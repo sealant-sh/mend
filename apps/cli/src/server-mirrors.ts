@@ -36,7 +36,12 @@ export const DOCKER_MIRROR_TTL = "168h";
 /** Which mirrors an install runs. `null` is a mirror turned off. */
 export interface ServerMirrors {
   readonly npm: { readonly maxSize: string } | null;
-  /** `upstreamUser`: the Docker Hub account the mirror pulls as; absent, it pulls anonymously. */
+  /**
+   * `upstreamUser`: the Docker Hub account the mirror pulls as; absent, it pulls anonymously. The
+   * mirror has no login of its own, so every session that reaches it can pull whatever this account
+   * can read: setup takes a login only with `--docker-hub-public-only`, the operator's statement that
+   * its token is scoped to Public Repo Read-only. Mend cannot check a token's scope.
+   */
   readonly docker: { readonly upstreamUser?: string } | null;
 }
 
@@ -418,7 +423,7 @@ export const observedDockerMirrorLine = (
     return "docker mirror · container not running · session Docker daemons pull from Docker Hub directly";
   const size =
     typeof observed.size === "number"
-      ? `${formatBytes(observed.size)} cached · kept 7 days after each fetch`
+      ? `${formatBytes(observed.size)} cached · layers evicted 7 days after each fetch`
       : `size not read: ${observed.size}`;
   const { traffic } = observed;
   const since = observed.startedAt === null ? "since it started" : `since ${observed.startedAt}`;
@@ -429,6 +434,6 @@ export const observedDockerMirrorLine = (
   const login =
     mirrors.docker.upstreamUser === undefined
       ? "pulls from Docker Hub anonymously"
-      : `pulls from Docker Hub as ${mirrors.docker.upstreamUser}`;
+      : `pulls from Docker Hub as ${mirrors.docker.upstreamUser}, with a token the operator declared Public Repo Read-only · every session can pull whatever that token can read`;
   return ["docker mirror · running", size, seen, login, "observed"].join(" · ");
 };

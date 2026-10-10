@@ -393,6 +393,7 @@ const SETUP_FLAGS = new Set([
   "--no-docker-mirror",
   "--docker-hub-username",
   "--docker-hub-token-stdin",
+  "--docker-hub-public-only",
   "--no-docker-hub-login",
 ]);
 
@@ -405,6 +406,7 @@ const SWITCHES: ReadonlySet<string> = new Set([
   "--docker-mirror",
   "--no-docker-mirror",
   "--docker-hub-token-stdin",
+  "--docker-hub-public-only",
   "--no-docker-hub-login",
 ]);
 
@@ -503,6 +505,15 @@ const parseSetupOptions = (args: ReadonlyArray<string>): SetupOptions => {
     );
   if (dockerHubUsername !== undefined && !isDockerHubCredential(dockerHubUsername))
     throw setupError(`--docker-hub-username "${dockerHubUsername}" is not a Docker Hub user name.`);
+  const dockerHubPublicOnly = values.has("--docker-hub-public-only");
+  if (dockerHubPublicOnly && dockerHubUsername === undefined)
+    throw setupError(
+      "--docker-hub-public-only goes with --docker-hub-username and --docker-hub-token-stdin: it states what the token you give can read.",
+    );
+  if (dockerHubUsername !== undefined && !dockerHubPublicOnly)
+    throw setupError(
+      'A Docker Hub login needs --docker-hub-public-only. The Docker mirror has no login of its own: every session that reaches it can pull whatever the token can read, private repositories included. Create a Docker Hub personal access token with the access permission "Public Repo Read-only", pipe it on standard input, and add --docker-hub-public-only to state that it is one. Mend cannot check a token\'s scope.',
+    );
   if (dockerHubUsername !== undefined && (noDockerHubLogin || dockerMirror === false))
     throw setupError(
       `--docker-hub-username and ${noDockerHubLogin ? "--no-docker-hub-login" : "--no-docker-mirror"} contradict each other.`,

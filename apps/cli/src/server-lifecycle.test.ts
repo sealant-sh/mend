@@ -1268,7 +1268,7 @@ describe("the mirrors", { timeout: 120_000 }, () => {
       "npm mirror · running · 2.0 MiB cached of 10 GiB · last 24 h: 2 tarball requests · 1 served from the cache (50%) · 1 fetched from registry.npmjs.org · observed",
     );
     expect(f.lines).toContain(
-      "docker mirror · running · 2.0 MiB cached · kept 7 days after each fetch · since 2026-10-10T08:00:00Z: layers 4 requested · 3 from the cache (75%) · manifests 4 · 2 from the cache · pulls from Docker Hub anonymously · observed",
+      "docker mirror · running · 2.0 MiB cached · layers evicted 7 days after each fetch · since 2026-10-10T08:00:00Z: layers 4 requested · 3 from the cache (75%) · manifests 4 · 2 from the cache · pulls from Docker Hub anonymously · observed",
     );
   });
 
@@ -1347,7 +1347,14 @@ describe("the mirrors", { timeout: 120_000 }, () => {
     const withStdin: ServerSetupRuntime = { ...f.runtime, readStdin: async () => `${token}\n` };
     expect(
       await serverCommand(
-        ["setup", "--offline", "--docker-hub-username", "mendbot", "--docker-hub-token-stdin"],
+        [
+          "setup",
+          "--offline",
+          "--docker-hub-username",
+          "mendbot",
+          "--docker-hub-token-stdin",
+          "--docker-hub-public-only",
+        ],
         withStdin,
       ),
     ).toEqual({ _tag: "ok" });
@@ -1381,12 +1388,26 @@ describe("the mirrors", { timeout: 120_000 }, () => {
     [["--npm-mirror-max-size", "512m"], "--npm-mirror-max-size must be"],
     [["--no-npm-mirror", "--npm-mirror-max-size", "20g"], "contradict each other"],
     [["--docker-hub-username", "mendbot"], "go together"],
+    [
+      ["--docker-hub-username", "mendbot", "--docker-hub-token-stdin"],
+      'needs --docker-hub-public-only. The Docker mirror has no login of its own: every session that reaches it can pull whatever the token can read, private repositories included. Create a Docker Hub personal access token with the access permission "Public Repo Read-only"',
+    ],
+    [["--docker-hub-public-only"], "goes with --docker-hub-username"],
     [["--docker-hub-token-stdin"], "go together"],
     [
-      ["--docker-hub-username", "mendbot", "--docker-hub-token-stdin", "--no-docker-mirror"],
+      [
+        "--docker-hub-username",
+        "mendbot",
+        "--docker-hub-token-stdin",
+        "--docker-hub-public-only",
+        "--no-docker-mirror",
+      ],
       "--docker-hub-username and --no-docker-mirror contradict each other.",
     ],
-    [["--docker-hub-username", "a b", "--docker-hub-token-stdin"], "is not a Docker Hub user name"],
+    [
+      ["--docker-hub-username", "a b", "--docker-hub-token-stdin", "--docker-hub-public-only"],
+      "is not a Docker Hub user name",
+    ],
   ])("refuses %j before anything is written", async (flags, message) => {
     const f = await fixture();
     const result = await serverCommand(["setup", ...flags], f.runtime);
@@ -1401,7 +1422,14 @@ describe("the mirrors", { timeout: 120_000 }, () => {
     const before = f.files()["server.env"];
     const withStdin: ServerSetupRuntime = { ...f.runtime, readStdin: async () => "two words\n" };
     const result = await serverCommand(
-      ["setup", "--offline", "--docker-hub-username", "mendbot", "--docker-hub-token-stdin"],
+      [
+        "setup",
+        "--offline",
+        "--docker-hub-username",
+        "mendbot",
+        "--docker-hub-token-stdin",
+        "--docker-hub-public-only",
+      ],
       withStdin,
     );
     expect(result._tag).toBe("error");

@@ -1183,14 +1183,14 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     section: "this machine",
     summary: "install or repair the local Mend server",
     synopsis: [
-      "[--context <name>] [--version <version|latest>] [--bind <ip>] [--ssh-bind <ip>] [--url <origin>] [--origin <origin>...] [--port <n>] [--ssh-port <n>] [--edge <host> | --no-edge] [--exposure <loopback|private|public>] [--tenancy <single|multi>] [--declare <item>...] [--npm-mirror | --no-npm-mirror] [--npm-mirror-max-size <size>] [--docker-mirror | --no-docker-mirror] [--docker-hub-username <name> --docker-hub-token-stdin | --no-docker-hub-login] [--docker-socket <path>] [--assets-dir <dir>] [--offline]",
+      "[--context <name>] [--version <version|latest>] [--bind <ip>] [--ssh-bind <ip>] [--url <origin>] [--origin <origin>...] [--port <n>] [--ssh-port <n>] [--edge <host> | --no-edge] [--exposure <loopback|private|public>] [--tenancy <single|multi>] [--declare <item>...] [--npm-mirror | --no-npm-mirror] [--npm-mirror-max-size <size>] [--docker-mirror | --no-docker-mirror] [--docker-hub-username <name> --docker-hub-token-stdin --docker-hub-public-only | --no-docker-hub-login] [--docker-socket <path>] [--assets-dir <dir>] [--offline]",
     ],
     description: [
       "Checks a local Unix-socket Docker context and the Compose plugin, downloads the compose and Postgres initialization assets for one Mend release, preserves existing data and secrets, and starts the server. Re-running repairs the same pinned version. A changed --version is refused; use mend server upgrade. Updating this CLI never updates an existing server pin.",
       "The default listens only on localhost at http://localhost:3105. Non-local access requires both --bind and --url. Every extra browser origin must be named with --origin; setup never guesses from the request Host header or network interfaces.",
       "--edge <host> runs a TLS edge in front of Mend: Caddy on ports 80 and 443 of every interface, which obtains and renews a certificate for the host and proxies to Mend's web tier. Mend's own port stays on loopback and the browser origin is https://<host>. The edge's compose overlay and Caddyfile are written into the generation beside compose.yaml, so start, restart and upgrade run them every time. --no-edge takes it away again, and the edge's container with it. A fresh install cannot start with the edge: until the first account exists, registration is open to whoever reaches the origin first, so set up on localhost, create the account, then add the edge.",
       "--exposure declares how the instance is reached, and --tenancy whether one organization or many use it. Both are written into the generation and kept across reruns and upgrades. public needs the edge and an existing first account. With multi, or with public, the multi mode gate's settings follow: MEND_SOURCE_POLICY=tenant and MEND_CAPTURE_REQUIRE_SIZES=true, and public sets MEND_URL_BEARERS=refuse. The server still decides whether it starts, and mend server status shows what it reports.",
-      "Two mirrors run beside Mend unless turned off: an npm mirror (nginx caching npmjs.org, capped at 10g by default, least recently used out) and a Docker mirror (a pull-through cache of Docker Hub, each layer kept seven days after it was fetched). Neither publishes a host port. Sessions install npm packages and pull Docker Hub images through them; a project's own npm settings win, and a mirror that is down sends sessions upstream instead. Both are kept across reruns and upgrades, and an upgrade adds them to an install from before them. The Docker mirror pulls anonymously unless given a Docker Hub login: --docker-hub-username with the access token piped on standard input, kept in server.env only.",
+      "Two mirrors run beside Mend unless turned off: an npm mirror (nginx caching npmjs.org, capped at 10g by default, least recently used out) and a Docker mirror (a pull-through cache of Docker Hub, each layer kept seven days after it was fetched). Neither publishes a host port. Sessions install npm packages and pull Docker Hub images through them; a project's own npm settings win, and a mirror that is down sends sessions upstream instead. Both are kept across reruns and upgrades, and an upgrade adds them to an install from before them. The Docker mirror pulls anonymously unless given a Docker Hub login: --docker-hub-username with the access token piped on standard input, kept in server.env only. The mirror has no login of its own, so every session that reaches it can pull whatever that token can read: setup takes a login only with --docker-hub-public-only, your statement that the token's access permission is Public Repo Read-only. Mend cannot check a token's scope.",
       "Docker Desktop on Linux and macOS, and OrbStack on macOS, expose client-side proxy sockets. Containers use the daemon-side /var/run/docker.sock. --docker-socket overrides detection and is retained on reruns.",
       "Setup holds an exclusive process lock through startup and health checks. A busy lock reports its owner and manual recovery steps. Never remove a live lock. Private configuration uses immutable generations and an atomic active pointer; failed attempts retain credentials and never delete Docker volumes.",
     ],
@@ -1255,6 +1255,10 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
         flag: "--docker-hub-token-stdin",
         text: "read that account's access token from standard input; kept in server.env, never in argv or a session",
       },
+      {
+        flag: "--docker-hub-public-only",
+        text: "required with a login: you state the token is scoped Public Repo Read-only, since every session can pull what it can read",
+      },
       { flag: "--no-docker-hub-login", text: "the Docker mirror pulls anonymously again" },
       {
         flag: "--assets-dir <dir>",
@@ -1292,8 +1296,8 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       },
       {
         command:
-          'printf %s "$DOCKER_HUB_TOKEN" | mend server setup --docker-hub-username mendbot --docker-hub-token-stdin',
-        text: "the Docker mirror pulls from Docker Hub as mendbot",
+          'printf %s "$DOCKER_HUB_TOKEN" | mend server setup --docker-hub-username mendbot --docker-hub-token-stdin --docker-hub-public-only',
+        text: "the Docker mirror pulls from Docker Hub as mendbot, with a Public Repo Read-only token",
       },
     ],
     see: ["server", "server status", "login", "doctor", "operator exposure"],

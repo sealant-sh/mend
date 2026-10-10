@@ -172,7 +172,7 @@ describe("what status observes", () => {
         startedAt: "2026-10-10T08:00:00Z",
       }),
     ).toBe(
-      "docker mirror · running · 120 MiB cached · kept 7 days after each fetch · since 2026-10-10T08:00:00Z: layers 8 requested · 6 from the cache (75%) · manifests 6 · 3 from the cache · pulls from Docker Hub anonymously · observed",
+      "docker mirror · running · 120 MiB cached · layers evicted 7 days after each fetch · since 2026-10-10T08:00:00Z: layers 8 requested · 6 from the cache (75%) · manifests 6 · 3 from the cache · pulls from Docker Hub anonymously · observed",
     );
     expect(
       observedDockerMirrorLine(
@@ -180,7 +180,7 @@ describe("what status observes", () => {
         { running: true, size: "du failed", traffic: "exec failed", startedAt: null },
       ),
     ).toBe(
-      "docker mirror · running · size not read: du failed · traffic not read: exec failed · pulls from Docker Hub as mendbot · observed",
+      "docker mirror · running · size not read: du failed · traffic not read: exec failed · pulls from Docker Hub as mendbot, with a token the operator declared Public Repo Read-only · every session can pull whatever that token can read · observed",
     );
   });
 });
