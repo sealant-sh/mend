@@ -805,6 +805,8 @@ export const personHomeFunction = (options: PersonHomeOptions): string => {
     `p_n=$1; p_u=$2; p_h=$4; p_p=${q(people)}; p_s="$p_p/$3"; p_o="$2:${group}"`,
     `p_t=${q(options.tmpRoot ?? "/tmp")}"/u-$2"; p_r=${q(options.runRoot ?? "/run/user")}"/$2"`,
     `fail() { printf 'mend: %s\\n' "$1" >&2; exit 1; }`,
+    // A link at the home is never followed: Mend makes a directory there (review 2 of mend#619).
+    `[ -L "$p_h" ] && fail "unexpected link: $p_h"`,
     `root=0; [ "$(id -u)" = 0 ] && root=1`,
     // The user, once: its uid is checked against the passwd entry whoever made it.
     `if [ "$root" = 1 ]; then ` +
@@ -866,6 +868,52 @@ export const personHomeFunction = (options: PersonHomeOptions): string => {
 export const personHomeCall = (person: LinuxIdentity, home?: string): string => {
   assertScriptSafe(person);
   return `mend_person ${person.name} ${person.uid} ${person.accountId} ${shellQuote(home ?? linuxHomeOf(person))}`;
+};
+
+/**
+ * A person's user and home ensured once more, after a start already made them
+ * (`HarnessLayoutSteps.processAs`'s retry of a failed login write), without reading or changing
+ * anything in the home: their deliveries (dotfiles that fold `~/.claude` into a link, the links
+ * restored after them) may be running in it, and `personHomeScript` refuses a link it did not
+ * make (review of mend#619, R1). The home itself is held to what `personHomeScript` makes of it
+ * (review 2 of mend#619, R2 and R3): a link there is refused, never followed, dangling or not; their
+ * user must have their uid and the `mend` group as its primary group, and the home must be theirs.
+ * Its group and mode, which root sets on the directory alone (the person cannot rename it under
+ * root's `/home`), are set again when they drifted. Only a user or home that is not there runs
+ * `personHomeScript` whole. As a non-root caller (the tests) the user and owner are not asked for.
+ */
+export const personHomeEnsureScript = (
+  person: LinuxIdentity,
+  options: PersonHomeOptions & { readonly home?: string },
+): string => {
+  assertScriptSafe(person);
+  const home = shellQuote(options.home ?? linuxHomeOf(person));
+  const { gid } = MEND_GROUP;
+  return [
+    `h=${home}; n=${person.name}; u=${person.uid}`,
+    `fail() { printf 'mend: %s\\n' "$1" >&2; exit 1; }`,
+    `[ -L "$h" ] && fail "unexpected link: $h"`,
+    `root=0; [ "$(id -u)" = 0 ] && root=1`,
+    // A user that is there is checked first, whether their home is there or not (review 3 of
+    // mend#619, R4): only a user or home that is missing goes to the whole script.
+    `known=0; [ "$root" = 1 ] && id -u "$n" >/dev/null 2>&1 && known=1`,
+    `if [ "$known" = 1 ]; then`,
+    `  [ "$(id -u "$n")" = "$u" ] || fail "user $n has another uid in this image"`,
+    `  [ "$(id -g "$n")" = ${gid} ] || fail "user $n has another primary group in this image"`,
+    `fi`,
+    `if [ -d "$h" ]; then`,
+    `  if [ "$root" != 1 ]; then exit 0; fi`,
+    `  if [ "$known" = 1 ]; then`,
+    `    [ "$(stat -c %u "$h")" = "$u" ] || fail "the home of $n belongs to someone else: $h"`,
+    `    [ "$(stat -c %g "$h")" = ${gid} ] || chgrp -h ${gid} "$h" || fail "the home of $n could not be set to its group"`,
+    // `00700`: a numeric `0700` keeps a directory's set-group-ID bit (GNU chmod).
+    `    [ "$(stat -c %a "$h")" = 700 ] || { chmod 00700 "$h" && [ "$(stat -c %a "$h")" = 700 ]; } || ` +
+      `fail "the home of $n could not be set to 0700"`,
+    `    exit 0`,
+    `  fi`,
+    `fi`,
+    personHomeScript(person, options),
+  ].join("\n");
 };
 
 /**

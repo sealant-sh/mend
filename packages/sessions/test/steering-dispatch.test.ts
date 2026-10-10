@@ -374,7 +374,9 @@ const steeredWorld = (harness: "claude" | "codex") => {
    * The engine's preparation before the stop (the login, the user, the take), run before it asks
    * the host its last question; what the host answers decides whether anything stops.
    */
-  const preparation: { during: Effect.Effect<void> } = { during: Effect.void };
+  const preparation: { during: Effect.Effect<void, SealantPlatformError> } = {
+    during: Effect.void,
+  };
   /**
    * What the engine does between the old process's stop and the next one's attach: stage the
    * home, two Core calls, open the pipe. About a second on the box, by which time the old
@@ -1022,6 +1024,74 @@ describe("shared steering's dispatch (docs/adr/0016, Delivery 18)", () => {
           () => alice.sent.some((message) => message["method"] === "turn/start"),
           "Alice's turn sent",
         );
+        yield* host.detach(steered.processA.id);
+      }).pipe(Effect.scoped, Effect.provide(steered.host));
+    },
+  );
+
+  /**
+   * The box, 2026-10-09 (benchmark 1ju0v2, mend 0.36.0-next.652): the first turn the second person
+   * sent into the owner's session failed at their logins write, before anything stopped. Their turn
+   * fails with the words; it, and every turn of theirs behind it, is never sent to the owner's
+   * process, so nothing of theirs runs as the owner or on the owner's login.
+   */
+  it.live(
+    "a hand-over refused before the stop fails B's waiting turn with its words, and never sends B's turns to A's process",
+    () => {
+      const steered = steeredWorld("claude");
+      const alice = claudePipe("pipe-a");
+      const bob = claudePipe("pipe-b");
+      const words =
+        "bob's logins could not be written into this workspace: the write exited with 1. Asked twice; nothing was started for bob.";
+      steered.preparation.during = Effect.fail(
+        new SealantPlatformError({
+          code: "person_login_not_written",
+          status: 502,
+          message: words,
+          cause: null,
+        }),
+      );
+      return Effect.gen(function* () {
+        const host = yield* ProtocolHost;
+        yield* attachAs(steered.processA, alice.pipe, steered.hooksFor(ALICE, Effect.void));
+        yield* host.submitTurn(sessionId, "Alice's request", ALICE);
+        yield* waitUntil(
+          () => alice.sent.some((message) => message["type"] === "user"),
+          "Alice's turn sent",
+        );
+        alice.push({ type: "result", subtype: "success" });
+        alice.push({ type: "system", subtype: "session_state_changed", state: "idle" });
+        yield* pause(30);
+        const bobs = yield* host.submitTurn(sessionId, "Bob's request", BOB);
+        const behind = yield* host.submitTurn(sessionId, "Bob's second request", BOB);
+        yield* waitUntil(
+          () => steered.world.turns.get(behind.id)?.status === "failed",
+          "Bob's turns refused",
+        );
+        // Each of Bob's turns asked for its own hand-over; none reached the stop.
+        expect(steered.handOvers.map((handOver) => handOver.sender)).toEqual([BOB, BOB]);
+        expect(steered.atStop).toEqual([]);
+        for (const id of [bobs.id, behind.id]) {
+          const turn = steered.world.turns.get(id);
+          expect(turn).toMatchObject({ status: "failed", error: words, providerTurnId: null });
+          // Never sent, so billed to nobody: not to Alice.
+          expect(turn?.billedUserId ?? null).toBeNull();
+        }
+        // Alice's process runs on, and never got a word of Bob's; nothing started for him.
+        expect(steered.live.has(steered.processA.id)).toBe(true);
+        expect(JSON.stringify(alice.sent)).not.toContain("Bob's");
+        expect(bob.sent).toEqual([]);
+        expect(steered.waits.at(-1)).toBeNull();
+        // Alice's own next turn is hers, sent to her process, on her login.
+        const own = yield* host.submitTurn(sessionId, "Alice's next", ALICE);
+        yield* waitUntil(
+          () => JSON.stringify(alice.sent).includes("Alice's next"),
+          "Alice's turn sent",
+        );
+        expect(steered.world.turns.get(own.id)).toMatchObject({
+          processId: steered.processA.id,
+          billedUserId: ALICE,
+        });
         yield* host.detach(steered.processA.id);
       }).pipe(Effect.scoped, Effect.provide(steered.host));
     },
