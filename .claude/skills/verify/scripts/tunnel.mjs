@@ -5,15 +5,20 @@
 //   node .claude/skills/verify/scripts/tunnel.mjs start --service <name> --port <port> --dir <private dir> --log <file>
 //   node .claude/skills/verify/scripts/tunnel.mjs stop --dir <private dir>
 //
-// `start` runs `mend service connect <name> --port <port>` in a session of its own, writes
-// <dir>/tunnel.json (pid, its start time as `ps` reports it, service, port), and
-// waits up to 60 s for http://localhost:<port>/api/health. Exit 0: it answers. Exit 1: the tunnel
-// exited (its log says why, a taken port for one) or never answered. `stop` signals the recorded pid
+// `start` refuses a port anything already listens on (127.0.0.1 or [::1]: the owner's own
+// `mend service connect stack --port 3305` is one), then runs `mend service connect <name> --port
+// <port>` in a session of its own, writes <dir>/tunnel.json (pid, its start time as `ps` reports it,
+// service, port, `bound: false`), and waits up to 60 s until its own child, or a process under it,
+// is the one listener on 127.0.0.1:<port> (`ss -ltnp`) and http://localhost:<port>/api/health
+// answers. Only then does tunnel.json say `bound: true`, which is what guard/policy.mjs allows.
+// Exit 0: bound and answering. Exit 1: the port was taken, the tunnel exited (its log says why) or
+// another process holds the port, or it never answered. `stop` signals the recorded pid
 // only when `ps` still reports the same start time for it; otherwise it says so
 // and signals nothing. doctor.mjs reads the same file. `mend` is the first one on PATH.
 
 import { spawn, spawnSync } from "node:child_process";
 import { openSync, readFileSync, writeFileSync } from "node:fs";
+import net from "node:net";
 import { join } from "node:path";
 
 const [command, ...args] = process.argv.slice(2);
@@ -39,6 +44,46 @@ const identityOf = (pid) => {
   return line === "" ? null : line;
 };
 
+/** Whether this process can bind host:port: false when anything already listens there. */
+const free = (host, port) =>
+  new Promise((done) => {
+    const probe = net.createServer();
+    probe.once("error", (error) =>
+      done(error.code === "EADDRNOTAVAIL" || error.code === "EAFNOSUPPORT"),
+    );
+    probe.listen({ host, port: Number(port), exclusive: true }, () =>
+      probe.close(() => done(true)),
+    );
+  });
+
+/** The pids listening on a TCP port, with their local addresses (`ss -ltnp`, this user's only). */
+const listeners = (port) => {
+  const run = spawnSync("ss", ["-ltnpH", `sport = :${port}`], { encoding: "utf8" });
+  if (run.status !== 0) return null;
+  return run.stdout
+    .split("\n")
+    .filter((line) => line.trim() !== "")
+    .map((line) => ({
+      address: line.trim().split(/\s+/)[3],
+      pids: [...line.matchAll(/pid=(\d+)/g)].map(([, pid]) => Number(pid)),
+    }));
+};
+
+/** Whether `pid` is `root` or a process under it (/proc's parent links). */
+const under = (pid, root) => {
+  for (let at = pid, hops = 0; at > 1 && hops < 64; hops += 1) {
+    if (at === root) return true;
+    try {
+      at = Number(
+        readFileSync(`/proc/${at}/stat`, "utf8").split(")").at(-1).trim().split(/\s+/)[1],
+      );
+    } catch {
+      return false;
+    }
+  }
+  return false;
+};
+
 const dir = flag("dir") ?? fail("needs --dir", 2);
 const file = join(dir, "tunnel.json");
 
@@ -46,6 +91,10 @@ if (command === "start") {
   const service = flag("service") ?? fail("start needs --service", 2);
   const port = flag("port") ?? fail("start needs --port", 2);
   const log = flag("log") ?? fail("start needs --log", 2);
+  if (!(await free("127.0.0.1", port)) || !(await free("::1", port)))
+    fail(
+      `port ${port} is taken on this machine (another tunnel, or the owner's own); pick another`,
+    );
   const out = openSync(log, "a");
   const child = spawn("mend", ["service", "connect", service, "--port", port], {
     detached: true,
@@ -53,21 +102,50 @@ if (command === "start") {
   });
   child.unref();
   const identity = identityOf(child.pid);
-  writeFileSync(file, JSON.stringify({ pid: child.pid, identity, service, port }), { mode: 0o600 });
+  const record = (bound) =>
+    writeFileSync(file, JSON.stringify({ pid: child.pid, identity, service, port, bound }), {
+      mode: 0o600,
+    });
+  record(false);
   const deadline = Date.now() + 60_000;
+  const stopChild = () => {
+    if (identityOf(child.pid) === identity) process.kill(child.pid, "SIGTERM");
+  };
   for (;;) {
-    const answered = await fetch(`http://localhost:${port}/api/health`, {
-      signal: AbortSignal.timeout(5000),
-    }).then(
-      (response) => response.ok,
-      () => false,
+    if (identityOf(child.pid) !== identity) fail(`the tunnel exited; read ${log}`);
+    // Only the child's own listener counts: anything else on the port ends the start.
+    const held = listeners(port);
+    if (held === null) {
+      stopChild();
+      fail("ss cannot list this machine's listeners; the tunnel cannot be proven to be this run's");
+    }
+    const foreign = held.filter(
+      (at) => at.address !== `127.0.0.1:${port}` || !at.pids.some((pid) => under(pid, child.pid)),
     );
+    if (foreign.length > 0) {
+      stopChild();
+      fail(
+        `another process listens on ${foreign.map((at) => at.address).join(", ")}; not this run's tunnel`,
+      );
+    }
+    const ours = held.length > 0;
+    const answered =
+      ours &&
+      (await fetch(`http://127.0.0.1:${port}/api/health`, {
+        signal: AbortSignal.timeout(5000),
+      }).then(
+        (response) => response.ok,
+        () => false,
+      ));
     if (answered) {
+      record(true);
       process.stdout.write(`tunnel · ${service} → 127.0.0.1:${port} · pid ${child.pid}\n`);
       process.exit(0);
     }
-    if (identityOf(child.pid) !== identity) fail(`the tunnel exited; read ${log}`);
-    if (Date.now() >= deadline) fail(`localhost:${port} did not answer within 60 s; read ${log}`);
+    if (Date.now() >= deadline) {
+      stopChild();
+      fail(`127.0.0.1:${port} did not answer within 60 s; read ${log}`);
+    }
     await new Promise((done) => setTimeout(done, 1000));
   }
 } else if (command === "stop") {

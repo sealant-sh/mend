@@ -4,37 +4,16 @@
 # Put this directory first on PATH (`export PATH=<skill>/scripts/guard:$PATH`), give the run a CLI
 # config of its own (`export XDG_CONFIG_HOME=<an absolute directory holding mend/cli.json>`) and
 # declare the outer server the run uses (`export MEND_VERIFY_OUTER_URL=<its URL, as that config
-# names it>`). Every `mend` the skill runs, its helpers' and drivers' included, then passes through
-# here. policy.mjs (beside this file) decides; it refuses (exit 97, nothing run) whatever could
-# reach a server other than the declared outer or the run's own tunnel: an override in the
-# environment, a relative or missing config home, this machine's own config, a config or a
-# `--url`/`--server` argument naming another server, and commands that act on this machine's own
-# Mend installation.
+# names it>`). Inside a Mend session, also name the CLI the run built
+# (`export MEND_VERIFY_REAL_MEND=<its absolute path>`): the next mend on PATH there is the session's
+# own helper. Every `mend` the skill runs, its helpers' and drivers' included, then passes through
+# here.
 #
-# Otherwise it runs the real CLI with the config home pinned: XDG_CONFIG_HOME is passed on as the
-# absolute, resolved directory the policy checked, so no change of directory or of HOME downstream
-# can make the CLI read another config. The real CLI is $MEND_VERIFY_REAL_MEND, else the next `mend`
-# on PATH after this directory, so a shared shim another process rewrites cannot point the run
-# anywhere else.
+# policy.mjs (beside this file) decides, and then becomes the real CLI (execve: same process, same
+# signals). It refuses (exit 97, nothing run) whatever could reach a server other than the declared
+# outer or the run's own tunnel, this machine's own config, or the session the run is in; and it
+# runs the real CLI with the config home pinned, a home of the run's own, and no session, SSH agent,
+# GitHub or provider variable. Its header lists every rule.
 set -u
 here=$(cd "$(dirname "$0")" && pwd -P)
-config_home=$(node "$here/policy.mjs" cli -- "$@") || exit 97
-deny() {
-  echo "mend-guard: $1; refused · a verifier never talks to the owner's server" >&2
-  exit 97
-}
-real=${MEND_VERIFY_REAL_MEND:-}
-if [ -z "$real" ]; then
-  old_ifs=$IFS
-  IFS=:
-  for d in $PATH; do
-    [ -n "$d" ] && [ -x "$d/mend" ] || continue
-    [ "$(cd "$d" 2>/dev/null && pwd -P)" = "$here" ] && continue
-    real=$d/mend
-    break
-  done
-  IFS=$old_ifs
-fi
-[ -n "$real" ] || deny "no mend on PATH after the guard"
-export XDG_CONFIG_HOME="$config_home"
-exec "$real" "$@"
+exec node "$here/policy.mjs" exec -- "$@"

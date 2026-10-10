@@ -23,6 +23,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { deflateSync } from "node:zlib";
 
+import { identityOf } from "./guard/policy.mjs";
 import { loadSecrets, privateRoot, redactValues, register } from "./secrets.mjs";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
@@ -30,7 +31,15 @@ const here = fileURLToPath(new URL(".", import.meta.url));
 // fixtures record their port as the tunnel's, beside this declared outer.
 process.env.MEND_VERIFY_OUTER_URL = "http://127.0.0.1:23105";
 const tunnelTo = (privateDir, port) =>
-  writeFileSync(join(privateDir, "tunnel.json"), JSON.stringify({ port: String(port) }));
+  writeFileSync(
+    join(privateDir, "tunnel.json"),
+    JSON.stringify({
+      port: String(port),
+      pid: process.pid,
+      identity: identityOf(process.pid),
+      bound: true,
+    }),
+  );
 const skillMd = readFileSync(join(here, "..", "SKILL.md"), "utf8");
 const playwright =
   process.env.MEND_VERIFY_PLAYWRIGHT ?? join(homedir(), ".cache", "mend-verify", "playwright");

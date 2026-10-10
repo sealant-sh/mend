@@ -5,9 +5,11 @@
 //   node --test .claude/skills/verify/scripts/guard.test.mjs
 
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import {
   chmodSync,
+  existsSync,
+  linkSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -17,12 +19,26 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
+import { createServer } from "node:net";
 import { tmpdir, userInfo } from "node:os";
 import { dirname, join } from "node:path";
-import { test } from "node:test";
+import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { Refused, checkCli } from "./guard/policy.mjs";
+import { Refused, checkCli, checkTarget, identityOf, runHome } from "./guard/policy.mjs";
+
+/** A tunnel record as tunnel.mjs leaves a bound one: held by a live process (this test's). */
+const tunnelTo = (dir, port, extra = {}) =>
+  writeFileSync(
+    join(dir, "tunnel.json"),
+    JSON.stringify({
+      port: String(port),
+      pid: process.pid,
+      identity: identityOf(process.pid),
+      bound: true,
+      ...extra,
+    }),
+  );
 
 const scripts = dirname(fileURLToPath(import.meta.url));
 const guardDir = join(scripts, "guard");
@@ -53,13 +69,28 @@ const world = ({ xdgUrl, legacyUrl, tunnelPort } = {}) => {
   }
   const P = join(home, "private");
   mkdirSync(P);
-  if (tunnelPort !== undefined)
-    writeFileSync(join(P, "tunnel.json"), JSON.stringify({ port: String(tunnelPort) }));
+  if (tunnelPort !== undefined) tunnelTo(P, tunnelPort);
   return { home, bin, xdg, P };
 };
 
-const run = (w, args = ["projects"], env = {}, cwd = w.home) =>
-  spawnSync(join(guardDir, "mend"), args, {
+// The guard gives the real CLI a home of the run's own under ~/.cache/mend-verify/home: every one
+// these tests make goes again at the end.
+const runHomes = new Set();
+after(() => {
+  for (const home of runHomes) rmSync(home, { recursive: true, force: true });
+});
+const track = (xdg) => {
+  try {
+    runHomes.add(runHome(realpathSync(xdg)));
+  } catch {
+    // An XDG home that does not exist is refused before any home is made.
+  }
+};
+
+const run = (w, args = ["projects"], env = {}, cwd = w.home) => {
+  const xdg = "XDG_CONFIG_HOME" in env ? env.XDG_CONFIG_HOME : w.xdg;
+  if (xdg?.startsWith("/")) track(xdg);
+  return spawnSync(join(guardDir, "mend"), args, {
     encoding: "utf8",
     cwd,
     env: {
@@ -70,6 +101,7 @@ const run = (w, args = ["projects"], env = {}, cwd = w.home) =>
       ...env,
     },
   });
+};
 
 const within = (options, body) => {
   const w = world(options);
@@ -335,6 +367,7 @@ test("every mend in the terminal passes the guard", { skip: noTmux }, () => {
         tui(w, ["start", "ok", "http://localhost:3325", "--", "mend", "projects"]).status,
         0,
       );
+      track(join(w.P, "tui-cli"));
       assert.match(capture("ok"), /BUNDLED CLI REACHED projects/);
       assert.equal(
         tui(w, ["start", "no", "http://localhost:3325", "--", "mend", "login", "--url", owner])
@@ -452,24 +485,19 @@ test("a changed HOME does not make the account's own config a run's", () => {
   }
 });
 
-// The reported bypass, through the guard itself, on a machine whose account has a CLI config. The
-// real CLI is a fake that only echoes: nothing is sent anywhere.
-const accountConfig = join(userInfo().homedir, ".config", "mend", "cli.json");
-let accountUrl = null;
-try {
-  accountUrl = JSON.parse(readFileSync(accountConfig, "utf8")).url ?? null;
-} catch {
-  // No config for this account: the case below has nothing to reproduce.
-}
+// The reported bypass, through the guard itself, on a machine whose account has a CLI config. Only
+// the directory's presence is looked at: the refusal comes before any config is read, and the real
+// CLI is a fake that only echoes.
+const accountConfigDir = join(userInfo().homedir, ".config", "mend");
 test(
   "the guard refuses the account's own config under another HOME",
-  { skip: accountUrl ? false : "this account has no ~/.config/mend/cli.json" },
+  { skip: existsSync(accountConfigDir) ? false : "this account has no ~/.config/mend" },
   () => {
     within({}, (w) => {
       const result = run(w, ["run", "--", "true"], {
         HOME: w.home,
         XDG_CONFIG_HOME: join(userInfo().homedir, ".config"),
-        MEND_VERIFY_OUTER_URL: accountUrl,
+        MEND_VERIFY_OUTER_URL: outer,
         MEND_VERIFY_REAL_MEND: join(w.bin, "mend"),
       });
       refused(result, /own CLI config/);
@@ -500,5 +528,302 @@ test("a run's own config in a directory of its own passes, under the real HOME o
     });
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// Review round 2, R2-1: inside a Mend session the next `mend` on PATH is the session's own helper,
+// which ignores the config and acts on the session. Main's real helper, staged here, against a
+// loopback stub playing the session's server; the token is synthetic.
+const repoRoot = join(scripts, "..", "..", "..", "..");
+const { SESSION_HELPER_SCRIPT } = await import(
+  join(repoRoot, "packages", "sessions", "src", "session-socket.ts")
+);
+
+/** A loopback stub for the session's server, in a process of its own, logging each request. */
+const sessionStub = async (log) => {
+  const child = spawn(
+    process.execPath,
+    [
+      "-e",
+      `const http = require("node:http"), fs = require("node:fs");
+       const server = http.createServer((req, res) => {
+         fs.appendFileSync(process.argv[1], req.method + " " + req.url + "\\n");
+         req.resume();
+         req.on("end", () => { res.setHeader("content-type", "application/json"); res.end(req.url.includes("services") ? "[]" : "{}"); });
+       });
+       server.listen(0, "127.0.0.1", () => console.log(server.address().port));`,
+      log,
+    ],
+    { stdio: ["ignore", "pipe", "inherit"] },
+  );
+  const port = await new Promise((done) =>
+    child.stdout.once("data", (data) => done(String(data).trim())),
+  );
+  return { child, url: `http://127.0.0.1:${port}` };
+};
+
+test("inside a session the guard never runs the session's helper, and the session hears nothing", async () => {
+  const w = world({ xdgUrl: outer });
+  const log = join(w.home, "session-requests.log");
+  writeFileSync(log, "");
+  const { child, url } = await sessionStub(log);
+  try {
+    const helperDir = join(w.home, "helper");
+    mkdirSync(helperDir);
+    writeFileSync(join(helperDir, "mend"), SESSION_HELPER_SCRIPT, { mode: 0o755 });
+    writeFileSync(join(w.home, "wrapper"), `#!/bin/sh\nexec ${join(helperDir, "mend")} "$@"\n`, {
+      mode: 0o755,
+    });
+    const session = {
+      MEND_VERIFY_OUTER_URL: outer,
+      MEND_SESSION_ENDPOINT: url,
+      MEND_SESSION_ID: "owner-session",
+      MEND_SESSION_TOKEN: "synthetic-session-token-0000",
+      PATH: `${guardDir}:${helperDir}:${process.env.PATH}`,
+    };
+    for (const args of [["stop"], ["service", "list"], ["land"]]) {
+      refused(run(w, args, session), /inside a Mend session/);
+      refused(
+        run(w, args, { ...session, MEND_VERIFY_REAL_MEND: join(helperDir, "mend") }),
+        /in-workspace helper/,
+      );
+      refused(
+        run(w, args, { ...session, MEND_VERIFY_REAL_MEND: join(w.home, "wrapper") }),
+        /in-workspace helper/,
+      );
+    }
+    // Outside a session, the helper first on PATH is refused all the same.
+    refused(
+      run(w, ["stop"], { MEND_VERIFY_OUTER_URL: outer, PATH: session.PATH }),
+      /in-workspace helper/,
+    );
+    // The CLI the run names runs, with no session variable in its environment.
+    writeFileSync(
+      join(w.bin, "env-mend"),
+      '#!/bin/sh\nenv | grep "^MEND_SESSION_" || echo "no session variables"\n',
+      { mode: 0o755 },
+    );
+    const named = run(w, ["projects"], {
+      ...session,
+      MEND_VERIFY_REAL_MEND: join(w.bin, "env-mend"),
+    });
+    assert.equal(named.status, 0, named.stderr);
+    assert.equal(named.stdout.trim(), "no session variables");
+    assert.equal(readFileSync(log, "utf8"), "", "the session's server was reached");
+  } finally {
+    child.kill();
+    rmSync(w.home, { recursive: true, force: true });
+  }
+});
+
+// R2-3: this machine's own config by identity, not only by path. Synthetic homes and tokens.
+test("a copy, a hard link, or the owner's config under a recorded XDG home is the owner's", () => {
+  const passwd = realpathSync(mkdtempSync(join(tmpdir(), "verify-guard-passwd-")));
+  const runs = realpathSync(mkdtempSync(join(tmpdir(), "verify-guard-runs-")));
+  try {
+    const owner = JSON.stringify({
+      url: outer,
+      token: "owner-token-0123456789",
+      deviceId: "owner-device-0123",
+    });
+    mkdirSync(join(passwd, ".config", "mend"), { recursive: true });
+    writeFileSync(join(passwd, ".config", "mend", "cli.json"), owner);
+    const config = (name, write) => {
+      mkdirSync(join(runs, name, "mend"), { recursive: true });
+      write(join(runs, name, "mend", "cli.json"));
+      return join(runs, name);
+    };
+    const check =
+      (xdg, env = {}) =>
+      () =>
+        checkCli(["projects"], { MEND_VERIFY_OUTER_URL: outer, XDG_CONFIG_HOME: xdg, ...env }, [
+          runs,
+          passwd,
+        ]);
+    const ownersBy = (pattern) => (error) =>
+      error instanceof Refused && pattern.test(error.message);
+    assert.throws(check(config("copy", (file) => writeFileSync(file, owner))), ownersBy(/copy/));
+    const device = JSON.stringify({
+      url: outer,
+      token: "another-token-0123456",
+      deviceId: "owner-device-0123",
+    });
+    assert.throws(check(config("device", (file) => writeFileSync(file, device))), ownersBy(/copy/));
+    assert.throws(
+      check(config("hard", (file) => linkSync(join(passwd, ".config", "mend", "cli.json"), file))),
+      ownersBy(/same file/),
+    );
+    // The owner's own config kept under their own XDG home, recorded by Launch: by path.
+    const elsewhere = JSON.stringify({
+      url: outer,
+      token: "owner-xdg-token-0123456",
+      deviceId: "owner-xdg-device-01",
+    });
+    const dotconfig = config("dotconfig", (file) => writeFileSync(file, elsewhere));
+    assert.throws(
+      check(dotconfig, { MEND_VERIFY_MACHINE_XDG: dotconfig }),
+      ownersBy(/own CLI config/),
+    );
+    const mine = JSON.stringify({
+      url: outer,
+      token: "a-run-token-0123456789",
+      deviceId: "run-device-0123",
+    });
+    const ok = config("mine", (file) => writeFileSync(file, mine));
+    assert.equal(check(ok)(), ok);
+  } finally {
+    rmSync(passwd, { recursive: true, force: true });
+    rmSync(runs, { recursive: true, force: true });
+  }
+});
+
+// R2-4: the real CLI never sees this machine's home, logins, agent or session.
+test("the real CLI runs in a home of the run's own, with no login or provider variable", () => {
+  within({ xdgUrl: outer }, (w) => {
+    writeFileSync(join(w.bin, "env-mend"), "#!/bin/sh\nenv\n", { mode: 0o755 });
+    const leaked = {
+      GH_TOKEN: "gho_synthetic0000000000000000000000",
+      GITHUB_TOKEN: "ghp_synthetic0000000000000000000000",
+      GH_CONFIG_DIR: join(w.home, "owner-gh"),
+      ANTHROPIC_API_KEY: "sk-ant-synthetic-000000000000",
+      OPENAI_API_KEY: "sk-synthetic-0000000000000000000000",
+      CLAUDE_CONFIG_DIR: join(w.home, "owner-claude"),
+      CODEX_HOME: join(w.home, "owner-codex"),
+      SSH_AUTH_SOCK: join(w.home, "agent.sock"),
+      MEND_URL: "http://127.0.0.1:9",
+    };
+    const result = run(w, ["connect", "github"], {
+      MEND_VERIFY_OUTER_URL: outer,
+      MEND_VERIFY_REAL_MEND: join(w.bin, "env-mend"),
+      ...leaked,
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const env = Object.fromEntries(
+      result.stdout
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => [line.slice(0, line.indexOf("=")), line.slice(line.indexOf("=") + 1)]),
+    );
+    const home = env.HOME;
+    try {
+      assert.ok(
+        home.startsWith(join(userInfo().homedir, ".cache", "mend-verify", "home") + "/"),
+        home,
+      );
+      assert.equal(env.CLAUDE_CONFIG_DIR, join(home, ".claude"));
+      assert.equal(env.CODEX_HOME, join(home, ".codex"));
+      assert.equal(env.GH_CONFIG_DIR, join(home, ".config", "gh"));
+      for (const name of [
+        "GH_TOKEN",
+        "GITHUB_TOKEN",
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+        "SSH_AUTH_SOCK",
+      ])
+        assert.equal(env[name], undefined, `${name} reached the CLI`);
+      assert.equal(env.MEND_URL, "http://127.0.0.1:9");
+      assert.equal(env.XDG_CONFIG_HOME, w.xdg);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+});
+
+// R2-2: a tunnel counts only when its own child holds the port.
+const freePort = () =>
+  new Promise((done) => {
+    const probe = createServer();
+    probe.listen(0, "127.0.0.1", () => {
+      const { port } = probe.address();
+      probe.close(() => done(port));
+    });
+  });
+
+/** A `mend` whose `service connect … --port <p>` listens on 127.0.0.1:<p> and answers health. */
+const FAKE_CONNECT = `#!/usr/bin/env node
+const port = Number(process.argv[process.argv.indexOf("--port") + 1]);
+require("node:http").createServer((req, res) => res.end("{}")).listen(port, "127.0.0.1");
+process.on("SIGTERM", () => process.exit(0));
+`;
+
+test("a tunnel counts only when its own child holds the port", async () => {
+  const w = world({});
+  writeFileSync(join(w.bin, "mend"), FAKE_CONNECT, { mode: 0o755 });
+  const env = {
+    ...process.env,
+    PATH: `${w.bin}:${process.env.PATH}`,
+    MEND_VERIFY_OUTER_URL: outer,
+  };
+  const tunnel = (...args) =>
+    new Promise((done) => {
+      const child = spawn(process.execPath, [join(scripts, "tunnel.mjs"), ...args], { env });
+      let out = "";
+      child.stdout.on("data", (data) => (out += data));
+      child.stderr.on("data", (data) => (out += data));
+      child.on("exit", (status) => done({ status, out }));
+    });
+  const target = (port) => () =>
+    checkTarget(`http://localhost:${port}`, {
+      MEND_VERIFY_OUTER_URL: outer,
+      MEND_VERIFY_PRIVATE: w.P,
+    });
+  const squatPort = await freePort();
+  const squatter = spawn(process.execPath, [
+    "-e",
+    `require("node:http").createServer((q, r) => r.end("{}")).listen(${squatPort}, "127.0.0.1", () => console.log("up"))`,
+  ]);
+  try {
+    await new Promise((done) => squatter.stdout.once("data", done));
+    // Something else answers health there (the owner's own tunnel, say): refused before any spawn.
+    const taken = await tunnel(
+      "start",
+      "--service",
+      "s",
+      "--port",
+      String(squatPort),
+      "--dir",
+      w.P,
+      "--log",
+      join(w.home, "t.log"),
+    );
+    assert.equal(taken.status, 1, taken.out);
+    assert.match(taken.out, /taken/);
+    assert.ok(!existsSync(join(w.P, "tunnel.json")));
+    assert.throws(target(squatPort), Refused);
+    // Its own child's listener: bound, allowed while it lives, refused once stopped.
+    const port = await freePort();
+    const own = await tunnel(
+      "start",
+      "--service",
+      "s",
+      "--port",
+      String(port),
+      "--dir",
+      w.P,
+      "--log",
+      join(w.home, "t.log"),
+    );
+    assert.equal(own.status, 0, own.out);
+    assert.equal(JSON.parse(readFileSync(join(w.P, "tunnel.json"), "utf8")).bound, true);
+    assert.equal(target(port)(), `http://localhost:${port}`);
+    assert.throws(
+      () =>
+        checkTarget(`http://[::1]:${port}`, {
+          MEND_VERIFY_OUTER_URL: outer,
+          MEND_VERIFY_PRIVATE: w.P,
+        }),
+      Refused,
+    );
+    assert.equal((await tunnel("stop", "--dir", w.P)).status, 0);
+    for (
+      let i = 0;
+      i < 50 && identityOf(JSON.parse(readFileSync(join(w.P, "tunnel.json"), "utf8")).pid);
+      i += 1
+    )
+      await new Promise((done) => setTimeout(done, 100));
+    assert.throws(target(port), Refused);
+  } finally {
+    squatter.kill();
+    rmSync(w.home, { recursive: true, force: true });
   }
 });

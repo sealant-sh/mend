@@ -43,6 +43,7 @@ verdicts. They never appear in a report.
   ```sh
   .claude/skills/verify/scripts/local-outer.sh up   # Mend 0.36.0-next.658 on 127.0.0.1:23105
   .claude/skills/verify/scripts/local-outer.sh serve HEAD   # prints the served commit, for --expect-mend
+  export MEND_VERIFY_MACHINE_XDG=${XDG_CONFIG_HOME:-}      # this machine's own, before it changes
   export XDG_CONFIG_HOME=~/.cache/mend-verify/outer-cli   # the mend CLI now talks to it
   export MEND_VERIFY_OUTER_URL=http://127.0.0.1:23105      # and the guard (Launch) lets it through
   .claude/skills/verify/scripts/local-outer.sh down   # after Cleanup: the container and its volumes
@@ -102,7 +103,7 @@ Pick the run's names once, from the root of a Mend checkout; everything below us
 ```sh
 run=$(date -u +%m%d-%H%M)-$(od -An -N2 -tx1 /dev/urandom | tr -d ' \n')   # one run: 1010-0305-9f3a
 wt=st-verify-$run                             # its outer worktree, and its stack's Service
-port=3305                                     # free on this machine; the stack's browser origin
+port=3345                                     # free on this machine; the stack's browser origin (not 3305: mend.toml's own stack tunnel)
 web=http://localhost:$port
 E=${XDG_STATE_HOME:-$HOME/.local/state}/mend-verify/$wt   # evidence: kept
 P=$(mktemp -d)                                # private: the run's secret registry, browser state
@@ -110,6 +111,9 @@ export MEND_VERIFY_PRIVATE=$P                 # every helper redacts the registr
 mkdir -p "$(dirname "$E")" && mkdir "$E" && mkdir "$E/launch"   # refuses a run that exists
 skill=$PWD/.claude/skills/verify              # absolute, so a later cd cannot lose it
 export PATH=$skill/scripts/guard:$PATH         # every mend below, the helpers' too, passes the guard
+[ -n "${MEND_VERIFY_MACHINE_XDG+set}" ] || export MEND_VERIFY_MACHINE_XDG=${XDG_CONFIG_HOME:-}   # this machine's own, before the run's
+# Inside a Mend session, the next mend on PATH is the session's own helper: name the CLI you built.
+# export MEND_VERIFY_REAL_MEND=<absolute path to a `mend` that runs a Mend checkout's apps/cli>
 export MEND_VERIFY_OUTER_URL=<the outer server's URL, as its CLI config names it>   # local-outer.sh: http://127.0.0.1:23105
 [ "$(command -v mend)" = "$skill/scripts/guard/mend" ] || { echo "mend does not resolve to the guard: unalias mend, or run this in a bash script" >&2; exit 1; }
 ```
@@ -117,9 +121,12 @@ export MEND_VERIFY_OUTER_URL=<the outer server's URL, as its CLI config names it
 **A verifier never talks to the owner's server; the guard refuses it.** `scripts/guard/mend` stands
 in front of the CLI, and `scripts/guard/policy.mjs` decides for it and for every driver. A run may
 reach two servers: the outer one it declared (`MEND_VERIFY_OUTER_URL`), and its own stack through
-its own tunnel (`http://localhost:<port>` for the port `$P/tunnel.json` records; a loopback URL
-alone is not enough, the owner's own server may listen on this machine). The guard refuses (exit 97,
-before any request) when:
+its own tunnel (`http://localhost:<port>` or `http://127.0.0.1:<port>`, while `$P/tunnel.json` says
+`tunnel.mjs` saw its own child bind that port and the recorded pid is still that child, and nothing
+listens on `[::1]:<port>`). A loopback URL alone is not enough: the owner's own server, or the
+owner's own `mend service connect stack --port 3305`, may listen on this machine, so
+`tunnel.mjs start` refuses a port anything already holds. The guard refuses (exit 97, before any
+request) when:
 
 - `MEND_VERIFY_OUTER_URL` is not declared, `MEND_TOKEN` is set, or `MEND_URL` is (except
   `http://127.0.0.1:9`, loopback's discard port, where the map drives the unreachable-server lines);
@@ -127,24 +134,36 @@ before any request) when:
   CLI then reads a legacy `~/.mend`; only `mend login --url <one of the two>` may make it, into an
   existing `$XDG_CONFIG_HOME/mend`), or the config is this machine's own (under `~/.config/mend` or
   `~/.mend`, for `$HOME` and for the account's home in the password database, symlinks resolved, so
-  setting `HOME` elsewhere changes nothing): a run's CLI config is its own;
+  setting `HOME` elsewhere changes nothing, and under `$MEND_VERIFY_MACHINE_XDG`, recorded at
+  Launch), the same file (a hard link), or a copy holding the same token or device id (read to
+  compare, never printed): a run's CLI config is its own;
 - that config, or a `--url` or `--server` argument (`mend login --url …` included), names any other
   server. Only the words after a runner's `--` (`mend run`, `mend service`,
   `mend claude|codex|opencode|pi`) are left alone: they run in the workspace;
 - the command acts on this machine's own Mend installation (`mend server …`, `mend uninstall`),
-  except its help page: those recipes run on a disposable host.
+  except its help page: those recipes run on a disposable host;
+- the real CLI would be a Mend session's in-workspace helper (`/run/mend/bin/mend`, which every
+  workspace links to `/usr/local/bin/mend`), or a script that starts it: the helper ignores the
+  config and acts on the session it runs in (`stop`, `land`, `service`). Inside a session (a
+  `MEND_SESSION_*` variable, or `/run/mend`) the guard does not search `PATH`:
+  `MEND_VERIFY_REAL_MEND` must name the CLI the run built.
 
-Then it runs the next `mend` on `PATH` (or `$MEND_VERIFY_REAL_MEND`) with `XDG_CONFIG_HOME` pinned
-to the absolute, resolved directory it checked, so no change of directory or of `HOME` downstream
-makes the CLI read another config, and a shared shim (`~/.cache/mend-verify/bin/mend` is any
-process's to rewrite) cannot point the run anywhere else. The drivers hold to the same policy:
-`drive-tui.sh` puts the guard first on its terminal's `PATH` and its bundled CLI behind it, and
-`drive-tui.sh`, `drive-desktop.sh`, `drive-web.mjs` and `drive-mobile.mjs` refuse a `<web>` that is
-not the run's tunnel. The box is an outer server only when its operator says so: then declare its
-URL. An alias or a shell function named `mend` outranks `PATH` and skips the guard (an interactive
-zsh often has one), so the check above must print nothing: run the steps in a `bash` script, where
-aliases do not apply, or `unalias mend` first. The helpers start `mend` through `PATH`, so they
-always meet the guard.
+Then it becomes the real CLI (`$MEND_VERIFY_REAL_MEND`, else the next `mend` on `PATH`) with
+`XDG_CONFIG_HOME` pinned to the absolute, resolved directory it checked, so no change of directory
+or of `HOME` downstream makes the CLI read another config. The CLI gets a home of the run's own
+(`~/.cache/mend-verify/home/<digest>`, with `CLAUDE_CONFIG_DIR`, `CODEX_HOME` and `GH_CONFIG_DIR` in
+it) and none of this machine's session, SSH agent, GitHub or provider variables (`GH_TOKEN`,
+`ANTHROPIC_*`, `OPENAI_*`, `CLAUDE_*`, …): `mend connect github`, `--use-my-login`, `memory import`,
+`dotfiles sync`, `skills push` and `ssh setup` see an empty home, never the owner's logins or files.
+A recipe that needs a login supplies a test one, through the secret registry and `--from-stdin`. A
+shared shim (`~/.cache/mend-verify/bin/mend` is any process's to rewrite) cannot point the run
+anywhere else. The drivers hold to the same policy: `drive-tui.sh` puts the guard first on its
+terminal's `PATH` and its bundled CLI behind it, and `drive-tui.sh`, `drive-desktop.sh`,
+`drive-web.mjs` and `drive-mobile.mjs` refuse a `<web>` that is not the run's tunnel. The box is an
+outer server only when its operator says so: then declare its URL. An alias or a shell function
+named `mend` outranks `PATH` and skips the guard (an interactive zsh often has one), so the check
+above must print nothing: run the steps in a `bash` script, where aliases do not apply, or
+`unalias mend` first. The helpers start `mend` through `PATH`, so they always meet the guard.
 
 1. **Take a slot.** Count the live verify stacks on the outer Mend before starting one:
 

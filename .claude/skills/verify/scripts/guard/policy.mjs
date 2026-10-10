@@ -1,18 +1,21 @@
 #!/usr/bin/env node
-// The guard's policy: which Mend server a verifier may reach from this machine, and with which CLI
-// config. One module, used by the `mend` guard beside it and by every driver that hands a Mend
-// client a server (drive-tui.sh, drive-desktop.sh, drive-web.mjs, drive-mobile.mjs).
+// The guard's policy: which Mend server a verifier may reach from this machine, with which CLI
+// config, which CLI and which environment. One module, used by the `mend` guard beside it and by
+// every driver that hands a Mend client a server (drive-tui.sh, drive-desktop.sh, drive-web.mjs,
+// drive-mobile.mjs).
 //
-//   node guard/policy.mjs cli -- <mend argv...>   the guard's check: prints the CLI config
-//                                                 directory to pin, or refuses
-//   node guard/policy.mjs target <url>            a driver's check: the URL is a server this run
-//                                                 may reach, or refuses
+//   node guard/policy.mjs exec -- <mend argv...>   the guard: check, then replace this process with
+//                                                  the real CLI, or refuse
+//   node guard/policy.mjs target <url>             a driver's check: the URL is a server this run
+//                                                  may reach, or refuses
 //
 // A run may reach two servers, and nothing else:
 //   - the outer server it declared (MEND_VERIFY_OUTER_URL, as the CLI config names it);
-//   - its own stack, through its own tunnel: http://localhost:<port> (or 127.0.0.1, [::1]) where
-//     <port> is the one $MEND_VERIFY_PRIVATE/tunnel.json records (tunnel.mjs writes it).
-// A loopback URL is not enough on its own: the owner's own server may listen on this machine.
+//   - its own stack, through its own tunnel: http://localhost:<port> or http://127.0.0.1:<port>,
+//     where $MEND_VERIFY_PRIVATE/tunnel.json records <port>, that tunnel.mjs saw its own child bind
+//     it (`bound`), and the recorded pid is still that child (its start time). Nothing may listen on
+//     [::1]:<port>, where a browser would try `localhost` first. A loopback URL is not enough on its
+//     own: the owner's own server, or the owner's own stack tunnel, may listen on this machine.
 //
 // The CLI check refuses (exit 97, nothing run) when:
 //   - MEND_VERIFY_OUTER_URL is not set, or is not a URL;
@@ -24,20 +27,36 @@
 //   - <XDG_CONFIG_HOME>/mend/cli.json is missing, which is when the CLI reads the legacy ~/.mend
 //     (except `mend login --url <a run's server>` into an existing <XDG_CONFIG_HOME>/mend, the one
 //     command that makes a config);
-//   - the config is this machine's own (under ~/.config/mend or ~/.mend, for $HOME and for the
-//     account's home in the password database, which a changed HOME cannot move): a verifier's
-//     config is its own;
+//   - the config is this machine's own: under ~/.config/mend or ~/.mend (for $HOME and for the
+//     account's home in the password database, which a changed HOME cannot move, and under
+//     $MEND_VERIFY_MACHINE_XDG when Launch recorded one), or the same file (device and inode, so a
+//     hard link), or one holding the same token or device id (a copy). Those files are read here
+//     to compare and never printed;
 //   - the config names a server outside the two above, or none (the CLI's default server);
 //   - an argument names one: `--url <x>`, `--url=<x>`, `--server <x>`, `--server=<x>`, wherever
 //     the CLI would read it (every argument, except the command after a runner's `--`: `mend run`,
 //     `mend service`, `mend claude|codex|opencode|pi` pass that to the workspace, not to the CLI);
 //   - the command acts on this machine's own Mend installation (`mend server …`,
-//     `mend uninstall`), except their help pages: those recipes run on a disposable host.
+//     `mend uninstall`), except their help pages: those recipes run on a disposable host;
+//   - the real CLI is a Mend session's in-workspace helper (/run/mend/bin/mend, linked to
+//     /usr/local/bin/mend in every workspace), or a script that starts it: the helper ignores the
+//     config and acts on the session it runs in. Inside a session (a MEND_SESSION_* variable, or
+//     /run/mend) the real CLI must be named with MEND_VERIFY_REAL_MEND; PATH is not searched.
 // `mend login` is covered by the same rules: it signs in to its `--url`, else to the config's URL.
+//
+// The real CLI then runs with this machine left out of its environment: XDG_CONFIG_HOME pinned to
+// the resolved directory checked above; HOME, CLAUDE_CONFIG_DIR, CODEX_HOME and GH_CONFIG_DIR in a
+// home of the run's own (~/.cache/mend-verify/home/<digest of the config home>, outside the private
+// directory); and no MEND_SESSION_*, SSH_AUTH_SOCK, GH_*/GITHUB_* or provider variable
+// (ANTHROPIC_*, OPENAI_*, CLAUDE_*, CODEX_*, …). So `mend connect github`, `--use-my-login`,
+// `memory import`, `dotfiles sync`, `skills push` and `ssh setup` see an empty home, never the
+// owner's logins and files.
 
-import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
-import { isAbsolute, join, sep } from "node:path";
+import { delimiter, dirname, isAbsolute, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export class Refused extends Error {}
@@ -62,7 +81,44 @@ export const normalizeUrl = (input) => {
 /** The one MEND_URL a run may set: loopback's discard port, where no server answers. */
 export const UNREACHABLE = "http://127.0.0.1:9";
 
-const LOOPBACK = new Set(["localhost", "127.0.0.1", "[::1]"]);
+/** A process's start time as `ps` reports it, or null once it is gone (tunnel.mjs records it). */
+export const identityOf = (pid) => {
+  const run = spawnSync("ps", ["-o", "lstart=", "-p", String(pid)], { encoding: "utf8" });
+  const line = run.status === 0 ? run.stdout.trim() : "";
+  return line === "" ? null : line;
+};
+
+/** The local addresses listening on a TCP port (`ss`), or null when they cannot be read. */
+export const listenersOn = (port) => {
+  const run = spawnSync("ss", ["-ltnH", `sport = :${port}`], { encoding: "utf8" });
+  if (run.status !== 0) return null;
+  return run.stdout
+    .split("\n")
+    .map((line) => line.trim().split(/\s+/)[3])
+    .filter(Boolean);
+};
+
+/** The run's tunnel URLs, when its tunnel is the one tunnel.mjs saw bind and is still alive. */
+const tunnelTargets = (env) => {
+  const privateDir = env.MEND_VERIFY_PRIVATE ?? "";
+  if (privateDir === "" || !isAbsolute(privateDir)) return [];
+  const file = join(privateDir, "tunnel.json");
+  if (!existsSync(file)) return [];
+  let tunnel;
+  try {
+    tunnel = JSON.parse(readFileSync(file, "utf8"));
+  } catch {
+    refuse(`${file} is not valid JSON`);
+  }
+  const port = String(tunnel.port ?? "");
+  if (!/^\d+$/.test(port) || tunnel.bound !== true) return [];
+  if (!Number.isInteger(tunnel.pid) || typeof tunnel.identity !== "string") return [];
+  if (identityOf(tunnel.pid) !== tunnel.identity) return [];
+  const listening = listenersOn(port);
+  if (listening === null || listening.some((at) => at.startsWith("[")))
+    refuse(`something listens on [::1]:${port}, where localhost goes first; not this run's tunnel`);
+  return [`http://localhost:${port}`, `http://127.0.0.1:${port}`];
+};
 
 /** The servers this run may reach: its declared outer, and its own stack through its tunnel. */
 export const allowedTargets = (env) => {
@@ -70,21 +126,7 @@ export const allowedTargets = (env) => {
   if (declared === "") refuse("MEND_VERIFY_OUTER_URL is not set");
   const outer =
     normalizeUrl(declared) ?? refuse(`MEND_VERIFY_OUTER_URL (${declared}) is not a URL`);
-  const targets = [outer];
-  const privateDir = env.MEND_VERIFY_PRIVATE ?? "";
-  if (privateDir !== "" && isAbsolute(privateDir)) {
-    const file = join(privateDir, "tunnel.json");
-    if (existsSync(file)) {
-      let port;
-      try {
-        port = String(JSON.parse(readFileSync(file, "utf8")).port ?? "");
-      } catch {
-        refuse(`${file} is not valid JSON`);
-      }
-      if (/^\d+$/.test(port)) for (const host of LOOPBACK) targets.push(`http://${host}:${port}`);
-    }
-  }
-  return targets;
+  return [outer, ...tunnelTargets(env)];
 };
 
 /** Refuses unless `url` is one of the run's servers. */
@@ -115,7 +157,48 @@ const real = (path) => {
  * environment changes. A run that sets HOME elsewhere must not make the real home's config look
  * like a run's own.
  */
-const machineHomes = () => [...new Set([homedir(), userInfo().homedir])];
+export const machineHomes = () => [...new Set([homedir(), userInfo().homedir])];
+
+/** This machine's own CLI config files that exist: each home's, and the recorded XDG one's. */
+const machineConfigs = (homes, env) => {
+  const dirs = homes.flatMap((at) => [join(at, ".config", "mend"), join(at, ".mend")]);
+  const recorded = env.MEND_VERIFY_MACHINE_XDG ?? "";
+  if (recorded !== "" && isAbsolute(recorded)) dirs.push(join(recorded, "mend"));
+  return dirs;
+};
+
+/** The values a config is the owner's by: its token and device id. Read, never printed. */
+const credentialsOf = (file) => {
+  try {
+    const { token, deviceId } = JSON.parse(readFileSync(file, "utf8"));
+    return [token, deviceId].filter((value) => typeof value === "string" && value.length >= 6);
+  } catch {
+    return [];
+  }
+};
+
+/** Refuses a config dir that is this machine's own: by path, by file identity, by credential. */
+const refuseMachineConfig = (configDir, configFile, homes, env) => {
+  const resolved = [real(configDir) ?? configDir, real(configFile)].filter((at) => at !== null);
+  const mine = existsSync(configFile) ? statSync(configFile) : null;
+  const held = existsSync(configFile) ? credentialsOf(configFile) : [];
+  for (const dir of machineConfigs(homes, env)) {
+    const own = real(dir);
+    if (own === null) continue;
+    if (resolved.some((at) => at === own || at.startsWith(own + sep)))
+      refuse(`${configDir} is this machine's own CLI config`);
+    const ownFile = join(own, "cli.json");
+    if (mine === null || !existsSync(ownFile)) continue;
+    const theirs = statSync(ownFile);
+    if (theirs.dev === mine.dev && theirs.ino === mine.ino)
+      refuse(`${configFile} is this machine's own CLI config (the same file)`);
+    // Read only with something to compare: a run config holding no credential needs no look.
+    if (held.length === 0) continue;
+    const ownValues = credentialsOf(ownFile);
+    if (held.some((value) => ownValues.includes(value)))
+      refuse(`${configFile} holds this machine's own sign-in (a copy of its CLI config)`);
+  }
+};
 
 /**
  * The guard's check of one `mend` invocation; returns the absolute CLI config home to pin. `homes`
@@ -137,14 +220,7 @@ export const checkCli = (argv, env, homes = machineHomes()) => {
   const configHome = real(xdg) ?? refuse(`XDG_CONFIG_HOME (${xdg}) does not exist`);
   const configDir = join(configHome, "mend");
   const configFile = join(configDir, "cli.json");
-  // Under either home's ~/.config/mend or ~/.mend, symlinks resolved: this machine's own config.
-  // The directory and the file each resolved: either may be a link into the owner's config.
-  const resolved = [real(configDir) ?? configDir, real(configFile)].filter((at) => at !== null);
-  for (const own of homes.flatMap((at) => [join(at, ".config", "mend"), join(at, ".mend")])) {
-    const mine = real(own);
-    if (mine !== null && resolved.some((at) => at === mine || at.startsWith(mine + sep)))
-      refuse(`${configDir} is this machine's own CLI config`);
-  }
+  refuseMachineConfig(configDir, configFile, homes, env);
 
   const [command, ...rest] = argv;
   const dashdash = rest.indexOf("--");
@@ -194,20 +270,122 @@ export const checkCli = (argv, env, homes = machineHomes()) => {
   return configHome;
 };
 
+// ─── the real CLI ────────────────────────────────────────────────────────────
+
+const HELPER_ROOT = "/run/mend";
+const HELPER_MARKS = ["mend — the in-workspace helper", `"${HELPER_ROOT}/mend.sock"`];
+
+/** A Mend session's workspace: its helper's variables, or its helper's directory. */
+export const inSession = (env, root = HELPER_ROOT) =>
+  Object.keys(env).some((name) => name.startsWith("MEND_SESSION_")) || existsSync(root);
+
+const textOf = (path) => {
+  try {
+    return statSync(path).size <= 4 * 1024 * 1024 ? readFileSync(path, "utf8") : "";
+  } catch {
+    return "";
+  }
+};
+
+/** Whether a program is the session helper, or a script that names it. */
+const isHelper = (path, root = HELPER_ROOT) => {
+  const resolved = real(path) ?? path;
+  if (resolved === root || resolved.startsWith(root + sep)) return true;
+  const text = textOf(resolved);
+  if (HELPER_MARKS.some((mark) => text.includes(mark))) return true;
+  // A wrapper (`#!/bin/sh … exec <program>`): every absolute path it names, one level down.
+  if (!text.startsWith("#!") || text.length > 64 * 1024) return false;
+  return [...text.matchAll(/\/[^\s"'`$;|&<>()]+/g)].some(([named]) => {
+    const target = real(named);
+    if (target === null || target === resolved) return false;
+    if (target === root || target.startsWith(root + sep)) return true;
+    const inner = textOf(target);
+    return HELPER_MARKS.some((mark) => inner.includes(mark));
+  });
+};
+
+/** The real CLI: $MEND_VERIFY_REAL_MEND, or (outside a session) the next mend on PATH. */
+export const realCli = (env, guardDir, root = HELPER_ROOT) => {
+  const named = env.MEND_VERIFY_REAL_MEND ?? "";
+  let found = null;
+  if (named !== "") {
+    if (!isAbsolute(named)) refuse(`MEND_VERIFY_REAL_MEND (${named}) is relative`);
+    found = named;
+  } else if (inSession(env, root)) {
+    refuse(
+      "inside a Mend session the next mend on PATH is the session's own helper; name the CLI the run built with MEND_VERIFY_REAL_MEND",
+    );
+  } else {
+    const here = real(guardDir);
+    for (const dir of (env.PATH ?? "").split(delimiter)) {
+      if (dir === "" || real(dir) === here) continue;
+      const candidate = join(dir, "mend");
+      if (existsSync(candidate) && statSync(candidate).isFile()) {
+        found = candidate;
+        break;
+      }
+    }
+    if (found === null) refuse("no mend on PATH after the guard");
+  }
+  if (isHelper(found, root))
+    refuse(`${found} is a Mend session's in-workspace helper, which acts on that session`);
+  return found;
+};
+
+// ─── the real CLI's environment ─────────────────────────────────────────────
+
+const SCRUBBED =
+  /^(?:MEND_SESSION_|MEND_URL$|MEND_TOKEN$|SSH_AUTH_SOCK$|GH_|GITHUB_|ANTHROPIC_|OPENAI_|CLAUDE_|CODEX_|OPENCODE_|GEMINI_|GOOGLE_API_KEY$|GOOGLE_GENERATIVE_AI_|AZURE_OPENAI_|OPENROUTER_|XAI_|MISTRAL_|GROQ_|DEEPSEEK_|AWS_)/;
+
+/** The home the real CLI gets: the run's own, outside the private directory. */
+export const runHome = (configHome) =>
+  join(
+    userInfo().homedir,
+    ".cache",
+    "mend-verify",
+    "home",
+    createHash("sha256").update(configHome).digest("hex").slice(0, 16),
+  );
+
+/** The real CLI's environment: this machine's homes, logins and session left out. */
+export const childEnv = (env, configHome) => {
+  const child = Object.fromEntries(
+    Object.entries(env).filter(
+      ([name]) =>
+        !SCRUBBED.test(name) || (name === "MEND_URL" && normalizeUrl(env.MEND_URL) === UNREACHABLE),
+    ),
+  );
+  const home = runHome(configHome);
+  mkdirSync(home, { recursive: true, mode: 0o700 });
+  return {
+    ...child,
+    XDG_CONFIG_HOME: configHome,
+    HOME: home,
+    CLAUDE_CONFIG_DIR: join(home, ".claude"),
+    CODEX_HOME: join(home, ".codex"),
+    GH_CONFIG_DIR: join(home, ".config", "gh"),
+  };
+};
+
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const [mode, ...rest] = process.argv.slice(2);
   try {
-    if (mode === "cli" && rest[0] === "--")
-      process.stdout.write(checkCli(rest.slice(1), process.env));
-    else if (mode === "target" && rest.length === 1) checkTarget(rest[0], process.env);
+    if (mode === "exec" && rest[0] === "--") {
+      const argv = rest.slice(1);
+      const configHome = checkCli(argv, process.env);
+      const cli = realCli(process.env, dirname(fileURLToPath(import.meta.url)));
+      process.execve(cli, [cli, ...argv], childEnv(process.env, configHome));
+    } else if (mode === "target" && rest.length === 1) checkTarget(rest[0], process.env);
     else {
-      process.stderr.write("usage: policy.mjs cli -- <mend argv...> | target <url>\n");
+      process.stderr.write("usage: policy.mjs exec -- <mend argv...> | target <url>\n");
       process.exit(2);
     }
   } catch (error) {
-    if (!(error instanceof Refused)) throw error;
+    // Anything else that goes wrong refuses too: the guard fails closed.
+    const reason =
+      error instanceof Refused ? error.message : `the guard failed (${error?.message ?? error})`;
     process.stderr.write(
-      `mend-guard: ${error.message}; refused · a verifier never talks to the owner's server\n`,
+      `mend-guard: ${reason}; refused · a verifier never talks to the owner's server\n`,
     );
     process.exit(97);
   }
