@@ -7,7 +7,8 @@
 #   .claude/skills/verify/scripts/local-outer.sh down
 #
 # `up` starts the container `st-verify-outer` (privileged docker:27.5.1-dind, the server's web on
-# 127.0.0.1:23105), installs Mend <version> (default 0.36.0-next.658) with `mend server setup`,
+# 127.0.0.1:23105; MEND_VERIFY_OUTER_NAME, MEND_VERIFY_OUTER_PORT, MEND_VERIFY_OUTER_CONFIG and
+# MEND_VERIFY_OUTER_WORK give a second verifier on this machine an outer of its own), installs Mend <version> (default 0.36.0-next.658) with `mend server setup`,
 # signs up its first account with a generated password that is never printed, and writes the CLI
 # config the run uses to $MEND_VERIFY_OUTER_CONFIG/mend/cli.json (default
 # ~/.cache/mend-verify/outer-cli; 0600). Use it with `export XDG_CONFIG_HOME=<that dir>`.
@@ -23,7 +24,10 @@
 # `down` removes the container with its volumes (Docker-in-Docker keeps everything in one) and the
 # CLI config. The evidence of runs against it lives elsewhere and stays.
 set -eu
-name=st-verify-outer
+# One outer per name: two verifiers on one machine each set their own name, port, config and work
+# directory (the defaults are one machine-wide outer, which a second `up` collides with).
+name=${MEND_VERIFY_OUTER_NAME:-st-verify-outer}
+port=${MEND_VERIFY_OUTER_PORT:-23105}
 config=${MEND_VERIFY_OUTER_CONFIG:-$HOME/.cache/mend-verify/outer-cli}
 work=${MEND_VERIFY_OUTER_WORK:-$HOME/.cache/mend-verify/outer-work}
 here=$(cd "$(dirname "$0")" && pwd)
@@ -34,7 +38,7 @@ case "${1:-}" in
 up)
   version=0.36.0-next.658
   [ "${2:-}" = "--version" ] && version=$3
-  docker run -d --privileged --name "$name" -p 127.0.0.1:23105:3105 -e DOCKER_TLS_CERTDIR= \
+  docker run -d --privileged --name "$name" -p "127.0.0.1:$port:3105" -e DOCKER_TLS_CERTDIR= \
     docker:27.5.1-dind --tls=false --host=unix:///var/run/docker.sock > /dev/null
   i=0
   until inner docker info > /dev/null 2>&1; do
@@ -59,7 +63,7 @@ up)
     const { randomBytes, randomUUID } = require("node:crypto");
     const { writeFileSync } = require("node:fs");
     (async () => {
-      const response = await fetch("http://127.0.0.1:23105/api/auth/sign-up/email", {
+      const response = await fetch(`http://127.0.0.1:${process.argv[2]}/api/auth/sign-up/email`, {
         method: "POST",
         headers: { origin: "http://outer.verify.test:3105", "content-type": "application/json" },
         body: JSON.stringify({
@@ -73,9 +77,9 @@ up)
         console.error(`local-outer: sign-up refused (HTTP ${response.status})`);
         process.exit(1);
       }
-      writeFileSync(process.argv[1], JSON.stringify({ url: "http://127.0.0.1:23105", token, deviceId: randomUUID() }), { mode: 0o600 });
-    })();' "$config/mend/cli.json"
-  echo "local-outer · Mend $version on http://127.0.0.1:23105 · CLI config $config"
+      writeFileSync(process.argv[1], JSON.stringify({ url: `http://127.0.0.1:${process.argv[2]}`, token, deviceId: randomUUID() }), { mode: 0o600 });
+    })();' "$config/mend/cli.json" "$port"
+  echo "local-outer · $name · Mend $version on http://127.0.0.1:$port · CLI config $config · MEND_VERIFY_OUTER_URL=http://127.0.0.1:$port"
   ;;
 serve)
   ref=${2:?serve needs a commit-ish}
@@ -91,8 +95,18 @@ serve)
   [ "$(git -C "$work/repo.git" rev-parse --is-shallow-repository)" = false ]
   git -C "$work/repo.git" update-server-info
   tar -cf "$work/repo.tar" -C "$work" repo.git
-  if ! inner docker inspect outer-fixture > /dev/null 2>&1; then
-    image=$(inner docker ps --filter name=mend-mend-1 --format '{{.Image}}')
+  # A container inspect: a plain `docker inspect` also matches the volume of the same name, which a
+  # first serve that failed after creating it leaves behind.
+  if ! inner docker container inspect outer-fixture > /dev/null 2>&1; then
+    # Right after `up` the server's container may still be restarting: wait for it to be listed.
+    image=
+    i=0
+    while [ -z "$image" ]; do
+      image=$(inner docker ps --filter name=mend-mend-1 --format '{{.Image}}')
+      [ -n "$image" ] && break
+      i=$((i + 1)); [ "$i" -gt 60 ] && { echo "local-outer: mend-mend-1 is not running; nothing served" >&2; exit 1; }
+      sleep 1
+    done
     inner docker volume create outer-fixture > /dev/null
     inner docker create --name outer-fixture --restart unless-stopped --network mend_default \
       -v outer-fixture:/fixture --entrypoint node "$image" /fixture/packaged-git-fixture.mjs > /dev/null
@@ -110,6 +124,9 @@ serve)
   inner docker start outer-fixture > /dev/null
   inner docker exec outer-fixture sh -c 'rm -rf /fixture/repo.git && mv /fixture/repo.next.git /fixture/repo.git && chown -R root:root /fixture/repo.git'
   export XDG_CONFIG_HOME="$config"
+  # Its own `mend` calls pass the skill's guard too: this outer server and no other.
+  export MEND_VERIFY_OUTER_URL=http://127.0.0.1:$port
+  export PATH="$here/guard:$PATH"
   if mend projects --json | grep -q '"name": "mend"'; then
     mend refresh --project mend > /dev/null
   else

@@ -2,7 +2,13 @@
 // The verify skill's web driver: one headless Chromium against the tunnelled stack, one recipe.
 //
 //   node .claude/skills/verify/scripts/drive-web.mjs --web <url> --out <dir> --recipe <file.mjs> \
-//     --private <dir> [--account <file>] [--state <file>] [--timeout <ms>]
+//     --private <dir> [--account <file>] [--state <file>] [--timeout <ms>] [--viewport <w>x<h>] \
+//     [--cdp <url>]
+//
+// --viewport sets the page size (default 1280x900; the map's mobile web runs at 390x844).
+// --cdp attaches to a browser that is already running with a remote debugging port (the desktop
+// app, started by drive-desktop.sh) instead of launching one, and drives its first window. It never
+// closes that browser, and --account and --state do not apply: the app holds its own sign-in.
 //
 // --recipe is a module whose default export is
 // `async ({ page, web, capture, note, typeSecret, registerSecret }) => {}`:
@@ -21,21 +27,32 @@
 // value, by value) and redact.mjs (every shape). A page that shows one (a field a secret was typed
 // into, a registered value, a QR code, any shape redact.mjs knows, a filled credential field) keeps
 // its redacted snapshot, with every credential field's subtree redacted, and its screenshot is
-// withheld: <name>.png.withheld says which kinds were on the page. A failing recipe is captured as
-// <out>/failure.* (the same rules) before the driver exits 1, and its error is printed redacted.
+// withheld: <name>.png.withheld says which kinds were on the page. The page's whole text is checked
+// as well as its ARIA snapshot (text a screen reader is told to skip, `aria-hidden`, is still drawn).
+// Pixels no text check can read are never kept: every canvas (a terminal draws its output on one),
+// video and embedded object is masked in every screenshot, and so is any frame that holds one or
+// cannot be inspected. A kept screenshot gets <name>.png.checked (its sha256 and what was masked):
+// scan-evidence.mjs refuses an image without one. A code a page shows (a pairing code, an
+// authorization code and its link) joins the registry by value before anything is written. A failing recipe is captured as
+// <out>/failure-<n>.* (the same rules; numbered, so earlier failures stay) before the driver exits 1, and its error is printed redacted.
 // No trace, HAR or video is recorded.
+//
+// --web must be this run's own stack through its tunnel (guard/policy.mjs, with the private
+// directory's tunnel.json and MEND_VERIFY_OUTER_URL): the driver refuses (exit 97) any other server.
 //
 // Playwright comes from $MEND_VERIFY_PLAYWRIGHT (default ~/.cache/mend-verify/playwright), never
 // from this repository's dependencies.
 
+import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { CREDENTIAL_PATTERNS, redact } from "./redact.mjs";
-import { loadSecrets, redactValues, register } from "./secrets.mjs";
+import { Refused, checkTarget } from "./guard/policy.mjs";
+import { CREDENTIAL_PATTERNS, mintedCodes, redact } from "./redact.mjs";
+import { loadSecrets, privateRoot, redactValues, register } from "./secrets.mjs";
 
 const args = process.argv.slice(2);
 const flag = (name) => {
@@ -49,11 +66,23 @@ const privateDir = flag("private");
 const state = flag("state");
 const accountFile = flag("account");
 const timeout = Number(flag("timeout") ?? "30000");
-if (!web || !out || !recipe || !privateDir) {
+const cdp = flag("cdp");
+const viewportFlag = /^(\d+)x(\d+)$/.exec(flag("viewport") ?? "1280x900");
+if (!web || !out || !recipe || !privateDir || !viewportFlag || (cdp && (state || accountFile))) {
   process.stderr.write(
-    "usage: drive-web.mjs --web <url> --out <dir> --recipe <file.mjs> --private <dir> [--account <file>] [--state <file>] [--timeout <ms>]\n",
+    "usage: drive-web.mjs --web <url> --out <dir> --recipe <file.mjs> --private <dir> [--account <file>] [--state <file>] [--timeout <ms>] [--viewport <w>x<h>] [--cdp <url>] (--cdp takes neither --account nor --state)\n",
   );
   process.exit(2);
+}
+const viewport = { width: Number(viewportFlag[1]), height: Number(viewportFlag[2]) };
+try {
+  checkTarget(web, { ...process.env, MEND_VERIFY_PRIVATE: privateRoot(privateDir) });
+} catch (error) {
+  if (!(error instanceof Refused)) throw error;
+  process.stderr.write(
+    `drive-web: ${error.message}; refused · a verifier never talks to the owner's server\n`,
+  );
+  process.exit(97);
 }
 mkdirSync(out, { recursive: true });
 
@@ -117,15 +146,53 @@ const redactFieldSubtrees = (snapshot) => {
     .join("\n");
 };
 
+// Pixels a text check cannot read: masked in every screenshot.
+const OPAQUE = "canvas, video, embed, object";
+
+/** Every text node's text, open shadow roots included, scripts and styles not. */
+const deepText = () => {
+  const parts = [];
+  const walk = (root) => {
+    for (const node of root.childNodes) {
+      if (node.nodeType === Node.TEXT_NODE) parts.push(node.textContent ?? "");
+      else if (node.nodeType === Node.ELEMENT_NODE) {
+        if (["SCRIPT", "STYLE", "TEMPLATE", "NOSCRIPT"].includes(node.tagName)) continue;
+        if (node.shadowRoot) walk(node.shadowRoot);
+        if (node instanceof HTMLInputElement || node instanceof HTMLTextAreaElement)
+          parts.push(node.value);
+        walk(node);
+      }
+    }
+  };
+  walk(document.documentElement);
+  return parts.join("\n");
+};
+
+/** The frames whose pixels cannot be checked: one that holds an opaque element, or cannot be read. */
+const opaqueFrames = async (page) => {
+  const found = [];
+  for (const frame of page.frames()) {
+    if (frame === page.mainFrame()) continue;
+    const opaque = await frame
+      .evaluate((selector) => document.querySelector(selector) !== null, OPAQUE)
+      .catch(() => true);
+    if (opaque) found.push(frame);
+  }
+  return found;
+};
+
 /** The redacted snapshot, and the kinds of credential the page showed. */
 const inspect = async (page) => {
   const raw = await page.locator("body").ariaSnapshot();
+  const text = await page.evaluate(deepText);
+  for (const code of mintedCodes(`${raw}\n${text}`)) registerSecret("minted-code", code);
   const kinds = new Set(
     CREDENTIAL_PATTERNS.filter(({ pattern }) =>
-      new RegExp(pattern.source, pattern.flags).test(raw),
+      [raw, text].some((view) => new RegExp(pattern.source, pattern.flags).test(view)),
     ).map(({ kind }) => kind),
   );
-  if ([...secrets.keys()].some((value) => raw.includes(value))) kinds.add("a registered secret");
+  if ([...secrets.keys()].some((value) => raw.includes(value) || text.includes(value)))
+    kinds.add("a registered secret");
   const onPage = await page.evaluate(
     ({ mark, words }) => {
       const credential = new RegExp(words, "i");
@@ -165,12 +232,15 @@ const playwrightHome =
   process.env.MEND_VERIFY_PLAYWRIGHT ?? join(homedir(), ".cache", "mend-verify", "playwright");
 const { chromium } = createRequire(join(playwrightHome, "package.json"))("playwright-core");
 
-const browser = await chromium.launch();
-const context = await browser.newContext({
-  viewport: { width: 1280, height: 900 },
-  ...(storageState ? { storageState } : {}),
-});
-const page = await context.newPage();
+const browser = cdp ? await chromium.connectOverCDP(cdp) : await chromium.launch();
+const context = cdp
+  ? browser.contexts()[0]
+  : await browser.newContext({ viewport, ...(storageState ? { storageState } : {}) });
+// The desktop's window: the first page that is the app, not a devtools or blank target.
+const page = cdp
+  ? (context.pages().find((candidate) => !candidate.url().startsWith("devtools:")) ??
+    (await context.waitForEvent("page")))
+  : await context.newPage();
 page.setDefaultTimeout(timeout);
 
 const capture = async (name) => {
@@ -184,9 +254,22 @@ const capture = async (name) => {
     note(`capture ${name} · ${page.url()} · screenshot withheld (${kinds.join(", ")})`);
     return;
   }
+  // Every canvas, video and object is masked (CSS locators reach into open shadow roots), and every
+  // frame that holds one or cannot be read: no pixel a text check cannot read is kept.
+  const frames = await opaqueFrames(page);
+  const mask = [page.locator(OPAQUE)];
+  // A frame nested anywhere sits inside one of the page's own iframes: those are masked whole.
+  if (frames.length > 0) mask.push(page.locator("iframe"));
+  const masked = await page.locator(OPAQUE).count();
   // Playwright writes PNGs with no text chunks: pixels only.
-  await page.screenshot({ path: join(out, `${name}.png`), fullPage: true });
-  note(`capture ${name} · ${page.url()}`);
+  const png = await page.screenshot({ path: join(out, `${name}.png`), fullPage: true, mask });
+  writeFileSync(
+    join(out, `${name}.png.checked`),
+    `${JSON.stringify({ sha256: createHash("sha256").update(png).digest("hex"), masked: { opaqueElements: masked, frames: frames.length } })}\n`,
+  );
+  note(
+    `capture ${name} · ${page.url()}${masked + frames.length > 0 ? ` · ${masked} canvas/video/object and ${frames.length} frame(s) masked` : ""}`,
+  );
 };
 
 const typeSecret = async (locator, name, value) => {
@@ -236,7 +319,10 @@ try {
   // Playwright's messages carry their call log, arguments included: only the scrubbed text leaves.
   const message = scrub(String(error?.message ?? error));
   note(`FAILED · ${message.split("\n")[0]}`);
-  await capture("failure").catch(() => undefined);
+  // Numbered, so a second failed drive into the same folder keeps the first one's capture.
+  let n = 1;
+  while (existsSync(join(out, `failure-${n}.aria.yml`))) n += 1;
+  await capture(`failure-${n}`).catch(() => undefined);
   process.stderr.write(`drive-web: ${message}\n`);
 } finally {
   if (state) {
@@ -244,6 +330,7 @@ try {
     await context.storageState({ path: state });
     secrets = loadSecrets(privateDir);
   }
+  // Over CDP this only disconnects: the desktop app stays as it was for the next recipe.
   await browser.close();
 }
 process.exit(failed ? 1 : 0);

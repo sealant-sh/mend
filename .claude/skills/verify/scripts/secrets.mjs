@@ -43,12 +43,18 @@ const SECRET_KEY =
   /^(?:password|token|secret|apiKey|api_key|accessToken|refreshToken|sessionToken|privateKey)$/i;
 
 /** The secret values of a JSON document: by key, and the `value` of a name/value item (cookies). */
+// A bare UUID is an id the app keeps (the last project, a session), shown on every page that names
+// it, never a credential. Registered, it would redact ordinary text and make the scan delete
+// evidence captured before the browser state stored it.
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 const fromJson = (node, found = [], key = "") => {
   if (typeof node === "string") {
     if (SECRET_KEY.test(key)) found.push(node);
   } else if (Array.isArray(node)) for (const item of node) fromJson(item, found, key);
   else if (node && typeof node === "object") {
-    if (typeof node.name === "string" && typeof node.value === "string") found.push(node.value);
+    if (typeof node.name === "string" && typeof node.value === "string" && !UUID.test(node.value))
+      found.push(node.value);
     for (const [name, item] of Object.entries(node))
       if (name !== "value") fromJson(item, found, name);
   }
@@ -77,11 +83,18 @@ const formsOf = (value) => {
   return [...forms].filter((form) => form.length >= MIN_SECRET_LENGTH);
 };
 
+// A link whose target is gone (a browser profile's lock, say) is skipped: it holds nothing to read.
 const files = (root) =>
   existsSync(root)
     ? readdirSync(root).flatMap((name) => {
         const path = join(root, name);
-        return statSync(path).isDirectory() ? files(path) : [path];
+        let stat;
+        try {
+          stat = statSync(path);
+        } catch {
+          return [];
+        }
+        return stat.isDirectory() ? files(path) : [path];
       })
     : [];
 

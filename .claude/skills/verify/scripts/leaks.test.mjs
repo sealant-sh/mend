@@ -6,7 +6,9 @@
 
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -21,9 +23,23 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { deflateSync } from "node:zlib";
 
+import { identityOf } from "./guard/policy.mjs";
 import { loadSecrets, privateRoot, redactValues, register } from "./secrets.mjs";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
+// Every driver reaches only the declared outer and the run's tunnel (guard/policy.mjs): the
+// fixtures record their port as the tunnel's, beside this declared outer.
+process.env.MEND_VERIFY_OUTER_URL = "http://127.0.0.1:23105";
+const tunnelTo = (privateDir, port) =>
+  writeFileSync(
+    join(privateDir, "tunnel.json"),
+    JSON.stringify({
+      port: String(port),
+      pid: process.pid,
+      identity: identityOf(process.pid),
+      bound: true,
+    }),
+  );
 const skillMd = readFileSync(join(here, "..", "SKILL.md"), "utf8");
 const playwright =
   process.env.MEND_VERIFY_PLAYWRIGHT ?? join(homedir(), ".cache", "mend-verify", "playwright");
@@ -66,6 +82,7 @@ const node = (args, options = {}) =>
 const drive = (privateDir, out, recipe, extra = []) => {
   const recipePath = join(fresh("recipe"), "recipe.mjs");
   writeFileSync(recipePath, recipe);
+  tunnelTo(privateDir, 9);
   return node([
     join(here, "drive-web.mjs"),
     "--web",
@@ -117,6 +134,7 @@ test(
     });
     await new Promise((done) => server.listen(0, "127.0.0.1", done));
     const web = `http://127.0.0.1:${server.address().port}`;
+    tunnelTo(privateDir, server.address().port);
     const recipePath = join(fresh("recipe"), "recipe.mjs");
     writeFileSync(recipePath, "export default async () => {};");
     // Asynchronous: the server above answers on this same event loop.
@@ -470,6 +488,7 @@ for (const [spelling, spell] of SPELLINGS) {
       const { arg, cwd } = spell(base);
       const state = join(base, "private", "browser.json");
       writeFileSync(state, cookieState(PATH_EARLIER), { mode: 0o600 });
+      tunnelTo(join(base, "private"), 9);
       const run = (out, recipe) => {
         const recipePath = join(base, `${out}.mjs`);
         writeFileSync(recipePath, recipe);
@@ -521,3 +540,149 @@ for (const [spelling, spell] of SPELLINGS) {
     },
   );
 }
+
+// Review of #662, F4: a terminal draws its output on a canvas, beside an empty input, aria-hidden.
+const terminalPage = (shown) =>
+  `<main><textarea aria-label="Terminal input"></textarea><canvas aria-hidden="true" width="600" height="80"></canvas></main>
+   <script>const c = document.querySelector("canvas").getContext("2d"); c.font = "24px monospace"; c.fillText(${JSON.stringify(shown)}, 10, 40);</script>`;
+
+test(
+  "a terminal canvas's pixels are never kept: every canvas is masked, and the scan vouches only for the driver's image",
+  { skip: noBrowser },
+  () => {
+    const privateDir = privateWithAccount();
+    const shots = [];
+    for (const shown of [TOKEN, "nothing to see here"]) {
+      const out = fresh("evidence");
+      const run = drive(
+        privateDir,
+        out,
+        `export default async ({ page, capture }) => {
+          await page.setContent(${JSON.stringify(terminalPage(shown))});
+          await capture("terminal");
+        };`,
+      );
+      assert.equal(run.status, 0, run.stderr);
+      assert.ok(existsSync(join(out, "terminal.png.checked")), "no .checked beside the screenshot");
+      assert.match(
+        readFileSync(join(out, "steps.log"), "utf8"),
+        /1 canvas\/video\/object and 0 frame\(s\) masked/,
+      );
+      const scan = node([join(here, "scan-evidence.mjs"), "--dir", out, "--secrets", privateDir]);
+      assert.equal(scan.status, 0, scan.stdout);
+      shots.push(readFileSync(join(out, "terminal.png")));
+    }
+    // The canvas drew a registered token in one and plain words in the other: masked, they match.
+    assert.ok(shots[0].equals(shots[1]), "the canvas's pixels reached the screenshot");
+  },
+);
+
+test("text a page hides from screen readers is checked too", { skip: noBrowser }, () => {
+  const privateDir = privateWithAccount();
+  const out = fresh("evidence");
+  const run = drive(
+    privateDir,
+    out,
+    `export default async ({ page, capture }) => {
+      await page.setContent('<main><div aria-hidden="true">${TOKEN}</div><p>visible</p></main>');
+      await capture("hidden");
+    };`,
+  );
+  assert.equal(run.status, 0, run.stderr);
+  assert.ok(existsSync(join(out, "hidden.png.withheld")), "the screenshot was kept");
+  assert.ok(!everything(out).includes(TOKEN));
+});
+
+test("the scan refuses an image no driver vouched for, or one changed since", () => {
+  const P = privateWithAccount();
+  const E = fresh("evidence");
+  // A PNG with no text chunk: only pixels, which the scan cannot read.
+  const png = Buffer.concat([
+    Buffer.from("\x89PNG\r\n\x1a\n", "latin1"),
+    chunk("IHDR", Buffer.alloc(13)),
+    chunk("IEND", Buffer.alloc(0)),
+  ]);
+  writeFileSync(join(E, "recipe-shot.png"), png);
+  writeFileSync(join(E, "photo.jpg"), Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 0]));
+  writeFileSync(join(E, "vouched.png"), png);
+  const sha256 = createHash("sha256").update(png).digest("hex");
+  writeFileSync(join(E, "vouched.png.checked"), JSON.stringify({ sha256 }));
+  writeFileSync(join(E, "changed.png"), Buffer.concat([png, Buffer.from("x")]));
+  writeFileSync(join(E, "changed.png.checked"), JSON.stringify({ sha256 }));
+  const run = node([join(here, "scan-evidence.mjs"), "--dir", E, "--secrets", P, "--delete-hits"]);
+  assert.equal(run.status, 1);
+  for (const file of ["recipe-shot.png", "photo.jpg", "changed.png"]) {
+    assert.match(
+      run.stdout,
+      new RegExp(`${file.replace(".", "\\.")} · an image no driver checked`),
+    );
+    assert.ok(!existsSync(join(E, file)), `${file} was kept`);
+  }
+  assert.doesNotMatch(run.stdout, /vouched\.png ·/);
+  assert.ok(existsSync(join(E, "vouched.png")));
+});
+
+// Review of #662, F5: `mend login` prints its authorization code and the link that carries it.
+const CODE = "K7QZ-3MXP";
+const LOGIN_OUTPUT = `✓ authorize request open at http://localhost:3325
+  code    ${CODE} · approve only if the browser shows the same code
+  browser http://localhost:3325/authorize?code=${CODE}
+`;
+
+test("an authorization code a terminal prints joins the registry by value, and leaves no capture", () => {
+  const P = privateWithAccount();
+  const E = fresh("evidence");
+  const run = spawnSync(
+    "sh",
+    [join(here, "capture.sh"), E, "login", "--", "printf", "%s", LOGIN_OUTPUT],
+    {
+      encoding: "utf8",
+      env: { ...process.env, MEND_VERIFY_PRIVATE: P },
+    },
+  );
+  assert.equal(run.status, 0, run.stderr);
+  assert.ok(!everything(E).includes(CODE), "the code reached the capture");
+  assert.match(
+    readFileSync(join(E, "login.stdout"), "utf8"),
+    /code {4}<(?:secret|authorization code)>/,
+  );
+  const secrets = loadSecrets(P);
+  assert.ok(secrets.has(CODE) && secrets.has(CODE.replace("-", "")), "the code is not registered");
+  // Registered, it is found wherever it turns up next, ungrouped included.
+  writeFileSync(join(E, "later.txt"), `typed ${CODE.replace("-", "")} into the browser`);
+  const scan = node([join(here, "scan-evidence.mjs"), "--dir", E, "--secrets", P]);
+  assert.equal(scan.status, 1);
+  assert.match(scan.stdout, /later\.txt · a value from secrets\/minted-code/);
+});
+
+const noTmux = spawnSync("tmux", ["-V"]).status === 0 ? false : "tmux is not installed";
+
+test(
+  "the terminal driver registers the code it shows before keeping a capture",
+  { skip: noTmux },
+  () => {
+    const P = privateWithAccount();
+    const home = fresh("tui");
+    tunnelTo(P, 3325);
+    const bundle = join(home, "mend-verify", "tui-cli-bundle");
+    mkdirSync(join(bundle, "real"), { recursive: true });
+    writeFileSync(join(bundle, "real", "mend"), "#!/bin/sh\n");
+    chmodSync(join(bundle, "real", "mend"), 0o755);
+    const env = { ...process.env, MEND_VERIFY_PRIVATE: P, XDG_CACHE_HOME: home, TMUX_TMPDIR: home };
+    const tui = (...args) =>
+      spawnSync("sh", [join(here, "drive-tui.sh"), ...args], { encoding: "utf8", env });
+    try {
+      assert.equal(
+        tui("start", "login", "http://localhost:3325", "--", "printf", "%s", LOGIN_OUTPUT).status,
+        0,
+      );
+      assert.equal(tui("wait", "login", "command ended", "10").status, 0);
+      const E = fresh("evidence");
+      assert.equal(tui("capture", "login", E, "login").status, 0);
+      assert.ok(!everything(E).includes(CODE), "the code reached the capture");
+      assert.ok(loadSecrets(P).has(CODE), "the code is not registered");
+    } finally {
+      spawnSync("tmux", ["-L", "st-verify-tui", "kill-server"], { env });
+    }
+  },
+);

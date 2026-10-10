@@ -1,0 +1,19 @@
+#!/bin/sh
+# The verify skill's guard in front of the `mend` CLI: a verifier never talks to the owner's server.
+#
+# Put this directory first on PATH (`export PATH=<skill>/scripts/guard:$PATH`), give the run a CLI
+# config of its own (`export XDG_CONFIG_HOME=<an absolute directory holding mend/cli.json>`) and
+# declare the outer server the run uses (`export MEND_VERIFY_OUTER_URL=<its URL, as that config
+# names it>`). The real CLI is `$MEND_VERIFY_REAL_MEND`, else this checkout's own apps/cli from
+# source (`node apps/cli/src/main.ts`, after `pnpm install`); PATH is never searched: inside a Mend
+# session the next mend on it is the session's in-workspace helper, not the CLI. Every`mend` the skill runs, its helpers' and drivers' included, then passes through
+# here.
+#
+# policy.mjs (beside this file) decides, and then becomes the real CLI (execve: same process, same
+# signals). It refuses (exit 97, nothing run) whatever could reach a server other than the declared
+# outer or the run's own tunnel, this machine's own config, or the session the run is in; and it
+# runs the real CLI with the config home pinned, a home of the run's own, and no session, SSH agent,
+# GitHub or provider variable. Its header lists every rule.
+set -u
+here=$(cd "$(dirname "$0")" && pwd -P)
+exec node "$here/policy.mjs" exec -- "$@"

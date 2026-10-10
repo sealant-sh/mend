@@ -38,7 +38,7 @@ echo >> "$raw/cmd"
 "$@" > "$raw/stdout" 2> "$raw/stderr"
 code=$?
 for part in cmd stdout stderr; do
-  node "$here/redact.mjs" ${MEND_VERIFY_PRIVATE:+--secrets "$MEND_VERIFY_PRIVATE"} < "$raw/$part" > "$dir/$name.$part" || {
+  node "$here/redact.mjs" ${MEND_VERIFY_PRIVATE:+--secrets "$MEND_VERIFY_PRIVATE" --register-minted} < "$raw/$part" > "$dir/$name.$part" || {
     echo "capture.sh: redacting $part failed; nothing of it kept" >&2
     : > "$dir/$name.$part"
   }
