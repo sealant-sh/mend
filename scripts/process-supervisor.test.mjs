@@ -35,6 +35,47 @@ test("an unexpected child exit becomes fatal and shutdown stops its sibling", as
   await supervisor.shutdown("SIGTERM", 2_000);
 });
 
+test("an optional process kept running is started again, and its exit is never fatal", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "mend-supervisor-keep-"));
+  const starts = path.join(directory, "starts");
+  const supervisor = new ProcessSupervisor();
+  const logged = [];
+  try {
+    await supervisor.keepRunning(
+      {
+        name: "optional",
+        command: [
+          process.execPath,
+          "-e",
+          `require("node:fs").appendFileSync(${JSON.stringify(starts)}, "x"); setTimeout(()=>process.exit(3), 20)`,
+        ],
+        env: process.env,
+        stdio: "ignore",
+      },
+      { backoffMs: 20, maxBackoffMs: 40, log: (line) => logged.push(line) },
+    );
+    await withTimeout(
+      (async () => {
+        for (;;) {
+          const count = (await readFile(starts, "utf8").catch(() => "")).length;
+          if (count >= 3) return;
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+      })(),
+    );
+    // Nothing fatal: the set's failure never settled.
+    const settled = await Promise.race([
+      supervisor.failure.then(() => true),
+      new Promise((resolve) => setTimeout(() => resolve(false), 50)),
+    ]);
+    assert.equal(settled, false);
+    assert.ok(logged.some((line) => line.includes("optional ended (exit code 3)")));
+  } finally {
+    await supervisor.shutdown("SIGTERM", 2_000);
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("a one-shot failure reports its process and exit code", async () => {
   const supervisor = new ProcessSupervisor();
   await assert.rejects(

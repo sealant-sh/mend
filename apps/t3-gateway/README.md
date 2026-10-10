@@ -416,7 +416,14 @@ the agent in the session's live workspace (`POST /api/sessions/:id/shell`), reac
 
 ## Run it
 
-Nothing in Mend starts the gateway. Run it beside a Mend server:
+It is off unless someone turns it on. In Mend's server image it is one bundled file
+(`pnpm --filter @mend/t3-gateway build`, `dist/bin.js`), which the bundle's supervisor starts after
+Mend is ready when `MEND_T3_GATEWAY_ENABLED` is `1` or `true`: on 3120 in the container, in front of
+Mend's API there, with its state under the config volume
+(`/var/lib/mend/config/t3-gateway/state.sqlite`). It is kept running on its own (`keepRunning`): its
+exit is logged and it starts again, and it never stops Mend. Mend's health does not wait for it.
+
+From a checkout, run it beside a Mend server:
 
 ```sh
 MEND_T3_GATEWAY_MEND_URL=http://127.0.0.1:3101 pnpm --filter @mend/t3-gateway start

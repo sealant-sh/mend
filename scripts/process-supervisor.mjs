@@ -50,6 +50,44 @@ export class ProcessSupervisor {
     return this.#spawn(specification, true);
   }
 
+  /**
+   * Keep an optional process running: its exit is never fatal to the set. It is started again
+   * after `backoffMs`, doubled each time it exits before it ran `steadyMs` (to `maxBackoffMs`),
+   * until shutdown. For a part an operator turned on beside Mend (the t3code gateway), which must
+   * never take Mend down with it. Resolves once the first start spawned.
+   */
+  async keepRunning(
+    specification,
+    { backoffMs = 1_000, maxBackoffMs = 60_000, steadyMs = 60_000, log = console.error } = {},
+  ) {
+    let wait = backoffMs;
+    const first = await this.#spawn(specification, false);
+    void (async () => {
+      let tracked = first;
+      for (;;) {
+        const startedAt = Date.now();
+        const result = await tracked.exited;
+        if (this.#stopping) return;
+        wait = Date.now() - startedAt >= steadyMs ? backoffMs : Math.min(wait * 2, maxBackoffMs);
+        log(
+          `[supervisor] ${specification.name} ended (${describeExit(result)}); again in ${wait} ms`,
+        );
+        await unrefDelay(wait);
+        if (this.#stopping) return;
+        try {
+          tracked = await this.#spawn(specification, false);
+        } catch (error) {
+          if (this.#stopping) return;
+          log(`[supervisor] ${specification.name} did not start: ${String(error)}`);
+          tracked = {
+            exited: Promise.resolve({ name: specification.name, code: null, signal: null, error }),
+          };
+        }
+      }
+    })();
+    return first;
+  }
+
   /** Run a startup process to completion without treating its expected exit as fatal. */
   async run(specification) {
     const tracked = await this.#spawn(specification, false);

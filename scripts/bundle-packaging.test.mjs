@@ -251,3 +251,35 @@ test("a preview sealantd image reaches only the Sealant worker, and a release ad
     },
   );
 });
+
+test("the t3code gateway is in the bundle, and runs only when the operator turned it on", async () => {
+  const [dockerfile, supervisor, { t3GatewayEnvironment }] = await Promise.all([
+    readFile(path.join(root, "Dockerfile"), "utf8"),
+    readFile(path.join(root, "scripts/bundle-supervisor.mjs"), "utf8"),
+    import("./bundle-supervisor.mjs"),
+  ]);
+  assert.match(dockerfile, /pnpm --filter @mend\/t3-gateway build/);
+  assert.match(
+    dockerfile,
+    /COPY --from=mend-build \/app\/apps\/t3-gateway\/dist \.\/apps\/t3-gateway\/dist/,
+  );
+  // Kept running on its own: its exit never stops Mend.
+  assert.match(supervisor, /keepRunning\(\s*baseSpecification\("mend-t3-gateway"/);
+  assert.doesNotMatch(supervisor, /supervisor\.start\(\s*baseSpecification\("mend-t3-gateway"/);
+
+  assert.equal(t3GatewayEnvironment({}), null);
+  assert.equal(t3GatewayEnvironment({ MEND_T3_GATEWAY_ENABLED: "0" }), null);
+  assert.equal(t3GatewayEnvironment({ MEND_T3_GATEWAY_ENABLED: "" }), null);
+  assert.deepEqual(t3GatewayEnvironment({ MEND_T3_GATEWAY_ENABLED: "true" }), {
+    MEND_T3_GATEWAY_HOST: "0.0.0.0",
+    MEND_T3_GATEWAY_PORT: "3120",
+    MEND_T3_GATEWAY_MEND_URL: "http://127.0.0.1:3101",
+    MEND_T3_GATEWAY_STATE_PATH: "/var/lib/mend/config/t3-gateway/state.sqlite",
+    MEND_T3_GATEWAY_LABEL: "Mend",
+  });
+  assert.equal(
+    t3GatewayEnvironment({ MEND_T3_GATEWAY_ENABLED: "1", MEND_T3_GATEWAY_LABEL: "Box" })
+      ?.MEND_T3_GATEWAY_LABEL,
+    "Box",
+  );
+});

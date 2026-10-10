@@ -24,7 +24,8 @@ RUN npm install --global corepack && corepack enable
 WORKDIR /app
 COPY . .
 RUN pnpm install --frozen-lockfile
-RUN pnpm --filter @mend/api-server build && pnpm --filter @mend/web build
+RUN pnpm --filter @mend/api-server build && pnpm --filter @mend/web build \
+  && pnpm --filter @mend/t3-gateway build
 RUN node scripts/mend-migrations.mjs > /app/mend-migrations.txt
 
 # The runtime is the same slim Node image the build stages use. Sealant's published bundles
@@ -52,6 +53,8 @@ COPY --from=sealant-worker /usr/local/libexec/docker/cli-plugins/docker-buildx /
 WORKDIR /app
 COPY --from=mend-build /app/apps/api/dist ./apps/api/dist
 COPY --from=mend-build /app/apps/web/.output ./apps/web/.output
+# The t3code gateway, one bundled file; it runs only when the operator turned it on (ADR 0012).
+COPY --from=mend-build /app/apps/t3-gateway/dist ./apps/t3-gateway/dist
 COPY scripts/process-supervisor.mjs scripts/process-supervisor.mjs
 COPY scripts/bundle-supervisor.mjs scripts/bundle-supervisor.mjs
 COPY scripts/bundle-health.mjs scripts/bundle-health.mjs
@@ -91,7 +94,7 @@ ENV NODE_ENV=production \
   SEALANT_MOUNT_ALLOWED_STORE_ROOTS=/var/lib/mend/store \
   SEALANT_DOCKER_VOLUME_MAPPINGS='[{"logicalRoot":"/var/lib/mend/store","volumeName":"mend-store"},{"logicalRoot":"/run/sealant/sockets","volumeName":"mend-control"}]'
 
-EXPOSE 3105 2222
+EXPOSE 3105 2222 3120
 STOPSIGNAL SIGTERM
 HEALTHCHECK --interval=15s --timeout=8s --start-period=90s --retries=4 \
   CMD ["node", "/app/scripts/bundle-health.mjs"]

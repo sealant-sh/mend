@@ -136,6 +136,25 @@ export const workerQueueEnvironment = (environment) => ({
   WORKSPACE_BUILD_QUEUE_PREFETCH: environment.WORKSPACE_BUILD_QUEUE_PREFETCH?.trim() || "4",
 });
 
+/**
+ * The t3code gateway (ADR 0012, phase 4), when the operator turned it on (`mend server setup
+ * --t3-gateway`, which sets MEND_T3_GATEWAY_ENABLED): its own listener on 3120, in front of Mend's
+ * API in this container, with its state file under the config volume. It listens on every address
+ * of the container; the host publishes it on loopback only, so who reaches it is the operator's to
+ * widen (ADR 0004). Off, nothing of it runs. Null when off.
+ */
+export const t3GatewayEnvironment = (environment) => {
+  const switch_ = environment.MEND_T3_GATEWAY_ENABLED?.trim().toLowerCase() ?? "";
+  if (switch_ !== "1" && switch_ !== "true") return null;
+  return {
+    MEND_T3_GATEWAY_HOST: "0.0.0.0",
+    MEND_T3_GATEWAY_PORT: "3120",
+    MEND_T3_GATEWAY_MEND_URL: "http://127.0.0.1:3101",
+    MEND_T3_GATEWAY_STATE_PATH: "/var/lib/mend/config/t3-gateway/state.sqlite",
+    MEND_T3_GATEWAY_LABEL: environment.MEND_T3_GATEWAY_LABEL?.trim() || "Mend",
+  };
+};
+
 const baseSpecification = (name, command, environment = {}) => ({
   name,
   command,
@@ -238,6 +257,16 @@ const startBundle = async (supervisor) => {
   ]);
   await writeFile(READY_FILE, `${new Date().toISOString()}\n`, { mode: 0o644 });
   console.log("[bundle] ready: Mend web and the Sealant API, worker and SSH gateway");
+
+  // After Mend is ready, and never in its way: the gateway is kept running on its own, and its
+  // exit never stops the bundle.
+  const t3Gateway = t3GatewayEnvironment(process.env);
+  if (t3Gateway !== null) {
+    console.log("[bundle] starting the t3code gateway on 3120 (MEND_T3_GATEWAY_ENABLED)");
+    await supervisor.keepRunning(
+      baseSpecification("mend-t3-gateway", ["node", "/app/apps/t3-gateway/dist/bin.js"], t3Gateway),
+    );
+  }
 };
 
 // Imported by the packaging tests for previewSealantdEnvironment; only the entry point supervises.
