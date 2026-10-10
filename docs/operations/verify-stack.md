@@ -30,27 +30,32 @@ a hang-up, then SIGKILL two seconds later), killed, or failed.
 - **A generation is one start's stack.** Each start claims the daemon with a container named
   `verify-stack-owner`, labelled with a claim id made for that start alone. Docker keeps names
   unique, so one generation exists at a time.
+- **One kernel lock per daemon orders everything else.** It is flock(2), through util-linux `flock`,
+  on `/tmp/mend-verify-stack-<daemon id hash>.lock`. `serve` and `up` hold it shared for their whole
+  life. Every teardown holds it exclusive: the watchdog's (it waits), `down` and `down --force`
+  (refused at once while a start holds it: "stop serve to cancel it"), and a failed start's (it
+  converts its own lock). Every Docker command a holder runs carries the locked descriptor, so the
+  lock is held until the last of them exits, even when the holder itself is killed. So a teardown
+  never runs beside a start that is building, a sweep never runs beside a new start, and nothing is
+  admitted while a removal, or a command a killed teardown left running, is still at work. The
+  kernel releases the lock when its holders end, however they end, so no process has to judge
+  whether another is still alive.
 - **`serve`'s watchdog makes the claim, and outlives it.** The watchdog is a process in a session of
-  its own, and `serve` asks it to create the claim. So a create still in flight when `serve` dies
-  belongs to the watchdog, which waits for it however long it takes. When `serve` ends, the watchdog
-  takes down the generation it claimed, and nothing else. A start that ends holding no claim stops
-  its watchdog.
-- **Every teardown holds the generation's lock.** The watchdog, a failed `up` and `down` all first
-  create `verify-stack-teardown-<claim id>`, then check that the daemon's owner is still that
-  generation, then remove, the owner last. While a teardown holds the lock and the owner stands, no
-  other teardown of it can act and no new start can be admitted. A teardown that waited and finds a
-  replacement touches nothing. The product's own volumes and network have fixed names (`mend-store`,
-  `mend_default`, …) that cannot carry a generation, so this exclusion is what keeps a stale
-  teardown off a replacement's.
-- **A watchdog retries; it never assumes.** A lookup or teardown that fails, or that finds another
-  teardown at work, is retried every 30 s at most, indefinitely: a daemon that does not answer
-  cannot show that the stack is gone. A lock left by a holder that is no longer running is cleared.
+  its own, without the lock, and `serve` asks it over IPC to create the claim. So a create still in
+  flight when `serve` dies belongs to the watchdog, which waits for it however long it takes. When
+  `serve` ends, the watchdog runs `teardown <claim id>` under the exclusive lock. That removes the
+  generation only if the daemon's owner still carries its claim id, the state file before the owner
+  and the owner last. A start that ends holding no claim stops its watchdog. A reply the watchdog
+  cannot deliver (the supervisor is gone) is logged, never fatal.
+- **A watchdog retries; it never assumes.** A lookup or teardown that fails is retried every 30 s at
+  most, indefinitely: a daemon that does not answer cannot show that the stack is gone.
 
 Images stay, so the next start reuses every image whose source did not change. `up` builds and
-starts without holding (and without a watchdog); `down` removes whatever stack the daemon holds.
-What can outlive a `serve`: only a stack whose watchdog was killed too, which `down` removes; a
-session's whole Docker service goes with its workspace anyway. `lifecycle.test.mjs` and
-`lifecycle.e2e.test.mjs` (real processes against a fake Docker) hold each of these cases.
+starts without a watchdog, holding the lock only while it runs; `down` removes whatever stack the
+daemon holds, once no start is running. What can outlive a `serve`: only a stack whose watchdog was
+killed too, which `down` removes; a session's whole Docker service goes with its workspace anyway.
+`lifecycle.test.mjs` and `lifecycle.e2e.test.mjs` (real processes, the real lock, a fake Docker)
+hold each of these cases.
 
 On your machine, bring the web here and open it:
 
@@ -109,8 +114,9 @@ against the stack: `mend adopt https://github.com/sealant-sh/mend.git`, `mend ru
 
 `up` claims the daemon before it resolves or builds anything: it creates a container named
 `verify-stack-owner`, labelled with its claim id, and Docker refuses a second container of that
-name, so of two starts at once one goes on and the other is refused. Each fetched ref goes into a
-ref of its own in the bare cache, so two starts never read each other's commit.
+name, so of two starts at once one goes on and the other is refused. Both hold the daemon's lock
+shared while they run, so neither is ever torn down beside the other's build. Each fetched ref goes
+into a ref of its own in the bare cache, so two starts never read each other's commit.
 
 How many stacks one machine runs at once (the box: 12 vCPUs, 40 GB) is not something this script can
 see or enforce: each session has its own Docker daemon. It is an operator's decision, taken from the
@@ -197,6 +203,10 @@ Docker service capped at 12 CPUs; Core and sealantd at main, Mend at this branch
   shares. On any other daemon, a TCP one included, it publishes on loopback.
 
 ## Limits
+
+- Linux only: the daemon's lock needs util-linux `flock(1)`, which Mend's workspace images and CI
+  carry. macOS has flock(2) but no `flock` command; the script refuses there and says why.
+- What a `serve` killed together with its watchdog leaves stays until `down` removes it.
 
 - One stack per Docker daemon: the inner server uses the product's own names (Compose project
   `mend`, volumes `mend-store`, `mend-control`, `mend-garage`). On a daemon that already runs a Mend

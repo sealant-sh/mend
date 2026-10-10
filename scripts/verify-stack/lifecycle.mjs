@@ -4,29 +4,21 @@
 //
 // A generation is one start's stack. It begins when the start creates the owner container
 // (OWNER_CONTAINER), labelled with a claim id made for that start alone; Docker keeps container
-// names unique, so one generation exists at a time. It ends when its owner container is removed,
-// and only a teardown of that generation removes it, last.
+// names unique, so one generation exists at a time. It ends when its owner container is removed.
 //
-// A teardown first creates a lock container named for the generation (TEARDOWN_PREFIX + claim id),
-// then checks that the daemon's owner is still that generation, then removes. While a teardown
-// holds the lock and the owner exists, no other teardown of the generation can act and no new start
-// can be admitted, so what it removes can only be its generation's: there is no window between the
-// check and the removal in which a replacement could appear. The product's own resources have
-// fixed names that cannot carry a generation (`mend-store`, `mend_default`, …), so this exclusion,
-// not a label, is what keeps a stale teardown off a replacement's.
+// Exclusion is a kernel lock, flock(2) on one file per daemon (stack.mjs `withDaemonLock`): a start
+// (`serve`, `up`) holds it shared for its whole life, and every teardown holds it exclusive, and so
+// do the Docker commands each of them runs (they carry the locked descriptor). The kernel releases
+// it when the last of them exits, however they end. So a teardown never runs beside a start, a
+// replacement is never admitted while a teardown, or a command a killed teardown left running, is
+// still at work, and nothing here has to judge whether some process is still alive.
 
 import { OWNER_CONTAINER, STACK_LABEL } from "./lib.mjs";
 
 /** The label that names the start a claim belongs to. */
 export const CLAIM_LABEL = `${STACK_LABEL}.claim`;
 
-/** A generation's teardown lock: this prefix and the claim id. */
-export const TEARDOWN_PREFIX = "verify-stack-teardown-";
-
-/** Who holds a teardown lock: `<pid>:<start time>` of the process that created it. */
-export const HOLDER_LABEL = `${STACK_LABEL}.teardown-holder`;
-
-/** Waits between retries of a lookup or a teardown that failed or found another at work. */
+/** Waits between retries of a lookup or a teardown that failed. */
 export const RETRY_DELAYS_MS = [1000, 2000, 5000, 10_000, 30_000];
 
 /**
@@ -82,67 +74,24 @@ export async function claim(docker, { claimId, image }) {
 }
 
 /**
- * Take generation `claimId` down, alone: `"removed"`; `"gone"` when no generation is up (an
- * earlier teardown finished it); `"not-ours"` when the daemon's owner is another generation, and
- * nothing is touched; `"busy"` when a live process holds this generation's teardown. A lock whose
- * holder is no longer alive (`holderAlive`) is cleared and taken. `removeResources(ownerId)` removes
- * the generation's resources and then its owner container by that id; it runs only while this
- * call holds the lock and the owner is this generation.
+ * Take generation `claimId` down: `"removed"`; `"gone"` when no generation is up (an earlier
+ * teardown finished it); `"not-ours"` when the daemon's owner is another generation, and nothing is
+ * touched. The caller holds the daemon's lock exclusively, so nothing admits, builds or tears down
+ * meanwhile. `removeResources(ownerId)` removes the generation and then its owner by that id.
  */
-export async function removeGeneration({
-  docker,
-  claimId,
-  image,
-  holder,
-  holderAlive,
-  removeResources,
-}) {
-  const lock = `${TEARDOWN_PREFIX}${claimId}`;
-  let lockId = null;
-  for (let attempt = 0; lockId === null; attempt += 1) {
-    try {
-      lockId = (
-        await docker([
-          "create",
-          "--name",
-          lock,
-          "--label",
-          `${HOLDER_LABEL}=${holder}`,
-          "--network",
-          "none",
-          image,
-          "true",
-        ])
-      ).trim();
-    } catch (error) {
-      const existing = await containerNamed(docker, lock);
-      if (existing === null) {
-        // Released between the create and the look: take it again, a few times at most.
-        if (attempt >= 3) throw error;
-        continue;
-      }
-      if (holderAlive(existing.Config?.Labels?.[HOLDER_LABEL] ?? "")) return "busy";
-      await docker(["rm", "--force", existing.Id]);
-    }
-  }
-  try {
-    const owner = await currentClaim(docker);
-    if (owner.state === "absent") return "gone";
-    if (owner.claim !== claimId) return "not-ours";
-    await removeResources(owner.id);
-    return "removed";
-  } finally {
-    // A lock this leaves behind names a holder that is gone; the next teardown clears it.
-    await docker(["rm", "--force", lockId]).catch(() => undefined);
-  }
+export async function teardownGeneration({ docker, claimId, removeResources }) {
+  const owner = await currentClaim(docker);
+  if (owner.state === "absent") return "gone";
+  if (owner.claim !== claimId) return "not-ours";
+  await removeResources(owner.id);
+  return "removed";
 }
 
 /**
  * A watchdog's whole life. It waits while the supervisor lives; then `claimed()` settles whether
  * this start ever held a claim (it resolves only once any claim attempt in flight has finished, so
- * a slow create still gets its watcher); then `remove()` (a `removeGeneration`) runs until the
- * generation is down, gone, or someone else's, retried after a failure or while another teardown
- * of it works (RETRY_DELAYS_MS).
+ * a slow create still gets its watcher); then `remove()` (a teardown under the exclusive lock) runs
+ * until the generation is down, gone, or someone else's, retried after a failure (RETRY_DELAYS_MS).
  */
 export async function watch({ alive, claimed, remove, pause, log = () => {}, pollMs = 2000 }) {
   while (alive()) await pause(pollMs);
@@ -160,9 +109,7 @@ export async function watch({ alive, claimed, remove, pause, log = () => {}, pol
     if (outcome === "gone" || outcome === "not-ours") return outcome;
     const delay = RETRY_DELAYS_MS[Math.min(failures, RETRY_DELAYS_MS.length - 1)];
     failures += 1;
-    log(
-      `teardown ${outcome === "busy" ? "held by another process" : outcome}; again in ${delay} ms`,
-    );
+    log(`teardown ${outcome}; again in ${delay} ms`);
     await pause(delay);
   }
 }
@@ -188,5 +135,24 @@ export async function settleClaim({ attempt, docker, claimId, pause, log = () =>
       log(`the owner lookup failed (${error.message}); again in ${delay} ms`);
       await pause(delay);
     }
+  }
+}
+
+/**
+ * Send `message` to a parent over IPC (`peer` is `process`), if it is still connected. A parent that
+ * died between the check and the write fails the write (EPIPE, ECONNRESET): that is reported to
+ * `log`, never thrown and never left as an unhandled `error` event, so the process sending, which
+ * may hold a claim nobody else will take down, lives on.
+ */
+export function sendSafely(peer, message, log = () => {}) {
+  if (!peer.connected) return;
+  const report = (error) =>
+    log(`the supervisor did not hear ${JSON.stringify(message)} (${error.code ?? error.message})`);
+  try {
+    peer.send(message, (error) => {
+      if (error) report(error);
+    });
+  } catch (error) {
+    report(error);
   }
 }

@@ -25,7 +25,14 @@
 
 import { spawn } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
-import { createWriteStream, existsSync, mkdirSync, openSync, readFileSync } from "node:fs";
+import {
+  closeSync,
+  createWriteStream,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+} from "node:fs";
 import { lstat, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -53,6 +60,7 @@ import {
   composeImages,
   defaultSpec,
   describeSource,
+  digestOf,
   dockerClientEnvironment,
   fetchRefspec,
   formatKb,
@@ -67,12 +75,11 @@ import {
   relayEndpoint,
 } from "./lib.mjs";
 import {
-  HOLDER_LABEL,
-  TEARDOWN_PREFIX,
   claim,
   currentClaim,
-  removeGeneration,
+  sendSafely,
   settleClaim,
+  teardownGeneration,
   watch,
 } from "./lifecycle.mjs";
 
@@ -110,6 +117,24 @@ const outerSecrets = (() => {
 class CommandError extends Error {}
 
 /**
+ * The daemon's lock (`lockDaemon`): this process's descriptor of the lock file, open once the lock
+ * is taken, and the position it takes in a child's stdio. Every command a holder runs gets it there,
+ * so the lock stays held until the last of them has exited, even if this process is killed first: a
+ * removal still in flight keeps blocking admission.
+ */
+let lockFd = null;
+const LOCK_FD = 9;
+
+function stdioFor(stdio, input) {
+  const base = stdio ?? [input === undefined ? "ignore" : "pipe", "pipe", "pipe"];
+  if (lockFd === null || !Array.isArray(base)) return base;
+  const withLock = [...base];
+  while (withLock.length < LOCK_FD) withLock.push("ignore");
+  withLock[LOCK_FD] = lockFd;
+  return withLock;
+}
+
+/**
  * Run a command. Output is captured, or appended to `log` when given (builds); `input` is written
  * to stdin. A failure names the command and its exit; its output is printed only for `log`ged
  * commands, which carry no secret (a build log), as the last lines of that log.
@@ -117,11 +142,7 @@ class CommandError extends Error {}
 function exec(command, args, options = {}) {
   const { env = dockerEnv, cwd, input, log, timeout = 30 * 60_000, stdio, reason } = options;
   return new Promise((resolvePromise, reject) => {
-    const child = spawn(command, args, {
-      cwd,
-      env,
-      stdio: stdio ?? [input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
-    });
+    const child = spawn(command, args, { cwd, env, stdio: stdioFor(stdio, input) });
     const out = [];
     const err = [];
     const sink = log ? createWriteStream(log, { flags: "a" }) : null;
@@ -576,7 +597,10 @@ async function up(args, { claimId = randomUUID(), claimWith = claimDaemon } = {}
   } catch (error) {
     if (flags.keep) throw error;
     say("verify stack · up failed; removing what it made (--keep keeps it for a look)");
-    const removed = await takeDown(claimId).catch((cleanup) => `failed: ${cleanup.message}`);
+    // From shared to exclusive on the same lock: no other start or teardown acts meanwhile.
+    const removed = await exec("flock", ["-x", "-w", "600", String(LOCK_FD)], { env: process.env })
+      .then(() => takeDown(claimId))
+      .catch((cleanup) => `failed: ${cleanup.message}`);
     if (removed !== "removed") say(`verify stack · removing it: ${removed}`);
     throw error;
   }
@@ -1059,12 +1083,7 @@ async function stackContainers({ owners = true } = {}) {
         isSealantExecutor(item) ||
         /^\/sealant-[0-9a-f-]+-docker$/i.test(item.Name ?? ""),
     )
-    .filter(
-      (item) =>
-        owners ||
-        (item.Name !== `/${OWNER_CONTAINER}` &&
-          !(item.Name ?? "").startsWith(`/${TEARDOWN_PREFIX}`)),
-    )
+    .filter((item) => owners || item.Name !== `/${OWNER_CONTAINER}`)
     .map((item) => item.Id);
 }
 
@@ -1117,16 +1136,11 @@ async function down(args) {
   const volumes = (await dockerOut(["volume", "ls", "--quiet"])).split("\n").filter(Boolean);
   let removed = null;
   if (owner.state === "present") {
-    // The generation that holds the daemon, through its teardown lock like every other teardown.
-    const outcome = await takeDown(owner.claim ?? "", (counts) => (removed = counts));
-    if (outcome === "busy")
-      throw new Error(
-        "a teardown of this stack is under way (its watchdog, or another `down`): it finishes on its own",
-      );
+    await takeDown(owner.claim ?? "", (counts) => (removed = counts));
   } else if (volumes.includes(STATE_VOLUME) || flags.force) {
-    // Remains with no generation (a start killed before it claimed, or after its teardown lost
-    // its owner): a manual sweep, refused while any teardown is at work.
-    removed = await sweep();
+    // Remains with no generation (a start killed before it claimed): this process holds the
+    // daemon's lock exclusively, so no start is building beside the sweep.
+    removed = await removeResources(null);
   } else if (!flags.purge) {
     throw new Error("no verify stack on this daemon (--force sweeps what one left anyway)");
   }
@@ -1136,41 +1150,29 @@ async function down(args) {
   );
 }
 
-/** `<pid>:<start time>` of this process, the holder a teardown lock names. */
-const thisHolder = () => `${process.pid}:${startTimeOf(process.pid) ?? ""}`;
-
-/** Whether the process a teardown lock names is still the one that took it. */
-const holderAlive = (holder) => {
-  const [pid, started] = holder.split(":");
-  return /^\d+$/.test(pid ?? "") && startTimeOf(pid) !== null && startTimeOf(pid) === started;
-};
-
 /**
- * Take generation `claimId` down (lifecycle.mjs `removeGeneration`): `"removed"`, `"gone"`,
- * `"not-ours"` or `"busy"`. `onRemoved` hears the counts when it removed.
+ * Take generation `claimId` down (lifecycle.mjs `teardownGeneration`), under the daemon's lock held
+ * exclusively: `"removed"`, `"gone"` or `"not-ours"`. `onRemoved` hears the counts.
  */
 const takeDown = (claimId, onRemoved = () => {}) =>
-  removeGeneration({
+  teardownGeneration({
     docker: dockerOut,
     claimId,
-    image: FIXTURE_BASE_IMAGE,
-    holder: thisHolder(),
-    holderAlive,
     removeResources: async (ownerId) => onRemoved(await removeResources(ownerId)),
   });
 
 /**
- * Everything of the stack on this daemon, then `ownerId` last. It runs only inside a teardown of
- * the owner's generation, which nothing else can act on meanwhile, so every stack resource here is
- * that generation's. Owner and teardown-lock containers are never removed by enumeration.
+ * Everything of the stack on this daemon, then `ownerId` last. It runs only under the daemon's lock
+ * held exclusively, so every stack resource here is the generation being removed. The state file
+ * goes before the owner, so no later generation's state is ever this one's to remove.
  */
 async function removeResources(ownerId) {
   const ids = await stackContainers({ owners: false });
   if (ids.length > 0) await docker(["rm", "--force", "--volumes", ...ids]);
   const volumes = await removeStackVolumes();
   await removeStackNetworks();
-  if (ownerId !== null) await docker(["rm", "--force", ownerId]);
   await rm(stateFile, { force: true });
+  if (ownerId !== null) await docker(["rm", "--force", ownerId]);
   return { containers: ids.length + (ownerId === null ? 0 : 1), volumes };
 }
 
@@ -1193,33 +1195,6 @@ async function removeStackNetworks() {
     .split("\n")
     .filter((name) => name === COMPOSE_NETWORK || /^sealant-[0-9a-f-]+-network$/i.test(name));
   for (const network of networks) await docker(["network", "rm", network]).catch(() => undefined);
-}
-
-/**
- * Remains with no generation: what `down --force` sweeps. Refused while a live process holds any
- * teardown lock or a claim exists, since either means a generation is being taken down or up.
- */
-async function sweep() {
-  const lockIds = (
-    await dockerOut([
-      "ps",
-      "--all",
-      "--quiet",
-      "--no-trunc",
-      "--filter",
-      `name=^${TEARDOWN_PREFIX}`,
-    ])
-  )
-    .split("\n")
-    .filter(Boolean);
-  const locks = await inspectAll(lockIds);
-  if (locks.some((lock) => holderAlive(lock.Config?.Labels?.[HOLDER_LABEL] ?? "")))
-    throw new Error("a teardown is under way on this daemon: it finishes on its own");
-  if ((await currentClaim(dockerOut)).state === "present")
-    throw new Error("a start claimed the daemon meanwhile: `down` takes its generation down");
-  const removed = await removeResources(null);
-  for (const lock of locks) await docker(["rm", "--force", lock.Id]).catch(() => undefined);
-  return removed;
 }
 
 /**
@@ -1280,6 +1255,8 @@ async function serve(args) {
   // The watchdog says when it listens, then answers the one claim request with the outcome.
   const replies = [];
   const waiting = [];
+  // A channel that breaks is a watchdog that went away: `exited` says so; it never kills this one.
+  watcher.on("error", () => undefined);
   watcher.on("message", (message) => {
     const waiter = waiting.shift();
     if (waiter) waiter(message);
@@ -1296,7 +1273,12 @@ async function serve(args) {
     ]);
   const claimWith = async () => {
     await reply(); // { ready: true }
-    watcher.send({ claim: true });
+    await new Promise((sent, fail) => {
+      watcher.send({ claim: true }, (error) => {
+        if (error) fail(error);
+        else sent();
+      });
+    });
     const answer = await reply();
     // The channel has done its work: it no longer holds this process open.
     watcher.channel?.unref();
@@ -1369,11 +1351,14 @@ function startWatchdog(claimId) {
 
 /**
  * `watchdog <pid> <start time> <claim id>`: makes the claim when its supervisor asks (over IPC),
- * waits for the supervisor to end, then takes the generation down (lifecycle.mjs `watch`).
+ * waits for the supervisor to end, then takes the generation down (lifecycle.mjs `watch`) through
+ * `teardown`, a command that holds the daemon's lock exclusively.
  */
 async function watchdog([pid, started, claimId]) {
   if (!claimId) throw new Error("watchdog needs the claim id it guards");
   const log = (line) => say(`${new Date().toISOString()} verify stack · ${pid} · ${line}`);
+  // Nothing on the IPC channel ends this process: an error there is a supervisor gone.
+  process.on("error", (error) => log(`ipc: ${error.code ?? error.message}`));
   let attempt = null;
   // Once the watchdog has settled whether this start holds a claim, it makes none: a request still
   // in the pipe from a supervisor that has died must not start a create nobody would watch.
@@ -1385,13 +1370,13 @@ async function watchdog([pid, started, claimId]) {
       try {
         const claimed = await attempt;
         log(claimed ? "claimed the daemon" : "refused: another start holds the daemon");
-        if (process.connected) process.send({ claimed });
+        sendSafely(process, { claimed }, log);
       } catch (error) {
-        if (process.connected) process.send({ error: error.message });
+        sendSafely(process, { error: error.message }, log);
       }
     })();
   });
-  if (process.connected) process.send({ ready: true });
+  sendSafely(process, { ready: true }, log);
   // The channel never keeps this process alive; the supervisor's life does.
   process.channel?.unref();
   const outcome = await watch({
@@ -1403,10 +1388,7 @@ async function watchdog([pid, started, claimId]) {
       settled = true;
       return settleClaim({ attempt, docker: dockerOut, claimId, pause, log });
     },
-    remove: () =>
-      takeDown(claimId, (removed) =>
-        log(`removed ${removed.containers} container(s), ${removed.volumes} volume(s)`),
-      ),
+    remove: () => runTeardown(claimId),
     pause,
     log,
   });
@@ -1418,6 +1400,87 @@ async function watchdog([pid, started, claimId]) {
       "never-claimed": "this start never held a claim; nothing touched",
     }[outcome],
   );
+}
+
+/** What `teardown` exits with for each outcome; anything else is a failure to retry. */
+const TEARDOWN_EXIT = { removed: 0, gone: 3, "not-ours": 4 };
+
+/**
+ * Run `teardown <claim id>` (which waits for the daemon's lock, exclusively) and answer its
+ * outcome. Its output goes to this process's own (the watchdog's log).
+ */
+function runTeardown(claimId) {
+  return new Promise((done, fail) => {
+    const child = spawn(process.execPath, [fileURLToPath(import.meta.url), "teardown", claimId], {
+      stdio: ["ignore", "inherit", "inherit"],
+      env: process.env,
+    });
+    child.once("error", fail);
+    child.once("close", (code) => {
+      const outcome = Object.entries(TEARDOWN_EXIT).find(([, exit]) => exit === code)?.[0];
+      if (outcome) done(outcome);
+      else fail(new Error(`teardown exited ${code}`));
+    });
+  });
+}
+
+/** `teardown <claim id>`: take that generation down, holding the daemon's lock exclusively. */
+async function teardown([claimId]) {
+  const outcome = await takeDown(claimId ?? "", (removed) =>
+    say(`verify stack · removed ${removed.containers} container(s), ${removed.volumes} volume(s)`),
+  );
+  process.exitCode = TEARDOWN_EXIT[outcome];
+}
+
+// ─── the daemon's lock ──────────────────────────────────────────────────────
+
+/**
+ * The lock file of this Docker daemon: one per daemon (`docker info` names it), in /tmp so every
+ * person in a session's workspace reaches the same file, readable by all (flock needs no write).
+ */
+async function daemonLockPath() {
+  const id = await dockerOut(["info", "--format", "{{.ID}}"]);
+  const path = `/tmp/mend-verify-stack-${digestOf(id).slice(0, 16)}.lock`;
+  closeSync(openSync(path, "a", 0o644));
+  return path;
+}
+
+const BUSY =
+  "this daemon's stack is busy: a serve or up holds it (it may be building), or a teardown is under way. Stop serve to cancel it (mend service stop stack); its watchdog takes the stack down.";
+
+/**
+ * Take the daemon's lock, flock(2) through util-linux `flock` on a descriptor this process keeps
+ * open: `shared` for a start (waits up to 10 minutes for a teardown to end), `exclusive` for `down`
+ * (refused at once while a start or a teardown holds it), `exclusive-wait` for a watchdog's
+ * teardown (waits for the start and every command it left running). The lock belongs to this
+ * process's open file, which the kernel closes when the last process holding it ends, however it
+ * ends, and so releases the lock.
+ */
+async function lockDaemon(mode) {
+  const flock = await exec("flock", ["--version"], { env: process.env }).then(
+    () => true,
+    () => false,
+  );
+  if (!flock)
+    throw new Error(
+      "the verify stack needs flock(1) (util-linux) to hold its daemon's lock; it runs on Linux, as Mend sessions do",
+    );
+  lockFd = openSync(await daemonLockPath(), "r");
+  const how = {
+    shared: ["-s", "-w", "600"],
+    exclusive: ["-x", "-n"],
+    "exclusive-wait": ["-x"],
+  }[mode];
+  await exec("flock", [...how, String(LOCK_FD)], {
+    env: process.env,
+    timeout: 24 * 3600_000,
+  }).catch(() => {
+    closeSync(lockFd);
+    lockFd = null;
+    throw new Error(
+      mode === "shared" ? "a teardown of this daemon's stack did not end within 10 minutes" : BUSY,
+    );
+  });
 }
 
 // ─── main ───────────────────────────────────────────────────────────────────
@@ -1440,10 +1503,16 @@ async function main() {
   const [command, ...args] = process.argv.slice(2);
   switch (command) {
     case "up":
+      await lockDaemon("shared");
       await up(args);
       return;
     case "serve":
+      await lockDaemon("shared");
       await serve(args);
+      return;
+    case "teardown":
+      await lockDaemon("exclusive-wait");
+      await teardown(args);
       return;
     case "mend": {
       const state = await readState();
@@ -1469,6 +1538,7 @@ async function main() {
       await report(args);
       return;
     case "down":
+      await lockDaemon("exclusive");
       await down(args);
       return;
     case undefined:

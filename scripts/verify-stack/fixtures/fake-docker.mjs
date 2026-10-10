@@ -8,17 +8,10 @@
 //   FAKE_DOCKER_CREATING (a file) is written while it waits;
 // - FAKE_DOCKER_PAUSE_LIST (a file): while it exists, an unfiltered `ps` (a stack's enumeration)
 //   writes `<file>.paused` and waits;
-// - FAKE_DOCKER_PAUSE_LOCK (a file): the first teardown-lock `create` takes it, writes
-//   `<file>.paused` and waits for `<file>.release`;
+// - FAKE_DOCKER_PAUSE_RM (a file holding a container or volume name): while the file exists, an
+//   `rm` or `volume rm` of that name writes `<file>.paused` and waits, before it removes anything;
 // - FAKE_DOCKER_BUILD: `hang` makes `build` wait a minute; otherwise `build` fails at once.
-import {
-  appendFileSync,
-  mkdirSync,
-  readFileSync,
-  renameSync,
-  rmdirSync,
-  writeFileSync,
-} from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, rmdirSync, writeFileSync } from "node:fs";
 
 const args = process.argv.slice(2);
 const statePath = process.env.FAKE_DOCKER_STATE;
@@ -81,8 +74,20 @@ const waitFor = async (condition) => {
 };
 
 const [verb, sub] = args;
+
+const pauseRm = process.env.FAKE_DOCKER_PAUSE_RM;
+if ((verb === "rm" || (verb === "volume" && sub === "rm")) && pauseRm && exists(pauseRm)) {
+  const name = readFileSync(pauseRm, "utf8").trim();
+  const list = await locked((state) => state.containers);
+  const named = list.find((item) => item.Name === `/${name}`)?.Id;
+  if (args.includes(name) || (named && args.includes(named))) {
+    writeFileSync(`${pauseRm}.paused`, "1");
+    await waitFor(() => !exists(pauseRm));
+  }
+}
 if (verb === "version") console.log("27.5.1");
 else if (verb === "pull") console.log(args.at(-1));
+else if (verb === "info" && args.includes("{{.ID}}")) console.log(`FAKE:${statePath}`);
 else if (verb === "info") console.log(JSON.stringify({ SecurityOptions: [] }));
 else if (verb === "build") {
   if (process.env.FAKE_DOCKER_BUILD === "hang") await sleep(60_000);
@@ -94,20 +99,6 @@ else if (verb === "create") {
   if (delay > 0 && name === "verify-stack-owner") {
     if (process.env.FAKE_DOCKER_CREATING) writeFileSync(process.env.FAKE_DOCKER_CREATING, "1");
     await sleep(delay);
-  }
-  const pauseLock = process.env.FAKE_DOCKER_PAUSE_LOCK;
-  if (pauseLock && name.startsWith("verify-stack-teardown-")) {
-    let took = false;
-    try {
-      renameSync(pauseLock, `${pauseLock}.taken`);
-      took = true;
-    } catch {
-      // Not set, or another create took it: this one goes straight on.
-    }
-    if (took) {
-      writeFileSync(`${pauseLock}.paused`, "1");
-      await waitFor(() => exists(`${pauseLock}.release`));
-    }
   }
   const created = await locked((state) => {
     if (state.containers.some((item) => item.Name === `/${name}`)) return null;
