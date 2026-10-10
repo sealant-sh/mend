@@ -176,3 +176,83 @@ test(
     assert.equal(docker("inspect", capped, "--format", "{{.State.ExitCode}}").stdout.trim(), "0");
   },
 );
+
+test(
+  "the Docker mirror's guard, started below its floor with a cache left over, clears it and resumes once there is room",
+  { skip },
+  () => {
+    if (docker("network", "inspect", network).status !== 0) docker("network", "create", network);
+    const guard = path.join(root, "deploy/docker/docker-mirror-guard.sh");
+    // A volume holding a cache from before the restart, owned like the chart's (uid 1000).
+    const volume = `mend-mirrors-retained-${id}`;
+    assert.equal(docker("volume", "create", volume).status, 0);
+    after(() => docker("volume", "rm", "-f", volume));
+    const seeded = docker(
+      "run",
+      "--rm",
+      "-v",
+      `${volume}:/r`,
+      "alpine:3.20",
+      "sh",
+      "-c",
+      "mkdir -p /r/docker/registry && echo cached > /r/docker/registry/marker && echo '{}' > /r/scheduler-state.json && chown -R 1000:1000 /r",
+    );
+    assert.equal(seeded.status, 0, seeded.stderr);
+    // A stand-in df ahead of busybox's on PATH: the free MiB it reports come from a file the
+    // test writes, so the floor is crossed and recovered without filling a disk.
+    const fakeDf = path.join(scratch, "df");
+    fs.writeFileSync(
+      fakeDf,
+      '#!/bin/sh\nprintf "Filesystem 1M-blocks Used Available Capacity Mounted\\nfake 10000 0 %s 0%% /var/lib/registry\\n" "$(cat /tmp/fake-free 2>/dev/null || echo 1)"\n',
+      { mode: 0o755 },
+    );
+    const name = `mend-mirrors-restart-${id}`;
+    run(
+      name,
+      "--user",
+      "1000:1000",
+      "--cap-drop",
+      "ALL",
+      "--security-opt",
+      "no-new-privileges",
+      "--network-alias",
+      name,
+      "--entrypoint",
+      "/bin/sh",
+      "-e",
+      "DOCKER_MIRROR_MAX_SIZE=20g",
+      "-e",
+      "DOCKER_MIRROR_MIN_FREE=100m",
+      "-e",
+      "DOCKER_MIRROR_GUARD_INTERVAL=1",
+      "-v",
+      `${guard}:/mend/docker-mirror-guard.sh:ro`,
+      "-v",
+      `${fakeDf}:/usr/local/bin/df:ro`,
+      "-v",
+      `${volume}:/var/lib/registry`,
+      "registry:3.1",
+      "/mend/docker-mirror-guard.sh",
+    );
+    const state = () => docker("exec", name, "cat", "/tmp/mend-mirror-guard").stdout.trim();
+    // One MiB free, below the hundred MiB floor: the retained cache goes, and nothing serves.
+    until("the guard to pause", () => state().startsWith("paused 1 100"));
+    until(
+      "the retained cache to be cleared",
+      () =>
+        docker(
+          "exec",
+          name,
+          "sh",
+          "-c",
+          "test -e /var/lib/registry/docker || test -e /var/lib/registry/scheduler-state.json",
+        ).status !== 0,
+    );
+    assert.match(docker("logs", name).stderr, /below 100 MiB: cache cleared, registry paused/);
+    assert.equal(curl("--max-time", "3", `http://${name}:5000/v2/`).code, "000");
+    // Room again: the registry starts on the next pass.
+    docker("exec", name, "sh", "-c", "echo 5000 > /tmp/fake-free");
+    until("the registry to resume", () => curl(`http://${name}:5000/v2/`).code === "200");
+    assert.equal(state(), "running");
+  },
+);

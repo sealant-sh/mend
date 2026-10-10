@@ -355,8 +355,10 @@ trap 'stop_registry; exit 0' TERM INT
 while :; do
   free=$(df -Pm "$root" | awk 'NR == 2 { print $4 }')
   if [ "$free" -lt "$floor" ]; then
-    if [ -n "$pid" ]; then
-      stop_registry
+    # Below the floor: no registry, and no cache, whether the registry was running or this is a
+    # start with a cache left from before. Once the space is back, the next pass starts it again.
+    stop_registry
+    if [ -e "$root/docker" ] || [ -e "$root/scheduler-state.json" ]; then
       clear_cache
       echo "mend docker mirror guard: \${free} MiB free on its disk, below \${floor} MiB: cache cleared, registry paused" >&2
     fi
