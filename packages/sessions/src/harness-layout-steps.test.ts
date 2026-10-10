@@ -131,7 +131,7 @@ interface CoreCalls {
   imageReports: number;
   /** How often the control plane was asked what it can do. */
   controlPlaneReads: number;
-  /** Core's answers to `setSshUser`, in order (`never`: no answer); then yes. */
+  /** Core's answers to `sshAsRoot`, in order (`never`: no answer); then yes. */
   sshAnswers: Array<boolean | "never">;
 }
 
@@ -168,9 +168,9 @@ const platformOf = (
     processUser: true,
     dotfilesUser: can.dotfilesUser ?? true,
     sshUser: Effect.succeed(true),
-    setSshUser: (_workspace, user) =>
+    sshAsRoot: () =>
       Effect.suspend(() => {
-        core.calls.push(`ssh-user:${user ?? "root"}`);
+        core.calls.push("ssh-user:root");
         const answer = core.sshAnswers.shift() ?? true;
         return answer === "never" ? Effect.never : Effect.succeed(answer);
       }),

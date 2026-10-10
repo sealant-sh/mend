@@ -297,14 +297,16 @@ exec or a stand-in, and none blocks the build.
   tables from captured databases.
 - **Later:** when the SSH gateway admits more than the workspace's owner, run each principal's
   session as their own user.
-- **2026-10-10, `sshUser`:** an e2e `ssh` into a per-person workspace printed `root`
-  (mend#621/#622): nothing named a user for the gateway. **In review:** sealant#348 adds `sshUser`
-  on a create and `PUT /v1/workspaces/:id/ssh-user` (`features.workspaceSshUser`), and the gateway
-  runs every shell and command as that user on a sealantd that reports `exec.user`; sealantd#155
+- **2026-10-10, SSH as the owner:** an e2e `ssh` into a per-person workspace printed `root`
+  (mend#621/#622): nothing named a user for the gateway. **In review:** sealant#348 adds
+  `sshAsOwner` on a create (Core takes the owner's `credentialsHome` uid; no caller names a user)
+  and `DELETE /v1/workspaces/:id/ssh-user` (`features.workspaceSshUser`). The gateway runs every
+  shell, command and its own disconnect-time capture as that user on a sealantd that reports
+  `exec.user`, asks who for every new channel, and refuses an answer that does not say. sealantd#155
   adds `openSftp { user }`, which Core passes once it pins it (until then Core refuses SFTP for a
-  workspace with a user). Mend names the launcher at create and root on a fallback, behind the
-  feature flag, through the SDK's `workspace.setSshUser` (read by name until Mend pins an SDK that
-  declares it).
+  workspace with a user). Mend asks for the owner's user at create and root on a fallback, behind
+  the feature flag, through the SDK's `sshAsOwner` and `workspace.sshAsRoot` (read by name until
+  Mend pins an SDK that declares them).
 
 ## 2026-10-04 · sealantd 0.19 · opencode's MCP logins and in-app logins ride captures
 

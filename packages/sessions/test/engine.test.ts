@@ -486,7 +486,10 @@ const sealantLaunchLayer = (
     readonly createLaunches?: Array<string | undefined>;
     /** Every create's `credentialsHome` (docs/adr/0016), as Mend sent it (`undefined`: none). */
     readonly createHomes?: Array<string | undefined>;
-    /** Every create's `sshUser` (docs/adr/0016, decision 10), as Mend sent it (`undefined`: none). */
+    /**
+     * Every create's SSH user (docs/adr/0016, decision 10): with `sshAsOwner`, the home whose
+     * owner's uid Core runs the sessions as (`credentialsHome`'s path); `undefined`: root.
+     */
     readonly createSshUsers?: Array<string | undefined>;
     /** Every exec's user (docs/adr/0016): the login name it ran as, null for root. */
     readonly execUsers?: Array<string | null>;
@@ -660,7 +663,9 @@ const sealantLaunchLayer = (
         created.push(options);
         captureOps?.createKeys?.push(launch?.idempotencyKey);
         captureOps?.createLaunches?.push(launch?.launchId);
-        captureOps?.createSshUsers?.push(launch?.sshUser);
+        captureOps?.createSshUsers?.push(
+          launch?.sshAsOwner === true ? launch.credentialsHome?.path : undefined,
+        );
         captureOps?.createHomes?.push(
           launch?.credentialsHome === undefined
             ? undefined
@@ -24485,7 +24490,7 @@ const personPlatform = (
   controlPlane?: () => string | null,
   /** Core runs a workspace's SSH sessions as a user (`features.workspaceSshUser`); yes unless said. */
   sshUserReported = true,
-  /** Core's answer to each `setSshUser`: taken unless said. */
+  /** Core's answer to each `sshAsRoot`: taken unless said. */
   sshUserTaken: () => boolean = () => true,
 ): Layer.Layer<PersonLayoutPlatform> =>
   Layer.succeed(PersonLayoutPlatform, {
@@ -24493,9 +24498,9 @@ const personPlatform = (
     dotfilesUser: dotfiles !== undefined,
     controlPlaneObstacle: Effect.sync(() => controlPlane?.() ?? null),
     sshUser: Effect.succeed(sshUserReported),
-    setSshUser: (_workspace, user) =>
+    sshAsRoot: () =>
       Effect.sync(() => {
-        calls.push(`ssh-user:${user ?? "root"}`);
+        calls.push("ssh-user:root");
         return sshUserTaken();
       }),
     workspaceProcessUser: () => Effect.succeed("supported"),
@@ -24798,7 +24803,7 @@ describe("per-person harness homes (docs/adr/0016)", () => {
         harnessLayout: { flag: "person", platform: personPlatform([], { person: true }) },
       },
     );
-    expect(sshUsers).toEqual([LAUNCHER, JOINER]);
+    expect(sshUsers).toEqual([`/home/${LAUNCHER}`, `/home/${JOINER}`]);
     expect(principals).toEqual(["user-fixture", MARIA]);
   });
 
@@ -24841,7 +24846,7 @@ describe("per-person harness homes (docs/adr/0016)", () => {
     // The create commits to the layout: the launcher's logins into their own home.
     expect(run.homes[0]).toBe(`/home/${LAUNCHER} 40001:40000`);
     // And their Remote-SSH: Core's gateway runs the owner's SSH sessions as their user.
-    expect(run.sshUsers[0]).toBe(LAUNCHER);
+    expect(run.sshUsers[0]).toBe(`/home/${LAUNCHER}`);
     // Users and homes are made in the executor's first exec, beside the helper install.
     const first = run.execs.find((argv) => (argv[2] ?? "").includes("mend-layout"));
     expect(first?.[2]).toContain(`useradd -u "$p_u" -g mend`);

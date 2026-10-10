@@ -39,7 +39,7 @@ const call = <A>(run: () => Promise<A>) => Effect.tryPromise({ try: run, catch: 
 const CREDENTIALS_CALL_TIMEOUT = Duration.seconds(30);
 
 /** `call`, bounded by `CREDENTIALS_CALL_TIMEOUT`, failing with words when Core does not answer. */
-/** How long one `setSshUser` may take before it counts as not done (and is tried again). */
+/** How long one `sshAsRoot` may take before it counts as not done (and is tried again). */
 export const SSH_USER_CALL_TIMEOUT = Duration.seconds(5);
 
 const boundedCall = <A>(what: string, home: string, run: () => Promise<A>) =>
@@ -169,13 +169,13 @@ export const controlPlaneObstacleOf = (features: SealantFeatures): string | null
 export const runsSshAsUser = (features: SealantFeatures): boolean =>
   "workspaceSshUser" in features && features.workspaceSshUser === true;
 
-/** A workspace handle whose SDK sets its SSH user (`workspace.setSshUser`, sealant#348). */
-interface SshUserSettable {
-  readonly setSshUser: (user: string | null) => Promise<void>;
+/** A workspace handle whose SDK sets its SSH sessions back to root (`sshAsRoot`, sealant#348). */
+interface SshRootSettable {
+  readonly sshAsRoot: () => Promise<void>;
 }
 
-const setsSshUser = (workspace: Workspace): workspace is Workspace & SshUserSettable =>
-  "setSshUser" in workspace && typeof workspace.setSshUser === "function";
+const setsSshRoot = (workspace: Workspace): workspace is Workspace & SshRootSettable =>
+  "sshAsRoot" in workspace && typeof workspace.sshAsRoot === "function";
 
 /** The workspace's own answer (`workspace.processUser()`), as a prepare's missing words. */
 export const workspaceProcessUserObstacleOf = (
@@ -288,13 +288,13 @@ export const PersonLayoutPlatformLive: Layer.Layer<PersonLayoutPlatform, never, 
         processUser: true,
         controlPlaneObstacle,
         sshUser: controlPlaneAnswer.pipe(Effect.map((answer) => answer.sshUser)),
-        // `workspace.setSshUser` (sealant#348), only where Core said it takes a user; an SDK
-        // from before it has no such method, and its creates never sent one.
-        setSshUser: (workspace, user) =>
+        // `workspace.sshAsRoot` (sealant#348), only where Core said it takes a user; an SDK
+        // from before it has no such method, and its creates never asked for one.
+        sshAsRoot: (workspace) =>
           Effect.gen(function* () {
             // Nothing to set: the create named no user either.
-            if (!(yield* controlPlaneAnswer).sshUser || !setsSshUser(workspace)) return true;
-            return yield* call(() => workspace.setSshUser(user)).pipe(
+            if (!(yield* controlPlaneAnswer).sshUser || !setsSshRoot(workspace)) return true;
+            return yield* call(() => workspace.sshAsRoot()).pipe(
               Effect.timeoutOrElse({
                 duration: SSH_USER_CALL_TIMEOUT,
                 orElse: () =>
@@ -309,13 +309,15 @@ export const PersonLayoutPlatformLive: Layer.Layer<PersonLayoutPlatform, never, 
               }),
               Effect.as(true),
               Effect.catch((error) =>
-                Effect.logWarning("person layout: the workspace's SSH user was not set").pipe(
-                  Effect.annotateLogs({ workspaceId: workspace.id, user, message: error.message }),
+                Effect.logWarning(
+                  "person layout: the workspace's SSH sessions were not set back to root",
+                ).pipe(
+                  Effect.annotateLogs({ workspaceId: workspace.id, message: error.message }),
                   Effect.as(false),
                 ),
               ),
             );
-          }).pipe(Effect.withSpan("PersonLayoutPlatform.setSshUser")),
+          }).pipe(Effect.withSpan("PersonLayoutPlatform.sshAsRoot")),
         // Filled in by `ready()` on the handle the create made; asked of Core otherwise (a handle
         // from `get()`). Unreadable is unknown, which is not a yes.
         workspaceProcessUser: (workspace) =>

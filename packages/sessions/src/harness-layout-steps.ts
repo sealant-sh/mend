@@ -1155,7 +1155,7 @@ export const makeHarnessLayoutSteps = (deps: {
         yield* Effect.sleep(delay);
         const entry = sshResets.get(workspaceId);
         if (entry === undefined) return;
-        if (yield* platform.setSshUser(entry.workspace, null)) {
+        if (yield* platform.sshAsRoot(entry.workspace)) {
           sshResets.delete(workspaceId);
           if (entry.told) yield* entry.notify(true).pipe(Effect.ignore);
           return;

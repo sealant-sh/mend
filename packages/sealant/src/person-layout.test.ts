@@ -676,32 +676,30 @@ describe("the workspace's SSH user (docs/adr/0016 decision 10, sealant#348)", ()
     const asked: Array<string | null> = [];
     const settable = {
       ...workspaceRecording([], []),
-      setSshUser: async (sshUser: string | null) => {
-        asked.push(sshUser);
+      sshAsRoot: async () => {
+        asked.push(null);
       },
     };
-    expect(
-      await Effect.runPromise((await platformReporting(reporting)).setSshUser(settable, null)),
-    ).toBe(true);
+    expect(await Effect.runPromise((await platformReporting(reporting)).sshAsRoot(settable))).toBe(
+      true,
+    );
     expect(asked).toEqual([null]);
     // A control plane that does not take it is not asked: there is nothing to set.
     expect(
-      await Effect.runPromise((await platformReporting(EVERY_FEATURE)).setSshUser(settable, null)),
+      await Effect.runPromise((await platformReporting(EVERY_FEATURE)).sshAsRoot(settable)),
     ).toBe(true);
     expect(asked).toEqual([null]);
     // A refusal is an answer of no, for the caller to try again; never a failure.
     const failing = {
       ...workspaceRecording([], []),
-      setSshUser: async () => {
+      sshAsRoot: async () => {
         throw new Error("down");
       },
     };
     const platform = await platformReporting(reporting);
-    expect(await Effect.runPromise(platform.setSshUser(failing, null))).toBe(false);
+    expect(await Effect.runPromise(platform.sshAsRoot(failing))).toBe(false);
     // An SDK without the method made no create with a user either.
-    expect(await Effect.runPromise(platform.setSshUser(workspaceRecording([], []), null))).toBe(
-      true,
-    );
+    expect(await Effect.runPromise(platform.sshAsRoot(workspaceRecording([], [])))).toBe(true);
   });
 
   effectIt.effect("gives up on an attempt Core does not answer within 5 s, as a no", () =>
@@ -717,9 +715,9 @@ describe("the workspace's SSH user (docs/adr/0016 decision 10, sealant#348)", ()
       );
       const silent = {
         ...workspaceRecording([], []),
-        setSshUser: () => new Promise<void>(() => {}),
+        sshAsRoot: () => new Promise<void>(() => {}),
       };
-      const fiber = yield* Effect.forkChild(platform.setSshUser(silent, null));
+      const fiber = yield* Effect.forkChild(platform.sshAsRoot(silent));
       yield* TestClock.adjust("5 seconds");
       expect(yield* Fiber.join(fiber)).toBe(false);
     }),

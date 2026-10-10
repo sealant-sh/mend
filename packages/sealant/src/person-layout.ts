@@ -167,22 +167,22 @@ export class PersonLayoutPlatform extends Context.Service<
      */
     readonly controlPlaneObstacle: Effect.Effect<string | null>;
     /**
-     * Whether Core runs a workspace's SSH sessions (VS Code Remote-SSH, `ssh`) as the Linux user
-     * its create names (`sshUser`, `features.workspaceSshUser`, sealant#348): read with
+     * Whether Core runs a workspace's SSH sessions (VS Code Remote-SSH, `ssh`) as its owner's
+     * Linux user (`sshAsOwner`, `features.workspaceSshUser`, sealant#348): read with
      * `controlPlaneObstacle`'s answer and kept as long. False when Core does not say so or cannot
      * be asked; a person launch then sends no user and its SSH sessions run as root, as before.
      */
     readonly sshUser: Effect.Effect<boolean>;
     /**
-     * Who Core's gateway runs the workspace's SSH sessions as from the next session on: `null`,
-     * root, for a person launch whose prepare fell back to one shared home (decision 1), so the
-     * launcher's Remote-SSH works there as it did before. One attempt, bounded
+     * Core's gateway runs the workspace's SSH sessions as root from the next session channel on
+     * (`workspace.sshAsRoot`), for a person launch whose prepare fell back to one shared home
+     * (decision 1), so the launcher's Remote-SSH works there as it did before. One attempt, bounded
      * (`SSH_USER_CALL_TIMEOUT`); never fails. True once Core holds it (or Core takes no user, so
-     * there is nothing to set); false when Core refused or did not answer in time, which the
+     * there is nothing to change); false when Core refused or did not answer in time, which the
      * caller retries. Until then the gateway refuses the launcher's SSH sessions, never runs them
      * as root.
      */
-    readonly setSshUser: (workspace: Workspace, user: string | null) => Effect.Effect<boolean>;
+    readonly sshAsRoot: (workspace: Workspace) => Effect.Effect<boolean>;
     /**
      * The workspace's own answer to whether its processes can start as a person
      * (`workspace.processUser()`, sealant#343): `supported` only when the sealantd of the image it
@@ -296,7 +296,7 @@ export const PersonLayoutPlatformNone: Layer.Layer<PersonLayoutPlatform> = Layer
     dotfilesUser: false,
     controlPlaneObstacle: Effect.succeed(null),
     sshUser: Effect.succeed(false),
-    setSshUser: () => Effect.succeed(true),
+    sshAsRoot: () => Effect.succeed(true),
     workspaceProcessUser: () => Effect.succeed("unsupported"),
     withOwnerMap: (options) => options,
     imageReport: () => Effect.succeed(UNKNOWN_IMAGE_REPORT),

@@ -685,22 +685,27 @@ read it. Known issues says so. sealantd scrubbing those tables from captures is 
   not the worktree's first session's owner: a member who launches a worktree's next executor after
   the last one stopped is its launcher, and Remote-SSH is theirs, not the earlier launcher's. The
   create is made as the launcher's Sealant user, so Core's gateway, which admits only the
-  workspace's owner, admits them and nobody else, and runs the session as the user Mend names for
-  the workspace at create (`sshUser`, sealant#348): every shell and command, the Remote-SSH
-  bootstrap's `ssh -T host bash` included, starts as that user with `HOME` and the rest from passwd.
-  The extension, its terminals and the Claude Code extension then run on the launcher's logins, save
+  workspace's owner, admits them and nobody else, and runs the session as their own Linux user: the
+  create asks for it (`sshAsOwner`, sealant#348) and Core takes the uid of the create's
+  `credentialsHome`, the launcher's home; Mend names no user, and no caller can pick another
+  person's. Every shell and command, the Remote-SSH bootstrap's `ssh -T host bash` and the gateway's
+  own disconnect-time capture included, starts as that user with `HOME` and the rest from passwd.
+  The gateway asks Core who for every new channel, so a change reaches a connection already open,
+  and refuses an answer that does not say (an older Core) rather than read it as root. The
+  extension, its terminals and the Claude Code extension then run on the launcher's logins, save
   into their `P`, and find their tools in their home. A joiner cannot open Remote-SSH into an
   executor someone else launched. The user does not exist at create; until prepare makes it,
   sealantd refuses the session, never runs it as root. Mend names the user only where Core reports
   `workspaceSshUser`; an older control plane's gateway runs the session as root, as before. A
-  prepare that falls back to one shared home sets the user back to root (`PUT .../ssh-user`), so the
-  launcher's Remote-SSH works there as before. That reset runs off the launch path, each attempt
-  bounded to 5 s and retried with backoff for about two minutes, then again at the executor's next
-  process start; while Core has not taken it the session line says `Remote-SSH unavailable · …`, and
-  nothing else waits on it. The gateway runs a session as a user only on a sealantd that reports
-  `exec.user`, and the API names the user only to a gateway that says it runs sessions as one. SFTP
-  is refused for such a workspace: sealantd's `openSftp` takes a user from sealantd#155, and Core
-  passes it once it pins that sealantd (Follow-ups).
+  prepare that falls back to one shared home sets the sessions back to root (`DELETE .../ssh-user`,
+  the only change Core takes after create), so the launcher's Remote-SSH works there as before. That
+  reset runs off the launch path, each attempt bounded to 5 s and retried with backoff for about two
+  minutes, then again at the executor's next process start; while Core has not taken it the session
+  line says `Remote-SSH unavailable · …`, and nothing else waits on it. The gateway runs a session
+  as a user only on a sealantd that reports `exec.user`, and the API names the user only to a
+  gateway that says it runs sessions as one. SFTP is refused for such a workspace: sealantd's
+  `openSftp` takes a user from sealantd#155, and Core passes it once it pins that sealantd
+  (Follow-ups).
 - **Anything else** (`docker exec`, a custom image's own entrypoint work) runs as root, which is no
   person: `/root` holds no login and no Mend token, and nothing written under `/root` is saved.
 
@@ -1020,7 +1025,7 @@ exceed `shared`'s by at most 2 per 10 resumes, and it may not reinstall at every
 - **Claiming uncredited memory** from before 0.36.
 - **sealantd scrubbing opencode's login tables.**
 - **An SFTP bridge as the workspace's user:** sealantd#155 adds `openSftp { user }`; Core passes the
-  workspace's `sshUser` once it pins that sealantd, and stops refusing SFTP there.
+  workspace's SSH user once it pins that sealantd, and stops refusing SFTP there.
 
 ## Delivery
 

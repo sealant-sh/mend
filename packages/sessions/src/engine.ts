@@ -10997,12 +10997,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // Remote-SSH is the launcher's (decision 10): the person whose launch started this
         // workspace, this create's (after it stops, whoever launches the next one; not the
         // worktree's first session's owner). The create is made as their Sealant user, so Core's
-        // gateway admits them and nobody else, and runs the session as the user named here, which
-        // prepare makes. A fallback to one shared home sets it back to root (`settlePrepare`).
-        const sshUser =
-          launchLayout.layout === "person" && (yield* personPlatform.sshUser)
-            ? launchLayout.launcher.name
-            : undefined;
+        // gateway admits them and nobody else, and runs the session as their own user, the uid of
+        // their `credentialsHome` (Mend names none), which prepare makes. A fallback to one shared
+        // home sets it back to root (`settlePrepare`).
+        const sshAsOwner = credentialsHome !== undefined && (yield* personPlatform.sshUser);
         if (credentialsHome !== undefined && input.createKey === undefined) {
           return yield* layoutRefused(
             "This launch runs each person as their own user and has no create key to send the launcher's home with, so nothing was created.",
@@ -11079,7 +11077,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                       idempotencyKey: input.createKey.key,
                       launchId: input.launchId,
                       ...(credentialsHome === undefined ? {} : { credentialsHome }),
-                      ...(sshUser === undefined ? {} : { sshUser }),
+                      ...(sshAsOwner ? { sshAsOwner: true as const } : {}),
                     },
                 input.watchCreate,
               ),

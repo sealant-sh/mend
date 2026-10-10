@@ -581,14 +581,15 @@ export interface WorkspaceCreateLaunch {
    */
   readonly credentialsHome?: CredentialsHome;
   /**
-   * `sshUser` (docs/adr/0016, decision 10; sealant#348): the Linux user Core's SSH gateway runs
-   * the workspace's SSH sessions as, VS Code Remote-SSH included, for a person-layout launch: the
-   * login name of its launcher, the person whose launch this create is (after the workspace stops,
-   * whoever launches the next one). Their user does not exist at create; until prepare makes it, the
-   * gateway refuses a session rather than run it as root. Sent only where Core reports
-   * `workspaceSshUser` (`PersonLayoutPlatform.sshUser`).
+   * `sshAsOwner` (docs/adr/0016, decision 10; sealant#348): Core's SSH gateway runs the
+   * workspace's SSH sessions, VS Code Remote-SSH included, as its owner's own Linux user, the uid
+   * of `credentialsHome`, for a person-layout launch. The owner is its launcher, the person whose
+   * launch this create is (after the workspace stops, whoever launches the next one). Mend names no
+   * user: Core takes the owner's. It does not exist at create; until prepare makes it, the gateway
+   * refuses a session rather than run it as root. Sent only where Core reports `workspaceSshUser`
+   * (`PersonLayoutPlatform.sshUser`), and only with `credentialsHome`.
    */
-  readonly sshUser?: string;
+  readonly sshAsOwner?: true;
 }
 
 /** A home and the numeric owner Core writes it as (docs/adr/0016, decision 5). */
@@ -883,7 +884,7 @@ const makeUserClient = (env: SealantEnvShape, ownerUserIdInput: string) =>
       const keyed: CreateOptions & {
         readonly idempotencyKey?: string;
         readonly launchId?: string;
-        readonly sshUser?: string;
+        readonly sshAsOwner?: boolean;
       } =
         launch === undefined
           ? options
@@ -894,7 +895,7 @@ const makeUserClient = (env: SealantEnvShape, ownerUserIdInput: string) =>
               ...(launch.credentialsHome === undefined
                 ? {}
                 : { credentialsHome: launch.credentialsHome }),
-              ...(launch.sshUser === undefined ? {} : { sshUser: launch.sshUser }),
+              ...(launch.sshAsOwner === true ? { sshAsOwner: true } : {}),
             };
       if (watch === undefined) {
         return wrap(() => sealant.workspaces.create(keyed)).pipe(
