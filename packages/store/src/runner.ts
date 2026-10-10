@@ -50,6 +50,9 @@ import {
 import {
   type ChangedFile,
   type DiffFileFact,
+  type DiffFileFactsListing,
+  type DiffFileFactsOptions,
+  type DiffRangeOptions,
   type FileListing,
   type StoreBranch,
   Store,
@@ -165,7 +168,7 @@ export class GitOpsRunner extends Context.Service<
       cache: RunnerCache,
       a: string,
       b: string,
-      options?: { readonly ignoreWhitespace?: boolean; readonly contextLines?: number },
+      options?: DiffRangeOptions,
     ) => Effect.Effect<string, GitError>;
     readonly diffFileFacts: (
       cache: RunnerCache,
@@ -173,6 +176,12 @@ export class GitOpsRunner extends Context.Service<
       b: string,
       options?: { readonly ignoreWhitespace?: boolean },
     ) => Effect.Effect<ReadonlyArray<DiffFileFact>, GitError>;
+    readonly diffFileFactsBounded: (
+      cache: RunnerCache,
+      a: string,
+      b: string,
+      options: DiffFileFactsOptions,
+    ) => Effect.Effect<DiffFileFactsListing, GitError>;
     readonly changedFiles: (
       cache: RunnerCache,
       a: string,
@@ -532,7 +541,7 @@ export const GitOpsRunnerLive: Layer.Layer<GitOpsRunner, never, Store | StoreCon
         cache: RunnerCache,
         a: string,
         b: string,
-        options?: { readonly ignoreWhitespace?: boolean; readonly contextLines?: number },
+        options?: DiffRangeOptions,
       ) {
         const [shaA, shaB] = yield* Effect.all([resolve(cache, a), resolve(cache, b)]);
         return yield* store.diffRange(cache.path, shaA, shaB, options);
@@ -546,6 +555,16 @@ export const GitOpsRunnerLive: Layer.Layer<GitOpsRunner, never, Store | StoreCon
       ) {
         const [shaA, shaB] = yield* Effect.all([resolve(cache, a), resolve(cache, b)]);
         return yield* store.diffFileFacts(cache.path, shaA, shaB, options);
+      });
+
+      const diffFileFactsBounded = Effect.fn("GitOpsRunner.diffFileFactsBounded")(function* (
+        cache: RunnerCache,
+        a: string,
+        b: string,
+        options: DiffFileFactsOptions,
+      ) {
+        const [shaA, shaB] = yield* Effect.all([resolve(cache, a), resolve(cache, b)]);
+        return yield* store.diffFileFactsBounded(cache.path, shaA, shaB, options);
       });
 
       const changedFiles = Effect.fn("GitOpsRunner.changedFiles")(function* (
@@ -713,6 +732,7 @@ export const GitOpsRunnerLive: Layer.Layer<GitOpsRunner, never, Store | StoreCon
         resolve,
         diffRange,
         diffFileFacts,
+        diffFileFactsBounded,
         changedFiles,
         listTreeFiles,
         headSha,

@@ -81,6 +81,7 @@ describe("typed HTTP error contracts", () => {
       "create",
       "createSession",
       "detail",
+      "diff",
       "list",
       "remove",
     ]);
@@ -91,6 +92,7 @@ describe("typed HTTP error contracts", () => {
     expect(statuses.get("create")?.has(409), "create should preserve WorktreeNameTaken").toBe(true);
     expect(statuses.get("remove")?.has(409), "remove should preserve WorktreeActive").toBe(true);
     expect(statuses.get("remove")?.has(422), "remove should preserve StoreFailure").toBe(true);
+    expect(statuses.get("diff")?.has(422), "diff should preserve StoreFailure").toBe(true);
   });
 
   it("decodes worktree payloads: old-client omissions and the legacy change shape", () => {

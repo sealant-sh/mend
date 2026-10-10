@@ -1,4 +1,4 @@
-import { ProjectId, WorktreeId } from "@mend/domain";
+import { CheckpointId, ProjectId, WorktreeId } from "@mend/domain";
 import {
   AgentLaunchMode,
   Change as SessionChange,
@@ -14,6 +14,7 @@ import { NotFound } from "./accounts.ts";
 import { AuthMiddleware } from "./common.ts";
 import { CheckpointRequest, WorktreeName } from "./project-environment.ts";
 import {
+  ObservationStamp,
   RemovalReport,
   SessionAnnotation,
   StoreFailure,
@@ -44,6 +45,59 @@ export class WorktreeNameTaken extends Schema.TaggedErrorClass<WorktreeNameTaken
   { projectId: Schema.String, name: Schema.String },
   { httpApiStatus: 409 },
 ) {}
+
+/** One file of a checkpoint range, as git counts it (`DiffFileFact` in @mend/store). */
+export class WorktreeRangeFile extends Schema.Class<WorktreeRangeFile>("WorktreeRangeFile")({
+  oldPath: Schema.NullOr(Schema.String),
+  newPath: Schema.NullOr(Schema.String),
+  status: Schema.Literals([
+    "added",
+    "modified",
+    "deleted",
+    "renamed",
+    "copied",
+    "type-changed",
+    "unmerged",
+    "unknown",
+  ]),
+  additions: Schema.Int,
+  deletions: Schema.Int,
+  binary: Schema.Boolean,
+}) {}
+
+/**
+ * A slice of a worktree's checkpoint chain, rendered: from `from` (or, with none, the worktree's
+ * base) to `to`. Both ends are immutable commits, so the slice never moves; what it was read from
+ * is in `observation`, as for a change's diff.
+ *
+ * Bounded: `files` lists every file of the slice (or the one `path` asked for), while `diff`
+ * carries the patches of at most 200 of them within 8 MiB, rendered whole, in `files`' order.
+ * `truncated` says some are not in `diff`, and `omitted` names them; each can be asked for alone
+ * with `path`. A file whose own patch passes the budget stays omitted.
+ */
+export class WorktreeRangeDiff extends Schema.Class<WorktreeRangeDiff>("WorktreeRangeDiff")({
+  worktreeId: WorktreeId,
+  /** Null when the slice starts at the worktree's base. */
+  from: Schema.NullOr(Checkpoint),
+  to: Checkpoint,
+  /** The commit the slice starts at: `from`'s, else the worktree's base. */
+  fromSha: Schema.String,
+  diff: Schema.String,
+  files: Schema.Array(WorktreeRangeFile),
+  /**
+   * Not every file has its patch in `diff`: some of `files` are `omitted`, or the slice has more
+   * files than `files` lists (`listingCut`).
+   */
+  truncated: Schema.Boolean,
+  /** The files of `files` with no patch in `diff`, by path (the new path, else the old). */
+  omitted: Schema.Array(Schema.String),
+  /**
+   * The slice has more files than `files` lists: Mend listed its first files within its listing
+   * budget or deadline. Ask for one by `path` to get it whatever its place.
+   */
+  listingCut: Schema.Boolean,
+  observation: Schema.optionalKey(ObservationStamp),
+}) {}
 
 /** Provisioning the container without a conversation; joining happens via sessions. */
 export class NewWorktree extends Schema.Class<NewWorktree>("NewWorktree")({
@@ -131,6 +185,22 @@ export const worktreesGroup = HttpApiGroup.make("worktrees")
       payload: NewWorktreeSession,
       success: Session,
       error: [WorktreeNotFound, StoreFailure],
+    }),
+  )
+  .add(
+    // A read: a slice of the worktree's checkpoint chain, for clients that show one turn's work
+    // (the t3code gateway, ADR 0012 phase 3). Visible to whoever sees the worktree.
+    HttpApiEndpoint.get("diff", "/worktrees/:id/diff", {
+      params: { id: WorktreeId },
+      query: {
+        from: Schema.optional(CheckpointId),
+        to: CheckpointId,
+        whitespace: Schema.optional(Schema.Literal("ignore")),
+        /** One file of the slice, by its new or old path: its patch alone. */
+        path: Schema.optional(Schema.String),
+      },
+      success: WorktreeRangeDiff,
+      error: [WorktreeNotFound, NotFound, StoreFailure],
     }),
   )
   .add(

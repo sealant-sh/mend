@@ -265,6 +265,103 @@ const QUIET_STDERR_BYTES = 64 * 1024;
  * 1.7M objects print 70 MB, past `git`'s 64 MiB). Succeeds with the count of bytes git printed;
  * fails as `git` does, keeping the tail of stderr.
  */
+/** What a capped git run printed: its stdout up to the cap, and whether the cap cut it. */
+export interface CappedOutput {
+  readonly stdout: string;
+  readonly cut: boolean;
+}
+
+/**
+ * Run git and keep at most `maxBytes` of its stdout: past them, or past `deadlineMs` when given,
+ * git is stopped and the output so far answers, marked `cut`. For output whose size the caller
+ * cannot know beforehand (a diff, a search), so a large or slow one is a bounded answer rather
+ * than Node's output-buffer failure or a request left running.
+ */
+export const gitCapped = (
+  args: ReadonlyArray<string>,
+  cwd: string,
+  maxBytes: number,
+  deadlineMs?: number,
+): Effect.Effect<CappedOutput, GitError> =>
+  Effect.callback<CappedOutput, GitError>((resume) => {
+    const chunks: Array<Buffer> = [];
+    let kept = 0;
+    let cut = false;
+    let stderr = Buffer.alloc(0);
+    let settled = false;
+    const settle = (effect: Effect.Effect<CappedOutput, GitError>) => {
+      if (settled) return;
+      settled = true;
+      resume(effect);
+    };
+    const child = spawn("git", [...args], {
+      cwd,
+      env: gitProcessEnv(undefined),
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const deadline =
+      deadlineMs === undefined
+        ? undefined
+        : setTimeout(() => {
+            cut = true;
+            child.kill();
+          }, deadlineMs);
+    child.stdout.on("data", (chunk: Buffer) => {
+      if (cut) return;
+      const room = maxBytes - kept;
+      if (chunk.length > room) {
+        chunks.push(chunk.subarray(0, room));
+        kept = maxBytes;
+        cut = true;
+        child.kill();
+        return;
+      }
+      chunks.push(chunk);
+      kept += chunk.length;
+    });
+    child.stderr.on("data", (chunk: Buffer) => {
+      const joined = Buffer.concat([stderr, chunk]);
+      stderr = joined.subarray(Math.max(0, joined.length - QUIET_STDERR_BYTES));
+    });
+    child.on("error", (error: NodeJS.ErrnoException) =>
+      settle(
+        Effect.fail(
+          new GitError({
+            args: [...args],
+            cwd,
+            exitCode: null,
+            stderr: error.message,
+            ...(typeof error.code === "string" ? { code: error.code } : {}),
+          }),
+        ),
+      ),
+    );
+    child.on("close", (exitCode, signal) => {
+      if (deadline !== undefined) clearTimeout(deadline);
+      const stdout = Buffer.concat(chunks).toString("utf8");
+      if (cut) {
+        settle(Effect.succeed({ stdout, cut: true }));
+        return;
+      }
+      if (exitCode === 0) {
+        settle(Effect.succeed({ stdout: stdout.replace(/\n$/, ""), cut: false }));
+        return;
+      }
+      settle(
+        Effect.fail(
+          new GitError({
+            args: [...args],
+            cwd,
+            exitCode,
+            stderr: stderr.toString("utf8").trim(),
+            ...(signal === null ? {} : { signal }),
+          }),
+        ),
+      );
+    });
+    return Effect.sync(() => child.kill());
+  });
+
 export const gitQuiet = (
   args: ReadonlyArray<string>,
   cwd: string,

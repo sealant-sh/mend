@@ -248,7 +248,7 @@ export const readFailure = (error: WorktreeReadError): StoreFailure =>
   });
 
 /** The stamp every change read carries (ADR-0002 "Review"): where the bytes were observed. */
-const observationOf = (stamp: ReadStamp, state: "claimed" | "observed" = "observed") =>
+export const observationOf = (stamp: ReadStamp, state: "claimed" | "observed" = "observed") =>
   new ObservationStamp({
     state,
     source: stamp.source,
