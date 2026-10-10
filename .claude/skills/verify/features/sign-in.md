@@ -84,9 +84,9 @@ Preconditions:
 - **Authorize.** Run `await page.goto("<the browser line's URL>")`. The heading
   `Authorize this terminal?` is visible and the page shows the same grouped code. Run
   `await page.getByRole("button", { name: "Authorize" }).click()`. The heading reads `Authorized`.
-  The CLI prints `✓ signed in as <email>`,
-  `  this terminal is the device <hostname> · revoke it any time under Settings → Devices` and
-  `  token saved to <path>/cli.json (0600)`, and exits `0`.
+  The CLI prints `  token saved to <path>/cli.json (0600)`, then `✓ signed in as <email>` and
+  `  this terminal is the device <hostname> · revoke it any time under Settings → Devices`, and
+  exits `0`.
 - **Spent and missing codes.** Reload the authorize URL. The heading reads
   `This code is not waiting`. Run `await page.goto("<web>/authorize")`. The heading reads
   `No code to authorize`.

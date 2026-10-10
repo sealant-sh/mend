@@ -18,16 +18,22 @@ host key on first contact and refuses a changed one. The VS Code extension runs 
 - `vscode-setup` runs the same setup from VS Code, after asking.
 - `vscode-open` opens a session's worktree over Remote-SSH, offering a shell resume for a settled
   session.
+- `ssh-keys` lists the account's registered workspace SSH keys from every machine (`mend ssh keys`:
+  `<fingerprint>  <machine>  ssh-ed25519 · registered <day> ● this machine`) and removes one
+  (`mend ssh keys remove <fingerprint>`); Settings → `Workspace SSH` lists them on the web
+  (`no keys registered` before any).
 
 ## How to get to it (user POV)
 
-- CLI: `mend ssh [status]` and `mend ssh setup [--key <path>] [--host <hostname>]`.
+- CLI: `mend ssh [status]`, `mend ssh setup [--key <path>] [--host <hostname>]` and
+  `mend ssh keys [remove <fingerprint>]`.
+- Web: Settings (`/settings`), the heading `Workspace SSH`, lists the account's registered keys.
 - VS Code: the command palette's `Mend: Set up workspace SSH`; `Mend: Open in VS Code` from a
   session in the Mend tree or the quick pick. The setting `mend.workspaceSshHost` overrides the
   hostname. Not drivable yet: no VS Code harness exists for this map.
 - `mend uninstall` with the `home` scope removes the managed block (see
   [Uninstall](./uninstall.md)).
-- Web, TUI, desktop and mobile have no workspace SSH controls.
+- TUI, desktop and mobile have no workspace SSH controls.
 
 ## Driving it with verify
 
@@ -65,7 +71,7 @@ Preconditions:
 - **Setup again.** Run `mend ssh setup`. The key line names the same fingerprint with
   `· existing selected key`, and the config still holds exactly one managed block for this server.
 - **Unknown subcommand.** Run `mend ssh bogus`. Stdout reads
-  `mend: Unknown ssh subcommand "bogus". Try: mend ssh · mend ssh setup [--key <path>] [--host <hostname>]`,
+  `mend: Unknown ssh subcommand "bogus". Try: mend ssh · mend ssh setup [--key <path>] [--host <hostname>] · mend ssh keys [remove <fingerprint>]`,
   exit `1`.
 - **No gateway.** Against a deployment without one, `mend ssh` prints
   `workspace ssh   no gateway · this deployment exposes none` (exit `0`), and `mend ssh setup`
