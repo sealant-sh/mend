@@ -41,9 +41,10 @@ it runs under a guard (`docker-mirror-guard.sh`, its entrypoint) that checks eve
 
 - **The cap.** Over `--docker-mirror-max-size` (default `20g`), the guard stops the registry, clears
   the cache and starts it again. The next pulls fill it from Docker Hub.
-- **The floor.** With less than 5 GiB free on the disk the volume lives on, it clears the cache and
-  keeps the registry stopped until there is room again. Meanwhile session daemons pull from Docker
-  Hub directly, as they do when the mirror is down.
+- **The floor.** With less than 5 GiB free on the disk the volume lives on, it stops the registry
+  and clears the cache, including one left over from before a restart, and keeps the registry
+  stopped. Meanwhile session daemons pull from Docker Hub directly, as they do when the mirror is
+  down. On the first check with 5 GiB free again, it starts the registry with an empty cache.
 
 ```sh
 mend server setup --docker-mirror-max-size 40g   # a larger cap
@@ -72,7 +73,8 @@ Sessions running while it is off pull from Docker Hub; relaunch them to use the 
 docker mirror · running · 120 MiB cached of 20 GiB · 412 GiB free on its disk · layers evicted 7 days after each fetch · since 2026-10-10T08:00:00Z: layers 8 requested · 6 from the cache (75%) · manifests 6 · 3 from the cache · pulls from Docker Hub anonymously · observed
 ```
 
-When the guard has paused it for want of space, status says so instead:
+When the guard has paused it for want of space, status says so instead. By then the cache has been
+cleared:
 
 ```
 docker mirror · paused by its disk guard · 3.0 GiB free on its disk, below 5.0 GiB · cache cleared · session Docker daemons pull from Docker Hub directly until there is room · observed
