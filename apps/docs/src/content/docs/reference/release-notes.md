@@ -13,6 +13,70 @@ Each entry says what a release changes and what it leaves as it was. Known limit
 Not released yet. Previews (`0.36.0-next.<n>`) carry what is below; see
 [Try a preview](/getting-started/try-a-preview/).
 
+Upgrading a server from 0.35.1: read [Upgrade to 0.36](/operate/upgrade-to-0-36/) first. Two things
+need doing before the upgrade: copy out any old upgrade backup you want kept, since the upgrade now
+prunes them, and plan to rotate credentials Mend passed to Sealant before 0.36. The bundled Sealant
+is 0.39, and the desktop app is not part of this release.
+
+### Server setup and operation
+
+- **Guided setup.** `mend server setup` on a terminal with no flags asks its questions one at a time
+  and says what it observed. Each flag now changes only what it names. `--declare` adds to the saved
+  exposure statements, `--undeclare` takes one back, and `--origin none` clears the extra origins.
+- **Edge and posture.** `--edge <host>` runs a Caddy TLS edge in front of Mend; `--exposure` and
+  `--tenancy` declare the posture. `mend server status` reports the edge and both gates.
+- **Mirrors.** An npm mirror and a Docker Hub mirror run beside Mend, on by default, in two more
+  containers. See [npm mirror](/operate/npm-mirror/) and [Docker mirror](/operate/docker-mirror/).
+- **Workspace SSH.** `--ssh-bind <ip>` publishes workspace SSH on its own address, a `workspace-ssh`
+  item of the public exposure gate. In a per-person workspace Remote-SSH runs as the launcher, not
+  root. `mend ssh keys` lists your workspace SSH keys and removes one.
+- **T3 Code gateway**, opt-in with `--t3-gateway`. See [t3code](/integrations/t3code/).
+- **Upgrade backups** are pruned to the newest two (`--keep-backups`).
+- **Ubuntu 23.10 and later**: setup and `mend doctor` say when the host refuses user namespaces,
+  with the command that allows them.
+
+### Sessions
+
+- **pi and opencode** run as sessions beside Claude Code and Codex (`mend pi`, `mend opencode`), on
+  your ChatGPT subscription through the Codex login. `mend connect pi` sends your pi setup. See
+  [Your pi setup](/guides/pi/).
+- **One model picker.** The server owns each harness's model list (`GET /api/harnesses/models`,
+  `mend models`), and every session records the model and effort it started with.
+- **Agent memory** for Claude Code and Codex is kept per person per project and carried into each
+  session you start. `mend memory import` brings what your machine has. See
+  [Agent memory](/guides/agent-memory/).
+- **Secret files**: files such as `~/.aws/credentials` kept encrypted in Mend and written into every
+  session you own (`mend secrets`). See [Secret files](/guides/secret-files/).
+- **Automatic install**: a switch per project that runs the install command the lockfile names.
+- **Several repositories in one session** with `mend repo add`. See
+  [Several repositories in one session](/guides/repositories-in-a-session/).
+- **Claude Code plugins** your settings and the repository's enable are installed before Claude
+  starts, with no prompt. See [Claude Code plugins](/guides/skills/#claude-code-plugins).
+- **Faster.** On the team's box a new session takes about 27 s (was about 90 s) and a Stop 15 to 19
+  s. A Stop on Garage no longer waits 10 minutes for its upload links to expire.
+- **Images.** Workspaces carry `bun` and `unzip` (each project's image rebuilds once, about +80 MB)
+  and pin their harness versions. Claude Code no longer updates itself in a workspace.
+- **Shallow repositories are refused** at adoption and at a session's start.
+
+### CLI, dashboard and phone
+
+- `mend run` works in scripts: it prints the command's output and exits with its code. `mend logs`
+  and `mend wait` are new. `mend service run --wait` waits through a slow start.
+- `mend pull` fast-forwards a second pull. `mend worktrees rm` removes a worktree, `--force` one
+  whose change was never landed.
+- The dashboard's panes are numbered (`[1]`, `[2]`, `[3]`, `[0]`), and `?` lists every key.
+- The phone shows the change's pull request, asks before it stops a session, and picks models from
+  the server's list.
+
+### Credentials
+
+- Secret files, the pi profile, memory, skills and pasted images reach a workspace through a
+  single-use pickup ticket, no longer through Sealant's exec arguments, which Sealant stored. The
+  upgrade purges the stored ones; rotate what was sent before
+  ([Upgrade to 0.36](/operate/upgrade-to-0-36/#rotate-credentials-that-went-through-sealants-exec-arguments)).
+- No saved harness state keeps a login or token another person's session could pick up. The list is
+  in [How Mend handles your logins](/concepts/provider-logins/).
+
 ### Per-person workspaces, on by default
 
 Each person who runs anything in a workspace gets their own Linux user and home, and everything they
