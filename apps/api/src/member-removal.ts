@@ -14,10 +14,16 @@ import {
 } from "@mend/db";
 import type { OrganizationId } from "@mend/domain";
 import { SessionEngine } from "@mend/sessions";
-import { Effect, Layer } from "effect";
+import { Duration, Effect, Layer } from "effect";
 import * as Context from "effect/Context";
 
 import { ConnectionRegistry } from "./connections.ts";
+import {
+  SSH_KEY_REVOCATION_LEASE,
+  SshKeyFirstAttemptLimit,
+  type SshKeyRevocationOutcome,
+  SshKeyRevoker,
+} from "./ssh-key-revocation.ts";
 
 export interface RemoveMemberInput {
   readonly organizationId: OrganizationId;
@@ -26,10 +32,18 @@ export interface RemoveMemberInput {
   readonly actorUserId: string;
 }
 
+/** What a removal leaves for the owner to know: the workspace SSH keys not yet archived. */
+export interface MemberRemovalOutcome {
+  readonly sshKeys: SshKeyRevocationOutcome;
+}
+
 /**
  * Removing a member (docs/adr/0003-organizations-and-tenancy.md): the membership goes, the account
  * is deactivated, every way it signs in is revoked, its open connections close on every process,
- * its Slack links go (docs/adr/0006-slack.md), and its unsettled sessions stop. Stopping flushes
+ * its Slack links go (docs/adr/0006-slack.md), its workspace SSH keys are archived on the platform
+ * (docs/WORKSPACE-SSH.md), and its unsettled sessions stop. The keys owed are recorded with the
+ * membership's deletion, so a key the platform does not archive now is retried by the worker until
+ * it is. Stopping flushes
  * and checkpoints like any stop, so the work so far stays reviewable. Private projects stay where
  * they are until an owner takes them over.
  */
@@ -42,7 +56,7 @@ export class MemberRemoval extends Context.Service<
      */
     readonly remove: (
       input: RemoveMemberInput,
-    ) => Effect.Effect<void, MemberNotFoundError | LastOwnerError>;
+    ) => Effect.Effect<MemberRemovalOutcome, MemberNotFoundError | LastOwnerError>;
   }
 >()("@mend/api/MemberRemoval") {}
 
@@ -59,6 +73,7 @@ export const MemberRemovalLive: Layer.Layer<
   | SessionEngine
   | SessionsRepo
   | SlackLinksRepo
+  | SshKeyRevoker
   | UserEvents
   | UsersRepo
 > = Layer.effect(
@@ -71,6 +86,7 @@ export const MemberRemovalLive: Layer.Layer<
     const organizations = yield* OrganizationsRepo;
     const projects = yield* ProjectsRepo;
     const pushDevices = yield* PushDevicesRepo;
+    const revoker = yield* SshKeyRevoker;
     const engine = yield* SessionEngine;
     const sessions = yield* SessionsRepo;
     const slackLinks = yield* SlackLinksRepo;
@@ -103,8 +119,17 @@ export const MemberRemovalLive: Layer.Layer<
     const remove = Effect.fn("MemberRemoval.remove")(function* (input: RemoveMemberInput) {
       // Read first: the membership going takes the Slack links with it.
       const linked = yield* slackLinks.listForUser(input.userId);
-      // The owner lock refuses removing the last owner before anything else moves.
-      yield* organizations.removeMember(input.organizationId, input.userId);
+      // The owner lock refuses removing the last owner before anything else moves; the keys owed
+      // are recorded in the same transaction as the membership's deletion.
+      const requestedAt = new Date();
+      const { revocationId } = yield* organizations.removeMember(
+        input.organizationId,
+        input.userId,
+        {
+          actorUserId: input.actorUserId,
+          revocationLeaseMs: Duration.toMillis(SSH_KEY_REVOCATION_LEASE),
+        },
+      );
       // Nobody keeps steering on the removed account's credentials, even before their sessions stop.
       const unshared = yield* sessions.disableSharedControlForOwner(input.userId);
       yield* Effect.forEach(
@@ -151,7 +176,8 @@ export const MemberRemovalLive: Layer.Layer<
           data: { teamId: link.teamId, slackUserId: link.slackUserId, memberRemoved: true },
         });
       }
-      // Other processes close on the event; this one closes now.
+      // Mend's own revocation never waits on the platform. Other processes close on the event;
+      // this one closes now, and the sessions begin to stop.
       yield* userEvents.changed(input.userId, "access");
       yield* connections.closeForUser(input.userId);
       yield* Effect.forkIn(
@@ -164,6 +190,51 @@ export const MemberRemovalLive: Layer.Layer<
         ),
         scope,
       );
+      // Only now the platform: no workspace SSH key of theirs opens a new connection at the
+      // gateway. Every key is tried, for at most `SshKeyFirstAttemptLimit`; what the platform
+      // does not archive in that time stays owed, the worker retries it, and the owner is told.
+      // An interrupted removal leaves the row too, so nothing below this line is lost with it.
+      const firstAttemptLimit = yield* SshKeyFirstAttemptLimit;
+      const sshKeys = yield* revoker
+        .attempt({
+          id: revocationId,
+          userId: input.userId,
+          organizationId: input.organizationId,
+          actorUserId: input.actorUserId,
+          requestedAt,
+          attempts: 0,
+          outstanding: null,
+          lastError: null,
+        })
+        .pipe(
+          Effect.timeoutOrElse({
+            duration: firstAttemptLimit,
+            orElse: () =>
+              Effect.logWarning(
+                "member removal: SSH key revocation still running at the limit; the sweep takes it",
+              ).pipe(
+                Effect.annotateLogs({ userId: input.userId }),
+                Effect.as<SshKeyRevocationOutcome>({ removed: 0, outstanding: null }),
+              ),
+          }),
+          Effect.catchCause((cause) =>
+            Effect.logWarning("member removal: the first SSH key revocation attempt failed").pipe(
+              Effect.annotateLogs({ userId: input.userId, cause: String(cause) }),
+              Effect.as({ removed: 0, outstanding: null }),
+            ),
+          ),
+        );
+      if (sshKeys.outstanding !== 0) {
+        yield* audit.record({
+          organizationId: input.organizationId,
+          actorUserId: input.actorUserId,
+          action: "ssh_key.revocation_pending",
+          subjectType: "member",
+          subjectId: input.userId,
+          data: { removed: sshKeys.removed, outstanding: sshKeys.outstanding },
+        });
+      }
+      return { sshKeys };
     });
 
     return { remove };

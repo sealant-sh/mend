@@ -379,6 +379,33 @@ export const auditEvents = pgTable(
 );
 
 /**
+ * The workspace SSH keys Mend still owes a removed member (docs/WORKSPACE-SSH.md): one row per
+ * removed account, written with the membership's deletion and deleted once the platform holds no
+ * active key of theirs. FKs to "user"(id) are declared in the migration.
+ */
+export const sshKeyRevocations = pgTable(
+  "ssh_key_revocations",
+  {
+    /** One obligation; a later removal of the same account replaces the row with a new id. */
+    id: text().primaryKey(),
+    userId: text().notNull().unique(),
+    organizationId: text()
+      .$type<OrganizationId>()
+      .notNull()
+      .references(() => organizations.id, { onDelete: "restrict" }),
+    /** The owner who removed them: the actor of each key's removal in the audit log. */
+    actorUserId: text().notNull(),
+    requestedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+    attempts: integer().notNull().default(0),
+    nextAttemptAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+    /** Keys still active after the last attempt; null while they could not be read. */
+    outstanding: integer(),
+    lastError: text(),
+  },
+  (table) => [index("ssh_key_revocations_next_attempt_at").on(table.nextAttemptAt)],
+);
+
+/**
  * Steering acts on a session beyond turns and approvals (docs/adr/0003): who interrupted, attached
  * a terminal, opened a shell, stopped it, or shared control.
  */

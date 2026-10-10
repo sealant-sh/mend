@@ -176,7 +176,7 @@ import {
 } from "./shared.ts";
 import { type AttachOutcome } from "./shared.ts";
 import { DEFAULT_SKILLS_DIR, scanSkillLibrary } from "./skills.ts";
-import { sshCommand } from "./ssh-setup.ts";
+import { removeThisMachineKey, sshCommand } from "./ssh-setup.ts";
 import {
   describeUninstall,
   executeUninstall,
@@ -3593,6 +3593,12 @@ const uninstallCommand = async (config: CliConfig, args: ReadonlyArray<string>) 
         return error instanceof Error ? error.message : String(error);
       }
     },
+    removeWorkspaceSshKey: () =>
+      removeThisMachineKey(
+        (method, route, body) => request(config, method, route, body),
+        mendCliHome(),
+        config.url,
+      ),
   };
   const plan = await describeUninstall(runtime, scope);
   say(dim(`mend uninstall · ${scope === "all" ? "everything" : scope}`));

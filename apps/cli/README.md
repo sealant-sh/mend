@@ -243,6 +243,8 @@ mend ssh                          # inspect config and this client's key registr
 mend ssh setup                    # register a key and reconcile this server's Host block
 mend ssh setup --key ./my-key      # explicitly select private key or its .pub file
 mend ssh setup --host mend.example.com
+mend ssh keys                     # your registered keys, from every machine; this one is marked
+mend ssh keys remove SHA256:…     # stop the gateway accepting one of them
 ```
 
 Setup puts the managed block before wildcard defaults and restores all-host scope before your
@@ -262,6 +264,23 @@ config directory. Later setup preserves private keys.
 Status and setup report config and client-key registration, not a successful SSH connection or
 verified host trust. The public Sealant SDK's gateway info supplies host, port and username prefix,
 not a host-key fingerprint. Mend cannot authenticate a rotated host key from that metadata.
+
+### Removing a key
+
+`mend ssh keys` lists every key your account registered, with its fingerprint, name, algorithm and
+the day it was registered; `--json` prints the same with `thisMachine` on each. The platform does
+not record when a key was last used. `mend ssh keys remove <fingerprint>` removes one of your own
+keys; another person's fingerprint answers as an unknown one. The gateway looks a key up on every
+new connection, so the next connection offering it is refused. A connection already open stays open
+until it ends. The key file and this server's `~/.ssh/config` block stay on the machine that
+registered it; `mend ssh setup` there registers it again.
+
+`mend uninstall --home` removes the key this machine registered before it revokes the terminal's
+device token, then deletes the key file and the managed block. The key is found by its public half,
+so an encrypted private key or a stopped agent does not hide it. When the server refuses the
+removal, or this machine's public key cannot be read, the uninstall still finishes and exits 1,
+naming the fingerprint that may still be registered and `mend ssh keys remove` to run from another
+signed-in machine.
 
 ### Gateway host-key rotation
 

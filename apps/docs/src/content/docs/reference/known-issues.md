@@ -393,6 +393,9 @@ is used by the other person's `git push`.
 - **SFTP is refused in a per-person workspace,** and with it `sftp` and `scp` (which speaks SFTP).
   The pinned sealantd runs an SFTP bridge only as root. Copy a file with
   `ssh <host> 'cat > file' < file` until Sealant pins a sealantd that runs SFTP as you.
+- **A removed workspace SSH key ends no connection already open.** The gateway refuses the key from
+  the next connection; a Remote-SSH window connected before the removal stays connected until it
+  disconnects or the workspace stops. The platform does not record when a key was last used.
 - Settings edited by hand in a workspace last until it ends.
 
 ### Images

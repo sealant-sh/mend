@@ -3365,6 +3365,31 @@ const hotWorkspaceRemoteSshMigration = Effect.gen(function* () {
         CHECK (remote_ssh IN ('owner', 'unbound', 'not-taken'))`;
 });
 
+/**
+ * 0125: the workspace SSH keys Mend still owes a removed member (docs/WORKSPACE-SSH.md). Inserted
+ * in the transaction that deletes the membership, so no removal commits without it; the worker's
+ * sweep archives the person's keys on the platform and deletes the row once none is active.
+ * `outstanding` is the count still active after the last attempt, NULL while they are unread.
+ * `id` names one obligation: a later removal of the same account replaces it with a new id, so an
+ * attempt at the older one can neither settle nor defer the newer.
+ */
+const sshKeyRevocationsMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    CREATE TABLE ssh_key_revocations (
+      id text PRIMARY KEY,
+      user_id text NOT NULL UNIQUE REFERENCES "user" (id) ON DELETE RESTRICT,
+      organization_id text NOT NULL REFERENCES organizations (id) ON DELETE RESTRICT,
+      actor_user_id text NOT NULL REFERENCES "user" (id) ON DELETE RESTRICT,
+      requested_at timestamptz NOT NULL DEFAULT now(),
+      attempts integer NOT NULL DEFAULT 0,
+      next_attempt_at timestamptz NOT NULL DEFAULT now(),
+      outstanding integer,
+      last_error text
+    )`;
+  yield* sql`CREATE INDEX ssh_key_revocations_next_attempt_at ON ssh_key_revocations (next_attempt_at)`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -3489,4 +3514,6 @@ export const migrations = {
   // 0121 is taken by the repository URL credentials work in flight (fix/origin-url-credentials).
   "0122_checkpoint_source": checkpointSourceMigration,
   "0123_hot_workspace_remote_ssh": hotWorkspaceRemoteSshMigration,
+  // 0124 is unused: mend#640 (repository URL credentials) moved to 0126.
+  "0125_ssh_key_revocations": sshKeyRevocationsMigration,
 };

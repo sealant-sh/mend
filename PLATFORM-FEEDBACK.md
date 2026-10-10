@@ -7,6 +7,26 @@ around by importing internals.
 Format: date · SDK version · what Mend needed · what exists today · suggested surface. Entries stay
 after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
+## 2026-10-10 · 0.39.0-next.707 · A removed workspace SSH key: open connections and last use
+
+Mend now lists and removes a person's workspace SSH keys (`mend ssh keys`, Settings → Workspace SSH)
+through `sshKeys.list` and `archiveSshKeyOp`. Two things a person revoking a lost laptop's key needs
+are missing.
+
+- **Today, open connections:** the gateway resolves a key through
+  `POST /v1/ssh-keys/resolve-principal` once per connection and caches only within it, so the next
+  connection offering an archived key is refused (Mend drove the gateway's own
+  `startSshGatewayServer` and `createPrincipalResolver` against an archive: refused about 200 ms
+  later). A connection authenticated before the archive keeps running until it ends. VS Code
+  Remote-SSH holds one connection for hours, so a removed key can keep a live editor session.
+- **Today, last use:** `SshKey` carries `createdAt` only. Mend says the platform does not record
+  when a key was last used, and shows nothing in its place.
+- **Suggested:** on archive, the gateway closes the connections that key authenticated (the API
+  could tell it over the gateway token channel, or the gateway could re-resolve each connection's
+  key on a short interval and on every new channel). Record `lastUsedAt` on the key at
+  resolve-principal and return it on `SshKey`; Mend shows it beside each key, as it does for
+  devices.
+
 ## 2026-10-10 · 0.39.0-next.707 · A session's arguments must be trimmed and non-empty
 
 - **Shipped (0.39.0-next.712, sealant#347) and used:** `argv[0]` stays non-empty and trimmed; every

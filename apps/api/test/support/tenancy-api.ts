@@ -106,6 +106,7 @@ import { UrlBearers } from "../../src/routes/upgrade-tickets.ts";
 import { CheckpointRequestLimit } from "../../src/routes/workbench.ts";
 import { HostEnvironment } from "../../src/services/host-environment.ts";
 import { SessionSteeringLive } from "../../src/session-steering.ts";
+import { SshKeyRevoker } from "../../src/ssh-key-revocation.ts";
 import { TenancyConfig } from "../../src/tenancy.ts";
 import { createTenancyWorld, type HarnessUser, type TenancyWorld } from "./tenancy-harness.ts";
 import { recording } from "./tenancy-harness.ts";
@@ -197,6 +198,9 @@ export const createTenancyApi = async (
       readonly secretFiles?: Layer.PartialEffectful<SecretFilesRepo["Service"]>;
       readonly cipher?: Layer.PartialEffectful<SecretCipher["Service"]>;
       readonly harnessModels?: Layer.PartialEffectful<HarnessModelsRepo["Service"]>;
+      /** Each account's workspace SSH keys on the platform, and the gateway it reports. */
+      readonly sshKeys?: SealantClients["Service"]["sshKeys"];
+      readonly workspaceSshInfo?: SealantClients["Service"]["workspaceSshInfo"];
     };
   } = {},
 ): Promise<TenancyApi> => {
@@ -315,9 +319,14 @@ export const createTenancyApi = async (
           connectedAccounts: () => {
             throw new Error("the harness does not implement sealantClients.connectedAccounts");
           },
-          sshKeys: () => {
-            throw new Error("the harness does not implement sealantClients.sshKeys");
-          },
+          sshKeys:
+            options.implement?.sshKeys ??
+            (() => {
+              throw new Error("the harness does not implement sealantClients.sshKeys");
+            }),
+          ...(options.implement?.workspaceSshInfo === undefined
+            ? {}
+            : { workspaceSshInfo: options.implement.workspaceSshInfo }),
         },
         calls,
       ),
@@ -383,6 +392,7 @@ export const createTenancyApi = async (
       recording(PiProfilesRepo, "piProfiles", options.implement?.piProfiles ?? {}, calls),
       recording(AgentMemoryRepo, "agentMemory", options.implement?.agentMemory ?? {}, calls),
       recording(SecretFilesRepo, "secretFiles", options.implement?.secretFiles ?? {}, calls),
+      recording(SshKeyRevoker, "sshKeyRevoker", {}, calls),
       recording(
         HarnessModelsRepo,
         "harnessModels",

@@ -182,7 +182,7 @@ const clientsLayer = (
   Layer.mock(SealantClients, {
     controlPlaneFeatures: features,
     connectedAccounts: () => ({ list: unused, connect: unused, disconnect: unused }),
-    sshKeys: () => ({ ensure: unused, list: unused }),
+    sshKeys: () => ({ ensure: unused, list: unused, remove: unused }),
     sealantUserId: (userId) => Effect.succeed(`su-${userId}`),
     imageKey: (options) => Effect.succeed(`key:${options.os ?? options.baseImage ?? ""}`),
     inspectImage: (_userId, options) =>
@@ -428,7 +428,7 @@ describe("the live platform (Core 0.39)", () => {
           Layer.mock(SealantClients, {
             controlPlaneFeatures: () => Effect.succeed(EVERY_FEATURE),
             connectedAccounts: () => ({ list: unused, connect: unused, disconnect: unused }),
-            sshKeys: () => ({ ensure: unused, list: unused }),
+            sshKeys: () => ({ ensure: unused, list: unused, remove: unused }),
             imageKey: () =>
               Effect.fail(
                 new SealantPlatformError({
@@ -769,7 +769,7 @@ describe("the workspace's SSH user (docs/adr/0016 decision 10, sealant#348)", ()
           Layer.mock(SealantClients, {
             controlPlaneFeatures: () => Effect.succeed(features),
             connectedAccounts: () => ({ list: unused, connect: unused, disconnect: unused }),
-            sshKeys: () => ({ ensure: unused, list: unused }),
+            sshKeys: () => ({ ensure: unused, list: unused, remove: unused }),
             sealantUserId: (userId) => Effect.succeed(`su-${userId}`),
             bindPerson: (userId, person) =>
               Effect.suspend(() => {

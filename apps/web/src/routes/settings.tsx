@@ -24,6 +24,7 @@ import { SecretFilesPanel } from "#/components/secret-files-panel";
 import { AppShell } from "#/components/shell";
 import { SlackSettings } from "#/components/slack-settings";
 import { WorkspaceEnvironmentEditor } from "#/components/workspace-environment-editor";
+import { WorkspaceSshPanel } from "#/components/workspace-ssh-panel";
 import {
   connectAccount,
   createPairing,
@@ -104,6 +105,7 @@ function SettingsPage() {
         <GitAuthorPanel />
         <ConnectedAccountsPanel />
         <DevicesPanel />
+        <WorkspaceSshPanel />
         <OrganizationSettings />
         <SlackSettings />
         {/* Machine settings are the operator's (docs/adr/0003): not shown to anyone else. */}
