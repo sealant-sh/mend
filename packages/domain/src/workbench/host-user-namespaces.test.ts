@@ -5,6 +5,7 @@ import {
   hostUserNamespacesOf,
   hostUserNamespacesRefusal,
   hostUserNamespacesRefusalParts,
+  hostUserNamespacesSysctlLines,
 } from "./host-user-namespaces.ts";
 
 const none = {
@@ -80,5 +81,22 @@ describe("hostUserNamespacesRefusal", () => {
       hostUserNamespacesRefusalParts(`launch failed: ${hostUserNamespacesRefusal(setting)}`),
     ).toMatchObject({ command: hostUserNamespacesFix(setting), rest: "" });
     expect(hostUserNamespacesRefusalParts("launch failed: setup command failed")).toBeNull();
+  });
+});
+
+describe("hostUserNamespacesSysctlLines", () => {
+  it("marks the file as setup's and keeps the setting it replaced", () => {
+    expect(
+      hostUserNamespacesSysctlLines("kernel.apparmor_restrict_unprivileged_userns = 0"),
+    ).toEqual([
+      "# written by mend server setup; mend uninstall removes it",
+      "# previous: kernel.apparmor_restrict_unprivileged_userns = 1",
+      "kernel.apparmor_restrict_unprivileged_userns = 0",
+    ]);
+    expect(hostUserNamespacesSysctlLines("kernel.unprivileged_userns_clone = 1")).toEqual([
+      "# written by mend server setup; mend uninstall removes it",
+      "# previous: kernel.unprivileged_userns_clone = 0",
+      "kernel.unprivileged_userns_clone = 1",
+    ]);
   });
 });

@@ -32,8 +32,39 @@ export const HOST_USER_NAMESPACE_FILES = [
   "/proc/sys/kernel/unprivileged_userns_clone",
 ] as const;
 
-/** Where the setting goes on a host, so it holds across a restart. */
+/** Where the setting goes on a host, so it holds across a restart. The path does not change. */
 export const HOST_USER_NAMESPACE_SYSCTL_FILE = "/etc/sysctl.d/60-mend-rootless-docker.conf";
+
+/**
+ * The first line of the file when `mend server setup` wrote it. `mend uninstall` removes the file
+ * only when it starts with this line: one a person wrote by hand is theirs.
+ */
+export const HOST_USER_NAMESPACE_SYSCTL_MARKER =
+  "# written by mend server setup; mend uninstall removes it";
+
+/** What the kernel had before each setting that allows them: the distribution's default. */
+const PREVIOUS_SETTINGS: Readonly<Record<string, string>> = {
+  "kernel.apparmor_restrict_unprivileged_userns = 0":
+    "kernel.apparmor_restrict_unprivileged_userns = 1",
+  "kernel.unprivileged_userns_clone = 1": "kernel.unprivileged_userns_clone = 0",
+};
+
+/** The second line's lead: the setting to apply again once the file is removed. */
+export const HOST_USER_NAMESPACE_SYSCTL_PREVIOUS = "# previous: ";
+
+/**
+ * The file setup writes, line by line: the marker, the setting the kernel had before (for
+ * `mend uninstall` to apply again after removing the file, since nothing else on the host sets it
+ * back), and the setting itself.
+ */
+export const hostUserNamespacesSysctlLines = (setting: string): ReadonlyArray<string> => {
+  const previous = PREVIOUS_SETTINGS[setting];
+  return [
+    HOST_USER_NAMESPACE_SYSCTL_MARKER,
+    ...(previous === undefined ? [] : [`${HOST_USER_NAMESPACE_SYSCTL_PREVIOUS}${previous}`]),
+    setting,
+  ];
+};
 
 export const hostUserNamespacesOf = (readings: HostUserNamespaceReadings): HostUserNamespaces => {
   const restrict = readings.apparmorRestrictUnprivilegedUserns?.trim();

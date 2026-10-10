@@ -931,11 +931,13 @@ describe("mend server setup", () => {
         "sh",
         "postgres:17-alpine",
         "-c",
-        `printf '%s\\n' "$1" > /host/sysctl.d/60-mend-rootless-docker.conf && printf '%s\\n' "$3" > "/host/proc-sys/$2"`,
+        `file="$1"; value="$2"; shift 2; printf '%s\\n' "$@" > /host/sysctl.d/60-mend-rootless-docker.conf && printf '%s\\n' "$value" > "/host/proc-sys/$file"`,
         "mend-allow-userns",
-        "kernel.apparmor_restrict_unprivileged_userns = 0",
         "kernel/apparmor_restrict_unprivileged_userns",
         "0",
+        "# written by mend server setup; mend uninstall removes it",
+        "# previous: kernel.apparmor_restrict_unprivileged_userns = 1",
+        "kernel.apparmor_restrict_unprivileged_userns = 0",
       ],
     ]);
     expect(control.lines).not.toContain(USERNS_REMINDER);
