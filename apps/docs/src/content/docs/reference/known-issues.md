@@ -312,6 +312,15 @@ workspace. On a co-located store nothing changed: the images are attached when t
 
 Send the images again in a follow-up once the session is running.
 
+## A server outside Linux on the co-located store does not store pasted images
+
+On the deprecated co-located store (`MEND_SESSION_STORE=colocated`), the server writes a pasted
+image into the session's harness home itself, reaching each directory through its open descriptor
+(`/proc/self/fd`), so a link or a moved directory never leads the write elsewhere. A server run
+where that is not available, such as one started outside its container on macOS, refuses the paste
+with `no /proc/self/fd or /dev/fd here to keep the write inside …` and writes nothing. The packaged
+server runs on Linux and is not affected.
+
 ## Per-person workspaces
 
 Applies to workspaces where each person runs as their own Linux user: by default, every new worktree

@@ -174,21 +174,28 @@ export const SCRIPT_PINNED_PUT_FUNCTION = `const pinnedPut = (dir, name, staging
  * `containedPut(root, directoryMode, fileMode, target, bytes)`, for a file that must land
  * physically inside `root` (a pasted image, mend#597 review finding 2): `null` once `bytes` are at
  * `target`, `fileMode`, else why not, naming paths only. `target` must be a plain absolute path
- * below `root`. `root` is entered at its real path, and every directory below it is opened through
- * no link (`O_NOFOLLOW`), each next one through the descriptor of the last (`/proc/self/fd/<n>/…`),
- * so a link planted anywhere below `root` refuses the write instead of leading it elsewhere; with no
- * `/proc/self/fd` nothing is written. A directory missing is made with `directoryMode` in the one
- * `mkdir` (the umask cleared around it), so the mode of no directory is ever changed after the
- * fact: one put in place of the new directory keeps its own (mend#615 review, finding 2; `mkdir`
- * sets no setgid bit). The file is staged exclusively, never through a link, set `fileMode` through
- * its own descriptor, and renamed into place within the pinned directory, wherever that directory
- * is by then. Only when, after the rename, the pinned directory is still at the path `target` names
- * and that path holds the staged file is it answered `null`; otherwise the file is taken back out
- * of the pinned directory and the write refused (finding 1: a directory moved while it is written).
+ * below `root`.
+ *
+ * - Every directory is reached through the descriptor of the one above it (`/proc/self/fd/<n>/…`,
+ *   or `/dev/fd/<n>/…` where that is proved to reach the same directory), opened through no link
+ *   (`O_NOFOLLOW`), from `root`'s real path down. With neither, nothing is written (mend#615
+ *   review 2, 615-1b): a write by literal path follows whatever a parent became meanwhile.
+ * - A directory missing is made with `directoryMode` in its one `mkdir` (the umask cleared around
+ *   it), and no directory's mode is ever changed after: one put in place of the new directory
+ *   keeps its own (mend#615 review, 615-2; `mkdir` sets no setgid bit).
+ * - The file is staged exclusively, through no link, 0600, and its descriptor kept: it is renamed
+ *   into place inside the pinned directory, and only once the pinned directory is still at the
+ *   path `target` names and that path holds the staged file is it set `fileMode`. Until then
+ *   nobody but its writer can read it, wherever the directory was moved (615-1a).
+ * - A write refused after staging truncates its file through that descriptor, so its bytes are
+ *   gone wherever the file is, then takes its names back: each is first renamed to a private
+ *   quarantine name inside the pinned directory, and only what is proved there to be the staged
+ *   file is removed; anything else is put back (615-r2-1).
  */
 export const SCRIPT_CONTAINED_PUT_FUNCTION = `const containedPut = (root, directoryMode, fileMode, target, bytes) => {
   const c = fs.constants;
   const path = require("path");
+  const crypto = require("crypto");
   if (!path.isAbsolute(root) || path.normalize(root) !== root || path.normalize(target) !== target) return "not a plain absolute path";
   if (!target.startsWith(root === "/" ? "/" : root + "/")) return "not inside " + root;
   const parts = target.slice(root === "/" ? 1 : root.length + 1).split("/");
@@ -198,13 +205,21 @@ export const SCRIPT_CONTAINED_PUT_FUNCTION = `const containedPut = (root, direct
   try { real = fs.realpathSync(root); } catch { return "could not enter " + root; }
   let dfd;
   try { dfd = fs.openSync(real, c.O_RDONLY | c.O_DIRECTORY | c.O_NOFOLLOW); } catch { return "could not enter " + root; }
-  const proc = (fd) => "/proc/self/fd/" + fd;
+  // A directory's descriptor as a path: the first of /proc/self/fd and /dev/fd that reaches it.
+  const fdDir = (() => {
+    const held = fs.fstatSync(dfd);
+    for (const base of ["/proc/self/fd/", "/dev/fd/"]) {
+      try { const seen = fs.statSync(base + dfd + "/."); if (seen.dev === held.dev && seen.ino === held.ino) return base; } catch {}
+    }
+    return null;
+  })();
   let shown = root;
-  const at = (entry) => proc(dfd) + "/" + entry;
+  const at = (entry) => fdDir + dfd + "/" + entry;
   const linked = (entry) => { try { return fs.lstatSync(at(entry)).isSymbolicLink(); } catch { return false; } };
   const enter = (entry) => fs.openSync(at(entry), c.O_RDONLY | c.O_DIRECTORY | c.O_NOFOLLOW);
+  let fd;
   try {
-    if (!fs.existsSync(proc(dfd))) return "no /proc/self/fd here to keep the write inside " + root;
+    if (fdDir === null) return "no /proc/self/fd or /dev/fd here to keep the write inside " + root;
     for (const part of parts) {
       let next;
       try { next = enter(part); } catch (error) {
@@ -220,35 +235,49 @@ export const SCRIPT_CONTAINED_PUT_FUNCTION = `const containedPut = (root, direct
       shown = shown + "/" + part;
     }
     const expected = path.join(real, ...parts);
-    const inPlace = () => { try { return fs.readlinkSync(proc(dfd)) === expected; } catch { return false; } };
+    // The directory at the path \`target\` names, reached through no link, is the pinned one.
+    const inPlace = () => {
+      try {
+        const held = fs.fstatSync(dfd);
+        const named = fs.lstatSync(expected);
+        return named.isDirectory() && named.dev === held.dev && named.ino === held.ino && fs.realpathSync(expected) === expected;
+      } catch { return false; }
+    };
     const moved = "its directory moved during the write";
     if (!inPlace()) return moved;
-    const staging = ".mend-part-" + require("crypto").randomBytes(8).toString("hex");
-    const unstage = () => { try { fs.unlinkSync(at(staging)); } catch {} };
-    let fd;
-    let staged;
+    const staging = ".mend-part-" + crypto.randomBytes(8).toString("hex");
+    let staged = null;
+    const ours = (stat) => staged !== null && stat.dev === staged.dev && stat.ino === staged.ino;
+    // A name of the staged file taken back: renamed aside first, removed only once proved ours.
+    const takeBack = (entry) => {
+      const aside = ".mend-quarantine-" + crypto.randomBytes(8).toString("hex");
+      try { fs.renameSync(at(entry), at(aside)); } catch { return; }
+      let stat;
+      try { stat = fs.lstatSync(at(aside)); } catch { return; }
+      if (ours(stat)) { try { fs.unlinkSync(at(aside)); } catch {} return; }
+      try { if (stat.isDirectory()) fs.renameSync(at(aside), at(entry)); else { fs.linkSync(at(aside), at(entry)); fs.unlinkSync(at(aside)); } } catch {}
+    };
+    const refuse = (why, entry) => {
+      try { if (fd !== undefined) fs.ftruncateSync(fd, 0); } catch {}
+      takeBack(entry);
+      return why;
+    };
     try {
       fd = fs.openSync(at(staging), c.O_WRONLY | c.O_CREAT | c.O_EXCL | c.O_NOFOLLOW, 0o600);
+      staged = fs.fstatSync(fd);
       let done = 0;
       while (done < bytes.length) done += fs.writeSync(fd, bytes, done, bytes.length - done);
-      fs.fchmodSync(fd, fileMode);
-      staged = fs.fstatSync(fd);
     } catch (error) {
-      if (fd !== undefined) unstage();
-      return "could not write (" + (error.code || "error") + ")";
-    } finally {
-      if (fd !== undefined) { try { fs.closeSync(fd); } catch {} }
+      return refuse("could not write (" + (error.code || "error") + ")", staging);
     }
-    const ours = (stat) => stat.dev === staged.dev && stat.ino === staged.ino;
-    try { fs.renameSync(at(staging), at(name)); } catch (error) { unstage(); return "could not write (" + (error.code || "error") + ")"; }
+    try { fs.renameSync(at(staging), at(name)); } catch (error) { return refuse("could not write (" + (error.code || "error") + ")", staging); }
     let landed = false;
     try { landed = inPlace() && ours(fs.lstatSync(path.join(expected, name))); } catch {}
-    if (!landed) {
-      try { if (ours(fs.lstatSync(at(name)))) fs.unlinkSync(at(name)); } catch {}
-      return moved;
-    }
+    if (!landed) return refuse(moved, name);
+    try { fs.fchmodSync(fd, fileMode); } catch (error) { return refuse("could not set its mode (" + (error.code || "error") + ")", name); }
     return null;
   } finally {
+    if (fd !== undefined) { try { fs.closeSync(fd); } catch {} }
     try { fs.closeSync(dfd); } catch {}
   }
 };

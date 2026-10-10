@@ -3036,6 +3036,10 @@ const recordingTokens = (events: Array<string>): Layer.Layer<SessionChannelToken
         Effect.sync(() => events.push(`revokeLaunch:${launchId}`)).pipe(
           Effect.andThen(inner.revokeLaunch(launchId)),
         ),
+      revokeToken: (token: string) =>
+        Effect.sync(() => events.push(`revokeToken:${token}`)).pipe(
+          Effect.andThen(inner.revokeToken(token)),
+        ),
       revokePerson: (launchId: string, accountId: string, issuedBefore: Date) =>
         Effect.sync(() => events.push(`revokePerson:${launchId}:${accountId}`)).pipe(
           Effect.andThen(inner.revokePerson(launchId, accountId, issuedBefore)),
@@ -28036,10 +28040,18 @@ interface DeliveryRun {
 }
 
 /** The command a person's exec runs, past its umask and the session it names (`personExecPrefix`). */
-const commandOf = (argv: ReadonlyArray<string>) =>
-  argv[3] === "mend-as-person" && (argv[5] ?? "").startsWith("MEND_SESSION_ID=")
-    ? argv.slice(6)
-    : argv;
+const commandOf = (argv: ReadonlyArray<string>) => {
+  if (argv[3] !== "mend-as-person" || !(argv[5] ?? "").startsWith("MEND_SESSION_ID=")) return argv;
+  // Past the environment it names: the session, and a one-off write's own token file.
+  let at = 6;
+  while ((argv[at] ?? "").startsWith("MEND_SESSION_TOKEN_FILE=")) at++;
+  return argv.slice(at);
+};
+/** The token file a person's exec names (a one-off write's own), or null. */
+const tokenFileNamed = (argv: ReadonlyArray<string>) =>
+  argv[3] === "mend-as-person" && (argv[6] ?? "").startsWith("MEND_SESSION_TOKEN_FILE=")
+    ? (argv[6] ?? "").slice("MEND_SESSION_TOKEN_FILE=".length)
+    : null;
 const named = (argv: ReadonlyArray<string>, name: string) => commandOf(argv)[3] === name;
 const asWho = (run: DeliveryRun, test: (argv: ReadonlyArray<string>) => boolean) =>
   run.execs.flatMap((argv, index) => (test(argv) ? [run.users[index] ?? null] : []));
@@ -28116,6 +28128,12 @@ describe("deliveries per person (docs/adr/0016, Delivery 15)", () => {
     readonly exec?: (
       argv: ReadonlyArray<string>,
     ) => { exitCode: number; stdout: string; stderr: string } | undefined;
+    /** Answers an exec as an effect, before `exec` (undefined falls through). */
+    readonly execEffect?: (
+      argv: ReadonlyArray<string>,
+    ) =>
+      | Effect.Effect<{ exitCode: number; stdout: string; stderr: string }, SealantPlatformError>
+      | undefined;
     readonly inspect?: (
       engine: SessionEngine["Service"],
       world: World,
@@ -28216,6 +28234,7 @@ describe("deliveries per person (docs/adr/0016, Delivery 15)", () => {
           undefined,
           {
             execUsers: users,
+            ...(options.execEffect === undefined ? {} : { execEffect: options.execEffect }),
             exec: (argv) =>
               options.exec?.(argv) ?? answerLayout(options.prepareStdout ?? LAYOUT_READY)(argv),
           },
@@ -28391,20 +28410,33 @@ describe("deliveries per person (docs/adr/0016, Delivery 15)", () => {
     /**
      * mend#615 review, finding 3: a first paste ran a person's whole first start (their logins
      * written, their deliveries) though no process of theirs ever ran, and nothing released it. A
-     * paste makes only their user, home and Mend token, and revokes the token once the write is
-     * over, whether it was placed or refused.
+     * paste makes only their user and home, with a Mend token of the write's own, in a file of its
+     * own that the write's exec names, and that token, exactly, is revoked when the write ends,
+     * placed or refused (review 2, 615-r2-2 and 615-r2-3). The home exec here redeems its ticket
+     * over the session's channel, as the executor's root does.
      */
     it.each([
       { write: "placed", fails: false },
       { write: "refused", fails: true },
     ])(
-      "makes only a first sender's user, home and token, and revokes the token after, the write $write",
+      "makes only a first sender's user, home and a token of the write's own, and revokes exactly it, the write $write",
       async ({ fails }) => {
         const tokenEvents: Array<string> = [];
+        let holder: SessionId | null = null;
         let seen: { readonly from: number; readonly outcome: string } | null = null;
         const run = await launchAndJoin({
           join: null,
           layers: { tokenEvents },
+          execEffect: (argv) => {
+            const ticket = /write token[\s\S]*-- '([A-Za-z0-9_-]{43})'/.exec(argv[2] ?? "")?.[1];
+            if (ticket === undefined || holder === null) return undefined;
+            const pickup = servedSocketApis.get(holder)?.pickup;
+            if (pickup === undefined) return undefined;
+            return pickup(ticket).pipe(
+              Effect.as({ exitCode: 0, stdout: "", stderr: "" }),
+              Effect.orDie,
+            );
+          },
           exec: (argv) =>
             fails &&
             named(argv, "mend-write") &&
@@ -28413,6 +28445,7 @@ describe("deliveries per person (docs/adr/0016, Delivery 15)", () => {
               : undefined,
           inspect: (engine, world, ids, current) =>
             Effect.gen(function* () {
+              holder = ids.holder;
               const from = current.execs.length;
               const processes = world.processes.size;
               const placed = yield* engine
@@ -28435,23 +28468,27 @@ describe("deliveries per person (docs/adr/0016, Delivery 15)", () => {
         expect(run.calls.some((call) => call.startsWith(`post:${MARIA}:`))).toBe(false);
         expect(asWho(after, () => true).filter((who) => who === JOINER)).toEqual([JOINER]);
         expect(asWho(after, (argv) => named(argv, "mend-write"))).toEqual([JOINER]);
-        // Her user and home were made by root, once.
-        expect(
-          after.execs.filter(
-            (argv) => (argv[2] ?? "").includes("mend_person") && argv.join(" ").includes(JOINER),
-          ),
-        ).toHaveLength(1);
-        // Her token went with the write; Alice's, whose home was already made, did not.
-        expect(
-          tokenEvents.filter(
-            (event) => event.startsWith("revokePerson:") && event.endsWith(`:${MARIA}`),
-          ),
-        ).toHaveLength(1);
-        expect(
-          tokenEvents.some(
-            (event) => event.startsWith("revokePerson:") && event.endsWith(":user-fixture"),
-          ),
-        ).toBe(false);
+        // Her user and home were made by root, once, with the write's token file; the write's exec
+        // names that file.
+        const homes = after.execs.filter(
+          (argv) => (argv[2] ?? "").includes("mend_person") && argv.join(" ").includes(JOINER),
+        );
+        expect(homes).toHaveLength(1);
+        const [write] = after.execs.filter((argv) => named(argv, "mend-write"));
+        const file = tokenFileNamed(write ?? []);
+        expect(file).toMatch(new RegExp(`^/home/${JOINER}/\\.mend/write-token-[0-9a-f]{32}$`));
+        expect(homes[0]?.[2]).toContain(`'${file}'`);
+        // One token minted for Maria, and exactly that one revoked; nobody's else, and no bulk
+        // revocation of hers.
+        const minted = tokenEvents.flatMap((event) => {
+          const match = new RegExp(`^issuePerson:.+:${MARIA}:([^:]+)$`).exec(event);
+          return match?.[1] === undefined ? [] : [match[1]];
+        });
+        expect(minted).toHaveLength(1);
+        expect(tokenEvents.filter((event) => event.startsWith("revokeToken:"))).toEqual([
+          `revokeToken:${minted[0]}`,
+        ]);
+        expect(tokenEvents.some((event) => event.startsWith("revokePerson:"))).toBe(false);
       },
     );
 

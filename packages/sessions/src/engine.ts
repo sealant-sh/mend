@@ -578,6 +578,7 @@ import {
   WORKSPACE_NOTE_NOT_WRITTEN,
   workspaceNoteExec,
 } from "./workspace-note.ts";
+import { makeWriteTokens } from "./write-tokens.ts";
 
 /** Whether a push's ref commands created or moved a branch (not a tag, not a delete). */
 const pushedBranches = (refUpdates: ReadonlyArray<string> | null): boolean =>
@@ -1246,20 +1247,27 @@ interface PersonExec {
   readonly user: ProcessUser;
   readonly sessionId: SessionId;
   readonly places: PersonPlaces;
+  /**
+   * A one-off write's own Mend token file (`HarnessLayoutSteps.homeForWrite`), which the exec
+   * presents instead of the one in their home. Absent: their home's.
+   */
+  readonly tokenFile?: string;
 }
 
 /**
  * What a person's exec runs ahead of its own argv (`execAsPerson`): umask 077, so what a delivery
- * makes in their home and saved directory is theirs alone unless it says otherwise, and the
- * session it speaks for over the session channel.
+ * makes in their home and saved directory is theirs alone unless it says otherwise, the session it
+ * speaks for over the session channel and, for a one-off write, the file of its own Mend token
+ * (a path, never the token).
  */
-export const personExecPrefix = (sessionId: string): ReadonlyArray<string> => [
+export const personExecPrefix = (sessionId: string, tokenFile?: string): ReadonlyArray<string> => [
   "sh",
   "-c",
   'umask 077 && exec "$@"',
   "mend-as-person",
   "env",
   `MEND_SESSION_ID=${sessionId}`,
+  ...(tokenFile === undefined ? [] : [`MEND_SESSION_TOKEN_FILE=${tokenFile}`]),
 ];
 
 /** A person's deliveries, with what Mend last delivered into their home (`personRecordsExec`). */
@@ -6851,7 +6859,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         as: PersonExec,
         argv: ReadonlyArray<string>,
       ): Effect.Effect<WorkspaceExecResult, SealantPlatformError> =>
-        sealant.exec(workspace, [...personExecPrefix(as.sessionId), ...argv], { user: as.user });
+        sealant.exec(workspace, [...personExecPrefix(as.sessionId, as.tokenFile), ...argv], {
+          user: as.user,
+        });
 
       /**
        * A ticket for `files`, bound to the purpose, the session and its worktree, its owner, and
@@ -6904,8 +6914,52 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         });
 
       /**
+       * The Mend tokens of one-off writes (`write-tokens.ts`): each its write's own, revoked,
+       * exactly that one, when the write ends (mend#615 review 2).
+       */
+      const writeTokens = makeWriteTokens({
+        revoke: (token) => channelTokens.revokeToken(token),
+        fork: (effect) => Effect.suspend(() => effect.pipe(Effect.forkIn(scope), Effect.asVoid)),
+      });
+
+      /**
+       * A one-off write's token ticket (`HarnessLayoutSteps.homeForWrite`): purpose
+       * `session-token`, bound as an identity ticket is, with one file, the write's own token file,
+       * whose bytes are minted only when it is redeemed (`identityFilesAt`).
+       */
+      const mintWriteTokenTicket = (input: {
+        readonly sessionId: string;
+        readonly worktreeId: string;
+        readonly launchId: string;
+        readonly person: LinuxIdentity;
+        readonly file: string;
+      }): Effect.Effect<string> =>
+        Effect.sync(() => {
+          const ticket = pickups.mint(
+            {
+              purpose: "session-token",
+              sessionId: input.sessionId,
+              worktreeId: input.worktreeId,
+              personId: input.person.accountId,
+              launchId: input.launchId,
+            },
+            [{ path: input.file, bytes: new Uint8Array() }],
+          );
+          writeTokens.track(ticketKeyOf(ticket));
+          return ticket;
+        });
+
+      /** A one-off write ended: its ticket goes, and the token it minted is revoked. */
+      const endWriteToken = (ticket: string): Effect.Effect<void> =>
+        Effect.suspend(() => {
+          discardPickup(ticket);
+          return writeTokens.end(ticketKeyOf(ticket));
+        });
+
+      /**
        * What an identity ticket answers, made now: the person's Mend token of the launch, and
-       * their git author when they have one. Nothing is minted for a ticket nobody redeems.
+       * their git author when they have one (a one-off write's ticket names its token file alone).
+       * Nothing is minted for a ticket nobody redeems.
        */
       const identityFilesAt = Effect.fn("SessionEngine.identityFilesAt")(function* (
         binding: PickupBinding,
@@ -6915,8 +6969,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           return yield* Effect.fail(new Error("this identity ticket names no person or launch"));
         }
         const [tokenFile, configFile] = files;
-        if (tokenFile === undefined || configFile === undefined) {
+        if (tokenFile === undefined) {
           return yield* Effect.fail(new Error("this identity ticket names no files"));
+        }
+        if (configFile === undefined) {
+          const token = yield* channelTokens.issuePerson(binding.launchId, binding.personId);
+          return [{ path: tokenFile.path, bytes: new TextEncoder().encode(token) }];
         }
         // The author first: the token is minted last, so nothing after it can fail and leave a
         // token nobody received.
@@ -7053,6 +7111,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               yield* Deferred.fail(done, made.failure);
               identityInFlight.delete(key);
               return yield* Effect.fail(made.failure);
+            }
+            // A one-off write's token is that write's: kept for its end, or revoked now if it ended.
+            const [mintedToken] = made.success;
+            if (mintedToken !== undefined) {
+              yield* writeTokens.minted(key, new TextDecoder().decode(mintedToken.bytes));
             }
             const answer = pickupAnswerOf(made.success);
             const kept = {
@@ -7296,6 +7359,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         discardTicket: (ticket) => discardPickup(ticket),
         revokePersonToken: (launchId, accountId, issuedBefore) =>
           channelTokens.revokePerson(launchId, accountId, issuedBefore),
+        writeTokenTicket: (input) => mintWriteTokenTicket(input),
+        endWriteToken: (ticket) => endWriteToken(ticket),
       });
       // A shared conversation's home and its restart path (docs/adr/0016, decision 6): reached
       // only for a protocol Claude or Codex session in a person-layout executor.
@@ -14889,42 +14954,46 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const checked = yield* checkPastedImage(bytes);
         const workspace = yield* workspaceForSupportingProcess(session);
         // A person executor (docs/adr/0016): the write runs as the sender. If nothing of theirs
-        // was made here yet, only their user, home and Mend token are: no logins, no deliveries,
-        // and the token goes once the write is over (mend#615 review, finding 3). Null: a shared
-        // executor, where it runs as root, as before.
-        const home = yield* layoutSteps.homeForWrite({
-          workspace,
-          launchId: yield* executorLaunchIdOf(session, SealantWorkspaceId.make(workspace.id)),
-          accountId: sender,
-          sessionId: session.id,
-          worktreeId: session.worktreeId,
-          live: peopleLiveIn(SealantWorkspaceId.make(workspace.id)),
-        });
-        const as: PersonExec | undefined =
-          home === null
-            ? undefined
-            : {
-                person: home.identity,
-                user: home.user,
-                sessionId: session.id,
-                places: personPlacesOf(HARNESS_HOME_MOUNT_PATH, home.identity),
-              };
-        const placement = pastedImagePlacement(checked.name, as === undefined ? null : sender);
-        yield* writeWorkspaceFiles(
-          session,
-          workspace,
-          [{ path: placement.path, bytes, within: placement.within }],
-          "workspace-files",
-          as,
-        ).pipe(
-          Effect.mapError(
-            (error) =>
-              new PastedImageError({
-                reason: "write-failed",
-                message: `Could not place the image in the workspace: ${error.message}`,
-              }),
-          ),
-          Effect.ensuring(home === null ? Effect.void : home.done),
+        // was made here yet, only their user and home are, with a Mend token of this write's own,
+        // revoked when the write ends on any path (mend#615 review 2). Null: a shared executor,
+        // where it runs as root, as before.
+        const placement = yield* Effect.scoped(
+          Effect.gen(function* () {
+            const home = yield* layoutSteps.homeForWrite({
+              workspace,
+              launchId: yield* executorLaunchIdOf(session, SealantWorkspaceId.make(workspace.id)),
+              accountId: sender,
+              sessionId: session.id,
+              worktreeId: session.worktreeId,
+            });
+            const as: PersonExec | undefined =
+              home === null
+                ? undefined
+                : {
+                    person: home.identity,
+                    user: home.user,
+                    sessionId: session.id,
+                    places: personPlacesOf(HARNESS_HOME_MOUNT_PATH, home.identity),
+                    ...(home.tokenFile === null ? {} : { tokenFile: home.tokenFile }),
+                  };
+            const placed = pastedImagePlacement(checked.name, as === undefined ? null : sender);
+            yield* writeWorkspaceFiles(
+              session,
+              workspace,
+              [{ path: placed.path, bytes, within: placed.within }],
+              "workspace-files",
+              as,
+            ).pipe(
+              Effect.mapError(
+                (error) =>
+                  new PastedImageError({
+                    reason: "write-failed",
+                    message: `Could not place the image in the workspace: ${error.message}`,
+                  }),
+              ),
+            );
+            return placed;
+          }),
         );
         return { path: placement.path, mediaType: checked.mediaType, bytes: bytes.byteLength };
       });

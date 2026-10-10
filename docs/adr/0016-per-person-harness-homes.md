@@ -193,10 +193,13 @@ starts. A person's live process, Services included, keeps their user's logins he
   ends with the executor. Mend's per-person saved records are `P/.mend-saved/`, addressed by their
   absolute path, never through `~/.mend`. An image a person pastes is written as them into
   `P/paste/` (0770 when made, the image 0640, both group `mend`, so another person's agent reads
-  it). The writer enters no link below `P`, never changes a directory's mode, and refuses a write
-  whose directory moved meanwhile (mend#597 review, finding 2; mend#615 review, findings 1 and 2). A
-  first paste makes only the person's user, home and Mend token, writes none of their logins,
-  delivers nothing, and revokes the token once the image is written (mend#615 review, finding 3).
+  it). The writer enters no link below `P`, never changes a directory's mode, keeps the image 0600
+  until it is proved in place, and refuses a write whose directory moved meanwhile, taking back only
+  what it proves is its own file (mend#597 review, finding 2; mend#615 reviews 1 and 2). A first
+  paste makes only the person's user and home, with a Mend token of that write's own in a file of
+  its own, writes none of their logins and delivers nothing. That token, exactly, is revoked when
+  the write ends on any path; a revocation that fails is retried until done (mend#615 reviews 1 and
+  2, finding 3, 615-r2-2 and 615-r2-3).
 
 - **The conversations a session shares,** `P_owner/conversations/<session id>/` (`C`): owned by the
   session's owner, group `mend`, setgid, mode 2770 with a default ACL granting the group `rwX`,

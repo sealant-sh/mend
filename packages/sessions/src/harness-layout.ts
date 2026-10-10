@@ -1109,6 +1109,64 @@ next(0);
 /** The identity pickup's node, before its words: `ticket name home uid` per person. */
 const IDENTITY_COMMAND = `node -e ${shellQuote(IDENTITY_PROGRAM)} --`;
 
+/** Where a one-off write's own Mend token goes in a person's home: a name of its own. */
+export const writeTokenFileOf = (person: LinuxIdentity, nonce: string): string =>
+  `${linuxHomeOf(person)}/.mend/write-token-${nonce}`;
+
+const WRITE_TOKEN_PROGRAM = [
+  SCRIPT_TRANSPORT_PRELUDE,
+  SCRIPT_PICKUP_FUNCTION,
+  SCRIPT_PINNED_PUT_FUNCTION,
+  `const [ticket, name, home, uid, file] = process.argv.slice(1);
+const root = typeof process.getuid === "function" && process.getuid() === 0;
+const fail = (why) => { process.stderr.write("mend: " + name + "'s write token: " + why + "\\n"); process.exit(3); };
+let made = false;
+try { made = fs.lstatSync(home + "/.mend").isDirectory(); } catch {}
+if (!made) fail("their home is not made");
+const passing = (reason) => !reason.startsWith("the pickup was refused: this pickup ticket");
+const written = (reason, files) => {
+  if (reason !== null) return fail(reason);
+  const bytes = files.get(file);
+  if (bytes === undefined) return fail("the pickup carried no token");
+  const staging = ".mend-write-token-part-" + process.pid + "-" + require("node:crypto").randomBytes(4).toString("hex");
+  const why = pinnedPut(home + "/.mend", file.slice(file.lastIndexOf("/") + 1), staging, bytes);
+  if (why !== null) return fail(file + ": " + why);
+  if (root) { try { fs.lchownSync(file, Number(uid), ${MEND_GROUP.gid}); } catch { return fail(file + ": could not give it to its person"); } }
+  process.exit(0);
+};
+redeemPickup(ticket, (reason, files) => {
+  if (reason === null || !passing(reason)) return written(reason, files);
+  setTimeout(() => redeemPickup(ticket, written), 500);
+});
+`,
+].join("\n");
+
+/**
+ * What writes a one-off write's own Mend token (`HarnessLayoutSteps.homeForWrite`; mend#615
+ * review 2): as root, once the person's home is made (`personHomeScript`), it redeems `ticket` and
+ * writes the token it carries to `file` (`writeTokenFileOf`), 0600 and the person's, never through
+ * a link. The write's own exec names that file (`MEND_SESSION_TOKEN_FILE`), so no other write or
+ * process of theirs shares it. Exits 0 once written; else says why on stderr and exits 3.
+ */
+export const writeTokenPickupScript = (
+  person: LinuxIdentity,
+  ticket: string,
+  file: string,
+  /** `R`; the passwd home unless a test names another. */
+  home: string = linuxHomeOf(person),
+): string => {
+  assertScriptSafe(person);
+  if (!SAFE_TICKET.test(ticket)) throw new Error("a pickup ticket is 43 base64url characters");
+  const prefix = `${home}/.mend/write-token-`;
+  if (!file.startsWith(prefix) || !/^[0-9a-f]{32}$/.test(file.slice(prefix.length))) {
+    throw new Error("a write token goes in its person's .mend, under a name of its own");
+  }
+  return [
+    `node -e ${shellQuote(WRITE_TOKEN_PROGRAM)} --`,
+    ...[ticket, person.name, home, String(person.uid), file].map(shellQuote),
+  ].join(" ");
+};
+
 /**
  * What prepare runs in a person-layout executor beside the helper install, as root and in the
  * same exec (decision 1): the probe, then, only when nothing is missing, every person's user and

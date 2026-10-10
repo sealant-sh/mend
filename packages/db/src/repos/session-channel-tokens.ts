@@ -91,6 +91,12 @@ export class SessionChannelTokensRepo extends Context.Service<
       accountId: string,
       issuedBefore: Date,
     ) => Effect.Effect<void>;
+    /**
+     * Revoke exactly this token, whoever's it is: a one-off write's own person token (a pasted
+     * image, mend#615 review), whose end must leave every other token of that person, a concurrent
+     * write's included, as it was. Idempotent.
+     */
+    readonly revokeToken: (token: string) => Effect.Effect<void>;
   }
 >()("@mend/db/SessionChannelTokensRepo") {}
 
@@ -217,7 +223,31 @@ export const SessionChannelTokensRepoLive: Layer.Layer<SessionChannelTokensRepo,
           .pipe(Effect.orDie);
       });
 
-      return { issue, issuePerson, verify, resolve, revoke, revokeLaunch, revokePerson };
+      const revokeToken = Effect.fn("SessionChannelTokensRepo.revokeToken")(function* (
+        token: string,
+      ) {
+        yield* db
+          .update(sessionChannelTokens)
+          .set({ revokedAt: new Date() })
+          .where(
+            and(
+              eq(sessionChannelTokens.tokenHash, hashSessionChannelToken(token)),
+              isNull(sessionChannelTokens.revokedAt),
+            ),
+          )
+          .pipe(Effect.orDie);
+      });
+
+      return {
+        issue,
+        issuePerson,
+        verify,
+        resolve,
+        revoke,
+        revokeLaunch,
+        revokePerson,
+        revokeToken,
+      };
     }),
   );
 
@@ -302,6 +332,11 @@ export const SessionChannelTokensRepoMemory: Layer.Layer<SessionChannelTokensRep
             row.sessionId === personTokenSession(accountId) &&
             row.createdAt < issuedBefore.getTime(),
         ),
+      revokeToken: (token) =>
+        Effect.sync(() => {
+          const row = rows.get(hashSessionChannelToken(token));
+          if (row !== undefined) row.revoked = true;
+        }),
     };
   },
 );

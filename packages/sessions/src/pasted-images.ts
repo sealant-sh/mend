@@ -216,9 +216,6 @@ export const storePastedImage = Effect.fn("storePastedImage")(function* (
   } satisfies StoredPastedImage;
 });
 
-/** A descriptor's directory, entered again without walking its path (Linux). */
-const proc = (fd: number) => `/proc/self/fd/${fd}`;
-
 const codeOf = (error: unknown): string =>
   error instanceof Error && "code" in error && typeof error.code === "string"
     ? error.code
@@ -226,16 +223,19 @@ const codeOf = (error: unknown): string =>
 
 /**
  * `bytes` as `<within.root>/<directories…>/<name>` on this machine, kept there as the workspace's
- * writer keeps a file (`SCRIPT_CONTAINED_PUT_FUNCTION`): the root entered at its real path, each
- * directory below it opened through no link (through the last one's descriptor where `/proc` has
- * it), one missing made with `directoryMode` in its `mkdir` (under this process's umask, as before)
- * and no directory's mode changed after the fact, so one put in place of a new directory keeps its
- * own (mend#615 review, finding 2). The file is staged exclusively through no link, set `fileMode`
- * through its own descriptor, and renamed into place within the directory that was entered. Null
- * only when, after the rename, that directory is still where its path says and the path holds the
- * staged file; otherwise the file is taken back out and why is answered, naming paths only
- * (finding 1). Without `/proc` (macOS) each step goes by its literal path, and the same check after
- * the rename still refuses a file that did not land where its path says.
+ * writer keeps a file (`SCRIPT_CONTAINED_PUT_FUNCTION`), with the same rules:
+ *
+ * - every directory reached through the descriptor of the one above it (`/proc/self/fd/<n>/…`, or
+ *   `/dev/fd/<n>/…` where that is proved to reach the same directory), through no link, from the
+ *   root's real path; with neither, nothing is written (mend#615 review 2, 615-1b);
+ * - a missing directory made with `directoryMode` in its `mkdir` (under this process's umask, as
+ *   before), and no directory's mode changed after (615-2);
+ * - the file staged 0600 through no link and set `fileMode` through its own descriptor only once
+ *   it is renamed into place and proved there (615-1a);
+ * - a refused write truncates its file and takes its names back through a private quarantine name,
+ *   removing only what is proved to be its own file (615-r2-1).
+ *
+ * Null once written; else why not, naming paths only.
  */
 export const writeContained = (
   within: ContainedPlacement,
@@ -264,10 +264,9 @@ export const writeContained = (
   } catch {
     return `could not enter ${within.root}`;
   }
-  const pinned = fs.existsSync(proc(dfd));
-  let literal = real;
+  const fdDir = descriptorDirectory(dfd);
   let shown = within.root;
-  const at = (entry: string) => `${pinned ? proc(dfd) : literal}/${entry}`;
+  const at = (entry: string) => `${fdDir}${dfd}/${entry}`;
   const linkOrNot = (entry: string) => {
     try {
       return fs.lstatSync(at(entry)).isSymbolicLink() ? "a link" : "not a directory";
@@ -275,7 +274,11 @@ export const writeContained = (
       return "not a directory";
     }
   };
+  let fd: number | undefined;
   try {
+    if (fdDir === null) {
+      return `no /proc/self/fd or /dev/fd here to keep the write inside ${within.root}`;
+    }
     for (const part of directories) {
       let next: number;
       try {
@@ -297,13 +300,20 @@ export const writeContained = (
       }
       fs.closeSync(dfd);
       dfd = next;
-      literal = `${literal}/${part}`;
       shown = `${shown}/${part}`;
     }
     const expected = path.join(real, ...directories);
+    // The directory at the path the file names, reached through no link, is the pinned one.
     const inPlace = () => {
       try {
-        return (pinned ? fs.readlinkSync(proc(dfd)) : fs.realpathSync(literal)) === expected;
+        const held = fs.fstatSync(dfd);
+        const named = fs.lstatSync(expected);
+        return (
+          named.isDirectory() &&
+          named.dev === held.dev &&
+          named.ino === held.ino &&
+          fs.realpathSync(expected) === expected
+        );
       } catch {
         return false;
       }
@@ -311,32 +321,51 @@ export const writeContained = (
     const moved = "its directory moved during the write";
     if (!inPlace()) return moved;
     const staging = `.mend-part-${randomBytes(8).toString("hex")}`;
-    const unstage = () => {
+    let staged: fs.Stats | null = null;
+    const ours = (stat: fs.Stats) =>
+      staged !== null && stat.dev === staged.dev && stat.ino === staged.ino;
+    /** A name of the staged file taken back: renamed aside first, removed only once proved ours. */
+    const takeBack = (entry: string) => {
+      const aside = `.mend-quarantine-${randomBytes(8).toString("hex")}`;
       try {
-        fs.unlinkSync(at(staging));
+        fs.renameSync(at(entry), at(aside));
       } catch {
-        // Nothing staged, or gone already.
+        return;
+      }
+      try {
+        const stat = fs.lstatSync(at(aside));
+        if (ours(stat)) {
+          fs.unlinkSync(at(aside));
+        } else if (stat.isDirectory()) {
+          fs.renameSync(at(aside), at(entry));
+        } else {
+          fs.linkSync(at(aside), at(entry));
+          fs.unlinkSync(at(aside));
+        }
+      } catch {
+        // Left where it is: what is not proved ours is never removed.
       }
     };
-    let fd: number | undefined;
-    let staged: fs.Stats;
+    const refuse = (why: string, entry: string) => {
+      try {
+        if (fd !== undefined) fs.ftruncateSync(fd, 0);
+      } catch {
+        // The file goes with its names below.
+      }
+      takeBack(entry);
+      return why;
+    };
     try {
       fd = fs.openSync(at(staging), c.O_WRONLY | c.O_CREAT | c.O_EXCL | c.O_NOFOLLOW, 0o600);
-      fs.writeFileSync(fd, bytes);
-      fs.fchmodSync(fd, within.fileMode);
       staged = fs.fstatSync(fd);
+      fs.writeFileSync(fd, bytes);
     } catch (error) {
-      if (fd !== undefined) unstage();
-      return `could not write (${codeOf(error)})`;
-    } finally {
-      if (fd !== undefined) fs.closeSync(fd);
+      return refuse(`could not write (${codeOf(error)})`, staging);
     }
-    const ours = (stat: fs.Stats) => stat.dev === staged.dev && stat.ino === staged.ino;
     try {
       fs.renameSync(at(staging), at(name));
     } catch (error) {
-      unstage();
-      return `could not write (${codeOf(error)})`;
+      return refuse(`could not write (${codeOf(error)})`, staging);
     }
     let landed = false;
     try {
@@ -344,16 +373,33 @@ export const writeContained = (
     } catch {
       landed = false;
     }
-    if (!landed) {
-      try {
-        if (ours(fs.lstatSync(at(name)))) fs.unlinkSync(at(name));
-      } catch {
-        // Gone already.
-      }
-      return moved;
+    if (!landed) return refuse(moved, name);
+    try {
+      fs.fchmodSync(fd, within.fileMode);
+    } catch (error) {
+      return refuse(`could not set its mode (${codeOf(error)})`, name);
     }
     return null;
   } finally {
+    if (fd !== undefined) fs.closeSync(fd);
     fs.closeSync(dfd);
   }
+};
+
+/**
+ * The first of `/proc/self/fd/` and `/dev/fd/` through which `<base><fd>/.` is the directory `fd`
+ * holds, so a path under it reaches that directory whatever its name is now; null when neither
+ * does (macOS's `/dev/fd` opens a descriptor, it does not walk into one).
+ */
+const descriptorDirectory = (fd: number): string | null => {
+  const held = fs.fstatSync(fd);
+  for (const base of ["/proc/self/fd/", "/dev/fd/"]) {
+    try {
+      const seen = fs.statSync(`${base}${fd}/.`);
+      if (seen.dev === held.dev && seen.ino === held.ino) return base;
+    } catch {
+      // Not here.
+    }
+  }
+  return null;
 };

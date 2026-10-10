@@ -24,6 +24,7 @@ import {
   gitAuthorConfigText,
   identityFilesOf,
   identityPickupScript,
+  writeTokenPickupScript,
   personPrepareScript,
   personProcessEnv,
   processUserOf,
@@ -1153,6 +1154,30 @@ describe("a person's Mend identity in their home (decision 4)", () => {
       ],
       opened.env,
     );
+
+  it("writes a one-off write's own token 0600 from its pickup, beside their home's, never in the arguments (mend#615 review 2)", async () => {
+    const { home, script } = homeOf(null);
+    expect(sh(script).status).toBe(0);
+    const opened = await channel();
+    const file = `${home}/.mend/write-token-${"0123456789abcdef".repeat(2)}`;
+    const ticket = opened.mint([{ path: file, bytes: new TextEncoder().encode(TOKEN) }]);
+    const argv = ["sh", "-c", writeTokenPickupScript(alice, ticket, file, home)];
+    for (const arg of argv) expect(arg).not.toContain(TOKEN);
+    const run = await runExec(argv, opened.env);
+    expect(run.stderr).toBe("");
+    expect(run.status).toBe(0);
+    expect(fs.readFileSync(file, "utf8")).toBe(TOKEN);
+    expect(fs.statSync(file).mode & 0o777).toBe(0o600);
+    expect(fs.existsSync(path.join(home, ".mend/session-token"))).toBe(false);
+    // Spent: a second run is refused, and says so.
+    const again = await runExec(argv, opened.env);
+    expect(again.status).toBe(3);
+    expect(again.stderr).toContain(`${alice.name}'s write token: the pickup was refused`);
+    // A file anywhere but a name of its own in their .mend is refused before anything runs.
+    expect(() =>
+      writeTokenPickupScript(alice, ticket, `${home}/.mend/session-token`, home),
+    ).toThrow();
+  });
 
   it("makes a real ~/.mend (0700) and ~/.config/git for them, with no file in either yet", () => {
     const { home, script } = homeOf(null);
