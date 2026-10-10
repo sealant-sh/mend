@@ -2,7 +2,9 @@
 "@sealant/mend": patch
 ---
 
-Opening a review, marking a checkpoint or landing while a session is stopping no longer hangs. A
-checkpoint taken during a Stop now uses the Stop's own final capture, which holds everything the
-session saved. It does not ask the stopping executor again. A checkpoint a request asks for answers
-within 90 seconds, or says it did not finish.
+Opening a review or marking a checkpoint while a session is stopping no longer hangs. The checkpoint
+uses the Stop's final save, which holds everything the session saved, and Mend does not ask the
+stopping executor again. A landing during a Stop waits for the Stop to finish, then lands what it
+saved. If the Stop takes longer than 45 seconds, the landing is refused with "the session is
+stopping", and nothing is landed. Opening a review answers within 90 seconds, or says it did not
+finish.

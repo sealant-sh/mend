@@ -1345,6 +1345,8 @@ const EVIDENCE_SETTLE_LOOK = Duration.millis(25);
 const CHECKPOINT_PUBLISH_WAIT = Duration.seconds(20);
 /** Between two looks at a running drain's word on its executor (`drainWordFor`). */
 const DRAIN_WORD_LOOK = Duration.millis(50);
+/** Between two looks at whether a Stop under way has settled. */
+const STOP_SETTLE_LOOK = Duration.millis(250);
 /** A landing asks the executor this many times for its captures before it says they are behind. */
 const LANDING_FLUSH_ATTEMPTS = 4;
 const LANDING_FLUSH_PAUSE = Duration.seconds(2);
@@ -1639,10 +1641,12 @@ const readRelaunchPlan = (stored: string): RelaunchPlan =>
  * A landing asked for the worktree as its executor holds it now, and the registered captures did
  * not catch up (`SessionEngine.landingCheckpoint`): the flush was refused, timed out or partial,
  * or nobody could say whether an executor still holds work. Nothing was checkpointed or landed.
+ * `stopping`: a Stop was still saving and ending the executor, so nothing was asked of it; the
+ * landing can be asked again once the session settles.
  */
 export class CapturesBehindError extends Schema.TaggedErrorClass<CapturesBehindError>()(
   "CapturesBehindError",
-  { worktreeId: Schema.String, attempts: Schema.Int },
+  { worktreeId: Schema.String, attempts: Schema.Int, stopping: Schema.Boolean },
 ) {}
 
 /**
@@ -3543,6 +3547,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const flushLeaseHolder = Effect.fn("SessionEngine.flushLeaseHolder")(function* (
         worktreeId: WorktreeId,
         why: string,
+        /**
+         * `checkpoint`: a review's, a mark's — during a Stop it may be taken from the Stop's own
+         * final save, as it stood then. `barrier`: a landing's, which must see the disk as it is
+         * now — during a Stop it is never answered caught up (`awaitStopSettled`).
+         */
+        purpose: "checkpoint" | "barrier",
       ): Effect.fn.Return<CaptureFlushObservation> {
         if (capture === null) return "none" satisfies CaptureFlushObservation;
         const lease = yield* capture.repo.leaseOf(worktreeId);
@@ -3579,19 +3589,37 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // stopping it: nothing else is asked of it. Asked again, the executor answered, and
         // publishing that answer waited on the evidence permit the drain holds while the platform
         // stops the executor: a review opened during a Stop had no answer in 120 s (packaged
-        // acceptance, arm64, 2026-10-10). The checkpoint reads the drain's word instead, as the
-        // Stop's own checkpoint does.
-        if ((ending && drains.has(workspaceId)) || terminating.has(workspaceId)) {
-          const word = yield* drainWordFor(workspaceId);
+        // acceptance, arm64, 2026-10-10).
+        if (stopUnderWayOn(workspaceId, ending)) {
+          // A landing's barrier is the disk as it is now. A completed final may later answer
+          // `changed` (ADR 0002 decision 7), so the Stop's save is never taken as caught up; the
+          // landing waits for the Stop to settle, outside the checkpoint writer, or refuses.
+          if (purpose === "barrier") {
+            yield* Effect.logInfo(
+              `session engine: ${why} · the session is stopping · its final save is not taken as caught up`,
+            ).pipe(Effect.annotateLogs({ sessionId: holder.id, worktreeId, workspaceId }));
+            return "incomplete" satisfies CaptureFlushObservation;
+          }
+          // A review's or a mark's checkpoint is the Stop's final save as it stood then, as the
+          // Stop's own checkpoint is: said as such, and named by the capture it was derived from.
+          const word = yield* drainWordFor(workspaceId, Date.now());
           if (word !== null) {
             const observed = observedOf(word) ?? "incomplete";
-            yield* Effect.logInfo(
-              `session engine: ${why} · the drain's final flush stands for it · ${observed}`,
-            ).pipe(Effect.annotateLogs({ sessionId: holder.id, worktreeId, workspaceId }));
+            const from =
+              typeof word !== "object"
+                ? word === "sealed"
+                  ? "the Stop's sealed final save"
+                  : "the registered head · the Stop's final save had not answered"
+                : `the Stop's final save at capture ${word.headN ?? "unknown"}`;
+            yield* Effect.logInfo(`session engine: ${why} · from ${from} · ${observed}`).pipe(
+              Effect.annotateLogs({ sessionId: holder.id, worktreeId, workspaceId }),
+            );
             return observed satisfies CaptureFlushObservation;
           }
           // The drain ended meanwhile: the lease as it stands now.
-          if (!terminating.has(workspaceId)) return yield* flushLeaseHolder(worktreeId, why);
+          if (!terminating.has(workspaceId)) {
+            return yield* flushLeaseHolder(worktreeId, why, purpose);
+          }
           return "incomplete" satisfies CaptureFlushObservation;
         }
         const workspace = yield* sealant
@@ -3626,23 +3654,69 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       });
 
       /**
-       * A running drain's word on its executor, for a checkpoint asked meanwhile: the drain's
-       * saved word once it read the executor saved, or a reading it took after the checkpoint
-       * asked that did not save. Null once no drain runs on it. Waited for at most
+       * A Stop is under way on the executor in `workspaceId`: Mend is stopping it, or a drain runs
+       * on it and has sent it the final flush (`ending`). Nothing more is asked of it.
+       */
+      const stopUnderWayOn = (workspaceId: SealantWorkspaceId, ending: boolean) =>
+        terminating.has(workspaceId) || (ending && drains.has(workspaceId));
+
+      /** The executor holding `worktreeId`'s lease, when a Stop is under way on it; else null. */
+      const executorStopping = Effect.fn("SessionEngine.executorStopping")(function* (
+        worktreeId: WorktreeId,
+      ) {
+        if (capture === null) return null;
+        const lease = yield* capture.repo.leaseOf(worktreeId);
+        if (lease === null || lease.executorId === null || lease.executorId.startsWith("mend:")) {
+          return null;
+        }
+        const holder = yield* sessions
+          .byId(SessionId.make(lease.executorId))
+          .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
+        const workspaceId = holder?.sealantWorkspaceId ?? null;
+        if (workspaceId === null) return null;
+        const ending = yield* workspaceFinalFlushed(worktreeId, workspaceId);
+        return stopUnderWayOn(workspaceId, ending) ? workspaceId : null;
+      });
+
+      /**
+       * Wait, at most `wait`, for a Stop under way on the worktree's executor to settle (saved
+       * and ended, or kept): a landing then reads the chain as the Stop left it, or asks the
+       * executor as before. False when it has not settled in time. Asked outside the checkpoint
+       * writer, which the Stop's own checkpoint needs before the executor can end.
+       */
+      const awaitStopSettled = Effect.fn("SessionEngine.awaitStopSettled")(function* (
+        worktreeId: WorktreeId,
+        wait: Duration.Duration,
+      ) {
+        const deadline = Date.now() + Duration.toMillis(wait);
+        while ((yield* executorStopping(worktreeId)) !== null) {
+          if (Date.now() >= deadline) return false;
+          yield* Effect.sleep(STOP_SETTLE_LOOK);
+        }
+        return true;
+      });
+
+      /**
+       * A running drain's word on its executor, for a review's or a mark's checkpoint asked at
+       * `askedAtMs`: the drain's saved word once it read the executor saved, or a reading the
+       * drain asked for after the checkpoint was asked that did not save (an answer asked before
+       * it says nothing of the disk since). Null once no drain runs on it. Waited for at most
        * `CHECKPOINT_FLUSH_TIMEOUT` (the drain's final flush may still be shipping): `refused`
        * past it, and the checkpoint observes the registered head.
        */
       const drainWordFor = Effect.fn("SessionEngine.drainWordFor")(function* (
         workspaceId: SealantWorkspaceId,
+        askedAtMs: number,
       ) {
-        const before = lastReadings.get(workspaceId);
-        const deadline = Date.now() + Duration.toMillis(CHECKPOINT_FLUSH_TIMEOUT);
+        const deadline = askedAtMs + Duration.toMillis(CHECKPOINT_FLUSH_TIMEOUT);
         while (true) {
           const saved = drainSaved.get(workspaceId);
           if (saved !== undefined) return saved;
           if (!drains.has(workspaceId)) return null;
           const latest = lastReadings.get(workspaceId);
-          if (latest !== undefined && latest !== before) return latest;
+          if (latest !== undefined && (lastReadingAskedAt.get(workspaceId) ?? 0) >= askedAtMs) {
+            return latest;
+          }
           if (Date.now() >= deadline) return "refused" satisfies DrainWord;
           yield* Effect.sleep(DRAIN_WORD_LOOK);
         }
@@ -4410,6 +4484,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * it instead of asking the executor again (`drainWordFor`).
        */
       const drainSaved = new Map<SealantWorkspaceId, DrainWord>();
+      /**
+       * When the drain asked for its last reading (`lastReadings`), by Mend's clock: a checkpoint
+       * takes it only when it was asked after the checkpoint was (`drainWordFor`). Zero for an
+       * earlier FINAL the drain reused, asked before it began.
+       */
+      const lastReadingAskedAt = new Map<SealantWorkspaceId, number>();
       /**
        * Executors whose stop Mend is sending (`terminateWorkspace`): their evidence permit is held
        * for as long as the platform takes to answer, so nothing is asked of them.
@@ -5387,6 +5467,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               ? recent.reading
               : null;
           if (reused !== null) recentFinals.delete(workspaceId);
+          const askedAtMs = reused !== null ? 0 : Date.now();
           const reading: CaptureReading | null =
             lookup.kind !== "found"
               ? null
@@ -5494,6 +5575,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           if (reading !== null) {
             previous = reading;
             lastReadings.set(workspaceId, reading);
+            lastReadingAskedAt.set(workspaceId, askedAtMs);
             if (harvestReadyOf(reading) === true) deferredEvidence.set(workspaceId, reading);
           }
           if (step.kind === "saved" && lookup.kind === "found") {
@@ -5641,6 +5723,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               Effect.ensuring(
                 Effect.sync(() => {
                   lastReadings.delete(workspaceId);
+                  lastReadingAskedAt.delete(workspaceId);
                   drainSaved.delete(workspaceId);
                 }),
               ),
@@ -7491,9 +7574,18 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             // observed from is the disk as of now. A flush that does not complete costs nothing
             // but the wait for a capture to land — except for a landing, which needs the disk.
             const observed =
-              observedByDrain ?? (yield* flushLeaseHolder(worktree.id, `checkpoint · ${trigger}`));
+              observedByDrain ??
+              (yield* flushLeaseHolder(
+                worktree.id,
+                `checkpoint · ${trigger}`,
+                requireCaughtUp ? "barrier" : "checkpoint",
+              ));
             if (requireCaughtUp && observed === "incomplete") {
-              return yield* new CapturesBehindError({ worktreeId: worktree.id, attempts: 1 });
+              return yield* new CapturesBehindError({
+                worktreeId: worktree.id,
+                attempts: 1,
+                stopping: false,
+              });
             }
             const flushed = observed === "flushed";
             const snapshot = yield* sessionRepo.checkpoint({
@@ -17634,9 +17726,16 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       ) {
         const session = yield* sessions.byId(sessionId);
         if (capture === null) return "none" satisfies CaptureFlushObservation;
+        // A Stop under way is waited out first, outside the writer: its own checkpoint needs it.
+        if (!(yield* awaitStopSettled(session.worktreeId, drainPolicy.landingStopWait))) {
+          yield* Effect.logInfo(
+            `session engine: ${why} · the session is still stopping · not caught up`,
+          ).pipe(Effect.annotateLogs({ sessionId, worktreeId: session.worktreeId }));
+          return "incomplete" satisfies CaptureFlushObservation;
+        }
         return yield* withCheckpointWriter(
           session.worktreeId,
-          flushLeaseHolder(session.worktreeId, why),
+          flushLeaseHolder(session.worktreeId, why, "barrier"),
         );
       });
 
@@ -17657,6 +17756,22 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           sealantRunId: latestRun?.sealantRunId ?? null,
           sequence: latestRun?.lastSeenSequence ?? 0n,
         };
+        // A Stop under way is waited out first, outside the checkpoint writer (the Stop's own
+        // checkpoint needs it before the executor can end): the landing then reads the chain as
+        // the Stop saved it, or the executor as before. Still stopping: refused, honestly.
+        if (
+          capture !== null &&
+          !(yield* awaitStopSettled(worktree.id, drainPolicy.landingStopWait))
+        ) {
+          yield* Effect.logWarning(
+            "session engine: landing checkpoint · the session is still stopping · nothing taken",
+          ).pipe(Effect.annotateLogs({ sessionId, worktreeId: worktree.id }));
+          return yield* new CapturesBehindError({
+            worktreeId: worktree.id,
+            attempts: 0,
+            stopping: true,
+          });
+        }
         for (let attempt = 1; ; attempt += 1) {
           const taken = yield* takeWorktreeSnapshot(
             worktree,
@@ -17674,7 +17789,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             yield* Effect.logWarning(
               "session engine: landing checkpoint · the captures did not catch up · nothing taken",
             ).pipe(Effect.annotateLogs({ sessionId, worktreeId: worktree.id, attempts: attempt }));
-            return yield* new CapturesBehindError({ worktreeId: worktree.id, attempts: attempt });
+            return yield* new CapturesBehindError({
+              worktreeId: worktree.id,
+              attempts: attempt,
+              stopping: (yield* executorStopping(worktree.id)) !== null,
+            });
           }
           yield* Effect.logInfo(
             "session engine: landing checkpoint · the captures have not caught up",

@@ -78,7 +78,7 @@ import {
   makeSourcePolicy,
   SourcePolicy,
 } from "@mend/store";
-import { Effect, Layer, ManagedRuntime, Queue, Schema, Stream } from "effect";
+import { Duration, Effect, Layer, ManagedRuntime, Queue, Schema, Stream } from "effect";
 import { HttpRouter, HttpServer } from "effect/unstable/http";
 
 import { ProjectAccessLive } from "../../src/access.ts";
@@ -103,6 +103,7 @@ import { Gh } from "../../src/routes/github.ts";
 import { ServiceTunnelRoutes } from "../../src/routes/service-tunnel.ts";
 import { TtyRoutes } from "../../src/routes/tty.ts";
 import { UrlBearers } from "../../src/routes/upgrade-tickets.ts";
+import { CheckpointRequestLimit } from "../../src/routes/workbench.ts";
 import { HostEnvironment } from "../../src/services/host-environment.ts";
 import { SessionSteeringLive } from "../../src/session-steering.ts";
 import { TenancyConfig } from "../../src/tenancy.ts";
@@ -174,7 +175,10 @@ export const createTenancyApi = async (
      * What a few services answer, for tests that follow a request past authorization. Each is
      * still recorded; a method left out still fails as unimplemented.
      */
+    /** How long a request that takes a checkpoint may run (`CheckpointRequestLimit`). */
+    readonly checkpointRequestLimit?: Duration.Duration;
     readonly implement?: {
+      readonly slices?: Layer.PartialEffectful<ReviewSlicesRepo["Service"]>;
       readonly workspaceCaller?: Partial<WorkspaceCaller["Service"]>;
       readonly audit?: Layer.PartialEffectful<AuditEventsRepo["Service"]>;
       readonly landings?: Layer.PartialEffectful<ChangeLandingsRepo["Service"]>;
@@ -292,7 +296,7 @@ export const createTenancyApi = async (
       recording(NotificationSettingsRepo, "notificationSettings", {}, calls),
     ),
     Layer.mergeAll(
-      recording(ReviewSlicesRepo, "slices", {}, calls),
+      recording(ReviewSlicesRepo, "slices", options.implement?.slices ?? {}, calls),
       recording(SessionControlEventsRepo, "controlEvents", { record: () => Effect.void }, calls),
       recording(RunsRepo, "runs", {}, calls),
       recording(ServiceForwardsRepo, "forwards", options.implement?.forwards ?? {}, calls),
@@ -409,7 +413,14 @@ export const createTenancyApi = async (
       ),
     ),
   );
-  const dependencies = Layer.mergeAll(world.authLayer, world.accessLayers, effects);
+  const dependencies = Layer.mergeAll(
+    world.authLayer,
+    world.accessLayers,
+    effects,
+    options.checkpointRequestLimit === undefined
+      ? Layer.empty
+      : Layer.succeed(CheckpointRequestLimit, options.checkpointRequestLimit),
+  );
   // One registry for the whole world. The API, the socket routes and the event route are separate
   // web handlers here, each building its own layers; they must still see each other's connections,
   // as they do in the one production process.

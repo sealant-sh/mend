@@ -175,7 +175,7 @@ import {
   pathsBeyondGitWords,
   SourcePolicy,
 } from "@mend/store";
-import { Duration, Effect, Option, Result, Schema } from "effect";
+import { Context, Duration, Effect, Option, Result, Schema } from "effect";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 
 import { ProjectAccess } from "../access.ts";
@@ -3354,27 +3354,35 @@ const toFailure = (error: { readonly stderr: string }) =>
   new StoreFailure({ message: error.stderr });
 
 /**
- * How long a request waits for the engine's checkpoint (a flush of the executor, then the
- * snapshot derived from the registered head) before it answers that it did not finish. Every
- * wait inside is bounded on its own; this bounds the sum, so no request hangs for minutes.
+ * How long a request that takes a checkpoint (a flush of the executor, then the snapshot derived
+ * from the registered head) may run before it answers that it did not finish. Every wait inside
+ * is bounded on its own; this bounds the whole request, its locks included, so none hangs for
+ * minutes. A reference so a test can shorten it.
  */
-const CHECKPOINT_REQUEST_LIMIT = Duration.seconds(90);
+export const CheckpointRequestLimit: Context.Reference<Duration.Duration> =
+  Context.Reference<Duration.Duration>("@mend/api/CheckpointRequestLimit", {
+    defaultValue: () => Duration.seconds(90),
+  });
 
-/** A checkpoint a request asked for, refused honestly once `CHECKPOINT_REQUEST_LIMIT` passes. */
+/**
+ * A request that takes a checkpoint, refused honestly once `CheckpointRequestLimit` passes. What
+ * it held is let go as it is interrupted: a transaction rolls back and its lock goes with it.
+ */
 export const withinCheckpointLimit =
   (what: string) =>
   <A, E, R>(self: Effect.Effect<A, E, R>): Effect.Effect<A, E | StoreFailure, R> =>
-    self.pipe(
-      Effect.timeoutOrElse({
-        duration: CHECKPOINT_REQUEST_LIMIT,
-        orElse: () =>
-          Effect.fail(
-            new StoreFailure({
-              message: `${what} did not finish in ${Duration.format(CHECKPOINT_REQUEST_LIMIT)}.`,
-            }),
-          ),
-      }),
-    );
+    Effect.gen(function* () {
+      const limit = yield* CheckpointRequestLimit;
+      return yield* self.pipe(
+        Effect.timeoutOrElse({
+          duration: limit,
+          orElse: () =>
+            Effect.fail(
+              new StoreFailure({ message: `${what} did not finish in ${Duration.format(limit)}.` }),
+            ),
+        }),
+      );
+    });
 
 const openReviewResult = Effect.fn("SessionChanges.openReviewResult")(function* (
   slice: ReviewSlice,
@@ -3555,7 +3563,6 @@ export const SessionChangesGroupLive = HttpApiBuilder.group(MendApi, "sessionCha
             ProjectNotFoundError: () => Effect.fail(new NotFound({ id: projectId })),
             GitError: (error) => Effect.fail(toFailure(error)),
           }),
-          withinCheckpointLimit("Review did not open: its checkpoint"),
         );
         const patch = (yield* reads
           .diffRange(projectId, worktreeId, checkpointA.sha, checkpointB.sha)
@@ -3576,7 +3583,16 @@ export const SessionChangesGroupLive = HttpApiBuilder.group(MendApi, "sessionCha
             return yield* openReviewResult(slice, false);
           }),
         );
-      }),
+      }).pipe(
+        Effect.catchTag("ReviewChangeBusyError", (busy) =>
+          Effect.fail(
+            new StoreFailure({
+              message: `Review did not open: another Review open on this change held its lock for ${busy.lockTimeoutSeconds} s. Nothing was opened; try again.`,
+            }),
+          ),
+        ),
+        withinCheckpointLimit("Review did not open: the request"),
+      ),
     )
     .handle("reviewDiff", ({ params, query }) =>
       Effect.gen(function* () {
