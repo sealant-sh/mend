@@ -17,6 +17,7 @@ import {
   type AdoptOffer,
 } from "./dashboard-adoption.ts";
 import {
+  gameSwallows,
   advanceFromBase,
   baseStepNotice,
   clampIndex,
@@ -100,7 +101,17 @@ import {
   pendingId,
 } from "./shared.ts";
 import type { AttachOutcome } from "./shared.ts";
-import { SnakeBoard, SnakeHeading, SnakeRows, useSnake } from "./snake.tsx";
+import { snakeHints, snakeKey } from "./snake-play.ts";
+import {
+  SNAKE_BEHIND_DIALOG,
+  SNAKE_IDLE,
+  snakeTooSmall,
+  SnakeBoard,
+  SnakeFooter,
+  SnakeHeading,
+  SnakeRows,
+  useSnake,
+} from "./snake.tsx";
 import { openUrl } from "./terminal.ts";
 import {
   ACCENT,
@@ -701,13 +712,28 @@ const PREVIEW_MAX_LINES = 300;
 
 /** The facts SessionFacts can state; the preview gets every row they leave. */
 const SESSION_FACT_ROWS = 6;
+/** The snake's rows around its board in the session pane: the starting line, the score, the border, the keys. */
+const SNAKE_CHROME_ROWS = 5;
+const SNAKE_MIN_BOARD_ROWS = 4;
+const SNAKE_MIN_BOARD_COLS = 8;
+/** The session pane that holds the smallest board, with every fact given way. */
+const SNAKE_MIN_PANE_ROWS = SNAKE_CHROME_ROWS + SNAKE_MIN_BOARD_ROWS;
+/** The board, its border and its margin. */
+const SNAKE_MIN_PANE_COLS = SNAKE_MIN_BOARD_COLS + 4;
 
 /** The header's share fact when no share runs. */
 const noShare = (): "off" => "off";
 const NO_TUNNELS: ReadonlyArray<OpenTunnel> = [];
 const noTunnels = (): ReadonlyArray<OpenTunnel> => NO_TUNNELS;
 
-const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit: () => void }) => {
+/** Exported for the render tests (dashboard-snake.test.tsx). */
+export const App = ({
+  ctx,
+  onQuit,
+}: {
+  readonly ctx: DashboardContext;
+  readonly onQuit: () => void;
+}) => {
   const renderer = useRenderer();
   const queryClient = useQueryClient();
   const { data, failureReason } = useQuery({
@@ -718,7 +744,8 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
     retryDelay: 1000,
   });
 
-  const [focus, setFocusState] = useState<Column>("sessions");
+  /** The column the user is in; the game borrows the session pane on top of it (see `focus`). */
+  const [columnFocus, setFocusState] = useState<Column>("sessions");
   /**
    * The section the sidebar keeps open while the keyboard is in the session
    * pane: reading a record must not fold the list you were just walking.
@@ -769,6 +796,20 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
   /** Set synchronously around attach so keystrokes can't double-fire. */
   const lockRef = useRef(false);
   /**
+   * The snake in the session pane wants the keyboard: asked for by a start or resume from here
+   * (`start` is its gate key, so only that request's failure withdraws it), or by moving into
+   * the pane of a starting session (`start` null). Esc or q hand the keyboard back to
+   * `returnTo`, the column the request came from; any other move of the user's withdraws it.
+   * It has the keyboard only while the selected session is starting, the game fits, and no
+   * dialog is open.
+   */
+  const [snakeFocus, setSnakeFocus] = useState<{
+    readonly returnTo: Column;
+    readonly start: string | null;
+  } | null>(null);
+  // `mend snake`: the game floats over the whole dashboard until esc, whatever is selected.
+  const [snakeOverlay, setSnakeOverlay] = useState(ctx.openSnake === true);
+  /**
    * The starting verbs' one-at-a-time guard. Taken in the key handler BEFORE
    * any await, so a held `r` or a double `enter` on the harness picker cannot
    * provision two workspaces for one intention.
@@ -812,6 +853,35 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
   const selectedItem = sessionItems[sessionIndex] ?? null;
   const selectedSession = selectedItem?.session ?? null;
   const pickerItems = picker === null ? [] : deriveHarnesses(picker.session);
+
+  // A session that is still starting has no record to show. The image builds, then the session
+  // boots; a first build on a new setup takes about seven minutes. Snake fills the wait.
+  const waiting =
+    selectedSession !== null &&
+    (selectedSession.status === "starting" || isPendingId(selectedSession.id));
+  // A game never plays under a dialog: it waits for the dialog to close, then counts down.
+  const dialogOpen =
+    picker !== null ||
+    editing !== null ||
+    creating !== null ||
+    adoptOffer !== null ||
+    reviewing !== null;
+  // A game takes the keyboard only where it can be seen whole. The pane's game is measured on
+  // the layout it plays in (the session pane focused), where the facts give way to it; the
+  // overlay needs its smallest board inside the terminal. One that does not fit says so.
+  const gameLayout = planLayout(terminalCols, terminalRows, "detail", lastNav);
+  const snakeFits =
+    gameLayout.detailRows >= SNAKE_MIN_PANE_ROWS && gameLayout.detailWidth >= SNAKE_MIN_PANE_COLS;
+  const overlayFits = terminalRows >= 12 && terminalCols >= 22;
+  /** `mend snake` has the keyboard: the game when it fits, else only esc or q to close it. */
+  const overlayOpen = snakeOverlay && !dialogOpen;
+  const overlayFocused = overlayOpen && overlayFits;
+  const snakeFocused = snakeFocus !== null && waiting && snakeFits && !dialogOpen && !snakeOverlay;
+  /**
+   * Where the keyboard is. The game holds the session pane while it plays, and leaving it
+   * (esc, q, or the session finishing its start) is simply the column the user was in.
+   */
+  const focus: Column = snakeFocused ? "detail" : columnFocus;
 
   // ── where every pane sits ──
   const layout = planLayout(terminalCols, terminalRows, focus, lastNav);
@@ -898,33 +968,33 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
   // Slicing to exactly what fits is what keeps the newest line on screen — an
   // over-count would push it under the bottom border. A pane too short for the
   // facts drops them from the end rather than pushing the record out.
-  const factRows = Math.max(
+  const allFactRows = Math.max(
     0,
     Math.min(SESSION_FACT_ROWS + workspaceRows.length, layout.detailRows - 2),
   );
+  const factRows = waiting
+    ? Math.max(0, Math.min(allFactRows, layout.detailRows - SNAKE_MIN_PANE_ROWS - 1))
+    : allFactRows;
   const showFactRule = factRows > 0 && layout.detailRows - factRows > 1;
-  // A session that is still starting has no record to show. The image builds, then the session
-  // boots; a first build on a new setup takes about seven minutes. Snake fills the wait.
-  const waiting =
-    selectedSession !== null &&
-    (selectedSession.status === "starting" || isPendingId(selectedSession.id));
+  // The board gets the pane minus the facts, the rule, and the game's own rows; while a session
+  // starts, the facts give way down to the smallest board.
+  const snakeRoom = {
+    cols: detailWidth - 4,
+    rows: layout.detailRows - factRows - (showFactRule ? 1 : 0) - SNAKE_CHROME_ROWS,
+  };
+  const snakeShown =
+    snakeRoom.rows >= SNAKE_MIN_BOARD_ROWS && snakeRoom.cols >= SNAKE_MIN_BOARD_COLS;
   const snake = useSnake({
-    width: Math.max(8, Math.min(40, detailWidth - 4)),
-    // The pane minus the facts, the rule, the starting line, two lines of hints and the border.
-    height: Math.max(4, Math.min(14, layout.detailRows - factRows - 8)),
-    enabled: waiting,
+    width: Math.max(SNAKE_MIN_BOARD_COLS, Math.min(40, snakeRoom.cols)),
+    height: Math.max(SNAKE_MIN_BOARD_ROWS, Math.min(14, snakeRoom.rows)),
+    focused: snakeFocused,
   });
-  // esc puts the game away for this session; space brings it back.
-  const [snakeAwayFor, setSnakeAwayFor] = useState<string | null>(null);
-  const snakeShown = waiting && snakeAwayFor !== selectedSession?.id;
-  // `mend snake`: the game floats over the whole dashboard until esc, whatever is selected.
-  const [snakeOverlay, setSnakeOverlay] = useState(ctx.openSnake === true);
   const overlayWidth = Math.max(16, Math.min(60, terminalCols - 8));
   const overlayHeight = Math.max(6, Math.min(20, terminalRows - 10));
   const overlaySnake = useSnake({
     width: overlayWidth,
     height: overlayHeight,
-    enabled: snakeOverlay,
+    focused: overlayFocused,
   });
   const previewRows = Math.max(1, layout.detailRows - factRows - (showFactRule ? 1 : 0));
   const previewView = previewWindow(preview, previewRows, previewOffset);
@@ -1124,6 +1194,7 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
     },
     onError: (error, vars) => {
       patchWorkbench((current) => removeSession(current, vars.projectId, vars.pendingKey));
+      setSnakeFocus((current) => (current?.start === vars.gateKey ? null : current));
       setBusy(null);
       say(errorText(error));
     },
@@ -1170,7 +1241,8 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
       );
       setBusyStarted(Date.now());
     },
-    onError: (error) => {
+    onError: (error, vars) => {
+      setSnakeFocus((current) => (current?.start === vars.gateKey ? null : current));
       setBusy(null);
       say(errorText(error));
       refetch();
@@ -1347,6 +1419,7 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
     },
     onError: (error, vars) => {
       patchWorkbench((current) => removeSession(current, vars.projectId, vars.pendingKey));
+      setSnakeFocus((current) => (current?.start === vars.gateKey ? null : current));
       setBusy(null);
       say(errorText(error));
     },
@@ -1624,6 +1697,7 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
       return;
     }
     setCreating(null);
+    setSnakeFocus({ returnTo: focus, start: gateKey });
     setFocus("sessions");
     launchMutation.mutate({
       projectId: current.projectId,
@@ -1706,6 +1780,7 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
       say(`already resuming · ${sessionDisplayName(session)}`);
       return;
     }
+    setSnakeFocus({ returnTo: focus, start: gateKey });
     setFocus("sessions");
     resumeMutation.mutate({ projectId, session, harness, gateKey });
   };
@@ -1745,6 +1820,7 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
       say(`already starting a session in ${group.name}`);
       return;
     }
+    setSnakeFocus({ returnTo: focus, start: gateKey });
     setFocus("sessions");
     launchInWorktreeMutation.mutate({
       projectId,
@@ -1798,44 +1874,41 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
     }
   };
 
-  const moveColumn = (delta: number): void => setFocus(stepColumn(focus, delta));
+  const moveColumn = (delta: number): void => {
+    const next = stepColumn(focus, delta);
+    // Into the pane of a starting session is into the game; esc hands back this column. A
+    // game the terminal cannot show whole stays out of it, and the pane says so.
+    if (next === "detail" && waiting && snakeFits) {
+      setSnakeFocus({ returnTo: focus, start: null });
+      return;
+    }
+    setFocus(next);
+  };
 
   useKeyboard((key) => {
     if (reviewing !== null) return;
     if (lockRef.current) return;
     if (key.ctrl && key.name === "c") return onQuit();
-    if (snakeOverlay) {
-      // The game over the dashboard owns the keyboard until esc or q.
-      if (key.name === "up" || key.name === "down" || key.name === "left" || key.name === "right") {
-        overlaySnake.steer(key.name);
-      } else if (key.name === "space") {
-        overlaySnake.togglePause();
-      } else if (key.name === "escape" || key.name === "q") {
-        setSnakeOverlay(false);
-      }
-      return;
-    }
-    if (waiting && focus === "detail" && picker === null && editing === null && creating === null) {
-      // The snake, while a starting session is in the focused detail pane. The arrows steer it,
-      // space pauses it, esc puts it away and space brings it back; h j k l and tab still move
-      // the dashboard.
-      if (snakeShown) {
-        if (
-          key.name === "up" ||
-          key.name === "down" ||
-          key.name === "left" ||
-          key.name === "right"
-        ) {
-          snake.steer(key.name);
-          return;
-        }
-        if (key.name === "space") return snake.togglePause();
-        if (key.name === "escape") return setSnakeAwayFor(selectedSession?.id ?? null);
-      } else if (key.name === "space") {
-        return setSnakeAwayFor(null);
-      }
-    }
     const verb = verbForKey(key.name ?? "", key.shift === true);
+    // A game with the keyboard reads its own keys first: the arrows and h j k l steer, space or
+    // p pauses, enter starts again, esc or q hands the keyboard back. No dashboard verb acts
+    // behind it (gameSwallows); a key bound to nothing falls through to nothing.
+    const game = overlayFocused ? overlaySnake : snakeFocused ? snake : null;
+    if (game !== null || overlayOpen) {
+      const action = snakeKey(key.name ?? "");
+      if (action?.type === "leave") {
+        if (overlayOpen) {
+          setSnakeOverlay(false);
+        } else if (snakeFocus !== null) {
+          setFocus(snakeFocus.returnTo);
+          setSnakeFocus(null);
+        }
+        return;
+      }
+      // An overlay too small to play in answers only esc and q.
+      if (action !== null) return game?.send(action);
+      if (gameSwallows(verb) || game === null) return;
+    }
     if (verb !== "stop") setStopArmed(null);
     if (verb !== "remove") setRemoveArmed(null);
     if (adoptOffer !== null) {
@@ -1966,6 +2039,12 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
         default:
           return;
       }
+    }
+    // A verb at the dashboard's own layer is a move of the user's own, so a game still waiting
+    // for its session to appear stands down. Space or enter in a starting session's pane plays.
+    if (snakeFocus !== null && verb !== null) setSnakeFocus(null);
+    if (key.name === "space" && waiting && snakeFits && focus === "detail") {
+      return setSnakeFocus({ returnTo: focus, start: null });
     }
     // Ctrl-combinations belong to the terminal, never to a bare verb.
     if (key.ctrl === true) return;
@@ -2110,7 +2189,9 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
       ? editing === null
         ? creating === null
           ? picker === null
-            ? ` ${fitHints(verbHints(focus), Math.max(12, terminalCols - 2))}`
+            ? overlayFocused || snakeFocused
+              ? ` ${snakeHints(overlayFocused ? overlaySnake.play : snake.play)}`
+              : ` ${fitHints(verbHints(focus), Math.max(12, terminalCols - 2))}`
             : " ↑↓ move · enter start · esc cancel"
           : creating.step === "name"
             ? " enter continue · esc cancel"
@@ -2319,9 +2400,12 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
                   </span>
                 </text>
                 {snakeShown ? (
-                  <SnakeBoard handle={snake} focused={focus === "detail"} />
+                  <SnakeBoard
+                    handle={snake}
+                    idle={snakeFocus !== null && dialogOpen ? SNAKE_BEHIND_DIALOG : SNAKE_IDLE}
+                  />
                 ) : (
-                  <EmptyNote text="snake is put away · space brings it back" />
+                  <EmptyNote text={snakeTooSmall(snakeRoom.rows < SNAKE_MIN_BOARD_ROWS)} />
                 )}
               </>
             ) : previewSessionId === null ? (
@@ -2419,26 +2503,49 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
         {detailWidth === 0 ? null : renderDetail()}
       </box>
 
-      {snakeOverlay ? (
+      {snakeOverlay && !overlayFits ? (
         <box
           position="absolute"
-          zIndex={13}
-          left={Math.max(1, Math.floor((terminalCols - (overlayWidth + 4)) / 2))}
-          top={Math.max(1, Math.floor((terminalRows - (overlayHeight + 5)) / 2))}
-          width={overlayWidth + 4}
-          height={overlayHeight + 5}
+          zIndex={9}
+          left={1}
+          top={Math.max(1, Math.floor((terminalRows - 3) / 2))}
+          width={Math.max(4, terminalCols - 2)}
+          height={3}
           border
           borderStyle="rounded"
-          borderColor={ACCENT}
+          borderColor={RULE}
+          backgroundColor={SURFACE}
+        >
+          <text height={1} bg="transparent" fg={FAINT}>
+            {fit(
+              ` ${snakeTooSmall(terminalRows < 12)} · esc closes`,
+              Math.max(1, terminalCols - 4),
+            )}
+          </text>
+        </box>
+      ) : null}
+      {snakeOverlay && overlayFits ? (
+        // Under every dialog: one that opens over the game has the keyboard until it closes.
+        <box
+          position="absolute"
+          zIndex={9}
+          left={Math.max(1, Math.floor((terminalCols - (overlayWidth + 4)) / 2))}
+          top={Math.max(1, Math.floor((terminalRows - (overlayHeight + 4)) / 2))}
+          width={overlayWidth + 4}
+          height={overlayHeight + 4}
+          border
+          borderStyle="rounded"
+          borderColor={overlayFocused ? ACCENT : RULE}
           title=" snake "
           titleAlignment="left"
           backgroundColor={SURFACE}
           flexDirection="column"
         >
-          <SnakeHeading handle={overlaySnake} hint="arrows steer · space pauses · esc closes" />
-          <box marginLeft={1} flexDirection="column">
-            <SnakeRows game={overlaySnake.game} />
+          <SnakeHeading play={overlaySnake.play} />
+          <box marginLeft={1} flexDirection="column" flexShrink={0}>
+            <SnakeRows play={overlaySnake.play} />
           </box>
+          <SnakeFooter play={overlaySnake.play} idle={SNAKE_BEHIND_DIALOG} />
         </box>
       ) : null}
 

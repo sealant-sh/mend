@@ -17,6 +17,7 @@ import {
   groupActivityAt,
   groupBaseLabel,
   KEY_BINDINGS,
+  gameSwallows,
   isDeadEnd,
   liveCountWords,
   liveProtocolOf,
@@ -1310,5 +1311,21 @@ describe("people in a workspace (docs/adr/0016, decisions 13 and 14)", () => {
         80,
       ),
     ).toEqual([]);
+  });
+});
+
+describe("gameSwallows", () => {
+  it("keeps every dashboard verb from acting behind a game with the keyboard", () => {
+    for (const binding of KEY_BINDINGS) {
+      for (const key of binding.keys) {
+        const verb = verbForKey(key, binding.shift === true);
+        expect(gameSwallows(verb), `${key} → ${verb}`).toBe(true);
+      }
+    }
+  });
+
+  it("has nothing to keep for a key bound to nothing", () => {
+    expect(gameSwallows(verbForKey("z", false))).toBe(false);
+    expect(gameSwallows(null)).toBe(false);
   });
 });
