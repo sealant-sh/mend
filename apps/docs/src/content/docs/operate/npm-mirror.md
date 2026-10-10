@@ -7,17 +7,21 @@ sidebar:
   order: 4
 ---
 
-Every session on a new worktree installs its dependencies before the agent starts. Without a mirror
-that means downloading every tarball from registry.npmjs.org, each time: about 2,000 for Mend's own
-repository. The npm mirror keeps what it fetched and serves it again from the server's disk, so the
-second install on the same lockfile asks the internet for nothing.
+When [automatic install](/guides/project-environment/#automatic-install) is on and a session's
+worktree has no dependency tree for its platform yet, Mend installs the dependencies before the
+agent starts. Without a mirror that means downloading every tarball from registry.npmjs.org, each
+time: about 2,000 for Mend's own repository. The npm mirror keeps the tarballs it fetched and serves
+them again from the server's disk, so a second install on the same lockfile downloads no tarball
+from the internet. Package metadata, when an install asks for it, is revalidated upstream after five
+minutes, and `npm audit` requests (`npm ci` and `npm install` send one) pass through to the registry
+uncached.
 
-The mirror is nginx's `proxy_cache` in front of the public registry. It answers `GET` and `HEAD`,
-sends no credential upstream, and serves a copy it already holds while the registry fails. It never
-decides what is installed. The package manager checks every tarball against its lockfile's integrity
-hash, as it does from the registry itself, and the mirror never rewrites the tarball URLs in package
-metadata. A lockfile written through it names registry.npmjs.org, the same as one written without
-it.
+The mirror is nginx's `proxy_cache` in front of the public registry. It caches `GET` and `HEAD`,
+passes audit `POST`s through, sends no credential upstream, and serves a copy it already holds while
+the registry fails. It never decides what is installed. The package manager checks every tarball
+against its lockfile's integrity hash, as it does from the registry itself, and the mirror never
+rewrites the tarball URLs in package metadata. A lockfile written through it names
+registry.npmjs.org, the same as one written without it.
 
 ## On the Docker install
 
@@ -95,9 +99,10 @@ mirrors:
 ```
 
 It renders a Deployment (one replica, `nginxinc/nginx-unprivileged`, uid 101), a ReadWriteOnce
-claim, a ClusterIP Service and a NetworkPolicy that admits only the API tier and workspace Pods. The
-API tier receives `MEND_NPM_MIRROR_URL`. The Sealant chart's workspace egress policy must allow port
-4873 to it; the chart's notes print the entry.
+claim, a ClusterIP Service and a NetworkPolicy that admits workspace Pods only. The API tier
+receives `MEND_NPM_MIRROR_URL` and hands it to the install a workspace runs; it never connects to
+the mirror. The Sealant chart's workspace egress policy must allow port 4873 to it; the chart's
+notes print the entry.
 
 ## Exposure
 

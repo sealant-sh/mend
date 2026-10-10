@@ -36,15 +36,29 @@ mend server setup --no-docker-mirror   # turn it off; the next setup keeps it of
 mend server setup --docker-mirror      # turn it on again
 ```
 
-Its cache lives in the volume `mend_mend-docker-mirror`. The registry has no size cap. It removes
-each layer and manifest seven days after it fetched it, and fetches it again on the next pull. A tag
-is checked against Docker Hub on every pull, so `latest` follows upstream. When Docker Hub does not
-answer, the copy already held is served.
+Its cache lives in the volume `mend_mend-docker-mirror`, and the registry has no size cap. Seven
+days after it fetched a layer, it deletes the layer's data and fetches it again on the next pull. A
+manifest expires on the same schedule, but only its link to the repository goes: the manifest's own
+bytes and the tag links stay on the volume. So the volume keeps growing slowly with every distinct
+image and tag pulled, and seven days is not a bound on its size. A tag is checked against Docker Hub
+on every pull, so `latest` follows upstream. When Docker Hub does not answer, the copy already held
+is served.
+
+To reclaim everything, clear the cache. It holds only copies of Docker Hub content, and the next
+pulls fill it again:
+
+```sh
+mend server setup --no-docker-mirror                            # removes the container, keeps the volume
+docker --context <context> volume rm mend_mend-docker-mirror    # the cache itself
+mend server setup --docker-mirror                               # a new, empty cache
+```
+
+Sessions running while it is off pull from Docker Hub; relaunch them to use the new mirror.
 
 `mend server status` reports what it observed:
 
 ```
-docker mirror · running · 120 MiB cached · kept 7 days after each fetch · since 2026-10-10T08:00:00Z: layers 8 requested · 6 from the cache (75%) · manifests 6 · 3 from the cache · pulls from Docker Hub anonymously · observed
+docker mirror · running · 120 MiB cached · layers evicted 7 days after each fetch · since 2026-10-10T08:00:00Z: layers 8 requested · 6 from the cache (75%) · manifests 6 · 3 from the cache · pulls from Docker Hub anonymously · observed
 ```
 
 The counts are the registry's own, read from its metrics listener on the container's loopback, and
@@ -53,17 +67,28 @@ start again when the container restarts.
 ## A Docker Hub login
 
 Anonymous by default. A Docker Hub account raises the pull limit for the mirror, and only for the
-mirror. Pipe the account's access token on standard input:
+mirror.
+
+The mirror has no login of its own. Every session that reaches it can pull whatever the mirror's
+token can read, and that includes private repositories if the token can read them. Keeping the token
+secret does not limit what the mirror serves. So give it a token that can read public images and
+nothing else: a Docker Hub personal access token whose access permission is **Public Repo
+Read-only**, ideally on an account that holds no private repositories. Never use an organization's
+or a person's everyday token.
+
+Pipe the token on standard input, and state its scope with `--docker-hub-public-only`. Setup refuses
+a login without it, because Mend cannot check a token's scope:
 
 ```sh
-printf %s "$DOCKER_HUB_TOKEN" | mend server setup --docker-hub-username mendbot --docker-hub-token-stdin
+printf %s "$DOCKER_HUB_TOKEN" | mend server setup --docker-hub-username mendbot --docker-hub-token-stdin --docker-hub-public-only
 mend server setup --no-docker-hub-login   # back to anonymous
 ```
 
 The token is kept in the install's `server.env`, private to the operator like the other server
 secrets, and handed to the mirror's container alone. It never appears in a command line, in
 `server.json`, in Mend's environment or in a session. Reruns and upgrades keep it until
-`--no-docker-hub-login` or `--no-docker-mirror`.
+`--no-docker-hub-login` or `--no-docker-mirror`. `mend server status` names the account and repeats
+that every session can pull what its token can read.
 
 ## When the mirror is down
 
@@ -84,11 +109,16 @@ mirrors:
     storage: 50Gi
     upstreamCredentials:
       existingSecret: "" # a Secret with keys username and password
+      publicReadOnly: false # true states the token is scoped Public Repo Read-only
 ```
 
+A login here carries the same consequence as on the Docker install: every admitted workspace can
+pull whatever the token can read. The chart refuses `existingSecret` unless `publicReadOnly: true`
+states that its token's access permission is Public Repo Read-only.
+
 It renders a Deployment (one replica, uid 1000), a ReadWriteOnce claim, a ClusterIP Service and a
-NetworkPolicy that admits only the API tier and workspace Pods. On Kubernetes the daemon shares its
-Pod's network, so point it at the Service in the Sealant chart:
+NetworkPolicy that admits workspace Pods only. On Kubernetes the daemon shares its Pod's network, so
+point it at the Service in the Sealant chart:
 
 ```yaml
 workspaces:
@@ -97,7 +127,15 @@ workspaces:
 ```
 
 The Sealant chart's workspace egress policy must allow port 5000 to it; the Mend chart's notes print
-the entry.
+the entry. To clear the cache, scale the Deployment to zero, delete its claim, and let the chart
+make a new one:
+
+```sh
+kubectl -n mend scale deployment/mend-docker-mirror --replicas=0
+kubectl -n mend delete pvc mend-docker-mirror
+helm upgrade mend deploy/helm/mend -n mend --reuse-values
+kubectl -n mend scale deployment/mend-docker-mirror --replicas=1
+```
 
 MicroVM workspaces run their own daemon and do not use the mirror.
 
