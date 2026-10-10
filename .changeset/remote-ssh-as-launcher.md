@@ -12,4 +12,5 @@ Remote-SSH there, as before. SFTP (and `scp`) is refused in such a workspace unt
 sealantd that runs it as the user. Mend binds each account's person in Sealant once
 (`users.bindPerson`), which Sealant checks every `sshAsOwner` create against; if it cannot (an older
 Sealant, a refusal), the launch asks nothing, Remote-SSH stays root, and the session says
-`Remote-SSH: root, Core can't bind your person`.
+`Remote-SSH: root, Core can't bind your person`. A person launch whose Remote-SSH runs as root for
+any reason, a claimed standby included, says so on its session line.

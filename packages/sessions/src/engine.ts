@@ -70,6 +70,7 @@ import type {
   Checkpoint,
   CheckpointTrigger,
   HotWorkspace,
+  RemoteSsh,
   Project,
   Service,
   ServiceRecipe,
@@ -343,7 +344,7 @@ import {
   type PersonHome,
   type PrepareOutcome,
   REMOTE_SSH_RESET_PENDING_WORDS,
-  REMOTE_SSH_ROOT_WORDS,
+  remoteSshRootWords,
   SHARED_AS_BEFORE,
   isAuthenticationFailure,
   layoutRefused,
@@ -11182,6 +11183,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                       },
                     }),
               });
+        const remoteSsh: RemoteSsh = sshOwnerAnswer === "yes" ? "owner" : sshOwnerAnswer;
         return {
           workspace,
           workspaceImage,
@@ -11191,8 +11193,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           executorLayout: prepared?.layout ?? ("shared" as const),
           /** Why a person prediction fell back to shared, for the session line. */
           layoutFallback: prepared?.fallback ?? null,
-          /** Remote-SSH stays root: Core runs SSH as a user, and the launcher's person is unbound. */
-          remoteSshRoot: sshOwnerAnswer === "unbound",
+          /**
+           * Who Remote-SSH runs as (docs/adr/0016, decision 10): the launcher's own user, or root
+           * for its reason. Kept on a standby (`HotWorkspace.remoteSsh`) for its claim.
+           */
+          remoteSsh,
           /** People whose restored opencode database prepare found (decision 8a). */
           opencodeRestored: prepared?.opencode ?? [],
           environmentManifest,
@@ -11560,7 +11565,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           // (docs/adr/0016).
           executorLayout: "shared" as const,
           layoutFallback: null,
-          remoteSshRoot: false,
+          // As the standby's create decided it, never as a binding would answer now.
+          remoteSsh: entry.remoteSsh,
           opencodeRestored: [],
           personDotfiles: [],
         };
@@ -16929,8 +16935,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if (layoutWords !== null) {
           yield* noteLaunchWords(sessionId, layoutWords).pipe(Effect.ignore);
         }
-        if (launched.remoteSshRoot) {
-          yield* noteLaunchWords(sessionId, REMOTE_SSH_ROOT_WORDS).pipe(Effect.ignore);
+        // Remote-SSH runs as root while the agent runs as the person: said, whatever the reason.
+        if (executorLayout === "person" && launched.remoteSsh !== "owner") {
+          yield* noteLaunchWords(sessionId, remoteSshRootWords(launched.remoteSsh)).pipe(
+            Effect.ignore,
+          );
         }
         if (dependencyInstallSkipped !== null) {
           yield* noteLaunchWords(sessionId, dependencyInstallSkipped);
@@ -21353,6 +21362,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             environment: provisioned.environmentManifest,
             referenceMounts: provisioned.referenceMounts,
             extraMounts: provisioned.extraMounts,
+            remoteSsh: provisioned.remoteSsh,
           });
           return true;
         });

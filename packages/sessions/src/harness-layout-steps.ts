@@ -97,9 +97,16 @@ export const SSH_RESET_DELAYS: ReadonlyArray<Duration.Duration> = [1, 2, 4, 8, 1
 
 /**
  * The session line when Core runs SSH sessions as a user but the launcher's person could not be
- * bound there (an older Core, a refused or unanswered binding): Remote-SSH stays root.
+ * bound there (a refused or unanswered binding, a Core without the route): Remote-SSH stays root.
  */
 export const REMOTE_SSH_ROOT_WORDS = "Remote-SSH: root, Core can't bind your person";
+
+/** The session line when Core runs no SSH session as a user (an older Core or SDK). */
+export const REMOTE_SSH_ROOT_UNSUPPORTED_WORDS = "Remote-SSH: root, this Sealant runs it as root";
+
+/** What a person launch's line says when its Remote-SSH runs as root (docs/adr/0016). */
+export const remoteSshRootWords = (reason: "unbound" | "not-taken"): string =>
+  reason === "unbound" ? REMOTE_SSH_ROOT_WORDS : REMOTE_SSH_ROOT_UNSUPPORTED_WORDS;
 
 /** The session line while a fallback executor's SSH user is not yet back to root. */
 export const REMOTE_SSH_RESET_PENDING_WORDS =

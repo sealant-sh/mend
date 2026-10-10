@@ -280,6 +280,7 @@ import {
   HarnessLayoutConfig,
   HarnessLayoutConfigShared,
   REMOTE_SSH_RESET_PENDING_WORDS,
+  REMOTE_SSH_ROOT_UNSUPPORTED_WORDS,
   REMOTE_SSH_ROOT_WORDS,
 } from "../src/harness-layout-steps.ts";
 import {
@@ -8013,6 +8014,7 @@ describe("SessionEngine hot sessions", () => {
               status: "ready",
               error: null,
               fingerprint: "match-simulated-by-the-fake-claim",
+              remoteSsh: "not-taken",
               harnessLayout: "shared",
               worktree: null,
               branch: null,
@@ -8114,6 +8116,7 @@ describe("SessionEngine hot sessions", () => {
               status: "ready",
               error: null,
               fingerprint: "match-simulated-by-the-fake-claim",
+              remoteSsh: "not-taken",
               harnessLayout: "shared",
               worktree: null,
               branch: null,
@@ -8660,6 +8663,7 @@ const memoryHotPool = () => {
         const entry = new HotWorkspace({
           ...input,
           status: "warming",
+          remoteSsh: "not-taken",
           error: null,
           sealantWorkspaceId: null,
           workspaceImage: null,
@@ -25443,6 +25447,27 @@ describe("per-person harness homes (docs/adr/0016)", () => {
     expect(run.summary).toContain(REMOTE_SSH_ROOT_WORDS);
   });
 
+  it("a person launch on a Sealant that runs no SSH session as a user says Remote-SSH is root (review 3 of mend#641, N4)", async () => {
+    const run = await launchPersonOnce({
+      flag: "person",
+      state: makeHarnessLayoutsMemoryState(),
+      platform: personPlatform(
+        [],
+        { person: true },
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        false,
+      ),
+      exec: answerLayout(LAYOUT_READY),
+      summaryAfter: "100 millis",
+    });
+    expect(run.failure).toBeNull();
+    expect(run.sshUsers).toEqual([undefined]);
+    expect(run.summary).toContain(REMOTE_SSH_ROOT_UNSUPPORTED_WORDS);
+  });
+
   it("a fallback whose SSH reset Core has not taken starts the agent anyway, and says Remote-SSH is down", async () => {
     const calls: Array<string> = [];
     const run = await launchPersonOnce({
@@ -26363,6 +26388,67 @@ describe("per-person standbys (docs/adr/0016)", () => {
       if (standby === undefined) throw new Error("no person standby");
       return standby;
     });
+
+  /** A person standby warmed while the owner's person is bound in Core (`bound`) or not, then claimed. */
+  const claimStandby = (bound: boolean) => {
+    const sshUsers: Array<string | undefined> = [];
+    const world = personStandbyWorld({
+      report: { person: true, missing: [] },
+      exec: answerLayout(LAYOUT_READY),
+      captureOps: { createSshUsers: sshUsers },
+    });
+    const platform = personPlatform(
+      world.calls,
+      { person: true },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      true,
+      () => true,
+      bound,
+    );
+    let summary: string | null | undefined;
+    return withEngine(
+      (testWorld, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, testWorld);
+          testWorld.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
+          const engine = yield* SessionEngine;
+          const standby = yield* warmPersonStandby(project, world.pool);
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "claude",
+            label: null,
+            name: null,
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+          expect(session.id).toBe(standby.id);
+          world.executor.id = session.id;
+          yield* engine.launch(session.id, ["claude"]);
+          yield* Effect.sleep("200 millis");
+          const launched = testWorld.sessions.get(session.id);
+          expect(launched?.status).not.toBe("failed");
+          expect(launched?.sealantWorkspaceId).toBe(standby.sealantWorkspaceId);
+          summary = launched?.summary;
+        }),
+      { ...world.layers, harnessLayout: { ...world.layers.harnessLayout, platform } },
+    ).then(() => ({ sshUsers, summary }));
+  };
+
+  it("a claimed person standby whose owner's person Core could not bind says Remote-SSH is root (review 3 of mend#641, N4)", async () => {
+    const run = await claimStandby(false);
+    // Its create asked for no SSH user, and the claim says so, as the standby's create decided.
+    expect(run.sshUsers[0]).toBeUndefined();
+    expect(run.summary).toContain(REMOTE_SSH_ROOT_WORDS);
+  });
+
+  it("a claimed person standby whose owner's person is bound keeps their SSH user and says nothing of root", async () => {
+    const run = await claimStandby(true);
+    expect(run.sshUsers[0]).toBe(`/home/${STANDBY_OWNER}`);
+    expect(run.summary).not.toContain("Remote-SSH: root");
+  });
 
   it("a person standby, warmed as its owner, is claimed by their fresh worktree and runs per person: their user, a 0700 home, their own logins, their saved directory under people/", async () => {
     const world = personStandbyWorld({

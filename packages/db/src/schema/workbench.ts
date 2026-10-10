@@ -60,7 +60,7 @@ import type {
   SkillId,
   WorktreeId,
 } from "@mend/domain";
-import type { CapturePosition, HarnessLayout } from "@mend/domain/workbench";
+import type { CapturePosition, HarnessLayout, RemoteSsh } from "@mend/domain/workbench";
 import {
   AuditData,
   HotWorkspaceEnvironment,
@@ -523,6 +523,8 @@ export const hotWorkspaces = pgTable(
     fingerprint: text().notNull(),
     /** The layout the standby booted in (docs/adr/0016); `shared` for rows from before 0120. */
     harnessLayout: text().$type<HarnessLayout>().notNull().default("shared"),
+    /** Who Remote-SSH into it runs as (`HotWorkspace.remoteSsh`); `not-taken` before 0123. */
+    remoteSsh: text().$type<RemoteSsh>().notNull().default("not-taken"),
     // Null since standby workspaces (0048): the pool no longer pre-creates a worktree.
     worktree: text(),
     branch: text(),

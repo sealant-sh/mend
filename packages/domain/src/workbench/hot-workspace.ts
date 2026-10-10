@@ -44,6 +44,14 @@ export type HotWorkspaceEnvironment = typeof HotWorkspaceEnvironment.Type;
  * session socket directory are deterministic per session id and are already bound into the
  * running workspace.
  */
+/**
+ * Who a person launch's Remote-SSH runs as (docs/adr/0016, decision 10): its launcher's own user
+ * (`owner`), or root because Core could not bind their person (`unbound`) or runs no SSH session
+ * as a user (`not-taken`).
+ */
+export const RemoteSsh = Schema.Literals(["owner", "unbound", "not-taken"]);
+export type RemoteSsh = typeof RemoteSsh.Type;
+
 export class HotWorkspace extends Schema.Class<HotWorkspace>("HotWorkspace")({
   id: SessionId,
   projectId: ProjectId,
@@ -70,6 +78,13 @@ export class HotWorkspace extends Schema.Class<HotWorkspace>("HotWorkspace")({
    * `shared`.
    */
   harnessLayout: HarnessLayout,
+  /**
+   * Who Remote-SSH into the standby runs as (docs/adr/0016, decision 10), decided at its create and
+   * kept for its claim: `owner` its owner's own user; `unbound` root, because Core could not bind
+   * the owner's person; `not-taken` root, because Core runs no SSH session as a user. Rows from
+   * before it are `not-taken`.
+   */
+  remoteSsh: RemoteSsh,
   /** Worktree directory name inside the project's store (derived from `id`). */
   worktree: Schema.NullOr(Schema.String),
   /** The pre-created session branch the worktree is on. */

@@ -3352,6 +3352,19 @@ const checkpointSourceMigration = Effect.gen(function* () {
         CHECK ((source_kind IS NULL) = (source_observed_at IS NULL))`;
 });
 
+/**
+ * Who Remote-SSH into a standby runs as, decided at its create (docs/adr/0016, decision 10), so a
+ * claim reports a root SSH on its session line as a cold launch does. Rows from before it never
+ * asked Core for an SSH user: `not-taken`.
+ */
+const hotWorkspaceRemoteSshMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    ALTER TABLE hot_workspaces
+      ADD COLUMN remote_ssh text NOT NULL DEFAULT 'not-taken'
+        CHECK (remote_ssh IN ('owner', 'unbound', 'not-taken'))`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -3475,4 +3488,5 @@ export const migrations = {
   "0120_hot_workspace_layout": hotWorkspaceLayoutMigration,
   // 0121 is taken by the repository URL credentials work in flight (fix/origin-url-credentials).
   "0122_checkpoint_source": checkpointSourceMigration,
+  "0123_hot_workspace_remote_ssh": hotWorkspaceRemoteSshMigration,
 };

@@ -709,15 +709,18 @@ read it. Known issues says so. sealantd scrubbing those tables from captures is 
   cannot open Remote-SSH into an executor someone else launched. The user does not exist at create;
   until prepare makes it, sealantd refuses the session, never runs it as root. Mend names the user
   only where Core reports `workspaceSshUser`; an older control plane's gateway runs the session as
-  root, as before. A prepare that falls back to one shared home sets the sessions back to root
-  (`DELETE .../ssh-user`, the only change Core takes after create), so the launcher's Remote-SSH
-  works there as before. That reset runs off the launch path, each attempt bounded to 5 s and
-  retried with backoff for about two minutes, then again at the executor's next process start; while
-  Core has not taken it the session line says `Remote-SSH unavailable · …`, and nothing else waits
-  on it. The gateway runs a session as a user only on a sealantd that reports `exec.user`, and the
-  API names the user only to a gateway that says it runs sessions as one. SFTP is refused for such a
-  workspace: sealantd's `openSftp` takes a user from sealantd#155, and Core passes it once it pins
-  that sealantd (Follow-ups).
+  root, as before. Whenever a person executor's Remote-SSH runs as root (an older Core, an unbound
+  person), its session line says so, with the reason; a standby keeps what its create decided
+  (`hot_workspaces.remote_ssh`) and its claim says it too, never re-asking Core. A prepare that
+  falls back to one shared home sets the sessions back to root (`DELETE .../ssh-user`, the only
+  change Core takes after create), so the launcher's Remote-SSH works there as before. That reset
+  runs off the launch path, each attempt bounded to 5 s and retried with backoff for about two
+  minutes, then again at the executor's next process start; while Core has not taken it the session
+  line says `Remote-SSH unavailable · …`, and nothing else waits on it. The gateway runs a session
+  as a user only on a sealantd that reports `exec.user`, and the API names the user only to a
+  gateway that says it runs sessions as one. SFTP is refused for such a workspace: sealantd's
+  `openSftp` takes a user from sealantd#155, and Core passes it once it pins that sealantd
+  (Follow-ups).
 - **Anything else** (`docker exec`, a custom image's own entrypoint work) runs as root, which is no
   person: `/root` holds no login and no Mend token, and nothing written under `/root` is saved.
 
