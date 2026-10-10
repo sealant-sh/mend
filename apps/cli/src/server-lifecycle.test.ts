@@ -31,6 +31,8 @@ interface DaemonState {
   readonly edgeDirectory?: string;
   readonly version: string;
   readonly images: Readonly<Record<string, string>>;
+  /** The versions whose image carries the t3code gateway (its label). */
+  readonly gatewayImages?: ReadonlyArray<string>;
   readonly fail: string;
   readonly healthVersion: string | null;
   /** Fields the health body carries beside status and version: tenancy, its gate, exposure. */
@@ -1559,6 +1561,92 @@ describe("the edge and the posture", { timeout: 120_000 }, () => {
     expect(f.state().edgeRunning).toBe(true);
   });
 
+  it("the t3code gateway's overlay runs with every start, and status says what this machine observed at its port", async () => {
+    const f = await fixture();
+    expect(await f.setup()).toEqual({ _tag: "ok" });
+    f.update({ gatewayImages: ["0.23.0"] });
+    let answering = true;
+    const gatewayProbes: Array<string> = [];
+    const runtime = {
+      ...f.runtime,
+      fetchText: async (
+        url: string,
+        timeout: number,
+        headers?: Readonly<Record<string, string>>,
+      ) => {
+        if (url.startsWith("http://127.0.0.1:3120/")) {
+          gatewayProbes.push(url);
+          return answering
+            ? { status: 200, body: '{"environmentId":"e"}' }
+            : { status: 0, body: "", error: "connect ECONNREFUSED" };
+        }
+        return f.runtime.fetchText(url, timeout, headers);
+      },
+    };
+    expect(await serverCommand(["setup", "--offline", "--t3-gateway"], runtime)).toEqual({
+      _tag: "ok",
+    });
+    // Setup looked at the port once Mend answered, and said what it saw.
+    expect(gatewayProbes).toEqual(["http://127.0.0.1:3120/.well-known/t3/environment"]);
+    expect(
+      f.lines.some((line) => line.startsWith("The t3code gateway answered at 127.0.0.1:3120")),
+    ).toBe(true);
+    gatewayProbes.length = 0;
+    expect(f.state().upFiles).toEqual(["compose.yaml", "compose.mirrors.yaml", "compose.t3.yaml"]);
+    for (const command of [["restart"], ["stop"], ["start", "--offline"]]) {
+      expect(await serverCommand(command, runtime)).toEqual({ _tag: "ok" });
+      expect(f.state().upFiles).toEqual([
+        "compose.yaml",
+        "compose.mirrors.yaml",
+        "compose.t3.yaml",
+      ]);
+    }
+    f.lines.length = 0;
+    expect(await serverCommand(["status"], runtime)).toEqual({ _tag: "ok" });
+    expect(f.lines).toContain(
+      "t3code gateway · on · 127.0.0.1:3120 · loopback only · reaching it from elsewhere is an exposure you declare",
+    );
+    expect(f.lines).toContain(
+      "t3code gateway · observed answering at 127.0.0.1:3120 from this machine",
+    );
+    expect(gatewayProbes).toEqual(["http://127.0.0.1:3120/.well-known/t3/environment"]);
+    answering = false;
+    f.lines.length = 0;
+    expect(await serverCommand(["status"], runtime)).toEqual({ _tag: "ok" });
+    expect(f.lines).toContain(
+      "t3code gateway · not observed at 127.0.0.1:3120 from this machine · mend server logs shows what it said",
+    );
+    for (const line of f.lines) expect(line).not.toMatch(/\bsafe\b|gate passed/i);
+  });
+
+  it("refuses an upgrade that carries the gateway onto an image without it, and keeps the pin (644-1)", async () => {
+    const f = await fixture();
+    expect(await f.setup()).toEqual({ _tag: "ok" });
+    f.update({ gatewayImages: ["0.23.0"] });
+    const runtime = {
+      ...f.runtime,
+      fetchText: async (url: string, timeout: number, headers?: Readonly<Record<string, string>>) =>
+        url.startsWith("http://127.0.0.1:3120/")
+          ? { status: 200, body: '{"environmentId":"e"}' }
+          : f.runtime.fetchText(url, timeout, headers),
+    };
+    expect(await serverCommand(["setup", "--offline", "--t3-gateway"], runtime)).toMatchObject({
+      _tag: "ok",
+    });
+    const old = f.active();
+    // 0.24.0's image has no gateway: the carried setting is refused before anything stops.
+    expect(await f.upgrade()).toMatchObject({
+      _tag: "error",
+      message: expect.stringContaining("Mend 0.24.0 has no t3code gateway"),
+    });
+    expect(f.active()).toBe(old);
+    expect(f.state().appRunning).toBe(true);
+    expect(f.calls().some((call) => call.command[0] === "stop")).toBe(false);
+    // An image that carries it upgrades as before.
+    f.update({ gatewayImages: ["0.23.0", "0.24.0"] });
+    expect(await f.upgrade()).toMatchObject({ _tag: "ok" });
+  });
+
   it("status says what was declared beside what was observed, and never a verdict", async () => {
     const f = await fixture();
     expect(await f.setupEdge(host, "--exposure", "private")).toEqual({ _tag: "ok" });
@@ -1836,6 +1924,43 @@ describe("the edge and the posture", { timeout: 120_000 }, () => {
 });
 
 describe("server uninstall", { timeout: 60_000 }, () => {
+  it("names and removes the t3code gateway's volume a turned-off gateway left behind (644-R2-1)", async () => {
+    const f = await fixture();
+    expect(await f.setup()).toEqual({ _tag: "ok" });
+    // What --no-t3-gateway leaves: the generation has no gateway overlay, so Compose's own
+    // `down --volumes` does not know the volume that holds paired people's device tokens.
+    const protocolFile = path.join(f.root, "docker-protocol.json");
+    const saved = fs.existsSync(protocolFile)
+      ? JSON.parse(fs.readFileSync(protocolFile, "utf8"))
+      : {};
+    saved.volumes = [...(saved.volumes ?? []), ["mend_mend-t3-gateway", {}]];
+    fs.writeFileSync(protocolFile, JSON.stringify(saved));
+    const runtime = {
+      server: f.runtime,
+      cliHome: path.join(f.root, "home", "mend"),
+      sshConfigFile: path.join(f.root, "home", "ssh-config"),
+      signedIn: null,
+      revokeDevice: async () => "must not be called",
+      removeWorkspaceSshKey: async (): Promise<ThisMachineKeyRemoval> => ({
+        removed: [],
+        stillActive: [],
+        problem: "must not be called",
+      }),
+    };
+    const plan = await describeUninstall(runtime, "server");
+    expect(plan.server).toMatchObject({ t3GatewayVolume: true });
+    expect(planLines(plan, f.configDir).join("\n")).toContain("mend-t3-gateway");
+    const before = f.calls().length;
+    const outcome = await executeUninstall(runtime, plan);
+    expect(outcome.failures).toEqual([]);
+    const commands = f
+      .calls()
+      .slice(before)
+      .map((call) => (call.command.length > 0 ? call.command : call.args.slice(2)).join(" "));
+    expect(commands).toContain("volume rm mend_mend-t3-gateway");
+    expect(f.lines.some((line) => line.includes("removed volume mend_mend-t3-gateway"))).toBe(true);
+  });
+
   it("takes the installation down, removes its volumes, image and files, and releases the lock", async () => {
     const f = await fixture();
     expect(await f.setup()).toEqual({ _tag: "ok" });
@@ -1864,6 +1989,7 @@ describe("server uninstall", { timeout: 60_000 }, () => {
       dockerContext: "saved-local",
       edgeHost: null,
       mirrors: ["npm-mirror", "docker-mirror"],
+      t3GatewayVolume: false,
       generations: 1,
       backups: 0,
     });

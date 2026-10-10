@@ -9,7 +9,7 @@ import {
   secondaryVolumesOf,
   verifyServerDockerVolumes,
 } from "./server-docker-volumes.ts";
-import { composeOverlays } from "./server-edge.ts";
+import { composeOverlays, T3_GATEWAY_VOLUME } from "./server-edge.ts";
 import { mirrorServices } from "./server-mirrors.ts";
 import { serverComposeArgs, serverProcessDeadlines } from "./server-runtime.ts";
 import { readServerInstallation, type ServerSetupRuntime } from "./server-setup.ts";
@@ -88,6 +88,11 @@ export interface ServerPlan {
   readonly edgeHost: string | null;
   /** The mirrors' Compose services the install runs; their containers and caches go too. */
   readonly mirrors?: ReadonlyArray<string>;
+  /**
+   * Whether the t3code gateway's volume goes too: it is on, or one turned off left its volume
+   * behind. The volume holds paired people's Mend device tokens.
+   */
+  readonly t3GatewayVolume?: boolean;
   readonly generations: number;
   readonly backups: number;
 }
@@ -176,6 +181,21 @@ export const describeUninstall = async (
         dockerContext: read.value.config.dockerContext,
         edgeHost: read.value.config.edgeHost ?? null,
         mirrors: mirrorServices(read.value.config.mirrors),
+        t3GatewayVolume:
+          read.value.config.t3GatewayPort !== undefined ||
+          (
+            await runtime.server.run(
+              "docker",
+              dockerArgs(
+                read.value.config.dockerContext,
+                "volume",
+                "inspect",
+                `mend_${T3_GATEWAY_VOLUME}`,
+                "--format",
+                "{{json .}}",
+              ),
+            )
+          ).status === 0,
         generations: countEntries(path.join(configDir, "generations")),
         backups: countEntries(path.join(configDir, "backups")),
       };
@@ -213,6 +233,8 @@ export const planLines = (plan: UninstallPlan, configDir: string): ReadonlyArray
       const edgeVolumes = [
         ...(edgeHost === null ? [] : ["mend-edge-data", "mend-edge-config"]),
         ...mirrors.map((service) => `mend-${service}`),
+        // The t3code gateway's state, with paired people's device tokens, when it is there.
+        ...(plan.server.t3GatewayVolume === true ? [T3_GATEWAY_VOLUME] : []),
       ];
       lines.push(
         `         containers ${["mend", "postgres", "garage", ...edge].join(", ")} · volumes ${[MEND_DOCKER_NAMESPACE_WITH_GARAGE.store, ...secondaryVolumesOf(MEND_DOCKER_NAMESPACE_WITH_GARAGE), "mend-config", "mend-ssh", "mend-postgres", ...edgeVolumes].join(", ")} · image ghcr.io/sealant-sh/mend:${version}${edgeHost === null ? "" : ` · the edge for ${edgeHost}`}`,
@@ -298,6 +320,27 @@ const removeServer = async (
         server.writeLine(
           `removed containers ${["mend", "postgres", "garage", ...mirrorServices(installation.config.mirrors)].join(", ")} and the Compose-owned volumes`,
         );
+
+        // The t3code gateway's volume holds paired people's device tokens. Compose removes it
+        // only while the gateway is on; one turned off left it behind, so it goes by name.
+        const gatewayVolume = `mend_${T3_GATEWAY_VOLUME}`;
+        const gatewayLeft = await server.run(
+          "docker",
+          dockerArgs(context, "volume", "inspect", gatewayVolume, "--format", "{{json .}}"),
+        );
+        if (gatewayLeft.status === 0) {
+          const gone = await server.run(
+            "docker",
+            dockerArgs(context, "volume", "rm", gatewayVolume),
+          );
+          if (gone.status === 0) {
+            server.writeLine(`removed volume ${gatewayVolume}, the t3code gateway's state`);
+          } else {
+            failures.push(
+              `could not remove volume ${gatewayVolume} (the t3code gateway's state, with paired device tokens): ${(gone.error ?? gone.stderr.trim()) || "no output"}`,
+            );
+          }
+        }
 
         // The external volumes are the data. Only this installation's own label allows their
         // removal; anything else is somebody's data and stays, named. A generation from before

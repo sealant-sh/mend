@@ -416,7 +416,12 @@ the agent in the session's live workspace (`POST /api/sessions/:id/shell`), reac
 
 ## Run it
 
-It is off unless someone turns it on. In Mend's server image it is one bundled file
+It is off unless someone turns it on. On a packaged server, `mend server setup --t3-gateway` turns
+it on (`--t3-gateway-port <n>` for another port, `--no-t3-gateway` off): the generation gains
+`compose.t3.yaml`, which sets `MEND_T3_GATEWAY_ENABLED` in the Mend container, publishes the gateway
+on 127.0.0.1 only and mounts its state volume (`mend-t3-gateway`). Setup refuses it on an image
+without the gateway and says whether it answered; `mend server status` says it is on and whether
+this machine reached it. In Mend's server image it is one bundled file
 (`pnpm --filter @mend/t3-gateway build`, `dist/bin.js`), which the bundle's supervisor starts after
 Mend is ready when `MEND_T3_GATEWAY_ENABLED` is `1` or `true`: on 3120 in the container, in front of
 Mend's API there. It is kept running on its own (`keepRunning`): its exit, or a start that fails, is
@@ -426,8 +431,9 @@ It runs confined, as nothing else in the container does (`scripts/bundle-supervi
 `scripts/t3-gateway-root.sh`):
 
 - in a root of its own, `/opt/mend-t3-gateway`: node and its libraries, `setpriv`, the bundle in
-  `/app` and its state in `/state` (`/state/state.sqlite`; a packaged server mounts a volume there).
-  Mend's store, config and SSH keys, the control sockets and the Docker socket are not in it;
+  `/app` and its state in `/state` (`/state/state.sqlite`, the `mend-t3-gateway` volume on a
+  packaged server). Mend's store, config and SSH keys, the control sockets and the Docker socket are
+  not in it;
 - as its own uid and gid, 10120, with no supplementary groups, no capabilities and `no_new_privs`;
 - with only its own environment: Mend's API on loopback, where it listens, its state and its label.
   No database URL, secret or key of the bundle's reaches it; it reaches Mend over HTTP with each
