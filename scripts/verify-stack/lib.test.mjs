@@ -160,6 +160,13 @@ test("the images an offline setup needs are read from the Compose file", async (
     images.every((image) => !image.includes("$")),
     "the templated Mend image is built",
   );
+  // The mirrors' overlay, which setup adds by default: its images are pulled too.
+  const mirrors = await readFile(
+    new URL("../../deploy/docker/compose.mirrors.yaml", import.meta.url),
+    "utf8",
+  ).catch(() => "");
+  for (const image of composeImages(mirrors))
+    assert.ok(composeImages(`${compose}\n${mirrors}`).includes(image), image);
 });
 
 test("a Docker client gets the daemon and nothing of the session", () => {

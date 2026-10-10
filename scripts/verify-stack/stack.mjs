@@ -637,7 +637,12 @@ async function upClaimed(flags, specs, { started, phases, logs }) {
     ),
   );
   const cliVersion = JSON.parse(await showFile(resolved.mend, "apps/cli/package.json")).version;
-  const composeYaml = await showFile(resolved.mend, "deploy/docker/compose.v2.yaml");
+  // Setup runs offline, so every image it starts is pulled first: the bundle's Compose file, and
+  // the package and image mirrors' overlay, which setup adds by default where the source has it.
+  const composeYaml = [
+    await showFile(resolved.mend, "deploy/docker/compose.v2.yaml"),
+    await showFile(resolved.mend, "deploy/docker/compose.mirrors.yaml").catch(() => ""),
+  ].join("\n");
   const relay = relayEndpoint(process.env.DOCKER_HOST, flags.port);
   const { socket, rootless } = await daemonSocket();
 
