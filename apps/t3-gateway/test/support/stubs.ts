@@ -20,6 +20,7 @@ const unavailable = (operation: string) =>
 export const unreachableMend: MendClient["Service"] = {
   claimPairing: () => unavailable("POST /api/pair"),
   checkDevice: () => Effect.succeed("accepted"),
+  connectedAccounts: () => Effect.succeed([]),
   listHarnessModels: () => Effect.succeed([]),
   listProjects: () => unavailable("GET /api/projects"),
   projectDetail: () => unavailable("GET /api/projects/:id"),
@@ -74,6 +75,7 @@ export const emptyHub: PersonHub = {
     projects: [],
     threads: [],
   }),
+  accountChanges: Effect.succeed(Stream.never),
   subscribeArchivedShell: Effect.succeed({
     snapshot: {
       schemaVersion: EMPTY_SHELL_SNAPSHOT.schemaVersion,

@@ -1,5 +1,6 @@
 import { assert, describe, it } from "@effect/vitest";
 import {
+  type ServerProvider,
   EnvironmentAuthInvalidError,
   ORCHESTRATION_PROTOCOL_HEADER,
   ORCHESTRATION_PROTOCOL_VERSION_TEXT,
@@ -17,6 +18,7 @@ import * as HttpClient from "effect/unstable/http/HttpClient";
 import { EMPTY_SHELL_SNAPSHOT } from "../src/shell.ts";
 import { orchestrationProtocolCompatibilityError } from "./support/compatibility.ts";
 import { startFakeMend, type FakeMend } from "./support/fake-mend.ts";
+import { feed } from "./support/feed.ts";
 import { bearer, gatewayTestLayer, PERSON, t3Client, tokenRequest } from "./support/gateway.ts";
 import { connectWsRpc, socketUrl } from "./support/rpc.ts";
 
@@ -56,6 +58,15 @@ const pairAndTicket = (mend: FakeMend, code: string) =>
     const ticket = yield* client.auth.webSocketTicket({ headers: bearer(access.access_token) });
     return { client, access, ticket: ticket.ticket, url: yield* socketUrl(ticket.ticket) };
   });
+
+/** Each provider's driver, state, login and message, as t3code reads them. */
+const loginOf = (config: { readonly providers: ReadonlyArray<ServerProvider> }) =>
+  config.providers.map((provider) => [
+    provider.driver,
+    provider.status,
+    provider.auth.status,
+    provider.message ?? null,
+  ]);
 
 const first = <A, E, R>(stream: Stream.Stream<A, E, R>) =>
   stream.pipe(Stream.runHead, Effect.map(Option.getOrThrow), Effect.timeout("5 seconds"));
@@ -164,6 +175,157 @@ describe("GET /ws", () => {
           },
         });
         assert.deepStrictEqual(viaHttp, { ...EMPTY_SHELL_SNAPSHOT, snapshotSequence: sequenceOf });
+      }),
+    ),
+  );
+
+  it.live("says which providers Mend holds a login of the person's for, never more", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        const paired = yield* pairAndTicket(mend, "LOGINS");
+        const rpc = yield* connectWsRpc(paired.url);
+        // Both connected and active.
+        assert.deepStrictEqual(loginOf(yield* rpc[WS_METHODS.serverGetConfig]({})), [
+          ["claudeAgent", "ready", "authenticated", null],
+          ["codex", "ready", "authenticated", null],
+        ]);
+
+        // No Codex login that works: t3code must not call it connected.
+        mend.setAccounts([
+          { provider: "claude", status: "active" },
+          { provider: "codex", status: "invalid" },
+        ]);
+        assert.deepStrictEqual(loginOf(yield* rpc[WS_METHODS.serverGetConfig]({})), [
+          ["claudeAgent", "ready", "authenticated", null],
+          [
+            "codex",
+            "warning",
+            "unauthenticated",
+            "Mend's Codex login of yours is invalid. Connect one with mend connect codex.",
+          ],
+        ]);
+
+        // The account sessions use is `default` (R650-1): an active backup by another name does
+        // not make an invalid or missing default a working login.
+        mend.setAccounts([
+          { provider: "claude", status: "active" },
+          { provider: "codex", status: "invalid" },
+          { provider: "codex", status: "active", name: "backup" },
+        ]);
+        assert.deepStrictEqual(loginOf(yield* rpc[WS_METHODS.serverGetConfig]({}))[1], [
+          "codex",
+          "warning",
+          "unauthenticated",
+          "Mend's Codex login of yours is invalid. Connect one with mend connect codex.",
+        ]);
+        mend.setAccounts([
+          { provider: "claude", status: "active" },
+          { provider: "codex", status: "active", name: "backup" },
+        ]);
+        assert.deepStrictEqual(loginOf(yield* rpc[WS_METHODS.serverGetConfig]({}))[1], [
+          "codex",
+          "warning",
+          "unauthenticated",
+          "Mend holds no default Codex login of yours, the one sessions use (only others by name). Connect one with mend connect codex.",
+        ]);
+
+        // Active but observed expired with its refresh failed (R650-2): not known to work.
+        const past = Date.parse("2026-10-01T00:00:00.000Z");
+        mend.setAccounts([
+          {
+            provider: "claude",
+            status: "active",
+            metadata: { expiresAt: past, lastRefreshOutcome: "failed" },
+          },
+          {
+            provider: "codex",
+            status: "active",
+            metadata: { expiresAt: past, refreshTokenExpiresAt: past + 1_000 },
+          },
+        ]);
+        assert.deepStrictEqual(loginOf(yield* rpc[WS_METHODS.serverGetConfig]({})), [
+          [
+            "claudeAgent",
+            "warning",
+            "unknown",
+            "Mend's Claude login of yours expired at 2026-10-01T00:00:00.000Z, and its last refresh failed. If it does not work, connect it again with mend connect claude.",
+          ],
+          [
+            "codex",
+            "warning",
+            "unknown",
+            "Mend's Codex login of yours expired at 2026-10-01T00:00:00.000Z, and its refresh grant at 2026-10-01T00:00:01.000Z. If it does not work, connect it again with mend connect codex.",
+          ],
+        ]);
+        // An expired access token with a live refresh grant is what the platform renews: signed in.
+        mend.setAccounts([
+          { provider: "claude", status: "active", metadata: { expiresAt: past } },
+          { provider: "codex", status: "active" },
+        ]);
+        assert.deepStrictEqual(loginOf(yield* rpc[WS_METHODS.serverGetConfig]({}))[0], [
+          "claudeAgent",
+          "ready",
+          "authenticated",
+          null,
+        ]);
+
+        // Mend cannot ask the platform: nothing is claimed either way, and the config still comes.
+        mend.setAccounts(null);
+        assert.deepStrictEqual(loginOf(yield* rpc[WS_METHODS.serverGetConfig]({})), [
+          ["claudeAgent", "ready", "unknown", null],
+          ["codex", "ready", "unknown", null],
+        ]);
+
+        // A slow answer never holds the config back past its deadline.
+        mend.setAccounts([{ provider: "claude", status: "active" }], 10_000);
+        const started = Date.now();
+        assert.deepStrictEqual(loginOf(yield* rpc[WS_METHODS.serverGetConfig]({})), [
+          ["claudeAgent", "ready", "unknown", null],
+          ["codex", "ready", "unknown", null],
+        ]);
+        assert.isBelow(Date.now() - started, 5_000);
+      }),
+    ),
+  );
+
+  it.live("tells a subscribed client when its logins change, and answers a refresh (R650-3)", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        mend.setAccounts([{ provider: "claude", status: "active" }]);
+        const paired = yield* pairAndTicket(mend, "LOGINS-LIVE");
+        const rpc = yield* connectWsRpc(paired.url);
+        const config = yield* feed(rpc[WS_METHODS.subscribeServerConfig]({}));
+        const snapshot = yield* config.next(
+          (event): event is Extract<typeof event, { type: "snapshot" }> =>
+            event.type === "snapshot",
+        );
+        assert.strictEqual(loginOf(snapshot.config)[1]?.[2], "unauthenticated");
+        // The person runs mend connect codex: Mend says their accounts changed.
+        mend.setAccounts([
+          { provider: "claude", status: "active" },
+          { provider: "codex", status: "active" },
+        ]);
+        mend.workbench.emit({ type: "user", userId: "user-1", facet: "accounts" });
+        const connected = yield* config.next(
+          (event): event is Extract<typeof event, { type: "providerStatuses" }> =>
+            event.type === "providerStatuses",
+        );
+        assert.strictEqual(loginOf(connected.payload)[1]?.[2], "authenticated");
+        // And disconnects it again.
+        mend.setAccounts([{ provider: "claude", status: "active" }]);
+        mend.workbench.emit({ type: "user", userId: "user-1", facet: "accounts" });
+        const gone = yield* config.next(
+          (event): event is Extract<typeof event, { type: "providerStatuses" }> =>
+            event.type === "providerStatuses",
+        );
+        assert.strictEqual(loginOf(gone.payload)[1]?.[2], "unauthenticated");
+        // t3code's refresh button reads them again, and sets nothing up.
+        mend.setAccounts([
+          { provider: "claude", status: "active" },
+          { provider: "codex", status: "active" },
+        ]);
+        const refreshed = yield* rpc[WS_METHODS.serverRefreshProviders]({});
+        assert.strictEqual(loginOf(refreshed)[1]?.[2], "authenticated");
       }),
     ),
   );

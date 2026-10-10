@@ -68,6 +68,10 @@ Pairing claims the code through Mend, so Mend lists the client among your device
 
 - Sessions you start from t3code are yours: Mend records you as their owner, and their agent runs as
   you, with your provider logins (see [Per-person workspaces](/operate/per-person-workspaces/)).
+- t3code shows Claude and Codex as signed in when Mend holds an active `default` login of yours for
+  them, the one your sessions use. It warns when Mend holds none, or one that is invalid, and says
+  when Mend observed it expired or failing to refresh: connect one with `mend connect claude` or
+  `mend connect codex`, and t3code shows the change without reconnecting.
 - You see the projects Mend shows you, and of their sessions the Codex and Claude ones that run over
   Mend's protocol. You can send to a session only when Mend lets you steer it: your own, or one
   whose owner turned on shared control. Any other thread is read-only, and t3code says you are not

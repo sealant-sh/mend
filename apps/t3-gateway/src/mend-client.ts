@@ -80,6 +80,23 @@ const MendBranch = Schema.Struct({ name: Schema.String, isDefault: Schema.Boolea
 export type MendBranch = typeof MendBranch.Type;
 const decodeBranches = Schema.decodeUnknownEffect(Schema.Array(MendBranch));
 
+/**
+ * The person's connected accounts, from `GET /api/me/sealant` (`SealantIdentity` in
+ * @mend/api-contracts): which provider each is for, its name (sessions use `default`), its status,
+ * and its non-secret metadata (expiries in epoch milliseconds, the last refresh's outcome). Mend
+ * never returns secret material here.
+ */
+const MendConnectedAccount = Schema.Struct({
+  provider: Schema.String,
+  name: Schema.String,
+  status: Schema.String,
+  metadata: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
+});
+export type MendConnectedAccount = typeof MendConnectedAccount.Type;
+const decodeConnectedAccounts = Schema.decodeUnknownEffect(
+  Schema.Struct({ accounts: Schema.Array(MendConnectedAccount) }),
+);
+
 /** Mend refused the pairing code: unknown, or already claimed or expired. */
 export class MendPairingRefused extends Schema.TaggedError<MendPairingRefused>()(
   "MendPairingRefused",
@@ -219,6 +236,10 @@ export class MendClient extends Context.Service<
     readonly checkDevice: (
       deviceToken: string,
     ) => Effect.Effect<"accepted" | "refused", MendUnavailable>;
+    /** `GET /api/me/sealant`, as the person who paired: the logins Mend holds for them. */
+    readonly connectedAccounts: (
+      deviceToken: string,
+    ) => Effect.Effect<ReadonlyArray<MendConnectedAccount>, MendDeviceRefused | MendUnavailable>;
     /** `GET /api/harnesses/models`, as the person who paired: Mend's model catalog. */
     readonly listHarnessModels: (
       deviceToken: string,
@@ -550,6 +571,30 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
         if (response.status === 200) return "accepted" as const;
         if (response.status === 401) return "refused" as const;
         return yield* new MendUnavailable({ operation, status: response.status, cause: null });
+      });
+
+      const connectedAccounts = Effect.fn("MendClient.connectedAccounts")(function* (
+        deviceToken: string,
+      ) {
+        const operation = "GET /api/me/sealant";
+        const response = yield* send(
+          operation,
+          HttpClientRequest.get(url("/api/me/sealant")).pipe(
+            HttpClientRequest.acceptJson,
+            HttpClientRequest.bearerToken(deviceToken),
+          ),
+        );
+        if (response.status === 401) return yield* new MendDeviceRefused({ operation });
+        if (response.status !== 200) {
+          return yield* new MendUnavailable({ operation, status: response.status, cause: null });
+        }
+        const body = yield* readJson(operation, response);
+        return yield* decodeConnectedAccounts(body).pipe(
+          Effect.map((identity) => identity.accounts),
+          Effect.mapError(
+            (cause) => new MendUnavailable({ operation, status: response.status, cause }),
+          ),
+        );
       });
 
       const listHarnessModels = Effect.fn("MendClient.listHarnessModels")(function* (
@@ -1047,6 +1092,7 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
       return {
         claimPairing,
         checkDevice,
+        connectedAccounts,
         listHarnessModels,
         listProjects,
         projectDetail,

@@ -36,6 +36,12 @@ export interface FakeMend {
   readonly modelReads: ReadonlyArray<string | undefined>;
   /** Make `GET /api/harnesses/models` answer 503 until set back. */
   readonly setModelsDown: (down: boolean) => void;
+  /**
+   * The connected accounts `GET /api/me/sealant` answers for everyone (Claude and Codex, active,
+   * unless set), or null to answer 503 as Mend does when the platform is unreachable. `delayMs`
+   * holds the answer back.
+   */
+  readonly setAccounts: (accounts: ReadonlyArray<FakeAccount> | null, delayMs?: number) => void;
   /** Projects, sessions and their conversations, and the SSE stream that reports them. */
   readonly workbench: FakeWorkbench;
   /** Shells, `tty` tickets and the `/api/tty` socket. */
@@ -103,6 +109,14 @@ const normalise = (code: string) => code.toUpperCase().replaceAll(/[^0-9A-Z]/g, 
 const asRecord = (value: unknown): Record<string, unknown> =>
   typeof value === "object" && value !== null ? Object.fromEntries(Object.entries(value)) : {};
 
+/** A connected account as `GET /api/me/sealant` answers it; named `default` unless said. */
+export interface FakeAccount {
+  readonly provider: string;
+  readonly status: string;
+  readonly name?: string;
+  readonly metadata?: Readonly<Record<string, unknown>>;
+}
+
 export const startFakeMend: Effect.Effect<FakeMend, never, Scope.Scope> = Effect.gen(function* () {
   const codes = new Map<string, { readonly user: FakeMendUser; spent: boolean }>();
   const tokens = new Map<string, { revoked: boolean; readonly userId: string }>();
@@ -111,6 +125,11 @@ export const startFakeMend: Effect.Effect<FakeMend, never, Scope.Scope> = Effect
   const modelReads: Array<string | undefined> = [];
   const pairForwardedFor: Array<string | undefined> = [];
   let modelsDown = false;
+  let accounts: ReadonlyArray<FakeAccount> | null = [
+    { provider: "claude", status: "active" },
+    { provider: "codex", status: "active" },
+  ];
+  let accountsDelayMs = 0;
   let pairingRateLimited = false;
   let devices = 0;
   const workbench = new FakeWorkbench();
@@ -162,6 +181,25 @@ export const startFakeMend: Effect.Effect<FakeMend, never, Scope.Scope> = Effect
         deviceChecks.push(authorization);
         if (!accepted(authorization)) return json(401, { _tag: "Unauthorized" });
         return json(200, []);
+      }
+      if (request.method === "GET" && request.url === "/api/me/sealant") {
+        if (!accepted(request.headers.authorization)) return json(401, { _tag: "Unauthorized" });
+        if (accountsDelayMs > 0) await new Promise((done) => setTimeout(done, accountsDelayMs));
+        if (accounts === null) return json(503, { _tag: "SealantUnavailable" });
+        return json(200, {
+          sealantUserId: "usr_fake",
+          accounts: accounts.map((account, index) => ({
+            id: `account-${index}`,
+            provider: account.provider,
+            name: account.name ?? "default",
+            kind: "oauth-token",
+            status: account.status,
+            metadata: account.metadata ?? {},
+            connectedAt: "2026-10-04T12:00:00.000Z",
+            updatedAt: "2026-10-04T12:00:00.000Z",
+            lastUsedAt: null,
+          })),
+        });
       }
       if (request.method === "GET" && request.url === "/api/harnesses/models") {
         const authorization = request.headers.authorization;
@@ -227,6 +265,10 @@ export const startFakeMend: Effect.Effect<FakeMend, never, Scope.Scope> = Effect
     modelReads,
     setModelsDown: (down) => {
       modelsDown = down;
+    },
+    setAccounts: (next, delayMs = 0) => {
+      accounts = next;
+      accountsDelayMs = delayMs;
     },
     workbench,
     tty,

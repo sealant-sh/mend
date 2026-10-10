@@ -14,7 +14,7 @@ import {
 } from "@mend/t3-contracts";
 import { DEFAULT_RESOLVED_KEYBINDINGS } from "@mend/t3-contracts/keybindings";
 
-import type { MendHarnessCatalog } from "./mend-client.ts";
+import type { MendConnectedAccount, MendHarnessCatalog } from "./mend-client.ts";
 
 /**
  * t3code's server config for one paired person, built from Mend's model catalog
@@ -154,15 +154,105 @@ const modelsFor = (
   return models;
 };
 
-/** One t3code provider per Mend harness the gateway can show, in Mend's order. */
+/** What the gateway observed of the login a person's sessions use for one harness. */
+export type Login =
+  | { readonly kind: "signed-in" }
+  /** No usable login: none, or Mend's marks it invalid or archived. `reason` says which. */
+  | { readonly kind: "none"; readonly reason: string }
+  /** Held, but observed expired or failing to refresh: whether it works is not known. */
+  | { readonly kind: "unsure"; readonly reason: string };
+
+/** Each served harness's login, or null when the gateway could not read them. */
+export type PersonLogins = ReadonlyMap<string, Login> | null;
+
+/** The account Mend's sessions use for a harness: the one named `default` (review R650-1). */
+export const SESSION_ACCOUNT = "default";
+
+/** An epoch in milliseconds as an ISO time. */
+const at = (epoch: number) => new Date(epoch).toISOString();
+
+const numberAt = (metadata: Readonly<Record<string, unknown>> | undefined, key: string) => {
+  const value = metadata?.[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+};
+
+/**
+ * A person's logins as their sessions will meet them (reviews R650-1 and R650-2): only the
+ * `default` account of each harness counts, as Mend's sessions select it; an active one observed
+ * expired with its refresh failed or its refresh grant expired, or with its last refresh failed,
+ * is `unsure`, with what was observed. Never "signed in" on a stored status alone when expiry or
+ * a failed refresh says otherwise.
+ */
+export const loginsOf = (
+  accounts: ReadonlyArray<MendConnectedAccount>,
+  now: number,
+): ReadonlyMap<string, Login> => {
+  const logins = new Map<string, Login>();
+  for (const [harness, driver] of Object.entries(HARNESS_DRIVERS)) {
+    const account = accounts.find(
+      (candidate) => candidate.provider === harness && candidate.name === SESSION_ACCOUNT,
+    );
+    const name = driver.displayName;
+    if (account === undefined) {
+      const others = accounts.some((candidate) => candidate.provider === harness);
+      logins.set(harness, {
+        kind: "none",
+        reason: others
+          ? `Mend holds no default ${name} login of yours, the one sessions use (only others by name).`
+          : `Mend holds no ${name} login of yours.`,
+      });
+      continue;
+    }
+    if (account.status !== "active") {
+      logins.set(harness, {
+        kind: "none",
+        reason: `Mend's ${name} login of yours is ${account.status}.`,
+      });
+      continue;
+    }
+    const expiresAt = numberAt(account.metadata, "expiresAt");
+    const refreshExpiresAt = numberAt(account.metadata, "refreshTokenExpiresAt");
+    const refreshFailed = account.metadata?.["lastRefreshOutcome"] === "failed";
+    const expired = expiresAt !== undefined && expiresAt <= now;
+    if (expired && refreshExpiresAt !== undefined && refreshExpiresAt <= now) {
+      logins.set(harness, {
+        kind: "unsure",
+        reason: `Mend's ${name} login of yours expired at ${at(expiresAt)}, and its refresh grant at ${at(refreshExpiresAt)}.`,
+      });
+    } else if (expired && refreshFailed) {
+      logins.set(harness, {
+        kind: "unsure",
+        reason: `Mend's ${name} login of yours expired at ${at(expiresAt)}, and its last refresh failed.`,
+      });
+    } else if (refreshFailed) {
+      logins.set(harness, {
+        kind: "unsure",
+        reason: `Mend's last refresh of your ${name} login failed.`,
+      });
+    } else {
+      logins.set(harness, { kind: "signed-in" });
+    }
+  }
+  return logins;
+};
+
+/**
+ * One t3code provider per Mend harness the gateway can show, in Mend's order. Its login is what
+ * Mend observed of the account sessions use (`loginsOf`): signed in is `authenticated`; none is
+ * `unauthenticated`, and unsure is `unknown`, each with a warning saying what was observed and how
+ * to connect one (t3code otherwise tells the person a provider is "Connected"). A warning, not an
+ * error: the turn still goes to Mend, which decides what runs. Unread logins stay `unknown`.
+ */
 export const providersFromMend = (
   catalogs: ReadonlyArray<MendHarnessCatalog>,
   checkedAt: string,
+  logins: PersonLogins,
 ): ReadonlyArray<ServerProvider> => {
   const providers: Array<ServerProvider> = [];
   for (const catalog of catalogs) {
     const driver = HARNESS_DRIVERS[catalog.harness];
     if (driver === undefined) continue;
+    const login = logins === null ? null : (logins.get(catalog.harness) ?? null);
     providers.push({
       instanceId: ProviderInstanceId.make(driver.driver),
       driver: driver.driver,
@@ -181,9 +271,21 @@ export const providersFromMend = (
       enabled: true,
       installed: true,
       version: null,
-      status: "ready",
-      // The gateway cannot see whether the person's login works until a turn runs.
-      auth: { status: "unknown" },
+      status: login === null || login.kind === "signed-in" ? "ready" : "warning",
+      // What Mend holds of the login, never whether it works: that shows when a turn runs.
+      auth: {
+        status:
+          login === null || login.kind === "unsure"
+            ? "unknown"
+            : login.kind === "signed-in"
+              ? "authenticated"
+              : "unauthenticated",
+      },
+      ...(login === null || login.kind === "signed-in"
+        ? {}
+        : {
+            message: `${login.reason} ${login.kind === "none" ? "Connect one" : "If it does not work, connect it again"} with mend connect ${catalog.harness}.`,
+          }),
       checkedAt,
       models: modelsFor(catalog, driver),
       slashCommands: [],
