@@ -34,6 +34,7 @@ import { describe, expect } from "vitest";
 import { provisionIn } from "./engine/capture-fixture.ts";
 import { makeEngineClock } from "./engine/clock-fixture.ts";
 import {
+  invalidAccount,
   now,
   sealantLaunchLayer,
   setup,
@@ -171,7 +172,9 @@ describe("SessionEngine", () => {
           yield* engine.launch(session.id, ["codex"]);
 
           expect(created.map((options) => options.credentials)).toEqual([
+            { codex: true, claude: true, github: true },
             { codex: true, github: true },
+            { codex: true, claude: true },
             { codex: true },
             { github: true },
           ]);
@@ -180,6 +183,91 @@ describe("SessionEngine", () => {
         sealantLayer: sealantLaunchLayer(created, (credentials) => credentials?.codex === true),
       },
     );
+  });
+
+  describe("the same person's other agent login (docs/adr/0016, decision 5, amended 2026-10-10)", () => {
+    // oxlint-disable-next-line unicorn/consistent-function-scoping -- Keep this scenario helper beside the assertions that use it.
+    const launchOnce = (
+      harness: "claude" | "codex",
+      options: {
+        readonly reject?: (
+          credentials: CreateOptions["credentials"],
+        ) => boolean | SealantPlatformError;
+        readonly selectedOnly?: ReadonlySet<string>;
+      } = {},
+    ) => {
+      const created: CreateOptions[] = [];
+      return withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const project = yield* setup(tmp, world);
+            const engine = yield* SessionEngine;
+            const session = yield* engine.provision({
+              projectId: project.id,
+              harness,
+              label: null,
+              name: null,
+              ownerUserId: "user-fixture",
+              base: null,
+            });
+            const launched = yield* engine.launch(session.id, [harness]).pipe(Effect.result);
+            return { created, launched, session: world.sessions.get(session.id) };
+          }),
+        {
+          sealantLayer: sealantLaunchLayer(created, options.reject ?? (() => false)),
+          ...(options.selectedOnly === undefined ? {} : { selectedOnly: options.selectedOnly }),
+        },
+      );
+    };
+
+    it("a Claude session's create names its owner's Codex login too, and starts without it when Codex is not connected", async () => {
+      const result = await launchOnce("claude", {
+        reject: (credentials) => credentials?.codex === true,
+      });
+      expect(result.launched._tag).toBe("Success");
+      expect(result.created.map((options) => options.credentials)).toEqual([
+        { claude: true, codex: true, github: true },
+        { claude: true, github: true },
+      ]);
+    });
+
+    it("a stale login never stops a shared launch: Core's refusal names it, and no later try names it again", async () => {
+      const other = await launchOnce("claude", {
+        reject: (credentials) =>
+          credentials?.codex === undefined ? false : invalidAccount("codex"),
+      });
+      expect(other.launched._tag).toBe("Success");
+      expect(other.created.map((options) => options.credentials)).toEqual([
+        { claude: true, codex: true, github: true },
+        { claude: true, github: true },
+      ]);
+      // A shared launch steps past its own refused login too (mend#671): no try names Claude
+      // again, and no try names the other agent's login without it.
+      const own = await launchOnce("claude", {
+        reject: (credentials) =>
+          credentials?.claude === undefined ? false : invalidAccount("claude"),
+      });
+      expect(own.created.map((options) => options.credentials)).toEqual([
+        { claude: true, codex: true, github: true },
+        { github: true },
+      ]);
+    });
+
+    it("an owner who chose the selected agent's login only gets a create naming that one and GitHub, as before 0.36.1", async () => {
+      const claude = await launchOnce("claude", { selectedOnly: new Set(["user-fixture"]) });
+      expect(claude.created.map((options) => options.credentials)).toEqual([
+        { claude: true, github: true },
+      ]);
+      const codex = await launchOnce("codex", { selectedOnly: new Set(["user-fixture"]) });
+      expect(codex.created.map((options) => options.credentials)).toEqual([
+        { codex: true, github: true },
+      ]);
+      // Someone else's choice is not the owner's.
+      const other = await launchOnce("codex", { selectedOnly: new Set(["user-other"]) });
+      expect(other.created.map((options) => options.credentials)).toEqual([
+        { codex: true, claude: true, github: true },
+      ]);
+    });
   });
 
   it("gives a shell session the codex account when only codex is connected", async () => {

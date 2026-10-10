@@ -845,6 +845,70 @@ describe("SessionEngine hot sessions", () => {
     );
   });
 
+  it("never serves a Claude or Codex session of an owner who chose the selected agent's login only from a standby: it goes cold with the narrower create", async () => {
+    const created: CreateOptions[] = [];
+    const pool = { entries: [] as Array<HotWorkspace>, removed: [] as Array<string> };
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          world.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
+          const skeletonId = SessionId.make(crypto.randomUUID());
+          // Made with every login its owner connected (`platformShape("shell")`).
+          pool.entries.push(
+            new HotWorkspace({
+              id: skeletonId,
+              projectId: project.id,
+              worktreeId: null,
+              ownerUserId: "user-fixture",
+              status: "ready",
+              error: null,
+              fingerprint: "match-simulated-by-the-fake-claim",
+              remoteSsh: "not-taken",
+              harnessLayout: "shared",
+              worktree: null,
+              branch: null,
+              baseSha: null,
+              sealantWorkspaceId: SealantWorkspaceId.make("workspace-1"),
+              workspaceImage: defaultSettings.workspaceImage,
+              dotfiles: { repository: null, snapshotSha: null, notApplied: [] },
+              environment: {
+                environmentRevision: 0,
+                environmentVariableNames: [],
+                secretRevision: 0,
+                secretNames: [],
+              },
+              referenceMounts: [],
+              extraMounts: [],
+              createdAt: now(),
+              updatedAt: now(),
+            }),
+          );
+
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            name: null,
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+          expect(session.id).not.toBe(skeletonId);
+          yield* engine.launch(session.id, ["codex"]);
+
+          expect(created.map((options) => options.credentials)).toEqual([
+            { codex: true, github: true },
+          ]);
+        }),
+      {
+        sealantLayer: sealantLaunchLayer(created),
+        hotWorkspacesLayer: hotPoolLayer(pool),
+        selectedOnly: new Set(["user-fixture"]),
+      },
+    );
+  });
+
   it("claims a ready skeleton for a new conversation inside an existing worktree too", async () => {
     const created: CreateOptions[] = [];
     const spawned: ReadonlyArray<string>[] = [];

@@ -22,6 +22,7 @@
  */
 export * from "./audit.ts";
 export * from "../repository-url.ts";
+export * from "./agent-logins.ts";
 export * from "./agent-start.ts";
 export * from "./agent-protocol.ts";
 export * from "./agent-memory.ts";
