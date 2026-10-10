@@ -204,11 +204,14 @@ mend wait "$id" --timeout 900   # exits with the test run's exit code, or 124
 
 `mend logs` reads the session's command (or agent) by default, and another of its processes, a shell
 or a Service attempt, with `--process` and a prefix of its id. `--follow` keeps printing until the
-process ends. `mend wait` exits with the code the platform reported, or `1` when it reported none.
-While a launch or a resume is starting, the previous process's end does not count; `--process` binds
-the wait to one process, the `processId` that `mend run --json` prints. `--timeout` covers
-everything, finding the session and every read and retry; `--json` then prints the last state read.
-Both take the session id, a prefix of it, or the worktree's name.
+process ends. A record is printed as it is, with nothing taken out, and it is not the session
+owner's alone: anyone who can read the project can read it with `mend logs` or `mend service logs`,
+so what a command printed, a password included, reaches them too. `mend wait` exits with the code
+the platform reported, or `1` when it reported none. While a launch or a resume is starting, the
+previous process's end does not count; `--process` binds the wait to one process, the `processId`
+that `mend run --json` prints. `--timeout` covers everything, finding the session and every read and
+retry; `--json` then prints the last state read. Both take the session id, a prefix of it, or the
+worktree's name.
 
 The platform takes a command of at most 64 words, none of them empty and none starting or ending
 with whitespace. A script passed as `bash -lc "<script>"` that starts with a newline is such a word:

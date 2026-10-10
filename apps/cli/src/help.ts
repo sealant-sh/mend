@@ -378,7 +378,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     summary: "print a session's recorded terminal output",
     synopsis: ["[session] [--follow] [--from <sequence>] [--process <id>]"],
     description: [
-      "Prints what the session's command (or agent) wrote to its terminal, as the record holds it, on stdout. Settled sessions count: the record outlives the process and the workspace. --follow keeps printing until the process ends. A signal stops it and puts the terminal back, exiting 128 + its number: 130 for SIGINT (Ctrl+C), 129 for SIGHUP, 143 for SIGTERM.",
+      "Prints what the session's command (or agent) wrote to its terminal, as the record holds it, on stdout. Settled sessions count: the record outlives the process and the workspace. --follow keeps printing until the process ends. The record is printed as it is, nothing taken out: anyone who can read the project can read it, so what a command printed, a password included, reaches them too. A signal stops it and puts the terminal back, exiting 128 + its number: 130 for SIGINT (Ctrl+C), 129 for SIGHUP, 143 for SIGTERM.",
       "<session> is the session id, a prefix of it, or the worktree's name. With none, the one live session is taken. --process reads another process of the session, a shell or a Service attempt, by a prefix of its id.",
     ],
     options: [
@@ -657,7 +657,10 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     section: "services",
     summary: "follow a supervised service's output",
     synopsis: ["<name-or-id> [--from <sequence>]"],
-    description: ["Replays the recorded output, then follows it live. Ctrl-C stops following."],
+    description: [
+      "Replays the recorded output, then follows it live. Ctrl-C stops following.",
+      "The record is printed as it is, nothing taken out, and anyone who can read the project can read it: what the Service printed, a password included, reaches them too.",
+    ],
     options: [{ flag: "--from <sequence>", text: "start the replay at a record sequence" }],
     see: ["service run"],
   },
