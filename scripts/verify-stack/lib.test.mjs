@@ -294,22 +294,28 @@ const own = { [STACK_LABEL]: "1" };
 test("a recording window records what appeared and has the stack's shape, by identity (R7-1)", () => {
   const before = {
     containers: [{ id: "c1", name: "mend-mend-1", compose: "mend" }],
-    networks: [{ id: "n1", name: "mend_default" }],
+    networks: [{ id: "n1", name: "mend_default", compose: "mend" }],
     volumes: [{ name: "mend-store", createdAt: "t1" }],
   };
   const after = {
     containers: [
       ...before.containers,
-      { id: "c2", name: "sealant-run-5e55", compose: "" },
-      { id: "c3", name: "sealant-run-5e55-docker", compose: "" },
+      { id: "c2", name: "sealant-run-5e55", compose: "", mounts: ["mend-control"] },
+      { id: "c3", name: "sealant-run-5e55-docker", compose: "", workspace: "sealant-run-5e55" },
       { id: "c4", name: "mend-mend-2", compose: "mend" },
       // Another client on the session's daemon: a dev database, its network and its data.
       { id: "c5", name: "mend-dev-postgres-1", compose: "mend-dev" },
+      // The person's Core dev stack (Compose project `sealant`), and a hand-named `sealant-…`
+      // container and sidecar lookalike: none is an inner session (R8-1).
+      { id: "c6", name: "sealant-postgres-1", compose: "sealant", mounts: ["mend-control"] },
+      { id: "c7", name: "sealant-test-redis", compose: "", mounts: ["0f3a"] },
+      { id: "c8", name: "sealant-ci-docker", compose: "", workspace: "" },
     ],
     networks: [
       ...before.networks,
-      { id: "n2", name: "sealant-run-5e55-network" },
-      { id: "n3", name: "mend-dev_default" },
+      { id: "n2", name: "sealant-run-5e55-network", compose: "" },
+      { id: "n3", name: "mend-dev_default", compose: "mend-dev" },
+      { id: "n4", name: "sealant-ci-network", compose: "sealant-ci" },
     ],
     volumes: [
       // Removed and made again: another volume.
@@ -355,7 +361,10 @@ test("a teardown removes what was recorded and has the stack's shape, and follow
       inspected("dev", "mend-dev-postgres-1", { "com.docker.compose.project": "mend-dev" }),
       // Never recorded: the product's Compose project, an executor, half of the stack's mark.
       inspected("product", "mend-mend-2", { "com.docker.compose.project": "mend" }),
-      inspected("executor", "sealant-12ab"),
+      {
+        ...inspected("executor", "sealant-12ab"),
+        Mounts: [{ Type: "volume", Name: "mend-control" }],
+      },
       inspected("half", "verify-stack-named"),
       inspected("web", "web-1"),
     ],
@@ -367,9 +376,13 @@ test("a teardown removes what was recorded and has the stack's shape, and follow
       { Name: "data", Labels: {}, CreatedAt: "t1" },
     ],
     networks: [
-      { Id: "net-inner", Name: "mend_default" },
+      { Id: "net-inner", Name: "mend_default", Labels: { "com.docker.compose.project": "mend" } },
       { Id: "bridge-id", Name: "bridge" },
-      { Id: "net-dev", Name: "mend-dev_default" },
+      {
+        Id: "net-dev",
+        Name: "mend-dev_default",
+        Labels: { "com.docker.compose.project": "mend-dev" },
+      },
       { Id: "net-product", Name: "sealant-12ab-network" },
     ],
   });

@@ -1187,7 +1187,8 @@ async function ledgerDirectory() {
 }
 
 /**
- * The daemon's containers (id, name, Compose project) and networks (id, name), and its volumes by
+ * The daemon's containers (id, name, Compose project, `sealant.workspace` label, the volumes they
+ * mount) and networks (id, name, Compose project), and its volumes by
  * name and creation time. Retried when something goes between its listing and its inspection.
  */
 async function snapshot() {
@@ -1213,12 +1214,24 @@ async function snapshot() {
           "--all",
           "--no-trunc",
           "--format",
-          '{{.ID}}\t{{.Names}}\t{{.Label "com.docker.compose.project"}}',
+          '{{.ID}}\t{{.Names}}\t{{.Label "com.docker.compose.project"}}\t{{.Label "sealant.workspace"}}\t{{.Mounts}}',
+        ]),
+      ).map(([id, name, compose = "", workspace = "", mounts = ""]) => ({
+        id,
+        name,
+        compose,
+        workspace,
+        mounts: mounts.split(",").filter(Boolean),
+      }));
+      const networks = rows(
+        await dockerOut([
+          "network",
+          "ls",
+          "--no-trunc",
+          "--format",
+          '{{.ID}}\t{{.Name}}\t{{.Label "com.docker.compose.project"}}',
         ]),
       ).map(([id, name, compose = ""]) => ({ id, name, compose }));
-      const networks = rows(
-        await dockerOut(["network", "ls", "--no-trunc", "--format", "{{.ID}}\t{{.Name}}"]),
-      ).map(([id, name]) => ({ id, name }));
       return { containers, networks, volumes };
     } catch (error) {
       if (attempt >= 4) throw error;
@@ -1288,26 +1301,40 @@ async function recording(work, { state = null, shape = SHAPES.session } = {}) {
 
 /** A ledger file: this user's own regular file, private to them, read without following a link. */
 function readPrivateFile(path) {
-  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  let fd;
+  try {
+    fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  } catch (error) {
+    throw new CommandError(
+      error.code === "ELOOP"
+        ? `${path} is a symlink, refused; nothing was removed. A ledger file must be this user's own (0600).`
+        : `${path} cannot be opened (${error.code ?? error.message}); nothing was removed.`,
+    );
+  }
   try {
     const file = fstatSync(fd);
     if (!file.isFile() || file.uid !== process.getuid() || (file.mode & 0o077) !== 0)
-      throw new Error(`${path} must be this user's own file, private to them (0600)`);
+      throw new CommandError(
+        `${path} must be this user's own file, private to them (0600), refused; nothing was removed.`,
+      );
     return readFileSync(fd, "utf8");
   } finally {
     closeSync(fd);
   }
 }
 
-/** A ledger's JSON, or a refusal that names where it came from: a teardown removes nothing then. */
-function parseLedger(text, where) {
+/**
+ * A ledger's JSON, or a refusal that names where it came from and how to move it aside (`aside`):
+ * a teardown removes nothing then.
+ */
+function parseLedger(text, where, aside = `mv '${where}' '${where}.bad'`) {
   try {
     const ledger = JSON.parse(text);
     if (ledger === null || typeof ledger !== "object") throw new Error("not an object");
     return ledger;
   } catch (error) {
     throw new CommandError(
-      `the ledger in ${where} cannot be read (${error.message}); nothing was removed. Move it aside to tear down the stack's own infrastructure only.`,
+      `the ledger in ${where} cannot be read (${error.message}); nothing was removed. To tear down without it (the stack's own infrastructure only, and what the rest of the ledger names), move it aside: ${aside}`,
     );
   }
 }
@@ -1347,7 +1374,15 @@ async function readLedger(volumes) {
     "-c",
     "if [ -f /state/ledger.json ]; then cat /state/ledger.json; fi",
   ]).catch(() => "");
-  const copies = copy ? [parseLedger(copy, `the state volume's ledger.json`)] : [];
+  const copies = copy
+    ? [
+        parseLedger(
+          copy,
+          `the state volume's ledger.json`,
+          `docker run --rm --volume ${STATE_VOLUME}:/s ${FIXTURE_BASE_IMAGE} mv /s/ledger.json /s/ledger.json.bad`,
+        ),
+      ]
+    : [];
   return { ...mergeLedgers([...windows, ...copies]), cutShort };
 }
 

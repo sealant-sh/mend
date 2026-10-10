@@ -16,7 +16,8 @@
 //   `rm` or `volume rm` of that name writes `<file>.paused` and waits, before it removes anything;
 // - FAKE_DOCKER_PAUSE_PULL (a file): while it exists, a `pull` writes `<file>.paused` and waits;
 // - FAKE_DOCKER_RUN (a file holding `{ containers, volumes, networks }` of names, a container's
-//   name optionally with its labels as `[name, labels]`): a `run` of the
+//   name optionally with its labels and mounted volumes as `[name, labels, volumes]`): a `run`
+//   of the
 //   inner CLI makes them, as an inner session would; then, while FAKE_DOCKER_PAUSE_RUN (a file)
 //   exists, it writes `<file>.paused` and waits;
 // - FAKE_DOCKER_BUILD: `hang` makes `build` wait a minute; otherwise `build` fails at once.
@@ -115,6 +116,7 @@ const listed = (item) => ({
   ID: item.Id,
   Names: item.Name.slice(1),
   Labels: item.Config?.Labels ?? {},
+  Mounts: (item.Mounts ?? []).map((mount) => mount.Name).join(","),
 });
 const formatOf = () => (args.includes("--format") ? args[args.indexOf("--format") + 1] : null);
 const newId = (state, fill) => `${String(state.next++).padStart(4, "0")}${fill.repeat(60)}`;
@@ -137,11 +139,12 @@ else if (verb === "run" && args.some((arg) => arg.includes("umask 077"))) {
     const made = JSON.parse(readFileSync(script, "utf8"));
     await locked((state) => {
       for (const made1 of made.containers ?? []) {
-        const [name, labels = {}] = Array.isArray(made1) ? made1 : [made1];
+        const [name, labels = {}, mounts = []] = Array.isArray(made1) ? made1 : [made1];
         state.containers.push({
           Id: newId(state, "a"),
           Name: `/${name}`,
           Config: { Labels: labels },
+          Mounts: mounts.map((volume) => ({ Type: "volume", Name: volume })),
         });
       }
       for (const name of made.volumes ?? [])
@@ -248,7 +251,9 @@ else if (verb === "network" && sub === "ls") {
   console.log(
     (await locked((state) => state.networks))
       .map((network) =>
-        format === null ? network.Id : render(format, { ID: network.Id, Name: network.Name }),
+        format === null
+          ? network.Id
+          : render(format, { ID: network.Id, Name: network.Name, Labels: network.Labels }),
       )
       .join("\n"),
   );

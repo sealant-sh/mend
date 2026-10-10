@@ -434,6 +434,9 @@ const on = (...networks) => ({
 const mounts = (...volumes) => ({
   Mounts: volumes.map((name) => ({ Type: "volume", Name: name, Destination: `/${name}` })),
 });
+/** An inner session as the inner Sealant makes it: its executor and its Docker sidecar. */
+const EXECUTOR = ["sealant-5e55", {}, ["mend-control"]];
+const SIDECAR = ["sealant-5e55-docker", { "sealant.workspace": "sealant-5e55" }];
 /** A Mend server of the machine's own on the daemon: the product's names, none of the stack's. */
 const product = {
   containers: [
@@ -594,7 +597,7 @@ test("a teardown removes the ledger's entries whose identity still matches, and 
       volume("mend-garage", {}, "2026-10-10T03:00:00Z"),
       "unrecorded-data",
     ],
-    networks: [{ Name: "mend_default", Id: "net-inner" }],
+    networks: [{ Name: "mend_default", Id: "net-inner", Labels: { [COMPOSE]: "mend" } }],
   });
   const ids = Object.fromEntries(
     fakeDaemon.read().containers.map((item) => [item.Name.slice(1), item.Id]),
@@ -630,11 +633,7 @@ test("a `mend` window records an inner session, and nothing another client makes
   writeFileSync(
     fakeDaemon.file("run"),
     JSON.stringify({
-      containers: [
-        "sealant-5e55",
-        "sealant-5e55-docker",
-        ["mend-dev-postgres-1", { [COMPOSE]: "mend-dev" }],
-      ],
+      containers: [EXECUTOR, SIDECAR, ["mend-dev-postgres-1", { [COMPOSE]: "mend-dev" }]],
       volumes: ["mend-dev_mend-dev-pgdata"],
       networks: ["sealant-5e55-network", "mend-dev_default"],
     }),
@@ -667,7 +666,7 @@ test("a recording cut short by a kill keeps what it saw, and says so", async () 
   const cache = fakeDaemon.env.MEND_VERIFY_STACK_CACHE;
   mkdirSync(cache, { recursive: true });
   writeFileSync(join(cache, "stack.json"), JSON.stringify({ images: { cli: "c" } }));
-  writeFileSync(fakeDaemon.file("run"), JSON.stringify({ containers: ["sealant-5e55"] }));
+  writeFileSync(fakeDaemon.file("run"), JSON.stringify({ containers: [EXECUTOR] }));
   writeFileSync(fakeDaemon.file("pause-run"), "1");
   const inner = fakeDaemon.run(["mend", "run", "--", "sleep", "60"]);
   await until("the session to be recorded", () =>
@@ -688,6 +687,94 @@ test("a recording cut short by a kill keeps what it saw, and says so", async () 
   assert.match(down.output(), /was cut short/);
 });
 
+/** An anonymous volume's name, as Docker makes one: 64 hex digits. */
+const anonymous = (n) => `${String(n).repeat(8)}${"0".repeat(56)}`;
+
+test("a Core dev stack of Compose project `sealant`, made during a `mend` window, survives (R8-1)", async () => {
+  const fakeDaemon = daemon({ containers: generation("a"), volumes: [STATE_VOLUME] });
+  const cache = fakeDaemon.env.MEND_VERIFY_STACK_CACHE;
+  mkdirSync(cache, { recursive: true });
+  writeFileSync(join(cache, "stack.json"), JSON.stringify({ images: { cli: "c" } }));
+  // While the window is open: an inner session, and the person's `docker compose up -d` in
+  // /workspace/repos/sealant (Core's compose.yaml, project `sealant`; compose.selfhost.yaml, `name:
+  // sealant`), a `sealant-ci` copy, and a hand-named `docker run --name sealant-test-redis`.
+  writeFileSync(
+    fakeDaemon.file("run"),
+    JSON.stringify({
+      containers: [
+        EXECUTOR,
+        SIDECAR,
+        ["sealant-postgres-1", { [COMPOSE]: "sealant" }, ["sealant_postgres-data"]],
+        ["sealant-cache-1", { [COMPOSE]: "sealant" }, [anonymous(1)]],
+        ["sealant-web-1", { [COMPOSE]: "sealant" }],
+        ["sealant-ci-postgres-1", { [COMPOSE]: "sealant-ci" }, ["sealant-ci_postgres-data"]],
+        ["sealant-test-redis", {}, [anonymous(2)]],
+      ],
+      volumes: ["sealant_postgres-data", "sealant-ci_postgres-data", anonymous(1), anonymous(2)],
+      networks: ["sealant-5e55-network", "sealant_default"],
+    }),
+  );
+  const inner = fakeDaemon.run(["mend", "run", "--", "true"]);
+  assert.equal(await inner.done, 0, inner.output());
+  const [window] = ledgerWindows(fakeDaemon);
+  assert.equal(window.containers.length, 2, "the executor and its sidecar only");
+  assert.equal(window.networks.length, 1);
+  const down = fakeDaemon.run(["down"]);
+  assert.equal(await down.done, 0, down.output());
+  const left = fakeDaemon.read();
+  assert.deepEqual(names(left), [
+    "sealant-cache-1",
+    "sealant-ci-postgres-1",
+    "sealant-postgres-1",
+    "sealant-test-redis",
+    "sealant-web-1",
+  ]);
+  assert.deepEqual(
+    volumeNames(left),
+    [anonymous(1), anonymous(2), "sealant-ci_postgres-data", "sealant_postgres-data"].toSorted(),
+  );
+  assert.deepEqual(
+    left.networks.map((network) => network.Name),
+    ["sealant_default"],
+  );
+  assert.doesNotMatch(down.output(), /removed container sealant-(cache|web|postgres|ci|test)/);
+});
+
+test("a window file that is a symlink is refused, and nothing is removed (NIT-7)", async () => {
+  const fakeDaemon = daemon({
+    containers: [["verify-stack-relay", { [STACK_LABEL]: "1" }]],
+    volumes: [STATE_VOLUME],
+  });
+  ledger(fakeDaemon, {});
+  const target = join(fakeDaemon.root, "planted.json");
+  writeFileSync(target, "{}", { mode: 0o600 });
+  rmSync(join(ledgerDirOf(fakeDaemon), "window.json"));
+  symlinkSync(target, join(ledgerDirOf(fakeDaemon), "window.json"));
+  const sweep = fakeDaemon.run(["down", "--force"]);
+  assert.notEqual(await sweep.done, 0);
+  assert.match(sweep.output(), /window\.json is a symlink, refused; nothing was removed/);
+  assert.deepEqual(names(fakeDaemon.read()), ["verify-stack-relay"]);
+});
+
+test("a torn ledger copy in the state volume is refused with the command that moves it aside (NIT-6)", async () => {
+  const fakeDaemon = daemon({
+    containers: [["verify-stack-relay", { [STACK_LABEL]: "1" }]],
+    volumes: [STATE_VOLUME],
+    files: { [`/fake/volumes/${STATE_VOLUME}/_data/ledger.json`]: "{" },
+  });
+  const sweep = fakeDaemon.run(["down", "--force"]);
+  assert.notEqual(await sweep.done, 0);
+  assert.match(
+    sweep.output(),
+    /the state volume's ledger.json cannot be read .*nothing was removed/,
+  );
+  assert.match(
+    sweep.output(),
+    /docker run --rm --volume verify-stack-state:\/s \S+ mv \/s\/ledger\.json \/s\/ledger\.json\.bad/,
+  );
+  assert.deepEqual(names(fakeDaemon.read()), ["verify-stack-relay"]);
+});
+
 test("a volume the stack made twice under one name is removed whichever record is read first (R7-2)", async () => {
   const fakeDaemon = daemon({
     containers: generation("a"),
@@ -706,7 +793,7 @@ test("a volume the stack made twice under one name is removed whichever record i
 
 test("a teardown on one daemon leaves another daemon's ledger alone (R7-3)", async () => {
   const first = daemon({
-    containers: [...generation("a"), ["sealant-5e55", {}]],
+    containers: [...generation("a"), ["sealant-5e55", {}, mounts("mend-control")]],
     volumes: [STATE_VOLUME],
   });
   const ids = Object.fromEntries(
@@ -728,7 +815,7 @@ test("a ledger that is planted, open to others or unreadable removes nothing (NI
     const fakeDaemon = daemon({
       containers: [
         ["verify-stack-relay", { [STACK_LABEL]: "1" }],
-        ["sealant-5e55", {}],
+        ["sealant-5e55", {}, mounts("mend-control")],
       ],
       volumes: [STATE_VOLUME],
     });
@@ -761,7 +848,7 @@ test("a ledger that is planted, open to others or unreadable removes nothing (NI
 
 test("the ledger is this cache's windows and the state volume's copy, merged (NIT-4)", async () => {
   const fakeDaemon = daemon({
-    containers: [...generation("a"), ["sealant-5e55", {}]],
+    containers: [...generation("a"), ["sealant-5e55", {}, mounts("mend-control")]],
     volumes: [STATE_VOLUME, volume("mend-store", {}, "2026-10-10T01:00:00Z")],
     files: {
       [`/fake/volumes/${STATE_VOLUME}/_data/ledger.json`]: JSON.stringify({

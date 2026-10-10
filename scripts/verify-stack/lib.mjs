@@ -328,7 +328,9 @@ export const volumeIdentity = (volume) => `${volume.name}\u0000${volume.createdA
 
 // What the stack makes on a daemon is shaped by `mend server setup` and the inner Sealant: Compose
 // project `mend` (its containers, its `mend_…` volumes and network), the volumes setup claims, and an
-// inner session's `sealant-<run>` container, its `-docker` sidecar and its `-network`. A session's
+// inner session's `sealant-<run>` container, its `-docker` sidecar and its `-network`, which the inner
+// Sealant makes with `docker run` and `docker network create`, never with Compose: a Compose project
+// named `sealant…` (Core's own dev stack, in the session's `/workspace/repos/sealant`) is not one. A session's
 // Docker daemon is shared with its agent and its person, so a recording window takes only what has
 // that shape, and a teardown removes only what was both recorded and has it (`planTeardown`).
 const SESSION_CONTAINER = /^sealant-[a-z0-9][a-z0-9_.-]*$/i;
@@ -337,20 +339,36 @@ const PRODUCT_VOLUME = /^(mend-(store|control|garage)|mend_.+)$/;
 const COMPOSE_NETWORK_NAME = /^mend_.+$/;
 
 /**
- * What a recording window may take, by kind, from snapshot entries (`{ id, name, compose }` for a
- * container, `{ id, name }` for a network, `{ name, createdAt }` for a volume):
+ * What a recording window may take, by kind, from snapshot entries: `{ id, name, compose, mounts,
+ * workspace }` for a container (`compose` its Compose project or "", `mounts` the volumes it mounts,
+ * `workspace` its `sealant.workspace` label), `{ id, name, compose }` for a network, and
+ * `{ name, createdAt }` for a volume:
  * - `install` (`up`): the inner server's and its sessions' shapes;
  * - `session` (`mend`, `check`): an inner session's only.
  */
+/**
+ * An inner session's container, as the inner Sealant makes it with `docker run`: no Compose project,
+ * a `sealant-…` name, and either the executor's mount of the server's `mend-control` volume or, for
+ * its Docker sidecar `<executor>-docker`, the `sealant.workspace=<executor>` label Core gives it. A
+ * container someone else names `sealant-…` has neither.
+ */
+const sessionContainer = (item) =>
+  item.compose === "" &&
+  SESSION_CONTAINER.test(item.name) &&
+  ((item.mounts ?? []).includes("mend-control") ||
+    (item.name.endsWith("-docker") && item.workspace === item.name.slice(0, -"-docker".length)));
+const sessionNetwork = (item) => item.compose === "" && SESSION_NETWORK.test(item.name);
 export const SHAPES = {
   install: {
-    container: (item) => item.compose === COMPOSE_PROJECT || SESSION_CONTAINER.test(item.name),
-    network: (item) => COMPOSE_NETWORK_NAME.test(item.name) || SESSION_NETWORK.test(item.name),
+    container: (item) => item.compose === COMPOSE_PROJECT || sessionContainer(item),
+    network: (item) =>
+      (item.compose === COMPOSE_PROJECT && COMPOSE_NETWORK_NAME.test(item.name)) ||
+      sessionNetwork(item),
     volume: (item) => PRODUCT_VOLUME.test(item.name),
   },
   session: {
-    container: (item) => SESSION_CONTAINER.test(item.name),
-    network: (item) => SESSION_NETWORK.test(item.name),
+    container: sessionContainer,
+    network: sessionNetwork,
     volume: () => false,
   },
 };
@@ -403,8 +421,16 @@ const entry = {
     id: item.Id,
     name: nameOf(item),
     compose: labelsOf(item)["com.docker.compose.project"] ?? "",
+    mounts: (item.Mounts ?? [])
+      .filter((mount) => mount.Type === "volume")
+      .map((mount) => mount.Name),
+    workspace: labelsOf(item)["sealant.workspace"] ?? "",
   }),
-  network: (item) => ({ id: item.Id, name: nameOf(item) }),
+  network: (item) => ({
+    id: item.Id,
+    name: nameOf(item),
+    compose: labelsOf(item)["com.docker.compose.project"] ?? "",
+  }),
   volume: (item) => ({ name: item.Name, createdAt: item.CreatedAt }),
 };
 /** Names the stack's resources take, which another server or client may share: reported only. */

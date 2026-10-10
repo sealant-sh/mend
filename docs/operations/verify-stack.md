@@ -65,9 +65,13 @@ a hang-up, then SIGKILL two seconds later), killed, or failed.
     (directories 0700, files 0600, both checked as the lock's are). `up` copies the ledger into the
     state volume, and a teardown reads both.
   - **It has the stack's shape.** `up` records what the inner server and its sessions make: Compose
-    project `mend` and its `mend_…` volumes and network, the volumes setup claims, and `sealant-…`
-    containers and networks. `mend` and `check` record an inner session's `sealant-…` containers and
-    networks only.
+    project `mend` and its `mend_…` volumes and network, the volumes setup claims, and inner
+    sessions. `mend` and `check` record inner sessions only. An inner session is what the inner
+    Sealant makes with `docker run`, never Compose. Its executor is a `sealant-…` container with no
+    Compose project that mounts the server's `mend-control` volume. Its Docker sidecar is
+    `<executor>-docker`, labelled `sealant.workspace=<executor>`. Its network is
+    `<executor>-network`, with no Compose project. The person's own Core dev stack (Compose project
+    `sealant`, from `docker compose up` in `/workspace/repos/sealant`) is none of these.
 
   A teardown, the watchdog's, a failed start's and `down`'s alike, removes what passes both, plus
   the stack's own infrastructure (its label and its `verify-stack-` prefix, both), and prints each
@@ -251,10 +255,11 @@ Docker service capped at 12 CPUs; Core and sealantd at main, Mend at this branch
   or, for `down`, whatever stack the daemon holds; the failed start then finds its generation gone
   and stops.
 - A session's Docker service is shared with its agent and its person. What they create while a
-  recording window is open is recorded only if it has the stack's shape: something they start under
-  the product's names (Compose project `mend`, `mend-store`, `sealant-…`) during a window would be
-  taken for the stack's. Mend's own refusal of a second Mend on one daemon covers the product's
-  server; anything else of those names needs a daemon of its own.
+  recording window is open is recorded only if it has the stack's shape. Something they start in
+  that shape during a window would be taken for the stack's: Compose project `mend`, the product's
+  volume names, a `sealant-…` container that mounts `mend-control`, or a hand-made
+  `sealant-…-network` network (which holds no data). Mend's own refusal of a second Mend on one
+  daemon covers the product's server. Anything else of those shapes needs a daemon of its own.
 - A volume's identity has one-second resolution (Docker's creation time). A stack-shaped volume that
   someone else removes and makes again under the same name within the second the stack made it is
   taken for the stack's.
