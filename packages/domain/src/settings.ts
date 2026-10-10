@@ -19,10 +19,13 @@ export type WorkspaceImageOs = typeof WorkspaceImageOs.Type;
 /**
  * The code default for new installs. The last five are what Mend's default shell profile
  * (`packages/sessions/src/shell-profile/zshrc`) looks for, which is why the default shell is zsh:
- * the prompt, the three zsh plugins and direnv, beside `bat` and `fzf`.
+ * the prompt, the three zsh plugins and direnv, beside `bat` and `fzf`. `bun` is for pstack
+ * (`orch`, `watch-pr`, `ship-pr`), and `unzip` is what bun's own installer needs; migration 0127
+ * added both to every stored family image.
  */
 const DEFAULT_WORKSPACE_PACKAGES: ReadonlyArray<string> = [
   "pnpm",
+  "bun",
   "python",
   "uv",
   "mise",
@@ -30,6 +33,7 @@ const DEFAULT_WORKSPACE_PACKAGES: ReadonlyArray<string> = [
   "lazygit",
   "bat",
   "curl",
+  "unzip",
   "jq",
   "ripgrep",
   "fd",

@@ -15,6 +15,7 @@ describe("MendSettings workspace image profile", () => {
       os: "arch",
       packages: [
         "pnpm",
+        "bun",
         "python",
         "uv",
         "mise",
@@ -22,6 +23,7 @@ describe("MendSettings workspace image profile", () => {
         "lazygit",
         "bat",
         "curl",
+        "unzip",
         "jq",
         "ripgrep",
         "fd",
@@ -50,6 +52,7 @@ describe("MendSettings workspace image profile", () => {
       os: "arch",
       packages: [
         "pnpm",
+        "bun",
         "python",
         "uv",
         "mise",
@@ -57,6 +60,7 @@ describe("MendSettings workspace image profile", () => {
         "lazygit",
         "bat",
         "curl",
+        "unzip",
         "jq",
         "ripgrep",
         "fd",

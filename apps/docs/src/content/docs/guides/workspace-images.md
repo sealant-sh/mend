@@ -36,6 +36,7 @@ The default for a new install is Arch Linux with `zsh`, Docker enabled, and thes
 
 ```text
 pnpm
+bun
 python
 uv
 mise
@@ -43,6 +44,7 @@ github-cli
 lazygit
 bat
 curl
+unzip
 jq
 ripgrep
 fd
@@ -55,14 +57,17 @@ direnv
 ```
 
 The last five are what Mend's [default shell profile](/guides/dotfiles/#default-shell-profile) uses.
-A saved instance, organization or project environment keeps its own shell and packages.
+A saved instance, organization or project environment keeps its own shell and packages, with one
+exception: upgrading to the release that added `bun` and `unzip` adds both to every saved managed
+family environment that lacks them. Custom base environments are not changed.
 
 Mend checks each package name against the platform's package catalog when you save. Every id in the
 default list installs on all four families, on both x86_64 and ARM64, from the family's own
 repositories or from a pinned, checksum-verified release where the family has no package (`mise`,
-`lazygit`, `uv`). Save is refused when a package cannot be resolved or is unsupported for the
-selected family, and the refusal names each rejected entry. A saved definition stores each name as
-the catalog id it resolved to, so an alias you typed may come back under its canonical id.
+`lazygit`, `uv`, `bun`). The `bun` release was built on x86_64 only; its ARM64 archive's checksum
+matches bun's published one. Save is refused when a package cannot be resolved or is unsupported for
+the selected family, and the refusal names each rejected entry. A saved definition stores each name
+as the catalog id it resolved to, so an alias you typed may come back under its canonical id.
 
 On the instance default, the operator also sees **Suggestions from this machine**. It checks a fixed
 list of executable and config paths on the machine running Mend and offers matching packages. It

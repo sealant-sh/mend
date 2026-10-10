@@ -1,10 +1,40 @@
-import { defaultWorkspaceImage } from "@mend/domain";
+import type { WorkspaceImage } from "@mend/domain";
 import { describe, expect, it } from "vitest";
 
 import { hotFingerprint, type HotFingerprintInputs } from "../src/hot-pool.ts";
 
+/**
+ * The default image before `bun` and `unzip` joined it, spelled out: the shared standby's golden
+ * hash below must not move when the defaults do.
+ */
+const workspaceImage: WorkspaceImage = {
+  mode: "family",
+  os: "arch",
+  packages: [
+    "pnpm",
+    "python",
+    "uv",
+    "mise",
+    "github-cli",
+    "lazygit",
+    "bat",
+    "curl",
+    "jq",
+    "ripgrep",
+    "fd",
+    "fzf",
+    "starship",
+    "zsh-autosuggestions",
+    "zsh-syntax-highlighting",
+    "zsh-history-substring-search",
+    "direnv",
+  ],
+  shell: "zsh",
+  services: { docker: true },
+};
+
 const base: HotFingerprintInputs = {
-  workspaceImage: defaultWorkspaceImage,
+  workspaceImage,
   applyDotfiles: true,
   inheritUserSkills: true,
   skills: [

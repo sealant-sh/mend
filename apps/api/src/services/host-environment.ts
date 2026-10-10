@@ -41,6 +41,7 @@ const TOOL_PROBES: ReadonlyArray<{
 }> = [
   { executables: ["docker"], kind: "service", id: "docker" },
   { executables: ["bat", "batcat"], kind: "package", id: "bat" },
+  { executables: ["bun"], kind: "package", id: "bun" },
   { executables: ["curl"], kind: "package", id: "curl" },
   { executables: ["fd", "fdfind"], kind: "package", id: "fd" },
   { executables: ["fzf"], kind: "package", id: "fzf" },
@@ -52,6 +53,7 @@ const TOOL_PROBES: ReadonlyArray<{
   { executables: ["pnpm"], kind: "package", id: "pnpm" },
   { executables: ["python3", "python"], kind: "package", id: "python" },
   { executables: ["rg"], kind: "package", id: "ripgrep" },
+  { executables: ["unzip"], kind: "package", id: "unzip" },
   { executables: ["uv"], kind: "package", id: "uv" },
 ];
 

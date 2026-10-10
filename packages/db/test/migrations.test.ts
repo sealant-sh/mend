@@ -2818,3 +2818,95 @@ describe.skipIf(!reachable)("0126 repository URL credentials", () => {
     });
   });
 });
+
+/** A stored family image; rows from before custom mode existed carry no `mode`. */
+const familyImage = (packages: ReadonlyArray<string>, withMode = true) => ({
+  ...(withMode ? { mode: "family" } : {}),
+  os: "arch",
+  packages,
+  shell: "zsh",
+  services: { docker: true },
+});
+const customImage = {
+  mode: "custom",
+  baseImage: "ghcr.io/me/base:1",
+  packages: ["ripgrep"],
+  setupCommands: [],
+  services: { docker: true },
+};
+
+describe.skipIf(!reachable)("0127 default bun", () => {
+  const DB = `${SCRATCH_DB}_default_bun`;
+  const layer = (() => {
+    const url = new URL(ADMIN_URL);
+    url.pathname = `/${DB}`;
+    return PgClient.layer({ url: Redacted.make(url.toString()) });
+  })();
+  const withDb = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
+    Effect.runPromise(effect.pipe(Effect.provide(layer), Effect.scoped));
+
+  beforeAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`CREATE DATABASE ${DB}`);
+      }),
+    );
+  });
+  afterAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`DROP DATABASE IF EXISTS ${DB} WITH (FORCE)`);
+      }),
+    );
+  });
+
+  it("adds bun and unzip to every stored family image where missing, and leaves custom bases alone", async () => {
+    const result = await withDb(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* upTo("0126_repository_url_credentials");
+        const [organization] = yield* sql<{ readonly id: string }>`SELECT id FROM organizations`;
+        const org = organization?.id ?? "";
+        yield* sql`
+          INSERT INTO settings (key, value)
+          VALUES ('mend', ${JSON.stringify({ prMode: "draft-immediately", concurrency: 1, workspaceImage: familyImage(["pnpm", "jq"]) })}::jsonb)`;
+        yield* sql`
+          INSERT INTO organization_settings (organization_id, workspace_image)
+          VALUES (${org}, ${JSON.stringify(familyImage(["ripgrep", "unzip"], false))}::jsonb)`;
+        yield* sql`
+          INSERT INTO projects (id, name, store_path, default_branch, organization_id, workspace_image)
+          VALUES
+            ('p-family', 'family', '/store/p-family/repo.git', 'main', ${org}, ${JSON.stringify(familyImage(["bun", "fd"]))}::jsonb),
+            ('p-custom', 'custom', '/store/p-custom/repo.git', 'main', ${org}, ${JSON.stringify(customImage)}::jsonb),
+            ('p-inherit', 'inherit', '/store/p-inherit/repo.git', 'main', ${org}, NULL)`;
+        yield* migrations["0127_default_bun"];
+        // Running it again changes nothing.
+        yield* migrations["0127_default_bun"];
+        const [instance] = yield* sql<{ readonly packages: ReadonlyArray<string> }>`
+          SELECT value->'workspaceImage'->'packages' AS packages FROM settings`;
+        const [organizationImage] = yield* sql<{ readonly packages: ReadonlyArray<string> }>`
+          SELECT workspace_image->'packages' AS packages FROM organization_settings`;
+        const projects = yield* sql<{
+          readonly id: string;
+          readonly packages: ReadonlyArray<string> | null;
+        }>`SELECT id, workspace_image->'packages' AS packages FROM projects ORDER BY id`;
+        return {
+          instance: instance?.packages,
+          organization: organizationImage?.packages,
+          projects: projects.map((row) => [row.id, row.packages]),
+        };
+      }),
+    );
+    expect(result).toEqual({
+      instance: ["pnpm", "jq", "bun", "unzip"],
+      organization: ["ripgrep", "unzip", "bun"],
+      projects: [
+        ["p-custom", ["ripgrep"]],
+        ["p-family", ["bun", "fd", "unzip"]],
+        ["p-inherit", null],
+      ],
+    });
+  });
+});
