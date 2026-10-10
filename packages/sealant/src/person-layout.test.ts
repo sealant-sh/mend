@@ -166,6 +166,7 @@ const EVERY_FEATURE: SealantFeatures = {
   captureOwnerMap: true,
   workspaceSshUser: false,
   personBinding: false,
+  sshKeyRemovalEndsConnections: false,
 };
 /** A control plane from before any of them (an older Core reports every flag false). */
 const NO_FEATURE: SealantFeatures = {
@@ -176,6 +177,7 @@ const NO_FEATURE: SealantFeatures = {
   captureOwnerMap: false,
   workspaceSshUser: false,
   personBinding: false,
+  sshKeyRemovalEndsConnections: false,
 };
 
 const clientsLayer = (
