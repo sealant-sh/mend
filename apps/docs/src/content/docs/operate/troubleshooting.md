@@ -217,7 +217,7 @@ that names it. These appear in `mend server logs` (or the API Pod's log):
 
 - `MEND_EXPOSURE=public is refused: the public exposure gate …` followed by each open item and its
   fix. See [Exposure and the public gate](/operate/exposure/).
-- `MEND_EXPOSURE_DECLARED names <item>: only core-private, edge-tls, workspace-ssh can be declared; …`
+- `MEND_EXPOSURE_DECLARED names <item>: only core-private, edge-tls, workspace-ssh, t3code-gateway can be declared; …`
 - `MEND_TENANCY=multi is refused: the multi mode gate … is not complete.` followed by each open
   item; `mend operator gate` lists the same items.
 - `MEND_TENANCY=single is refused: <n> organizations exist on this instance.`

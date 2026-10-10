@@ -109,8 +109,8 @@ spec:
             - { name: MEND_SESSION_ENDPOINT_CA_FILE, value: /etc/mend/session-ca/{{ .Values.sessionChannel.tls.ca.key }} }
             {{- end }}
             {{- range .Values.exposure.declared }}
-            {{- if not (has . (list "core-private" "edge-tls")) }}
-            {{ fail (printf "exposure.declared takes only core-private and edge-tls (got %q)" .) }}
+            {{- if not (has . (list "core-private" "edge-tls" "t3code-gateway")) }}
+            {{ fail (printf "exposure.declared takes only core-private, edge-tls and t3code-gateway (got %q)" .) }}
             {{- end }}
             {{- end }}
             {{- with .Values.exposure.declared }}

@@ -1180,9 +1180,93 @@ describe("mend server setup", () => {
     expect(await serverCommand(["setup", "--declare", "budgets"], invalid.runtime)).toMatchObject({
       _tag: "error",
       message: expect.stringContaining(
-        "--declare takes core-private, edge-tls, workspace-ssh or none",
+        "--declare takes core-private, edge-tls, workspace-ssh, t3code-gateway or none",
       ),
     });
+  });
+
+  it("keeps the edge, public exposure, --ssh-bind, every --declare and the t3code gateway together (mend#620 and #644/#645)", async () => {
+    const configDir = temporaryDirectory("ssh-gate-gateway");
+    expect(await serverCommand(["setup"], makeRuntime({ configDir }).runtime)).toEqual({
+      _tag: "ok",
+    });
+    const both = makeRuntime({ configDir, gatewayLabel: "1" });
+    expect(
+      await serverCommand(
+        [
+          "setup",
+          "--edge",
+          "mend.example.test",
+          "--exposure",
+          "public",
+          "--ssh-bind",
+          "0.0.0.0",
+          "--t3-gateway",
+          "--declare",
+          "workspace-ssh",
+          "--declare",
+          "core-private",
+          "--declare",
+          "t3code-gateway",
+        ],
+        { ...both.runtime, probeSsh: async () => [] },
+      ),
+    ).toEqual({ _tag: "ok" });
+    const env = readEnv(activeFile(configDir, "server.env"));
+    expect(env.get("MEND_SSH_PUBLISHED")).toBe("0.0.0.0:2222");
+    expect(env.get("MEND_EXPOSURE_DECLARED")).toBe("workspace-ssh,core-private,t3code-gateway");
+    expect(env.get("MEND_T3_GATEWAY_PORT")).toBe("3120");
+    expect(JSON.parse(fs.readFileSync(activeFile(configDir, "server.json"), "utf8"))).toMatchObject(
+      {
+        sshBind: "0.0.0.0",
+        declared: ["workspace-ssh", "core-private", "t3code-gateway"],
+        t3GatewayPort: 3120,
+        edgeHost: "mend.example.test",
+      },
+    );
+    const up = both.commands.find(([, args]) => args.includes("up"))?.[1] ?? [];
+    for (const overlay of ["compose.edge.yaml", "compose.posture.yaml", "compose.t3.yaml"]) {
+      expect(up.some((arg) => arg.endsWith(overlay))).toBe(true);
+    }
+    // A rerun keeps all of it: the generation reads back as written.
+    expect(
+      await serverCommand(["setup"], makeRuntime({ configDir, gatewayLabel: "1" }).runtime),
+    ).toEqual({ _tag: "ok" });
+    expect(readEnv(activeFile(configDir, "server.env")).get("MEND_EXPOSURE_DECLARED")).toBe(
+      "workspace-ssh,core-private,t3code-gateway",
+    );
+
+    // The gateway off: SSH stays published, and every declaration stays.
+    expect(
+      await serverCommand(["setup", "--no-t3-gateway"], {
+        ...makeRuntime({ configDir }).runtime,
+        probeSsh: async () => [],
+      }),
+    ).toEqual({ _tag: "ok" });
+    const off = readEnv(activeFile(configDir, "server.env"));
+    expect(off.get("MEND_SSH_PUBLISHED")).toBe("0.0.0.0:2222");
+    expect(off.get("MEND_EXPOSURE_DECLARED")).toBe("workspace-ssh,core-private,t3code-gateway");
+    expect(off.has("MEND_T3_GATEWAY_PORT")).toBe(false);
+    expect(fs.existsSync(activeFile(configDir, "compose.t3.yaml"))).toBe(false);
+    expect(fs.existsSync(activeFile(configDir, "compose.posture.yaml"))).toBe(true);
+
+    // The gateway on again and SSH back on loopback: the gateway's overlay stays, SSH's goes.
+    expect(
+      await serverCommand(
+        ["setup", "--t3-gateway", "--ssh-bind", "127.0.0.1"],
+        makeRuntime({ configDir, gatewayLabel: "1" }).runtime,
+      ),
+    ).toEqual({ _tag: "ok" });
+    const back = readEnv(activeFile(configDir, "server.env"));
+    expect(back.has("MEND_SSH_PUBLISHED")).toBe(false);
+    expect(back.get("MEND_T3_GATEWAY_PORT")).toBe("3120");
+    expect(fs.readFileSync(activeFile(configDir, "compose.t3.yaml"), "utf8")).toContain(
+      '"127.0.0.1:${MEND_T3_GATEWAY_PORT',
+    );
+    // On loopback, SSH is not published apart: mend#620 keeps no override for it.
+    const config = JSON.parse(fs.readFileSync(activeFile(configDir, "server.json"), "utf8"));
+    expect(config).toMatchObject({ t3GatewayPort: 3120 });
+    expect(config).not.toHaveProperty("sshBind");
   });
 
   it("reads an SSH banner, and settles on silence, a clean close before any bytes, and a refusal", async () => {

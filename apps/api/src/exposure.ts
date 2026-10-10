@@ -38,7 +38,7 @@ export type Established = "observed" | "carried" | "declared" | "open";
  * outside states so in `MEND_EXPOSURE_DECLARED`; nothing else can close them. `workspace-ssh` is
  * declarable only in that sense: who reaches a published SSH port is never visible from in here.
  */
-export const DECLARABLE = ["core-private", "edge-tls", "workspace-ssh"] as const;
+export const DECLARABLE = ["core-private", "edge-tls", "workspace-ssh", "t3code-gateway"] as const;
 export type Declarable = (typeof DECLARABLE)[number];
 
 export interface ExposureOutcome {
@@ -100,6 +100,12 @@ export interface ExposurePosture {
   readonly declared: ReadonlyArray<Declarable>;
   /** `MEND_EXPOSURE_REASSESSED`: the version the operator recorded a reassessment of. */
   readonly reassessedVersion: string | undefined;
+  /**
+   * `MEND_T3_GATEWAY_ENABLED`: the t3code gateway is enabled beside Mend, on a port of its own
+   * (ADR 0012). A configuration fact, read once: whether it listens is not observed here. Absent
+   * or false, the gate lists nothing about it.
+   */
+  readonly t3Gateway?: boolean;
   readonly version: string;
   /**
    * The package and image mirrors sessions are pointed at (`MEND_NPM_MIRROR_URL`,
@@ -345,6 +351,18 @@ export const evaluateExposureGate = (posture: ExposurePosture): ReadonlyArray<Ex
       "the operator states the edge's certificate chains to a public root, renews, and port 80 redirects",
       "mend doctor run against the origin from another network",
     ),
+    // Only while the gateway is enabled: an install that never turns it on reads as before it.
+    ...(posture.t3Gateway === true
+      ? [
+          unobservable(
+            posture,
+            "t3code-gateway",
+            "the t3code gateway is enabled (MEND_T3_GATEWAY_ENABLED), on a port of its own; this process cannot observe who reaches that port, nor whether the gateway is listening there. mend server setup publishes it on 127.0.0.1 only, and mend server status says whether it answered",
+            "the operator states who reaches the t3code gateway's port is what they put in front of it",
+            "a connection attempt to its port from another machine, answering nothing or only through what you put in front of it",
+          ),
+        ]
+      : []),
     {
       id: "reassessment",
       established: reassessed ? "declared" : "open",
@@ -414,6 +432,12 @@ export const ExposureConfigLive: Layer.Layer<
     }
     const reassessed = yield* Config.string("MEND_EXPOSURE_REASSESSED").pipe(Config.option);
     const version = yield* Config.string("MEND_VERSION").pipe(Config.withDefault("dev"));
+    // The switch the bundle starts the gateway by (scripts/bundle-supervisor.mjs).
+    const t3Gateway = ["1", "true"].includes(
+      (yield* Config.string("MEND_T3_GATEWAY_ENABLED").pipe(Config.withDefault("")))
+        .trim()
+        .toLowerCase(),
+    );
     const network = yield* NetworkConfig;
     const deployment = yield* DeploymentConfig;
     const mirrorHosts = [
@@ -447,6 +471,7 @@ export const ExposureConfigLive: Layer.Layer<
       reassessedVersion: reassessed._tag === "Some" ? reassessed.value : undefined,
       version,
       mirrors: mirrorHosts,
+      t3Gateway,
     });
     const refusal = exposureRefusal(exposure, gate);
     if (refusal !== null) return yield* new ExposureRefused({ message: refusal });

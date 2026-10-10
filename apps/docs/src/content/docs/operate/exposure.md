@@ -97,10 +97,10 @@ which ones.
 
 ## The public exposure gate
 
-The gate has fourteen items. The first eleven can be established by this build, or are stated by you
-for what it cannot see; an open one among them refuses a `public` start. The last three cannot be
-observed from inside the deployment, are reported as open until you state otherwise, and never block
-a start.
+The gate has fourteen items, fifteen while the t3code gateway is enabled. The first eleven can be
+established by this build, or are stated by you for what it cannot see; an open one among them
+refuses a `public` start. The rest cannot be observed from inside the deployment, are reported as
+open until you state otherwise, and never block a start.
 
 | Item                         | Established by        | What closes it                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | ---------------------------- | --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -117,14 +117,15 @@ a start.
 | `workspace-ssh`              | observed, or declared | Workspace SSH is not published apart from the web port, or only on loopback (observed). Published elsewhere with `mend server setup --ssh-bind` (`MEND_SSH_PUBLISHED`), it is open until you checked from each network that should not reach it, and named it in `MEND_EXPOSURE_DECLARED` (`--declare workspace-ssh`). The gateway admits registered keys only, and a workspace only for its launcher; who reaches the port is not something the server can see. |
 | `core-private`               | open until declared   | You checked from outside that Sealant, its registry and the database answer nothing from the Internet, and named it in `MEND_EXPOSURE_DECLARED`.                                                                                                                                                                                                                                                                                                                 |
 | `edge-tls`                   | open until declared   | You checked from another network that the certificate chains to a public root, renews, and that port 80 redirects, and named it in `MEND_EXPOSURE_DECLARED`.                                                                                                                                                                                                                                                                                                     |
+| `t3code-gateway`             | open until declared   | Listed while the t3code gateway is enabled, whether or not it is answering (`mend server status` says that). You checked from another machine that its port answers nothing, or only through what you put in front of it, and named it in `MEND_EXPOSURE_DECLARED`.                                                                                                                                                                                              |
 | `reassessment`               | open until declared   | `MEND_EXPOSURE_REASSESSED` equals the running version. An upgrade reopens it. A build with no version of its own (`dev`) stays open.                                                                                                                                                                                                                                                                                                                             |
 
-`MEND_EXPOSURE_DECLARED` takes a comma-separated list, and only `core-private`, `edge-tls` and
-`workspace-ssh`. `mend server setup --declare <item>` writes it. Any other name refuses to start,
-because every other item is read by the server or not at all:
+`MEND_EXPOSURE_DECLARED` takes a comma-separated list, and only `core-private`, `edge-tls`,
+`workspace-ssh` and `t3code-gateway`. `mend server setup --declare <item>` writes it. Any other name
+refuses to start, because every other item is read by the server or not at all:
 
 ```text
-MEND_EXPOSURE_DECLARED names budgets: only core-private, edge-tls, workspace-ssh can be declared; every other item is observed by this process or not at all.
+MEND_EXPOSURE_DECLARED names budgets: only core-private, edge-tls, workspace-ssh, t3code-gateway can be declared; every other item is observed by this process or not at all.
 ```
 
 A `public` start with an observable item open fails with the list of what is open and the fix for

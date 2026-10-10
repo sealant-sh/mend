@@ -57,11 +57,11 @@ edge in front of Mend. `mend server setup --edge <host>` runs the repository's C
 render an Ingress to the web tier. Test a terminal through the edge before relying on it.
 
 `public` refuses to start while an item of the public exposure gate that Mend can observe is open.
-`mend operator exposure` lists them. Two items, `core-private` and `edge-tls`, no build can observe;
-once you have verified one from outside, name it in `MEND_EXPOSURE_DECLARED` and the report shows it
-as declared. An independent security reassessment of the exact release is also yours to record.
-Nothing in Mend says an instance is fit to expose to the Internet. Read
-[Exposure](/operate/exposure/).
+`mend operator exposure` lists them. Two items, `core-private` and `edge-tls`, no build can observe,
+and a third, `t3code-gateway`, while the t3code gateway is enabled; once you have verified one from
+outside, name it in `MEND_EXPOSURE_DECLARED` and the report shows it as declared. An independent
+security reassessment of the exact release is also yours to record. Nothing in Mend says an instance
+is fit to expose to the Internet. Read [Exposure](/operate/exposure/).
 
 ## Pair another device
 

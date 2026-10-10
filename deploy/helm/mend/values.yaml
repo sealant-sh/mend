@@ -166,8 +166,9 @@ exposure:
   reassessedVersion: ""
   # The gate items no process can observe from inside the deployment, once YOU have verified them
   # from outside: "core-private" (Sealant, its registry and the database answer nothing from the
-  # Internet) and "edge-tls" (public certificate, renewal, port 80 redirects). Reported as
-  # declared, never as observed. Nothing else can be declared.
+  # Internet), "edge-tls" (public certificate, renewal, port 80 redirects) and, while the t3code
+  # gateway is enabled, "t3code-gateway" (who reaches its port). Reported as declared, never as
+  # observed. Nothing else can be declared.
   declared: []
 
 # An Ingress to the WEB Service only, on one host, with TLS. Opt-in. The chart renders the Ingress;
