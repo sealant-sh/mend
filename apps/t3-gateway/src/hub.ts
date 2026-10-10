@@ -994,7 +994,7 @@ export const makePersonHub = (input: {
       for (const [id, next] of nextProjects) {
         if (shellProjects.get(id)?.print === next.print) continue;
         deltas.push({ kind: "project.updated", sequence: nextSequence(), project: next.value });
-        sizes.push(next.print.length);
+        sizes.push(replayBytes(next.print));
       }
       for (const [id, next] of nextThreads) {
         if (shellThreads.get(id)?.print === next.print) continue;
@@ -1004,7 +1004,7 @@ export const makePersonHub = (input: {
           location: "active",
           thread: next.value,
         });
-        sizes.push(next.print.length);
+        sizes.push(replayBytes(next.print));
       }
       for (const [id, previous] of shellThreads) {
         if (nextThreads.has(id)) continue;
@@ -1110,7 +1110,7 @@ export const makePersonHub = (input: {
           yield* publish([
             [
               { kind: "snapshot", snapshotSequence: nextSequence(), projection: built.projection },
-              built.entities.reduce((total, entity) => total + entity.print.length, 0),
+              built.entities.reduce((total, entity) => total + replayBytes(entity.print), 0),
             ],
           ]);
           return built.projection;
@@ -1125,7 +1125,7 @@ export const makePersonHub = (input: {
               sequence,
               event: entity.event({ ...base, threadId: built.projection.thread.id }),
             },
-            entity.print.length,
+            replayBytes(entity.print),
           ]);
         }
         if (changes.length > 0) yield* publish(changes);
@@ -2571,6 +2571,13 @@ const NOT_KEPT =
 const SEQUENCE_BLOCK = 1_000_000;
 /** What a removal costs the replay log: an id and a tag. */
 const REMOVAL_BYTES = 128;
+/** What a replayed change's envelope (its kind, sequence, ids, event fields) adds, at most. */
+const ENVELOPE_BYTES = 512;
+/**
+ * A replayed change's size as it goes out: its print's UTF-8 bytes and its envelope (review
+ * 595-R2-N1), never the print's length in UTF-16 units, which counts a CJK character as one.
+ */
+const replayBytes = (print: string): number => Buffer.byteLength(print, "utf8") + ENVELOPE_BYTES;
 /** How long a thread stays watched after its last subscriber: a reconnect resumes it by replay. */
 const WATCH_GRACE = "2 minutes";
 

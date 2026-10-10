@@ -159,6 +159,44 @@ describe("replay after a sequence", () => {
   );
 });
 
+describe("replay sizes as they go out (595-R2-N1)", () => {
+  it.live("answers a snapshot for a change past 1 MiB in UTF-8, short as it is in characters", () =>
+    Effect.gen(function* () {
+      const mend = yield* startFakeMend;
+      setup(mend);
+      const turn = mend.workbench.addTurn("session-1", "Explain it");
+      yield* Effect.gen(function* () {
+        const { rpc } = yield* pairAndConnect(mend, "UTF8-BYTES");
+        const before = yield* Effect.scoped(
+          Effect.gen(function* () {
+            const thread = yield* feed(
+              rpc[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({ threadId: THREAD }),
+            );
+            return (yield* thread.next(isThreadSnapshot)).snapshotSequence;
+          }),
+        );
+        // 400,000 characters, 1.2 MB in UTF-8: past the 1 MiB a thread's replay keeps.
+        const text = "漢".repeat(400_000);
+        assert.isAbove(Buffer.byteLength(text), 1024 * 1024);
+        mend.workbench.addItem(turn, { kind: "assistant-message", text });
+        yield* Effect.sleep("500 millis");
+        const resumed = yield* Effect.scoped(
+          Effect.gen(function* () {
+            const thread = yield* feed(
+              rpc[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({
+                threadId: THREAD,
+                afterSequence: before,
+              }),
+            );
+            return yield* thread.next(anyThreadItem);
+          }),
+        );
+        assert.strictEqual(resumed.kind, "snapshot");
+      }).pipe(Effect.scoped, Effect.provide(gatewayTestLayer(mend.url)));
+    }),
+  );
+});
+
 describe("the replay log", () => {
   it("answers what came after a sequence it covers, and nothing it does not", () => {
     const log = makeReplayLog<string>({ capacity: 2, maxBytes: 1_000 }, 10);
