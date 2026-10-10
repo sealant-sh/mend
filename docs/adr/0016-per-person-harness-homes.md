@@ -191,7 +191,15 @@ starts. A person's live process, Services included, keeps their user's logins he
   copy of every file Claude edits, secret files included, so it is never saved, here or anywhere
   else, `people/*/` included (`HARNESS_CREDENTIALS`, sealantd#136 and #144). It stays in `R` and
   ends with the executor. Mend's per-person saved records are `P/.mend-saved/`, addressed by their
-  absolute path, never through `~/.mend`.
+  absolute path, never through `~/.mend`. An image a person pastes is written by their own process,
+  as them, into `P/paste/` (0700 when made, the image 0600: only their own processes read it, and
+  the turn an image is attached to runs as its sender), created exclusively at its name, through no
+  link, and never by root (mend#597 review, finding 2; mend#615 review 3). A paste makes only the
+  person's user and home (`personHomeEnsureScript`), writes none of their logins and delivers
+  nothing. It redeems its image with a Mend token of its own, which root writes into root's own
+  `/run/mend/write-tokens/`: that token redeems pickups only, is never reached by a bulk revocation
+  of the person's tokens, is revoked when its paste ends on any path, and lapses 15 minutes after it
+  is issued in any case.
 
 - **The conversations a session shares,** `P_owner/conversations/<session id>/` (`C`): owned by the
   session's owner, group `mend`, setgid, mode 2770 with a default ACL granting the group `rwX`,

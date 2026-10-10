@@ -169,3 +169,86 @@ export const SCRIPT_PINNED_PUT_FUNCTION = `const pinnedPut = (dir, name, staging
   }
 };
 `;
+
+/**
+ * `containedPut(root, directoryMode, fileMode, target, bytes)`, for a file that must land inside
+ * `root` (a pasted image, mend#597 review finding 2): `null` once `bytes` are at `target`,
+ * `fileMode`, else why not, naming paths only. `target` must be a plain absolute path below `root`.
+ *
+ * - Every directory is reached through the descriptor of the one above it (`/proc/self/fd/<n>/…`,
+ *   or `/dev/fd/<n>/…` where that is proved to reach the same directory), opened through no link
+ *   (`O_NOFOLLOW`), from `root`'s real path down; with neither, nothing is written. A link planted
+ *   anywhere below `root` refuses the write instead of leading it elsewhere.
+ * - A directory missing is made with `directoryMode` in its one `mkdir` (the umask cleared around
+ *   it); no directory's mode is changed after (mend#615 review, 615-2).
+ * - The file is created once, at its name, exclusively and through no link (`O_EXCL|O_NOFOLLOW`),
+ *   0600, written, and set `fileMode` through its own descriptor. A refused write empties it.
+ *
+ * What it does not do is guard against the directory being renamed while it writes: it needs no
+ * guard (mend#615 review 3). In a person-layout executor this runs as the person, into their own
+ * saved directory, so only they (or `sudo`, which ADR 0016 accepts) could rename it, and a rename
+ * moves their own file among their own files. In a shared one it runs as root, where every
+ * process is root. Nothing is renamed, staged or taken back by name, so no race can lead it to
+ * remove or change anyone else's file.
+ */
+export const SCRIPT_CONTAINED_PUT_FUNCTION = `const containedPut = (root, directoryMode, fileMode, target, bytes) => {
+  const c = fs.constants;
+  const path = require("path");
+  if (!path.isAbsolute(root) || path.normalize(root) !== root || path.normalize(target) !== target) return "not a plain absolute path";
+  if (!target.startsWith(root === "/" ? "/" : root + "/")) return "not inside " + root;
+  const parts = target.slice(root === "/" ? 1 : root.length + 1).split("/");
+  const name = parts.pop();
+  if (name === undefined || name === "" || parts.some((part) => part === "" || part === "." || part === "..")) return "not a plain absolute path";
+  let real;
+  try { real = fs.realpathSync(root); } catch { return "could not enter " + root; }
+  let dfd;
+  try { dfd = fs.openSync(real, c.O_RDONLY | c.O_DIRECTORY | c.O_NOFOLLOW); } catch { return "could not enter " + root; }
+  // A directory's descriptor as a path: the first of /proc/self/fd and /dev/fd that reaches it.
+  const fdDir = (() => {
+    const held = fs.fstatSync(dfd);
+    for (const base of ["/proc/self/fd/", "/dev/fd/"]) {
+      try { const seen = fs.statSync(base + dfd + "/."); if (seen.dev === held.dev && seen.ino === held.ino) return base; } catch {}
+    }
+    return null;
+  })();
+  let shown = root;
+  const at = (entry) => fdDir + dfd + "/" + entry;
+  const linked = (entry) => { try { return fs.lstatSync(at(entry)).isSymbolicLink(); } catch { return false; } };
+  const enter = (entry) => fs.openSync(at(entry), c.O_RDONLY | c.O_DIRECTORY | c.O_NOFOLLOW);
+  let fd;
+  try {
+    if (fdDir === null) return "no /proc/self/fd or /dev/fd here to keep the write inside " + root;
+    for (const part of parts) {
+      let next;
+      try { next = enter(part); } catch (error) {
+        if (error.code !== "ENOENT") return (linked(part) ? "a link: " : "not a directory: ") + shown + "/" + part;
+        const mask = process.umask(0);
+        try { fs.mkdirSync(at(part), directoryMode & 0o777); } catch (mkdirError) {
+          if (mkdirError.code !== "EEXIST") return "could not make " + shown + "/" + part + " (" + (mkdirError.code || "error") + ")";
+        } finally { process.umask(mask); }
+        try { next = enter(part); } catch { return (linked(part) ? "a link: " : "not a directory: ") + shown + "/" + part; }
+      }
+      try { fs.closeSync(dfd); } catch {}
+      dfd = next;
+      shown = shown + "/" + part;
+    }
+    try {
+      fd = fs.openSync(at(name), c.O_WRONLY | c.O_CREAT | c.O_EXCL | c.O_NOFOLLOW, 0o600);
+    } catch (error) {
+      return (error.code === "EEXIST" ? "already there: " : "could not create: ") + shown + "/" + name;
+    }
+    try {
+      let done = 0;
+      while (done < bytes.length) done += fs.writeSync(fd, bytes, done, bytes.length - done);
+      fs.fchmodSync(fd, fileMode);
+    } catch (error) {
+      try { fs.ftruncateSync(fd, 0); } catch {}
+      return "could not write (" + (error.code || "error") + ")";
+    }
+    return null;
+  } finally {
+    if (fd !== undefined) { try { fs.closeSync(fd); } catch {} }
+    try { fs.closeSync(dfd); } catch {}
+  }
+};
+`;

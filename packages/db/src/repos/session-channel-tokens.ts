@@ -31,6 +31,22 @@ export const hashSessionChannelToken = (token: string): string =>
  */
 export const personTokenSession = (accountId: string): string => `person:${accountId}`;
 
+/**
+ * The session a one-off write's token row names (a pasted image, mend#615 review 3): the person's,
+ * marked apart, so nothing that revokes a person's tokens in bulk (`revokePerson`) ever reaches
+ * it. Only its own write revokes it (`revokeToken`), and it lapses `WRITE_TOKEN_TTL_MS` after it
+ * was issued whatever happens to that write.
+ */
+export const writeTokenSession = (accountId: string): string => `person-write:${accountId}`;
+const isWriteTokenSession = (sessionId: string): boolean => sessionId.startsWith("person-write:");
+
+/**
+ * How long a one-off write's token is accepted after it is issued: the longest a write waits for
+ * its exec on a busy instance (Core's run-exec queue) and runs, with room to spare. A revocation
+ * lost to a store outage or a restart is bounded by it.
+ */
+export const WRITE_TOKEN_TTL_MS = 15 * 60_000;
+
 /** 32 random bytes, base64url: 43 characters, no padding, safe in env and headers. */
 export const mintSessionChannelToken = (): string => randomBytes(32).toString("base64url");
 
@@ -60,6 +76,12 @@ export class SessionChannelTokensRepo extends Context.Service<
      */
     readonly issuePerson: (launchId: string, accountId: string) => Effect.Effect<string>;
     /**
+     * Mint one person's token for one one-off write in a launch (a pasted image, mend#615 review
+     * 3): accepted only to redeem pickups, for `WRITE_TOKEN_TTL_MS`, and never revoked by anything
+     * but `revokeToken` or the launch's end (`revokeLaunch`).
+     */
+    readonly issueWrite: (launchId: string, accountId: string) => Effect.Effect<string>;
+    /**
      * The launch a live (unrevoked) launch token of that session was issued for, or null. The
      * token is verified before anything is resolved from it. A person's token never verifies
      * here: it is resolved (`resolve`) and checked against the session it names.
@@ -75,6 +97,11 @@ export class SessionChannelTokensRepo extends Context.Service<
       readonly sessionId: string;
       readonly launchId: string;
       readonly accountId: string | null;
+      /**
+       * A one-off write's token (`issueWrite`): it redeems that write's pickups and nothing else.
+       * One past `WRITE_TOKEN_TTL_MS` resolves to null, as a revoked one does.
+       */
+      readonly writeOnly: boolean;
     } | null>;
     /** Revoke every token of the session. Idempotent. */
     readonly revoke: (sessionId: string) => Effect.Effect<void>;
@@ -91,6 +118,12 @@ export class SessionChannelTokensRepo extends Context.Service<
       accountId: string,
       issuedBefore: Date,
     ) => Effect.Effect<void>;
+    /**
+     * Revoke exactly this token, whoever's it is: a one-off write's own person token (a pasted
+     * image, mend#615 review), whose end must leave every other token of that person, a concurrent
+     * write's included, as it was. Idempotent.
+     */
+    readonly revokeToken: (token: string) => Effect.Effect<void>;
   }
 >()("@mend/db/SessionChannelTokensRepo") {}
 
@@ -133,12 +166,32 @@ export const SessionChannelTokensRepoLive: Layer.Layer<SessionChannelTokensRepo,
         return token;
       });
 
+      const issueWrite = Effect.fn("SessionChannelTokensRepo.issueWrite")(function* (
+        launchId: string,
+        accountId: string,
+      ) {
+        const token = mintSessionChannelToken();
+        yield* db
+          .insert(sessionChannelTokens)
+          .values({
+            tokenHash: hashSessionChannelToken(token),
+            sessionId: writeTokenSession(accountId),
+            launchId,
+            accountId,
+            createdAt: new Date(),
+            revokedAt: null,
+          })
+          .pipe(Effect.orDie);
+        return token;
+      });
+
       const liveRowOf = (token: string) =>
         db
           .select({
             sessionId: sessionChannelTokens.sessionId,
             launchId: sessionChannelTokens.launchId,
             accountId: sessionChannelTokens.accountId,
+            createdAt: sessionChannelTokens.createdAt,
           })
           .from(sessionChannelTokens)
           .where(
@@ -166,7 +219,16 @@ export const SessionChannelTokensRepoLive: Layer.Layer<SessionChannelTokensRepo,
       });
 
       const resolve = Effect.fn("SessionChannelTokensRepo.resolve")(function* (token: string) {
-        return yield* liveRowOf(token);
+        const row = yield* liveRowOf(token);
+        if (row === null) return null;
+        const writeOnly = isWriteTokenSession(row.sessionId);
+        if (writeOnly && row.createdAt.getTime() + WRITE_TOKEN_TTL_MS <= Date.now()) return null;
+        return {
+          sessionId: row.sessionId,
+          launchId: row.launchId,
+          accountId: row.accountId,
+          writeOnly,
+        };
       });
 
       const revoke = Effect.fn("SessionChannelTokensRepo.revoke")(function* (sessionId: string) {
@@ -217,7 +279,32 @@ export const SessionChannelTokensRepoLive: Layer.Layer<SessionChannelTokensRepo,
           .pipe(Effect.orDie);
       });
 
-      return { issue, issuePerson, verify, resolve, revoke, revokeLaunch, revokePerson };
+      const revokeToken = Effect.fn("SessionChannelTokensRepo.revokeToken")(function* (
+        token: string,
+      ) {
+        yield* db
+          .update(sessionChannelTokens)
+          .set({ revokedAt: new Date() })
+          .where(
+            and(
+              eq(sessionChannelTokens.tokenHash, hashSessionChannelToken(token)),
+              isNull(sessionChannelTokens.revokedAt),
+            ),
+          )
+          .pipe(Effect.orDie);
+      });
+
+      return {
+        issue,
+        issuePerson,
+        issueWrite,
+        verify,
+        resolve,
+        revoke,
+        revokeLaunch,
+        revokePerson,
+        revokeToken,
+      };
     }),
   );
 
@@ -278,6 +365,18 @@ export const SessionChannelTokensRepoMemory: Layer.Layer<SessionChannelTokensRep
           });
           return token;
         }),
+      issueWrite: (launchId, accountId) =>
+        Effect.sync(() => {
+          const token = mintSessionChannelToken();
+          rows.set(hashSessionChannelToken(token), {
+            sessionId: writeTokenSession(accountId),
+            launchId,
+            accountId,
+            createdAt: Date.now(),
+            revoked: false,
+          });
+          return token;
+        }),
       verify: (sessionId, token) =>
         Effect.sync(() => {
           const row = liveRowOf(token);
@@ -288,9 +387,15 @@ export const SessionChannelTokensRepoMemory: Layer.Layer<SessionChannelTokensRep
       resolve: (token) =>
         Effect.sync(() => {
           const row = liveRowOf(token);
-          return row === null
-            ? null
-            : { sessionId: row.sessionId, launchId: row.launchId, accountId: row.accountId };
+          if (row === null) return null;
+          const writeOnly = isWriteTokenSession(row.sessionId);
+          if (writeOnly && row.createdAt + WRITE_TOKEN_TTL_MS <= Date.now()) return null;
+          return {
+            sessionId: row.sessionId,
+            launchId: row.launchId,
+            accountId: row.accountId,
+            writeOnly,
+          };
         }),
       revoke: (sessionId) => revokeWhere((row) => row.sessionId === sessionId),
       revokeLaunch: (launchId) => revokeWhere((row) => row.launchId === launchId),
@@ -302,6 +407,11 @@ export const SessionChannelTokensRepoMemory: Layer.Layer<SessionChannelTokensRep
             row.sessionId === personTokenSession(accountId) &&
             row.createdAt < issuedBefore.getTime(),
         ),
+      revokeToken: (token) =>
+        Effect.sync(() => {
+          const row = rows.get(hashSessionChannelToken(token));
+          if (row !== undefined) row.revoked = true;
+        }),
     };
   },
 );

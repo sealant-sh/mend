@@ -44,6 +44,16 @@ and their agents, can read and change each other's files, logins included.
 - **Deliveries.** Dotfiles (scripts included), the default shell profile, skills, the pi profile,
   memory and secret files go into each person's home, as that person. A joiner's `install.sh` runs
   beside their agent unless **Start my agents after install.sh** is on.
+- **Pasted images.** An image is written by the process of the person who pasted it, as them, into
+  `/workspace/harness-home/people/<account id>/paste/` (0700; the image 0600). Root writes nothing
+  of theirs. A first paste makes only that person's user and home: it writes none of their logins
+  and delivers nothing. Each paste fetches its image with a Mend token of its own that does nothing
+  else, is revoked when the paste ends however it ends, and lapses after 15 minutes in any case. In
+  every layout the writer follows no link, creates the image only where nothing is, and never
+  changes the mode of a directory. A `paste` directory that is a link is refused; before, it led a
+  root write, and a 0755 `chmod`, outside the harness home. Slack images go the same way, as the
+  person who asked; on the capture store a request that starts a session attaches none (see
+  [Known issues](/reference/known-issues/)).
 - **Readers.** Conversations and memory are read back per person, for the person each process ran
   as.
 - **Shared steering.** Under shared control each turn runs on its sender's login, in one shared

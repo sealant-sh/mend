@@ -64,7 +64,12 @@ import {
 } from "@mend/inference";
 import { LandingNotStartedError } from "@mend/landing";
 import { SealantClients, SealantPrincipal } from "@mend/sealant";
-import { ProtocolHostNotLiveError, SessionEngine } from "@mend/sessions";
+import {
+  ProtocolHostNotLiveError,
+  SessionEngine,
+  SessionNotLiveError,
+  storePastedImage,
+} from "@mend/sessions";
 import {
   channelDefaultActionId,
   channelSettingsBlockId,
@@ -220,6 +225,11 @@ interface WorldOptions {
   readonly createFailsFrom?: number;
   /** The engine cannot stop a session. */
   readonly stopFails?: boolean;
+  /**
+   * The session is captured and has no running workspace: an image cannot be placed in it
+   * (`SessionNotLiveError`), as for a captured session's opening turn.
+   */
+  readonly imagesNotLive?: boolean;
   /** SessionStart dies: a failure nothing expected. */
   readonly createDies?: boolean;
   /** Alice has unlinked since. */
@@ -381,6 +391,8 @@ const world = (options: WorldOptions = {}) => {
   const reported = new Map<string, string>();
   const audited: Array<NewAuditEvent> = [];
   const launches: Array<LaunchRequest> = [];
+  /** Each image placed or refused, as `<session>:<sender>`. */
+  const pastedAs: Array<string> = [];
   /** What each create was asked, beyond what `effects` notes. */
   const creates: Array<CreateSessionInput> = [];
   /** The opening turn each launch submitted, by session. */
@@ -658,6 +670,24 @@ const world = (options: WorldOptions = {}) => {
     }),
     Layer.mock(SessionEngine, {
       launchUnderWay: () => false,
+      // Co-located: into the session's harness home under the store, as the engine writes it.
+      storePastedImage: (sessionId, bytes, sender) =>
+        Effect.gen(function* () {
+          pastedAs.push(`${sessionId}:${sender}`);
+          if (options.imagesNotLive === true) {
+            return yield* new SessionNotLiveError({ sessionId });
+          }
+          const session =
+            sessionsCreated.get(sessionId) ??
+            (earlierSession !== null && sessionId === EARLIER ? earlierSession : null);
+          if (session === null || storeRoot === undefined) {
+            return yield* new SessionNotFoundError({ sessionId });
+          }
+          return yield* storePastedImage(
+            harnessHomePathOf(path.join(storeRoot, session.projectId), sessionId),
+            bytes,
+          );
+        }),
       // The sender's own login, as a person-layout worktree asks for it (docs/adr/0016).
       steeringRefusal: () => Effect.succeed(null),
       stop: (sessionId) =>
@@ -965,6 +995,7 @@ const world = (options: WorldOptions = {}) => {
     recorded,
     audited,
     launches,
+    pastedAs,
     creates,
     intents,
     lands,
@@ -2231,6 +2262,48 @@ describe("the Slack runner, attaching screenshots from the thread", () => {
           user: "U-alice",
           threadTs: SHOTS_THREAD,
           text: "not attached · photo.heic · not a PNG, JPEG, GIF or WebP image; huge.png · over the 8 MB an image may be; fake.png · not a PNG, JPEG, GIF or WebP image",
+        },
+      ]);
+      // Placed as the person who asked, as a paste of theirs (per person where the workspace is).
+      // fake.png is refused there, by its bytes.
+      expect(w.pastedAs).toEqual(["session-1:alice", "session-1:alice", "session-1:alice"]);
+    });
+  });
+
+  it("says an image of a captured session's opening turn was not attached: its workspace does not exist yet", async () => {
+    await withStore(async (storeRoot) => {
+      const requestFiles = [shot("F-alice", "layout.png")];
+      const w = world({
+        storeRoot,
+        imagesNotLive: true,
+        threads: {
+          [`C-general:${SHOTS_THREAD}`]: [
+            {
+              ...message(SHOTS_MENTION, "U-alice", "<@U-bot> project=billing-api fix the layout"),
+              files: requestFiles,
+            },
+          ],
+        },
+        files: { [url("F-alice")]: png() },
+      });
+      await w.deliver(
+        w.mention("Ev1", {
+          user: "U-alice",
+          text: "<@U-bot> project=billing-api fix the layout",
+          ts: SHOTS_MENTION,
+          thread_ts: SHOTS_THREAD,
+          files: onTheWire(requestFiles),
+        }),
+      );
+      expect(await pasted(storeRoot, billing.id, "session-1")).toEqual([]);
+      expect(w.launches[0]?.prompt).toContain(
+        "[image: layout.png · not attached · the session has no running workspace to place it in yet]",
+      );
+      expect(posts(w, "postEphemeral")).toMatchObject([
+        {
+          user: "U-alice",
+          threadTs: SHOTS_THREAD,
+          text: "not attached · layout.png · the session has no running workspace to place it in yet",
         },
       ]);
     });

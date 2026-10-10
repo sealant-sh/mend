@@ -3,6 +3,9 @@ import {
   HarnessLayoutsRepo,
   type HarnessLayoutsMemoryState,
   OrganizationsRepo,
+  SessionChannelTokensRepo,
+  SessionChannelTokensRepoMemory,
+  WRITE_TOKEN_TTL_MS,
   harnessLayoutsRepoMemory,
   makeHarnessLayoutsMemoryState,
 } from "@mend/db";
@@ -16,7 +19,7 @@ import {
   SealantPlatformError,
 } from "@mend/sealant";
 import { claudeCode, type Run, type Workspace } from "@sealant/sdk";
-import { ConfigProvider, Deferred, Duration, Effect, Fiber, Layer } from "effect";
+import { ConfigProvider, Deferred, Duration, Effect, Exit, Fiber, Layer, Scope } from "effect";
 import { TestClock } from "effect/testing";
 import { describe, expect, it } from "vitest";
 
@@ -39,6 +42,7 @@ import {
   personHomeEnsureScript,
 } from "./harness-layout.ts";
 import { DOTFILES_NOT_TO_ROOT } from "./person-deliveries.ts";
+import { makeWriteTokens } from "./write-tokens.ts";
 
 /**
  * The per-person steps' own memory (docs/adr/0016): the layout each launch runs, as the session
@@ -296,6 +300,15 @@ const stepsWith = (
           return "t".repeat(43);
         }),
       discardTicket: () => {},
+      writeTokenTicket: (input) =>
+        Effect.sync(() => {
+          options.log?.push(`write-token:${input.person.accountId}`);
+          return "w".repeat(43);
+        }),
+      endWriteToken: () =>
+        Effect.sync(() => {
+          options.log?.push("write-token-ended");
+        }),
       revokePersonToken: (_launchId, accountId, issuedBefore) =>
         Effect.sync(() => {
           options.log?.push(`revoke:${accountId}`);
@@ -2071,6 +2084,299 @@ describe("logins per person (docs/adr/0016, decision 5)", () => {
     expect(result.other).toBeNull();
     expect(result.capabilities).toEqual([["its sealantd does not restore files per person"]]);
     expect(result.worktree).toBe("person");
+  });
+});
+
+/** Runs `body` over the memory token store (`homeForWrite`'s tests). */
+const run = <A, E>(body: Effect.Effect<A, E, SessionChannelTokensRepo>) =>
+  Effect.runPromise(body.pipe(Effect.provide(SessionChannelTokensRepoMemory)));
+
+/**
+ * A one-off write's home and token (mend#615 review 2, findings 615-r2-2 and 615-r2-3): each write's
+ * own token, minted when the root exec redeems its ticket (here, by the exec itself) through the real
+ * write-token bookkeeping over the memory token store, revoked when its scope closes on any path.
+ */
+describe("homeForWrite", () => {
+  /** The steps of a person executor whose execs, token tickets and their ends the test answers. */
+  const tokenSteps = (answers: {
+    readonly writeTokenTicket: (file: string) => Effect.Effect<string>;
+    readonly endWriteToken: (ticket: string) => Effect.Effect<void>;
+    readonly exec: (
+      script: string,
+    ) =>
+      | Effect.Effect<{ exitCode: number; stdout: string; stderr: string }, SealantPlatformError>
+      | undefined;
+  }) =>
+    Effect.gen(function* () {
+      const repo = yield* HarnessLayoutsRepo;
+      const tokens = yield* SessionChannelTokensRepo;
+      const steps = makeHarnessLayoutSteps({
+        flag: "person",
+        repo,
+        anyRecorded: yield* repo.anyRecorded(),
+        platform: yield* PersonLayoutPlatform,
+        organizations: yield* OrganizationsRepo,
+        sealant: {
+          exec: (_workspace, argv) =>
+            (
+              answers.exec(argv[0] === "sh" ? (argv[2] ?? "") : argv.join(" ")) ??
+              Effect.succeed({ exitCode: 0, stdout: "", stderr: "" })
+            ).pipe(Effect.map((result) => ({ ...result, run: execRun }))),
+        },
+        harnessHome: "/workspace/harness-home",
+        fork: () => Effect.void,
+        identityTicket: () => Effect.succeed("t".repeat(43)),
+        discardTicket: () => {},
+        // The real bulk revocation of a person's tokens, which a paste's must never meet.
+        revokePersonToken: (launchId, accountId, issuedBefore) =>
+          tokens.revokePerson(launchId, accountId, issuedBefore),
+        writeTokenTicket: (input) => answers.writeTokenTicket(input.file),
+        endWriteToken: (ticket) => answers.endWriteToken(ticket),
+        loginReleaseGrace: Duration.zero,
+      });
+      return { steps, repo };
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          harnessLayoutsRepoMemory(makeHarnessLayoutsMemoryState()),
+          platformLayer,
+          organizationsLayer,
+        ),
+      ),
+    );
+  const homeInput = {
+    workspace,
+    launchId: "launch-1",
+    accountId: "user-maria",
+    sessionId: "sess-1",
+    worktreeId: "wt-1",
+  };
+  const tokenWorld = (
+    options: {
+      /** The exec after the redemption: answered, or failed, or held until the gate opens. */
+      readonly execFails?: boolean;
+      readonly execGate?: Deferred.Deferred<void>;
+      readonly redeemed?: Deferred.Deferred<void>;
+      /** How many revocations fail (a store outage) before one succeeds. */
+      readonly revokeFails?: number;
+    } = {},
+  ) =>
+    Effect.gen(function* () {
+      const tokens = yield* SessionChannelTokensRepo;
+      const minted: Array<string> = [];
+      const forks: Array<Effect.Effect<void>> = [];
+      let revokeFails = options.revokeFails ?? 0;
+      const writeTokens = makeWriteTokens({
+        revoke: (token) =>
+          revokeFails-- > 0 ? Effect.die("the store is down") : tokens.revokeToken(token),
+        fork: (effect) => Effect.sync(() => void forks.push(effect)),
+        ttl: Duration.millis(WRITE_TOKEN_TTL_MS),
+        backoff: Duration.millis(1),
+        sweepEvery: Duration.millis(1),
+      });
+      let counter = 0;
+      const files = new Map<string, string>();
+      const world = yield* tokenSteps({
+        writeTokenTicket: (file) =>
+          Effect.sync(() => {
+            const ticket = String(counter++).padStart(43, "w");
+            files.set(ticket, file);
+            writeTokens.track(ticket);
+            return ticket;
+          }),
+        endWriteToken: (ticket) => writeTokens.end(ticket),
+        exec: (script) => {
+          const ticket = [...files.keys()].find((candidate) => script.includes(candidate));
+          if (ticket === undefined) return undefined;
+          return Effect.gen(function* () {
+            // The root exec redeems its ticket, as the engine answers it: minted only while its
+            // write is open, as a write's own token; then the exec goes on.
+            if (!writeTokens.beginMint(ticket)) {
+              return { exitCode: 3, stdout: "", stderr: "mend: the pickup was refused\n" };
+            }
+            const token = yield* tokens.issueWrite("launch-1", "user-maria");
+            minted.push(token);
+            yield* writeTokens.minted(ticket, token);
+            if (options.redeemed !== undefined)
+              yield* Deferred.succeed(options.redeemed, undefined);
+            if (options.execGate !== undefined) yield* Deferred.await(options.execGate);
+            if (options.execFails === true) {
+              return yield* new SealantPlatformError({
+                code: "transport_lost",
+                status: null,
+                message: "the exec's result was lost after its pickup",
+                cause: null,
+              });
+            }
+            return { exitCode: 0, stdout: "", stderr: "" };
+          });
+        },
+      });
+      const layout = yield* world.steps.decide(decideInput("launch-1"));
+      const alice = yield* world.repo.ensureIdentity("user-alice");
+      yield* world.steps.settlePrepare({
+        layout,
+        ...settleInput(
+          "launch-1",
+          `mend-layout probed\nmend-layout made ${alice.name}\nmend-layout ready\n`,
+        ),
+      });
+      const live = (token: string | undefined) =>
+        token === undefined
+          ? Effect.succeed(false)
+          : tokens.resolve(token).pipe(Effect.map((row) => row?.accountId === "user-maria"));
+      return { ...world, minted, forks, writeTokens, live, files };
+    });
+
+  it("gives each write a token of its own, in a file of its own, and ending one leaves the other's", async () => {
+    await run(
+      Effect.gen(function* () {
+        const w = yield* tokenWorld();
+        const scopeA = yield* Scope.make();
+        const scopeB = yield* Scope.make();
+        const a = yield* w.steps.homeForWrite(homeInput).pipe(Scope.provide(scopeA));
+        const b = yield* w.steps.homeForWrite(homeInput).pipe(Scope.provide(scopeB));
+        expect(a?.tokenFile).toMatch(/^\/run\/mend\/write-tokens\/[0-9]{13}-[0-9a-f]{32}$/);
+        expect(b?.tokenFile).not.toBe(a?.tokenFile);
+        expect(w.minted).toHaveLength(2);
+        const [tokenA, tokenB] = w.minted;
+        // A ends while B still writes: only A's token goes.
+        yield* Scope.close(scopeA, Exit.void);
+        expect(yield* w.live(tokenA)).toBe(false);
+        expect(yield* w.live(tokenB)).toBe(true);
+        yield* Scope.close(scopeB, Exit.void);
+        expect(yield* w.live(tokenB)).toBe(false);
+      }),
+    );
+  });
+
+  it("revokes the write's token when its exec fails after the token was minted", async () => {
+    await run(
+      Effect.gen(function* () {
+        const w = yield* tokenWorld({ execFails: true });
+        const outcome = yield* Effect.scoped(w.steps.homeForWrite(homeInput)).pipe(Effect.result);
+        expect(outcome._tag).toBe("Failure");
+        expect(w.minted).toHaveLength(1);
+        expect(yield* w.live(w.minted[0])).toBe(false);
+      }),
+    );
+  });
+
+  it("revokes the write's token when the write is interrupted after the token was minted", async () => {
+    await run(
+      Effect.gen(function* () {
+        const execGate = yield* Deferred.make<void>();
+        const redeemed = yield* Deferred.make<void>();
+        const w = yield* tokenWorld({ execGate, redeemed });
+        const fiber = yield* Effect.forkChild(Effect.scoped(w.steps.homeForWrite(homeInput)));
+        yield* Deferred.await(redeemed);
+        yield* Fiber.interrupt(fiber);
+        expect(w.minted).toHaveLength(1);
+        expect(yield* w.live(w.minted[0])).toBe(false);
+      }),
+    );
+  });
+
+  it("revokes a token minted after its write already ended", async () => {
+    await run(
+      Effect.gen(function* () {
+        const w = yield* tokenWorld();
+        const tokens = yield* SessionChannelTokensRepo;
+        w.writeTokens.track("late-ticket");
+        yield* w.writeTokens.end("late-ticket");
+        const token = yield* tokens.issuePerson("launch-1", "user-maria");
+        yield* w.writeTokens.minted("late-ticket", token);
+        expect(yield* w.live(token)).toBe(false);
+      }),
+    );
+  });
+
+  it("retries a failed revocation, then keeps it and sweeps it until the store answers", async () => {
+    await run(
+      Effect.gen(function* () {
+        // Two failures: the third try at once revokes it.
+        const brief = yield* tokenWorld({ revokeFails: 2 });
+        yield* Effect.scoped(brief.steps.homeForWrite(homeInput));
+        expect(yield* brief.live(brief.minted[0])).toBe(false);
+        expect(brief.writeTokens.unrevoked()).toBe(0);
+        expect(brief.forks).toHaveLength(0);
+        // Four: the write ends with its token still live, kept, and the sweep revokes it.
+        const outage = yield* tokenWorld({ revokeFails: 4 });
+        yield* Effect.scoped(outage.steps.homeForWrite(homeInput));
+        expect(yield* outage.live(outage.minted[0])).toBe(true);
+        expect(outage.writeTokens.unrevoked()).toBe(1);
+        expect(outage.forks).toHaveLength(1);
+        const [sweep] = outage.forks;
+        if (sweep !== undefined) yield* sweep;
+        expect(yield* outage.live(outage.minted[0])).toBe(false);
+        expect(outage.writeTokens.unrevoked()).toBe(0);
+      }),
+    );
+  });
+
+  it("gives a person already made here a token of the write's own too, which their release never takes (615-r3-2)", async () => {
+    await run(
+      Effect.gen(function* () {
+        const w = yield* tokenWorld();
+        // Maria's first real process: made, her logins written, her own token.
+        yield* w.steps.processAs({
+          ...homeInput,
+          harness: "shell",
+          live: Effect.succeed(new Set<string>()),
+        });
+        const scope = yield* Scope.make();
+        const home = yield* w.steps.homeForWrite(homeInput).pipe(Scope.provide(scope));
+        expect(home?.tokenFile).toMatch(/^\/run\/mend\/write-tokens\/[0-9]{13}-[0-9a-f]{32}$/);
+        expect(w.minted).toHaveLength(1);
+        // Her process ends and the idle check releases her: her tokens go in bulk, the open
+        // paste's stays until its own write ends. (A moment later, so the bulk revocation's
+        // "issued before" takes in the paste's token: it is spared by what it is, not by timing.)
+        yield* Effect.sleep("5 millis");
+        yield* w.steps.releaseIdle({
+          workspaceId: workspace.id,
+          workspace: Effect.succeed(workspace),
+          live: Effect.succeed(new Set<string>()),
+          launcher: Effect.succeed("user-alice"),
+        });
+        expect(yield* w.live(w.minted[0])).toBe(true);
+        yield* Scope.close(scope, Exit.void);
+        expect(yield* w.live(w.minted[0])).toBe(false);
+      }),
+    );
+  });
+
+  it("mints nothing for a redemption that comes after its write ended (615-r3-4)", async () => {
+    await run(
+      Effect.gen(function* () {
+        const w = yield* tokenWorld();
+        const tickets: Array<string> = [];
+        const scope = yield* Scope.make();
+        // The ticket is made, then the write ends before anything redeems it.
+        yield* w.steps.homeForWrite(homeInput).pipe(
+          Scope.provide(scope),
+          Effect.tap(() => Effect.sync(() => tickets.push(...w.files.keys()))),
+        );
+        const [ticket] = tickets;
+        expect(w.minted).toHaveLength(1);
+        yield* Scope.close(scope, Exit.void);
+        if (ticket === undefined) throw new Error("no ticket");
+        expect(w.writeTokens.beginMint(ticket)).toBe(false);
+        expect(w.writeTokens.open()).toBe(0);
+      }),
+    );
+  });
+
+  it("is null in a shared executor", async () => {
+    await run(
+      Effect.gen(function* () {
+        const w = yield* tokenWorld();
+        const shared = yield* Effect.scoped(
+          w.steps.homeForWrite({ ...homeInput, launchId: "launch-unknown" }),
+        );
+        expect(shared).toBeNull();
+        expect(w.minted).toEqual([]);
+      }),
+    );
   });
 });
 

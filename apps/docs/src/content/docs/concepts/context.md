@@ -35,7 +35,8 @@ Host folders an operator declares on the machine are not delivered to these work
 
 A session can also receive context with a turn:
 
-- An image pasted into an attached terminal with `Ctrl+V` is stored in the session's harness home,
+- An image pasted into an attached terminal with `Ctrl+V` is stored in the session's harness home
+  (in a per-person workspace, in the saved directory of the person who pasted it, written as them),
   and its path is pasted for the agent to read.
 - A session started or followed up from Slack receives the request, then the thread: every message
   up to the mention, at most fifty messages or 20,000 characters, keeping the newest. Messages from

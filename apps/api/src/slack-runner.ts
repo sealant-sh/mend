@@ -42,12 +42,7 @@ import {
 } from "@mend/inference";
 import { makeWindowLimiter } from "@mend/network";
 import { asSealantUser, SealantClients } from "@mend/sealant";
-import {
-  PASTED_IMAGE_MAX_BYTES,
-  PASTED_IMAGE_TYPES,
-  SessionEngine,
-  storePastedImage,
-} from "@mend/sessions";
+import { PASTED_IMAGE_MAX_BYTES, PASTED_IMAGE_TYPES, SessionEngine } from "@mend/sessions";
 import {
   answersFromMention,
   channelDefaultChanged,
@@ -97,10 +92,11 @@ import {
   type ThreadContext,
   type ThreadImage,
   type ThreadImageLimits,
+  type ThreadImageSkip,
 } from "@mend/slack";
 import { SlackApi, type SlackApiError } from "@mend/slack/client";
 import type { SlackEnvelope } from "@mend/slack/socket";
-import { harnessHomePathOf, SecretCipher, Store } from "@mend/store";
+import { SecretCipher, Store } from "@mend/store";
 import { Cause, Config, Effect, FiberSet, Layer, Option, Schema, type Fiber } from "effect";
 import * as Context from "effect/Context";
 
@@ -832,20 +828,22 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
       });
 
     /**
-     * Attach a turn's images (`turnImages`) through the paste's path: fetch each from Slack with
-     * the bot token and store it as a pasted image in the session's harness home, which every
-     * workspace of the session mounts. In order, within `SLACK_TURN_IMAGE_LIMITS`; an image that
-     * cannot be attached is skipped with why, and nothing here fails the turn.
+     * Attach a turn's images (`turnImages`) through the paste's path (`storePastedImage`): fetch
+     * each from Slack with the bot token and place it as an image `sender` pasted. Co-located: in
+     * the session's harness home on this machine, which every workspace of the session mounts.
+     * Captured: in its running workspace, as `sender` where it runs per person (docs/adr/0016); a
+     * captured session with no running workspace (its opening turn, written before the workspace
+     * exists) takes none, and says so (`not-live`). In order, within `SLACK_TURN_IMAGE_LIMITS`; an
+     * image that cannot be attached is skipped with why, and nothing here fails the turn.
      */
     const attachImages = (
       token: string,
-      storePath: string,
       sessionId: SessionId,
+      sender: string,
       files: ReadonlyArray<SlackThreadFile>,
     ) =>
       Effect.gen(function* () {
         const limits = SLACK_TURN_IMAGE_LIMITS;
-        const harnessHome = harnessHomePathOf(storePath, sessionId);
         const images: Array<ThreadImage> = [];
         let taken = { count: 0, bytes: 0 };
         for (const file of files) {
@@ -873,23 +871,25 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
             );
             continue;
           }
-          const stored = yield* storePastedImage(harnessHome, fetched.success.bytes).pipe(
-            Effect.result,
-          );
+          const stored = yield* engine
+            .storePastedImage(sessionId, fetched.success.bytes, sender)
+            .pipe(Effect.result);
           if (stored._tag === "Failure") {
-            const { reason } = stored.failure;
-            if (reason === "write-failed") {
+            const failure = stored.failure;
+            const skip: ThreadImageSkip =
+              failure._tag === "SessionNotLiveError"
+                ? "not-live"
+                : failure._tag === "PastedImageError" && failure.reason === "not-an-image"
+                  ? "type"
+                  : failure._tag === "PastedImageError" && failure.reason === "too-large"
+                    ? "size"
+                    : "not-stored";
+            if (skip === "not-stored") {
               yield* Effect.logWarning("slack runner: image not stored").pipe(
-                Effect.annotateLogs({ sessionId, fileId: file.id, cause: stored.failure.message }),
+                Effect.annotateLogs({ sessionId, fileId: file.id, cause: failure.message }),
               );
             }
-            images.push(
-              skippedImage(
-                file,
-                reason === "not-an-image" ? "type" : reason === "too-large" ? "size" : "not-stored",
-                limits,
-              ),
-            );
+            images.push(skippedImage(file, skip, limits));
             continue;
           }
           images.push({
@@ -1466,7 +1466,7 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
           return moved;
         });
 
-      const attached = yield* attachImages(token, choice.project.storePath, session.id, images);
+      const attached = yield* attachImages(token, session.id, userId, images);
       yield* sayWhatWasLeftOut(token, mention, attached);
       const opening = renderOpeningTurn({
         prompt: parsed.prompt,
@@ -1678,7 +1678,7 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
       const attached =
         sessionProject === null
           ? images.map((file) => skippedImage(file, "not-stored", SLACK_TURN_IMAGE_LIMITS))
-          : yield* attachImages(token, sessionProject.storePath, session.id, images);
+          : yield* attachImages(token, session.id, userId, images);
       const turn = renderFollowUpTurn({
         prompt: parsed.prompt,
         requestFiles: mention.files,

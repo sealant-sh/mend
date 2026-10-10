@@ -3,9 +3,11 @@ import { createHash, randomBytes } from "node:crypto";
 /**
  * Pickup tickets: how a secret reaches a workspace without riding an exec's arguments.
  *
- * The platform keeps every exec's argv, in plaintext and for good (Core's `telemetry_events`,
- * `telemetry_timeline` and the job row, which holds it from the moment the exec is queued; review
- * of mend#552/#553, P1-1). So no secret goes there. Mend mints a ticket instead, puts only the
+ * Core before sealant#329 kept every exec's argv, in plaintext and for good (`telemetry_events`,
+ * `telemetry_timeline` and the job row; review of mend#552/#553, P1-1). Since #329 (in the pinned
+ * 0.39.0-next.707) it records only the program and the arguments' count and lengths, and deletes
+ * the job row when a worker takes it, but the row still holds the argv from the moment the exec is
+ * queued until then, and an older Core keeps it all. So no secret goes there. Mend mints a ticket instead, puts only the
  * ticket in the argv, and the same exec redeems it over the session channel, the authenticated
  * connection the workspace already uses to reach Mend, writing what it gets straight into its
  * file. What the platform stores is a ticket that is spent or discarded by the time the exec ends,
@@ -36,7 +38,13 @@ export const PICKUP_TICKET_SHAPE = /^[A-Za-z0-9_-]{43}$/;
  * session token and git author for their home, minted only when the ticket is redeemed, so a
  * person prepare skips gets no token.
  */
-export type PickupPurpose = "secret-files" | "pi-profile" | "workspace-files" | "session-token";
+export type PickupPurpose =
+  | "secret-files"
+  | "pi-profile"
+  | "workspace-files"
+  | "session-token"
+  /** A one-off write's own Mend token (`write-tokens.ts`), minted only while that write is open. */
+  | "write-token";
 
 /** What a ticket is bound to. */
 export interface PickupBinding {
@@ -180,12 +188,19 @@ export interface PickupChannel {
    * the workspace's own token and the Unix socket, which name nobody.
    */
   readonly accountId: string | null;
+  /**
+   * A one-off write's token (`issueWrite`; mend#615 review 4): it redeems a write's own files
+   * (`workspace-files`) and no ticket that mints anything, an identity or another write's token.
+   */
+  readonly writeOnly?: boolean;
 }
 
 /** What `grant` the network channel hands `pickupAs`: the token's launch and person. */
 export interface PickupGrant {
   readonly launchId: string;
   readonly accountId: string | null;
+  /** A one-off write's token: a write's own files only (`PickupChannel.writeOnly`). */
+  readonly writeOnly?: boolean;
 }
 
 /**
@@ -203,6 +218,9 @@ export const pickupChannelMatch = (
   | { readonly kind: "no"; readonly reason: string } => {
   if (channel.accountId !== null && channel.accountId !== binding.personId) {
     return { kind: "no", reason: "this pickup ticket is another person's" };
+  }
+  if (channel.writeOnly === true && binding.purpose !== "workspace-files") {
+    return { kind: "no", reason: "this token redeems a write's own files only" };
   }
   if (binding.launchId !== null && channel.launchId !== null) {
     return binding.launchId === channel.launchId

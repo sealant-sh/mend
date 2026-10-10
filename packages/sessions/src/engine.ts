@@ -47,6 +47,7 @@ import {
   UserDotfilesRepo,
   UserGitAuthorRepo,
   SessionChannelTokensRepo,
+  WRITE_TOKEN_TTL_MS,
   HarnessLayoutsRepo,
   type ExecutorRetirementRecord,
   type PreReleaseMigrationRecord,
@@ -420,7 +421,7 @@ import {
 import {
   checkPastedImage,
   PastedImageError,
-  pastedImageWorkspacePath,
+  pastedImagePlacement,
   type PlacedPastedImage,
   storePastedImage as storePastedImageOnHost,
 } from "./pasted-images.ts";
@@ -576,6 +577,7 @@ import {
 import { mayWorkIn, WorkspaceCaller } from "./workspace-caller.ts";
 import {
   parseHomeFileOutcomes,
+  type ContainedPlacement,
   type WorkspaceFile,
   WorkspaceFileError,
   writeAbsentHomeFilesExecs,
@@ -587,6 +589,7 @@ import {
   WORKSPACE_NOTE_NOT_WRITTEN,
   workspaceNoteExec,
 } from "./workspace-note.ts";
+import { makeWriteTokens } from "./write-tokens.ts";
 
 /** Whether a push's ref commands created or moved a branch (not a tag, not a delete). */
 const pushedBranches = (refUpdates: ReadonlyArray<string> | null): boolean =>
@@ -1256,20 +1259,27 @@ interface PersonExec {
   readonly user: ProcessUser;
   readonly sessionId: SessionId;
   readonly places: PersonPlaces;
+  /**
+   * A one-off write's own Mend token file (`HarnessLayoutSteps.homeForWrite`), which the exec
+   * presents instead of the one in their home. Absent: their home's.
+   */
+  readonly tokenFile?: string;
 }
 
 /**
  * What a person's exec runs ahead of its own argv (`execAsPerson`): umask 077, so what a delivery
- * makes in their home and saved directory is theirs alone unless it says otherwise, and the
- * session it speaks for over the session channel.
+ * makes in their home and saved directory is theirs alone unless it says otherwise, the session it
+ * speaks for over the session channel and, for a one-off write, the file of its own Mend token
+ * (a path, never the token).
  */
-export const personExecPrefix = (sessionId: string): ReadonlyArray<string> => [
+export const personExecPrefix = (sessionId: string, tokenFile?: string): ReadonlyArray<string> => [
   "sh",
   "-c",
   'umask 077 && exec "$@"',
   "mend-as-person",
   "env",
   `MEND_SESSION_ID=${sessionId}`,
+  ...(tokenFile === undefined ? [] : [`MEND_SESSION_TOKEN_FILE=${tokenFile}`]),
 ];
 
 /** A person's deliveries, with what Mend last delivered into their home (`personRecordsExec`). */
@@ -1975,6 +1985,11 @@ export class SessionEngine extends Context.Service<
     readonly storePastedImage: (
       sessionId: SessionId,
       bytes: Uint8Array,
+      /**
+       * Who pasted it: in a person-layout executor the file is written as them, into their own
+       * saved directory (docs/adr/0016); a shared executor writes it as root, as before.
+       */
+      sender: string,
     ) => Effect.Effect<
       PlacedPastedImage,
       | SessionNotFoundError
@@ -7153,7 +7168,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         as: PersonExec,
         argv: ReadonlyArray<string>,
       ): Effect.Effect<WorkspaceExecResult, SealantPlatformError> =>
-        sealant.exec(workspace, [...personExecPrefix(as.sessionId), ...argv], { user: as.user });
+        sealant.exec(workspace, [...personExecPrefix(as.sessionId, as.tokenFile), ...argv], {
+          user: as.user,
+        });
 
       /**
        * A ticket for `files`, bound to the purpose, the session and its worktree, its owner, and
@@ -7203,6 +7220,51 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               { path: files.gitAuthor, bytes: new Uint8Array() },
             ],
           );
+        });
+
+      /**
+       * The Mend tokens of one-off writes (`write-tokens.ts`): each its write's own, revoked,
+       * exactly that one, when the write ends (mend#615 review 2).
+       */
+      const writeTokens = makeWriteTokens({
+        revoke: (token) => channelTokens.revokeToken(token),
+        fork: (effect) => Effect.suspend(() => effect.pipe(Effect.forkIn(scope), Effect.asVoid)),
+        ttl: Duration.millis(WRITE_TOKEN_TTL_MS),
+      });
+
+      /**
+       * A one-off write's token ticket (`HarnessLayoutSteps.homeForWrite`): purpose `write-token`,
+       * bound to the person, the session and the launch, with one file, the write's own token file,
+       * whose bytes are minted when it is redeemed and only while the write is open
+       * (`write-tokens.ts`).
+       */
+      const mintWriteTokenTicket = (input: {
+        readonly sessionId: string;
+        readonly worktreeId: string;
+        readonly launchId: string;
+        readonly person: LinuxIdentity;
+        readonly file: string;
+      }): Effect.Effect<string> =>
+        Effect.sync(() => {
+          const ticket = pickups.mint(
+            {
+              purpose: "write-token",
+              sessionId: input.sessionId,
+              worktreeId: input.worktreeId,
+              personId: input.person.accountId,
+              launchId: input.launchId,
+            },
+            [{ path: input.file, bytes: new Uint8Array() }],
+          );
+          writeTokens.track(ticketKeyOf(ticket));
+          return ticket;
+        });
+
+      /** A one-off write ended: its ticket goes, and the token it minted is revoked. */
+      const endWriteToken = (ticket: string): Effect.Effect<void> =>
+        Effect.suspend(() => {
+          discardPickup(ticket);
+          return writeTokens.end(ticketKeyOf(ticket));
         });
 
       /**
@@ -7327,6 +7389,37 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             if (!pickupSiblingMatch(entry.binding, other)) {
               return yield* refuse(entry.binding, "this pickup ticket is another session's");
             }
+          }
+          if (entry.binding.purpose === "write-token") {
+            // A one-off write's own token (`write-tokens.ts`): minted only while its write is
+            // open, and that write's alone; one that ended meanwhile has it revoked at once.
+            const key = ticketKeyOf(ticket);
+            const [file] = entry.files;
+            const { personId, launchId } = entry.binding;
+            if (file === undefined || personId === null || launchId === null) {
+              return yield* refuse(entry.binding, "this write's ticket names no person or file");
+            }
+            if (!writeTokens.beginMint(key)) {
+              return yield* refuse(entry.binding, "this write has ended; nothing was minted");
+            }
+            const token = yield* channelTokens
+              .issueWrite(launchId, personId)
+              .pipe(
+                Effect.onExit((exit) =>
+                  Exit.isSuccess(exit)
+                    ? Effect.void
+                    : Effect.sync(() => writeTokens.mintFailed(key)),
+                ),
+              );
+            yield* writeTokens.minted(key, token);
+            yield* Effect.logInfo("session engine: pickup redeemed").pipe(
+              Effect.annotateLogs({
+                sessionId: entry.binding.sessionId,
+                purpose: entry.binding.purpose,
+                files: 1,
+              }),
+            );
+            return pickupAnswerOf([{ path: file.path, bytes: new TextEncoder().encode(token) }]);
           }
           if (entry.binding.purpose === "session-token") {
             const key = ticketKeyOf(ticket);
@@ -7598,6 +7691,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         discardTicket: (ticket) => discardPickup(ticket),
         revokePersonToken: (launchId, accountId, issuedBefore) =>
           channelTokens.revokePerson(launchId, accountId, issuedBefore),
+        writeTokenTicket: (input) => mintWriteTokenTicket(input),
+        endWriteToken: (ticket) => endWriteToken(ticket),
       });
       // A shared conversation's home and its restart path (docs/adr/0016, decision 6): reached
       // only for a protocol Claude or Codex session in a person-layout executor.
@@ -11896,7 +11991,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         session: Session,
         workspace: Workspace,
         files: ReadonlyArray<
-          WorkspaceFile & { readonly secret?: boolean; readonly absent?: boolean }
+          WorkspaceFile & {
+            readonly secret?: boolean;
+            readonly absent?: boolean;
+            readonly within?: ContainedPlacement;
+          }
         >,
         purpose: PickupBinding["purpose"] = "workspace-files",
         /**
@@ -11906,10 +12005,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
          */
         as?: PersonExec,
       ) {
-        const latest = new Map<
-          string,
-          WorkspaceFile & { readonly secret?: boolean; readonly absent?: boolean }
-        >();
+        const latest = new Map<string, (typeof files)[number]>();
         for (const file of files) latest.set(file.path, file);
         const unique = [...latest.values()];
         if (unique.length === 0) return;
@@ -11927,9 +12023,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             // A person's saved state stays theirs: 0600 files, no directory opened up.
             private:
               file.absent !== true &&
+              file.within === undefined &&
               as !== undefined &&
               file.path.startsWith(`${as.places.saved}/`),
             absent: file.absent === true,
+            ...(file.within === undefined ? {} : { within: file.within }),
           })),
           ticket,
         );
@@ -15280,6 +15378,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const storePastedImage = Effect.fn("SessionEngine.storePastedImage")(function* (
         sessionId: SessionId,
         bytes: Uint8Array,
+        sender: string,
       ) {
         const session = yield* sessions.byId(sessionId);
         if (capture === null) {
@@ -15292,17 +15391,50 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         }
         const checked = yield* checkPastedImage(bytes);
         const workspace = yield* workspaceForSupportingProcess(session);
-        const target = pastedImageWorkspacePath(checked.name);
-        yield* writeWorkspaceFiles(session, workspace, [{ path: target, bytes }]).pipe(
-          Effect.mapError(
-            (error) =>
-              new PastedImageError({
-                reason: "write-failed",
-                message: `Could not place the image in the workspace: ${error.message}`,
-              }),
-          ),
+        // A person executor (docs/adr/0016): the write runs as the sender, their user and home
+        // ensured first, with a Mend token of this write's own that redeems its pickup and nothing
+        // else, revoked when the write ends on any path and lapsing on its own soon after (mend#615
+        // reviews 2 and 3). Root writes nothing of theirs. Null: a shared executor, where it runs as
+        // root, as before.
+        const placement = yield* Effect.scoped(
+          Effect.gen(function* () {
+            const home = yield* layoutSteps.homeForWrite({
+              workspace,
+              launchId: yield* executorLaunchIdOf(session, SealantWorkspaceId.make(workspace.id)),
+              accountId: sender,
+              sessionId: session.id,
+              worktreeId: session.worktreeId,
+            });
+            const as: PersonExec | undefined =
+              home === null
+                ? undefined
+                : {
+                    person: home.identity,
+                    user: home.user,
+                    sessionId: session.id,
+                    places: personPlacesOf(HARNESS_HOME_MOUNT_PATH, home.identity),
+                    tokenFile: home.tokenFile,
+                  };
+            const placed = pastedImagePlacement(checked.name, as === undefined ? null : sender);
+            yield* writeWorkspaceFiles(
+              session,
+              workspace,
+              [{ path: placed.path, bytes, within: placed.within }],
+              "workspace-files",
+              as,
+            ).pipe(
+              Effect.mapError(
+                (error) =>
+                  new PastedImageError({
+                    reason: "write-failed",
+                    message: `Could not place the image in the workspace: ${error.message}`,
+                  }),
+              ),
+            );
+            return placed;
+          }),
         );
-        return { path: target, mediaType: checked.mediaType, bytes: bytes.byteLength };
+        return { path: placement.path, mediaType: checked.mediaType, bytes: bytes.byteLength };
       });
 
       // ─── Repositories in a session (docs/adr/0010) ─────────────────────────────────────────
@@ -20827,7 +20959,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         pickup: (ticket) => redeemPickup({ sessionId, launchId: null, accountId: actor }, ticket),
         pickupAs: (grant) => (ticket) =>
           redeemPickup(
-            { sessionId, launchId: grant.launchId, accountId: actor ?? grant.accountId },
+            {
+              sessionId,
+              launchId: grant.launchId,
+              accountId: actor ?? grant.accountId,
+              ...(grant.writeOnly === true ? { writeOnly: true } : {}),
+            },
             ticket,
           ),
         ...(capture === null || actor !== null
@@ -21071,7 +21208,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const channelGrant = Effect.fn("SessionEngine.channelGrant")(function* (
         sessionId: SessionId,
         base: SessionSocketApi,
-        grant: { readonly launchId: string; readonly accountId: string | null },
+        grant: {
+          readonly launchId: string;
+          readonly accountId: string | null;
+          readonly writeOnly?: boolean;
+        },
       ) {
         const layout = yield* layoutSteps.layoutOfLaunch(grant.launchId);
         const launchCapture = base.captureAs?.(grant.launchId);
@@ -21124,6 +21265,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const pickup = closures.pickupAs?.({
           launchId: grant.launchId,
           accountId: grant.accountId,
+          ...(grant.writeOnly === true ? { writeOnly: true } : {}),
         });
         // Their session's process has not started in this launch's executor yet (a join, whose row
         // names the executor once its process opens), and the executor holds the session's
@@ -21133,6 +21275,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           const lease = capture === null ? null : yield* capture.repo.leaseOf(session.worktreeId);
           return pickup === undefined || lease?.launchId !== grant.launchId
             ? { ok: false as const, status: 409, message: CHANNEL_NOT_LIVE_HERE }
+            : { ok: true as const, api: pickupOnly(pickup) };
+        }
+        // A one-off write's token: its own files' pickups, and nothing else of the session.
+        if (grant.writeOnly === true) {
+          return pickup === undefined
+            ? { ok: false as const, status: 403, message: CHANNEL_MAY_NOT_ACT }
             : { ok: true as const, api: pickupOnly(pickup) };
         }
         return {
@@ -22765,8 +22913,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         restartService: (serviceId) => ownedByService(serviceId)(restartService(serviceId)),
         stopService: (serviceId) => ownedByService(serviceId)(stopService(serviceId)),
         stopServices: (sessionId) => owned(sessionId)(stopServices(sessionId)),
-        storePastedImage: (sessionId, bytes) =>
-          owned(sessionId)(storePastedImage(sessionId, bytes)),
+        storePastedImage: (sessionId, bytes, sender) =>
+          owned(sessionId)(storePastedImage(sessionId, bytes, sender)),
         listRepositories: (sessionId) => owned(sessionId)(listRepositories(sessionId)),
         addableProjects: (sessionId) => owned(sessionId)(addableProjects(sessionId)),
         addRepository: (sessionId, input) => owned(sessionId)(addRepository(sessionId, input)),

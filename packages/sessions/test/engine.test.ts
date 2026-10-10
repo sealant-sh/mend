@@ -3073,6 +3073,14 @@ const recordingTokens = (events: Array<string>): Layer.Layer<SessionChannelToken
               Effect.sync(() => events.push(`issuePerson:${launchId}:${accountId}:${token}`)),
             ),
           ),
+      issueWrite: (launchId: string, accountId: string) =>
+        inner
+          .issueWrite(launchId, accountId)
+          .pipe(
+            Effect.tap((token) =>
+              Effect.sync(() => events.push(`issueWrite:${launchId}:${accountId}:${token}`)),
+            ),
+          ),
       revoke: (sessionId: string) =>
         Effect.sync(() => events.push(`revoke:${sessionId}`)).pipe(
           Effect.andThen(inner.revoke(sessionId)),
@@ -3080,6 +3088,10 @@ const recordingTokens = (events: Array<string>): Layer.Layer<SessionChannelToken
       revokeLaunch: (launchId: string) =>
         Effect.sync(() => events.push(`revokeLaunch:${launchId}`)).pipe(
           Effect.andThen(inner.revokeLaunch(launchId)),
+        ),
+      revokeToken: (token: string) =>
+        Effect.sync(() => events.push(`revokeToken:${token}`)).pipe(
+          Effect.andThen(inner.revokeToken(token)),
         ),
       revokePerson: (launchId: string, accountId: string, issuedBefore: Date) =>
         Effect.sync(() => events.push(`revokePerson:${launchId}:${accountId}`)).pipe(
@@ -8024,11 +8036,13 @@ describe("SessionEngine files into a captured workspace", () => {
             base: null,
           });
           // No workspace yet: nowhere a harness would read the file, so nothing is stored.
-          const early = yield* engine.storePastedImage(session.id, PNG).pipe(Effect.flip);
+          const early = yield* engine
+            .storePastedImage(session.id, PNG, "user-fixture")
+            .pipe(Effect.flip);
           expect(early._tag).toBe("SessionNotLiveError");
 
           yield* engine.launch(session.id, ["codex"]);
-          const placed = yield* engine.storePastedImage(session.id, PNG);
+          const placed = yield* engine.storePastedImage(session.id, PNG, "user-fixture");
           expect(placed.path).toMatch(/^\/workspace\/harness-home\/paste\/\d{8}-\d{6}-\w{4}\.png$/);
           expect(placed.mediaType).toBe("image/png");
           expect(new Uint8Array(writtenFiles(execCalls).get(placed.path) ?? [])).toEqual(PNG);
@@ -8037,7 +8051,7 @@ describe("SessionEngine files into a captured workspace", () => {
           ).toBe(false);
 
           const refused = yield* engine
-            .storePastedImage(session.id, new TextEncoder().encode("not an image"))
+            .storePastedImage(session.id, new TextEncoder().encode("not an image"), "user-fixture")
             .pipe(Effect.flip);
           expect(refused._tag).toBe("PastedImageError");
         }),
@@ -8058,7 +8072,7 @@ describe("SessionEngine files into a captured workspace", () => {
           ownerUserId: "user-fixture",
           base: null,
         });
-        const placed = yield* engine.storePastedImage(session.id, PNG);
+        const placed = yield* engine.storePastedImage(session.id, PNG, "user-fixture");
         const hostPath = path.join(
           harnessHomePathOf(project.storePath, session.id),
           "paste",
@@ -29531,10 +29545,18 @@ interface DeliveryRun {
 }
 
 /** The command a person's exec runs, past its umask and the session it names (`personExecPrefix`). */
-const commandOf = (argv: ReadonlyArray<string>) =>
-  argv[3] === "mend-as-person" && (argv[5] ?? "").startsWith("MEND_SESSION_ID=")
-    ? argv.slice(6)
-    : argv;
+const commandOf = (argv: ReadonlyArray<string>) => {
+  if (argv[3] !== "mend-as-person" || !(argv[5] ?? "").startsWith("MEND_SESSION_ID=")) return argv;
+  // Past the environment it names: the session, and a one-off write's own token file.
+  let at = 6;
+  while ((argv[at] ?? "").startsWith("MEND_SESSION_TOKEN_FILE=")) at++;
+  return argv.slice(at);
+};
+/** The token file a person's exec names (a one-off write's own), or null. */
+const tokenFileNamed = (argv: ReadonlyArray<string>) =>
+  argv[3] === "mend-as-person" && (argv[6] ?? "").startsWith("MEND_SESSION_TOKEN_FILE=")
+    ? (argv[6] ?? "").slice("MEND_SESSION_TOKEN_FILE=".length)
+    : null;
 const named = (argv: ReadonlyArray<string>, name: string) => commandOf(argv)[3] === name;
 const asWho = (run: DeliveryRun, test: (argv: ReadonlyArray<string>) => boolean) =>
   run.execs.flatMap((argv, index) => (test(argv) ? [run.users[index] ?? null] : []));
@@ -29611,6 +29633,12 @@ describe("deliveries per person (docs/adr/0016, Delivery 15)", () => {
     readonly exec?: (
       argv: ReadonlyArray<string>,
     ) => { exitCode: number; stdout: string; stderr: string } | undefined;
+    /** Answers an exec as an effect, before `exec` (undefined falls through). */
+    readonly execEffect?: (
+      argv: ReadonlyArray<string>,
+    ) =>
+      | Effect.Effect<{ exitCode: number; stdout: string; stderr: string }, SealantPlatformError>
+      | undefined;
     readonly inspect?: (
       engine: SessionEngine["Service"],
       world: World,
@@ -29621,6 +29649,8 @@ describe("deliveries per person (docs/adr/0016, Delivery 15)", () => {
     readonly state?: HarnessLayoutsMemoryState;
     /** How long a start waits for a person's dotfiles apply; 120 s unless a test says. */
     readonly dotfilesApplyBound?: Duration.Duration;
+    /** How long a person's logins stay after their start before the idle check releases them. */
+    readonly loginReleaseGrace?: Duration.Duration;
     /** The join itself, when the test drives it (a waited install.sh). */
     readonly joinWith?: (
       engine: SessionEngine["Service"],
@@ -29709,6 +29739,7 @@ describe("deliveries per person (docs/adr/0016, Delivery 15)", () => {
           undefined,
           {
             execUsers: users,
+            ...(options.execEffect === undefined ? {} : { execEffect: options.execEffect }),
             exec: (argv) =>
               options.exec?.(argv) ?? answerLayout(options.prepareStdout ?? LAYOUT_READY)(argv),
           },
@@ -29720,6 +29751,9 @@ describe("deliveries per person (docs/adr/0016, Delivery 15)", () => {
           ...(options.dotfilesApplyBound === undefined
             ? {}
             : { dotfilesApplyBound: options.dotfilesApplyBound }),
+          ...(options.loginReleaseGrace === undefined
+            ? {}
+            : { loginReleaseGrace: options.loginReleaseGrace }),
         },
         ...options.layers,
       },
@@ -29814,6 +29848,206 @@ describe("deliveries per person (docs/adr/0016, Delivery 15)", () => {
         deliveryNames.some((name) => named(argv, name)) ||
         (commandOf(argv)[2] ?? "").includes("mend-record");
       if (delivery) expect(run.users[index]).not.toBeNull();
+    });
+  });
+
+  /**
+   * mend#597 review, finding 2: a paste was written as root, through a link, into the shared
+   * harness home. In a person executor it is written as its sender, into their own saved
+   * directory and kept inside it; a shared executor still writes it as root, kept inside the
+   * harness home.
+   */
+  describe("a pasted image", () => {
+    const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0x0d]);
+    const pastes = (run: DeliveryRun, from: number) =>
+      run.execs.flatMap((argv, index) => {
+        const command = commandOf(argv);
+        // Past the ticket (`command[4]`), which may itself start with a `C`.
+        const marker = command.findIndex((part, at) => at > 4 && part.startsWith("C"));
+        return index >= from && command[3] === "mend-write" && marker > 4
+          ? [
+              {
+                user: run.users[index] ?? null,
+                within: command[marker],
+                path: command[marker + 1],
+                session: sessionNamed(argv),
+              },
+            ]
+          : [];
+      });
+
+    it("is written as whoever pasted it, into their own saved directory", async () => {
+      let seen: {
+        readonly holder: SessionId;
+        readonly from: number;
+        readonly own: string;
+        readonly steered: string;
+      } | null = null;
+      const run = await launchAndJoin({
+        join: null,
+        inspect: (engine, _world, ids, current) =>
+          Effect.gen(function* () {
+            const from = current.execs.length;
+            const own = yield* engine.storePastedImage(ids.holder, PNG, "user-fixture");
+            // Maria has run nothing here yet: she is made first, as her first process would be.
+            const steered = yield* engine.storePastedImage(ids.holder, PNG, MARIA);
+            seen = { holder: ids.holder, from, own: own.path, steered: steered.path };
+          }),
+      });
+      if (seen === null) throw new Error("nothing pasted");
+      const { holder, from, own, steered } = seen;
+      expect(own).toMatch(new RegExp(`^${P_LAUNCHER}/paste/\\d{8}-\\d{6}-\\w{4}\\.png$`));
+      expect(steered).toMatch(new RegExp(`^${P_JOINER}/paste/\\d{8}-\\d{6}-\\w{4}\\.png$`));
+      expect(pastes(run, from)).toEqual([
+        { user: LAUNCHER, within: `C700:600:${P_LAUNCHER}`, path: own, session: holder },
+        { user: JOINER, within: `C700:600:${P_JOINER}`, path: steered, session: holder },
+      ]);
+      // Maria's user and home were made before her paste, by root, as prepare makes anyone.
+      expect(
+        run.execs
+          .slice(from)
+          .some(
+            (argv) => (argv[2] ?? "").includes("mend_person") && argv.join(" ").includes(JOINER),
+          ),
+      ).toBe(true);
+    });
+
+    /**
+     * mend#615 review, finding 3: a first paste ran a person's whole first start (their logins
+     * written, their deliveries) though no process of theirs ever ran, and nothing released it. A
+     * paste makes only their user and home, with a Mend token of the write's own, in a file of its
+     * own that the write's exec names, and that token, exactly, is revoked when the write ends,
+     * placed or refused (review 2, 615-r2-2 and 615-r2-3). The home exec here redeems its ticket
+     * over the session's channel, as the executor's root does.
+     */
+    it.each([
+      { write: "placed", fails: false },
+      { write: "refused", fails: true },
+    ])(
+      "makes only a first sender's user, home and a token of the write's own, and revokes exactly it, the write $write",
+      async ({ fails }) => {
+        const tokenEvents: Array<string> = [];
+        let holder: SessionId | null = null;
+        let seen: { readonly from: number; readonly outcome: string } | null = null;
+        const run = await launchAndJoin({
+          join: null,
+          layers: { tokenEvents },
+          execEffect: (argv) => {
+            const ticket = /write token[\s\S]*-- '([A-Za-z0-9_-]{43})'/.exec(argv[2] ?? "")?.[1];
+            if (ticket === undefined || holder === null) return undefined;
+            const pickup = servedSocketApis.get(holder)?.pickup;
+            if (pickup === undefined) return undefined;
+            return pickup(ticket).pipe(
+              Effect.as({ exitCode: 0, stdout: "", stderr: "" }),
+              Effect.orDie,
+            );
+          },
+          exec: (argv) =>
+            fails &&
+            named(argv, "mend-write") &&
+            argv.some((part) => part.startsWith(`C700:600:${P_JOINER}`))
+              ? { exitCode: 3, stdout: "", stderr: "mend-write: not written\n" }
+              : undefined,
+          inspect: (engine, world, ids, current) =>
+            Effect.gen(function* () {
+              holder = ids.holder;
+              const from = current.execs.length;
+              const processes = world.processes.size;
+              const placed = yield* engine
+                .storePastedImage(ids.holder, PNG, MARIA)
+                .pipe(Effect.result);
+              expect(world.processes.size).toBe(processes);
+              seen = { from, outcome: placed._tag };
+            }),
+        });
+        if (seen === null) throw new Error("nothing pasted");
+        const { from, outcome } = seen;
+        expect(outcome).toBe(fails ? "Failure" : "Success");
+        const after: DeliveryRun = {
+          ...run,
+          execs: run.execs.slice(from),
+          users: run.users.slice(from),
+        };
+        // No login of Maria's was written, and nothing was delivered to her: the one exec as her is
+        // the write itself.
+        expect(run.calls.some((call) => call.startsWith(`post:${MARIA}:`))).toBe(false);
+        expect(asWho(after, () => true).filter((who) => who === JOINER)).toEqual([JOINER]);
+        expect(asWho(after, (argv) => named(argv, "mend-write"))).toEqual([JOINER]);
+        // Her user and home were made by root, once, with the write's token file; the write's exec
+        // names that file.
+        const homes = after.execs.filter(
+          (argv) => (argv[2] ?? "").includes("mend_person") && argv.join(" ").includes(JOINER),
+        );
+        expect(homes).toHaveLength(1);
+        const [write] = after.execs.filter((argv) => named(argv, "mend-write"));
+        const file = tokenFileNamed(write ?? []);
+        expect(file).toMatch(/^\/run\/mend\/write-tokens\/[0-9]{13}-[0-9a-f]{32}$/);
+        expect(homes[0]?.[2]).toContain(`'${file?.slice("/run/mend/write-tokens/".length)}'`);
+        // One token minted for Maria, and exactly that one revoked; nobody's else, and no bulk
+        // revocation of hers.
+        const minted = tokenEvents.flatMap((event) => {
+          const match = new RegExp(`^issueWrite:.+:${MARIA}:([^:]+)$`).exec(event);
+          return match?.[1] === undefined ? [] : [match[1]];
+        });
+        expect(minted).toHaveLength(1);
+        expect(tokenEvents.filter((event) => event.startsWith("revokeToken:"))).toEqual([
+          `revokeToken:${minted[0]}`,
+        ]);
+        expect(tokenEvents.some((event) => event.startsWith("revokePerson:"))).toBe(false);
+      },
+    );
+
+    it("leaves a sender's first start whole: their join after a paste is made and delivered to as a first one", async () => {
+      let pasted = 0;
+      const run = await launchAndJoin({
+        layers: people,
+        joinWith: (engine, world, joined, current) =>
+          Effect.gen(function* () {
+            // Maria pastes into Alice's live session before she starts anything here.
+            const holder = [...world.sessions.values()].find(
+              (session) => session.ownerUserId === "user-fixture",
+            );
+            if (holder === undefined) throw new Error("no holder");
+            yield* engine.storePastedImage(holder.id, PNG, MARIA);
+            pasted = current.execs.length;
+            yield* engine.launch(joined, ["claude"]);
+          }),
+      });
+      const joinPart: DeliveryRun = {
+        ...run,
+        execs: run.execs.slice(pasted),
+        users: run.users.slice(pasted),
+      };
+      // Her join made her again (a new token) and ran her first-process deliveries as her.
+      expect(
+        joinPart.execs.some(
+          (argv) => (argv[2] ?? "").includes("mend_person") && argv.join(" ").includes(JOINER),
+        ),
+      ).toBe(true);
+      for (const delivery of ["mend-skills", "mend-secret-files", "mend-write-absent"]) {
+        expect(asWho(joinPart, (argv) => named(argv, delivery))).toContain(JOINER);
+      }
+      expect(run.calls).toContain(`post:${MARIA}:/home/${JOINER}`);
+    });
+
+    it("is written as root, inside the harness home, in a shared executor", async () => {
+      let seen: { readonly from: number; readonly path: string } | null = null;
+      const run = await launchAndJoin({
+        flag: "shared",
+        join: null,
+        inspect: (engine, _world, ids, current) =>
+          Effect.gen(function* () {
+            const from = current.execs.length;
+            const placed = yield* engine.storePastedImage(ids.holder, PNG, MARIA);
+            seen = { from, path: placed.path };
+          }),
+      });
+      if (seen === null) throw new Error("nothing pasted");
+      const { from, path: placed } = seen;
+      expect(placed).toMatch(/^\/workspace\/harness-home\/paste\/\d{8}-\d{6}-\w{4}\.png$/);
+      expect(pastes(run, from)).toEqual([
+        { user: null, within: "C755:644:/workspace/harness-home", path: placed, session: null },
+      ]);
     });
   });
 

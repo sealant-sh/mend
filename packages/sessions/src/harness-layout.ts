@@ -1110,6 +1110,135 @@ next(0);
 const IDENTITY_COMMAND = `node -e ${shellQuote(IDENTITY_PROGRAM)} --`;
 
 /**
+ * Where one-off writes' Mend tokens wait for their writes (mend#615 review 3): root's own
+ * directory, 0711, beside the conversation homes, never anywhere a person owns, so no person can
+ * rename, link or replace anything on the way to a token's file. Not saved; gone with the executor.
+ */
+export const WRITE_TOKENS_DIR = "/run/mend/write-tokens";
+
+/**
+ * A one-off write's own token file in `WRITE_TOKENS_DIR`: a name of its own, which says when Mend
+ * issued it (`<ms>-<32 hex>`), so the cleanup of lapsed files reads Mend's time, never a time its
+ * person could set on the file (mend#615 review 4).
+ */
+export const writeTokenFileOf = (name: string, dir: string = WRITE_TOKENS_DIR): string =>
+  `${dir}/${name}`;
+
+/** A write token file's name: when it was issued, and a nonce. */
+export const writeTokenNameOf = (issuedAtMs: number, nonce: string): string =>
+  `${String(Math.floor(issuedAtMs)).padStart(13, "0")}-${nonce}`;
+const WRITE_TOKEN_NAME = /^[0-9]{13}-[0-9a-f]{32}$/;
+
+/** How long a token file is kept before a later write's exec removes it (it has lapsed by then). */
+const WRITE_TOKEN_FILE_KEPT_MS = 30 * 60_000;
+
+const WRITE_TOKEN_PROGRAM = [
+  SCRIPT_TRANSPORT_PRELUDE,
+  SCRIPT_PICKUP_FUNCTION,
+  `const [ticket, name, uid, dir, nonce] = process.argv.slice(1);
+const c = fs.constants;
+const root = typeof process.getuid === "function" && process.getuid() === 0;
+const fail = (why) => { process.stderr.write("mend: " + name + "'s write token: " + why + "\\n"); process.exit(3); };
+const file = dir + "/" + nonce;
+// Root's own directories, each a real directory of root's, never through a link.
+const own = (path, mode) => {
+  try { fs.mkdirSync(path, { mode }); } catch (error) { if (error.code !== "EEXIST") fail("could not make " + path + " (" + (error.code || "error") + ")"); }
+  let fd;
+  try { fd = fs.openSync(path, c.O_RDONLY | c.O_DIRECTORY | c.O_NOFOLLOW); } catch { fail("not a directory of its own: " + path); }
+  const held = fs.fstatSync(fd);
+  if (root && held.uid !== 0) fail("not root's: " + path);
+  fs.fchmodSync(fd, mode);
+  fs.closeSync(fd);
+};
+own(dir.slice(0, dir.lastIndexOf("/")), 0o755);
+own(dir, 0o711);
+// Token files left by earlier writes have lapsed: removed from root's own directory, by the time
+// their names say Mend issued them, never a time on the file.
+for (const entry of fs.readdirSync(dir)) {
+  if (!${WRITE_TOKEN_NAME}.test(entry)) continue;
+  if (Date.now() - Number(entry.slice(0, 13)) <= ${WRITE_TOKEN_FILE_KEPT_MS}) continue;
+  try { fs.unlinkSync(dir + "/" + entry); } catch {}
+}
+const passing = (reason) => !reason.startsWith("the pickup was refused: this pickup ticket");
+const written = (reason, files) => {
+  if (reason !== null) return fail(reason);
+  const bytes = files.get(file);
+  if (bytes === undefined) return fail("the pickup carried no token");
+  let fd;
+  try {
+    fd = fs.openSync(file, c.O_WRONLY | c.O_CREAT | c.O_EXCL | c.O_NOFOLLOW, 0o600);
+    let done = 0;
+    while (done < bytes.length) done += fs.writeSync(fd, bytes, done, bytes.length - done);
+    // Given to its person through the file it made: never a name someone could have replaced.
+    if (root) fs.fchownSync(fd, Number(uid), ${MEND_GROUP.gid});
+    fs.fchmodSync(fd, 0o400);
+  } catch (error) {
+    return fail(file + ": could not be written (" + (error && error.code ? error.code : "error") + ")");
+  } finally {
+    if (fd !== undefined) { try { fs.closeSync(fd); } catch {} }
+  }
+  process.exit(0);
+};
+redeemPickup(ticket, (reason, files) => {
+  if (reason === null || !passing(reason)) return written(reason, files);
+  setTimeout(() => redeemPickup(ticket, written), 500);
+});
+`,
+].join("\n");
+
+/**
+ * What writes a one-off write's own Mend token (`HarnessLayoutSteps.homeForWrite`; mend#615
+ * review 3): as root, it redeems `ticket` and writes the token it carries to `file`
+ * (`writeTokenFileOf`) in root's own `WRITE_TOKENS_DIR`, created exclusively, never through a link,
+ * then gives it to the person and makes it 0400 through its own descriptor. Nothing of the
+ * person's is touched. The write's exec, as the person, names that file (`MEND_SESSION_TOKEN_FILE`),
+ * so no other write or process of theirs shares it. Exits 0 once written; else says why on stderr
+ * and exits 3.
+ */
+export const writeTokenPickupScript = (
+  person: LinuxIdentity,
+  ticket: string,
+  file: string,
+  /** `WRITE_TOKENS_DIR` unless a test names another. */
+  dir: string = WRITE_TOKENS_DIR,
+): string => {
+  assertScriptSafe(person);
+  if (!SAFE_TICKET.test(ticket)) throw new Error("a pickup ticket is 43 base64url characters");
+  const nonce = file.slice(dir.length + 1);
+  if (!file.startsWith(`${dir}/`) || !WRITE_TOKEN_NAME.test(nonce)) {
+    throw new Error("a write token goes in the write tokens directory, under a name of its own");
+  }
+  return [
+    `node -e ${shellQuote(WRITE_TOKEN_PROGRAM)} --`,
+    ...[ticket, person.name, String(person.uid), dir, nonce].map(shellQuote),
+  ].join(" ");
+};
+
+/**
+ * `HarnessLayoutSteps.homeForWrite`'s one root exec: the person's user and home ensured
+ * (`personHomeEnsureScript`), then the write's own token written (`writeTokenPickupScript`). The
+ * ensure runs in a subshell, so its `exit 0` for a home already made ends only that part and the
+ * token is written every time, a person's second paste included (mend#615 review 4); its failure
+ * fails the exec before any token is minted.
+ */
+export const homeForWriteScript = (
+  person: LinuxIdentity,
+  ticket: string,
+  file: string,
+  options: PersonHomeOptions & {
+    readonly home?: string;
+    /** `WRITE_TOKENS_DIR` unless a test names another. */
+    readonly dir?: string;
+  },
+): string =>
+  [
+    "(",
+    personHomeEnsureScript(person, options),
+    ") || exit 1",
+    writeTokenPickupScript(person, ticket, file, options.dir),
+  ].join("\n");
+
+/**
  * What prepare runs in a person-layout executor beside the helper install, as root and in the
  * same exec (decision 1): the probe, then, only when nothing is missing, every person's user and
  * home (`personHomeScript`), `/root` made traversable (0755: a custom image's toolchains under
