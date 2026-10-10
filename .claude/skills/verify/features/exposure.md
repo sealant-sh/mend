@@ -3,7 +3,7 @@
 The operator declares how the instance is reached with `MEND_EXPOSURE`: `loopback`, `private` (the
 default: a network they control admission to) or `public`. Mend cannot observe who can reach it, so
 it reports what it observed beside what was declared, item by item, and never a verdict. The public
-exposure gate is that report: thirteen items, each `observed`, `carried`, `declared` or `open`. Only
+exposure gate is that report: fourteen items, each `observed`, `carried`, `declared` or `open`. Only
 `public` refuses to start, and only while an item this build can observe is open. The multi mode
 gate does the same for `MEND_TENANCY=multi`. Budgets bound what a client, an account or an
 organization may ask: reaching one refuses new work and stops nothing that runs. Credentials that
@@ -18,8 +18,8 @@ must ride a URL ride as upgrade tickets: single use, thirty seconds, one target.
 - `doctor-line` prints one `exposure` line in `mend doctor` (mapped in [doctor.md](./doctor.md)).
 - `shell-line` shows `exposure · <declared> · <scheme>` in the web sidebar.
 - `public-refusal` refuses to start `MEND_EXPOSURE=public` with the open items and the fix for each.
-- `declared-items` takes `core-private` and `edge-tls` in `MEND_EXPOSURE_DECLARED` and refuses any
-  other name at start.
+- `declared-items` takes `core-private`, `edge-tls` and `workspace-ssh` in `MEND_EXPOSURE_DECLARED`
+  and refuses any other name at start.
 - `budget-refusal` refuses new work past a budget with
   `budget reached · <limit> <what> · nothing running was stopped`.
 - `upgrade-tickets` mints a single-use, thirty-second ticket for a socket URL.
@@ -58,15 +58,17 @@ Preconditions:
   `"exposure": { "declared": "private", "open": <n>, "unobservable": <m> }`, and names no exposure
   item.
 - **Exposure report.** Run `mend operator exposure`. Line 1 reads
-  `exposure · declared private · reached over a network you control admission to`. Thirteen lines
+  `exposure · declared private · reached over a network you control admission to`. Fourteen lines
   follow, one per item (`https-origin`, `secure-cookies`, `trusted-proxies`, `enrollment-closed`,
   `tenancy-gate`, `budgets`, `no-bearers-in-urls`, `browser-headers`, `error-redaction`,
-  `executor-channel-transport`, `core-private`, `edge-tls`, `reassessment`), each starting with `●`
-  observed, `◐` carried, `○` declared or `·` open, then the word, the detail and, after `·`, what
-  would close or observe it where the item names one. The last line reads
-  `<k> of 13 items open · <b> this build can observe; MEND_EXPOSURE=public refuses to start · <u> it cannot`,
-  or `… · 0 this build can observe · <u> it cannot` when only unobservable items are open. Exit code
-  `0`. `core-private`, `edge-tls` and `reassessment` read `open` until declared.
+  `executor-channel-transport`, `workspace-ssh`, `core-private`, `edge-tls`, `reassessment`), each
+  starting with `●` observed, `◐` carried, `○` declared or `·` open, then the word, the detail and,
+  after `·`, what would close or observe it where the item names one. The last line reads
+  `<k> of 14 items open · <b> refuse a public start; MEND_EXPOSURE=public refuses to start · <u> do not`
+  (`8 of 14 items open · 5 refuse a public start; MEND_EXPOSURE=public refuses to start · 3 do not`
+  on the verify stack), or `<k> of 14 items open · 0 refuse a public start · <u> do not` when no
+  open item refuses a public start. Exit code `0`. `core-private`, `edge-tls` and `reassessment`
+  read `open` until declared.
 - **Gate.** Run `mend operator gate`. Ten lines, one per multi mode gate item
   (`cross-organization-authorization` through `operator-present`), each `✓` or `·`, then the detail
   and, where the item names one, its fix. The last line reads
@@ -81,7 +83,7 @@ Preconditions:
 - **Declare an item.** Restart with `MEND_EXPOSURE_DECLARED=edge-tls`. `mend operator exposure`
   shows `○ edge-tls  declared …`. Restart with `MEND_EXPOSURE_DECLARED=budgets`: the server does not
   start, and its log says
-  `MEND_EXPOSURE_DECLARED names budgets: only core-private and edge-tls can be declared; every other item is observed by this process or not at all.`
+  `MEND_EXPOSURE_DECLARED names budgets: only core-private, edge-tls, workspace-ssh can be declared; every other item is observed by this process or not at all.`
 - **Public is refused while observable items are open.** Restart with `MEND_EXPOSURE=public` on an
   `http` origin. The server does not start; its log starts with
   `MEND_EXPOSURE=public is refused: the public exposure gate`, lists each open item as
@@ -125,7 +127,7 @@ Preconditions:
 ## Gotchas
 
 - The report never says an instance is fit to expose, and neither may a verification report. Write
-  what was declared and what was observed (`declared private · 5 of 13 items open`), never a verdict
+  what was declared and what was observed (`declared private · 8 of 14 items open`), never a verdict
   about the instance or the gate (AGENTS.md, "Access nouns", lists the phrases a report never uses).
   `nothing open · every item was observed here, is carried by this build, or was declared by the operator`
   is a statement about the list.
