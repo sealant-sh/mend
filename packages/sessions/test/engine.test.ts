@@ -2794,6 +2794,9 @@ const checkpointsLayer = (world: World) =>
             seq: input.seq,
             trigger: input.trigger,
             createdAt: now(),
+            ...(input.source === undefined || input.source === null
+              ? {}
+              : { source: input.source }),
           });
           world.checkpoints.push(checkpoint);
           world.checkpointCaptureIds.set(checkpoint.id, input.captureId ?? null);
@@ -14800,6 +14803,16 @@ describe("a review opened while a Stop ends the executor (packaged acceptance, a
             expect(Option.isSome(taken)).toBe(true);
             // No flush of its own: the drain's final one stands for it.
             expect(kinds).toEqual(["final"]);
+            // And it says so: the Stop's final save, its capture and when Mend received it —
+            // never the checkpoint's own time as a fresh reading (round 2 of the review).
+            if (Option.isSome(taken)) {
+              const source = taken.value.source;
+              expect(source?.kind).toBe("stop-final");
+              expect(source?.captureN).toBe(1);
+              expect(source?.observedAt.getTime()).toBeLessThanOrEqual(
+                taken.value.createdAt.getTime(),
+              );
+            }
             expect(memory.chains.get(session.worktreeId)?.headN ?? null).toBe(head);
             yield* Deferred.succeed(stopHeld, undefined);
             yield* until(
@@ -14850,7 +14863,7 @@ describe("a review opened while a Stop ends the executor (packaged acceptance, a
             expect(
               logs.some((line) =>
                 line.includes(
-                  "checkpoint · review-open · from the Stop's final save at capture 1 · flushed",
+                  "checkpoint · review-open · from the Stop's final save · capture 1 · ",
                 ),
               ),
             ).toBe(true);
@@ -14980,6 +14993,123 @@ describe("a review opened while a Stop ends the executor (packaged acceptance, a
           sealantLayer: lifecycleLayer(created, {
             captureOps: {
               flushKinds: kinds,
+              flush: () => Effect.succeed(flushReport(0, 1, { headN: 1 })),
+              aroundStop: () =>
+                Deferred.succeed(stopAsked, undefined).pipe(
+                  Effect.andThen(Deferred.await(stopHeld)),
+                ),
+            },
+          }),
+        },
+      );
+    },
+  );
+  // Round 2 of the review of mend#649: requests and answers were ordered, and waits timed, by the
+  // wall clock. Set back, it let a review take an answer the drain asked for before the review was
+  // asked, and stretched a landing's wait by as much. Asks are a sequence now, and waits monotonic.
+  it(
+    "never takes a drain's answer asked before the review, whatever the wall clock says",
+    { timeout: 20_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const memory = makeMemoryCaptureStore();
+      const first = Deferred.makeUnsafe<void>();
+      const second = Deferred.makeUnsafe<void>();
+      let asks = 0;
+      const wallClock = Date.now;
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            yield* engine.launch(session.id, ["codex"]);
+            yield* engine.stop(session.id);
+            yield* until(() => asks === 1, "the drain's first final");
+            Date.now = () => wallClock() - 60_000;
+            const review = yield* Effect.forkChild(engine.checkpointNow(session.id, "review-open"));
+            yield* Effect.sleep(Duration.millis(100));
+            // The answer to the final asked before the review: in progress, not saved.
+            yield* Deferred.succeed(first, undefined);
+            yield* until(() => asks >= 2, "the drain's next final");
+            yield* Effect.sleep(Duration.millis(500));
+            expect(review.pollUnsafe()).toBeUndefined();
+            // The final asked after the review saves: that is what the review takes.
+            yield* Deferred.succeed(second, undefined);
+            const taken = yield* Fiber.join(review).pipe(Effect.timeoutOption(Duration.seconds(5)));
+            expect(Option.isSome(taken)).toBe(true);
+            if (Option.isSome(taken)) expect(taken.value.source?.kind).toBe("stop-final");
+          }).pipe(
+            Effect.ensuring(
+              Effect.sync(() => {
+                Date.now = wallClock;
+              }).pipe(Effect.andThen(Deferred.succeed(second, undefined))),
+            ),
+          ),
+        {
+          captured: memory,
+          drainPolicy: { keptRetryFirst: Duration.millis(50), stallSeconds: 600 },
+          sealantLayer: lifecycleLayer(created, {
+            captureOps: {
+              finalCompletion: "unreported",
+              flush: () =>
+                Effect.gen(function* () {
+                  asks += 1;
+                  const ask = asks;
+                  yield* Deferred.await(ask === 1 ? first : second);
+                  return ask === 1
+                    ? {
+                        ...flushReport(1, 1, { headN: 1 }),
+                        complete: false,
+                        incompleteReason: "in-progress",
+                      }
+                    : { ...flushReport(0, 1, { headN: 1 }), complete: true };
+                }),
+            },
+          }),
+        },
+      );
+    },
+  );
+
+  it(
+    "refuses a landing when its wait is over, whatever the wall clock says",
+    { timeout: 20_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const memory = makeMemoryCaptureStore();
+      const stopAsked = Deferred.makeUnsafe<void>();
+      const stopHeld = Deferred.makeUnsafe<void>();
+      const wallClock = Date.now;
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            yield* engine.launch(session.id, ["codex"]);
+            yield* engine.stop(session.id);
+            yield* Deferred.await(stopAsked);
+            const landing = yield* Effect.forkChild(
+              engine.landingCheckpoint(session.id, "user-mark").pipe(Effect.flip),
+            );
+            yield* Effect.sleep(Duration.millis(100));
+            Date.now = () => wallClock() - 60_000;
+            const refused = yield* Fiber.join(landing).pipe(
+              Effect.timeoutOption(Duration.seconds(3)),
+            );
+            expect(Option.isSome(refused)).toBe(true);
+            if (Option.isSome(refused) && refused.value._tag === "CapturesBehindError") {
+              expect(refused.value.stopping).toBe(true);
+            }
+          }).pipe(
+            Effect.ensuring(
+              Effect.sync(() => {
+                Date.now = wallClock;
+              }).pipe(Effect.andThen(Deferred.succeed(stopHeld, undefined))),
+            ),
+          ),
+        {
+          captured: memory,
+          drainPolicy: { landingStopWait: Duration.seconds(1) },
+          sealantLayer: lifecycleLayer(created, {
+            captureOps: {
               flush: () => Effect.succeed(flushReport(0, 1, { headN: 1 })),
               aroundStop: () =>
                 Deferred.succeed(stopAsked, undefined).pipe(

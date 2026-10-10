@@ -3334,6 +3334,24 @@ const hotWorkspaceLayoutMigration = Effect.gen(function* () {
         CHECK (harness_layout IN ('person', 'shared'))`;
 });
 
+/**
+ * 0122: where a checkpoint's view of the executor came from when it was not observed for the
+ * checkpoint itself (mend#649, `CheckpointSource`). A review or a mark asked while a Stop was
+ * ending the executor is taken from the Stop's own flush, and says so: which reading
+ * (`stop-final` or `stop-reading`), the capture that flush reported, and when Mend received it.
+ * Every earlier checkpoint observed for itself: NULL.
+ */
+const checkpointSourceMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    ALTER TABLE checkpoints
+      ADD COLUMN source_kind text CHECK (source_kind IN ('stop-final', 'stop-reading')),
+      ADD COLUMN source_capture_n integer,
+      ADD COLUMN source_observed_at timestamptz,
+      ADD CONSTRAINT checkpoints_source_whole
+        CHECK ((source_kind IS NULL) = (source_observed_at IS NULL))`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -3455,4 +3473,6 @@ export const migrations = {
   "0118_pre_release_executors": preReleaseExecutorsMigration,
   "0119_image_layout_confirmed": imageLayoutConfirmedMigration,
   "0120_hot_workspace_layout": hotWorkspaceLayoutMigration,
+  // 0121 is taken by the repository URL credentials work in flight (fix/origin-url-credentials).
+  "0122_checkpoint_source": checkpointSourceMigration,
 };

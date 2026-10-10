@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 
+import { checkpointSourceWords, type CheckpointSourceKind } from "@mend/domain/workbench";
 import {
   RGBA,
   SyntaxStyle,
@@ -97,7 +98,7 @@ interface PinnedReviewDiffDto {
   readonly change: ChangeDto;
   readonly slice: { readonly id: string; readonly diffDigest: string };
   readonly checkpointA: { readonly id: string };
-  readonly checkpointB: { readonly id: string };
+  readonly checkpointB: { readonly id: string; readonly source?: CheckpointSourceDto };
   readonly patch: string;
   readonly files: ReadonlyArray<ReviewDiffFileDto>;
   readonly anchorFiles: ReadonlyArray<ReviewDiffFileDto>;
@@ -161,11 +162,27 @@ interface FollowUpDto {
   readonly deliveryError: string | null;
 }
 
+/**
+ * A checkpoint taken during a Stop from the Stop's own flush (`CheckpointSource`, mend#649): which
+ * reading, the capture it reported and when Mend received it.
+ */
+interface CheckpointSourceDto {
+  readonly kind: CheckpointSourceKind;
+  readonly captureN: number | null;
+  readonly observedAt: string;
+}
+
+/** Wall-clock hours and minutes, as the terminal's own clock would say them. */
+const clockOf = (iso: string): string =>
+  new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+
 interface ReviewData {
   readonly wire: ChangeDiffDto;
   readonly sliceId: string;
   readonly checkpointAId: string;
   readonly checkpointBId: string;
+  /** Where the review's checkpoint came from, when not observed for itself; null otherwise. */
+  readonly checkpointSource: CheckpointSourceDto | null;
   readonly diffDigest: string;
   readonly anchorFiles: ReadonlyArray<ReviewDiffFileDto>;
   readonly files: ReadonlyArray<ReviewFile>;
@@ -242,6 +259,7 @@ const fetchReview = async (ctx: ReviewContext, changeId: string): Promise<Review
     sliceId: pinned.slice.id,
     checkpointAId: pinned.checkpointA.id,
     checkpointBId: pinned.checkpointB.id,
+    checkpointSource: pinned.checkpointB.source ?? null,
     diffDigest: pinned.slice.diffDigest,
     anchorFiles: pinned.anchorFiles,
     files: buildReviewFiles(wire.diff, wire.files),
@@ -1270,7 +1288,12 @@ export function ReviewScreen({
               ? " · checkpointing"
               : checkpointState === "failed"
                 ? " · checkpoint incomplete"
-                : " · checkpoint recorded"}
+                : data.checkpointSource === null
+                  ? " · checkpoint recorded"
+                  : ` · checkpoint ${checkpointSourceWords(
+                      data.checkpointSource,
+                      clockOf(data.checkpointSource.observedAt),
+                    )}`}
           </span>
         </text>
         <text height={1} bg="transparent">

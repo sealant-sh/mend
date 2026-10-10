@@ -83,6 +83,8 @@ import type {
   Worktree,
 } from "@mend/domain/workbench";
 import {
+  CheckpointSource,
+  checkpointSourceWords,
   LAUNCH_BOOTING,
   LAUNCH_PREPARING,
   LAUNCH_QUEUED,
@@ -1294,6 +1296,17 @@ interface PersonDelivered {
  * `sealed` when the store's seal stood for a lost answer; `none` when nothing drained.
  */
 type DrainWord = CaptureReading | "refused" | "none" | "sealed";
+
+/**
+ * What a look at the lease holder came to, when it came from a Stop's own reading instead of one
+ * asked for the checkpoint (`flushLeaseHolder`): the observation, and where it came from.
+ */
+interface SourcedObservation {
+  readonly observed: CaptureFlushObservation;
+  readonly source: CheckpointSource | null;
+}
+const sourcedOf = (look: CaptureFlushObservation | SourcedObservation): SourcedObservation =>
+  typeof look === "string" ? { observed: look, source: null } : look;
 
 /** What a drain's word says for a checkpoint put off until it; undefined asks a flush. */
 const observedOf = (reading: DrainWord): CaptureFlushObservation | undefined =>
@@ -3534,6 +3547,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         ).pipe(Effect.asVoid);
 
       /**
+       * The asks of this process in order: a drain's FINAL and a checkpoint's look at a Stop each
+       * take the next one. A sequence, not a clock: a wall clock set back, or two asks in one
+       * millisecond, never orders an earlier answer after a later request (review of mend#649).
+       */
+      let asks = 0;
+      const nextAsk = () => {
+        asks += 1;
+        return asks;
+      };
+
+      /**
        * Flush whoever holds a worktree's lease, when that is a session's live executor: the
        * head a checkpoint is observed from is then the disk as of now, not the last cadence
        * tick. `none` only when it is known that no executor holds anything more
@@ -3553,7 +3577,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
          * now — during a Stop it is never answered caught up (`awaitStopSettled`).
          */
         purpose: "checkpoint" | "barrier",
-      ): Effect.fn.Return<CaptureFlushObservation> {
+      ): Effect.fn.Return<CaptureFlushObservation | SourcedObservation> {
         if (capture === null) return "none" satisfies CaptureFlushObservation;
         const lease = yield* capture.repo.leaseOf(worktreeId);
         // Never claimed, or released after its holder ended: the registered head is everything.
@@ -3601,20 +3625,19 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             return "incomplete" satisfies CaptureFlushObservation;
           }
           // A review's or a mark's checkpoint is the Stop's final save as it stood then, as the
-          // Stop's own checkpoint is: said as such, and named by the capture it was derived from.
-          const word = yield* drainWordFor(workspaceId, Date.now());
-          if (word !== null) {
-            const observed = observedOf(word) ?? "incomplete";
-            const from =
-              typeof word !== "object"
-                ? word === "sealed"
-                  ? "the Stop's sealed final save"
-                  : "the registered head · the Stop's final save had not answered"
-                : `the Stop's final save at capture ${word.headN ?? "unknown"}`;
-            yield* Effect.logInfo(`session engine: ${why} · from ${from} · ${observed}`).pipe(
-              Effect.annotateLogs({ sessionId: holder.id, worktreeId, workspaceId }),
-            );
-            return observed satisfies CaptureFlushObservation;
+          // Stop's own checkpoint is, and carries where it came from (`CheckpointSource`): the
+          // capture and the time of that reading, never the checkpoint's own as a fresh one.
+          const drained = yield* drainWordFor(workspaceId, nextAsk());
+          if (drained !== null) {
+            const observed = observedOf(drained.word) ?? "incomplete";
+            yield* Effect.logInfo(
+              `session engine: ${why} · ${
+                drained.source === null
+                  ? "the registered head · the Stop's final save had not answered"
+                  : checkpointSourceWords(drained.source, drained.source.observedAt.toISOString())
+              } · ${observed}`,
+            ).pipe(Effect.annotateLogs({ sessionId: holder.id, worktreeId, workspaceId }));
+            return { observed, source: drained.source };
           }
           // The drain ended meanwhile: the lease as it stands now.
           if (!terminating.has(workspaceId)) {
@@ -3688,36 +3711,59 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         worktreeId: WorktreeId,
         wait: Duration.Duration,
       ) {
-        const deadline = Date.now() + Duration.toMillis(wait);
+        const deadline = performance.now() + Duration.toMillis(wait);
         while ((yield* executorStopping(worktreeId)) !== null) {
-          if (Date.now() >= deadline) return false;
+          if (performance.now() >= deadline) return false;
           yield* Effect.sleep(STOP_SETTLE_LOOK);
         }
         return true;
       });
 
       /**
-       * A running drain's word on its executor, for a review's or a mark's checkpoint asked at
-       * `askedAtMs`: the drain's saved word once it read the executor saved, or a reading the
-       * drain asked for after the checkpoint was asked that did not save (an answer asked before
-       * it says nothing of the disk since). Null once no drain runs on it. Waited for at most
-       * `CHECKPOINT_FLUSH_TIMEOUT` (the drain's final flush may still be shipping): `refused`
-       * past it, and the checkpoint observes the registered head.
+       * A running drain's word on its executor, for a review's or a mark's checkpoint that took ask
+       * `askedAs` (`nextAsk`): the drain's saved word once it read the executor saved, or a reading
+       * the drain asked for after the checkpoint asked that did not save (an answer asked before it
+       * says nothing of the disk since), each with where it came from (`CheckpointSource`). Null
+       * once no drain runs on it. Waited for at most `CHECKPOINT_FLUSH_TIMEOUT` (the drain's final
+       * flush may still be shipping): `refused` past it, from no reading, and the checkpoint
+       * observes the registered head.
        */
       const drainWordFor = Effect.fn("SessionEngine.drainWordFor")(function* (
         workspaceId: SealantWorkspaceId,
-        askedAtMs: number,
-      ) {
-        const deadline = askedAtMs + Duration.toMillis(CHECKPOINT_FLUSH_TIMEOUT);
+        askedAs: number,
+      ): Effect.fn.Return<{
+        readonly word: DrainWord;
+        readonly source: CheckpointSource | null;
+      } | null> {
+        const deadline = performance.now() + Duration.toMillis(CHECKPOINT_FLUSH_TIMEOUT);
         while (true) {
           const saved = drainSaved.get(workspaceId);
-          if (saved !== undefined) return saved;
+          if (saved !== undefined) {
+            return {
+              word: saved.word,
+              source: new CheckpointSource({
+                kind: "stop-final",
+                captureN: saved.captureN,
+                observedAt: saved.at,
+              }),
+            };
+          }
           if (!drains.has(workspaceId)) return null;
           const latest = lastReadings.get(workspaceId);
-          if (latest !== undefined && (lastReadingAskedAt.get(workspaceId) ?? 0) >= askedAtMs) {
-            return latest;
+          const asked = lastReadingAsks.get(workspaceId);
+          if (latest !== undefined && asked !== undefined && asked.ask > askedAs) {
+            return {
+              word: latest,
+              source: new CheckpointSource({
+                kind: captureSaved(latest) ? "stop-final" : "stop-reading",
+                captureN: latest.headN,
+                observedAt: asked.at,
+              }),
+            };
           }
-          if (Date.now() >= deadline) return "refused" satisfies DrainWord;
+          if (performance.now() >= deadline) {
+            return { word: "refused", source: null };
+          }
           yield* Effect.sleep(DRAIN_WORD_LOOK);
         }
       });
@@ -4483,13 +4529,20 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * executor's final flush, which admits nothing after it. A checkpoint asked meanwhile reads
        * it instead of asking the executor again (`drainWordFor`).
        */
-      const drainSaved = new Map<SealantWorkspaceId, DrainWord>();
+      const drainSaved = new Map<
+        SealantWorkspaceId,
+        { readonly word: DrainWord; readonly captureN: number | null; readonly at: Date }
+      >();
       /**
-       * When the drain asked for its last reading (`lastReadings`), by Mend's clock: a checkpoint
-       * takes it only when it was asked after the checkpoint was (`drainWordFor`). Zero for an
-       * earlier FINAL the drain reused, asked before it began.
+       * Where the drain's last reading (`lastReadings`) stands among the asks of this process
+       * (`nextAsk`), and when Mend received it: a checkpoint takes it only when the drain asked
+       * for it after the checkpoint was asked (`drainWordFor`). Zero for an earlier FINAL the drain
+       * reused, asked before it began.
        */
-      const lastReadingAskedAt = new Map<SealantWorkspaceId, number>();
+      const lastReadingAsks = new Map<
+        SealantWorkspaceId,
+        { readonly ask: number; readonly at: Date }
+      >();
       /**
        * Executors whose stop Mend is sending (`terminateWorkspace`): their evidence permit is held
        * for as long as the platform takes to answer, so nothing is asked of them.
@@ -5467,7 +5520,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               ? recent.reading
               : null;
           if (reused !== null) recentFinals.delete(workspaceId);
-          const askedAtMs = reused !== null ? 0 : Date.now();
+          const askedAs = reused !== null ? 0 : nextAsk();
           const reading: CaptureReading | null =
             lookup.kind !== "found"
               ? null
@@ -5485,6 +5538,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                     Effect.tap(() => Effect.sync(() => recentFinals.delete(workspaceId))),
                   );
           const nowMs = Date.now();
+          const receivedAt = new Date(
+            reused !== null && recent !== undefined ? recent.atMs : nowMs,
+          );
           // A completed answer is what the executor said; saved is the one decision a seal and an
           // end are read by (cross-repo decision 31, review 2026-09-28 (10) #7): the executor's
           // kept evidence, bound to this executor and its epoch, with every answer asked of it
@@ -5575,7 +5631,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           if (reading !== null) {
             previous = reading;
             lastReadings.set(workspaceId, reading);
-            lastReadingAskedAt.set(workspaceId, askedAtMs);
+            lastReadingAsks.set(workspaceId, { ask: askedAs, at: receivedAt });
             if (harvestReadyOf(reading) === true) deferredEvidence.set(workspaceId, reading);
           }
           if (step.kind === "saved" && lookup.kind === "found") {
@@ -5588,7 +5644,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             // (Astra review, 2026-10-03). Saved on the store's seal with no answer from the
             // executor: the head is sealed.
             const word: DrainWord = reading ?? "sealed";
-            drainSaved.set(workspaceId, word);
+            drainSaved.set(workspaceId, {
+              word,
+              captureN: reading?.headN ?? savedBy?.n ?? null,
+              at: reading === null ? (savedBy?.at ?? receivedAt) : receivedAt,
+            });
             if (harvestReadyOf(word) === true) deferredEvidence.set(workspaceId, word);
             if (!(yield* runDeferred(workspaceId, word, drainPolicy.deferredWorkLimit, true))) {
               // A piece ran past its limit (a writer lock held, a store not answering): it runs
@@ -5723,7 +5783,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               Effect.ensuring(
                 Effect.sync(() => {
                   lastReadings.delete(workspaceId);
-                  lastReadingAskedAt.delete(workspaceId);
+                  lastReadingAsks.delete(workspaceId);
                   drainSaved.delete(workspaceId);
                 }),
               ),
@@ -7573,13 +7633,16 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             // Capture mode: the lease holder flushes first, so the head this checkpoint is
             // observed from is the disk as of now. A flush that does not complete costs nothing
             // but the wait for a capture to land — except for a landing, which needs the disk.
-            const observed =
-              observedByDrain ??
-              (yield* flushLeaseHolder(
-                worktree.id,
-                `checkpoint · ${trigger}`,
-                requireCaughtUp ? "barrier" : "checkpoint",
-              ));
+            const { observed, source } =
+              observedByDrain === undefined
+                ? sourcedOf(
+                    yield* flushLeaseHolder(
+                      worktree.id,
+                      `checkpoint · ${trigger}`,
+                      requireCaughtUp ? "barrier" : "checkpoint",
+                    ),
+                  )
+                : { observed: observedByDrain, source: null };
             if (requireCaughtUp && observed === "incomplete") {
               return yield* new CapturesBehindError({
                 worktreeId: worktree.id,
@@ -7608,6 +7671,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 seq: cursor.sequence,
                 trigger,
                 captureId,
+                source,
               })
               .pipe(
                 Effect.catchTag("CheckpointOrdinalTakenError", (taken) =>
@@ -17735,7 +17799,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         }
         return yield* withCheckpointWriter(
           session.worktreeId,
-          flushLeaseHolder(session.worktreeId, why, "barrier"),
+          flushLeaseHolder(session.worktreeId, why, "barrier").pipe(
+            Effect.map((look) => sourcedOf(look).observed),
+          ),
         );
       });
 

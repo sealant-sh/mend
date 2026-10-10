@@ -5,6 +5,8 @@
 // "nothing changed", and an empty slice says which checkpoint was empty and
 // when it was taken, not that the worktree is clean.
 
+import { checkpointSourceWords, type CheckpointSourceKind } from "@mend/domain/workbench";
+
 /** One checkpoint of the worktree's chain, as `GET /sessions/:id` sends it. */
 export interface CheckpointDto {
   readonly id: string;
@@ -13,6 +15,15 @@ export interface CheckpointDto {
   readonly sha: string;
   readonly trigger: string;
   readonly createdAt: string;
+  /**
+   * Taken during a Stop from the Stop's own flush (`CheckpointSource`): which reading, the capture
+   * it reported and when Mend received it. Absent: observed for the checkpoint itself.
+   */
+  readonly source?: {
+    readonly kind: CheckpointSourceKind;
+    readonly captureN: number | null;
+    readonly observedAt: string;
+  };
 }
 
 /** Which capture (or the live worktree) a read was observed on. */
@@ -83,7 +94,7 @@ export interface ReadFacts {
 /** The rendered slice as the body needs it; null until one has been read. */
 export interface RenderedSlice {
   readonly fileCount: number;
-  readonly checkpointB: Pick<CheckpointDto, "ordinal" | "createdAt">;
+  readonly checkpointB: Pick<CheckpointDto, "ordinal" | "createdAt" | "source">;
 }
 
 export type ChangeBody =
@@ -98,12 +109,21 @@ export type ChangeBody =
   | { readonly kind: "empty"; readonly line: string }
   | { readonly kind: "files" };
 
-/** "no files changed · checkpoint 3 · observed 10:18" — what was read, not a claim. */
+/**
+ * "no files changed · checkpoint 3 · observed 10:18" — what was read, not a claim. A checkpoint
+ * taken from a Stop's own flush says that instead, with the time of that reading: "no files
+ * changed · checkpoint 3 · from the Stop's final save · capture 12 · 10:16". Its own time is when
+ * it was recorded, never when the disk was read.
+ */
 export const emptySliceLine = (
-  checkpointB: Pick<CheckpointDto, "ordinal" | "createdAt">,
+  checkpointB: Pick<CheckpointDto, "ordinal" | "createdAt" | "source">,
   format: (iso: string) => string = clock,
 ): string =>
-  `no files changed · checkpoint ${checkpointB.ordinal} · observed ${format(checkpointB.createdAt)}`;
+  `no files changed · checkpoint ${checkpointB.ordinal} · ${
+    checkpointB.source === undefined
+      ? `observed ${format(checkpointB.createdAt)}`
+      : checkpointSourceWords(checkpointB.source, format(checkpointB.source.observedAt))
+  }`;
 
 /**
  * Exactly one body per state. A slice already on screen stays on screen
