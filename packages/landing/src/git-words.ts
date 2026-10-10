@@ -36,3 +36,11 @@ export const missingWords = (tag: string): string => {
       return "something the landing needs no longer exists";
   }
 };
+
+/** The landing commit was made but Mend could not keep it in its store (a blob write failed). */
+export const COMMIT_NOT_KEPT =
+  "Mend could not save the landing commit in its store · nothing was pushed";
+
+/** The copy a capture-backed landing commits in could not be prepared. */
+export const CACHE_NOT_READY =
+  "Mend could not prepare the copy it lands from · nothing was pushed · try again";
