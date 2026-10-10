@@ -374,3 +374,47 @@ describe("the docker line", () => {
     expect(await dockerLine(() => false)).toBeNull();
   });
 });
+
+const serverLine = async (localServerUrl?: () => Promise<string | null>) => {
+  const checks = await runChecks(
+    { url: "http://127.0.0.1:9", token: "token" },
+    {
+      localCredential: () => null,
+      claudeGrant: () => null,
+      onPath: () => false,
+      ...(localServerUrl === undefined ? {} : { localServerUrl }),
+    },
+  );
+  return checks.find((check) => check.label === "server");
+};
+
+describe("the server line when the configured URL does not answer", () => {
+  it("says the server on this machine moved, when it answers at its new URL", async () => {
+    const mend = await startFakeMend((_request, response) => {
+      response.setHeader("content-type", "application/json");
+      response.end(JSON.stringify({ status: "ok", version: "0.36.0" }));
+    });
+    try {
+      expect(await serverLine(async () => mend.url)).toEqual({
+        label: "server",
+        state: "failed",
+        detail: `cannot reach http://127.0.0.1:9 · the Mend server on this machine answers at ${mend.url}, and this CLI points at the old URL`,
+        fix: `mend login --url ${mend.url}`,
+      });
+    } finally {
+      await mend.close();
+    }
+  });
+
+  it("asks for the server to be started only when nothing here answers", async () => {
+    const expected = {
+      label: "server",
+      state: "failed",
+      detail: "cannot reach http://127.0.0.1:9",
+      fix: "start the Mend server (mend server start on its machine), or, if its URL changed, mend login --url <its URL>",
+    };
+    expect(await serverLine()).toEqual(expected);
+    expect(await serverLine(async () => null)).toEqual(expected);
+    expect(await serverLine(async () => "http://127.0.0.1:10")).toEqual(expected);
+  });
+});

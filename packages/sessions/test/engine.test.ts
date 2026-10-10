@@ -142,6 +142,8 @@ import {
   Reference,
 } from "@mend/domain/workbench";
 import {
+  type HostUserNamespaces,
+  hostUserNamespacesRefusal,
   LAUNCH_BOOTING,
   LAUNCH_PREPARING,
   LAUNCH_WAITING_SAVING,
@@ -215,6 +217,8 @@ import {
   WorkspaceCallerLive,
   WorkspaceGitHooks,
   WorkspaceGitHooksLive,
+  WorkspaceHostUserNamespaces,
+  WorkspaceHostUserNamespacesUnobserved,
   secretFilesDeliveredExec,
   secretFilesRecordExec,
 } from "@mend/sessions";
@@ -3238,6 +3242,8 @@ const withEngine = <A, E>(
     readonly drainPolicy?: Partial<CaptureDrainPolicyShape>;
     /** The store's sealed records of completed final flushes; none unless a test says. */
     readonly seals?: Layer.Layer<CaptureSeals>;
+    /** What the host whose Docker runs the workspaces says of user namespaces; nothing unless a test says. */
+    readonly hostUserNamespaces?: Layer.Layer<WorkspaceHostUserNamespaces>;
     /** Every log line the engine writes, in order, when a test reads them. */
     readonly logs?: Array<string>;
     /** Every channel token issue and revocation (`issue:<launch>`, `revoke:<session>`, `revokeLaunch:<launch>`). */
@@ -3396,6 +3402,7 @@ const withEngine = <A, E>(
         projectRecipesEmptyLayer,
         options.hotWorkspacesLayer ?? hotWorkspacesEmptyLayer,
         options.seals ?? CaptureSealsNone,
+        options.hostUserNamespaces ?? WorkspaceHostUserNamespacesUnobserved,
       ),
     ),
     Layer.provide(
@@ -7567,6 +7574,7 @@ describe("SessionEngine", () => {
           foldersEmptyLayer,
           projectRecipesEmptyLayer,
           hotWorkspacesEmptyLayer,
+          WorkspaceHostUserNamespacesUnobserved,
         ),
       ),
       Layer.provide(
@@ -22411,6 +22419,49 @@ it(
     );
   },
 );
+
+/**
+ * Fresh install on Ubuntu 24.04: its kernel refuses unprivileged user namespaces, so every
+ * workspace's rootless Docker service failed after minutes of image build, in Docker's words. A
+ * launch on such a host now fails before anything is created, with doctor's words and the fix;
+ * the host is read at each launch, so once the operator applies the setting the next one goes.
+ */
+it("a launch on a host that refuses user namespaces fails before any workspace is created, and goes once the host allows them", async () => {
+  const created: Array<CreateOptions> = [];
+  const setting = "kernel.apparmor_restrict_unprivileged_userns = 0";
+  let observed: HostUserNamespaces = { allowed: false, setting };
+  let reads = 0;
+  await withEngine(
+    (world, tmp) =>
+      Effect.gen(function* () {
+        const { engine, session } = yield* launchOnce(world, tmp);
+        const refused = yield* engine.launch(session.id, ["codex"]).pipe(Effect.flip);
+        expect(refused).toBeInstanceOf(SealantPlatformError);
+        expect(refused.message).toBe(hostUserNamespacesRefusal(setting));
+        expect(created).toHaveLength(0);
+        const failed = world.sessions.get(session.id);
+        expect(failed?.status).toBe("failed");
+        expect(failed?.summary).toBe(`launch failed: ${hostUserNamespacesRefusal(setting)}`);
+
+        // The operator applies the setting: no restart, the next launch reads the host again.
+        observed = { allowed: true };
+        yield* engine.launch(session.id, ["codex"]);
+        expect(created).toHaveLength(1);
+        expect(world.sessions.get(session.id)?.status).toBe("running");
+        expect(reads).toBe(2);
+      }),
+    {
+      sealantLayer: sealantLaunchLayer(created),
+      hostUserNamespaces: Layer.succeed(WorkspaceHostUserNamespaces, {
+        observe: () =>
+          Effect.sync(() => {
+            reads += 1;
+            return observed;
+          }),
+      }),
+    },
+  );
+});
 
 /**
  * e2e8 (i), B and WU: a session resumed after its executor was stopped outside Mend and saved read

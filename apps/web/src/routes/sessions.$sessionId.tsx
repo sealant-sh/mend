@@ -13,6 +13,7 @@ import { useState } from "react";
 
 import { ProjectCrumbs } from "#/components/breadcrumb";
 import { FollowUpBanner } from "#/components/follow-up";
+import { SummaryText } from "#/components/host-user-namespaces";
 import { SessionLandingLineView } from "#/components/land-panel";
 import { ServicesCard } from "#/components/services-card";
 import {
@@ -325,7 +326,7 @@ function SessionPage() {
         )}
         {session.summary !== null && (
           <p className="mt-3 max-w-[760px] text-[14.5px] leading-relaxed text-ink-2">
-            {session.summary}
+            <SummaryText summary={session.summary} />
           </p>
         )}
         {/* A settled session with no run: none started. A session that is still ACTIVE

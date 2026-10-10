@@ -87,6 +87,7 @@ import type {
 import {
   CheckpointSource,
   checkpointSourceWords,
+  hostUserNamespacesRefusal,
   LAUNCH_BOOTING,
   LAUNCH_PREPARING,
   LAUNCH_QUEUED,
@@ -399,6 +400,7 @@ import {
   locateHarnessState,
 } from "./harness-state.ts";
 import { makeHeadPeopleCheck } from "./head-people.ts";
+import { WorkspaceHostUserNamespaces } from "./host-user-namespaces.ts";
 import {
   hotFingerprint,
   type HotFingerprintInputs,
@@ -2519,7 +2521,8 @@ type SessionEngineRequirements =
   | WorkspaceGitHooks
   | HarnessLayoutsRepo
   | PersonLayoutPlatform
-  | HarnessLayoutConfig;
+  | HarnessLayoutConfig
+  | WorkspaceHostUserNamespaces;
 
 /**
  * The executor answered an ask: its evidence fence now clears only with a publication (review
@@ -2638,6 +2641,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       }
       const capture = captureStoreOn && captureRuntime.enabled ? captureRuntime : null;
       const drainPolicy = yield* CaptureDrainPolicy;
+      // Whether the host whose Docker runs the workspaces lets their Docker services start, read
+      // at each launch (`launchInternal`).
+      const hostUserNamespaces = yield* WorkspaceHostUserNamespaces;
       // The store's sealed record of a completed final flush (`CaptureSeals`). Nothing provided
       // reads as no seal recorded: nothing is ever saved on a seal Mend cannot read.
       const seals: CaptureSeals["Service"] = Option.getOrElse(
@@ -15915,6 +15921,24 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // A launch over a settled row (a failed first attempt retried) records a new run: one
         // the settle left open takes the session's words first.
         yield* settleRunsOfSettled(sessionId);
+        // A host that refuses unprivileged user namespaces stops every workspace's rootless
+        // Docker service, after minutes of image build and a workspace created for nothing: the
+        // launch fails here instead, before anything is built or created or any earlier workspace
+        // is replaced, in doctor's words and with the fix. Read now, so a host the operator just
+        // fixed launches without a restart.
+        const userNamespaces = yield* hostUserNamespaces.observe();
+        if (userNamespaces !== null && !userNamespaces.allowed) {
+          const error = new SealantPlatformError({
+            code: "host_user_namespaces_refused",
+            status: 409,
+            message: hostUserNamespacesRefusal(userNamespaces.setting),
+            cause: null,
+          });
+          yield* settleSession(sessionId, "failed", `launch failed: ${error.message}`).pipe(
+            Effect.ignore,
+          );
+          return yield* error;
+        }
         const project = yield* projects.byId(session.projectId);
         const worktree = worktreePathOf(project.storePath, session.worktree);
         // A bash launch (shell session, shell resume) is an open workbench:

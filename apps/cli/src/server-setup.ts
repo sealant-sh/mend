@@ -8,6 +8,8 @@ import * as path from "node:path";
 
 import {
   HOST_USER_NAMESPACE_FILES,
+  HOST_USER_NAMESPACE_SYSCTL_FILE,
+  type HostUserNamespaces,
   hostUserNamespacesFix,
   hostUserNamespacesOf,
 } from "@mend/domain/host-user-namespaces";
@@ -202,6 +204,20 @@ export interface ServerSetupRuntime {
   readonly lookupHost?: (host: string) => Promise<ReadonlyArray<string> | null>;
   /** This machine's own addresses, loopback excluded. */
   readonly localAddresses?: () => ReadonlyArray<string>;
+  /**
+   * The URL this machine's CLI saved in `cli.json` under the config directory given (the file
+   * alone, not `MEND_URL`), and whether a token is saved beside it. Null when there is none.
+   * Absent: setup does not read it.
+   */
+  readonly savedCliLogin?: (configDir: string) => SavedCliLogin | null;
+  /** Point `cli.json` at another URL, keeping its token and device. Absent: setup only says how. */
+  readonly repointCliLogin?: (configDir: string, url: string) => void;
+}
+
+/** This machine's CLI sign-in, as `cli.json` holds it. */
+export interface SavedCliLogin {
+  readonly url: string;
+  readonly signedIn: boolean;
 }
 
 /** One address workspace SSH was tried at, and what answered there. */
@@ -261,6 +277,12 @@ interface SetupOptions {
   readonly t3GatewayPort: number | undefined;
   /** `--no-t3-gateway`: turn it off. */
   readonly noT3Gateway: boolean;
+  /**
+   * `--allow-userns` (true), `--no-allow-userns` (false): whether setup allows unprivileged user
+   * namespaces on a Docker host whose kernel refuses them. Omitted: asked on a terminal, else the
+   * command is printed.
+   */
+  readonly allowUserns: boolean | undefined;
 }
 
 /** Parsed server configuration shared by setup and lifecycle commands. */
@@ -461,6 +483,8 @@ const SETUP_FLAGS = new Set([
   "--t3-gateway-port",
   "--no-t3-gateway",
   "--undeclare",
+  "--allow-userns",
+  "--no-allow-userns",
   "--yes",
 ]);
 
@@ -477,6 +501,8 @@ const SWITCHES: ReadonlySet<string> = new Set([
   "--no-docker-hub-login",
   "--t3-gateway",
   "--no-t3-gateway",
+  "--allow-userns",
+  "--no-allow-userns",
   "--yes",
 ]);
 
@@ -652,8 +678,12 @@ const parseSetupOptions = (args: ReadonlyArray<string>): SetupOptions => {
     t3GatewayPort:
       t3GatewayPort === undefined ? undefined : parsePort(t3GatewayPort, "--t3-gateway-port"),
     noT3Gateway: values.has("--no-t3-gateway"),
+    allowUserns: pair("--allow-userns", "--no-allow-userns"),
   };
 };
+
+/** Flags about this host rather than about the install: they do not say how Mend is reached. */
+const HOST_FLAGS: ReadonlySet<string> = new Set(["--allow-userns", "--no-allow-userns"]);
 
 /**
  * The mirrors a setup writes: each flag given, else what the install saved, else on. A config from
@@ -1154,6 +1184,7 @@ const parseServerConfig = (raw: string): ServerConfig => {
     t3Gateway: false,
     t3GatewayPort: config.t3GatewayPort,
     noT3Gateway: false,
+    allowUserns: undefined,
   });
   return config;
 };
@@ -1368,18 +1399,19 @@ const checkDocker = async (runtime: ServerSetupRuntime, context: string): Promis
   return info.stdout.trim();
 };
 
+/** The image setup reads and changes the Docker host's kernel through: every install pulls it. */
+const HOST_HELPER_IMAGE = "postgres:17-alpine";
+
 /**
- * What setup says when the Docker host's kernel refuses unprivileged user namespaces: every
- * workspace's Docker service is a rootless Docker daemon that needs them, so no session could start
- * (Ubuntu 23.10 and later refuse them by default). Read from the Docker host's own kernel through a
- * throwaway container of the Mend image, so it holds for a remote context too. Null when the host
- * allows them, or when the container could not answer: nothing observed, nothing said.
+ * Whether the Docker host's kernel lets an unprivileged process create a user namespace, which
+ * every workspace's rootless Docker service needs (Ubuntu 23.10 and later refuse them by default).
+ * Read from the host's own kernel through a throwaway container, so it holds whatever runs the
+ * daemon. Null when the container could not answer: nothing observed, nothing said.
  */
-const hostUserNamespacesLine = async (
+const observeHostUserNamespaces = async (
   runtime: ServerSetupRuntime,
   context: string,
-  image: string,
-): Promise<string | null> => {
+): Promise<HostUserNamespaces | null> => {
   const read = HOST_USER_NAMESPACE_FILES.map(
     (file) => `printf '%s|' "$(cat ${file} 2>/dev/null || echo -)"`,
   ).join("; ");
@@ -1392,7 +1424,7 @@ const hostUserNamespacesLine = async (
     "none",
     "--entrypoint",
     "sh",
-    image,
+    HOST_HELPER_IMAGE,
     "-c",
     read,
   ]);
@@ -1401,14 +1433,144 @@ const hostUserNamespacesLine = async (
     .trim()
     .split("|")
     .map((value) => (value.trim() === "-" ? null : value));
-  const observed = hostUserNamespacesOf({
+  return hostUserNamespacesOf({
     apparmorRestrictUnprivilegedUserns: restrict ?? null,
     apparmorEnabled: apparmor ?? null,
     unprivilegedUsernsClone: clone ?? null,
   });
-  return observed.allowed
-    ? null
-    : `No session can start on this Docker host yet: its kernel refuses unprivileged user namespaces, which each workspace's rootless Docker service needs. On the host, run: ${hostUserNamespacesFix(observed.setting)}`;
+};
+
+/** The last line setup prints while the host still refuses them: the server runs, sessions do not. */
+const userNamespacesReminder = (setting: string): string =>
+  `No session can start on this Docker host yet: its kernel refuses unprivileged user namespaces, which each workspace's rootless Docker service needs. On the host, run: ${hostUserNamespacesFix(setting)}`;
+
+/** `kernel.apparmor_restrict_unprivileged_userns = 0` as the file under /proc/sys and its value. */
+const sysctlOf = (setting: string): { readonly file: string; readonly value: string } | null => {
+  const match = /^([a-z0-9_.]+) = ([0-9]+)$/.exec(setting);
+  if (match?.[1] === undefined || match[2] === undefined) return null;
+  return { file: match[1].replaceAll(".", "/"), value: match[2] };
+};
+
+/**
+ * Whether the daemon runs rootless: its containers, privileged or not, cannot change the host's
+ * kernel, so setup does not try.
+ */
+const rootlessDaemon = async (runtime: ServerSetupRuntime, context: string): Promise<boolean> => {
+  const info = await runtime.run("docker", [
+    "--context",
+    context,
+    "info",
+    "--format",
+    "{{json .SecurityOptions}}",
+  ]);
+  return info.status === 0 && info.stdout.includes("name=rootless");
+};
+
+/**
+ * Allow them on the Docker host through the socket setup already drives: a short privileged
+ * container with the host's /etc/sysctl.d and /proc/sys mounted writes the setting where it holds
+ * across a restart and applies it now. Null when it ran; otherwise what stopped it.
+ */
+const allowHostUserNamespaces = async (
+  runtime: ServerSetupRuntime,
+  context: string,
+  setting: string,
+): Promise<string | null> => {
+  const sysctl = sysctlOf(setting);
+  if (sysctl === null) return `setup does not know how to apply "${setting}"`;
+  const written = await runtime.run("docker", [
+    "--context",
+    context,
+    "run",
+    "--rm",
+    "--privileged",
+    "--network",
+    "none",
+    "--volume",
+    "/etc/sysctl.d:/host/sysctl.d",
+    "--volume",
+    "/proc/sys:/host/proc-sys",
+    "--entrypoint",
+    "sh",
+    HOST_HELPER_IMAGE,
+    "-c",
+    `printf '%s\\n' "$1" > /host/sysctl.d/${path.basename(HOST_USER_NAMESPACE_SYSCTL_FILE)} && printf '%s\\n' "$3" > "/host/proc-sys/$2"`,
+    "mend-allow-userns",
+    setting,
+    sysctl.file,
+    sysctl.value,
+  ]);
+  return written.status === 0 ? null : outputDetail(written);
+};
+
+/**
+ * Before anything is pulled or written: when the Docker host's kernel refuses user namespaces, no
+ * session can start, so setup asks to allow them (`--allow-userns` answers for a script), allows
+ * them through Docker on a yes, and prints the command on a no. Returns the line to repeat last
+ * while they stay refused; null when the host allows them or nothing was observed.
+ */
+const settleHostUserNamespaces = async (
+  runtime: ServerSetupRuntime,
+  options: SetupOptions,
+  context: string,
+): Promise<string | null> => {
+  // The helper image is one every install pulls anyway; when it cannot be had, setup says what
+  // it says about that image later, and nothing about the kernel here.
+  const helper = await inspectImage(
+    runtime,
+    context,
+    HOST_HELPER_IMAGE,
+    "{{.Id}}",
+    options.offline ? "local" : "pull-missing",
+  ).catch(() => null);
+  if (helper === null || helper.status !== 0) return null;
+  const observed = await observeHostUserNamespaces(runtime, context);
+  if (observed === null || observed.allowed) return null;
+  const fix = hostUserNamespacesFix(observed.setting);
+  const who = observed.setting.startsWith("kernel.apparmor_") ? "Ubuntu" : "This host's kernel";
+  runtime.writeLine("");
+  runtime.writeLine(
+    `Sessions cannot start on this host yet: ${who} blocks the unprivileged user namespaces each workspace's Docker service needs.`,
+  );
+  const printFix = (why: string): string => {
+    runtime.writeLine(`${why} On the host, run: ${fix}`);
+    runtime.writeLine("");
+    return userNamespacesReminder(observed.setting);
+  };
+  if (await rootlessDaemon(runtime, context)) {
+    return printFix(
+      "Docker here runs rootless, so setup cannot change the host's kernel through it.",
+    );
+  }
+  let allow = options.allowUserns;
+  if (allow === undefined && runtime.prompter !== undefined && !options.yes) {
+    runtime.writeLine(
+      `Allowing them writes ${observed.setting} to ${HOST_USER_NAMESPACE_SYSCTL_FILE} on the Docker host and applies it now. It lifts that restriction for the whole host, not only for Mend.`,
+    );
+    const answer = await runtime.prompter("Allow them now? [Y/n] ");
+    if (answer === null) throw setupError("Stopped before anything was pulled; nothing changed.");
+    allow = !/^n/i.test(answer.trim());
+  }
+  if (allow !== true) {
+    return printFix(
+      allow === false
+        ? "Left as it is (--no-allow-userns or your answer)."
+        : "Setup changes the host's kernel only when asked: answer the question on a terminal, or pass --allow-userns.",
+    );
+  }
+  const stopped = await allowHostUserNamespaces(runtime, context, observed.setting);
+  if (stopped !== null) return printFix(`Setup could not apply it through Docker (${stopped}).`);
+  const after = await observeHostUserNamespaces(runtime, context);
+  if (after === null || !after.allowed) {
+    return printFix(
+      `Setup wrote ${HOST_USER_NAMESPACE_SYSCTL_FILE}, but the kernel still refuses them.`,
+    );
+  }
+  runtime.writeLine(
+    `Allowed: ${HOST_USER_NAMESPACE_SYSCTL_FILE} written on the Docker host and applied; observed: its kernel allows them now.`,
+  );
+  runtime.writeLine("");
+  return null;
 };
 
 const resolveLatestVersion = async (runtime: ServerSetupRuntime): Promise<string> => {
@@ -2640,6 +2802,7 @@ const guideObservations = (runtime: ServerSetupRuntime): GuideObservations => ({
 const guidedSetup = async (
   runtime: ServerSetupRuntime,
   prompter: (prompt: string) => Promise<string | null>,
+  hostFlags: ReadonlyArray<string> = [],
 ): Promise<ServerCommandResult> => {
   if (runtime.platform !== "linux" && runtime.platform !== "darwin") {
     throw setupError(`mend server setup supports Linux and macOS, not ${runtime.platform}.`);
@@ -2669,7 +2832,9 @@ const guidedSetup = async (
   return underLock(
     runtime.configDir,
     (store) =>
-      setupServer(outcome.flags, runtime, store, { askedAgainst: existing?.directory ?? null }),
+      setupServer([...outcome.flags, ...hostFlags], runtime, store, {
+        askedAgainst: existing?.directory ?? null,
+      }),
     { create: true },
   );
 };
@@ -2717,7 +2882,11 @@ const setupServer = async (
       "The install changed while you answered: another mend server setup or upgrade ran. This one changed nothing; run mend server setup again to see the install as it is now.",
     );
   }
-  if (run.askedAgainst === undefined && args.length === 0 && existing === null) {
+  if (
+    run.askedAgainst === undefined &&
+    args.every((arg) => HOST_FLAGS.has(arg)) &&
+    existing === null
+  ) {
     throw setupError(UNASKED_FRESH_SETUP);
   }
   const savedIdentity = storeValue(store.readIdentity());
@@ -2738,6 +2907,9 @@ const setupServer = async (
   );
   const operatingSystem = await checkDocker(runtime, selectedContext.name);
   runtime.writeLine(`Using Docker context "${selectedContext.name}" (${selectedContext.endpoint})`);
+  // Before the Mend image is pulled or anything is written: a host that refuses user namespaces
+  // starts no session, and the person decides about it while it is still the first thing said.
+  const userNamespaces = await settleHostUserNamespaces(runtime, options, selectedContext.name);
 
   const serverVersion = await resolveServerVersion(runtime, options, existing?.config ?? null);
   const mirrors = resolveMirrors(existing?.config.mirrors, options);
@@ -2844,11 +3016,6 @@ const setupServer = async (
   });
   if (ownership._tag === "error") throw setupError(ownership.error.message);
   await checkLocalImages(runtime, installation, options.offline ? "local" : "pull-missing");
-  const userNamespaces = await hostUserNamespacesLine(
-    runtime,
-    config.dockerContext,
-    `ghcr.io/sealant-sh/mend:${config.serverVersion}`,
-  );
   storeValue(store.activate(generation));
   await startCompose(runtime, installation);
   await initGarage(runtime, installation, secrets);
@@ -2872,11 +3039,129 @@ const setupServer = async (
     );
   }
   for (const line of mirrorsChangedLines(existing?.config.mirrors, config)) runtime.writeLine(line);
-  runtime.writeLine(
-    `Open ${config.appUrl}, create the first account, then run: mend login --url ${config.appUrl}`,
-  );
+  // A changed URL says how every CLI follows it; otherwise the last word is how to sign in, and
+  // the first account only while there is none.
+  const urlChanged = existing !== null && existing.config.appUrl !== config.appUrl;
+  const cliHere = urlChanged
+    ? await followUrlChange(runtime, options, existing.config, config)
+    : (runtime.savedCliLogin?.(runtime.configDir) ?? null);
+  const users = await instanceUsers(runtime, healthOrigin(config));
+  if (users === "none" || (users === null && existing === null)) {
+    runtime.writeLine(
+      `Open ${config.appUrl}, create the first account, then run: mend login --url ${config.appUrl}`,
+    );
+  } else if (urlChanged) {
+    // Said by followUrlChange.
+  } else if (
+    cliHere === null ||
+    !cliHere.signedIn ||
+    !(await answersAs(runtime, cliHere.url, config.serverVersion))
+  ) {
+    runtime.writeLine(
+      `Open ${config.appUrl} to sign in. To sign in this machine's CLI, run: mend login --url ${config.appUrl}`,
+    );
+  }
   // Last, where it is read: the server runs, but its sessions cannot until this is changed.
   if (userNamespaces !== null) runtime.writeLine(userNamespaces);
+};
+
+/**
+ * Whether any account exists, from the instance's signed-out answer (`GET /api/instance`). Null
+ * when it did not answer in a way setup can read: nothing observed.
+ */
+const instanceUsers = async (
+  runtime: ServerSetupRuntime,
+  origin: string,
+): Promise<"none" | "some" | null> => {
+  const response = await runtime.fetchText(`${origin}/api/instance`, 3_000);
+  if (response.error !== undefined || response.status !== 200) return null;
+  try {
+    const users = ownFields(JSON.parse(response.body))?.get("users");
+    return users === "none" || users === "some" ? users : null;
+  } catch {
+    return null;
+  }
+};
+
+/** Whether this Mend answers its health at `url`, from this machine. */
+const answersAs = async (
+  runtime: ServerSetupRuntime,
+  url: string,
+  version: string,
+): Promise<boolean> => {
+  const response = await runtime.fetchText(`${url.replace(/\/+$/, "")}/api/health`, 3_000);
+  if (response.error !== undefined || response.status !== 200) return false;
+  try {
+    const fields = ownFields(JSON.parse(response.body));
+    return fields?.get("status") === "ok" && fields.get("version") === version;
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * Whether a CLI URL reached the install before this run: its URL, the origin setup checks health
+ * at, or this machine's loopback on its port while the web was published there.
+ */
+const reachedBefore = (url: string, before: ServerConfig): boolean => {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
+  if (parsed.origin === new URL(before.appUrl).origin) return true;
+  if (parsed.origin === new URL(healthOrigin(before)).origin) return true;
+  const port = parsed.port === "" ? (parsed.protocol === "https:" ? 443 : 80) : Number(parsed.port);
+  return (
+    isLoopbackHost(parsed.hostname) &&
+    port === before.appPort &&
+    (isLoopbackBind(before.bind) || before.bind === "0.0.0.0" || before.bind === "::")
+  );
+};
+
+/**
+ * Mend's URL changed: every CLI signed in at the old one is left pointing there. This machine's
+ * own, when the old URL no longer answers, is moved with a yes (`--yes` answers it): a device's
+ * token is not bound to a URL, so its sign-in carries over. Everyone else is told the command.
+ * Returns this machine's sign-in as it stands afterwards.
+ */
+const followUrlChange = async (
+  runtime: ServerSetupRuntime,
+  options: SetupOptions,
+  before: ServerConfig,
+  after: ServerConfig,
+): Promise<SavedCliLogin | null> => {
+  runtime.writeLine(
+    `Mend's URL changed from ${before.appUrl} to ${after.appUrl}. Browsers open ${after.appUrl}. A CLI signed in at the old URL (another account on this machine, another machine) moves with: mend login --url ${after.appUrl}`,
+  );
+  const saved = runtime.savedCliLogin?.(runtime.configDir) ?? null;
+  if (
+    saved === null ||
+    !saved.signedIn ||
+    !reachedBefore(saved.url, before) ||
+    (await answersAs(runtime, saved.url, after.serverVersion))
+  ) {
+    return saved;
+  }
+  let move = options.yes;
+  if (!move && runtime.prompter !== undefined) {
+    const answer = await runtime.prompter(
+      `This machine's CLI is signed in at ${saved.url}, which no longer answers. Point it at ${after.appUrl}? Its sign-in carries over. [Y/n] `,
+    );
+    move = answer !== null && !/^n/i.test(answer.trim());
+  }
+  if (move && runtime.repointCliLogin !== undefined) {
+    runtime.repointCliLogin(runtime.configDir, after.appUrl);
+    runtime.writeLine(
+      `This machine's CLI now points at ${after.appUrl}; its sign-in carried over.`,
+    );
+    return { url: after.appUrl, signedIn: true };
+  }
+  runtime.writeLine(
+    `This machine's CLI still points at ${saved.url}, which no longer answers. Move it with: mend login --url ${after.appUrl}`,
+  );
+  return saved;
 };
 
 const serverVersionParts = (version: string) => {
@@ -3870,6 +4155,8 @@ export const nodeServerRuntime = (): ServerSetupRuntime => {
     writeLine: (line) => process.stdout.write(`${redactCredentials(line)}\n`),
     dockerDaemonFacts: hostDockerDaemonFacts,
     readLogin: (configDir) => savedLogin(configDir, environment),
+    savedCliLogin: savedCliLoginHere,
+    repointCliLogin: repointCliLoginHere,
     probeSsh: probeSshFromHere,
     portTaken: portTakenHere,
     ...(process.stdin.isTTY === true && process.stdout.isTTY === true
@@ -4000,6 +4287,35 @@ const savedLogin = (
   return url === null || token === null || token === "" ? null : { url, token };
 };
 
+/** `cli.json`'s own fields, or null when it is missing or unreadable. */
+const cliJsonFields = (configDir: string): ReadonlyMap<string, unknown> | null => {
+  try {
+    return ownFields(JSON.parse(fs.readFileSync(path.join(configDir, "cli.json"), "utf8")));
+  } catch {
+    return null;
+  }
+};
+
+const savedCliLoginHere = (configDir: string): SavedCliLogin | null => {
+  const fields = cliJsonFields(configDir);
+  const url = fields?.get("url");
+  const token = fields?.get("token");
+  return typeof url === "string"
+    ? { url, signedIn: typeof token === "string" && token !== "" }
+    : null;
+};
+
+/** Rewrite `cli.json`'s URL in place, as `mend login` writes the file: 0600, the rest kept. */
+const repointCliLoginHere = (configDir: string, url: string): void => {
+  const fields = cliJsonFields(configDir);
+  if (fields === null) return;
+  const file = path.join(configDir, "cli.json");
+  fs.writeFileSync(file, `${JSON.stringify({ ...Object.fromEntries(fields), url }, null, 2)}\n`, {
+    mode: 0o600,
+  });
+  fs.chmodSync(file, 0o600);
+};
+
 /** Compatibility name for callers predating the lifecycle command family. */
 export const nodeServerSetupRuntime = nodeServerRuntime;
 
@@ -4019,8 +4335,13 @@ export const serverCommand = async (
     };
   }
   try {
-    if (command === "setup" && rest.length === 0 && runtime.prompter !== undefined) {
-      return await guidedSetup(runtime, runtime.prompter);
+    // Flags about this host alone (`--allow-userns`) still leave the questions to the guide.
+    if (
+      command === "setup" &&
+      rest.every((arg) => HOST_FLAGS.has(arg)) &&
+      runtime.prompter !== undefined
+    ) {
+      return await guidedSetup(runtime, runtime.prompter, rest);
     }
     return await underLock(
       runtime.configDir,

@@ -225,6 +225,7 @@ import { type ReviewPassJob, runReviewPass } from "./review-pass-worker.ts";
 import { MendApiLive } from "./routes/api-live.ts";
 import { EventsRoutes } from "./routes/events.ts";
 import { GhLive } from "./routes/github.ts";
+import { WorkspaceHostUserNamespacesLive } from "./routes/machine.ts";
 import { UrlBearersLive } from "./routes/upgrade-tickets.ts";
 import { WebSocketRoutes } from "./routes/websocket.ts";
 import { HostEnvironmentLive } from "./services/host-environment.ts";
@@ -369,6 +370,9 @@ const SessionEngineLayer = SessionEngineBaseLive.pipe(
   Layer.provide(SessionSocketHostLayer),
   Layer.provide(DotfilesStoreLayer),
   Layer.provide(DeploymentConfigLive),
+  // Whether this host's kernel lets workspaces' Docker services start: a launch on one that
+  // refuses fails before it builds (the machine view's `userNamespaces`, read the same way).
+  Layer.provide(WorkspaceHostUserNamespacesLive),
 );
 // The capture store (docs/adr/0002-session-capture-store.md): the bucket and the git runner
 // over it, plus the pointer repositories. Built for every install except one that opted back

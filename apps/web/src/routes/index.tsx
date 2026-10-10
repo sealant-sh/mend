@@ -10,6 +10,7 @@ import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useCallback, useState } from "react";
 
 import { FirstRun, PairHint } from "#/components/first-run";
+import { WorkspacesRefusedNotice } from "#/components/host-user-namespaces";
 import { PullRequestLink } from "#/components/pull-request-link";
 import { SessionComposer } from "#/components/session-composer";
 import { AppShell } from "#/components/shell";
@@ -170,6 +171,8 @@ function HomePage() {
             ? "Nothing yet — adopt a repository and start a session."
             : `${waiting.length === 0 ? "Nothing waiting on you" : `${waiting.length} waiting`} · ${live.length} live · ${readyToReview.length} to review · ${projects.length} project${projects.length === 1 ? "" : "s"}`}
         </p>
+
+        <WorkspacesRefusedNotice />
 
         {projects.length > 0 && (
           <div className="mt-6">

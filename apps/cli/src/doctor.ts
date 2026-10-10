@@ -1,7 +1,11 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-import { claudeGrantFacts, hostUserNamespacesFix } from "@mend/domain/workbench";
+import {
+  claudeGrantFacts,
+  HOST_USER_NAMESPACES_REFUSED,
+  hostUserNamespacesFixLine,
+} from "@mend/domain/workbench";
 
 import {
   dockerShutdownCheck,
@@ -55,6 +59,12 @@ export interface DoctorProbes {
    * is on PATH. Absent: the line is left out.
    */
   readonly dockerShutdown?: () => ShutdownTimeoutReading;
+  /**
+   * The URL the Mend server installed on this machine (`mend server setup`) is served at, or null
+   * when there is none here. Read only when the configured URL does not answer: a setup that moved
+   * the server leaves this machine's CLI on the old URL. Absent: not read.
+   */
+  readonly localServerUrl?: () => Promise<string | null>;
 }
 
 const MARKS: Record<CheckState, string> = { ok: "✓", todo: "○", failed: "✗" };
@@ -191,11 +201,8 @@ export const userNamespacesCheck = (observed: NonNullable<MachineDto["userNamesp
     : {
         label: "workspaces",
         state: "failed",
-        detail: "the server's host refuses user namespaces · no workspace can start",
-        fix:
-          observed.setting === null
-            ? null
-            : `on the server's host: ${hostUserNamespacesFix(observed.setting)}`,
+        detail: HOST_USER_NAMESPACES_REFUSED,
+        fix: observed.setting === null ? null : hostUserNamespacesFixLine(observed.setting),
       };
 
 /** Where each provider's own CLI writes the credential Mend forwards (mirrors `mend connect`). */
@@ -227,6 +234,32 @@ const identityOf = (account: AccountDto): string | null => {
   return null;
 };
 
+/**
+ * The server line when the configured URL does not answer. When the server installed on this
+ * machine answers at another URL, setup moved it and this CLI still points at the old one: that is
+ * said, rather than asking for a server that is running to be started.
+ */
+const unreachedServer = async (config: DoctorConfig, probes: DoctorProbes): Promise<Check> => {
+  const local = probes.localServerUrl === undefined ? null : await probes.localServerUrl();
+  if (local !== null && local !== config.url) {
+    const there = await getJson<HealthDto>({ url: local, token: null }, "/health");
+    if (there.value !== null) {
+      return {
+        label: "server",
+        state: "failed",
+        detail: `cannot reach ${config.url} · the Mend server on this machine answers at ${local}, and this CLI points at the old URL`,
+        fix: `mend login --url ${local}`,
+      };
+    }
+  }
+  return {
+    label: "server",
+    state: "failed",
+    detail: `cannot reach ${config.url}`,
+    fix: "start the Mend server (mend server start on its machine), or, if its URL changed, mend login --url <its URL>",
+  };
+};
+
 /** Every fact the checklist prints, in the order a first run needs them. */
 export const runChecks = async (
   config: DoctorConfig,
@@ -237,12 +270,7 @@ export const runChecks = async (
   const health = await getJson<HealthDto>(config, "/health");
   checks.push(
     health.value === null
-      ? {
-          label: "server",
-          state: "failed",
-          detail: `cannot reach ${config.url}`,
-          fix: "start the Mend server",
-        }
+      ? await unreachedServer(config, probes)
       : {
           label: "server",
           state: "ok",
@@ -461,12 +489,14 @@ export const doctorCommand = async (
   config: DoctorConfig,
   localCredential: (provider: Provider) => string | null,
   claudeGrant: () => string | null,
+  localServerUrl?: () => Promise<string | null>,
 ): Promise<void> => {
   const checks = await runChecks(config, {
     localCredential,
     claudeGrant,
     onPath,
     dockerShutdown: observeHostShutdownTimeout,
+    ...(localServerUrl === undefined ? {} : { localServerUrl }),
   });
   for (const check of checks) {
     process.stdout.write(`${redactCredentials(formatCheck(check, paintMark))}\n`);

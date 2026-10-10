@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 import type { ReactNode } from "react";
 
+import { WorkspacesRefusedLine } from "#/components/host-user-namespaces";
 import { authClient } from "#/lib/auth-client";
 import { useTRPC } from "#/lib/trpc";
 import { useWorkbenchEvents } from "#/lib/workbench-events";
@@ -194,6 +195,7 @@ function MachineBlock() {
           {exposureLine(exposure)}
         </p>
       )}
+      <WorkspacesRefusedLine />
     </div>
   );
 }

@@ -369,7 +369,8 @@ describe("server lifecycle", { timeout: 30_000 }, () => {
           ),
       ).toBe(true);
       expect(fs.readdirSync(path.join(f.configDir, "generations"))).toHaveLength(1);
-      expect(f.fetched.every((request) => request.endsWith("/api/health"))).toBe(true);
+      // Only Mend itself is asked: its health, and whether it has accounts yet.
+      expect(f.fetched.every((request) => /\/api\/(health|instance)$/.test(request))).toBe(true);
     },
   );
 
@@ -1513,10 +1514,15 @@ describe("the edge and the posture", { timeout: 120_000 }, () => {
       "compose.mirrors.yaml",
     ]);
     expect(f.state().edgeRunning).toBe(true);
-    // Health was read on Mend's own loopback port, never through the edge's public name.
-    expect(f.fetched.every((request) => request === `http://127.0.0.1:${f.port}/api/health`)).toBe(
-      true,
-    );
+    // Health and the accounts question were read on Mend's own loopback port, never through the
+    // edge's public name.
+    expect(
+      f.fetched.every(
+        (request) =>
+          request === `http://127.0.0.1:${f.port}/api/health` ||
+          request === `http://127.0.0.1:${f.port}/api/instance`,
+      ),
+    ).toBe(true);
     expect(f.fetched.some((request) => request.includes(host))).toBe(false);
     expect(f.lines).toContain(
       `Mend 0.23.0 answers at http://127.0.0.1:${f.port} on this machine · the edge is set up for https://${host}`,

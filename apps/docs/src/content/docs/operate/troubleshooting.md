@@ -41,7 +41,7 @@ whose check could not run says `not checked`.
 
 | Line                                | What it reads                                                                                                                                                                                                      |
 | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `server`                            | The server's `/health`: its URL and version, or `cannot reach <url>`.                                                                                                                                              |
+| `server`                            | The server's `/health`: its URL and version, or `cannot reach <url>`. When the server installed on this machine answers at another URL (a setup moved it), doctor says so and gives `mend login --url <new>`.      |
 | `signed in`                         | Whether the saved token is accepted: `token accepted`, or `no token saved` and `token rejected`, which point to `mend login`. Another answer prints the status `GET /projects` returned.                           |
 | `sealant`                           | Whether the server reaches the platform: `connected`, or `unauthorized`, `unreachable` or `mismatched` with the platform's message.                                                                                |
 | `claude`, `codex`, `github`         | Your connected accounts on the platform: `connected` with the account's login or email, `not connected`, or the account's status.                                                                                  |
@@ -174,15 +174,18 @@ this session's Git access is bound to github.com; pushes and fetches to gitlab.c
 
 ### Every session fails to launch on Ubuntu
 
-On Ubuntu 23.10 and later, every launch fails while the workspace starts, with an error such as:
+On Ubuntu 23.10 and later, every launch fails at once with:
 
 ```text
-Workspace Docker service 'sealant-…-docker' did not become ready … container … is not running
+launch failed: the server's host refuses user namespaces · no workspace can start · on the server's host: echo 'kernel.apparmor_restrict_unprivileged_userns = 0' | sudo tee /etc/sysctl.d/60-mend-rootless-docker.conf && sudo sysctl --system
 ```
 
 Each workspace runs its own rootless Docker, and Ubuntu refuses the unprivileged user namespaces it
-needs (`kernel.apparmor_restrict_unprivileged_userns=1`). `mend doctor` reports it on the
-`workspaces` line. Allow them on the server's host; no restart is needed:
+needs (`kernel.apparmor_restrict_unprivileged_userns=1`). `mend server setup` asks to allow them
+before it pulls anything; `mend doctor` reports it on the `workspaces` line, and the web on the Now
+page. A server older than 0.36 fails later instead, while the workspace starts, with
+`Workspace Docker service 'sealant-…-docker' did not become ready … container … is not running`.
+Allow them on the server's host; no restart is needed:
 
 ```sh
 echo 'kernel.apparmor_restrict_unprivileged_userns = 0' | sudo tee /etc/sysctl.d/60-mend-rootless-docker.conf

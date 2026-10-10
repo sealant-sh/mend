@@ -437,6 +437,41 @@ describe("the guided server setup", () => {
     ]);
   });
 
+  it("a domain that does not resolve here: Apply defaults to no, and says why", async () => {
+    const { sshBind: _ssh, edgeHost: _edge, tenancy: _tenancy, declared: _declared, ...rest } = BOX;
+    const lan: ServerConfig = {
+      ...rest,
+      appUrl: "http://192.168.1.20:3105",
+      bind: "192.168.1.20",
+      allowedOrigins: [],
+      exposure: "private",
+    };
+    // change · reach · public · domain · SSH: from any network (3) · I checked · nothing else ·
+    // Enter at Apply
+    const unresolved = observe({
+      tailscale: async () => tailscaleFactsOf(TAILSCALE_STATUS, ""),
+      lookupHost: async () => null,
+    });
+    const entered = await converse(
+      ["2", "1", "3", "mend.example.com", "3", "1", "", ""],
+      lan,
+      unresolved,
+    );
+    expect(entered.transcript).toContain(
+      "Observed: mend.example.com does not resolve from this machine.",
+    );
+    expect(entered.transcript).toContain(
+      "mend.example.com did not resolve from this machine, so the edge cannot get a certificate yet: Enter changes nothing. Point its DNS here first, or answer y to apply anyway.\nApply? [y/N] ",
+    );
+    expect(entered.outcome).toEqual({ _tag: "stopped" });
+    const forced = await converse(
+      ["2", "1", "3", "mend.example.com", "3", "1", "", "y"],
+      lan,
+      unresolved,
+    );
+    expect(flagsOf(forced.outcome)).toContain("--edge");
+  });
+
   it("changing a private install's URL keeps SSH where it was published (review 664-1)", async () => {
     const { tenancy: _t, declared: _d, edgeHost: _e, ...rest } = BOX;
     const lan: ServerConfig = {
