@@ -705,6 +705,16 @@ const pendingEntries = (
   return out;
 };
 
+/** Mend's own words for its permission modes, as its session composer shows them. */
+const MODE_WORDS: Readonly<Record<"bypass" | "ask", string>> = {
+  ask: "ask before acting",
+  bypass: "skip permission prompts",
+};
+
+/** What a thread says while the mode chosen for its agent's next start is not yet the running one. */
+export const nextModeLineOf = (next: "bypass" | "ask"): string =>
+  `From the agent's next start: ${MODE_WORDS[next]} · it runs as it started until then`;
+
 /**
  * What Mend says about people sharing the session's workspace (docs/adr/0016, decisions 6, 13 and
  * 14), as system notices: the waiting line right after the input of the turn that waits (it has
@@ -746,6 +756,9 @@ const noticeItems = (
   });
   const out: Array<OrchestrationV2TurnItem> = [];
   const sessionAt = utc(source.session.updatedAt);
+  if (source.nextMode !== null) {
+    out.push(notice("next-mode", nextModeLineOf(source.nextMode), null, endBase + 4, sessionAt));
+  }
   if (source.sharedWorktree && source.turnCheckpoints.size > 0) {
     out.push(notice("shared-worktree", SHARED_CHAIN_NOTICE, null, endBase + 3, sessionAt));
   }

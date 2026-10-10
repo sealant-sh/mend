@@ -30,6 +30,8 @@ import type { BearerSession } from "./state.ts";
  *   agent; what is still queued is held.
  * - `thread.delete`: Mend's delete, after a stop when Mend says the session is live. The worktree
  *   and its change stay in Mend.
+ * - `thread.runtime-mode.set`: the permission mode for the agent's next start; Mend sets it per
+ *   launch.
  */
 
 /** t3code's approval decisions as Mend's; Mend has no "always", so it is "for this session". */
@@ -227,6 +229,20 @@ export const dispatchCommand = (
       return answered(hub.commands.stop({ session, threadId: command.threadId }));
     case "thread.delete":
       return answered(hub.commands.remove({ session, threadId: command.threadId }));
+    case "thread.runtime-mode.set": {
+      const mode =
+        command.runtimeMode === "approval-required"
+          ? "ask"
+          : command.runtimeMode === "full-access"
+            ? "bypass"
+            : null;
+      if (mode === null) {
+        return refuse(
+          "Mend runs a session either asking before acting or skipping permission prompts; it has nothing in between.",
+        );
+      }
+      return answered(hub.commands.setNextMode({ session, threadId: command.threadId, mode }));
+    }
     default:
       return refuse(`Mend's t3code gateway does not accept ${command.type}.`);
   }
