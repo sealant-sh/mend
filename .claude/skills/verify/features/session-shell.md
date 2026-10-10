@@ -83,9 +83,11 @@ Preconditions:
   `Start shell session` (`page.getByRole("menuitem", { name: "Start shell session" })`); choosing it
   opens another new `shell` session page.
 - **Desktop.** With a session tab focused, press `Control+Shift+T`
-  (`await page.keyboard.press("Control+Shift+T")`). A new tab titled `shell <n>` (`shell 1` for the
-  first) opens with the strip `shell <n> · session worktree · <branch>`, and buttons `rename` and
-  `detach tab`.
+  (`await page.keyboard.press("Control+Shift+T")`). The session's tree gains `shell <n>` (`shell 1`
+  for the first), and a new tab titled `shell <n>` opens with the strip
+  `shell <n> · session worktree · <branch>`, and buttons `rename` and `detach tab`. Until mend#667
+  lands the tab may not open (Gotchas): when none shows within 20 s, record that, then click the
+  `shell <n>` row in the tree; the tab opens.
 - **Mobile.** At 390x844 on `/session/<id>`, run
   `await page.getByRole("button", { name: "Shell" }).click()`. The app pushes
   `/terminal/<id>?process=<processId>` titled `Shell`. The web build cannot render the terminal (see
@@ -105,6 +107,11 @@ Preconditions:
   its hidden textarea). Use `.first()` and type through `page.keyboard`. Its output is drawn on a
   canvas, not text: prove what a command did through a second view (the review, `mend shell`, a
   file), not by reading the pane.
+- On the desktop, a new supporting shell's tab (`Control+Shift+T`, the tab bar's `+`) may not open:
+  the live pass saw the tree list `shell 1` with no tab until the row was clicked (2026-10-10), and
+  on main a process read that predates the shell closes the tab just opened
+  (`apps/desktop/src/renderer/src/lib/workbench.ts:204`). mend#667 keeps the tab open; until it
+  lands, record whether the tab opened on its own before clicking the row.
 - Detaching (`Ctrl+]`) leaves the shell running and the workspace up. End it with `exit` when the
   run needs the session to settle. `MEND_DETACH_KEY=none` turns the detach key off.
 - With no id and several live or retained candidates after narrowing by the cwd's project,
