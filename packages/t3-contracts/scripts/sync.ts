@@ -15,15 +15,7 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
-const REPOSITORY = "https://github.com/pingdotgg/t3code.git";
-
-/** Upstream directory or file → where it lands in this package. */
-const SOURCES: ReadonlyArray<{ readonly upstream: string; readonly local: string }> = [
-  { upstream: "packages/contracts/src", local: "src" },
-  // The default keybindings live beside the shared helpers that compile them.
-  { upstream: "packages/shared/src/keybindings.ts", local: "shared/keybindings.ts" },
-  { upstream: "LICENSE", local: "LICENSE" },
-];
+import { REPOSITORY, SOURCES } from "./sources.ts";
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
