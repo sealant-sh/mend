@@ -108,13 +108,14 @@ Workspaces reach their session over a mounted Unix socket by default, or over a 
 
 See [Exposure and the public gate](/operate/exposure/) for what each item means.
 
-| Variable                   | Default    | What it does                                                                                                                                        |
-| -------------------------- | ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `MEND_EXPOSURE`            | `private`  | How the instance is reached, as you declare it: `loopback`, `private` or `public`. `public` refuses to start while an observable gate item is open. |
-| `MEND_EXPOSURE_DECLARED`   | empty      | Comma-separated gate items you verified from outside: `core-private`, `edge-tls`. Any other name refuses to start.                                  |
-| `MEND_EXPOSURE_REASSESSED` | unset      | The version you recorded an independent security reassessment of. It counts only while it equals `MEND_VERSION`.                                    |
-| `MEND_URL_BEARERS`         | `accept`   | `accept` still reads a bearer from `?token=` on a socket URL and logs it; `refuse` answers 400.                                                     |
-| `MEND_ERROR_DETAIL`        | `redacted` | `verbose` turns off the scrubbing of error responses, for debugging a private instance.                                                             |
+| Variable                   | Default    | What it does                                                                                                                                             |
+| -------------------------- | ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `MEND_EXPOSURE`            | `private`  | How the instance is reached, as you declare it: `loopback`, `private` or `public`. `public` refuses to start while an observable gate item is open.      |
+| `MEND_EXPOSURE_DECLARED`   | empty      | Comma-separated gate items you verified from outside: `core-private`, `edge-tls`, `workspace-ssh`. Any other name refuses to start.                      |
+| `MEND_SSH_PUBLISHED`       | unset      | Where workspace SSH is published apart from the web port, `<address>:<port>` (`mend server setup --ssh-bind`). The gate's `workspace-ssh` item reads it. |
+| `MEND_EXPOSURE_REASSESSED` | unset      | The version you recorded an independent security reassessment of. It counts only while it equals `MEND_VERSION`.                                         |
+| `MEND_URL_BEARERS`         | `accept`   | `accept` still reads a bearer from `?token=` on a socket URL and logs it; `refuse` answers 400.                                                          |
+| `MEND_ERROR_DETAIL`        | `redacted` | `verbose` turns off the scrubbing of error responses, for debugging a private instance.                                                                  |
 
 ## Budgets
 
@@ -184,6 +185,7 @@ What `server.env` holds, all read by the compose files:
 | `MEND_VERSION`, `MEND_IMAGE_REPOSITORY`                                                                                                                                          | `--version`; `ghcr.io/sealant-sh/mend`                           |
 | `APP_URL`, `MEND_ALLOWED_ORIGINS`                                                                                                                                                | `--url`, `--origin`                                              |
 | `MEND_BIND_HOST`, `MEND_PORT`, `MEND_SSH_PORT`                                                                                                                                   | `--bind` (`127.0.0.1`), `--port` (`3105`), `--ssh-port` (`2222`) |
+| `MEND_SSH_BIND_HOST`                                                                                                                                                             | `--ssh-bind`; absent when workspace SSH is published on `--bind` |
 | `SEALANT_SSH_HOST`                                                                                                                                                               | the host name in `--url`                                         |
 | `MEND_EDGE_HOST`                                                                                                                                                                 | `--edge`; read by `compose.edge.yaml`, absent without an edge    |
 | `MEND_EXPOSURE`, `MEND_TENANCY`                                                                                                                                                  | `--exposure`, `--tenancy`; absent when never declared            |

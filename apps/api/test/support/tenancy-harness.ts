@@ -708,6 +708,24 @@ export const createTenancyWorld = async (
           Effect.succeed([...sessions.values()].filter((row) => row.worktreeId === worktreeId)),
         listActive: () => Effect.succeed([...sessions.values()]),
         listActiveView: () => Effect.succeed([...sessions.values()]),
+        // Who launched each executor: the owner of the first session in the world that names it
+        // (the harness's stand-in for "the session whose own launch made it").
+        launchersOf: (workspaceIds) =>
+          Effect.sync(() => {
+            const launchers = new Map<string, string>();
+            for (const row of sessions.values()) {
+              const workspace = row.sealantWorkspaceId;
+              if (
+                workspace !== null &&
+                row.ownerUserId !== null &&
+                workspaceIds.includes(workspace) &&
+                !launchers.has(workspace)
+              ) {
+                launchers.set(workspace, row.ownerUserId);
+              }
+            }
+            return launchers;
+          }),
         viewById: (id) => found(sessions, id, () => new SessionNotFoundError({ sessionId: id })),
         listForProjectView: (projectId) =>
           Effect.succeed([...sessions.values()].filter((row) => row.projectId === projectId)),
@@ -772,6 +790,9 @@ export const createTenancyWorld = async (
         // The terminal route reads a session's current agent before attaching.
         listForSession: (sessionId) =>
           Effect.succeed([...processes.values()].filter((row) => row.sessionId === sessionId)),
+        // What `GET /api/sessions?retained=true` keeps a settled session listed for.
+        listLive: () =>
+          Effect.succeed([...processes.values()].filter((row) => row.exitedAt === null)),
       },
       calls,
     ),

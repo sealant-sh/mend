@@ -55,7 +55,10 @@ export const OperatorGroupLive = HttpApiBuilder.group(MendApi, "operator", (hand
         const exposure = yield* ExposureConfig;
         return new ExposureReport({
           declared: exposure.exposure,
-          items: exposure.gate.map((outcome) => new ExposureGateItem(outcome)),
+          items: exposure.gate.map(
+            ({ id, established, detail, fix, blocksStart }) =>
+              new ExposureGateItem({ id, established, detail, fix, blocksStart }),
+          ),
         });
       }),
     )

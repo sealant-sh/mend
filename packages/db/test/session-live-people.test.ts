@@ -216,6 +216,48 @@ describe.skipIf(!reachable)("the people live in a session's executor, in Postgre
     });
   });
 
+  it("names who launched a session's executor, a joined session included, in the same query", async () => {
+    const launchers = await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        // Alice's launch made ws-person and Maria joined it (no launch of her own); Carol made hers.
+        yield* sql`
+          UPDATE agent_sessions SET executor_launch_id = id, executor_started_at = now()
+          WHERE id IN ('s-alice', 's-carol')`;
+        const sessions = yield* SessionsRepo;
+        const listed = yield* sessions.listActiveView();
+        const view = yield* sessions.viewById(SessionId.make("s-maria"));
+        const plain = yield* sessions.byId(SessionId.make("s-maria"));
+        // The batched read the API fills plain reads with: the same rule, by workspace.
+        const batched = yield* sessions.launchersOf([
+          SealantWorkspaceId.make("ws-person"),
+          SealantWorkspaceId.make("ws-shared"),
+          SealantWorkspaceId.make("ws-nobody"),
+        ]);
+        yield* sql`
+          UPDATE agent_sessions SET executor_launch_id = NULL, executor_started_at = NULL
+          WHERE id IN ('s-alice', 's-carol')`;
+        return {
+          listed: Object.fromEntries(
+            listed.map((session) => [session.id, session.workspaceLauncherUserId]),
+          ),
+          view: view.workspaceLauncherUserId,
+          plain: plain.workspaceLauncherUserId,
+          batched: Object.fromEntries(batched),
+        };
+      }),
+    );
+    expect(launchers.listed).toEqual({
+      "s-alice": "alice",
+      "s-maria": "alice",
+      "s-carol": "carol",
+    });
+    expect(launchers.view).toBe("alice");
+    // The plain read leaves it empty; the API fills it from the batched read.
+    expect(launchers.plain).toBeNull();
+    expect(launchers.batched).toEqual({ "ws-person": "alice", "ws-shared": "carol" });
+  });
+
   it("reads the list and the view within the budget of the plain reads (+5% or +20 ms)", async () => {
     const timings = await run(
       Effect.gen(function* () {

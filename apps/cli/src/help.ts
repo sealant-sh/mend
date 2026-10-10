@@ -1097,7 +1097,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     summary: "how this instance is exposed, as declared and as observed",
     synopsis: [],
     description: [
-      "Operator only. States MEND_EXPOSURE as declared (loopback, private or public) and one line per item of the public exposure gate, with how it was established: observed (this server read it), carried (this build contains it, and the server cannot see it in effect), declared (you stated it and the server cannot check it), or open. MEND_EXPOSURE=public refuses to start while an item the server can observe is open. Items it cannot observe say what would verify them; once you have verified core-private or edge-tls from outside, name it in MEND_EXPOSURE_DECLARED. The report is what was observed; it is not a statement that the instance is fit to expose.",
+      "Operator only. States MEND_EXPOSURE as declared (loopback, private or public) and one line per item of the public exposure gate, with how it was established: observed (this server read it), carried (this build contains it, and the server cannot see it in effect), declared (you stated it and the server cannot check it), or open. MEND_EXPOSURE=public refuses to start while an item that blocks a start is open: every item the server can observe, and workspace-ssh until you declare it. Items it cannot observe say what would verify them; once you have verified core-private, edge-tls or workspace-ssh (SSH published apart from the web port) from outside, name it in MEND_EXPOSURE_DECLARED, or with mend server setup --declare. The report is what was observed; it is not a statement that the instance is fit to expose.",
     ],
     see: ["operator gate", "doctor"],
   },
@@ -1183,7 +1183,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     section: "this machine",
     summary: "install or repair the local Mend server",
     synopsis: [
-      "[--context <name>] [--version <version|latest>] [--bind <ip>] [--url <origin>] [--origin <origin>...] [--port <n>] [--ssh-port <n>] [--edge <host> | --no-edge] [--exposure <loopback|private|public>] [--tenancy <single|multi>] [--docker-socket <path>] [--assets-dir <dir>] [--offline]",
+      "[--context <name>] [--version <version|latest>] [--bind <ip>] [--ssh-bind <ip>] [--url <origin>] [--origin <origin>...] [--port <n>] [--ssh-port <n>] [--edge <host> | --no-edge] [--exposure <loopback|private|public>] [--tenancy <single|multi>] [--declare <item>...] [--docker-socket <path>] [--assets-dir <dir>] [--offline]",
     ],
     description: [
       "Checks a local Unix-socket Docker context and the Compose plugin, downloads the compose and Postgres initialization assets for one Mend release, preserves existing data and secrets, and starts the server. Re-running repairs the same pinned version. A changed --version is refused; use mend server upgrade. Updating this CLI never updates an existing server pin.",
@@ -1203,6 +1203,10 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
         text: "exact Mend server version, or latest; omitted keeps the current pin",
       },
       { flag: "--bind <ip>", text: "published listen address. Default: 127.0.0.1" },
+      {
+        flag: "--ssh-bind <ip>",
+        text: "where workspace SSH is published, when not on --bind; with --edge, Remote-SSH from another machine needs it. Kept across reruns; the --bind address takes it away",
+      },
       { flag: "--url <origin>", text: "advertised browser URL, required with a non-loopback bind" },
       {
         flag: "--origin <origin>",
@@ -1227,6 +1231,10 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
         text: "declare single or multi; kept across reruns and upgrades. multi also sets the multi mode gate's variables",
       },
       {
+        flag: "--declare <item>",
+        text: "state a gate item you verified from outside: core-private, edge-tls or workspace-ssh; repeat for more, none clears. Kept across reruns. public with --ssh-bind beyond loopback needs workspace-ssh",
+      },
+      {
         flag: "--assets-dir <dir>",
         text: "copy compose.v2.yaml and postgres-init.sh from a release directory; fresh setup requires --version",
       },
@@ -1246,6 +1254,11 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       {
         command: "mend server setup --version 0.25.0 --assets-dir ./release-assets --offline",
         text: "install from local release assets and preloaded images",
+      },
+      {
+        command:
+          "mend server setup --edge mend.example.com --ssh-bind 0.0.0.0 --exposure public --declare workspace-ssh",
+        text: "the TLS edge for the browser and the API, and workspace SSH for Remote-SSH from other machines",
       },
       {
         command: "mend server setup --edge mend.example.com",

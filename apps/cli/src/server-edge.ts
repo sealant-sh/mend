@@ -34,13 +34,33 @@ export const POSTURE_COMPOSE_FILE = "compose.posture.yaml";
 
 export { EDGE_CADDYFILE, EDGE_COMPOSE_OVERLAY };
 
+/**
+ * The public exposure gate's items an operator can state they verified from outside
+ * (`MEND_EXPOSURE_DECLARED`; apps/api/src/exposure.ts `DECLARABLE`). `mend server setup --declare`
+ * names them; nothing else reaches the server's statement.
+ */
+export const DECLARABLE_ITEMS = ["core-private", "edge-tls", "workspace-ssh"] as const;
+export type DeclarableItem = (typeof DECLARABLE_ITEMS)[number];
+
+export const isDeclarableItem = (value: string): value is DeclarableItem =>
+  DECLARABLE_ITEMS.some((item) => item === value);
+
 /** What a server config says about how the install is reached and for whom. */
 export interface ServerPosture {
   /** The name the edge's certificate is for; absent, no edge runs. */
   readonly edgeHost?: string;
   readonly exposure?: Exposure;
   readonly tenancy?: Tenancy;
+  /** Where workspace SSH is published apart from the web port (`--ssh-bind`); absent, it is not. */
+  readonly sshBind?: string;
+  readonly sshPort?: number;
+  /** The gate items the operator states they verified from outside (`--declare`). */
+  readonly declared?: ReadonlyArray<DeclarableItem>;
 }
+
+/** `<address>:<port>` as Compose and the gate read it: IPv6 in brackets. */
+export const publishedAddress = (address: string, port: number): string =>
+  `${net.isIP(address) === 6 ? `[${address}]` : address}:${port}`;
 
 /**
  * A DNS name a public certificate can be issued for: two labels or more, letters, digits and
@@ -82,6 +102,14 @@ export const postureEnvironment = (
       ? [["MEND_SOURCE_POLICY", "tenant"] as const, ["MEND_CAPTURE_REQUIRE_SIZES", "true"] as const]
       : []),
     ...(posture.exposure === "public" ? [["MEND_URL_BEARERS", "refuse"] as const] : []),
+    // The gate's workspace-ssh item reads where SSH is published apart from the web port; the
+    // container cannot see what its host publishes.
+    ...(posture.sshBind === undefined || posture.sshPort === undefined
+      ? []
+      : [["MEND_SSH_PUBLISHED", publishedAddress(posture.sshBind, posture.sshPort)] as const]),
+    ...(posture.declared === undefined || posture.declared.length === 0
+      ? []
+      : [["MEND_EXPOSURE_DECLARED", posture.declared.join(",")] as const]),
   ];
 };
 
@@ -178,6 +206,14 @@ export const declaredPostureLines = (posture: ServerPosture): ReadonlyArray<stri
     : [`edge · ${posture.edgeHost} · ${EDGE_IMAGE} on 80 and 443 · Mend's own port on loopback`]),
   `exposure · declared ${posture.exposure ?? "private"}${posture.exposure === undefined ? " · the default, not set on this install" : ""}`,
   `tenancy · declared ${posture.tenancy ?? "single"}${posture.tenancy === undefined ? " · the default, not set on this install" : ""}`,
+  ...(posture.sshBind === undefined || posture.sshPort === undefined
+    ? []
+    : [
+        `workspace ssh · published on ${publishedAddress(posture.sshBind, posture.sshPort)} apart from the web port`,
+      ]),
+  ...(posture.declared === undefined || posture.declared.length === 0
+    ? []
+    : [`stated verified from outside · ${posture.declared.join(", ")}`]),
 ];
 
 /**

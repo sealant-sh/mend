@@ -1,7 +1,7 @@
 import { sessionCookiePolicy } from "@mend/auth";
 import { NetworkConfig, trustedProxyCidrs, trustsEveryAddress } from "@mend/network";
 import { DeploymentConfig } from "@mend/store";
-import { Config, Effect, Layer, Schema } from "effect";
+import { Config, Effect, Layer, Option, Schema } from "effect";
 import * as Context from "effect/Context";
 
 import { budgetEnvName, Budgets, budgetsOff, type BudgetName } from "./budgets.ts";
@@ -35,9 +35,10 @@ export type Established = "observed" | "carried" | "declared" | "open";
 
 /**
  * The items no build can observe from inside the deployment. An operator who verified one from
- * outside states so in `MEND_EXPOSURE_DECLARED`; nothing else can close them.
+ * outside states so in `MEND_EXPOSURE_DECLARED`; nothing else can close them. `workspace-ssh` is
+ * declarable only in that sense: who reaches a published SSH port is never visible from in here.
  */
-export const DECLARABLE = ["core-private", "edge-tls"] as const;
+export const DECLARABLE = ["core-private", "edge-tls", "workspace-ssh"] as const;
 export type Declarable = (typeof DECLARABLE)[number];
 
 export interface ExposureOutcome {
@@ -47,8 +48,18 @@ export interface ExposureOutcome {
   readonly detail: string;
   /** What would close it, when it is open. For an item no build can observe: what would verify it. */
   readonly fix: string | null;
-  /** Whether an open item refuses a `public` start. Items no build can observe never do. */
+  /**
+   * Whether an open item refuses a `public` start. Items no build can observe never do, with one
+   * exception: `workspace-ssh`, which no build can observe either, waits for the operator's
+   * statement because the operator chose to publish the port.
+   */
   readonly blocksStart: boolean;
+  /**
+   * Whether this process can establish the item itself: read it in effect, here. False for what
+   * only a look from outside or the operator's word can settle. What the summaries count as
+   * observable; never inferred from `blocksStart`.
+   */
+  readonly observable: boolean;
 }
 
 export class ExposureConfig extends Context.Service<
@@ -80,6 +91,11 @@ export interface ExposurePosture {
    * What the engine sends the daemon as `transport.plaintext`; here, what the gate reports.
    */
   readonly executorNetwork: "private" | undefined;
+  /**
+   * `MEND_SSH_PUBLISHED`: where the workspace SSH gateway is published apart from the web port
+   * (`mend server setup --ssh-bind`), as `<address>:<port>`; undefined when it is not.
+   */
+  readonly sshPublished: string | undefined;
   /** `MEND_EXPOSURE_DECLARED`: the unobservable items the operator states they verified. */
   readonly declared: ReadonlyArray<Declarable>;
   /** `MEND_EXPOSURE_REASSESSED`: the version the operator recorded a reassessment of. */
@@ -93,6 +109,7 @@ const observed = (id: string, ok: boolean, detail: string, fix: string): Exposur
   detail,
   fix: ok ? null : fix,
   blocksStart: true,
+  observable: true,
 });
 
 /** In this build, and not something this process can see in effect. `verify` says what would. */
@@ -102,6 +119,7 @@ const carried = (id: string, detail: string, verify: string): ExposureOutcome =>
   detail,
   fix: `what would observe it: ${verify}`,
   blocksStart: false,
+  observable: false,
 });
 
 /** Something only a look from outside can establish: open until the operator states they looked. */
@@ -119,6 +137,7 @@ const unobservable = (
         detail: `${stated} (MEND_EXPOSURE_DECLARED); this process cannot check it`,
         fix: null,
         blocksStart: false,
+        observable: false,
       }
     : {
         id,
@@ -126,12 +145,60 @@ const unobservable = (
         detail: cannot,
         fix: `what would verify it: ${verify}; then add ${id} to MEND_EXPOSURE_DECLARED`,
         blocksStart: false,
+        observable: false,
       };
 
 /** A build with no version of its own: nothing a reassessment could name. */
 const UNVERSIONED = "dev";
 
 const isHttps = (origin: string): boolean => origin.startsWith("https://");
+
+/** The address part of `<address>:<port>`, IPv6 brackets removed. */
+const publishedAddress = (published: string): string =>
+  published.replace(/:\d+$/, "").replace(/^\[|\]$/g, "");
+
+const isLoopbackAddress = (address: string): boolean =>
+  address === "::1" || address === "localhost" || address.startsWith("127.");
+
+/**
+ * The workspace SSH gateway published apart from the web port. An edge carries HTTPS only, so a
+ * published SSH port is a second way in, beside it: the gateway admits registered keys only, and a
+ * workspace only for its launcher, but who can reach the port is a fact of the network this process
+ * cannot see. On loopback (or not published apart) there is nothing to state. Anywhere else it is
+ * open until the operator states, having looked from outside, who reaches it; a `public` start
+ * waits for that statement.
+ */
+const workspaceSsh = (posture: ExposurePosture): ExposureOutcome => {
+  const published = posture.sshPublished;
+  if (published === undefined) {
+    return observed(
+      "workspace-ssh",
+      true,
+      "workspace SSH is not published apart from the web port (MEND_SSH_PUBLISHED unset)",
+      "",
+    );
+  }
+  if (isLoopbackAddress(publishedAddress(published))) {
+    return observed("workspace-ssh", true, `workspace SSH is published on ${published} only`, "");
+  }
+  return posture.declared.includes("workspace-ssh")
+    ? {
+        id: "workspace-ssh",
+        established: "declared",
+        detail: `workspace SSH is published on ${published} apart from the web port, and the operator states who can reach it (MEND_EXPOSURE_DECLARED); this process cannot check it`,
+        fix: null,
+        blocksStart: true,
+        observable: false,
+      }
+    : {
+        id: "workspace-ssh",
+        established: "open",
+        detail: `workspace SSH is published on ${published} apart from the web port; this process cannot observe who can reach it`,
+        fix: `what would verify it: a connection attempt to ${published} from each network that should not reach it; then add workspace-ssh to MEND_EXPOSURE_DECLARED, or publish it on loopback`,
+        blocksStart: true,
+        observable: false,
+      };
+};
 
 export const evaluateExposureGate = (posture: ExposurePosture): ReadonlyArray<ExposureOutcome> => {
   const plainOrigins = posture.allowedOrigins.filter((origin) => !isHttps(origin));
@@ -241,6 +308,7 @@ export const evaluateExposureGate = (posture: ExposurePosture): ReadonlyArray<Ex
               "the session channel is plain http, and the operator declared the executor network private (MEND_EXECUTOR_NETWORK=private)",
             fix: null,
             blocksStart: true,
+            observable: true,
           }
         : observed(
             "executor-channel-transport",
@@ -249,6 +317,7 @@ export const evaluateExposureGate = (posture: ExposurePosture): ReadonlyArray<Ex
             "serve the session channel over https, or set MEND_EXECUTOR_NETWORK=private when executors reach it over a private network",
           );
     })(),
+    workspaceSsh(posture),
     unobservable(
       posture,
       "core-private",
@@ -279,6 +348,7 @@ export const evaluateExposureGate = (posture: ExposurePosture): ReadonlyArray<Ex
           ? "run a released build"
           : `after an independent security reassessment of this exact release, set MEND_EXPOSURE_REASSESSED=${posture.version}`,
       blocksStart: false,
+      observable: false,
     },
   ];
 };
@@ -300,7 +370,7 @@ export const exposureRefusal = (
   if (blocking.length === 0) return null;
   return [
     "MEND_EXPOSURE=public is refused: the public exposure gate",
-    "(docs/adr/0004-access-without-a-private-network.md, 'Public exposure gate') has open items this build can observe.",
+    "(docs/adr/0004-access-without-a-private-network.md, 'Public exposure gate') has open items that refuse a public start.",
     ...blocking.map((outcome) => `\n  ${outcome.id}: ${outcome.detail} (${outcome.fix ?? ""})`),
     "\nStart with MEND_EXPOSURE=private behind a network you control admission to, or close them.",
   ].join(" ");
@@ -326,7 +396,7 @@ export const ExposureConfigLive: Layer.Layer<
     const unknown = stated.filter((entry) => !DECLARABLE.some((id) => id === entry));
     if (unknown.length > 0) {
       return yield* new ExposureRefused({
-        message: `MEND_EXPOSURE_DECLARED names ${unknown.join(", ")}: only ${DECLARABLE.join(" and ")} can be declared; every other item is observed by this process or not at all.`,
+        message: `MEND_EXPOSURE_DECLARED names ${unknown.join(", ")}: only ${DECLARABLE.join(", ")} can be declared; every other item is observed by this process or not at all.`,
       });
     }
     const reassessed = yield* Config.string("MEND_EXPOSURE_REASSESSED").pipe(Config.option);
@@ -345,6 +415,9 @@ export const ExposureConfigLive: Layer.Layer<
       // The same statement the session engine sends to every capture launch as
       // `source.transport.plaintext`: one variable, read once (`DeploymentConfig`).
       executorNetwork: deployment.executorTransport?.plaintext === true ? "private" : undefined,
+      sshPublished: Option.getOrUndefined(
+        yield* Config.string("MEND_SSH_PUBLISHED").pipe(Config.option),
+      ),
       declared: DECLARABLE.filter((id) => stated.includes(id)),
       reassessedVersion: reassessed._tag === "Some" ? reassessed.value : undefined,
       version,

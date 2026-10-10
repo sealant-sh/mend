@@ -2521,6 +2521,15 @@ const sessionsLayer = (world: World) => {
           : { workspaceId: current, launchId: found.launchId };
       }),
     executorSessionOf: (workspaceId) => Effect.sync(() => executorSessionIn(world, workspaceId)),
+    launchersOf: (workspaceIds) =>
+      Effect.sync(() => {
+        const launchers = new Map<string, string>();
+        for (const workspaceId of workspaceIds) {
+          const owner = executorSessionIn(world, workspaceId)?.ownerUserId;
+          if (owner !== undefined && owner !== null) launchers.set(workspaceId, owner);
+        }
+        return launchers;
+      }),
     executorAccessOf: (workspaceId, askerUserId) =>
       Effect.sync(() => {
         const creator = executorSessionIn(world, workspaceId);

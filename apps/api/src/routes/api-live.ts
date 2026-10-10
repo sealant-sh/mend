@@ -135,7 +135,7 @@ export const HealthGroupLive = HttpApiBuilder.group(MendApi, "health", (handlers
           // Counts, not ids: this answer needs no sign-in (see the contract).
           open: exposure.gate.filter((outcome) => outcome.established === "open").length,
           unobservable: exposure.gate.filter(
-            (outcome) => outcome.established === "open" && !outcome.blocksStart,
+            (outcome) => outcome.established === "open" && !outcome.observable,
           ).length,
         },
       });

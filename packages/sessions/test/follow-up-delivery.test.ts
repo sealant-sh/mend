@@ -527,6 +527,7 @@ const testLayer = (world: TestWorld) => {
     executorResourceOf: () => Effect.succeed(null),
     executorLaunchOf: () => Effect.succeed(null),
     executorSessionOf: () => Effect.succeed(null),
+    launchersOf: () => Effect.succeed(new Map()),
     executorAccessOf: () => Effect.succeed(null),
     requestRemoval: () => Effect.die("not in test"),
     listRemovalRequested: () => Effect.die("not in test"),

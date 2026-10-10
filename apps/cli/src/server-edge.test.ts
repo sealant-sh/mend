@@ -109,6 +109,21 @@ describe("the posture", () => {
     }
   });
 
+  it("hands the gate where workspace SSH is published apart from the web port, and what was declared", () => {
+    expect(postureEnvironment({ sshBind: "0.0.0.0", sshPort: 2222 })).toEqual([
+      ["MEND_SSH_PUBLISHED", "0.0.0.0:2222"],
+    ]);
+    expect(
+      postureEnvironment({ sshBind: "fd00::1", sshPort: 2222, declared: ["workspace-ssh"] }),
+    ).toEqual([
+      ["MEND_SSH_PUBLISHED", "[fd00::1]:2222"],
+      ["MEND_EXPOSURE_DECLARED", "workspace-ssh"],
+    ]);
+    // Neither set: nothing new, and no overlay where there was none.
+    expect(postureEnvironment({ sshPort: 2222, declared: [] })).toEqual([]);
+    expect(renderPostureOverlay({ sshPort: 2222 })).toBeUndefined();
+  });
+
   it("writes an overlay that names each variable and reads its value from server.env", () => {
     const overlay = renderPostureOverlay({ exposure: "public", tenancy: "multi" });
     expect(overlay).toBe(

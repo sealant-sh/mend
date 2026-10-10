@@ -378,8 +378,10 @@ export const renderExposure = (report: ExposureReportDto): ReadonlyArray<string>
   };
   const mark = (item: ExposureItemDto) => marks[item.established];
   const open = report.items.filter((item) => item.established === "open");
+  // Counted by what refuses a public start, which is not the same as what the build can observe:
+  // workspace-ssh refuses one and no build can observe it.
   const blocking = open.filter((item) => item.blocksStart).length;
-  const unobservable = open.length - blocking;
+  const notBlocking = open.length - blocking;
   return [
     `exposure · declared ${report.declared} · ${EXPOSURE_WORDS[report.declared]}`,
     ...report.items.map(
@@ -390,9 +392,9 @@ export const renderExposure = (report: ExposureReportDto): ReadonlyArray<string>
     ),
     open.length === 0
       ? "nothing open · every item was observed here, is carried by this build, or was declared by the operator"
-      : `${open.length} of ${report.items.length} items open · ${blocking} this build can observe${
+      : `${open.length} of ${report.items.length} items open · ${blocking} refuse a public start${
           blocking === 0 ? "" : "; MEND_EXPOSURE=public refuses to start"
-        } · ${unobservable} it cannot`,
+        } · ${notBlocking} do not`,
   ];
 };
 

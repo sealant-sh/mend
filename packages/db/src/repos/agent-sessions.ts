@@ -602,6 +602,15 @@ export class SessionsRepo extends Context.Service<
      */
     readonly executorSessionOf: (workspaceId: SealantWorkspaceId) => Effect.Effect<Session | null>;
     /**
+     * Who launched each of these executors, by `executorSessionOf`'s rule, in one read: the owner
+     * of the session whose own launch made it. The API fills `Session.workspaceLauncherUserId` with
+     * it on every read that carries the field and did not compute it in the same statement (the
+     * plain reads, retained additions). A workspace no row names a creator for is absent.
+     */
+    readonly launchersOf: (
+      workspaceIds: ReadonlyArray<SealantWorkspaceId>,
+    ) => Effect.Effect<ReadonlyMap<string, string>>;
+    /**
      * In one read: who created the executor in `workspaceId` (as `executorSessionOf`), the facts
      * of its project that decide who may see it, and the creator's and `askerUserId`'s roles in
      * that project's organization (null: not a member of it). What `WorkspaceCaller` decides
@@ -686,9 +695,10 @@ const toSessionView = (
   row: typeof agentSessions.$inferSelect & {
     readonly livePeople: unknown;
     readonly workspaceRetirement: unknown;
+    readonly workspaceLauncherUserId: unknown;
   },
 ): Session => {
-  const { livePeople, workspaceRetirement, ...session } = row;
+  const { livePeople, workspaceRetirement, workspaceLauncherUserId, ...session } = row;
   return new Session({
     ...session,
     workspaceImage:
@@ -699,6 +709,8 @@ const toSessionView = (
       Array.isArray(livePeople) && livePeople.length === 0 ? [] : decodeLivePeople(livePeople),
     workspaceRetirement:
       workspaceRetirement === null ? null : decodeRetirementState(workspaceRetirement),
+    workspaceLauncherUserId:
+      typeof workspaceLauncherUserId === "string" ? workspaceLauncherUserId : null,
   });
 };
 
@@ -731,11 +743,11 @@ type SessionBookkeepingColumns =
   | "executorResourceId"
   | "executorCreateKey"
   | "executorLaunchId";
-// `livePeople` and `workspaceRetirement` are read with the API's session list and view
-// (`sessionViewColumns`), not columns.
+// `livePeople`, `workspaceRetirement` and `workspaceLauncherUserId` are read with the API's
+// session list and view (`sessionViewColumns`), not columns.
 const sessionSeamIntact: ExactKeys<
   Omit<SessionRow, SessionBookkeepingColumns>,
-  Omit<Session, "livePeople" | "workspaceRetirement">
+  Omit<Session, "livePeople" | "workspaceRetirement" | "workspaceLauncherUserId">
 > = true;
 void sessionSeamIntact;
 
@@ -849,6 +861,11 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
                   and sp.exited_at is null and sp.runs_as is not null) p), '[]'::json)`,
         workspaceRetirement: sql<unknown>`(select r.state from executor_retirements r
           where r.workspace_id = "agent_sessions"."sealant_workspace_id")`,
+        // Who launched the executor, as `executorSessionOf` finds it (0114's partial index).
+        workspaceLauncherUserId: sql<unknown>`(select e.owner_user_id from agent_sessions e
+          where e.sealant_workspace_id = "agent_sessions"."sealant_workspace_id"
+            and e.executor_launch_id is not null
+          order by e.executor_started_at desc nulls last limit 1)`,
       };
 
       const listActiveView = Effect.fn("SessionsRepo.listActiveView")(function* () {
@@ -2099,6 +2116,36 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         return row === undefined ? null : toSession(row);
       });
 
+      const launchersOf = Effect.fn("SessionsRepo.launchersOf")(function* (
+        workspaceIds: ReadonlyArray<SealantWorkspaceId>,
+      ) {
+        if (workspaceIds.length === 0) return new Map<string, string>();
+        const rows = yield* db
+          .selectDistinctOn([agentSessions.sealantWorkspaceId], {
+            workspaceId: agentSessions.sealantWorkspaceId,
+            ownerUserId: agentSessions.ownerUserId,
+          })
+          .from(agentSessions)
+          .where(
+            and(
+              inArray(agentSessions.sealantWorkspaceId, [...workspaceIds]),
+              isNotNull(agentSessions.executorLaunchId),
+            ),
+          )
+          .orderBy(
+            agentSessions.sealantWorkspaceId,
+            sql`${agentSessions.executorStartedAt} DESC NULLS LAST`,
+          )
+          .pipe(Effect.orDie);
+        const launchers = new Map<string, string>();
+        for (const row of rows) {
+          if (row.workspaceId !== null && row.ownerUserId !== null) {
+            launchers.set(row.workspaceId, row.ownerUserId);
+          }
+        }
+        return launchers;
+      });
+
       const executorAccessOf = Effect.fn("SessionsRepo.executorAccessOf")(function* (
         workspaceId: SealantWorkspaceId,
         askerUserId: string,
@@ -2233,6 +2280,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         executorResourceOf,
         executorLaunchOf,
         executorSessionOf,
+        launchersOf,
         executorAccessOf,
         recordExecutorCreate,
         clearExecutorCreate,
