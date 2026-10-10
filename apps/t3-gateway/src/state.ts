@@ -62,6 +62,31 @@ export interface TurnIds {
   readonly messageId: string;
 }
 
+/**
+ * What a launch named for its session's agent (`LaunchRequest` in @mend/api-contracts), kept so
+ * every later launch of the thread names the same: a launch that never brought an agent up leaves
+ * Mend nothing recorded to reuse.
+ */
+export const ThreadLaunchOptions = Schema.Struct({
+  model: Schema.optional(Schema.String),
+  effort: Schema.optional(Schema.String),
+  permissionMode: Schema.optional(Schema.Literals(["bypass", "ask"])),
+  speed: Schema.optional(Schema.Literals(["standard", "fast"])),
+});
+export type ThreadLaunchOptions = typeof ThreadLaunchOptions.Type;
+
+/**
+ * A thread a t3code client launched (`orchestration.launchThread`): the client's own thread id,
+ * the Mend session that is it, the launch command (a retry of it is the same thread) and what the
+ * launch named.
+ */
+export interface LaunchedThread {
+  readonly threadId: string;
+  readonly sessionId: string;
+  readonly commandId: string;
+  readonly options: ThreadLaunchOptions;
+}
+
 export class GatewayStateError extends Schema.TaggedError<GatewayStateError>()(
   "GatewayStateError",
   {
@@ -100,6 +125,24 @@ export class GatewayState extends Context.Service<
     readonly recordTurnIds: (ids: TurnIds, at: number) => Effect.Effect<void, GatewayStateError>;
     /** Every turn the gateway sent, with its t3code ids. */
     readonly listTurnIds: () => Effect.Effect<ReadonlyArray<TurnIds>, GatewayStateError>;
+    /**
+     * Records a thread a person launched from t3code; a second record of its command keeps the
+     * first.
+     */
+    readonly recordThread: (
+      mendUserId: string,
+      thread: LaunchedThread,
+      at: number,
+    ) => Effect.Effect<void, GatewayStateError>;
+    /** Every thread a person launched from t3code whose session was not seen removed. */
+    readonly listThreads: (
+      mendUserId: string,
+    ) => Effect.Effect<ReadonlyArray<LaunchedThread>, GatewayStateError>;
+    /** Forgets a person's launched thread whose session Mend removed. */
+    readonly forgetThread: (
+      mendUserId: string,
+      sessionId: string,
+    ) => Effect.Effect<void, GatewayStateError>;
   }
 >()("@mend/t3-gateway/GatewayState") {}
 
@@ -107,10 +150,12 @@ export class GatewayState extends Context.Service<
 
 /**
  * Migrations by `PRAGMA user_version`. Append only. t3code shows Mend's projects and sessions by
- * their Mend ids, so `project_ids` and `thread_ids` stay empty until a t3code client creates a
- * thread (phase 2). `message_ids` and `run_ids` carry the ids of every turn a t3code client sent,
- * keyed by the Mend turn: a message id comes from the client, so it is never a key across
- * sessions, and a recorded turn is never replaced (migration 3).
+ * their Mend ids, except a thread a t3code client launched, which keeps the client's own id for
+ * the person who launched it: `thread_ids` maps it to its session, per person, with the launch's
+ * command and options (migration 4). Everyone else sees the session by its Mend id.
+ * `project_ids` stays empty. `message_ids` and `run_ids` carry the ids of every turn a t3code
+ * client sent, keyed by the Mend turn: a message id comes from the client, so it is never a key
+ * across sessions, and a recorded turn is never replaced (migration 3).
  */
 const MIGRATIONS: ReadonlyArray<string> = [
   `
@@ -173,6 +218,20 @@ const MIGRATIONS: ReadonlyArray<string> = [
   DROP TABLE message_ids;
   ALTER TABLE message_ids_by_turn RENAME TO message_ids;
   `,
+  `
+  DROP TABLE thread_ids;
+  CREATE TABLE thread_ids (
+    mend_user_id TEXT NOT NULL,
+    thread_id TEXT NOT NULL,
+    mend_session_id TEXT NOT NULL,
+    command_id TEXT NOT NULL,
+    launch_options TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (mend_user_id, thread_id),
+    UNIQUE (mend_user_id, mend_session_id),
+    UNIQUE (mend_user_id, command_id)
+  );
+  `,
 ];
 
 const UserVersionRow = Schema.Struct({ user_version: Schema.Number });
@@ -203,6 +262,15 @@ const TurnIdsRow = Schema.Struct({
 });
 const decodeTurnIdsRows = Schema.decodeUnknownEffect(Schema.Array(TurnIdsRow));
 const encodeScopes = Schema.encodeSync(Scopes);
+const LaunchOptionsJson = Schema.fromJsonString(ThreadLaunchOptions);
+const encodeLaunchOptions = Schema.encodeSync(LaunchOptionsJson);
+const ThreadRow = Schema.Struct({
+  thread_id: Schema.String,
+  mend_session_id: Schema.String,
+  command_id: Schema.String,
+  launch_options: LaunchOptionsJson,
+});
+const decodeThreadRows = Schema.decodeUnknownEffect(Schema.Array(ThreadRow));
 
 const toBearerSession = (decoded: typeof SessionRow.Type): BearerSession => ({
   sessionId: decoded.session_id,
@@ -410,6 +478,57 @@ export const openGatewayState = (
         ),
       );
 
+    const recordThread = (mendUserId: string, thread: LaunchedThread, at: number) =>
+      run("recordThread", () => {
+        database
+          .prepare(
+            `INSERT OR IGNORE INTO thread_ids
+               (mend_user_id, thread_id, mend_session_id, command_id, launch_options, created_at)
+             VALUES (?, ?, ?, ?, ?, ?)`,
+          )
+          .run(
+            mendUserId,
+            thread.threadId,
+            thread.sessionId,
+            thread.commandId,
+            encodeLaunchOptions(thread.options),
+            at,
+          );
+      });
+
+    const listThreads = (mendUserId: string) =>
+      run("listThreads", () =>
+        database
+          .prepare(
+            `SELECT thread_id, mend_session_id, command_id, launch_options FROM thread_ids
+              WHERE mend_user_id = ? ORDER BY created_at`,
+          )
+          .all(mendUserId),
+      ).pipe(
+        Effect.flatMap((rows) =>
+          decodeThreadRows(rows).pipe(
+            Effect.mapError((cause) => new GatewayStateError({ operation: "listThreads", cause })),
+          ),
+        ),
+        Effect.map((rows) =>
+          rows.map(
+            (row): LaunchedThread => ({
+              threadId: row.thread_id,
+              sessionId: row.mend_session_id,
+              commandId: row.command_id,
+              options: row.launch_options,
+            }),
+          ),
+        ),
+      );
+
+    const forgetThread = (mendUserId: string, sessionId: string) =>
+      run("forgetThread", () => {
+        database
+          .prepare("DELETE FROM thread_ids WHERE mend_user_id = ? AND mend_session_id = ?")
+          .run(mendUserId, sessionId);
+      });
+
     return {
       environmentId,
       insertSession,
@@ -419,6 +538,9 @@ export const openGatewayState = (
       revokeSessionsForDevice,
       recordTurnIds,
       listTurnIds,
+      recordThread,
+      listThreads,
+      forgetThread,
     };
   });
 

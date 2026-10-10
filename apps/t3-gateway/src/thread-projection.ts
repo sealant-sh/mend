@@ -433,7 +433,7 @@ const turnEntries = (
   items: ReadonlyArray<MendItem>,
   requests: ReadonlyArray<MendRequest>,
 ): TurnEntries => {
-  const threadId = threadIdOf(source.session);
+  const threadId = threadIdOf(source);
   const providerThreadId = providerThreadIdOf(source.session);
   const runId = runIdOf(source, turn);
   const ordinalBase = (index + 1) * TURN_ORDINAL_STRIDE;
@@ -606,7 +606,7 @@ const pendingEntries = (
   entry: ThreadSource["pending"][number],
   index: number,
 ): TurnEntries => {
-  const threadId = threadIdOf(source.session);
+  const threadId = threadIdOf(source);
   const providerThreadId = providerThreadIdOf(source.session);
   const runId = RunId.make(entry.runId);
   const messageId = MessageId.make(entry.messageId);
@@ -690,7 +690,7 @@ const noticeItems = (
   turns: ReadonlyArray<MendTurn>,
 ): ReadonlyArray<OrchestrationV2TurnItem> => {
   const { notices } = source;
-  const threadId = threadIdOf(source.session);
+  const threadId = threadIdOf(source);
   const providerThreadId = providerThreadIdOf(source.session);
   // The block after every turn and every queued message.
   const endBase = (turns.length + source.pending.length + 1) * TURN_ORDINAL_STRIDE;

@@ -231,6 +231,11 @@ export const MendWorkspaceRetirement = Schema.Struct({
 });
 export type MendWorkspaceRetirement = typeof MendWorkspaceRetirement.Type;
 
+/** What the gateway reads of `WorktreeListing` (`GET /api/projects/:id/worktrees`): the names. */
+export const MendWorktreeListing = Schema.Struct({
+  worktrees: Schema.Array(Schema.Struct({ name: Schema.String })),
+});
+
 /** `ChangeDiff` in @mend/api-contracts, from `GET /api/changes/:id/diff`: git's live answer. */
 export const MendChangeDiff = Schema.Struct({
   change: Schema.Struct({

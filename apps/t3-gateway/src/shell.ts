@@ -64,9 +64,17 @@ export const EMPTY_SHELL_SNAPSHOT: OrchestrationV2ShellSnapshot = {
 
 /** What the gateway knows of one protocol session: enough to project it as a thread. */
 export interface ThreadSource {
+  /**
+   * The thread's id: the session's own, or, for a thread a t3code client launched, the id that
+   * client gave it (`thread_ids` in the state file).
+   */
+  readonly threadId: ThreadId;
   readonly project: MendProject;
   readonly session: MendSession;
-  /** The session's current agent: a protocol process (`isProjectable`). */
+  /**
+   * The session's current agent: a protocol process (`isProjectable`), or, for a launched thread
+   * whose agent Mend has not started yet, the agent its launch asked for (`launchingAgentOf`).
+   */
   readonly agent: MendProcess;
   /** The change of the session's worktree, when it has one. */
   readonly changeId: string | null;
@@ -105,10 +113,43 @@ export interface PendingRun {
 
 /**
  * Whether a session is a thread: its current agent is a protocol process of a harness t3code has
- * a driver for. PTY and shell sessions are hidden (ADR 0012, "Out of the MVP").
+ * a driver for, or it has no agent yet and a t3code client launched it (`launched`). PTY and shell
+ * sessions are hidden (ADR 0012, "Out of the MVP").
  */
-export const isProjectable = (session: MendSession, agent: MendProcess | null): boolean =>
-  agent !== null && agent.kind === "agent-protocol" && harnessProvider(session.harness) !== null;
+export const isProjectable = (
+  session: MendSession,
+  agent: MendProcess | null,
+  launched = false,
+): boolean =>
+  harnessProvider(session.harness) !== null &&
+  (agent === null ? launched : agent.kind === "agent-protocol");
+
+/**
+ * The agent a launched thread asked for while Mend has none for it: starting while the session
+ * starts, otherwise not running. The gateway never reports it running; only Mend's own process
+ * does.
+ */
+export const launchingAgentOf = (
+  session: MendSession,
+  options: {
+    readonly model?: string | undefined;
+    readonly effort?: string | undefined;
+    readonly permissionMode?: "bypass" | "ask" | undefined;
+  },
+): MendProcess => ({
+  id: `launching:${session.id}`,
+  kind: "agent-protocol",
+  harness: session.harness,
+  status: session.status === "starting" ? "starting" : "exited",
+  providerSessionId: null,
+  protocolOptions: {
+    model: options.model ?? session.model ?? null,
+    effort: options.effort ?? null,
+    permissionMode: options.permissionMode ?? "bypass",
+  },
+  createdAt: session.createdAt,
+  exitedAt: session.status === "starting" ? null : session.updatedAt,
+});
 
 // ─── Small conversions ───────────────────────────────────────────────────────
 
@@ -151,7 +192,7 @@ export const runtimeModeOf = (agent: MendProcess): RuntimeMode =>
 
 // ─── Ids ─────────────────────────────────────────────────────────────────────
 
-export const threadIdOf = (session: MendSession): ThreadId => ThreadId.make(session.id);
+export const threadIdOf = (source: ThreadSource): ThreadId => source.threadId;
 
 /** The provider thread and session every thread has one of: the session's agent conversation. */
 export const providerThreadIdOf = (session: MendSession): ProviderThreadId =>
@@ -221,12 +262,17 @@ export const projectShellOf = (project: MendProject): OrchestrationProjectShell 
   updatedAt: project.updatedAt,
 });
 
-/** The thread's title: the session's label, else its first message, else its harness. */
+/**
+ * The thread's title: the session's label, else its first message (sent, or still in the
+ * gateway's queue), else its harness.
+ */
 export const threadTitleOf = (source: ThreadSource): string => {
   const label = source.session.label?.trim();
   if (label !== undefined && label.length > 0) return label;
-  const first = source.turns.find((turn) => turn.origin !== "harness");
-  const fromInput = first === undefined ? null : firstLine(first.input, 80);
+  const first =
+    source.turns.toSorted(byOrdinal).find((turn) => turn.origin !== "harness")?.input ??
+    source.pending.find((entry) => entry.state !== "cancelled")?.text;
+  const fromInput = first === undefined ? null : firstLine(first, 80);
   if (fromInput !== null) return fromInput;
   return `${harnessProvider(source.session.harness)?.displayName ?? source.session.harness} session`;
 };
@@ -240,7 +286,7 @@ export const threadUpdatedAtOf = (source: ThreadSource): string =>
   ]) ?? source.session.updatedAt;
 
 export const appThreadOf = (source: ThreadSource): OrchestrationV2AppThread => {
-  const id = threadIdOf(source.session);
+  const id = threadIdOf(source);
   return {
     createdBy: "user",
     creationSource: "server",
@@ -277,7 +323,7 @@ export const runsOf = (source: ThreadSource): ReadonlyArray<OrchestrationV2Run> 
   const turns = source.turns.toSorted(byOrdinal).map(
     (turn, index): OrchestrationV2Run => ({
       id: runIdOf(source, turn),
-      threadId: threadIdOf(source.session),
+      threadId: threadIdOf(source),
       ordinal: index + 1,
       providerInstanceId: modelSelection.instanceId,
       modelSelection,
@@ -299,7 +345,7 @@ export const runsOf = (source: ThreadSource): ReadonlyArray<OrchestrationV2Run> 
     const settled = entry.state === "failed" || entry.state === "cancelled";
     return {
       id: RunId.make(entry.runId),
-      threadId: threadIdOf(source.session),
+      threadId: threadIdOf(source),
       ordinal: turns.length + index + 1,
       providerInstanceId: modelSelection.instanceId,
       modelSelection,
@@ -456,7 +502,14 @@ export const threadShellOf = (
   const runs = runsOf(source);
   const latestRun = runs.at(-1);
   const activeRun = runs.findLast((run) => isActiveRunStatus(run.status));
-  const latestUserTurn = source.turns.toSorted(byOrdinal).findLast((t) => t.origin !== "harness");
+  // A message still in the gateway's queue is the person's latest too: t3code's own server has it
+  // as a message the moment it is dispatched, and a launched thread's client waits for it.
+  const latestUserMessage = latestOf([
+    source.turns.toSorted(byOrdinal).findLast((t) => t.origin !== "harness")?.createdAt,
+    ...source.pending
+      .filter((entry) => entry.state !== "cancelled")
+      .map((entry) => entry.requestedAt),
+  ]);
   return {
     createdBy: thread.createdBy,
     creationSource: thread.creationSource,
@@ -491,7 +544,7 @@ export const threadShellOf = (
     lastError: source.turns.toSorted(byOrdinal).at(-1)?.error ?? null,
     pendingRuntimeRequest: pendingRequestSummaryOf(source),
     latestVisibleMessage: null,
-    latestUserMessageAt: latestUserTurn === undefined ? null : utc(latestUserTurn.createdAt),
+    latestUserMessageAt: latestUserMessage === null ? null : utc(latestUserMessage),
     hasActionableProposedPlan: false,
     pendingBackgroundTasks: waitingTasksOf(source.notices),
     providerInstanceHistory: [thread.providerInstanceId],

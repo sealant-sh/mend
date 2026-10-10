@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 
 import {
   EventId,
@@ -26,6 +26,7 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
 import * as RcMap from "effect/RcMap";
+import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
@@ -37,6 +38,7 @@ import { makeFanout, type SubscriberFellBehind } from "./fanout.ts";
 import {
   MendClient,
   MendDeviceRefused,
+  type MendCommand,
   type MendCommandRefused,
   type MendRequestResponse,
   type MendNotFound,
@@ -44,6 +46,7 @@ import {
 } from "./mend-client.ts";
 import type {
   MendActiveSession,
+  MendProcess,
   MendConversationWait,
   MendEventPointer,
   MendItem,
@@ -58,13 +61,20 @@ import { readsRetirement, readsWaiting, threadNoticesOf } from "./notices.ts";
 import * as Queueing from "./queue.ts";
 import {
   isProjectable,
+  launchingAgentOf,
   PROJECTION_SCHEMA_VERSION,
   projectShellOf,
   threadShellOf,
   type ThreadSource,
   worktreePathOf,
 } from "./shell.ts";
-import { GatewayState, type BearerSession, type TurnIds } from "./state.ts";
+import {
+  GatewayState,
+  type BearerSession,
+  type LaunchedThread,
+  type ThreadLaunchOptions,
+  type TurnIds,
+} from "./state.ts";
 import { threadProjectionOf } from "./thread-projection.ts";
 
 /**
@@ -83,6 +93,13 @@ export type ShellDelta = Exclude<
 
 /** Mend could not be read as the person: their devices are refused, or Mend did not answer. */
 export type HubReadError = MendDeviceRefused | MendUnavailable;
+
+/** How much of a branch's name a new worktree's name keeps, before its suffix. */
+const WORKTREE_NAME_STEM = 53;
+const SUFFIX_ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789";
+/** Six random characters of `[a-z0-9]`: what makes a new worktree's name its own. */
+const worktreeSuffix = (): string =>
+  Array.from(randomBytes(6), (byte) => SUFFIX_ALPHABET[byte % SUFFIX_ALPHABET.length]).join("");
 
 export interface ShellSubscription {
   /** The shell as of subscribing; every later change arrives in `changes`, sequenced after it. */
@@ -195,6 +212,38 @@ export interface ThreadCommands {
     readonly requestId: string;
     readonly response: MendRequestResponse;
   }) => Effect.Effect<number, ThreadCommandFailure>;
+  /**
+   * A new thread (`orchestration.launchThread`): a Mend session the sender owns, in a new
+   * worktree or one they join, launched in protocol mode on what the launch names. Its opening
+   * message goes through the queue like any other, so it is sent as an exact turn once the agent
+   * runs. A retry of the same command is the same thread.
+   */
+  readonly launch: (input: ThreadLaunch) => Effect.Effect<LaunchedThreadId, ThreadCommandFailure>;
+}
+
+/** Where a launched thread works: a new worktree from a base, or an existing one it joins. */
+export type ThreadWorkspace =
+  | { readonly kind: "new"; readonly base: string; readonly name: string | null }
+  | { readonly kind: "join"; readonly worktreePath: string };
+
+export interface ThreadLaunch {
+  readonly session: BearerSession;
+  readonly commandId: string;
+  /** The client's id for the thread, or null for the session's own. */
+  readonly threadId: string | null;
+  readonly projectId: string;
+  readonly harness: string;
+  /** The session's label in Mend, or null to leave it unnamed (named from its first message). */
+  readonly label: string | null;
+  readonly workspace: ThreadWorkspace;
+  readonly options: ThreadLaunchOptions;
+  readonly message: { readonly messageId: string; readonly text: string } | null;
+}
+
+export interface LaunchedThreadId {
+  readonly threadId: string;
+  /** The command was launched before: this is that thread. */
+  readonly resumed: boolean;
 }
 
 /**
@@ -426,10 +475,17 @@ const FULL_READ_RETRY = "3 seconds";
 /** A stream that lasted this long resets the backoff: it was a drop, not a refusal loop. */
 const HEALTHY_STREAM_MS = 30_000;
 
-const projectableSessionIds = (entry: ProjectEntry): ReadonlyArray<string> =>
+const projectableSessionIds = (
+  entry: ProjectEntry,
+  launched: ReadonlyMap<string, LaunchedThread>,
+): ReadonlyArray<string> =>
   entry.sessions
     .filter((session) =>
-      isProjectable(session, entry.annotations.get(session.id)?.currentAgent ?? null),
+      isProjectable(
+        session,
+        entry.annotations.get(session.id)?.currentAgent ?? null,
+        launched.has(session.id),
+      ),
     )
     .map((session) => session.id);
 
@@ -520,11 +576,69 @@ export const makePersonHub = (input: {
       )) {
       rememberIds(ids);
     }
+    /**
+     * Session id → the thread a t3code client launched as it, and the client's thread id → its
+     * session: a launched thread keeps the id its client gave it (`thread_ids`).
+     */
+    const launched = new Map<string, LaunchedThread>();
+    const sessionOfThread = new Map<string, string>();
+    const rememberThread = (thread: LaunchedThread) => {
+      launched.set(thread.sessionId, thread);
+      sessionOfThread.set(thread.threadId, thread.sessionId);
+    };
+    // Only the person's own launches: a client thread id names a session for its launcher alone,
+    // and everyone else sees the session by its Mend id.
+    const launcher = input.viewer?.id ?? null;
+    for (const thread of yield* (
+      launcher === null
+        ? Effect.succeed<ReadonlyArray<LaunchedThread>>([])
+        : state.listThreads(launcher)
+    ).pipe(
+      Effect.catch((error) =>
+        Effect.logError("t3 gateway could not read its thread map", {
+          cause: error.message,
+        }).pipe(Effect.as<ReadonlyArray<LaunchedThread>>([])),
+      ),
+    )) {
+      rememberThread(thread);
+    }
+    /** A t3code thread id as the Mend session it is. */
+    const sessionIdOf = (threadId: string): string => sessionOfThread.get(threadId) ?? threadId;
+    /**
+     * Sessions just created for a launch that no project read has shown yet: hidden, and their
+     * queue left alone, until one does, so the client never sees the thread without its message
+     * and the message is never failed as "gone" for a session not read yet.
+     */
+    const opening = new Set<string>();
+    /** A launched session a project read showed: it is a thread from here. */
+    const seen = (sessionIds: Iterable<string>) => {
+      for (const sessionId of sessionIds) opening.delete(sessionId);
+    };
     const queues = new Map<string, Queueing.ThreadQueue>();
     const handledCommands = new Set<string>();
 
     const projects = new Map<string, ProjectEntry>();
     const conversations = new Map<string, Conversation>();
+    /**
+     * Session id → the turns Mend answered `POST /turns` with that no read of Mend has shown yet. A
+     * read that started before Mend took the turn can land after it was adopted; applied as it is,
+     * it would drop the turn, and the queue would send the next message while this one runs.
+     */
+    const adoptedTurns = new Map<string, Map<string, MendTurn>>();
+    /** A conversation as read, with the adopted turns it does not show yet; one it shows is let go. */
+    const withAdopted = (sessionId: string, conversation: Conversation): Conversation => {
+      const adopted = adoptedTurns.get(sessionId);
+      if (adopted === undefined) return conversation;
+      const missing: Array<MendTurn> = [];
+      for (const [turnId, turn] of adopted) {
+        if (conversation.turns.some((known) => known.id === turnId)) adopted.delete(turnId);
+        else missing.push(turn);
+      }
+      if (adopted.size === 0) adoptedTurns.delete(sessionId);
+      return missing.length === 0
+        ? conversation
+        : { ...conversation, turns: [...conversation.turns, ...missing] };
+    };
     /**
      * Session id → its row of `GET /api/sessions` (docs/adr/0016, decisions 6, 13 and 14): the
      * people live in its executor, whether control is shared, whether its executor waits to be
@@ -588,13 +702,17 @@ export const makePersonHub = (input: {
       const names = knownNames();
       for (const entry of projects.values()) {
         for (const session of entry.sessions) {
+          if (opening.has(session.id)) continue;
           const annotation = entry.annotations.get(session.id);
-          const agent = annotation?.currentAgent ?? null;
-          if (agent === null || !isProjectable(session, agent)) continue;
+          const thread = launched.get(session.id);
+          const current = annotation?.currentAgent ?? null;
+          if (!isProjectable(session, current, thread !== undefined)) continue;
+          const agent = current ?? launchingAgentOf(session, thread?.options ?? {});
           const conversation = conversations.get(session.id) ?? EMPTY_CONVERSATION;
           const ids = turnIds.get(session.id);
           const queue = queues.get(session.id);
           sources.push({
+            threadId: ThreadId.make(thread?.threadId ?? session.id),
             project: entry.project,
             session,
             agent,
@@ -936,7 +1054,7 @@ export const makePersonHub = (input: {
       );
       const facts = people ?? active;
       const entries = details.filter((entry): entry is ProjectEntry => entry !== null);
-      const sessionIds = entries.flatMap(projectableSessionIds);
+      const sessionIds = entries.flatMap((entry) => projectableSessionIds(entry, launched));
       const [read, retired] = yield* Effect.all(
         [readConversations(sessionIds, facts), readRetirements(sessionIds, facts)],
         { concurrency: 2 },
@@ -954,11 +1072,14 @@ export const makePersonHub = (input: {
         Effect.gen(function* () {
           projects.clear();
           for (const entry of entries) projects.set(entry.project.id, entry);
+          seen(entries.flatMap((entry) => entry.sessions.map((session) => session.id)));
           active = facts;
           applyRetirements(retired);
           conversations.clear();
           for (const [sessionId, conversation] of read) {
-            if (conversation !== null) conversations.set(sessionId, conversation);
+            if (conversation !== null) {
+              conversations.set(sessionId, withAdopted(sessionId, conversation));
+            }
           }
           for (const [sessionId, items] of caughtUp) {
             const watch = watches.get(sessionId);
@@ -973,7 +1094,14 @@ export const makePersonHub = (input: {
     });
 
     /** One project again, and the turns of any thread that is new in it. */
-    const refreshProject = (projectId: string): Effect.Effect<void, HubReadError> =>
+    /**
+     * `applied` runs with what was read, under the lock and before anything is published: a
+     * launched thread's opening message joins its queue in the same publication as its session.
+     */
+    const refreshProject = (
+      projectId: string,
+      applied: () => void = () => {},
+    ): Effect.Effect<void, HubReadError> =>
       Effect.gen(function* () {
         // A process starting or ending re-reads the project: who is live in each executor with it.
         const [entry, people] = yield* Effect.all(
@@ -987,7 +1115,7 @@ export const makePersonHub = (input: {
           { concurrency: 2 },
         );
         const facts = people ?? active;
-        const sessionIds = entry === null ? [] : projectableSessionIds(entry);
+        const sessionIds = entry === null ? [] : projectableSessionIds(entry, launched);
         const fresh = sessionIds.filter((sessionId) => !conversations.has(sessionId));
         // A thread already read whose owner just shared control with someone live: its waiting
         // line, now worth reading (later ones come with its conversation's pointers).
@@ -1017,13 +1145,19 @@ export const makePersonHub = (input: {
               projects.delete(projectId);
             } else {
               projects.set(projectId, entry);
+              seen(entry.sessions.map((session) => session.id));
             }
             const kept = new Set(entry?.sessions.map((session) => session.id) ?? []);
             for (const session of previous?.sessions ?? []) {
-              if (!kept.has(session.id)) conversations.delete(session.id);
+              if (!kept.has(session.id)) {
+                conversations.delete(session.id);
+                adoptedTurns.delete(session.id);
+              }
             }
             for (const [sessionId, conversation] of read) {
-              if (conversation !== null) conversations.set(sessionId, conversation);
+              if (conversation !== null) {
+                conversations.set(sessionId, withAdopted(sessionId, conversation));
+              }
             }
             for (const [sessionId, wait] of waits) {
               const conversation = conversations.get(sessionId);
@@ -1044,6 +1178,7 @@ export const makePersonHub = (input: {
             active = facts;
             applyRetirements(retired);
             for (const session of entry?.sessions ?? []) sawSession(session.id);
+            applied();
             yield* publishAll;
           }),
         );
@@ -1051,7 +1186,7 @@ export const makePersonHub = (input: {
 
     const isKnownThread = (sessionId: string): boolean => {
       for (const entry of projects.values()) {
-        if (projectableSessionIds(entry).includes(sessionId)) return true;
+        if (projectableSessionIds(entry, launched).includes(sessionId)) return true;
       }
       return false;
     };
@@ -1073,8 +1208,9 @@ export const makePersonHub = (input: {
           Effect.gen(function* () {
             if (conversation === null) {
               conversations.delete(sessionId);
+              adoptedTurns.delete(sessionId);
             } else if (isKnownThread(sessionId)) {
-              conversations.set(sessionId, conversation);
+              conversations.set(sessionId, withAdopted(sessionId, conversation));
             }
             const current = watches.get(sessionId);
             if (current !== undefined) mergeItems(current, items);
@@ -1283,6 +1419,10 @@ export const makePersonHub = (input: {
         const conversation = conversations.get(sessionId) ?? EMPTY_CONVERSATION;
         if (!conversation.turns.some((known) => known.id === turn.id)) {
           conversations.set(sessionId, { ...conversation, turns: [...conversation.turns, turn] });
+          // Kept until a read shows it: a read from before Mend took it may still land.
+          const adopted = adoptedTurns.get(sessionId) ?? new Map<string, MendTurn>();
+          adopted.set(turn.id, turn);
+          adoptedTurns.set(sessionId, adopted);
         }
         yield* state
           .recordTurnIds(ids, Date.now())
@@ -1339,18 +1479,27 @@ export const makePersonHub = (input: {
     /**
      * Launches the stopped session again with no prompt: the message goes out by `POST /turns`
      * once Mend reports the agent live. Naming no options, Mend reuses what the session's last
-     * protocol agent recorded (mend#493), so an ask session comes back asking.
+     * protocol agent recorded (mend#493), so an ask session comes back asking. A thread a t3code
+     * client launched names what its launch named every time: its first launch may not have
+     * brought an agent up, and then Mend has nothing recorded to reuse.
      */
     const launchAgain = (sessionId: string, entry: Queueing.QueueEntry): Effect.Effect<void> =>
       Effect.gen(function* () {
-        const launched = yield* mend.launchProtocol(entry.token, sessionId, "").pipe(Effect.result);
+        // A launched thread's options go with its launches only until Mend has recorded a protocol
+        // agent for it; from then on Mend reuses what that agent recorded (mend#493), as for every
+        // session, so a mode or model changed in Mend is never undone from here.
+        const options =
+          recordedAgentOf(sessionId) === null ? launched.get(sessionId)?.options : undefined;
+        const answer = yield* mend
+          .launchProtocol(entry.token, sessionId, "", options)
+          .pipe(Effect.result);
         // Mend refuses a launch that races another (`session_starting`) or finds the agent up
         // (`session_active`); its 422 carries only words, so the session itself is read: launching
         // or with a live agent, the launch is under way or done, and the message waits for it.
         const underWay =
-          launched._tag === "Failure" &&
-          launched.failure._tag === "MendCommandRefused" &&
-          launched.failure.status === 422
+          answer._tag === "Failure" &&
+          answer.failure._tag === "MendCommandRefused" &&
+          answer.failure.status === 422
             ? yield* mend.sessionDetail(entry.token, sessionId).pipe(
                 Effect.map((detail) => {
                   const agent = detail.currentAgent;
@@ -1367,12 +1516,12 @@ export const makePersonHub = (input: {
             : null;
         yield* locked(
           Effect.gen(function* () {
-            if (launched._tag === "Success") {
-              Queueing.launchAnswered(entry, launched.success.updatedAt);
+            if (answer._tag === "Success") {
+              Queueing.launchAnswered(entry, answer.success.updatedAt);
             } else if (underWay !== null) {
               Queueing.launchAnswered(entry, underWay);
             } else {
-              Queueing.fail(queueOf(sessionId), entry, reasonOf(launched.failure));
+              Queueing.fail(queueOf(sessionId), entry, reasonOf(answer.failure));
             }
             yield* publishAll;
           }),
@@ -1380,6 +1529,15 @@ export const makePersonHub = (input: {
         const projectId = sourceOf(sessionId)?.project.id;
         if (projectId !== undefined) yield* requestRefresh(`project:${projectId}`);
       });
+
+    /** The protocol agent Mend has recorded for a session, or null when it has none yet. */
+    const recordedAgentOf = (sessionId: string): MendProcess | null => {
+      for (const entry of projects.values()) {
+        const agent = entry.annotations.get(sessionId)?.currentAgent ?? null;
+        if (agent !== null && agent.kind === "agent-protocol") return agent;
+      }
+      return null;
+    };
 
     /** Session id → when its queue is next looked at without a read (a retry, a deadline). */
     const wakes = new Map<string, number>();
@@ -1413,8 +1571,9 @@ export const makePersonHub = (input: {
       Effect.forEach(
         Array.from(queues),
         ([sessionId, queue]) => {
-          // Before the first full read, nothing is known of any session yet.
-          if (!loaded) return Effect.void;
+          // Before the first full read, nothing is known of any session yet; a launched session no
+          // read has shown yet is not gone either.
+          if (!loaded || opening.has(sessionId)) return Effect.void;
           const step = Queueing.nextStep(queue, viewOf(sessionId), performance.now(), timings);
           const work =
             step === null
@@ -1590,7 +1749,222 @@ export const makePersonHub = (input: {
         return yield* locked(Effect.sync(() => sequence));
       });
 
-    const commands: ThreadCommands = { send, interrupt, cancelQueued, resumeQueue, respond };
+    /** Mend's refusal of a command as the thread command's. */
+    const asCommandRefusal = <A>(
+      effect: MendCommand<A>,
+    ): Effect.Effect<A, ThreadCommandRefused | MendDeviceRefused | MendUnavailable> =>
+      effect.pipe(
+        Effect.catchTags({
+          MendCommandRefused: (error) => Effect.fail(commandRefusalOf(error)),
+          MendNotFound: (error) => Effect.fail(commandRefusalOf(error)),
+        }),
+      );
+
+    /**
+     * `wanted` with a random suffix (`health-check-k3x9qa`) no worktree of the project has; null
+     * when unsure, and Mend names it. Mend joins an existing worktree of the same name, and a
+     * lookup alone reserves nothing: two launches, or another Mend client, could take a name both
+     * saw free (review 590-R2-1). The suffix makes the name its own whoever creates at once.
+     */
+    const freeWorktreeName = (token: string, projectId: string, wanted: string) =>
+      mend.worktreeNames(token, projectId).pipe(
+        Effect.map((names) => {
+          const taken = new Set(names);
+          for (let attempt = 0; attempt < 5; attempt++) {
+            const candidate = `${wanted.slice(0, WORKTREE_NAME_STEM)}-${worktreeSuffix()}`;
+            if (!taken.has(candidate)) return candidate;
+          }
+          return null;
+        }),
+        Effect.orElseSucceed(() => null),
+      );
+
+    /**
+     * Launch commands and client thread ids under way, so a retry sent while the first runs is not
+     * a second thread, and two launches never take one thread id.
+     */
+    const launching = new Set<string>();
+
+    const launchReserved = (request: ThreadLaunch) =>
+      Effect.gen(function* () {
+        const token = request.session.deviceToken;
+        const target = yield* locked(
+          Effect.sync(() => {
+            if (
+              request.threadId !== null &&
+              (sessionOfThread.has(request.threadId) || isKnownThread(request.threadId))
+            ) {
+              return { kind: "taken" as const };
+            }
+            const entry = projects.get(request.projectId);
+            if (entry === undefined) return { kind: "no-project" as const };
+            const { workspace } = request;
+            if (workspace.kind === "new") {
+              return { kind: "new" as const, name: workspace.name, base: workspace.base };
+            }
+            // A worktree is known by the path of a session in it: the same directory.
+            const joined = entry.sessions.find(
+              (session) => worktreePathOf(entry.project, session) === workspace.worktreePath,
+            );
+            return joined === undefined
+              ? { kind: "no-worktree" as const }
+              : { kind: "join" as const, worktreeId: joined.worktreeId };
+          }),
+        );
+        if (target.kind === "taken") {
+          return yield* refused(`Thread ${request.threadId ?? ""} is already in this environment.`);
+        }
+        if (target.kind === "no-project") {
+          return yield* refused(`Project ${request.projectId} is not in this environment.`);
+        }
+        if (target.kind === "no-worktree") {
+          return yield* refused(
+            request.workspace.kind === "join"
+              ? `No session of this project works in ${request.workspace.worktreePath}.`
+              : "No such worktree.",
+          );
+        }
+        // Mend joins an existing worktree of the same name: a new worktree takes a name no
+        // worktree of the project has, or none, and Mend names it.
+        const name =
+          target.kind === "new" && target.name !== null
+            ? yield* freeWorktreeName(token, request.projectId, target.name)
+            : null;
+        const created = yield* asCommandRefusal(
+          target.kind === "new"
+            ? mend.createSession(token, request.projectId, {
+                harness: request.harness,
+                label: request.label,
+                name,
+                base: target.base,
+              })
+            : mend.joinWorktree(token, target.worktreeId, {
+                harness: request.harness,
+                label: request.label,
+              }),
+        );
+        const thread: LaunchedThread = {
+          threadId: request.threadId ?? created.id,
+          sessionId: created.id,
+          commandId: request.commandId,
+          options: request.options,
+        };
+        yield* state.recordThread(request.session.mendUser.id, thread, Date.now()).pipe(
+          Effect.catch((error) =>
+            Effect.logError("t3 gateway could not record a launched thread", {
+              cause: error.message,
+            }),
+          ),
+        );
+        yield* locked(
+          Effect.sync(() => {
+            rememberThread(thread);
+            opening.add(created.id);
+          }),
+        );
+        const { message } = request;
+        // The opening message is queued like any other: the queue launches the session on what
+        // the launch named and sends the message as an exact turn once the agent runs.
+        const queueOpening = () => {
+          if (message === null) return;
+          const queue = queueOf(created.id);
+          if (queue.entries.some((entry) => entry.messageId === message.messageId)) return;
+          queue.entries.push(
+            Queueing.newEntry({
+              runId: `t3-run:${randomUUID()}`,
+              messageId: message.messageId,
+              text: message.text,
+              requestedAt: new Date().toISOString(),
+              token,
+            }),
+          );
+        };
+        // The message is queued at once, whatever the reads below find: it is never dropped.
+        // Until a project read shows the session, it stays hidden and its queue waits.
+        yield* locked(Effect.sync(queueOpening));
+        // The session as Mend has it now, so the thread is in the shell, with its message, before
+        // the launch answers: t3code's client opens a launched thread only once its shell shows it.
+        const read = (attempts: number) =>
+          refreshProject(request.projectId).pipe(
+            Effect.retry({ times: attempts, schedule: Schedule.spaced(OPENING_READ_RETRY) }),
+            Effect.catch((error) =>
+              Effect.logWarning("t3 gateway could not read a launched thread's project", {
+                cause: error.message,
+              }),
+            ),
+          );
+        yield* read(OPENING_READ_ATTEMPTS);
+        if (yield* locked(Effect.sync(() => opening.has(created.id)))) {
+          // Mend not answering yet: keep reading in the background; the message waits for it.
+          yield* Effect.forkIn(
+            read(OPENING_READ_BACKGROUND_ATTEMPTS).pipe(
+              Effect.andThen(
+                locked(
+                  Effect.gen(function* () {
+                    if (!opening.has(created.id)) return;
+                    opening.delete(created.id);
+                    Queueing.failAll(
+                      queueOf(created.id),
+                      "Mend created the session, but the gateway could not read it to send this message.",
+                    );
+                    yield* publishAll;
+                  }),
+                ),
+              ),
+            ),
+            hubScope,
+          );
+        }
+        if (message === null) {
+          // Nothing to send: the agent comes up now, and a refusal is the launch's.
+          yield* asCommandRefusal(mend.launchProtocol(token, created.id, "", request.options)).pipe(
+            Effect.tap(() => requestRefresh(`project:${request.projectId}`)),
+          );
+        }
+        const launchedId: LaunchedThreadId = { threadId: thread.threadId, resumed: false };
+        return launchedId;
+      });
+
+    const launch: ThreadCommands["launch"] = (request) =>
+      Effect.gen(function* () {
+        yield* ensureLoaded;
+        const known = Array.from(launched.values()).find(
+          (thread) => thread.commandId === request.commandId,
+        );
+        if (known !== undefined) {
+          const resumed: LaunchedThreadId = { threadId: known.threadId, resumed: true };
+          return resumed;
+        }
+        if (request.session.mendUser.id !== launcher) {
+          return yield* refused("A launch is the paired person's own.", true);
+        }
+        const reserved = [
+          `command:${request.commandId}`,
+          ...(request.threadId === null ? [] : [`thread:${request.threadId}`]),
+        ];
+        if (reserved.some((key) => launching.has(key))) {
+          return yield* refused("This launch is already under way.");
+        }
+        for (const key of reserved) launching.add(key);
+        return yield* launchReserved(request).pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              for (const key of reserved) launching.delete(key);
+            }),
+          ),
+        );
+      });
+
+    // A thread a t3code client launched is addressed by the client's id; everything inside the
+    // hub is keyed by the Mend session.
+    const commands: ThreadCommands = {
+      send: (command) => send({ ...command, threadId: sessionIdOf(command.threadId) }),
+      interrupt: (command) => interrupt({ ...command, threadId: sessionIdOf(command.threadId) }),
+      cancelQueued: (threadId, runId) => cancelQueued(sessionIdOf(threadId), runId),
+      resumeQueue: (threadId) => resumeQueue(sessionIdOf(threadId)),
+      respond: (command) => respond({ ...command, threadId: sessionIdOf(command.threadId) }),
+      launch,
+    };
 
     // ─── The hub ───────────────────────────────────────────────────────────
 
@@ -1691,8 +2065,8 @@ export const makePersonHub = (input: {
     return {
       shellSnapshot,
       subscribeShell,
-      threadSnapshot,
-      subscribeThread,
+      threadSnapshot: (threadId: string) => threadSnapshot(sessionIdOf(threadId)),
+      subscribeThread: (threadId: string) => subscribeThread(sessionIdOf(threadId)),
       isRefused: tokens.isRefused,
       refusal: tokens.refusal,
       mend,
@@ -1716,6 +2090,11 @@ export class Projections extends Context.Service<
     readonly refuseDevice: (userId: string, deviceToken: string) => Effect.Effect<void>;
   }
 >()("@mend/t3-gateway/Projections") {}
+
+/** How a launch reads its new session's project before it answers, and then in the background. */
+const OPENING_READ_RETRY = "500 millis";
+const OPENING_READ_ATTEMPTS = 3;
+const OPENING_READ_BACKGROUND_ATTEMPTS = 60;
 
 /** How long a hub outlives its last user: a client reconnecting finds it warm. */
 export const HUB_IDLE_TTL = "2 minutes";

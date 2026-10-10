@@ -68,6 +68,16 @@ export const harnessProvider = (
       };
 };
 
+/** The Mend harness a t3code provider instance stands for, or null for one Mend does not run. */
+export const harnessOfInstance = (
+  instanceId: string,
+): { readonly harness: string; readonly effortOptionId: string } | null => {
+  for (const [harness, driver] of Object.entries(HARNESS_DRIVERS)) {
+    if (driver.driver === instanceId) return { harness, effortOptionId: driver.effortOptionId };
+  }
+  return null;
+};
+
 /** The option id and choice t3code's Codex driver uses for priority processing. */
 export const SERVICE_TIER_OPTION_ID = "serviceTier";
 export const STANDARD_SERVICE_TIER = "default";
