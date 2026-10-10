@@ -6,6 +6,7 @@
   "main": "expo-router/entry",
   "scripts": {
     "android": "expo start --android",
+    "check:web": "node scripts/check-web.mjs",
     "dev": "expo start",
     "ios": "expo start --ios",
     "ios:clean": "expo prebuild --clean && expo run:ios --device --configuration Release",
@@ -50,6 +51,7 @@
     "lucide-react-native": "^1.26.0",
     "react": "catalog:",
     "react-dom": "catalog:",
+    "react-markdown": "^10.1.0",
     "react-native": "0.86.0",
     "react-native-gesture-handler": "~2.32.0",
     "react-native-keyboard-controller": "^1.22.2",
@@ -61,11 +63,16 @@
     "react-native-svg": "15.15.4",
     "react-native-web": "~0.21.0",
     "react-native-webview": "^14.0.1",
-    "react-native-worklets": "0.10.0"
+    "react-native-worklets": "0.10.0",
+    "remark-gfm": "^4.0.1",
+    "remark-math": "^6.0.0"
   },
   "devDependencies": {
+    "@babel/plugin-transform-object-rest-spread": "^7.29.7",
     "@mend/api-contracts": "workspace:*",
     "@types/react": "catalog:",
+    "babel-preset-expo": "~57.0.5",
+    "playwright-core": "^1.64.0",
     "typescript": "~6.0.3",
     "vitest": "catalog:"
   }
