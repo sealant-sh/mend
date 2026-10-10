@@ -314,6 +314,43 @@ const lockGuidance = (lockDir: string): ServerStoreError =>
     `Server is busy: ${lockDir} is locked (${describeOwner(lockDir)}). Wait for the owning command. Never remove a live lock. For stale-lock recovery, verify on that host that the owner and its Docker Compose children have stopped, then move only this lock directory aside and retry. Keep identity.env, active, and generations intact.`,
   );
 
+/** The locks this process holds now, and what waits for the last of them to go. */
+const heldLocks = new Set<OwnedLock>();
+let afterRelease: Array<() => void> = [];
+
+const noteReleased = (lock: OwnedLock): void => {
+  heldLocks.delete(lock);
+  if (heldLocks.size > 0) return;
+  const waiting = afterRelease;
+  afterRelease = [];
+  for (const callback of waiting) callback();
+};
+
+/**
+ * Run `callback` once this process holds no server lock: at once when it holds none, else when the
+ * command holding it finishes and releases it. A CLI whose reader went away (`| head`, EPIPE) or
+ * whose terminal closed exits through here, so a server command finishes what it started (its
+ * Compose children included) and leaves no lock behind (RC 0.36.0-next.754, D-F1).
+ */
+export const whenServerLockReleased = (callback: () => void): void => {
+  if (heldLocks.size === 0) callback();
+  else afterRelease.push(callback);
+};
+
+/**
+ * Every exit path through `process.exit` releases a lock this process still holds: `exit`
+ * listeners run synchronously, as the release does. A process killed by a signal runs none, and
+ * leaves the lock with its owner metadata for the recovery `lockGuidance` describes.
+ */
+let releaseOnExit = false;
+const releaseHeldLocksOnExit = (): void => {
+  if (releaseOnExit) return;
+  releaseOnExit = true;
+  process.on("exit", () => {
+    for (const lock of heldLocks) lock.release();
+  });
+};
+
 const acquireLock = (configDir: string, create: boolean): OwnedLock => {
   if (create) {
     fs.mkdirSync(configDir, { recursive: true, mode: 0o700 });
@@ -353,7 +390,7 @@ const acquireLock = (configDir: string, create: boolean): OwnedLock => {
   } catch {
     throw lockGuidance(lockDir);
   }
-  return {
+  const lock: OwnedLock = {
     assertOwned,
     release: () => {
       const result = attempt(() => {
@@ -362,9 +399,13 @@ const acquireLock = (configDir: string, create: boolean): OwnedLock => {
         fs.rmdirSync(lockDir); // Never recursively delete unexpected or replaced lock contents.
       });
       open = false;
+      noteReleased(lock);
       return result;
     },
   };
+  heldLocks.add(lock);
+  releaseHeldLocksOnExit();
+  return lock;
 };
 
 const readIdentity = (paths: StorePaths): string | null => {

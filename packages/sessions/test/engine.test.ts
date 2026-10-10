@@ -140,6 +140,7 @@ import {
   serviceStartCorrelation,
   withoutAgentStarting,
   Reference,
+  noResumeLine,
 } from "@mend/domain/workbench";
 import {
   type HostUserNamespaces,
@@ -24298,6 +24299,36 @@ describe("an agent's first screen (alpha 2026-09-30)", () => {
     );
   });
 
+  it("refuses to resume a `mend run` command on its own harness, in words, starting nothing", async () => {
+    const created: Array<CreateOptions> = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "run",
+            label: null,
+            name: null,
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+          yield* engine.launch(session.id, ["make", "test"]);
+          yield* engine.stop(session.id);
+          const launches = created.length;
+
+          for (const harness of [null, "run"]) {
+            const refused = yield* engine.resumeSession(session.id, harness).pipe(Effect.flip);
+            expect(refused).toBeInstanceOf(SealantPlatformError);
+            expect(refused.message).toBe(noResumeLine("run"));
+          }
+          expect(created).toHaveLength(launches);
+        }),
+      { sealantLayer: lifecycleLayer(created) },
+    );
+  });
+
   it("the agent reads as starting until its record carries output, then its row says when it drew and the words go", async () => {
     const created: Array<CreateOptions> = [];
     const drew = "2026-09-30T17:15:41.000Z";
@@ -25186,7 +25217,8 @@ const personPlatform = (
               new SealantPlatformError({
                 code: "control_plane_unavailable",
                 status: 503,
-                message: "Core did not answer",
+                // A sentence, as Codex's own refusals are: the session line must not double its stop.
+                message: "Core did not answer.",
                 cause: null,
               }),
             )
@@ -32421,6 +32453,8 @@ describe("shared steering through the engine (docs/adr/0016, Delivery 18)", () =
     });
     expect(restart.outcome?.message).toContain("Core did not answer");
     expect(restart.summary).toContain("could not be started again");
+    // The cause's own full stop is not doubled (RC 0.36.0-next.754, B-F4: `Nothing was sent..`).
+    expect(restart.summary).toContain("could not be started again: Core did not answer. Resume");
     // No process takes the conversation's queue: what waited behind Maria's turn ends with the
     // stopped process, as at any stop.
     expect(restart.swept).toContain(restart.attached[0]?.process.id);

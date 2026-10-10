@@ -8,8 +8,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import {
-  AGENT_MEMORY_FILES,
-  AGENT_MEMORY_ROOTS,
+  agentMemoryPathOf,
   agentStartingFacts,
   type AgentStartingProcess,
   claudeGrantFacts,
@@ -133,6 +132,7 @@ import {
   readServerInstallationFacts,
   serverCommand,
 } from "./server-setup.ts";
+import { ServerStoreError, whenServerLockReleased } from "./server-store.ts";
 import {
   isComposeFile,
   proposeFromCompose,
@@ -2952,21 +2952,6 @@ interface AgentMemoryEntryDto {
 const kilobytes = (bytes: number) =>
   bytes < 1024 ? `${bytes} B` : `${(bytes / 1024).toFixed(1)} KB`;
 
-/**
- * A file named as `mend memory` lists it: `MEMORY.md` (Claude's), `codex:MEMORY.md` (another
- * harness's, by the harness column), `memories_1.sqlite` (a single memory file), or its full path.
- */
-const memoryPathOf = (name: string): string => {
-  if (name.startsWith(".")) return name;
-  const single = AGENT_MEMORY_FILES.find((file) => file.path.endsWith(`/${name}`));
-  if (single !== undefined) return single.path;
-  const qualified = /^([a-z]+):(.+)$/.exec(name);
-  const harness = qualified?.[1] ?? "claude";
-  const rest = qualified?.[2] ?? name;
-  const root = AGENT_MEMORY_ROOTS.find((candidate) => candidate.harness === harness)?.root;
-  return root === undefined ? name : `${root}/${rest}`;
-};
-
 const memoryImport = async (config: CliConfig, args: ReadonlyArray<string>) => {
   const repoRoot = cwdFacts(process.cwd()).repoRoot;
   if (repoRoot === null) return fail("run mend memory import inside the repository's checkout");
@@ -3029,7 +3014,7 @@ const memoryCommand = async (config: CliConfig, args: ReadonlyArray<string>) => 
       (arg, index) => !arg.startsWith("--") && rest[index - 1] !== "--project",
     );
     if (name === undefined) return fail(usageOf(`memory ${verb}`));
-    const query = `?path=${encodeURIComponent(memoryPathOf(name))}`;
+    const query = `?path=${encodeURIComponent(agentMemoryPathOf(name))}`;
     if (verb === "rm") {
       const removed = await api<{ readonly removed: boolean }>(
         config,
@@ -3656,7 +3641,12 @@ const uninstallCommand = async (config: CliConfig, args: ReadonlyArray<string>) 
       ),
     forgetSignIn: () => saveCliConfig({ ...config, token: null, deviceId: null }),
   };
-  const plan = await describeUninstall(runtime, scope);
+  // A busy server lock (another server command, or a stale lock) is a refusal in the store's words:
+  // what holds it and how to clear it, never a stack trace (RC 0.36.0-next.754, D-F2).
+  const plan = await describeUninstall(runtime, scope).catch((error: unknown) =>
+    error instanceof ServerStoreError ? error : Promise.reject(error),
+  );
+  if (plan instanceof ServerStoreError) return fail(plan.message);
   say(dim(`mend uninstall · ${scope === "all" ? "everything" : scope}`));
   for (const line of planLines(plan, server.configDir)) say(`  ${line}`);
   if (planIsEmpty(plan)) {
@@ -4490,6 +4480,8 @@ process.once("exit", restoreTerminal);
 
 /** The terminal this CLI wrote to went away: nothing it says is read any more. */
 let terminalGone = false;
+/** The pipe this CLI wrote to closed (`| head -1`): nothing it says is read any more. */
+let readerGone = false;
 /**
  * Set once a foreground session exists: its stop, which every way this CLI goes away still sends,
  * a closed terminal included.
@@ -4503,7 +4495,8 @@ const exitOnceStopped = async (stop: () => Promise<boolean>): Promise<never> =>
 /**
  * A reader that stops reading (`| head -1`, `| grep -q`) closes the pipe early, and the next write
  * fails with EPIPE. That is the reader's choice, not a failure of the command: every command exits
- * 0 at once, quietly, so a pipeline under `set -o pipefail` reads as the reader's own result.
+ * 0 quietly, so a pipeline under `set -o pipefail` reads as the reader's own result: at once, or,
+ * for a `mend server` command, once it has finished what it started and released its lock.
  * Recorded output (`mend run`, `mend logs`) says it itself and exits with the code it documents:
  * there the write reports the closed pipe.
  *
@@ -4515,15 +4508,20 @@ const exitOnceStopped = async (stop: () => Promise<boolean>): Promise<never> =>
 const onStreamError =
   (stream: NodeJS.WriteStream) =>
   (error: NodeJS.ErrnoException): void => {
+    // A write after the pipe closed fails again (EPIPE, or the stream is destroyed): already met.
+    if (readerGone) return;
     const closedTerminal =
       stream.isTTY === true && (error.code === "EIO" || error.code === "EPIPE");
     if (!closedTerminal && error.code !== "EPIPE") throw error;
     if (recordedOutput) return;
-    if (!closedTerminal) process.exit(0);
+    if (!closedTerminal) {
+      readerGone = true;
+      return whenServerLockReleased(() => process.exit(0));
+    }
     if (terminalGone) return;
     terminalGone = true;
     const stop = stopForegroundSession;
-    if (stop === null) process.exit(0);
+    if (stop === null) return whenServerLockReleased(() => process.exit(0));
     void exitOnceStopped(stop);
   };
 

@@ -158,6 +158,18 @@ export const noReviewFollowUpLine = (harness: string): string =>
   `This ${harness} session has no agent to send the review to. Start an agent in this worktree, then send it.`;
 
 /**
+ * Whether a session resumes on its own harness: an agent comes back with its conversation and a
+ * shell opens again, but a `mend run` command has nothing to resume (verify 2026-10-11). Such a
+ * session still opens as a shell, or as another harness, in its worktree.
+ */
+export const resumesOwnHarness = (harness: string): boolean =>
+  PROMPTABLE_HARNESSES.has(harness) || harness === "shell";
+
+/** What a resume on the session's own harness reads where it has none (`resumesOwnHarness`). */
+export const noResumeLine = (harness: string): string =>
+  `This ${harness} session has no agent to resume. Resume it as a shell, or start another session in its worktree.`;
+
+/**
  * opencode's permission switch, set at launch (`OPENCODE_PERMISSION`, JSON): `allow` is Mend's
  * stance as for every harness (the workspace is the sandbox), `ask` restores its prompts. Set in
  * the environment, so the user's own opencode config is never written.

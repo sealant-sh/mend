@@ -1,4 +1,4 @@
-import { launchPhaseOf, servicesHoldLine } from "@mend/domain/workbench";
+import { launchPhaseOf, resumesOwnHarness, servicesHoldLine } from "@mend/domain/workbench";
 
 import {
   hasPersonFacts,
@@ -451,12 +451,18 @@ export const deriveHarnesses = (
 ): ReadonlyArray<HarnessItem> => {
   if (resuming !== null) {
     const others = Object.keys(HARNESS_COMMANDS).filter((h) => h !== resuming.harness);
+    // A `mend run` command has no agent to resume: it comes back as a shell or another harness.
+    const same: ReadonlyArray<HarnessItem> = resumesOwnHarness(resuming.harness)
+      ? [
+          {
+            harness: null,
+            label: resuming.harness,
+            hint: "same harness · native resume, conversation intact",
+          },
+        ]
+      : [];
     return [
-      {
-        harness: null,
-        label: resuming.harness,
-        hint: "same harness · native resume, conversation intact",
-      },
+      ...same,
       ...others.map(
         (harness): HarnessItem => ({
           harness,

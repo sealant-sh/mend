@@ -172,6 +172,26 @@ export const agentMemoryNameOf = (
   return null;
 };
 
+/**
+ * The path of a memory file named as `mend memory` lists it: `MEMORY.md` (Claude's),
+ * `codex:MEMORY.md` (another harness's, by the harness column), `memories_1.sqlite` or
+ * `codex:memories_1.sqlite` (a single memory file), or its full path. `agentMemoryNameOf` inverted.
+ */
+export const agentMemoryPathOf = (name: string): string => {
+  if (name.startsWith(".")) return name;
+  const qualified = /^([a-z]+):(.+)$/.exec(name);
+  const harness = qualified?.[1] ?? null;
+  const rest = qualified?.[2] ?? name;
+  const single = AGENT_MEMORY_FILES.find(
+    (file) => (harness === null || file.harness === harness) && file.path.endsWith(`/${rest}`),
+  );
+  if (single !== undefined) return single.path;
+  const root = AGENT_MEMORY_ROOTS.find(
+    (candidate) => candidate.harness === (harness ?? "claude"),
+  )?.root;
+  return root === undefined ? name : `${root}/${rest}`;
+};
+
 /** A path Mend may store and write: under a memory root, relative, with no way out of it. */
 export const validateAgentMemoryPath = (filePath: string): string | null => {
   if (filePath.length === 0) return "a file path is required";

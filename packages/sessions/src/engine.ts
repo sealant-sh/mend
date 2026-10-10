@@ -182,6 +182,8 @@ import {
   PreReleaseMemory,
   WorkspaceRetirement,
   WorkspaceRetirementStop,
+  noResumeLine,
+  resumesOwnHarness,
 } from "@mend/domain/workbench";
 import {
   asSealantUser,
@@ -17833,7 +17835,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                         // Said on the session line, not only in a log (review 2, P3-2).
                         yield* noteLaunchWords(
                           session.id,
-                          `stopped · ${nameOf(sender)}'s turn could not start (${words}), and ${nameOf(previous)}'s agent could not be started again: ${causeWords(cause)}. Resume the session to continue.`,
+                          `stopped · ${nameOf(sender)}'s turn could not start (${words}), and ${nameOf(previous)}'s agent could not be started again: ${causeWords(cause).replace(/\.+$/, "")}. Resume the session to continue.`,
                         ).pipe(Effect.ignore);
                         yield* Effect.logWarning(
                           "session engine: the conversation could not be started again after a failed hand-over",
@@ -19318,6 +19320,18 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const session = yield* sessions.byId(sessionId);
         if (isLegacyBench(session)) {
           return yield* new LegacyBenchReadOnlyError({ sessionId });
+        }
+        // A `mend run` command has no agent to come back: it resumes as a shell or another harness.
+        if (
+          (harness ?? session.harness) === session.harness &&
+          !resumesOwnHarness(session.harness)
+        ) {
+          return yield* new SealantPlatformError({
+            code: "unknown_harness",
+            status: null,
+            message: noResumeLine(session.harness),
+            cause: null,
+          });
         }
         // A settled session resumes with no run of it open: one left `running` when it settled
         // takes the session's words now, before the launch below records the next one.

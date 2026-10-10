@@ -1,5 +1,6 @@
 import {
   canRelaunchSession,
+  resumesOwnHarness,
   type Viewer,
   type WorktreeRemovalRefusal,
 } from "@mend/domain/workbench";
@@ -133,7 +134,10 @@ export const sessionMenu = (
   const actions = sessionActions(session, viewer);
   const { own, stop } = actions;
   // A resume that opens a terminal is the owner's alone, even while shared (docs/adr/0013).
-  const resumes = canRelaunchSession(actions, annotation?.currentAgent?.kind ?? null);
+  // A `mend run` command has no agent to resume on its own harness: the session page offers others.
+  const resumes =
+    resumesOwnHarness(session.harness) &&
+    canRelaunchSession(actions, annotation?.currentAgent?.kind ?? null);
   const entries: ContextMenuEntry[] = [
     {
       label: "Open session",

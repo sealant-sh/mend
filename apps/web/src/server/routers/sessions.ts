@@ -1,6 +1,7 @@
 import {
   CheckpointRequest,
   DeliverFollowUpRequest,
+  DiscardUnsavedRequest,
   EndBackgroundWorkRequest,
   LaunchRequest,
   NewWorkbenchSession,
@@ -67,7 +68,7 @@ export const sessionsRouter = router({
     run(ctx, (api) =>
       api.sessions.discardUnsaved({
         params: { id: i.id },
-        payload: { confirm: "discard unsaved" },
+        payload: new DiscardUnsavedRequest({ confirm: "discard unsaved" }),
       }),
     ),
   ),

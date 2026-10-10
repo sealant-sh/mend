@@ -236,8 +236,11 @@ else if (args.includes("image")) {
   const sized = (id) => (args.some((arg) => arg.includes("{{.Size}}")) ? `${id}\t100000000` : id);
   if (image === "postgres:17-alpine") out(sized("sha256:postgres"));
   else if (image === "dxflrs/garage:v2.4.1") out(sized("sha256:garage"));
-  else if (image === "caddy:2.10-alpine") out(sized("sha256:caddy"));
-  else if (image.startsWith("nginx:") || image.startsWith("registry:"))
+  // Present unless the test says the edge's image was never pulled here.
+  else if (image === "caddy:2.10-alpine") {
+    if (state.edgeImage === false) fail();
+    out(sized("sha256:caddy"));
+  } else if (image.startsWith("nginx:") || image.startsWith("registry:"))
     out(sized(`sha256:${image}`));
   else {
     const version = image.split(":").at(-1);

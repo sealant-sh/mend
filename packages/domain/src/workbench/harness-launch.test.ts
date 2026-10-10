@@ -6,6 +6,7 @@ import {
   ProtocolHarnessUnsupportedError,
   composeLaunchArgv,
   composeProtocolArgv,
+  resumesOwnHarness,
   takesReviewFollowUp,
 } from "./harness-launch.ts";
 
@@ -226,5 +227,12 @@ describe("takesReviewFollowUp", () => {
     ]);
     expect(takesReviewFollowUp("run")).toBe(false);
     expect(takesReviewFollowUp("shell")).toBe(false);
+  });
+});
+
+describe("resumesOwnHarness", () => {
+  it("resumes an agent or a shell, never a `mend run` command (verify 2026-10-11)", () => {
+    expect(["claude", "codex", "opencode", "pi", "shell"].every(resumesOwnHarness)).toBe(true);
+    expect(resumesOwnHarness("run")).toBe(false);
   });
 });

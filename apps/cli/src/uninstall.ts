@@ -21,7 +21,7 @@ import {
   secondaryVolumesOf,
   serverVolumeOwner,
 } from "./server-docker-volumes.ts";
-import { composeOverlays, T3_GATEWAY_VOLUME } from "./server-edge.ts";
+import { composeOverlays, EDGE_IMAGE, T3_GATEWAY_VOLUME } from "./server-edge.ts";
 import { mirrorServices } from "./server-mirrors.ts";
 import {
   serverComposeArgs,
@@ -801,6 +801,8 @@ export const describeUninstall = async (
             ...(composed.status === 0 ? composed.stdout.split(/\s+/) : []),
             ...(guard.status === 0 ? [guard.stdout.trim()] : []),
             DOCKER_SERVICE_IMAGE,
+            // The edge's image stays after `--no-edge`, when the overlay no longer names it.
+            EDGE_IMAGE,
             ...holdings.images,
           ].filter((image) => IMAGE_REFERENCE.test(image) && image !== mendImage);
           const found = await findImages(run, context, [...new Set(candidates)]);

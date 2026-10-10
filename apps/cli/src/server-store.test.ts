@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
   ServerRefusal,
+  whenServerLockReleased,
   withServerStore,
   type ServerFiles,
   type ServerGeneration,
@@ -440,6 +441,40 @@ describe("setup across processes", spawnsChildren, () => {
     expect((await launch([root]).done).code).toBe(0);
     expect(identityAt(root)).toBe(identity);
     expect(activeDirectory(root)).toBe(generation);
+  });
+
+  it("releases its lock when the process exits while holding it", async () => {
+    const root = temporary();
+    expect((await launch([root, "exit-under-lock"]).done).code).toBe(0);
+    expect(fs.existsSync(path.join(root, "server.lock"))).toBe(false);
+  });
+
+  it("finishes and releases its lock when its reader goes away, then exits 0", async () => {
+    // `mend server status | head` left a stale lock that refused every later server command
+    // (RC 0.36.0-next.754, D-F1): the EPIPE handler exited before the lock was released.
+    const root = temporary();
+    const rendezvous = temporary();
+    const reader = launch([root, "reader-gone-under-lock", rendezvous]);
+    await waitFor(path.join(rendezvous, "reader"));
+    reader.child.stdout?.destroy();
+    fs.writeFileSync(path.join(rendezvous, "release-reader"), "go");
+    const done = await reader.done;
+    expect(done.code).toBe(0);
+    expect(fs.existsSync(path.join(rendezvous, "finished"))).toBe(true);
+    expect(fs.existsSync(path.join(root, "server.lock"))).toBe(false);
+  });
+});
+
+describe("whenServerLockReleased", () => {
+  it("runs at once with no lock held, and after the release with one", async () => {
+    const order: Array<string> = [];
+    whenServerLockReleased(() => order.push("no lock"));
+    const result = await withServerStore(temporary(), async () => {
+      whenServerLockReleased(() => order.push("released"));
+      order.push("operation done");
+    });
+    expect(result._tag).toBe("ok");
+    expect(order).toEqual(["no lock", "operation done", "released"]);
   });
 });
 
