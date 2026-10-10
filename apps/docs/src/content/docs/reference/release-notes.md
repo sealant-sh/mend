@@ -15,8 +15,8 @@ Not released yet. Previews (`0.36.0-next.<n>`) carry what is below; see
 
 Upgrading a server from 0.35.1: read [Upgrade to 0.36](/operate/upgrade-to-0-36/) first. Two things
 need doing before the upgrade: copy out any old upgrade backup you want kept, since the upgrade now
-prunes them, and plan to rotate credentials Mend passed to Sealant before 0.36. The bundled Sealant
-is 0.39, and the desktop app is not part of this release.
+prunes them, and rotate any token that was in an adopted repository URL. The bundled Sealant is
+0.39. The desktop app and the native phone app are not published with this release.
 
 ### Server setup and operation
 
@@ -71,9 +71,9 @@ is 0.39, and the desktop app is not part of this release.
 ### Credentials
 
 - Secret files, the pi profile, memory, skills and pasted images reach a workspace through a
-  single-use pickup ticket, no longer through Sealant's exec arguments, which Sealant stored. The
-  upgrade purges the stored ones; rotate what was sent before
-  ([Upgrade to 0.36](/operate/upgrade-to-0-36/#rotate-credentials-that-went-through-sealants-exec-arguments)).
+  single-use pickup ticket, not through Sealant's exec arguments. The bundled Sealant stores no
+  process arguments and purges the ones it stored. If you ran a 0.36 prerelease, see
+  [what to rotate](/operate/upgrade-to-0-36/#if-the-server-ran-a-036-prerelease).
 - No saved harness state keeps a login or token another person's session could pick up. The list is
   in [How Mend handles your logins](/concepts/provider-logins/).
 

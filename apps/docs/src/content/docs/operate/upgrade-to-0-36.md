@@ -9,7 +9,7 @@ sidebar:
 
 This page is for an operator moving a server from 0.35.1 to 0.36. What 0.36 changes for everyone is
 in the [release notes](/reference/release-notes/#036). Read the whole list before you upgrade: two
-items (old backups, and credentials Mend sent to Sealant before 0.36) need action beforehand.
+items need action beforehand (old backups, and tokens in adopted repository URLs).
 
 ## The upgrade itself
 
@@ -57,18 +57,25 @@ that failed after its target started. Copy any you want out of `~/.config/mend/b
 run that upgrade with `--keep-backups 0`. Their removals end in
 `· from before 0.36, no recorded outcome`.
 
-### Rotate credentials that went through Sealant's exec arguments
+### Rotate tokens that were in repository URLs
 
-Before 0.36, Mend placed secret files, the pi profile, agent memory, skills and pasted images in a
-workspace through Sealant's exec arguments, which Sealant stored in plaintext. 0.36 sends a
-single-use pickup ticket instead, and the upgrade's purge removes the stored arguments. Treat what
-was sent before as exposed and rotate it:
+Before 0.36, a repository URL adopted with a login or token in it (`https://oauth2:TOKEN@…`) was
+stored as typed and returned to everyone who could see the project: on a shared project, the whole
+organization. The upgrade removes the credential from stored URLs (migration 0126), but treat every
+such token as exposed and rotate it. Note which projects rely on one before you upgrade: they need a
+new origin afterwards ([below](#credentials-in-repository-urls-are-removed)). An upgrade backup
+taken before 0.36 still holds the old URLs.
 
-- every credential kept as a [secret file](/guides/secret-files/);
-- every key in a pi profile's `mcp.json`;
-- any secret written into agent memory (memory imported from people's machines often holds
-  hostnames, account IDs and tokens);
-- every token in an adopted origin URL, and every one added to a session with `mend repo add`.
+### If the server ran a 0.36 prerelease
+
+Secret files, pi profiles, agent memory and `mend repo add` are new in 0.36. Prereleases before the
+pickup tickets passed them to Sealant as exec arguments, which Sealant stored in plaintext. The
+bundled Sealant purges stored arguments when it upgrades; a database backup taken before then still
+holds them. If people used such a prerelease, rotate every credential kept as a
+[secret file](/guides/secret-files/), every key in a pi profile's `mcp.json`, any secret written
+into agent memory, and every token in an origin added to a session with `mend repo add`. A server
+going straight from 0.35.1 needs none of this: 0.35.1 passed only skills, pasted images and the
+shell profile that way.
 
 ### Check your Docker host and images
 
