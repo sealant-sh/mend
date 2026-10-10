@@ -50,19 +50,25 @@ a hang-up, then SIGKILL two seconds later), killed, or failed.
   generation only if the daemon's owner still carries its claim id, the state file before the owner
   and the owner last. A start that ends holding no claim stops its watchdog. A reply the watchdog
   cannot deliver (the supervisor is gone) is logged, never fatal.
-- **A teardown removes what the stack's provenance names, and nothing else.** The inner server
-  carries the product's names, which `mend server setup` fixes (Compose project `mend`, volumes
-  `mend-store`, `mend-control`, `mend-garage`), so a name proves nothing. A teardown, `down --force`
-  included, removes the stack's own containers and volumes (its label and its `verify-stack-`
-  prefix, both); the inner server's containers (Compose project `mend` whose working directory is
-  inside the stack's `verify-stack-state` volume, where the inner setup wrote its generation); the
-  volumes the inner setup claimed (labelled with the hash of the inner install's `identity.env`,
-  hashed inside a container so its bytes never leave the volume); the inner sessions' containers on
-  those networks or volumes, and their Docker sidecars; and the volumes and networks (never Docker's
-  own) all of those use. On a daemon with no `verify-stack-state` volume of the stack's, that is the
-  stack's own resources only: a Mend server of the machine's own is never touched. Every container
-  the stack runs for a moment (the inner CLI, a probe, a copy) is named and labelled too, so one a
-  killed command left behind is found.
+- **A teardown removes what the stack recorded making, and nothing it would have to infer.** The
+  inner server carries the product's names, which `mend server setup` fixes (Compose project `mend`,
+  volumes `mend-store`, `mend-control`, `mend-garage`), so no name, label, path or shared network
+  proves whose a resource is. Instead the stack keeps a ledger. Each recording window (`up` from its
+  state volume through setup, the relay, the fixture and the check; every `mend` and `check`)
+  snapshots the daemon before it starts. While it runs, it writes what has appeared since, by
+  identity: container and network ids, and volumes by name and creation time (a volume has no id).
+  It writes every two seconds and once more when it ends, to a file of its own under
+  `<cache>/ledger/` (0700, files 0600). `up` copies the ledger into the state volume, for a `down`
+  run from another cache directory. A teardown, the watchdog's, a failed start's and `down`'s alike,
+  removes the ledger's entries whose identity still matches exactly, plus the stack's own
+  infrastructure (its label and its `verify-stack-` prefix, both). Nothing is followed from there. A
+  recorded volume whose creation time changed is another volume: it is left alone and reported.
+  Anything else that looks like the stack's (Compose project `mend`, the product's volume names, an
+  inner session's names, the label or the prefix alone) is reported with the commands that remove it
+  by hand, and left alone. With no ledger, `down --force` removes the stack's own infrastructure
+  only. When a removal fails, the ledger and the state volume stay, so the next teardown tries
+  again. Every container the stack runs for a moment (the inner CLI, a probe, a copy) carries both
+  the label and the prefix, so one that a killed command left behind is found.
 - **A watchdog retries; it never assumes.** A lookup or teardown that fails is retried every 30 s at
   most, indefinitely: a daemon that does not answer cannot show that the stack is gone.
 
@@ -232,10 +238,21 @@ Docker service capped at 12 CPUs; Core and sealantd at main, Mend at this branch
   `down` or a watchdog's teardown may run first. Each removes only a generation whose claim it holds
   or, for `down`, whatever stack the daemon holds; the failed start then finds its generation gone
   and stops.
-- A teardown that fails part way (a volume still in use) is retried. The stack's state volume goes
-  last, so a retry still has its provenance; a Compose volume of the inner server whose containers
-  were already removed has none left, and stays (`docker volume ls`, `mend_…`) until removed by
-  hand.
+- Run the stack on a daemon of its own: a session's own Docker service is its intended home. A
+  recording window attributes to the stack whatever appears on the daemon while it runs. On a daemon
+  that something else uses at the same time, what that creates during a window is recorded as the
+  stack's and removed with it.
+- A window cut short by a kill (`serve` stopped during setup, say) has recorded all but its last two
+  seconds. The teardown removes what was recorded and says the recording was cut short. What it
+  missed is left: product-named leftovers, listed with the commands that remove them by hand. It
+  never guesses.
+- An inner session started from the inner web while no window is open is not in the ledger. If it
+  still runs at teardown, its containers are reported, not removed. Stop it in the inner web first,
+  or remove it with the printed commands. A session's whole Docker service goes with its workspace
+  anyway.
+- Someone with access to the daemon who deliberately gives a container or volume both the stack's
+  label and its `verify-stack-` prefix makes it the stack's own infrastructure, and a teardown
+  removes it.
 
 - One stack per Docker daemon: the inner server uses the product's own names (Compose project
   `mend`, volumes `mend-store`, `mend-control`, `mend-garage`), which `mend server setup` does not

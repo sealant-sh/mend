@@ -51,10 +51,15 @@ after(() => {
  * A volume as `docker volume inspect` shows it. A name alone is one the stack made, labelled as it
  * labels its own; anything else passes `labels`.
  */
-const volume = (name, labels = name.startsWith("verify-stack-") ? { [STACK_LABEL]: "1" } : {}) => ({
+const volume = (
+  name,
+  labels = name.startsWith("verify-stack-") ? { [STACK_LABEL]: "1" } : {},
+  createdAt = "2026-10-10T00:00:00Z",
+) => ({
   Name: name,
   Labels: labels,
   Mountpoint: `/fake/volumes/${name}/_data`,
+  CreatedAt: createdAt,
 });
 const asVolume = (item) => (typeof item === "string" ? volume(item) : item);
 /** A container as `docker inspect` shows it; `rest` adds its mounts and networks. */
@@ -66,14 +71,13 @@ const container = (id, name, labels, rest = {}) => ({
 });
 
 /**
- * A fake daemon holding `containers` (`[name, labels, rest]`), `volumes` (names or `volume(…)`),
- * `networks` and the inner install's `identity` hash, and a `docker` on PATH that speaks to it.
+ * A fake daemon holding `containers` (`[name, labels, rest]`), `volumes` (names or `volume(…)`)
+ * and `networks` (`{ Id, Name }`), and a `docker` on PATH that speaks to it.
  */
 function daemon({
   containers = [],
   volumes = [],
   networks = [],
-  identity = null,
   failLookups = 0,
   createDelayMs = 0,
   build = "fail",
@@ -90,7 +94,6 @@ function daemon({
       ),
       volumes: volumes.map(asVolume),
       networks,
-      identity,
     }),
   );
   const file = (name) => join(root, name);
@@ -110,6 +113,8 @@ function daemon({
       `export FAKE_DOCKER_PAUSE_LIST='${file("pause-list")}'`,
       `export FAKE_DOCKER_PAUSE_RM='${file("pause-rm")}'`,
       `export FAKE_DOCKER_PAUSE_PULL='${file("pause-pull")}'`,
+      `export FAKE_DOCKER_RUN='${file("run")}'`,
+      `export FAKE_DOCKER_PAUSE_RUN='${file("pause-run")}'`,
       `export FAKE_DOCKER_BUILD='${build}'`,
       `exec '${process.execPath}' '${fake}' "$@"`,
       "",
@@ -412,15 +417,11 @@ test("report reads the stack and writes nothing", async () => {
   assert.equal(readFileSync(stateFile, "utf8"), written);
 });
 
-// ─── round 5: what a teardown may remove, the private lock, what carries it ──
+// ─── what a teardown may remove: the ledger; the private lock; what carries it ─
 
-const INSTALLATION = "dev.sealant.mend.installation";
 const COMPOSE = "com.docker.compose.project";
 const WORKING_DIR = "com.docker.compose.project.working_dir";
 const STATE_MOUNT = `/fake/volumes/${STATE_VOLUME}/_data`;
-/** The sha256 of an install's identity.env, as setup labels its volumes with. */
-const INNER_INSTALL = "a".repeat(64);
-const PRODUCT_INSTALL = "b".repeat(64);
 const on = (...networks) => ({
   NetworkSettings: {
     Networks: Object.fromEntries(networks.map(([name, id]) => [name, { NetworkID: id }])),
@@ -440,12 +441,40 @@ const product = {
     ["sealant-0a1b2c", {}, { ...mounts("mend-control"), ...on(["bridge", "net-bridge"]) }],
   ],
   volumes: [
-    volume("mend-store", { [INSTALLATION]: PRODUCT_INSTALL }),
-    volume("mend-control", { [INSTALLATION]: PRODUCT_INSTALL }),
+    volume("mend-store"),
+    volume("mend-control"),
     volume("mend-garage"),
     volume("mend_mend-postgres", { [COMPOSE]: "mend" }),
   ],
   networks: [{ Name: "mend_default", Id: "net-product" }],
+};
+const productNames = names({
+  containers: product.containers.map(([name]) => ({ Name: `/${name}` })),
+});
+/** Write a recording window's ledger file into the stack's cache, as `recording` does. */
+function ledger(fakeDaemon, entries, { closed = true } = {}) {
+  const dir = join(fakeDaemon.env.MEND_VERIFY_STACK_CACHE, "ledger");
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  writeFileSync(
+    join(dir, "window.json"),
+    JSON.stringify({
+      window: "window",
+      startedAt: "2026-10-10T00:00:00Z",
+      closed,
+      containers: [],
+      networks: [],
+      volumes: [],
+      ...entries,
+    }),
+  );
+}
+const ledgerWindows = (fakeDaemon) => {
+  const dir = join(fakeDaemon.env.MEND_VERIFY_STACK_CACHE, "ledger");
+  return existsSync(dir)
+    ? readdirSync(dir)
+        .filter((name) => name.endsWith(".json"))
+        .map((name) => JSON.parse(readFileSync(join(dir, name), "utf8")))
+    : [];
 };
 
 test("down --force on a daemon with no stack of its own removes nothing of a product server (N13)", async () => {
@@ -458,79 +487,176 @@ test("down --force on a daemon with no stack of its own removes nothing of a pro
   assert.deepEqual(names(left), names(before));
   assert.deepEqual(volumeNames(left), volumeNames(before));
   assert.deepEqual(left.networks, before.networks);
+  // Reported, with how to remove them by hand, and never touched.
+  assert.match(sweep.output(), /left alone, not recorded as the stack's: .*container mend-mend-1/);
+  assert.match(sweep.output(), /docker volume rm .*mend-store/);
 });
 
-test("down --force beside a product server removes the stack's leftover state, nothing of the product's (N13)", async () => {
+test("down --force with no ledger removes only the stack's own infrastructure (N13)", async () => {
   const fakeDaemon = daemon({
     ...product,
-    identity: INNER_INSTALL,
+    containers: [...product.containers, ["verify-stack-relay", { [STACK_LABEL]: "1" }]],
     volumes: [...product.volumes, STATE_VOLUME],
   });
   const sweep = fakeDaemon.run(["down", "--force"]);
   assert.equal(await sweep.done, 0, sweep.output());
   const left = fakeDaemon.read();
-  assert.deepEqual(
-    names(left),
-    names({ containers: product.containers.map(([name]) => ({ Name: `/${name}` })) }),
-  );
+  assert.deepEqual(names(left), productNames);
   assert.deepEqual(volumeNames(left), volumeNames(product));
   assert.deepEqual(left.networks, product.networks);
 });
 
-test("a teardown removes its generation by provenance, and only it (N13)", async () => {
-  const inner = {
-    [COMPOSE]: "mend",
-    [WORKING_DIR]: `${STATE_MOUNT}/server/.config/mend/generations/1`,
-  };
+test("a Compose path under the state volume's Mountpoint proves nothing (N13a)", async () => {
+  // A Compose client with a file system of its own wrote its file under the same path.
   const fakeDaemon = daemon({
-    identity: INNER_INSTALL,
+    containers: [
+      [
+        "product-real-compose",
+        { [COMPOSE]: "mend", [WORKING_DIR]: `${STATE_MOUNT}/product-generation` },
+        mounts("product-real-compose-data"),
+      ],
+      [
+        "product-traversal",
+        { [COMPOSE]: "mend", [WORKING_DIR]: `${STATE_MOUNT}/../../product/generation` },
+        mounts("product-traversal-data"),
+      ],
+    ],
+    volumes: [STATE_VOLUME, "product-real-compose-data", "product-traversal-data"],
+  });
+  const sweep = fakeDaemon.run(["down", "--force"]);
+  assert.equal(await sweep.done, 0, sweep.output());
+  const left = fakeDaemon.read();
+  assert.deepEqual(names(left), ["product-real-compose", "product-traversal"]);
+  assert.deepEqual(volumeNames(left), ["product-real-compose-data", "product-traversal-data"]);
+});
+
+test("a shared network pulls nothing in: not a product executor, its network or its data (N13b)", async () => {
+  const shared = ["shared-product-network", "net-shared"];
+  const fakeDaemon = daemon({
+    containers: [
+      ["verify-stack-relay", { [STACK_LABEL]: "1" }, on(shared)],
+      [
+        "sealant-22222222-2222-2222-2222-222222222222",
+        {},
+        { ...mounts("external-executor-data"), ...on(shared, ["product-network", "net-product"]) },
+      ],
+      ["product-unrelated", {}, on(["product-network", "net-product"])],
+    ],
+    volumes: ["external-executor-data", "product-shared-data"],
+    networks: [
+      { Name: "shared-product-network", Id: "net-shared" },
+      { Name: "product-network", Id: "net-product" },
+    ],
+  });
+  const sweep = fakeDaemon.run(["down", "--force"]);
+  assert.equal(await sweep.done, 0, sweep.output());
+  const left = fakeDaemon.read();
+  assert.deepEqual(names(left), [
+    "product-unrelated",
+    "sealant-22222222-2222-2222-2222-222222222222",
+  ]);
+  assert.deepEqual(volumeNames(left), ["external-executor-data", "product-shared-data"]);
+  assert.deepEqual(
+    left.networks.map((network) => network.Name),
+    ["shared-product-network", "product-network"],
+  );
+});
+
+test("a teardown removes the ledger's entries whose identity still matches, and nothing else (N13)", async () => {
+  const fakeDaemon = daemon({
     containers: [
       ...generation("a"),
-      [
-        "mend-mend-1",
-        inner,
-        { ...mounts("mend-store", "mend_mend-postgres"), ...on(["mend_default", "net-inner"]) },
-      ],
-      ["mend-sealant-1", inner, on(["mend_default", "net-inner"])],
-      // An inner session: on the inner network, with its Docker sidecar on its own.
-      [
-        "sealant-5e55",
-        {},
-        {
-          ...mounts("mend-control"),
-          ...on(["mend_default", "net-inner"], ["sealant-5e55-network", "net-session"]),
-        },
-      ],
-      ["sealant-5e55-docker", {}, on(["sealant-5e55-network", "net-session"])],
-      // Not the stack's: a container of the product's name, and one with the stack's name only.
-      ["sealant-0a1b2c", {}, on(["bridge", "net-bridge"])],
-      ["verify-stack-impostor", {}],
+      ["mend-mend-1", { [COMPOSE]: "mend" }, on(["mend_default", "net-inner"])],
+      ["sealant-5e55", {}, mounts("mend-control")],
+      // On the inner network, never recorded: a container someone else attached.
+      ["attached-later", {}, on(["mend_default", "net-inner"])],
     ],
     volumes: [
       STATE_VOLUME,
-      volume("mend-store", { [INSTALLATION]: INNER_INSTALL }),
-      volume("mend-control", { [INSTALLATION]: INNER_INSTALL }),
-      // Claimed by the inner setup, mounted by nothing yet.
-      volume("mend-garage", { [INSTALLATION]: INNER_INSTALL }),
-      volume("mend_mend-postgres", { [COMPOSE]: "mend" }),
-      volume("someone-else", { [COMPOSE]: "mend" }),
-      volume("verify-stack-unlabelled", {}),
+      volume("mend-store", {}, "2026-10-10T01:00:00Z"),
+      volume("mend-control", {}, "2026-10-10T01:00:01Z"),
+      // Recorded once, since removed and made again: another volume.
+      volume("mend-garage", {}, "2026-10-10T03:00:00Z"),
+      "unrecorded-data",
     ],
-    networks: [
-      { Name: "mend_default", Id: "net-inner" },
-      { Name: "sealant-5e55-network", Id: "net-session" },
-      { Name: "bridge", Id: "net-bridge" },
+    networks: [{ Name: "mend_default", Id: "net-inner" }],
+  });
+  const ids = Object.fromEntries(
+    fakeDaemon.read().containers.map((item) => [item.Name.slice(1), item.Id]),
+  );
+  ledger(fakeDaemon, {
+    containers: [ids["mend-mend-1"], ids["sealant-5e55"], "0".repeat(64)],
+    networks: ["net-inner"],
+    volumes: [
+      { name: "mend-store", createdAt: "2026-10-10T01:00:00Z" },
+      { name: "mend-control", createdAt: "2026-10-10T01:00:01Z" },
+      { name: "mend-garage", createdAt: "2026-10-10T01:00:02Z" },
     ],
   });
   const down = fakeDaemon.run(["down"]);
   assert.equal(await down.done, 0, down.output());
   const left = fakeDaemon.read();
-  assert.deepEqual(names(left), ["sealant-0a1b2c", "verify-stack-impostor"]);
-  assert.deepEqual(volumeNames(left), ["someone-else", "verify-stack-unlabelled"]);
-  assert.deepEqual(
-    left.networks.map((network) => network.Name),
-    ["bridge"],
+  assert.deepEqual(names(left), ["attached-later"]);
+  assert.deepEqual(volumeNames(left), ["mend-garage", "unrecorded-data"]);
+  assert.match(down.output(), /volume mend-garage was made again after the stack recorded it/);
+  assert.deepEqual(ledgerWindows(fakeDaemon), [], "the ledger goes with the stack");
+});
+
+test("an inner session made while `mend` runs is recorded, and a teardown removes it", async () => {
+  const fakeDaemon = daemon({
+    containers: generation("a"),
+    volumes: [STATE_VOLUME, ...product.volumes.slice(2)],
+  });
+  const cache = fakeDaemon.env.MEND_VERIFY_STACK_CACHE;
+  mkdirSync(cache, { recursive: true });
+  writeFileSync(join(cache, "stack.json"), JSON.stringify({ images: { cli: "c" } }));
+  writeFileSync(
+    fakeDaemon.file("run"),
+    JSON.stringify({
+      containers: ["sealant-5e55", "sealant-5e55-docker"],
+      volumes: ["sealant-5e55-home"],
+      networks: ["sealant-5e55-network"],
+    }),
   );
+  const inner = fakeDaemon.run(["mend", "run", "--", "true"]);
+  assert.equal(await inner.done, 0, inner.output());
+  const [window] = ledgerWindows(fakeDaemon);
+  assert.equal(window.closed, true);
+  assert.equal(window.containers.length, 2);
+  assert.deepEqual(
+    window.volumes.map((item) => item.name),
+    ["sealant-5e55-home"],
+  );
+  assert.equal(window.networks.length, 1);
+  const down = fakeDaemon.run(["down"]);
+  assert.equal(await down.done, 0, down.output());
+  const left = fakeDaemon.read();
+  assert.deepEqual(names(left), []);
+  // What was there before the window, unrecorded and not the stack's own, stays.
+  assert.deepEqual(volumeNames(left), volumeNames({ volumes: product.volumes.slice(2) }));
+  assert.deepEqual(left.networks, []);
+});
+
+test("a recording cut short by a kill keeps what it saw, and says so", async () => {
+  const fakeDaemon = daemon({ containers: generation("a"), volumes: [STATE_VOLUME] });
+  const cache = fakeDaemon.env.MEND_VERIFY_STACK_CACHE;
+  mkdirSync(cache, { recursive: true });
+  writeFileSync(join(cache, "stack.json"), JSON.stringify({ images: { cli: "c" } }));
+  writeFileSync(fakeDaemon.file("run"), JSON.stringify({ containers: ["sealant-5e55"] }));
+  writeFileSync(fakeDaemon.file("pause-run"), "1");
+  const inner = fakeDaemon.run(["mend", "run", "--", "sleep", "60"]);
+  await until("the session to be recorded", () =>
+    ledgerWindows(fakeDaemon).some((window) => window.containers.length === 1),
+  );
+  inner.child.kill("SIGKILL");
+  // The inner CLI's run holds the killed process's output open until it ends.
+  rmSync(fakeDaemon.file("pause-run"));
+  await inner.done;
+  assert.equal(ledgerWindows(fakeDaemon)[0].closed, false);
+  const down = fakeDaemon.run(["down"]);
+  assert.equal(await down.done, 0, down.output());
+  assert.deepEqual(names(fakeDaemon.read()), []);
+  assert.match(down.output(), /was cut short/);
 });
 
 test("the lock lives in a private directory of the caller's, in a file only they can open (N14)", async () => {

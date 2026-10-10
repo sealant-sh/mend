@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // A `docker` for lifecycle.e2e.test.mjs: containers, volumes and networks in a JSON file
 // ($FAKE_DOCKER_STATE), for the commands the stack's claim, preflight, removal and watchdog send.
-// Containers are kept as `docker inspect` shows them (labels, mounts, networks); volumes as `docker
-// volume inspect` does; `identity` is the hash a `run` over the state volume's identity.env prints.
+// Containers, volumes and networks are kept as `docker inspect` shows them; `files` holds what a
+// `run` wrote into the state volume (the ledger's copy).
 // Every call is appended to `<state>.calls`, and to `<state>.locks` with whether it inherited the
 // stack's lock descriptor (FAKE_DOCKER_LOCK, set by the wrapper from fd 9).
 // Faults and pauses, each named by an environment variable:
@@ -15,6 +15,9 @@
 // - FAKE_DOCKER_PAUSE_RM (a file holding a container or volume name): while the file exists, an
 //   `rm` or `volume rm` of that name writes `<file>.paused` and waits, before it removes anything;
 // - FAKE_DOCKER_PAUSE_PULL (a file): while it exists, a `pull` writes `<file>.paused` and waits;
+// - FAKE_DOCKER_RUN (a file holding `{ containers, volumes, networks }` of names): a `run` of the
+//   inner CLI makes them, as an inner session would; then, while FAKE_DOCKER_PAUSE_RUN (a file)
+//   exists, it writes `<file>.paused` and waits;
 // - FAKE_DOCKER_BUILD: `hang` makes `build` wait a minute; otherwise `build` fails at once.
 import { appendFileSync, mkdirSync, readFileSync, rmdirSync, writeFileSync } from "node:fs";
 
@@ -99,14 +102,50 @@ if (verb === "pull" && pausePull && exists(pausePull)) {
   writeFileSync(`${pausePull}.paused`, "1");
   await waitFor(() => !exists(pausePull));
 }
-const networkName = (network) => (typeof network === "string" ? network : network.Name);
 const volumeNamed = (name) => (volume) => volume.Name === name;
+/** `--format` of a Go template naming fields only (`{{.Name}}\t{{.CreatedAt}}`), per item. */
+const render = (template, item) =>
+  template
+    .replaceAll("\\t", "\t")
+    .replace(/\{\{\.(\w+)\}\}/g, (_, field) => String(item[field] ?? ""));
+const formatOf = () => (args.includes("--format") ? args[args.indexOf("--format") + 1] : null);
+const newId = (state, fill) => `${String(state.next++).padStart(4, "0")}${fill.repeat(60)}`;
 
 if (verb === "version") console.log("27.5.1");
 else if (verb === "pull") console.log(args.at(-1));
-else if (verb === "run" && args.some((arg) => arg.includes("identity.env"))) {
-  const identity = await locked((state) => state.identity);
-  if (identity) console.log(`${identity}  /state/server/.config/mend/identity.env`);
+else if (verb === "run" && args.some((arg) => arg.includes("umask 077"))) {
+  const chunks = [];
+  for await (const chunk of process.stdin) chunks.push(chunk);
+  await locked((state) => {
+    state.files = { ...state.files, [args.at(-1)]: Buffer.concat(chunks).toString() };
+  });
+} else if (verb === "run" && args.some((arg) => arg.includes("/state/ledger.json"))) {
+  const files = await locked((state) => state.files ?? {});
+  const copy = Object.entries(files).find(([path]) => path.endsWith("/ledger.json"));
+  if (copy) process.stdout.write(copy[1]);
+} else if (verb === "run") {
+  const script = process.env.FAKE_DOCKER_RUN;
+  if (script && exists(script)) {
+    const made = JSON.parse(readFileSync(script, "utf8"));
+    await locked((state) => {
+      for (const name of made.containers ?? [])
+        state.containers.push({ Id: newId(state, "a"), Name: `/${name}`, Config: { Labels: {} } });
+      for (const name of made.volumes ?? [])
+        state.volumes.push({
+          Name: name,
+          Labels: {},
+          Mountpoint: `/fake/volumes/${name}/_data`,
+          CreatedAt: new Date().toISOString(),
+        });
+      for (const name of made.networks ?? [])
+        state.networks.push({ Id: newId(state, "b"), Name: name });
+    });
+    const pauseRun = process.env.FAKE_DOCKER_PAUSE_RUN;
+    if (pauseRun && exists(pauseRun)) {
+      writeFileSync(`${pauseRun}.paused`, "1");
+      await waitFor(() => !exists(pauseRun));
+    }
+  }
 } else if (verb === "info" && args.includes("{{.ID}}")) console.log(`FAKE:${statePath}`);
 else if (verb === "info") console.log(JSON.stringify({ SecurityOptions: [] }));
 else if (verb === "build") {
@@ -122,7 +161,7 @@ else if (verb === "create") {
   }
   const created = await locked((state) => {
     if (state.containers.some((item) => item.Name === `/${name}`)) return null;
-    const id = `${String(state.next++).padStart(4, "0")}${"c".repeat(60)}`;
+    const id = newId(state, "c");
     state.containers.push({ Id: id, Name: `/${name}`, Config: { Labels: labelsOf(args) } });
     return id;
   });
@@ -160,8 +199,16 @@ else if (verb === "create") {
   console.log((await locked((state) => state.volumes)).map((volume) => volume.Name).join("\n"));
 else if (verb === "volume" && sub === "inspect") {
   const list = await locked((state) => state.volumes);
-  const names = args.slice(2);
-  console.log(JSON.stringify(list.filter((volume) => names.includes(volume.Name))));
+  const format = formatOf();
+  const names = args
+    .slice(2)
+    .filter((arg, index, all) => arg !== "--format" && all[index - 1] !== "--format");
+  const found = list.filter((volume) => names.includes(volume.Name));
+  console.log(
+    format === null
+      ? JSON.stringify(found)
+      : found.map((volume) => render(format, volume)).join("\n"),
+  );
   if (names.some((name) => !list.some(volumeNamed(name)))) fail("Error: no such volume");
 } else if (verb === "volume" && sub === "create") {
   const name = args.at(-1);
@@ -171,6 +218,7 @@ else if (verb === "volume" && sub === "inspect") {
         Name: name,
         Labels: labelsOf(args),
         Mountpoint: `/fake/volumes/${name}/_data`,
+        CreatedAt: new Date().toISOString(),
       });
   });
   console.log(name);
@@ -179,11 +227,19 @@ else if (verb === "volume" && sub === "inspect") {
     state.volumes = state.volumes.filter((volume) => !args.includes(volume.Name));
   });
 else if (verb === "network" && sub === "ls")
-  console.log((await locked((state) => state.networks)).map(networkName).join("\n"));
-else if (verb === "network" && sub === "rm")
+  console.log((await locked((state) => state.networks)).map((network) => network.Id).join("\n"));
+else if (verb === "network" && sub === "inspect") {
+  const list = await locked((state) => state.networks);
+  const asked = args.slice(2);
+  const found = list.filter(
+    (network) => asked.includes(network.Id) || asked.includes(network.Name),
+  );
+  console.log(JSON.stringify(found));
+  if (found.length < asked.length) fail("Error: no such network");
+} else if (verb === "network" && sub === "rm")
   await locked((state) => {
     state.networks = state.networks.filter(
-      (network) => !args.includes(networkName(network)) && !args.includes(network.Id),
+      (network) => !args.includes(network.Name) && !args.includes(network.Id),
     );
   });
 else if (verb === "image") console.log("");

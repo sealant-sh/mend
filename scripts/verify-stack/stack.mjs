@@ -67,7 +67,10 @@ import {
   fetchRefspec,
   formatKb,
   formatSeconds,
-  generationOf,
+  madeSince,
+  manualRemoval,
+  mergeLedgers,
+  planTeardown,
   imageNames,
   innerOrigins,
   insideCaptureRoot,
@@ -217,7 +220,7 @@ const pause = (ms) => new Promise((done) => setTimeout(done, ms));
 
 /**
  * The name and label of a container the stack runs for a moment (a copy, a probe, the inner CLI):
- * both, so a teardown finds one a killed command left behind (lib.mjs `generationOf`).
+ * both, so a teardown finds one a killed command left behind (lib.mjs `planTeardown`).
  */
 const transient = (purpose) => [
   "--name",
@@ -803,6 +806,31 @@ async function upClaimed(flags, specs, { started, phases, logs }) {
     logs,
   };
   await writeState(state);
+  // From here on the stack creates on the daemon: all of it is recorded in the ledger.
+  return recording(
+    () =>
+      install(flags, state, {
+        logs,
+        started,
+        phases,
+        contexts,
+        images,
+        origins,
+        socket,
+        sealantdBuild,
+      }),
+    {
+      state,
+    },
+  );
+}
+
+/** Set up the inner server, its relay, account and fixture, then check it: a recording window. */
+async function install(
+  flags,
+  state,
+  { logs, started, phases, contexts, images, origins, socket, sealantdBuild },
+) {
   say(`verify stack · mend server setup ${images.version}`);
   await docker(["volume", "create", "--label", `${STACK_LABEL}=1`, STATE_VOLUME]);
   await timed(phases, "setup", async () => {
@@ -1087,7 +1115,7 @@ async function measureMemory(state) {
     return { method: "pss of every process of the session's Docker daemon", ...memory };
   }
   // Any other daemon is shared with the machine: the stack's containers only, as Docker counts.
-  const ids = (await generation()).containers;
+  const ids = await stackContainers();
   if (ids.length === 0) return { method: "docker stats", totalKb: 0, processes: [] };
   const lines = await dockerOut([
     "stats",
@@ -1117,56 +1145,167 @@ async function inspectAll(ids) {
 }
 
 /**
- * What this daemon's stack owns (lib.mjs `generationOf`), read from Docker: every container and
- * volume inspected, the state volume's daemon-side path, and the hash of the inner install's
- * identity, which setup labels its volumes with. Nothing qualifies without the stack's own state
- * volume, so on a daemon with no stack of its own a teardown removes no product container or volume.
+ * What is on the daemon, `docker inspect`ed: every container, volume and network. A teardown plans
+ * from it (lib.mjs `planTeardown`).
  */
-async function generation() {
+async function inventory() {
   const containers = await inspectAll(
     nonEmptyLines(await dockerOut(["ps", "--all", "--quiet", "--no-trunc"])),
   );
   const names = nonEmptyLines(await dockerOut(["volume", "ls", "--quiet"]));
   const volumes =
     names.length === 0 ? [] : JSON.parse(await dockerOut(["volume", "inspect", ...names]));
-  const state = volumes.find(
-    (volume) => volume.Name === STATE_VOLUME && volume.Labels?.[STACK_LABEL] === "1",
+  const ids = nonEmptyLines(await dockerOut(["network", "ls", "--quiet", "--no-trunc"]));
+  const networks =
+    ids.length === 0 ? [] : JSON.parse(await dockerOut(["network", "inspect", ...ids]));
+  return { containers, volumes, networks };
+}
+
+/** The stack's containers on the daemon now: what the ledger recorded, and its own. */
+async function stackContainers() {
+  const now = await inventory();
+  return planTeardown({ ledger: await readLedger(now.volumes), ...now }).containers.map(
+    (item) => item.Id,
   );
-  return generationOf({
-    containers,
-    volumes,
-    stateMountpoint: state?.Mountpoint ?? null,
-    installation: state ? await installationOf() : null,
-  });
+}
+
+// ─── the ledger ─────────────────────────────────────────────────────────────
+
+/**
+ * What the stack made on the daemon, by exact identity, one file per recording window. A teardown
+ * removes those entries and nothing it would have to infer (lib.mjs `planTeardown`).
+ */
+const ledgerDir = join(cacheDir, "ledger");
+
+/**
+ * The daemon's containers and networks by id, and its volumes by name and creation time. Retried
+ * when a volume goes between its listing and its inspection.
+ */
+async function snapshot() {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const names = nonEmptyLines(await dockerOut(["volume", "ls", "--quiet"]));
+      const volumes =
+        names.length === 0
+          ? []
+          : nonEmptyLines(
+              await dockerOut([
+                "volume",
+                "inspect",
+                "--format",
+                "{{.Name}}\t{{.CreatedAt}}",
+                ...names,
+              ]),
+            ).map((line) => {
+              const [name, createdAt] = line.split("\t");
+              return { name, createdAt };
+            });
+      return {
+        containers: nonEmptyLines(await dockerOut(["ps", "--all", "--quiet", "--no-trunc"])),
+        networks: nonEmptyLines(await dockerOut(["network", "ls", "--quiet", "--no-trunc"])),
+        volumes,
+      };
+    } catch (error) {
+      if (attempt >= 4) throw error;
+      await pause(500);
+    }
+  }
+}
+
+async function writeAtomically(file, value) {
+  await writeFile(`${file}.tmp`, `${JSON.stringify(value)}\n`, { mode: 0o600 });
+  await rename(`${file}.tmp`, file);
 }
 
 /**
- * The sha256 of the inner install's identity.env, hashed inside a container so its bytes (they hold
- * the install's credentials) never leave the state volume; null before setup wrote one, or when the
- * image is not on the daemon to hash it with (`--pull never`: a teardown fetches nothing).
+ * Run `work` as a recording window: what appears on the daemon while it runs is the stack's (the
+ * stack's daemon is a dedicated one: docs/operations/verify-stack.md). The window's ledger file is
+ * written when it opens, every two seconds while it runs and once more when it ends, so a window cut
+ * short by a kill has recorded all but its last seconds and says so (`closed: false`). When `state`
+ * is given, the whole ledger is also copied into the state volume, for a `down` run without this
+ * cache directory.
  */
-async function installationOf() {
+async function recording(work, { state = null } = {}) {
+  await mkdir(ledgerDir, { recursive: true, mode: 0o700 });
+  const window = { window: randomUUID(), startedAt: new Date().toISOString() };
+  const file = join(ledgerDir, `${window.window}.json`);
+  const before = await snapshot();
+  let made = madeSince(before, before);
+  const save = (closed) => writeAtomically(file, { ...window, closed, ...made });
+  await save(false);
+  const ticker = { open: true, wake: () => undefined };
+  const ticks = (async () => {
+    for (;;) {
+      await new Promise((done) => {
+        ticker.wake = done;
+        setTimeout(done, 2000);
+      });
+      if (!ticker.open) return;
+      try {
+        made = madeSince(before, await snapshot());
+        await save(false);
+      } catch {
+        // The next tick, or the close, records it.
+      }
+    }
+  })();
   try {
-    const out = await dockerOut([
-      "run",
-      "--rm",
-      "--pull",
-      "never",
-      ...transient("identity"),
-      "--network",
-      "none",
-      "--volume",
-      `${STATE_VOLUME}:/state:ro`,
-      "--entrypoint",
-      "sh",
-      FIXTURE_BASE_IMAGE,
-      "-c",
-      'f=/state/server/.config/mend/identity.env; if [ -f "$f" ]; then sha256sum "$f"; fi',
-    ]);
-    return /^[0-9a-f]{64}\b/.exec(out)?.[0] ?? null;
-  } catch {
-    return null;
+    return await work();
+  } finally {
+    ticker.open = false;
+    ticker.wake();
+    await ticks;
+    try {
+      made = madeSince(before, await snapshot());
+      await save(true);
+    } catch (error) {
+      say(
+        `verify stack · the ledger's last record failed (${error.message}): it keeps what the recording saw until then, marked as cut short`,
+      );
+    }
+    if (state !== null) {
+      const ledger = mergeLedgers((await readLedgerFiles()).windows);
+      await writePrivate(state, "ledger.json", JSON.stringify(ledger)).catch(() => undefined);
+    }
   }
+}
+
+/** Every window's file in this cache directory, and the windows that were cut short. */
+async function readLedgerFiles() {
+  const names = (await readdir(ledgerDir).catch(() => [])).filter((name) => name.endsWith(".json"));
+  const windows = [];
+  for (const name of names) windows.push(JSON.parse(await readFile(join(ledgerDir, name), "utf8")));
+  return { windows, cutShort: windows.filter((window) => !window.closed) };
+}
+
+/**
+ * The stack's ledger: this cache directory's windows, or, when it has none, the copy in the stack's
+ * state volume (read with `--pull never`: a teardown fetches nothing).
+ */
+async function readLedger(volumes) {
+  const { windows, cutShort } = await readLedgerFiles();
+  if (windows.length > 0) return { ...mergeLedgers(windows), cutShort };
+  const stateVolume = volumes.find(
+    (volume) => volume.Name === STATE_VOLUME && volume.Labels?.[STACK_LABEL] === "1",
+  );
+  if (stateVolume === undefined) return { ...mergeLedgers([]), cutShort };
+  const copy = await dockerOut([
+    "run",
+    "--rm",
+    "--pull",
+    "never",
+    ...transient("ledger"),
+    "--network",
+    "none",
+    "--volume",
+    `${STATE_VOLUME}:/state:ro`,
+    "--entrypoint",
+    "sh",
+    FIXTURE_BASE_IMAGE,
+    "-c",
+    "if [ -f /state/ledger.json ]; then cat /state/ledger.json; fi",
+  ]).catch(() => "");
+  return { ...mergeLedgers(copy ? [JSON.parse(copy)] : []), cutShort };
 }
 
 async function report(args) {
@@ -1174,10 +1313,7 @@ async function report(args) {
   const state = await readState();
   if (!state) throw new Error("no verify stack here: `up` starts one");
   const memory = await measureMemory(state);
-  const isolation = isolationFindings(
-    await inspectAll((await generation()).containers),
-    outerSecrets,
-  );
+  const isolation = isolationFindings(await inspectAll(await stackContainers()), outerSecrets);
   // Read-only: what it measures is printed with the stack's state, never written back.
   const measured = {
     memory: {
@@ -1247,25 +1383,59 @@ const takeDown = (claimId, onRemoved = () => {}) =>
   });
 
 /**
- * Everything this stack owns on the daemon (`generation`), then `ownerId` last. It runs only under
- * the daemon's lock held exclusively, so no start of the stack builds meanwhile. The state volume
- * goes after the rest, so a removal that failed part way is retried with the provenance it needs;
- * the state file goes before the owner, so no later generation's state is ever this one's to remove.
+ * What the stack's ledger recorded and its own infrastructure (lib.mjs `planTeardown`), then
+ * `ownerId` last. It runs only under the daemon's lock held exclusively, so no start of the stack
+ * records or builds meanwhile. Nothing else is removed: what looks like the stack's but is not in
+ * the ledger is reported with the commands that remove it by hand. When a removal fails, the state
+ * volume and the ledger stay, so the next teardown tries again; the state file goes before the
+ * owner, so no later generation's state is ever this one's to remove.
  */
 async function removeResources(ownerId) {
-  const owned = await generation();
-  if (owned.containers.length > 0)
-    await docker(["rm", "--force", "--volumes", ...owned.containers]);
-  const volumes = owned.volumes.filter((name) => name !== STATE_VOLUME);
-  if (volumes.length > 0) await docker(["volume", "rm", "--force", ...volumes]);
-  for (const network of owned.networks)
-    await docker(["network", "rm", network]).catch(() => undefined);
-  if (owned.volumes.includes(STATE_VOLUME)) await docker(["volume", "rm", "--force", STATE_VOLUME]);
+  const now = await inventory();
+  const ledger = await readLedger(now.volumes);
+  const plan = planTeardown({ ledger, ...now });
+  const failures = [];
+  const attempt = (args, what) =>
+    docker(args).catch((error) => failures.push(`${what} (${error.message})`));
+  if (plan.containers.length > 0)
+    await attempt(
+      ["rm", "--force", "--volumes", ...plan.containers.map((item) => item.Id)],
+      "containers",
+    );
+  for (const volume of plan.volumes.filter((item) => item.Name !== STATE_VOLUME))
+    await attempt(["volume", "rm", "--force", volume.Name], `volume ${volume.Name}`);
+  // A network holds no data: one still in use by something unrecorded is reported, not retried.
+  for (const network of plan.networks)
+    await docker(["network", "rm", network.Id]).catch(() =>
+      say(`verify stack · left network ${network.Name}: something the stack did not make uses it`),
+    );
+  for (const volume of plan.changed)
+    say(
+      `verify stack · left alone: volume ${volume.Name} was made again after the stack recorded it (now created ${volume.CreatedAt})`,
+    );
+  for (const window of ledger.cutShort)
+    say(
+      `verify stack · a recording that began ${window.startedAt} was cut short: what it made in its last seconds is not recorded`,
+    );
+  if (plan.suspects.length > 0) {
+    say(
+      `verify stack · left alone, not recorded as the stack's: ${plan.suspects.map((item) => `${item.kind} ${item.name}`).join(", ")}`,
+    );
+    say("  if they are the stack's, remove them by hand:");
+    for (const line of manualRemoval(plan.suspects)) say(`    ${line}`);
+  }
+  if (failures.length > 0)
+    throw new CommandError(
+      `could not remove ${failures.join("; ")}; the ledger is kept, so the next down tries again`,
+    );
+  if (plan.volumes.some((item) => item.Name === STATE_VOLUME))
+    await docker(["volume", "rm", "--force", STATE_VOLUME]);
+  await rm(ledgerDir, { recursive: true, force: true });
   await rm(stateFile, { force: true });
   if (ownerId !== null) await docker(["rm", "--force", ownerId]);
   return {
-    containers: owned.containers.length + (ownerId === null ? 0 : 1),
-    volumes: owned.volumes.length,
+    containers: plan.containers.length + (ownerId === null ? 0 : 1),
+    volumes: plan.volumes.length,
   };
 }
 
@@ -1606,11 +1776,14 @@ async function main() {
     case "mend": {
       const state = await readState();
       if (!state) throw new Error("no verify stack here: `up` starts one");
-      // The inner CLI's own exit is this command's: its output went straight to the terminal.
-      await cliRun(state, args, { stdio: "inherit", timeout: 24 * 3600_000 }).catch((error) => {
-        if (!(error instanceof CommandError)) throw error;
-        process.exitCode = 1;
-      });
+      // The inner CLI's own exit is this command's: its output went straight to the terminal. What
+      // it makes on the daemon (an inner session's containers) goes into the ledger.
+      await recording(() =>
+        cliRun(state, args, { stdio: "inherit", timeout: 24 * 3600_000 }).catch((error) => {
+          if (!(error instanceof CommandError)) throw error;
+          process.exitCode = 1;
+        }),
+      );
       return;
     }
     case "watchdog":
@@ -1619,7 +1792,7 @@ async function main() {
     case "check": {
       const state = await readState();
       if (!state) throw new Error("no verify stack here: `up` starts one");
-      await check(state);
+      await recording(() => check(state));
       await writeState(state);
       return;
     }

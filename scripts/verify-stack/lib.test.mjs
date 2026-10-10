@@ -10,7 +10,10 @@ import {
   fetchRefspec,
   formatKb,
   formatSeconds,
-  generationOf,
+  madeSince,
+  manualRemoval,
+  mergeLedgers,
+  planTeardown,
   imageNames,
   innerOrigins,
   insideCaptureRoot,
@@ -284,41 +287,113 @@ test("memory sums the proportional set sizes of every process read", () => {
 });
 
 /** A container as `docker inspect` shows it. */
-const inspected = (Id, name, labels, networks = {}, mounts = []) => ({
-  Id,
-  Name: `/${name}`,
-  Config: { Labels: labels },
-  NetworkSettings: { Networks: networks },
-  Mounts: mounts.map((Name) => ({ Type: "volume", Name })),
+const inspected = (Id, name, labels = {}) => ({ Id, Name: `/${name}`, Config: { Labels: labels } });
+const own = { [STACK_LABEL]: "1" };
+
+test("a recording window records what appeared, by identity", () => {
+  const before = {
+    containers: ["c1"],
+    networks: ["n1"],
+    volumes: [{ name: "data", createdAt: "t1" }],
+  };
+  const after = {
+    containers: ["c1", "c2"],
+    networks: ["n1", "n2"],
+    // `data` was removed and made again: another volume.
+    volumes: [
+      { name: "data", createdAt: "t2" },
+      { name: "new", createdAt: "t3" },
+    ],
+  };
+  assert.deepEqual(madeSince(before, after), {
+    containers: ["c2"],
+    networks: ["n2"],
+    volumes: [
+      { name: "data", createdAt: "t2" },
+      { name: "new", createdAt: "t3" },
+    ],
+  });
+  assert.deepEqual(mergeLedgers([madeSince(before, after), { containers: ["c2", "c3"] }]), {
+    containers: ["c2", "c3"],
+    networks: ["n2"],
+    volumes: [
+      { name: "data", createdAt: "t2" },
+      { name: "new", createdAt: "t3" },
+    ],
+  });
 });
 
-test("a generation is what the stack's provenance names, and never Docker's own networks (N13)", () => {
-  const own = { [STACK_LABEL]: "1" };
-  const containers = [
-    inspected("owner", OWNER_CONTAINER, own),
-    inspected("relay", RELAY_CONTAINER, own, { bridge: { NetworkID: "bridge" } }, [STATE_VOLUME]),
-    // On the default bridge, beside the relay: Docker's network names nobody's container.
-    inspected("web", "web-1", {}, { bridge: { NetworkID: "bridge" } }, ["data"]),
-    inspected("sealant", "sealant-12ab", {}, { bridge: { NetworkID: "bridge" } }),
-    inspected("named", "verify-stack-named", {}),
-  ];
-  const volumes = [
-    { Name: STATE_VOLUME, Labels: own },
-    { Name: "data", Labels: {} },
-    { Name: "mend-store", Labels: {} },
-  ];
-  // Without the stack's state, its own resources only.
-  assert.deepEqual(
-    generationOf({ containers, volumes, stateMountpoint: null, installation: null }),
-    { containers: ["relay"], volumes: [STATE_VOLUME], networks: [] },
-  );
-  // The owner is never in it; an unlabelled name or a product name never is either.
-  const withState = generationOf({
-    containers,
-    volumes,
-    stateMountpoint: "/var/lib/docker/volumes/verify-stack-state/_data",
-    installation: "f".repeat(64),
+test("a teardown plans exact identities and its own infrastructure, and follows nothing (N13)", () => {
+  const plan = planTeardown({
+    ledger: {
+      containers: ["inner", "gone"],
+      networks: ["net-inner", "bridge-id"],
+      volumes: [
+        { name: "mend-store", createdAt: "t1" },
+        { name: "mend-garage", createdAt: "t1" },
+      ],
+    },
+    containers: [
+      inspected("owner", OWNER_CONTAINER, own),
+      inspected("relay", RELAY_CONTAINER, own),
+      inspected("inner", "mend-mend-1", { "com.docker.compose.project": "mend" }),
+      // The product's: a Compose project of the same name, an executor, a forged half of the mark.
+      inspected("product", "mend-mend-2", { "com.docker.compose.project": "mend" }),
+      inspected("executor", "sealant-12ab"),
+      inspected("half", "verify-stack-named"),
+      inspected("web", "web-1"),
+    ],
+    volumes: [
+      { Name: STATE_VOLUME, Labels: own, CreatedAt: "t0" },
+      { Name: "mend-store", Labels: {}, CreatedAt: "t1" },
+      { Name: "mend-garage", Labels: {}, CreatedAt: "t9" },
+      { Name: "data", Labels: {}, CreatedAt: "t1" },
+    ],
+    networks: [
+      { Id: "net-inner", Name: "mend_default" },
+      { Id: "bridge-id", Name: "bridge" },
+      { Id: "net-product", Name: "sealant-12ab-network" },
+    ],
   });
-  assert.deepEqual(withState.containers, ["relay"]);
-  assert.deepEqual(withState.volumes, [STATE_VOLUME]);
+  assert.deepEqual(
+    plan.containers.map((item) => item.Id),
+    ["relay", "inner"],
+  );
+  assert.deepEqual(
+    plan.volumes.map((item) => item.Name),
+    [STATE_VOLUME, "mend-store"],
+  );
+  assert.deepEqual(
+    plan.networks.map((item) => item.Id),
+    ["net-inner"],
+  );
+  assert.deepEqual(
+    plan.changed.map((item) => item.Name),
+    ["mend-garage"],
+  );
+  assert.deepEqual(
+    plan.suspects.map((item) => `${item.kind} ${item.name}`),
+    [
+      "container mend-mend-2",
+      "container sealant-12ab",
+      "container verify-stack-named",
+      "network sealant-12ab-network",
+    ],
+  );
+  assert.deepEqual(manualRemoval(plan.suspects), [
+    "docker rm --force product executor half",
+    "docker network rm net-product",
+  ]);
+  // Without a ledger: the stack's own infrastructure only.
+  const bare = planTeardown({
+    ledger: { containers: [], networks: [], volumes: [] },
+    containers: [inspected("relay", RELAY_CONTAINER, own), inspected("inner", "mend-mend-1")],
+    volumes: [{ Name: "mend-store", Labels: {}, CreatedAt: "t1" }],
+    networks: [],
+  });
+  assert.deepEqual(
+    bare.containers.map((item) => item.Id),
+    ["relay"],
+  );
+  assert.deepEqual(bare.volumes, []);
 });

@@ -315,90 +315,119 @@ export function beyondRetention(entries, keep) {
     .map((entry) => entry.name);
 }
 
-// ─── what a generation owns ─────────────────────────────────────────────────
+// ─── what the stack made: the ledger ────────────────────────────────────────
 
 /** The prefix of every container and volume the stack itself names. */
 export const VERIFIER_PREFIX = "verify-stack-";
 
-/** Compose's label for the directory a project's file was in: setup's generation directory. */
-export const WORKING_DIR_LABEL = "com.docker.compose.project.working_dir";
+/**
+ * A volume's identity: its name and its creation time. A volume has no id, and one removed and made
+ * again under its name is another volume. (Containers and networks are known by their ids.)
+ */
+export const volumeIdentity = (volume) => `${volume.name}\u0000${volume.createdAt}`;
 
-/** The label setup puts on the volumes it claims: the sha256 of the install's identity file. */
-export const INSTALLATION_LABEL = "dev.sealant.mend.installation";
+/**
+ * What appeared on the daemon between two snapshots (`{ containers, networks, volumes }`, as
+ * stack.mjs `snapshot` takes them): the entries a recording window adds to the stack's ledger.
+ */
+export function madeSince(before, after) {
+  const containers = new Set(before.containers);
+  const networks = new Set(before.networks);
+  const volumes = new Set(before.volumes.map(volumeIdentity));
+  return {
+    containers: after.containers.filter((id) => !containers.has(id)),
+    networks: after.networks.filter((id) => !networks.has(id)),
+    volumes: after.volumes.filter((volume) => !volumes.has(volumeIdentity(volume))),
+  };
+}
+
+/** The ledger entries of several windows, as one. */
+export function mergeLedgers(ledgers) {
+  const containers = new Set();
+  const networks = new Set();
+  const volumes = new Map();
+  for (const ledger of ledgers) {
+    for (const id of ledger.containers ?? []) containers.add(id);
+    for (const id of ledger.networks ?? []) networks.add(id);
+    for (const volume of ledger.volumes ?? []) volumes.set(volumeIdentity(volume), volume);
+  }
+  return { containers: [...containers], networks: [...networks], volumes: [...volumes.values()] };
+}
 
 const nameOf = (item) => String(item.Name ?? "").replace(/^\//, "");
 const labelsOf = (item) => item.Config?.Labels ?? item.Labels ?? {};
-/** Docker's own networks, which every daemon has and nothing of the stack's makes. */
-const PREDEFINED_NETWORKS = new Set(["bridge", "host", "none"]);
-const networksOf = (container) =>
-  Object.entries(container.NetworkSettings?.Networks ?? {})
-    .filter(([name]) => !PREDEFINED_NETWORKS.has(name))
-    .map(([, network]) => network.NetworkID)
-    .filter(Boolean);
-const volumesOf = (container) =>
-  (container.Mounts ?? [])
-    .filter((mount) => mount.Type === "volume" && mount.Name)
-    .map((mount) => mount.Name);
+/** The stack's own infrastructure: its label and its name prefix, both. */
 const own = (item) =>
   labelsOf(item)[STACK_LABEL] === "1" && nameOf(item).startsWith(VERIFIER_PREFIX);
+/** Docker's own networks, which every daemon has. */
+const PREDEFINED_NETWORKS = new Set(["bridge", "host", "none"]);
+/** Names the inner server's resources take, which a product server shares: reported, never inferred. */
+const looksLikeTheStacks = (item) =>
+  labelsOf(item)[STACK_LABEL] !== undefined ||
+  nameOf(item).startsWith(VERIFIER_PREFIX) ||
+  labelsOf(item)["com.docker.compose.project"] === COMPOSE_PROJECT ||
+  /^(mend-(store|control|garage)|mend_.+|sealant-[0-9a-f-]+(-docker|-network)?)$/i.test(
+    nameOf(item),
+  );
 
 /**
- * What the stack owns on a daemon, from `docker inspect` of every container and volume: the
- * containers, volumes and network ids a teardown may remove, and nothing else. The inner server's
- * resources carry the product's names (`mend-store`, Compose project `mend`), which `mend server
- * setup` fixes, so a product server on the same daemon shares them; they are told apart by
- * provenance only this stack has:
- * - the stack's own containers and volumes carry its label and its name prefix, both;
- * - the inner server's containers are Compose project `mend` with a working directory inside the
- *   stack's state volume (`stateMountpoint`), where the inner setup wrote its generation;
- * - the volumes the inner setup claimed carry its install's identity hash (`installation`);
- * - an inner session's container (`sealant-<id>`) is on one of those containers' networks or mounts
- *   one of those volumes, and its Docker sidecar is `sealant-<id>-docker`;
- * - the rest are the volumes and networks (never Docker's own) those containers use.
- * Without the stack's state volume (`stateMountpoint` null) only its own resources qualify. The owner
- * container is never in the result: the teardown that holds it removes it, last, by id.
+ * What a teardown removes, from the stack's ledger and `docker inspect` of what is on the daemon
+ * now (containers, volumes, networks): the ledger's entries whose identity still matches exactly,
+ * and the stack's own infrastructure (its label and its prefix). Nothing is followed from there: not
+ * a network, a mount, a label or a path. Besides the plan:
+ * - `changed`: volumes the ledger names whose creation time differs: another volume, left alone;
+ * - `suspects`: what looks like the stack's (its label or prefix alone, Compose project `mend`, the
+ *   product's volume names, an inner session's names) and is in neither: reported, left alone.
+ * The owner container is never in it: the teardown that holds it removes it, last, by id.
  */
-export function generationOf({ containers, volumes, stateMountpoint, installation }) {
-  const live = containers.filter((container) => nameOf(container) !== OWNER_CONTAINER);
-  const claimed = new Set(
-    volumes
-      .filter(
-        (volume) =>
-          own(volume) || (installation && labelsOf(volume)[INSTALLATION_LABEL] === installation),
-      )
-      .map((volume) => volume.Name),
-  );
-  const chosen = new Map();
-  for (const container of live) {
-    const labels = labelsOf(container);
-    const inner =
-      stateMountpoint !== null &&
-      labels["com.docker.compose.project"] === COMPOSE_PROJECT &&
-      String(labels[WORKING_DIR_LABEL] ?? "").startsWith(`${stateMountpoint}/`);
-    if (own(container) || inner) chosen.set(container.Id, container);
-  }
-  const networks = new Set([...chosen.values()].flatMap(networksOf));
-  const used = new Set([...claimed, ...[...chosen.values()].flatMap(volumesOf)]);
-  const executors = new Set();
-  for (const container of live)
-    if (
-      /^sealant-[0-9a-f-]+$/i.test(nameOf(container)) &&
-      (networksOf(container).some((id) => networks.has(id)) ||
-        volumesOf(container).some((name) => used.has(name)))
-    ) {
-      chosen.set(container.Id, container);
-      executors.add(nameOf(container));
-    }
-  for (const container of live)
-    if (executors.has(nameOf(container).replace(/-docker$/, "")) && !chosen.has(container.Id))
-      chosen.set(container.Id, container);
-  const present = new Set(volumes.map((volume) => volume.Name));
-  const volumeNames = new Set(claimed);
-  for (const container of chosen.values())
-    for (const name of volumesOf(container)) if (present.has(name)) volumeNames.add(name);
-  return {
-    containers: [...chosen.keys()],
-    volumes: [...volumeNames].toSorted(),
-    networks: [...new Set([...chosen.values()].flatMap(networksOf))],
+export function planTeardown({ ledger, containers, volumes, networks }) {
+  const recorded = {
+    containers: new Set(ledger.containers),
+    networks: new Set(ledger.networks),
+    volumes: new Map(ledger.volumes.map((volume) => [volume.name, volume.createdAt])),
   };
+  const live = containers.filter((item) => nameOf(item) !== OWNER_CONTAINER);
+  const plan = {
+    containers: live.filter((item) => recorded.containers.has(item.Id) || own(item)),
+    volumes: [],
+    networks: networks.filter(
+      (item) => recorded.networks.has(item.Id) && !PREDEFINED_NETWORKS.has(nameOf(item)),
+    ),
+    changed: [],
+    suspects: [],
+  };
+  for (const volume of volumes) {
+    const createdAt = recorded.volumes.get(volume.Name);
+    if (own(volume) || createdAt === volume.CreatedAt) plan.volumes.push(volume);
+    else if (createdAt !== undefined) plan.changed.push(volume);
+  }
+  const planned = new Set(
+    [...plan.containers, ...plan.networks]
+      .map((item) => item.Id)
+      .concat([...plan.volumes, ...plan.changed].map((item) => item.Name)),
+  );
+  const suspect = (kind) => (item) =>
+    !planned.has(kind === "volume" ? item.Name : item.Id) &&
+    !PREDEFINED_NETWORKS.has(nameOf(item)) &&
+    looksLikeTheStacks(item)
+      ? [{ kind, id: kind === "volume" ? item.Name : item.Id, name: nameOf(item) }]
+      : [];
+  plan.suspects = [
+    ...live.flatMap(suspect("container")),
+    ...volumes.flatMap(suspect("volume")),
+    ...networks.flatMap(suspect("network")),
+  ];
+  return plan;
+}
+
+/** How to remove by hand what a teardown left alone: one command per kind. */
+export function manualRemoval(items) {
+  const of = (kind) => items.filter((item) => item.kind === kind).map((item) => item.id);
+  return [
+    ["docker rm --force", of("container")],
+    ["docker volume rm", of("volume")],
+    ["docker network rm", of("network")],
+  ]
+    .filter(([, ids]) => ids.length > 0)
+    .map(([command, ids]) => `${command} ${ids.join(" ")}`);
 }
