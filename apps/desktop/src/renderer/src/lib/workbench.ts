@@ -36,6 +36,14 @@ const KEY = "mend-workbench";
 const EMPTY: WorkbenchState = { focusedProjectId: null, byProject: {}, opening: null };
 const hydratedProjects = new Set<string>();
 
+/**
+ * Tabs opened on the server's answer before the cached reads list what they view: a session the
+ * launcher just created, a shell `openShell` just started. Reconcile keeps such a tab until a read
+ * lists it once (the server decides from then on), or until this long has passed without one.
+ */
+const AWAIT_LISTING_MS = 60_000;
+const awaitingListing = new Map<string, number>();
+
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
 
@@ -135,9 +143,10 @@ const withTabs = (projectId: string, next: ProjectTabs): WorkbenchState => ({
   byProject: { ...state.byProject, [projectId]: next },
 });
 
-const addOrRaise = (projectId: string, tab: Tab) => {
+const addOrRaise = (projectId: string, tab: Tab, unlisted = false) => {
   const current = tabsOf(projectId);
   const existing = current.tabs.findIndex((candidate) => tabKey(candidate) === tabKey(tab));
+  if (unlisted && existing === -1) awaitingListing.set(tabKey(tab), Date.now());
   set(
     withTabs(
       projectId,
@@ -161,14 +170,24 @@ export const workbench = {
     set(withTabs(projectId, { ...current, focused: index }));
   },
 
-  /** Open or raise the tab viewing a coding-agent session. */
+  /** Open or raise the tab viewing a session. */
   openSession: (projectId: string, sessionId: string) => {
     addOrRaise(projectId, { kind: "session", sessionId });
+  },
+
+  /** Open and focus the tab of a session just created, before the project's detail lists it. */
+  openLaunchedSession: (projectId: string, sessionId: string) => {
+    addOrRaise(projectId, { kind: "session", sessionId }, true);
   },
 
   /** Open or raise one server-owned supporting shell. */
   openShell: (projectId: string, sessionId: string, processId: string) => {
     addOrRaise(projectId, { kind: "shell", sessionId, processId });
+  },
+
+  /** Open and focus the tab of a shell just started, before the process index lists it. */
+  openStartedShell: (projectId: string, sessionId: string, processId: string) => {
+    addOrRaise(projectId, { kind: "shell", sessionId, processId }, true);
   },
 
   /** Open or raise the read-only durable logs of one process. */
@@ -200,8 +219,19 @@ export const workbench = {
       (process) => process.kind === "shell" && LIVE_PROCESS.has(process.status),
     );
     const liveById = new Map(liveShells.map((process) => [process.id, process]));
+    const listedProcesses = new Set(shellProcesses.map((process) => process.id));
     const current = tabsOf(projectId);
+    const now = Date.now();
     let tabs = current.tabs.filter((tab) => {
+      const key = tabKey(tab);
+      const awaitedSince = awaitingListing.get(key);
+      if (awaitedSince !== undefined) {
+        const listed =
+          knownSessions.has(tab.sessionId) &&
+          (tab.kind !== "shell" || listedProcesses.has(tab.processId));
+        if (!listed && now - awaitedSince < AWAIT_LISTING_MS) return true;
+        awaitingListing.delete(key);
+      }
       if (!knownSessions.has(tab.sessionId)) return false;
       // Logs read the durable record, so the tab outlives its process.
       if (tab.kind === "session" || tab.kind === "logs") return true;
@@ -242,7 +272,7 @@ export const openShellTab = async (projectId: string, sessionId: string): Promis
   set({ ...state, opening: sessionId });
   try {
     const process = await openShell(sessionId);
-    workbench.openShell(projectId, sessionId, process.id);
+    workbench.openStartedShell(projectId, sessionId, process.id);
     void queryClient.invalidateQueries({ queryKey: ["session", sessionId, "processes"] });
   } finally {
     set({ ...state, opening: null });

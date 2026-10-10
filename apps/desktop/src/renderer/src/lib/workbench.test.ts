@@ -28,6 +28,8 @@ const shell = (id: string, label: string): SessionProcessDto =>
     updatedAt: "2026-08-20T00:00:00.000Z",
   });
 
+const tabsOf = (): unknown => JSON.parse(localStorage.getItem("mend-workbench") ?? "null");
+
 const memoryStorage = (): Storage => {
   const entries = new Map<string, string>();
   return {
@@ -97,5 +99,93 @@ describe("desktop workbench layout", () => {
 
     const saved: unknown = JSON.parse(localStorage.getItem("mend-workbench") ?? "null");
     expect(saved).toMatchObject({ byProject: { "project-1": { tabs: [] } } });
+  });
+});
+
+describe("tabs opened before the server lists them", () => {
+  beforeEach(() => {
+    Object.defineProperty(globalThis, "localStorage", {
+      configurable: true,
+      value: memoryStorage(),
+    });
+    vi.resetModules();
+  });
+
+  it("keeps a launched session's tab focused until the project detail lists it", async () => {
+    const { workbench } = await import("./workbench");
+    workbench.reconcileProject("project-1", new Set(["session-0"]), []);
+    workbench.openSession("project-1", "session-0");
+    workbench.openLaunchedSession("project-1", "session-1");
+
+    // The launcher's own invalidation re-reads the detail; the first answer predates the create.
+    workbench.reconcileProject("project-1", new Set(["session-0"]), []);
+    expect(tabsOf()).toMatchObject({
+      byProject: {
+        "project-1": {
+          focused: 1,
+          tabs: [
+            { kind: "session", sessionId: "session-0" },
+            { kind: "session", sessionId: "session-1" },
+          ],
+        },
+      },
+    });
+
+    workbench.reconcileProject("project-1", new Set(["session-0", "session-1"]), []);
+    // Listed once, the server decides: a later read without it closes the tab.
+    workbench.reconcileProject("project-1", new Set(["session-0"]), []);
+    expect(tabsOf()).toMatchObject({
+      byProject: { "project-1": { tabs: [{ kind: "session", sessionId: "session-0" }] } },
+    });
+  });
+
+  it("keeps a just-started shell's tab until the process index lists it", async () => {
+    const { workbench } = await import("./workbench");
+    workbench.reconcileProject("project-1", new Set(["session-1"]), []);
+    workbench.openSession("project-1", "session-1");
+    workbench.openStartedShell("project-1", "session-1", "shell-1");
+
+    workbench.reconcileProject("project-1", new Set(["session-1"]), []);
+    expect(tabsOf()).toMatchObject({
+      byProject: {
+        "project-1": {
+          focused: 1,
+          tabs: [
+            { kind: "session", sessionId: "session-1" },
+            { kind: "shell", sessionId: "session-1", processId: "shell-1" },
+          ],
+        },
+      },
+    });
+
+    workbench.reconcileProject("project-1", new Set(["session-1"]), [shell("shell-1", "shell 1")]);
+    workbench.reconcileProject("project-1", new Set(["session-1"]), [
+      { ...shell("shell-1", "shell 1"), status: "exited", exitedAt: "2026-08-20T00:01:00.000Z" },
+    ]);
+    expect(tabsOf()).toMatchObject({
+      byProject: { "project-1": { tabs: [{ kind: "session", sessionId: "session-1" }] } },
+    });
+  });
+
+  it("closes a tab no read has listed within a minute", async () => {
+    vi.useFakeTimers();
+    try {
+      const { workbench } = await import("./workbench");
+      workbench.reconcileProject("project-1", new Set(), []);
+      workbench.openLaunchedSession("project-1", "session-1");
+      vi.advanceTimersByTime(60_001);
+      workbench.reconcileProject("project-1", new Set(), []);
+      expect(tabsOf()).toMatchObject({ byProject: { "project-1": { tabs: [] } } });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("still closes a plain tab whose session the server no longer lists", async () => {
+    const { workbench } = await import("./workbench");
+    workbench.reconcileProject("project-1", new Set(), []);
+    workbench.openSession("project-1", "session-1");
+    workbench.reconcileProject("project-1", new Set(), []);
+    expect(tabsOf()).toMatchObject({ byProject: { "project-1": { tabs: [] } } });
   });
 });

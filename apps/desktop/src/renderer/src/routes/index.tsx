@@ -17,7 +17,14 @@ import { useConnection } from "#/lib/connection";
 import { useWorkbenchEvents } from "#/lib/events";
 import { useInboxShelves } from "#/lib/inbox-shelves";
 import { useKeybindings } from "#/lib/keys";
-import { buildInbox, buildTree, scopeInbox, visibleInboxRows, type InboxRow } from "#/lib/model";
+import {
+  buildInbox,
+  buildTree,
+  scopeInbox,
+  sessionCounts,
+  visibleInboxRows,
+  type InboxRow,
+} from "#/lib/model";
 import { useNow } from "#/lib/now";
 import {
   projectDetailQuery,
@@ -121,6 +128,7 @@ function Main() {
   });
 
   const tree = useMemo(() => buildTree(data, visited), [data, visited]);
+  const counts = useMemo(() => sessionCounts(tree), [tree]);
   /** Global order for the palette and the inbox face; per-project rows for the tree. */
   const inbox = useMemo(
     () => buildInbox(data, visited, snoozes, now),
@@ -467,9 +475,7 @@ function Main() {
 
   return (
     <>
-      <Titlebar
-        liveCount={details.every((query) => query.isSuccess) ? inbox.active.length : null}
-      />
+      <Titlebar liveCount={details.every((query) => query.isSuccess) ? counts.live : null} />
       <div className="flex min-h-0 flex-1">
         <nav
           aria-label="Projects and sessions"
@@ -501,7 +507,7 @@ function Main() {
             <span className="flex-1" />
             {details.every((query) => query.isSuccess) && (
               <span className="pr-1 font-mono text-[10.5px] text-faint">
-                {inbox.active.length} live · {inbox.settled.length} settled
+                {counts.live} live · {counts.settled} settled
               </span>
             )}
           </div>
@@ -599,7 +605,9 @@ function Main() {
                     key={focusedProject.project.id}
                     project={focusedProject.project}
                     variant="inline"
-                    onLaunched={(session) => workbench.openSession(session.projectId, session.id)}
+                    onLaunched={(session) =>
+                      workbench.openLaunchedSession(session.projectId, session.id)
+                    }
                   />
                   <p className="mt-5 max-w-sm text-center font-sans text-[12.5px] leading-relaxed text-muted-foreground">
                     Or choose a session in the tree; Ctrl+Shift+T opens a supporting shell in its
@@ -667,7 +675,7 @@ function Main() {
           project={launcherProject}
           onLaunched={(session) => {
             setLauncherFor(null);
-            workbench.openSession(session.projectId, session.id);
+            workbench.openLaunchedSession(session.projectId, session.id);
           }}
           onClose={() => setLauncherFor(null)}
         />

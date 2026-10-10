@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { ProjectDto, SessionDto, SessionProcessDto } from "./api.ts";
 import { annotationFixture, processFixture, projectFixture, sessionFixture } from "./fixtures.ts";
 import { SETTLED_INITIAL } from "./inbox-shelves.ts";
-import { buildInbox, buildTree, scopeInbox, visibleInboxRows } from "./model.ts";
+import { buildInbox, buildTree, scopeInbox, sessionCounts, visibleInboxRows } from "./model.ts";
 
 const project = (id: string): ProjectDto => projectFixture({ id, name: id });
 
@@ -231,5 +231,27 @@ describe("buildTree", () => {
       "done-early",
     ]);
     expect(tree[0]?.rows[0]?.title).toBe("shell · shell");
+  });
+});
+
+describe("sessionCounts", () => {
+  it("counts a running shell session as live, as the tree does", () => {
+    // The inbox drops shells; the rail and titlebar count what the tree shows.
+    expect(buildInbox(data, {}, {}, now).active).toHaveLength(3);
+    expect(sessionCounts(buildTree(data, {}, now))).toEqual({ live: 4, settled: 2 });
+  });
+
+  it("reads 1 live while only a shell runs", () => {
+    const shellOnly = [
+      {
+        project: project("p1"),
+        sessions: [
+          { ...session("desk", "p1", "running", "2026-08-21T11:30:00.000Z"), harness: "shell" },
+          session("run", "p1", "completed", "2026-08-21T08:00:00.000Z", "2026-08-21T09:00:00.000Z"),
+        ],
+      },
+    ];
+    expect(buildInbox(shellOnly, {}, {}, now).active).toHaveLength(0);
+    expect(sessionCounts(buildTree(shellOnly, {}, now))).toEqual({ live: 1, settled: 1 });
   });
 });
