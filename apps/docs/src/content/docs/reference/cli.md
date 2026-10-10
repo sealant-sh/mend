@@ -207,6 +207,11 @@ Stopped by a signal, `mend run`, `mend logs` and `mend wait` exit 128 + its numb
 terminal back first. A second signal exits at once, and an exit waits at most 5 seconds for a reader
 that takes nothing, then says the output may be incomplete and fails.
 
+A reader that stops reading early (`mend service list | grep -q web`, `| head -1`) closes the pipe,
+and every `mend` command then exits `0` at once, quietly, so a pipeline under `set -o pipefail`
+reads as the reader's own result. `mend run` and `mend logs` are the exception above: the command's
+output is what they deliver, and output that could not be delivered fails them.
+
 `--detach` returns as soon as the command runs. `--json` prints one JSON object on stdout in place
 of the output: `sessionId`, `processId`, `worktree`, `branch`, `url`, and the process's `status` and
 `exitCode` as last observed (`exitCode` is `null` until it ended). With `--detach` it is printed
@@ -513,13 +518,16 @@ probe that answers. The exit status says how it ended:
 | `3`   | The server no longer has the session; its workspace went with it                                             |
 | `124` | The Service was still starting when the timeout passed; it keeps starting                                    |
 
-The wait judges the one process this start began: the CLI sends an id with the start, the server
-stamps it on the attempt it begins (`launchCorrelationId` `service-start:<id>`), and the wait finds
-that attempt by it once, whatever another client starts, restarts or stops meanwhile. Its port
-answering counts only from a probe made after that attempt began. A process its workspace took ends
-as `exited · no exit code reported`, exit `2`: Mend records the end, not its cause. A server older
-than the CLI stamps no id: a start whose answer an edge cut is then not followed, and a command that
-exits inside the server's minute reads as the refusal the server answers with, both exit `1`.
+The wait judges the one process this start began: the CLI sends a fresh id with the start, the
+server stamps it on the attempt it begins, keyed by the Service (`launchCorrelationId`
+`service-start:<service id>:<id>`), and the wait finds that attempt by it once, in the session it
+started in, whatever another client starts, restarts or stops meanwhile. An id the same Service took
+before is refused; another Service's ids, another person's included, are neither refused nor seen.
+Its port answering counts only from a probe made after that attempt began. A process its workspace
+took ends as `exited · no exit code reported`, exit `2`: Mend records the end, not its cause. A
+server older than the CLI stamps no id: a start whose answer an edge cut is then not followed, and a
+command that exits inside the server's minute reads as the refusal the server answers with, both
+exit `1`.
 
 A waited start returns and opens no tunnel; `mend service connect` reaches the port. `--wait` takes
 TCP ports only (UDP has no probe), and not a recipe that declares only a port, which Mend adopts

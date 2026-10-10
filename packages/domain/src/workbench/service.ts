@@ -197,6 +197,9 @@ export const serviceConnectCommand = (name: string): string => `mend service con
 /**
  * The launch correlation a Service attempt carries when its start named a `startId`: the client's
  * own id for that start, so the client finds the attempt its request began (an edge that cut the
- * start included) and judges that attempt alone, never whichever is current.
+ * start included) and judges that attempt alone, never whichever is current. Keyed by the Service
+ * too: an id is one start of one Service, and another Service's ids, another person's included,
+ * never collide with it nor reveal that they were used.
  */
-export const serviceStartCorrelation = (startId: string): string => `service-start:${startId}`;
+export const serviceStartCorrelation = (serviceId: string, startId: string): string =>
+  `service-start:${serviceId}:${startId}`;

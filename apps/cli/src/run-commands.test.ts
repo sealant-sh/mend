@@ -6,6 +6,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { serviceStartCorrelation } from "@mend/domain/workbench";
 import { afterAll, describe, expect, it } from "vitest";
 
 /**
@@ -1066,8 +1067,8 @@ describe("--json and --wait", spawning, () => {
   });
 });
 
-/** The launch correlation the server stamps on the attempt a start with `startId` began. */
-const stamped = (startId: string) => `service-start:${startId}`;
+/** The launch correlation the server stamps on the attempt a start of service-1 began. */
+const stamped = (startId: string) => serviceStartCorrelation("service-1", startId);
 
 /**
  * A server for a waited start. The start answers with `started(ours)`, `ours` being the correlation
@@ -1493,6 +1494,48 @@ describe("a Service's process id", spawning, () => {
       expect(fake.routes.some((route) => route.includes(`/processes/${otherAttempt}/`))).toBe(
         false,
       );
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it("a reader that closes the pipe early (| head -1) ends mend quietly, exit 0, for any command", async () => {
+    // Far more than a pipe holds: head takes one line and closes, and mend's next write meets
+    // EPIPE.
+    const many = Array.from({ length: 3000 }, (_, index) => {
+      const view = serviceView("reachable");
+      return {
+        ...view,
+        service: { ...view.service, id: `service-${index}`, name: `web-${index}` },
+      };
+    });
+    const fake = await startFake((route, _request, response) => {
+      if (route === "GET /api/services") json(response, many);
+      else response.writeHead(404).end();
+    });
+    try {
+      for (const args of [
+        ["service", "list"],
+        ["service", "list", "--json"],
+      ]) {
+        const child = spawn(
+          "bash",
+          [
+            "-c",
+            'set -o pipefail; "$0" --experimental-strip-types "$1" "${@:2}" | head -1 >/dev/null',
+            process.execPath,
+            entrypoint,
+            ...args,
+          ],
+          { env: cliEnv(fake.url), stdio: ["ignore", "pipe", "pipe"], cwd: os.tmpdir() },
+        );
+        let stderr = "";
+        child.stderr.on("data", (chunk: Buffer) => {
+          stderr += chunk.toString();
+        });
+        const [code] = await once(child, "close");
+        expect({ args, code, stderr }).toEqual({ args, code: 0, stderr: "" });
+      }
     } finally {
       await fake.close();
     }

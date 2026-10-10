@@ -59,9 +59,10 @@ import {
 } from "./workbench-views.ts";
 
 /**
- * A client's own id for one Service start (a UUID). The attempt the start begins carries it as its
- * launch correlation (`serviceStartCorrelation`), so the client finds that attempt even when an
- * edge cut the start's answer. A server older than the field ignores it.
+ * A client's own id for one Service start (a UUID). The attempt the start begins carries it, keyed
+ * by its Service, as its launch correlation (`serviceStartCorrelation(serviceId, startId)`), so the
+ * client finds that attempt even when an edge cut the start's answer. An id used before by the same
+ * Service is refused; another Service's ids are not seen. A server older than the field ignores it.
  */
 export const ServiceStartId = Schema.String.check(Schema.isUUID());
 

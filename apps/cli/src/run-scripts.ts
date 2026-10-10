@@ -1,3 +1,5 @@
+import { serviceStartCorrelation } from "@mend/domain/workbench";
+
 import { GATEWAY_STATUSES, MendRequestError } from "./server-request.ts";
 
 /**
@@ -515,7 +517,7 @@ export interface ServiceViewSlice {
     readonly exitedAt: string | null;
     readonly sealantSessionId: string | null;
     readonly createdAt?: string;
-    /** `service-start:<startId>` on an attempt a start began under its client's id. */
+    /** `serviceStartCorrelation(serviceId, startId)` on an attempt a start began under an id. */
     readonly launchCorrelationId?: string | null;
   }>;
   readonly currentForward: { readonly id: string } | null;
@@ -534,16 +536,23 @@ export interface ServiceStartRead<V extends ServiceViewSlice = ServiceViewSlice>
 }
 
 /**
- * The one attempt a wait judges: the attempt this client's start began. `attemptId` once known
- * (the start answered with it, or a read found it); until then `correlation`, the launch
- * correlation the server stamps on the attempt a start began under its client's id. Never
+ * The one attempt a wait judges: the attempt this client's start began, in the session it was
+ * started in. `attemptId` once known (the start answered with it, or a read found it); until then
+ * the start's own id, which the server stamps on that attempt keyed by its Service. Never
  * whichever attempt is current: another client may have started, restarted or stopped the Service.
  */
 export interface ServiceStartTarget {
   readonly attemptId: string | null;
-  /** `serviceStartCorrelation(startId)`; null against a server that answered without one. */
-  readonly correlation: string | null;
+  readonly sessionId: string;
+  readonly startId: string;
 }
+
+/** Whether `attempt` of `view`'s Service is the one a start with `startId` began. */
+const begunBy = (
+  view: ServiceViewSlice,
+  attempt: ServiceViewSlice["attempts"][number],
+  startId: string,
+): boolean => attempt.launchCorrelationId === serviceStartCorrelation(view.service.id, startId);
 
 /** The attempt `target` names, and the Service it belongs to, in what one read listed. */
 export const findStartAttempt = <V extends ServiceViewSlice>(
@@ -551,27 +560,30 @@ export const findStartAttempt = <V extends ServiceViewSlice>(
   target: ServiceStartTarget,
 ): { readonly view: V; readonly attempt: V["attempts"][number] } | undefined => {
   for (const view of services) {
+    if (view.service.sessionId !== target.sessionId) continue;
     const attempt = view.attempts.find((candidate) =>
       target.attemptId !== null
         ? candidate.id === target.attemptId
-        : target.correlation !== null && candidate.launchCorrelationId === target.correlation,
+        : begunBy(view, candidate, target.startId),
     );
     if (attempt !== undefined) return { view, attempt };
   }
   return undefined;
 };
 
+/** What every start id stamp starts with: how an older server, which stamps none, is told apart. */
+const STAMP_KIND = serviceStartCorrelation("", "").split(":")[0] ?? "service-start";
+
 /**
- * The attempt a start answered with: the one carrying the start's correlation, or, from a server
- * older than start ids, the Service's current attempt as that very answer read it.
+ * The attempt a start answered with: the one carrying the start's id, or, from a server older
+ * than start ids, the Service's current attempt as that very answer read it.
  */
-export const answeredAttemptId = (view: ServiceViewSlice, correlation: string): string | null => {
-  const own = view.attempts.find((attempt) => attempt.launchCorrelationId === correlation);
+export const answeredAttemptId = (view: ServiceViewSlice, startId: string): string | null => {
+  const own = view.attempts.find((attempt) => begunBy(view, attempt, startId));
   if (own !== undefined) return own.id;
   // A server that stamps start ids stamped this start's attempt; only an older one stamps none.
-  const kind = correlation.slice(0, correlation.indexOf(":") + 1);
   const stamps = view.attempts.some(
-    (attempt) => attempt.launchCorrelationId?.startsWith(kind) === true,
+    (attempt) => attempt.launchCorrelationId?.startsWith(`${STAMP_KIND}:`) === true,
   );
   return stamps ? null : view.service.currentAttemptId;
 };

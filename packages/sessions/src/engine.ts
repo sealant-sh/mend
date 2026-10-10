@@ -20012,17 +20012,6 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if (isLegacyBench(session)) {
           return yield* new LegacyBenchReadOnlyError({ sessionId });
         }
-        // A start id names one start: a second start under it would make "the attempt this start
-        // began" two attempts.
-        const launchCorrelationId = startId === null ? null : serviceStartCorrelation(startId);
-        if (
-          launchCorrelationId !== null &&
-          (yield* processes.byLaunchCorrelation(launchCorrelationId)) !== null
-        ) {
-          return yield* new ServiceStartError({
-            message: "This start id was used by an earlier start; send a new one.",
-          });
-        }
         const workspace = yield* workspaceForSupportingProcess(session);
         const workspaceId = SealantWorkspaceId.make(workspace.id);
         // A Service runs as the person who started it, across restarts (docs/adr/0016).
@@ -20048,6 +20037,19 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           declarationSource,
         );
         const attempts = yield* processes.listForService(service.id);
+        // A start id names one start of this Service: a second start under it would make "the
+        // attempt this start began" two attempts. The key is the Service and the id, so another
+        // Service's ids, or another person's, are neither seen nor refused here.
+        const launchCorrelationId =
+          startId === null ? null : serviceStartCorrelation(service.id, startId);
+        if (
+          launchCorrelationId !== null &&
+          attempts.some((earlier) => earlier.launchCorrelationId === launchCorrelationId)
+        ) {
+          return yield* new ServiceStartError({
+            message: "This start id was used by an earlier start of this Service; send a new one.",
+          });
+        }
         const attemptOrdinal =
           attempts.reduce((largest, attempt) => Math.max(largest, attempt.attemptOrdinal ?? 0), 0) +
           1;

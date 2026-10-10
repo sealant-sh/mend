@@ -20,3 +20,7 @@ and a name two Services carry is refused with both ids listed. A Service with no
 refused with a line that says why nothing is recorded. `mend wait --timeout` takes a duration (`90`,
 `90s`, `5m`, `1h`), as `mend service run --timeout` does; a bare number is seconds as before, `.5`
 included.
+
+A reader that closes the pipe early (`mend service list | grep -q web`, `| head -1`) no longer kills
+the CLI with an unhandled EPIPE and a stack trace: every command exits 0, quietly. `mend run` and
+`mend logs` still fail when their command's output could not be delivered.

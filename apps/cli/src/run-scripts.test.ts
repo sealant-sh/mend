@@ -1,3 +1,4 @@
+import { serviceStartCorrelation } from "@mend/domain/workbench";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -428,7 +429,8 @@ describe("arguments", () => {
 
 type Attempt = ServiceViewSlice["attempts"][number];
 
-const correlation = "service-start:5b3f0c1e-8d2a-4f6b-9c7e-1a2b3c4d5e6f";
+const startId = "5b3f0c1e-8d2a-4f6b-9c7e-1a2b3c4d5e6f";
+const correlation = serviceStartCorrelation("service-1", startId);
 
 /** An attempt begun at `began` (ms), running, or ended with `end`'s status and code. */
 const attemptOf = (
@@ -478,9 +480,9 @@ const startRead = (
   sessionStatus: string | null = "idle",
 ): ServiceStartRead => ({ services: service === null ? [] : [service], sessionStatus });
 
-const pinned = { attemptId: "attempt-a", correlation };
+const pinned = { attemptId: "attempt-a", sessionId: "session-1", startId };
 /** A start an edge cut: the attempt is found by the start's id alone. */
-const unpinned = { attemptId: null, correlation };
+const unpinned = { attemptId: null, sessionId: "session-1", startId };
 
 describe("waitForServiceStart", () => {
   it("keeps waiting while the Service builds past the server's minute, and returns once it answers", async () => {
@@ -701,20 +703,35 @@ describe("the attempt a start answered with", () => {
       attemptOf("attempt-a", { correlation }),
       attemptOf("attempt-b", { correlation: "service-start:other" }),
     ]);
-    expect(answeredAttemptId(view, correlation)).toBe("attempt-a");
+    expect(answeredAttemptId(view, startId)).toBe("attempt-a");
   });
 
   it("from a server that stamps no start ids, is the current attempt that answer read", () => {
     const view = serviceOf("unreachable", [attemptOf("attempt-z")]);
-    expect(answeredAttemptId(view, correlation)).toBe("attempt-z");
+    expect(answeredAttemptId(view, startId)).toBe("attempt-z");
   });
 
   it("is unknown when the server stamps ids and none is this start's", () => {
     const view = serviceOf("unreachable", [
       attemptOf("attempt-b", { correlation: "service-start:other" }),
     ]);
-    expect(answeredAttemptId(view, correlation)).toBe(null);
+    expect(answeredAttemptId(view, startId)).toBe(null);
     expect(findStartAttempt([view], unpinned)).toBe(undefined);
+  });
+
+  it("is never one stamped with the same id for another Service, or one in another session", () => {
+    // This Service's attempt carries the id keyed by another Service: not this start's.
+    const keyedElsewhere = serviceOf("reachable", [
+      attemptOf("attempt-x", { correlation: serviceStartCorrelation("service-9", startId) }),
+    ]);
+    // Another session's Service, stamped with this very id under its own key.
+    const otherSession = serviceOf(
+      "reachable",
+      [attemptOf("attempt-y", { correlation: serviceStartCorrelation("service-2", startId) })],
+      { id: "service-2", sessionId: "session-2" },
+    );
+    expect(answeredAttemptId(keyedElsewhere, startId)).toBe(null);
+    expect(findStartAttempt([keyedElsewhere, otherSession], unpinned)).toBe(undefined);
   });
 });
 

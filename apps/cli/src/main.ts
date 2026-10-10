@@ -16,7 +16,6 @@ import {
   narrowCredential,
   repositoryCloneUrlIssue,
   sameGrant,
-  serviceStartCorrelation,
   validatePiProfile,
 } from "@mend/domain/workbench";
 
@@ -2345,8 +2344,7 @@ const startServiceWaited = async (
   start: (startId: string) => Promise<ServiceViewDto>,
 ): Promise<void> => {
   const { name, port } = target;
-  const correlation = serviceStartCorrelation(crypto.randomUUID());
-  const startId = correlation.slice(correlation.indexOf(":") + 1);
+  const startId = crypto.randomUUID();
   const after = durationLine(wait.timeoutMs);
   const stillStarting = (processId: string | null, more = ""): Promise<never> =>
     failWith(
@@ -2373,11 +2371,11 @@ const startServiceWaited = async (
   let attemptId: string | null = null;
   if (posted.value.ok) {
     const { view } = posted.value;
-    attemptId = answeredAttemptId(view, correlation);
+    attemptId = answeredAttemptId(view, startId);
     if (attemptId !== null) {
       const first = serviceStartStateOf(
         { services: [view], sessionStatus: session.status },
-        { attemptId, correlation },
+        { attemptId, sessionId: session.id, startId },
       );
       if (first.kind === "answered") return reportAnswered(config, flattenService(view));
       if (first.kind === "process-ended") {
@@ -2399,7 +2397,7 @@ const startServiceWaited = async (
       ).catch(() => null);
       const found =
         read?.done === true
-          ? findStartAttempt(read.value, { attemptId: null, correlation })
+          ? findStartAttempt(read.value, { attemptId: null, sessionId: session.id, startId })
           : undefined;
       if (found !== undefined && found.attempt.exitedAt !== null) {
         return ended(
@@ -2420,7 +2418,7 @@ const startServiceWaited = async (
     () => line,
     waitForServiceStart({
       read: () => readServiceStart(config, session.id),
-      target: { attemptId, correlation },
+      target: { attemptId, sessionId: session.id, startId },
       deadline: wait.deadline,
       ...clock,
       onStarting: (state) => {
@@ -4369,7 +4367,8 @@ const printJson = (value: unknown): void => {
 
 /** Whether recorded bytes reached this terminal, which may have set its modes. */
 let outputOnTerminal = false;
-let stdoutErrorsHandled = false;
+/** Recorded output owns delivery: a reader that went away is reported by its write (`writeOutput`). */
+let recordedOutput = false;
 /** A signal asked this CLI to stop: no more recorded output is written. */
 let outputStopped = false;
 
@@ -4386,6 +4385,21 @@ const restoreTerminal = (): void => {
 process.once("exit", restoreTerminal);
 
 /**
+ * A reader that stops reading (`| head -1`, `| grep -q`) closes the pipe early, and the next write
+ * fails with EPIPE. That is the reader's choice, not a failure of the command: every command exits
+ * 0 at once, quietly, so a pipeline under `set -o pipefail` reads as the reader's own result.
+ * Recorded output (`mend run`, `mend logs`) says it itself and exits with the code it documents:
+ * there the write reports the closed pipe. Any other stream error is not swallowed.
+ */
+const onClosedPipe = (error: NodeJS.ErrnoException): void => {
+  if (error.code !== "EPIPE") throw error;
+  if (recordedOutput) return;
+  process.exit(0);
+};
+process.stdout.on("error", onClosedPipe);
+process.stderr.on("error", onClosedPipe);
+
+/**
  * Hand recorded bytes to stdout and resolve once they are written: a reader slower than the record
  * holds the next page back, and nothing queues up in memory. A reader that went away (EPIPE)
  * rejects.
@@ -4393,11 +4407,8 @@ process.once("exit", restoreTerminal);
 const writeOutput = (bytes: Uint8Array): Promise<void> => {
   if (outputStopped) return Promise.reject(new Error("stopped by a signal"));
   if (process.stdout.isTTY === true) outputOnTerminal = true;
-  // A closed pipe also arrives as an `error` event; the write's callback already reports it.
-  if (!stdoutErrorsHandled) {
-    stdoutErrorsHandled = true;
-    process.stdout.on("error", () => undefined);
-  }
+  // A closed pipe also arrives as an `error` event; the write's callback reports it here.
+  recordedOutput = true;
   return new Promise((resolve, reject) => {
     process.stdout.write(bytes, (error) => {
       if (error === null || error === undefined) resolve();
