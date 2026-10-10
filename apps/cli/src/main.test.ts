@@ -1187,7 +1187,7 @@ describe("mend help", spawning, () => {
     const cli = startCli("http://127.0.0.1:1", ["server", "setup", "--help"]);
     const outcome = await cli.exited;
     expect(outcome.code).toBe(0);
-    expect(cli.stdout()).toContain("mend server setup · install or repair the local Mend server");
+    expect(cli.stdout()).toContain("mend server setup · install or change the local Mend server, guided");
     expect(cli.stdout()).toContain("--docker-socket <path>");
   });
 

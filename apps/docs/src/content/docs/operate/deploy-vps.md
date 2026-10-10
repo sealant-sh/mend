@@ -28,10 +28,19 @@ open. `mend operator exposure` prints each item, marked `observed`, `carried`, `
 
 ## Set up the server
 
-On the server:
+On the server, in a terminal over ordinary SSH:
 
 ```sh
 npm install --global @sealant/mend
+mend server setup
+```
+
+Setup asks how people reach the server. For a server your devices reach over a tailnet, a LAN or a
+VPN, answer "my private network or Tailscale". When Tailscale runs on the server, setup offers its
+MagicDNS name and tailnet address, so only your tailnet reaches Mend. Setup ends with the same
+command with flags. A script passes the flags itself:
+
+```sh
 mend server setup --bind 0.0.0.0 --url http://your-vps:3105 \
   --origin http://localhost:3105
 ```
@@ -54,16 +63,19 @@ bind-mounted into them.
 
 For a server reached from the Internet, let setup run the edge instead of binding Mend's port beyond
 loopback. The order matters: until the first account exists, registration is open to whoever reaches
-the origin first, so the account is created on localhost before anything is published. Set up on the
-server with no flags, then create the account over an SSH tunnel from your laptop:
+the origin first, so the account is created on localhost before anything is published. Run setup on
+the server and answer "just this machine" (a script runs `mend server setup --yes`). Then create the
+account over an SSH tunnel from your laptop:
 
 ```sh
-mend server setup                                  # on the server: http://localhost:3105, loopback only
+mend server setup                                  # on the server: answer "just this machine"
 ssh -L 3105:127.0.0.1:3105 your-vps                # on your laptop, then open http://localhost:3105
 ```
 
-With the account created, add the edge. The name's DNS points at the server and ports 80 and 443
-reach it:
+With the account created, run `mend server setup` again, choose "change something", then "how people
+reach it", then "the public internet, with HTTPS". Setup asks for the domain, says where it resolves
+from the server and whether ports 80 and 443 are free, and asks whether VS Code Remote-SSH should
+reach sessions from other machines. The flags for the edge alone:
 
 ```sh
 mend server setup --edge mend.example.com
@@ -71,7 +83,7 @@ mend server setup --edge mend.example.com
 
 Caddy obtains the certificate and proxies to Mend, whose own port stays on loopback. The origin is
 now `https://mend.example.com`, and `mend login --url https://mend.example.com` signs the laptop in.
-Then declare the posture:
+The questions also declare the posture as `public`. With flags, declare it yourself:
 
 ```sh
 mend server setup --exposure public

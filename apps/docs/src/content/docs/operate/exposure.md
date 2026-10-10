@@ -31,11 +31,13 @@ Where you set it:
 
 - On Kubernetes, `exposure.mode` in the chart's values (`loopback`, `private` or `public`; the chart
   refuses to render anything else). See [the Helm values](#kubernetes-ingress) below.
-- On the Docker install made by `mend server setup`, with `--exposure`:
-  `mend server setup --exposure private` writes it into the installation's generation and every
-  rerun and upgrade keeps it. Without the flag the install runs the default, `private`. `public`
-  needs [the edge](#the-caddy-edge) and an existing first account, and with it setup also sets the
-  multi mode gate's variables and `MEND_URL_BEARERS=refuse`.
+- On the Docker install made by `mend server setup`, from the answer to its first question (just
+  this machine is `loopback`, a private network or Tailscale is `private`, the public internet with
+  HTTPS is `public`), or with `--exposure`: `mend server setup --exposure private` writes it into
+  the installation's generation and every rerun and upgrade keeps it. Without the flag the install
+  runs the default, `private`. `public` needs [the edge](#the-caddy-edge) and an existing first
+  account, and with it setup also sets the multi mode gate's variables and
+  `MEND_URL_BEARERS=refuse`.
 
 ## What Mend reports
 
@@ -121,8 +123,10 @@ open until you state otherwise, and never block a start.
 | `reassessment`               | open until declared   | `MEND_EXPOSURE_REASSESSED` equals the running version. An upgrade reopens it. A build with no version of its own (`dev`) stays open.                                                                                                                                                                                                                                                                                                                             |
 
 `MEND_EXPOSURE_DECLARED` takes a comma-separated list, and only `core-private`, `edge-tls`,
-`workspace-ssh` and `t3code-gateway`. `mend server setup --declare <item>` writes it. Any other name
-refuses to start, because every other item is read by the server or not at all:
+`workspace-ssh` and `t3code-gateway`. `mend server setup` writes it: its questions ask, on a public
+install, what you checked from outside, and `--declare <item>` adds one statement to the saved ones
+(`--undeclare <item>` takes one back, `--declare none` clears them). Any other name refuses to
+start, because every other item is read by the server or not at all:
 
 ```text
 MEND_EXPOSURE_DECLARED names budgets: only core-private, edge-tls, workspace-ssh, t3code-gateway can be declared; every other item is observed by this process or not at all.

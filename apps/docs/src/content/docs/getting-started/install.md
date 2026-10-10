@@ -1,6 +1,7 @@
 ---
 title: Install Mend
-description: Install the CLI, then explicitly set up a three-container Mend server.
+description:
+  Install the CLI, then set up a three-container Mend server by answering a few questions.
 sidebar:
   order: 2
 ---
@@ -42,10 +43,73 @@ the next release before it ships, read [Try a preview](/getting-started/try-a-pr
 
 ## Set up the server
 
-On the server machine:
+On the server machine, in a terminal:
 
 ```sh
 mend server setup
+```
+
+Setup asks a few questions, one at a time, and says in a line what each choice means. Enter takes
+the answer in brackets.
+
+- **How will people reach this Mend?** Just this machine, your private network or Tailscale, or the
+  public internet with HTTPS.
+- For **Tailscale**, setup reads `tailscale status` and offers this machine's MagicDNS name and
+  tailnet address. When Tailscale Serve already forwards an https name to Mend's port, it offers
+  that name as a browser origin too. Setup never changes Tailscale's own settings.
+- For **public HTTPS**, it asks for your domain, then says where the domain resolves from this
+  machine and whether something already listens on ports 80 and 443. It asks whether VS Code
+  Remote-SSH should reach sessions from other machines and, if so, whether you checked who can reach
+  that port.
+- Whether to turn on the **T3 Code gateway**, whether to keep the **mirrors** as they are, and
+  whether the server holds **one organization or several**.
+
+Setup never asks which address to bind: that follows from your answers. Each line that starts with
+`Observed:` is something setup looked at on this machine, not a judgment about who can reach it.
+Setup ends with what it will do and the same command with flags, and changes nothing until you say
+yes:
+
+```text
+Setup will install:
+  reached          your network, at http://mend-box.tailc79e49.ts.net:3105 (listening on 100.94.101.28)
+  exposure         declared private
+  workspace SSH    reachable from other machines, published on 100.94.101.28:2222
+  T3 Code gateway  off
+  organizations    one organization (single)
+  mirrors          npm on, 10g · Docker Hub on, 20g
+  extra origins    https://mend-box.tailc79e49.ts.net:8443
+Same as: mend server setup --bind 100.94.101.28 --url http://mend-box.tailc79e49.ts.net:3105 --origin https://mend-box.tailc79e49.ts.net:8443 --exposure private
+Apply? [Y/n]
+```
+
+Run it again to change something. Setup shows what is saved, then lets you keep it, change one
+thing, or go through every question. Turning on the T3 Code gateway on a public install looks like
+this:
+
+```text
+Currently: public HTTPS at alpha.mend.run, VS Code SSH from other machines on, T3 gateway off.
+  …
+What would you like to do?
+  1. keep it as it is · setup checks this install and starts it again
+  2. change something · pick it, answer, done
+  3. go through every question
+  1-3 [1]: 2
+
+What should change?
+  1. how people reach it · the public internet, over HTTPS at alpha.mend.run (the edge, Caddy, on 80 and 443)
+  2. VS Code Remote-SSH from other machines · reachable from other machines, published on 0.0.0.0:2222
+  3. the T3 Code gateway · off
+  …
+  1-7 [1]: 3
+…
+Turn on the T3 Code gateway? [y/N] y
+
+Change something else? [y/N]
+
+What changes:
+  T3 Code gateway: off → on, at 127.0.0.1:3120
+Same as: mend server setup --t3-gateway
+Apply? [Y/n]
 ```
 
 At idle, three product containers run:
@@ -61,10 +125,24 @@ You manage the Mend version. There is no separate Sealant installation or versio
 Docker setup. Session workspaces may create additional containers. Repositories, session captures,
 database data, and SSH identity persist in Docker-managed volumes.
 
+### With flags
+
+Scripts and CI pass flags instead. The `Same as:` line is the flag command for what you answered,
+and `mend help server setup` lists every flag. On an existing install, each flag changes only what
+it names and setup keeps the rest, so `mend server setup --t3-gateway` turns the gateway on and
+leaves everything else as it was. Setup prints `This run changes:` and one line per change before it
+applies. `--declare <item>` adds a statement to the saved ones, `--undeclare <item>` takes one back,
+and `--declare none` clears them all.
+
+With no terminal and no flags, setup refuses a fresh install instead of guessing how the server is
+reached, and names the flags that say it. `mend server setup --yes` takes the defaults: this machine
+only, at `http://localhost:3105`.
+
 ## Network boundary
 
 Web and SSH bind to localhost by default. Postgres has no published host port, and no image registry
-is published. Private access must be configured explicitly:
+is published. Private access must be configured explicitly: answer "my private network or Tailscale"
+to setup's first question, or pass the flags yourself:
 
 ```sh
 mend server setup --bind 0.0.0.0 --url http://mend-host:3105 \
@@ -81,7 +159,8 @@ interface discovery cannot add trust.
 > does not do it for you.
 
 Plain HTTP does not protect credentials on an untrusted network. Use an encrypted private network or
-a TLS edge. Setup runs the edge for you, once the first account exists:
+a TLS edge. Setup runs the edge for you once the first account exists: answer "the public internet,
+with HTTPS", or pass the flag:
 
 ```sh
 mend server setup --edge mend.example.com
@@ -92,7 +171,8 @@ Caddy then listens on ports 80 and 443 of every interface, obtains and renews a 
 `https://mend.example.com`. For a certificate to be issued, the name's DNS must point at this
 machine and both ports must reach it from the Internet. `mend server status` says whether Caddy
 holds one. A fresh install refuses `--edge`: until the first account exists, registration is open to
-whoever reaches the origin first, so set up on localhost, create the account, then add the edge.
+whoever reaches the origin first, so set up on localhost, create the account, then add the edge. The
+questions say the same on a fresh install and set up on this machine first.
 
 Setup also takes the posture the server declares, `--exposure loopback|private|public` and
 `--tenancy single|multi`, and keeps the edge and the posture across reruns and upgrades. Without the

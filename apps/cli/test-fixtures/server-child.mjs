@@ -94,7 +94,7 @@ if (operation === "oversized-generation") {
       };
     },
   };
-  const result = await serverCommand(["setup"], runtime);
+  const result = await serverCommand(["setup", "--yes"], runtime);
   console.log(JSON.stringify(result));
   process.exitCode = result._tag === "ok" ? 0 : 1;
 }
