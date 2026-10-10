@@ -23,10 +23,14 @@ mend service run --port 3305 --http --name stack -- \
   node scripts/verify-stack/stack.mjs serve --sealant '#345' --sealantd pr:152
 ```
 
-`serve` builds, installs, runs the check below, then holds while the Service runs. Stopping the
-Service (`mend service stop stack`, the web's Stop) removes the stack and keeps its images, so the
-next start reuses every image whose source did not change. `up` does the same without holding, and
-`down` removes it.
+`serve` builds, installs, runs the check below, then holds while the Service runs. The stack goes
+when `serve` goes, however it goes: stopped as a Service (`mend service stop stack`, the web's Stop:
+a hang-up, then SIGKILL two seconds later), killed, or failed. A watchdog started in a session of
+its own waits for the `serve` process to end and runs `down`; a start that fails removes what it
+made before it exits (`--keep` leaves it for a look). Images stay, so the next start reuses every
+image whose source did not change. `up` builds and starts without holding (and without a watchdog);
+`down` removes the stack. What outlives a `serve` that ends: only a stack whose watchdog was killed
+too, which `down --force` sweeps; a session's whole Docker service goes with its workspace anyway.
 
 On your machine, bring the web here and open it:
 
@@ -81,6 +85,18 @@ are not touched.
 against the stack: `mend adopt https://github.com/sealant-sh/mend.git`, `mend run`,
 `mend sessions --all`, `mend server status`.
 
+## One stack per daemon, and how many per machine
+
+`up` claims the daemon before it resolves or builds anything: it creates a container named
+`verify-stack-owner`, and Docker refuses a second container of that name, so of two starts at once
+one goes on and the other is refused. Each fetched ref goes into a ref of its own in the bare cache,
+so two starts never read each other's commit.
+
+How many stacks one machine runs at once (the box: 12 vCPUs, 40 GB) is not something this script can
+see or enforce: each session has its own Docker daemon. It is an operator's decision, taken from the
+measurements below, and it lives with whoever starts verifier sessions (pstack's verify skill, an
+orchestrator).
+
 ## Evidence
 
 ```sh
@@ -91,10 +107,36 @@ prints the sources (ref, commit, tree), the time of every phase, the check's out
 every process in the session's Docker daemon (PSS, largest first), and the isolation check below.
 Build logs are under `~/.cache/mend-verify-stack/logs/<run>/`.
 
+## Disk
+
+A stack keeps, for its next start: its images and BuildKit's cache in the session's Docker daemon
+(cargo's cache mounts included), and under `~/.cache/mend-verify-stack` the build contexts, packed
+packages, bare repositories and logs. Each `up` trims the cache directories to the newest 6
+contexts, 6 packed package sets and 10 runs' logs. `down --purge` removes the stack's images, all of
+BuildKit's cache on the daemon and every cache directory, with or without a stack up. Pulled base
+images and the inner Sealant's workspace images stay. All of it lives in the session's Docker
+service and home, so it goes with the session's workspace.
+
 ## Measured
 
-Locally, in a session of a Mend 0.36.0-next.658 server in Docker-in-Docker, per-person layout, the
-session's Docker service capped at 12 CPUs; Core, sealantd at main, Mend at this branch:
+**On the box** (alpha.mend.run, Mend 0.36.0-next.658, 12 vCPUs and 40 GB shared with the server):
+one `st-verify-` session of the test account, per-person layout (uid 40001, home 0700), Mend #610,
+Core #347 and sealantd #129 with their packages from source:
+
+| Measure                                          | Run 1 (2026-10-10 02:34) | Run 2 (02:52)           |
+| ------------------------------------------------ | ------------------------ | ----------------------- |
+| cold start to ready (no image, no build cache)   | 4 min 13 s               | 3 min 16 s              |
+| sealantd (cargo, the critical path)              | 2 min 49 s               | 2 min 59 s              |
+| Core's three images, in parallel                 | 1 min 34 s – 1 min 45 s  | 1 min 28 s – 1 min 39 s |
+| Mend bundle, after Core                          | 44 s                     | 45 s                    |
+| `mend server setup`                              | 20 s                     | 14 s                    |
+| the check (`mend run -- true`, builds its image) | 37 s, completed          | 35 s, completed         |
+| start again, every image reused                  | 25 s                     |                         |
+| idle, every process of the daemon (PSS)          | 1.70 GiB                 |                         |
+| peak while building (PSS, sampled every 5 s)     |                          | 6.32 GiB                |
+
+**Locally**, in a session of the same Mend in Docker-in-Docker, per-person layout, the session's
+Docker service capped at 12 CPUs; Core and sealantd at main, Mend at this branch:
 
 | Phase                                    | Time                                       |
 | ---------------------------------------- | ------------------------------------------ |
@@ -116,24 +158,29 @@ session's Docker service capped at 12 CPUs; Core, sealantd at main, Mend at this
 
 - The inner server's secrets (its Sealant service key, auth secret, database and Garage credentials)
   are generated by `mend server setup` inside a container and live in the Docker volume
-  `mend-verify-stack-state`. The first account's password and token are written there over stdin.
-  None of it is in argv, a log, or a capture root.
+  `verify-stack-state`. The first account's password and token are written there over stdin. None of
+  it is in argv, a log, or a capture root.
 - Docker clients run with an environment of their own (`dockerClientEnvironment`): `PATH`,
   `DOCKER_HOST`, a private `HOME` and `DOCKER_CONFIG`. No `MEND_*` variable of the session reaches
-  them, so no container of the stack holds a credential of the outer server. `report` checks every
-  container's environment, command and labels for the session's token and names any place it finds
-  one, never the value.
+  them. `report` checks every container's environment, command and labels for the session's
+  credential (from the environment, or from `~/.mend/session-token` or `MEND_SESSION_TOKEN_FILE` in
+  a per-person session) and names any place it finds one, never the value. That is all it checks:
+  not files inside containers, not volumes, not whether something could reach the outer server. When
+  no credential is readable it says it checked nothing.
 - The stack's files (contexts, bare repositories, logs, the state file) are under
   `~/.cache/mend-verify-stack`, which is in the session's home and outside every capture root; the
   script refuses a cache inside `/workspace`.
-- The relay publishes on every interface of the session's Docker service only, which is reached on a
-  network only the session's workspace shares. On any other daemon it publishes on loopback.
+- The relay publishes on every interface only when the daemon is the session's Docker service
+  (`DOCKER_HOST=tcp://docker:2375`), which is reached on a network only the session's workspace
+  shares. On any other daemon, a TCP one included, it publishes on loopback.
 
 ## Limits
 
 - One stack per Docker daemon: the inner server uses the product's own names (Compose project
   `mend`, volumes `mend-store`, `mend-control`, `mend-garage`). On a daemon that already runs a Mend
-  server the script refuses to start.
+  server the script refuses to start. The stack's own containers and volumes are named
+  `verify-stack-…`: `mend server setup` refuses to install beside a container named `mend-…` it did
+  not make.
 - The fixture's sessions run without a Docker service: a Docker daemon inside the session's own
   rootless one was not tried.
 - Mend's image installs `@sealant/sdk` and `@sealant/api-contracts` from npm at the version Mend

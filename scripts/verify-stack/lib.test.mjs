@@ -18,7 +18,12 @@ import {
   parseMemory,
   parseSource,
   relayEndpoint,
-  stacksThatFit,
+  beyondRetention,
+  FIXTURE_CONTAINER,
+  FIXTURE_VOLUME,
+  OWNER_CONTAINER,
+  RELAY_CONTAINER,
+  STATE_VOLUME,
   verifyVersion,
 } from "./lib.mjs";
 
@@ -191,7 +196,37 @@ test("the relay publishes on every interface only of a session's sidecar", () =>
     port: 3105,
   });
   assert.equal(relayEndpoint("unix:///var/run/docker.sock", 4000).publish, "127.0.0.1:4000:3105");
+  // A TCP daemon that is not the session's sidecar: loopback, never every interface.
+  assert.deepEqual(relayEndpoint("tcp://127.0.0.1:2375", 3305), {
+    publish: "127.0.0.1:3305:3105",
+    host: "127.0.0.1",
+    port: 3305,
+  });
+  assert.equal(relayEndpoint("tcp://build-box.lan:2375", 3305).publish, "127.0.0.1:3305:3105");
   assert.throws(() => relayEndpoint("ssh://box", 3105), /tcp:\/\/ or unix:\/\//);
+});
+
+test("the stack's own names stay out of the namespace setup claims", () => {
+  for (const name of [
+    STATE_VOLUME,
+    OWNER_CONTAINER,
+    RELAY_CONTAINER,
+    FIXTURE_CONTAINER,
+    FIXTURE_VOLUME,
+  ])
+    assert.doesNotMatch(name, /^mend[-_]/, name);
+});
+
+test("a cache keeps its newest entries", () => {
+  const entries = [
+    { name: "a", mtimeMs: 1 },
+    { name: "c", mtimeMs: 3 },
+    { name: "b", mtimeMs: 2 },
+    { name: "d", mtimeMs: 4 },
+  ];
+  assert.deepEqual(beyondRetention(entries, 2).toSorted(), ["a", "b"]);
+  assert.deepEqual(beyondRetention(entries, 10), []);
+  assert.deepEqual(beyondRetention([], 3), []);
 });
 
 test("the inner server trusts the connected port and the session's view of the relay", () => {
@@ -237,14 +272,4 @@ test("memory sums the proportional set sizes of every process read", () => {
   assert.equal(formatKb(36_432), "36 MiB");
   assert.equal(formatSeconds(42.4), "42 s");
   assert.equal(formatSeconds(125), "2 min 5 s");
-});
-
-test("how many stacks fit is what memory leaves, over one stack", () => {
-  const gib = 1024 * 1024;
-  assert.equal(
-    stacksThatFit({ machineKb: 39 * gib, reservedKb: 8 * gib, perStackKb: 3 * gib }),
-    10,
-  );
-  assert.equal(stacksThatFit({ machineKb: 4 * gib, reservedKb: 8 * gib, perStackKb: 3 * gib }), 0);
-  assert.equal(stacksThatFit({ machineKb: 4 * gib, reservedKb: 0, perStackKb: 0 }), 0);
 });

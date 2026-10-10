@@ -25,8 +25,8 @@
 
 import { spawn } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
-import { createWriteStream, existsSync, mkdirSync, openSync } from "node:fs";
-import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { createWriteStream, existsSync, mkdirSync, openSync, readFileSync } from "node:fs";
+import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -48,6 +48,8 @@ import {
   SESSION_REPOS,
   STACK_LABEL,
   STATE_VOLUME,
+  OWNER_CONTAINER,
+  beyondRetention,
   composeImages,
   defaultSpec,
   describeSource,
@@ -76,10 +78,23 @@ const dockerEnv = dockerClientEnvironment(process.env, {
   home: join(cacheDir, "home"),
   dockerConfig: join(cacheDir, "docker-config"),
 });
-// What the outer session holds that the inner stack must never see; checked, never printed.
-const outerSecrets = Object.entries(process.env)
-  .filter(([key]) => /^(MEND_SESSION_TOKEN|SEALANT_CAPTURE_TOKEN|MEND_TOKEN)$/.test(key))
-  .map(([, value]) => value);
+// What the outer session holds that the inner stack must never see; checked, never printed. A
+// shared-layout session carries its token in the environment; a per-person one (docs/adr/0016)
+// in `~/.mend/session-token`, or the file MEND_SESSION_TOKEN_FILE names.
+const outerSecrets = (() => {
+  const values = Object.entries(process.env)
+    .filter(([key]) => /^(MEND_SESSION_TOKEN|SEALANT_CAPTURE_TOKEN|MEND_TOKEN)$/.test(key))
+    .map(([, value]) => value);
+  for (const file of [process.env.MEND_SESSION_TOKEN_FILE, join(homedir(), ".mend/session-token")])
+    if (file) {
+      try {
+        values.push(readFileSync(file, "utf8").trim());
+      } catch {
+        // Absent outside a session, or not this person's.
+      }
+    }
+  return [...new Set(values.filter((value) => value.length > 0))];
+})();
 
 // ─── processes ──────────────────────────────────────────────────────────────
 
@@ -91,7 +106,7 @@ class CommandError extends Error {}
  * commands, which carry no secret (a build log), as the last lines of that log.
  */
 function exec(command, args, options = {}) {
-  const { env = dockerEnv, cwd, input, log, timeout = 30 * 60_000, stdio } = options;
+  const { env = dockerEnv, cwd, input, log, timeout = 30 * 60_000, stdio, reason } = options;
   return new Promise((resolvePromise, reject) => {
     const child = spawn(command, args, {
       cwd,
@@ -120,7 +135,11 @@ function exec(command, args, options = {}) {
         tail = `\n${lines.slice(-30).join("\n")}\n(full log: ${log})`;
       }
       const ended = signal ? `signal ${signal}` : `exit ${code}`;
-      reject(new CommandError(`${command} ${args[0] ?? ""} failed (${ended})${tail}`));
+      // The verb, not a flag or a path; and, when the caller asks, the command's own last word on
+      // why (only for commands whose output carries no secret, such as an anonymous fetch).
+      const verb = args.find((arg) => !arg.startsWith("-") && !arg.startsWith("/")) ?? "";
+      const why = reason ? `: ${stderr.trim().split("\n").at(-1) ?? ""}` : "";
+      reject(new CommandError(`${command} ${verb} failed (${ended})${why}${tail}`));
     });
     if (input !== undefined) child.stdin.end(input);
   });
@@ -180,12 +199,20 @@ async function resolveSource(source) {
     await git(gitDir, ["init", "--bare", "--quiet"], { env: dockerEnv });
   }
   const { url } = REPOSITORIES[source.repository];
-  await git(gitDir, ["fetch", "--quiet", "--no-tags", "--depth", "1", url, fetchRefspec(source)], {
-    env: dockerEnv,
-    timeout: 10 * 60_000,
+  // Into a ref of this fetch's own, not FETCH_HEAD: two starts sharing the cache each read back
+  // the commit they fetched.
+  const ref = `refs/verify-stack/${randomUUID()}`;
+  await git(
+    gitDir,
+    ["fetch", "--quiet", "--no-tags", "--depth", "1", url, `+${fetchRefspec(source)}:${ref}`],
+    { env: dockerEnv, timeout: 10 * 60_000, reason: true },
+  ).catch((error) => {
+    throw new CommandError(
+      `--${source.repository} ${source.kind === "pr" ? `#${source.number}` : source.ref}: ${url} would not give it (${error.message})`,
+    );
   });
-  const commit = await gitOut(gitDir, ["rev-parse", "FETCH_HEAD"], { env: dockerEnv });
-  const tree = await gitOut(gitDir, ["rev-parse", "FETCH_HEAD^{tree}"], { env: dockerEnv });
+  const commit = await gitOut(gitDir, ["rev-parse", ref], { env: dockerEnv });
+  const tree = await gitOut(gitDir, ["rev-parse", `${ref}^{tree}`], { env: dockerEnv });
   return { ...source, gitDir, commit, tree };
 }
 
@@ -439,7 +466,14 @@ const DEFAULT_PORT = 3305;
 const SERVER_PORT_OFFSET = 10_000;
 
 function parseFlags(args) {
-  const flags = { port: DEFAULT_PORT, check: true, json: false, purge: false, force: false };
+  const flags = {
+    port: DEFAULT_PORT,
+    check: true,
+    json: false,
+    purge: false,
+    force: false,
+    keep: false,
+  };
   const sources = {};
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -454,6 +488,7 @@ function parseFlags(args) {
     else if (arg === "--json") flags.json = true;
     else if (arg === "--purge") flags.purge = true;
     else if (arg === "--force") flags.force = true;
+    else if (arg === "--keep") flags.keep = true;
     else throw new Error(`unknown option ${arg}`);
   }
   if (!Number.isInteger(flags.port) || flags.port < 1024 || flags.port + SERVER_PORT_OFFSET > 65535)
@@ -464,7 +499,6 @@ function parseFlags(args) {
 /** Refuse a daemon that runs a Mend server the stack did not make: its names are the same. */
 async function assertDaemonIsFree() {
   const volumes = (await dockerOut(["volume", "ls", "--quiet"])).split("\n").filter(Boolean);
-  const ours = volumes.includes(STATE_VOLUME);
   const product = ["mend-store", "mend-control", "mend-garage"].filter((v) => volumes.includes(v));
   const compose = await dockerOut([
     "ps",
@@ -473,13 +507,40 @@ async function assertDaemonIsFree() {
     "--filter",
     `label=com.docker.compose.project=${COMPOSE_PROJECT}`,
   ]);
-  if (ours)
+  if (volumes.includes(STATE_VOLUME))
     throw new Error(
       "a verify stack is already up on this daemon: `report` reads it, `down` removes it",
     );
   if (product.length > 0 || compose !== "")
     throw new Error(
       "this Docker daemon runs a Mend server of its own (Compose project mend or its volumes): the stack uses the same names, so it refuses. Run it in a Mend session, or point DOCKER_HOST at an empty daemon.",
+    );
+}
+
+/**
+ * Claim the daemon before anything is built: a container under a name Docker keeps unique. Of two
+ * starts at once, one creates it and the other is refused, so they never share names or state.
+ */
+async function claimDaemon(runId) {
+  const claimed = await docker([
+    "create",
+    "--name",
+    OWNER_CONTAINER,
+    "--label",
+    `${STACK_LABEL}=1`,
+    "--label",
+    `${STACK_LABEL}.run=${runId}`,
+    "--network",
+    "none",
+    FIXTURE_BASE_IMAGE,
+    "true",
+  ]).then(
+    () => true,
+    () => false,
+  );
+  if (!claimed)
+    throw new Error(
+      "a verify stack is already starting or up on this daemon: `report` reads it, `down` removes it",
     );
 }
 
@@ -504,7 +565,23 @@ async function up(args) {
     );
   });
   await assertDaemonIsFree();
+  // The base of the fixture's sessions, and the image the claim and the socket probe run.
+  await docker(["pull", "--quiet", FIXTURE_BASE_IMAGE], { timeout: 15 * 60_000 });
+  await claimDaemon(runId);
+  await trimCaches();
+  try {
+    return await upClaimed(flags, specs, { started, phases, logs });
+  } catch (error) {
+    if (flags.keep) throw error;
+    say("verify stack · up failed; removing what it made (--keep keeps it for a look)");
+    await down(["--force"]).catch((cleanup) =>
+      say(`verify stack · down failed: ${cleanup.message}`),
+    );
+    throw error;
+  }
+}
 
+async function upClaimed(flags, specs, { started, phases, logs }) {
   const repos = await sessionRepos();
   const parsed = Object.fromEntries(
     Object.keys(REPOSITORIES).map((repository) => [
@@ -537,11 +614,7 @@ async function up(args) {
   const cliVersion = JSON.parse(await showFile(resolved.mend, "apps/cli/package.json")).version;
   const composeYaml = await showFile(resolved.mend, "deploy/docker/compose.v2.yaml");
   const relay = relayEndpoint(process.env.DOCKER_HOST, flags.port);
-  const { socket, rootless } = await (async () => {
-    // The probe image is pulled here, once, before the builds start.
-    await docker(["pull", "--quiet", FIXTURE_BASE_IMAGE], { timeout: 15 * 60_000 });
-    return daemonSocket();
-  })();
+  const { socket, rootless } = await daemonSocket();
 
   // Every build starts at once. The bundle copies Core's three images in, so it waits for them;
   // it only names the sealantd image (the bundled worker bakes it into workspace images when an
@@ -1011,10 +1084,13 @@ async function report(args) {
   say(`  memory · ${formatKb(memory.totalKb)} · ${memory.method}`);
   for (const item of memory.processes.slice(0, 8))
     say(`    ${formatKb(item.kb).padStart(9)}  ${item.command}`);
+  // What was looked at, and only that: each container's environment, command and labels.
   say(
-    isolation.length === 0
-      ? `  isolation · no container holds the session's ${outerSecrets.length} credential(s)`
-      : `  isolation · FOUND in ${isolation.join(", ")}`,
+    outerSecrets.length === 0
+      ? "  isolation · not checked: no credential of the session is readable here"
+      : isolation.length === 0
+        ? `  isolation · the session's credential (${outerSecrets.length} value(s)) is in no container's environment, command or labels`
+        : `  isolation · FOUND in ${isolation.join(", ")}`,
   );
   if (isolation.length > 0) process.exitCode = 1;
 }
@@ -1024,69 +1100,93 @@ async function report(args) {
 async function down(args) {
   const { flags } = parseFlags(args);
   const volumes = (await dockerOut(["volume", "ls", "--quiet"])).split("\n").filter(Boolean);
-  if (!volumes.includes(STATE_VOLUME) && !flags.force)
+  const owner = await dockerOut([
+    "ps",
+    "--all",
+    "--quiet",
+    "--no-trunc",
+    "--filter",
+    `name=^${OWNER_CONTAINER}$`,
+  ]);
+  const present = owner !== "" || volumes.includes(STATE_VOLUME);
+  if (!present && !flags.force && !flags.purge)
     throw new Error("no verify stack on this daemon (--force sweeps what one left anyway)");
-  const ids = await stackContainers();
-  if (ids.length > 0) await docker(["rm", "--force", "--volumes", ...ids]);
-  const owned = [
-    STATE_VOLUME,
-    FIXTURE_VOLUME,
-    "mend-store",
-    "mend-control",
-    "mend-garage",
-    ...volumes.filter((name) => name.startsWith(`${COMPOSE_PROJECT}_`)),
-  ].filter((name) => volumes.includes(name));
-  if (owned.length > 0) await docker(["volume", "rm", "--force", ...owned]);
-  const networks = (await dockerOut(["network", "ls", "--format", "{{.Name}}"]))
-    .split("\n")
-    .filter((name) => name === COMPOSE_NETWORK || /^sealant-[0-9a-f-]+-network$/i.test(name));
-  for (const network of networks) await docker(["network", "rm", network]).catch(() => undefined);
-  if (flags.purge) {
-    const images = (
-      await dockerOut(["image", "ls", "--quiet", "--filter", `label=${STACK_LABEL}=1`])
-    )
+  let ids = [];
+  let owned = [];
+  if (present || flags.force) {
+    // The claim goes last: until everything else is gone, a new start is still refused.
+    ids = await stackContainers();
+    const others = ids.filter((id) => id !== owner);
+    if (others.length > 0) await docker(["rm", "--force", "--volumes", ...others]);
+    owned = [
+      STATE_VOLUME,
+      FIXTURE_VOLUME,
+      "mend-store",
+      "mend-control",
+      "mend-garage",
+      ...volumes.filter((name) => name.startsWith(`${COMPOSE_PROJECT}_`)),
+    ].filter((name) => volumes.includes(name));
+    if (owned.length > 0) await docker(["volume", "rm", "--force", ...owned]);
+    const networks = (await dockerOut(["network", "ls", "--format", "{{.Name}}"]))
       .split("\n")
-      .filter(Boolean);
-    if (images.length > 0)
-      await docker(["image", "rm", "--force", ...new Set(images)]).catch(() => undefined);
-    await rm(join(cacheDir, "contexts"), { recursive: true, force: true });
+      .filter((name) => name === COMPOSE_NETWORK || /^sealant-[0-9a-f-]+-network$/i.test(name));
+    for (const network of networks) await docker(["network", "rm", network]).catch(() => undefined);
+    await docker(["rm", "--force", OWNER_CONTAINER]).catch(() => undefined);
+    await rm(stateFile, { force: true });
   }
-  await rm(stateFile, { force: true });
+  if (flags.purge) await purgeCaches();
   say(
-    `verify stack · removed ${ids.length} container(s), ${owned.length} volume(s)${flags.purge ? ", its images and contexts" : "; images kept for the next up"}`,
+    `verify stack · removed ${ids.length} container(s), ${owned.length} volume(s)${flags.purge ? "; images, build cache and every cache directory purged" : "; images kept for the next up"}`,
   );
+}
+
+/**
+ * Everything the stack keeps for its next start: its images, BuildKit's cache on this daemon (layers
+ * and cache mounts, cargo's included), and its cache directories (contexts, packed packages, the
+ * bare repositories, logs). Works with or without a stack up.
+ */
+async function purgeCaches() {
+  const images = (await dockerOut(["image", "ls", "--quiet", "--filter", `label=${STACK_LABEL}=1`]))
+    .split("\n")
+    .filter(Boolean);
+  if (images.length > 0)
+    await docker(["image", "rm", "--force", ...new Set(images)]).catch(() => undefined);
+  await ensureBuildx();
+  await docker(["buildx", "prune", "--all", "--force"]);
+  for (const dir of ["contexts", "packages", "git", "logs"])
+    await rm(join(cacheDir, dir), { recursive: true, force: true });
+}
+
+/** How many entries each cache directory keeps across starts; older ones go at the next `up`. */
+const RETENTION = { contexts: 6, packages: 6, logs: 10 };
+
+async function trimCaches() {
+  for (const [dir, keep] of Object.entries(RETENTION)) {
+    const root = join(cacheDir, dir);
+    const names = await readdir(root).catch(() => []);
+    const entries = await Promise.all(
+      names.map(async (name) => ({ name, mtimeMs: (await stat(join(root, name))).mtimeMs })),
+    );
+    for (const name of beyondRetention(entries, keep))
+      await rm(join(root, name), { recursive: true, force: true });
+  }
 }
 
 // ─── serve ──────────────────────────────────────────────────────────────────
 
 /**
- * `up`, then hold while the Service runs, and take the stack down when it is stopped. The
- * Service's port is the relay's: Mend dials the workspace loopback, then the Docker sidecar.
+ * `up`, then hold while the Service runs. The Service's port is the relay's: Mend dials the
+ * workspace loopback, then the Docker sidecar.
  *
- * Mend stops a Service by hanging up its terminal: SIGHUP to the process group, SIGKILL two
- * seconds later (sealantd `sealant-pty` close). A teardown takes longer, so it runs in a process of
- * its own session, out of that group's reach, and logs to the stack's cache.
+ * The stack goes when this process goes, however it goes. Mend stops a Service by hanging up its
+ * terminal (SIGHUP to the process group, SIGKILL two seconds later, sealantd `sealant-pty` close),
+ * a verifier may be killed outright, and `up` may fail. So the teardown does not run here: a
+ * watchdog in a session of its own, out of the group's reach, waits for this process to end and
+ * then runs `down`. A failed `up` also removes what it made before it exits.
  */
 async function serve(args) {
-  let stopping = false;
-  const stop = (signal) => {
-    if (stopping) return;
-    stopping = true;
-    const log = join(cacheDir, "logs", "down.log");
-    say(`verify stack · ${signal} · taking the stack down (log: ${log})`);
-    try {
-      mkdirSync(dirname(log), { recursive: true });
-      const out = openSync(log, "a");
-      spawn(process.execPath, [fileURLToPath(import.meta.url), "down"], {
-        detached: true,
-        stdio: ["ignore", out, out],
-        env: process.env,
-      }).unref();
-    } finally {
-      process.exit(0);
-    }
-  };
-  for (const signal of ["SIGHUP", "SIGTERM", "SIGINT"]) process.on(signal, () => stop(signal));
+  startWatchdog();
+  for (const signal of ["SIGHUP", "SIGTERM", "SIGINT"]) process.on(signal, () => process.exit(0));
   const state = await up(args);
   say(
     `verify stack · on your machine: mend service connect stack --port ${state.relay.port}, then open ${state.url}`,
@@ -1108,16 +1208,65 @@ async function serve(args) {
   }
 }
 
+/**
+ * A running process's start time (field 22 of /proc/<pid>/stat), so a reused pid is not mistaken
+ * for it; null once it has ended, a zombie (state Z) included: nothing may have reaped it yet.
+ */
+const startTimeOf = (pid) => {
+  try {
+    const line = readFileSync(`/proc/${pid}/stat`, "utf8");
+    const fields = line.slice(line.lastIndexOf(")") + 2).split(" ");
+    if (fields[0] === "Z" || fields[0] === "X") return null;
+    return fields[19] ?? null;
+  } catch {
+    return null;
+  }
+};
+
+function startWatchdog() {
+  const log = join(cacheDir, "logs", "watchdog.log");
+  mkdirSync(dirname(log), { recursive: true });
+  const out = openSync(log, "a");
+  const started = startTimeOf(process.pid) ?? "";
+  spawn(
+    process.execPath,
+    [fileURLToPath(import.meta.url), "watchdog", String(process.pid), started],
+    { detached: true, stdio: ["ignore", out, out], env: process.env },
+  ).unref();
+  say(`verify stack · watchdog holds the stack to this process (log: ${log})`);
+}
+
+/** `watchdog <pid> <start time>`: wait for that process to end, then take the stack down. */
+async function watchdog([pid, started]) {
+  const alive = () => {
+    const now = startTimeOf(pid);
+    return now !== null && (started === "" || started === undefined || now === started);
+  };
+  while (alive()) await pause(2000);
+  say(`${new Date().toISOString()} verify stack · ${pid} ended; taking the stack down`);
+  const claimed = await dockerOut([
+    "ps",
+    "--all",
+    "--quiet",
+    "--filter",
+    `name=^${OWNER_CONTAINER}$`,
+  ]).catch(() => "");
+  if (claimed === "") return say("nothing to take down");
+  await down(["--force"]);
+}
+
 // ─── main ───────────────────────────────────────────────────────────────────
 
 const HELP = `usage: node scripts/verify-stack/stack.mjs <command>
 
-  up [sources] [--port <n>] [--no-check]   build and start the stack, then run the check
+  up [sources] [--port <n>] [--no-check] [--keep]
+                                           build and start the stack, then run the check
+                                           (--keep: leave a failed start for a look)
   serve [sources] [--port <n>]             up, then hold; the stack goes when this stops
   mend <args…>                             the inner mend CLI, signed in as the first account
   check                                    inner mend run -- true, until its session settles
   report [--json]                          sources, timings, memory, isolation
-  down [--purge] [--force]                 remove the stack (--purge: its images too)
+  down [--purge] [--force]                 remove the stack (--purge: images, build cache, caches)
 
 sources: --mend|--sealant|--sealantd <path|#pr|ref|pinned> (pinned: Core and sealantd only)
 docs/operations/verify-stack.md has the rest.`;
@@ -1141,6 +1290,9 @@ async function main() {
       });
       return;
     }
+    case "watchdog":
+      await watchdog(args);
+      return;
     case "check": {
       const state = await readState();
       if (!state) throw new Error("no verify stack here: `up` starts one");

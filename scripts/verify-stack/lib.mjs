@@ -21,13 +21,23 @@ export const CAPTURE_ROOTS = ["/workspace"];
 /** Every image, container and volume the stack makes carries this label. */
 export const STACK_LABEL = "dev.mend.verify-stack";
 
+// The stack's own containers and volumes are named `verify-stack-…`, never `mend-…` or `mend_…`:
+// `mend server setup` claims that namespace for its Compose project and refuses to install beside a
+// container in it that it did not make (apps/cli/src/server-docker-volumes.ts `refuseOldData`).
+
 /** The Docker volume that holds the inner server's configuration and secrets. */
-export const STATE_VOLUME = "mend-verify-stack-state";
+export const STATE_VOLUME = "verify-stack-state";
+
+/**
+ * The stack's claim on a daemon: a container created before anything else, whose name Docker keeps
+ * unique, so two starts on one daemon cannot both pass. `down` removes it last.
+ */
+export const OWNER_CONTAINER = "verify-stack-owner";
 
 /** The containers the stack runs beside the inner server's own. */
-export const RELAY_CONTAINER = "mend-verify-stack-relay";
-export const FIXTURE_CONTAINER = "mend-verify-stack-fixture";
-export const FIXTURE_VOLUME = "mend-verify-stack-fixture";
+export const RELAY_CONTAINER = "verify-stack-relay";
+export const FIXTURE_CONTAINER = "verify-stack-fixture";
+export const FIXTURE_VOLUME = "verify-stack-fixture";
 
 /** The inner server's Compose project and network (`name: mend` in compose.v2.yaml). */
 export const COMPOSE_PROJECT = "mend";
@@ -188,11 +198,15 @@ export function dockerClientEnvironment(source, { home, dockerConfig }) {
   };
 }
 
+/** The name a session's Docker sidecar answers to on the workspace's network (Core's adapter). */
+export const SESSION_SIDECAR_HOST = "docker";
+
 /**
  * Where the browser and the session reach the inner web. In a session the daemon is the workspace's
- * Docker sidecar, reached as `tcp://docker:2375` on a network only the workspace shares: a port the
- * relay publishes on every interface there is reachable from the workspace and nowhere else. On any
- * other daemon the relay publishes on loopback only.
+ * Docker sidecar, `tcp://docker:2375`, on a network only the workspace shares: a port the relay
+ * publishes on every interface there is reachable from the workspace and nowhere else, and on
+ * loopback it would be reachable from nowhere. Any other daemon, a TCP one included, gets loopback
+ * only: an all-interface publish there could put the inner web on a network.
  */
 export function relayEndpoint(dockerHost, port) {
   if (dockerHost) {
@@ -202,8 +216,10 @@ export function relayEndpoint(dockerHost, port) {
     } catch {
       throw new Error(`DOCKER_HOST ${dockerHost} is not a URL`);
     }
-    if (url.protocol === "tcp:")
+    if (url.protocol === "tcp:" && url.hostname === SESSION_SIDECAR_HOST)
       return { publish: `0.0.0.0:${port}:${INNER_WEB_PORT}`, host: url.hostname, port };
+    if (url.protocol === "tcp:")
+      return { publish: `127.0.0.1:${port}:${INNER_WEB_PORT}`, host: url.hostname, port };
     if (url.protocol !== "unix:")
       throw new Error(`DOCKER_HOST ${url.protocol}// is not supported: tcp:// or unix:// only`);
   }
@@ -289,10 +305,12 @@ export function formatSeconds(seconds) {
 }
 
 /**
- * How many stacks fit a machine by memory alone: what is left after the session's own workspace and
- * a margin, over one stack's measured footprint with an inner session running.
+ * What a cache directory keeps: the `keep` newest entries by modification time; the rest go. Pure
+ * over `[{ name, mtimeMs }]`, so the retention rule is tested without a disk.
  */
-export function stacksThatFit({ machineKb, reservedKb, perStackKb }) {
-  if (!(perStackKb > 0)) return 0;
-  return Math.max(0, Math.floor((machineKb - reservedKb) / perStackKb));
+export function beyondRetention(entries, keep) {
+  return entries
+    .toSorted((a, b) => b.mtimeMs - a.mtimeMs)
+    .slice(keep)
+    .map((entry) => entry.name);
 }
