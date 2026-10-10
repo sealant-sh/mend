@@ -52,8 +52,9 @@ platform feedback (in `PLATFORM-FEEDBACK.md`) instead of working around it.
   registration is closed after the first account), `folder` (a Mend-managed directory that replaces
   host mounts). A project's visibility is `private` (its creator only) or `shared` (its
   organization). Only a session's owner steers it unless they turn on `shared control`, which lets
-  others steer while spending the owner's credentials. `MEND_TENANCY=single|multi` picks the
-  posture; `single` is the default and `multi` stays refused until the multi mode gate passes.
+  others steer: in a per-person workspace each turn spends its sender's own login; only a workspace
+  that shares one home spends the owner's (ADR 0016 decision 7a). `MEND_TENANCY=single|multi` picks
+  the posture; `single` is the default and `multi` stays refused until the multi mode gate passes.
 - Access nouns (`docs/adr/0004-access-without-a-private-network.md`): `exposure` is how an instance
   is reached, as its operator declares it: `loopback`, `private` (a network they control admission
   to) or `public`. Mend reports what it **observed** beside what was **declared**; an item neither

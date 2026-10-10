@@ -592,6 +592,31 @@ change. ADR 0010's "a joiner receives no secret files of its own" and ADR 0009's
 agent writes goes to the executor's owner" no longer hold in a person executor; they still hold in
 an executor that shares one home (Delivery 22 as built).
 
+### 7a. The shared layout: a documented exception for joins and shared control
+
+"No person ever runs on anyone else's login" holds in a person executor. An executor that shares one
+home has one set of logins, so two acts in it spend another person's:
+
+- **A join** by a different person runs their agent, shells and Services on the holder's logins and
+  Git access (owner, 2026-10-06).
+- **Shared control** runs a teammate's turns on the session owner's logins and Git access, and the
+  agent keeps the owner's memory and instructions (owner, 2026-10-10, security review 0.36 D1).
+
+Both are allowed and documented, not refused, and only where the executor shares one home:
+
+- the first workspace on a new image, before Mend knows whether the image can run per person
+  (decision 14);
+- `MEND_HARNESS_LAYOUT=shared`, the operator's opt-out;
+- a custom base without a setuid `sudo` (or `useradd`, or `setfacl`);
+- a Kubernetes workspace runtime, which imposes no-new-privileges.
+
+The product says so each time. The join line says that what the joiner starts runs on the identity
+of whoever started it (decision 13). The Shared control switch asks first, in words true to the
+layout (`SessionControlView.turnsOnSendersLogin`). Every turn someone else paid for carries its
+payer line (`billed to Alice's default`). ADR 0013's "Mend never falls back to the owner's login for
+someone else's turn" holds wherever per-person homes run. The exception ends for a worktree once it
+runs per person, and it never returns there (decision 14).
+
 ### 8. Saving and restoring per person (sealantd)
 
 - **Each person's saved directory is saved and restored per person.** sealantd records mode and
@@ -1569,4 +1594,7 @@ benchmark once more, before 0.36 is tagged.
 - 2026-10-10 (owner): repository settings are trusted. Claude plugins enabled by the repository's or
   the person's settings are installed before Claude starts, with no prompt, and named on the start
   line (decision 11a, mend#678). Saving `~/.claude/plugins` per person is held for 0.37.
+- 2026-10-10 (owner, security review 0.36 D1): shared control in an executor that shares one home
+  runs a teammate's turns on the owner's logins, as a join there does. Documented in decision 7a
+  with the cases it covers, not refused.
 - Open: gate B's history record.
