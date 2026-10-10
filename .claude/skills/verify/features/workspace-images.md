@@ -111,15 +111,16 @@ Preconditions:
 
 ## Gotchas
 
-- The project editor has no Docker service switch: it keeps whatever the inherited definition says.
-  The docs describe a Docker switch for custom images on the project level
-  (`guides/project-environment.md`, `guides/workspace-images.md`); only the Settings editors offer
-  it (`apps/web/src/routes/projects.$projectId.setup.tsx:263-423`). A product gap.
+- Both editors have a Docker service switch (`role="switch"`, named `Docker service` by its label):
+  the project's `Workspace image` panel since mend#663
+  (`apps/web/src/routes/projects.$projectId.setup.tsx:375-386`), and Settings. The live pass
+  (2026-10-10) ran before mend#663, when the project editor had none.
 - No choice button exposes its state: the mode, OS and shell buttons in both editors have no
   `aria-pressed`, so a snapshot cannot say which is chosen. Read the saved summary line instead.
-- The Settings Docker toggle is named only by its state, `Enabled` or `Disabled`
-  (`apps/web/src/components/workspace-environment-editor.tsx:254-265`). The Settings OS buttons'
-  names include their description (`Arch Rolling packages; Mend’s default.`); match `/^Arch/`.
+- The Settings Docker toggle is a `switch` named `Docker service`
+  (`apps/web/src/components/workspace-environment-editor.tsx:250-261`); before mend#663 it was named
+  only by its state, `Enabled` or `Disabled`, as the live pass saw. The Settings OS buttons' names
+  include their description (`Arch Rolling packages; Mend’s default.`); match `/^Arch/`.
 - The Settings editor uses fixed element ids for `Base image`, `Setup commands` and `Packages`
   (`workspace-environment-editor.tsx:164`, `188`, `271`). An operator who is also the owner sees two
   editors on `/settings` once the organization has its own image, and the second editor's labels

@@ -144,9 +144,10 @@ Preconditions:
 - The Setup sections are `section` elements without `aria-labelledby`, so none has the region role.
   Scope by their `h2` heading as above. Every panel has its own `Save`, `Cancel` and `Remove`, and
   the composer's `Save` changes its name with the row count (`Save`, `Save 2`, …).
-- The `Sensitive` switch has no accessible name of its own: its name is its state text, `Enabled` or
-  `Disabled` (`apps/web/src/routes/projects.$projectId.setup.tsx:1545`). It is the only `switch` on
-  the page today; ask for the role, not the name.
+- The `Sensitive` switch is named `Sensitive` by its label
+  (`apps/web/src/routes/projects.$projectId.setup.tsx:1568-1580`); before mend#663 its name was its
+  state text, `Enabled` or `Disabled`, as the live pass saw. The page has a second switch since
+  then, `Docker service` in `Workspace image`: scope to the section, as above.
 - Composer values and the secret editor's `Value`/`New value` are password inputs until revealed, so
   they have no `textbox` role. Use `getByLabel("Value 1", { exact: true })`, not
   `getByRole("textbox")`. The configuration editor's `Value` is a textarea and is a textbox.
