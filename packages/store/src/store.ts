@@ -266,9 +266,6 @@ const binaryOf = (bytes: Uint8Array): boolean => bytes.subarray(0, 8000).include
 
 /** How many links one read follows inside a worktree before it gives up. */
 const CONTAINED_LINK_HOPS = 16;
-/** A descriptor's file or directory, reached again without walking its path (Linux). */
-const procPath = (fd: number) => `/proc/self/fd/${fd}`;
-const hasProc = (): boolean => fs.existsSync("/proc/self/fd");
 const errorCode = (error: unknown): string | undefined =>
   error instanceof Error && "code" in error && typeof error.code === "string"
     ? error.code
@@ -277,19 +274,48 @@ const errorCode = (error: unknown): string | undefined =>
 const GONE = new Set(["ENOENT", "ENOTDIR", "ELOOP", "EACCES", "EPERM", "ENXIO"]);
 
 /**
- * Opens `<root>/<relative>` for reading so that nothing outside `root` can be what is opened, even
- * while the worktree changes underneath (mend#602 review, 602-1; the walk mend#615's contained
- * writer uses). Each directory is opened through no link (`O_NOFOLLOW`), the next one through the
- * last one's descriptor where `/proc` has it, and the file through no link either. A link met on
- * the way is read and the walk starts again from `root` on its target, only while that target
- * stays inside `root` and `.git` is not on it: a link inside the worktree is followed, one out of
- * it is not. A component swapped for a link between the look and the open fails the open. Null
- * when there is nothing (left) to read there.
+ * The first of `/proc/self/fd/` and `/dev/fd/` through which `<base><fd>/.` is the directory `fd`
+ * holds (same device and inode), so a path under it reaches that directory whatever its name is
+ * now; null when neither does (no `/proc`; macOS's `/dev/fd` opens a descriptor, it does not walk
+ * into one). The probe mend#615's contained writer uses.
  */
-const openContained = (root: string, relative: string): number | null => {
+const descriptorDirectory = (fd: number): string | null => {
+  const held = fs.fstatSync(fd);
+  for (const base of ["/proc/self/fd/", "/dev/fd/"]) {
+    try {
+      const seen = fs.statSync(`${base}${fd}/.`);
+      if (seen.dev === held.dev && seen.ino === held.ino) return base;
+    } catch {
+      // Not here.
+    }
+  }
+  return null;
+};
+
+/** Where no descriptor can be walked into, a read is refused rather than walked by its path. */
+export const containmentUnavailable = (root: string): string =>
+  `no /proc/self/fd or /dev/fd here to keep the read inside ${root}`;
+
+/** A file opened inside a worktree, and the descriptor directory it was reached through. */
+interface ContainedFile {
+  readonly fd: number;
+  readonly base: string;
+}
+
+/**
+ * Opens `<root>/<relative>` for reading so that nothing outside `root` can be what is opened, even
+ * while the worktree changes underneath (mend#602 review, 602-1 and 602-R2-1; the walk mend#615's
+ * contained writer uses). Each directory is opened through no link (`O_NOFOLLOW`), the next one
+ * through the last one's descriptor (`/proc/self/fd/<n>/…`, or `/dev/fd/<n>/…` where a probe shows
+ * it walks), and the file through no link either. Never by its literal path: a directory renamed
+ * and replaced by a link mid-walk is then not on the way. Where no descriptor directory walks, the
+ * read is refused (an error), never walked by path. A link met on the way is read and the walk
+ * starts again from `root` on its target, only while that target stays inside `root` and `.git` is
+ * not on it. Null when there is nothing (left) to read there.
+ */
+const openContained = (root: string, relative: string): ContainedFile | null => {
   const c = fs.constants;
   const enter = c.O_RDONLY | c.O_DIRECTORY | c.O_NOFOLLOW;
-  const proc = hasProc();
   let parts = relative.split("/");
   for (let hops = 0; hops <= CONTAINED_LINK_HOPS; hops++) {
     let dfd: number;
@@ -299,13 +325,14 @@ const openContained = (root: string, relative: string): number | null => {
       if (GONE.has(errorCode(error) ?? "")) return null;
       throw error;
     }
-    let literal = root;
     const walked: Array<string> = [];
     let restart: Array<string> | null = null;
     try {
+      const base = descriptorDirectory(dfd);
+      if (base === null) throw new Error(containmentUnavailable(root));
       for (const [index, part] of parts.entries()) {
         if (part === ".git") return null;
-        const at = `${proc ? procPath(dfd) : literal}/${part}`;
+        const at = `${base}${dfd}/${part}`;
         const entry = fs.lstatSync(at, { throwIfNoEntry: false });
         if (entry === undefined) return null;
         if (entry.isSymbolicLink()) {
@@ -323,12 +350,11 @@ const openContained = (root: string, relative: string): number | null => {
         }
         if (index === parts.length - 1) {
           // No link, and no waiting on a pipe: a file, or nothing.
-          return fs.openSync(at, c.O_RDONLY | c.O_NOFOLLOW | c.O_NONBLOCK);
+          return { fd: fs.openSync(at, c.O_RDONLY | c.O_NOFOLLOW | c.O_NONBLOCK), base };
         }
         const next = fs.openSync(at, enter);
         fs.closeSync(dfd);
         dfd = next;
-        literal = `${literal}/${part}`;
         walked.push(part);
       }
     } catch (error) {
@@ -345,12 +371,16 @@ const openContained = (root: string, relative: string): number | null => {
 
 /**
  * Whether an opened file is inside `root` and outside `.git`, by where the descriptor itself is
- * (`/proc/self/fd`), not by the path that named it. Without `/proc`, the walk's own refusals are
- * what holds.
+ * (its link under the descriptor directory it was reached through), not by the path that named
+ * it. A descriptor whose place cannot be read is not inside.
  */
-const descriptorInside = (fd: number, root: string): boolean => {
-  if (!hasProc()) return true;
-  const real = fs.readlinkSync(procPath(fd));
+const descriptorInside = (file: ContainedFile, root: string): boolean => {
+  let real: string;
+  try {
+    real = fs.readlinkSync(`${file.base}${file.fd}`);
+  } catch {
+    return false;
+  }
   return real.startsWith(`${root}${path.sep}`) && !real.split(path.sep).includes(".git");
 };
 
@@ -1498,12 +1528,13 @@ export class Store extends Context.Service<
         return yield* Effect.try({
           try: (): FileRead | null => {
             const root = fs.realpathSync(worktreePath);
-            const handle = openContained(root, relative);
-            if (handle === null) return null;
+            const file = openContained(root, relative);
+            if (file === null) return null;
+            const handle = file.fd;
             try {
               // The descriptor, not the path: what was opened is what is checked and read.
               const stat = fs.fstatSync(handle);
-              if (!stat.isFile() || !descriptorInside(handle, root)) return null;
+              if (!stat.isFile() || !descriptorInside(file, root)) return null;
               const buffer = Buffer.alloc(Math.min(maxBytes, stat.size));
               const read = fs.readSync(handle, buffer, 0, buffer.byteLength, 0);
               const bytes = new Uint8Array(buffer.subarray(0, read));
