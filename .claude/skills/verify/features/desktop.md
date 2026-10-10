@@ -79,10 +79,12 @@ Preconditions:
   `env -u MEND_TOKEN XDG_CONFIG_HOME=<scratch>/config mend run --project <project> -- sh -c 'printf "verified\n" > VERIFY.md'`.
   Note its id `<id>` and the worktree name `<run-worktree>` from the `✓ worktree` line.
 - No worktree named `verify-desk` exists in `<project>`.
-- Start the app with its own profile and a debugging port, and record its PID:
-  `env -u MEND_TOKEN XDG_CONFIG_HOME=<scratch>/config MEND_USER_DATA=<scratch>/desktop MEND_URL=<web> pnpm --filter @mend/desktop dev --remoteDebuggingPort 9222`.
-  It is ready when `curl -s http://127.0.0.1:9222/json/version` answers and `/json/list` lists a
-  page target.
+- Start the app with its own profile and a debugging port. Under the skill,
+  `drive-desktop.sh start <checkout>/apps/desktop "$web" 9222 <display>` does it: it refuses a
+  `<web>` that is not the run's tunnel, and records the pids. Outside the skill,
+  `env -u MEND_TOKEN -u MEND_URL XDG_CONFIG_HOME=<scratch>/config MEND_USER_DATA=<scratch>/desktop pnpm --filter @mend/desktop dev --remoteDebuggingPort 9222`
+  (the config names `<web>`), and record its PID. It is ready when
+  `curl -s http://127.0.0.1:9222/json/version` answers and `/json/list` lists a page target.
 
 - **Attach.** Run `const browser = await chromium.connectOverCDP("http://127.0.0.1:9222")` and
   `const page = browser.contexts()[0].pages().find((p) => !p.url().startsWith("devtools://"))`. The
