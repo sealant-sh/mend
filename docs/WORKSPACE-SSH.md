@@ -95,9 +95,12 @@ costs one lookup from the single budget all its requests share (Core's
 `SEALANT_BUDGET_PRINCIPAL_REQUESTS_PER_MINUTE`, 12000 a minute). Anyone who reaches the port can
 spend that budget. The gateway then refuses every login, and every new channel on connections
 already open, until the budget refills. Nobody reaches a workspace that way. sealant#359 adds sshd's
-limits: a 30 s login grace time, 10 connections not yet logged in per address (100 in all), 6
-attempts per connection, 60 key lookups a minute per address, and a lookup budget kept apart from
-the one connections already in use.
+limits: a 60 s login grace time, 10 connections not yet logged in per source (100 in all), 6
+attempts per connection, 60 lookups a minute per source of keys nobody holds, and a lookup budget
+kept apart from the one connections already in use. A source is an IPv4 address or an IPv6 /64:
+every address in one /64 counts as one. The limits need the gateway to see each client's own
+address. Rootful Docker keeps it for IPv4 clients. Rootless Docker, Docker Desktop and docker-proxy
+for IPv6 clients hide it, and every client then counts as one source.
 
 `mend uninstall --home` removes the key this machine registered, and only that key, before it
 revokes the terminal's device token and deletes the key file. It identifies the key by its public

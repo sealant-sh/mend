@@ -40,10 +40,11 @@ are missing.
   an outsider spends it, every real login is refused, and so is every new channel on a connection
   already open (the 0.36 security review's probe, budget scaled down to 50). Mend 0.36 offers
   publishing that port (`--ssh-bind`, `--declare workspace-ssh`).
-- **Filed (sealant#359):** sshd-like limits before login (LoginGraceTime 30 s, MaxStartups 100,
-  PerSourceMaxStartups 10, MaxAuthTries 6, and 60 key lookups a minute per IPv4 address or IPv6
-  /64), and key lookups billed to their own subject (`gateway:keys`). Until Mend pins it, the docs
-  say the port has no limits before login (docs/WORKSPACE-SSH.md, the exposure page).
+- **Filed (sealant#359):** sshd-like limits before login (LoginGraceTime 60 s, MaxStartups 100,
+  PerSourceMaxStartups 10, MaxAuthTries 6, and 60 lookups a minute of keys nobody holds per IPv4
+  address or IPv6 /64; the Helm Service keeps client addresses with `externalTrafficPolicy: Local`),
+  and key lookups billed to their own subject (`gateway:keys`). Until Mend pins it, the docs say the
+  port has no limits before login (docs/WORKSPACE-SSH.md, the exposure page).
 
 ## 2026-10-10 · 0.39.0-next.707 · A session's arguments must be trimmed and non-empty
 

@@ -36,12 +36,14 @@ export function WorkspaceSshPanel() {
   // The caller's running sessions a removal named, on a platform that keeps open connections.
   const [toStop, setToStop] = useState<RemovedKey["runningSessions"]>([]);
   const [stopping, setStopping] = useState(false);
+  const [confirmingStop, setConfirmingStop] = useState(false);
 
   const remove = (key: WorkspaceSshKeyDto) => {
     setBusy(key.sshKeyId);
     setSaid(null);
     setError(null);
     setToStop([]);
+    setConfirmingStop(false);
     void removeWorkspaceSshKey(key.sshKeyId)
       .then((removed) => {
         setConfirming(null);
@@ -73,7 +75,10 @@ export function WorkspaceSshPanel() {
           setError(`${failed} could not be stopped · stop them from the session page`);
         return undefined;
       })
-      .finally(() => setStopping(false));
+      .finally(() => {
+        setStopping(false);
+        setConfirmingStop(false);
+      });
   };
 
   return (
@@ -152,16 +157,37 @@ export function WorkspaceSshPanel() {
         {said === null ? null : <p className="font-mono text-[12px] text-label">{said}</p>}
         {toStop.length === 0 ? null : (
           <div className="flex flex-wrap items-center gap-3">
-            <button
-              type="button"
-              disabled={stopping}
-              onClick={stopRunning}
-              className="font-sans text-xs font-medium text-danger transition-opacity hover:opacity-80 disabled:opacity-60"
-            >
-              {stopping
-                ? "Stopping…"
-                : `Stop ${toStop.length} running ${toStop.length === 1 ? "session" : "sessions"}`}
-            </button>
+            {confirmingStop ? (
+              <>
+                <button
+                  type="button"
+                  disabled={stopping}
+                  onClick={stopRunning}
+                  className="font-sans text-xs font-medium text-danger transition-opacity hover:opacity-80 disabled:opacity-60"
+                >
+                  {stopping ? "Stopping…" : "Confirm stop"}
+                </button>
+                <button
+                  type="button"
+                  disabled={stopping}
+                  onClick={() => setConfirmingStop(false)}
+                  className={QUIET_BUTTON}
+                >
+                  Cancel
+                </button>
+                <span className="font-mono text-[12px] text-label">
+                  stops each one&apos;s agent and Services · the record and the review remain
+                </span>
+              </>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setConfirmingStop(true)}
+                className={QUIET_BUTTON}
+              >
+                {`Stop ${toStop.length} running ${toStop.length === 1 ? "session" : "sessions"}…`}
+              </button>
+            )}
             <span className="truncate font-mono text-[12px] text-label">
               {toStop.map((session) => session.label ?? session.sessionId).join(" · ")}
             </span>
