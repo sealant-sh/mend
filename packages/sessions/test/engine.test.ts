@@ -266,6 +266,7 @@ import {
   Fiber,
   Layer,
   Logger,
+  Option,
   Schedule,
   Stream,
   type Scope,
@@ -444,6 +445,8 @@ const sealantLaunchLayer = (
     readonly stopOptions?: Array<WorkspaceStopOptions | undefined>;
     /** What the platform answers a stop, given whether it discards; `requested` by default. */
     readonly stopAnswer?: (discard: boolean) => "stopped" | "draining" | "kept" | "requested";
+    /** Holds the platform's answer to a stop until it completes (a Core slow to stop the executor). */
+    readonly aroundStop?: () => Effect.Effect<void>;
     /** Every flush's kind, in order (`suspend` · `final`). */
     readonly flushKinds?: CaptureFlushKind[];
     /**
@@ -749,24 +752,29 @@ const sealantLaunchLayer = (
           ),
     forward: () => Effect.die("not in test"),
     stopWorkspace: (target, options) =>
-      Effect.sync(() => {
-        stopped?.push(target.id);
-        captureOps?.stops?.push(options?.discardUnsaved === true ? "discard" : "drain");
-        captureOps?.stopOptions?.push(options);
-        const answer = captureOps?.stopAnswer?.(options?.discardUnsaved === true) ?? "requested";
-        // A platform that keeps the workspace (its drain did not move) terminates nothing.
-        if (target.id === workspace.id && answer !== "kept") terminated = true;
-        // SDK 0.37.2: the stop is accepted and nothing more is said; the status says the rest.
-        const retained = captureOps?.retained?.() ?? null;
-        return {
-          state: answer,
-          retained,
-          completion:
-            options?.completion === undefined
-              ? null
-              : { outcome: captureOps?.completionOutcome ?? "accepted", detail: null },
-        };
-      }),
+      (captureOps?.aroundStop?.() ?? Effect.void).pipe(
+        Effect.andThen(
+          Effect.sync(() => {
+            stopped?.push(target.id);
+            captureOps?.stops?.push(options?.discardUnsaved === true ? "discard" : "drain");
+            captureOps?.stopOptions?.push(options);
+            const answer =
+              captureOps?.stopAnswer?.(options?.discardUnsaved === true) ?? "requested";
+            // A platform that keeps the workspace (its drain did not move) terminates nothing.
+            if (target.id === workspace.id && answer !== "kept") terminated = true;
+            // SDK 0.37.2: the stop is accepted and nothing more is said; the status says the rest.
+            const retained = captureOps?.retained?.() ?? null;
+            return {
+              state: answer,
+              retained,
+              completion:
+                options?.completion === undefined
+                  ? null
+                  : { outcome: captureOps?.completionOutcome ?? "accepted", detail: null },
+            };
+          }),
+        ),
+      ),
     captureFlush: (target, kind) =>
       Effect.gen(function* () {
         captureOps?.flushed?.push(`flush:${target.id}`);
@@ -14751,6 +14759,113 @@ describe("a Stop the person made in Mend (box, 2026-10-05)", () => {
                     },
                   };
                 }),
+            },
+          }),
+        },
+      );
+    },
+  );
+});
+
+describe("a review opened while a Stop ends the executor (packaged acceptance, arm64, 2026-10-10)", () => {
+  // Release run 38011808256 (0.36.0-next.663): `POST /changes/:id/reviews/open` had no answer in
+  // 120 s. The session was `stopping`: its drain had the final flush's answer (`final ·
+  // completed`), read it saved and was terminating the executor. The review's checkpoint asked
+  // that executor for another final flush and, once it answered, waited to publish the answer on
+  // the executor's evidence permit, which the drain holds for as long as the platform takes to
+  // answer the stop. The final flush the drain saved is the state to review: nothing more is asked.
+  it(
+    "takes the review's checkpoint from the drain's saved final flush, without another flush and without waiting for the stop",
+    { timeout: 20_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const kinds: CaptureFlushKind[] = [];
+      const memory = makeMemoryCaptureStore();
+      const stopAsked = await Effect.runPromise(Deferred.make<void>());
+      const stopHeld = await Effect.runPromise(Deferred.make<void>());
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            yield* engine.launch(session.id, ["codex"]);
+            yield* engine.stop(session.id);
+            // The drain read the executor saved and asked the platform to stop it.
+            yield* Deferred.await(stopAsked);
+            expect(kinds).toEqual(["final"]);
+            const head = memory.chains.get(session.worktreeId)?.headN ?? null;
+            const taken = yield* engine
+              .checkpointNow(session.id, "review-open")
+              .pipe(Effect.timeoutOption(Duration.seconds(5)));
+            expect(Option.isSome(taken)).toBe(true);
+            // No flush of its own: the drain's final one stands for it.
+            expect(kinds).toEqual(["final"]);
+            expect(memory.chains.get(session.worktreeId)?.headN ?? null).toBe(head);
+            yield* Deferred.succeed(stopHeld, undefined);
+            yield* until(
+              () => world.sessions.get(session.id)?.settledAt != null,
+              "the session to settle",
+            );
+            expect(world.sessions.get(session.id)?.status).toBe("stopped");
+          }),
+        {
+          captured: memory,
+          sealantLayer: lifecycleLayer(created, {
+            captureOps: {
+              flushKinds: kinds,
+              flush: () => Effect.succeed(flushReport(0, 1, { headN: 1 })),
+              aroundStop: () =>
+                Deferred.succeed(stopAsked, undefined).pipe(
+                  Effect.andThen(Deferred.await(stopHeld)),
+                ),
+            },
+          }),
+        },
+      );
+    },
+  );
+  it(
+    "waits for the drain's final flush still on its way and takes its word, never asking the executor again",
+    { timeout: 20_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const kinds: CaptureFlushKind[] = [];
+      const logs: Array<string> = [];
+      const memory = makeMemoryCaptureStore();
+      const finalHeld = await Effect.runPromise(Deferred.make<void>());
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            yield* engine.launch(session.id, ["codex"]);
+            yield* engine.stop(session.id);
+            yield* until(() => kinds.includes("final"), "the drain's final flush");
+            const review = yield* Effect.forkChild(engine.checkpointNow(session.id, "review-open"));
+            yield* Effect.sleep(Duration.millis(200));
+            expect(review.pollUnsafe()).toBeUndefined();
+            yield* Deferred.succeed(finalHeld, undefined);
+            const taken = yield* Fiber.join(review).pipe(Effect.timeoutOption(Duration.seconds(5)));
+            expect(Option.isSome(taken)).toBe(true);
+            expect(kinds).toEqual(["final"]);
+            expect(
+              logs.some((line) =>
+                line.includes(
+                  "checkpoint · review-open · the drain's final flush stands for it · flushed",
+                ),
+              ),
+            ).toBe(true);
+            yield* until(
+              () => world.sessions.get(session.id)?.settledAt != null,
+              "the session to settle",
+            );
+          }),
+        {
+          captured: memory,
+          logs,
+          sealantLayer: lifecycleLayer(created, {
+            captureOps: {
+              flushKinds: kinds,
+              flush: () =>
+                Deferred.await(finalHeld).pipe(Effect.as(flushReport(0, 1, { headN: 1 }))),
             },
           }),
         },

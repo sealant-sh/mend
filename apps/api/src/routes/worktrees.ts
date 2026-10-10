@@ -31,7 +31,7 @@ import { HttpApiBuilder } from "effect/unstable/httpapi";
 
 import { ProjectAccess } from "../access.ts";
 import { unlandedWork } from "../landing-state.ts";
-import { LIVE_STATES, readFailure } from "./workbench.ts";
+import { LIVE_STATES, readFailure, withinCheckpointLimit } from "./workbench.ts";
 
 /**
  * The worktree container's own verbs (plan §5.5/§5.6): provision the durable
@@ -322,6 +322,7 @@ export const WorktreesGroupLive = HttpApiBuilder.group(MendApi, "worktrees", (ha
             ProjectNotFoundError: () => Effect.fail(new WorktreeNotFound({ id: params.id })),
             GitError: (error) => Effect.fail(new StoreFailure({ message: error.stderr })),
           }),
+          withinCheckpointLimit("The checkpoint"),
         );
       }),
     ),

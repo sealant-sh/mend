@@ -1336,6 +1336,15 @@ const CAPTURE_STATUS_TIMEOUT = Duration.seconds(10);
 const EVIDENCE_SETTLE_WAIT = Duration.sum(CAPTURE_STATUS_TIMEOUT, Duration.seconds(1));
 /** Between two looks at whether such an answer was published. */
 const EVIDENCE_SETTLE_LOOK = Duration.millis(25);
+/**
+ * How long a checkpoint's look at the lease holder may wait to publish the answer its flush got:
+ * the executor's evidence permit is held only while one answer is published or one decision is
+ * sent. Past it the checkpoint observes the registered head, and the answer stays unpublished
+ * until a later one is (`fencedObservation`).
+ */
+const CHECKPOINT_PUBLISH_WAIT = Duration.seconds(20);
+/** Between two looks at a running drain's word on its executor (`drainWordFor`). */
+const DRAIN_WORD_LOOK = Duration.millis(50);
 /** A landing asks the executor this many times for its captures before it says they are behind. */
 const LANDING_FLUSH_ATTEMPTS = 4;
 const LANDING_FLUSH_PAUSE = Duration.seconds(2);
@@ -3534,7 +3543,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const flushLeaseHolder = Effect.fn("SessionEngine.flushLeaseHolder")(function* (
         worktreeId: WorktreeId,
         why: string,
-      ) {
+      ): Effect.fn.Return<CaptureFlushObservation> {
         if (capture === null) return "none" satisfies CaptureFlushObservation;
         const lease = yield* capture.repo.leaseOf(worktreeId);
         // Never claimed, or released after its holder ended: the registered head is everything.
@@ -3562,23 +3571,81 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if (holder === null || holder.sealantWorkspaceId === null) {
           return "incomplete" satisfies CaptureFlushObservation;
         }
-        const workspace = yield* sealant
-          .getWorkspace(holder.sealantWorkspaceId)
-          .pipe(Effect.option, asSealantUser(holder.ownerUserId));
-        if (Option.isNone(workspace)) return "incomplete" satisfies CaptureFlushObservation;
+        const workspaceId = holder.sealantWorkspaceId;
         // An executor already sent a final flush takes nothing else; asking the final kind again
         // ships what it holds.
-        const ending = yield* workspaceFinalFlushed(worktreeId, holder.sealantWorkspaceId);
+        const ending = yield* workspaceFinalFlushed(worktreeId, workspaceId);
+        // A Stop's drain sent the executor its final flush, the one that saves it, or Mend is
+        // stopping it: nothing else is asked of it. Asked again, the executor answered, and
+        // publishing that answer waited on the evidence permit the drain holds while the platform
+        // stops the executor: a review opened during a Stop had no answer in 120 s (packaged
+        // acceptance, arm64, 2026-10-10). The checkpoint reads the drain's word instead, as the
+        // Stop's own checkpoint does.
+        if ((ending && drains.has(workspaceId)) || terminating.has(workspaceId)) {
+          const word = yield* drainWordFor(workspaceId);
+          if (word !== null) {
+            const observed = observedOf(word) ?? "incomplete";
+            yield* Effect.logInfo(
+              `session engine: ${why} · the drain's final flush stands for it · ${observed}`,
+            ).pipe(Effect.annotateLogs({ sessionId: holder.id, worktreeId, workspaceId }));
+            return observed satisfies CaptureFlushObservation;
+          }
+          // The drain ended meanwhile: the lease as it stands now.
+          if (!terminating.has(workspaceId)) return yield* flushLeaseHolder(worktreeId, why);
+          return "incomplete" satisfies CaptureFlushObservation;
+        }
+        const workspace = yield* sealant
+          .getWorkspace(workspaceId)
+          .pipe(
+            Effect.timeoutOption(CHECKPOINT_FLUSH_TIMEOUT),
+            Effect.option,
+            Effect.map(Option.flatten),
+            asSealantUser(holder.ownerUserId),
+          );
+        if (Option.isNone(workspace)) return "incomplete" satisfies CaptureFlushObservation;
+        // The flush is bounded by its own timeout, its publication by `CHECKPOINT_PUBLISH_WAIT`:
+        // past both the checkpoint observes the registered head.
         const reading = yield* observeCaptureFlush(
           holder,
           workspace.value,
           why,
           CHECKPOINT_FLUSH_TIMEOUT,
           ending ? "final" : "suspend",
+        ).pipe(
+          Effect.timeoutOption(Duration.sum(CHECKPOINT_FLUSH_TIMEOUT, CHECKPOINT_PUBLISH_WAIT)),
         );
+        if (Option.isNone(reading)) {
+          yield* Effect.logWarning(
+            "session engine: capture flush · its answer was not published in time · the registered head is observed",
+          ).pipe(Effect.annotateLogs({ sessionId: holder.id, worktreeId, workspaceId, why }));
+          return "incomplete" satisfies CaptureFlushObservation;
+        }
         return (
-          reading !== null && captureCaughtUp(reading) ? "flushed" : "incomplete"
+          reading.value !== null && captureCaughtUp(reading.value) ? "flushed" : "incomplete"
         ) satisfies CaptureFlushObservation;
+      });
+
+      /**
+       * A running drain's word on its executor, for a checkpoint asked meanwhile: the drain's
+       * saved word once it read the executor saved, or a reading it took after the checkpoint
+       * asked that did not save. Null once no drain runs on it. Waited for at most
+       * `CHECKPOINT_FLUSH_TIMEOUT` (the drain's final flush may still be shipping): `refused`
+       * past it, and the checkpoint observes the registered head.
+       */
+      const drainWordFor = Effect.fn("SessionEngine.drainWordFor")(function* (
+        workspaceId: SealantWorkspaceId,
+      ) {
+        const before = lastReadings.get(workspaceId);
+        const deadline = Date.now() + Duration.toMillis(CHECKPOINT_FLUSH_TIMEOUT);
+        while (true) {
+          const saved = drainSaved.get(workspaceId);
+          if (saved !== undefined) return saved;
+          if (!drains.has(workspaceId)) return null;
+          const latest = lastReadings.get(workspaceId);
+          if (latest !== undefined && latest !== before) return latest;
+          if (Date.now() >= deadline) return "refused" satisfies DrainWord;
+          yield* Effect.sleep(DRAIN_WORD_LOOK);
+        }
       });
 
       /**
@@ -4338,6 +4405,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       /** The last reading each running drain took of its executor (`runDeferred`). */
       const lastReadings = new Map<SealantWorkspaceId, CaptureReading>();
       /**
+       * Each running drain's word once it read its executor saved (`saved · terminating`): the
+       * executor's final flush, which admits nothing after it. A checkpoint asked meanwhile reads
+       * it instead of asking the executor again (`drainWordFor`).
+       */
+      const drainSaved = new Map<SealantWorkspaceId, DrainWord>();
+      /**
+       * Executors whose stop Mend is sending (`terminateWorkspace`): their evidence permit is held
+       * for as long as the platform takes to answer, so nothing is asked of them.
+       */
+      const terminating = new Map<SealantWorkspaceId, number>();
+      /**
        * Workspaces whose put-off work a drain holds: from the drain's first look until a round
        * runs the queue to empty (saved, in use, gone). A kept round keeps it held, and the ends
        * that would otherwise run leftovers with a flush of their own leave it to the next round.
@@ -4885,12 +4963,24 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const workspaceId = SealantWorkspaceId.make(workspace.id);
         // Decided and sent under the executor's permit (cross-repo decision 18): no answer of it
         // is recorded between reading the evidence and the attestation reaching the platform.
-        const { sent, answer } = yield* withEvidenceLock(
-          workspaceId,
-          Effect.gen(function* () {
-            const decided = yield* stopOptionsFor(sessionId, workspace, options);
-            return { sent: decided, answer: yield* sealant.stopWorkspace(workspace, decided) };
-          }),
+        // Marked for as long as the permit is held across the platform's answer: a checkpoint
+        // asks nothing of an executor being stopped (`flushLeaseHolder`).
+        const { sent, answer } = yield* Effect.acquireUseRelease(
+          Effect.sync(() => terminating.set(workspaceId, (terminating.get(workspaceId) ?? 0) + 1)),
+          () =>
+            withEvidenceLock(
+              workspaceId,
+              Effect.gen(function* () {
+                const decided = yield* stopOptionsFor(sessionId, workspace, options);
+                return { sent: decided, answer: yield* sealant.stopWorkspace(workspace, decided) };
+              }),
+            ),
+          () =>
+            Effect.sync(() => {
+              const left = (terminating.get(workspaceId) ?? 1) - 1;
+              if (left > 0) terminating.set(workspaceId, left);
+              else terminating.delete(workspaceId);
+            }),
         );
         const stopState = answer.state;
         if (answer.completion !== null) {
@@ -5416,6 +5506,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             // (Astra review, 2026-10-03). Saved on the store's seal with no answer from the
             // executor: the head is sealed.
             const word: DrainWord = reading ?? "sealed";
+            drainSaved.set(workspaceId, word);
             if (harvestReadyOf(word) === true) deferredEvidence.set(workspaceId, word);
             if (!(yield* runDeferred(workspaceId, word, drainPolicy.deferredWorkLimit, true))) {
               // A piece ran past its limit (a writer lock held, a store not answering): it runs
@@ -5547,7 +5638,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   drains.delete(workspaceId);
                 }),
               ),
-              Effect.ensuring(Effect.sync(() => lastReadings.delete(workspaceId))),
+              Effect.ensuring(
+                Effect.sync(() => {
+                  lastReadings.delete(workspaceId);
+                  drainSaved.delete(workspaceId);
+                }),
+              ),
             );
           }),
         );
