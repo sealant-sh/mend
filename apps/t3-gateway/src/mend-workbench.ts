@@ -236,6 +236,14 @@ export const MendWorktreeListing = Schema.Struct({
   worktrees: Schema.Array(Schema.Struct({ name: Schema.String })),
 });
 
+/** `RemovalReport` in @mend/api-contracts, from `DELETE /api/sessions/:id`. */
+export const MendRemovalReport = Schema.Struct({
+  removed: Schema.Boolean,
+  /** What stays for now, in Mend's words ("… · removed once its workspace has stopped"). */
+  leftover: Schema.NullOr(Schema.String),
+});
+export type MendRemovalReport = typeof MendRemovalReport.Type;
+
 /** `ChangeDiff` in @mend/api-contracts, from `GET /api/changes/:id/diff`: git's live answer. */
 export const MendChangeDiff = Schema.Struct({
   change: Schema.Struct({

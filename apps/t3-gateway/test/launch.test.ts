@@ -9,6 +9,7 @@ import {
   ORCHESTRATION_V2_WS_METHODS,
   ProjectId,
   ProviderInstanceId,
+  ProviderSessionId,
   ThreadId,
   type OrchestrationV2Run,
   type OrchestrationV2ShellStreamItem,
@@ -450,6 +451,242 @@ describe("orchestration.launchThread", () => {
       ).pipe(Effect.provide(gatewayTestLayer(mend.url, statePath)));
     });
   });
+});
+
+const setup = (mend: FakeMend, steer = true) => {
+  mend.workbench.addProject("project-1", "mend");
+  mend.workbench.addSession({ id: "session-1", projectId: "project-1", steer });
+};
+
+describe("rename, stop and delete", () => {
+  it.live("renames the session in Mend, and refuses one that is not the person's", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        setup(mend);
+        mend.workbench.addSession({ id: "session-2", projectId: "project-1", steer: false });
+        const { rpc } = yield* pairAndConnect(mend, "RENAME");
+        const shell = yield* feed(rpc[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({}));
+        yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({
+          type: "thread.metadata.update",
+          commandId: commandId(),
+          threadId: ThreadId.make("session-1"),
+          title: "Parser cleanup",
+        });
+        assert.deepStrictEqual(calls(mend, "POST", "/sessions/session-1/label")[0]?.body, {
+          label: "Parser cleanup",
+        });
+        yield* shell.next(shellThread("session-1", (thread) => thread.title === "Parser cleanup"));
+
+        const notMine = yield* Effect.exit(
+          rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({
+            type: "thread.metadata.update",
+            commandId: commandId(),
+            threadId: ThreadId.make("session-2"),
+            title: "Mine now",
+          }),
+        );
+        assert.strictEqual(errorTag(notMine), "EnvironmentAuthorizationError");
+
+        // Only the name moves through Mend.
+        const branch = yield* Effect.exit(
+          rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({
+            type: "thread.metadata.update",
+            commandId: commandId(),
+            threadId: ThreadId.make("session-1"),
+            branch: "feature/x",
+          }),
+        );
+        assert.strictEqual(errorTag(branch), "OrchestrationV2DispatchCommandError");
+      }),
+    ),
+  );
+
+  it.live("deletes a live session by stopping it first, and the thread goes from the shell", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        setup(mend);
+        const { rpc } = yield* pairAndConnect(mend, "DELETE");
+        const shell = yield* feed(rpc[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({}));
+        const thread = yield* feed(
+          rpc[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({
+            threadId: ThreadId.make("session-1"),
+          }),
+        );
+        yield* thread.next(
+          (item): item is Extract<Item, { kind: "snapshot" }> => item.kind === "snapshot",
+        );
+        yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({
+          type: "thread.delete",
+          commandId: commandId(),
+          threadId: ThreadId.make("session-1"),
+        });
+        assert.deepStrictEqual(
+          mend.workbench.calls
+            .filter(
+              (call) => call.path.startsWith("/api/sessions/session-1") && call.method !== "GET",
+            )
+            .map((call) => `${call.method} ${call.path}`),
+          [
+            "DELETE /api/sessions/session-1",
+            "POST /api/sessions/session-1/stop",
+            "DELETE /api/sessions/session-1",
+          ],
+        );
+        assert.isFalse(mend.workbench.sessions.has("session-1"));
+        yield* shell.next(
+          (item): item is Extract<ShellItem, { kind: "thread.removed" }> =>
+            item.kind === "thread.removed" && item.threadId === "session-1",
+        );
+        yield* thread.next(
+          (item): item is Extract<Item, { kind: "event" }> =>
+            item.kind === "event" && item.event.type === "thread.deleted",
+        );
+      }),
+    ),
+  );
+
+  it.live("hides a deleted session Mend keeps until its workspace stops, across a restart", () => {
+    const statePath = join(mkdtempSync(join(tmpdir(), "t3-gateway-removal-")), "state.sqlite");
+    return Effect.gen(function* () {
+      const mend = yield* startFakeMend;
+      setup(mend);
+      mend.workbench.stopAgent("session-1");
+      mend.workbench.removalLeavesWorkspace = true;
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const { rpc } = yield* pairAndConnect(mend, "LEFTOVER");
+          const shell = yield* feed(rpc[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({}));
+          yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({
+            type: "thread.delete",
+            commandId: commandId(),
+            threadId: ThreadId.make("session-1"),
+          });
+          yield* shell.next(
+            (item): item is Extract<ShellItem, { kind: "thread.removed" }> =>
+              item.kind === "thread.removed" && item.threadId === "session-1",
+          );
+          // Mend still lists it; the gateway does not bring it back.
+          mend.workbench.emit({ type: "session", sessionId: "session-1", projectId: "project-1" });
+          assert.isTrue(yield* shell.quiet((item) => item.kind === "thread.updated"));
+        }),
+      ).pipe(Effect.provide(gatewayTestLayer(mend.url, statePath)));
+
+      // A restart while Mend still keeps the session: it stays hidden.
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const { rpc } = yield* pairAndConnect(mend, "RESTARTED");
+          const shell = yield* feed(rpc[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({}));
+          const first = yield* shell.next(
+            (item): item is Extract<ShellItem, { kind: "snapshot" }> => item.kind === "snapshot",
+          );
+          assert.deepStrictEqual(
+            first.snapshot.threads.map((thread) => String(thread.id)),
+            [],
+          );
+          // Mend finishes the removal: the pending removal is forgotten.
+          mend.workbench.removeSession("session-1");
+          yield* eventually(() => mend.workbench.sessions.size === 0, "the removal");
+        }),
+      ).pipe(Effect.provide(gatewayTestLayer(mend.url, statePath)));
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const { rpc } = yield* pairAndConnect(mend, "AFTER");
+          const shell = yield* feed(rpc[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({}));
+          yield* shell.next(
+            (item): item is Extract<ShellItem, { kind: "snapshot" }> => item.kind === "snapshot",
+          );
+        }),
+      ).pipe(Effect.provide(gatewayTestLayer(mend.url, statePath)));
+      const pending = yield* Effect.scoped(
+        openGatewayState(statePath).pipe(Effect.flatMap((state) => state.listRemovals(PERSON.id))),
+      );
+      assert.deepStrictEqual(pending, []);
+    });
+  });
+
+  it.live(
+    "a shared-control steerer's delete stops the owner's session, and Mend refuses the delete",
+    () =>
+      withGateway((mend) =>
+        Effect.gen(function* () {
+          mend.workbench.addProject("project-1", "mend");
+          mend.workbench.addSession({ id: "session-1", projectId: "project-1", own: false });
+          const { rpc } = yield* pairAndConnect(mend, "STEERER");
+          // t3code's client detaches a live agent before it deletes the thread.
+          yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({
+            type: "provider-session.detach",
+            commandId: commandId(),
+            threadId: ThreadId.make("session-1"),
+            providerSessionId: ProviderSessionId.make("provider-session:session-1"),
+          });
+          const deleted = yield* Effect.exit(
+            rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({
+              type: "thread.delete",
+              commandId: commandId(),
+              threadId: ThreadId.make("session-1"),
+            }),
+          );
+          assert.strictEqual(errorTag(deleted), "EnvironmentAuthorizationError");
+          assert.strictEqual(calls(mend, "POST", "/sessions/session-1/stop").length, 1);
+          assert.isTrue(mend.workbench.sessions.has("session-1"));
+        }),
+      ),
+  );
+
+  it.live("stops the session for provider-session.detach and holds what is queued", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        setup(mend);
+        mend.workbench.addTurn("session-1", "A long job");
+        const { rpc } = yield* pairAndConnect(mend, "STOP");
+        const thread = yield* feed(
+          rpc[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({
+            threadId: ThreadId.make("session-1"),
+          }),
+        );
+        yield* thread.next(
+          (item): item is Extract<Item, { kind: "snapshot" }> => item.kind === "snapshot",
+        );
+        yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({
+          type: "message.dispatch",
+          commandId: commandId(),
+          createdBy: "user",
+          creationSource: "web",
+          threadId: ThreadId.make("session-1"),
+          messageId: MessageId.make("message-behind"),
+          text: "Behind the long job",
+          attachments: [],
+          dispatchMode: { type: "queue_after_active" },
+        });
+        yield* thread.next(
+          runEvent((run) => run.userMessageId === "message-behind" && run.status === "queued"),
+        );
+        yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({
+          type: "provider-session.detach",
+          commandId: commandId(),
+          threadId: ThreadId.make("session-1"),
+          providerSessionId: ProviderSessionId.make("provider-session:session-1"),
+        });
+        assert.strictEqual(calls(mend, "POST", "/sessions/session-1/stop").length, 1);
+        const agent = mend.workbench.agents.get("session-1");
+        assert.isNotNull(agent?.exitedAt);
+        // Held: the stop ended the turn, and nothing relaunches the session unasked.
+        yield* thread.next(
+          runEvent((run) => run.userMessageId === "message-behind" && run.queueHeld === true),
+        );
+        assert.isTrue(
+          yield* thread.quiet(
+            (item) =>
+              item.kind === "event" &&
+              item.event.type === "run.updated" &&
+              item.event.payload.status === "starting",
+          ),
+        );
+        assert.strictEqual(calls(mend, "POST", "/launch").length, 0);
+        assert.strictEqual(calls(mend, "POST", "/turns").length, 0);
+      }),
+    ),
+  );
 });
 
 describe("planLaunch", () => {

@@ -143,6 +143,24 @@ export class GatewayState extends Context.Service<
       mendUserId: string,
       sessionId: string,
     ) => Effect.Effect<void, GatewayStateError>;
+    /**
+     * Keeps a session a person deleted that Mend keeps until its workspace has stopped, so it stays
+     * hidden from them across a restart.
+     */
+    readonly keepRemoval: (
+      mendUserId: string,
+      sessionId: string,
+      at: number,
+    ) => Effect.Effect<void, GatewayStateError>;
+    /** The sessions a person deleted that Mend had not removed when last read. */
+    readonly listRemovals: (
+      mendUserId: string,
+    ) => Effect.Effect<ReadonlyArray<string>, GatewayStateError>;
+    /** Forgets a pending removal once Mend no longer lists the session. */
+    readonly dropRemoval: (
+      mendUserId: string,
+      sessionId: string,
+    ) => Effect.Effect<void, GatewayStateError>;
   }
 >()("@mend/t3-gateway/GatewayState") {}
 
@@ -155,7 +173,8 @@ export class GatewayState extends Context.Service<
  * command and options (migration 4). Everyone else sees the session by its Mend id.
  * `project_ids` stays empty. `message_ids` and `run_ids` carry the ids of every turn a t3code
  * client sent, keyed by the Mend turn: a message id comes from the client, so it is never a key
- * across sessions, and a recorded turn is never replaced (migration 3).
+ * across sessions, and a recorded turn is never replaced (migration 3). `pending_removals` keeps
+ * each person's deleted sessions that Mend keeps until their workspace has stopped (migration 5).
  */
 const MIGRATIONS: ReadonlyArray<string> = [
   `
@@ -232,6 +251,14 @@ const MIGRATIONS: ReadonlyArray<string> = [
     UNIQUE (mend_user_id, command_id)
   );
   `,
+  `
+  CREATE TABLE pending_removals (
+    mend_user_id TEXT NOT NULL,
+    mend_session_id TEXT NOT NULL,
+    deleted_at INTEGER NOT NULL,
+    PRIMARY KEY (mend_user_id, mend_session_id)
+  );
+  `,
 ];
 
 const UserVersionRow = Schema.Struct({ user_version: Schema.Number });
@@ -271,6 +298,8 @@ const ThreadRow = Schema.Struct({
   launch_options: LaunchOptionsJson,
 });
 const decodeThreadRows = Schema.decodeUnknownEffect(Schema.Array(ThreadRow));
+const RemovalRow = Schema.Struct({ mend_session_id: Schema.String });
+const decodeRemovalRows = Schema.decodeUnknownEffect(Schema.Array(RemovalRow));
 
 const toBearerSession = (decoded: typeof SessionRow.Type): BearerSession => ({
   sessionId: decoded.session_id,
@@ -529,6 +558,37 @@ export const openGatewayState = (
           .run(mendUserId, sessionId);
       });
 
+    const keepRemoval = (mendUserId: string, sessionId: string, at: number) =>
+      run("keepRemoval", () => {
+        database
+          .prepare(
+            `INSERT OR IGNORE INTO pending_removals (mend_user_id, mend_session_id, deleted_at)
+             VALUES (?, ?, ?)`,
+          )
+          .run(mendUserId, sessionId, at);
+      });
+
+    const listRemovals = (mendUserId: string) =>
+      run("listRemovals", () =>
+        database
+          .prepare("SELECT mend_session_id FROM pending_removals WHERE mend_user_id = ?")
+          .all(mendUserId),
+      ).pipe(
+        Effect.flatMap((rows) =>
+          decodeRemovalRows(rows).pipe(
+            Effect.mapError((cause) => new GatewayStateError({ operation: "listRemovals", cause })),
+          ),
+        ),
+        Effect.map((rows) => rows.map((row) => row.mend_session_id)),
+      );
+
+    const dropRemoval = (mendUserId: string, sessionId: string) =>
+      run("dropRemoval", () => {
+        database
+          .prepare("DELETE FROM pending_removals WHERE mend_user_id = ? AND mend_session_id = ?")
+          .run(mendUserId, sessionId);
+      });
+
     return {
       environmentId,
       insertSession,
@@ -541,6 +601,9 @@ export const openGatewayState = (
       recordThread,
       listThreads,
       forgetThread,
+      keepRemoval,
+      listRemovals,
+      dropRemoval,
     };
   });
 
