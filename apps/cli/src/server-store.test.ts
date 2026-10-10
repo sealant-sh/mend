@@ -23,6 +23,13 @@ const temporary = (): string => {
   return root;
 };
 const fixture = fileURLToPath(new URL("../test-fixtures/server-child.mjs", import.meta.url));
+/**
+ * For a test that spawns the fixture: each child is a Node process that strips and loads the whole
+ * `server-setup.ts` graph from source before it does anything (0.4 s of a 0.55 s run on an idle
+ * workstation). On a loaded CI runner one child has taken 3.7 s, and the file's first test, which
+ * spawns the first child, ran past vitest's 5 s default (actions run 37680477311).
+ */
+const spawnsChildren = { timeout: 30_000 };
 const launch = (args: ReadonlyArray<string>, limited = false) => {
   const nodeArgs = ["--experimental-strip-types", fixture, ...args];
   const child = limited
@@ -85,27 +92,31 @@ afterEach(async () => {
 });
 
 describe("server filesystem transactions", () => {
-  it("writes public init permissions under a private umask without exposing credentials or directories", async () => {
-    const root = temporary();
-    expect((await launch([root, "private-umask"]).done).code).toBe(0);
-    const generation = activeDirectory(root);
-    for (const directory of [root, path.join(root, "generations"), generation]) {
-      expect(modeOf(directory)).toBe(0o700);
-    }
-    expect(modeOf(path.join(root, "identity.env"))).toBe(0o600);
-    for (const file of [
-      "identity.env",
-      "server.json",
-      "server.env",
-      "compose.yaml",
-      "compose.mirrors.yaml",
-    ]) {
-      expect(modeOf(path.join(generation, file))).toBe(0o600);
-    }
-    expect(modeOf(path.join(generation, "postgres-init.sh"))).toBe(0o755);
-    // nginx's worker reads the npm mirror's configuration: public, like Postgres's init.
-    expect(modeOf(path.join(generation, "npm-mirror.conf"))).toBe(0o644);
-  });
+  it(
+    "writes public init permissions under a private umask without exposing credentials or directories",
+    spawnsChildren,
+    async () => {
+      const root = temporary();
+      expect((await launch([root, "private-umask"]).done).code).toBe(0);
+      const generation = activeDirectory(root);
+      for (const directory of [root, path.join(root, "generations"), generation]) {
+        expect(modeOf(directory)).toBe(0o700);
+      }
+      expect(modeOf(path.join(root, "identity.env"))).toBe(0o600);
+      for (const file of [
+        "identity.env",
+        "server.json",
+        "server.env",
+        "compose.yaml",
+        "compose.mirrors.yaml",
+      ]) {
+        expect(modeOf(path.join(generation, file))).toBe(0o600);
+      }
+      expect(modeOf(path.join(generation, "postgres-init.sh"))).toBe(0o755);
+      // nginx's worker reads the npm mirror's configuration: public, like Postgres's init.
+      expect(modeOf(path.join(generation, "npm-mirror.conf"))).toBe(0o644);
+    },
+  );
 
   it.each([0o700, 0o600, 0o644, 0o750, 0o777, 0o4755])(
     "prepares a new identical generation for incompatible init mode %i without mutating the old one",
@@ -214,6 +225,7 @@ describe("server filesystem transactions", () => {
 
   it.each([false, true])(
     "survives process loss after a kernel-limited partial write, prior active=%s",
+    spawnsChildren,
     async (hasActive) => {
       const root = temporary();
       if (hasActive) {
@@ -377,9 +389,7 @@ describe("server filesystem transactions", () => {
   });
 });
 
-// Each test here spawns Node processes that load TypeScript; on a loaded CI runner one has taken
-// 3.7 s, so vitest's 5 s default left little headroom.
-describe("setup across processes", { timeout: 30_000 }, () => {
+describe("setup across processes", spawnsChildren, () => {
   it("excludes contenders before state creation, during Compose, and through health, then reuses credentials", async () => {
     const root = temporary();
     const rendezvous = temporary();

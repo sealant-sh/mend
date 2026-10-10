@@ -23,12 +23,24 @@ const ptyAgent = {
   kind: "agent-pty",
 };
 
-/** A follower over scripted reads: each read answers the next entry, the last one repeats. */
+/**
+ * A follower over scripted reads: each read answers the next entry, the last one repeats.
+ * `said(n)` settles once the follower has said `n` lines, whatever the event loop's order.
+ */
 const follow = (
   start: Promise<StartingSession> | null,
   reads: ReadonlyArray<StartingDetail<StartingSession> | Error>,
 ) => {
   const lines: Array<string> = [];
+  let lineSaid: (() => void) | null = null;
+  const said = (count: number): Promise<void> =>
+    new Promise((resolve) => {
+      const check = () => {
+        if (lines.length >= count) resolve();
+      };
+      lineSaid = check;
+      check();
+    });
   let index = 0;
   let clock = 0;
   const outcome = followStart<StartingSession>({
@@ -40,14 +52,17 @@ const follow = (
       if (next instanceof Error) throw next;
       return next;
     },
-    onLine: (line) => lines.push(line),
+    onLine: (line) => {
+      lines.push(line);
+      lineSaid?.();
+    },
     sleep: async (ms) => {
       clock += ms;
       await new Promise<void>((resolve) => setImmediate(resolve));
     },
     now: () => clock,
   });
-  return { outcome, lines, reads: () => index };
+  return { outcome, lines, said, reads: () => index };
 };
 
 const never = new Promise<StartingSession>(() => undefined);
@@ -73,7 +88,8 @@ describe("followStart", () => {
   it("reads the session while the old long launch is held, and attaches once it answers running", async () => {
     const { promise: start, resolve: answer } = Promise.withResolvers<StartingSession>();
     const run = follow(start, [{ session: starting("booting"), currentAgent: null }]);
-    await new Promise<void>((resolve) => setTimeout(resolve, 5));
+    // The follower reads and says the session's line while the launch call is still out.
+    await run.said(1);
     expect(run.lines).toEqual(["starting · booting"]);
     answer(running);
     expect(await run.outcome).toEqual({ kind: "live", session: running });
