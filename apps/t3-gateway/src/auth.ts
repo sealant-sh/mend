@@ -13,6 +13,7 @@ import {
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -29,6 +30,18 @@ import { GatewayState, type BearerSession, type GatewayStateError } from "./stat
  * back, and gives the client a bearer of its own. Every later call to Mend is the person's own,
  * made with that device token, so Mend's access rules apply unchanged.
  */
+
+/** How long a request waits on Mend's answer about the bearer's device. */
+export const DEVICE_CHECK_DEADLINE = "2 seconds";
+
+/**
+ * How long Mend's answer that a device is still paired is taken as current: a connect's ticket and
+ * its snapshot reads share one call to Mend, never one each.
+ */
+export const DEVICE_CONFIRMED_FOR_MS = 5_000;
+
+/** What Mend answered about a device token, or that it did not answer. */
+type DeviceVerdict = "accepted" | "refused" | "unanswered";
 
 /** As long as t3code's own bearer sessions (`DEFAULT_SESSION_TTL`, 30 days). */
 export const BEARER_TTL_MS = 30 * 24 * 60 * 60 * 1000;
@@ -83,6 +96,19 @@ export class GatewayRequestInvalid extends Schema.TaggedError<GatewayRequestInva
   "GatewayRequestInvalid",
   { reason: Schema.Literals(["invalid_scope", "scope_not_granted"]) },
 ) {}
+
+/**
+ * Mend did not say, within `DEVICE_CHECK_DEADLINE`, whether the bearer's device is still paired.
+ * Nothing is served on the gateway's word alone: the client is told to retry (503).
+ */
+export class GatewayDeviceUnconfirmed extends Schema.TaggedError<GatewayDeviceUnconfirmed>()(
+  "GatewayDeviceUnconfirmed",
+  {},
+) {
+  override get message(): string {
+    return "Mend did not answer whether this device is still paired. Try again shortly.";
+  }
+}
 
 /** A bearer that authenticated, with the Mend identity behind it. */
 export interface AuthenticatedBearer {
@@ -151,6 +177,17 @@ export class GatewayAuth extends Context.Service<
     readonly authenticateSession: (
       sessionId: AuthSessionId,
     ) => Effect.Effect<AuthenticatedBearer, GatewayCredentialInvalid | GatewayStateError>;
+    /**
+     * Every route that serves the person's data, after the bearer authenticated (the ticket, the
+     * HTTP snapshots): Mend still accepts its device token. A device revoked in Mend ends the
+     * bearer, so the client is told its credential is invalid (t3code's terminal answer). Mend not
+     * answering within `DEVICE_CHECK_DEADLINE` is `GatewayDeviceUnconfirmed`: nothing is served
+     * from the hub's memory to a device nobody could confirm. One answer serves every request of
+     * the device for `DEVICE_CONFIRMED_FOR_MS`.
+     */
+    readonly confirmDevice: (
+      bearer: AuthenticatedBearer,
+    ) => Effect.Effect<void, GatewayCredentialInvalid | GatewayDeviceUnconfirmed>;
     /**
      * `GET /api/auth/session`: authenticated only while the bearer is live here and Mend still
      * accepts its device token. A device revoked in Mend ends the bearer too.
@@ -243,13 +280,27 @@ export const GatewayAuthLive: Layer.Layer<
       };
     });
 
-    /** A stored session that is neither revoked nor expired. */
+    /**
+     * A stored session that is neither revoked nor expired, for a device Mend has not refused. A
+     * refusal whose revocation the state file could not write still ends the bearer; the write is
+     * tried again here.
+     */
     const live = (found: Option.Option<BearerSession>) =>
       Effect.gen(function* () {
         if (Option.isNone(found)) return yield* new GatewayCredentialInvalid({});
         const session = found.value;
         const now = yield* Clock.currentTimeMillis;
         if (session.revokedAt !== null || session.expiresAt <= now) {
+          return yield* new GatewayCredentialInvalid({});
+        }
+        if (projections.isDeviceRefused(session.deviceToken)) {
+          yield* state.revokeSessionsForDevice(session.deviceToken, now).pipe(
+            Effect.catch((error) =>
+              Effect.logError("t3 gateway could not revoke a refused device's bearers", {
+                cause: error.message,
+              }),
+            ),
+          );
           return yield* new GatewayCredentialInvalid({});
         }
         const bearer: AuthenticatedBearer = {
@@ -278,6 +329,50 @@ export const GatewayAuthLive: Layer.Layer<
       sessionId: AuthSessionId,
     ) {
       return yield* live(yield* state.findSessionById(sessionId));
+    });
+
+    /** Device token → when Mend last said it is paired. */
+    const confirmedAt = new Map<string, number>();
+    /** Device token → the answer a request is already waiting for: concurrent ones share it. */
+    const asking = new Map<string, Deferred.Deferred<DeviceVerdict>>();
+
+    const askMend = (deviceToken: string): Effect.Effect<DeviceVerdict> =>
+      Effect.suspend(() => {
+        const pending = asking.get(deviceToken);
+        if (pending !== undefined) return Deferred.await(pending);
+        const answer = Deferred.makeUnsafe<DeviceVerdict>();
+        asking.set(deviceToken, answer);
+        return mend.checkDevice(deviceToken).pipe(
+          Effect.timeoutOption(DEVICE_CHECK_DEADLINE),
+          Effect.map((verdict): DeviceVerdict => Option.getOrElse(verdict, () => "unanswered")),
+          Effect.catchTag("MendUnavailable", () => Effect.succeed<DeviceVerdict>("unanswered")),
+          Effect.tap((verdict) => Deferred.succeed(answer, verdict)),
+          // An interrupted ask leaves no one waiting on it.
+          Effect.ensuring(
+            Effect.sync(() => asking.delete(deviceToken)).pipe(
+              Effect.andThen(Deferred.succeed(answer, "unanswered")),
+            ),
+          ),
+        );
+      });
+
+    const confirmDevice = Effect.fn("GatewayAuth.confirmDevice")(function* (
+      bearer: AuthenticatedBearer,
+    ) {
+      const { session } = bearer;
+      const now = yield* Clock.currentTimeMillis;
+      const last = confirmedAt.get(session.deviceToken);
+      if (last !== undefined && now - last < DEVICE_CONFIRMED_FOR_MS) return;
+      const verdict = yield* askMend(session.deviceToken);
+      if (verdict === "accepted") {
+        confirmedAt.set(session.deviceToken, yield* Clock.currentTimeMillis);
+        return;
+      }
+      confirmedAt.delete(session.deviceToken);
+      if (verdict === "unanswered") return yield* new GatewayDeviceUnconfirmed({});
+      // As the device gate refuses a token: its bearers are revoked and its sockets close.
+      yield* projections.refuseDevice(session.mendUser.id, session.deviceToken);
+      return yield* new GatewayCredentialInvalid({});
     });
 
     const sessionState = Effect.fn("GatewayAuth.sessionState")(function* (
@@ -310,6 +405,6 @@ export const GatewayAuthLive: Layer.Layer<
       return authenticated;
     });
 
-    return { exchange, authenticate, authenticateSession, sessionState };
+    return { exchange, authenticate, authenticateSession, confirmDevice, sessionState };
   }),
 );

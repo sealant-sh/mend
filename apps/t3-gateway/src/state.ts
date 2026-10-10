@@ -285,6 +285,10 @@ export class GatewayState extends Context.Service<
     readonly listArchived: (
       mendUserId: string,
     ) => Effect.Effect<ReadonlyMap<string, string>, GatewayStateError>;
+    /** Every bearer neither revoked nor expired at `now`: what a start checks with Mend. */
+    readonly liveSessions: (
+      now: number,
+    ) => Effect.Effect<ReadonlyArray<BearerSession>, GatewayStateError>;
     /** The people who have a message kept that can still reach Mend: their hubs start with the gateway. */
     readonly peopleWithQueuedMessages: () => Effect.Effect<
       ReadonlyArray<BearerSession>,
@@ -1179,6 +1183,16 @@ export const openGatewayState = (
         ),
       );
 
+    const liveSessions = (now: number) =>
+      run("liveSessions", () =>
+        database
+          .prepare("SELECT * FROM bearer_sessions WHERE revoked_at IS NULL AND expires_at > ?")
+          .all(now),
+      ).pipe(
+        Effect.flatMap(decoded("liveSessions", decodeSessionRows)),
+        Effect.map((rows) => rows.map(toBearerSession)),
+      );
+
     const peopleWithQueuedMessages = () =>
       run("peopleWithQueuedMessages", () =>
         database
@@ -1224,6 +1238,7 @@ export const openGatewayState = (
       listNextModes,
       setArchived,
       listArchived,
+      liveSessions,
       peopleWithQueuedMessages,
     };
   });

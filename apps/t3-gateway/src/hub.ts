@@ -688,8 +688,12 @@ export const refreshKeyOf = (pointer: MendEventPointer): string | null => {
 
 const RECONNECT_BASE_MS = 500;
 const RECONNECT_MAX_MS = 15_000;
-/** How often every device token of the person is checked against Mend, pointer or not. */
-const DEVICE_CHECK_INTERVAL = "60 seconds";
+/**
+ * How often every device token of the person is checked against Mend, pointer or not. Mend
+ * publishes a `devices` pointer when a device is revoked, which checks at once; this bounds how
+ * long an open socket of a revoked device is served when that pointer is missed.
+ */
+const DEVICE_CHECK_INTERVAL = "15 seconds";
 /** How long a failed full read waits before it is tried again. */
 const FULL_READ_RETRY = "3 seconds";
 /** A stream that lasted this long resets the backoff: it was a drop, not a refusal loop. */
@@ -3474,6 +3478,8 @@ export class Projections extends Context.Service<
      * makes, closing its sockets and revoking its bearers.
      */
     readonly refuseDevice: (userId: string, deviceToken: string) => Effect.Effect<void>;
+    /** Whether Mend refused this device token since the gateway started. */
+    readonly isDeviceRefused: (deviceToken: string) => boolean;
   }
 >()("@mend/t3-gateway/Projections") {}
 
@@ -3484,6 +3490,18 @@ const OPENING_READ_BACKGROUND_ATTEMPTS = 60;
 
 /** How long a kept queue waits before its person's hub reads Mend again after a failed read. */
 const QUEUE_RESTORE_RETRY = "30 seconds";
+
+/**
+ * How a start's check of its paired devices waits for a Mend that does not answer: from 30 s,
+ * doubling, at most an hour apart.
+ */
+const DEVICE_RECONCILE_RETRY = Schedule.min([
+  Schedule.exponential("30 seconds"),
+  Schedule.spaced("1 hour"),
+]);
+
+/** Mend not answering at all, or failing: worth asking again. A 4xx other than 401 is an answer. */
+const isOutage = (error: MendUnavailable): boolean => error.status === null || error.status >= 500;
 
 /** Why a change to a queue the state file could not keep was refused: nothing changed. */
 const QUEUE_NOT_KEPT =
@@ -3605,20 +3623,30 @@ export const ProjectionsLive: Layer.Layer<
       },
       live: () => liveOf(userId),
       refuse: (token) =>
-        Effect.suspend(() => {
-          if (isRefused(token)) return Effect.void;
-          Deferred.doneUnsafe(refusalOf(token), Exit.void);
-          // The last device of the person: their hub tears itself down.
-          if (liveOf(userId).length === 0) Deferred.doneUnsafe(exhaustedOf(userId), Exit.void);
-          // The bearers standing for the device stop authenticating too.
-          return state.revokeSessionsForDevice(token, Date.now()).pipe(
-            Effect.catch((error) =>
-              Effect.logError("t3 gateway could not revoke a refused device's bearers", {
-                cause: error.message,
-              }),
-            ),
-          );
-        }),
+        Effect.uninterruptible(
+          Effect.suspend(() => {
+            if (isRefused(token)) return Effect.void;
+            // The bearers standing for the device stop authenticating first. Completing the
+            // refusal closes sockets and can tear the hub down, interrupting whoever found it
+            // (its event stream or device check): written after, the revocation was lost.
+            return state.revokeSessionsForDevice(token, Date.now()).pipe(
+              Effect.catch((error) =>
+                Effect.logError("t3 gateway could not revoke a refused device's bearers", {
+                  cause: error.message,
+                }),
+              ),
+              Effect.andThen(
+                Effect.sync(() => {
+                  Deferred.doneUnsafe(refusalOf(token), Exit.void);
+                  // The last device of the person: their hub tears itself down.
+                  if (liveOf(userId).length === 0) {
+                    Deferred.doneUnsafe(exhaustedOf(userId), Exit.void);
+                  }
+                }),
+              ),
+            );
+          }),
+        ),
       isRefused,
       refusal: (token) => Deferred.await(refusalOf(token)),
       noneLeft: Deferred.await(exhaustedOf(userId)),
@@ -3727,6 +3755,48 @@ export const ProjectionsLive: Layer.Layer<
     const refuseDevice = (userId: string, deviceToken: string) =>
       tokensOf(userId).refuse(deviceToken);
 
-    return { hub, refuseDevice };
+    /**
+     * Every device a live bearer stands for, checked with Mend once on start: one revoked while
+     * the gateway was not running gets its bearers revoked now, before any client of it asks.
+     * Mend not answering yet is tried again; until then, a bearer is checked when it asks for a
+     * ticket.
+     */
+    const reconcileDevices = Effect.gen(function* () {
+      const sessions = yield* state.liveSessions(Date.now());
+      const devices = new Map(sessions.map((session) => [session.deviceToken, session] as const));
+      yield* Effect.forEach(
+        devices.values(),
+        (session) =>
+          mend.checkDevice(session.deviceToken).pipe(
+            Effect.retry({ schedule: DEVICE_RECONCILE_RETRY, while: isOutage }),
+            Effect.flatMap((verdict) =>
+              // A person with no hub yet holds no known token, so this also completes their
+              // "none left"; `know` clears it when one of their devices connects or pairs.
+              verdict === "refused"
+                ? refuseDevice(session.mendUser.id, session.deviceToken)
+                : Effect.void,
+            ),
+            // Any other answer (a 403 or 404 from an older or misconfigured Mend) is not a
+            // revocation and will not change by asking again: the device is left as it is, and
+            // its tickets still ask Mend.
+            Effect.catch((error) =>
+              Effect.logWarning("t3 gateway could not check a paired device with Mend", {
+                cause: error.message,
+                status: error.status,
+              }),
+            ),
+          ),
+        { concurrency: 4, discard: true },
+      );
+    }).pipe(
+      Effect.catch((error) =>
+        Effect.logError("t3 gateway could not check its paired devices with Mend", {
+          cause: error.message,
+        }),
+      ),
+    );
+    yield* Effect.forkScoped(reconcileDevices);
+
+    return { hub, refuseDevice, isDeviceRefused: isRefused };
   }),
 );

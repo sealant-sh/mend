@@ -21,6 +21,7 @@ import { AssetRouteLive } from "./assets.ts";
 import {
   GatewayAuth,
   type GatewayCredentialInvalid,
+  type GatewayDeviceUnconfirmed,
   type GatewayPairingRateLimited,
 } from "./auth.ts";
 import { GatewayEnvironment } from "./environment.ts";
@@ -78,6 +79,23 @@ export const pairingRateLimited = (error: GatewayPairingRateLimited) =>
             ? {}
             : { "retry-after": String(error.retryAfterSeconds) },
       },
+    ),
+  );
+
+/** How soon a client is told to ask again when Mend could not confirm its device. */
+const DEVICE_RETRY_AFTER_SECONDS = 5;
+
+/**
+ * Mend did not answer whether the bearer's device is still paired, so nothing is served on the
+ * gateway's word alone. t3code's contracts declare no unavailable error here, so this is a plain
+ * `503 Service Unavailable` with `retry-after`: t3code's clients report an undeclared status as
+ * transient and retry, and fall back from an HTTP snapshot to the socket, whose ticket asks again.
+ */
+export const deviceUnconfirmed = (error: GatewayDeviceUnconfirmed) =>
+  Effect.succeed(
+    HttpServerResponse.jsonUnsafe(
+      { error: "temporarily_unavailable", error_description: error.message },
+      { status: 503, headers: { "retry-after": String(DEVICE_RETRY_AFTER_SECONDS) } },
     ),
   );
 
@@ -194,8 +212,17 @@ export const AuthGroupLive = HttpApiBuilder.group(GatewayHttpApi, "auth", (handl
           Effect.gen(function* () {
             const principal = yield* EnvironmentAuthenticatedPrincipal;
             yield* noStore;
+            // A ticket per connect: the moment to ask Mend whether the device is still paired.
+            const bearer = yield* auth.authenticateSession(principal.sessionId);
+            yield* auth.confirmDevice(bearer);
             return yield* tickets.issue(principal.sessionId);
-          }),
+          }).pipe(
+            Effect.catchTags({
+              GatewayCredentialInvalid: invalidCredential,
+              GatewayDeviceUnconfirmed: deviceUnconfirmed,
+              GatewayStateError: (error) => internal("internal_error", error),
+            }),
+          ),
         )
         // Pairing links and client sessions are administered in Mend (its devices), never here. A
         // paired client never holds the access scopes, so these answer as t3code answers a client
@@ -233,7 +260,9 @@ export const OrchestrationGroupLive = HttpApiBuilder.group(
         }
         const bearer = yield* auth
           .authenticateSession(principal.sessionId)
-          .pipe(Effect.catch((error) => internal("internal_error", error)));
+          .pipe(Effect.catchTag("GatewayStateError", (error) => internal("internal_error", error)));
+        // Mend still pairs the device: a warm hub would otherwise answer from memory.
+        yield* auth.confirmDevice(bearer);
         return yield* projections.hub(bearer.session);
       });
 
@@ -247,6 +276,13 @@ export const OrchestrationGroupLive = HttpApiBuilder.group(
                 return yield* hub.shellSnapshot.pipe(
                   Effect.catch((error) => internal("orchestration_snapshot_failed", error)),
                 );
+              }),
+            ).pipe(
+              // A device Mend refused is told its credential is invalid; one it could not
+              // confirm is told to retry.
+              Effect.catchTags({
+                GatewayCredentialInvalid: invalidCredential,
+                GatewayDeviceUnconfirmed: deviceUnconfirmed,
               }),
             ),
           )
@@ -263,6 +299,11 @@ export const OrchestrationGroupLive = HttpApiBuilder.group(
                   );
                 if (snapshot === null) return yield* notFound("thread_not_found");
                 return snapshot;
+              }),
+            ).pipe(
+              Effect.catchTags({
+                GatewayCredentialInvalid: invalidCredential,
+                GatewayDeviceUnconfirmed: deviceUnconfirmed,
               }),
             ),
           )
@@ -286,6 +327,11 @@ export const OrchestrationGroupLive = HttpApiBuilder.group(
                   latestLocalTurnOrdinal: latestLocalTurnOrdinalOf(snapshot.projection),
                 };
               }),
+            ).pipe(
+              Effect.catchTags({
+                GatewayCredentialInvalid: invalidCredential,
+                GatewayDeviceUnconfirmed: deviceUnconfirmed,
+              }),
             ),
           )
           // No cursor is ever handed out, so there is never an older page.
@@ -305,6 +351,11 @@ export const OrchestrationGroupLive = HttpApiBuilder.group(
                   nextCursor: null,
                   hasMoreHistory: false,
                 };
+              }),
+            ).pipe(
+              Effect.catchTags({
+                GatewayCredentialInvalid: invalidCredential,
+                GatewayDeviceUnconfirmed: deviceUnconfirmed,
               }),
             ),
           )

@@ -25,6 +25,7 @@ export interface FakeMend {
     readonly name: string;
     readonly platform: string;
     readonly token: string;
+    readonly deviceId: string;
   }>;
   /** Every `x-forwarded-for` header `POST /api/pair` saw, claimed or not. */
   readonly pairForwardedFor: ReadonlyArray<string | undefined>;
@@ -168,12 +169,13 @@ export const startFakeMend: Effect.Effect<FakeMend, never, Scope.Scope> = Effect
         tokens.set(token, { revoked: false, userId: entry.user.id });
         devices += 1;
         const name = String(payload["name"]);
-        claims.push({ code, name, platform: String(payload["platform"]), token });
+        const deviceId = `device-${devices}`;
+        claims.push({ code, name, platform: String(payload["platform"]), token, deviceId });
         return json(200, {
           token,
           url: { url: "http://127.0.0.1:3101", kind: "loopback" },
           user: entry.user,
-          device: { id: `device-${devices}`, name },
+          device: { id: deviceId, name },
         });
       }
       if (request.method === "GET" && request.url === "/api/me/devices") {

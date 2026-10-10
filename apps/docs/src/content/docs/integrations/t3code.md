@@ -62,7 +62,12 @@ them, deliberately.
    server's own machine, and enter the code.
 
 Pairing claims the code through Mend, so Mend lists the client among your devices as
-`t3code · <client>`. Revoking that device in Mend signs the client out of the gateway.
+`t3code · <client>`. Revoking that device in Mend signs the client out of the gateway: within five
+seconds for a new request or connect, and within 15 seconds for a socket it already holds. t3code
+then shows the environment as failed ("The environment credential is invalid.") and stops
+reconnecting; pair it again with a new code. A gateway that was not running when the device was
+revoked finds it when it starts. While Mend cannot be reached, the gateway serves no new connection
+or snapshot, since it cannot confirm the device; t3code retries until Mend answers.
 
 ## Who you are in t3code
 
@@ -89,7 +94,7 @@ Pairing claims the code through Mend, so Mend lists the client among your device
 | Interrupt                          | The turn is interrupted and what waits is held until you resume                                                                                                                                                                                  |
 | Approvals and questions            | The agent's requests, answered in Mend                                                                                                                                                                                                           |
 | Runtime mode                       | Applies from the agent's next start: Mend sets the mode per launch. The thread says so until then                                                                                                                                                |
-| Rename, stop, delete               | Mend's own routes. A delete keeps the worktree and its change, as Mend always does                                                                                                                                                               |
+| Rename, stop, delete               | Mend's own routes. A delete keeps the worktree and its change, as Mend always does; asked to delete the worktree too, t3code shows that Mend keeps it                                                                                            |
 | Archive                            | Your own view, kept by the gateway: Mend has no archive. What was queued is held, not lost                                                                                                                                                       |
 | Diffs                              | Each turn's slice of the worktree's checkpoints, matched to the turn by session and time, and the whole thread's                                                                                                                                 |
 | Files and `@`-mentions             | The session's worktree as it stands: the file tree, reading a file, searching contents                                                                                                                                                           |
