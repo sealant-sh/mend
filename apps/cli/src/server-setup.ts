@@ -1435,14 +1435,22 @@ const checkDocker = async (runtime: ServerSetupRuntime, context: string): Promis
 };
 
 /**
- * The image setup reads and changes the Docker host's kernel through: the busybox the Mend image's
- * `dev.sealant.mend.network-guard-image` label names (the Dockerfile's MEND_NETWORK_GUARD_IMAGE),
- * which every install preloads anyway. A few megabytes, so the user-namespace question comes before
- * the guide's questions and before the release's images are pulled (RC 0.36.0-next.761: the probe
- * pulled postgres first). A test holds it equal to the Dockerfile's pin.
+ * The image the worker runs to refuse the cloud metadata address in every workspace: what the Mend
+ * image's `dev.sealant.mend.network-guard-image` label names (the Dockerfile's
+ * MEND_NETWORK_GUARD_IMAGE), which every install preloads. A test holds it equal to the
+ * Dockerfile's pin. `mend uninstall --all` offers it even once the Mend image, and its label, are
+ * gone (RC 0.36.0-next.761 on a Mac: a re-run left it, unmentioned).
  */
-export const HOST_HELPER_IMAGE =
+export const NETWORK_GUARD_IMAGE =
   "busybox:1.37@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e";
+
+/**
+ * The image setup reads and changes the Docker host's kernel through: the guard's busybox, a few
+ * megabytes every install pulls anyway, so the user-namespace question comes before the guide's
+ * questions and before the release's images are pulled (RC 0.36.0-next.761: the probe pulled
+ * postgres first).
+ */
+export const HOST_HELPER_IMAGE = NETWORK_GUARD_IMAGE;
 
 /**
  * Whether the Docker host's kernel lets an unprivileged process create a user namespace, which

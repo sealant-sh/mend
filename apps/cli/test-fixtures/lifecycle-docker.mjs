@@ -239,6 +239,14 @@ else if (args.includes("image")) {
   const sized = (id) => (args.some((arg) => arg.includes("{{.Size}}")) ? `${id}\t100000000` : id);
   if (image === "postgres:17-alpine") out(sized("sha256:postgres"));
   else if (image === "dxflrs/garage:v2.4.1") out(sized("sha256:garage"));
+  // The metadata guard's busybox, by its pin: present once setup preloaded it.
+  else if (image.startsWith("busybox:")) {
+    if (state.guardImagePresent !== true) {
+      process.stderr.write(`Error: No such image: ${image}\n`);
+      process.exit(1);
+    }
+    out(sized("sha256:busybox"));
+  }
   // Present unless the test says the edge's image was never pulled here.
   else if (image === "caddy:2.10-alpine") {
     if (state.edgeImage === false) fail();

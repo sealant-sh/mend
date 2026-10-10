@@ -12,6 +12,7 @@ import { SERVER_VOLUME_OWNER_LABEL } from "./server-docker-volumes.ts";
 import {
   HOST_HELPER_IMAGE,
   instanceIdOf,
+  NETWORK_GUARD_IMAGE,
   nodeServerRuntime,
   reachableAddressesOf,
   serverCommand,
@@ -2439,7 +2440,8 @@ describe("mend server setup, guided and unasked", () => {
       path.join(import.meta.dirname, "..", "..", "..", "Dockerfile"),
       "utf8",
     );
-    expect(/^ARG MEND_NETWORK_GUARD_IMAGE=(\S+)$/m.exec(dockerfile)?.[1]).toBe(HOST_HELPER_IMAGE);
+    expect(/^ARG MEND_NETWORK_GUARD_IMAGE=(\S+)$/m.exec(dockerfile)?.[1]).toBe(NETWORK_GUARD_IMAGE);
+    expect(HOST_HELPER_IMAGE).toBe(NETWORK_GUARD_IMAGE);
   });
 
   it("guides a rerun: shows what is saved, changes one thing, keeps the rest and every declaration", async () => {

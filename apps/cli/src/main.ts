@@ -190,9 +190,9 @@ import { type AttachOutcome } from "./shared.ts";
 import { DEFAULT_SKILLS_DIR, scanSkillLibrary } from "./skills.ts";
 import { removeThisMachineKey, sshCommand } from "./ssh-setup.ts";
 import {
-  clearBuildCache,
   describeUninstall,
   executeUninstall,
+  settleBuildCache,
   parseUninstallArgs,
   planDeletesData,
   planIsEmpty,
@@ -3680,27 +3680,29 @@ const uninstallCommand = async (config: CliConfig, args: ReadonlyArray<string>) 
   const outcome = await executeUninstall(runtime, plan);
   const remaining = [...outcome.remaining];
   const leftovers = [...outcome.leftovers];
+  const notReached = [...(outcome.notReached ?? [])];
   if (
     extras?.buildCache != null &&
     plan.server !== null &&
     plan.server !== "none" &&
     !("kind" in plan.server)
   ) {
-    const context = plan.server.dockerContext;
-    const problem =
-      clearCache && outcome.failures.length === 0
-        ? await clearBuildCache(runtime, context)
-        : "kept";
-    if (problem === null) say(`removed Docker's build cache (${extras.buildCache})`);
+    const cache = await settleBuildCache(
+      runtime,
+      plan.server.dockerContext,
+      extras.buildCache,
+      clearCache,
+      outcome,
+    );
+    if (cache.kind === "removed") say(cache.line);
     else {
-      leftovers.push(
-        `Docker's build cache, ${extras.buildCache}${problem === "kept" ? "" : ` (${problem})`}: docker --context ${context} builder prune --all removes it`,
-      );
+      (cache.kind === "kept" ? leftovers : notReached).push(cache.line);
       remaining.push(`Docker's build cache (${extras.buildCache})`);
     }
   }
   if (scope === "all") remaining.push("the mend CLI itself (npm uninstall -g @sealant/mend)");
   for (const line of leftovers) say(dim(`  kept · ${line}`));
+  for (const line of notReached) say(dim(`  not reached · ${line}`));
   if (outcome.failures.length > 0) {
     return fail(outcome.failures.join("\n"));
   }

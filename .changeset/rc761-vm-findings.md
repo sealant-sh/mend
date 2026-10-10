@@ -4,10 +4,15 @@
 
 Fixes from the 0.36.0-next.761 fresh install on Ubuntu 24.04:
 
-- `mend uninstall --server` finishes in one run with a live session. It used to stop on
-  `network sealant-…-network has active endpoints (mend-docker-mirror)`, because it removed the
+- `mend uninstall --server` and `--all` finish in one run with live sessions. Both used to stop on
+  `network sealant-…-network has active endpoints (mend-docker-mirror)`, because they removed the
   workspaces' networks while the Docker mirror was still attached to them. Workspace containers go
   first, then the server's own containers (the mirrors among them), then the networks.
+- An `--all` that stops before its images, sysctl file or build cache now says each one was "not
+  reached". It used to say "kept · Docker's build cache" after a y, and say nothing about the rest.
+  A yes to the build cache is carried out once the server is gone.
+- `mend uninstall --all` offers the metadata guard's busybox image even on a re-run, after the Mend
+  image (whose label names it) is gone. It used to leave the image there without a word.
 - A launch refused because the host blocks user namespaces now prints a command that works when
   pasted: `… | sudo tee /etc/sysctl.d/60-mend-rootless-docker.conf && sudo sysctl --system`. The
   server's error scrubber had turned the path into `<path>`. The command crosses whole only when it

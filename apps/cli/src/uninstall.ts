@@ -28,7 +28,11 @@ import {
   serverProcessDeadlines,
   type ServerProcessOutput,
 } from "./server-runtime.ts";
-import { readServerInstallation, type ServerSetupRuntime } from "./server-setup.ts";
+import {
+  NETWORK_GUARD_IMAGE,
+  readServerInstallation,
+  type ServerSetupRuntime,
+} from "./server-setup.ts";
 import { ServerRefusal, withServerStore } from "./server-store.ts";
 import type { ThisMachineKeyRemoval } from "./ssh-setup.ts";
 
@@ -911,6 +915,9 @@ export const describeUninstall = async (
           const candidates = [
             ...(composed.status === 0 ? composed.stdout.split(/\s+/) : []),
             ...(guard.status === 0 ? [guard.stdout.trim()] : []),
+            // By its pin too: a re-run after a partial uninstall no longer has the Mend image,
+            // and so no label to read it from.
+            NETWORK_GUARD_IMAGE,
             DOCKER_SERVICE_IMAGE,
             // The edge's image stays after `--no-edge`, when the overlay no longer names it.
             EDGE_IMAGE,
@@ -1135,6 +1142,11 @@ export interface UninstallOutcome {
   readonly leftovers: ReadonlyArray<string>;
   /** Short names of what stays on this machine, for the last line; empty when nothing does. */
   readonly remaining: ReadonlyArray<string>;
+  /**
+   * What the plan named that the uninstall did not get to, because it stopped first: not kept by
+   * anyone's choice, so never said as "kept". Absent when it got to everything.
+   */
+  readonly notReached?: ReadonlyArray<string>;
 }
 
 interface Report {
@@ -1573,6 +1585,40 @@ const removeHostExtras = async (
   if (refused.length > 0) report.remaining.push(plural(refused.length, "image"));
 };
 
+/** What `all` removes once the server is gone, as said when the uninstall stopped before it. */
+const notReachedExtras = (extras: HostExtras): ReadonlyArray<string> => [
+  ...(extras.images.length === 0
+    ? []
+    : [`${plural(extras.images.length, "image")} (${listOf(extras.images, 4)})`]),
+  ...(extras.sysctl.state === "mend" ? [HOST_USER_NAMESPACE_SYSCTL_FILE] : []),
+];
+
+/**
+ * Docker's build cache after the uninstall ran, by the answer to its separate question. A yes is
+ * carried out once the server is gone; a yes the uninstall stopped before is "not reached", never
+ * "kept" (RC 0.36.0-next.761 on a Mac said "kept" after a y). Returns the line to say.
+ */
+export const settleBuildCache = async (
+  runtime: UninstallRuntime,
+  context: string,
+  size: string,
+  clear: boolean,
+  outcome: UninstallOutcome,
+): Promise<{ readonly kind: "removed" | "kept" | "not reached"; readonly line: string }> => {
+  const prune = `docker --context ${context} builder prune --all removes it`;
+  if (!clear) return { kind: "kept", line: `Docker's build cache, ${size}: ${prune}` };
+  if (outcome.failures.length > 0) {
+    return {
+      kind: "not reached",
+      line: `Docker's build cache, ${size}: the uninstall stopped before it; run mend uninstall again, or ${prune}`,
+    };
+  }
+  const problem = await clearBuildCache(runtime, context);
+  return problem === null
+    ? { kind: "removed", line: `removed Docker's build cache (${size})` }
+    : { kind: "kept", line: `Docker's build cache, ${size} (${problem}): ${prune}` };
+};
+
 /** Clear Docker's build cache, after the plan's separate question. */
 export const clearBuildCache = async (
   runtime: UninstallRuntime,
@@ -1713,10 +1759,12 @@ export const executeUninstall = async (
     leftovers: [],
     remaining: [],
   };
+  const notReached: Array<string> = [];
   const done = (): UninstallOutcome => ({
     failures: report.failures,
     leftovers: report.leftovers,
     remaining: report.remaining,
+    ...(notReached.length === 0 ? {} : { notReached }),
   });
   const refusal = planRefusal(plan);
   if (refusal !== null) {
@@ -1730,6 +1778,8 @@ export const executeUninstall = async (
     serverGone = true;
     if (server === "removed" && plan.server.extras !== undefined) {
       await removeHostExtras(runtime, plan.server.dockerContext, plan.server.extras, report);
+    } else if (plan.server.extras !== undefined) {
+      notReached.push(...notReachedExtras(plan.server.extras));
     }
   } else if (isLeftovers(plan.server)) {
     await removeLeftovers(runtime, plan.server, report);
