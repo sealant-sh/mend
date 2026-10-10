@@ -694,7 +694,7 @@ test("the real CLI runs in a home of the run's own, with no login or provider va
       SSH_AUTH_SOCK: join(w.home, "agent.sock"),
       MEND_URL: "http://127.0.0.1:9",
     };
-    const result = run(w, ["connect", "github"], {
+    const result = run(w, ["connect", "github", "--from-stdin"], {
       MEND_VERIFY_OUTER_URL: outer,
       MEND_VERIFY_REAL_MEND: join(w.bin, "env-mend"),
       ...leaked,
@@ -729,6 +729,123 @@ test("the real CLI runs in a home of the run's own, with no login or provider va
       rmSync(home, { recursive: true, force: true });
     }
   });
+});
+
+// H3: `gh auth token` with an empty GH_CONFIG_DIR still reads the owner's login from the OS keyring,
+// through the secret service on the session D-Bus.
+test("mend connect github needs --from-stdin under the guard: gh would read this machine's login", () => {
+  within({ xdgUrl: outer }, (w) => {
+    const env = { MEND_VERIFY_OUTER_URL: outer };
+    refused(run(w, ["connect", "github"], env), /gh auth token/);
+    refused(run(w, ["connect", "github", "--use-my-login"], env), /--from-stdin/);
+    for (const args of [
+      ["connect", "github", "--from-stdin"],
+      ["connect", "github", "--remove"],
+      ["connect", "github", "--help"],
+      ["connect", "codex", "--from-stdin"],
+      ["run", "--project", "mend", "--", "mend", "connect", "github"],
+    ]) {
+      const result = run(w, args, env);
+      assert.equal(result.status, 0, `${args.join(" ")}: ${result.stderr}`);
+    }
+  });
+});
+
+/**
+ * A `gh` that looks for the keyring the way gh's keyring library does on Linux: the session bus at
+ * DBUS_SESSION_BUS_ADDRESS (empty or `autolaunch:` means look on), else $XDG_RUNTIME_DIR/bus, and
+ * connects to it. It prints what it reached, and the keyring agents' variables it was handed.
+ */
+const KEYRING_GH = `#!/usr/bin/env node
+const { existsSync } = require("node:fs");
+const net = require("node:net");
+const address = process.env.DBUS_SESSION_BUS_ADDRESS ?? "";
+const runtime = process.env.XDG_RUNTIME_DIR ?? "";
+const path =
+  address !== "" && address !== "autolaunch:"
+    ? (/unix:path=([^,;]+)/.exec(address) ?? [])[1]
+    : runtime !== "" && existsSync(runtime + "/bus")
+      ? runtime + "/bus"
+      : undefined;
+const agents = Object.keys(process.env).filter((name) =>
+  /^(?:GNOME_KEYRING_|KWALLET|GPG_AGENT_INFO$|SSH_AGENT_PID$|SSH_AUTH_SOCK$|OP_|BW_SESSION$)/.test(name),
+);
+const done = (line) => {
+  console.log(line + " · agents " + (agents.join(",") || "none"));
+  process.exit(line.startsWith("keyring reached") ? 0 : 1);
+};
+if (path === undefined) done("no D-Bus · nothing to look at");
+const socket = net.connect(path);
+socket.on("connect", () => done("keyring reached " + path));
+socket.on("error", (error) => done("no D-Bus · " + error.code));
+`;
+
+test("under the guard, a gh that tries the keyring finds no D-Bus and no keyring agent", async () => {
+  const w = world({ xdgUrl: outer });
+  const servers = [];
+  try {
+    writeFileSync(join(w.bin, "gh"), KEYRING_GH, { mode: 0o755 });
+    // The real CLI as `mend connect github` is without --from-stdin: it runs `gh auth token`.
+    writeFileSync(join(w.bin, "gh-mend"), "#!/bin/sh\nexec gh auth token\n", { mode: 0o755 });
+    // The owner's session bus, and the runtime directory's `bus` a D-Bus client tries next.
+    const runtime = join(w.home, "owner-run");
+    mkdirSync(runtime, { mode: 0o700 });
+    const reached = [];
+    for (const path of [join(w.home, "owner-bus"), join(runtime, "bus")]) {
+      const server = createServer((socket) => {
+        reached.push(path);
+        socket.destroy();
+      });
+      await new Promise((done) => server.listen(path, done));
+      servers.push(server);
+    }
+    const owner = {
+      DBUS_SESSION_BUS_ADDRESS: `unix:path=${join(w.home, "owner-bus")},guid=0123456789abcdef`,
+      DBUS_SYSTEM_BUS_ADDRESS: `unix:path=${join(w.home, "owner-bus")}`,
+      XDG_RUNTIME_DIR: runtime,
+      GNOME_KEYRING_CONTROL: join(runtime, "keyring"),
+      GNOME_KEYRING_PID: "4242",
+      KWALLET_SESSION: "kwallet6",
+      GPG_AGENT_INFO: join(runtime, "gnupg", "S.gpg-agent"),
+      SSH_AGENT_PID: "4243",
+      SSH_AUTH_SOCK: join(runtime, "ssh-agent.sock"),
+      OP_SESSION_owner: "synthetic-op-session",
+      BW_SESSION: "synthetic-bw-session",
+    };
+    const gh = (command, env) =>
+      new Promise((done) => {
+        const child = spawn(command[0], command.slice(1), { cwd: w.home, env });
+        let out = "";
+        child.stdout.on("data", (data) => (out += data));
+        child.stderr.on("data", (data) => (out += data));
+        child.on("exit", (status) => done({ status, out }));
+      });
+    const base = {
+      PATH: `${guardDir}:${w.bin}:${process.env.PATH}`,
+      HOME: w.home,
+      XDG_CONFIG_HOME: w.xdg,
+      MEND_VERIFY_PRIVATE: w.P,
+      MEND_VERIFY_OUTER_URL: outer,
+      ...owner,
+    };
+    // Without the guard, the same gh reaches the owner's bus: the stub can tell.
+    const bare = await gh([join(w.bin, "gh"), "auth", "token"], base);
+    assert.match(bare.out, /keyring reached/, bare.out);
+    assert.equal(reached.length, 1);
+    reached.length = 0;
+    // Under the guard: no bus, no runtime `bus`, no agent.
+    track(w.xdg);
+    const guarded = await gh([join(guardDir, "mend"), "connect", "github", "--from-stdin"], {
+      ...base,
+      MEND_VERIFY_REAL_MEND: join(w.bin, "gh-mend"),
+    });
+    assert.equal(guarded.status, 1, guarded.out);
+    assert.match(guarded.out, /^no D-Bus · ENOENT · agents none$/m, guarded.out);
+    assert.deepEqual(reached, []);
+  } finally {
+    for (const server of servers) server.close();
+    rmSync(w.home, { recursive: true, force: true });
+  }
 });
 
 // R2-2: a tunnel counts only when its own child holds the port.
