@@ -6,6 +6,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { serviceStartCorrelation } from "@mend/domain/workbench";
 import { afterAll, describe, expect, it } from "vitest";
 
 /**
@@ -726,8 +727,29 @@ const stall = (response: ServerResponse) => {
   response.write("[");
 };
 
-/** A Service's view as the server answers a start, its port observed `state`. */
-const serviceView = (state: "reachable" | "unreachable") => ({
+const attemptId = "9f8e7d6c-1b2a-4c3d-8e9f-0a1b2c3d4e5f";
+
+/** A Service attempt: running, or ended with `end`'s status and code; a start's id stamped on it. */
+const serviceAttempt = (
+  id: string,
+  end: { readonly status: string; readonly exitCode: number | null } | null = null,
+  launchCorrelationId: string | null = null,
+) => ({
+  id,
+  argv: ["pnpm", "dev"],
+  status: end?.status ?? "running",
+  exitCode: end?.exitCode ?? null,
+  exitedAt: end === null ? null : new Date(2000).toISOString(),
+  sealantSessionId: `pty-${id}`,
+  createdAt: new Date(1000).toISOString(),
+  launchCorrelationId,
+});
+
+/** A Service's view as the server answers a start or lists it, its port observed `state`. */
+const serviceView = (
+  state: "reachable" | "unreachable",
+  attempts: ReadonlyArray<ReturnType<typeof serviceAttempt>> = [serviceAttempt(attemptId)],
+) => ({
   service: {
     id: "service-1",
     sessionId,
@@ -735,19 +757,15 @@ const serviceView = (state: "reachable" | "unreachable") => ({
     workspacePort: 3000,
     transport: "tcp",
     browserScheme: null,
-    currentAttemptId: "attempt-1",
+    currentAttemptId: attempts.at(-1)?.id ?? null,
   },
-  attempts: [
-    {
-      id: "attempt-1",
-      argv: ["pnpm", "dev"],
-      status: "running",
-      exitedAt: null,
-      sealantSessionId: "pty-2",
-    },
-  ],
+  attempts,
   currentForward: { id: "forward-1", hostPort: 41000, state: "bound" },
-  latestObservation: { forwardId: "forward-1", state },
+  latestObservation: {
+    forwardId: "forward-1",
+    state,
+    lastObservedAt: new Date(1500).toISOString(),
+  },
   workspaceExpiresAt: null,
   workspaceTtlRenewedAt: null,
   workspaceTtlRenewalFailedAt: null,
@@ -961,29 +979,10 @@ describe("--json and --wait", spawning, () => {
     }
   });
 
-  it("mend service run --wait exits 1 when the port did not answer, and the Service stays", async () => {
-    const view = serviceView("unreachable");
-    const fake = await startFake((route, _request, response) => {
-      if (route === "GET /api/sessions?retained=1") json(response, [session]);
-      else if (route === `POST /api/sessions/${sessionId}/services/run`) json(response, view);
-      else response.writeHead(404).end();
-    });
-    try {
-      const args = ["service", "run", sessionId.slice(0, 8), "--port", "3000"];
-      const waited = await runCli(fake.url, [...args, "--wait", "--", "pnpm", "dev"]);
-      expect(waited.code).toBe(1);
-      expect(waited.stderr).toContain("nothing answered on :3000 · unreachable");
-      expect(fake.routes).not.toContain("POST /api/services/service-1/stop");
-      const unwaited = await runCli(fake.url, [...args, "--", "pnpm", "dev"]);
-      expect(unwaited.code, unwaited.stderr).toBe(0);
-    } finally {
-      await fake.close();
-    }
-  });
-
   it("mend service run --wait against a remote server returns once it answered, with no tunnel", async () => {
     const fake = await startFake((route, _request, response) => {
       if (route === "GET /api/sessions?retained=1") json(response, [session]);
+      else if (route === "GET /api/services?all=1") json(response, []);
       else if (route === `POST /api/sessions/${sessionId}/services/run`) {
         json(response, serviceView("reachable"));
       } else response.writeHead(404).end();
@@ -1045,6 +1044,7 @@ describe("--json and --wait", spawning, () => {
   it("mend service run --wait gives up on a start the server never answers, with 124", async () => {
     const fake = await startFake((route, _request, response) => {
       if (route === "GET /api/sessions?retained=1") json(response, [session]);
+      else if (route === "GET /api/services?all=1") json(response, []);
       else if (route === `POST /api/sessions/${sessionId}/services/run`) {
         // An answer that starts and never finishes: headers, then nothing.
         response.writeHead(200, { "content-type": "application/json" });
@@ -1058,7 +1058,499 @@ describe("--json and --wait", spawning, () => {
         { MEND_SERVICE_WAIT_MS: "1000" },
       );
       expect(result.code, result.stderr).toBe(124);
-      expect(result.stderr).toContain("no answer within 1 s · the Service may still be starting");
+      expect(result.stderr).toContain(
+        "pnpm · still starting after 1 s · :3000 has not answered · the start request has not returned · the Service keeps starting",
+      );
+    } finally {
+      await fake.close();
+    }
+  });
+});
+
+/** The launch correlation the server stamps on the attempt a start of service-1 began. */
+const stamped = (startId: string) => serviceStartCorrelation("service-1", startId);
+
+/**
+ * A server for a waited start. The start answers with `started(ours)`, `ours` being the correlation
+ * of the start id the CLI sent (the server's minute is over and the port has not answered), or
+ * with `startStatus` and that body, or not at all (`startStatus` 0: an edge cut it). Then every
+ * read of the Services lists `listed(reads, ours)`, and the session reads `sessionStatus(reads)`
+ * (null: the server no longer has it). `stallRecovery` holds the Services reads that follow a
+ * refused start open, unanswered.
+ */
+const waitedStart = (options: {
+  readonly started: (ours: string) => unknown;
+  readonly startStatus?: number;
+  readonly listed: (reads: number, ours: string) => unknown;
+  readonly sessionStatus?: (reads: number) => string | null;
+  readonly stallRecovery?: boolean;
+}) => {
+  let reads = 0;
+  let ours: string | null = null;
+  return startFake((route, request, response) => {
+    if (route === "GET /api/sessions?retained=1") json(response, [session]);
+    else if (route === "GET /api/services?all=1") {
+      if (ours === null) json(response, []);
+      else if (options.stallRecovery === true) stall(response);
+      else {
+        reads += 1;
+        json(response, [options.listed(reads, ours)]);
+      }
+    } else if (route === `POST /api/sessions/${sessionId}/services/run`) {
+      void (async () => {
+        const body: unknown = JSON.parse(await bodyOf(request));
+        const startId =
+          typeof body === "object" && body !== null && "startId" in body
+            ? String(body.startId)
+            : "none";
+        ours = stamped(startId);
+        if (options.startStatus === undefined) json(response, options.started(ours));
+        else if (options.startStatus === 0) response.destroy();
+        else {
+          response.writeHead(options.startStatus, { "content-type": "application/json" });
+          response.end(JSON.stringify(options.started(ours)));
+        }
+      })();
+    } else if (route === `GET /api/sessions/${sessionId}`) {
+      const status = options.sessionStatus === undefined ? "idle" : options.sessionStatus(reads);
+      if (status === null) response.writeHead(404).end();
+      else json(response, { session: { ...session, status }, currentAgent: null, processes: [] });
+    } else if (route === "GET /api/services") {
+      // Nothing after the wait's own reads: a blip here must not turn an answer into a failure.
+      response.writeHead(503).end();
+    } else response.writeHead(404).end();
+  });
+};
+
+const waitedRun = (url: string, ...flags: ReadonlyArray<string>) =>
+  runCli(url, [
+    "service",
+    "run",
+    sessionId.slice(0, 8),
+    "--port",
+    "3000",
+    "--name",
+    "web",
+    "--wait",
+    ...flags,
+    "--",
+    "pnpm",
+    "dev",
+  ]);
+
+const otherAttempt = "5a4b3c2d-1e0f-4a9b-8c7d-6e5f4a3b2c1d";
+
+describe("mend service run --wait through a slow start", spawning, () => {
+  it("keeps waiting while the Service builds past the server's minute, and exits 0 once it answers", async () => {
+    // The start returns unreachable (before, --wait exited 1 here), then three reads see it still
+    // building and the fourth sees the probe answer.
+    const fake = await waitedStart({
+      started: (ours) => serviceView("unreachable", [serviceAttempt(attemptId, null, ours)]),
+      listed: (reads, ours) =>
+        serviceView(reads < 4 ? "unreachable" : "reachable", [
+          serviceAttempt(attemptId, null, ours),
+        ]),
+    });
+    try {
+      const result = await waitedRun(fake.url, "--timeout", "2m");
+      expect(result.code, result.stderr).toBe(0);
+      const said = result.stdout + result.stderr;
+      expect(said).toContain("web · process 9f8e7d6c runs · :3000 has not answered yet");
+      expect(said).toContain("✓ Service web · reachable");
+      expect(fake.routes).not.toContain("POST /api/services/service-1/stop");
+      // The answer is printed from the read that saw it: no further read could undo it.
+      expect(fake.routes).not.toContain("GET /api/services");
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it("from a server that stamps no start ids, waits on the attempt its start answered with", async () => {
+    const fake = await waitedStart({
+      started: () => serviceView("unreachable"),
+      listed: (reads) => serviceView(reads < 2 ? "unreachable" : "reachable"),
+    });
+    try {
+      const result = await waitedRun(fake.url);
+      expect(result.code, result.stderr).toBe(0);
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it("exits 2 when the process exits while starting, saying its status and code", async () => {
+    const fake = await waitedStart({
+      started: (ours) => serviceView("unreachable", [serviceAttempt(attemptId, null, ours)]),
+      listed: (reads, ours) =>
+        serviceView("unreachable", [
+          serviceAttempt(attemptId, reads < 2 ? null : { status: "exited", exitCode: 1 }, ours),
+        ]),
+    });
+    try {
+      const result = await waitedRun(fake.url);
+      expect(result.code, result.stderr).toBe(2);
+      expect(result.stderr).toContain(
+        "web · process 9f8e7d6c exited · code 1 · before :3000 answered · mend logs --service web",
+      );
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it("an exit that settles the session exits 2 with the process's code, not 3", async () => {
+    const fake = await waitedStart({
+      started: (ours) => serviceView("unreachable", [serviceAttempt(attemptId, null, ours)]),
+      listed: (reads, ours) =>
+        serviceView("unreachable", [
+          serviceAttempt(attemptId, reads < 2 ? null : { status: "exited", exitCode: 7 }, ours),
+        ]),
+      sessionStatus: (reads) => (reads < 2 ? "idle" : "completed"),
+    });
+    try {
+      const result = await waitedRun(fake.url);
+      expect(result.code, result.stderr).toBe(2);
+      expect(result.stderr).toContain("web · process 9f8e7d6c exited · code 7");
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it("exits 2 when the server saw this start's command exit, though another client started one since", async () => {
+    const fake = await waitedStart({
+      startStatus: 422,
+      started: () => ({
+        _tag: "StoreFailure",
+        message:
+          "The command exited (code 127) before :3000 answered.\n--- output ---\npnpm: not found",
+      }),
+      listed: (_reads, ours) =>
+        serviceView("unreachable", [
+          serviceAttempt(attemptId, { status: "exited", exitCode: 127 }, ours),
+          serviceAttempt(otherAttempt),
+        ]),
+    });
+    try {
+      const result = await waitedRun(fake.url);
+      expect(result.code, result.stderr).toBe(2);
+      expect(result.stderr).toContain(
+        "web · process 9f8e7d6c exited · code 127 · before :3000 answered",
+      );
+      expect(result.stderr).toContain("pnpm: not found");
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it("keeps a refusal a refusal when another client's attempt ended meanwhile", async () => {
+    const fake = await waitedStart({
+      startStatus: 422,
+      started: () => ({
+        _tag: "StoreFailure",
+        message: 'A live Service named "web" already exists.',
+      }),
+      listed: () =>
+        serviceView("unreachable", [
+          serviceAttempt(otherAttempt, { status: "exited", exitCode: 1 }),
+        ]),
+    });
+    try {
+      const result = await waitedRun(fake.url);
+      expect(result.code, result.stderr).toBe(1);
+      expect(result.stderr).toContain('A live Service named "web" already exists.');
+      expect(result.stderr).not.toContain("before :3000 answered");
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it("bounds the read after a refusal by the timeout", async () => {
+    // The read that would tell whether this start's process ended never answers: the refusal is
+    // said once the timeout passes, not when the read gives up.
+    const fake = await waitedStart({
+      startStatus: 422,
+      started: () => ({ _tag: "StoreFailure", message: "refused" }),
+      listed: () => serviceView("unreachable"),
+      stallRecovery: true,
+    });
+    try {
+      const result = await waitedRun(fake.url, "--timeout", "2s");
+      expect(result.code, result.stderr).toBe(1);
+      expect(result.stderr).toContain("refused");
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it("exits 1 on a refusal, when no attempt began", async () => {
+    const fake = await waitedStart({
+      startStatus: 409,
+      started: () => ({ _tag: "SessionNotLive", id: sessionId }),
+      listed: () => serviceView("unreachable", []),
+    });
+    try {
+      const result = await waitedRun(fake.url);
+      expect(result.code, result.stderr).toBe(1);
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it("pins the attempt an edge-cut start began: a restart's answer is not this start's", async () => {
+    // The start's answer never arrives. The first read finds this start's attempt starting; then
+    // another client restarts the Service, and its attempt answers.
+    const fake = await waitedStart({
+      startStatus: 0,
+      started: () => null,
+      listed: (reads, ours) =>
+        reads < 2
+          ? serviceView("unreachable", [serviceAttempt(attemptId, null, ours)])
+          : serviceView("reachable", [
+              serviceAttempt(attemptId, { status: "stopped", exitCode: null }, ours),
+              serviceAttempt(otherAttempt),
+            ]),
+    });
+    try {
+      const result = await waitedRun(fake.url);
+      expect(result.code, result.stderr).toBe(2);
+      expect(result.stderr).toContain("web · process 9f8e7d6c stopped · no exit code reported");
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it("exits 3 when the server no longer has the session", async () => {
+    const fake = await waitedStart({
+      started: (ours) => serviceView("unreachable", [serviceAttempt(attemptId, null, ours)]),
+      listed: (_reads, ours) => serviceView("unreachable", [serviceAttempt(attemptId, null, ours)]),
+      sessionStatus: (reads) => (reads < 2 ? "idle" : null),
+    });
+    try {
+      const result = await waitedRun(fake.url);
+      expect(result.code, result.stderr).toBe(3);
+      expect(result.stderr).toContain(
+        "web · session 0c9f7e1a no longer exists, and its workspace went with it · before :3000 answered",
+      );
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it("exits 124 when the timeout passes while it is still starting, and leaves it running", async () => {
+    const fake = await waitedStart({
+      started: (ours) => serviceView("unreachable", [serviceAttempt(attemptId, null, ours)]),
+      listed: (_reads, ours) => serviceView("unreachable", [serviceAttempt(attemptId, null, ours)]),
+    });
+    try {
+      const result = await waitedRun(fake.url, "--timeout", "3s");
+      expect(result.code, result.stderr).toBe(124);
+      expect(result.stderr).toContain(
+        "web · still starting after 3 s · process 9f8e7d6c runs · :3000 has not answered · the Service keeps starting · mend logs --service web --follow",
+      );
+      expect(fake.routes.filter((route) => route.includes("/stop"))).toEqual([]);
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it("refuses a --timeout that is not a duration, and one without --wait, before anything starts", async () => {
+    const fake = await waitedStart({
+      started: () => serviceView("reachable"),
+      listed: () => serviceView("reachable"),
+    });
+    try {
+      const bad = await waitedRun(fake.url, "--timeout", "soon");
+      expect(bad.code).toBe(1);
+      expect(bad.stderr).toContain("--timeout takes a duration above 0: 90 or 90s, 5m, 1h");
+      const unwaited = await runCli(fake.url, [
+        "service",
+        "run",
+        "--port",
+        "3000",
+        "--timeout",
+        "5m",
+        "--",
+        "pnpm",
+        "dev",
+      ]);
+      expect(unwaited.code).toBe(1);
+      expect(unwaited.stderr).toContain("--timeout bounds --wait");
+      expect(fake.routes.filter((route) => route.startsWith("POST "))).toEqual([]);
+    } finally {
+      await fake.close();
+    }
+  });
+});
+
+describe("a Service's process id", spawning, () => {
+  const services = (route: string, response: ServerResponse): boolean => {
+    if (route === "GET /api/services" || route === "GET /api/services?all=1") {
+      json(response, [serviceView("reachable")]);
+      return true;
+    }
+    return false;
+  };
+
+  it("mend service list prints the current attempt's process id, in JSON too", async () => {
+    const fake = await startFake((route, _request, response) => {
+      if (!services(route, response)) response.writeHead(404).end();
+    });
+    try {
+      const table = await runCli(fake.url, ["service", "list"]);
+      expect(table.code, table.stderr).toBe(0);
+      expect(table.stdout).toContain("service service- · process 9f8e7d6c");
+      const listed = await runCli(fake.url, ["service", "list", "--json"]);
+      expect(listed.code, listed.stderr).toBe(0);
+      expect(JSON.parse(listed.stdout)).toEqual({
+        version: 1,
+        services: [
+          {
+            id: "service-1",
+            name: "web",
+            sessionId,
+            processId: attemptId,
+            status: "reachable",
+            workspacePort: 3000,
+            protocol: "tcp",
+            hostPort: null,
+            authority: null,
+            browserUrl: null,
+          },
+        ],
+      });
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it("mend logs --service and --process <service> read the current attempt's record", async () => {
+    const fake = await startFake((route, _request, response) => {
+      if (services(route, response)) return;
+      if (route === `GET /api/sessions/${sessionId}`) {
+        json(response, { session, currentAgent: command, processes: [command] });
+      } else if (route.startsWith(`GET /api/processes/${attemptId}/logs?from=0&`)) {
+        json(response, {
+          ...logPage("1", "running", "listening on :3000\n"),
+          processId: attemptId,
+        });
+      } else if (route.startsWith(`GET /api/processes/${attemptId}/logs?from=1&`)) {
+        json(response, { ...logPage("1", "running"), processId: attemptId });
+      } else response.writeHead(404).end();
+    });
+    try {
+      const byName = await runCli(fake.url, ["logs", "--service", "web"]);
+      expect(byName.code, byName.stderr).toBe(0);
+      expect(byName.stdout).toBe("listening on :3000\n");
+      const byServiceId = await runCli(fake.url, ["logs", sessionId, "--process", "service-1"]);
+      expect(byServiceId.code, byServiceId.stderr).toBe(0);
+      expect(byServiceId.stdout).toBe("listening on :3000\n");
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it("mend logs takes a Service by its full id before one named like that id, and refuses a name two carry", async () => {
+    const fullId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const wanted = {
+      ...serviceView("reachable"),
+      service: { ...serviceView("reachable").service, id: fullId, name: "wanted" },
+    };
+    const impostorView = serviceView("reachable", [serviceAttempt(otherAttempt)]);
+    const impostor = {
+      ...impostorView,
+      service: {
+        ...impostorView.service,
+        id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        name: fullId,
+      },
+    };
+    const twinView = serviceView("reachable", [serviceAttempt(otherAttempt)]);
+    const twin = { ...twinView, service: { ...twinView.service, id: "service-2" } };
+    let listed: ReadonlyArray<unknown> = [impostor, wanted];
+    const fake = await startFake((route, _request, response) => {
+      if (route === "GET /api/services?all=1") json(response, listed);
+      else if (route === `GET /api/sessions/${sessionId}`) {
+        json(response, { session, currentAgent: command, processes: [command] });
+      } else if (route.startsWith("GET /api/processes/")) {
+        const processId = route.includes(attemptId) ? attemptId : otherAttempt;
+        const text = processId === attemptId ? "wanted\n" : "wrong-process\n";
+        const first = route.includes("logs?from=0&");
+        json(response, { ...logPage("1", "exited", ...(first ? [text] : [])), processId });
+      } else response.writeHead(404).end();
+    });
+    try {
+      const byService = await runCli(fake.url, ["logs", "--service", fullId]);
+      expect(byService.code, byService.stderr).toBe(0);
+      expect(byService.stdout).toBe("wanted\n");
+      const byProcess = await runCli(fake.url, ["logs", sessionId, "--process", fullId]);
+      expect(byProcess.code, byProcess.stderr).toBe(0);
+      expect(byProcess.stdout).toBe("wanted\n");
+
+      listed = [serviceView("reachable"), twin];
+      const ambiguous = await runCli(fake.url, ["logs", "--service", "web"]);
+      expect(ambiguous.code).toBe(1);
+      expect(ambiguous.stderr).toContain(
+        '"web" names 2 Services · name one by its id: service-1 (session 0c9f7e1a), service-2 (session 0c9f7e1a)',
+      );
+      expect(fake.routes.some((route) => route.includes(`/processes/${otherAttempt}/`))).toBe(
+        false,
+      );
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it("a reader that closes the pipe early (| head -1) ends mend quietly, exit 0, for any command", async () => {
+    // Far more than a pipe holds: head takes one line and closes, and mend's next write meets
+    // EPIPE.
+    const many = Array.from({ length: 3000 }, (_, index) => {
+      const view = serviceView("reachable");
+      return {
+        ...view,
+        service: { ...view.service, id: `service-${index}`, name: `web-${index}` },
+      };
+    });
+    const fake = await startFake((route, _request, response) => {
+      if (route === "GET /api/services") json(response, many);
+      else response.writeHead(404).end();
+    });
+    try {
+      for (const args of [
+        ["service", "list"],
+        ["service", "list", "--json"],
+      ]) {
+        const child = spawn(
+          "bash",
+          [
+            "-c",
+            'set -o pipefail; "$0" --experimental-strip-types "$1" "${@:2}" | head -1 >/dev/null',
+            process.execPath,
+            entrypoint,
+            ...args,
+          ],
+          { env: cliEnv(fake.url), stdio: ["ignore", "pipe", "pipe"], cwd: os.tmpdir() },
+        );
+        let stderr = "";
+        child.stderr.on("data", (chunk: Buffer) => {
+          stderr += chunk.toString();
+        });
+        const [code] = await once(child, "close");
+        expect({ args, code, stderr }).toEqual({ args, code: 0, stderr: "" });
+      }
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it("mend logs --service refuses a Service with no attempt yet", async () => {
+    const fake = await startFake((route, _request, response) => {
+      if (route === "GET /api/services?all=1") json(response, [serviceView("reachable", [])]);
+      else response.writeHead(404).end();
+    });
+    try {
+      const result = await runCli(fake.url, ["logs", "--service", "web"]);
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain("Service web has no attempt yet");
+      expect(fake.routes.some((route) => route.includes("/processes/"))).toBe(false);
     } finally {
       await fake.close();
     }

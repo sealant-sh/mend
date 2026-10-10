@@ -2753,6 +2753,7 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
             payload.protocol,
             payload.browserScheme,
             caller.user.id,
+            payload.startId,
           )
           .pipe(
             Effect.catchTag("SessionNotFoundError", () =>
@@ -2782,23 +2783,27 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         yield* requireOwnerRuns(yield* steering.session(params.id), "command");
         const engine = yield* SessionEngine;
         const caller = yield* CurrentUser;
-        return yield* engine.runServiceRecipe(params.id, payload.name, caller.user.id).pipe(
-          Effect.catchTag("SessionNotFoundError", () =>
-            Effect.fail(new NotFound({ id: params.id })),
-          ),
-          Effect.catchTag("LegacyBenchReadOnlyError", () =>
-            Effect.fail(new StoreFailure({ message: "Legacy bench sessions are review-only." })),
-          ),
-          Effect.catchTag("SessionNotLiveError", () =>
-            Effect.fail(new SessionNotLive({ id: params.id })),
-          ),
-          Effect.catchTags({
-            SealantPlatformError: (error) =>
-              Effect.fail(new StoreFailure({ message: error.message })),
-            ServiceBindError: (error) => Effect.fail(new StoreFailure({ message: error.message })),
-            ServiceStartError: (error) => Effect.fail(new StoreFailure({ message: error.message })),
-          }),
-        );
+        return yield* engine
+          .runServiceRecipe(params.id, payload.name, caller.user.id, payload.startId)
+          .pipe(
+            Effect.catchTag("SessionNotFoundError", () =>
+              Effect.fail(new NotFound({ id: params.id })),
+            ),
+            Effect.catchTag("LegacyBenchReadOnlyError", () =>
+              Effect.fail(new StoreFailure({ message: "Legacy bench sessions are review-only." })),
+            ),
+            Effect.catchTag("SessionNotLiveError", () =>
+              Effect.fail(new SessionNotLive({ id: params.id })),
+            ),
+            Effect.catchTags({
+              SealantPlatformError: (error) =>
+                Effect.fail(new StoreFailure({ message: error.message })),
+              ServiceBindError: (error) =>
+                Effect.fail(new StoreFailure({ message: error.message })),
+              ServiceStartError: (error) =>
+                Effect.fail(new StoreFailure({ message: error.message })),
+            }),
+          );
       }),
     )
     .handle("listRecipes", ({ params }) =>

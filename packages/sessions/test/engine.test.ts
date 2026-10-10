@@ -135,6 +135,7 @@ import {
   captureDiscardAuditData,
   captureStatusLine,
   executorEndOf,
+  serviceStartCorrelation,
   withoutAgentStarting,
 } from "@mend/domain/workbench";
 import {
@@ -6074,6 +6075,188 @@ describe("SessionEngine", () => {
           expect(rerun.service.id).toBe(service.service.id);
           expect(rerun.attempts).toHaveLength(3);
           expect(rerun.service.currentAttemptId).toBe(rerun.attempts.at(-1)?.id);
+        }),
+      { sealantLayer: sealantLaunchLayer(created) },
+    );
+  });
+
+  it("stamps a start's id on the attempt it began, and refuses the id a second time", async () => {
+    const created: CreateOptions[] = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            name: null,
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+          yield* engine.launch(session.id, ["codex"]);
+          const startId = "5b3f0c1e-8d2a-4f6b-9c7e-1a2b3c4d5e6f";
+
+          const service = yield* engine.runService(
+            session.id,
+            ["pnpm", "dev"],
+            3000,
+            "web",
+            "tcp",
+            null,
+            undefined,
+            startId,
+          );
+          expect(service.attempts.at(-1)?.launchCorrelationId).toBe(
+            serviceStartCorrelation(service.service.id, startId),
+          );
+          yield* engine.stopService(service.service.id);
+
+          const again = yield* engine
+            .runService(session.id, ["pnpm", "dev"], 3000, "web", "tcp", null, undefined, startId)
+            .pipe(Effect.flip);
+          expect(again._tag).toBe("ServiceStartError");
+          expect(again.message).toContain(
+            "This start id was used by an earlier start of this Service",
+          );
+
+          // Another Service of the session takes the same id: the key is the Service and the id.
+          const api = yield* engine.runService(
+            session.id,
+            ["pnpm", "api"],
+            4000,
+            "api",
+            "tcp",
+            null,
+            undefined,
+            startId,
+          );
+          expect(api.attempts.at(-1)?.launchCorrelationId).toBe(
+            serviceStartCorrelation(api.service.id, startId),
+          );
+
+          // A start that names no id carries none: an older client's starts are as before.
+          const unnamed = yield* engine.runService(session.id, ["pnpm", "dev"], 3000, "web");
+          expect(unnamed.attempts.at(-1)?.launchCorrelationId).toBeNull();
+          expect(unnamed.attempts).toHaveLength(2);
+        }),
+      { sealantLayer: sealantLaunchLayer(created) },
+    );
+  });
+
+  // Review 2 of mend#651: an id another person used on their own private work, in the same
+  // organization or another, neither refuses this person's start nor says it was used.
+  it.each([
+    { who: "carol", organization: "org-test" },
+    { who: "bob", organization: "org-bob" },
+  ])(
+    "a start id another person used on hidden work is invisible to $who's own start ($organization)",
+    async ({ who, organization }) => {
+      const created: CreateOptions[] = [];
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const fixture = yield* setup(tmp, world);
+            const alicesProject = new Project({
+              ...fixture,
+              visibility: "private",
+              createdByUserId: "user-fixture",
+            });
+            world.projects.set(alicesProject.id, alicesProject);
+            const sibling = yield* setupSibling(tmp, world, who, fixture.originUrl ?? "");
+            const theirProject = new Project({
+              ...sibling,
+              organizationId: OrganizationId.make(organization),
+              visibility: "private",
+              createdByUserId: `user-${who}`,
+            });
+            world.projects.set(theirProject.id, theirProject);
+            const engine = yield* SessionEngine;
+            const startId = "5b3f0c1e-8d2a-4f6b-9c7e-1a2b3c4d5e6f";
+
+            const alice = yield* engine.provision({
+              projectId: alicesProject.id,
+              harness: "codex",
+              label: null,
+              name: null,
+              ownerUserId: "user-fixture",
+              base: null,
+            });
+            yield* engine.launch(alice.id, ["codex"]);
+            const hers = yield* engine.runService(
+              alice.id,
+              ["pnpm", "dev"],
+              3000,
+              "web",
+              "tcp",
+              null,
+              "user-fixture",
+              startId,
+            );
+            yield* engine.stopService(hers.service.id);
+
+            const theirs = yield* engine.provision({
+              projectId: theirProject.id,
+              harness: "codex",
+              label: null,
+              name: null,
+              ownerUserId: `user-${who}`,
+              base: null,
+            });
+            yield* engine.launch(theirs.id, ["codex"]);
+            // The same name too: nothing of Alice's Service decides theirs.
+            const started = yield* engine.runService(
+              theirs.id,
+              ["pnpm", "dev"],
+              3001,
+              "web",
+              "tcp",
+              null,
+              `user-${who}`,
+              startId,
+            );
+            expect(started.service.sessionId).toBe(theirs.id);
+            expect(started.attempts).toHaveLength(1);
+            expect(started.attempts[0]?.status).toBe("running");
+            expect(started.attempts[0]?.launchCorrelationId).toBe(
+              serviceStartCorrelation(started.service.id, startId),
+            );
+            expect(started.attempts[0]?.launchCorrelationId).not.toBe(
+              hers.attempts[0]?.launchCorrelationId,
+            );
+          }),
+        { sealantLayer: sealantLaunchLayer(created) },
+      );
+    },
+  );
+
+  it("stamps a recipe start's id on its attempt", async () => {
+    const created: CreateOptions[] = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            name: null,
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+          yield* engine.launch(session.id, ["codex"]);
+          const worktree = path.join(tmp, "store", "fixture", "worktrees", session.worktree);
+          fs.writeFileSync(
+            path.join(worktree, "mend.toml"),
+            '[service.web]\ncommand = "pnpm dev"\nport = 3000\n',
+          );
+          const startId = "0e1d2c3b-4a59-4687-9a6b-5c4d3e2f1a0b";
+          const service = yield* engine.runServiceRecipe(session.id, "web", undefined, startId);
+          expect(service.attempts.at(-1)?.launchCorrelationId).toBe(
+            serviceStartCorrelation(service.service.id, startId),
+          );
         }),
       { sealantLayer: sealantLaunchLayer(created) },
     );

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { spawn, spawnSync } from "node:child_process";
+import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import { createRequire } from "node:module";
 import * as net from "node:net";
@@ -89,17 +90,30 @@ import {
   type CommandDetail,
   type CommandEnd,
   commandEndOf,
+  DURATION_ISSUE,
+  durationLine,
   endLine,
   exitStatusOf,
   followLogs,
   isSessionId,
+  parseDuration,
   parseLogsArgs,
   parseWaitArgs,
   pickProcess,
+  pickServiceAttempt,
   processRowOf,
   runArgvIssue,
+  SERVICE_PROCESS_ENDED,
+  SERVICE_WORKSPACE_ENDED,
+  answeredAttemptId,
+  findStartAttempt,
+  readWithin,
+  serviceStartStateOf,
+  type ServiceStartRead,
+  type ServiceWaitOutcome,
   WAIT_TIMED_OUT,
   waitForCommand,
+  waitForServiceStart,
 } from "./run-scripts.ts";
 import {
   secretFileLines,
@@ -107,7 +121,7 @@ import {
   secretFileUploadOf,
   type SecretFileDto,
 } from "./secret-files.ts";
-import { MendRequestError, noAnswerError, spoken } from "./server-request.ts";
+import { mayStillBeWorking, MendRequestError, noAnswerError, spoken } from "./server-request.ts";
 import { runServerProcess } from "./server-runtime.ts";
 import { nodeServerRuntime, readServerInstallationFacts, serverCommand } from "./server-setup.ts";
 import {
@@ -1868,8 +1882,11 @@ interface ServiceViewDto {
     readonly id: string;
     readonly argv: ReadonlyArray<string>;
     readonly status: string;
+    readonly exitCode: number | null;
     readonly exitedAt: string | null;
     readonly sealantSessionId: string | null;
+    readonly createdAt: string;
+    readonly launchCorrelationId: string | null;
   }>;
   readonly currentForward: {
     readonly id: string;
@@ -1879,6 +1896,7 @@ interface ServiceViewDto {
   readonly latestObservation: {
     readonly forwardId: string;
     readonly state: "reachable" | "unreachable";
+    readonly lastObservedAt: string;
   } | null;
   readonly workspaceExpiresAt: string | null;
   readonly workspaceTtlRenewedAt: string | null;
@@ -2040,8 +2058,11 @@ const printService = (config: CliConfig, service: ServiceDto) => {
   const port = `:${service.workspacePort ?? "?"}${service.protocol === "udp" ? "/udp" : ""}`;
   // Pad around the colored status by its bare length — ANSI codes break padEnd.
   const statusPad = " ".repeat(Math.max(1, 12 - service.status.length));
+  // The attempt's process id is what mend logs --process and mend wait --process take.
+  const processLine =
+    service.processId === null ? "no process" : `process ${service.processId.slice(0, 8)}`;
   say(
-    `${(service.label ?? service.id.slice(0, 8)).padEnd(14)} ${status}${statusPad}${dim(port.padEnd(7))} ${dim(service.id.slice(0, 8))}`,
+    `${(service.label ?? service.id.slice(0, 8)).padEnd(14)} ${status}${statusPad}${dim(port.padEnd(7))} ${dim(`service ${service.id.slice(0, 8)} · ${processLine}`)}`,
   );
   printServiceAccess(config, service);
   printWorkspaceTtlFailure(service);
@@ -2093,8 +2114,49 @@ const serviceAdd = async (config: CliConfig, args: ReadonlyArray<string>) => {
   }
 };
 
-const serviceList = async (config: CliConfig) => {
+/** What `mend service list --json` prints, stable for scripts like `mend projects --json`. */
+interface ServicesJson {
+  readonly version: 1;
+  readonly services: ReadonlyArray<{
+    readonly id: string;
+    readonly name: string;
+    readonly sessionId: string;
+    /** The current attempt's process id; null for an adopted port, which has none. */
+    readonly processId: string | null;
+    /** As last observed: `reachable`, `unreachable`, or the attempt's or forward's state. */
+    readonly status: string;
+    readonly workspacePort: number;
+    readonly protocol: "tcp" | "udp";
+    readonly hostPort: number | null;
+    readonly authority: string | null;
+    readonly browserUrl: string | null;
+  }>;
+}
+
+const serviceList = async (config: CliConfig, args: ReadonlyArray<string>) => {
+  const unknown = args.find((arg) => arg !== "--json");
+  if (unknown !== undefined) {
+    return fail(`unknown argument ${unknown} · ${usageOf("service list")}`);
+  }
   const services = await fetchServices(config);
+  if (args.includes("--json")) {
+    printJson({
+      version: 1,
+      services: services.map((service) => ({
+        id: service.id,
+        name: service.label,
+        sessionId: service.sessionId,
+        processId: service.processId,
+        status: service.status,
+        workspacePort: service.workspacePort,
+        protocol: service.protocol,
+        hostPort: service.hostPort,
+        authority: service.authority,
+        browserUrl: service.browserUrl,
+      })),
+    } satisfies ServicesJson);
+    return;
+  }
   if (services.length === 0) {
     say(dim("no live services — mend service add <port> adopts a listening one"));
     return;
@@ -2153,64 +2215,269 @@ const autoConnect = async (config: CliConfig, service: ServiceDto): Promise<void
 };
 
 /**
- * `--wait`: the server holds a start until the port answers, for up to a minute. With the flag the
- * exit status says how that ended: 0 once the port answered, 1 when it did not, 124 when the server
- * gave no answer within `SERVICE_WAIT_MS`. The Service keeps running in every case. UDP has no
- * probe, and a recipe without a command is adopted with one probe, so neither can be waited for.
- * A waited start opens no tunnel: it returns, and `mend service connect` reaches the port.
+ * `--wait`: the exit status says how the start ended. 0 once the port answered; 1 when Mend refused
+ * the start (or could not be asked); `SERVICE_PROCESS_ENDED` when the Service's process ended before
+ * its port answered; `SERVICE_WORKSPACE_ENDED` when the session's workspace did; `WAIT_TIMED_OUT`
+ * when the Service was still starting at the timeout. A Service that is building, installing or
+ * booting keeps the wait going: the server holds the start for a minute, then the wait reads the
+ * Service until one of those is observed. The Service keeps running in every case but the two ends.
+ * UDP has no probe, and a recipe without a command is adopted with one probe, so neither can be
+ * waited for. A waited start opens no tunnel: it returns, and `mend service connect` reaches the
+ * port.
  */
-const SERVICE_WAIT_MS = (() => {
+const SERVICE_WAIT_DEFAULT_MS = (() => {
   const configured = Number(process.env["MEND_SERVICE_WAIT_MS"]);
-  return Number.isFinite(configured) && configured > 0 ? configured : 90_000;
+  return Number.isFinite(configured) && configured > 0 ? configured : 10 * 60_000;
 })();
 
+/** A waited start's one deadline, set before its first request (review 2 of mend#611). */
+interface ServiceWait {
+  readonly deadline: number;
+  readonly timeoutMs: number;
+}
+
 /**
- * One step of a `--wait`: `work`, unless the wait's deadline passes first, which fails with 124.
- * The deadline is set once, before the first request (the session lookup), so every read and the
- * start share it (review 2 of mend#611). A null deadline (no `--wait`) waits as before.
+ * The flags before `--` that take a value, so that value is not read as a session or a recipe.
+ * `--timeout` is one of them.
  */
-const withinServiceWait = async <T>(work: Promise<T>, deadline: number | null): Promise<T> => {
-  const bounded = await beforeDeadline(work, clock, deadline);
-  if (bounded.done) return bounded.value;
-  process.stderr.write(
-    `mend: no answer within ${Math.round(SERVICE_WAIT_MS / 1000)} s · the Service may still be starting · mend service list\n`,
-  );
-  return exitFlushed(WAIT_TIMED_OUT);
+const SERVICE_RUN_VALUED = new Set(["--port", "--name", "--timeout"]);
+
+/** `--wait [--timeout <duration>]` from the flags before `--`; null without `--wait`. */
+const serviceWaitOf = (head: ReadonlyArray<string>): ServiceWait | null => {
+  const timeoutFlag = head.indexOf("--timeout");
+  const timeoutText = timeoutFlag === -1 ? undefined : head[timeoutFlag + 1];
+  if (!head.includes("--wait")) {
+    return timeoutFlag === -1
+      ? null
+      : fail("--timeout bounds --wait: pass --wait too, or leave --timeout out");
+  }
+  const timeoutMs =
+    timeoutFlag === -1
+      ? SERVICE_WAIT_DEFAULT_MS
+      : timeoutText === undefined
+        ? null
+        : parseDuration(timeoutText);
+  if (timeoutMs === null) return fail(`${DURATION_ISSUE} · ${usageOf("service run")}`);
+  return { deadline: clock.now() + timeoutMs, timeoutMs };
 };
 
-const failUnlessAnswered = (config: CliConfig, service: ServiceDto, wait: boolean): void => {
-  if (!wait) return;
-  const name = service.label ?? service.id.slice(0, 8);
-  if (service.status !== "reachable") {
-    fail(
-      `nothing answered on :${service.workspacePort} · ${service.status} · the Service keeps running · mend service logs ${name}`,
+/** The words before `--` that are not flags nor a flag's value: the session, the recipe. */
+const serviceRunPositionals = (head: ReadonlyArray<string>): ReadonlyArray<string> =>
+  head.filter(
+    (arg, index) => !arg.startsWith("--") && !SERVICE_RUN_VALUED.has(head[index - 1] ?? ""),
+  );
+
+/** Say `message` on stderr and exit with `code`, once what was written so far has flushed. */
+const failWith = (code: number, message: string): Promise<never> => {
+  process.stderr.write(`mend: ${redactCredentials(message)}\n`);
+  return exitFlushed(code);
+};
+
+/**
+ * One step of a waited start before anything is started: `work`, unless the deadline passes first,
+ * which exits 124. A null wait (no `--wait`) waits as before.
+ */
+const withinServiceWait = async <T>(work: Promise<T>, wait: ServiceWait | null): Promise<T> => {
+  const bounded = await beforeDeadline(work, clock, wait?.deadline ?? null);
+  if (bounded.done) return bounded.value;
+  return failWith(
+    WAIT_TIMED_OUT,
+    `Mend gave no answer within ${durationLine(wait?.timeoutMs ?? 0)} · nothing was started`,
+  );
+};
+
+const errorText = (error: unknown): string =>
+  error instanceof Error ? error.message : String(error);
+
+/** `code 1`, or `no exit code reported`. */
+const exitCodeText = (exitCode: number | null): string =>
+  exitCode === null ? "no exit code reported" : `code ${exitCode}`;
+
+/** One read of a starting Service: every Service, ended ones included, and its session's status. */
+const readServiceStart = async (
+  config: CliConfig,
+  sessionId: string,
+): Promise<ServiceStartRead<ServiceViewDto>> => {
+  const [services, sessionStatus] = await Promise.all([
+    request<ReadonlyArray<ServiceViewDto>>(config, "GET", "/services?all=1"),
+    request<CommandDetail>(config, "GET", `/sessions/${sessionId}`).then(
+      (detail): string | null => detail.session.status,
+      (error: unknown) => {
+        // A session the server no longer has took its workspace with it.
+        if (error instanceof MendRequestError && error.kind === "http" && error.status === 404) {
+          return null;
+        }
+        throw error;
+      },
+    ),
+  ]);
+  return { services, sessionStatus };
+};
+
+/** How a start request ended: the Service's view, or what it failed with. */
+type StartAnswer =
+  | { readonly ok: true; readonly view: ServiceViewDto }
+  | { readonly ok: false; readonly error: unknown };
+
+/** What a waited start says once the port answered; a remote server's tunnel is the next command. */
+const reportAnswered = (config: CliConfig, service: ServiceDto): void => {
+  const name = service.label;
+  say(`${green("✓")} Service ${name} · ${service.status}`);
+  printServiceEndpoint(config, service, false);
+  say(dim(`  logs: mend service logs ${name}`));
+  if (willAutoConnect(config, service, false)) say(dim(`  connect: mend service connect ${name}`));
+};
+
+/**
+ * Start a Service and wait until its port answers, the attempt this start began ends, its session
+ * goes, or the timeout passes; exit with which (see `SERVICE_WAIT_DEFAULT_MS`). `start` sends the
+ * request with this start's own id, which the server stamps on the attempt it begins: that attempt
+ * is found once and judged alone, whatever another client starts, restarts or stops meanwhile.
+ * Every request is under the wait's one deadline.
+ */
+const startServiceWaited = async (
+  config: CliConfig,
+  session: SessionDto,
+  target: { readonly name: string; readonly port: number },
+  wait: ServiceWait,
+  spinner: string,
+  start: (startId: string) => Promise<ServiceViewDto>,
+): Promise<void> => {
+  const { name, port } = target;
+  const startId = crypto.randomUUID();
+  const after = durationLine(wait.timeoutMs);
+  const stillStarting = (processId: string | null, more = ""): Promise<never> =>
+    failWith(
+      WAIT_TIMED_OUT,
+      `${name} · still starting after ${after} · ${processId === null ? "" : `process ${processId.slice(0, 8)} runs · `}:${port} has not answered${more} · the Service keeps starting · mend logs --service ${name} --follow`,
     );
+  const ended = (processId: string, status: string, exitCode: number | null, more: string) =>
+    failWith(
+      SERVICE_PROCESS_ENDED,
+      `${name} · process ${processId.slice(0, 8)} ${status} · ${exitCodeText(exitCode)} · before :${port} answered · ${more}`,
+    );
+  const posted = await withSpinner(
+    spinner,
+    beforeDeadline(
+      start(startId).then(
+        (view): StartAnswer => ({ ok: true, view }),
+        (error: unknown): StartAnswer => ({ ok: false, error }),
+      ),
+      clock,
+      wait.deadline,
+    ),
+  );
+  if (!posted.done) return stillStarting(null, " · the start request has not returned");
+  let attemptId: string | null = null;
+  if (posted.value.ok) {
+    const { view } = posted.value;
+    attemptId = answeredAttemptId(view, startId);
+    if (attemptId !== null) {
+      const first = serviceStartStateOf(
+        { services: [view], sessionStatus: session.status },
+        { attemptId, sessionId: session.id, startId },
+      );
+      if (first.kind === "answered") return reportAnswered(config, flattenService(view));
+      if (first.kind === "process-ended") {
+        return ended(first.processId, first.status, first.exitCode, `mend logs --service ${name}`);
+      }
+    }
+    say(
+      `${amber("·")} ${name} · ${attemptId === null ? "started" : `process ${attemptId.slice(0, 8)} runs`} · :${port} has not answered yet · waiting up to ${after}; Mend probes the port every 20 s`,
+    );
+  } else {
+    const { error } = posted.value;
+    if (!mayStillBeWorking(error)) {
+      // A refusal is this start's process ending only when the attempt carrying its id ended: a
+      // Service another client started and stopped meanwhile proves nothing about this start.
+      const read = await readWithin(
+        () => request<ReadonlyArray<ServiceViewDto>>(config, "GET", "/services?all=1"),
+        clock,
+        wait.deadline,
+      ).catch(() => null);
+      const found =
+        read?.done === true
+          ? findStartAttempt(read.value, { attemptId: null, sessionId: session.id, startId })
+          : undefined;
+      if (found !== undefined && found.attempt.exitedAt !== null) {
+        return ended(
+          found.attempt.id,
+          found.attempt.status,
+          found.attempt.exitCode,
+          errorText(error),
+        );
+      }
+      return failWith(1, errorText(error));
+    }
+    say(dim(`  the start got no answer (${errorText(error)}) · looking for the attempt it began…`));
   }
-  // A waited start returns: the tunnel a remote server would get is the next command's.
-  if (willAutoConnect(config, service, false)) {
-    say(dim(`  connect: mend service connect ${name}`));
+  const started = clock.now();
+  let line = `${name} · starting · waiting for :${port} to answer…`;
+  let nextReport = started + 60_000;
+  const outcome: ServiceWaitOutcome<ServiceViewDto> = await withSpinner(
+    () => line,
+    waitForServiceStart({
+      read: () => readServiceStart(config, session.id),
+      target: { attemptId, sessionId: session.id, startId },
+      deadline: wait.deadline,
+      ...clock,
+      onStarting: (state) => {
+        const running =
+          state.processId === null ? "" : ` · process ${state.processId.slice(0, 8)} runs`;
+        line = `${name} · starting${running} · :${port} has not answered`;
+        // Off a terminal there is no spinner: a line a minute says the wait is alive.
+        if (chrome.isTTY !== true && clock.now() >= nextReport) {
+          nextReport = clock.now() + 60_000;
+          say(dim(`  ${line} · ${durationLine(clock.now() - started)} so far`));
+        }
+      },
+    }),
+  ).catch((error: unknown) => failFlushed(errorText(error)));
+  switch (outcome.kind) {
+    case "answered":
+      // The view the answer was read in: nothing more is asked of the server.
+      return reportAnswered(config, flattenService(outcome.view));
+    case "process-ended":
+      return ended(
+        outcome.processId,
+        outcome.status,
+        outcome.exitCode,
+        `mend logs --service ${name}`,
+      );
+    case "workspace-ended":
+      return failWith(
+        SERVICE_WORKSPACE_ENDED,
+        `${name} · session ${session.id.slice(0, 8)} no longer exists, and its workspace went with it · before :${port} answered`,
+      );
+    case "timeout":
+      return stillStarting(outcome.last?.kind === "starting" ? outcome.last.processId : null);
+    case "no-attempt":
+      return failWith(
+        1,
+        `${name} · the start got no answer, and no attempt carrying its id appeared within a minute (a server older than this CLI stamps none) · mend service list`,
+      );
   }
 };
 
 const serviceRun = async (config: CliConfig, args: ReadonlyArray<string>) => {
   const dashdash = args.indexOf("--");
   const usage = usageOf("service run");
-  const wait = (dashdash === -1 ? args : args.slice(0, dashdash)).includes("--wait");
-  const deadline = wait ? clock.now() + SERVICE_WAIT_MS : null;
+  const head = dashdash === -1 ? args : args.slice(0, dashdash);
+  const wait = serviceWaitOf(head);
   // No explicit command = a DECLARED Service: resolve the name against the
   // session worktree's mend.toml and start (or adopt) its recipe.
   if (dashdash === -1) {
-    const positionals = args.filter((a) => !a.startsWith("--"));
+    const positionals = serviceRunPositionals(head);
     const name = positionals.at(-1);
     if (name === undefined) return fail(usage);
     const prefix = positionals.length > 1 ? positionals[0] : undefined;
     const session = await withinServiceWait(
       resolveLiveSession(config, prefix, "service run"),
-      deadline,
+      wait,
     );
     const recipes = await withinServiceWait(
       api<ReadonlyArray<ServiceRecipeDto>>(config, "GET", `/sessions/${session.id}/recipes`),
-      deadline,
+      wait,
     );
     const recipe = recipes.find((entry) => entry.name === name);
     if (recipe === undefined) {
@@ -2221,12 +2488,27 @@ const serviceRun = async (config: CliConfig, args: ReadonlyArray<string>) => {
           : `no recipe named "${name}" — declared: ${known}`,
       );
     }
-    if (wait && recipe.protocol === "udp") {
-      return fail(`--wait needs a TCP port: ${recipe.name} is UDP, which has no probe`);
-    }
-    if (wait && recipe.command === null) {
-      return fail(
-        `--wait needs a command Mend starts: ${recipe.name} declares only a port, which Mend adopts with one probe · run it without --wait, or give the recipe a command`,
+    const startRecipe = (startId: string) =>
+      request<ServiceViewDto>(config, "POST", `/sessions/${session.id}/services/recipe`, {
+        name: recipe.name,
+        startId,
+      });
+    if (wait !== null) {
+      if (recipe.protocol === "udp") {
+        return fail(`--wait needs a TCP port: ${recipe.name} is UDP, which has no probe`);
+      }
+      if (recipe.command === null) {
+        return fail(
+          `--wait needs a command Mend starts: ${recipe.name} declares only a port, which Mend adopts with one probe · run it without --wait, or give the recipe a command`,
+        );
+      }
+      return startServiceWaited(
+        config,
+        session,
+        { name: recipe.name, port: recipe.port },
+        wait,
+        `starting ${recipe.name} — waiting for :${recipe.port} to answer…`,
+        startRecipe,
       );
     }
     const service = await withSpinner(
@@ -2235,24 +2517,19 @@ const serviceRun = async (config: CliConfig, args: ReadonlyArray<string>) => {
         : recipe.protocol === "udp"
           ? `starting ${recipe.name} (udp :${recipe.port})…`
           : `starting ${recipe.name} — waiting for :${recipe.port} to answer…`,
-      withinServiceWait(
-        mutateService(config, "POST", `/sessions/${session.id}/services/recipe`, {
-          name: recipe.name,
-        }),
-        deadline,
-      ),
+      mutateService(config, "POST", `/sessions/${session.id}/services/recipe`, {
+        name: recipe.name,
+      }),
     );
-    const tunneling = willAutoConnect(config, service, args.includes("--no-connect") || wait);
+    const tunneling = willAutoConnect(config, service, args.includes("--no-connect"));
     say(`${green("✓")} Service ${service.label ?? ""} · ${service.status}`);
     printServiceEndpoint(config, service, tunneling);
     say(dim(`  logs: mend service logs ${service.label ?? service.id.slice(0, 8)}`));
-    failUnlessAnswered(config, service, wait);
     if (tunneling) await autoConnect(config, service);
     return;
   }
   const argv = args.slice(dashdash + 1);
   if (argv.length === 0) return fail(usage);
-  const head = args.slice(0, dashdash);
   const portFlag = head.indexOf("--port");
   const port = portFlag === -1 ? Number.NaN : Number(head[portFlag + 1]);
   if (!Number.isInteger(port) || port < 1 || port > 65535) return fail(usage);
@@ -2265,41 +2542,38 @@ const serviceRun = async (config: CliConfig, args: ReadonlyArray<string>) => {
   if (http && https) return fail(usage);
   const browserScheme = https ? ("https" as const) : http ? ("http" as const) : null;
   if (protocol === "udp" && browserScheme !== null) return fail(usage);
-  if (protocol === "udp" && wait) {
+  if (protocol === "udp" && wait !== null) {
     return fail("--wait needs a TCP port: UDP has no probe, so nothing could be waited for");
   }
-  // A flag absent reads -1: its "value" index must not shadow a session named first on the line.
-  const prefix = head.find(
-    (a, i) =>
-      !a.startsWith("--") &&
-      (portFlag === -1 || i !== portFlag + 1) &&
-      (nameFlag === -1 || i !== nameFlag + 1),
-  );
-  const session = await withinServiceWait(
-    resolveLiveSession(config, prefix, "service run"),
-    deadline,
-  );
-
+  // A flag's value is never the session: an absent flag reads -1 and shadows nothing.
+  const prefix = serviceRunPositionals(head)[0];
+  const session = await withinServiceWait(resolveLiveSession(config, prefix, "service run"), wait);
+  const body = { argv, port, name, protocol, browserScheme };
+  if (wait !== null) {
+    // The server names the Service as the command when --name is absent.
+    return startServiceWaited(
+      config,
+      session,
+      { name: name ?? argv[0] ?? "service", port },
+      wait,
+      `starting ${name ?? argv[0]} — waiting for :${port} to answer…`,
+      (startId) =>
+        request<ServiceViewDto>(config, "POST", `/sessions/${session.id}/services/run`, {
+          ...body,
+          startId,
+        }),
+    );
+  }
   const service = await withSpinner(
     protocol === "udp"
       ? `starting ${name ?? argv[0]} (udp :${port})…`
       : `starting ${name ?? argv[0]} — waiting for :${port} to answer…`,
-    withinServiceWait(
-      mutateService(config, "POST", `/sessions/${session.id}/services/run`, {
-        argv,
-        port,
-        name,
-        protocol,
-        browserScheme,
-      }),
-      deadline,
-    ),
+    mutateService(config, "POST", `/sessions/${session.id}/services/run`, body),
   );
-  const tunneling = willAutoConnect(config, service, head.includes("--no-connect") || wait);
+  const tunneling = willAutoConnect(config, service, head.includes("--no-connect"));
   say(`${green("✓")} Service ${service.label ?? ""} · ${service.status}`);
   printServiceEndpoint(config, service, tunneling);
   say(dim(`  logs: mend service logs ${service.label ?? service.id.slice(0, 8)}`));
-  failUnlessAnswered(config, service, wait);
   if (tunneling) await autoConnect(config, service);
 };
 
@@ -2613,8 +2887,9 @@ const serviceCommand = async (config: CliConfig, args: ReadonlyArray<string>) =>
     case "connect":
       return serviceConnect(config, rest);
     case "list":
+      return serviceList(config, rest);
     case undefined:
-      return serviceList(config);
+      return serviceList(config, []);
     case "logs":
       return serviceLogs(config, rest);
     case "restart":
@@ -4092,7 +4367,8 @@ const printJson = (value: unknown): void => {
 
 /** Whether recorded bytes reached this terminal, which may have set its modes. */
 let outputOnTerminal = false;
-let stdoutErrorsHandled = false;
+/** Recorded output owns delivery: a reader that went away is reported by its write (`writeOutput`). */
+let recordedOutput = false;
 /** A signal asked this CLI to stop: no more recorded output is written. */
 let outputStopped = false;
 
@@ -4109,6 +4385,21 @@ const restoreTerminal = (): void => {
 process.once("exit", restoreTerminal);
 
 /**
+ * A reader that stops reading (`| head -1`, `| grep -q`) closes the pipe early, and the next write
+ * fails with EPIPE. That is the reader's choice, not a failure of the command: every command exits
+ * 0 at once, quietly, so a pipeline under `set -o pipefail` reads as the reader's own result.
+ * Recorded output (`mend run`, `mend logs`) says it itself and exits with the code it documents:
+ * there the write reports the closed pipe. Any other stream error is not swallowed.
+ */
+const onClosedPipe = (error: NodeJS.ErrnoException): void => {
+  if (error.code !== "EPIPE") throw error;
+  if (recordedOutput) return;
+  process.exit(0);
+};
+process.stdout.on("error", onClosedPipe);
+process.stderr.on("error", onClosedPipe);
+
+/**
  * Hand recorded bytes to stdout and resolve once they are written: a reader slower than the record
  * holds the next page back, and nothing queues up in memory. A reader that went away (EPIPE)
  * rejects.
@@ -4116,11 +4407,8 @@ process.once("exit", restoreTerminal);
 const writeOutput = (bytes: Uint8Array): Promise<void> => {
   if (outputStopped) return Promise.reject(new Error("stopped by a signal"));
   if (process.stdout.isTTY === true) outputOnTerminal = true;
-  // A closed pipe also arrives as an `error` event; the write's callback already reports it.
-  if (!stdoutErrorsHandled) {
-    stdoutErrorsHandled = true;
-    process.stdout.on("error", () => undefined);
-  }
+  // A closed pipe also arrives as an `error` event; the write's callback reports it here.
+  recordedOutput = true;
   return new Promise((resolve, reject) => {
     process.stdout.write(bytes, (error) => {
       if (error === null || error === undefined) resolve();
@@ -4408,36 +4696,91 @@ const resolveAnySession = async (config: CliConfig, word: string): Promise<Sessi
   return picked.session;
 };
 
+/** The process a `mend logs` reads, and how to read it again. */
+interface LogsTarget {
+  readonly processId: string;
+  /** `mend logs …` that reads it again, for the line a signal prints. */
+  readonly again: string;
+}
+
 /**
- * `mend logs [session] [--follow] [--from <sequence>] [--process <id>]`: a session's recorded
- * terminal output on stdout, as bytes. The session's command (or agent) by default; another of
- * its processes, a shell or a Service attempt, with --process.
+ * `--service <name-or-id>`: the Service's current attempt, ended ones included (the record outlives
+ * the process). Within the session when one is named.
+ */
+const serviceLogsTarget = async (
+  config: CliConfig,
+  needle: string,
+  sessionWord: string | null,
+): Promise<LogsTarget> => {
+  const session = sessionWord === null ? null : await resolveAnySession(config, sessionWord);
+  const picked = pickServiceAttempt(
+    await fetchServiceViews(config, true),
+    needle,
+    session?.id ?? null,
+  );
+  if ("error" in picked) return fail(picked.error);
+  return { processId: picked.processId, again: `mend logs --service ${needle}` };
+};
+
+/**
+ * `mend logs [session] [--follow] [--from <sequence>] [--process <id> | --service <name>]`: a
+ * session's recorded terminal output on stdout, as bytes. The session's command (or agent) by
+ * default; another of its processes, a shell or a Service attempt, with --process (a Service's id
+ * or name there reads its current attempt); a Service's current attempt with --service.
  */
 const logsCommand = async (config: CliConfig, args: ReadonlyArray<string>) => {
   chromeToStderr();
   const parsed = parseLogsArgs(args);
   if ("error" in parsed) return fail(`${parsed.error} · ${usageOf("logs")}`);
-  const { session: word, follow, from, process: processPrefix } = parsed.args;
-  const session =
-    word === null
-      ? await resolveLiveSession(config, undefined, "logs")
-      : await resolveAnySession(config, word);
-  const detail = await api<CommandDetail>(config, "GET", `/sessions/${session.id}`);
-  const picked = pickProcess(detail, processPrefix);
-  if ("error" in picked) return fail(`session ${session.id.slice(0, 8)} · ${picked.error}`);
-  const target = picked.process;
-  if (target.id === undefined || target.sealantSessionId === null) {
-    return fail(
-      `session ${session.id.slice(0, 8)} · this process has no recorded terminal (an adopted port, or a server older than process ids)`,
-    );
+  const { session: word, follow, from, process: processPrefix, service } = parsed.args;
+  let target: LogsTarget;
+  if (service !== null) {
+    target = await serviceLogsTarget(config, service, word);
+  } else {
+    const session =
+      word === null
+        ? await resolveLiveSession(config, undefined, "logs")
+        : await resolveAnySession(config, word);
+    const id8 = session.id.slice(0, 8);
+    const detail = await api<CommandDetail>(config, "GET", `/sessions/${session.id}`);
+    const picked = pickProcess(detail, processPrefix);
+    if ("error" in picked) {
+      // `mend service list` prints a Service's id beside its process's: either one reads it.
+      const asService =
+        processPrefix === null
+          ? null
+          : pickServiceAttempt(await fetchServiceViews(config, true), processPrefix, session.id);
+      if (asService === null || ("error" in asService && !asService.named)) {
+        return fail(`session ${id8} · ${picked.error}`);
+      }
+      if ("error" in asService) return fail(`session ${id8} · ${asService.error}`);
+      target = {
+        processId: asService.processId,
+        again: `mend logs ${id8} --process ${processPrefix}`,
+      };
+    } else {
+      const chosen = picked.process;
+      if (chosen.id === undefined || chosen.sealantSessionId === null) {
+        return fail(
+          `session ${id8} · this process has no recorded terminal (an adopted port, or a server older than process ids)`,
+        );
+      }
+      target = {
+        processId: chosen.id,
+        again:
+          processPrefix === null
+            ? `mend logs ${id8}`
+            : `mend logs ${id8} --process ${processPrefix}`,
+      };
+    }
   }
   stopOutputOnSignal(
     follow
-      ? `stopped watching · the process keeps running · mend logs ${session.id.slice(0, 8)} --follow`
+      ? `stopped watching · the process keeps running · ${target.again} --follow`
       : "stopped reading the record",
   );
   try {
-    const last = await writeProcessLogs(config, target.id, from, follow);
+    const last = await writeProcessLogs(config, target.processId, from, follow);
     restoreTerminal();
     if (follow) say(dim(`\nrecord ended · ${last.status} · next sequence ${last.next}`));
   } catch (error) {
@@ -4449,7 +4792,7 @@ const logsCommand = async (config: CliConfig, args: ReadonlyArray<string>) => {
 };
 
 /**
- * `mend wait [session] [--timeout <seconds>] [--process <id>] [--json]`: return once the session's
+ * `mend wait [session] [--timeout <duration>] [--process <id>] [--json]`: return once the session's
  * command has ended, with its exit code; 124 when the timeout passes first, and the command keeps
  * running. The timeout is one deadline over everything: finding the session, every read and retry,
  * and what `--json` prints, which is the last observation and never a further read.
@@ -4460,7 +4803,7 @@ const waitCommand = async (config: CliConfig, args: ReadonlyArray<string>) => {
   if ("error" in parsed) return fail(`${parsed.error} · ${usageOf("wait")}`);
   const { session: word, timeoutMs, json, process: processPrefix } = parsed.args;
   const deadline = timeoutMs === null ? null : clock.now() + timeoutMs;
-  const after = `${Math.round((timeoutMs ?? 0) / 1000)} s`;
+  const after = durationLine(timeoutMs ?? 0);
   const timedOut = async (
     session: SessionDto | null,
     processId: string | null,
