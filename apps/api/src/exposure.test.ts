@@ -29,6 +29,9 @@ const open = (posture: ExposurePosture) =>
     .filter((outcome) => outcome.established === "open")
     .map((outcome) => outcome.id);
 
+const workspaceSshOf = (posture: ExposurePosture) =>
+  evaluateExposureGate(posture).find((outcome) => outcome.id === "workspace-ssh");
+
 describe("the public exposure gate", () => {
   it("with everything observable closed, only what no build can observe stays open", () => {
     expect(open(closed)).toEqual(["core-private", "edge-tls", "reassessment"]);
@@ -152,26 +155,24 @@ describe("the public exposure gate", () => {
   });
 
   it("reports workspace SSH published apart from the web port as declared, observed or open, never as a verdict", () => {
-    const id = (posture: ExposurePosture) =>
-      evaluateExposureGate(posture).find((outcome) => outcome.id === "workspace-ssh");
     // Not published apart (the edge keeps it with the web port, on loopback), or on loopback alone.
-    expect(id(closed)).toMatchObject({ established: "observed", fix: null });
-    expect(id({ ...closed, sshPublished: "127.0.0.1:2222" })).toMatchObject({
+    expect(workspaceSshOf(closed)).toMatchObject({ established: "observed", fix: null });
+    expect(workspaceSshOf({ ...closed, sshPublished: "127.0.0.1:2222" })).toMatchObject({
       established: "observed",
       detail: "workspace SSH is published on 127.0.0.1:2222 only",
     });
     // Beside a public edge on every interface: open, says what would verify it, refuses `public`.
     const published = { ...closed, sshPublished: "0.0.0.0:2222" };
-    expect(id(published)).toMatchObject({ established: "open", blocksStart: true });
-    expect(id(published)?.fix).toContain("a connection attempt to 0.0.0.0:2222");
-    expect(id(published)?.fix).toContain("MEND_EXPOSURE_DECLARED");
+    expect(workspaceSshOf(published)).toMatchObject({ established: "open", blocksStart: true });
+    expect(workspaceSshOf(published)?.fix).toContain("a connection attempt to 0.0.0.0:2222");
+    expect(workspaceSshOf(published)?.fix).toContain("MEND_EXPOSURE_DECLARED");
     expect(exposureRefusal("public", evaluateExposureGate(published))).toContain("workspace-ssh:");
     // A private declaration still reports it, and does not refuse.
     expect(exposureRefusal("private", evaluateExposureGate(published))).toBeNull();
     // The operator's statement, and only that, makes it declared; this process still cannot check it.
     const stated: ExposurePosture = { ...published, declared: ["workspace-ssh"] };
-    expect(id(stated)).toMatchObject({ established: "declared", fix: null });
-    expect(id(stated)?.detail).toContain("this process cannot check it");
+    expect(workspaceSshOf(stated)).toMatchObject({ established: "declared", fix: null });
+    expect(workspaceSshOf(stated)?.detail).toContain("this process cannot check it");
     expect(exposureRefusal("public", evaluateExposureGate(stated))).toBeNull();
   });
 
