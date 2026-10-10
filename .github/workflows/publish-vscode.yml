@@ -1,6 +1,7 @@
-# Publishes the VS Code extension (apps/vscode, sealant-sh.mend) to the Visual Studio Marketplace and
-# Open VSX, and attaches its .vsix to a GitHub release. docs/operations/vscode-extension.md has the
-# one-time setup and the release steps.
+# Packages the VS Code extension (apps/vscode, sealant-sh.mend), publishes it to Open VSX, and
+# attaches its .vsix to a GitHub release. The owner uploads that .vsix to the Visual Studio
+# Marketplace by hand; the workflow publishes there too only if VSCE_PAT is set.
+# docs/operations/vscode-extension.md has the one-time setup and the release steps.
 #
 # - A vscode-vX.Y.Z tag publishes that version; the tag must equal apps/vscode/package.json's version.
 # - A dispatch from main publishes package.json's version and tags its commit vscode-vX.Y.Z; a
@@ -8,8 +9,9 @@
 # - A pull request that touches the extension packages it and checks the .vsix; nothing publishes.
 #
 # The publish job runs in the vscode-marketplace environment, which needs an approval and holds
-# VSCE_PAT and OVSX_PAT. It is idempotent: a version a registry already has is skipped there, and a
-# release asset that exists is kept.
+# OVSX_PAT (and VSCE_PAT, if ever set). A registry without its token is skipped with a notice in the
+# job summary. It is idempotent: a version a registry already has is skipped there, and a release
+# asset that exists is kept.
 name: Publish VS Code extension
 
 on:
@@ -157,7 +159,7 @@ jobs:
   # Holds the registry tokens. It installs vsce and ovsx from the lockfile with no install scripts,
   # and builds nothing: what it publishes is the package job's .vsix.
   publish:
-    name: Publish to the Marketplace and Open VSX
+    name: Publish to the registries that have a token
     needs: package
     if: github.event_name != 'pull_request'
     runs-on: blacksmith-2vcpu-ubuntu-2404
@@ -180,32 +182,54 @@ jobs:
           name: vsix
           path: ${{ runner.temp }}/vsix
 
+      # The Marketplace is uploaded by hand: automated publishing there needs Azure DevOps or Entra
+      # ID, which this repository does not use. A registry whose token is missing is skipped, and
+      # the job summary says what to do instead.
+      - name: Check which registries have a token
+        id: tokens
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+          OVSX_PAT: ${{ secrets.OVSX_PAT }}
+          VERSION: ${{ needs.package.outputs.version }}
+          TAG: ${{ needs.package.outputs.tag }}
+        run: |
+          set -euo pipefail
+          release="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/$TAG"
+          if [[ -n $VSCE_PAT ]]; then
+            echo "vsce=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "vsce=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Marketplace: upload mend-$VERSION.vsix by hand at https://marketplace.visualstudio.com/manage/publishers/sealant-sh"
+            echo "- **Marketplace:** upload \`mend-$VERSION.vsix\` by hand at <https://marketplace.visualstudio.com/manage/publishers/sealant-sh>. It is attached to [$TAG]($release) once this run finishes." >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [[ -n $OVSX_PAT ]]; then
+            echo "ovsx=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ovsx=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Open VSX: OVSX_PAT is not set; upload mend-$VERSION.vsix by hand at https://open-vsx.org/user-settings/extensions"
+            echo "- **Open VSX:** \`OVSX_PAT\` is not set in the vscode-marketplace environment. Upload \`mend-$VERSION.vsix\` by hand at <https://open-vsx.org/user-settings/extensions>, or set the secret and re-run this job." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
       # --skip-duplicate: a version the registry already has is done, so a re-run after a partial
       # failure publishes only what is missing. Each tool runs from an empty directory.
       - name: Publish to the Visual Studio Marketplace
+        if: steps.tokens.outputs.vsce == 'true'
         env:
           VSCE_PAT: ${{ secrets.VSCE_PAT }}
           VSIX: ${{ runner.temp }}/vsix/mend-${{ needs.package.outputs.version }}.vsix
         run: |
           set -euo pipefail
-          if [[ -z $VSCE_PAT ]]; then
-            echo "::error::VSCE_PAT is not set in the vscode-marketplace environment."
-            exit 1
-          fi
           vsce="$GITHUB_WORKSPACE/apps/vscode/node_modules/.bin/vsce"
           cd "$(mktemp -d)"
           "$vsce" publish --packagePath "$VSIX" --skip-duplicate
 
       - name: Publish to Open VSX
+        if: steps.tokens.outputs.ovsx == 'true'
         env:
           OVSX_PAT: ${{ secrets.OVSX_PAT }}
           VSIX: ${{ runner.temp }}/vsix/mend-${{ needs.package.outputs.version }}.vsix
         run: |
           set -euo pipefail
-          if [[ -z $OVSX_PAT ]]; then
-            echo "::error::OVSX_PAT is not set in the vscode-marketplace environment."
-            exit 1
-          fi
           ovsx="$GITHUB_WORKSPACE/apps/vscode/node_modules/.bin/ovsx"
           cd "$(mktemp -d)"
           "$ovsx" publish "$VSIX" --skip-duplicate
