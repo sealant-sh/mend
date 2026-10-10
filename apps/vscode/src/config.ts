@@ -5,9 +5,11 @@ import * as path from "node:path";
 import * as vscode from "vscode";
 
 import {
-  parseStoredCredential,
-  serializeStoredCredential,
+  parseCredentialStore,
+  serializeCredentialStore,
+  signOutOf,
   tokenFor,
+  withCredential,
   type StoredCredential,
 } from "./credentials.js";
 import { requestMend } from "./mend-http.js";
@@ -63,8 +65,8 @@ export class ConnectionStore {
       (configured === undefined || configured === "" ? discovered?.url : configured) ??
       "http://localhost:3105"
     ).replace(/\/$/, "");
-    const stored = parseStoredCredential(await this.context.secrets.get(TOKEN_KEY));
-    return { url, token: tokenFor(url, stored, discovered) };
+    const store = parseCredentialStore(await this.context.secrets.get(TOKEN_KEY));
+    return { url, token: tokenFor(url, store.get(url) ?? null, discovered) };
   }
 
   /**
@@ -131,7 +133,11 @@ export class ConnectionStore {
       stored = { kind: "none", url };
     }
     // The token first: changing the setting restarts the event stream, which reads it.
-    await this.context.secrets.store(TOKEN_KEY, serializeStoredCredential(stored));
+    const store = parseCredentialStore(await this.context.secrets.get(TOKEN_KEY));
+    await this.context.secrets.store(
+      TOKEN_KEY,
+      serializeCredentialStore(withCredential(store, stored)),
+    );
     await vscode.workspace
       .getConfiguration("mend")
       .update("serverUrl", url, vscode.ConfigurationTarget.Global);
@@ -172,12 +178,19 @@ export class ConnectionStore {
    * Forget this editor's token. A browser sign-in's device is revoked on the server first, so the
    * token stops working everywhere, not only here.
    */
+  /**
+   * Sign this editor out of the server it is connected to now, and only that one: its own entry for
+   * that URL is revoked (a browser sign-in's device) and replaced by "no token", so the editor does
+   * not fall back to the CLI's sign-in there. Entries for other servers stay as they were.
+   */
   async signOut(): Promise<string> {
     const current = await this.get();
-    const stored = parseStoredCredential(await this.context.secrets.get(TOKEN_KEY));
-    const own = stored !== null && stored.kind === "token" ? stored : null;
+    const { own, next } = signOutOf(
+      current.url,
+      parseCredentialStore(await this.context.secrets.get(TOKEN_KEY)),
+    );
     if (own === null && current.token === null) {
-      return "This editor holds no Mend sign-in.";
+      return `This editor holds no Mend sign-in for ${current.url}.`;
     }
     let revoked = false;
     if (own !== null && own.deviceId !== null) {
@@ -190,17 +203,15 @@ export class ConnectionStore {
         revoked = false;
       }
     }
-    // Signed out stays signed out: the editor does not fall back to the CLI's sign-in for this URL.
-    const url = own?.url ?? current.url;
-    await this.context.secrets.store(TOKEN_KEY, serializeStoredCredential({ kind: "none", url }));
+    await this.context.secrets.store(TOKEN_KEY, serializeCredentialStore(next));
     if (own === null) {
-      return `Signed out of Mend at ${url} in this editor. The Mend CLI on this machine keeps its own sign-in; mend logout ends it.`;
+      return `Signed out of Mend at ${current.url} in this editor. The Mend CLI on this machine keeps its own sign-in; mend logout ends it.`;
     }
     if (own.deviceId === null) {
-      return `Signed out of Mend at ${url}. The pasted token stays valid until it is revoked under Settings → Devices.`;
+      return `Signed out of Mend at ${current.url}. The pasted token stays valid until it is revoked under Settings → Devices.`;
     }
     return revoked
-      ? `Signed out of Mend at ${url}, and revoked this editor's device.`
-      : `Signed out of Mend at ${url}; Mend could not be reached to revoke this editor's device. Revoke it under Settings → Devices.`;
+      ? `Signed out of Mend at ${current.url}, and revoked this editor's device.`
+      : `Signed out of Mend at ${current.url}; Mend could not be reached to revoke this editor's device. Revoke it under Settings → Devices.`;
   }
 }

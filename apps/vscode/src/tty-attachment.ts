@@ -18,8 +18,12 @@ import { isEndFrame, mintTtyTicket, resizeFrame, ttyUrl, type TtyAddress } from 
 /** How many times a dropped or refused-in-transit terminal tries again before it says so. */
 export const RECONNECTS = 5;
 
-/** Whether the PTY's process runs: asked after a socket closed without the server's `end`. */
-export type PtyLiveness = "live" | "ended" | "refused" | "unknown";
+/**
+ * Whether the PTY's process runs, and whether this viewer may still attach to it: asked after a
+ * socket closed without the server's `end`. `not-steerable`: the process runs, and the server would
+ * now refuse this viewer the terminal (its owner turned shared control off).
+ */
+export type PtyLiveness = "live" | "ended" | "refused" | "not-steerable" | "unknown";
 
 /** The slice of a WebSocket the attachment uses. */
 export interface TtySocket {
@@ -198,6 +202,13 @@ export class TtyAttachment {
     }
     if (liveness === "refused") {
       this.end("[Mend no longer lets this editor see the session · the process keeps running]", 1);
+      return;
+    }
+    if (liveness === "not-steerable") {
+      this.end(
+        "[the session's owner turned shared control off · its terminal is theirs alone now · the process keeps running]",
+        1,
+      );
       return;
     }
     await this.retry(true, opened ? "connection lost" : "Mend did not open the terminal");

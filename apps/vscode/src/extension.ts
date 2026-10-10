@@ -452,6 +452,9 @@ class MendCommands {
           liveness: async () => {
             try {
               const now = await this.client.sessionDetail(detail.session.id);
+              // Admission first: the server refuses the upgrade to whoever may no longer steer
+              // (shared control turned off), however live the process is.
+              if (viewer !== null && !maySteer(now.session, viewer)) return "not-steerable";
               const running =
                 processId === null
                   ? now.currentAgent !== null && now.currentAgent.exitedAt === null

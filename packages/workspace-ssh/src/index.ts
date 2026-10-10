@@ -611,8 +611,41 @@ export const writeWorkspaceSshConfig = (
     replaceFileAtomically(configFile, reconciled.value, 0o600);
     return success(undefined);
   } catch (cause) {
-    return failure(new WorkspaceSshError("config", `Could not write ${configFile}.`, cause));
+    return failure(
+      new WorkspaceSshError(
+        "config",
+        `Could not write ${configFile}${cause instanceof Error ? `: ${cause.message}` : "."}`,
+        cause,
+      ),
+    );
   }
+};
+
+/**
+ * The file a path's bytes live in: the path itself, or the end of its symlink chain, followed by
+ * reading each link (not by asking whether the target exists, which is false for a dangling link).
+ * A dangling link's target is created where it points, as a plain write would have; when its
+ * directory does not exist, nothing is written and the link stays.
+ */
+const linkTarget = (file: string): string => {
+  let current = file;
+  for (let hops = 0; hops < 40; hops += 1) {
+    let stat: fs.Stats;
+    try {
+      stat = fs.lstatSync(current);
+    } catch {
+      // Nothing here: a new file, or the missing end of a link chain.
+      if (current !== file && !fs.existsSync(path.dirname(current))) {
+        throw new Error(
+          `${file} is a symlink to ${current}, whose directory does not exist. Create it, or replace the link with a file; Mend left the link as it is.`,
+        );
+      }
+      return current;
+    }
+    if (!stat.isSymbolicLink()) return current;
+    current = path.resolve(path.dirname(current), fs.readlinkSync(current));
+  }
+  throw new Error(`${file} is a chain of symlinks too long to follow; Mend left it as it is.`);
 };
 
 /**
@@ -622,7 +655,7 @@ export const writeWorkspaceSshConfig = (
  * link and its target gets the new bytes.
  */
 const replaceFileAtomically = (file: string, contents: string, mode: number): void => {
-  const destination = fs.existsSync(file) ? fs.realpathSync(file) : file;
+  const destination = linkTarget(file);
   const temporary = path.join(
     path.dirname(destination),
     `.${path.basename(destination)}.mend-${process.pid}-${createHash("sha256")

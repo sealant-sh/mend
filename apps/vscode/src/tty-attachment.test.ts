@@ -181,6 +181,17 @@ describe("a session terminal's attachment", () => {
     await settle();
     expect(ended.ended).toEqual([0]);
 
+    // Shared control turned off while the socket was down: no retry, and the reason.
+    const unshared = harness({ liveness: async () => "not-steerable" });
+    unshared.attachment.start(null);
+    await settle();
+    unshared.sockets[0]?.drop();
+    await settle();
+    expect(unshared.ended).toEqual([1]);
+    expect(unshared.sockets).toHaveLength(1);
+    expect(unshared.mints()).toBe(1);
+    expect(unshared.written.join("")).toContain("turned shared control off");
+
     const refused = harness({ liveness: async () => "refused" });
     refused.attachment.start(null);
     await settle();
