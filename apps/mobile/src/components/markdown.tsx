@@ -2,8 +2,9 @@
 // (md4c parsing over Nitro Modules — the same engine t3code's mobile app uses
 // for its non-native markdown path; MIT, pingdotgg/t3code showed the way).
 // Theme and node styles are materialized from the Evidence tokens so markdown
-// follows the app's scheme and the user's text scale; math stays off, so the
-// ratex peer never loads.
+// follows the app's scheme and the user's text scale. Math is on (the parser's
+// default) and ratex-react-native, autolinked as nitro-markdown's peer, draws
+// it. Both are native-only: the web build renders with markdown.web.tsx.
 
 import { useMemo } from "react";
 import { Linking, StyleSheet } from "react-native";

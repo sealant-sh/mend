@@ -30,16 +30,20 @@ const notify = () => {
   for (const listener of listeners) listener();
 };
 
-void AsyncStorage.getItem(STORAGE_KEY).then((raw) => {
-  if (raw === null) return undefined;
-  try {
-    current = { ...DEFAULTS, ...(JSON.parse(raw) as Partial<DisplayPreferences>) };
-    notify();
-  } catch {
-    // Corrupt record — the defaults stand; the next save rewrites it.
-  }
-  return undefined;
-});
+void AsyncStorage.getItem(STORAGE_KEY)
+  .then((raw) => {
+    if (raw === null) return undefined;
+    try {
+      current = { ...DEFAULTS, ...(JSON.parse(raw) as Partial<DisplayPreferences>) };
+      notify();
+    } catch {
+      // Corrupt record — the defaults stand; the next save rewrites it.
+    }
+    return undefined;
+  })
+  // The web build's static render runs in Node, where there is no localStorage
+  // and the read rejects; the defaults stand there and the browser hydrates.
+  .catch(() => undefined);
 
 export const setDisplayPreferences = (patch: Partial<DisplayPreferences>): void => {
   current = { ...current, ...patch };

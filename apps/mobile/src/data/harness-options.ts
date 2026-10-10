@@ -56,13 +56,17 @@ const parsePrefs = (raw: string): LaunchPrefs => {
   }
 };
 
-void AsyncStorage.getItem(STORAGE_KEY).then((raw) => {
-  if (raw !== null) {
-    current = parsePrefs(raw);
-    notify();
-  }
-  return undefined;
-});
+void AsyncStorage.getItem(STORAGE_KEY)
+  .then((raw) => {
+    if (raw !== null) {
+      current = parsePrefs(raw);
+      notify();
+    }
+    return undefined;
+  })
+  // The web build's static render runs in Node, where there is no localStorage
+  // and the read rejects; the defaults stand there and the browser hydrates.
+  .catch(() => undefined);
 
 export const setLaunchOptions = (harness: string, options: LaunchOptions): void => {
   current = { ...current, [harness]: options };
