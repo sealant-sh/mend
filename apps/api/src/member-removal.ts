@@ -130,6 +130,10 @@ export const MemberRemovalLive: Layer.Layer<
           revocationLeaseMs: Duration.toMillis(SSH_KEY_REVOCATION_LEASE),
         },
       );
+      // Their open pages hear why before anything they ask is refused: a page that is refused
+      // first walks to a plain sign-in that cannot say why (live pass 2026-10-10). Other
+      // processes close the account's connections on it; this one closes them below.
+      yield* userEvents.changed(input.userId, "access");
       // Nobody keeps steering on the removed account's credentials, even before their sessions stop.
       const unshared = yield* sessions.disableSharedControlForOwner(input.userId);
       yield* Effect.forEach(
@@ -176,9 +180,8 @@ export const MemberRemovalLive: Layer.Layer<
           data: { teamId: link.teamId, slackUserId: link.slackUserId, memberRemoved: true },
         });
       }
-      // Mend's own revocation never waits on the platform. Other processes close on the event;
-      // this one closes now, and the sessions begin to stop.
-      yield* userEvents.changed(input.userId, "access");
+      // Mend's own revocation never waits on the platform. This process closes the account's
+      // connections now, and the sessions begin to stop.
       yield* connections.closeForUser(input.userId);
       yield* Effect.forkIn(
         windDown(input).pipe(

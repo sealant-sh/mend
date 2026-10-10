@@ -2,7 +2,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
 
 import type { WorkbenchEventDto } from "#/lib/api";
-import { useTRPC } from "#/lib/trpc";
+import { loginWalk, useTRPC } from "#/lib/trpc";
 
 /**
  * One SSE subscription per mounted page: workbench events invalidate exactly
@@ -89,7 +89,7 @@ export const useWorkbenchEvents = (onEvent?: (event: WorkbenchEventDto) => void)
             disposed = true;
             source?.close();
             queryClient.clear();
-            window.location.assign("/login?reason=access");
+            loginWalk.accessRemoved();
           }
           break;
         case "organization":

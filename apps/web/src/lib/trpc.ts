@@ -4,6 +4,7 @@ import { createTRPCContext, createTRPCOptionsProxy } from "@trpc/tanstack-react-
 import superjson from "superjson";
 
 import type { AppRouter } from "../server/routers/index.ts";
+import { makeLoginWalk } from "./login-walk.ts";
 
 /**
  * The UI's one client of the web tier's tRPC surface. Same origin — the web
@@ -45,6 +46,14 @@ export const loginWalkUrl = (): string => {
   return here === "/" ? "/login" : `/login?next=${encodeURIComponent(here)}`;
 };
 
+/** The page's one walk to sign-in (`makeLoginWalk`): refused requests and the access event. */
+export const loginWalk = makeLoginWalk({
+  pathname: () => window.location.pathname,
+  loginUrl: loginWalkUrl,
+  assign: (url) => window.location.assign(url),
+  later: (run, ms) => void window.setTimeout(run, ms),
+});
+
 /**
  * Map a mutation's 401 (surfaced as UNAUTHORIZED) to the login walk. These
  * wrappers run from event handlers and menus — no loader is watching, so a
@@ -56,10 +65,12 @@ export const orLogin = async <A>(promise: Promise<A>): Promise<A> => {
   try {
     return await promise;
   } catch (error) {
-    if (error instanceof TRPCClientError && error.data?.code === "UNAUTHORIZED") {
-      if (typeof window !== "undefined" && window.location.pathname !== "/login") {
-        window.location.assign(loginWalkUrl());
-      }
+    if (
+      typeof window !== "undefined" &&
+      error instanceof TRPCClientError &&
+      error.data?.code === "UNAUTHORIZED"
+    ) {
+      loginWalk.refused();
     }
     throw error;
   }
