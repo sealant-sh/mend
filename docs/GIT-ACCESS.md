@@ -142,33 +142,18 @@ CLI's `--json`) is redacted one string at a time.
   carries the whole command line), `ReferenceCloneError.source` likewise, and the server's console
   strips URL credentials from every log line (`RedactingConsoleLive`).
 - **Existing data.** Migration 0123 strips project and reference origins and both dotfiles columns.
-  At each worker start `RemoteCredentialScrubLive` rewrites any remote URL (`url`, `pushurl`) in a
-  project store or reference clone that still carries one. Each repository is reported the moment
-  its outcome is known, never after the others: a cleaned one with a warning naming it and an entry
-  in its organization's audit log (`project.remote_credentials_removed`, credited to whoever adopted
-  it); one that cannot be cleaned yet with its reason and file, retried 1 s doubling to every 5
-  minutes. The store leaves a notice file beside the config before its first rewrite
-  (`mend-remote-credentials-removed`: when, and which keys; no URL), whichever op did the rewrite,
-  and the sweep clears it only once recorded, so a removal a fetch made first, or one a restart
-  interrupted, is still reported.
-- **Gated until clean.** Every store op that uses or exposes a repository's remotes (a fetch, a
-  push, a probe, a reference refresh, opening or resetting a worktree) first cleans them
-  (`Store.cleanRemotes`), waiting about a second for a held lock. A remote that still cannot be
-  cleaned refuses the op with that reason; nothing fetches, pushes or mounts with the token.
-- **What git reads, not what one file says** (reviews 2 and 3 of mend#640). Mend never writes an
-  `include` or `includeIf` into a store's config, and a conditional one can turn on in a worktree
-  after the gate passed, so a store whose config has any is refused, naming the config, rather than
-  evaluated. The scrub reads the config NUL-delimited (`git config -z --show-origin`), so a value
-  with a newline is one value. A credential in a `url.<base>.insteadOf` base is not Mend's to edit:
-  the gated ops refuse, naming the file.
-- **No lost remote, no stale write.** Each dirty value is rewritten by one atomic git write
-  (`--fixed-value --replace-all KEY CLEAN OLD`: git writes the new file aside and renames it), so a
-  crash or a concurrent reader never sees a remote missing or half-written, and a value keeps its
-  place. A writer working from a stale read appends the clean value instead; those copies are
-  collapsed into one. The scrub is accepted only once every value read before has its clean spelling
-  in the config after, re-read, with no credential left. Within one process the read-and-rewrite of
-  a repository runs once at a time (a lock keyed by the git dir's real path, shared by every Store);
-  across processes the atomic, idempotent writes are what keep it safe.
+  Mend does not rewrite a store's git config (review 4 of mend#640: four rounds of rewriting it in
+  place kept finding ways to lose or reorder a remote). A store or reference clone whose config has
+  a remote URL with a login or token in it, a `url.<base>.insteadOf` whose base holds one, or any
+  `include`/`includeIf` (Mend never writes one, and a conditional one can turn on in a worktree
+  after a check passed) is refused instead: every fetch, push, probe, reference refresh and worktree
+  open or reset says what it found (`remote.origin.url in <config>`, never the URL) and how to fix
+  it, either by adopting the project again from its SSH URL with a Mend key or the bridge, or with
+  the exact `git --git-dir=<store> remote set-url …` (or `config --unset-all`, or `config --edit`)
+  an operator can run. Stripping the token would break that project's fetch anyway, so nothing is
+  lost: the store and its worktrees stay as they are. The scan is read only
+  (`git config -z --local --includes --show-origin`, so a value with a newline is one value), and
+  `RemoteCredentialCheckLive` logs each refused repository and a count at every worker start.
 - **Known limits.** The gate reads the store's own config. Global and system git config and
   `GIT_CONFIG_*` in the server's environment are the operator's configuration of their own server,
   not input from a person, and are outside it. Neither does it judge `http.<url>.extraHeader` or
@@ -180,8 +165,10 @@ account's, and a token in a project's URL is the adopter's credential spent by e
 the project, including fetches and landings by other members. That is the cross-person spend the
 per-person rules forbid. The supported ways are each person's own: their Mend key or their bridge. A
 per-account HTTPS token, sealed like other credentials, is the planned follow-up (above), and would
-not live in the URL either. A project whose fetch needed the token stops fetching after the upgrade;
-it is adopted again from its SSH URL. The owner's box had none (0 of 6 projects, 0 references).
+not live in the URL either. A project whose store still holds the token is refused after the upgrade
+until it is adopted again from its SSH URL, or the operator strips it. The owner's box had none (0
+of 6 projects, 0 references; no store with a credential, a token in an insteadOf base or an
+include).
 
 ## Accounts and organizations
 

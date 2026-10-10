@@ -8,10 +8,10 @@ import {
   redactRepositoryUrl,
   repositoryUrlHasCredential,
 } from "@mend/domain/workbench";
-import { Effect, Layer, Schedule, Schema, Semaphore } from "effect";
+import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
-import { git, GitError, gitHostFaultWords } from "./git.ts";
+import { git, GitError } from "./git.ts";
 import {
   type BundleEmptyError,
   type BundleInput,
@@ -36,6 +36,9 @@ import { mendHome } from "./paths.ts";
 /** The config keys that decide where git's transport goes: remote URLs and URL rewrites. */
 const REMOTE_CONFIG_KEYS = String.raw`^(remote\..*\.(url|pushurl)|url\..*\.(insteadof|pushinsteadof))$`;
 
+/** The include keys: `include.path` and every `includeIf.<condition>.path`. */
+const INCLUDE_KEYS = String.raw`^include(if\..*)?\.path$`;
+
 /** One config entry, with the file it was read from as git names it (relative to where it ran). */
 interface RemoteConfigEntry {
   readonly origin: string;
@@ -43,95 +46,87 @@ interface RemoteConfigEntry {
   readonly value: string;
 }
 
-/** A file's real path when it exists, so a symlink on the way does not make it another file. */
-const realPath = (file: string): string =>
-  fs.existsSync(file) ? fs.realpathSync(file) : path.resolve(file);
+/**
+ * Why a repository's git config keeps Mend from running git with it: a key that carries a login
+ * or token (or an include), the file it sits in, and the command that removes it. No URL with a
+ * credential, and no secret, is ever in it: a `url.<base>` key is named with its base redacted.
+ */
+export interface RemoteCredentialFinding {
+  readonly key: string;
+  readonly file: string;
+  readonly fix: string;
+}
+
+/** A shell word, quoted only when it has to be. */
+const shellWord = (word: string): string =>
+  /^[\w@%+=:,./-]+$/u.test(word) ? word : `'${word.replaceAll("'", "'\\''")}'`;
 
 /**
- * What of `entries` carries a credential: remote URLs in the repository's own config, which
- * Mend rewrites, and anything else (a remote URL in an included file, a `url.<base>.insteadOf`
- * whose base holds one), which Mend does not edit and refuses to run with.
+ * What in `entries` carries a credential, as findings. A remote URL keeps its key and gets the
+ * command that points it at its clean spelling (`git remote set-url`), or, when the key has more
+ * than one value, an edit; a `url.<base>.insteadOf` whose base holds one is named with the base
+ * redacted and gets an edit, since Mend will not print the base.
  */
-const credentialsIn = (
+const credentialFindings = (
   gitDir: string,
   entries: ReadonlyArray<RemoteConfigEntry>,
-  ownConfig: string,
-) => {
-  const own = new Set<string>();
-  const elsewhere = new Set<string>();
+): ReadonlyArray<RemoteCredentialFinding> => {
+  const gitCommand = `git --git-dir=${shellWord(gitDir)}`;
+  const findings = new Map<string, RemoteCredentialFinding>();
   for (const entry of entries) {
+    // git names the file as it opened it, relative to where it ran: the git dir.
+    const file = path.resolve(gitDir, entry.origin);
+    const id = `${file}\0${entry.key}`;
     if (/^url\./iu.test(entry.key)) {
-      const base = entry.key.slice("url.".length, entry.key.lastIndexOf("."));
-      if (repositoryUrlHasCredential(base)) elsewhere.add(entry.origin);
+      const dot = entry.key.lastIndexOf(".");
+      const base = entry.key.slice("url.".length, dot);
+      if (!repositoryUrlHasCredential(base)) continue;
+      findings.set(id, {
+        key: `url.${redactRepositoryUrl(base)}${entry.key.slice(dot)}`,
+        file,
+        fix: `${gitCommand} config --edit   # remove the url section whose address holds a login`,
+      });
       continue;
     }
-    if (redactRepositoryUrl(entry.value) === entry.value) continue;
-    // git names the file as it opened it, relative to where it ran: `gitDir`.
-    if (realPath(path.resolve(gitDir, entry.origin)) === realPath(ownConfig)) own.add(entry.key);
-    else elsewhere.add(entry.origin);
+    const clean = redactRepositoryUrl(entry.value);
+    if (clean === entry.value) continue;
+    const name = entry.key.replace(/^remote\./u, "").replace(/\.(url|pushurl)$/u, "");
+    const several = entries.filter((other) => other.key === entry.key).length > 1;
+    const push = entry.key.endsWith(".pushurl") ? " --push" : "";
+    findings.set(id, {
+      key: entry.key,
+      file,
+      fix: several
+        ? `${gitCommand} config --edit   # take the login out of each ${entry.key}`
+        : `${gitCommand} remote set-url${push} ${shellWord(name)} ${shellWord(clean)}`,
+    });
   }
-  return { own, elsewhere };
+  return [...findings.values()];
 };
 
-const refusedElsewhere = (gitDir: string, files: ReadonlySet<string>) =>
+/**
+ * The refusal of a gated op on a repository whose config has `findings`: what Mend found, never a
+ * URL with a credential, and how to fix it either way. Mend does not rewrite a store's config.
+ */
+const refusedForCredentials = (
+  gitDir: string,
+  findings: ReadonlyArray<RemoteCredentialFinding>,
+): GitError =>
   new GitError({
     args: ["mend", "remote-credentials"],
     cwd: gitDir,
     exitCode: null,
-    stderr: `a login or token sits in git config Mend does not edit (${[...files].join(", ")}: an included file or a url.insteadOf rewrite). Remove it there.`,
+    stderr: [
+      `Mend does not fetch, push or open a worktree with this repository: its git config has ${findings
+        .map(
+          (finding) =>
+            `${finding.key} in ${finding.file} (${/^include/iu.test(finding.key) ? "an include, which Mend never writes and does not run git through" : "a login or token, which Mend never stores or uses"})`,
+        )
+        .join("; ")}.`,
+      "Adopt the project again from its SSH URL with your Mend key (`mend keys`) or your own key through the agent bridge (`--auth bridge`), or remove it where the store is:",
+      ...findings.map((finding) => `  ${finding.fix}`),
+    ].join("\n"),
   });
-
-/** The include keys: `include.path` and every `includeIf.<condition>.path`. */
-const INCLUDE_KEYS = String.raw`^include(if\..*)?\.path$`;
-
-/**
- * One permit per repository across every Store in this process, keyed by the git dir's real path,
- * so a symlinked spelling is the same repository: Mend's read-and-rewrite of a config never runs
- * twice at once here. Across processes the rewrite itself is safe (`rewriteKey`).
- */
-const remoteLocks = new Map<string, Semaphore.Semaphore>();
-const remoteLock = (gitDir: string): Semaphore.Semaphore => {
-  const key = realPath(gitDir);
-  const existing = remoteLocks.get(key);
-  if (existing !== undefined) return existing;
-  const created = Semaphore.makeUnsafe(1);
-  remoteLocks.set(key, created);
-  return created;
-};
-
-/** The file a rewrite leaves in the git dir until its notice is reported. No URL, no secret. */
-export const REMOTE_CREDENTIAL_NOTICE = "mend-remote-credentials-removed";
-
-/** What a rewrite of a repository's remotes left to report: when, and which config keys. */
-export const RemoteCredentialNotice = Schema.Struct({
-  removedAt: Schema.NullOr(Schema.String),
-  keys: Schema.Array(Schema.String),
-});
-export type RemoteCredentialNotice = typeof RemoteCredentialNotice.Type;
-
-const decodeNotice = Schema.decodeUnknownEffect(Schema.fromJsonString(RemoteCredentialNotice));
-
-/** Record (or extend) a notice: the keys about to be rewritten, and the first time it happened. */
-const writeNotice = (file: string, keys: ReadonlyArray<string>): void => {
-  let previous: RemoteCredentialNotice | null = null;
-  try {
-    const parsed: unknown = JSON.parse(fs.readFileSync(file, "utf8"));
-    previous = Schema.decodeUnknownSync(RemoteCredentialNotice)(parsed);
-  } catch {
-    previous = null;
-  }
-  const notice: RemoteCredentialNotice = {
-    removedAt: previous?.removedAt ?? new Date().toISOString(),
-    keys: [...new Set([...(previous?.keys ?? []), ...keys])],
-  };
-  fs.writeFileSync(file, JSON.stringify(notice));
-};
-
-/** Every value of `key` in the repository's own config, in order, whole (`-z`). */
-const valuesOf = (gitDir: string, key: string) =>
-  git(["config", "-z", "--local", "--get-all", key], gitDir, undefined, [1]).pipe(
-    Effect.map((listed) => listed.split("\0").slice(0, -1)),
-  );
 
 /** Where the store lives on disk. One root, one directory per project. */
 export class StoreConfig extends Context.Service<
@@ -694,22 +689,16 @@ export class Store extends Context.Service<
     /** Delete the clone directory. Selection rows are the caller's concern. */
     readonly removeReference: (clonePath: string) => Effect.Effect<void>;
     /**
-     * Take the credential out of every remote URL of the repository at `gitDir` (a project's bare
-     * store, a reference clone), as `redactRepositoryUrl` does: servers before 0.36 cloned the
-     * URL as typed, token included, and git keeps it in the repository's config, which a
-     * workspace can read. Answers the number of URLs it rewrote. A remote that needed the token
-     * will no longer fetch; the caller says so.
+     * What in the git config of the repository at `gitDir` (a project's bare store, a reference
+     * clone) keeps Mend from running git with it: a remote URL with a login or token in it, a
+     * `url.<base>.insteadOf` whose base holds one, or any include (docs/GIT-ACCESS.md,
+     * "Credentials in repository URLs"). Read only: Mend never rewrites a store's config. Servers
+     * before 0.36 cloned an adopted URL as typed, token included; every op that uses or exposes
+     * the remotes refuses with these findings until someone removes them.
      */
-    readonly scrubRemoteCredentials: (gitDir: string) => Effect.Effect<number, GitError>;
-    /**
-     * What a rewrite by `scrubRemoteCredentials` left to report for this repository, whichever
-     * caller did it (the sweep, or a fetch that got there first), or null. It stays until
-     * `clearRemoteCredentialNotice`, so a restart re-derives what was never reported.
-     */
-    readonly remoteCredentialNotice: (
+    readonly remoteCredentialFindings: (
       gitDir: string,
-    ) => Effect.Effect<RemoteCredentialNotice | null, GitError>;
-    readonly clearRemoteCredentialNotice: (gitDir: string) => Effect.Effect<void, GitError>;
+    ) => Effect.Effect<ReadonlyArray<RemoteCredentialFinding>, GitError>;
     /**
      * Landing step 2 (docs/adr/0007-landing.md) in the project store: Mend's commit of the
      * checkpoint's tree, parented by `planLanding` on the last landing and the agent's head, or
@@ -829,7 +818,7 @@ export class Store extends Context.Service<
         );
       });
 
-      /** Every remote URL and URL rewrite git reads for `gitDir` from its own config. */
+      /** Every remote URL and URL rewrite git reads for `gitDir`: its own config, NUL-delimited. */
       const remoteConfig = Effect.fn("Store.remoteConfig")(function* (gitDir: string) {
         // `-z`: a value may hold a newline, so entries end in NUL and a key ends at its first newline.
         const listed = yield* git(
@@ -861,143 +850,40 @@ export class Store extends Context.Service<
         return entries;
       });
 
-      /**
-       * Rewrite every value of `key` that holds a credential to its clean spelling, in the
-       * repository's own config. Each rewrite is one atomic git write (`--fixed-value
-       * --replace-all KEY CLEAN OLD`: git writes the new file aside and renames it), so no crash or
-       * concurrent reader ever sees a remote missing or half-written, and a value that is the only
-       * one of its spelling keeps its place. A writer working from a stale read appends CLEAN
-       * instead of replacing; the copies of a clean value this produced are then collapsed into one.
-       * The rewrite is accepted only when every value read before has its clean spelling in the
-       * config after: a remote that went missing is never "clean". Answers how many values changed.
-       */
-      const rewriteKey = Effect.fn("Store.rewriteKey")(function* (gitDir: string, key: string) {
-        const values = yield* valuesOf(gitDir, key);
-        const dirty = [...new Set(values.filter((value) => redactRepositoryUrl(value) !== value))];
-        for (const value of dirty) {
-          yield* git(
-            [
-              "config",
-              "--local",
-              "--fixed-value",
-              "--replace-all",
-              key,
-              redactRepositoryUrl(value),
-              value,
-            ],
-            gitDir,
-          );
-        }
-        const produced = new Set(dirty.map(redactRepositoryUrl));
-        const written = yield* valuesOf(gitDir, key);
-        for (const clean of produced) {
-          if (written.filter((value) => value === clean).length > 1) {
-            yield* git(
-              ["config", "--local", "--fixed-value", "--replace-all", key, clean, clean],
-              gitDir,
-            );
-          }
-        }
-        const after = new Set(yield* valuesOf(gitDir, key));
-        if (values.some((value) => !after.has(redactRepositoryUrl(value)))) {
-          return yield* new GitError({
-            args: ["mend", "remote-credentials"],
-            cwd: gitDir,
-            exitCode: null,
-            stderr: `a value of ${key} went missing while Mend cleaned it; it is not clean`,
-          });
-        }
-        return dirty.length;
-      });
-
-      /** Where a rewrite leaves its notice, beside the config it rewrote, until it is reported. */
-      const noticePath = (absoluteGitDir: string) =>
-        path.join(absoluteGitDir, REMOTE_CREDENTIAL_NOTICE);
-
-      const remoteCredentialNotice = Effect.fn("Store.remoteCredentialNotice")(function* (
-        gitDir: string,
-      ) {
-        const file = noticePath(yield* git(["rev-parse", "--absolute-git-dir"], gitDir));
-        if (!fs.existsSync(file)) return null;
-        return yield* decodeNotice(fs.readFileSync(file, "utf8")).pipe(
-          // An unreadable notice still says something was removed; when is unknown.
-          Effect.orElseSucceed(() => ({ removedAt: null, keys: [] })),
-        );
-      });
-
-      const clearRemoteCredentialNotice = Effect.fn("Store.clearRemoteCredentialNotice")(function* (
-        gitDir: string,
-      ) {
-        const file = noticePath(yield* git(["rev-parse", "--absolute-git-dir"], gitDir));
-        yield* Effect.sync(() => fs.rmSync(file, { force: true }));
-      });
-
-      const scrubRemoteCredentials = Effect.fn("Store.scrubRemoteCredentials")(function* (
+      const remoteCredentialFindings = Effect.fn("Store.remoteCredentialFindings")(function* (
         gitDir: string,
       ) {
         const absoluteGitDir = yield* git(["rev-parse", "--absolute-git-dir"], gitDir);
+        // Mend never writes an include into a store's config, and a conditional one can turn on
+        // in a worktree after this check passed: any include is a finding, not evaluated.
+        const includes = yield* git(
+          ["config", "--local", "--no-includes", "--name-only", "--get-regexp", INCLUDE_KEYS],
+          gitDir,
+          undefined,
+          [1],
+        );
         const ownConfig = path.join(absoluteGitDir, "config");
-        const scrub = Effect.gen(function* () {
-          // Mend never writes an include into a store's config, and a conditional one can turn on
-          // in a worktree after this check passed: a config that has one is refused, not evaluated.
-          const includes = yield* git(
-            ["config", "--local", "--no-includes", "--name-only", "--get-regexp", INCLUDE_KEYS],
-            gitDir,
-            undefined,
-            [1],
-          );
-          if (includes.trim() !== "") {
-            return yield* new GitError({
-              args: ["mend", "remote-credentials"],
-              cwd: gitDir,
-              exitCode: null,
-              stderr: `this repository's git config includes other files (${includes.trim().split("\n").join(", ")} in ${ownConfig}); Mend never writes one and does not run git through it. Remove it there.`,
-            });
-          }
-          const before = credentialsIn(gitDir, yield* remoteConfig(gitDir), ownConfig);
-          if (before.elsewhere.size > 0) return yield* refusedElsewhere(gitDir, before.elsewhere);
-          if (before.own.size > 0) {
-            // The notice goes down before the first rewrite: a crash after it still reports.
-            yield* Effect.sync(() => writeNotice(noticePath(absoluteGitDir), [...before.own]));
-          }
-          let rewritten = 0;
-          for (const key of before.own) rewritten += yield* rewriteKey(gitDir, key);
-          // The answer is what git reads now, not what was written: another process may write too.
-          const after = credentialsIn(gitDir, yield* remoteConfig(gitDir), ownConfig);
-          if (after.elsewhere.size > 0) return yield* refusedElsewhere(gitDir, after.elsewhere);
-          if (after.own.size > 0) {
-            return yield* new GitError({
-              args: ["mend", "remote-credentials"],
-              cwd: gitDir,
-              exitCode: null,
-              stderr: "the repository's remotes changed while Mend cleaned them",
-            });
-          }
-          return rewritten;
-        });
-        return yield* remoteLock(absoluteGitDir).withPermits(1)(scrub);
+        const included: ReadonlyArray<RemoteCredentialFinding> = includes
+          .split("\n")
+          .filter((key) => key !== "")
+          .map((key) => ({
+            key,
+            file: ownConfig,
+            fix: `git --git-dir=${shellWord(absoluteGitDir)} config --unset-all ${shellWord(key)}`,
+          }));
+        return [...included, ...credentialFindings(absoluteGitDir, yield* remoteConfig(gitDir))];
       });
 
       /**
        * The gate in front of every git that uses or exposes a remote of `gitDir` (a fetch, a push,
-       * a worktree a workspace mounts): its remotes hold no credential, or nothing runs. A config
-       * another git holds locked is waited for briefly; a remote that still cannot be cleaned
-       * refuses the op with the reason, and the worker's sweep keeps trying
-       * (docs/GIT-ACCESS.md, "Credentials in repository URLs").
+       * a worktree a workspace mounts): its config holds no login or token and no include, or
+       * nothing runs, with what was found and how to fix it (docs/GIT-ACCESS.md, "Credentials in
+       * repository URLs"). Read only, so a config another git holds locked does not stand in its
+       * way.
        */
       const cleanRemotes = Effect.fn("Store.cleanRemotes")(function* (gitDir: string) {
-        yield* scrubRemoteCredentials(gitDir).pipe(
-          Effect.retry({ schedule: Schedule.spaced("100 millis"), times: 10 }),
-          Effect.mapError(
-            (cause) =>
-              new GitError({
-                args: ["mend", "remote-credentials"],
-                cwd: gitDir,
-                exitCode: cause.exitCode,
-                stderr: `Mend has not yet removed a login or token from this repository's git remotes (${gitHostFaultWords(cause)}), so it does not fetch, push or open a worktree with them. It keeps trying; adopt the repository again from its SSH URL if this persists.`,
-              }),
-          ),
-        );
+        const findings = yield* remoteCredentialFindings(gitDir);
+        if (findings.length > 0) return yield* refusedForCredentials(gitDir, findings);
       });
 
       /**
@@ -1521,9 +1407,7 @@ export class Store extends Context.Service<
         cloneReference,
         refreshReference,
         removeReference,
-        scrubRemoteCredentials,
-        remoteCredentialNotice,
-        clearRemoteCredentialNotice,
+        remoteCredentialFindings,
         adopt,
         createWorktree,
         resolveBase,

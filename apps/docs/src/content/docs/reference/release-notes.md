@@ -66,7 +66,7 @@ Mend refuses a repository URL with a login or token in it (`https://oauth2:TOKEN
 for reference repositories, as it already was for dotfiles, on every client and the API, and points
 to `mend keys` and the bridge instead. Before 0.36 such a URL was stored as typed and returned to
 everyone who could see the project. On upgrade, Mend removes the credential from every stored
-repository URL and from the Git remotes in its store; a project or reference that fetched only
-through that token no longer does. Mend also strips URL credentials from every repository URL it
-returns, from the Git errors it reports, and from its logs. See
+repository URL. A project whose Git store still holds one is refused, with the command that removes
+it, until someone does; the store and its worktrees are kept. Mend also strips URL credentials from
+every repository URL it returns, from the Git errors it reports, and from its logs. See
 [Known issues](/reference/known-issues/#projects-adopted-with-a-token-in-their-url).

@@ -219,7 +219,7 @@ import { OwnerLandingLive } from "./owner-landing.ts";
 import { PullRequestAdoptionLive } from "./pull-request-adoption.ts";
 import { RedactingConsoleLive } from "./redacting-console.ts";
 import { RegistrationPolicyLive } from "./registration-policy.ts";
-import { RemoteCredentialScrubLive } from "./remote-credential-scrub.ts";
+import { RemoteCredentialCheckLive } from "./remote-credential-check.ts";
 import { boundedWebRequest } from "./request-budgets.ts";
 import { type ReviewPassJob, runReviewPass } from "./review-pass-worker.ts";
 import { MendApiLive } from "./routes/api-live.ts";
@@ -660,8 +660,8 @@ const WorkerLive = Layer.mergeAll(
   AutomaticLandingLive,
   // Adopts a pull request the agent opened itself, after its push and when its turn ends.
   PullRequestAdoptionLive,
-  // Takes a login or token out of the git remotes an older server cloned with one.
-  RemoteCredentialScrubLive,
+  // Names the stores whose git config has a login, a token or an include: refused until fixed.
+  RemoteCredentialCheckLive,
   // Answers `mend land` inside a workspace: the change's owner's landing, as the Land panel's.
   WorkspaceLandingLive,
   // Queues tour + suggestion passes at settle, per the automation cascade.

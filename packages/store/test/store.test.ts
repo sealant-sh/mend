@@ -11,7 +11,7 @@ import {
   RepositoryCloneUrl,
   type RepositoryCloneUrl as RepositoryCloneUrlValue,
 } from "@mend/domain/workbench";
-import { Effect, Layer, Result, Schedule } from "effect";
+import { Effect, Layer, Result } from "effect";
 
 import {
   GRAFTED_REPOSITORY_REASON,
@@ -390,253 +390,114 @@ describe("Store", () => {
     );
   });
 
-  it("takes a login or token out of every remote URL, and leaves a clean config alone", async () => {
-    await withStore((_tmp, _origin, source) =>
-      Effect.gen(function* () {
-        const store = yield* Store;
-        const adopted = yield* store.adopt("scrub", source, {});
-        const config = (...args: ReadonlyArray<string>) =>
-          execFileSync("git", ["config", ...args], { cwd: adopted.storePath, encoding: "utf8" });
-        // What a server before 0.36 left behind for a URL adopted with a token.
-        config(
-          "--add",
-          "remote.origin.pushurl",
-          "https://oauth2:TOKEN-SECRET@example.invalid/o/r.git",
-        );
-        config("remote.mirror.url", "https://ghp_TOKEN-SECRET@example.invalid/o/r.git");
-        config("remote.login.url", "ssh://git:TOKEN-SECRET@example.invalid/o/r.git");
-        // Quotes and angle brackets are userinfo like any other character (review of mend#640).
-        config("remote.quoted.url", "http://user:se'cret<TOKEN-SECRET>@example.invalid/o/r.git");
-
-        expect(yield* store.scrubRemoteCredentials(adopted.storePath)).toBe(4);
-        const remotes = config("--get-regexp", String.raw`^remote\.`);
-        expect(remotes).not.toContain("TOKEN-SECRET");
-        expect(remotes).toContain(`remote.origin.url ${source}`);
-        expect(remotes).toContain("remote.origin.pushurl https://example.invalid/o/r.git");
-        expect(remotes).toContain("remote.mirror.url https://example.invalid/o/r.git");
-        expect(remotes).toContain("remote.login.url ssh://git@example.invalid/o/r.git");
-        expect(remotes).toContain("remote.quoted.url http://example.invalid/o/r.git");
-
-        expect(yield* store.scrubRemoteCredentials(adopted.storePath)).toBe(0);
-        // The origin that needed no credential still fetches.
-        yield* store.refreshFromOrigin(adopted.storePath, {});
-      }),
-    );
-  });
-
-  // Two refusals each wait out the gate's ~1 s for a held lock: longer than the default timeout.
-  it("refuses to fetch or open a worktree while a remote still holds a token, and cleans it first once it can", async () => {
-    await withStore((_tmp, _origin, source) =>
-      Effect.gen(function* () {
-        const store = yield* Store;
-        const adopted = yield* store.adopt("gated", source, {});
-        const config = (...args: ReadonlyArray<string>) =>
-          execFileSync("git", ["config", ...args], { cwd: adopted.storePath, encoding: "utf8" });
-        config("remote.origin.pushurl", "https://user:se'TOKEN-SECRET@example.invalid/o/r.git");
-        // Another git holds the config for longer than the gate waits: nothing runs with the token.
-        const lock = path.join(adopted.storePath, "config.lock");
-        fs.writeFileSync(lock, "");
-        const refused = yield* store.refreshFromOrigin(adopted.storePath, {}).pipe(Effect.flip);
-        expect(refused.stderr).toContain("has not yet removed a login or token");
-        expect(JSON.stringify(refused)).not.toContain("TOKEN-SECRET");
-        const worktree = yield* store
-          .createWorktree(adopted.storePath, wtIdentity("gated"), null, null)
-          .pipe(Effect.flip);
-        expect(worktree.stderr).toContain("has not yet removed a login or token");
-        // The lock goes: the next fetch cleans the remote first, then runs.
-        fs.rmSync(lock);
-        yield* store.refreshFromOrigin(adopted.storePath, {});
-        expect(config("--get", "remote.origin.pushurl").trim()).toBe(
-          "https://example.invalid/o/r.git",
-        );
-      }),
-    );
-  }, 30_000);
-
-  it("reads what git reads: a multiline value is cleaned whole; an include, or a url rewrite with a token, refuses", async () => {
+  it("refuses every gated op while a store's git config holds a login, a token or an include, and changes nothing", async () => {
     await withStore((tmp, _origin, source) =>
       Effect.gen(function* () {
         const store = yield* Store;
-        const adopted = yield* store.adopt("effective", source, {});
+        const adopted = yield* store.adopt("refused", source, {});
+        const configFile = path.join(adopted.storePath, "config");
         const config = (...args: ReadonlyArray<string>) =>
           execFileSync("git", ["config", ...args], { cwd: adopted.storePath, encoding: "utf8" });
-        // A value with a newline in it is one value (review 2 of mend#640, N2).
-        config("remote.origin.pushurl", "https://user:LINE\nTOKEN-SECRET@example.invalid/o/r.git");
-        expect(yield* store.scrubRemoteCredentials(adopted.storePath)).toBe(1);
-        expect(config("-z", "--get-all", "remote.origin.pushurl")).toBe(
-          "https://example.invalid/o/r.git\0",
-        );
-        yield* store.createWorktree(adopted.storePath, wtIdentity("after-multiline"), null, null);
-
-        // Mend never writes an include: any include, clean or not, conditional or not, refuses
-        // every gated op and names the config it sits in (review 3 of mend#640, R3-2).
         const included = path.join(tmp, "included.gitconfig");
-        fs.writeFileSync(
-          included,
-          `[remote "origin"]\n\tpushurl = http://user:se'TOKEN-SECRET@example.invalid/o/r.git\n`,
-        );
-        for (const key of ["include.path", "includeIf.onbranch:mend/**.path"]) {
-          config(key, included);
-          const refused = yield* store.refreshFromOrigin(adopted.storePath, {}).pipe(Effect.flip);
-          expect(refused.stderr).toContain("has not yet removed a login or token");
-          expect(refused.stderr).toContain("includes other files");
-          expect(refused.stderr).toContain(key.toLowerCase());
-          expect(JSON.stringify(refused)).not.toContain("TOKEN-SECRET");
-          const worktree = yield* store
-            .createWorktree(adopted.storePath, wtIdentity(`included-${key.length}`), null, null)
-            .pipe(Effect.flip);
-          expect(worktree.stderr).toContain("includes other files");
-          config("--unset-all", key);
+        fs.writeFileSync(included, "[core]\n");
+        // What a server before 0.36, or a person, may have left in a store's config.
+        const cases: ReadonlyArray<{
+          readonly key: string;
+          readonly set: () => void;
+          readonly unset: () => void;
+        }> = [
+          {
+            key: "remote.origin.pushurl",
+            set: () =>
+              config("remote.origin.pushurl", "https://user:TOKEN-SECRET@example.invalid/o/r.git"),
+            unset: () => config("--unset-all", "remote.origin.pushurl"),
+          },
+          {
+            key: "remote.mirror.url",
+            set: () =>
+              config("remote.mirror.url", "http://user:se'TOKEN-SECRET@example.invalid/o/r.git"),
+            unset: () => config("--remove-section", "remote.mirror"),
+          },
+          {
+            // A value with a newline in it is one value (review 2 of mend#640, N2).
+            key: "remote.multi.pushurl",
+            set: () =>
+              config(
+                "remote.multi.pushurl",
+                "https://user:LINE\nTOKEN-SECRET@example.invalid/o/r.git",
+              ),
+            unset: () => config("--remove-section", "remote.multi"),
+          },
+          {
+            // Named with its base redacted: Mend never prints the address that holds the login.
+            key: "url.https://example.invalid/.insteadof",
+            set: () =>
+              config(
+                "url.https://ghp_TOKEN-SECRET@example.invalid/.insteadOf",
+                "https://example.invalid/",
+              ),
+            unset: () =>
+              config("--remove-section", "url.https://ghp_TOKEN-SECRET@example.invalid/"),
+          },
+          {
+            // Any include, clean or not, conditional or not: Mend never writes one (R3-2).
+            key: "include.path",
+            set: () => config("include.path", included),
+            unset: () => config("--unset-all", "include.path"),
+          },
+          {
+            key: "includeif.onbranch:mend/**.path",
+            set: () => config("includeIf.onbranch:mend/**.path", included),
+            unset: () => config("--remove-section", "includeIf.onbranch:mend/**"),
+          },
+        ];
+        for (const [index, { key, set, unset }] of cases.entries()) {
+          set();
+          const before = fs.readFileSync(configFile, "utf8");
+          const findings = yield* store.remoteCredentialFindings(adopted.storePath);
+          expect(findings.map((finding) => finding.key)).toEqual([key]);
+          const refusals = [
+            yield* store.refreshFromOrigin(adopted.storePath, {}).pipe(Effect.flip),
+            yield* store
+              .createWorktree(adopted.storePath, wtIdentity(`refused-${index}`), null, null)
+              .pipe(Effect.flip),
+          ];
+          for (const refusal of refusals) {
+            expect(refusal.stderr).toContain(`${key} in ${configFile}`);
+            expect(refusal.stderr).toContain("mend keys");
+            expect(refusal.stderr).toContain("git --git-dir=");
+            expect(JSON.stringify(refusal)).not.toContain("TOKEN-SECRET");
+          }
+          // Read only: the config is exactly as it was.
+          expect(fs.readFileSync(configFile, "utf8")).toBe(before);
+          unset();
         }
-        expect(fs.readFileSync(included, "utf8")).toContain("TOKEN-SECRET");
-        // A clean included file refuses too, until the include goes.
-        fs.writeFileSync(
-          included,
-          `[remote "origin"]\n\tpushurl = http://example.invalid/o/r.git\n`,
-        );
-        config("include.path", included);
-        yield* store.refreshFromOrigin(adopted.storePath, {}).pipe(Effect.flip);
-        config("--unset-all", "include.path");
+        // An ssh login is not a credential, and a clean config runs.
+        config("remote.ssh.url", "ssh://git@example.invalid/o/r.git");
+        expect(yield* store.remoteCredentialFindings(adopted.storePath)).toEqual([]);
         yield* store.refreshFromOrigin(adopted.storePath, {});
-
-        // A url rewrite that puts a token into every matching remote refuses the same way.
-        config(
-          "url.https://ghp_TOKEN-SECRET@example.invalid/.insteadOf",
-          "https://example.invalid/",
-        );
-        const rewrite = yield* store.scrubRemoteCredentials(adopted.storePath).pipe(Effect.flip);
-        expect(rewrite.stderr).toContain("url.insteadOf");
-        expect(JSON.stringify(rewrite)).not.toContain("TOKEN-SECRET");
-      }),
-    );
-  }, 30_000);
-
-  it("cleans a remote once when the sweep and several fetches race for it", async () => {
-    await withStore((_tmp, _origin, source) =>
-      Effect.gen(function* () {
-        const store = yield* Store;
-        const adopted = yield* store.adopt("race", source, {});
-        const config = (...args: ReadonlyArray<string>) =>
-          execFileSync("git", ["config", ...args], { cwd: adopted.storePath, encoding: "utf8" });
-        config("remote.origin.pushurl", "https://user:TOKEN-SECRET@example.invalid/o/r.git");
-        // Everyone queues behind a held lock, then all go at once (review 2 of mend#640, N3).
-        const lock = path.join(adopted.storePath, "config.lock");
-        fs.writeFileSync(lock, "");
-        setTimeout(() => fs.rmSync(lock, { force: true }), 150);
-        yield* Effect.all(
-          [
-            store
-              .scrubRemoteCredentials(adopted.storePath)
-              .pipe(Effect.retry({ times: 20, schedule: Schedule.spaced("25 millis") })),
-            ...Array.from({ length: 6 }, () => store.refreshFromOrigin(adopted.storePath, {})),
-          ],
-          { concurrency: "unbounded" },
-        );
-        expect(config("-z", "--get-all", "remote.origin.pushurl")).toBe(
-          "https://example.invalid/o/r.git\0",
-        );
-        expect(config("--get-all", "remote.origin.url").trim()).toBe(source);
       }),
     );
   });
 
-  it("never loses a remote when git is killed at any write of the rewrite, and the next scrub finishes it", async () => {
-    // Two dirty values of one key around a clean one, and a dirty url: three rewrites.
-    const dirty = [
-      ["remote.origin.pushurl", "https://user:TOKEN-SECRET@a.example/o/r.git"],
-      ["remote.origin.pushurl", "https://b.example/o/r.git"],
-      ["remote.origin.pushurl", "https://ghp_TOKEN-SECRET@c.example/o/r.git"],
-      ["remote.mirror.url", "https://user:TOKEN-SECRET@m.example/o/r.git"],
-    ] as const;
-    const cleanAfter = {
-      pushurl: "https://a.example/o/r.git\0https://b.example/o/r.git\0https://c.example/o/r.git\0",
-      mirror: "https://m.example/o/r.git\0",
-    };
-    // A git on PATH killed at its Nth config rewrite (`--replace-all`), before or after git wrote.
-    const bin = fs.mkdtempSync(path.join(os.tmpdir(), "mend-crash-git-"));
-    const realGit = execFileSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).trim();
-    const counter = path.join(bin, "count");
-    fs.writeFileSync(
-      path.join(bin, "git"),
-      [
-        "#!/bin/sh",
-        `case " $* " in *" --replace-all "*)`,
-        `  n=$(cat "${counter}" 2>/dev/null || echo 0); n=$((n+1)); echo $n > "${counter}"`,
-        `  if [ "$n" -eq "$MEND_CRASH_AT" ]; then`,
-        `    if [ "$MEND_CRASH_WHEN" = after ]; then "${realGit}" "$@"; fi`,
-        "    kill -9 $$",
-        "  fi;;",
-        "esac",
-        `exec "${realGit}" "$@"`,
-        "",
-      ].join("\n"),
-      { mode: 0o755 },
-    );
-    const originalPath = process.env["PATH"];
-    try {
-      for (const [crashAt, when] of [1, 2, 3].flatMap((at) =>
-        (["before", "after"] as const).map((moment) => [at, moment] as const),
-      )) {
-        await withStore((_tmp, _origin, source) =>
-          Effect.gen(function* () {
-            const store = yield* Store;
-            const adopted = yield* store.adopt(`crash-${crashAt}-${when}`, source, {});
-            const config = (...args: ReadonlyArray<string>) =>
-              execFileSync(realGit, ["config", ...args], {
-                cwd: adopted.storePath,
-                encoding: "utf8",
-              });
-            for (const [key, value] of dirty) config("--add", key, value);
-            fs.rmSync(counter, { force: true });
-            process.env["PATH"] = `${bin}:${originalPath ?? ""}`;
-            process.env["MEND_CRASH_AT"] = String(crashAt);
-            process.env["MEND_CRASH_WHEN"] = when;
-            const crashed = yield* store
-              .scrubRemoteCredentials(adopted.storePath)
-              .pipe(Effect.result);
-            process.env["PATH"] = originalPath;
-            // Killed somewhere in the rewrite: never "clean", and no remote went missing.
-            expect(Result.isFailure(crashed)).toBe(true);
-            expect(config("-z", "--get-all", "remote.origin.pushurl").split("\0").length - 1).toBe(
-              3,
-            );
-            expect(config("-z", "--get-all", "remote.mirror.url").split("\0").length - 1).toBe(1);
-            expect(config("--get", "remote.origin.url").trim()).toBe(source);
-            // The notice was down before the first write: it survives the crash.
-            expect(yield* store.remoteCredentialNotice(adopted.storePath)).not.toBeNull();
-            // The next scrub, by anyone, finishes the job: every value clean, in place, once.
-            yield* store.scrubRemoteCredentials(adopted.storePath);
-            expect(config("-z", "--get-all", "remote.origin.pushurl")).toBe(cleanAfter.pushurl);
-            expect(config("-z", "--get-all", "remote.mirror.url")).toBe(cleanAfter.mirror);
-          }),
-        );
-      }
-    } finally {
-      process.env["PATH"] = originalPath;
-      delete process.env["MEND_CRASH_AT"];
-      delete process.env["MEND_CRASH_WHEN"];
-      fs.rmSync(bin, { recursive: true, force: true });
-    }
-  }, 30_000);
-
-  it("leaves a notice of what it removed until someone reports it", async () => {
+  it("names the command an operator can run, and the gate opens once it ran", async () => {
     await withStore((_tmp, _origin, source) =>
       Effect.gen(function* () {
         const store = yield* Store;
-        const adopted = yield* store.adopt("notice", source, {});
-        expect(yield* store.remoteCredentialNotice(adopted.storePath)).toBeNull();
-        execFileSync(
-          "git",
-          ["config", "remote.origin.pushurl", "https://user:TOKEN-SECRET@example.invalid/o/r.git"],
-          { cwd: adopted.storePath },
-        );
-        // A fetch gets there first: the notice is the store's, not the caller's.
+        const adopted = yield* store.adopt("fixable", source, {});
+        const config = (...args: ReadonlyArray<string>) =>
+          execFileSync("git", ["config", ...args], { cwd: adopted.storePath, encoding: "utf8" });
+        // The origin as an older server cloned it, with a login in it, and a push URL too.
+        config("remote.origin.url", source.replace("git://", "git://user:TOKEN-SECRET@"));
+        config("remote.origin.pushurl", "https://oauth2:TOKEN-SECRET@example.invalid/o/r.git");
+        const findings = yield* store.remoteCredentialFindings(adopted.storePath);
+        expect(findings.map((finding) => finding.fix)).toEqual([
+          `git --git-dir=${adopted.storePath} remote set-url origin ${source}`,
+          `git --git-dir=${adopted.storePath} remote set-url --push origin https://example.invalid/o/r.git`,
+        ]);
+        for (const finding of findings) execFileSync("sh", ["-c", finding.fix]);
+        expect(yield* store.remoteCredentialFindings(adopted.storePath)).toEqual([]);
         yield* store.refreshFromOrigin(adopted.storePath, {});
-        const notice = yield* store.remoteCredentialNotice(adopted.storePath);
-        expect(notice?.keys).toEqual(["remote.origin.pushurl"]);
-        expect(JSON.stringify(notice)).not.toContain("TOKEN-SECRET");
-        yield* store.clearRemoteCredentialNotice(adopted.storePath);
-        expect(yield* store.remoteCredentialNotice(adopted.storePath)).toBeNull();
       }),
     );
   });
