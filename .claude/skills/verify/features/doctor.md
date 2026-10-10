@@ -137,7 +137,10 @@ Preconditions:
   `apps/api/src/routes/devices.ts:56`) standing bare in a log line, outside those shapes, has no
   rule and would survive. A product gap.
 - The redactor is over-eager on purpose: any key containing `token`, `secret` or `password` and
-  every `NAME=value` line is blanked. A blanked harmless value is expected, not a bug.
+  every `NAME=value` line is blanked. A blanked harmless value is expected, not a bug. The
+  `NAME=value` rule is anchored at the start of a line (`apps/cli/src/doctor-bundle.ts:56`): inside
+  a longer line, such as a session's recorded argv (`sh -c 'echo NAME=value'`), the value stays in
+  the archive.
 - The web `Sealant connection` panel is a `section` with no `aria-labelledby`, so it has no region
   role (`apps/web/src/routes/settings.tsx:1223`); scope to it through its heading. Its status word
   is plain text, not `role="status"` (`settings.tsx:1245`); assert it with `getByText`. A finding.

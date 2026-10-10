@@ -47,10 +47,13 @@ Preconditions:
 
 - Mend is healthy at `<web>`, the CLI is signed in to it, and `<project>` is adopted (see
   [Adopt a project](./adopt-project.md)).
-- The `mend` on `PATH` runs on Node 26 or newer. For the Node gate step, a Node 22 or 24 binary is
-  also available as `<node22>`, and `command -v mend` resolves to a JavaScript file Node can run
-  (the published `dist/main.js`). How Launch installs the CLI decides that: a shell wrapper or the
-  TypeScript source does not qualify. Without both, report that step unreachable.
+- The `mend` on `PATH` runs on Node 26 or newer and is a built CLI (the published `dist/main.js`, or
+  an esbuild bundle of `apps/cli/src/main.ts`). A wrapper that runs `node apps/cli/src/main.ts` from
+  a checkout stops when the dashboard opens: `ERR_UNKNOWN_FILE_EXTENSION` for
+  `apps/cli/src/dashboard.tsx`. For the Node gate step, a Node 22 or 24 binary is also available as
+  `<node22>`, and `command -v mend` resolves to a JavaScript file Node can run (the published
+  `dist/main.js`). How Launch installs the CLI decides that: a shell wrapper or the TypeScript
+  source does not qualify. Without both, report that step unreachable.
 - tmux is installed. Every dashboard runs in its own session sized like a real terminal, started in
   a directory that is not a Git checkout (so no adopt offer appears), and wrapped so its exit code
   stays on screen:
@@ -69,9 +72,12 @@ Preconditions:
   worktree is selected), the session pane's frame reads `session · read-only` (or `session` with
   nothing selected), and the footer starts
   ` ↑↓ move · ←→ panes · a attach · r resume · n new session · w new worktree`.
-- **Navigate to the project.** Send `tmux send-keys -t verify-tui Left Left`. The projects section
-  opens and the footer reads ` ↑↓ move · → worktrees · n/w new worktree · ⇧R refresh · q quit`. Send
-  `j` or `k` until the row with `<project>` carries the `▌` gutter.
+- **Navigate to the project.** Send `tmux send-keys -t verify-tui Left`, wait until the footer reads
+  ` ↑↓ move · ←→ panes · a attach · r resume · n new session · w new worktree · ⇧K stop all · ⇧D remove worktree …`
+  (the worktrees section), then send `Left` again; `Left Left` in one call moved one section only.
+  The projects section opens and the footer reads
+  ` ↑↓ move · → worktrees · n/w new worktree · ⇧R refresh · q quit`. Send `j` or `k` until the row
+  with `<project>` carries the `▌` gutter.
 - **Session verbs refuse at the project tier.** Send `a`. The status line reads
   `select a session first · → opens worktrees`. Nothing attaches.
 - **New worktree: name.** Send `w`. A modal titled `new worktree · <project>` opens with rows
@@ -83,7 +89,8 @@ Preconditions:
 - **New worktree: harness.** The footer reads ` ↑↓ move · enter launch · esc back` and the harness
   rows read `codex`, `claude`, `opencode`, `pi` and `shell`. Send `Down Down Down Down`, so `shell`
   carries the gutter (it needs no provider), then `Enter`. The modal closes, the sessions section
-  opens, and the status line reads `started · shell <id8> · a attaches` or
+  opens, and the status line reads `provisioning shell workspace · <n>s elapsed`, then
+  `started · shell <id8> · a attaches` or
   `still starting · shell <id8> · a attaches once the row reads running`. The worktrees frame names
   `verify-tui`.
 - **Snake while it starts.** While the session pane reads `starting · …`, it shows
@@ -108,11 +115,12 @@ Preconditions:
   wait it out. Then the first line reads ` mend / <project> / review · shell <id8>`, then
   ` · syncing` while it refetches, then ` · checkpoint recorded`. With the fixture above, the second
   line names `1 files` and `+1`, the `files · 1` frame lists `TUI.md`, and the diff frame's title
-  reads `TUI.md · unified`. The footer starts ` diff · ↑↓/jk lines · n/p files`. Send `w`; the diff
-  title ends `· wrapped`. Send `Tab`; the footer starts ` comments · ↑↓/jk move`. Send `r`; the
-  status line reads `Refreshing live change…`. Send `Escape`; the dashboard returns. If `v` instead
-  reads `this session has no reviewable change yet`, send `R` (status `refreshing…`) and try again
-  once a checkpoint exists.
+  reads `TUI.md · unified`. The footer is two lines: the first starts
+  ` m read · g suggest · t tour`, the second ` diff · ↑↓/jk lines · n/p files`. Send `w`; the diff
+  title ends `· wrapped`. Send `Tab`; the footer's second line starts ` comments · ↑↓/jk move`. Send
+  `r`; the status line reads `Refreshing live change…`. Send `Escape`; the dashboard returns. If `v`
+  instead reads `this session has no reviewable change yet`, send `R` (status `refreshing…`) and try
+  again once a checkpoint exists.
 - **Open in the browser.** Send `o`. The status line reads `opened · <web>/sessions/<id8>…`.
 - **Stop.** Send `K`. The status line reads `press ⇧K again to stop · verify tui`. Within five
   seconds send `K` again. It reads `stopped · verify tui · the record and review remain`, and the
@@ -160,9 +168,9 @@ Preconditions:
   is text on the screen. The focused section is marked only by colour and the `▌` gutter; read the
   footer to know which section has the keyboard, since each section's footer differs.
 - tmux key names: `Enter`, `Escape`, `Tab`, `BTab` (Shift+Tab), `Space`, `Up` `Down` `Left` `Right`,
-  `NPage` `PPage`, `C-]`. `⇧K`, `⇧D` and `⇧R` are sent as the capital letters `K`, `D`, `R`. That
-  opentui reads a capital letter from tmux as shift plus the letter is how the key table is written;
-  it has not been driven live.
+  `NPage` `PPage`, `C-]`. `⇧K`, `⇧D` and `⇧R` are sent as the capital letters `K`, `D`, `R`. opentui
+  reads a capital letter from tmux as shift plus the letter: `K`, `D` and `R` acted as ⇧K, ⇧D and ⇧R
+  in the live pass of 2026-10-10.
 - tmux holds a lone `Escape` for its `escape-time` before passing it on. Wait for the screen to
   change before the next key, or set `tmux set -s escape-time 0`.
 - In the worktree form, the base step's input appears only once the branch list has loaded; an

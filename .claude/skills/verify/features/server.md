@@ -28,7 +28,8 @@ same way, and an old-style preview moves to the `next` channel once with `--from
 ## How to get to it (user POV)
 
 - CLI:
-  `mend server setup [--context <name>] [--version <version|latest>] [--bind <ip>] [--url <origin>] [--origin <origin>...] [--port <n>] [--ssh-port <n>] [--edge <host> | --no-edge] [--exposure <loopback|private|public>] [--tenancy <single|multi>] [--docker-socket <path>] [--assets-dir <dir>] [--offline]`.
+  `mend server setup [--context <name>] [--version <version|latest>] [--bind <ip>] [--ssh-bind <ip>] [--url <origin>] [--origin <origin>...] [--port <n>] [--ssh-port <n>] [--edge <host> | --no-edge] [--exposure <loopback|private|public>] [--tenancy <single|multi>] [--declare <item>...] [--npm-mirror | --no-npm-mirror] [--npm-mirror-max-size <size>] [--docker-mirror | --no-docker-mirror] [--docker-mirror-max-size <size>] [--docker-hub-username <name> --docker-hub-token-stdin --docker-hub-public-only | --no-docker-hub-login] [--docker-socket <path>] [--assets-dir <dir>] [--offline]`,
+  the usage block of `mend help server setup`.
 - CLI: `mend server status`, `mend server start [--offline]`, `mend server stop`,
   `mend server restart [--offline]`, `mend server logs [--tail <n>]`.
 - CLI:
@@ -69,21 +70,26 @@ Preconditions:
   and `server upgrade`, followed by `see also`.
 - **Refusals before Docker.** Run `mend server`. Stderr reads
   `mend: usage: mend server <setup|status|start|stop|restart|logs|upgrade> [options]`, exit code
-  `1`. Run `mend server setup --bogus`. Stderr reads `mend: Unknown server setup option "--bogus".`,
-  exit code `1`. Run `mend server status`. Stderr reads
-  `mend: No Mend server is configured. Run mend server setup explicitly to install one.`, exit code
-  `1`.
+  `1`. Run `mend server setup --bogus`. Stderr contains `Unknown server setup option "--bogus".`,
+  exit code `1`. Run `mend server status`. Stderr contains
+  `No Mend server is configured. Run mend server setup explicitly to install one.`, exit code `1`.
+  Both arrive inside the storage wrapper described under Gotchas, for example
+  `mend: Server storage operation failed: No Mend server is configured. Run mend server setup explicitly to install one.. Retain the identity and generations; fix the filesystem problem and retry.`
+  On a machine with no installation, `logs` (even `--tail 0`), `stop`, `start`, `restart` and every
+  `upgrade` refusal print the same `No Mend server is configured` line.
 - **Contradictions refused.** These need Docker: stdout first shows
-  `Using Docker context "<name>" (<endpoint>)`. Run `mend server setup --bind 0.0.0.0`. Stderr reads
-  `mend: A non-loopback --bind also requires an explicit --url.`. Run
-  `mend server setup --exposure public`. Stderr starts
-  `mend: --exposure public needs the edge: add --edge <host>.`. Both exit `1`, and
-  `<scratch>/config/mend` holds no `active` file afterwards.
+  `Using Docker context "<name>" (<endpoint>)`. Run `mend server setup --bind 0.0.0.0`. Stderr
+  contains `A non-loopback --bind also requires an explicit --url.`. Run
+  `mend server setup --exposure public`. Stderr contains
+  `--exposure public needs the edge: add --edge <host>.`. Before either refusal setup only reads
+  Docker: `docker context ls`, `docker --context <name> version`, `compose version` and `info`. Both
+  exit `1`, and `<scratch>/config/mend` holds no `active` file afterwards.
 - **Edge refused on a fresh install.** Still before any setup has succeeded, run
   `mend server setup --edge verify.example.com` (add the offline flags when offline). It reads the
-  release assets, then stderr starts
-  `mend: A fresh install cannot start with the edge or as public:`, exit code `1`. No container
-  starts and no `active` file is written.
+  release assets, then stderr contains `A fresh install cannot start with the edge or as public:`,
+  exit code `1`. When the daemon's shutdown-timeout is below 3600 s, stdout first shows
+  `Docker shutdown-timeout is <n> s (…), below the 3600 s capture grace: …`. No container starts and
+  no `active` file is written.
 - **Fresh setup.** Run `mend server setup` (or
   `mend server setup --version <v> --assets-dir deploy/docker --offline`). Stdout shows
   `Using Docker context "<name>" (<endpoint>)`, `Downloading release assets for Mend <v>` (online
@@ -206,3 +212,9 @@ Preconditions:
 - Status words are observations. `Mend <v> is reachable at <url>` means health answered with the
   exact pinned version; the gate lines say what was declared and observed, never that the instance
   is fit to expose. Report them as written.
+- Every refusal raised while the server's configuration lock is held reaches stderr wrapped as
+  `mend: Server storage operation failed: <refusal>.. Retain the identity and generations; fix the filesystem problem and retry.`
+  (`apps/cli/src/server-store.ts:152-158`, `:1023-1024`): an unknown option, no installation, a
+  contradicting flag pair, a fresh install with the edge. Match the refusal inside the line. A
+  product gap: the advice names a filesystem problem that is not there, and the refusal's own period
+  doubles. Only `mend server` with no subcommand prints its usage line unwrapped.

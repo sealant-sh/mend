@@ -62,7 +62,8 @@ Preconditions:
 - **Plan only, home.** Run `mend uninstall --home < /dev/null; echo "exit $?"`. Stdout reads
   `mend uninstall · home`, then `  home     <scratch>/config/mend/cli.json (signed in to <url>)`,
   plus `<scratch>/config/mend/ssh` and `1 managed block in ~/.ssh/config` (or
-  `<n> managed blocks in ~/.ssh/config`) lines when present. No `delete` line is printed. Stderr
+  `<n> managed blocks in ~/.ssh/config`) lines when present, and, while `cli.json` holds a sign-in,
+  `this machine's workspace ssh key on <url>, if registered`. No `delete` line is printed. Stderr
   reads `mend: non-interactive — pass --yes to remove`, and the echo prints `exit 1`.
 - **Remove the home files.** Run `mend uninstall --home --yes`. Stdout shows
   `revoked this terminal's device on <url>`, `removed <scratch>/config/mend/cli.json`, the SSH key
@@ -91,7 +92,10 @@ Preconditions:
   `  3. this machine's files only · sign-in, workspace ssh key, ~/.ssh/config block` and the prompt
   ` 1, 2 or 3:`. Send `tmux send-keys -t verify-uninstall 2 Enter`. The server plan prints, then
   `type delete to remove: `. Send `tmux send-keys -t verify-uninstall no Enter`. The screen shows
-  `nothing removed` and `exit 0`.
+  `nothing removed` and `exit 0`. With no server installed, `2` prints
+  `server   none installed under <scratch>/config/mend` and `nothing to remove` and exits `0`
+  without asking, and `1` or `3` ask `remove? [y/N]`; answering `n` prints `nothing removed` and
+  `exit 0`.
 - **Remove the server.** Before it, run
   `docker --context <ctx> container ls --all --filter name=^sealant- --format '{{.Names}}'` and note
   what it lists. Run `mend uninstall --server --yes`. Stdout shows the plan, then

@@ -124,6 +124,13 @@ Preconditions:
 - The session list behind TAB is an undocumented internal command, `mend __complete session`
   (`apps/cli/src/main.ts:3842`), printing `id<TAB>harness · project · branch`. It swallows every
   error and prints nothing on a dead server; an empty completion is not proof of no sessions.
+- `mend help adopt` prints a cut page: everything between `file://` in the description and
+  `github.com:acme/api.git` in the examples is missing (the end of the description, the `--auth`
+  paragraph, `options`, the first examples). The help printer passes the page through the
+  URL-credential redactor (`apps/cli/src/shared.ts:598`,
+  `packages/domain/src/repository-url.ts:104`), which reads `file:// … git@` as a URL with a
+  password. A product gap; compare any page that holds `://` and a later `@` against
+  `apps/cli/src/help.ts`.
 - `mend help qr` says the installer renders its pairing QR through `mend qr`
   (`apps/cli/src/help.ts:1394-1399`), but no installer in the repository calls it; the host
   installer was retired. Its only caller is the package smoke test
