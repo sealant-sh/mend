@@ -100,6 +100,7 @@ import {
   type ThreadLaunchOptions,
   type TurnIds,
 } from "./state.ts";
+import { makeTerminals, type Terminals } from "./terminals.ts";
 import { threadProjectionOf } from "./thread-projection.ts";
 import {
   checkpointFileOf,
@@ -227,6 +228,8 @@ export interface PersonHub {
     readonly toTurnCount: number;
     readonly ignoreWhitespace: boolean;
   }) => Effect.Effect<string, ThreadCommandFailure>;
+  /** The person's terminals, Mend's shells reached over `/api/tty` (`terminals.ts`). */
+  readonly terminals: Terminals;
   /** One of the person's images, or null when it is not theirs. */
   readonly imageOf: (imageId: string) => MessageImage | null;
   /**
@@ -713,6 +716,8 @@ export const makePersonHub = (input: {
   readonly retain?: (busy: boolean) => Effect.Effect<void>;
   /** The queue's waits (`queue.ts`); Mend-sized defaults when unset. */
   readonly queueTimings?: Queueing.QueueTimings;
+  /** Mend's API origin, for the terminal socket; terminals answer "not running" without it. */
+  readonly mendUrl?: URL;
 }): Effect.Effect<PersonHub, never, Scope.Scope> =>
   Effect.gen(function* () {
     const { mend, state, tokens } = input;
@@ -3151,7 +3156,22 @@ export const makePersonHub = (input: {
         );
       });
 
+    const terminals = makeTerminals({
+      mend,
+      mendUrl: input.mendUrl ?? new URL("http://127.0.0.1:0"),
+      threadSession: (threadId) =>
+        ensureLoaded.pipe(
+          Effect.andThen(
+            locked(Effect.sync(() => sourceOf(sessionIdOf(threadId))?.session.id ?? null)),
+          ),
+          Effect.orElseSucceed(() => null),
+        ),
+    });
+    // A hub that goes ends its terminals' sockets.
+    yield* Effect.addFinalizer(() => terminals.closeAll);
+
     return {
+      terminals,
       turnDiff,
       locationOf,
       shellSnapshot,
@@ -3361,6 +3381,7 @@ export const ProjectionsLive: Layer.Layer<
           tokens,
           retain: retainFor(userId),
           queueTimings: { ...Queueing.DEFAULT_QUEUE_TIMINGS, ...config.queueTimings },
+          mendUrl: config.mendUrl,
           dispose: RcMap.invalidate(hubs, userId),
         });
       },

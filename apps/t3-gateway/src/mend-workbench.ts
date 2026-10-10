@@ -323,6 +323,13 @@ export const MendWorktreeContents = Schema.Struct({
 });
 export type MendWorktreeContents = typeof MendWorktreeContents.Type;
 
+/** What the gateway reads of a `SessionProcess` it opened: the shell to attach to. */
+export const MendShell = Schema.Struct({ id: Schema.String });
+export type MendShell = typeof MendShell.Type;
+
+/** `UpgradeTicket` in @mend/api-contracts, from `POST /api/upgrade-tickets`. */
+export const MendUpgradeTicket = Schema.Struct({ ticket: Schema.String });
+
 /** `RemovalReport` in @mend/api-contracts, from `DELETE /api/sessions/:id`. */
 export const MendRemovalReport = Schema.Struct({
   removed: Schema.Boolean,

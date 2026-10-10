@@ -102,6 +102,15 @@ export const SERVED_METHODS: ReadonlySet<WsRpcMethod> = new Set<WsRpcMethod>([
   WS_METHODS.projectsSearchContents,
   WS_METHODS.subscribeVcsStatus,
   WS_METHODS.vcsRefreshStatus,
+  WS_METHODS.terminalOpen,
+  WS_METHODS.terminalAttach,
+  WS_METHODS.terminalWrite,
+  WS_METHODS.terminalResize,
+  WS_METHODS.terminalClear,
+  WS_METHODS.terminalRestart,
+  WS_METHODS.terminalClose,
+  WS_METHODS.subscribeTerminalEvents,
+  WS_METHODS.subscribeTerminalMetadata,
   WS_METHODS.reviewGetDiffPreview,
   WS_METHODS.reviewGetDiffFileContents,
 ]);
@@ -116,8 +125,6 @@ export const SILENT_STREAMS: ReadonlySet<WsRpcMethod> = new Set<WsRpcMethod>([
   WS_METHODS.pullRequestsSubscribeRefreshes,
   WS_METHODS.subscribeProjectClones,
   WS_METHODS.subscribeWorktreeSetup,
-  WS_METHODS.subscribeTerminalEvents,
-  WS_METHODS.subscribeTerminalMetadata,
   WS_METHODS.previewAutomationConnect,
   WS_METHODS.subscribePreviewEvents,
   WS_METHODS.subscribeDiscoveredLocalServers,
@@ -216,6 +223,13 @@ const scopeCheck = (session: BearerSession, requiredScope: AuthEnvironmentScope)
 
 const MODELS_SOURCE = "Mend GET /api/harnesses/models";
 const encodeServerConfig = Schema.encodeEffect(Schema.toCodecJson(ServerConfig));
+
+/** A feed whose subscriber fell behind; the only typed failure these feeds declare. */
+const fellBehind = (requiredScope: AuthEnvironmentScope) =>
+  new EnvironmentAuthorizationError({
+    message: "This feed fell behind; subscribe again.",
+    requiredScope,
+  });
 
 /** Mend no longer takes the socket's device: t3code blocks the connection. */
 const deviceRefused = (requiredScope: AuthEnvironmentScope) =>
@@ -794,16 +808,36 @@ export const makeGatewayRpcHandlers = ({
     [WS_METHODS.reviewGetDiffFileContents]: (input) =>
       authorize(session, READ).pipe(Effect.andThen(review.getDiffFileContents(input))),
 
-    // ── Terminal (phase 3, over Mend's /api/tty) ────────────────────────────
-    [WS_METHODS.terminalOpen]: () => refuse(WS_METHODS.terminalOpen, TERMINAL),
-    [WS_METHODS.terminalAttach]: () => refuseStream(WS_METHODS.terminalAttach, TERMINAL),
-    [WS_METHODS.terminalWrite]: () => refuse(WS_METHODS.terminalWrite, TERMINAL),
-    [WS_METHODS.terminalResize]: () => refuse(WS_METHODS.terminalResize, TERMINAL),
-    [WS_METHODS.terminalClear]: () => refuse(WS_METHODS.terminalClear, TERMINAL),
-    [WS_METHODS.terminalRestart]: () => refuse(WS_METHODS.terminalRestart, TERMINAL),
-    [WS_METHODS.terminalClose]: () => refuse(WS_METHODS.terminalClose, TERMINAL),
-    [WS_METHODS.subscribeTerminalEvents]: () => Stream.never,
-    [WS_METHODS.subscribeTerminalMetadata]: () => Stream.never,
+    // ── Terminal: Mend's shell beside the agent, over /api/tty (`terminals.ts`) ──
+    [WS_METHODS.terminalOpen]: (input) =>
+      authorize(session, TERMINAL).pipe(Effect.andThen(hub.terminals.open(session, input))),
+    [WS_METHODS.terminalAttach]: (input) =>
+      Stream.unwrap(
+        authorize(session, TERMINAL).pipe(Effect.as(hub.terminals.attach(session, input))),
+      ),
+    [WS_METHODS.terminalWrite]: (input) =>
+      authorize(session, TERMINAL).pipe(Effect.andThen(hub.terminals.write(input))),
+    [WS_METHODS.terminalResize]: (input) =>
+      authorize(session, TERMINAL).pipe(Effect.andThen(hub.terminals.resize(input))),
+    [WS_METHODS.terminalClear]: (input) =>
+      authorize(session, TERMINAL).pipe(Effect.andThen(hub.terminals.clear(input))),
+    [WS_METHODS.terminalRestart]: (input) =>
+      authorize(session, TERMINAL).pipe(Effect.andThen(hub.terminals.restart(session, input))),
+    [WS_METHODS.terminalClose]: (input) =>
+      authorize(session, TERMINAL).pipe(Effect.andThen(hub.terminals.close(session, input))),
+    // A subscriber too slow to keep up fails typed, and t3code subscribes again.
+    [WS_METHODS.subscribeTerminalEvents]: () =>
+      Stream.unwrap(
+        authorize(session, TERMINAL).pipe(
+          Effect.as(hub.terminals.events.pipe(Stream.mapError(() => fellBehind(TERMINAL)))),
+        ),
+      ),
+    [WS_METHODS.subscribeTerminalMetadata]: () =>
+      Stream.unwrap(
+        authorize(session, TERMINAL).pipe(
+          Effect.as(hub.terminals.metadata.pipe(Stream.mapError(() => fellBehind(TERMINAL)))),
+        ),
+      ),
 
     // ── Preview ─────────────────────────────────────────────────────────────
     [WS_METHODS.previewOpen]: () => refuse(WS_METHODS.previewOpen, OPERATE),

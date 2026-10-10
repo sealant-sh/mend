@@ -43,6 +43,9 @@ class GatedMendClient {
   readonly stopSession: DeviceCalls["stopSession"];
   readonly removeSession: DeviceCalls["removeSession"];
   readonly pasteImage: DeviceCalls["pasteImage"];
+  readonly openShell: DeviceCalls["openShell"];
+  readonly stopShell: DeviceCalls["stopShell"];
+  readonly ttyTicket: DeviceCalls["ttyTicket"];
   readonly submitTurn: DeviceCalls["submitTurn"];
   readonly launchProtocol: DeviceCalls["launchProtocol"];
   readonly interruptTurn: DeviceCalls["interruptTurn"];
@@ -74,6 +77,9 @@ class GatedMendClient {
     this.stopSession = calls.stopSession;
     this.removeSession = calls.removeSession;
     this.pasteImage = calls.pasteImage;
+    this.openShell = calls.openShell;
+    this.stopShell = calls.stopShell;
+    this.ttyTicket = calls.ttyTicket;
     this.submitTurn = calls.submitTurn;
     this.launchProtocol = calls.launchProtocol;
     this.interruptTurn = calls.interruptTurn;
@@ -139,6 +145,9 @@ export const gateDeviceCalls = (
     stopSession: (token, sessionId) => guard(token, mend.stopSession(token, sessionId)),
     removeSession: (token, sessionId) => guard(token, mend.removeSession(token, sessionId)),
     pasteImage: (token, sessionId, bytes) => guard(token, mend.pasteImage(token, sessionId, bytes)),
+    openShell: (token, sessionId) => guard(token, mend.openShell(token, sessionId)),
+    stopShell: (token, processId) => guard(token, mend.stopShell(token, processId)),
+    ttyTicket: (token, processId) => guard(token, mend.ttyTicket(token, processId)),
     launchProtocol: (token, sessionId, prompt, options) =>
       guard(token, mend.launchProtocol(token, sessionId, prompt, options)),
     interruptTurn: (token, turnId) => guard(token, mend.interruptTurn(token, turnId)),
