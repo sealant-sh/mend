@@ -16,7 +16,13 @@ import {
   type ServerSetupRuntime,
 } from "./server-setup.ts";
 import type { ThisMachineKeyRemoval } from "./ssh-setup.ts";
-import { describeUninstall, executeUninstall, planLines } from "./uninstall.ts";
+import {
+  describeUninstall,
+  executeUninstall,
+  planLines,
+  planRefusal,
+  type UninstallRuntime,
+} from "./uninstall.ts";
 
 interface DaemonState {
   readonly appRunning: boolean;
@@ -49,6 +55,15 @@ interface DaemonState {
   readonly manifests?: Readonly<Record<string, string>>;
   /** The migrations each database applied, as psql prints them, by database. */
   readonly applied?: Readonly<Record<string, ReadonlyArray<string>>>;
+  /** The host's user-namespace sysctl file: absent, written by setup, or written by hand. */
+  readonly sysctl?: "absent" | "mend" | "by-hand";
+  /** What uninstall's helper set back, after removing the file setup wrote. */
+  readonly sysctlRestored?: ReadonlyArray<string>;
+  /** Docker's build cache size, as `docker system df` prints it; absent, none. */
+  readonly buildCache?: string | null;
+  readonly prunedBuildCache?: boolean;
+  /** The bundle's other images uninstall removed. */
+  readonly removedImages?: ReadonlyArray<string>;
 }
 interface Call {
   readonly args: ReadonlyArray<string>;
@@ -1998,6 +2013,9 @@ describe("server uninstall", { timeout: 60_000 }, () => {
       t3GatewayVolume: false,
       generations: 1,
       backups: 0,
+      dockerProblem: null,
+      holdings: { workspaces: [], sidecars: [], networks: [], images: [] },
+      leftByEarlier: [],
     });
     const before = f.calls().length;
 
@@ -2008,7 +2026,9 @@ describe("server uninstall", { timeout: 60_000 }, () => {
       .slice(before)
       .map((call) => (call.command.length > 0 ? call.command : call.args.slice(2)).join(" "));
     expect(commands).toContain("down --volumes --remove-orphans --timeout 30");
-    expect(commands).toContain("volume rm mend-store mend-control mend-garage");
+    for (const volume of ["mend-control", "mend-garage", "mend-store"]) {
+      expect(commands).toContain(`volume rm ${volume}`);
+    }
     expect(commands).toContain("image rm ghcr.io/sealant-sh/mend:0.23.0");
     expect(f.state()).toMatchObject({ appRunning: false, postgresRunning: false });
     expect(f.state().images["0.23.0"]).toBeUndefined();
@@ -2042,7 +2062,7 @@ describe("server uninstall", { timeout: 60_000 }, () => {
     };
     const outcome = await executeUninstall(runtime, await describeUninstall(runtime, "server"));
     expect(outcome.failures).toEqual([
-      "Docker did not take the server down (docker compose down: fixture operation failed). Containers, volumes and files are kept; get Docker answering, then run mend uninstall again.",
+      "Docker did not take the server down (docker compose down: fixture operation failed). Its volumes and files are kept; run mend uninstall again once Docker answers.",
     ]);
     expect(fs.existsSync(path.join(f.configDir, "identity.env"))).toBe(true);
     expect(fs.existsSync(path.join(f.configDir, "server.lock"))).toBe(false);
@@ -2050,5 +2070,309 @@ describe("server uninstall", { timeout: 60_000 }, () => {
     expect(volumes.volumes.map(([name]: [string]) => name)).toEqual(
       expect.arrayContaining(["mend-store", "mend-control"]),
     );
+  });
+});
+
+type Fixture = Awaited<ReturnType<typeof fixture>>;
+
+/** Add resources to the fixture daemon beside what setup made: a session's workspace, say. */
+const seedDaemon = (
+  f: Fixture,
+  seed: Readonly<Record<string, ReadonlyArray<readonly [string, unknown]>>>,
+) => {
+  const file = path.join(f.root, "docker-protocol.json");
+  const saved = JSON.parse(fs.readFileSync(file, "utf8"));
+  for (const [kind, entries] of Object.entries(seed)) {
+    saved[kind] = [...(saved[kind] ?? []), ...entries];
+  }
+  fs.writeFileSync(file, JSON.stringify(saved));
+};
+const daemonNames = (f: Fixture, kind: "volumes" | "containers" | "networks") =>
+  (JSON.parse(fs.readFileSync(path.join(f.root, "docker-protocol.json"), "utf8"))[kind] ?? []).map(
+    ([name]: [string]) => name,
+  );
+
+/** One live session's workspace: it mounts the control volume and joins the project network. */
+const liveWorkspace = (f: Fixture) =>
+  seedDaemon(f, {
+    containers: [
+      ["sealant-w1", {}],
+      ["sealant-w1-docker", { "sealant.workspace": "sealant-w1" }],
+    ],
+    facts: [
+      [
+        "sealant-w1",
+        {
+          mounts: ["mend-control"],
+          networks: ["mend_default", "sealant-w1-network"],
+          state: "running",
+          image: "sealant-workspace-arch:latest",
+        },
+      ],
+      [
+        "sealant-w1-docker",
+        { networks: ["sealant-w1-network"], image: "docker:27.5.1-dind-rootless" },
+      ],
+    ],
+    networks: [
+      ["mend_default", { "com.docker.compose.project": "mend" }],
+      ["sealant-w1-network", null],
+    ],
+  });
+
+const uninstallRuntime = (
+  f: Fixture,
+  options: { readonly signedIn?: string; readonly calls?: Array<string> } = {},
+): UninstallRuntime => {
+  const home = path.join(f.root, "home", "mend");
+  fs.mkdirSync(home, { recursive: true });
+  fs.writeFileSync(path.join(home, "cli.json"), "{}");
+  const calls = options.calls ?? [];
+  return {
+    server: f.runtime,
+    cliHome: home,
+    sshConfigFile: path.join(f.root, "home", "ssh-config"),
+    signedIn: options.signedIn === undefined ? null : { url: options.signedIn, deviceId: "dev-1" },
+    revokeDevice: async () => {
+      calls.push("revokeDevice");
+      return null;
+    },
+    removeWorkspaceSshKey: async (): Promise<ThisMachineKeyRemoval> => {
+      calls.push("removeWorkspaceSshKey");
+      return { removed: ["SHA256:here"], stillActive: [], problem: null };
+    },
+    forgetSignIn: () => {
+      calls.push("forgetSignIn");
+    },
+  };
+};
+
+describe("server uninstall with live sessions", { timeout: 60_000 }, () => {
+  it("lists the live workspace, stops and removes it with its volumes and network, then everything else", async () => {
+    const f = await fixture();
+    expect(await f.setup()).toEqual({ _tag: "ok" });
+    expect(await serverCommand(["start", "--offline"], f.runtime)).toEqual({ _tag: "ok" });
+    liveWorkspace(f);
+    const runtime = uninstallRuntime(f);
+    const plan = await describeUninstall(runtime, "server");
+    expect(plan.server).toMatchObject({
+      dockerProblem: null,
+      holdings: {
+        workspaces: [{ name: "sealant-w1", running: true }],
+        sidecars: ["sealant-w1-docker"],
+        networks: ["sealant-w1-network"],
+      },
+      leftByEarlier: [],
+    });
+    expect(planLines(plan, f.configDir)).toEqual(
+      expect.arrayContaining([
+        "sessions 1 live session · 1 workspace container on docker context saved-local (sealant-w1)",
+        "         uninstall stops them, then removes them with their Docker services, volumes and networks; unsaved work in them is lost",
+      ]),
+    );
+    const before = f.calls().length;
+    const outcome = await executeUninstall(runtime, plan);
+    expect(outcome).toEqual({ failures: [], leftovers: [], remaining: [] });
+    const commands = f
+      .calls()
+      .slice(before)
+      .map((call) => (call.command.length > 0 ? call.command : call.args.slice(2)).join(" "));
+    // The server stops launching, the workspaces go, and only then does Compose take it down.
+    const stop = commands.indexOf("stop --timeout 30 mend");
+    const rm = commands.indexOf("container rm -f -v sealant-w1");
+    const down = commands.indexOf("down --volumes --remove-orphans --timeout 30");
+    expect(stop).toBeGreaterThanOrEqual(0);
+    expect(rm).toBeGreaterThan(stop);
+    expect(down).toBeGreaterThan(rm);
+    expect(daemonNames(f, "containers")).toEqual([]);
+    expect(daemonNames(f, "networks")).toEqual([]);
+    expect(daemonNames(f, "volumes")).toEqual([]);
+    for (const name of ["identity.env", "active", "generations", "uninstall-left.json"]) {
+      expect(fs.existsSync(path.join(f.configDir, name)), name).toBe(false);
+    }
+    expect(f.lines).toEqual(
+      expect.arrayContaining([
+        "removed 2 workspace containers, 1 of them live, with their volumes (sealant-w1, sealant-w1-docker)",
+        "removed workspace networks sealant-w1-network",
+        "removed volumes mend-control, mend-garage",
+        "removed volume mend-store",
+      ]),
+    );
+  });
+
+  it("keeps the anchor and identity while anything is left; a reinstall works over it and a second run finishes", async () => {
+    const f = await fixture();
+    expect(await f.setup()).toEqual({ _tag: "ok" });
+    liveWorkspace(f);
+    // Something that is not the installation's still holds the workspace's network.
+    seedDaemon(f, {
+      containers: [["someone-else", {}]],
+      facts: [["someone-else", { networks: ["sealant-w1-network"] }]],
+    });
+    const runtime = uninstallRuntime(f);
+    const outcome = await executeUninstall(runtime, await describeUninstall(runtime, "server"));
+    expect(outcome.failures).toEqual([
+      expect.stringMatching(
+        /^could not remove network sealant-w1-network: .*active endpoints.*To remove it: docker --context saved-local network rm sealant-w1-network$/,
+      ),
+      `the uninstall is not finished: sealant-w1-network is still there. Volume mend-store and ${f.configDir} (identity, generations) stay so that mend uninstall can finish it; run it again, or reinstall over it with mend server setup.`,
+    ]);
+    expect(daemonNames(f, "volumes")).toEqual(["mend-store"]);
+    expect(fs.existsSync(path.join(f.configDir, "identity.env"))).toBe(true);
+    expect(
+      JSON.parse(fs.readFileSync(path.join(f.configDir, "uninstall-left.json"), "utf8")),
+    ).toEqual({ names: ["sealant-w1-network"] });
+
+    // A reinstall over what is left claims it instead of refusing it (offline, after the
+    // release image the uninstall removed is loaded again).
+    f.update({ images: { ...f.state().images, "0.23.0": "0.23.0" } });
+    expect(await f.setup()).toEqual({ _tag: "ok" });
+    expect(daemonNames(f, "volumes")).toEqual(["mend-store", "mend-control", "mend-garage"]);
+
+    // Once the network is free, a second run finishes, starting with what the first one left.
+    seedDaemon(f, {});
+    const file = path.join(f.root, "docker-protocol.json");
+    const saved = JSON.parse(fs.readFileSync(file, "utf8"));
+    saved.facts = saved.facts.filter(([name]: [string]) => name !== "someone-else");
+    fs.writeFileSync(file, JSON.stringify(saved));
+    const again = await describeUninstall(runtime, "server");
+    expect(planLines(again, f.configDir)).toContain(
+      "         left by an earlier mend uninstall: sealant-w1-network",
+    );
+    expect(await executeUninstall(runtime, again)).toEqual({
+      failures: [],
+      leftovers: [],
+      remaining: [],
+    });
+    expect(daemonNames(f, "volumes")).toEqual([]);
+    expect(daemonNames(f, "networks")).toEqual([]);
+    expect(fs.existsSync(path.join(f.configDir, "identity.env"))).toBe(false);
+    expect(fs.existsSync(path.join(f.configDir, "uninstall-left.json"))).toBe(false);
+  });
+
+  it("with Docker stopped, refuses everything up front and leaves this machine's files and sign-in alone", async () => {
+    const f = await fixture();
+    expect(await f.setup()).toEqual({ _tag: "ok" });
+    f.update({ fail: "docker-down" });
+    const calls: Array<string> = [];
+    const runtime = uninstallRuntime(f, { signedIn: "https://elsewhere.example", calls });
+    const plan = await describeUninstall(runtime, "all");
+    const refusal =
+      "Docker is not answering on context saved-local (Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?), so nothing was removed. Start Docker and run mend uninstall again, or run mend uninstall --home to remove only this machine's files.";
+    expect(planRefusal(plan)).toBe(refusal);
+    expect(await executeUninstall(runtime, plan)).toEqual({
+      failures: [refusal],
+      leftovers: [],
+      remaining: [],
+    });
+    expect(calls).toEqual([]);
+    expect(fs.existsSync(path.join(runtime.cliHome, "cli.json"))).toBe(true);
+    expect(fs.existsSync(path.join(f.configDir, "identity.env"))).toBe(true);
+  });
+
+  it("does not revoke a sign-in to the server it deletes, and clears it under --server", async () => {
+    const f = await fixture();
+    expect(await f.setup()).toEqual({ _tag: "ok" });
+    const appUrl = `http://127.0.0.1:${f.port}`;
+    const calls: Array<string> = [];
+    const all = uninstallRuntime(f, { signedIn: appUrl, calls });
+    const plan = await describeUninstall(all, "all");
+    expect(plan.home).toMatchObject({ signedInToThisServer: true });
+    expect(planLines(plan, f.configDir).join("\n")).not.toContain("workspace ssh key on");
+    const outcome = await executeUninstall(all, plan);
+    expect(outcome.failures).toEqual([]);
+    expect(calls).toEqual([]);
+    expect(f.lines).toContain(
+      `this terminal's device token and workspace ssh key on ${appUrl} went with the server's database`,
+    );
+
+    const g = await fixture();
+    expect(await g.setup()).toEqual({ _tag: "ok" });
+    const serverCalls: Array<string> = [];
+    const server = uninstallRuntime(g, {
+      signedIn: `http://localhost:${g.port}`,
+      calls: serverCalls,
+    });
+    expect(
+      (await executeUninstall(server, await describeUninstall(server, "server"))).failures,
+    ).toEqual([]);
+    expect(serverCalls).toEqual(["forgetSignIn"]);
+    expect(g.lines).toContain(
+      `signed out of http://localhost:${g.port}: its device token went with the server`,
+    );
+  });
+
+  it("with a sign-in to another server, removes the server first, then revokes, then the files", async () => {
+    const f = await fixture();
+    expect(await f.setup()).toEqual({ _tag: "ok" });
+    const calls: Array<string> = [];
+    const runtime = uninstallRuntime(f, { signedIn: "https://elsewhere.example", calls });
+    const outcome = await executeUninstall(runtime, await describeUninstall(runtime, "all"));
+    expect(outcome.failures).toEqual([]);
+    expect(calls).toEqual(["removeWorkspaceSshKey", "revokeDevice"]);
+    const removedServer = f.lines.findIndex((line) => line.startsWith("removed containers"));
+    const revoked = f.lines.indexOf("revoked this terminal's device on https://elsewhere.example");
+    const removedFiles = f.lines.indexOf(`removed ${path.join(runtime.cliHome, "cli.json")}`);
+    expect(removedServer).toBeGreaterThanOrEqual(0);
+    expect(revoked).toBeGreaterThan(removedServer);
+    expect(removedFiles).toBeGreaterThan(revoked);
+  });
+
+  it("everything also removes Mend's images and the sysctl file setup wrote, restoring the default", async () => {
+    const f = await fixture();
+    expect(await f.setup()).toEqual({ _tag: "ok" });
+    f.update({ sysctl: "mend", buildCache: "5.075GB" });
+    const runtime = uninstallRuntime(f);
+    const plan = await describeUninstall(runtime, "all");
+    expect(plan.server).toMatchObject({
+      extras: {
+        images: ["postgres:17-alpine", "dxflrs/garage:v2.4.1", "nginx:1.29-alpine", "registry:3.1"],
+        imageBytes: 400_000_000,
+        buildCache: "5.075GB",
+        sysctl: {
+          state: "mend",
+          restore: { key: "kernel.apparmor_restrict_unprivileged_userns", value: "1" },
+        },
+      },
+    });
+    expect(planLines(plan, f.configDir)).toEqual(
+      expect.arrayContaining([
+        "images   4 images Mend pulled or built, 400 MB: postgres:17-alpine, dxflrs/garage:v2.4.1, nginx:1.29-alpine, registry:3.1",
+        "         Docker's build cache, 5.075GB: shared by every build on this daemon, so uninstall asks about it separately",
+        "host     /etc/sysctl.d/60-mend-rootless-docker.conf, which setup wrote; kernel.apparmor_restrict_unprivileged_userns goes back to 1",
+      ]),
+    );
+    const outcome = await executeUninstall(runtime, plan);
+    expect(outcome).toEqual({ failures: [], leftovers: [], remaining: [] });
+    const state = f.state();
+    expect(state.sysctl).toBe("absent");
+    expect(state.sysctlRestored).toEqual(["kernel/apparmor_restrict_unprivileged_userns", "1"]);
+    expect(state.removedImages).toEqual([
+      "postgres:17-alpine",
+      "dxflrs/garage:v2.4.1",
+      "nginx:1.29-alpine",
+      "registry:3.1",
+    ]);
+    // The build cache is the caller's separate question: executeUninstall never prunes it.
+    expect(state.prunedBuildCache).toBeUndefined();
+    expect(f.lines).toEqual(
+      expect.arrayContaining([
+        "removed /etc/sysctl.d/60-mend-rootless-docker.conf and set kernel.apparmor_restrict_unprivileged_userns back to 1",
+        "removed 4 images (postgres:17-alpine, dxflrs/garage:v2.4.1, nginx:1.29-alpine, registry:3.1)",
+      ]),
+    );
+  });
+
+  it("leaves a sysctl file written by hand, naming the command that removes it", async () => {
+    const f = await fixture();
+    expect(await f.setup()).toEqual({ _tag: "ok" });
+    f.update({ sysctl: "by-hand" });
+    const runtime = uninstallRuntime(f);
+    const outcome = await executeUninstall(runtime, await describeUninstall(runtime, "all"));
+    expect(outcome.failures).toEqual([]);
+    expect(outcome.leftovers).toEqual([
+      "/etc/sysctl.d/60-mend-rootless-docker.conf: setup did not write it, so it stays. To restore the kernel's default: sudo rm /etc/sysctl.d/60-mend-rootless-docker.conf && sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=1",
+    ]);
+    expect(outcome.remaining).toEqual(["/etc/sysctl.d/60-mend-rootless-docker.conf"]);
   });
 });

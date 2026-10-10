@@ -59,13 +59,19 @@ export class ServerVolumeOwnershipError extends ServerRefusal {
   /** Safe operation name, never credentials or raw Docker output. */
   readonly operation: string;
 
-  /** Construct an actionable ownership failure without including identity bytes. */
-  constructor(reason: ServerVolumeOwnershipError["reason"], operation: string) {
+  /**
+   * Construct an actionable ownership failure without including identity bytes. `leftover`: the
+   * data in the way carries Mend's installation label but no anchor, so it is what an earlier
+   * install left behind (a partial `mend uninstall`), and `mend uninstall` is the way out.
+   */
+  constructor(reason: ServerVolumeOwnershipError["reason"], operation: string, leftover = false) {
     super(
       `Docker volume ownership check failed (${reason}, ${operation}). ` +
         (reason === "docker" || reason === "inspection"
           ? "Check Docker access and the selected context, then retry. No absence was assumed."
-          : "Retain all Docker data. Restore the original Mend identity/configuration or choose a clean Docker daemon; do not delete or relabel existing data."),
+          : leftover
+            ? "Docker still holds what an earlier Mend install left behind: volumes with Mend's installation label and no installation to own them. Run mend uninstall --server to remove them, then run setup again."
+            : "Retain all Docker data. Restore the original Mend identity/configuration or choose a clean Docker daemon; do not delete or relabel existing data."),
     );
     this.reason = reason;
     this.operation = operation;
@@ -109,6 +115,7 @@ const listNames = async (
   context: string,
   kind: "volume" | "container" | "network",
   project?: string,
+  label?: string,
 ): Promise<Result<ReadonlyArray<string>>> => {
   const field = kind === "container" ? "Names" : "Name";
   const output = await docker(runtime, context, [
@@ -116,6 +123,7 @@ const listNames = async (
     "ls",
     ...(kind === "container" ? ["--all"] : []),
     ...(project === undefined ? [] : ["--filter", `label=com.docker.compose.project=${project}`]),
+    ...(label === undefined ? [] : ["--filter", `label=${label}`]),
     "--format",
     `{{json .${field}}}`,
   ]);
@@ -275,6 +283,31 @@ const refuseOldData = async (
   namespace: ServerDockerNamespace,
   volumes: ReadonlyArray<string>,
 ): Promise<Result<void>> => {
+  const refused = await findOldData(runtime, context, namespace, volumes);
+  if (refused._tag === "ok" || refused.error.reason !== "unowned-data") return refused;
+  // Data in the way that carries Mend's own installation label, with no anchor beside it, is what
+  // an earlier install left (an uninstall that could not finish): say how to finish it. Anything
+  // unlabelled keeps the plain refusal.
+  const labelled = await listNames(
+    runtime,
+    context,
+    "volume",
+    undefined,
+    SERVER_VOLUME_OWNER_LABEL,
+  );
+  if (labelled._tag === "error" || labelled.value.length === 0) return refused;
+  return {
+    _tag: "error",
+    error: new ServerVolumeOwnershipError(refused.error.reason, refused.error.operation, true),
+  };
+};
+
+const findOldData = async (
+  runtime: Runtime,
+  context: string,
+  namespace: ServerDockerNamespace,
+  volumes: ReadonlyArray<string>,
+): Promise<Result<void>> => {
   if (
     volumes.some(
       (name) =>
@@ -308,6 +341,10 @@ const refuseOldData = async (
   return { _tag: "ok", value: undefined };
 };
 
+/** The installation label's value for an identity: the hash of its exact persisted bytes. */
+export const serverVolumeOwner = (identityBytes: Uint8Array): string =>
+  createHash("sha256").update(identityBytes).digest("hex");
+
 const parseOwnershipInput = (input: ServerVolumeOwnershipInput): ServerVolumeOwnershipResult => {
   const namespace = input.namespace ?? MEND_DOCKER_NAMESPACE;
   if (
@@ -321,7 +358,7 @@ const parseOwnershipInput = (input: ServerVolumeOwnershipInput): ServerVolumeOwn
       1 + secondaryVolumesOf(namespace).length
   )
     return fail("invalid-input", "ownership inputs");
-  const owner = createHash("sha256").update(input.identityBytes).digest("hex");
+  const owner = serverVolumeOwner(input.identityBytes);
   return { _tag: "ok", value: { owner, namespace } };
 };
 

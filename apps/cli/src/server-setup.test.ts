@@ -544,17 +544,32 @@ describe("mend server setup", () => {
     expect(await serverCommand(["setup", "--yes"], first.runtime)).toEqual({ _tag: "ok" });
   });
 
+  it("keeps the plain refusal for data in the way that carries no Mend label", async () => {
+    const daemon = new DockerProtocol();
+    daemon.volumes.set("mend-control", null);
+    const refused = await serverCommand(["setup", "--yes"], makeRuntime({ daemon }).runtime);
+    expect(refused).toMatchObject({
+      _tag: "error",
+      message: expect.stringContaining("Restore the original Mend identity/configuration"),
+    });
+    expect([...daemon.volumes.keys()]).toEqual(["mend-control"]);
+  });
+
   it.each(["mend-control", "mend-garage"])(
-    "refuses a foreign %s volume with the same message before and after the anchor exists",
+    "refuses a foreign %s volume before and after the anchor exists, pointing at mend uninstall for an earlier install's leftovers",
     async (volume) => {
       // Before any anchor: an unowned volume with a bundle name is existing data, never adopted.
+      // It carries Mend's installation label with no anchor beside it: what a partial uninstall
+      // left, which mend uninstall removes.
       const orphaned = new DockerProtocol();
       orphaned.volumes.set(volume, { [SERVER_VOLUME_OWNER_LABEL]: "another-installation" });
       const first = makeRuntime({ daemon: orphaned });
       const refused = await serverCommand(["setup", "--yes"], first.runtime);
       expect(refused).toMatchObject({
         _tag: "error",
-        message: expect.stringContaining("Restore the original Mend identity/configuration"),
+        message: expect.stringContaining(
+          "Docker still holds what an earlier Mend install left behind: volumes with Mend's installation label and no installation to own them. Run mend uninstall --server to remove them, then run setup again.",
+        ),
       });
       expect([...orphaned.volumes.keys()]).toEqual([volume]);
       expect(first.commands.some(([, args]) => args.includes("up") || args[3] === "create")).toBe(

@@ -241,9 +241,11 @@ CLI and its environment, the local server's configuration (the names of its `.en
 values), container logs, and every session with its processes and recorded output. Read it before
 you share it. See [Troubleshooting](/operate/troubleshooting/).
 
-`mend uninstall --server` removes the local installation: its containers, every volume it owns
-(repositories, captures, the database), its release image and its private configuration. It prints
-the plan and asks you to type `delete` first.
+`mend uninstall --server` removes the local installation: its live sessions' workspaces, its
+containers, every volume and network it owns (repositories, captures, the database), its release
+image and its private configuration. It prints the plan and asks you to type `delete` first.
+`mend uninstall --all` also removes Mend's images and, when setup wrote it,
+`/etc/sysctl.d/60-mend-rootless-docker.conf`, putting back the setting it replaced.
 
 ### Server defaults
 
