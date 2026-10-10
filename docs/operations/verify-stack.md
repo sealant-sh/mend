@@ -144,8 +144,12 @@ versions each repository pins ([Preview builds](preview-builds.md), "Limits"); t
   that track sealantd's `next` line (`npm:@sealant/runtime-*-next@…`, today `@sealant/workspaces`),
   so `apps/ssh-gateway`, pinned to `^0.6.0`, keeps what Core ships it with.
 
-`report` says where the packages came from. `--packages npm` installs the pinned ones, as a preview
-does. A pinned source links nothing.
+The consumer's lockfile is made against the registry as it is when the stack starts: a dependency
+the packed packages bring in that the consumer's lockfile lacks resolves to the newest version its
+range allows then. Each image's tag covers that lockfile's bytes, and `report` names the lockfile
+(by digest) each consumer was built from, so two runs that resolved differently say so. `report`
+says where the packages came from. `--packages npm` installs the pinned ones, as a preview does. A
+pinned source links nothing.
 
 ## What it does
 

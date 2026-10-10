@@ -474,8 +474,12 @@ async function packFromSource(logs, resolved, context) {
 /**
  * A copy of a context that installs `packed` in place of the published packages: the tarballs in
  * VENDOR_DIR, the overrides in pnpm-workspace.yaml, and a lockfile made for them, so the
- * repository's own Dockerfile, `--frozen-lockfile` and all, builds it unchanged. Its build key
- * covers the tree and every tarball's bytes.
+ * repository's own Dockerfile, `--frozen-lockfile` and all, builds it unchanged.
+ *
+ * The lockfile is made against the registry as it is now: a dependency the packed packages bring in
+ * that the consumer's own lockfile lacks resolves to the newest version its range allows. So the
+ * build key covers the lockfile's bytes too, beside the tree and every tarball's: two starts that
+ * resolved differently build two images, and the report names the lockfile each one built from.
  */
 async function linkedContext(logs, resolved, context, packed, overrides) {
   const digests = await Promise.all(
@@ -485,8 +489,8 @@ async function linkedContext(logs, resolved, context, packed, overrides) {
         .digest("hex"),
     ),
   );
-  const key = digestOf(resolved.tree, ...packed.files, ...digests);
-  const dir = join(cacheDir, "contexts", `${resolved.repository}-${key}`);
+  const inputs = digestOf(resolved.tree, ...packed.files, ...digests);
+  const dir = join(cacheDir, "contexts", `${resolved.repository}-${inputs}`);
   if (!existsSync(dir)) {
     const partial = `${dir}.partial-${randomUUID()}`;
     await cp(context, partial, { recursive: true });
@@ -504,7 +508,10 @@ async function linkedContext(logs, resolved, context, packed, overrides) {
     await rm(lock, { recursive: true, force: true });
     await rename(partial, dir);
   }
-  return { dir, key };
+  const lock = createHash("sha256")
+    .update(await readFile(join(dir, "pnpm-lock.yaml")))
+    .digest("hex");
+  return { dir, key: digestOf(inputs, lock), lock };
 }
 
 /** Every package manifest of a context's workspace (apps/*, packages/*). */
@@ -854,6 +861,7 @@ async function upClaimed(flags, specs, { started, phases, logs }) {
       packageOverrides(runtime.files, consumers),
     );
     resolved.sealant.buildKey = linked.key;
+    resolved.sealant.lock = linked.lock;
     return linked.dir;
   })();
   const mendContext = (async () => {
@@ -867,6 +875,7 @@ async function upClaimed(flags, specs, { started, phases, logs }) {
       packageOverrides(sdk.files),
     );
     resolved.mend.buildKey = linked.key;
+    resolved.mend.lock = linked.lock;
     return linked.dir;
   })();
   const sealantdTag = imageNames(resolved, { cliVersion, upstreamIds: [] }).sealantd;
@@ -947,10 +956,10 @@ async function upClaimed(flags, specs, { started, phases, logs }) {
   await Promise.all([cliBuild, bundleBuild]);
   const packages = {
     runtime: linking.runtime
-      ? `@sealant/runtime-* from sealantd@${resolved.sealantd.commit.slice(0, 12)}`
+      ? `@sealant/runtime-* from sealantd@${resolved.sealantd.commit.slice(0, 12)} (Core's lockfile ${resolved.sealant.lock.slice(0, 12)})`
       : "@sealant/runtime-* from npm, as Core pins them",
     sdk: linking.sdk
-      ? `@sealant/sdk and @sealant/api-contracts from sealant@${resolved.sealant.commit.slice(0, 12)}`
+      ? `@sealant/sdk and @sealant/api-contracts from sealant@${resolved.sealant.commit.slice(0, 12)} (Mend's lockfile ${resolved.mend.lock.slice(0, 12)})`
       : "@sealant/sdk and @sealant/api-contracts from npm, as Mend pins them",
   };
   say(`  packages · ${packages.sdk}; ${packages.runtime}`);
