@@ -31,9 +31,16 @@ License in `LICENSE` (t3code's own, copied with the files):
   `t3` catalog to t3code's versions at that tag (its `pnpm-workspace.yaml`), then run `pnpm install`
   and this package's tests.
 
+- `scripts/drift.ts` says whether t3code moved on: it lists the files under the vendored sources at
+  the newest nightly tag (or `--tag`) by git blob id and compares them with the pin, writing nothing
+  here. Exit 0 is no drift, 1 drift (the report lists what changed, what is new, what is gone), 2
+  that it could not tell. `.github/workflows/t3code-drift.yml` runs it every day and opens one
+  issue, or comments on it for a new tag; moving the pin stays a person's step.
+
 ## Tests
 
 - `test/verbatim.test.ts`: every copied file matches the pin, and nothing was added or removed.
+- `test/drift.test.ts`: the drift job's tag order, comparison and report.
 - `test/rpc-group.test.ts`: `WsRpcGroup` loads on the `t3` catalog and its schemas decode real
   frames.
 - t3code's own tests under `src/` run too, on vitest (`vite-plus/test` is aliased to it).
