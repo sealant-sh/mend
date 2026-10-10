@@ -46,6 +46,9 @@ const record = (step: string, value: unknown): void => {
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+/** From createTerminal to the first command's answer in the Remote-SSH window. */
+const FIRST_TERMINAL_BUDGET_MS = 10_000;
+
 const until = async <T>(
   what: string,
   read: () => Promise<T | null | undefined | false>,
@@ -222,6 +225,7 @@ const remoteWindow = async (): Promise<void> => {
     new TextEncoder().encode("edited in VS Code over Remote-SSH\n"),
   );
   // …use the workspace's terminal (an integrated terminal in a remote window runs there)…
+  const terminalOpened = Date.now();
   const terminal = vscode.window.createTerminal({ name: "st-vscode" });
   terminal.sendText(
     "id -un > /workspace/repo/.st-vscode-whoami; echo remote-terminal-$((6*7)) > /workspace/repo/st-vscode-remote-term.txt",
@@ -232,6 +236,8 @@ const remoteWindow = async (): Promise<void> => {
     async () => (await read("st-vscode-remote-term.txt")) || null,
     60_000,
   );
+  // Instant or unacceptable: the first command's answer, from createTerminal.
+  const terminalMs = Date.now() - terminalOpened;
   const whoami = await read(".st-vscode-whoami");
   // …and forward a port: a server on the workspace's loopback, opened from this machine.
   terminal.sendText(
@@ -255,7 +261,7 @@ const remoteWindow = async (): Promise<void> => {
         remoteName: vscode.env.remoteName,
         folder: folder.toString(),
         readOverRemoteSsh: typed,
-        terminal: { wrote: fromTerminal, user: whoami },
+        terminal: { wrote: fromTerminal, user: whoami, ms: terminalMs },
         forwarded,
         entries: (await vscode.workspace.fs.readDirectory(folder)).map(([name]) => name).toSorted(),
       },
@@ -444,6 +450,13 @@ export async function run(): Promise<void> {
     }
     if (field(remote, "forwarded", "body") !== "st-vscode-port") {
       throw new Error("Remote-SSH did not forward the workspace's port");
+    }
+    // A plain SSH host answers in about half a second; so does a Mend workspace.
+    const terminalMs = Number(field(remote, "terminal", "ms"));
+    if (!(terminalMs < FIRST_TERMINAL_BUDGET_MS)) {
+      throw new Error(
+        `the Remote-SSH window's first terminal answered after ${terminalMs} ms (budget ${FIRST_TERMINAL_BUDGET_MS} ms)`,
+      );
     }
 
     // The session sees what the editor wrote: Mend's own terminal into the session reads the file,
