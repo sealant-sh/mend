@@ -45,8 +45,13 @@ const NAV: ReadonlyArray<{ label: string; href: string }> = [
 
 export function MarketingPage() {
   return (
-    <div className="mend-grain mend-grain-surface min-h-dvh overflow-x-clip text-foreground">
-      <header className="mend-grain-surface sticky top-0 z-40">
+    <div className="mend-grain mend-grain-surface min-h-dvh text-foreground">
+      {/* The header sticks to the viewport, so nothing between it and the root may
+          clip or scroll: iOS Safari otherwise pins it to that ancestor and lets the
+          page paint over it mid-scroll. The horizontal clip lives on <main> for the
+          same reason, and will-change keeps the header on its own layer so WebKit
+          composites it above the scrolling content rather than behind it. */}
+      <header className="mend-grain-surface sticky top-0 z-40 will-change-transform">
         <div
           className={`${FRAME} flex min-h-16 items-center justify-between gap-4 border-b-2 px-5 sm:px-8`}
         >
@@ -79,7 +84,7 @@ export function MarketingPage() {
         </div>
       </header>
 
-      <main className={FRAME}>
+      <main className={`${FRAME} overflow-x-clip`}>
         {/* Masthead: the wordmark at the width of the page, then the statement and the install line. */}
         <section className="px-5 sm:px-8">
           <div className={`relative border-b-2 ${RULE} pt-4 sm:pt-12`}>
