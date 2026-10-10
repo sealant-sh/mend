@@ -11,13 +11,19 @@
 // outer CLI's config). Every file under --dir is searched for each value and for each shape
 // redact.mjs knows: as text, as raw bytes, and for a PNG, every text chunk (tEXt, and zTXt and iTXt
 // inflated). An archive (zip, a Playwright trace, a HAR) cannot be searched here and counts as a
-// hit: the driver never records one. A hit names the file and the kind, never the value.
+// hit: the driver never records one. So does an image (PNG, JPEG, GIF, WebP, BMP, TIFF, by its bytes
+// or its name): its pixels cannot be searched, so one counts as a hit unless drive-web.mjs vouched
+// for it, with a <image>.checked beside it whose sha256 is the image's own (written after the page's
+// text was checked and every canvas, video, object and unreadable frame was masked). An image a
+// recipe or another tool saved, or one changed since, has no such file. A hit names the file and the
+// kind, never the value.
 //
 // It writes <dir>/scan.json (files, secret count, hits by file and kind; no value) whatever the
 // result. Exit 0: no hit. Exit 1: hits; with --delete-hits, every file that had one is deleted
 // first (scan.json says which). Exit 2: nothing to compare (the registry is empty).
 
-import { readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { inflateSync } from "node:zlib";
 
@@ -84,6 +90,31 @@ const pngText = (bytes) => {
 };
 
 const ARCHIVE = /\.(?:zip|trace|har|tar|gz|tgz|7z)$/i;
+const IMAGE = /\.(?:png|jpe?g|gif|webp|bmp|tiff?|avif|heic)$/i;
+const IMAGE_MAGIC = [
+  [0x89, 0x50, 0x4e, 0x47],
+  [0xff, 0xd8, 0xff],
+  [0x47, 0x49, 0x46, 0x38],
+  [0x42, 0x4d],
+  [0x49, 0x49, 0x2a, 0x00],
+  [0x4d, 0x4d, 0x00, 0x2a],
+];
+const isImage = (path, bytes) =>
+  IMAGE.test(path) ||
+  IMAGE_MAGIC.some((magic) => magic.every((byte, at) => bytes[at] === byte)) ||
+  (bytes.subarray(0, 4).toString("latin1") === "RIFF" &&
+    bytes.subarray(8, 12).toString("latin1") === "WEBP");
+
+/** drive-web.mjs's word for an image: its .checked file names this image's digest. */
+const vouched = (path, bytes) => {
+  if (!existsSync(`${path}.checked`)) return false;
+  try {
+    const { sha256 } = JSON.parse(readFileSync(`${path}.checked`, "utf8"));
+    return sha256 === createHash("sha256").update(bytes).digest("hex");
+  } catch {
+    return false;
+  }
+};
 const evidence = files(dir).filter((path) => path !== join(dir, "scan.json"));
 const hits = [];
 for (const path of evidence) {
@@ -93,6 +124,8 @@ for (const path of evidence) {
     hits.push({ file: name, kind: "an archive, which cannot be searched" });
     continue;
   }
+  if (isImage(path, bytes) && !vouched(path, bytes))
+    hits.push({ file: name, kind: "an image no driver checked, whose pixels cannot be searched" });
   const views = [bytes.toString("utf8"), bytes.toString("latin1"), ...pngText(bytes)];
   const sources = new Set();
   for (const [value, source] of secrets)

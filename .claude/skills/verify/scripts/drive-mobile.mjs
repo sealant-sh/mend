@@ -11,10 +11,14 @@
 // and Referer rewritten to <web>'s own, and everything else goes to the Expo dev server. Pair the app
 // with http://127.0.0.1:<port> as its server. It runs until killed (SIGTERM ends Expo too). Expo's
 // output goes to --log; the proxy prints one line per refused upstream, never a header or a body.
+// --web must be this run's own stack through its tunnel ($MEND_VERIFY_PRIVATE/tunnel.json, with
+// MEND_VERIFY_OUTER_URL declared; guard/policy.mjs): any other server is refused (exit 97).
 import { spawn } from "node:child_process";
 import { openSync } from "node:fs";
 import http from "node:http";
 import net from "node:net";
+
+import { Refused, checkTarget } from "./guard/policy.mjs";
 
 const args = process.argv.slice(2);
 const flag = (name) => {
@@ -31,6 +35,16 @@ if (!app || !web || !port || !log) {
     "usage: drive-mobile.mjs --app <dir> --web <url> --port <port> [--expo-port <port>] --log <file>\n",
   );
   process.exit(2);
+}
+
+try {
+  checkTarget(web.href, process.env);
+} catch (error) {
+  if (!(error instanceof Refused)) throw error;
+  process.stderr.write(
+    `drive-mobile: ${error.message}; refused · a verifier never talks to the owner's server\n`,
+  );
+  process.exit(97);
 }
 
 const out = openSync(log, "a");

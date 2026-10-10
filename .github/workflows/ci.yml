@@ -52,4 +52,6 @@ jobs:
           scripts/mirrors-runtime.test.mjs scripts/verify-stack/lib.test.mjs
           scripts/verify-stack/lifecycle.test.mjs scripts/verify-stack/lifecycle.e2e.test.mjs
           .claude/skills/verify/scripts/leaks.test.mjs .claude/skills/verify/scripts/slots.test.mjs
+          .claude/skills/verify/scripts/guard.test.mjs
+          .claude/skills/verify/scripts/secrets.test.mjs
       - run: helm lint deploy/helm/mend -f deploy/helm/mend/ci/obc-values.yaml

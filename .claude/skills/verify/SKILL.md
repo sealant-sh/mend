@@ -48,6 +48,12 @@ verdicts. They never appear in a report.
   .claude/skills/verify/scripts/local-outer.sh down   # after Cleanup: the container and its volumes
   ```
 
+  Its defaults make one outer per machine. A second verifier on the same machine sets its own
+  `MEND_VERIFY_OUTER_NAME`, `MEND_VERIFY_OUTER_PORT`, `MEND_VERIFY_OUTER_CONFIG` and
+  `MEND_VERIFY_OUTER_WORK` for every `local-outer.sh` call (and its `XDG_CONFIG_HOME` and
+  `MEND_VERIFY_OUTER_URL` to match): with the defaults, its `up` meets the first one's container and
+  its `serve` writes into the first one's served repository.
+
   It always serves a complete repository (one parentless commit of the tree, then each serve on
   top), never a shallow clone: Mend refuses to adopt a shallow repository (mend#654), and a worktree
   whose history it cannot walk never finishes its Stop (`final seal · refused · unrestorable`). The
@@ -109,15 +115,35 @@ export MEND_VERIFY_OUTER_URL=<the outer server's URL, as its CLI config names it
 ```
 
 **A verifier never talks to the owner's server; the guard refuses it.** `scripts/guard/mend` stands
-in front of the CLI: it refuses (exit 97, before any request) unless `MEND_VERIFY_OUTER_URL` is
-declared, the CLI config in effect names exactly that server, and neither `MEND_URL` nor
-`MEND_TOKEN` overrides it; then it runs the next `mend` on `PATH`. A command that forgot
-`XDG_CONFIG_HOME` would otherwise reach the CLI's default server, and a shared shim
-(`~/.cache/mend-verify/bin/mend` is any process's to rewrite) cannot point the run anywhere else.
-The box is an outer server only when its operator says so: then declare its URL. An alias or a shell
-function named `mend` outranks `PATH` and skips the guard (an interactive zsh often has one), so the
-check above must print nothing: run the steps in a `bash` script, where aliases do not apply, or
-`unalias mend` first. The helpers start `mend` through `PATH`, so they always meet the guard.
+in front of the CLI, and `scripts/guard/policy.mjs` decides for it and for every driver. A run may
+reach two servers: the outer one it declared (`MEND_VERIFY_OUTER_URL`), and its own stack through
+its own tunnel (`http://localhost:<port>` for the port `$P/tunnel.json` records; a loopback URL
+alone is not enough, the owner's own server may listen on this machine). The guard refuses (exit 97,
+before any request) when:
+
+- `MEND_VERIFY_OUTER_URL` is not declared, `MEND_TOKEN` is set, or `MEND_URL` is (except
+  `http://127.0.0.1:9`, loopback's discard port, where the map drives the unreachable-server lines);
+- `XDG_CONFIG_HOME` is unset, relative or missing, `$XDG_CONFIG_HOME/mend/cli.json` is missing (the
+  CLI then reads a legacy `~/.mend`; only `mend login --url <one of the two>` may make it, into an
+  existing `$XDG_CONFIG_HOME/mend`), or the config is this machine's own (`~/.config/mend`,
+  `~/.mend`): a run's CLI config is its own;
+- that config, or a `--url` or `--server` argument (`mend login --url …` included), names any other
+  server. Only the words after a runner's `--` (`mend run`, `mend service`,
+  `mend claude|codex|opencode|pi`) are left alone: they run in the workspace;
+- the command acts on this machine's own Mend installation (`mend server …`, `mend uninstall`),
+  except its help page: those recipes run on a disposable host.
+
+Then it runs the next `mend` on `PATH` (or `$MEND_VERIFY_REAL_MEND`) with `XDG_CONFIG_HOME` pinned
+to the absolute, resolved directory it checked, so no change of directory or of `HOME` downstream
+makes the CLI read another config, and a shared shim (`~/.cache/mend-verify/bin/mend` is any
+process's to rewrite) cannot point the run anywhere else. The drivers hold to the same policy:
+`drive-tui.sh` puts the guard first on its terminal's `PATH` and its bundled CLI behind it, and
+`drive-tui.sh`, `drive-desktop.sh`, `drive-web.mjs` and `drive-mobile.mjs` refuse a `<web>` that is
+not the run's tunnel. The box is an outer server only when its operator says so: then declare its
+URL. An alias or a shell function named `mend` outranks `PATH` and skips the guard (an interactive
+zsh often has one), so the check above must print nothing: run the steps in a `bash` script, where
+aliases do not apply, or `unalias mend` first. The helpers start `mend` through `PATH`, so they
+always meet the guard.
 
 1. **Take a slot.** Count the live verify stacks on the outer Mend before starting one:
 
@@ -390,7 +416,10 @@ $skill/scripts/drive-tui.sh stop ui-1
 
 `build` is needed because the dashboard cannot run from the CLI's TypeScript source; it bundles with
 the checkout's own esbuild, so the checkout needs its dependencies installed (`pnpm install`).
-`capture` keeps only the redacted screen. Lines a program prints before a full-screen redraw
+`capture` keeps only the redacted screen, and a code the screen shows (`mend login`'s authorization
+code and its `/authorize?code=` link, a pairing code) joins the registry by value first, so it is
+redacted wherever it turns up next. Every `mend` typed in the terminal passes the guard: the bundled
+CLI is reached only as the guard's real CLI. Lines a program prints before a full-screen redraw
 (`mend attach`'s `✓ attaching to …`) are not on the screen or in its scrollback; take them from a
 CLI capture of the same command instead.
 
@@ -404,6 +433,10 @@ node $skill/scripts/drive-web.mjs --web "$web" --cdp http://127.0.0.1:9335 --out
   --private "$P" --recipe <recipe.mjs>
 $skill/scripts/drive-desktop.sh stop
 ```
+
+The desktop's terminal draws on a canvas (its text is not in the page), so every screenshot masks
+it: read a terminal's output from the session (`drive-tui.sh` on `mend attach`, or the record), not
+from a screenshot.
 
 **Mobile web.** `drive-mobile.mjs` serves the Expo app's web build and the stack's API on one local
 origin (the stack trusts only its own origins), and `drive-web.mjs --viewport 390x844` drives it.
@@ -486,16 +519,16 @@ Everything goes under `$E`, on this machine, outside any checkout and outside th
 Cleanup removes neither. Name each directory for the feature file and the entry point:
 `$E/adopt-project/web`, `$E/adopt-project/cli`.
 
-| What                     | How                                                                                                                                                                                                | Where                                   |
-| ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------- |
-| ARIA snapshot            | `capture(name)` in a recipe: `page.locator("body").ariaSnapshot()`, redacted                                                                                                                       | `<dir>/<name>.aria.yml`                 |
-| screenshot               | the same `capture(name)`, full page, heading in view; withheld on a page that shows a credential                                                                                                   | `<dir>/<name>.png` or `.png.withheld`   |
-| web steps                | `note(text)`, and every capture and failure                                                                                                                                                        | `<dir>/steps.log`                       |
-| CLI stdout, stderr, exit | `$skill/scripts/capture.sh <dir> <step> -- <command…>`, redacted                                                                                                                                   | `<dir>/<step>.{cmd,stdout,stderr,exit}` |
-| the stack                | the doctor, and once more before Cleanup: `doctor.mjs … --out "$E/final"`                                                                                                                          | `report.json`, `doctor.txt`             |
-| the inner record         | before Cleanup: `stack.mjs mend sessions --all --json` through `capture.sh`, and the inner session page through `capture()`; `stack.mjs mend logs <id>` once the Mend under test has it (mend#610) | `$E/<feature>/cli`, `/web`              |
-| the outer record         | each `mend run` prints `session <id8>` on stderr; the outer server keeps those records after Cleanup: `mend logs <id8>`                                                                            | `<step>.stderr`                         |
-| a Stop that stays saving | `settle.mjs` (Cleanup): the session's last state, and the outer server's logs with its `capture seals` lines                                                                                       | `$E/cleanup/settle/`                    |
+| What                     | How                                                                                                                                                                                                | Where                                                     |
+| ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------- |
+| ARIA snapshot            | `capture(name)` in a recipe: `page.locator("body").ariaSnapshot()`, redacted                                                                                                                       | `<dir>/<name>.aria.yml`                                   |
+| screenshot               | the same `capture(name)`, full page, heading in view, every canvas masked; withheld on a page that shows a credential                                                                              | `<dir>/<name>.png` and `.png.checked`, or `.png.withheld` |
+| web steps                | `note(text)`, and every capture and failure                                                                                                                                                        | `<dir>/steps.log`                                         |
+| CLI stdout, stderr, exit | `$skill/scripts/capture.sh <dir> <step> -- <command…>`, redacted                                                                                                                                   | `<dir>/<step>.{cmd,stdout,stderr,exit}`                   |
+| the stack                | the doctor, and once more before Cleanup: `doctor.mjs … --out "$E/final"`                                                                                                                          | `report.json`, `doctor.txt`                               |
+| the inner record         | before Cleanup: `stack.mjs mend sessions --all --json` through `capture.sh`, and the inner session page through `capture()`; `stack.mjs mend logs <id>` once the Mend under test has it (mend#610) | `$E/<feature>/cli`, `/web`                                |
+| the outer record         | each `mend run` prints `session <id8>` on stderr; the outer server keeps those records after Cleanup: `mend logs <id8>`                                                                            | `<step>.stderr`                                           |
+| a Stop that stays saving | `settle.mjs` (Cleanup): the session's last state, and the outer server's logs with its `capture seals` lines                                                                                       | `$E/cleanup/settle/`                                      |
 
 The inner record lives in the stack and goes with it, so capture it before Cleanup. A proof follows
 the map's proof rules:
@@ -518,9 +551,14 @@ the map's proof rules:
   line by line and encoded), and by shape, against `redact.mjs` (invitation and reset links, device
   tokens, pairing codes and links, bearer tokens, signed URLs, private keys, provider keys,
   credential fields). A page that shows a credential (a field a secret was typed into, a QR code, a
-  pairing code, a minted token) keeps only its redacted snapshot, every credential field's subtree
-  included: `<name>.png.withheld` says why. No trace, HAR or video is recorded. Cleanup's scan
-  searches every file of `$E` for every registered value and every shape, and a hit fails the run.
+  pairing code, a minted token), in its ARIA snapshot or anywhere in its text (`aria-hidden`
+  included), keeps only its redacted snapshot, every credential field's subtree included:
+  `<name>.png.withheld` says why. Pixels no text check can read are never kept: every canvas (a
+  terminal's), video and embedded object is masked, and so is a frame that holds one; a kept
+  screenshot gets `<name>.png.checked` with its digest. No trace, HAR or video is recorded.
+  Cleanup's scan searches every file of `$E` for every registered value and every shape, and counts
+  as a hit an archive and any image without a matching `.checked` (one a recipe saved itself, or
+  changed since): a hit fails the run.
 
 ## Cleanup
 

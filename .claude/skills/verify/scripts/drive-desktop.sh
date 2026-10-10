@@ -11,7 +11,9 @@
 # written here if absent), keeps its user data and its log in $MEND_VERIFY_PRIVATE.desktop (0700, beside
 # the private directory, not in it: every non-JSON file under the private directory joins the secret
 # registry, a log included), and draws on an Xvfb display started here, so no window opens on this
-# machine's screen. The pids go to $MEND_VERIFY_PRIVATE.desktop/pids; stop ends those processes and no
+# machine's screen. <web> must be this run's own stack through its tunnel, with MEND_VERIFY_OUTER_URL
+# declared (guard/policy.mjs, as for every command): any other server is refused (exit 97), and so
+# is a config already there that names one. The pids go to $MEND_VERIFY_PRIVATE.desktop/pids; stop ends those processes and no
 # others, and removes that directory.
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
@@ -22,6 +24,9 @@ case "${1:-}" in
 start)
   app=$(cd "${2:?the desktop app dir}" && pwd); web=${3:?the stack web URL}; port=${4:?a CDP port}; display=${5:?an X display, e.g. :93}
   [ -f "$app/out/main/index.js" ] || { echo "drive-desktop: $app/out is missing; build the desktop first" >&2; exit 1; }
+  MEND_VERIFY_PRIVATE=$(cd "$MEND_VERIFY_PRIVATE" && pwd -P) || exit 1
+  export MEND_VERIFY_PRIVATE
+  node "$here/guard/policy.mjs" target "$web" || exit 97
   conf=$MEND_VERIFY_PRIVATE/tui-cli
   if [ ! -f "$conf/mend/cli.json" ]; then
     mkdir -p "$conf/mend" && chmod 700 "$conf"
@@ -31,6 +36,7 @@ start)
       writeFileSync(process.argv[2], JSON.stringify({ url: process.argv[3], token: account.token }), { mode: 0o600 });
     ' "$MEND_VERIFY_PRIVATE/account.json" "$conf/mend/cli.json" "$web"
   fi
+  node "$here/guard/policy.mjs" target "$(node -e 'process.stdout.write(String(JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")).url ?? ""))' "$conf/mend/cli.json")" || exit 97
   mkdir -p "$side" && chmod 700 "$side"
   Xvfb "$display" -screen 0 1440x900x24 -nolisten tcp > /dev/null 2>&1 &
   echo $! > "$pids"
