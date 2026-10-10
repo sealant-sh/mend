@@ -104,6 +104,12 @@ Workspaces reach their session over a mounted Unix socket by default, or over a 
 | `MEND_SERVICE_PORT_MAX`          | `43999`     | The highest port a Service listener takes.                                                                                                                                                                                                                                                                                       |
 | `MEND_HARNESS_LAYOUT`            | `person`    | `person` gives each person their own Linux user and home in a workspace, for worktrees with no layout yet; `shared` keeps them on one shared home (and keeps Hot sessions' standbys). Unset or empty is `person`. A worktree that has run `person` stays `person`. See [Per-person workspaces](/operate/per-person-workspaces/). |
 
+## Cloud metadata guard
+
+| Variable                             | Default                                         | What it does                                                                                                                                                                                                     |
+| ------------------------------------ | ----------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `SEALANT_DOCKER_NETWORK_GUARD_IMAGE` | the Mend image's pinned `busybox:1.37@sha256:…` | The image the Sealant worker runs in each workspace to refuse the cloud metadata address. Set by the Mend image; `mend server setup` preloads the same image (its `dev.sealant.mend.network-guard-image` label). |
+
 ## Package and image mirrors
 
 `mend server setup` sets these from the install's mirrors; see [npm mirror](/operate/npm-mirror/)

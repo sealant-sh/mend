@@ -220,9 +220,15 @@ never installed. Review `.claude/settings*.json` in the repositories you adopt. 
 
 ## Cloud metadata is blocked from workspaces
 
-:::note Not merged yet. This section describes the decision for 0.36, and is updated when the change
-lands. :::
+On a cloud VM, `169.254.169.254` (and `fd00:ec2::254` over IPv6 on AWS) hands out the instance's own
+credentials. Sessions can no longer reach it: a connection from a workspace, or from a container its
+Docker service runs, is refused at once, and nothing else on the network changes. The refusal is in
+place before Mend starts a session. Mend has no setting to open it for a project.
 
-Workspaces cannot reach the cloud metadata address (`169.254.169.254`, `fd00:ec2::254`), so a
-workspace on a cloud VM cannot read the host's instance credentials. A connection there is refused
-at once. A workspace that needs it can be given access explicitly.
+- **One more image.** The bundled Sealant adds the refusal with a small pinned busybox image, which
+  `mend server setup` and `mend server upgrade` pull with the server's images. With `--offline`,
+  load it first: the image is named by the Mend image's `dev.sealant.mend.network-guard-image`
+  label, and setup says which one it lacks.
+- **Workspaces already running at the upgrade** keep the address until they stop or are replaced.
+- **Not covered:** other credential endpoints (ECS's `169.254.170.2`, EKS Pod Identity's
+  `169.254.170.23`), and image builds, which run on the Docker host.
