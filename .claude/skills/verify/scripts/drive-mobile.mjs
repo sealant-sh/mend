@@ -12,13 +12,23 @@
 // with http://127.0.0.1:<port> as its server. It runs until killed (SIGTERM ends Expo too). Expo's
 // output goes to --log; the proxy prints one line per refused upstream, never a header or a body.
 // --web must be this run's own stack through its tunnel ($MEND_VERIFY_PRIVATE/tunnel.json, with
-// MEND_VERIFY_OUTER_URL declared; guard/policy.mjs): any other server is refused (exit 97).
+// MEND_VERIFY_OUTER_URL declared; guard/policy.mjs): any other server is refused (exit 97). Once
+// the proxy listens, it records itself in $MEND_VERIFY_PRIVATE/mobile.json (its pid and start time,
+// port, the stack it fronts, `bound: true`), which is what lets drive-web.mjs drive
+// http://127.0.0.1:<port>; the record goes when the proxy ends.
 import { spawn } from "node:child_process";
-import { openSync } from "node:fs";
+import { openSync, rmSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import net from "node:net";
+import { join } from "node:path";
 
-import { Refused, checkTarget } from "./guard/policy.mjs";
+import {
+  MOBILE_RECORD,
+  Refused,
+  allowedTargets,
+  checkTarget,
+  identityOf,
+} from "./guard/policy.mjs";
 
 const args = process.argv.slice(2);
 const flag = (name) => {
@@ -37,8 +47,12 @@ if (!app || !web || !port || !log) {
   process.exit(2);
 }
 
+let fronts;
 try {
-  checkTarget(web.href, process.env);
+  fronts = checkTarget(web.href, process.env);
+  // The run's tunnel only, never the declared outer: the proxy is the stack's page.
+  if (!allowedTargets(process.env).slice(1).includes(fronts))
+    throw new Refused(`${web.href} is the declared outer, not this run's tunnel`);
 } catch (error) {
   if (!(error instanceof Refused)) throw error;
   process.stderr.write(
@@ -53,7 +67,9 @@ const expo = spawn("pnpm", ["exec", "expo", "start", "--web", "--port", String(e
   stdio: ["ignore", out, out],
   env: { ...process.env, CI: "1", BROWSER: "none" },
 });
+const record = join(process.env.MEND_VERIFY_PRIVATE, MOBILE_RECORD);
 const end = () => {
+  rmSync(record, { force: true });
   expo.kill("SIGTERM");
   process.exit(0);
 };
@@ -119,8 +135,20 @@ server.on("upgrade", (req, socket, head) => {
   socket.on("error", () => upstream.destroy());
 });
 
-server.listen(port, "127.0.0.1", () =>
+server.listen(port, "127.0.0.1", () => {
+  // Bound by this process: the one proxy drive-web.mjs may drive, while this process lives.
+  writeFileSync(
+    record,
+    JSON.stringify({
+      pid: process.pid,
+      identity: identityOf(process.pid),
+      port: String(port),
+      web: fronts,
+      bound: true,
+    }),
+    { mode: 0o600 },
+  );
   process.stdout.write(
     `drive-mobile · app and stack on http://127.0.0.1:${port} · Expo on :${expoPort}\n`,
-  ),
-);
+  );
+});

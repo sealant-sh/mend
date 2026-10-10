@@ -965,3 +965,129 @@ test("a tunnel counts only when its own child holds the port", async () => {
     rmSync(w.home, { recursive: true, force: true });
   }
 });
+
+// H2: drive-web.mjs drives the mobile proxy drive-mobile.mjs started in front of the run's tunnel,
+// and no other.
+test("drive-web may drive the mobile proxy this run started, and no other", async () => {
+  const w = world({});
+  // Expo is not what is under test: a pnpm that exits.
+  writeFileSync(join(w.bin, "pnpm"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  const app = join(w.home, "app");
+  mkdirSync(app);
+  const tunnelPort = await quietPort();
+  tunnelTo(w.P, tunnelPort);
+  const env = {
+    ...process.env,
+    PATH: `${w.bin}:${process.env.PATH}`,
+    MEND_VERIFY_PRIVATE: w.P,
+    MEND_VERIFY_OUTER_URL: outer,
+  };
+  const policyEnv = { MEND_VERIFY_OUTER_URL: outer, MEND_VERIFY_PRIVATE: w.P };
+  const target = (url, mobile) => () => checkTarget(url, policyEnv, { mobile });
+  const driveWeb = (url) =>
+    spawnSync(
+      process.execPath,
+      [
+        join(scripts, "drive-web.mjs"),
+        "--web",
+        url,
+        "--out",
+        join(w.home, "out"),
+        "--recipe",
+        join(w.home, "none.mjs"),
+        "--private",
+        w.P,
+      ],
+      { encoding: "utf8", env: { ...env, MEND_VERIFY_PLAYWRIGHT: join(w.home, "no-playwright") } },
+    );
+  const mobilePort = await quietPort();
+  const mobileArgs = (web) => [
+    join(scripts, "drive-mobile.mjs"),
+    "--app",
+    app,
+    "--web",
+    web,
+    "--port",
+    String(mobilePort),
+    "--log",
+    join(w.home, "mobile.log"),
+  ];
+  const record = join(w.P, "mobile.json");
+  let proxy;
+  try {
+    // Before any proxy: refused.
+    assert.throws(target(`http://127.0.0.1:${mobilePort}`, true), Refused);
+    assert.equal(driveWeb(`http://127.0.0.1:${mobilePort}`).status, 97);
+    // A proxy in front of the declared outer is no proxy of the run's: refused before it listens.
+    const onOuter = spawnSync(process.execPath, mobileArgs(outer), { encoding: "utf8", env });
+    assert.equal(onOuter.status, 97, onOuter.stderr);
+    assert.ok(!existsSync(record));
+
+    proxy = spawn(process.execPath, mobileArgs(`http://localhost:${tunnelPort}`), { env });
+    await new Promise((done, fail) => {
+      let out = "";
+      proxy.stdout.on("data", (data) => {
+        out += data;
+        if (out.includes("drive-mobile ·")) done();
+      });
+      proxy.on("exit", (status) => fail(new Error(`drive-mobile exited ${status}: ${out}`)));
+    });
+    const recorded = JSON.parse(readFileSync(record, "utf8"));
+    assert.equal(recorded.pid, proxy.pid);
+    assert.equal(recorded.bound, true);
+    assert.equal(recorded.web, `http://localhost:${tunnelPort}`);
+
+    // The run's own proxy, for drive-web only.
+    assert.equal(target(`http://127.0.0.1:${mobilePort}`, true)(), `http://127.0.0.1:${mobilePort}`);
+    assert.equal(target(`http://localhost:${mobilePort}`, true)(), `http://localhost:${mobilePort}`);
+    assert.throws(target(`http://127.0.0.1:${mobilePort}`, false), Refused);
+    assert.throws(target(`http://127.0.0.1:${mobilePort + 1}`, true), Refused);
+    const allowed = driveWeb(`http://127.0.0.1:${mobilePort}`);
+    assert.notEqual(allowed.status, 97, allowed.stderr);
+    assert.doesNotMatch(allowed.stderr, /refused · a verifier/);
+    // The guard and the terminal's check (`policy.mjs target`) never take it.
+    const cli = spawnSync(
+      process.execPath,
+      [join(guardDir, "policy.mjs"), "target", `http://127.0.0.1:${mobilePort}`],
+      { encoding: "utf8", env },
+    );
+    assert.equal(cli.status, 97, cli.stderr);
+
+    // Once the run's tunnel is gone, the proxy in front of it no longer counts.
+    tunnelTo(w.P, tunnelPort, { bound: false });
+    assert.throws(target(`http://127.0.0.1:${mobilePort}`, true), Refused);
+    tunnelTo(w.P, tunnelPort);
+
+    // A record drive-mobile did not write, or that fronts another server, counts for nothing.
+    const forged = (fields) =>
+      writeFileSync(
+        record,
+        JSON.stringify({
+          pid: proxy.pid,
+          identity: identityOf(proxy.pid),
+          port: String(mobilePort),
+          web: `http://localhost:${tunnelPort}`,
+          bound: true,
+          ...fields,
+        }),
+      );
+    forged({ web: owner });
+    assert.throws(target(`http://127.0.0.1:${mobilePort}`, true), Refused);
+    forged({ bound: false });
+    assert.throws(target(`http://127.0.0.1:${mobilePort}`, true), Refused);
+    forged({ identity: "Thu Jan  1 00:00:00 1970" });
+    assert.throws(target(`http://127.0.0.1:${mobilePort}`, true), Refused);
+    forged({});
+
+    // The proxy ends: its record goes, and its port is refused again.
+    const ended = new Promise((done) => proxy.once("exit", done));
+    proxy.kill("SIGTERM");
+    await ended;
+    proxy = undefined;
+    assert.ok(!existsSync(record));
+    assert.throws(target(`http://127.0.0.1:${mobilePort}`, true), Refused);
+  } finally {
+    proxy?.kill("SIGKILL");
+    rmSync(w.home, { recursive: true, force: true });
+  }
+});

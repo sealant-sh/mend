@@ -16,6 +16,11 @@
 //     it (`bound`), and the recorded pid is still that child (its start time). Nothing may listen on
 //     [::1]:<port>, where a browser would try `localhost` first. A loopback URL is not enough on its
 //     own: the owner's own server, or the owner's own stack tunnel, may listen on this machine.
+// One more, for drive-web.mjs only (checkTarget's `mobile`): the mobile proxy this run started,
+// http://127.0.0.1:<port> or http://localhost:<port>, where $MEND_VERIFY_PRIVATE/mobile.json records
+// <port>, that drive-mobile.mjs bound it itself (`bound`), the recorded pid is still that process,
+// and the stack it fronts (`web`) is this run's tunnel, alive now. drive-mobile.mjs refuses any
+// other stack, and its proxy sends the API to that tunnel and nothing else.
 //
 // The CLI check refuses (exit 97, nothing run) when:
 //   - MEND_VERIFY_OUTER_URL is not set, or is not a URL;
@@ -141,13 +146,49 @@ export const allowedTargets = (env) => {
   return [outer, ...tunnelTargets(env)];
 };
 
-/** Refuses unless `url` is one of the run's servers. */
-export const checkTarget = (url, env) => {
+/** The file drive-mobile.mjs records its proxy in, in the private directory. */
+export const MOBILE_RECORD = "mobile.json";
+
+/**
+ * The run's mobile proxy URLs, when drive-mobile.mjs bound it itself, its process is still the one
+ * recorded, and the stack it fronts is one of `tunnels` (this run's tunnel, alive now).
+ */
+const mobileTargets = (env, tunnels) => {
+  const privateDir = env.MEND_VERIFY_PRIVATE ?? "";
+  if (privateDir === "" || !isAbsolute(privateDir)) return [];
+  const file = join(privateDir, MOBILE_RECORD);
+  if (!existsSync(file)) return [];
+  let proxy;
+  try {
+    proxy = JSON.parse(readFileSync(file, "utf8"));
+  } catch {
+    refuse(`${file} is not valid JSON`);
+  }
+  const port = String(proxy.port ?? "");
+  if (!/^\d+$/.test(port) || proxy.bound !== true) return [];
+  if (!Number.isInteger(proxy.pid) || typeof proxy.identity !== "string") return [];
+  if (identityOf(proxy.pid) !== proxy.identity) return [];
+  const fronts = normalizeUrl(proxy.web);
+  if (fronts === null || !tunnels.includes(fronts)) return [];
+  const own = [`http://localhost:${port}`, `http://127.0.0.1:${port}`];
+  if (own.some((url) => tunnels.includes(url))) return [];
+  const listening = listenersOn(port);
+  if (listening === null || listening.some((at) => at.startsWith("[")))
+    refuse(`something listens on [::1]:${port}, where localhost goes first; not this run's proxy`);
+  return own;
+};
+
+/**
+ * Refuses unless `url` is one of the run's servers. `mobile` (drive-web.mjs only) also lets the
+ * run's own mobile proxy through: the page drive-mobile.mjs serves, in front of the run's tunnel.
+ */
+export const checkTarget = (url, env, { mobile = false } = {}) => {
   const targets = allowedTargets(env);
+  if (mobile) targets.push(...mobileTargets(env, targets.slice(1)));
   const wanted = normalizeUrl(url);
   if (wanted === null || !targets.includes(wanted))
     refuse(
-      `${url || "no server"} is neither the declared outer (${targets[0]}) nor this run's tunnel`,
+      `${url || "no server"} is neither the declared outer (${targets[0]}) nor this run's tunnel${mobile ? " or mobile proxy" : ""}`,
     );
   return wanted;
 };

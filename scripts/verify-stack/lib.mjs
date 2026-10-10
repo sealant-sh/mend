@@ -174,6 +174,42 @@ export function mendBuildArgs(images) {
   };
 }
 
+/**
+ * The Mend image's label naming the image every session's network guard runs (apps/cli
+ * server-setup.ts: the Dockerfile's MEND_NETWORK_GUARD_IMAGE). An offline setup refuses to continue
+ * unless the daemon holds it.
+ */
+export const NETWORK_GUARD_IMAGE_LABEL = "dev.sealant.mend.network-guard-image";
+/** An image reference as a label carries it: no space, no option-looking leading dash. */
+const IMAGE_REFERENCE = /^[a-z0-9][A-Za-z0-9._/:@-]*$/;
+
+/**
+ * Preload the network guard image the built Mend image names, the way `mend server setup` reads it
+ * (`checkLocalImages`): from the image's label, so the stack and the worker cannot disagree. Pulled
+ * only when the daemon lacks it. `docker(args)` runs one docker command and resolves to its stdout,
+ * or rejects. Returns the image, or null for a Mend image from before the guard (no label).
+ */
+export async function preloadNetworkGuardImage(mendImage, docker) {
+  const label = (
+    await docker([
+      "image",
+      "inspect",
+      "--format",
+      `{{index .Config.Labels "${NETWORK_GUARD_IMAGE_LABEL}"}}`,
+      mendImage,
+    ])
+  ).trim();
+  if (label === "" || label === "<no value>") return null;
+  if (!IMAGE_REFERENCE.test(label))
+    throw new Error(`${mendImage} names an invalid ${NETWORK_GUARD_IMAGE_LABEL}: ${label}`);
+  const held = await docker(["image", "inspect", "--format", "{{.Id}}", label]).then(
+    () => true,
+    () => false,
+  );
+  if (!held) await docker(["pull", "--quiet", label]);
+  return label;
+}
+
 /** The images a Compose file names that setup does not build: pulled before an offline setup. */
 export function composeImages(composeYaml) {
   const images = new Set();
