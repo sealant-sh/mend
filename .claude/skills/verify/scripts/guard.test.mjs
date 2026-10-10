@@ -17,10 +17,12 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { tmpdir, userInfo } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+
+import { Refused, checkCli } from "./guard/policy.mjs";
 
 const scripts = dirname(fileURLToPath(import.meta.url));
 const guardDir = join(scripts, "guard");
@@ -411,4 +413,92 @@ test("MEND_URL may name only loopback's discard port, where nothing answers", ()
     for (const url of ["http://127.0.0.1:90", "http://localhost:9", outer, owner])
       refused(run(w, ["version"], { ...env, MEND_URL: url }), /MEND_URL is set/);
   });
+});
+
+// F10: HOME is the environment's; the account's home in the password database is not.
+test("a changed HOME does not make the account's own config a run's", () => {
+  const passwd = realpathSync(mkdtempSync(join(tmpdir(), "verify-guard-passwd-")));
+  const elsewhere = realpathSync(mkdtempSync(join(tmpdir(), "verify-guard-home-")));
+  try {
+    mkdirSync(join(passwd, ".config", "mend"), { recursive: true });
+    writeFileSync(join(passwd, ".config", "mend", "cli.json"), JSON.stringify({ url: outer }));
+    const env = { MEND_VERIFY_OUTER_URL: outer };
+    const homes = [elsewhere, passwd];
+    const refusedBy = (xdg) =>
+      assert.throws(
+        () => checkCli(["run", "--", "true"], { ...env, XDG_CONFIG_HOME: xdg }, homes),
+        (error) => error instanceof Refused && /own CLI config/.test(error.message),
+      );
+    refusedBy(join(passwd, ".config"));
+    // Under it, or reached through a link: the directory, or the file alone.
+    mkdirSync(join(passwd, ".config", "mend", "nested", "mend"), { recursive: true });
+    writeFileSync(
+      join(passwd, ".config", "mend", "nested", "mend", "cli.json"),
+      JSON.stringify({ url: outer }),
+    );
+    refusedBy(join(passwd, ".config", "mend", "nested"));
+    mkdirSync(join(elsewhere, "linked"));
+    symlinkSync(join(passwd, ".config", "mend"), join(elsewhere, "linked", "mend"));
+    refusedBy(join(elsewhere, "linked"));
+    mkdirSync(join(elsewhere, "file", "mend"), { recursive: true });
+    symlinkSync(
+      join(passwd, ".config", "mend", "cli.json"),
+      join(elsewhere, "file", "mend", "cli.json"),
+    );
+    refusedBy(join(elsewhere, "file"));
+  } finally {
+    rmSync(passwd, { recursive: true, force: true });
+    rmSync(elsewhere, { recursive: true, force: true });
+  }
+});
+
+// The reported bypass, through the guard itself, on a machine whose account has a CLI config. The
+// real CLI is a fake that only echoes: nothing is sent anywhere.
+const accountConfig = join(userInfo().homedir, ".config", "mend", "cli.json");
+let accountUrl = null;
+try {
+  accountUrl = JSON.parse(readFileSync(accountConfig, "utf8")).url ?? null;
+} catch {
+  // No config for this account: the case below has nothing to reproduce.
+}
+test(
+  "the guard refuses the account's own config under another HOME",
+  { skip: accountUrl ? false : "this account has no ~/.config/mend/cli.json" },
+  () => {
+    within({}, (w) => {
+      const result = run(w, ["run", "--", "true"], {
+        HOME: w.home,
+        XDG_CONFIG_HOME: join(userInfo().homedir, ".config"),
+        MEND_VERIFY_OUTER_URL: accountUrl,
+        MEND_VERIFY_REAL_MEND: join(w.bin, "mend"),
+      });
+      refused(result, /own CLI config/);
+    });
+  },
+);
+
+test("a run's own config in a directory of its own passes, under the real HOME or another", () => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "st-guard-")));
+  try {
+    const alpha = "https://alpha.mend.run";
+    mkdirSync(join(dir, "mend-cli", "mend"), { recursive: true });
+    writeFileSync(
+      join(dir, "mend-cli", "mend", "cli.json"),
+      JSON.stringify({ url: alpha, token: "t" }),
+    );
+    within({}, (w) => {
+      for (const HOME of [process.env.HOME ?? userInfo().homedir, w.home]) {
+        const result = run(w, ["projects"], {
+          HOME,
+          XDG_CONFIG_HOME: join(dir, "mend-cli"),
+          MEND_VERIFY_OUTER_URL: alpha,
+          MEND_VERIFY_REAL_MEND: join(w.bin, "mend"),
+        });
+        assert.equal(result.status, 0, result.stderr);
+        assert.equal(result.stdout.trim(), `real mend projects · config ${join(dir, "mend-cli")}`);
+      }
+    });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

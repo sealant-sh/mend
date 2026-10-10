@@ -125,8 +125,9 @@ before any request) when:
   `http://127.0.0.1:9`, loopback's discard port, where the map drives the unreachable-server lines);
 - `XDG_CONFIG_HOME` is unset, relative or missing, `$XDG_CONFIG_HOME/mend/cli.json` is missing (the
   CLI then reads a legacy `~/.mend`; only `mend login --url <one of the two>` may make it, into an
-  existing `$XDG_CONFIG_HOME/mend`), or the config is this machine's own (`~/.config/mend`,
-  `~/.mend`): a run's CLI config is its own;
+  existing `$XDG_CONFIG_HOME/mend`), or the config is this machine's own (under `~/.config/mend` or
+  `~/.mend`, for `$HOME` and for the account's home in the password database, symlinks resolved, so
+  setting `HOME` elsewhere changes nothing): a run's CLI config is its own;
 - that config, or a `--url` or `--server` argument (`mend login --url …` included), names any other
   server. Only the words after a runner's `--` (`mend run`, `mend service`,
   `mend claude|codex|opencode|pi`) are left alone: they run in the workspace;

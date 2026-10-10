@@ -24,7 +24,9 @@
 //   - <XDG_CONFIG_HOME>/mend/cli.json is missing, which is when the CLI reads the legacy ~/.mend
 //     (except `mend login --url <a run's server>` into an existing <XDG_CONFIG_HOME>/mend, the one
 //     command that makes a config);
-//   - the config is this machine's own (~/.config/mend or ~/.mend): a verifier's config is its own;
+//   - the config is this machine's own (under ~/.config/mend or ~/.mend, for $HOME and for the
+//     account's home in the password database, which a changed HOME cannot move): a verifier's
+//     config is its own;
 //   - the config names a server outside the two above, or none (the CLI's default server);
 //   - an argument names one: `--url <x>`, `--url=<x>`, `--server <x>`, `--server=<x>`, wherever
 //     the CLI would read it (every argument, except the command after a runner's `--`: `mend run`,
@@ -34,8 +36,8 @@
 // `mend login` is covered by the same rules: it signs in to its `--url`, else to the config's URL.
 
 import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
-import { homedir } from "node:os";
-import { isAbsolute, join } from "node:path";
+import { homedir, userInfo } from "node:os";
+import { isAbsolute, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export class Refused extends Error {}
@@ -108,8 +110,19 @@ const real = (path) => {
   }
 };
 
-/** The guard's check of one `mend` invocation; returns the absolute CLI config home to pin. */
-export const checkCli = (argv, env, home = homedir()) => {
+/**
+ * This machine's own homes: $HOME's, and the account's home from the password database, which no
+ * environment changes. A run that sets HOME elsewhere must not make the real home's config look
+ * like a run's own.
+ */
+const machineHomes = () => [...new Set([homedir(), userInfo().homedir])];
+
+/**
+ * The guard's check of one `mend` invocation; returns the absolute CLI config home to pin. `homes`
+ * is for tests: the guard always passes this machine's own.
+ */
+export const checkCli = (argv, env, homes = machineHomes()) => {
+  const home = homes[0];
   // One address only: the map drives the CLI's unreachable-server lines against loopback's
   // discard port, a privileged port no Mend listens on.
   if ((env.MEND_URL ?? "") !== "" && normalizeUrl(env.MEND_URL) !== UNREACHABLE)
@@ -124,9 +137,14 @@ export const checkCli = (argv, env, home = homedir()) => {
   const configHome = real(xdg) ?? refuse(`XDG_CONFIG_HOME (${xdg}) does not exist`);
   const configDir = join(configHome, "mend");
   const configFile = join(configDir, "cli.json");
-  for (const own of [join(home, ".config", "mend"), join(home, ".mend")])
-    if (real(own) !== null && real(own) === real(configDir))
+  // Under either home's ~/.config/mend or ~/.mend, symlinks resolved: this machine's own config.
+  // The directory and the file each resolved: either may be a link into the owner's config.
+  const resolved = [real(configDir) ?? configDir, real(configFile)].filter((at) => at !== null);
+  for (const own of homes.flatMap((at) => [join(at, ".config", "mend"), join(at, ".mend")])) {
+    const mine = real(own);
+    if (mine !== null && resolved.some((at) => at === mine || at.startsWith(mine + sep)))
       refuse(`${configDir} is this machine's own CLI config`);
+  }
 
   const [command, ...rest] = argv;
   const dashdash = rest.indexOf("--");
