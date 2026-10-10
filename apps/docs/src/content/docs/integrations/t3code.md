@@ -31,8 +31,10 @@ mend server setup --t3-gateway
 It runs in the Mend container on a listener of its own and is published on `127.0.0.1:3120` only.
 `--t3-gateway-port <n>` picks another port. The choice is kept across reruns and upgrades. Setup
 refuses it on a Mend version whose image has no gateway, and says whether the gateway answered once
-Mend was up. `mend server setup --no-t3-gateway` turns it off; its state stays in its own volume,
-`mend-t3-gateway`, and comes back if you turn it on again.
+Mend was up (it looks for about a minute). It also refuses a gateway port something on the machine
+already holds. `mend server setup --no-t3-gateway` turns it off; its state stays in its own volume,
+`mend_mend-t3-gateway`, and comes back if you turn it on again. `mend uninstall` removes that volume
+too.
 
 `mend server status` says it is on, and whether this machine reached it:
 
@@ -100,6 +102,9 @@ other than Codex and Claude, and provider or settings changes. Landing a change 
 
 - **Large diffs.** Mend renders the patches of at most 200 files, 8 MiB, within 20 seconds per turn.
   A larger turn's diff ends with `[truncated]`, the marker t3code's own server uses.
+- **Files on a server that is not Linux.** Mend reads a worktree's files through the directory
+  descriptors only Linux gives it, so it never follows a link out of the worktree. Elsewhere (macOS)
+  it refuses to read files as the worktree stands; diffs and checkpoint reads still work.
 - **Large trees.** Mend lists at most 20,000 files. In a larger tree a file past that cannot be
   found from the composer, and the search says it was cut.
 - **Uncommitted changes.** Mend reports a branch's change against its base, committed or not, and
