@@ -3211,6 +3211,8 @@ const withEngine = <A, E>(
     };
     /** The organization's references and each project's selection; none unless a test says. */
     readonly referencesLayer?: Layer.Layer<ReferencesRepo>;
+    /** The project's links; none unless a test says. */
+    readonly projectLinksLayer?: Layer.Layer<ProjectLinksRepo>;
     /** Seed crash-recovery facts before the SessionEngine layer runs its boot pass. */
     readonly prepareWorld?: (world: World, tmp: string) => void;
     /** Reuse one persisted test world across engine scopes to exercise process restart. */
@@ -3372,7 +3374,7 @@ const withEngine = <A, E>(
         checkpointsLayer(world),
         options.referencesLayer ?? referencesEmptyLayer,
         projectMountsEmptyLayer,
-        projectLinksEmptyLayer,
+        options.projectLinksLayer ?? projectLinksEmptyLayer,
         SessionRepositoriesRepoMemory,
         organizationsLayer(world),
         auditLayer(world),
@@ -3528,6 +3530,66 @@ describe("SessionEngine", () => {
       { sealantLayer: sealantLaunchLayer(created) },
     );
   });
+
+  it.each(["references", "links"] as const)(
+    "refuses to launch when the project's %s cannot be read, rather than mount them unchecked",
+    async (failing) => {
+      // A read that fails refuses as a finding does (fail closed): what it could not list would
+      // be mounted without its git config checked.
+      const created: CreateOptions[] = [];
+      const broken = Effect.die("the database is not answering");
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const project = yield* setup(tmp, world);
+            const engine = yield* SessionEngine;
+            const session = yield* engine.provision({
+              projectId: project.id,
+              harness: "codex",
+              label: null,
+              name: null,
+              ownerUserId: "user-fixture",
+              base: null,
+            });
+            const refused = yield* engine.launch(session.id, ["codex"]).pipe(Effect.flip);
+            expect(
+              refused._tag === "DotfilesResolveError" ? refused.message : refused._tag,
+            ).toContain(
+              failing === "references"
+                ? "could not read this project's selected references"
+                : "could not read this project's linked projects",
+            );
+            expect(created).toHaveLength(0);
+          }),
+        {
+          sealantLayer: sealantLaunchLayer(created),
+          ...(failing === "references"
+            ? {
+                referencesLayer: Layer.succeed(ReferencesRepo, {
+                  create: () => Effect.die("not in test"),
+                  byId: (id) => Effect.fail(new ReferenceNotFoundError({ referenceId: id })),
+                  byName: () => Effect.succeed(null),
+                  listAll: () => Effect.succeed([]),
+                  listForOrganization: () => Effect.succeed([]),
+                  byIdsInOrganization: () => Effect.succeed([]),
+                  remove: () => Effect.void,
+                  setHead: () => Effect.void,
+                  listForProject: () => broken,
+                  setForProject: () => Effect.void,
+                }),
+              }
+            : {
+                projectLinksLayer: Layer.succeed(ProjectLinksRepo, {
+                  create: () => Effect.die("not in test"),
+                  byId: (id) => Effect.fail(new ProjectLinkNotFoundError({ linkId: id })),
+                  listForProject: () => broken,
+                  remove: () => Effect.void,
+                }),
+              }),
+        },
+      );
+    },
+  );
 
   it("refuses to launch with a selected reference whose clone holds a login or token", async () => {
     const created: CreateOptions[] = [];
