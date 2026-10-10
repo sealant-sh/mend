@@ -36,16 +36,27 @@ mend server setup --no-docker-mirror   # turn it off; the next setup keeps it of
 mend server setup --docker-mirror      # turn it on again
 ```
 
-Its cache lives in the volume `mend_mend-docker-mirror`, and the registry has no size cap. Seven
-days after it fetched a layer, it deletes the layer's data and fetches it again on the next pull. A
-manifest expires on the same schedule, but only its link to the repository goes: the manifest's own
-bytes and the tag links stay on the volume. So the volume keeps growing slowly with every distinct
-image and tag pulled, and seven days is not a bound on its size. A tag is checked against Docker Hub
-on every pull, so `latest` follows upstream. When Docker Hub does not answer, the copy already held
-is served.
+Its cache lives in the volume `mend_mend-docker-mirror`. The registry has no size cap of its own, so
+it runs under a guard (`docker-mirror-guard.sh`, its entrypoint) that checks every 30 seconds:
 
-To reclaim everything, clear the cache. It holds only copies of Docker Hub content, and the next
-pulls fill it again:
+- **The cap.** Over `--docker-mirror-max-size` (default `20g`), the guard stops the registry, clears
+  the cache and starts it again. The next pulls fill it from Docker Hub.
+- **The floor.** With less than 5 GiB free on the disk the volume lives on, it clears the cache and
+  keeps the registry stopped until there is room again. Meanwhile session daemons pull from Docker
+  Hub directly, as they do when the mirror is down.
+
+```sh
+mend server setup --docker-mirror-max-size 40g   # a larger cap
+```
+
+Between those, the registry expires content on its own schedule. Seven days after it fetched a
+layer, it deletes the layer's data and fetches it again on the next pull. A manifest expires on the
+same schedule, but only its link to the repository goes: the manifest's own bytes and the tag links
+stay on the volume until the cap or the floor clears it. A tag is checked against Docker Hub on
+every pull, so `latest` follows upstream. When Docker Hub does not answer, the copy already held is
+served.
+
+To clear the cache by hand, which holds only copies of Docker Hub content:
 
 ```sh
 mend server setup --no-docker-mirror                            # removes the container, keeps the volume
@@ -58,7 +69,13 @@ Sessions running while it is off pull from Docker Hub; relaunch them to use the 
 `mend server status` reports what it observed:
 
 ```
-docker mirror · running · 120 MiB cached · layers evicted 7 days after each fetch · since 2026-10-10T08:00:00Z: layers 8 requested · 6 from the cache (75%) · manifests 6 · 3 from the cache · pulls from Docker Hub anonymously · observed
+docker mirror · running · 120 MiB cached of 20 GiB · 412 GiB free on its disk · layers evicted 7 days after each fetch · since 2026-10-10T08:00:00Z: layers 8 requested · 6 from the cache (75%) · manifests 6 · 3 from the cache · pulls from Docker Hub anonymously · observed
+```
+
+When the guard has paused it for want of space, status says so instead:
+
+```
+docker mirror · paused by its disk guard · 3.0 GiB free on its disk, below 5.0 GiB · cache cleared · session Docker daemons pull from Docker Hub directly until there is room · observed
 ```
 
 The counts are the registry's own, read from its metrics listener on the container's loopback, and
@@ -106,6 +123,7 @@ mirrors:
   docker:
     enabled: true
     ttl: 168h
+    maxSize: 40g # the guard's cap; keep it below the claim
     storage: 50Gi
     upstreamCredentials:
       existingSecret: "" # a Secret with keys username and password
@@ -116,9 +134,11 @@ A login here carries the same consequence as on the Docker install: every admitt
 pull whatever the token can read. The chart refuses `existingSecret` unless `publicReadOnly: true`
 states that its token's access permission is Public Repo Read-only.
 
-It renders a Deployment (one replica, uid 1000), a ReadWriteOnce claim, a ClusterIP Service and a
-NetworkPolicy that admits workspace Pods only. On Kubernetes the daemon shares its Pod's network, so
-point it at the Service in the Sealant chart:
+The chart runs the same guard, with `mirrors.docker.maxSize` and `mirrors.minFree` (5g); below the
+floor the Pod is not ready and workspaces pull from Docker Hub. It renders a Deployment (one
+replica, uid 1000), a ReadWriteOnce claim, a ClusterIP Service and a NetworkPolicy that admits
+workspace Pods only. On Kubernetes the daemon shares its Pod's network, so point it at the Service
+in the Sealant chart:
 
 ```yaml
 workspaces:

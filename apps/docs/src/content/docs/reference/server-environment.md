@@ -116,9 +116,10 @@ Sealant worker that runs inside the Mend container.
 | `SEALANT_DOCKER_REGISTRY_MIRRORS`          | unset   | Comma-separated http(s) origins every session's Docker daemon asks first for a Docker Hub image. The daemon falls back to Docker Hub when one fails.                                                |
 | `SEALANT_DOCKER_REGISTRY_MIRROR_CONTAINER` | unset   | The container serving those mirrors, which Sealant connects to each session's Docker network, such as `mend-docker-mirror`.                                                                         |
 
-The mirrors' own settings live in the install's `server.env`: `MEND_NPM_MIRROR_MAX_SIZE` (its cap),
-and `MEND_DOCKER_HUB_USERNAME` and `MEND_DOCKER_HUB_TOKEN` when the Docker mirror has a Docker Hub
-login. Only the mirrors' containers read them.
+The mirrors' own settings live in the install's `server.env`: `MEND_NPM_MIRROR_MAX_SIZE` and
+`MEND_DOCKER_MIRROR_MAX_SIZE` (their caps), and `MEND_DOCKER_HUB_USERNAME` and
+`MEND_DOCKER_HUB_TOKEN` when the Docker mirror has a Docker Hub login. Only the mirrors' containers
+read them.
 
 ## Exposure
 

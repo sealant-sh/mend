@@ -351,7 +351,8 @@ The chart can run the [npm mirror](/operate/npm-mirror/) and the
 ```yaml
 mirrors:
   npm: { enabled: true, maxSize: 10g, storage: 12Gi }
-  docker: { enabled: true, ttl: 168h, storage: 50Gi }
+  docker: { enabled: true, maxSize: 40g, ttl: 168h, storage: 50Gi }
+  minFree: 5g # both leave this free on their claims
 ```
 
 Each is one non-root replica on its own ReadWriteOnce claim, behind a ClusterIP Service that admits

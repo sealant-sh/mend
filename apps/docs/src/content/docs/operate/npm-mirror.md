@@ -37,14 +37,15 @@ mend server setup --npm-mirror                # turn it on again
 ```
 
 Its cache lives in the volume `mend_mend-npm-mirror` and is capped at `--npm-mirror-max-size`. When
-the cap is reached, nginx removes the tarballs used least recently. Metadata is fresh for five
-minutes and then revalidated. Turning the mirror off removes its container; the volume stays until
-you remove it, and setup prints the command.
+the cap is reached, or less than 5 GiB is free on the disk it lives on, nginx removes the tarballs
+used least recently. Metadata is fresh for five minutes and then revalidated; it is cached by the
+whole request, query included, so a search for one package never answers another. Turning the mirror
+off removes its container; the volume stays until you remove it, and setup prints the command.
 
 `mend server status` reports what it observed:
 
 ```
-npm mirror · running · 743 MiB cached of 10 GiB · last 24 h: 4010 tarball requests · 2006 served from the cache (50%) · 2004 fetched from registry.npmjs.org · observed
+npm mirror · running · 743 MiB cached of 10 GiB · 412 GiB free on its disk · last 24 h: 4010 tarball requests · 2006 served from the cache (50%) · 2004 fetched from registry.npmjs.org · observed
 ```
 
 The traffic counts come from the mirror's own log of the last 24 hours, one line per request. Its
@@ -64,6 +65,11 @@ all of these hold:
   `_auth`, `_authToken`, `_password`, `username` or `always-auth`, or `npm_config__auth*`. Packages
   behind such a login are private, and the mirror never forwards a credential, so the install stays
   on the registry.
+- The command passes no flag that could choose its own configuration. The mirror is offered only
+  when every flag is one that changes neither where the package manager reads its configuration nor
+  where it fetches from: `--frozen-lockfile`, `--prefer-offline`, `--ignore-scripts`, `--prod`,
+  `--no-audit`, `--reporter=…`, `--fetch-timeout=…` and the like. `--userconfig`, `--globalconfig`,
+  `--prefix`, `--dir`, `--config.…` or any flag not on that list leave the command as written.
 - The mirror answers `/-/ping` within three seconds.
 
 Scoped registries are left alone. With `@corp:registry=https://npm.corp.example/` in `.npmrc`, the
@@ -77,14 +83,16 @@ the mirror is offered to Mend's own install only.
 The install falls back to the registry in two ways:
 
 - When the mirror does not answer its ping, the install runs without it.
-- When an install through the mirror fails, and its output names the mirror beside an error (for
-  example `ERR_PNPM_FETCH_502 GET http://npm-mirror:4873/…`), Mend runs the command once more
-  exactly as written, against the registry.
+- When an install through the mirror fails, for any reason, Mend runs the command once more exactly
+  as written, against the registry. That covers a mirror that broke part-way and one that served
+  bytes the lockfile's integrity refuses (npm's `EINTEGRITY`). It is the only rerun: a project's own
+  failure therefore runs twice, and the outcome is the second run's.
 
 The install script states its choice in one line of its output, `mend: npm mirror · used`,
-`mend: npm mirror · not used · a registry is set`, or `… did not answer`. The server log line for
-the install carries `npmMirror: used | not used | fell back | off`. A fallback is also logged on its
-own line, `dependency install · retried without the npm mirror`.
+`mend: npm mirror · not used · a registry is set`,
+`… the command passes --userconfig=…, which may choose its own config`, or `… did not answer`. The
+server log line for the install carries `npmMirror: used | not used | fell back | off`. A fallback
+is also logged on its own line, `dependency install · retried without the npm mirror`.
 
 ## On Kubernetes
 
