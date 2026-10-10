@@ -172,7 +172,9 @@ describe("renderCommand", () => {
     expect(usageOf("land")).toBe(
       "usage: mend land <session> [--branch <name>] [--no-pr] [--title <text>] [--project <p>]\n       mend land <session> --check [--project <p>]",
     );
-    expect(usageOf("pull")).toBe("usage: mend pull <session> [--force] [--project <p>]");
+    expect(usageOf("pull")).toBe(
+      "usage: mend pull <session> [--branch <name>] [--force] [--project <p>]",
+    );
     const land = renderCommand(findCommand(["land"])!, 80).replace(/\s+/g, " ");
     expect(land).toContain("Only the change's owner lands it");
     expect(land).toContain(
@@ -183,6 +185,8 @@ describe("renderCommand", () => {
     const pull = renderCommand(findCommand(["pull"])!, 80).replace(/\s+/g, " ");
     expect(pull).toContain("MEND_BUDGET_BUNDLE_BYTES");
     expect(pull).toContain("--force");
+    expect(pull).toContain("--branch <name>");
+    expect(pull).toContain("refs/mend/pulled/<branch>");
     expect(renderCommand(findCommand(["claude"])!, 80)).toContain("--land, --no-land");
     expect(renderManPage(findCommand(["pull"])!, "0.30.0")).toContain("mend\\-land(1)");
   });

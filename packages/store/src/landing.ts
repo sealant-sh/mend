@@ -111,6 +111,11 @@ export interface BundleInput {
   readonly branch: string;
   /** The largest bundle handed back; a larger one is refused with its size. */
   readonly limitBytes: number;
+  /**
+   * A commit the recipient also has: the one it pulled last, which `tip` builds on. The bundle
+   * leaves out everything it reaches, so it carries only what is new since that pull.
+   */
+  readonly have?: string;
 }
 
 export interface ChangeBundle {
@@ -239,6 +244,15 @@ const isAncestor = (dir: string, ancestor: Sha, descendant: Sha) =>
       stderr: out.stderr.trim(),
     });
   });
+
+/**
+ * Whether `dir` holds `sha` as a commit that builds on `base`: a commit a recipient pulled earlier,
+ * which the next bundle may build on. False when the commit is not there.
+ */
+export const holdsCommitOn = (dir: string, sha: string, base: string) =>
+  gitOutput(["merge-base", "--is-ancestor", "--end-of-options", base, sha], dir).pipe(
+    Effect.map((out) => out.exitCode === 0),
+  );
 
 // ─── The plan ───────────────────────────────────────────────────────────────
 
@@ -480,7 +494,9 @@ export const createChangeBundle = Effect.fn("createChangeBundle")(function* (
 ) {
   const ref = yield* checkBranch(input.branch);
   const [base, tip] = yield* Effect.all([commitOf(dir, input.base), commitOf(dir, input.tip)]);
-  const commits = Number(yield* git(["rev-list", "--count", `${base}..${tip}`], dir));
+  const have = input.have === undefined ? null : yield* commitOf(dir, input.have);
+  const without = have === null ? [`^${base}`] : [`^${base}`, `^${have}`];
+  const commits = Number(yield* git(["rev-list", "--count", tip, ...without], dir));
   if (commits === 0) {
     return yield* new BundleEmptyError({ branch: input.branch, base, tip });
   }
@@ -495,7 +511,7 @@ export const createChangeBundle = Effect.fn("createChangeBundle")(function* (
     );
     yield* git(["update-ref", ref, tip], scratch);
     const file = path.join(scratch, "change.bundle");
-    yield* git(["bundle", "create", "-q", file, `${base}..${ref}`], scratch);
+    yield* git(["bundle", "create", "-q", file, ref, ...without], scratch);
     const size = yield* Effect.sync(() => fs.statSync(file).size);
     if (size > input.limitBytes) {
       return yield* new BundleTooLargeError({

@@ -57,6 +57,8 @@ interface Script {
   readonly publish?: "opened" | "updated" | PullRequestStepError;
   readonly observed?: LandedPullRequest;
   readonly bundle?: "ok" | BundleTooLargeError;
+  /** Commits the store holds on the base: what earlier pulls carried. */
+  readonly held?: ReadonlyArray<string>;
   /** The worktree has no checkpoint yet. */
   readonly noCheckpoint?: boolean;
   /** What `gh` finds for a pull request opened outside Mend. */
@@ -95,8 +97,13 @@ const harness = (script: Script = {}, options: WorldOptions = {}) => {
     readonly commit: string | null;
     readonly opened?: OpenedInTurn;
   }> = [];
-  const bundles: Array<{ readonly base: string; readonly tip: string; readonly branch: string }> =
-    [];
+  const bundles: Array<{
+    readonly base: string;
+    readonly tip: string;
+    readonly branch: string;
+    readonly have?: string;
+  }> = [];
+  const held: Array<{ readonly sha: string; readonly base: string }> = [];
   const git = Layer.succeed(LandingGit, {
     checkpoint: (_scope, trigger) =>
       Effect.suspend(() => {
@@ -179,7 +186,12 @@ const harness = (script: Script = {}, options: WorldOptions = {}) => {
     bundle: (_scope, bundle) =>
       Effect.suspend(() => {
         calls.push("bundle");
-        bundles.push({ base: bundle.base, tip: bundle.tip, branch: bundle.branch });
+        bundles.push({
+          base: bundle.base,
+          tip: bundle.tip,
+          branch: bundle.branch,
+          ...(bundle.have === undefined ? {} : { have: bundle.have }),
+        });
         const outcome = script.bundle ?? "ok";
         return outcome === "ok"
           ? Effect.succeed({
@@ -190,6 +202,12 @@ const harness = (script: Script = {}, options: WorldOptions = {}) => {
               bytes: new Uint8Array([1, 2, 3]),
             })
           : Effect.fail(outcome);
+      }),
+    holds: (_scope, asked) =>
+      Effect.sync(() => {
+        calls.push("holds");
+        held.push(asked);
+        return (script.held ?? []).includes(asked.sha);
       }),
     changedFiles: () =>
       Effect.sync(() => {
@@ -252,6 +270,7 @@ const harness = (script: Script = {}, options: WorldOptions = {}) => {
     published,
     observed,
     bundles,
+    held,
     tourRequests,
     finds,
     layer,
@@ -762,6 +781,47 @@ describe("Landing.bundle", () => {
         [null, true],
         [MEND_COMMIT, false],
       ]);
+    }).pipe(Effect.provide(h.layer));
+  });
+
+  it.effect("builds on the clone's last pull when the store still holds it", () => {
+    const pulled = Sha.make("7".repeat(40));
+    const h = harness({ held: [pulled] });
+    return Effect.gen(function* () {
+      const bundle = yield* (yield* Landing).bundle({ ...bundleInput(), onto: pulled });
+      expect(h.held).toEqual([{ sha: pulled, base: BASE_SHA }]);
+      expect(h.calls).toEqual(["latest", "holds", "commit", "bundle"]);
+      // The pull's commit is the last landing for this bundle: Mend's commit builds on it.
+      expect(h.commits[0]?.lastLanded).toBe(pulled);
+      expect(h.bundles).toEqual([
+        { base: BASE_SHA, tip: MEND_COMMIT, branch: "mend/fix-login", have: pulled },
+      ]);
+      expect(bundle.onto).toBe(pulled);
+    }).pipe(Effect.provide(h.layer));
+  });
+
+  it.effect(
+    "bundles as for a first pull when the store no longer holds the clone's last pull",
+    () => {
+      const h = harness();
+      return Effect.gen(function* () {
+        const landing = yield* Landing;
+        yield* landing.land(input());
+        const bundle = yield* landing.bundle({ ...bundleInput(), onto: Sha.make("7".repeat(40)) });
+        expect(h.commits.map((commit) => commit.lastLanded)).toEqual([null, MEND_COMMIT]);
+        expect(h.bundles[0]).not.toHaveProperty("have");
+        expect(bundle.onto).toBeNull();
+      }).pipe(Effect.provide(h.layer));
+    },
+  );
+
+  it.effect("carries the last pull's commit again when nothing is new since it", () => {
+    const pulled = Sha.make("7".repeat(40));
+    const h = harness({ held: [pulled], nothingNew: true });
+    return Effect.gen(function* () {
+      const bundle = yield* (yield* Landing).bundle({ ...bundleInput(), onto: pulled });
+      expect(h.bundles).toEqual([{ base: BASE_SHA, tip: pulled, branch: "mend/fix-login" }]);
+      expect(bundle.onto).toBe(pulled);
     }).pipe(Effect.provide(h.layer));
   });
 

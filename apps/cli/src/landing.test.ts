@@ -10,6 +10,7 @@ import {
   bundleFactsOf,
   bundleRefusal,
   type ChangeLandingDto,
+  divergedMessage,
   fetchBundle,
   fetchedLines,
   formatBytes,
@@ -20,9 +21,11 @@ import {
   checkLine,
   landingReportLine,
   landingSucceeded,
+  lastPullOf,
   parseLandArgs,
   parsePullArgs,
   pickSession,
+  pulledRefOf,
   remoteForOrigin,
 } from "./landing.ts";
 
@@ -110,7 +113,13 @@ describe("mend land's arguments", () => {
 
   it("reads mend pull's", () => {
     expect(parsePullArgs(["fix-login", "--force"])).toEqual({
-      args: { session: "fix-login", force: true, project: null },
+      args: { session: "fix-login", force: true, project: null, branch: null },
+    });
+    expect(parsePullArgs(["fix-login", "--branch", "mine/login"])).toEqual({
+      args: { session: "fix-login", force: false, project: null, branch: "mine/login" },
+    });
+    expect(parsePullArgs(["fix-login", "--branch", " "])).toEqual({
+      error: "--branch needs a name",
     });
     expect(parsePullArgs([])).toEqual({ error: "name the session to pull" });
   });
@@ -319,7 +328,24 @@ describe("the bundle's answer", () => {
           "x-mend-bundle-commits": "2",
         }),
       ),
-    ).toEqual({ branch: "mend/fix-login", base: "b".repeat(40), tip: "c".repeat(40), commits: 2 });
+    ).toEqual({
+      branch: "mend/fix-login",
+      base: "b".repeat(40),
+      tip: "c".repeat(40),
+      commits: 2,
+      onto: null,
+    });
+    expect(
+      bundleFactsOf(
+        answered(200, null, {
+          "x-mend-bundle-branch": "mend/fix-login",
+          "x-mend-bundle-base": "b".repeat(40),
+          "x-mend-bundle-tip": "c".repeat(40),
+          "x-mend-bundle-commits": "1",
+          "x-mend-bundle-onto": "d".repeat(40),
+        }),
+      )?.onto,
+    ).toBe("d".repeat(40));
     expect(bundleFactsOf(answered(200, null))).toBeNull();
   });
 
@@ -478,18 +504,82 @@ describe("fetchBundle", () => {
       `✓ mend/fix-login · ${bundle.tip.slice(0, 7)} · unchanged since the last pull · nothing moved`,
     );
 
-    // A change that did move, on the same parents, is not a fast-forward: still refused.
+    // A server that did not build on the last pull: a changed session is no fast-forward, and
+    // the pull says why and how to go on instead of git's non-fast-forward.
     fs.writeFileSync(path.join(store, "login.test.ts"), "test 2\n");
     run(store, ["add", "-A"]);
     const moved = bundleOf(
       recommit(run(store, ["write-tree"]), "Mend: work left uncommitted", "2026-10-10T12:00:02Z"),
     );
-    const refused = fetchBundle(local, moved);
-    expect(refused._tag).toBe("refused");
+    const diverged = fetchBundle(local, moved);
+    expect(diverged).toEqual({
+      _tag: "diverged",
+      branch: "mend/fix-login",
+      here: bundle.tip,
+      tip: moved.tip,
+      reason: "not-built-on",
+      pulled: bundle.tip,
+    });
     expect(run(local, ["rev-parse", "refs/heads/mend/fix-login"])).toBe(bundle.tip);
+    if (diverged._tag !== "diverged") throw new Error("expected a refusal");
+    expect(divergedMessage(diverged, "fix-login")).toBe(
+      `the server did not build the change on mend/fix-login's last pull ${bundle.tip.slice(0, 7)}: it no longer holds that commit, or it predates building on one · the change's ${moved.tip.slice(0, 7)} does not build on it, so nothing moved · pull into a new branch with mend pull fix-login --branch <name>, or delete mend/fix-login and pull again`,
+    );
+    // Into a new branch, it goes.
+    const elsewhere = fetchBundle(local, moved, "mine/login");
+    expect(elsewhere._tag).toBe("fetched");
+    expect(run(local, ["rev-parse", "refs/heads/mine/login"])).toBe(moved.tip);
+    expect(run(local, ["rev-parse", pulledRefOf("mine/login")])).toBe(moved.tip);
   });
 
-  it("refuses to move a local branch with commits the change does not have", () => {
+  it("pull, keep working, pull again: the server builds on the last pull and the branch fast-forwards", () => {
+    const { local, store, root, bundle } = world();
+    expect(lastPullOf(local, "mend/fix-login")).toBeNull();
+    expect(fetchBundle(local, bundle)._tag).toBe("fetched");
+    // The pull is recorded, and the next one asks the server to build on it.
+    expect(run(local, ["rev-parse", pulledRefOf("mend/fix-login")])).toBe(bundle.tip);
+    expect(lastPullOf(local, "mend/fix-login")).toBe(bundle.tip);
+
+    // The session changes; the server commits the new checkpoint on the pulled commit and sends
+    // only what is new (the pulled commit is the bundle's prerequisite).
+    fs.writeFileSync(path.join(store, "login.test.ts"), "test 2\n");
+    run(store, ["add", "-A"]);
+    const next = run(store, [
+      "commit-tree",
+      run(store, ["write-tree"]),
+      "-p",
+      bundle.tip,
+      "-m",
+      "Mend: work left uncommitted",
+    ]);
+    run(store, ["update-ref", "refs/heads/mend/fix-login", next]);
+    const file = path.join(root, "next.bundle");
+    run(store, [
+      "bundle",
+      "create",
+      "-q",
+      file,
+      "mend/fix-login",
+      `^${bundle.base}`,
+      `^${bundle.tip}`,
+    ]);
+    const again = fetchBundle(local, {
+      ...bundle,
+      tip: next,
+      commits: 3,
+      onto: bundle.tip,
+      bytes: new Uint8Array(fs.readFileSync(file)),
+    });
+
+    if (again._tag !== "fetched") throw new Error(`expected a fetch, got ${JSON.stringify(again)}`);
+    expect(again.previous).toBe(bundle.tip);
+    expect(fetchedLines(again)[0]).toContain(`· moved from ${bundle.tip.slice(0, 7)}`);
+    expect(run(local, ["rev-parse", "refs/heads/mend/fix-login"])).toBe(next);
+    expect(run(local, ["show", "mend/fix-login:login.test.ts"])).toBe("test 2");
+    expect(lastPullOf(local, "mend/fix-login")).toBe(next);
+  });
+
+  it("refuses to move a local branch with commits the change does not have, and says how to go on", () => {
     const { local, bundle } = world();
     run(local, ["switch", "-q", "-c", "mend/fix-login"]);
     const mine = commit(local, "mine.txt", "mine\n", "My own work");
@@ -497,9 +587,28 @@ describe("fetchBundle", () => {
 
     const fetched = fetchBundle(local, bundle);
 
-    expect(fetched._tag).toBe("refused");
-    expect(fetched._tag === "refused" && fetched.message).toMatch(/non-fast-forward|rejected/);
+    expect(fetched).toMatchObject({ _tag: "diverged", reason: "moved", pulled: null, here: mine });
+    if (fetched._tag !== "diverged") throw new Error("expected a refusal");
+    expect(divergedMessage(fetched, "fix-login")).toContain(
+      `mend/fix-login here is at ${mine.slice(0, 7)}, which no mend pull in this clone left there`,
+    );
     expect(run(local, ["rev-parse", "refs/heads/mend/fix-login"])).toBe(mine);
+    expect(lastPullOf(local, "mend/fix-login")).toBeNull();
+
+    // After a pull, work committed on the branch here is no pull's to build on either.
+    const { local: other, bundle: pulled } = world();
+    expect(fetchBundle(other, pulled)._tag).toBe("fetched");
+    run(other, ["switch", "-q", "mend/fix-login"]);
+    const ours = commit(other, "ours.txt", "ours\n", "Ours");
+    run(other, ["switch", "-q", "main"]);
+    expect(lastPullOf(other, "mend/fix-login")).toBeNull();
+    const moved = fetchBundle(other, pulled);
+    expect(moved).toMatchObject({ _tag: "diverged", reason: "moved", pulled: pulled.tip });
+    if (moved._tag !== "diverged") throw new Error("expected a refusal");
+    expect(divergedMessage(moved, "fix-login")).toContain(
+      `mend/fix-login moved since the last mend pull: it is at ${ours.slice(0, 7)}, the pull left ${pulled.tip.slice(0, 7)}`,
+    );
+    expect(run(other, ["rev-parse", "refs/heads/mend/fix-login"])).toBe(ours);
   });
 
   it("refuses while the branch is checked out, and when the clone lacks the base", () => {

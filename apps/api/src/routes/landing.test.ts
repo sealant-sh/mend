@@ -179,6 +179,7 @@ describe("landing routes", () => {
                       tip: PUSHED,
                       commits: 2,
                       bytes: new Uint8Array([35, 32, 118, 50]),
+                      onto: input.onto ?? null,
                     })
                   : Effect.fail(state.bundle);
               }),
@@ -650,9 +651,26 @@ describe("landing routes", () => {
             tip: PUSHED,
             commits: 2,
             bytes: 4,
+            onto: null,
           },
         },
       ]);
+      expect(response.headers.get("x-mend-bundle-onto")).toBeNull();
+    });
+
+    it("builds on the clone's last pull when asked, and says so", async () => {
+      const pulled = "7".repeat(40);
+      const response = await api.request("carol", "GET", `${bundle}?onto=${pulled}`);
+      expect(response.status).toBe(200);
+      expect(state.bundles).toMatchObject([{ actorUserId: "carol", onto: pulled }]);
+      expect(response.headers.get("x-mend-bundle-onto")).toBe(pulled);
+      expect(state.audited).toMatchObject([{ data: { onto: pulled } }]);
+    });
+
+    it("refuses an onto that is no commit id", async () => {
+      const response = await api.request("carol", "GET", `${bundle}?onto=HEAD~1`);
+      expect(response.status).toBe(400);
+      expect(state.bundles).toEqual([]);
     });
 
     it("refuses a bundle over the limit with its size", async () => {

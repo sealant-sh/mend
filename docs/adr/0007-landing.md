@@ -392,6 +392,15 @@ afterwards, and Mend's commit for the leftovers, authored by the change owner, e
 bundle. When the change owner downloads it, Mend takes a checkpoint first. Anyone else gets the
 latest checkpoint that already exists, so pulling someone's change never adds to their record.
 
+Pulling again after more work fast-forwards (amended 2026-10-10). The clone records the commit each
+pull left the branch at (`refs/mend/pulled/<branch>`, in the clone), and while the branch is still
+there the next pull sends it (`GET /changes/:id/bundle?onto=<sha>`). A server that still holds that
+commit treats it as step 2 treats the last landing: Mend's commit of the new checkpoint builds on
+it, the bundle leaves out everything it reaches, and the answer names it (`x-mend-bundle-onto`). A
+server that no longer holds it, or predates the parameter, bundles as for a first pull. The CLI
+never forces a branch: one that cannot fast-forward is left alone, with the reason and
+`mend pull <session> --branch <name>` as the way on.
+
 The bundle endpoint is authorized like the review diff. It is bounded by the request budgets,
 refuses a bundle over a size limit with the size in the answer, and every download is audited
 (`change.bundle_downloaded`).

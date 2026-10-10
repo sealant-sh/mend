@@ -586,14 +586,15 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     name: "pull",
     section: "sessions",
     summary: "fetch a session's change into this clone as mend/<name>",
-    synopsis: ["<session> [--force] [--project <p>]"],
+    synopsis: ["<session> [--branch <name>] [--force] [--project <p>]"],
     description: [
       "Run it inside a local clone of the project's repository. Mend commits the session's latest checkpoint the way mend land does, without pushing, and sends the commits from the session's base to it as a git bundle. The change's owner gets a checkpoint taken first; anyone else gets the latest one there is, and pulling moves nothing on the server. This command fetches the bundle into a local branch of the same name and prints what it fetched. The working tree, the index and the branch you are on are not touched; switch to the branch when you want it.",
-      "It works before the change is landed, and without origin. The clone needs the session's base commit, so fetch from origin first when it is missing. An existing local branch of the same name only fast-forwards. A bundle over the server's size limit (MEND_BUDGET_BUNDLE_BYTES) is refused with its size, and nothing is fetched.",
+      "It works before the change is landed, and without origin. The clone needs the session's base commit, so fetch from origin first when it is missing. An existing local branch of the same name only fast-forwards. Each pull is recorded in the clone (refs/mend/pulled/<branch>) and the next asks the server to build on it, so pulling again after more work fast-forwards; with nothing new, the branch stays. A branch that cannot fast-forward (you committed on it, or the server no longer holds the last pull) is left as it is, and --branch fetches into a new one. A bundle over the server's size limit (MEND_BUDGET_BUNDLE_BYTES) is refused with its size, and nothing is fetched.",
       "One of the clone's remotes must be the project's origin. They are compared by host and path, so ssh and https spellings match. --force skips the check.",
       "<session> is a prefix of the session id or the worktree's name. Settled sessions count.",
     ],
     options: [
+      { flag: "--branch <name>", text: "fetch into this local branch. Default: the session's" },
       {
         flag: "--force",
         text: "fetch into a clone whose remotes do not include the project's origin",

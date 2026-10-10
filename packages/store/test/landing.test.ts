@@ -11,6 +11,7 @@ import { BlobStore, BlobStoreFsLive } from "../src/blob-store.ts";
 import { captureKeys, packIdxKeyOf, sha256Hex } from "../src/captures.ts";
 import {
   deniedLines,
+  holdsCommitOn,
   landedRefOf,
   parsePushPorcelain,
   planLanding,
@@ -617,6 +618,75 @@ describe("landing in the project store", () => {
     );
     // Nothing was pushed.
     expect(originHead()).toBe("");
+  });
+
+  it("builds the next pull on the last one, so the checkout fast-forwards and gets only what is new", async () => {
+    const checkout = path.join(world.tmp, "checkout");
+    sh(world.tmp, ["clone", "-q", world.origin, checkout]);
+    const pull = (bytes: Uint8Array, name: string) => {
+      const file = path.join(world.tmp, name);
+      fs.writeFileSync(file, bytes);
+      sh(checkout, ["bundle", "verify", "-q", file]);
+      // No `+`: git refuses anything but a fast-forward.
+      sh(checkout, ["fetch", "-q", file, `refs/heads/${BRANCH}:refs/heads/${BRANCH}`]);
+      return sh(checkout, ["rev-parse", BRANCH]);
+    };
+    const bundleOf = (tip: string, have?: string) =>
+      Effect.gen(function* () {
+        const store = yield* Store;
+        return yield* store.bundle(world.storePath, {
+          base: world.baseSha,
+          tip,
+          branch: BRANCH,
+          limitBytes: MB,
+          ...(have === undefined ? {} : { have }),
+        });
+      });
+    const commitOn = (checkpointSha: string, lastLanded: string | null) =>
+      Effect.gen(function* () {
+        const store = yield* Store;
+        return yield* store.landingCommit(world.storePath, {
+          agentHead: `refs/heads/${BRANCH}`,
+          lastLanded,
+          checkpoint: checkpointSha,
+          author: owner,
+          message: MESSAGE,
+          keepFor: null,
+        });
+      });
+
+    fs.writeFileSync(path.join(world.worktree, "app.ts"), "export const answer = 42\n");
+    const first = await run(
+      Effect.gen(function* () {
+        const commit = yield* commitOn((yield* checkpoint(1)).sha, null);
+        return { head: commit.head, bundle: yield* bundleOf(commit.head) };
+      }),
+    );
+    expect(pull(first.bundle.bytes, "first.bundle")).toBe(first.head);
+
+    // The session keeps working; the store still holds the first pull's commit, kept by no ref.
+    fs.writeFileSync(path.join(world.worktree, "more.ts"), "export const more = 1\n");
+    const second = await run(
+      Effect.gen(function* () {
+        const held = yield* holdsCommitOn(world.storePath, first.head, world.baseSha);
+        const unknown = yield* holdsCommitOn(world.storePath, "7".repeat(40), world.baseSha);
+        const commit = yield* commitOn((yield* checkpoint(2)).sha, first.head);
+        return {
+          held,
+          unknown,
+          head: commit.head,
+          bundle: yield* bundleOf(commit.head, first.head),
+        };
+      }),
+    );
+    expect(second.held).toBe(true);
+    expect(second.unknown).toBe(false);
+    expect(parentsOf(second.head)).toEqual([first.head]);
+    // Only the new commit travels; the first pull's is the bundle's prerequisite.
+    expect(second.bundle.commits).toBe(1);
+    expect(pull(second.bundle.bytes, "second.bundle")).toBe(second.head);
+    expect(sh(checkout, ["show", `${BRANCH}:more.ts`])).toBe("export const more = 1");
+    expect(branchHead()).toBe(world.baseSha);
   });
 
   it("answers a bundle over the limit with its size, and an empty range as empty", async () => {

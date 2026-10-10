@@ -1022,9 +1022,76 @@ describe("mend pull", spawning, () => {
         });
       } else if (route === `GET /api/sessions/${session.id}/landings`) {
         json(response, { changeId: "change-1", facts: [] });
-      } else if (route === "GET /api/changes/change-1/bundle") bundle(response);
+      } else if (route.startsWith("GET /api/changes/change-1/bundle")) bundle(response);
       else response.writeHead(404).end();
     };
+
+  it("pull, keep working, pull again: the second pull asks to build on the first and fast-forwards", async () => {
+    const world = repositories();
+    const store = path.join(world.root, "store");
+    // The second bundle: the server built the new checkpoint on the first pull's commit.
+    fs.writeFileSync(path.join(store, "login.test.ts"), "test\n");
+    git(store, ["add", "-A"]);
+    const next = git(store, [
+      "commit-tree",
+      git(store, ["write-tree"]),
+      "-p",
+      world.tip,
+      "-m",
+      "Mend: work left uncommitted",
+    ]);
+    git(store, ["update-ref", "refs/heads/mend/fix-login", next]);
+    const nextFile = path.join(world.root, "next.bundle");
+    git(store, [
+      "bundle",
+      "create",
+      "-q",
+      nextFile,
+      "mend/fix-login",
+      `^${world.base}`,
+      `^${world.tip}`,
+    ]);
+    const routes: Array<string> = [];
+    let served = 0;
+    const fake = await startFakeMend(
+      pullRoutes(
+        world,
+        (response) => {
+          served += 1;
+          const first = served === 1;
+          response.writeHead(200, {
+            "content-type": "application/x-git-bundle",
+            "x-mend-bundle-branch": "mend/fix-login",
+            "x-mend-bundle-base": world.base,
+            "x-mend-bundle-tip": first ? world.tip : next,
+            "x-mend-bundle-commits": first ? "1" : "2",
+            ...(first ? {} : { "x-mend-bundle-onto": world.tip }),
+          });
+          response.end(first ? world.bytes : fs.readFileSync(nextFile));
+        },
+        routes,
+      ),
+    );
+
+    try {
+      const first = startCli(fake.url, ["pull", "fix-login"], {}, world.local);
+      expect((await first.exited).code, first.stderr()).toBe(0);
+      const second = startCli(fake.url, ["pull", "fix-login"], {}, world.local);
+      expect((await second.exited).code, second.stderr()).toBe(0);
+      expect(routes.filter((route) => route.includes("/bundle"))).toEqual([
+        "GET /api/changes/change-1/bundle",
+        `GET /api/changes/change-1/bundle?onto=${world.tip}`,
+      ]);
+      expect(second.stdout()).toContain(
+        `✓ fetched mend/fix-login · ${next.slice(0, 7)} · 2 commits on ${world.base.slice(0, 7)} · moved from ${world.tip.slice(0, 7)}`,
+      );
+      expect(git(world.local, ["rev-parse", "refs/heads/mend/fix-login"])).toBe(next);
+      expect(git(world.local, ["rev-parse", "refs/mend/pulled/mend/fix-login"])).toBe(next);
+    } finally {
+      await fake.close();
+      fs.rmSync(world.root, { recursive: true, force: true });
+    }
+  });
 
   it("fetches the change into this clone as mend/<name> and prints what it fetched", async () => {
     const world = repositories();

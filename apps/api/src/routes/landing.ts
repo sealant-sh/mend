@@ -24,6 +24,7 @@ import {
   WorktreeChangesRepo,
   WorktreesRepo,
 } from "@mend/db";
+import { Sha } from "@mend/domain";
 import type { Change, Session } from "@mend/domain/workbench";
 import { Landing, type LandingNotStartedError, pullRequestAvailability } from "@mend/landing";
 import { NetworkConfig } from "@mend/network";
@@ -299,7 +300,7 @@ export const LandingsGroupLive = HttpApiBuilder.group(MendApi, "landings", (hand
         return refreshed;
       }),
     )
-    .handle("bundle", ({ params }) =>
+    .handle("bundle", ({ params, query }) =>
       Effect.gen(function* () {
         const change = yield* (yield* ProjectAccess).change(params.id);
         const session = yield* sessionOfChange(change);
@@ -317,6 +318,7 @@ export const LandingsGroupLive = HttpApiBuilder.group(MendApi, "landings", (hand
             webOrigin: yield* webOriginOfRequest,
             // `0` turns the budget off.
             limitBytes: limits.bundleBytes > 0 ? limits.bundleBytes : Number.MAX_SAFE_INTEGER,
+            ...(query.onto === undefined ? {} : { onto: Sha.make(query.onto) }),
           })
           .pipe(
             Effect.catchTags({
@@ -358,6 +360,7 @@ export const LandingsGroupLive = HttpApiBuilder.group(MendApi, "landings", (hand
             tip: bundle.tip,
             commits: bundle.commits,
             bytes: bundle.bytes.byteLength,
+            onto: bundle.onto,
           },
         });
         return HttpServerResponse.uint8Array(bundle.bytes, {
@@ -368,6 +371,7 @@ export const LandingsGroupLive = HttpApiBuilder.group(MendApi, "landings", (hand
             [BUNDLE_HEADERS.base]: bundle.base,
             [BUNDLE_HEADERS.tip]: bundle.tip,
             [BUNDLE_HEADERS.commits]: String(bundle.commits),
+            ...(bundle.onto === null ? {} : { [BUNDLE_HEADERS.onto]: bundle.onto }),
           },
         });
       }),

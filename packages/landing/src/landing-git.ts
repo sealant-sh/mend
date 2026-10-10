@@ -1,7 +1,7 @@
 import { CheckpointsRepo } from "@mend/db";
 import { Sha } from "@mend/domain";
 import { SessionEngine } from "@mend/sessions";
-import { git as gitIn, type GitError, Store, worktreePathOf } from "@mend/store";
+import { git as gitIn, type GitError, holdsCommitOn, Store, worktreePathOf } from "@mend/store";
 import { Effect, Layer } from "effect";
 
 import { branchWords, gitWords } from "./git-words.ts";
@@ -149,6 +149,10 @@ export const LandingGitColocatedLive: Layer.Layer<
                 }),
             ),
           ),
+      holds: (scope, input) =>
+        holdsCommitOn(scope.project.storePath, input.sha, input.base).pipe(
+          Effect.catch(() => Effect.succeed(false)),
+        ),
       bundle: (scope, input) =>
         store.bundle(scope.project.storePath, input).pipe(
           Effect.catchTags({
