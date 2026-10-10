@@ -6,13 +6,19 @@ import {
   endLine,
   exitStatusOf,
   followLogs,
+  durationLine,
   isSessionId,
   type LogPage,
+  parseDuration,
   parseLogsArgs,
   parseWaitArgs,
   pickProcess,
+  pickServiceAttempt,
   runArgvIssue,
+  type ServiceStartRead,
+  type ServiceViewSlice,
   waitForCommand,
+  waitForServiceStart,
 } from "./run-scripts.ts";
 import { MendRequestError } from "./server-request.ts";
 
@@ -366,10 +372,16 @@ describe("pickProcess", () => {
 describe("arguments", () => {
   it("parses mend logs", () => {
     expect(parseLogsArgs(["3f2a", "-f", "--from", "12", "--process", "ab"])).toEqual({
-      args: { session: "3f2a", follow: true, from: "12", process: "ab" },
+      args: { session: "3f2a", follow: true, from: "12", process: "ab", service: null },
     });
     expect(parseLogsArgs([])).toEqual({
-      args: { session: null, follow: false, from: "0", process: null },
+      args: { session: null, follow: false, from: "0", process: null, service: null },
+    });
+    expect(parseLogsArgs(["--service", "web", "-f"])).toEqual({
+      args: { session: null, follow: true, from: "0", process: null, service: "web" },
+    });
+    expect(parseLogsArgs(["--service", "web", "--process", "ab"])).toEqual({
+      error: "--process and --service each name one process; pass one of them",
     });
     expect(parseLogsArgs(["--from", "x"])).toEqual({
       error: "--from takes a record sequence, e.g. 0",
@@ -382,13 +394,290 @@ describe("arguments", () => {
       args: { session: "3f2a", process: "p1", timeoutMs: 1500, json: true },
     });
     expect(parseWaitArgs(["--timeout", "0"])).toEqual({
-      error: "--timeout takes a number of seconds above 0",
+      error: "--timeout takes a duration above 0: 90 or 90s, 5m, 1h",
+    });
+    expect(parseWaitArgs(["--timeout", "5m"])).toEqual({
+      args: { session: null, process: null, timeoutMs: 300_000, json: false },
     });
     expect(parseWaitArgs(["--tail"])).toEqual({ error: "unknown flag --tail" });
+  });
+
+  it("reads a duration as mend wait and mend service run --wait take it", () => {
+    expect(parseDuration("90")).toBe(90_000);
+    expect(parseDuration("90s")).toBe(90_000);
+    expect(parseDuration("1.5")).toBe(1500);
+    expect(parseDuration("5m")).toBe(300_000);
+    expect(parseDuration("1h")).toBe(3_600_000);
+    for (const bad of ["0", "0s", "", "5x", "-1", "1m30s", "m"])
+      expect(parseDuration(bad)).toBe(null);
+    expect(durationLine(1000)).toBe("1 s");
+    expect(durationLine(600_000)).toBe("10 min");
+    expect(durationLine(90_000)).toBe("1 min 30 s");
+    expect(durationLine(5_400_000)).toBe("1 h 30 min");
   });
 
   it("knows a full session id", () => {
     expect(isSessionId("0c9f7e1a-6b2d-4c6e-9a51-3f2a7d1b8c40")).toBe(true);
     expect(isSessionId("0c9f7e1a")).toBe(false);
+  });
+});
+
+// ─── a Service's start ──────────────────────────────────────────────────────
+
+type Attempt = ServiceViewSlice["attempts"][number];
+
+const attemptOf = (
+  id: string,
+  ended: { status: string; exitCode: number | null } | null = null,
+): Attempt => ({
+  id,
+  status: ended?.status ?? "running",
+  exitCode: ended?.exitCode ?? null,
+  exitedAt: ended === null ? null : "now",
+  sealantSessionId: `pty-${id}`,
+});
+
+const serviceOf = (
+  observed: "reachable" | "unreachable",
+  attempts: ReadonlyArray<Attempt> = [attemptOf("attempt-2")],
+  overrides: Partial<ServiceViewSlice["service"]> = {},
+): ServiceViewSlice => ({
+  service: {
+    id: "service-1",
+    sessionId: "session-1",
+    name: "web",
+    currentAttemptId: attempts.at(-1)?.id ?? null,
+    ...overrides,
+  },
+  attempts,
+  currentForward: { id: "forward-1" },
+  latestObservation: { forwardId: "forward-1", state: observed },
+});
+
+const startRead = (
+  service: ServiceViewSlice | null,
+  sessionStatus: string | null = "idle",
+): ServiceStartRead => ({
+  services: service === null ? [] : [service],
+  sessionStatus,
+});
+
+const target = {
+  sessionId: "session-1",
+  name: "web",
+  attemptId: "attempt-2",
+  priorAttemptId: null,
+};
+
+describe("waitForServiceStart", () => {
+  it("keeps waiting while the Service builds past the server's minute, and returns once it answers", async () => {
+    const clock = fakeClock();
+    // 64 s of a cold build (verify stack, mend#642), then the 20 s probe sees the port.
+    const outcome = await waitForServiceStart({
+      read: async () => startRead(serviceOf(clock.now() < 84_000 ? "unreachable" : "reachable")),
+      target,
+      deadline: 600_000,
+      ...clock,
+    });
+    expect(outcome).toEqual({ kind: "answered", processId: "attempt-2" });
+    expect(clock.now()).toBe(84_000);
+  });
+
+  it("ends with the process's status and code when it exits while starting", async () => {
+    const clock = fakeClock();
+    const outcome = await waitForServiceStart({
+      read: async () =>
+        startRead(
+          serviceOf(
+            "unreachable",
+            clock.now() < 6000
+              ? [attemptOf("attempt-2")]
+              : [attemptOf("attempt-2", { status: "exited", exitCode: 1 })],
+          ),
+        ),
+      target,
+      deadline: 600_000,
+      ...clock,
+    });
+    expect(outcome).toEqual({
+      kind: "process-ended",
+      processId: "attempt-2",
+      status: "exited",
+      exitCode: 1,
+    });
+  });
+
+  it("says the workspace ended when the session settled with the attempt, or is gone", async () => {
+    const ended = serviceOf("unreachable", [
+      attemptOf("attempt-2", { status: "exited", exitCode: null }),
+    ]);
+    const cases: ReadonlyArray<{
+      readonly read: ServiceStartRead;
+      readonly status: string | null;
+    }> = [
+      { read: startRead(ended, "stopped"), status: "stopped" },
+      { read: startRead(serviceOf("unreachable"), null), status: null },
+    ];
+    for (const { read, status } of cases) {
+      const outcome = await waitForServiceStart({
+        read: async () => read,
+        target,
+        deadline: null,
+        ...fakeClock(),
+      });
+      expect(outcome).toEqual({ kind: "workspace-ended", sessionStatus: status });
+    }
+  });
+
+  it("does not take a retained session's settled status for the end while its attempt runs", async () => {
+    const clock = fakeClock();
+    const outcome = await waitForServiceStart({
+      read: async () =>
+        startRead(
+          serviceOf(clock.now() < 4000 ? "unreachable" : "reachable"),
+          clock.now() < 2000 ? "completed" : "idle",
+        ),
+      target,
+      deadline: null,
+      ...clock,
+    });
+    expect(outcome).toEqual({ kind: "answered", processId: "attempt-2" });
+  });
+
+  it("times out while still starting, never sleeping past the deadline, with the last state", async () => {
+    const clock = fakeClock();
+    const outcome = await waitForServiceStart({
+      read: async () => startRead(serviceOf("unreachable")),
+      target,
+      deadline: 5000,
+      ...clock,
+    });
+    expect(outcome).toEqual({
+      kind: "timeout",
+      last: { kind: "starting", processId: "attempt-2" },
+    });
+    expect(clock.slept).toEqual([2000, 2000, 1000]);
+  });
+
+  it("an earlier attempt's answer is not this start's: it waits for the attempt that began after", async () => {
+    const clock = fakeClock();
+    const outcome = await waitForServiceStart({
+      read: async () =>
+        startRead(
+          clock.now() < 4000
+            ? serviceOf("reachable", [attemptOf("attempt-1")])
+            : serviceOf("reachable", [
+                attemptOf("attempt-1", { status: "stopped", exitCode: null }),
+                attemptOf("attempt-2"),
+              ]),
+        ),
+      target: { ...target, attemptId: null, priorAttemptId: "attempt-1" },
+      deadline: null,
+      ...clock,
+    });
+    expect(outcome).toEqual({ kind: "answered", processId: "attempt-2" });
+    expect(clock.now()).toBe(4000);
+  });
+
+  it("gives up looking when a start that got no answer left no attempt within a minute", async () => {
+    const clock = fakeClock();
+    const outcome = await waitForServiceStart({
+      read: async () => startRead(serviceOf("unreachable", [attemptOf("attempt-1")])),
+      target: { ...target, attemptId: null, priorAttemptId: "attempt-1" },
+      deadline: null,
+      ...clock,
+    });
+    expect(outcome).toEqual({ kind: "no-attempt" });
+    expect(clock.now()).toBe(60_000);
+  });
+
+  it("reads through a gateway blip, and throws a refusal at once", async () => {
+    const clock = fakeClock();
+    let calls = 0;
+    const outcome = await waitForServiceStart({
+      read: async () => {
+        calls += 1;
+        if (calls === 1) throw new MendRequestError("http", "bad gateway", 502);
+        return startRead(serviceOf("reachable"));
+      },
+      target,
+      deadline: null,
+      ...clock,
+    });
+    expect(outcome.kind).toBe("answered");
+    await expect(
+      waitForServiceStart({
+        read: async () => {
+          throw new MendRequestError("http", "forbidden", 403);
+        },
+        target,
+        deadline: null,
+        ...fakeClock(),
+      }),
+    ).rejects.toThrow("forbidden");
+  });
+});
+
+describe("pickServiceAttempt", () => {
+  it("takes a Service's current attempt by its name or a prefix of its id", () => {
+    const web = serviceOf("reachable");
+    expect(pickServiceAttempt([web], "web", null)).toEqual({
+      service: web,
+      processId: "attempt-2",
+    });
+    expect(pickServiceAttempt([web], "service-", null)).toEqual({
+      service: web,
+      processId: "attempt-2",
+    });
+  });
+
+  it("reads an ended attempt: the record outlives the process", () => {
+    const web = serviceOf("unreachable", [
+      attemptOf("attempt-2", { status: "exited", exitCode: 1 }),
+    ]);
+    expect(pickServiceAttempt([web], "web", null)).toEqual({
+      service: web,
+      processId: "attempt-2",
+    });
+  });
+
+  it("refuses a Service with no attempt yet, saying why nothing is recorded", () => {
+    const adopted = serviceOf("reachable", []);
+    expect(pickServiceAttempt([adopted], "web", null)).toEqual({
+      error:
+        "Service web has no attempt yet: Mend has run no process for it, so nothing is recorded (an adopted port has none; mend service run starts one)",
+      named: true,
+    });
+  });
+
+  it("refuses an attempt whose terminal has not opened", () => {
+    const opening = serviceOf("unreachable", [
+      { ...attemptOf("attempt-2"), sealantSessionId: null },
+    ]);
+    const picked = pickServiceAttempt([opening], "web", null);
+    expect("error" in picked && picked.error).toContain("has not opened its terminal yet");
+  });
+
+  it("takes the running one of two Services of one name, and asks for the session otherwise", () => {
+    const live = serviceOf("reachable");
+    const ended = serviceOf(
+      "unreachable",
+      [attemptOf("attempt-9", { status: "exited", exitCode: 0 })],
+      { id: "service-2", sessionId: "session-2" },
+    );
+    expect(pickServiceAttempt([live, ended], "web", null)).toEqual({
+      service: live,
+      processId: "attempt-2",
+    });
+    const twin = serviceOf("reachable", [attemptOf("attempt-5")], {
+      id: "service-3",
+      sessionId: "session-3",
+    });
+    expect(pickServiceAttempt([live, twin], "web", null)).toMatchObject({ named: true });
+    expect(pickServiceAttempt([live, twin], "web", "session-3")).toEqual({
+      service: twin,
+      processId: "attempt-5",
+    });
+    expect(pickServiceAttempt([live], "api", null)).toMatchObject({ named: false });
   });
 });

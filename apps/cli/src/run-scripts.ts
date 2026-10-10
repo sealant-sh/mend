@@ -356,6 +356,8 @@ export interface LogsArgs {
   readonly follow: boolean;
   readonly from: string;
   readonly process: string | null;
+  /** `--service <name-or-id>`: the Service's current attempt. */
+  readonly service: string | null;
 }
 
 export interface WaitArgs {
@@ -404,44 +406,285 @@ const splitArgs = (
   return { values, on, session };
 };
 
-/** `mend logs [session] [--follow|-f] [--from <sequence>] [--process <id>]`. */
+/** `mend logs [session] [--follow|-f] [--from <sequence>] [--process <id> | --service <name>]`. */
 export const parseLogsArgs = (args: ReadonlyArray<string>): Parsed<LogsArgs> => {
-  const split = splitArgs(args, ["--from", "--process"], ["--follow", "-f"]);
+  const split = splitArgs(args, ["--from", "--process", "--service"], ["--follow", "-f"]);
   if ("error" in split) return split;
   const from = split.values.get("--from") ?? "0";
   if (!/^(0|[1-9]\d*)$/u.test(from)) return { error: "--from takes a record sequence, e.g. 0" };
+  const process = split.values.get("--process") ?? null;
+  const service = split.values.get("--service") ?? null;
+  if (process !== null && service !== null) {
+    return { error: "--process and --service each name one process; pass one of them" };
+  }
   return {
     args: {
       session: split.session,
       follow: split.on.has("--follow") || split.on.has("-f"),
       from,
-      process: split.values.get("--process") ?? null,
+      process,
+      service,
     },
   };
 };
 
-/** `mend wait [session] [--timeout <seconds>] [--process <id>] [--json]`. */
+/** `mend wait [session] [--timeout <duration>] [--process <id>] [--json]`. */
 export const parseWaitArgs = (args: ReadonlyArray<string>): Parsed<WaitArgs> => {
   const split = splitArgs(args, ["--timeout", "--process"], ["--json"]);
   if ("error" in split) return split;
   const timeout = split.values.get("--timeout");
-  const seconds = timeout === undefined ? null : Number(timeout);
-  if (seconds !== null && !(Number.isFinite(seconds) && seconds > 0)) {
-    return { error: "--timeout takes a number of seconds above 0" };
-  }
+  const timeoutMs = timeout === undefined ? null : parseDuration(timeout);
+  if (timeoutMs === null && timeout !== undefined) return { error: DURATION_ISSUE };
   return {
     args: {
       session: split.session,
       process: split.values.get("--process") ?? null,
-      timeoutMs: seconds === null ? null : Math.ceil(seconds * 1000),
+      timeoutMs,
       json: split.on.has("--json"),
     },
   };
 };
 
-/** The exit status `mend wait` gives when the timeout passed first, as `timeout(1)` does. */
+const DURATION_UNIT_MS: Readonly<Record<string, number>> = { s: 1000, m: 60_000, h: 3_600_000 };
+
+/**
+ * A `--timeout` in milliseconds, or null when it is not one: `90` and `90s` are seconds, `5m`
+ * minutes, `1h` hours, fractions allowed, above 0. `mend wait` and `mend service run --wait` read
+ * it the same way.
+ */
+export const parseDuration = (text: string): number | null => {
+  const match = /^(\d+(?:\.\d+)?)(s|m|h)?$/u.exec(text.trim());
+  if (match === null) return null;
+  const amount = Number(match[1]);
+  const unit = DURATION_UNIT_MS[match[2] ?? "s"] ?? 1000;
+  const ms = Math.ceil(amount * unit);
+  return Number.isFinite(ms) && ms > 0 ? ms : null;
+};
+
+export const DURATION_ISSUE = "--timeout takes a duration above 0: 90 or 90s, 5m, 1h";
+
+/** `10 min`, `90 s`, `1 h 30 min`: a duration as the CLI says it. */
+export const durationLine = (ms: number): string => {
+  const seconds = Math.round(ms / 1000);
+  if (seconds < 60) return `${seconds} s`;
+  const minutes = Math.floor(seconds / 60);
+  const rest = seconds % 60;
+  if (minutes < 60) return rest === 0 ? `${minutes} min` : `${minutes} min ${rest} s`;
+  const hours = Math.floor(minutes / 60);
+  return minutes % 60 === 0 ? `${hours} h` : `${hours} h ${minutes % 60} min`;
+};
+
+/**
+ * The exit status `mend wait` and `mend service run --wait` give when the timeout passed first, as
+ * `timeout(1)` does. What was waited for keeps running.
+ */
 export const WAIT_TIMED_OUT = 124;
 
 /** A full session id: one `GET /sessions/:id` finds it, settled or not. */
 export const isSessionId = (word: string): boolean =>
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu.test(word);
+
+// ─── a Service's start ──────────────────────────────────────────────────────
+
+/**
+ * How `mend service run --wait` ends, beyond 0 (the port answered), 1 (Mend refused the start or
+ * could not be asked) and `WAIT_TIMED_OUT` (still starting when the timeout passed).
+ */
+export const SERVICE_PROCESS_ENDED = 2;
+export const SERVICE_WORKSPACE_ENDED = 3;
+
+/** The slice of a Service's view (`GET /services`) a wait and `mend logs --service` read. */
+export interface ServiceViewSlice {
+  readonly service: {
+    readonly id: string;
+    readonly sessionId: string;
+    readonly name: string;
+    readonly currentAttemptId: string | null;
+  };
+  readonly attempts: ReadonlyArray<{
+    readonly id: string;
+    readonly status: string;
+    readonly exitCode?: number | null;
+    readonly exitedAt: string | null;
+    readonly sealantSessionId: string | null;
+  }>;
+  readonly currentForward: { readonly id: string } | null;
+  readonly latestObservation: { readonly forwardId: string; readonly state: string } | null;
+}
+
+/** One read of a starting Service: every Service listed, ended ones included, and its session. */
+export interface ServiceStartRead {
+  readonly services: ReadonlyArray<ServiceViewSlice>;
+  /** The session's status, or null once the server no longer has the session. */
+  readonly sessionStatus: string | null;
+}
+
+/**
+ * The attempt a wait is for: the one the start answered with, or, when the start got no answer
+ * (an edge cut it, a timeout), whichever attempt of the Service is current and was not before the
+ * start.
+ */
+export interface ServiceStartTarget {
+  readonly sessionId: string;
+  readonly name: string;
+  readonly attemptId: string | null;
+  readonly priorAttemptId: string | null;
+}
+
+export type ServiceStartState =
+  | { readonly kind: "answered"; readonly processId: string }
+  /** Its process runs and its port has not answered: building, installing, booting. */
+  | { readonly kind: "starting"; readonly processId: string | null }
+  | {
+      readonly kind: "process-ended";
+      readonly processId: string;
+      readonly status: string;
+      readonly exitCode: number | null;
+    }
+  | { readonly kind: "workspace-ended"; readonly sessionStatus: string | null };
+
+/** The Service a target names, in what one read listed. */
+export const targetServiceOf = <V extends ServiceViewSlice>(
+  services: ReadonlyArray<V>,
+  target: Pick<ServiceStartTarget, "sessionId" | "name">,
+): V | undefined =>
+  services.find(
+    (view) => view.service.sessionId === target.sessionId && view.service.name === target.name,
+  );
+
+/**
+ * What one read says about a starting Service. Its attempt's end is the process's end, or the
+ * workspace's when the session settled with it (or is gone): the workspace and every process in it
+ * went together. A settled session alone ends nothing: a retained session reopens once a Service
+ * starts in it. Then a probe that answered on the Service's current forward. Anything else is still
+ * starting.
+ */
+export const serviceStartStateOf = (
+  read: ServiceStartRead,
+  target: ServiceStartTarget,
+): ServiceStartState => {
+  if (read.sessionStatus === null) return { kind: "workspace-ended", sessionStatus: null };
+  const view = targetServiceOf(read.services, target);
+  const current = view?.service.currentAttemptId ?? null;
+  const processId =
+    target.attemptId ?? (current !== null && current !== target.priorAttemptId ? current : null);
+  if (view === undefined || processId === null) return { kind: "starting", processId };
+  const attempt = view.attempts.find((candidate) => candidate.id === processId);
+  if (attempt === undefined) return { kind: "starting", processId };
+  if (attempt.exitedAt !== null) {
+    return SETTLED.has(read.sessionStatus)
+      ? { kind: "workspace-ended", sessionStatus: read.sessionStatus }
+      : {
+          kind: "process-ended",
+          processId,
+          status: attempt.status,
+          exitCode: attempt.exitCode ?? null,
+        };
+  }
+  const answered =
+    view.currentForward !== null &&
+    view.latestObservation?.forwardId === view.currentForward.id &&
+    view.latestObservation.state === "reachable";
+  return answered ? { kind: "answered", processId } : { kind: "starting", processId };
+};
+
+export type ServiceWaitOutcome =
+  | Exclude<ServiceStartState, { readonly kind: "starting" }>
+  /** The deadline passed while the Service was still starting; `last` is the last state read. */
+  | { readonly kind: "timeout"; readonly last: ServiceStartState | null }
+  /** The start got no answer, and no attempt of the Service appeared for `unreachableAfterMs`. */
+  | { readonly kind: "no-attempt" };
+
+export interface ServiceWaitOptions extends Clock {
+  readonly read: () => Promise<ServiceStartRead>;
+  readonly target: ServiceStartTarget;
+  /** When to give up, on the clock's time; null waits as long as the Service is starting. */
+  readonly deadline: number | null;
+  /** Called with each state read while the Service is still starting. */
+  readonly onStarting?: (state: Extract<ServiceStartState, { readonly kind: "starting" }>) => void;
+}
+
+/**
+ * Read a starting Service until its port answers, its process ends, its workspace ends, or the
+ * deadline passes. A Service that is building, installing or booting keeps the wait going however
+ * long that takes: only the deadline bounds it. Reads that get no answer are retried, as
+ * `mend wait` does, and a refusal is thrown.
+ */
+export const waitForServiceStart = async (
+  options: ServiceWaitOptions,
+): Promise<ServiceWaitOutcome> => {
+  const pollMs = options.pollMs ?? 2000;
+  const discoverWithinMs = options.unreachableAfterMs ?? 60_000;
+  const since = options.now();
+  let last: ServiceStartState | null = null;
+  for (;;) {
+    const got = await readThrough(options.read, options, options.deadline);
+    if (!got.done) return { kind: "timeout", last };
+    const state = serviceStartStateOf(got.value, options.target);
+    if (state.kind !== "starting") return state;
+    last = state;
+    if (state.processId === null && options.now() - since >= discoverWithinMs) {
+      return { kind: "no-attempt" };
+    }
+    options.onStarting?.(state);
+    const left =
+      options.deadline === null ? pollMs : Math.min(pollMs, options.deadline - options.now());
+    if (left <= 0) return { kind: "timeout", last };
+    await options.sleep(left);
+  }
+};
+
+/**
+ * The process `mend logs --service` reads: the current attempt of the Service whose name is
+ * `needle`, or whose id starts with it. Within `sessionId` when one is given. Of several Services
+ * with one name (one per session), the one whose attempt runs is taken when it is the only one.
+ */
+export const pickServiceAttempt = (
+  services: ReadonlyArray<ServiceViewSlice>,
+  needle: string,
+  sessionId: string | null,
+):
+  | { readonly service: ServiceViewSlice; readonly processId: string }
+  /** `named`: some Service answers to `needle`, and the error is about it. */
+  | { readonly error: string; readonly named: boolean } => {
+  const inScope = services.filter(
+    (view) => sessionId === null || view.service.sessionId === sessionId,
+  );
+  const byName = inScope.filter((view) => view.service.name === needle);
+  const matches =
+    byName.length > 0 ? byName : inScope.filter((view) => view.service.id.startsWith(needle));
+  const running = matches.filter((view) =>
+    view.attempts.some(
+      (attempt) => attempt.id === view.service.currentAttemptId && attempt.exitedAt === null,
+    ),
+  );
+  const chosen = matches.length === 1 ? matches[0] : running.length === 1 ? running[0] : undefined;
+  if (matches.length === 0) {
+    return {
+      error: `no Service ${sessionId === null ? "" : "of this session "}is named "${needle}" or has an id starting with it`,
+      named: false,
+    };
+  }
+  if (chosen === undefined) {
+    return {
+      error: `"${needle}" matches ${matches.length} Services · name the session (mend logs <session> --service ${needle}) or use more of the Service id`,
+      named: true,
+    };
+  }
+  const name = chosen.service.name;
+  const attemptId = chosen.service.currentAttemptId;
+  if (attemptId === null) {
+    return {
+      error: `Service ${name} has no attempt yet: Mend has run no process for it, so nothing is recorded (an adopted port has none; mend service run starts one)`,
+      named: true,
+    };
+  }
+  const attempt = chosen.attempts.find((candidate) => candidate.id === attemptId);
+  if (attempt === undefined || attempt.sealantSessionId === null) {
+    return {
+      error: `Service ${name}'s attempt ${attemptId.slice(0, 8)} has not opened its terminal yet, so nothing is recorded · try again in a moment`,
+      named: true,
+    };
+  }
+  return { service: chosen, processId: attemptId };
+};

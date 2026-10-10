@@ -376,31 +376,39 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     name: "logs",
     section: "sessions",
     summary: "print a session's recorded terminal output",
-    synopsis: ["[session] [--follow] [--from <sequence>] [--process <id>]"],
+    synopsis: [
+      "[session] [--follow] [--from <sequence>] [--process <id>]",
+      "[session] --service <name-or-id> [--follow] [--from <sequence>]",
+    ],
     description: [
       "Prints what the session's command (or agent) wrote to its terminal, as the record holds it, on stdout. Settled sessions count: the record outlives the process and the workspace. --follow keeps printing until the process ends. The record is printed as it is, nothing taken out: anyone who can read the project can read it, so what a command printed, a password included, reaches them too. A signal stops it and puts the terminal back, exiting 128 + its number: 130 for SIGINT (Ctrl+C), 129 for SIGHUP, 143 for SIGTERM.",
-      "<session> is the session id, a prefix of it, or the worktree's name. With none, the one live session is taken. --process reads another process of the session, a shell or a Service attempt, by a prefix of its id.",
+      "<session> is the session id, a prefix of it, or the worktree's name. With none, the one live session is taken. --process reads another process of the session, a shell or a Service attempt, by a prefix of its id; a Service's id or name there reads the Service's current attempt.",
+      "--service reads a Service's current attempt, by the Service's name or a prefix of its id, the ids mend service list prints. The session is needed only when two sessions have a Service of that name and both run. A Service with no attempt (an adopted port, which Mend runs no process for) has nothing recorded, and mend logs says so and exits 1.",
     ],
     options: [
       { flag: "--follow, -f", text: "keep printing until the process ends" },
       { flag: "--from <sequence>", text: "start at a record sequence. Default: 0" },
       { flag: "--process <id>", text: "another process of the session, by a prefix of its id" },
+      { flag: "--service <name-or-id>", text: "a Service's current attempt" },
     ],
-    examples: [{ command: "mend logs 3f2a --follow", text: "" }],
+    examples: [
+      { command: "mend logs 3f2a --follow", text: "" },
+      { command: "mend logs --service web --follow", text: "the Service web's output, live" },
+    ],
     see: ["run", "wait", "service logs"],
   },
   {
     name: "wait",
     section: "sessions",
     summary: "wait for a session's command to end",
-    synopsis: ["[session] [--timeout <seconds>] [--process <id>] [--json]"],
+    synopsis: ["[session] [--timeout <duration>] [--process <id>] [--json]"],
     description: [
       "Returns once the session's command (or agent) has ended, with its exit code: the code the platform reported, or 1 when it reported none. A command that already ended answers at once. While a launch or a resume is starting, the previous process's end does not count. --process waits for one process by its id, the processId mend run --json prints.",
-      "When --timeout passes first, mend wait exits 124, as timeout(1) does, and the command keeps running. Stopped by a signal, it exits 128 + its number (130 for Ctrl+C), and the command keeps running. The timeout covers everything: finding the session, every read and every retry. --json then prints the last state read, and nothing more is asked of the server.",
+      "A session that is still starting (its workspace building, its image pulling) is waited through: only its end counts. When --timeout passes first, mend wait exits 124, as timeout(1) does, and the command keeps running. A duration is seconds (90 or 90s), minutes (5m) or hours (1h); with none, mend wait waits as long as the command runs. Stopped by a signal, it exits 128 + its number (130 for Ctrl+C), and the command keeps running. The timeout covers everything: finding the session, every read and every retry. --json then prints the last state read, and nothing more is asked of the server.",
       "<session> is the session id, a prefix of it, or the worktree's name. With none, the one live session is taken.",
     ],
     options: [
-      { flag: "--timeout <seconds>", text: "give up after this long; exit 124" },
+      { flag: "--timeout <duration>", text: "give up after this long (90, 90s, 5m, 1h); exit 124" },
       {
         flag: "--process <id>",
         text: "wait for this process of the session, by a prefix of its id",
@@ -602,18 +610,22 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     section: "services",
     summary: "start and supervise a server in the session's workspace",
     synopsis: [
-      "[session] --port <port> [--name <n>] [--udp] [--http|--https] [--wait] [--no-connect] -- <command...>",
-      "[session] <name> [--wait] [--no-connect]",
+      "[session] --port <port> [--name <n>] [--udp] [--http|--https] [--wait [--timeout <duration>]] [--no-connect] -- <command...>",
+      "[session] <name> [--wait [--timeout <duration>]] [--no-connect]",
     ],
     description: [
       "With --, the command after it is started in the workspace and supervised: its output is recorded, and mend service restart re-runs it. Without --, the name is a Service declared in the worktree's mend.toml. mend service <name> is the shorthand for that.",
-      "Mend waits up to a minute for the port to answer before it returns. --wait makes the exit status say how that ended: 0 once the port answered, 1 when it did not, and 124 when the server gave no answer within 90 seconds. The Service keeps running in every case. A waited start returns and opens no tunnel; mend service connect reaches the port. UDP has no probe, and a recipe that declares only a port is adopted with one probe, so --wait takes neither.",
+      "Mend waits up to a minute for the port to answer before it returns. --wait keeps waiting while the Service is still starting (its process runs and its port has not answered yet: building, installing, booting), however long that takes, up to --timeout (default 10 minutes). Mend probes a started Service's port every 20 seconds, so the wait ends at the first probe that answers. The exit status says how it ended: 0 the port answered; 1 Mend refused the start or could not be asked; 2 the Service's process ended before its port answered (the line says its status and exit code); 3 the session's workspace ended first; 124 the Service was still starting when the timeout passed, and it keeps starting. A waited start returns and opens no tunnel; mend service connect reaches the port. UDP has no probe, and a recipe that declares only a port is adopted with one probe, so --wait takes neither.",
       "The port is tunnelled to this machine's loopback as soon as it listens, unless --no-connect.",
     ],
     options: [
       {
         flag: "--wait",
-        text: "exit 1 when the port did not answer, 124 with no answer in 90 s; no tunnel",
+        text: "return once the port answers: 0; process ended 2, workspace ended 3; no tunnel",
+      },
+      {
+        flag: "--timeout <duration>",
+        text: "bound --wait (90, 90s, 5m, 1h); still starting then exits 124. Default: 10m",
       },
       { flag: "--port <port>", text: "the port the command listens on inside the workspace" },
       { flag: "--name <n>", text: "the service's name. Default: the command" },
@@ -624,8 +636,12 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     examples: [
       { command: "mend service run --port 3000 -- pnpm dev", text: "" },
       { command: "mend service web", text: "the Service named web in mend.toml" },
+      {
+        command: "mend service run web --wait --timeout 15m",
+        text: "returns once web answers; 124 if it is still starting after 15 minutes",
+      },
     ],
-    see: ["service init", "service connect", "service logs"],
+    see: ["service init", "service connect", "service logs", "logs"],
   },
   {
     name: "service add",
@@ -658,9 +674,13 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     name: "service list",
     section: "services",
     summary: "every live service and its observed state",
-    synopsis: [],
-    description: ["Name, session, port, whether it listens, and where it is reachable from here."],
-    see: ["service run", "service connect"],
+    synopsis: ["[--json]"],
+    description: [
+      "Name, observed state, port, the Service's id and its current attempt's process id, and where it is reachable from here. The process id is what mend logs --process and mend wait --process take; mend logs --service takes the Service's name or id. An adopted port has no process.",
+      "With --json, stdout carries one JSON object: version 1, and services, each with id, name, sessionId, processId (null for an adopted port), status as last observed, workspacePort, protocol (tcp or udp), and hostPort, authority and browserUrl (null when not bound).",
+    ],
+    options: [{ flag: "--json", text: "print the Services as JSON" }],
+    see: ["service run", "service connect", "logs"],
   },
   {
     name: "service logs",
