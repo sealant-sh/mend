@@ -1,6 +1,6 @@
 import { execFile, spawn } from "node:child_process";
 
-import { redactUrlCredentials } from "@mend/domain/workbench";
+import { redactRepositoryUrl, redactUrlCredentials } from "@mend/domain/workbench";
 import { Effect, Schema } from "effect";
 
 /** A git invocation that exited nonzero (or could not run at all). */
@@ -25,7 +25,7 @@ export class GitError extends Schema.TaggedErrorClass<GitError>()("GitError", {
 const gitError = (fields: ConstructorParameters<typeof GitError>[0]): GitError =>
   new GitError({
     ...fields,
-    args: fields.args.map(redactUrlCredentials),
+    args: fields.args.map(redactRepositoryUrl),
     stderr: redactUrlCredentials(fields.stderr),
   });
 

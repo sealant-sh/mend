@@ -1,5 +1,5 @@
 import { ReferenceId, type OrganizationId, type ProjectId, type Sha } from "@mend/domain";
-import { Reference, redactUrlCredentials } from "@mend/domain/workbench";
+import { Reference, redactRepositoryUrl } from "@mend/domain/workbench";
 import { and, asc, eq, inArray } from "drizzle-orm";
 import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
@@ -66,7 +66,7 @@ export class ReferencesRepo extends Context.Service<
 
 // A credential in the URL never leaves here, whatever an older server stored.
 const toReference = (row: typeof referenceRepos.$inferSelect): Reference =>
-  new Reference({ ...row, originUrl: redactUrlCredentials(row.originUrl) });
+  new Reference({ ...row, originUrl: redactRepositoryUrl(row.originUrl) });
 
 export const ReferencesRepoLive: Layer.Layer<ReferencesRepo, never, MendDB> = Layer.effect(
   ReferencesRepo,
@@ -78,7 +78,7 @@ export const ReferencesRepoLive: Layer.Layer<ReferencesRepo, never, MendDB> = La
         .insert(referenceRepos)
         .values({
           ...reference,
-          originUrl: redactUrlCredentials(reference.originUrl),
+          originUrl: redactRepositoryUrl(reference.originUrl),
           refreshedAt: new Date(),
         })
         .returning()

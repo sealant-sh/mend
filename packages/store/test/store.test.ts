@@ -405,18 +405,49 @@ describe("Store", () => {
         );
         config("remote.mirror.url", "https://ghp_TOKEN-SECRET@example.invalid/o/r.git");
         config("remote.login.url", "ssh://git:TOKEN-SECRET@example.invalid/o/r.git");
+        // Quotes and angle brackets are userinfo like any other character (review of mend#640).
+        config("remote.quoted.url", "http://user:se'cret<TOKEN-SECRET>@example.invalid/o/r.git");
 
-        expect(yield* store.scrubRemoteCredentials(adopted.storePath)).toBe(3);
+        expect(yield* store.scrubRemoteCredentials(adopted.storePath)).toBe(4);
         const remotes = config("--get-regexp", String.raw`^remote\.`);
         expect(remotes).not.toContain("TOKEN-SECRET");
         expect(remotes).toContain(`remote.origin.url ${source}`);
         expect(remotes).toContain("remote.origin.pushurl https://example.invalid/o/r.git");
         expect(remotes).toContain("remote.mirror.url https://example.invalid/o/r.git");
         expect(remotes).toContain("remote.login.url ssh://git@example.invalid/o/r.git");
+        expect(remotes).toContain("remote.quoted.url http://example.invalid/o/r.git");
 
         expect(yield* store.scrubRemoteCredentials(adopted.storePath)).toBe(0);
         // The origin that needed no credential still fetches.
         yield* store.refreshFromOrigin(adopted.storePath, {});
+      }),
+    );
+  });
+
+  it("refuses to fetch or open a worktree while a remote still holds a token, and cleans it first once it can", async () => {
+    await withStore((_tmp, _origin, source) =>
+      Effect.gen(function* () {
+        const store = yield* Store;
+        const adopted = yield* store.adopt("gated", source, {});
+        const config = (...args: ReadonlyArray<string>) =>
+          execFileSync("git", ["config", ...args], { cwd: adopted.storePath, encoding: "utf8" });
+        config("remote.origin.pushurl", "https://user:se'TOKEN-SECRET@example.invalid/o/r.git");
+        // Another git holds the config for longer than the gate waits: nothing runs with the token.
+        const lock = path.join(adopted.storePath, "config.lock");
+        fs.writeFileSync(lock, "");
+        const refused = yield* store.refreshFromOrigin(adopted.storePath, {}).pipe(Effect.flip);
+        expect(refused.stderr).toContain("has not yet removed a login or token");
+        expect(JSON.stringify(refused)).not.toContain("TOKEN-SECRET");
+        const worktree = yield* store
+          .createWorktree(adopted.storePath, wtIdentity("gated"), null, null)
+          .pipe(Effect.flip);
+        expect(worktree.stderr).toContain("has not yet removed a login or token");
+        // The lock goes: the next fetch cleans the remote first, then runs.
+        fs.rmSync(lock);
+        yield* store.refreshFromOrigin(adopted.storePath, {});
+        expect(config("--get", "remote.origin.pushurl").trim()).toBe(
+          "https://example.invalid/o/r.git",
+        );
       }),
     );
   });

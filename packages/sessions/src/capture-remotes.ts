@@ -1,6 +1,6 @@
 import { ProjectsRepo } from "@mend/db";
 import type { ProjectId } from "@mend/domain";
-import { redactUrlCredentials } from "@mend/domain/workbench";
+import { redactRepositoryUrl } from "@mend/domain/workbench";
 import { Effect, Layer } from "effect";
 import * as Context from "effect/Context";
 
@@ -38,9 +38,9 @@ export const CaptureRemotesOff: Layer.Layer<CaptureRemotes> = Layer.succeed(Capt
  * adopted origin from before 0.36 can hold a credential in its user part: `https://user:token@host/…`,
  * `https://x-access-token:ghs_…@host/…`, `https://oauth2:glpat-…@host/…`, or a token alone as the
  * user name, `https://ghp_…@github.com/…` (review of mend#555, P2-2). Nothing secret enters a
- * workspace: the rule is `redactUrlCredentials`, the one every project read applies.
+ * workspace: the rule is `redactRepositoryUrl`, the one every project read applies.
  */
-export const workspaceRemoteUrl = (originUrl: string): string => redactUrlCredentials(originUrl);
+export const workspaceRemoteUrl = (originUrl: string): string => redactRepositoryUrl(originUrl);
 
 export const CaptureRemotesLive: Layer.Layer<CaptureRemotes, never, ProjectsRepo> = Layer.effect(
   CaptureRemotes,

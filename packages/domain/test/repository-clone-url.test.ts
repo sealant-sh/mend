@@ -3,6 +3,7 @@ import { FastCheck } from "effect/testing";
 import { describe, expect, it } from "vitest";
 
 import {
+  redactRepositoryUrl,
   redactUrlCredentials,
   REPOSITORY_URL_CREDENTIAL_GUIDANCE,
   repositoryUrlHasCredential,
@@ -200,11 +201,66 @@ describe("a credential in a repository URL", () => {
     );
   });
 
-  it("never leaves a generated token behind", () => {
+  it("reads userinfo whatever it holds: quotes, angle brackets, spaces, unicode, escapes", () => {
+    const cases: ReadonlyArray<readonly [string, string]> = [
+      // The reviewer's case: a real HTTP Basic clone accepted this before (review of mend#640).
+      ["http://user:se'cret@127.0.0.1:8080/origin.git", "http://127.0.0.1:8080/origin.git"],
+      ['https://user:se"cret@github.com/o/r.git', "https://github.com/o/r.git"],
+      ["https://user:<secret>@github.com/o/r.git", "https://github.com/o/r.git"],
+      ["https://us er:pa ss@github.com/o/r.git", "https://github.com/o/r.git"],
+      ["https://ünï:pässwörd🔑@github.com/o/r.git", "https://github.com/o/r.git"],
+      ["https://us%40er:p%3As%22s@github.com/o/r.git", "https://github.com/o/r.git"],
+      ["https://a@b:c@d@github.com/o/r.git", "https://github.com/o/r.git"],
+      ["ssh://git:se'cret@host.example/r.git", "ssh://git@host.example/r.git"],
+    ];
+    for (const [stored, shown] of cases) {
+      expect(repositoryUrlHasCredential(stored), stored).toBe(true);
+      expect(redactRepositoryUrl(stored), stored).toBe(shown);
+      expect(repositoryCloneUrlIssue(stored), stored).not.toBeNull();
+      expect(Result.isFailure(decode(stored)), stored).toBe(true);
+    }
+    // In free text, whitespace ends a URL: one with none in it is redacted where it stands.
+    expect(
+      redactUrlCredentials(
+        "fatal: unable to access 'http://user:se'cret<x>@127.0.0.1/origin.git/': 401",
+      ),
+    ).toBe("fatal: unable to access 'http://127.0.0.1/origin.git/': 401");
+  });
+
+  // Anything but the characters that end an authority (`/`, `?`, `#`) can be userinfo.
+  const userinfoPart = FastCheck.string({ unit: "binary", maxLength: 24 }).filter(
+    (value) => !/[/?#]/u.test(value),
+  );
+  const host = FastCheck.constantFrom("github.com", "git.example.test:8443", "127.0.0.1", "[::1]");
+
+  it("finds and removes any generated credential, as one URL and inside text", () => {
     FastCheck.assert(
-      FastCheck.property(segment, segment, networkUrl, (user, token, url) => {
-        const withToken = url.replace("://", `://${user}:${token}@`).replace("git@", "");
-        expect(redactUrlCredentials(withToken)).not.toContain(`:${token}@`);
+      FastCheck.property(
+        userinfoPart,
+        userinfoPart,
+        host,
+        FastCheck.constantFrom("https", "http", "git"),
+        (user, password, at, scheme) => {
+          const clean = `${scheme}://${at}/org/repo.git`;
+          const stored = `${scheme}://${user}:${password}@${at}/org/repo.git`;
+          expect(repositoryUrlHasCredential(stored)).toBe(true);
+          expect(redactRepositoryUrl(stored)).toBe(clean);
+          expect(repositoryUrlHasCredential(redactRepositoryUrl(stored))).toBe(false);
+          if (!/\s/u.test(stored)) {
+            expect(redactUrlCredentials(`clone '${stored}' failed`)).toBe(
+              `clone '${clean}' failed`,
+            );
+          }
+        },
+      ),
+    );
+  });
+
+  it("keeps an ssh login and removes only what follows it", () => {
+    FastCheck.assert(
+      FastCheck.property(segment, userinfoPart, (login, password) => {
+        const stored = `ssh://${login}:${password}@host.example/repo.git`;
+        expect(redactRepositoryUrl(stored)).toBe(`ssh://${login}@host.example/repo.git`);
       }),
     );
   });

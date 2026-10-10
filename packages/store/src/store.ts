@@ -3,11 +3,11 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import { Sha } from "@mend/domain";
-import { RepositoryCloneUrl, redactUrlCredentials } from "@mend/domain/workbench";
-import { Effect, Layer, Schema } from "effect";
+import { RepositoryCloneUrl, redactRepositoryUrl } from "@mend/domain/workbench";
+import { Effect, Layer, Schedule, Schema } from "effect";
 import * as Context from "effect/Context";
 
-import { git, GitError } from "./git.ts";
+import { git, GitError, gitHostFaultWords } from "./git.ts";
 import {
   type BundleEmptyError,
   type BundleInput,
@@ -591,7 +591,7 @@ export class Store extends Context.Service<
     readonly removeReference: (clonePath: string) => Effect.Effect<void>;
     /**
      * Take the credential out of every remote URL of the repository at `gitDir` (a project's bare
-     * store, a reference clone), as `redactUrlCredentials` does: servers before 0.36 cloned the
+     * store, a reference clone), as `redactRepositoryUrl` does: servers before 0.36 cloned the
      * URL as typed, token included, and git keeps it in the repository's config, which a
      * workspace can read. Answers the number of URLs it rewrote. A remote that needed the token
      * will no longer fetch; the caller says so.
@@ -716,6 +716,56 @@ export class Store extends Context.Service<
         );
       });
 
+      const scrubRemoteCredentials = Effect.fn("Store.scrubRemoteCredentials")(function* (
+        gitDir: string,
+      ) {
+        // `--get-regexp` exits 1 when no remote has a URL: nothing to scrub.
+        const listed = yield* git(
+          ["config", "--local", "--get-regexp", String.raw`^remote\..*\.(url|pushurl)$`],
+          gitDir,
+          undefined,
+          [1],
+        );
+        let rewritten = 0;
+        for (const line of listed.split("\n")) {
+          const space = line.indexOf(" ");
+          if (space === -1) continue;
+          const key = line.slice(0, space);
+          const url = line.slice(space + 1);
+          const redacted = redactRepositoryUrl(url);
+          if (redacted === url) continue;
+          // `--fixed-value`: replace exactly this value, never another URL under the same key.
+          yield* git(
+            ["config", "--local", "--fixed-value", "--replace-all", key, redacted, url],
+            gitDir,
+          );
+          rewritten += 1;
+        }
+        return rewritten;
+      });
+
+      /**
+       * The gate in front of every git that uses or exposes a remote of `gitDir` (a fetch, a push,
+       * a worktree a workspace mounts): its remotes hold no credential, or nothing runs. A config
+       * another git holds locked is waited for briefly; a remote that still cannot be cleaned
+       * refuses the op with the reason, and the worker's sweep keeps trying
+       * (docs/GIT-ACCESS.md, "Credentials in repository URLs").
+       */
+      const cleanRemotes = Effect.fn("Store.cleanRemotes")(function* (gitDir: string) {
+        yield* scrubRemoteCredentials(gitDir).pipe(
+          Effect.retry({ schedule: Schedule.spaced("100 millis"), times: 10 }),
+          Effect.mapError(
+            (cause) =>
+              new GitError({
+                args: ["mend", "remote-credentials"],
+                cwd: gitDir,
+                exitCode: cause.exitCode,
+                stderr: `Mend has not yet removed a login or token from this repository's git remotes (${gitHostFaultWords(cause)}), so it does not fetch, push or open a worktree with them. It keeps trying; adopt the repository again from its SSH URL if this persists.`,
+              }),
+          ),
+        );
+      });
+
       /**
        * Freshen one base ref from the project origin before resolving it — best-effort by
        * contract: a session must start offline, on a disconnected bridge, or against a gone
@@ -728,7 +778,8 @@ export class Store extends Context.Service<
         remoteEnv: Record<string, string> | null,
       ) {
         if (remoteEnv === null) return;
-        yield* git(["fetch", "origin", baseRef], storePath, remoteEnv).pipe(
+        yield* cleanRemotes(storePath).pipe(
+          Effect.andThen(git(["fetch", "origin", baseRef], storePath, remoteEnv)),
           Effect.tapError((error) =>
             Effect.logDebug("store: base freshen skipped").pipe(
               Effect.annotateLogs({ storePath, baseRef, stderr: error.stderr }),
@@ -756,7 +807,10 @@ export class Store extends Context.Service<
         return yield* tryResolve(`refs/remotes/origin/${baseRef}`).pipe(
           Effect.catch(() => tryResolve(baseRef)),
           Effect.catch(() =>
-            git(["fetch", "origin"], storePath, remoteEnv ?? { GIT_TERMINAL_PROMPT: "0" }).pipe(
+            cleanRemotes(storePath).pipe(
+              Effect.andThen(
+                git(["fetch", "origin"], storePath, remoteEnv ?? { GIT_TERMINAL_PROMPT: "0" }),
+              ),
               Effect.ignore,
               Effect.andThen(
                 tryResolve(baseRef).pipe(Effect.catch(() => tryResolve(`origin/${baseRef}`))),
@@ -781,6 +835,8 @@ export class Store extends Context.Service<
         base: string | null,
         remoteEnv: Record<string, string> | null,
       ) {
+        // The worktree's admin dir, and on the co-located store the whole store, reach a workspace.
+        yield* cleanRemotes(storePath);
         // Idempotent: stores adopted before the exclude or shared-group policies get them here.
         yield* ensureExcludes(storePath);
         yield* ensureSharedGroup(storePath);
@@ -835,6 +891,7 @@ export class Store extends Context.Service<
         remoteEnv: Record<string, string> | null,
       ) {
         const worktreePath = path.join(path.dirname(storePath), "worktrees", name);
+        yield* cleanRemotes(storePath);
         const baseRef = base ?? (yield* git(["symbolic-ref", "--short", "HEAD"], storePath));
         yield* freshenBase(storePath, baseRef, remoteEnv);
         const baseSha = yield* resolveBaseSha(storePath, baseRef, remoteEnv);
@@ -853,6 +910,7 @@ export class Store extends Context.Service<
         // landings push `mend/*` to origin (docs/adr/0007-landing.md), so the negative refspec
         // keeps origin's `mend/*` from overwriting, or refusing to fetch into, a session branch a
         // worktree has checked out.
+        yield* cleanRemotes(storePath);
         yield* git(
           [
             "fetch",
@@ -1162,7 +1220,7 @@ export class Store extends Context.Service<
         return yield* attempt.pipe(
           Effect.catch((cause) =>
             Effect.fail(
-              new ReferenceCloneError({ name, source: redactUrlCredentials(source), cause }),
+              new ReferenceCloneError({ name, source: redactRepositoryUrl(source), cause }),
             ),
           ),
         );
@@ -1176,39 +1234,13 @@ export class Store extends Context.Service<
         // No pin = follow whatever branch the clone is on. FETCH_HEAD + hard
         // reset handles branches and tags uniformly, force-pushes included —
         // a reference clone has no local work to protect.
+        // A reference clone is mounted into co-located workspaces, its config included.
+        yield* cleanRemotes(clonePath);
         const target = ref ?? (yield* git(["symbolic-ref", "--short", "HEAD"], clonePath));
         yield* git(["fetch", "--depth", "1", "origin", target], clonePath, remoteEnv);
         yield* git(["reset", "--hard", "FETCH_HEAD"], clonePath);
         const head = yield* git(["rev-parse", "HEAD"], clonePath);
         return { path: clonePath, headSha: sha(head) };
-      });
-
-      const scrubRemoteCredentials = Effect.fn("Store.scrubRemoteCredentials")(function* (
-        gitDir: string,
-      ) {
-        // `--get-regexp` exits 1 when no remote has a URL: nothing to scrub.
-        const listed = yield* git(
-          ["config", "--local", "--get-regexp", String.raw`^remote\..*\.(url|pushurl)$`],
-          gitDir,
-          undefined,
-          [1],
-        );
-        let rewritten = 0;
-        for (const line of listed.split("\n")) {
-          const space = line.indexOf(" ");
-          if (space === -1) continue;
-          const key = line.slice(0, space);
-          const url = line.slice(space + 1);
-          const redacted = redactUrlCredentials(url);
-          if (redacted === url) continue;
-          // `--fixed-value`: replace exactly this value, never another URL under the same key.
-          yield* git(
-            ["config", "--local", "--fixed-value", "--replace-all", key, redacted, url],
-            gitDir,
-          );
-          rewritten += 1;
-        }
-        return rewritten;
       });
 
       const removeReference = Effect.fn("Store.removeReference")(function* (clonePath: string) {
@@ -1231,6 +1263,7 @@ export class Store extends Context.Service<
       });
 
       const push = Effect.fn("Store.push")(function* (storePath: string, input: PushInput) {
+        yield* cleanRemotes(storePath);
         return yield* pushBranch(storePath, input);
       });
 
@@ -1238,6 +1271,7 @@ export class Store extends Context.Service<
         storePath: string,
         input: ProbeInput,
       ) {
+        yield* cleanRemotes(storePath);
         return yield* probeRemoteBranch(storePath, input);
       });
 

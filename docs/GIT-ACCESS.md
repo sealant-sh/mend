@@ -118,10 +118,18 @@ Since 0.36 (found in the review of mend#611), Mend never stores, returns or logs
 with a credential in it. A URL is a credential carrier when it has a password (any scheme) or a user
 over any scheme but ssh: over HTTP(S) the user is where tokens go (`https://oauth2:TOKEN@…`,
 `https://ghp_…@github.com/…`), over ssh it is the login (`ssh://git@host/…`, `git@host:path`) and
-stays. One rule, `redactUrlCredentials` in `@mend/domain`, decides everywhere:
+stays. One parser in `@mend/domain` (`repository-url.ts`) decides everywhere. It reads an authority
+as RFC 3986 does: from `scheme://` to the next `/`, `?` or `#`, with everything before the last `@`
+as userinfo, whatever characters it holds (quotes, angle brackets, spaces, unicode, `%`-escapes); no
+character class decides what a credential may contain (review of mend#640). Detection also asks a
+URL parser, and either finding one is enough. `redactRepositoryUrl` handles one URL (a stored
+origin, a git remote, an argument); `redactUrlCredentials` handles free text, where whitespace also
+ends a URL.
 
 - **Refused where it enters.** `repositoryCloneUrlIssue` refuses such a URL with guidance that names
-  the supported ways (`mend keys`, `--auth bridge`). It backs the adopt payload's schema, every
+  the supported ways (`mend keys`, `--auth bridge`). The adopt route checks it before anything else
+  and answers `StoreFailure` with that sentence and never the URL; the payload's `source` is a plain
+  string so that a client from before the rule reads the reason, not a bare 400. It also backs every
   client's local check (CLI, dashboard, web, phone, VS Code) and `SourcePolicy.check`, which every
   adopt, refresh and reference clone passes. Dotfiles keep their own message
   (`dotfilesRepositoryUrlCredentialIssue`), on the same rule.
@@ -133,7 +141,13 @@ stays. One rule, `redactUrlCredentials` in `@mend/domain`, decides everywhere:
   strips URL credentials from every log line (`RedactingConsoleLive`).
 - **Existing data.** Migration 0121 strips project and reference origins and both dotfiles columns.
   At each worker start `RemoteCredentialScrubLive` rewrites any remote URL (`url`, `pushurl`) in a
-  project store or reference clone that still carries one, and logs the names it changed.
+  project store or reference clone that still carries one, and logs the names it changed. A
+  repository it cannot clean yet (a config another git holds locked) is retried, 1 s doubling to
+  every 5 minutes, until it is.
+- **Gated until clean.** Every store op that uses or exposes a repository's remotes (a fetch, a
+  push, a probe, a reference refresh, opening or resetting a worktree) first cleans them
+  (`Store.cleanRemotes`), waiting about a second for a held lock. A remote that still cannot be
+  cleaned refuses the op with that reason; nothing fetches, pushes or mounts with the token.
 
 Why refuse rather than keep the token sealed beside the URL: Mend holds no HTTPS credential of an
 account's, and a token in a project's URL is the adopter's credential spent by everyone who works in

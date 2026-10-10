@@ -7,7 +7,7 @@ import { ProjectsRepo, ReferencesRepo } from "@mend/db";
 import { OrganizationId, ProjectId, ReferenceId } from "@mend/domain";
 import { Reference } from "@mend/domain/workbench";
 import { Store, StoreConfig } from "@mend/store";
-import { Effect, Layer } from "effect";
+import { Effect, Layer, Schedule } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { makeProject } from "../test/support/tenancy-harness.ts";
@@ -89,13 +89,48 @@ describe("scrubRemoteCredentials", () => {
       }),
     );
 
-    const first = await Effect.runPromise(scrubRemoteCredentials.pipe(Effect.provide(layer)));
+    const first = await Effect.runPromise(scrubRemoteCredentials().pipe(Effect.provide(layer)));
     expect(first).toEqual({ projects: ["leaky"], references: ["docs"] });
     expect(originOf(leaky)).toBe("https://gitlab.com/org/leaky.git");
     expect(originOf(clean)).toBe("git@github.com:org/clean.git");
     expect(originOf(reference)).toBe("https://github.com/org/docs.git");
 
-    const again = await Effect.runPromise(scrubRemoteCredentials.pipe(Effect.provide(layer)));
+    const again = await Effect.runPromise(scrubRemoteCredentials().pipe(Effect.provide(layer)));
     expect(again).toEqual({ projects: [], references: [] });
+  });
+
+  it("retries a repository whose config another git holds locked, until its remote is clean", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mend-remote-scrub-lock-"));
+    scratches.push(root);
+    const locked = repositoryWithOrigin(
+      root,
+      "locked.git",
+      "https://user:LOCK-SECRET@example.invalid/repo.git",
+    );
+    const lock = path.join(locked, "config.lock");
+    fs.writeFileSync(lock, "");
+    const layer = Layer.mergeAll(
+      Store.layer.pipe(Layer.provide(StoreConfig.layerFor(root))),
+      Layer.mock(ProjectsRepo, {
+        listAll: () =>
+          Effect.succeed([
+            makeProject({
+              id: ProjectId.make("locked"),
+              organizationId: ORG,
+              visibility: "shared",
+              createdByUserId: null,
+              storePath: locked,
+            }),
+          ]),
+      }),
+      Layer.mock(ReferencesRepo, { listAll: () => Effect.succeed([]) }),
+    );
+    // Another git lets go of the config a moment after the sweep's first attempt.
+    setTimeout(() => fs.rmSync(lock, { force: true }), 150);
+    const result = await Effect.runPromise(
+      scrubRemoteCredentials(Schedule.spaced("25 millis")).pipe(Effect.provide(layer)),
+    );
+    expect(result).toEqual({ projects: ["locked"], references: [] });
+    expect(originOf(locked)).toBe("https://example.invalid/repo.git");
   });
 });

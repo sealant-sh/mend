@@ -1,4 +1,4 @@
-import { redactUrlCredentials } from "@mend/domain/workbench";
+import { redactRepositoryUrl } from "@mend/domain/workbench";
 import { Effect } from "effect";
 import { SqlClient } from "effect/unstable/sql";
 
@@ -3395,7 +3395,7 @@ const sshKeyRevocationsMigration = Effect.gen(function* () {
  * No login or token in a stored repository URL (docs/GIT-ACCESS.md, "Credentials in repository
  * URLs"). Servers before 0.36 stored an adopted URL as typed, `https://oauth2:TOKEN@host/…`
  * included, and returned it to everyone who could see the project. Every URL Mend stores loses its
- * credential the way `redactUrlCredentials` takes it (the whole userinfo; over ssh, the password
+ * credential the way `redactRepositoryUrl` takes it (the whole userinfo; over ssh, the password
  * only): project origins, reference origins, the dotfiles repository a person saved and the one
  * each session was stamped with. Only rows that change are written. The git remotes in the store
  * are the server's to fix at start (`RemoteCredentialScrubLive`): a migration runs no git.
@@ -3406,14 +3406,14 @@ const repositoryUrlCredentialsMigration = Effect.gen(function* () {
   const projects = yield* sql<{ readonly id: string; readonly url: string }>`
     SELECT id, origin_url AS url FROM projects WHERE origin_url LIKE '%://%@%'`;
   for (const row of projects) {
-    const redacted = redactUrlCredentials(row.url);
+    const redacted = redactRepositoryUrl(row.url);
     if (redacted === row.url) continue;
     yield* sql`UPDATE projects SET origin_url = ${redacted} WHERE id = ${row.id}`;
   }
   const referenceRows = yield* sql<{ readonly id: string; readonly url: string }>`
     SELECT id, origin_url AS url FROM reference_repos WHERE origin_url LIKE '%://%@%'`;
   for (const row of referenceRows) {
-    const redacted = redactUrlCredentials(row.url);
+    const redacted = redactRepositoryUrl(row.url);
     if (redacted === row.url) continue;
     yield* sql`UPDATE reference_repos SET origin_url = ${redacted} WHERE id = ${row.id}`;
   }
@@ -3421,7 +3421,7 @@ const repositoryUrlCredentialsMigration = Effect.gen(function* () {
     SELECT user_id AS id, repository->>'url' AS url FROM user_dotfiles
     WHERE repository->>'url' LIKE '%://%@%'`;
   for (const row of dotfiles) {
-    const redacted = redactUrlCredentials(row.url);
+    const redacted = redactRepositoryUrl(row.url);
     if (redacted === row.url) continue;
     yield* sql`
       UPDATE user_dotfiles SET repository = jsonb_set(repository, '{url}', to_jsonb(${redacted}::text))
@@ -3431,7 +3431,7 @@ const repositoryUrlCredentialsMigration = Effect.gen(function* () {
     SELECT id, dotfiles->'repository'->>'url' AS url FROM agent_sessions
     WHERE dotfiles->'repository'->>'url' LIKE '%://%@%'`;
   for (const row of stamped) {
-    const redacted = redactUrlCredentials(row.url);
+    const redacted = redactRepositoryUrl(row.url);
     if (redacted === row.url) continue;
     yield* sql`
       UPDATE agent_sessions

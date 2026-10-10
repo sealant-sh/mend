@@ -21,24 +21,14 @@ describe("AdoptProject", () => {
 
   it.each([
     "/srv/repos/mend",
-    "../mend",
-    "file:///srv/repos/mend",
-    "C:/repos/mend",
-    "C:repos/mend",
-    "--upload-pack=foo@host:repo",
-    "ext::/bin/false",
-    "custom::https://host/repo",
-    "https:///host/repo",
-  ])("rejects non-network source %s at API ingestion", (source) => {
-    expect(() => decode({ name: "mend", source })).toThrow(/Local paths and file:\/\//);
-  });
-
-  it.each([
     "https://oauth2:TOKEN@github.com/sealant-sh/Mend.git",
-    "https://ghp_TOKEN@github.com/sealant-sh/Mend.git",
-  ])("rejects a source that carries a login or token, %s, pointing at mend keys", (source) => {
-    expect(() => decode({ name: "mend", source })).toThrow(/mend keys/);
-  });
+    "http://user:se'cret@github.com/sealant-sh/Mend.git",
+  ])(
+    "leaves %s to the route, which refuses it with its reason rather than a bare 400",
+    (source) => {
+      expect(decode({ name: "mend", source }).source).toBe(source);
+    },
+  );
 });
 
 describe("errorStatusByTag", () => {

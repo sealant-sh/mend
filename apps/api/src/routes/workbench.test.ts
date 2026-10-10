@@ -20,6 +20,8 @@ import { OrganizationId, ProjectId, SessionId, Sha, WorktreeId } from "@mend/dom
 import {
   Organization,
   Project,
+  REPOSITORY_CLONE_URL_GUIDANCE,
+  REPOSITORY_URL_CREDENTIAL_GUIDANCE,
   Session,
   Worktree,
   type SessionStatus,
@@ -42,6 +44,7 @@ import { HttpApi, HttpApiBuilder } from "effect/unstable/httpapi";
 import { describe, expect, it } from "vitest";
 
 import { ProjectAccess, ProjectAccessLive } from "../access.ts";
+import { errorBoundary } from "../error-boundary.ts";
 import { GithubIdentity } from "../github-identity.ts";
 import { TenancyConfig } from "../tenancy.ts";
 import { AuthMiddlewareLive } from "./api-live.ts";
@@ -385,11 +388,14 @@ const requestRoute = async (
     ),
   );
   const authMiddlewareLayer = AuthMiddlewareLive.pipe(Layer.provide(authLayer));
-  const apiLayer = HttpApiBuilder.layer(ProjectsApi).pipe(
-    Layer.provide(ProjectsGroupLive),
-    Layer.provide(authMiddlewareLayer),
-    Layer.provide(HttpServer.layerServices),
-  );
+  // The production error boundary, so an error body reads as a client would read it.
+  const apiLayer = Layer.mergeAll(
+    HttpApiBuilder.layer(ProjectsApi).pipe(
+      Layer.provide(ProjectsGroupLive),
+      Layer.provide(authMiddlewareLayer),
+    ),
+    errorBoundary({ mode: "redacted" }),
+  ).pipe(Layer.provide(HttpServer.layerServices));
   const dependenciesRuntime = ManagedRuntime.make(projectRouteDependencies);
   const { handler, dispose } = HttpRouter.toWebHandler(apiLayer, { disableLogger: true });
 
@@ -560,18 +566,41 @@ describe("GET /projects/:id response", () => {
     expect(JSON.stringify(body)).not.toContain(existing.storePath);
   });
 
-  it("refuses to adopt a URL with a login or token, and clones nothing", async () => {
-    // The mocked store has no `adopt`: reaching it would answer 500, not the decode's 400.
+  it.each([
+    "https://oauth2:TOKEN-SECRET@github.com/org/leaky.git",
+    "https://ghp_TOKEN-SECRET@github.com/org/leaky.git",
+    "http://user:se'TOKEN-SECRET@github.com/org/leaky.git",
+    'https://user:"TOKEN-SECRET"@github.com/org/leaky.git',
+    "https://user:<TOKEN-SECRET>@github.com/org/leaky.git",
+  ])(
+    "refuses to adopt %s with the guidance an older client can show, clones nothing, and never echoes it",
+    async (source) => {
+      // The mocked store has no `adopt`: reaching it would answer 500.
+      const { response } = await requestProject(makeWorld([]), "/api/projects", AUTHORIZATION, {
+        method: "POST",
+        body: JSON.stringify({ name: "leaky", source }),
+      });
+      const body = await response.text();
+      expect(response.status).toBe(422);
+      expect(JSON.parse(body)).toEqual({
+        _tag: "StoreFailure",
+        message: REPOSITORY_URL_CREDENTIAL_GUIDANCE,
+      });
+      expect(body).not.toContain("TOKEN-SECRET");
+      expect(body).not.toContain("leaky.git");
+    },
+  );
+
+  it("refuses a local path at adoption with its reason, not a bare 400", async () => {
     const { response } = await requestProject(makeWorld([]), "/api/projects", AUTHORIZATION, {
       method: "POST",
-      body: JSON.stringify({
-        name: "leaky",
-        source: "https://oauth2:TOKEN-SECRET@github.com/org/leaky.git",
-      }),
+      body: JSON.stringify({ name: "local", source: "/srv/repos/local" }),
     });
-    const body = await response.text();
-    expect(response.status).toBe(400);
-    expect(body).not.toContain("TOKEN-SECRET");
+    expect(response.status).toBe(422);
+    expect(await response.json()).toEqual({
+      _tag: "StoreFailure",
+      message: REPOSITORY_CLONE_URL_GUIDANCE,
+    });
   });
 
   it("counts the Services that keep a session's workspace up", async () => {
