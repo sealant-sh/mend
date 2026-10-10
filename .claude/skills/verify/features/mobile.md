@@ -161,7 +161,10 @@ Preconditions:
   Within thirty seconds run
   `await page.goto("<web>/tty-embed?session=<live session id>&ticket=<ticket>")`. The terminal fills
   the page; `connecting…` shows until the socket opens. Reloading the same URL spends nothing new:
-  `/api/upgrade-tickets/exchange` answers 401 and the page posts `mend:embed-expired` to its host.
+  `/api/upgrade-tickets/exchange` answers 401 (twice) and the page reads
+  `connection lost — reconnecting automatically`. It posts `mend:embed-expired` only to a host: a
+  React Native WebView, or a parent frame (`apps/web/src/components/terminal.tsx:80-89`). Loaded at
+  the top level, as here, it posts nothing.
 - **Clear settled.** On Now, under `Recently settled`, tap `Clear settled`: it reads `Remove <n>?`;
   tap again. It reads `Removing…`, then the shelf empties of what the server removed. Run
   `mend sessions --project <project> --all --json` to see what remains.
@@ -172,6 +175,13 @@ Preconditions:
 
 ## Gotchas
 
+- On this branch the web build does not bundle: every route of `pnpm --filter @mend/mobile web`
+  answers HTTP 500, Metro reporting `Importing react-native internals is not supported on web` for
+  `ratex-react-native` (`lib/RaTeXViewNativeComponent.js` imports
+  `react-native/Libraries/Utilities/codegenNativeComponent`), pulled in through
+  `react-native-nitro-markdown` from `src/components/markdown`. A product gap: until it is fixed,
+  every phone step on the web build is unreachable; `/tty-embed` is a page of the web app and stays
+  drivable.
 - Most controls are `Pressable`s without a role. React Native Web renders them as focusable `div`s
   with no `button` role, so `getByRole("button")` finds only the few that set one: the session
   header's icon buttons (`Review the change`, `Diff`, `Shell`, `More actions`, …), `Now` in the wide

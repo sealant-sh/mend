@@ -136,6 +136,12 @@ Preconditions:
   `getByLabel("app-level token")` and `getByLabel("bot token")`, which their wrapping labels name.
 - `Your default project` is a select named by its `aria-label`; it appears only once the
   organization has a Slack app.
+- The refusal alerts carry the error's tag in front of the sentence:
+  `SlackRejected: The app-level token starts with xapp-. …` and
+  `SlackRejected: Slack refused the bot token (invalid_auth).` (2026-10-10). Match the sentence
+  inside the alert. A product gap: an internal error name shown to the person.
+- `/slack/link/<code>` renders no `main` landmark; scope its checks to the heading, not
+  `page.getByRole("main")`.
 - Clicking `Check and connect` with well-formed tokens calls Slack from the server. A stack without
   outbound network answers `Slack did not answer …`; that is the server's honest report, not a
   defect.

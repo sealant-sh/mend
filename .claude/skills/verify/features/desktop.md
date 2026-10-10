@@ -140,8 +140,10 @@ Preconditions:
   Close it with
   `await page.getByRole("complementary", { name: "Session Services" }).getByRole("button", { name: "Close" }).click()`.
 - **Palette.** Press `Control+Shift+P`. A dialog named `Sessions` opens with focus in its search
-  field. Type `<run-worktree>` and press `Enter`. The dialog closes and the `run · …` session's tab
-  is focused.
+  field. Type part of the `run · …` session's branch (`mend/wt/<id>` for an auto-named worktree) and
+  press `Enter`. The palette matches project, harness and branch, so the worktree name `wt-<id>`
+  from the `✓ worktree` line reads `no session matches`. The dialog closes and the `run · …`
+  session's tab is focused.
 - **Replay a settled session.** On the `run · …` tab the pane does not attach. It replays the record
   with a scrubber: the group `Replay checkpoints` holds one button per checkpoint, named
   `Replay from checkpoint <i>, seq <seq>`, the label reads `▶ replay · from seq <seq> · …`, and the
@@ -196,6 +198,9 @@ Preconditions:
   client starts, use the scratch environment for every CLI invocation and the app launch, and unset
   inherited `MEND_TOKEN`. Signing out of an owner's credential file revokes that device and empties
   the CLI's token too.
+- Clear `ELECTRON_RUN_AS_NODE` for the launch (`env -u ELECTRON_RUN_AS_NODE …`). A shell started
+  from another Electron app can inherit it, and the app then runs as plain Node and exits with
+  `The requested module 'electron' does not provide an export named 'BrowserWindow'`.
 - The app holds a single-instance lock on its profile. A second launch without `MEND_USER_DATA`
   quits at once and raises the owner's window instead. `Alt+Space` is a global shortcut; the run's
   instance takes it only when no other app holds it.

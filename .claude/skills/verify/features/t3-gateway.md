@@ -58,7 +58,9 @@ someone runs it beside a Mend server.
 Preconditions:
 
 - Mend is healthy at `<web>`, its API answers at `<api>` (the gateway's default
-  `http://127.0.0.1:3101`; Launch names it), and the CLI is signed in.
+  `http://127.0.0.1:3101`), and the CLI is signed in. On the verify stack `<api>` is `<web>`: the
+  web answers `/api`, and the gateway runs on this machine against the tunnel with
+  `MEND_T3_GATEWAY_PORT` set to a free port.
 - The repository's dependencies are installed. Nothing listens on `127.0.0.1:3120`.
 - A scratch path for the gateway's state, `<scratch>/t3/state.sqlite`, in a directory of its own.
 - Start the gateway and record its PID:
