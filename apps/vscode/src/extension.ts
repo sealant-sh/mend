@@ -452,11 +452,11 @@ class MendCommands {
           liveness: async () => {
             try {
               const now = await this.client.sessionDetail(detail.session.id);
-              const live =
+              const running =
                 processId === null
                   ? now.currentAgent !== null && now.currentAgent.exitedAt === null
                   : attachableProcesses(now.processes).some((process) => process.id === processId);
-              return live ? "live" : "ended";
+              return running ? "live" : "ended";
             } catch (cause) {
               return isRefusal(cause) ? "refused" : "unknown";
             }

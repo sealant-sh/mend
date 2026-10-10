@@ -43,13 +43,11 @@ class FakeSocket implements TtySocket {
 }
 
 const deferred = <T>() => {
-  let resolve: (value: T) => void = () => undefined;
-  let reject: (cause: unknown) => void = () => undefined;
-  const promise = new Promise<T>((ok, fail) => {
-    resolve = ok;
-    reject = fail;
+  const settled: { resolve: (value: T) => void } = { resolve: () => undefined };
+  const promise = new Promise<T>((ok) => {
+    settled.resolve = ok;
   });
-  return { promise, resolve, reject };
+  return { promise, resolve: (value: T) => settled.resolve(value) };
 };
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
