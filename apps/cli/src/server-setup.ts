@@ -2915,29 +2915,32 @@ export const nodeServerRuntime = (): ServerSetupRuntime => {
  * listener that drops connections before authentication). It settles exactly once, on every path,
  * and the deadline does not depend on the socket's own idle timer.
  */
-export const sshBannerAt = (
+export const sshBannerAt = async (
   host: string,
   port: number,
   timeoutMs: number,
-): Promise<string | null> =>
-  new Promise((resolve) => {
-    let settled = false;
-    const socket = net.connect({ host, port });
-    const finish = (banner: string | null) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(deadline);
-      socket.destroy();
-      resolve(banner);
-    };
-    const deadline = setTimeout(() => finish(null), timeoutMs);
-    socket.once("data", (bytes: Buffer) =>
-      finish(bytes.toString("utf8").split(/\r?\n/)[0]?.trim() ?? ""),
-    );
-    socket.once("end", () => finish(null));
-    socket.once("close", () => finish(null));
-    socket.once("error", () => finish(null));
-  });
+): Promise<string | null> => {
+  const socket = net.connect({ host, port });
+  let deadline: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      new Promise<string | null>((resolve) => {
+        socket.once("data", (bytes: Buffer) =>
+          resolve(bytes.toString("utf8").split(/\r?\n/)[0]?.trim() ?? ""),
+        );
+        socket.once("end", () => resolve(null));
+        socket.once("close", () => resolve(null));
+        socket.once("error", () => resolve(null));
+      }),
+      new Promise<null>((resolve) => {
+        deadline = setTimeout(() => resolve(null), timeoutMs);
+      }),
+    ]);
+  } finally {
+    clearTimeout(deadline);
+    socket.destroy();
+  }
+};
 
 /** `probeSsh` on this machine: the bind, or this machine's own addresses for an unspecified one. */
 const probeSshFromHere = async (bind: string, port: number): Promise<ReadonlyArray<SshProbe>> => {

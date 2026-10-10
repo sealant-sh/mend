@@ -46,6 +46,28 @@ interface RuntimeControl {
   readonly randomCalls: () => number;
 }
 
+/** A TCP listener on loopback that does `onConnection` with each connection. */
+const listen = (onConnection: (socket: net.Socket) => void) =>
+  new Promise<{ readonly port: number; readonly close: () => Promise<void> }>((resolve) => {
+    const sockets = new Set<net.Socket>();
+    const server = net.createServer((socket) => {
+      sockets.add(socket);
+      socket.on("close", () => sockets.delete(socket));
+      onConnection(socket);
+    });
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      resolve({
+        port: typeof address === "object" && address !== null ? address.port : 0,
+        close: () =>
+          new Promise<void>((done) => {
+            for (const socket of sockets) socket.destroy();
+            server.close(() => done());
+          }),
+      });
+    });
+  });
+
 const makeRuntime = (
   options: {
     readonly configDir?: string;
@@ -1129,26 +1151,6 @@ describe("mend server setup", () => {
   });
 
   it("reads an SSH banner, and settles on silence, a clean close before any bytes, and a refusal", async () => {
-    const listen = (onConnection: (socket: net.Socket) => void) =>
-      new Promise<{ readonly port: number; readonly close: () => Promise<void> }>((resolve) => {
-        const sockets = new Set<net.Socket>();
-        const server = net.createServer((socket) => {
-          sockets.add(socket);
-          socket.on("close", () => sockets.delete(socket));
-          onConnection(socket);
-        });
-        server.listen(0, "127.0.0.1", () => {
-          const address = server.address();
-          resolve({
-            port: typeof address === "object" && address !== null ? address.port : 0,
-            close: () =>
-              new Promise<void>((done) => {
-                for (const socket of sockets) socket.destroy();
-                server.close(() => done());
-              }),
-          });
-        });
-      });
     const banner = await listen((socket) => socket.end("SSH-2.0-sealant-gateway\r\n"));
     const silent = await listen(() => undefined);
     // The reviewer's case: accept, then FIN before any bytes (a gateway restarting).
