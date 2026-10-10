@@ -10,7 +10,8 @@ what Tailscale Serve forwards, where your domain resolves, and whether 80 and 44
 says what it observed. On an existing install it shows what is saved and lets you change one thing.
 It ends with what changes and the same command with flags, and applies on a yes.
 
-Flags keep their meaning. `--declare <item>` now adds to the saved statements instead of replacing
-them, `--undeclare <item>` takes one back, and `--origin none` clears the extra origins. A run with
-flags on an existing install says what it changes. With no terminal and no flags, a fresh install is
-refused and the message names the flags; `--yes` takes the defaults.
+Flags keep their meaning, and each changes only what it names. `--declare <item>` adds to the saved
+statements and `--declare none` clears them, `--undeclare <item>` takes one back, and
+`--origin none` clears the extra origins. A run with flags on an existing install says what it
+changes. With no terminal and no flags, a fresh install is refused and the message names the flags;
+`--yes` takes the defaults.
