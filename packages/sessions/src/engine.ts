@@ -10826,6 +10826,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           effect.pipe(
             Effect.tapError((error) => input.onFailure(error.message).pipe(Effect.ignore)),
           );
+        // Before anything is read for the mounts: what they would hold passes the gate first.
+        yield* refuseWorkspaceRepositories(project, ownerUserId).pipe(report);
         // What rides beside the worktree (plan §17, 2026-08-01): selected
         // references read-only at /workspace/ref/<name>, and the project's
         // declared host folders at /workspace/home/<name> — read-only unless
@@ -10836,7 +10838,6 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           .pipe(Effect.orElseSucceed(() => []));
         const declaredMounts = yield* declaredMountsOf(project);
         const linkedProjects = yield* resolveLinkedProjects(project, ownerUserId);
-        yield* refuseWorkspaceRepositories(project, ownerUserId).pipe(report);
         // The durable harness home (harness-state.ts): a store-backed directory mounted
         // read-write into the workspace; boot symlinks each harness's `$HOME` state dirs into
         // it, so conversation state survives any workspace death. A failed mkdir costs
@@ -11346,10 +11347,35 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const refuseWorkspaceRepositories = Effect.fn("SessionEngine.refuseWorkspaceRepositories")(
         function* (project: Project, ownerUserId: string | null) {
           if (captureStoreOn) return;
-          const selectedReferences = yield* references
-            .listForProject(project.id)
-            .pipe(Effect.orElseSucceed(() => []));
-          const linkedProjects = yield* resolveLinkedProjects(project, ownerUserId);
+          // A read that fails refuses, the way a finding does: a reference or a linked project
+          // this could not list would be mounted unchecked (fail closed). Both reads are typed
+          // infallible, so a database failure arrives as a defect.
+          const readOrRefuse = <A>(what: string, read: Effect.Effect<A>) =>
+            read.pipe(
+              Effect.catchDefect((defect) =>
+                Effect.logWarning(
+                  `session engine: could not read the ${what} of project ${project.name}; no workspace is opened`,
+                ).pipe(
+                  Effect.annotateLogs({ projectId: project.id, cause: String(defect) }),
+                  Effect.andThen(
+                    Effect.fail(
+                      new DotfilesResolveError({
+                        message: `Mend could not read this project's ${what}, so it does not open a workspace that would mount them. Try again; if it persists, the server log has the reason.`,
+                      }),
+                    ),
+                  ),
+                ),
+              ),
+            );
+          const selectedReferences = yield* readOrRefuse(
+            "selected references",
+            references.listForProject(project.id),
+          );
+          yield* readOrRefuse("linked projects", projectLinks.listForProject(project.id));
+          const linkedProjects = yield* readOrRefuse(
+            "linked projects",
+            resolveLinkedProjects(project, ownerUserId),
+          );
           yield* Effect.forEach(
             [
               { repository: `project ${project.name}`, gitDir: project.storePath },
