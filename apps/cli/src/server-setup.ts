@@ -53,7 +53,12 @@ import {
   DEFAULT_NPM_MIRROR_MAX_SIZE,
   DOCKER_MIRROR_CONTAINER,
   dockerMirrorTraffic,
-  duBytes,
+  DEFAULT_DOCKER_MIRROR_MAX_SIZE,
+  DOCKER_MIRROR_GUARD,
+  DOCKER_MIRROR_GUARD_NAME,
+  dockerMirrorLogin,
+  mirrorDiskOf,
+  mirrorDiskProbe,
   isDockerHubCredential,
   mirrorImagesOf,
   mirrorServices,
@@ -210,6 +215,8 @@ interface SetupOptions {
   readonly npmMirrorMaxSize: string | undefined;
   /** `--docker-mirror` (true), `--no-docker-mirror` (false); omitted keeps the saved choice. */
   readonly dockerMirror: boolean | undefined;
+  /** `--docker-mirror-max-size`: the Docker mirror's cap; omitted keeps the saved one. */
+  readonly dockerMirrorMaxSize: string | undefined;
   /** `--docker-hub-username` with `--docker-hub-token-stdin`: the Docker mirror's upstream login. */
   readonly dockerHubUsername: string | undefined;
   readonly dockerHubTokenStdin: boolean;
@@ -391,6 +398,7 @@ const SETUP_FLAGS = new Set([
   "--npm-mirror-max-size",
   "--docker-mirror",
   "--no-docker-mirror",
+  "--docker-mirror-max-size",
   "--docker-hub-username",
   "--docker-hub-token-stdin",
   "--docker-hub-public-only",
@@ -496,6 +504,15 @@ const parseSetupOptions = (args: ReadonlyArray<string>): SetupOptions => {
     );
   if (npmMirrorMaxSize !== undefined && npmMirror === false)
     throw setupError("--npm-mirror-max-size and --no-npm-mirror contradict each other.");
+  const dockerMaxSize = flagValue("--docker-mirror-max-size");
+  const dockerMirrorMaxSize =
+    dockerMaxSize === undefined ? undefined : parseMirrorSize(dockerMaxSize);
+  if (dockerMirrorMaxSize === null)
+    throw setupError(
+      `--docker-mirror-max-size must be a whole number of gibibytes or mebibytes, at least 1g, such as 40g, not "${dockerMaxSize ?? ""}".`,
+    );
+  if (dockerMirrorMaxSize !== undefined && dockerMirror === false)
+    throw setupError("--docker-mirror-max-size and --no-docker-mirror contradict each other.");
   const dockerHubUsername = flagValue("--docker-hub-username");
   const dockerHubTokenStdin = values.has("--docker-hub-token-stdin");
   const noDockerHubLogin = values.has("--no-docker-hub-login");
@@ -538,6 +555,7 @@ const parseSetupOptions = (args: ReadonlyArray<string>): SetupOptions => {
     npmMirror,
     npmMirrorMaxSize,
     dockerMirror,
+    dockerMirrorMaxSize,
     dockerHubUsername,
     dockerHubTokenStdin,
     noDockerHubLogin,
@@ -553,23 +571,39 @@ const resolveMirrors = (
   saved: ServerMirrors | undefined,
   options: Pick<
     SetupOptions,
-    "npmMirror" | "npmMirrorMaxSize" | "dockerMirror" | "dockerHubUsername" | "noDockerHubLogin"
+    | "npmMirror"
+    | "npmMirrorMaxSize"
+    | "dockerMirror"
+    | "dockerMirrorMaxSize"
+    | "dockerHubUsername"
+    | "noDockerHubLogin"
   >,
 ): ServerMirrors => {
   const base = saved ?? DEFAULT_MIRRORS;
   const npmOn = options.npmMirror ?? (options.npmMirrorMaxSize !== undefined || base.npm !== null);
   const dockerOn =
-    options.dockerMirror ?? (options.dockerHubUsername !== undefined || base.docker !== null);
-  const savedUser = base.docker?.upstreamUser;
+    options.dockerMirror ??
+    (options.dockerHubUsername !== undefined ||
+      options.dockerMirrorMaxSize !== undefined ||
+      base.docker !== null);
+  // A login is taken only with --docker-hub-public-only (parseSetupOptions), so one carried here
+  // was declared Public Repo Read-only when it was given.
   const upstreamUser =
-    options.dockerHubUsername ?? (options.noDockerHubLogin ? undefined : savedUser);
+    options.dockerHubUsername ??
+    (options.noDockerHubLogin ? undefined : dockerMirrorLogin(base.docker));
+  const dockerMaxSize =
+    options.dockerMirrorMaxSize ?? base.docker?.maxSize ?? DEFAULT_DOCKER_MIRROR_MAX_SIZE;
   return {
     npm: npmOn
       ? {
           maxSize: options.npmMirrorMaxSize ?? base.npm?.maxSize ?? DEFAULT_NPM_MIRROR_MAX_SIZE,
         }
       : null,
-    docker: dockerOn ? (upstreamUser === undefined ? {} : { upstreamUser }) : null,
+    docker: !dockerOn
+      ? null
+      : upstreamUser === undefined
+        ? { maxSize: dockerMaxSize }
+        : { maxSize: dockerMaxSize, upstreamUser, upstreamPublicOnly: true },
   };
 };
 
@@ -592,10 +626,18 @@ const parseMirrorsField = (value: unknown): ServerMirrors => {
   if (docker !== null) {
     const dockerFields = ownFields(docker);
     if (dockerFields === null) throw corrupt();
+    const maxSize = dockerFields.get("maxSize");
+    if (typeof maxSize !== "string" || parseMirrorSize(maxSize) !== maxSize) throw corrupt();
     const user = dockerFields.get("upstreamUser");
     if (user !== undefined && (typeof user !== "string" || !isDockerHubCredential(user)))
       throw corrupt();
-    parsedDocker = user === undefined ? {} : { upstreamUser: user };
+    // A login without the operator's public-only statement is never rendered.
+    if (user !== undefined && dockerFields.get("upstreamPublicOnly") !== true)
+      throw setupError(
+        "Server config is corrupt: the Docker mirror's login lacks upstreamPublicOnly. Run mend server setup with --docker-hub-public-only and a Public Repo Read-only token, or --no-docker-hub-login.",
+      );
+    parsedDocker =
+      user === undefined ? { maxSize } : { maxSize, upstreamUser: user, upstreamPublicOnly: true };
   }
   return { npm: parsedNpm, docker: parsedDocker };
 };
@@ -912,6 +954,7 @@ const parseServerConfig = (raw: string): ServerConfig => {
     npmMirror: undefined,
     npmMirrorMaxSize: undefined,
     dockerMirror: undefined,
+    dockerMirrorMaxSize: undefined,
     dockerHubUsername: undefined,
     dockerHubTokenStdin: false,
     noDockerHubLogin: false,
@@ -1509,7 +1552,10 @@ const validateMirrors = (
       `Server generation is corrupt: ${NPM_MIRROR_CONF_NAME} does not match the persisted server config.`,
     );
   }
-  if ((mirrors?.docker?.upstreamUser === undefined) !== (secrets.dockerHubToken === undefined)) {
+  if (
+    (dockerMirrorLogin(mirrors?.docker ?? null) === undefined) !==
+    (secrets.dockerHubToken === undefined)
+  ) {
     throw setupError(
       "Server secrets are corrupt: a Docker Hub login needs both MEND_DOCKER_HUB_USERNAME and MEND_DOCKER_HUB_TOKEN.",
     );
@@ -1521,6 +1567,21 @@ const validateMirrors = (
         `Server generation is corrupt: ${MIRRORS_COMPOSE_FILE} does not run the ${service} its config declares.`,
       );
   }
+  if (
+    (mirrors !== undefined && mirrors.docker !== null) !==
+    (files.dockerMirrorGuard !== undefined)
+  ) {
+    throw setupError(
+      `Server generation is corrupt: ${DOCKER_MIRROR_GUARD_NAME} does not match the persisted server config.`,
+    );
+  }
+  if (
+    files.dockerMirrorGuard !== undefined &&
+    !files.dockerMirrorGuard.includes("registry serve /etc/distribution/config.yml")
+  )
+    throw setupError(
+      `Server generation is corrupt: ${DOCKER_MIRROR_GUARD_NAME} is not the Docker mirror's guard.`,
+    );
   if (files.npmMirrorConf !== undefined && !files.npmMirrorConf.includes("proxy_cache npm;"))
     throw setupError(
       `Server generation is corrupt: ${NPM_MIRROR_CONF_NAME} is not the npm mirror's configuration.`,
@@ -1620,6 +1681,9 @@ export const readServerInstallationFacts = async (
           ...(generation.files.npmMirrorConf === undefined
             ? []
             : [{ name: NPM_MIRROR_CONF_NAME, content: generation.files.npmMirrorConf }]),
+          ...(generation.files.dockerMirrorGuard === undefined
+            ? []
+            : [{ name: DOCKER_MIRROR_GUARD_NAME, content: generation.files.dockerMirrorGuard }]),
         ],
         envKeys: envKeyNames(generation.files.env),
       };
@@ -1656,6 +1720,9 @@ const generationFiles = (
     ...(config.mirrors === undefined || config.mirrors.npm === null
       ? {}
       : { npmMirrorConf: NPM_MIRROR_CONF }),
+    ...(config.mirrors === undefined || config.mirrors.docker === null
+      ? {}
+      : { dockerMirrorGuard: DOCKER_MIRROR_GUARD }),
   };
 };
 
@@ -2199,7 +2266,7 @@ const resolveDockerHubToken = async (
   mirrors: ServerMirrors,
   store: ServerStore,
 ): Promise<string | undefined> => {
-  if (mirrors.docker?.upstreamUser === undefined) return undefined;
+  if (dockerMirrorLogin(mirrors.docker) === undefined) return undefined;
   if (options.dockerHubTokenStdin) {
     if (runtime.readStdin === undefined)
       throw setupError("--docker-hub-token-stdin needs standard input, and none is available.");
@@ -3116,14 +3183,14 @@ const mirrorStatusLines = async (
     });
   const failed = (output: CommandOutput): string | null =>
     output.status !== 0 || output.error !== undefined ? outputDetail(output) : null;
-  const sizeOf = async (service: string, directory: string): Promise<number | string> => {
-    const du = await run(["exec", "-T", service, "du", "-sk", directory]);
-    return failed(du) ?? duBytes(du.stdout) ?? "du answered no size";
+  const diskOf = async (service: string, directory: string) => {
+    const probe = await run(["exec", "-T", service, "sh", "-c", mirrorDiskProbe(directory)]);
+    return failed(probe) ?? mirrorDiskOf(probe.stdout) ?? "du and df answered nothing readable";
   };
   const lines: Array<string> = [];
   const npmRunning = runningServices.includes("npm-mirror");
   if (mirrors.npm === null || !npmRunning) {
-    lines.push(observedNpmMirrorLine(mirrors, { running: false, size: 0, traffic: "" }));
+    lines.push(observedNpmMirrorLine(mirrors, { running: false, disk: "", traffic: "" }));
   } else {
     const log = await run([
       "logs",
@@ -3136,7 +3203,7 @@ const mirrorStatusLines = async (
     lines.push(
       observedNpmMirrorLine(mirrors, {
         running: true,
-        size: await sizeOf("npm-mirror", "/var/cache/npm-mirror"),
+        disk: await diskOf("npm-mirror", "/var/cache/npm-mirror"),
         traffic: failed(log) ?? npmMirrorTraffic(log.stdout),
       }),
     );
@@ -3144,7 +3211,7 @@ const mirrorStatusLines = async (
   const dockerRunning = runningServices.includes("docker-mirror");
   if (mirrors.docker === null || !dockerRunning) {
     lines.push(
-      observedDockerMirrorLine(mirrors, { running: false, size: 0, traffic: "", startedAt: null }),
+      observedDockerMirrorLine(mirrors, { running: false, disk: "", traffic: "", startedAt: null }),
     );
   } else {
     const metrics = await run([
@@ -3170,7 +3237,7 @@ const mirrorStatusLines = async (
     lines.push(
       observedDockerMirrorLine(mirrors, {
         running: true,
-        size: await sizeOf("docker-mirror", "/var/lib/registry"),
+        disk: await diskOf("docker-mirror", "/var/lib/registry"),
         traffic:
           failed(metrics) ??
           dockerMirrorTraffic(metrics.stdout) ??

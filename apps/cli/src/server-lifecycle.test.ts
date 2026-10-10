@@ -36,6 +36,9 @@ interface DaemonState {
   readonly health?: Readonly<Record<string, unknown>>;
   /** Each mirror's container, by service, with the generation it was started from. */
   readonly mirrorContainers?: Readonly<Record<string, string>>;
+  /** What the Docker mirror's guard reports, and the KiB free under the mirrors. */
+  readonly mirrorGuard?: string;
+  readonly mirrorFreeKiB?: number;
   /** The compose files the last `up` and `down` ran with, by name. */
   readonly upFiles?: ReadonlyArray<string>;
   readonly downFiles?: ReadonlyArray<string>;
@@ -1087,7 +1090,8 @@ describe("server lifecycle", { timeout: 30_000 }, () => {
               ["ps", "logs"].includes(call.command[0] ?? "") ||
               // The mirrors are read, never changed: their volume's size and the registry's counters.
               (call.command[0] === "exec" &&
-                (call.command.includes("du") || call.command.includes("wget"))) ||
+                (call.command.some((arg) => arg.startsWith("du -sk ")) ||
+                  call.command.includes("wget"))) ||
               (call.args[2] === "container" && call.args[3] === "inspect")),
         ),
     ).toBe(true);
@@ -1238,11 +1242,11 @@ const withoutMirrors = (directory: string): void => {
     fs
       .readFileSync(envFile, "utf8")
       .split("\n")
-      .filter((line) => !line.startsWith("MEND_NPM_MIRROR_MAX_SIZE="))
+      .filter((line) => !/^MEND_(NPM|DOCKER)_MIRROR_MAX_SIZE=/.test(line))
       .join("\n"),
   );
-  fs.rmSync(path.join(directory, "compose.mirrors.yaml"));
-  fs.rmSync(path.join(directory, "npm-mirror.conf"));
+  for (const file of ["compose.mirrors.yaml", "npm-mirror.conf", "docker-mirror-guard.sh"])
+    fs.rmSync(path.join(directory, file));
 };
 
 describe("the mirrors", { timeout: 120_000 }, () => {
@@ -1252,7 +1256,7 @@ describe("the mirrors", { timeout: 120_000 }, () => {
     const files = f.files();
     expect(JSON.parse(files["server.json"] ?? "{}").mirrors).toEqual({
       npm: { maxSize: "10g" },
-      docker: {},
+      docker: { maxSize: "20g" },
     });
     expect(files["compose.mirrors.yaml"]).toContain("\n  npm-mirror:\n");
     expect(files["compose.mirrors.yaml"]).toContain("\n  docker-mirror:\n");
@@ -1265,10 +1269,10 @@ describe("the mirrors", { timeout: 120_000 }, () => {
     f.lines.length = 0;
     expect(await serverCommand(["status"], f.runtime)).toEqual({ _tag: "ok" });
     expect(f.lines).toContain(
-      "npm mirror · running · 2.0 MiB cached of 10 GiB · last 24 h: 2 tarball requests · 1 served from the cache (50%) · 1 fetched from registry.npmjs.org · observed",
+      "npm mirror · running · 2.0 MiB cached of 10 GiB · 1.0 GiB free on its disk · last 24 h: 2 tarball requests · 1 served from the cache (50%) · 1 fetched from registry.npmjs.org · observed",
     );
     expect(f.lines).toContain(
-      "docker mirror · running · 2.0 MiB cached · layers evicted 7 days after each fetch · since 2026-10-10T08:00:00Z: layers 4 requested · 3 from the cache (75%) · manifests 4 · 2 from the cache · pulls from Docker Hub anonymously · observed",
+      "docker mirror · running · 2.0 MiB cached of 20 GiB · 1.0 GiB free on its disk · layers evicted 7 days after each fetch · since 2026-10-10T08:00:00Z: layers 4 requested · 3 from the cache (75%) · manifests 4 · 2 from the cache · pulls from Docker Hub anonymously · observed",
     );
   });
 
@@ -1282,7 +1286,7 @@ describe("the mirrors", { timeout: 120_000 }, () => {
     expect(await f.upgrade()).toEqual({ _tag: "ok" });
     expect(JSON.parse(f.files()["server.json"] ?? "{}").mirrors).toEqual({
       npm: { maxSize: "10g" },
-      docker: {},
+      docker: { maxSize: "20g" },
     });
     expect(f.files()["server.env"]).toContain("MEND_NPM_MIRROR_MAX_SIZE=10g\n");
     expect(f.state().upFiles).toEqual(["compose.yaml", "compose.mirrors.yaml"]);
@@ -1317,7 +1321,7 @@ describe("the mirrors", { timeout: 120_000 }, () => {
     expect(await f.upgrade()).toEqual({ _tag: "ok" });
     expect(JSON.parse(f.files()["server.json"] ?? "{}").mirrors).toEqual({
       npm: null,
-      docker: {},
+      docker: { maxSize: "20g" },
     });
     // Both off: no overlay at all, and the generation reads as one from before the mirrors.
     expect(await serverCommand(["setup", "--offline", "--no-docker-mirror"], f.runtime)).toEqual({
@@ -1364,7 +1368,9 @@ describe("the mirrors", { timeout: 120_000 }, () => {
     for (const name of ["server.json", "compose.mirrors.yaml", "identity.env"])
       expect(files[name]).not.toContain(token);
     expect(JSON.parse(files["server.json"] ?? "{}").mirrors.docker).toEqual({
+      maxSize: "20g",
       upstreamUser: "mendbot",
+      upstreamPublicOnly: true,
     });
     // Never on a command line.
     expect(f.calls().some((call) => call.args.some((arg) => arg.includes(token)))).toBe(false);
@@ -1378,6 +1384,32 @@ describe("the mirrors", { timeout: 120_000 }, () => {
     );
     expect(f.files()["server.env"]).not.toContain("MEND_DOCKER_HUB");
     expect(f.files()["compose.mirrors.yaml"]).not.toContain("REGISTRY_PROXY_USERNAME");
+  });
+
+  it("caps the Docker mirror, says when its guard paused it, and never renders an undeclared login", async () => {
+    const f = await fixture();
+    expect(await f.setup()).toEqual({ _tag: "ok" });
+    expect(
+      await serverCommand(["setup", "--offline", "--docker-mirror-max-size", "40G"], f.runtime),
+    ).toEqual({ _tag: "ok" });
+    expect(f.files()["server.env"]).toContain("MEND_DOCKER_MIRROR_MAX_SIZE=40g\n");
+    expect(f.files()["docker-mirror-guard.sh"]).toContain("registry serve");
+    f.update({ mirrorGuard: "paused 3072 5120", mirrorFreeKiB: 3 * 1024 * 1024 });
+    f.lines.length = 0;
+    expect(await serverCommand(["status"], f.runtime)).toEqual({ _tag: "ok" });
+    expect(f.lines).toContain(
+      "docker mirror · paused by its disk guard · 3.0 GiB free on its disk, below 5.0 GiB · cache cleared · session Docker daemons pull from Docker Hub directly until there is room · observed",
+    );
+    // A saved login without the operator's public-only statement is refused, not rendered.
+    const configFile = path.join(f.active(), "server.json");
+    const config = JSON.parse(fs.readFileSync(configFile, "utf8"));
+    config.mirrors.docker = { maxSize: "40g", upstreamUser: "mendbot" };
+    fs.writeFileSync(configFile, `${JSON.stringify(config, null, 2)}\n`);
+    const refused = await serverCommand(["status"], f.runtime);
+    expect(refused._tag).toBe("error");
+    expect(refused._tag === "error" ? refused.message : "").toContain(
+      "the Docker mirror's login lacks upstreamPublicOnly",
+    );
   });
 
   it.each([

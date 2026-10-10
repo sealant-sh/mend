@@ -34,6 +34,8 @@ export interface ServerFiles {
   readonly mirrors?: string;
   /** npm-mirror.conf: the npm mirror's nginx configuration, mounted read-only. */
   readonly npmMirrorConf?: string;
+  /** docker-mirror-guard.sh: the Docker mirror's entrypoint, which bounds its cache. */
+  readonly dockerMirrorGuard?: string;
 }
 
 /** An immutable deployment snapshot. Use this directory, not the active symlink, for Compose. */
@@ -198,7 +200,14 @@ const writeDurable = (file: string, content: string, mode = 0o600): void => {
 
 const fileKeys = ["identity", "config", "env", "compose", "postgresInit"] as const;
 /** Present only when the config asks for them; a missing file reads as undefined. */
-const optionalFileKeys = ["posture", "edge", "caddyfile", "mirrors", "npmMirrorConf"] as const;
+const optionalFileKeys = [
+  "posture",
+  "edge",
+  "caddyfile",
+  "mirrors",
+  "npmMirrorConf",
+  "dockerMirrorGuard",
+] as const;
 const fileNames = {
   identity: "identity.env",
   config: "server.json",
@@ -210,6 +219,7 @@ const fileNames = {
   caddyfile: "Caddyfile",
   mirrors: "compose.mirrors.yaml",
   npmMirrorConf: "npm-mirror.conf",
+  dockerMirrorGuard: "docker-mirror-guard.sh",
 } as const;
 /**
  * The bind-mounted files another UID reads: Postgres's init (UID 70), Caddy's configuration and
@@ -226,6 +236,7 @@ const fileModes: Readonly<Record<(typeof fileKeys | typeof optionalFileKeys)[num
   caddyfile: 0o644,
   mirrors: 0o600,
   npmMirrorConf: 0o644,
+  dockerMirrorGuard: 0o644,
 };
 
 /** Every file a generation may hold, in a fixed order, with its content or undefined. */
@@ -364,6 +375,7 @@ const readActive = (paths: StorePaths): ServerGeneration | null => {
   const caddyfile = optional("caddyfile");
   const mirrors = optional("mirrors");
   const npmMirrorConf = optional("npmMirrorConf");
+  const dockerMirrorGuard = optional("dockerMirrorGuard");
   const files: ServerFiles = {
     identity: fs.readFileSync(path.join(directory, fileNames.identity), "utf8"),
     config: fs.readFileSync(path.join(directory, fileNames.config), "utf8"),
@@ -375,6 +387,7 @@ const readActive = (paths: StorePaths): ServerGeneration | null => {
     ...(caddyfile === undefined ? {} : { caddyfile }),
     ...(mirrors === undefined ? {} : { mirrors }),
     ...(npmMirrorConf === undefined ? {} : { npmMirrorConf }),
+    ...(dockerMirrorGuard === undefined ? {} : { dockerMirrorGuard }),
   };
   if (readIdentity(paths) !== files.identity) {
     throw new ServerStoreError(

@@ -204,9 +204,11 @@ else if (args.includes("image")) {
     process.stderr.write("ls: /data/caddy/certificates/*/x/x.crt: No such file or directory\n");
     process.exit(1);
   }
-} else if (command[0] === "exec" && command.includes("du")) {
-  // What each mirror's volume holds, as `du -sk` prints it.
-  out(`2048\t${command.at(-1)}`);
+} else if (command[0] === "exec" && command.some((arg) => arg.startsWith("du -sk "))) {
+  // Each mirror's disk probe: its cache's KiB, the KiB free on its disk, the Docker guard's state.
+  out(
+    `2048\n${state.mirrorFreeKiB ?? 1048576}\n${command.includes("docker-mirror") ? (state.mirrorGuard ?? "running") : ""}`,
+  );
 } else if (command[0] === "exec" && command.includes("docker-mirror")) {
   // The registry's proxy counters.
   out(

@@ -5,7 +5,8 @@ import { describe, expect, it } from "vitest";
 import {
   DEFAULT_MIRRORS,
   dockerMirrorTraffic,
-  duBytes,
+  DOCKER_MIRROR_GUARD,
+  mirrorDiskOf,
   isDockerHubCredential,
   mirrorImagesOf,
   mirrorsEnvLines,
@@ -29,6 +30,25 @@ describe("the mirrors overlay", () => {
     expect(NPM_MIRROR_CONF).toBe(
       fs.readFileSync(new URL("../../../deploy/docker/npm-mirror.conf", import.meta.url), "utf8"),
     );
+    // scripts/mirrors-runtime.test.mjs runs this copy in the registry image.
+    expect(DOCKER_MIRROR_GUARD).toBe(
+      fs.readFileSync(
+        new URL("../../../deploy/docker/docker-mirror-guard.sh", import.meta.url),
+        "utf8",
+      ),
+    );
+  });
+
+  it("runs the Docker mirror under its guard, with its cap and the free-space floor", () => {
+    const overlay = renderMirrorsOverlay(DEFAULT_MIRRORS) ?? "";
+    expect(overlay).toContain('entrypoint: ["/bin/sh", "/mend/docker-mirror-guard.sh"]');
+    expect(overlay).toContain("./docker-mirror-guard.sh:/mend/docker-mirror-guard.sh:ro");
+    expect(overlay).toContain("DOCKER_MIRROR_MAX_SIZE:\n        ${MEND_DOCKER_MIRROR_MAX_SIZE:?");
+    expect(overlay).toContain("DOCKER_MIRROR_MIN_FREE: 5g");
+    expect(overlay).toContain("NPM_MIRROR_MIN_FREE: 5g");
+    expect(mirrorsEnvLines(DEFAULT_MIRRORS, undefined)).toContain(
+      "MEND_DOCKER_MIRROR_MAX_SIZE=20g",
+    );
   });
 
   it("hands Mend the addresses of what runs, and only that", () => {
@@ -36,7 +56,7 @@ describe("the mirrors overlay", () => {
     expect(npmOnly).toContain("MEND_NPM_MIRROR_URL: http://npm-mirror:4873/");
     expect(npmOnly).not.toContain("SEALANT_DOCKER_REGISTRY_MIRRORS");
     expect(npmOnly).not.toContain("docker-mirror:");
-    const dockerOnly = renderMirrorsOverlay({ npm: null, docker: {} }) ?? "";
+    const dockerOnly = renderMirrorsOverlay({ npm: null, docker: { maxSize: "20g" } }) ?? "";
     expect(dockerOnly).toContain("SEALANT_DOCKER_REGISTRY_MIRRORS: http://docker-mirror:5000");
     expect(dockerOnly).toContain("SEALANT_DOCKER_REGISTRY_MIRROR_CONTAINER: mend-docker-mirror");
     expect(dockerOnly).toContain("container_name: mend-docker-mirror");
@@ -54,16 +74,33 @@ describe("the mirrors overlay", () => {
   it("gives the Docker Hub login to the Docker mirror alone, by reference to server.env", () => {
     const anonymous = renderMirrorsOverlay(DEFAULT_MIRRORS) ?? "";
     expect(anonymous).not.toContain("REGISTRY_PROXY_USERNAME");
-    const login = renderMirrorsOverlay({ npm: null, docker: { upstreamUser: "mendbot" } }) ?? "";
+    const login =
+      renderMirrorsOverlay({
+        npm: null,
+        docker: { maxSize: "20g", upstreamUser: "mendbot", upstreamPublicOnly: true },
+      }) ?? "";
     const dockerMirror = login.slice(login.indexOf("\n  docker-mirror:"));
     const mend = login.slice(0, login.indexOf("\n  docker-mirror:"));
     expect(dockerMirror).toContain("REGISTRY_PROXY_PASSWORD: ${MEND_DOCKER_HUB_TOKEN:?");
     expect(mend).not.toContain("MEND_DOCKER_HUB");
     expect(login).not.toContain("mendbot");
     expect(
-      mirrorsEnvLines({ npm: null, docker: { upstreamUser: "mendbot" } }, "dckr_pat_x"),
-    ).toEqual(["MEND_DOCKER_HUB_USERNAME=mendbot", "MEND_DOCKER_HUB_TOKEN=dckr_pat_x"]);
-    expect(mirrorsEnvLines(DEFAULT_MIRRORS, undefined)).toEqual(["MEND_NPM_MIRROR_MAX_SIZE=10g"]);
+      mirrorsEnvLines(
+        {
+          npm: null,
+          docker: { maxSize: "20g", upstreamUser: "mendbot", upstreamPublicOnly: true },
+        },
+        "dckr_pat_x",
+      ),
+    ).toEqual([
+      "MEND_DOCKER_MIRROR_MAX_SIZE=20g",
+      "MEND_DOCKER_HUB_USERNAME=mendbot",
+      "MEND_DOCKER_HUB_TOKEN=dckr_pat_x",
+    ]);
+    expect(mirrorsEnvLines(DEFAULT_MIRRORS, undefined)).toEqual([
+      "MEND_NPM_MIRROR_MAX_SIZE=10g",
+      "MEND_DOCKER_MIRROR_MAX_SIZE=20g",
+    ]);
   });
 
   it("names its images and services", () => {
@@ -72,7 +109,7 @@ describe("the mirrors overlay", () => {
       "registry:3.1",
     ]);
     expect(mirrorServices(DEFAULT_MIRRORS)).toEqual(["npm-mirror", "docker-mirror"]);
-    expect(mirrorServices({ npm: null, docker: {} })).toEqual(["docker-mirror"]);
+    expect(mirrorServices({ npm: null, docker: { maxSize: "20g" } })).toEqual(["docker-mirror"]);
     expect(mirrorServices(undefined)).toEqual([]);
   });
 });
@@ -142,45 +179,75 @@ describe("what status observes", () => {
     expect(dockerMirrorTraffic("go_goroutines 12")).toBeNull();
   });
 
-  it("reads du's KiB", () => {
-    expect(duBytes("2048\t/var/cache/npm-mirror\n")).toBe(2 * 1024 * 1024);
-    expect(duBytes("")).toBeNull();
-    expect(duBytes("du: cannot access")).toBeNull();
+  it("reads the disk probe: the cache, the free space, the guard's state", () => {
+    expect(mirrorDiskOf("2048\n1048576\nrunning\n")).toEqual({
+      used: 2 * 1024 ** 2,
+      free: 1024 ** 3,
+      guard: { state: "running" },
+    });
+    expect(mirrorDiskOf("0\n3072\npaused 3 5120\n")?.guard).toEqual({
+      state: "paused",
+      freeMiB: 3,
+      floorMiB: 5120,
+    });
+    expect(mirrorDiskOf("2048\n1048576\n")?.guard).toBeNull();
+    expect(mirrorDiskOf("")).toBeNull();
+    expect(mirrorDiskOf("du: cannot access")).toBeNull();
   });
 
   it("says what was observed, never a verdict", () => {
     expect(
       observedNpmMirrorLine(DEFAULT_MIRRORS, {
         running: true,
-        size: 743 * 1024 * 1024,
+        disk: { used: 743 * 1024 ** 2, free: 400 * 1024 ** 3, guard: null },
         traffic: { tarballs: 4010, fromCache: 2006, fromRegistry: 2004 },
       }),
     ).toBe(
-      "npm mirror · running · 743 MiB cached of 10 GiB · last 24 h: 4010 tarball requests · 2006 served from the cache (50%) · 2004 fetched from registry.npmjs.org · observed",
+      "npm mirror · running · 743 MiB cached of 10 GiB · 400 GiB free on its disk · last 24 h: 4010 tarball requests · 2006 served from the cache (50%) · 2004 fetched from registry.npmjs.org · observed",
     );
-    expect(observedNpmMirrorLine(DEFAULT_MIRRORS, { running: false, size: 0, traffic: "" })).toBe(
+    expect(observedNpmMirrorLine(DEFAULT_MIRRORS, { running: false, disk: "", traffic: "" })).toBe(
       "npm mirror · container not running · sessions install from registry.npmjs.org directly",
     );
     expect(
-      observedNpmMirrorLine({ npm: null, docker: {} }, { running: false, size: 0, traffic: "" }),
+      observedNpmMirrorLine(
+        { npm: null, docker: { maxSize: "20g" } },
+        { running: false, disk: "", traffic: "" },
+      ),
     ).toBe("npm mirror · off on this install · mend server setup --npm-mirror turns it on");
     expect(
       observedDockerMirrorLine(DEFAULT_MIRRORS, {
         running: true,
-        size: 120 * 1024 * 1024,
+        disk: { used: 120 * 1024 ** 2, free: 400 * 1024 ** 3, guard: { state: "running" } },
         traffic: { blobs: { hits: 6, misses: 2 }, manifests: { hits: 3, misses: 3 } },
         startedAt: "2026-10-10T08:00:00Z",
       }),
     ).toBe(
-      "docker mirror · running · 120 MiB cached · layers evicted 7 days after each fetch · since 2026-10-10T08:00:00Z: layers 8 requested · 6 from the cache (75%) · manifests 6 · 3 from the cache · pulls from Docker Hub anonymously · observed",
+      "docker mirror · running · 120 MiB cached of 20 GiB · 400 GiB free on its disk · layers evicted 7 days after each fetch · since 2026-10-10T08:00:00Z: layers 8 requested · 6 from the cache (75%) · manifests 6 · 3 from the cache · pulls from Docker Hub anonymously · observed",
     );
     expect(
       observedDockerMirrorLine(
-        { npm: null, docker: { upstreamUser: "mendbot" } },
-        { running: true, size: "du failed", traffic: "exec failed", startedAt: null },
+        {
+          npm: null,
+          docker: { maxSize: "20g", upstreamUser: "mendbot", upstreamPublicOnly: true },
+        },
+        { running: true, disk: "du failed", traffic: "exec failed", startedAt: null },
       ),
     ).toBe(
-      "docker mirror · running · size not read: du failed · traffic not read: exec failed · pulls from Docker Hub as mendbot, with a token the operator declared Public Repo Read-only · every session can pull whatever that token can read · observed",
+      "docker mirror · running · size not read: du failed · cap 20 GiB · layers evicted 7 days after each fetch · traffic not read: exec failed · pulls from Docker Hub as mendbot, with a token the operator declared Public Repo Read-only · every session can pull whatever that token can read · observed",
+    );
+    expect(
+      observedDockerMirrorLine(DEFAULT_MIRRORS, {
+        running: true,
+        disk: {
+          used: 0,
+          free: 3 * 1024 ** 3,
+          guard: { state: "paused", freeMiB: 3072, floorMiB: 5120 },
+        },
+        traffic: "",
+        startedAt: null,
+      }),
+    ).toBe(
+      "docker mirror · paused by its disk guard · 3.0 GiB free on its disk, below 5.0 GiB · cache cleared · session Docker daemons pull from Docker Hub directly until there is room · observed",
     );
   });
 });

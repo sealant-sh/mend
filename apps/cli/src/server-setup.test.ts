@@ -309,6 +309,7 @@ describe("mend server setup", () => {
           expect(fs.readdirSync(directory).toSorted()).toEqual([
             "compose.mirrors.yaml",
             "compose.yaml",
+            "docker-mirror-guard.sh",
             "identity.env",
             "npm-mirror.conf",
             "postgres-init.sh",
@@ -787,6 +788,7 @@ describe("mend server setup", () => {
         "MEND_BIND_HOST",
         "MEND_CONTROL_VOLUME_NAME",
         "MEND_DB_PASSWORD",
+        "MEND_DOCKER_MIRROR_MAX_SIZE",
         "MEND_GARAGE_ADMIN_TOKEN",
         "MEND_GARAGE_KEY_ID",
         "MEND_GARAGE_KEY_SECRET",
@@ -810,7 +812,7 @@ describe("mend server setup", () => {
     expect(
       JSON.parse(fs.readFileSync(activeFile(control.runtime.configDir, "server.json"), "utf8"))
         .mirrors,
-    ).toEqual({ npm: { maxSize: "10g" }, docker: {} });
+    ).toEqual({ npm: { maxSize: "10g" }, docker: { maxSize: "20g" } });
     expect(modeOf(activeFile(control.runtime.configDir, "npm-mirror.conf"))).toBe(0o644);
     expect(
       fs.readFileSync(activeFile(control.runtime.configDir, "compose.yaml"), "utf8"),
@@ -1553,6 +1555,7 @@ describe("mend server setup", () => {
       "compose.edge.yaml",
       "compose.mirrors.yaml",
       "compose.yaml",
+      "docker-mirror-guard.sh",
       "identity.env",
       "npm-mirror.conf",
       "postgres-init.sh",
