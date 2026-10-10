@@ -48,8 +48,9 @@ On the captured session store a worktree has one workspace, so a session you sta
 where someone else's session is live runs in their workspace. What happens then depends on the
 workspace.
 
-**A workspace that shares one home** (the default) receives none of your secret files, on that run
-or any later one in their workspace, and the session line names the files not written:
+**A workspace that shares one home** (`MEND_HARNESS_LAYOUT=shared`, or an image that cannot run per
+person) receives none of your secret files, on that run or any later one in their workspace, and the
+session line names the files not written:
 `secret files · 1 not written · this workspace is another person's · ~/.aws/credentials`.
 
 **A [per-person workspace](/operate/per-person-workspaces/)** gives each person their own Linux user

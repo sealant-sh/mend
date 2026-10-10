@@ -95,6 +95,7 @@ export default defineConfig({
             { label: "Per-person workspaces", slug: "operate/per-person-workspaces" },
             { label: "npm mirror", slug: "operate/npm-mirror" },
             { label: "Docker mirror", slug: "operate/docker-mirror" },
+            { label: "Upgrade to 0.36", slug: "operate/upgrade-to-0-36" },
             { label: "Troubleshooting", slug: "operate/troubleshooting" },
           ],
         },
