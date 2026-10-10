@@ -1924,6 +1924,43 @@ describe("the edge and the posture", { timeout: 120_000 }, () => {
 });
 
 describe("server uninstall", { timeout: 60_000 }, () => {
+  it("names and removes the t3code gateway's volume a turned-off gateway left behind (644-R2-1)", async () => {
+    const f = await fixture();
+    expect(await f.setup()).toEqual({ _tag: "ok" });
+    // What --no-t3-gateway leaves: the generation has no gateway overlay, so Compose's own
+    // `down --volumes` does not know the volume that holds paired people's device tokens.
+    const protocolFile = path.join(f.root, "docker-protocol.json");
+    const saved = fs.existsSync(protocolFile)
+      ? JSON.parse(fs.readFileSync(protocolFile, "utf8"))
+      : {};
+    saved.volumes = [...(saved.volumes ?? []), ["mend_mend-t3-gateway", {}]];
+    fs.writeFileSync(protocolFile, JSON.stringify(saved));
+    const runtime = {
+      server: f.runtime,
+      cliHome: path.join(f.root, "home", "mend"),
+      sshConfigFile: path.join(f.root, "home", "ssh-config"),
+      signedIn: null,
+      revokeDevice: async () => "must not be called",
+      removeWorkspaceSshKey: async (): Promise<ThisMachineKeyRemoval> => ({
+        removed: [],
+        stillActive: [],
+        problem: "must not be called",
+      }),
+    };
+    const plan = await describeUninstall(runtime, "server");
+    expect(plan.server).toMatchObject({ t3GatewayVolume: true });
+    expect(planLines(plan, f.configDir).join("\n")).toContain("mend-t3-gateway");
+    const before = f.calls().length;
+    const outcome = await executeUninstall(runtime, plan);
+    expect(outcome.failures).toEqual([]);
+    const commands = f
+      .calls()
+      .slice(before)
+      .map((call) => (call.command.length > 0 ? call.command : call.args.slice(2)).join(" "));
+    expect(commands).toContain("volume rm mend_mend-t3-gateway");
+    expect(f.lines.some((line) => line.includes("removed volume mend_mend-t3-gateway"))).toBe(true);
+  });
+
   it("takes the installation down, removes its volumes, image and files, and releases the lock", async () => {
     const f = await fixture();
     expect(await f.setup()).toEqual({ _tag: "ok" });
@@ -1952,6 +1989,7 @@ describe("server uninstall", { timeout: 60_000 }, () => {
       dockerContext: "saved-local",
       edgeHost: null,
       mirrors: ["npm-mirror", "docker-mirror"],
+      t3GatewayVolume: false,
       generations: 1,
       backups: 0,
     });

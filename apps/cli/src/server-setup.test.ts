@@ -1715,13 +1715,34 @@ describe("mend server setup", () => {
     expect(await serverCommand(["setup"], control.runtime)).toEqual({ _tag: "ok" });
   });
 
+  it("refuses a gateway port something else holds, before anything changes (644 nit)", async () => {
+    const control = makeRuntime({ gatewayLabel: "1" });
+    const taken: Array<number> = [];
+    const result = await serverCommand(["setup", "--t3-gateway"], {
+      ...control.runtime,
+      portTaken: async (port) => {
+        taken.push(port);
+        return true;
+      },
+    });
+    expect(result).toMatchObject({
+      _tag: "error",
+      message: expect.stringContaining(
+        "127.0.0.1:3120 is already in use on this machine, so the t3code gateway cannot be published there and Mend would not start",
+      ),
+    });
+    expect(taken).toEqual([3120]);
+    expect(fs.existsSync(path.join(control.runtime.configDir, "active"))).toBe(false);
+    expect(control.commands.some(([, args]) => args.includes("up"))).toBe(false);
+  });
+
   it("says the gateway did not answer when it did not, and Mend runs on (644-1)", async () => {
     const control = makeRuntime({ gatewayLabel: "1", gatewayAnswers: false });
     expect(await serverCommand(["setup", "--t3-gateway"], control.runtime)).toEqual({ _tag: "ok" });
     expect(
       control.lines.some((line) =>
         line.startsWith(
-          "The t3code gateway did not answer at 127.0.0.1:3120 from this machine within 30 s. Mend runs without it;",
+          "The t3code gateway did not answer at 127.0.0.1:3120 from this machine within about a minute. Mend runs without it;",
         ),
       ),
     ).toBe(true);

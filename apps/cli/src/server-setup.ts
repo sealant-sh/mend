@@ -173,6 +173,11 @@ export interface ServerSetupRuntime {
    * when nothing answered. Absent: setup says where it is published and observes nothing.
    */
   readonly probeSsh?: (bind: string, port: number) => Promise<ReadonlyArray<SshProbe>>;
+  /**
+   * Whether something on this machine already listens on `127.0.0.1:<port>` (the t3code gateway's
+   * port, before it is first published there). Absent, nothing is checked.
+   */
+  readonly portTaken?: (port: number) => Promise<boolean>;
   /** How long setup waits for `probeSsh` altogether; `SSH_PROBE_BOUND_MS` when absent. */
   readonly sshProbeBoundMs?: number;
   /** Read standard input to its end: `--docker-hub-token-stdin` takes the token from here. */
@@ -1847,7 +1852,7 @@ const observeT3Gateway = async (runtime: ServerSetupRuntime, port: number): Prom
     }
     if (attempt < T3_GATEWAY_OBSERVE_ATTEMPTS - 1) await runtime.sleep(2_000);
   }
-  return `The t3code gateway did not answer at 127.0.0.1:${port} from this machine within 30 s. Mend runs without it; mend server logs shows what it said, and mend server status looks again.`;
+  return `The t3code gateway did not answer at 127.0.0.1:${port} from this machine within about a minute. Mend runs without it; mend server logs shows what it said, and mend server status looks again.`;
 };
 
 const probeHealth = async (
@@ -2056,7 +2061,7 @@ const checkLocalImages = async (
     ]);
     if (gateway.status !== 0 || gateway.stdout.trim() !== "1") {
       throw setupError(
-        `Mend ${config.serverVersion} has no t3code gateway (its image carries no ${T3_GATEWAY_IMAGE_LABEL} label). Upgrade to a version that has one with mend server upgrade --version <version>, then turn it on; or run mend server setup --no-t3-gateway.`,
+        `Mend ${config.serverVersion} has no t3code gateway (its image carries no ${T3_GATEWAY_IMAGE_LABEL} label). Upgrade to a version that has one with mend server upgrade --version <version>, then turn it on; or run mend server setup --no-t3-gateway`,
       );
     }
   }
@@ -2515,6 +2520,20 @@ const setupServer = async (
     ...(savedSecrets ?? createSecrets(runtime)),
     ...(dockerHubToken === undefined ? {} : { dockerHubToken }),
   };
+  // A port something else holds would keep the whole mend container from starting, gateway and
+  // all: refused here, before anything changes, rather than Mend not coming up (review nit).
+  // Checked on this machine's daemon only, and only for a port the gateway does not have yet.
+  if (
+    config.t3GatewayPort !== undefined &&
+    config.t3GatewayPort !== existing?.config.t3GatewayPort &&
+    config.dockerEndpoint.startsWith("unix://") &&
+    runtime.portTaken !== undefined &&
+    (await runtime.portTaken(config.t3GatewayPort))
+  ) {
+    throw setupError(
+      `127.0.0.1:${config.t3GatewayPort} is already in use on this machine, so the t3code gateway cannot be published there and Mend would not start. Free it, or pick another with --t3-gateway-port <n>`,
+    );
+  }
   const generation = persistSetup(store, config, secrets, assets);
   const installation: ServerInstallation = {
     directory: generation.directory,
@@ -2553,7 +2572,7 @@ const setupServer = async (
   }
   if (existing?.config.t3GatewayPort !== undefined && config.t3GatewayPort === undefined) {
     runtime.writeLine(
-      `The t3code gateway is off. Its state (pairings, queued messages) stays in its volume, ${T3_GATEWAY_VOLUME}, and comes back if you turn it on again.`,
+      `The t3code gateway is off. Its state (pairings and the device tokens they hold, queued messages) stays in its volume and comes back if you turn it on again; to remove it: docker --context ${config.dockerContext} volume rm mend_${T3_GATEWAY_VOLUME}`,
     );
   }
   if (existing?.config.edgeHost !== undefined && config.edgeHost === undefined) {
@@ -3561,6 +3580,7 @@ export const nodeServerRuntime = (): ServerSetupRuntime => {
     dockerDaemonFacts: hostDockerDaemonFacts,
     readLogin: (configDir) => savedLogin(configDir, environment),
     probeSsh: probeSshFromHere,
+    portTaken: portTakenHere,
     readStdin: async () => {
       const chunks: Array<Buffer> = [];
       for await (const chunk of process.stdin)
@@ -3602,6 +3622,14 @@ export const sshBannerAt = async (
     socket.destroy();
   }
 };
+
+/** Whether binding `127.0.0.1:<port>` here fails because something holds it. */
+const portTakenHere = (port: number): Promise<boolean> =>
+  new Promise((resolve) => {
+    const server = net.createServer();
+    server.once("error", (error: NodeJS.ErrnoException) => resolve(error.code === "EADDRINUSE"));
+    server.listen(port, "127.0.0.1", () => server.close(() => resolve(false)));
+  });
 
 /** `probeSsh` on this machine: the bind, or this machine's own addresses for an unspecified one. */
 const probeSshFromHere = async (bind: string, port: number): Promise<ReadonlyArray<SshProbe>> => {
