@@ -40,6 +40,7 @@ import {
   type TranscriptEventDto,
 } from "#/lib/api";
 import { sessionDotfilesLines } from "#/lib/session-dotfiles";
+import { noRunWords } from "#/lib/session-record";
 import { sharedControlClick } from "#/lib/shared-workspace";
 import { useResolvedDark } from "#/lib/theme";
 import { useTRPC } from "#/lib/trpc";
@@ -327,13 +328,10 @@ function SessionPage() {
             {session.summary}
           </p>
         )}
-        {/* Legacy note for settled pre-platform sessions only — a session that is
-            still ACTIVE without a run is provisioning, not unsupervised. */}
+        {/* A settled session with no run: none started. A session that is still ACTIVE
+            without a run is provisioning. */}
         {session.sealantRunId === null && !ACTIVE.has(session.status) && (
-          <p className="mt-3 font-mono text-xs text-warning">
-            recording: off — launched before the platform&apos;s supervised path; worktree,
-            checkpoints, and review are live
-          </p>
+          <p className="mt-3 font-mono text-xs text-warning">{noRunWords(session.status).note}</p>
         )}
         {control.steer ? <FollowUpBanner sessionId={sessionId} followUp={followUp} /> : null}
         <WorkspaceRetirementNote session={session} />
@@ -512,16 +510,14 @@ function SessionPage() {
                   <div className="border-b border-rule-faint bg-secondary px-4 py-2">
                     <p className="font-mono text-[11.5px] text-muted-foreground">
                       {session.sealantRunId === null
-                        ? "no record — the session was not supervised"
+                        ? noRunWords(session.status).header
                         : agentLive
                           ? `run ${session.sealantRunId} · the owner's terminal; the record updates as the session runs`
                           : `run ${session.sealantRunId} · the durable record`}
                     </p>
                   </div>
                   {session.sealantRunId === null ? (
-                    <p className="p-4 font-mono text-xs text-faint">
-                      Progress appears here once sessions launch supervised.
-                    </p>
+                    <p className="p-4 font-mono text-xs text-faint">Nothing was recorded.</p>
                   ) : (
                     <TranscriptPane sessionId={sessionId} />
                   )}

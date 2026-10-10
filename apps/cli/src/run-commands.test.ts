@@ -195,6 +195,20 @@ describe("mend run for scripts", spawning, () => {
     }
   });
 
+  it("refuses a bare interactive shell before anything is created, and points to a real shell (fresh install 2026-10-10)", async () => {
+    const fake = await startFake((_route, _request, response) => response.writeHead(404).end());
+    try {
+      const result = await runCli(fake.url, ["run", "--project", project.name, "--", "bash"]);
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain("bash with no script or -c waits for input");
+      expect(result.stderr).toContain("mend shell");
+      expect(result.stderr).toContain("nothing was created");
+      expect(fake.routes.filter((route) => !route.startsWith("GET /api/me/"))).toEqual([]);
+    } finally {
+      await fake.close();
+    }
+  });
+
   it("launches a script that starts with a newline, as it was typed (Core 0.39.0-next.712)", async () => {
     const script = "\nset -e\necho hi\n";
     let launched: unknown = null;
@@ -677,6 +691,7 @@ describe("review of mend#610", spawning, () => {
       const [code] = await once(child, "close");
       expect(code, stderr()).toBe(130);
       expect(stderr()).toContain("stopped watching · the command keeps running");
+      expect(stderr()).toMatch(/mend stop [0-9a-z-]{8} ends it/);
       expect(stderr()).toContain("output may be incomplete");
     } finally {
       child.kill("SIGKILL");

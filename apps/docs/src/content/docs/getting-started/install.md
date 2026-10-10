@@ -20,7 +20,7 @@ Install the CLI on each device. Set up the server on the machine that will keep 
 
 ## Requirements
 
-- Node.js 22 or newer for the CLI. The TUI, the dashboard `mend` opens in a terminal, requires
+- Node.js 22.13 or newer for the CLI. The TUI, the dashboard `mend` opens in a terminal, requires
   Node.js 26 or newer.
 - For the server, a local Docker daemon with client/server API 1.45 or newer and Docker Compose v2.
 - Disk space for repositories, session captures, images, databases, and backups.

@@ -73,6 +73,41 @@ export const runArgvIssue = (argv: ReadonlyArray<string>): string | null => {
   return null;
 };
 
+/** Shells that read commands from their terminal when given no script and no `-c`. */
+const SHELLS = new Set(["bash", "sh", "dash", "ash", "zsh", "ksh", "mksh", "fish", "tcsh", "csh"]);
+
+/**
+ * Why `mend run` refuses this command as an interactive shell, or null. A shell given no script and
+ * no `-c` (or `-i`/`-s`, which ask for exactly that) reads its commands from a terminal, and an
+ * attached `mend run` only shows output: nothing typed reaches the shell, which waits forever. Only
+ * shells are named: whether any other program reads its terminal can't be known before it runs. A
+ * `--detach`ed run is not asked, since `mend attach` then types into it.
+ */
+export const interactiveShellIssue = (argv: ReadonlyArray<string>): string | null => {
+  const program = argv[0] ?? "";
+  const name = program.slice(program.lastIndexOf("/") + 1).replace(/^-/, "");
+  if (!SHELLS.has(name)) return null;
+  const words = argv.slice(1);
+  for (const [index, word] of words.entries()) {
+    // After `--`, a word is the script.
+    if (word === "--") {
+      if (index + 1 < words.length) return null;
+      break;
+    }
+    if (word === "--command") return null;
+    if (word === "--interactive") break;
+    if (word.startsWith("--")) continue;
+    if (/^[-+][a-zA-Z]+$/.test(word)) {
+      if (word.startsWith("-") && word.includes("c")) return null;
+      if (word.startsWith("-") && (word.includes("i") || word.includes("s"))) break;
+      continue;
+    }
+    // The first word that is not an option is the script to run.
+    return null;
+  }
+  return `${name} with no script or -c waits for input mend run never sends · for a shell: "Open a shell" on the web, mend shell <session>, or mend run --detach and mend attach · for commands: mend run -- ${name} -c '…'`;
+};
+
 // ─── a session's processes ──────────────────────────────────────────────────
 
 /** The slice of a process row these commands read. */

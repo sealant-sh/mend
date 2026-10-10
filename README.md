@@ -30,8 +30,8 @@ decision log.
 
 ## Install
 
-Install the CLI with Node.js 22 or newer. The TUI, which is the dashboard `mend` opens in a
-terminal, needs Node.js 26 or newer. Every other command works on Node.js 22.
+Install the CLI with Node.js 22.13 or newer. The TUI, which is the dashboard `mend` opens in a
+terminal, needs Node.js 26 or newer. Every other command works on Node.js 22.13.
 
 ```sh
 npm install --global @sealant/mend

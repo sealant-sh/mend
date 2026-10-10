@@ -77,6 +77,7 @@ import { followStart, startingLineOf, type StartOutcome } from "./launch-follow.
 import { throwawayLoginDir } from "./login-dir.ts";
 import { loginCommand } from "./login.ts";
 import { modelCatalogJson, modelCatalogLines, type HarnessModelCatalogDto } from "./models.ts";
+import { nodeVersionIssue, quietSqliteWarning } from "./node-runtime.ts";
 import {
   folderCommand,
   inviteCommand,
@@ -103,6 +104,7 @@ import {
   pickProcess,
   pickServiceAttempt,
   processRowOf,
+  interactiveShellIssue,
   runArgvIssue,
   SERVICE_PROCESS_ENDED,
   SERVICE_WORKSPACE_ENDED,
@@ -960,7 +962,10 @@ const launch = async (config: CliConfig, harness: string, args: ReadonlyArray<st
     return fail(harness === "run" ? usageOf("run") : `unknown harness ${harness}`);
   }
   // What the platform would refuse once the session exists, refused here with nothing created.
-  const argvIssue = harness === "run" ? runArgvIssue(argv) : null;
+  const argvIssue =
+    harness === "run"
+      ? (runArgvIssue(argv) ?? (parsed.detach ? null : interactiveShellIssue(argv)))
+      : null;
   if (argvIssue !== null) return fail(`${argvIssue} · nothing was created`);
 
   const project = await findProject(config, parsed.project, true);
@@ -4714,7 +4719,9 @@ const supervisedRun = async (
   say("");
   let undelivered: string | null = null;
   if (!options.json) {
-    stopOutputOnSignal(`stopped watching · the command keeps running · mend logs ${id8} --follow`);
+    stopOutputOnSignal(
+      `stopped watching · the command keeps running · mend logs ${id8} --follow · mend stop ${id8} ends it`,
+    );
   }
   if (processId !== null && !options.json) {
     try {
@@ -5827,6 +5834,9 @@ const manCommand = (words: ReadonlyArray<string>) => {
 };
 
 const main = async () => {
+  const oldNode = nodeVersionIssue(process.version);
+  if (oldNode !== null) return fail(oldNode);
+  quietSqliteWarning();
   // Before any request: every fetch and WebSocket goes over HTTP/1.1 (`http-client.ts`).
   useHttp1();
   const [command, ...rest] = process.argv.slice(2);

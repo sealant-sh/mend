@@ -18,8 +18,8 @@ mend ui --no-tunnel
 
 The dashboard needs Node 26 or newer, because its renderer loads through `node:ffi`. The CLI re-runs
 itself with the flag Node needs, so you never pass it yourself. On an older Node the dashboard
-refuses to open and says which version it found; every other `mend` command works on Node 22. When
-standard output is not a terminal, bare `mend` prints the command index instead.
+refuses to open and says which version it found; every other `mend` command works on Node 22.13.
+When standard output is not a terminal, bare `mend` prints the command index instead.
 
 ## Layout
 

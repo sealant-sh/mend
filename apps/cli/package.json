@@ -42,8 +42,8 @@
     "typecheck": "tsgo -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@opentui/core": "^0.5.1",
-    "@opentui/react": "^0.5.1",
+    "@opentui/core": "0.5.3",
+    "@opentui/react": "0.5.3",
     "@tanstack/react-query": "catalog:",
     "qrcode": "catalog:",
     "react": "catalog:",
@@ -64,6 +64,6 @@
     "vitest": "catalog:"
   },
   "engines": {
-    "node": ">=22"
+    "node": ">=22.13.0"
   }
 }

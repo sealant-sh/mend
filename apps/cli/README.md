@@ -9,7 +9,7 @@ terminal.
 npm install -g @sealant/mend
 ```
 
-Requires Node 22+ and a running Mend server.
+Requires Node 22.13+ and a running Mend server.
 
 Run bare `mend` for the interactive dashboard. The session pane takes three quarters of the screen
 and previews the recorded conversation without taking terminal control. The remaining quarter is a
