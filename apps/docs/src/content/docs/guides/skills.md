@@ -141,13 +141,14 @@ credentials in it, or a path. For example, a repository that wants
 The install runs as the person whose Claude it is, into their own `~/.claude`, and takes about 2 s
 for a plugin from GitHub. All installs at one launch share 30 seconds. A plugin that cannot be
 installed in that time, or at all, does not stop the launch: Claude starts without it. The terminal
-shows one line before Claude starts:
+says what is being installed while it runs, and what came of it before Claude starts:
 
 ```text
+mend: installing Claude plugins · pstack@pstack-claude …
 mend: Claude plugins · installed: pstack@pstack-claude
 ```
 
-The line also names what was already installed, and what was not installed and why:
+The last line also names what was already installed, and what was not installed and why:
 
 ```text
 mend: Claude plugins · already installed: pstack@pstack-claude · not installed: lint@acme-tools (timed out)
@@ -156,7 +157,7 @@ mend: Claude plugins · already installed: pstack@pstack-claude · not installed
 A plugin that wants to run a command of its marketplace's at install is not installed: Mend never
 accepts that command for you.
 
-A conversation session writes the same line to its process's stderr, which the conversation view
+A conversation session writes the same lines to its process's stderr, which the conversation view
 does not show. A new workspace installs the plugins again: Mend does not save `~/.claude/plugins`
 between workspaces yet. A conversation that
 [shared control](/reference/known-issues/#shared-control) moved into its own neutral home installs
