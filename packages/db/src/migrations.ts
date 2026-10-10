@@ -3440,6 +3440,42 @@ const repositoryUrlCredentialsMigration = Effect.gen(function* () {
   }
 });
 
+/**
+ * `bun` and `unzip` joined the default workspace packages (pstack's `orch`, `watch-pr` and
+ * `ship-pr` need bun; bun's own installer needs unzip). The defaults reach only an image nobody
+ * stored, and the instance's settings document stores its image on every save, so every stored
+ * family image gets the two as well: the instance's, each organization's and each project's own,
+ * appended where missing. A custom base is left as it is: its names go verbatim to the base's own
+ * package manager, which may know neither.
+ */
+const defaultBunMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  for (const name of ["bun", "unzip"]) {
+    const added = JSON.stringify([name]);
+    yield* sql`
+      UPDATE settings
+      SET value = jsonb_set(value, '{workspaceImage,packages}',
+                            value->'workspaceImage'->'packages' || ${added}::jsonb)
+      WHERE coalesce(value->'workspaceImage'->>'mode', 'family') = 'family'
+        AND jsonb_typeof(value->'workspaceImage'->'packages') = 'array'
+        AND NOT jsonb_exists(value->'workspaceImage'->'packages', ${name})`;
+    yield* sql`
+      UPDATE organization_settings
+      SET workspace_image = jsonb_set(workspace_image, '{packages}',
+                                      workspace_image->'packages' || ${added}::jsonb)
+      WHERE coalesce(workspace_image->>'mode', 'family') = 'family'
+        AND jsonb_typeof(workspace_image->'packages') = 'array'
+        AND NOT jsonb_exists(workspace_image->'packages', ${name})`;
+    yield* sql`
+      UPDATE projects
+      SET workspace_image = jsonb_set(workspace_image, '{packages}',
+                                      workspace_image->'packages' || ${added}::jsonb)
+      WHERE coalesce(workspace_image->>'mode', 'family') = 'family'
+        AND jsonb_typeof(workspace_image->'packages') = 'array'
+        AND NOT jsonb_exists(workspace_image->'packages', ${name})`;
+  }
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -3568,4 +3604,5 @@ export const migrations = {
   // 0124 is unused: mend#640 (repository URL credentials) moved to 0126.
   "0125_ssh_key_revocations": sshKeyRevocationsMigration,
   "0126_repository_url_credentials": repositoryUrlCredentialsMigration,
+  "0127_default_bun": defaultBunMigration,
 };
