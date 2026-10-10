@@ -66,8 +66,13 @@ export class ExposureConfig extends Context.Service<
   ExposureConfig,
   {
     readonly exposure: Exposure;
-    /** The public exposure gate as evaluated at start, whatever was declared. */
-    readonly gate: ReadonlyArray<ExposureOutcome>;
+    /**
+     * The public exposure gate as it stands now, whatever was declared: configuration as read at
+     * start, the multi mode gate items as they are on each read (`TenancyConfig.gate`).
+     */
+    readonly gate: Effect.Effect<ReadonlyArray<ExposureOutcome>>;
+    /** The same gate over a multi mode gate already read, so one request reads it once. */
+    readonly gateWith: (tenancyGate: ReadonlyArray<GateOutcome>) => ReadonlyArray<ExposureOutcome>;
   }
 >()("@mend/api/ExposureConfig") {}
 
@@ -452,11 +457,11 @@ export const ExposureConfigLive: Layer.Layer<
         return [];
       }
     });
-    const gate = evaluateExposureGate({
+    const tenancy = yield* TenancyConfig;
+    const posture: Omit<ExposurePosture, "tenancyGate"> = {
       appUrl: network.appUrl,
       allowedOrigins: network.allowedOrigins,
       trustedProxies: yield* trustedProxyCidrs,
-      tenancyGate: (yield* TenancyConfig).gate,
       budgetsOff: budgetsOff((yield* Budgets).limits),
       urlBearers: (yield* UrlBearers).mode,
       errorDetail: (yield* ErrorDetail).mode,
@@ -472,7 +477,11 @@ export const ExposureConfigLive: Layer.Layer<
       version,
       mirrors: mirrorHosts,
       t3Gateway,
-    });
+    };
+    const gateWith = (tenancyGate: ReadonlyArray<GateOutcome>) =>
+      evaluateExposureGate({ ...posture, tenancyGate });
+    const currentGate = tenancy.gate.pipe(Effect.map(gateWith));
+    const gate = yield* currentGate;
     const refusal = exposureRefusal(exposure, gate);
     if (refusal !== null) return yield* new ExposureRefused({ message: refusal });
     yield* Effect.logInfo("exposure").pipe(
@@ -485,6 +494,6 @@ export const ExposureConfigLive: Layer.Layer<
           .join(","),
       }),
     );
-    return { exposure, gate };
+    return { exposure, gate: currentGate, gateWith };
   }),
 );

@@ -177,7 +177,7 @@ export const MachineGroupLive = HttpApiBuilder.group(MendApi, "machine", (handle
         originOnMachine: originOnMachine(network.appUrl),
         arrivedVia: viaProxy ? "trusted-proxy" : "direct",
         addressKinds: observedAddressKinds(),
-        gateOpen: exposure.gate.filter((outcome) => outcome.established === "open").length,
+        gateOpen: (yield* exposure.gate).filter((outcome) => outcome.established === "open").length,
       });
     }),
   ),

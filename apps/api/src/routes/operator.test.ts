@@ -15,7 +15,7 @@ import { HttpApi, HttpApiBuilder } from "effect/unstable/httpapi";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 
 import { ProjectAccess } from "../access.ts";
-import { ExposureConfig } from "../exposure.ts";
+import { ExposureConfig, type ExposureOutcome } from "../exposure.ts";
 import { TenancyConfig } from "../tenancy.ts";
 import { AuthMiddlewareLive } from "./api-live.ts";
 import { OperatorGroupLive } from "./operator.ts";
@@ -61,6 +61,26 @@ const authLayer = Layer.succeed(Auth, {
     }),
 });
 
+/** What this instance's exposure gate leaves open, as the operator report reads it. */
+const OPEN_ITEMS: ReadonlyArray<ExposureOutcome> = [
+  {
+    id: "https-origin",
+    established: "open",
+    detail: "plain http origin(s): http://10.0.0.216:3105",
+    fix: "set APP_URL and every MEND_ALLOWED_ORIGINS entry to https",
+    blocksStart: true,
+    observable: true,
+  },
+  {
+    id: "reassessment",
+    established: "open",
+    detail: "no independent reassessment of dev is recorded",
+    fix: "after an independent security reassessment of this exact release, set MEND_EXPOSURE_REASSESSED=dev",
+    blocksStart: false,
+    observable: false,
+  },
+];
+
 const dependencies = Layer.mergeAll(
   authLayer,
   Layer.mock(OrganizationsRepo, {
@@ -86,27 +106,11 @@ const dependencies = Layer.mergeAll(
   }),
   Layer.mock(UsersRepo, { byEmail: (email) => Effect.succeed(accounts.get(email) ?? null) }),
   Layer.mock(AuditEventsRepo, { record: (event) => Effect.sync(() => void audited.push(event)) }),
-  Layer.succeed(TenancyConfig, { mode: "single", gate: [] }),
+  Layer.succeed(TenancyConfig, { mode: "single", gate: Effect.succeed([]) }),
   Layer.succeed(ExposureConfig, {
     exposure: "private",
-    gate: [
-      {
-        id: "https-origin",
-        established: "open",
-        detail: "plain http origin(s): http://10.0.0.216:3105",
-        fix: "set APP_URL and every MEND_ALLOWED_ORIGINS entry to https",
-        blocksStart: true,
-        observable: true,
-      },
-      {
-        id: "reassessment",
-        established: "open",
-        detail: "no independent reassessment of dev is recorded",
-        fix: "after an independent security reassessment of this exact release, set MEND_EXPOSURE_REASSESSED=dev",
-        blocksStart: false,
-        observable: false,
-      },
-    ],
+    gate: Effect.succeed(OPEN_ITEMS),
+    gateWith: () => OPEN_ITEMS,
   }),
 );
 

@@ -8,8 +8,11 @@ export class TenancyConfig extends Context.Service<
   TenancyConfig,
   {
     readonly mode: TenancyMode;
-    /** The multi mode gate as evaluated at start, in either mode. */
-    readonly gate: ReadonlyArray<GateOutcome>;
+    /**
+     * The multi mode gate as it stands now, in either mode: configuration as read at start, the
+     * operator accounts as they are on each read (the first account registers after start).
+     */
+    readonly gate: Effect.Effect<ReadonlyArray<GateOutcome>>;
   }
 >()("@mend/api/TenancyConfig") {}
 
@@ -204,16 +207,21 @@ export const TenancyConfigLive: Layer.Layer<
       "MEND_SESSION_STORE",
     ).pipe(Config.withDefault("captured" as const));
     const organizations = yield* OrganizationsRepo;
-    const operators = yield* (yield* InstanceRolesRepo).operators();
-    const gate = evaluateGate({
-      serviceHosts,
-      sourcePolicy,
-      transportBoundToOrigin,
-      captureRequireSizes,
-      blobStore,
-      sessionStore,
-      operatorCount: operators.length,
-    });
+    const roles = yield* InstanceRolesRepo;
+    const currentGate = roles.operatorCount().pipe(
+      Effect.map((operatorCount) =>
+        evaluateGate({
+          serviceHosts,
+          sourcePolicy,
+          transportBoundToOrigin,
+          captureRequireSizes,
+          blobStore,
+          sessionStore,
+          operatorCount,
+        }),
+      ),
+    );
+    const gate = yield* currentGate;
     const refusal = tenancyRefusal(mode, yield* organizations.count(), gate);
     if (refusal !== null) return yield* new TenancyRefused({ message: refusal });
     yield* Effect.logInfo("tenancy").pipe(
@@ -226,6 +234,6 @@ export const TenancyConfigLive: Layer.Layer<
           .join(","),
       }),
     );
-    return { mode, gate };
+    return { mode, gate: currentGate };
   }),
 );

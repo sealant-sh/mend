@@ -112,7 +112,10 @@ export const HealthGroupLive = HttpApiBuilder.group(MendApi, "health", (handlers
       const deployment = yield* DeploymentConfig;
       const store = yield* StoreConfig;
       const tenancy = yield* TenancyConfig;
+      const tenancyGate = yield* tenancy.gate;
       const exposure = yield* ExposureConfig;
+      // One read of the operator accounts serves both gates.
+      const exposureGate = exposure.gateWith(tenancyGate);
       return new HealthStatus({
         status: "ok",
         version,
@@ -124,15 +127,15 @@ export const HealthGroupLive = HttpApiBuilder.group(MendApi, "health", (handlers
             : { mode: "network", endpoint: deployment.sessionEndpoint.url },
         tenancy: tenancy.mode,
         tenancyGate: {
-          passed: tenancy.gate.every((outcome) => outcome.ok),
-          failing: tenancy.gate.filter((outcome) => !outcome.ok).map((outcome) => outcome.id),
+          passed: tenancyGate.every((outcome) => outcome.ok),
+          failing: tenancyGate.filter((outcome) => !outcome.ok).map((outcome) => outcome.id),
         },
         upgradeTickets: true,
         exposure: {
           declared: exposure.exposure,
           // Counts, not ids: this answer needs no sign-in (see the contract).
-          open: exposure.gate.filter((outcome) => outcome.established === "open").length,
-          unobservable: exposure.gate.filter(
+          open: exposureGate.filter((outcome) => outcome.established === "open").length,
+          unobservable: exposureGate.filter(
             (outcome) => outcome.established === "open" && !outcome.observable,
           ).length,
         },
