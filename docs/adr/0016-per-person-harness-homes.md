@@ -1598,4 +1598,23 @@ benchmark once more, before 0.36 is tagged.
 - 2026-10-10 (owner, security review 0.36 D1): shared control in an executor that shares one home
   runs a teammate's turns on the owner's logins, as a join there does. Documented in decision 7a
   with the cases it covers, not refused.
+- 2026-10-11 (owner), gate P1 on the release candidate, 0.36.0-next.754: **passed**. The run used
+  one build (image `sha256:eb3fe68c6a4d`, commit `08847fc58`), `shared` against `person`, 10 rounds,
+  all four harnesses for every launch scenario. The second person ran Claude only (the partial gate,
+  `--second-person-harnesses claude`): the second test account had no Codex login, which Codex, pi
+  and opencode need. 104 of 112 statistics were within their limits on the first pass, with no
+  failed check and no error. The 8 misses were settled this way:
+  - `git.fetch` and `git.push`, about +100 ms at median and p90, over a limit set by a tight shared
+    run's spread. The owner accepts this as within what a person costs: about 100 ms is fine. The
+    person values equal those of 0.36.0-next.708's interleaved runs.
+  - The hand-over's p90 (to_other 9.7 s, back 7.9 s over the own turn; the medians, 3.8 s, are
+    within). It is measured on Mend's part, from the stop to the sender's process started: 1.6–2.7
+    s, inside the budget. The rest is the model's first output on the other account's cold prompt
+    cache, which is not Mend's to budget.
+  - `new.opencode.first_turn_excl_install` SHORT (7 of 10), equally in both layouts. The benchmark
+    missed answers that opencode's differential redraw never shows whole; it now times opencode's
+    answer from opencode's record (mend#707), so the next gate measures it. Everything else held,
+    including both joins, resume, Stop, clean installs, delivery (`person` was faster) and executor
+    memory and disk. Records: `/tmp/p1-754-*.json` (benchmark runs `2socl2`, `2v32fr`, `2xifcb`,
+    `2xqepp`).
 - Open: gate B's history record.
