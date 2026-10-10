@@ -115,9 +115,14 @@
 //   the harnesses it names. Under gate P1 what such a companion ran and holds counts toward the set,
 //   every budgeted measure in it needs its baseline counterpart, and the baseline companion's
 //   errors are the baseline's.
-// - Cleanup waits for what is in flight that leaves something (a create, an import), refuses new
-//   such work once interrupted, and removes each kind on its own: the joiner's memory file of a
-//   run by its path, whatever else failed; a failure fails the cleanup.
+// - Cleanup waits for what is in flight that leaves something or starts work (a create, an import,
+//   a secret file, a launch, a resume, a shell, a turn), refuses new such requests once
+//   interrupted, and removes each kind on its own: the joiner's memory file of a run by its path,
+//   whatever else failed; a worktree it cannot read is retried, then a failure. A request that ran
+//   past the wait or ended with no answer may still commit: cleanup sweeps again later and records
+//   that what commits after that is left for `cleanup --run <id>`, so the run fails and says so.
+// - A record says the harness its joins, resume and interactive scenarios rode on
+//   (`method.firstHarness`); a companion's version of it must match.
 
 import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";

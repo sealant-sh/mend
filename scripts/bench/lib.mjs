@@ -71,28 +71,35 @@ export const parseContainerDisk = (text) => parseDockerSize((text ?? "").split("
 export const parseMemUsage = (text) => parseDockerSize((text ?? "").split("/")[0]);
 
 /**
- * Reads an executor's own cgroup `memory.stat` on its host, by its container's PID: the cgroup it
- * is in (`/proc/<pid>/cgroup`) under the host's mount, v2 (`cgroup2fs`, the unified `0::` line) or
- * v1 (the `memory` controller's line under its own mount). Read from the host, so it neither
- * assumes the container's view of `/sys/fs/cgroup` nor adds a process to the memory it reads.
- * Prints `cgroup v2 <path>` or `cgroup v1 <path>` and the file, or `unavailable <why>`
- * (`parseMemoryStat`). `$1` is the container's name.
+ * Reads an executor's own cgroup `memory.stat` on its host. The container's PID and id come from
+ * one `docker inspect`, and both must be there. Its memory cgroup is the `memory` controller's
+ * line of `/proc/<pid>/cgroup` (v1, hybrid included), else the unified `0::` line (v2), cut back
+ * to the segment that names the container (its first process may sit in a child, `…scope/init`).
+ * The hierarchy's mount and root come from the host's `/proc/self/mountinfo` (a v1 `memory`
+ * controller co-mounted with others, a v2 hierarchy at `/sys/fs/cgroup/unified`), never assumed.
+ * Read from the host, so it adds no process to the memory it reads. Prints `cgroup v1|v2 <path>`
+ * and the file once it was read whole, else `unavailable <why>` (`parseMemoryStat`). `$1` is the
+ * container's name.
  */
 export const MEMORY_STAT_SH = [
-  'pid=$(docker inspect -f "{{.State.Pid}}" "$1" 2>/dev/null)',
-  'id=$(docker inspect -f "{{.Id}}" "$1" 2>/dev/null)',
-  'if [ -z "$pid" ] || [ "$pid" = 0 ]; then echo "unavailable the executor has no running process"; exit 0; fi',
-  'if [ "$(stat -fc %T /sys/fs/cgroup 2>/dev/null)" = cgroup2fs ]; then',
-  '  v=v2; m=/sys/fs/cgroup; p=$(awk -F: \'$1 == "0" { print $3 }\' "/proc/$pid/cgroup")',
-  "else",
-  "  v=v1; m=/sys/fs/cgroup/memory; p=$(awk -F: '$2 ~ /(^|,)memory(,|$)/ { print $3 }' \"/proc/$pid/cgroup\")",
-  "fi",
-  'if [ -z "$p" ]; then echo "unavailable no $v memory cgroup in /proc/$pid/cgroup"; exit 0; fi',
-  // The container's own cgroup, not its first process's: that may sit in a child (`…scope/init`).
+  'info=$(docker inspect -f "{{.State.Pid}} {{.Id}}" "$1" 2>/dev/null)',
+  "pid=${info%% *}; id=${info#* }",
+  'case "$pid" in "" | 0 | *[!0-9]*) echo "unavailable the executor has no running process"; exit 0 ;; esac',
+  'if [ -z "$id" ] || [ "$id" = "$info" ]; then echo "unavailable the executor\'s container id could not be read"; exit 0; fi',
+  "p=$(awk -F: '$2 ~ /(^|,)memory(,|$)/ { print $3; exit }' \"/proc/$pid/cgroup\" 2>/dev/null)",
+  'if [ -n "$p" ]; then v=v1; else v=v2; p=$(awk -F: \'$1 == "0" { print $3; exit }\' "/proc/$pid/cgroup" 2>/dev/null); fi',
+  'if [ -z "$p" ]; then echo "unavailable no memory cgroup in /proc/$pid/cgroup"; exit 0; fi',
+  // The mount of that hierarchy: the fields after " - " are its type, source and options.
+  'if [ $v = v1 ]; then m=$(awk \'{ for (i = 7; i <= NF; i++) if ($i == "-") break; if ($(i+1) == "cgroup" && $(i+3) ~ /(^|,)memory(,|$)/) { print $4 " " $5; exit } }\' /proc/self/mountinfo)',
+  'else m=$(awk \'{ for (i = 7; i <= NF; i++) if ($i == "-") break; if ($(i+1) == "cgroup2") { print $4 " " $5; exit } }\' /proc/self/mountinfo); fi',
+  'if [ -z "$m" ]; then echo "unavailable no $v memory hierarchy is mounted on the host"; exit 0; fi',
+  "root=${m%% *}; mnt=${m#* }",
   'case "$p" in *"$id"*) p=$(printf %s "$p" | sed "s#\\(.*$id[^/]*\\).*#\\1#") ;; *) echo "unavailable $p does not name the container"; exit 0 ;; esac',
-  'f="$m$p/memory.stat"',
-  'if [ ! -r "$f" ]; then echo "unavailable $f cannot be read"; exit 0; fi',
-  'echo "cgroup $v $p"; cat "$f"',
+  'if [ "$root" = / ]; then rel=$p; else case "$p" in "$root"/*) rel=${p#"$root"} ;; *) echo "unavailable $p is outside the mounted $root"; exit 0 ;; esac; fi',
+  'f="$mnt$rel/memory.stat"',
+  'stat=$(cat "$f" 2>/dev/null) || { echo "unavailable $f could not be read"; exit 0; }',
+  'if [ -z "$stat" ]; then echo "unavailable $f was empty"; exit 0; fi',
+  'echo "cgroup $v $p"; printf "%s\\n" "$stat"',
 ].join("\n");
 
 /** The host command that runs `MEMORY_STAT_SH` for one container, the script passed whole. */
@@ -129,6 +136,8 @@ export const parseMemoryStat = (text) => {
     if (match !== null) values.set(match[1], Number(match[2]));
   }
   const header = /^cgroup (v1|v2)\b/.exec(lines.find((line) => line.startsWith("cgroup ")) ?? "");
+  if (header !== null && values.size === 0)
+    return noMemoryParts("its memory.stat held no counters");
   const version =
     header?.[1] ?? (values.has("anon") ? "v2" : values.has("total_rss") ? "v1" : null);
   const of = (name) => values.get(name) ?? null;
@@ -1479,6 +1488,10 @@ export const companionMismatchOf = (main, companion) => {
     reasons.push(`the workspace images differ (${workspaces[0]} and ${workspaces[1]})`);
   }
   for (const harness of companionHarnessesOf(companion)) {
+    if (harness === null) {
+      reasons.push("the harness its joins ran on is not known (no --harnesses in its options)");
+      continue;
+    }
     const versions = [
       main.target?.harnessVersions?.[harness],
       companion.target?.harnessVersions?.[harness],
@@ -1492,18 +1505,33 @@ export const companionMismatchOf = (main, companion) => {
   return reasons;
 };
 
-/** The harnesses a companion's measures and checks name (`harnessOf`): whose versions must match. */
-const companionHarnessesOf = (companion) =>
-  [
-    ...new Set(
-      [
-        ...Object.keys(companion.measures ?? {}),
-        ...(companion.checks ?? []).map((check) => check.check),
-      ]
-        .map(harnessOf)
-        .filter((harness) => harness !== null),
-    ),
-  ].toSorted();
+/**
+ * The scenarios that ride on the first harness's live session (`runLaunches`): their measures name
+ * no harness (`join.other.first_output`), so the harness they ran on is the run's first.
+ */
+const RIDES_ON_FIRST_HARNESS = new Set(["join-same", "join-other", "resume", "interactive", "api"]);
+
+/** The harness a record's joins, resume and interactive scenarios ran on, or null if not said. */
+export const firstHarnessOf = (result) =>
+  result.method?.firstHarness ?? result.options?.harnesses?.[0] ?? null;
+
+/**
+ * The harnesses whose versions must match for a companion to stand in for the record: those its
+ * measures and checks name (`harnessOf`), and the run's first harness (`firstHarnessOf`) when it
+ * holds a measure of a scenario that rode on it, a join's included. One that cannot be told is
+ * `null`, which `companionMismatchOf` refuses.
+ */
+const companionHarnessesOf = (companion) => {
+  const names = [
+    ...Object.keys(companion.measures ?? {}),
+    ...(companion.checks ?? []).map((check) => check.check),
+  ];
+  const harnesses = new Set(names.map(harnessOf).filter((harness) => harness !== null));
+  if (names.some((name) => RIDES_ON_FIRST_HARNESS.has(scenarioOf(name)))) {
+    harnesses.add(firstHarnessOf(companion));
+  }
+  return [...harnesses].toSorted((a, b) => String(a).localeCompare(String(b)));
+};
 
 /** A record's companions of its own run (`companionMismatchOf`), as `[name, record]` pairs. */
 export const sameRunCompanionsOf = (result) =>

@@ -88,9 +88,10 @@ const errorText = (error) => (error instanceof Error ? error.message : String(er
 
 /**
  * A request that leaves something on the server for cleanup to remove (a worktree, a secret file,
- * a memory file). Refused once the run is interrupted (`ctx.stopping`), and kept in `ctx.pending`
- * until it settles, so cleanup waits for it (`settlePending`): nothing it leaves can commit after
- * cleanup decided what to remove.
+ * a memory file), or starts work in it (a launch, a resume, a shell, a turn). Refused once the run
+ * is interrupted (`ctx.stopping`), and kept in `ctx.pending` until it settles, so cleanup waits for
+ * it (`settlePending`). One that ended with no answer (the connection broke, the server failed) may
+ * still commit on the server: it is counted in `ctx.unanswered`, and cleanup sweeps again later.
  */
 const leaving = (ctx, request) => {
   if (ctx.stopping === true) {
@@ -99,30 +100,51 @@ const leaving = (ctx, request) => {
   const pending = request();
   ctx.pending ??= new Set();
   ctx.pending.add(pending);
-  const forget = () => ctx.pending.delete(pending);
-  pending.then(forget, forget);
+  pending.then(
+    () => ctx.pending.delete(pending),
+    (error) => {
+      ctx.pending.delete(pending);
+      if (!(error instanceof ApiError) || error.status >= 500) {
+        ctx.unanswered = (ctx.unanswered ?? 0) + 1;
+      }
+    },
+  );
   return pending;
 };
 
-/** How long cleanup waits for requests in flight before it goes on without them. */
-export const PENDING_WAIT_MS = 120_000;
+/**
+ * Cleanup's waits: for requests in flight (`pending`), then, when one ran past it or ended with no
+ * answer, for a second sweep: the rest of them (`final`) and a server that may still commit one
+ * (`grace`); and between retries of a removal (`retry`). A test may shorten them
+ * (`ctx.cleanupWaits`).
+ */
+export const CLEANUP_WAITS = { pending: 120_000, final: 30_000, grace: 10_000, retry: 2000 };
 
-/** Waits for every request in flight that leaves something (`leaving`), up to `PENDING_WAIT_MS`. */
-export const settlePending = async (ctx, waitMs = PENDING_WAIT_MS) => {
+/** A wait that lets go of its timer once it is not needed. */
+const raceWithTimeout = async (promise, ms) => {
+  let timer;
+  const timeout = new Promise((resolve) => {
+    timer = setTimeout(resolve, ms);
+  });
+  try {
+    await Promise.race([promise, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+};
+
+/**
+ * Waits for every request in flight that leaves something (`leaving`), up to `waitMs`. True when
+ * none is left.
+ */
+export const settlePending = async (ctx, waitMs = CLEANUP_WAITS.pending) => {
   const deadline = Date.now() + waitMs;
   while ((ctx.pending?.size ?? 0) > 0) {
     const left = deadline - Date.now();
-    if (left <= 0) {
-      ctx.rec.error(
-        "cleanup",
-        new Error(
-          `${ctx.pending.size} request(s) still in flight after ${waitMs / 1000} s: what they leave may stay (cleanup --run ${ctx.rid} removes it)`,
-        ),
-      );
-      return;
-    }
-    await Promise.race([Promise.allSettled(ctx.pending), sleep(left)]);
+    if (left <= 0) return false;
+    await raceWithTimeout(Promise.allSettled(ctx.pending), left);
   }
+  return true;
 };
 
 // ─── the recorder ───────────────────────────────────────────────────────────
@@ -579,7 +601,9 @@ const runCommand = async (terminal, command, timeoutMs = 120_000) => {
 
 const openShell = async (ctx, sessionId) => {
   const started = performance.now();
-  const { value: process, ms } = await ctx.api.call("POST", `/sessions/${sessionId}/shell`, {});
+  const { value: process, ms } = await leaving(ctx, () =>
+    ctx.api.call("POST", `/sessions/${sessionId}/shell`, {}),
+  );
   const terminal = await attachTerminal(ctx.api, { process: process.id });
   const first = await terminal.firstFrame(0, 30_000);
   return { process, terminal, callMs: ms, openMs: first === null ? null : first.at - started };
@@ -604,7 +628,9 @@ const newSession = async (ctx, harness, run) => {
     layout: ctx.opts.layout,
   });
   ctx.log(`${harness} #${run} · created ${session.id.slice(0, 8)} · worktree ${name}`);
-  const { ms: launchMs } = await ctx.api.call("POST", `/sessions/${session.id}/launch`, { prompt });
+  const { ms: launchMs } = await leaving(ctx, () =>
+    ctx.api.call("POST", `/sessions/${session.id}/launch`, { prompt }),
+  );
   const { detail, agent } = await waitForAgent(ctx, session.id, startedAt);
   const outputAt = local(ctx, agent.firstOutputAt);
   // A launch that ran in another layout than the one asked for (a person launch the server put
@@ -716,7 +742,7 @@ const joinSamePerson = async (ctx, primary, run) => {
   if (session.worktreeId !== primary.session.worktreeId) {
     throw new Error("the second session did not join the first one's worktree");
   }
-  await ctx.api.call("POST", `/sessions/${session.id}/launch`, {});
+  await leaving(ctx, () => ctx.api.call("POST", `/sessions/${session.id}/launch`, {}));
   const { detail, agent } = await waitForAgent(ctx, session.id, startedAt);
   const prefix = await recordJoin(ctx, "join.same", "start", {
     startedAt,
@@ -742,7 +768,7 @@ const joinOtherPerson = async (ctx, primary, run) => {
   }
   let joined = false;
   try {
-    await ctx.api2.call("POST", `/sessions/${session.id}/launch`, {});
+    await leaving(ctx, () => ctx.api2.call("POST", `/sessions/${session.id}/launch`, {}));
     const { detail, agent } = await waitForAgent(ctx, session.id, startedAt, 600_000, ctx.api2);
     joined = true;
     if (ctx.opts.layout === "person") {
@@ -949,7 +975,9 @@ const apiLatency = async (ctx, sessionId) => {
 const resume = async (ctx, primary, run) => {
   const sessionId = primary.session.id;
   const startedAt = Date.now();
-  const { ms } = await ctx.api.call("POST", `/sessions/${sessionId}/resume`, { harness: null });
+  const { ms } = await leaving(ctx, () =>
+    ctx.api.call("POST", `/sessions/${sessionId}/resume`, { harness: null }),
+  );
   const { detail, agent } = await waitForAgent(ctx, sessionId, startedAt);
   const outputAt = local(ctx, agent.firstOutputAt);
   const firstOutput = outputAt - startedAt;
@@ -1101,9 +1129,9 @@ const steeredTurn = async (ctx, { session, harness, kind, api, round }) => {
   const b = 5000 + 7 * round + HARNESSES.indexOf(harness);
   const answer = String(a + b);
   const prefix = `handover.${harness}.${kind}`;
-  const { value: submitted, ms } = await api.call("POST", `/sessions/${session.id}/turns`, {
-    input: sumPrompt(a, b),
-  });
+  const { value: submitted, ms } = await leaving(ctx, () =>
+    api.call("POST", `/sessions/${session.id}/turns`, { input: sumPrompt(a, b) }),
+  );
   const { turn, detail, maxLive } = await waitForTurn(ctx, session.id, submitted.id);
   const items = await turnItems(ctx.api, session.id, turn.id);
   const times = turnTimes(turn, items);
@@ -1179,9 +1207,9 @@ const seedConversation = async (ctx, session, harness, container) => {
   let size = { tokens: null, compactions: null };
   let turns = 0;
   for (let k = 1; k <= ctx.opts.handoverSeedTurns; k += 1) {
-    const { value: submitted } = await ctx.api.call("POST", `/sessions/${session.id}/turns`, {
-      input: seedPrompt(k),
-    });
+    const { value: submitted } = await leaving(ctx, () =>
+      ctx.api.call("POST", `/sessions/${session.id}/turns`, { input: seedPrompt(k) }),
+    );
     const { turn } = await waitForTurn(ctx, session.id, submitted.id, 900_000);
     turns = k;
     ctx.rec.check(
@@ -1246,10 +1274,12 @@ const handoverOn = async (ctx, harness) => {
   const { session } = await createSession(ctx, { harness, name, label: name, layout: "person" });
   ctx.log(`handover.${harness} · created ${session.id.slice(0, 8)} · worktree ${name}`);
   try {
-    await ctx.api.call("POST", `/sessions/${session.id}/launch`, {
-      mode: "protocol",
-      prompt: sumPrompt(1200, 3400),
-    });
+    await leaving(ctx, () =>
+      ctx.api.call("POST", `/sessions/${session.id}/launch`, {
+        mode: "protocol",
+        prompt: sumPrompt(1200, 3400),
+      }),
+    );
     const first = await launchTurn(ctx, session.id);
     const launched = await ctx.api.get(`/sessions/${session.id}`);
     const firstProcess = (launched.processes ?? []).find((p) => p.id === first.processId) ?? null;
@@ -1397,7 +1427,7 @@ const personLaunch = async (ctx, { harness, name, api, prompt, layout = null }) 
     api,
     layout,
   });
-  await api.call("POST", `/sessions/${session.id}/launch`, { prompt });
+  await leaving(ctx, () => api.call("POST", `/sessions/${session.id}/launch`, { prompt }));
   const { agent } = await waitForAgent(ctx, session.id, startedAt, 600_000, api);
   return { session, agent };
 };
@@ -1683,9 +1713,32 @@ const noteHarnessVersion = async (ctx, container, harness, accountId = null) => 
 // ─── cleanup ────────────────────────────────────────────────────────────────
 
 /** Stops every live session of a worktree and removes it (forced: its change is ours to drop). */
+/** A request retried on what may pass (5xx, the transport), never on a client error. */
+const withRetries = async (request, { tries = 3, delayMs = 2000 } = {}) => {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await request();
+    } catch (error) {
+      const clientError = error instanceof ApiError && error.status < 500;
+      if (clientError || attempt >= tries) throw error;
+      await sleep(delayMs * attempt);
+    }
+  }
+};
+
+/**
+ * Stops a worktree's live sessions and removes it. Gone already (404) is done; any other failure to
+ * read it throws (after retries), so cleanup records it and fails instead of saying "removed".
+ */
 const removeWorktree = async (ctx, worktreeId) => {
-  const detail = await ctx.api.get(`/worktrees/${worktreeId}`).catch(() => null);
-  if (detail === null) return;
+  const delayMs = ctx.cleanupWaits?.retry ?? CLEANUP_WAITS.retry;
+  const detail = await withRetries(() => ctx.api.get(`/worktrees/${worktreeId}`), {
+    delayMs,
+  }).catch((error) => {
+    if (error instanceof ApiError && error.status === 404) return null;
+    throw error;
+  });
+  if (detail === null) return "gone";
   for (const session of detail.sessions ?? []) {
     if (session.settledAt === null) {
       // The second account's session in a worktree of the first is stopped by its owner when the
@@ -1699,7 +1752,8 @@ const removeWorktree = async (ctx, worktreeId) => {
         .catch((error) => ctx.rec.error(`cleanup · stop ${session.id.slice(0, 8)}`, error));
     }
   }
-  await ctx.api.delete(`/worktrees/${worktreeId}?force=true`);
+  await withRetries(() => ctx.api.delete(`/worktrees/${worktreeId}?force=true`), { delayMs });
+  return "removed";
 };
 
 /**
@@ -1709,16 +1763,50 @@ const removeWorktree = async (ctx, worktreeId) => {
  * run's: a bench run or a `cleanup` beside a gate run leaves the gate's sessions alone.
  */
 export const cleanupAll = async (ctx, { all = false } = {}) => {
+  const waits = { ...CLEANUP_WAITS, ...ctx.cleanupWaits };
   // Whatever is in flight first: an import or a create that commits after this would stay.
-  await settlePending(ctx);
+  const settled = await settlePending(ctx, waits.pending);
+  await sweep(ctx, { all });
+  // A request still in flight, or one that ended with no answer, may commit after that sweep:
+  // wait for it and for the server, and sweep again. Whatever is still unknown then is recorded,
+  // so the cleanup fails and says how to finish it.
+  const unanswered = ctx.unanswered ?? 0;
+  if (!settled || unanswered > 0) {
+    const late = await settlePending(ctx, waits.final);
+    await sleep(waits.grace);
+    await sweep(ctx, { all });
+    const left = ctx.pending?.size ?? 0;
+    const why = [
+      ...((ctx.unanswered ?? 0) > 0 ? [`${ctx.unanswered} request(s) ended with no answer`] : []),
+      ...(settled ? [] : [`a request ran past ${waits.pending / 1000} s`]),
+    ].join(" and ");
+    ctx.rec.error(
+      "cleanup",
+      new Error(
+        `${why}: swept again ${late ? "once it settled" : `after ${waits.final / 1000} s, ${left} still in flight`}; what one commits after that stays, and \`cleanup --run ${ctx.rid}\` removes it`,
+      ),
+    );
+  }
+  remoteRefsNote(ctx);
+};
+
+/**
+ * One pass over what a run leaves (`cleanupAll`): its worktrees, its secret files, the joiner's
+ * memory file. Each part on its own: one that fails is recorded and the others still run.
+ */
+const sweep = async (ctx, { all }) => {
   // Each part on its own: one that fails is recorded (cleanup then fails) and the others still run.
   try {
     const listing = await ctx.api.get(`/projects/${ctx.project.id}/worktrees`);
     for (const worktree of listing.worktrees ?? []) {
       if (!inCleanupScope(worktree.name, ctx.rid, all)) continue;
       try {
-        await removeWorktree(ctx, worktree.id);
-        ctx.log(`cleanup · removed worktree ${worktree.name}`);
+        const outcome = await removeWorktree(ctx, worktree.id);
+        ctx.log(
+          outcome === "gone"
+            ? `cleanup · worktree ${worktree.name} was gone already`
+            : `cleanup · removed worktree ${worktree.name}`,
+        );
       } catch (error) {
         ctx.rec.error(`cleanup · worktree ${worktree.name}`, error);
       }
@@ -1751,7 +1839,6 @@ export const cleanupAll = async (ctx, { all = false } = {}) => {
     }
   }
   await removeJoinerMemory(ctx, { all });
-  remoteRefsNote(ctx);
 };
 
 /**
@@ -1941,6 +2028,9 @@ const runLaunches = async (ctx, otherBlocker) => {
   const { opts, rec } = ctx;
   const selected = (scenario) => opts.only.includes(scenario);
   const primaryHarness = opts.harnesses[0];
+  // What the joins, the resume and the interactive scenarios ride on: their measures name no
+  // harness, so the record says which (`firstHarnessOf`).
+  ctx.result.method = { ...ctx.result.method, firstHarness: primaryHarness };
   const harnesses = selected("new") || selected("stop") ? opts.harnesses : [primaryHarness];
   for (let run = 1; run <= opts.runs; run += 1) {
     for (const harness of harnesses) {

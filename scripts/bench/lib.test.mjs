@@ -2330,8 +2330,32 @@ test("review 624 (1): a companion whose build, workspace or harness identity is 
     measures: { "join.other.first_output": personPair.measures["join.other.first_output"] },
     checks: [],
   };
+  // A join names no harness: the one it ran on (the run's first) needs its version too (review
+  // 2 of 624, N1).
   claudeOnly.target.harnessVersions = {};
+  assert.deepEqual(companionMismatchOf(personMain, claudeOnly), [
+    "claude's version is not known on both",
+  ]);
+  claudeOnly.target.harnessVersions = { claude: personMain.target.harnessVersions.claude };
   assert.deepEqual(companionMismatchOf(personMain, claudeOnly), []);
+  claudeOnly.method = { firstHarness: "codex" };
+  assert.deepEqual(companionMismatchOf(personMain, claudeOnly), [
+    "codex's version is not known on both",
+  ]);
+  const unsaid = { ...claudeOnly, method: {}, options: { ...claudeOnly.options, harnesses: [] } };
+  assert.match(companionMismatchOf(personMain, unsaid).join("; "), /joins ran on is not known/);
+  // The split gate whose shared companion lacks the joining harness's version is not the gate.
+  const joinVersion = splitCase(({ sharedPair }) => {
+    delete sharedPair.target.harnessVersions.claude;
+  });
+  assert.equal(comparisonFails(joinVersion), true);
+  assert.ok(
+    joinVersion.label.differs.some((reason) =>
+      /shared record's companion on configs is not of its run: claude's version is not known/.test(
+        reason,
+      ),
+    ),
+  );
   const noUrl = structuredClone(personPair);
   noUrl.target.url = undefined;
   assert.deepEqual(companionMismatchOf(personMain, noUrl), [
@@ -2384,6 +2408,8 @@ test("review 624 (3): a budgeted companion measure the baseline's companion lack
   );
   assert.ok(!plain.rows.some((row) => row.measure === "configs: executor.claude.memory_bytes"));
 });
+
+const sleepMs = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** A cleanup's world: the owner's and the joiner's API, with what the joiner's memory holds. */
 const cleanupWorld = ({ worktrees = "ok", memory = "ok", rid = "proof" } = {}) => {
@@ -2503,6 +2529,254 @@ test("review 624 (5): cleanup waits for an import in flight, and nothing new sta
   assert.equal(late.stored.size, 0);
 });
 
+test("review 624 r2 (N4-N6): the executor's cgroup is found by its mount, its id and a whole read", () => {
+  const root = mkdtempSync(path.join(tmpdir(), "st-bench-cgroup-"));
+  const id = "a".repeat(64);
+  const v2Stat = "anon 1000\nactive_file 2000\nshmem 3000\nkernel 4000\n";
+  const v1Stat =
+    "total_rss 1000\ntotal_active_file 2000\ntotal_shmem 3000\nactive_file 2\nshmem 3\n";
+  const parentV2 = { anon: 1000, activeFile: 2000, shmem: 3000, kernel: 4000, reason: null };
+  const parentV1 = { ...parentV2, kernel: null };
+  const run = ({ name, membership, mounts, files, inspect = `4242 ${id}`, catFails = false }) => {
+    const dir = path.join(root, name);
+    const bin = path.join(dir, "bin");
+    mkdirSync(bin, { recursive: true });
+    mkdirSync(path.join(dir, "proc", "4242"), { recursive: true });
+    mkdirSync(path.join(dir, "proc", "self"), { recursive: true });
+    writeFileSync(path.join(dir, "proc", "4242", "cgroup"), membership);
+    writeFileSync(
+      path.join(dir, "proc", "self", "mountinfo"),
+      mounts
+        .map(
+          ([mountRoot, mountedAt, type, options], index) =>
+            `${100 + index} 1 0:${index} ${mountRoot} ${dir}${mountedAt} rw shared:1 - ${type} cgroup ${options}\n`,
+        )
+        .join(""),
+    );
+    for (const [cgroupAt, text] of Object.entries(files)) {
+      mkdirSync(path.join(dir, cgroupAt), { recursive: true });
+      writeFileSync(path.join(dir, cgroupAt, "memory.stat"), text);
+    }
+    const stub = (tool, text) =>
+      writeFileSync(path.join(bin, tool), `#!/bin/sh\n${text}\n`, { mode: 0o755 });
+    stub("docker", `printf '%s\\n' '${inspect}'`);
+    if (catFails) stub("cat", "exit 1");
+    const script = MEMORY_STAT_SH.replaceAll("/proc/", `${dir}/proc/`);
+    const out = execFileSync("sh", ["-c", script, "st-bench", "fixture"], {
+      env: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
+      encoding: "utf8",
+    });
+    return parseMemoryStat(out);
+  };
+  const child = "anon 10\nactive_file 20\nshmem 30\nkernel 40\n";
+  const scope = `/system.slice/docker-${id}.scope`;
+  // Plain v2, the first process in a child: the container's own cgroup, not the child's.
+  assert.deepEqual(
+    run({
+      name: "v2",
+      membership: `0::${scope}/init\n`,
+      mounts: [["/", "/cg", "cgroup2", "rw"]],
+      files: { [`/cg${scope}`]: v2Stat, [`/cg${scope}/init`]: child },
+    }),
+    parentV2,
+  );
+  // v1, the memory controller co-mounted with cpu: found by its mount, not assumed.
+  assert.deepEqual(
+    run({
+      name: "v1-comounted",
+      membership: `7:cpu,memory:/docker/${id}/init\n4:pids:/docker/${id}\n`,
+      mounts: [
+        ["/", "/cg/pids", "cgroup", "rw,pids"],
+        ["/", "/cg/memory,cpu", "cgroup", "rw,cpu,memory"],
+      ],
+      files: { [`/cg/memory,cpu/docker/${id}`]: v1Stat },
+    }),
+    parentV1,
+  );
+  // Hybrid with memory on v2 (the unified hierarchy at /cg/unified), and with memory on v1.
+  assert.deepEqual(
+    run({
+      name: "hybrid-v2-memory",
+      membership: `4:pids:/docker/${id}\n0::${scope}/init\n`,
+      mounts: [
+        ["/", "/cg/pids", "cgroup", "rw,pids"],
+        ["/", "/cg/unified", "cgroup2", "rw"],
+      ],
+      files: { [`/cg/unified${scope}`]: v2Stat },
+    }),
+    parentV2,
+  );
+  assert.deepEqual(
+    run({
+      name: "hybrid-v1-memory",
+      membership: `5:memory:/docker/${id}\n0::${scope}\n`,
+      mounts: [
+        ["/", "/cg/unified", "cgroup2", "rw"],
+        ["/", "/cg/memory", "cgroup", "rw,memory"],
+      ],
+      files: { [`/cg/memory/docker/${id}`]: v1Stat, [`/cg/unified${scope}`]: child },
+    }),
+    parentV1,
+  );
+  // A hierarchy mounted from below its root: the path is taken relative to that root.
+  assert.deepEqual(
+    run({
+      name: "mounted-subtree",
+      membership: `5:memory:/docker/${id}\n`,
+      mounts: [["/docker", "/cg/memory", "cgroup", "rw,memory"]],
+      files: { [`/cg/memory/${id}`]: v1Stat },
+    }),
+    parentV1,
+  );
+  // An id that cannot be read is no cgroup at all, never the child's (N5).
+  assert.match(
+    run({
+      name: "no-id",
+      membership: `0::${scope}/init\n`,
+      mounts: [["/", "/cg", "cgroup2", "rw"]],
+      files: { [`/cg${scope}`]: v2Stat, [`/cg${scope}/init`]: child },
+      inspect: "4242",
+    }).reason,
+    /container id could not be read/,
+  );
+  // A read that fails after the cgroup was found says so (N6).
+  assert.match(
+    run({
+      name: "cat-fails",
+      membership: `0::${scope}\n`,
+      mounts: [["/", "/cg", "cgroup2", "rw"]],
+      files: { [`/cg${scope}`]: v2Stat },
+      catFails: true,
+    }).reason,
+    /could not be read/,
+  );
+  assert.match(
+    run({
+      name: "no-mount",
+      membership: `0::${scope}\n`,
+      mounts: [["/", "/cg/pids", "cgroup", "rw,pids"]],
+      files: {},
+    }).reason,
+    /no v2 memory hierarchy is mounted/,
+  );
+  assert.equal(parseMemoryStat(`cgroup v2 ${scope}\n`).reason, "its memory.stat held no counters");
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('review 624 r2 (N3): a worktree that cannot be read is a cleanup failure, retried, never "removed"', async () => {
+  const world = cleanupWorld();
+  const calls = [];
+  const logged = [];
+  world.ctx.cleanupWaits = { retry: 1 };
+  world.ctx.log = (line) => logged.push(line);
+  world.ctx.api.get = async (route) => {
+    calls.push(`GET ${route}`);
+    if (route.endsWith("/worktrees")) {
+      return { worktrees: [{ id: "w1", name: "st-bench-proof-claude-1" }] };
+    }
+    if (route === "/worktrees/w1") throw new ApiError("GET", route, 503, "unavailable");
+    return { files: [] };
+  };
+  world.ctx.api.delete = async (route) => {
+    calls.push(`DELETE ${route}`);
+    return {};
+  };
+  await cleanupAll(world.ctx);
+  assert.deepEqual(
+    world.result.errors.map((error) => error.scenario),
+    ["cleanup · worktree st-bench-proof-claude-1"],
+  );
+  assert.equal(calls.filter((call) => call === "GET /worktrees/w1").length, 3);
+  assert.ok(!calls.some((call) => call.startsWith("DELETE /worktrees")));
+  assert.ok(!logged.some((line) => /removed worktree/.test(line)));
+  // Gone already (404) is done, and said so.
+  const gone = cleanupWorld();
+  gone.ctx.cleanupWaits = { retry: 1 };
+  const goneLog = [];
+  gone.ctx.log = (line) => goneLog.push(line);
+  gone.ctx.api.get = async (route) => {
+    if (route.endsWith("/worktrees"))
+      return { worktrees: [{ id: "w2", name: "st-bench-proof-pi-1" }] };
+    if (route === "/worktrees/w2") throw new ApiError("GET", route, 404, "{}");
+    return { files: [] };
+  };
+  await cleanupAll(gone.ctx);
+  assert.deepEqual(gone.result.errors, []);
+  assert.ok(goneLog.some((line) => /st-bench-proof-pi-1 was gone already/.test(line)));
+});
+
+test("review 624 r2 (N2): what may commit after cleanup is swept again, and nothing launches after a signal", async () => {
+  const waits = { pending: 300, final: 1500, grace: 200, retry: 1 };
+  // An import whose connection broke: the server commits it 100 ms later.
+  const broken = cleanupWorld({ rid: "broken" });
+  broken.stored.clear();
+  broken.ctx.cleanupWaits = waits;
+  broken.ctx.opts = { only: ["join-other"], layout: "person", secretFile: false, runs: 1 };
+  broken.ctx.result = { target: { harnessVersions: {} }, blocked: [], method: {} };
+  broken.ctx.api.call = async () => {
+    throw new ApiError("POST", "/sessions", 400, "no sessions in this test");
+  };
+  broken.ctx.api2.post = async (_route, payload) => {
+    setTimeout(() => {
+      for (const file of payload.files) broken.stored.set(file.path, file);
+    }, 100);
+    throw new TypeError("fetch failed");
+  };
+  await runAll(broken.ctx).catch(() => null);
+  await cleanupAll(broken.ctx);
+  assert.equal(broken.stored.size, 0);
+  assert.match(
+    broken.result.errors.map((error) => error.message).join("\n"),
+    /1 request\(s\) ended with no answer: swept again .*cleanup --run broken/,
+  );
+  // An import still in flight when the first wait ends: swept once it commits.
+  const slow = cleanupWorld({ rid: "slow" });
+  slow.stored.clear();
+  slow.ctx.cleanupWaits = waits;
+  slow.ctx.opts = broken.ctx.opts;
+  slow.ctx.result = broken.ctx.result;
+  slow.ctx.api.call = broken.ctx.api.call;
+  slow.ctx.api2.post = (_route, payload) =>
+    new Promise((resolve) => {
+      setTimeout(() => {
+        for (const file of payload.files) slow.stored.set(file.path, file);
+        resolve({});
+      }, 800);
+    });
+  const running = runAll(slow.ctx).catch(() => null);
+  await sleepMs(50);
+  slow.ctx.stopping = true;
+  await cleanupAll(slow.ctx);
+  await running;
+  assert.equal(slow.stored.size, 0);
+  assert.match(
+    slow.result.errors.map((error) => error.message).join("\n"),
+    /a request ran past 0.3 s: swept again once it settled/,
+  );
+  // A session created as the signal came: its launch is never sent.
+  const fenced = cleanupWorld({ rid: "fenced" });
+  fenced.ctx.cleanupWaits = waits;
+  fenced.ctx.opts = {
+    only: ["new"],
+    layout: "person",
+    secretFile: false,
+    runs: 1,
+    harnesses: ["claude"],
+  };
+  fenced.ctx.result = { target: { harnessVersions: {} }, blocked: [], method: {} };
+  const posts = [];
+  fenced.ctx.api.call = async (method, route) => {
+    posts.push(`${method} ${route}`);
+    if (route.endsWith("/sessions")) {
+      fenced.ctx.stopping = true;
+      return { value: { id: "s1", worktree: "st-bench-fenced-claude-1", worktreeId: "w1" }, ms: 1 };
+    }
+    return { value: {}, ms: 1 };
+  };
+  await runAll(fenced.ctx).catch(() => null);
+  assert.deepEqual(posts, ["POST /projects/p/sessions"]);
+});
+
 test("review 624 (6): memory.stat is the executor's own cgroup, v1 read from hierarchical totals only", () => {
   // v1 with a child cgroup: the hierarchical totals, never the parent's local counters.
   assert.deepEqual(
@@ -2537,8 +2811,6 @@ test("review 624 (6): memory.stat is the executor's own cgroup, v1 read from hie
   assert.match(command, / st-bench sealant-abc_1\.x$/);
   assert.throws(() => memoryStatCommand("a; rm -rf /"), /not a container name/);
   // It reads the container's own cgroup: the first process's path is cut at the container's id.
-  assert.match(MEMORY_STAT_SH, /\/proc\/\$pid\/cgroup/);
-  assert.match(MEMORY_STAT_SH, /\$id\[\^\/\]\*/);
   assert.ok(!MEMORY_STAT_SH.includes("docker exec"));
 });
 
