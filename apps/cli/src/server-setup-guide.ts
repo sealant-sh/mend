@@ -181,7 +181,7 @@ const exposureOf = (settings: SetupSettings): string =>
 const sshOf = (settings: SetupSettings): string => {
   const at = publishedAddress(sshAt(settings), settings.sshPort);
   return sshBeyondThisMachine(settings)
-    ? `reachable from other machines, published on ${at}`
+    ? `published on ${at}, beyond this machine`
     : `this machine only (${at})`;
 };
 
@@ -269,6 +269,7 @@ export interface TailscaleFacts {
   /** MagicDNS name, without the trailing dot. */
   readonly dnsName: string | null;
   readonly ipv4: string | null;
+  readonly ipv6: string | null;
   readonly serve: ReadonlyArray<ServeRoute>;
 }
 
@@ -304,9 +305,11 @@ export const tailscaleFactsOf = (status: string, serve: string): TailscaleFacts 
   const self = fieldsOf(fields.get("Self"));
   const dns = self.get("DNSName");
   const ips = self.get("TailscaleIPs");
-  const ipv4 = Array.isArray(ips)
-    ? ips.find((ip): ip is string => typeof ip === "string" && net.isIPv4(ip))
-    : undefined;
+  const addresses = Array.isArray(ips)
+    ? ips.filter((ip): ip is string => typeof ip === "string")
+    : [];
+  const ipv4 = addresses.find((ip) => net.isIPv4(ip));
+  const ipv6 = addresses.find((ip) => net.isIPv6(ip));
   const serveFields = fieldsOf(parseJson(serve));
   const funnel = fieldsOf(serveFields.get("AllowFunnel"));
   const routes = [...fieldsOf(serveFields.get("Web")).entries()].flatMap(([hostPort, web]) => {
@@ -327,6 +330,7 @@ export const tailscaleFactsOf = (status: string, serve: string): TailscaleFacts 
     running: fields.get("BackendState") === "Running",
     dnsName: typeof dns === "string" && dns !== "" ? dns.replace(/\.$/, "") : null,
     ipv4: ipv4 ?? null,
+    ipv6: ipv6 ?? null,
     serve: routes,
   };
 };
@@ -481,6 +485,26 @@ const tailscaleOnce = (observe: GuideObservations): (() => Promise<TailscaleFact
   return () => (facts ??= observe.tailscale());
 };
 
+/** The address the tailnet reaches this machine at: IPv4 when it has one, else IPv6. */
+const tailnetAddress = (tailscale: TailscaleFacts | null): string | null =>
+  tailscale?.running === true ? (tailscale.ipv4 ?? tailscale.ipv6) : null;
+
+/** An address as a URL's host: an IPv6 literal in brackets. */
+const urlHost = (address: string): string => (net.isIPv6(address) ? `[${address}]` : address);
+
+/**
+ * The settings as setup itself keeps them: an extra origin that is now the URL is no longer extra,
+ * and an SSH publication on the web's own address is no separate publication. The flag resolver
+ * folds both the same way, so the guide compares like with like.
+ */
+const settled = (settings: SetupSettings): SetupSettings => ({
+  ...settings,
+  sshBind: settings.sshBind === settings.bind ? undefined : settings.sshBind,
+  allowedOrigins: [...new Set(settings.allowedOrigins)].filter(
+    (origin) => origin !== settings.appUrl,
+  ),
+});
+
 interface Asked {
   readonly io: GuideIo;
   readonly context: GuideContext;
@@ -510,26 +534,43 @@ const askNetwork = async (asked: Asked, settings: SetupSettings): Promise<SetupS
     io.write("Observed: Tailscale is installed here and not running (tailscale up starts it).");
   else
     io.write(
-      `Observed: Tailscale is up; this machine is ${tailscale.dnsName ?? "unnamed"} at ${tailscale.ipv4 ?? "no IPv4 address"} on your tailnet.`,
+      `Observed: Tailscale is up; this machine is ${tailscale.dnsName ?? "unnamed"} at ${[tailscale.ipv4, tailscale.ipv6].filter((ip) => ip !== null).join(" and ") || "no address"} on your tailnet.`,
     );
-  const tailnet = tailscale?.running === true ? tailscale.ipv4 : null;
+  const tailnet = tailnetAddress(tailscale);
   const others = asked.context.observe
     .localAddresses()
     .filter((address) => net.isIPv4(address) && address !== tailnet);
   const port = settings.appPort;
+  // Where a network install listens now stays a choice, whatever this machine's addresses are.
+  const listening =
+    reachModeOf(settings) === "network" &&
+    settings.bind !== "0.0.0.0" &&
+    settings.bind !== tailnet &&
+    !others.includes(settings.bind)
+      ? settings.bind
+      : null;
   const choices: ReadonlyArray<Choice<{ readonly bind: string; readonly host: string | null }>> = [
+    ...(listening === null
+      ? []
+      : [
+          {
+            label: `where it listens now, ${listening}`,
+            detail: "keeps the address it is published on",
+            value: { bind: listening, host: urlHost(listening) },
+          },
+        ]),
     ...(tailnet === null
       ? []
       : [
           {
             label: `over Tailscale, as ${tailscale?.dnsName ?? tailnet}`,
-            detail: `listens on ${tailnet}, this machine's tailnet address: only your tailnet reaches it`,
-            value: { bind: tailnet, host: tailscale?.dnsName ?? tailnet },
+            detail: `listens on ${tailnet}, this machine's tailnet address, and is published there only`,
+            value: { bind: tailnet, host: tailscale?.dnsName ?? urlHost(tailnet) },
           },
         ]),
     ...others.map((address) => ({
       label: `on this network address, ${address}`,
-      detail: `listens on ${address} only: whoever reaches that network reaches it`,
+      detail: `listens on ${address} only, and is published on that network`,
       value: { bind: address, host: address },
     })),
     {
@@ -568,14 +609,20 @@ const askNetwork = async (asked: Asked, settings: SetupSettings): Promise<SetupS
       return { value: origin };
     },
   );
-  return {
+  // SSH keeps what was saved: on the web's address it follows the new one, and published apart
+  // (loopback only, the tailnet, every address) it stays where it is until the SSH question moves it.
+  const followsWeb = settings.sshBind === undefined && !isLoopbackAddress(settings.bind);
+  return settled({
     ...settings,
     bind: picked.bind,
-    sshBind: undefined,
+    sshBind:
+      followsWeb || reachModeOf(settings) === "machine"
+        ? undefined
+        : (settings.sshBind ?? settings.bind),
     edgeHost: undefined,
     appUrl,
     exposure: "private",
-  };
+  });
 };
 
 const FRESH_PUBLIC = [
@@ -620,30 +667,44 @@ const askPublic = async (asked: Asked, settings: SetupSettings): Promise<SetupSe
         : `Observed: something on this machine already listens on ${taken.join(" and ")}; the edge needs ${taken.length === 1 ? "it" : "them"}.`,
     );
   }
-  const publicSettings: SetupSettings = {
+  // The web goes back to loopback behind the edge; SSH stays where it was published until the
+  // SSH question that follows moves it.
+  const publicSettings = settled({
     ...settings,
     edgeHost: domain,
     appUrl: `https://${domain}`,
     bind: isLoopbackAddress(settings.bind) ? settings.bind : LOOPBACK,
-    // On a network install SSH followed the bind, which now goes back to loopback.
-    sshBind: reachModeOf(settings) === "public" ? settings.sshBind : undefined,
+    sshBind: reachModeOf(settings) === "machine" ? undefined : sshAt(settings),
     exposure: "public",
-  };
+  });
   return askSsh(asked, publicSettings);
 };
 
-/** Remote-SSH beside the edge: a port of its own, and, when public, a statement Mend cannot check. */
+/**
+ * Remote-SSH from other machines: workspace SSH is a port of its own, published on loopback, on
+ * the web's address, on the tailnet or on every address. On a public install, publishing it beyond
+ * loopback needs a statement Mend cannot check.
+ */
 const askSsh = async (asked: Asked, settings: SetupSettings): Promise<SetupSettings> => {
   const { io } = asked;
-  const tailscale = await asked.tailscale();
-  const tailnet = tailscale?.running === true ? tailscale.ipv4 : null;
+  const tailnet = tailnetAddress(await asked.tailscale());
   const port = settings.sshPort;
-  const choices: ReadonlyArray<Choice<string | undefined>> = [
+  const web = isLoopbackAddress(settings.bind) ? null : settings.bind;
+  const candidates: ReadonlyArray<Choice<string>> = [
     {
       label: "no, this machine only",
-      detail: `SSH stays on ${publishedAddress(settings.bind, port)}`,
-      value: undefined,
+      detail: `SSH on ${publishedAddress(LOOPBACK, port)}`,
+      value: LOOPBACK,
     },
+    ...(web === null || web === "0.0.0.0" || web === tailnet
+      ? []
+      : [
+          {
+            label: "yes, on the same address as the web",
+            detail: `SSH on ${publishedAddress(web, port)}`,
+            value: web,
+          },
+        ]),
     ...(tailnet === null
       ? []
       : [
@@ -659,24 +720,38 @@ const askSsh = async (asked: Asked, settings: SetupSettings): Promise<SetupSetti
       value: "0.0.0.0",
     },
   ];
-  const current = choices.findIndex((choice) => choice.value === settings.sshBind);
-  const sshBind = await choose(
+  // Published somewhere none of these name (a saved --ssh-bind): that stays a choice.
+  const at = sshAt(settings);
+  const choices: ReadonlyArray<Choice<string>> =
+    isLoopbackAddress(at) || candidates.some((choice) => choice.value === at)
+      ? candidates
+      : [
+          ...candidates,
+          {
+            label: "yes, where it is published now",
+            detail: `SSH on ${publishedAddress(at, port)}`,
+            value: at,
+          },
+        ];
+  const current = isLoopbackAddress(at) ? 0 : choices.findIndex((choice) => choice.value === at);
+  const chosen = await choose(
     io,
-    "Should VS Code Remote-SSH and mend ssh reach sessions from other machines? The edge carries HTTPS only; workspace SSH is a port of its own.",
+    `Should VS Code Remote-SSH and mend ssh reach sessions from other machines?${settings.edgeHost === undefined ? " Workspace SSH" : " The edge carries HTTPS only; workspace SSH"} is a port of its own.`,
     choices,
     current < 0 ? 0 : current,
   );
-  if (sshBind === undefined || isLoopbackAddress(sshBind))
-    return {
+  const onLoopback = (): SetupSettings =>
+    settled({
       ...settings,
-      sshBind: undefined,
+      sshBind: isLoopbackAddress(settings.bind) ? undefined : LOOPBACK,
       declared: without(settings.declared, "workspace-ssh"),
-    };
-  if (settings.exposure !== "public") return { ...settings, sshBind };
-  const declared = settings.declared.includes("workspace-ssh") && settings.sshBind === sshBind;
+    });
+  if (isLoopbackAddress(chosen)) return onLoopback();
+  if (settings.exposure !== "public") return settled({ ...settings, sshBind: chosen });
+  const declared = settings.declared.includes("workspace-ssh") && at === chosen;
   const checked = await choose(
     io,
-    `Mend cannot see who reaches ${publishedAddress(sshBind, port)} from outside, and a public server does not start until you state that you checked (the exposure gate's workspace-ssh item).`,
+    `Mend cannot see who reaches ${publishedAddress(chosen, port)} from outside, and a public server does not start until you state that you checked (the exposure gate's workspace-ssh item).`,
     [
       {
         label: "I checked it from a network that should not reach it",
@@ -688,8 +763,12 @@ const askSsh = async (asked: Asked, settings: SetupSettings): Promise<SetupSetti
     declared ? 0 : 1,
   );
   return checked
-    ? { ...settings, sshBind, declared: withItem(settings.declared, "workspace-ssh") }
-    : { ...settings, sshBind: undefined, declared: without(settings.declared, "workspace-ssh") };
+    ? settled({
+        ...settings,
+        sshBind: chosen,
+        declared: withItem(settings.declared, "workspace-ssh"),
+      })
+    : onLoopback();
 };
 
 /** Origins Tailscale Serve forwards to Mend's port here, offered as extra browser origins. */
@@ -742,9 +821,9 @@ const askReach = async (asked: Asked, settings: SetupSettings): Promise<SetupSet
     for (const line of FRESH_PUBLIC) asked.io.write(line);
     next = toThisMachine(settings);
   } else if (reach === "public") next = await askPublic(asked, settings);
-  else if (reach === "network") next = await askNetwork(asked, settings);
+  else if (reach === "network") next = await askSsh(asked, await askNetwork(asked, settings));
   else next = toThisMachine(settings);
-  return offerServeOrigins(asked, next);
+  return settled(await offerServeOrigins(asked, settled(next)));
 };
 
 const DECLARATIONS: ReadonlyArray<{
@@ -940,7 +1019,7 @@ const changeOne = async (asked: Asked, settings: SetupSettings): Promise<SetupSe
       "What should change?",
       [
         { label: "how people reach it", detail: reachOf(next), value: "reach" },
-        ...(next.edgeHost === undefined
+        ...(reachModeOf(next) === "machine"
           ? []
           : [
               {
@@ -1019,6 +1098,7 @@ export const runGuide = async (io: GuideIo, context: GuideContext): Promise<Guid
             ? await changeOne(asked, base)
             : await walk(asked, base);
     }
+    target = settled(target);
     const flags = flagsFor(base, target);
     let resolved: SetupSettings;
     try {

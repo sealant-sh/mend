@@ -110,9 +110,12 @@ describe("the guided server setup", () => {
   });
 
   it("offers the tailnet: the MagicDNS name becomes the URL, the tailnet address the listener", async () => {
-    // reach: network · which network: 1 (Tailscale) · URL: enter · Serve origin: yes · T3: yes ·
-    // mirrors: keep · tenancy: several · apply
-    const { outcome, transcript } = await converse(["2", "1", "", "y", "y", "", "2", "y"], null);
+    // reach: network · which network: 1 (Tailscale) · URL: enter · SSH: enter (over Tailscale) ·
+    // Serve origin: yes · T3: yes · mirrors: keep · tenancy: several · apply
+    const { outcome, transcript } = await converse(
+      ["2", "1", "", "", "y", "y", "", "2", "y"],
+      null,
+    );
     const flags = flagsOf(outcome);
     expect(flags).toEqual([
       "--bind",
@@ -128,7 +131,7 @@ describe("the guided server setup", () => {
       "--t3-gateway",
     ]);
     expect(transcript).toContain(
-      "Observed: Tailscale is up; this machine is mend-box.tailc79e49.ts.net at 100.94.101.28 on your tailnet.",
+      "Observed: Tailscale is up; this machine is mend-box.tailc79e49.ts.net at 100.94.101.28 and fd7a:115c:a1e0::1 on your tailnet.",
     );
     expect(transcript).toContain(
       "Observed: Tailscale Serve forwards https://mend-box.tailc79e49.ts.net:8443 to Mend's port here.",
@@ -143,7 +146,7 @@ describe("the guided server setup", () => {
 
   it("says when tailscale did not answer, and still offers this machine's addresses", async () => {
     const { outcome, transcript } = await converse(
-      ["2", "1", "", "", "", "", ""],
+      ["2", "1", "", "", "", "", "", ""],
       null,
       observe({ tailscale: async () => null, localAddresses: () => ["192.168.1.20"] }),
     );
@@ -271,6 +274,101 @@ describe("the guided server setup", () => {
     ]);
   });
 
+  it("changing a private install's URL keeps SSH where it was published (review 664-1)", async () => {
+    const { tenancy: _t, declared: _d, edgeHost: _e, ...rest } = BOX;
+    const lan: ServerConfig = {
+      ...rest,
+      bind: "192.168.1.20",
+      sshBind: "127.0.0.1",
+      appUrl: "http://192.168.1.20:3105",
+      allowedOrigins: [],
+      exposure: "private",
+    };
+    const quiet = observe({ tailscale: async () => null, localAddresses: () => ["192.168.1.20"] });
+    // change · reach · network · the same address · a new URL · SSH: enter keeps loopback ·
+    // nothing else · apply
+    const renamed = await converse(
+      ["2", "1", "2", "", "http://mend.lan:3105", "", "", ""],
+      lan,
+      quiet,
+    );
+    expect(flagsOf(renamed.outcome)).toEqual(["--url", "http://mend.lan:3105"]);
+    // The old URL accepted as it is: nothing changes at all.
+    const same = await converse(["2", "1", "2", "", "", "", "", ""], lan, quiet);
+    expect(flagsOf(same.outcome)).toEqual([]);
+  });
+
+  it("an extra origin that becomes the URL is folded away, back to this machine (review 664-2)", async () => {
+    const { tenancy: _t, declared: _d, edgeHost: _e, sshBind: _s, ...rest } = BOX;
+    const lan: ServerConfig = {
+      ...rest,
+      bind: "0.0.0.0",
+      appUrl: "http://mend-host:3105",
+      allowedOrigins: ["http://localhost:3105"],
+      exposure: "private",
+    };
+    const quiet = observe({ tailscale: async () => null });
+    // change · reach · just this machine · nothing else · apply
+    const fromLan = await converse(["2", "1", "1", "", ""], lan, quiet);
+    expect(flagsOf(fromLan.outcome)).toEqual([
+      "--bind",
+      "127.0.0.1",
+      "--url",
+      "http://localhost:3105",
+      "--origin",
+      "none",
+      "--exposure",
+      "loopback",
+    ]);
+    // The same from a public edge install that kept the localhost origin.
+    const fromEdge = await converse(["2", "1", "1", "", ""], {
+      ...BOX,
+      allowedOrigins: ["http://localhost:3105", "https://mend-box.tailc79e49.ts.net:8443"],
+    });
+    const flags = flagsOf(fromEdge.outcome);
+    expect(flags).toContain("--no-edge");
+    expect(resolveSetupSettings(BOX, flags).allowedOrigins).toEqual([
+      "https://mend-box.tailc79e49.ts.net:8443",
+    ]);
+  });
+
+  it("offers an IPv6-only tailnet for the web and for SSH, bracketed in URLs (review 664-3)", async () => {
+    const v6 = observe({
+      tailscale: async () =>
+        tailscaleFactsOf(
+          JSON.stringify({
+            BackendState: "Running",
+            Self: { TailscaleIPs: ["fd7a:115c:a1e0::1"] },
+          }),
+          "",
+        ),
+      localAddresses: () => ["fd7a:115c:a1e0::1"],
+    });
+    // fresh · network · Tailscale (1) · URL: enter · SSH: over Tailscale (enter) · T3 · mirrors ·
+    // tenancy · apply
+    const fresh = await converse(["2", "1", "", "", "", "", "", ""], null, v6);
+    expect(fresh.transcript).toContain("1. over Tailscale, as fd7a:115c:a1e0::1");
+    expect(flagsOf(fresh.outcome)).toEqual([
+      "--bind",
+      "fd7a:115c:a1e0::1",
+      "--url",
+      "http://[fd7a:115c:a1e0::1]:3105",
+      "--exposure",
+      "private",
+    ]);
+    // A saved install on that address keeps it: enter all the way changes nothing.
+    const { tenancy: _t, declared: _d, edgeHost: _e, sshBind: _s, ...rest } = BOX;
+    const saved: ServerConfig = {
+      ...rest,
+      bind: "fd7a:115c:a1e0::1",
+      appUrl: "http://box.tail1234.ts.net:3105",
+      allowedOrigins: [],
+      exposure: "private",
+    };
+    const again = await converse(["2", "1", "2", "", "", "", "", ""], saved, v6);
+    expect(flagsOf(again.outcome)).toEqual([]);
+  });
+
   it("re-asks an answer it cannot use, and stops with nothing changed on Ctrl+D", async () => {
     const { outcome, transcript } = await converse(["7", "x"], null);
     expect(transcript).toContain('"7" is not one of the choices.');
@@ -339,7 +437,10 @@ describe("the guide's flags round-trip", () => {
   }
 
   it("the summary's command, parsed back, is the same settings", async () => {
-    const { outcome, transcript } = await converse(["2", "1", "", "y", "y", "", "2", "y"], null);
+    const { outcome, transcript } = await converse(
+      ["2", "1", "", "", "y", "y", "", "2", "y"],
+      null,
+    );
     const command = /Same as: (.*)/.exec(transcript)?.[1] ?? "";
     const flags = command.split(" ").slice(3);
     expect(flags).toEqual(flagsOf(outcome));
@@ -367,6 +468,7 @@ describe("tailscale's own words", () => {
       running: true,
       dnsName: "mend-box.tailc79e49.ts.net",
       ipv4: "100.94.101.28",
+      ipv6: "fd7a:115c:a1e0::1",
       serve: [
         { origin: "https://mend-box.tailc79e49.ts.net", loopbackPort: 3105, funnel: true },
         { origin: "https://mend-box.tailc79e49.ts.net:8443", loopbackPort: null, funnel: false },

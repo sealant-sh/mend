@@ -2072,6 +2072,84 @@ describe("mend server setup, guided and unasked", () => {
     expect(serverJson(configDir)).toMatchObject({ tenancy: "multi" });
   });
 
+  it("changing a private install's URL keeps SSH on loopback, in the files too (review 664-1)", async () => {
+    const control = makeRuntime();
+    const { configDir } = control.runtime;
+    const runtime = {
+      ...control.runtime,
+      probeSsh: async () => [],
+      localAddresses: () => ["192.168.1.20"],
+    };
+    expect(
+      await serverCommand(
+        [
+          "setup",
+          "--bind",
+          "192.168.1.20",
+          "--url",
+          "http://192.168.1.20:3105",
+          "--ssh-bind",
+          "127.0.0.1",
+          "--exposure",
+          "private",
+        ],
+        runtime,
+      ),
+    ).toEqual({ _tag: "ok" });
+    // change · reach · network · the same address · a new URL · SSH: enter keeps it on this
+    // machine · nothing else · apply
+    const lines: Array<string> = [];
+    expect(
+      await serverCommand(["setup"], {
+        ...runtime,
+        writeLine: (line) => lines.push(line),
+        prompter: scriptedPrompter(["2", "1", "2", "", "http://mend.lan:3105", "", "", ""], []),
+      }),
+    ).toEqual({ _tag: "ok" });
+    expect(lines).toContain("Same as: mend server setup --url http://mend.lan:3105");
+    expect(serverJson(configDir)).toMatchObject({
+      appUrl: "http://mend.lan:3105",
+      bind: "192.168.1.20",
+      sshBind: "127.0.0.1",
+    });
+    expect(readEnv(activeFile(configDir, "server.env")).get("MEND_SSH_BIND_HOST")).toBe(
+      "127.0.0.1",
+    );
+  });
+
+  it("the documented extra localhost origin does not block going back to this machine (review 664-2)", async () => {
+    const control = makeRuntime();
+    const { configDir } = control.runtime;
+    const runtime = { ...control.runtime, probeSsh: async () => [] };
+    expect(
+      await serverCommand(
+        [
+          "setup",
+          "--bind",
+          "0.0.0.0",
+          "--url",
+          "http://mend-host:3105",
+          "--origin",
+          "http://localhost:3105",
+        ],
+        runtime,
+      ),
+    ).toEqual({ _tag: "ok" });
+    // change · reach · just this machine · nothing else · apply
+    expect(
+      await serverCommand(["setup"], {
+        ...runtime,
+        prompter: scriptedPrompter(["2", "1", "1", "", ""], []),
+      }),
+    ).toEqual({ _tag: "ok" });
+    expect(serverJson(configDir)).toMatchObject({
+      bind: "127.0.0.1",
+      appUrl: "http://localhost:3105",
+      allowedOrigins: [],
+      exposure: "loopback",
+    });
+  });
+
   it("stopping the guide changes nothing", async () => {
     const control = makeRuntime();
     expect(

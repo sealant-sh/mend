@@ -58,9 +58,10 @@ the answer in brackets.
   tailnet address. When Tailscale Serve already forwards an https name to Mend's port, it offers
   that name as a browser origin too. Setup never changes Tailscale's own settings.
 - For **public HTTPS**, it asks for your domain, then says where the domain resolves from this
-  machine and whether something already listens on ports 80 and 443. It asks whether VS Code
-  Remote-SSH should reach sessions from other machines and, if so, whether you checked who can reach
-  that port.
+  machine and whether something already listens on ports 80 and 443.
+- For a private network or public HTTPS, it asks whether VS Code Remote-SSH should reach sessions
+  from other machines, and where workspace SSH is published. On a public install it also asks
+  whether you checked who can reach that port.
 - Whether to turn on the **T3 Code gateway**, whether to keep the **mirrors** as they are, and
   whether the server holds **one organization or several**.
 
@@ -73,7 +74,7 @@ yes:
 Setup will install:
   reached          your network, at http://mend-box.tailc79e49.ts.net:3105 (listening on 100.94.101.28)
   exposure         declared private
-  workspace SSH    reachable from other machines, published on 100.94.101.28:2222
+  workspace SSH    published on 100.94.101.28:2222, beyond this machine
   T3 Code gateway  off
   organizations    one organization (single)
   mirrors          npm on, 10g · Docker Hub on, 20g
@@ -97,7 +98,7 @@ What would you like to do?
 
 What should change?
   1. how people reach it · the public internet, over HTTPS at alpha.mend.run (the edge, Caddy, on 80 and 443)
-  2. VS Code Remote-SSH from other machines · reachable from other machines, published on 0.0.0.0:2222
+  2. VS Code Remote-SSH from other machines · published on 0.0.0.0:2222, beyond this machine
   3. the T3 Code gateway · off
   …
   1-7 [1]: 3
