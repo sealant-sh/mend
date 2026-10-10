@@ -115,15 +115,19 @@ export class ConnectionStore {
       },
     );
     if (method === undefined) return false;
+    // The browser walk can turn into a pasted token midway: the person chose that instead.
+    const signedIn = method.method === "browser" ? await this.browserSignIn(url) : undefined;
+    if (signedIn === null) return false;
     let stored: StoredCredential;
-    if (method.method === "browser") {
-      const signedIn = await this.browserSignIn(url);
-      if (signedIn === null) return false;
+    if (signedIn !== undefined && signedIn !== "token") {
       stored = { kind: "token", url, token: signedIn.token, deviceId: signedIn.deviceId };
       void vscode.window.showInformationMessage(
         `Signed in to Mend at ${url} as ${signedIn.email}. Revoke this editor under Settings → Devices.`,
       );
-    } else if (method.method === "token") {
+    } else if (method.method === "none") {
+      // "No token" means none: not the CLI's sign-in for the same URL either.
+      stored = { kind: "none", url };
+    } else {
       const token = await vscode.window.showInputBox({
         title: `Connect Mend · ${url}`,
         prompt: "Device token",
@@ -132,9 +136,6 @@ export class ConnectionStore {
       });
       if (token === undefined || token.trim() === "") return false;
       stored = { kind: "token", url, token: token.trim(), deviceId: null };
-    } else {
-      // "No token" means none: not the CLI's sign-in for the same URL either.
-      stored = { kind: "none", url };
     }
     // The token first: changing the setting restarts the event stream, which reads it.
     const store = parseCredentialStore(await this.context.secrets.get(TOKEN_KEY));
@@ -148,9 +149,26 @@ export class ConnectionStore {
     return true;
   }
 
-  private async browserSignIn(url: string): Promise<SignedIn | null> {
+  /**
+   * The browser walk. Null when cancelled; "token" when the person chose to paste a device token
+   * instead. The link and code are shown with their own actions from the start: VS Code's "open
+   * the external website?" dialog can hide behind other windows, and the walk must not depend on it.
+   */
+  private async browserSignIn(url: string): Promise<SignedIn | "token" | null> {
+    let switchedToToken = false;
+    let settled = false;
+    const offer = async (code: string, page: string): Promise<void> => {
+      const choice = await vscode.window.showInformationMessage(
+        `Mend sign-in: open ${page} and approve if it shows ${code}.`,
+        "Copy link",
+        "Paste a device token instead",
+      );
+      if (settled) return;
+      if (choice === "Copy link") await vscode.env.clipboard.writeText(page);
+      if (choice === "Paste a device token instead") switchedToToken = true;
+    };
     try {
-      return await vscode.window.withProgress(
+      const signedIn = await vscode.window.withProgress(
         {
           location: vscode.ProgressLocation.Notification,
           title: "Mend sign-in",
@@ -161,20 +179,23 @@ export class ConnectionStore {
             fetch,
             openExternal: (page) =>
               Promise.resolve(vscode.env.openExternal(vscode.Uri.parse(page))),
-            onCode: (code) =>
-              progress.report({
-                message: `approve in the browser if it shows ${code}`,
-              }),
+            onCode: (code, page) => {
+              progress.report({ message: `approve in the browser if it shows ${code}` });
+              void offer(code, page);
+            },
             sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
             deviceName: `VS Code on ${os.hostname()}`,
-            cancelled: () => cancellation.isCancellationRequested,
+            cancelled: () => switchedToToken || cancellation.isCancellationRequested,
           }),
       );
+      return signedIn ?? (switchedToToken ? "token" : null);
     } catch (cause) {
       void vscode.window.showErrorMessage(
         cause instanceof Error ? cause.message : "Mend sign-in failed.",
       );
       return null;
+    } finally {
+      settled = true;
     }
   }
 

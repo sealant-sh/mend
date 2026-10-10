@@ -9,6 +9,7 @@ import {
   DEVICE_TOKEN_PREFIX,
   claimAddress,
   cliAuthVerifyPath,
+  secondsUntil,
   configuredOriginForRequest,
   inCidr,
   PAIRING_ALPHABET,
@@ -87,6 +88,13 @@ describe("cli authorize", () => {
 
   it("points the browser at the grouped code on /authorize", () => {
     expect(cliAuthVerifyPath("ABCDEFGH")).toBe("/authorize?code=ABCD-EFGH");
+  });
+
+  it("counts the seconds left on the server's own clock, never below zero", () => {
+    const now = Date.parse("2026-10-11T02:00:00Z");
+    expect(secondsUntil(new Date(now + 600_000), now)).toBe(600);
+    expect(secondsUntil(new Date(now + 1_999), now)).toBe(1);
+    expect(secondsUntil(new Date(now - 5_000), now)).toBe(0);
   });
 });
 

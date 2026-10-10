@@ -10,6 +10,7 @@ import { describe, expect, it } from "vitest";
 
 import { readShutdownTimeout } from "./docker-shutdown.ts";
 import {
+  clockCheck,
   exposureCheck,
   formatCheck,
   type LocalServerFacts,
@@ -345,6 +346,43 @@ describe("the claude grant line", () => {
   /** Someone who connected with --use-my-login has no grant of Mend's own: say nothing. */
   it("prints no line at all when Mend keeps no grant", async () => {
     expect(await grantLine(null)).toBeNull();
+  });
+});
+
+describe("the clock line", () => {
+  const clockLine = async (skewMs: number) => {
+    const fake = await startFakeMend((request, response) => {
+      response.setHeader("date", new Date(Date.now() + skewMs).toUTCString());
+      greenServer(request, response);
+    });
+    try {
+      const checks = await runChecks(
+        { url: fake.url, token: null },
+        { localCredential: () => null, claudeGrant: () => null, onPath: () => false },
+      );
+      return checks.find((check) => check.label === "clock") ?? null;
+    } finally {
+      await fake.close();
+    }
+  };
+
+  it("says how far a server's clock is behind, and what resets it", async () => {
+    const line = await clockLine(-(116 * 60_000));
+    expect(line?.state).toBe("todo");
+    expect(line?.detail).toBe("this server's clock is 116 min behind this machine's");
+    expect(line?.fix).toContain("restart");
+    expect(line?.fix).toContain("NTP");
+  });
+
+  it("prints no line while the two clocks agree", async () => {
+    expect(await clockLine(0)).toBeNull();
+  });
+
+  it("names a clock ahead as ahead, and leaves a gap under two minutes alone", () => {
+    expect(clockCheck(7 * 60_000)?.detail).toBe(
+      "this server's clock is 7 min ahead of this machine's",
+    );
+    expect(clockCheck(-90_000)).toBeNull();
   });
 });
 

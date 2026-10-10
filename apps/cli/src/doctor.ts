@@ -105,20 +105,51 @@ interface Fetched<T> {
   readonly value: T | null;
   /** The HTTP status; null when the request got no answer at all. */
   readonly status: number | null;
+  /**
+   * How far the server's clock reads from this machine's, in ms (positive: the server's is
+   * ahead), from its Date header against the middle of the request. Null without one.
+   */
+  readonly clockSkewMs: number | null;
 }
 
 /** A read that never throws and never blocks: the outcome is a value the checklist can print. */
 const getJson = async <T>(config: DoctorConfig, route: string): Promise<Fetched<T>> => {
   try {
+    const sent = Date.now();
     const response = await fetch(`${config.url}/api${route}`, {
       headers: config.token === null ? {} : { authorization: `Bearer ${config.token}` },
       signal: AbortSignal.timeout(TIMEOUT_MS),
     });
-    if (!response.ok) return { value: null, status: response.status };
-    return { value: (await response.json()) as T, status: response.status };
+    const date = Date.parse(response.headers.get("date") ?? "");
+    const clockSkewMs = Number.isNaN(date) ? null : date - (sent + Date.now()) / 2;
+    if (!response.ok) return { value: null, status: response.status, clockSkewMs };
+    return { value: (await response.json()) as T, status: response.status, clockSkewMs };
   } catch {
-    return { value: null, status: null };
+    return { value: null, status: null, clockSkewMs: null };
   }
+};
+
+/**
+ * Past this, the server's clock and this machine's disagree enough to say so. A Date header is
+ * whole seconds and a slow answer adds its own, so a smaller gap is not a finding.
+ */
+const CLOCK_SKEW_FINDING_MS = 2 * 60_000;
+
+/**
+ * The server's clock against this machine's, as one doctor line, or null when they agree. Sign-in
+ * counts down from what the server says is left, so skew no longer breaks it, but anything that
+ * compares the server's times with this machine's still reads wrong. OrbStack and Docker Desktop
+ * pause their VM while a Mac sleeps, and its clock can wake hours behind until the VM restarts.
+ */
+export const clockCheck = (clockSkewMs: number): Check | null => {
+  if (Math.abs(clockSkewMs) < CLOCK_SKEW_FINDING_MS) return null;
+  const minutes = Math.round(Math.abs(clockSkewMs) / 60_000);
+  return {
+    label: "clock",
+    state: "todo",
+    detail: `this server's clock is ${minutes} min ${clockSkewMs < 0 ? "behind" : "ahead of"} this machine's`,
+    fix: "if the server runs in OrbStack or Docker Desktop, restart it; otherwise check NTP on both machines (timedatectl, or sntp on a Mac)",
+  };
 };
 
 interface HealthDto {
@@ -332,6 +363,9 @@ export const runChecks = async (
       ? await unreachedServer(config, local)
       : await answeredServer(config, health.value, local),
   );
+  const clock =
+    health.value === null || health.clockSkewMs === null ? null : clockCheck(health.clockSkewMs);
+  if (clock !== null) checks.push(clock);
 
   // Projects double as the cheapest authenticated read there is: it proves the token
   // without asking the platform anything.

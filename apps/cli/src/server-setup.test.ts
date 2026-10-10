@@ -2703,6 +2703,10 @@ describe("mend server setup beside another server (the RC on a Mac with two Dock
     expect(transcript[0]).toContain("1-3 [1]: 1");
     expect(transcript.at(-1)).toBe("Apply? [Y/n] ");
     expect(serverJson(control.runtime.configDir)).toMatchObject({ dockerContext: "orbstack" });
+    // The equivalent command picks the same engine.
+    expect(control.lines).toContain(
+      "Same as: mend server setup --exposure loopback --context orbstack",
+    );
 
     // No terminal: refused, as with no flags at all.
     const unasked = makeRuntime();

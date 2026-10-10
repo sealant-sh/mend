@@ -345,6 +345,13 @@ describe("the guided server setup", () => {
     const flags = flagsOf(outcome);
     expect(flags).toEqual(["--t3-gateway"]);
     expect(setupCommandOf(flags)).toBe("mend server setup --t3-gateway");
+    // Engine flags the person typed ride along; with no answer flags, --yes still leads.
+    expect(setupCommandOf(flags, ["--context", "orbstack"])).toBe(
+      "mend server setup --t3-gateway --context orbstack",
+    );
+    expect(setupCommandOf([], ["--context", "orbstack"])).toBe(
+      "mend server setup --yes --context orbstack",
+    );
     // The flags alone, against the saved config, keep the rest: the edge, SSH, the declarations.
     const after = resolveSetupSettings(BOX, flags);
     expect(after).toMatchObject({

@@ -11,6 +11,7 @@ import { describe, expect, it } from "vitest";
 import {
   authorizeUrl,
   browserCommand,
+  browserDecision,
   normalizeServerUrl,
   pollDeadline,
   pollDelayMs,
@@ -125,10 +126,55 @@ describe("authorize walk facts", () => {
     expect(pollDelayMs(600)).toBe(10_000);
   });
 
-  it("stops at the request's own expiry, or ten minutes for an unreadable date", () => {
-    const now = Date.parse("2026-08-22T10:00:00.000Z");
-    expect(pollDeadline("2026-08-22T10:10:00.000Z", now)).toBe(now + 10 * 60_000);
-    expect(pollDeadline("not a date", now)).toBe(now + 10 * 60_000);
+  it("counts down from receipt, whatever the server's clock says", () => {
+    const received = Date.parse("2026-10-11T02:00:00.000Z");
+    // The server's clock is 1 h 56 min behind: its expiresAt is long past on this clock.
+    const behind = { expiresAt: "2026-10-11T00:14:00.000Z", expiresIn: 600 };
+    expect(pollDeadline(behind, received)).toBe(received + 600_000);
+    expect(pollDeadline({ expiresAt: "not a date", expiresIn: -3 }, received)).toBe(received);
+  });
+
+  it("reads an older server's expiresAt against its own Date header", () => {
+    const received = Date.parse("2026-10-11T02:00:00.000Z");
+    const expiry = { expiresAt: "2026-10-11T00:14:00.000Z" };
+    expect(pollDeadline(expiry, received, "Sun, 11 Oct 2026 00:04:00 GMT")).toBe(
+      received + 600_000,
+    );
+    // No Date header, or an unreadable date: ten minutes.
+    expect(pollDeadline(expiry, received, null)).toBe(received + 10 * 60_000);
+    expect(
+      pollDeadline({ expiresAt: "not a date" }, received, "Sun, 11 Oct 2026 00:04:00 GMT"),
+    ).toBe(received + 10 * 60_000);
+  });
+
+  it("opens a browser only on a terminal with a screen of its own", () => {
+    const terminal = { args: [], platform: "darwin" as const, isTTY: true };
+    expect(browserDecision({ ...terminal, env: {} })).toEqual({ open: true, why: null });
+    // Over SSH the browser would open on the far machine's screen.
+    const overSsh = browserDecision({ ...terminal, env: { SSH_CONNECTION: "1 2 3 4" } });
+    expect(overSsh.open).toBe(false);
+    expect(overSsh.why).toContain("over SSH");
+    expect(browserDecision({ ...terminal, env: { SSH_TTY: "/dev/ttys003" } }).open).toBe(false);
+    // Linux needs a display; macOS always has one.
+    const linux = { ...terminal, platform: "linux" as const };
+    expect(browserDecision({ ...linux, env: {} }).why).toContain("no display");
+    expect(browserDecision({ ...linux, env: { WAYLAND_DISPLAY: "wayland-0" } }).open).toBe(true);
+    expect(browserDecision({ ...linux, env: { DISPLAY: ":0" } }).open).toBe(true);
+    // A pipe never opens one, and says nothing about it.
+    expect(browserDecision({ ...terminal, isTTY: false, env: {} })).toEqual({
+      open: false,
+      why: null,
+    });
+  });
+
+  it("lets --open and --no-open decide outright", () => {
+    const ssh = { SSH_CONNECTION: "1 2 3 4" };
+    expect(
+      browserDecision({ args: ["--open"], env: ssh, platform: "darwin", isTTY: false }).open,
+    ).toBe(true);
+    expect(
+      browserDecision({ args: ["--no-open"], env: {}, platform: "darwin", isTTY: true }),
+    ).toEqual({ open: false, why: null });
   });
 
   it("knows how each platform opens a browser, and when to just print", () => {
@@ -196,6 +242,65 @@ describe("mend login", { timeout: 30_000 }, () => {
       expect(saved).toEqual({ url: fake.url, token: "mdt_fresh-token", deviceId: "d1" });
       const mode = fs.statSync(result.configPath).mode & 0o777;
       expect(mode).toBe(0o600);
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it("signs in when the server's clock runs two hours behind this one", async () => {
+    let polls = 0;
+    let started: unknown = null;
+    const skewMs = -(116 * 60_000);
+    const fake = await startFakeMend((request, response) => {
+      const serverNow = Date.now() + skewMs;
+      const headers = {
+        "content-type": "application/json",
+        date: new Date(serverNow).toUTCString(),
+      };
+      if (request.url === "/api/cli/auth") {
+        let body = "";
+        request.on("data", (chunk: Buffer) => {
+          body += chunk.toString();
+        });
+        request.on("end", () => {
+          started = JSON.parse(body);
+          response.writeHead(200, headers);
+          // An older server: no expiresIn, only its own clock's expiresAt.
+          response.end(
+            JSON.stringify({
+              deviceCode: "mdc_secret",
+              code: "ABCDEFGH",
+              verifyPath: "/authorize?code=ABCD-EFGH",
+              expiresAt: new Date(serverNow + 10 * 60_000).toISOString(),
+              intervalSeconds: 1,
+            }),
+          );
+        });
+        return;
+      }
+      if (request.url === "/api/cli/auth/token") {
+        polls += 1;
+        response.writeHead(200, headers);
+        response.end(
+          JSON.stringify({
+            status: "approved",
+            token: "mdt_skewed",
+            user: { id: "u1", name: "Yiannis", email: "y@example.com" },
+            device: { id: "d1", name: "test-host" },
+          }),
+        );
+        return;
+      }
+      response.writeHead(404).end();
+    });
+
+    try {
+      const result = await runCli(fake.url, ["login"]);
+      expect(result.stderr).toBe("");
+      expect(result.code).toBe(0);
+      expect(polls).toBe(1);
+      expect(result.stdout).toContain("signed in as y@example.com");
+      expect(started).toEqual({ name: os.hostname(), client: "cli" });
     } finally {
       await fake.close();
     }

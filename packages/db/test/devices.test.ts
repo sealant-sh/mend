@@ -127,6 +127,37 @@ describe.skipIf(!reachable)("device pairing", () => {
     expect(result.secondTag).toBe("PairingCodeSpentError");
   });
 
+  it("keeps which client opened an authorize request, and null when an older one did", async () => {
+    const result = await withDevices(
+      Effect.gen(function* () {
+        const devices = yield* DevicesRepo;
+        const expiresAt = new Date(Date.now() + 600_000);
+        yield* devices.createCliAuth({
+          deviceCodeHash: hash("mdc_editor"),
+          userCode: "EDTRCODE",
+          name: "VS Code on macbook",
+          client: "vscode",
+          expiresAt,
+        });
+        yield* devices.createCliAuth({
+          deviceCodeHash: hash("mdc_older"),
+          userCode: "OLDRCODE",
+          name: "macbook",
+          client: null,
+          expiresAt,
+        });
+        return {
+          editor: yield* devices.getCliAuth("EDTRCODE"),
+          older: yield* devices.getCliAuth("OLDRCODE"),
+        };
+      }),
+    );
+
+    expect(result.editor.client).toBe("vscode");
+    expect(result.editor.name).toBe("VS Code on macbook");
+    expect(result.older.client).toBeNull();
+  });
+
   it("separates an unknown code from an expired one", async () => {
     const tags = await withDevices(
       Effect.gen(function* () {

@@ -3476,6 +3476,15 @@ const defaultBunMigration = Effect.gen(function* () {
   }
 });
 
+/**
+ * Which client opened a CLI authorize request (`cli`, `vscode`, `desktop`), so the approve page
+ * names the one asking. Null for a request an older client opened.
+ */
+const cliAuthClientMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`ALTER TABLE cli_auth_requests ADD COLUMN client text`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -3605,4 +3614,5 @@ export const migrations = {
   "0125_ssh_key_revocations": sshKeyRevocationsMigration,
   "0126_repository_url_credentials": repositoryUrlCredentialsMigration,
   "0127_default_bun": defaultBunMigration,
+  "0128_cli_auth_client": cliAuthClientMigration,
 };

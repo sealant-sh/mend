@@ -115,21 +115,35 @@ export class PairingRateLimited extends Schema.TaggedErrorClass<PairingRateLimit
 // token. No password ever reaches a terminal; the token is the same
 // revocable kind a paired phone holds.
 
-/** What `mend login` sends to open a request: what to call this machine. */
+/** The clients that open an authorize request, so the approve page can name the one asking. */
+export const CLI_AUTH_CLIENTS = ["cli", "vscode", "desktop"] as const;
+export type CliAuthClient = (typeof CLI_AUTH_CLIENTS)[number];
+
+/**
+ * What a client sends to open a request: what to call this machine, and which client is asking
+ * (one of `CLI_AUTH_CLIENTS`). A plain string, so a newer client's kind is kept rather than
+ * refused; the approve page names only kinds it knows. Absent from an older client.
+ */
 export class CliAuthStartRequest extends Schema.Class<CliAuthStartRequest>("CliAuthStartRequest")({
   name: Schema.String,
+  client: Schema.optional(Schema.String),
 }) {}
 
 /**
  * The opened request. `deviceCode` is the CLI's secret — polling with it is
  * the only way to the token; `code` is what the human confirms in the
  * browser, reachable at `verifyPath` on whichever base URL the CLI called.
+ * `expiresIn` is the seconds left when the server answered: a client counts
+ * down from receipt, so a clock that disagrees with the server's (a Mac's VM
+ * after sleep) cannot expire the request early. `expiresAt` is the server's
+ * own clock; an older server sends only that.
  */
 export class CliAuthStartView extends Schema.Class<CliAuthStartView>("CliAuthStartView")({
   deviceCode: Schema.String,
   code: Schema.String,
   verifyPath: Schema.String,
   expiresAt: Schema.String,
+  expiresIn: Schema.optional(Schema.Int),
   intervalSeconds: Schema.Int,
 }) {}
 
@@ -158,12 +172,17 @@ export class CliAuthApproved extends Schema.Class<CliAuthApproved>("CliAuthAppro
 export const CliAuthPollView = Schema.Union([CliAuthPending, CliAuthApproved]);
 export type CliAuthPollView = typeof CliAuthPollView.Type;
 
-/** One request as the approve page sees it: what asked and when it stops mattering. */
+/**
+ * One request as the approve page sees it: what asked and when it stops mattering. `client` is
+ * null for a request an older client opened; `expiresIn` is seconds left by the server's clock.
+ */
 export class CliAuthRequestView extends Schema.Class<CliAuthRequestView>("CliAuthRequestView")({
   code: Schema.String,
   name: Schema.String,
+  client: Schema.optional(Schema.NullOr(Schema.Literals(CLI_AUTH_CLIENTS))),
   createdAt: Schema.String,
   expiresAt: Schema.String,
+  expiresIn: Schema.optional(Schema.Int),
 }) {}
 
 /** No authorize request with that code or device code. */

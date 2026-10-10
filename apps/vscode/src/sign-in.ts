@@ -17,6 +17,8 @@ export interface AuthorizeRequest {
   readonly code: string;
   readonly verifyPath: string;
   readonly expiresAt: string;
+  /** Seconds left when the server answered; absent from an older server. */
+  readonly expiresIn?: number;
   readonly intervalSeconds: number;
 }
 
@@ -60,15 +62,59 @@ const isLoopbackHost = (hostname: string): boolean => {
   return bare === "localhost";
 };
 
+const ipv4Octets = (address: string): ReadonlyArray<number> | null =>
+  isIP(address) === 4 ? address.split(".").map(Number) : null;
+
 /**
- * Said before a token is chosen for a plain-http server another machine serves: the token crosses
- * that network unencrypted. Null for https and for this machine.
+ * A tailnet address or name: Tailscale's 100.64.0.0/10 and fd7a:115c:a1e0::/48, or a MagicDNS
+ * name. Tailscale encrypts every connection between its devices, so plain http there is not
+ * plain on the wire.
+ */
+const isTailnetHost = (hostname: string): boolean => {
+  const bare = hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  const octets = ipv4Octets(bare);
+  if (octets !== null) return octets[0] === 100 && (octets[1] ?? 0) >= 64 && (octets[1] ?? 0) < 128;
+  if (isIP(bare) === 6) return bare.startsWith("fd7a:115c:a1e0:");
+  return bare.endsWith(".ts.net");
+};
+
+/**
+ * An address or name on a local network: RFC 1918, link-local, IPv6 unique-local and link-local,
+ * mDNS (`.local`), `.lan`, `.home.arpa`, or a bare single-label name.
+ */
+const isLocalNetworkHost = (hostname: string): boolean => {
+  const bare = hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  const octets = ipv4Octets(bare);
+  if (octets !== null) {
+    const [a = 0, b = 0] = octets;
+    return (
+      a === 10 ||
+      (a === 172 && b >= 16 && b < 32) ||
+      (a === 192 && b === 168) ||
+      (a === 169 && b === 254)
+    );
+  }
+  if (isIP(bare) === 6) return /^f[cd]/.test(bare) || /^fe[89ab]/.test(bare);
+  return (
+    !bare.includes(".") ||
+    bare.endsWith(".local") ||
+    bare.endsWith(".lan") ||
+    bare.endsWith(".home.arpa")
+  );
+};
+
+/**
+ * Said before a token is chosen for a plain-http server another machine serves, short enough for a
+ * quick pick's placeholder (the title already names the server). Null for https, for this machine,
+ * and for a tailnet, which encrypts the connection itself.
  */
 export const plainHttpWarning = (url: string): string | null => {
   const parsed = new URL(url);
-  return parsed.protocol === "http:" && !isLoopbackHost(parsed.hostname)
-    ? `Plain http to ${parsed.host}: the token crosses the network unencrypted. Use a private network you control, or an https edge.`
-    : null;
+  if (parsed.protocol !== "http:" || isLoopbackHost(parsed.hostname)) return null;
+  if (isTailnetHost(parsed.hostname)) return null;
+  return isLocalNetworkHost(parsed.hostname)
+    ? "Plain http: anyone on this local network can read the token."
+    : "Plain http: the token crosses the network unencrypted.";
 };
 
 /** The code as both screens show it: `ABCD-EFGH`. */
@@ -79,14 +125,21 @@ export const groupCode = (code: string): string => {
 
 export const parseAuthorizeRequest = (value: unknown): AuthorizeRequest | null => {
   if (!isRecord(value)) return null;
-  const { deviceCode, code, verifyPath, expiresAt, intervalSeconds } = value;
+  const { deviceCode, code, verifyPath, expiresAt, expiresIn, intervalSeconds } = value;
   return typeof deviceCode === "string" &&
     typeof code === "string" &&
     typeof verifyPath === "string" &&
     verifyPath.startsWith("/") &&
     typeof expiresAt === "string" &&
     typeof intervalSeconds === "number"
-    ? { deviceCode, code, verifyPath, expiresAt, intervalSeconds }
+    ? {
+        deviceCode,
+        code,
+        verifyPath,
+        expiresAt,
+        intervalSeconds,
+        ...(typeof expiresIn === "number" && Number.isFinite(expiresIn) ? { expiresIn } : {}),
+      }
     : null;
 };
 
@@ -104,6 +157,25 @@ export const parsePoll = (value: unknown): "pending" | Omit<SignedIn, "url"> | n
     : null;
 };
 
+/**
+ * When to stop polling, on this machine's clock, counted from when the server's answer arrived.
+ * The two clocks can disagree by hours (a Mac's VM after sleep), so the server's `expiresAt` is
+ * never read against this clock alone: its `expiresIn` when it sends one; else `expiresAt` less
+ * the time on its own Date header (an older server); else ten minutes. The server judges expiry
+ * by its own clock either way; this only stops a poll that could no longer succeed.
+ */
+export const pollDeadline = (
+  request: Pick<AuthorizeRequest, "expiresAt" | "expiresIn">,
+  receivedAt: number,
+  serverDate: string | null,
+): number => {
+  if (request.expiresIn !== undefined) return receivedAt + Math.max(0, request.expiresIn) * 1000;
+  const at = Date.parse(request.expiresAt);
+  const serverNow = serverDate === null ? Number.NaN : Date.parse(serverDate);
+  if (Number.isNaN(at) || Number.isNaN(serverNow)) return receivedAt + 10 * 60_000;
+  return receivedAt + Math.max(0, at - serverNow);
+};
+
 /** Polling cadence: what the server asked for, held between one and ten seconds. */
 export const pollDelayMs = (intervalSeconds: number): number =>
   Math.min(Math.max(Math.round(intervalSeconds), 1), 10) * 1000;
@@ -117,7 +189,10 @@ export class SignInError extends Error {
 
 export interface SignInDeps {
   readonly fetch: typeof fetch;
-  /** Open the approve page; false when no browser could be asked to. */
+  /**
+   * Open the approve page; false when no browser could be asked to. Not awaited: VS Code may ask
+   * "open the external website?" first, and that dialog can sit behind other windows.
+   */
   readonly openExternal: (url: string) => Promise<boolean>;
   /** Shown while waiting: the code to compare with the browser's, and the page. */
   readonly onCode: (code: string, url: string) => void;
@@ -132,7 +207,14 @@ const post = async (
   deps: SignInDeps,
   url: string,
   body: unknown,
-): Promise<{ readonly status: number; readonly json: unknown }> => {
+): Promise<{
+  readonly status: number;
+  readonly json: unknown;
+  /** The server's own Date header, when it sent one. */
+  readonly date: string | null;
+  /** This machine's clock when the answer arrived. */
+  readonly receivedAt: number;
+}> => {
   let response: Response;
   try {
     response = await deps.fetch(url, {
@@ -144,6 +226,7 @@ const post = async (
   } catch (cause) {
     throw new SignInError(`Cannot reach Mend at ${new URL(url).origin}.${transportReason(cause)}`);
   }
+  const receivedAt = (deps.now ?? Date.now)();
   const text = await response.text();
   let json: unknown = null;
   try {
@@ -151,7 +234,7 @@ const post = async (
   } catch {
     // Only the happy path needs a body, and it is always JSON.
   }
-  return { status: response.status, json };
+  return { status: response.status, json, date: response.headers.get("date"), receivedAt };
 };
 
 const retryAfterMs = (json: unknown): number => {
@@ -162,7 +245,10 @@ const retryAfterMs = (json: unknown): number => {
 /** Open, show, wait. Null when cancelled; a SignInError for every way it can fail. */
 export const browserSignIn = async (base: string, deps: SignInDeps): Promise<SignedIn | null> => {
   const now = deps.now ?? Date.now;
-  const started = await post(deps, `${base}/api/cli/auth`, { name: deps.deviceName });
+  const started = await post(deps, `${base}/api/cli/auth`, {
+    name: deps.deviceName,
+    client: "vscode",
+  });
   if (started.status === 429) {
     throw new SignInError(
       `Mend asked for a pause: try again in ${retryAfterMs(started.json) / 1000}s.`,
@@ -181,9 +267,10 @@ export const browserSignIn = async (base: string, deps: SignInDeps): Promise<Sig
   }
   const page = `${base}${request.verifyPath}`;
   deps.onCode(groupCode(request.code), page);
-  await deps.openExternal(page);
-  const at = Date.parse(request.expiresAt);
-  const deadline = Number.isNaN(at) ? now() + 10 * 60_000 : at;
+  // Polling starts at once: an approval made from the printed link counts while VS Code's own
+  // "open the external website?" dialog still waits for an answer.
+  void deps.openExternal(page).catch(() => false);
+  const deadline = pollDeadline(request, started.receivedAt, started.date);
   while (now() < deadline) {
     await deps.sleep(pollDelayMs(request.intervalSeconds));
     if (deps.cancelled()) return null;

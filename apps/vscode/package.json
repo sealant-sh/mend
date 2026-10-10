@@ -217,24 +217,29 @@
           "group": "navigation@2"
         },
         {
-          "command": "mend.openTerminal",
-          "when": "view == mend.sessions && viewItem == mend.session.live",
+          "command": "mend.openWorktree",
+          "when": "view == mend.sessions && viewItem =~ /^mend\\.session/",
           "group": "1_open@0"
         },
         {
-          "command": "mend.reviewChange",
-          "when": "view == mend.sessions && viewItem =~ /^mend\\.session/",
-          "group": "1_open@3"
-        },
-        {
-          "command": "mend.takeOverSession",
+          "command": "mend.openTerminal",
           "when": "view == mend.sessions && viewItem == mend.session.live",
           "group": "1_open@1"
         },
         {
+          "command": "mend.reviewChange",
+          "when": "view == mend.sessions && viewItem =~ /^mend\\.session/",
+          "group": "1_open@4"
+        },
+        {
+          "command": "mend.takeOverSession",
+          "when": "view == mend.sessions && viewItem == mend.session.live",
+          "group": "1_open@2"
+        },
+        {
           "command": "mend.newSessionInWorktree",
           "when": "view == mend.sessions && viewItem =~ /^mend\\.session/",
-          "group": "1_open@2"
+          "group": "1_open@3"
         },
         {
           "command": "mend.stopSession",
