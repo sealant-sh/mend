@@ -55,6 +55,7 @@ const fakeWorkspace = (id: string): Workspace => ({
   runtimeDeadline: async () => null,
   runtime: async () => null,
   processUser: async () => "supported",
+  sshAsRoot: async () => {},
   phase: async () => null,
   launch: undefined,
   recover: async () => new Promise(() => undefined),
@@ -212,6 +213,7 @@ describe("PullRequestWorkspacesLive", () => {
             sshKeys: () => ({
               ensure: () => Effect.die("not in this test"),
               list: () => Effect.die("not in this test"),
+              remove: () => Effect.die("not in this test"),
             }),
           }),
           Layer.mock(SessionProcessesRepo, {

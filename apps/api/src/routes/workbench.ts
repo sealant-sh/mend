@@ -141,6 +141,8 @@ import {
   startsInTerminal,
   Session,
   type SessionStatus,
+  RepositoryCloneUrl,
+  repositoryCloneUrlIssue,
 } from "@mend/domain/workbench";
 import { JobRunner, queueReviewPass } from "@mend/jobs";
 import { asSealantUser, SealantClient } from "@mend/sealant";
@@ -175,7 +177,7 @@ import {
   pathsBeyondGitWords,
   SourcePolicy,
 } from "@mend/store";
-import { Effect, Option, Result, Schema } from "effect";
+import { Context, Duration, Effect, Option, Result, Schema } from "effect";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 
 import { ProjectAccess } from "../access.ts";
@@ -499,6 +501,10 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
             message: `"${payload.name}" is not a usable project name (lowercase letters, digits, ".", "_", "-").`,
           });
         }
+        // The route refuses what the schema does not (AdoptProject): the reason, never the URL.
+        const sourceIssue = repositoryCloneUrlIssue(payload.source);
+        if (sourceIssue !== null) return yield* new StoreFailure({ message: sourceIssue });
+        const source = RepositoryCloneUrl.make(payload.source);
         const caller = yield* CurrentUser;
         const organizations = yield* OrganizationsRepo;
         const membership = yield* organizations.membershipOf(caller.user.id);
@@ -514,10 +520,7 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
         if ((yield* projects.byName(organizationId, payload.name)) !== null) {
           return yield* nameTaken;
         }
-        const pinned = yield* reachableSource(
-          payload.source,
-          (message) => new StoreFailure({ message }),
-        );
+        const pinned = yield* reachableSource(source, (message) => new StoreFailure({ message }));
         // The user's git access default decides a new project's mode unless the request says.
         const gitAccess = yield* UserGitAccessRepo;
         const mode = payload.gitAuthMode ?? (yield* gitAccess.mode(caller.user.id)) ?? "mend-key";
@@ -527,9 +530,9 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
         const adopted = yield* withSignerContext(
           mode,
           caller.user.id,
-          `adopt ${payload.name} → ${payload.source}`,
+          `adopt ${payload.name} → ${source}`,
           store
-            .adopt(id, payload.source, remoteEnv)
+            .adopt(id, source, remoteEnv)
             .pipe(Effect.mapError((error) => readableGitFailure(error.cause, mode))),
         );
         return yield* projects
@@ -541,7 +544,7 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
             visibility: payload.visibility ?? "private",
             createdByUserId: caller.user.id,
             name: payload.name,
-            originUrl: payload.source,
+            originUrl: source,
             storePath: adopted.storePath,
             defaultBranch: adopted.defaultBranch,
             adoptedSha: adopted.headSha,
@@ -571,9 +574,11 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
         // its retirement (docs/adr/0016, decision 13); otherwise the plain read, at no cost.
         const engine = yield* SessionEngine;
         const sessionVisibility = projectSessionVisibility(
-          (yield* engine.personLayoutPossible())
-            ? yield* sessions.listForProjectView(params.id)
-            : yield* sessions.listForProject(params.id),
+          yield* withLaunchers(
+            (yield* engine.personLayoutPossible())
+              ? yield* sessions.listForProjectView(params.id)
+              : yield* sessions.listForProject(params.id),
+          ),
           query.deadEnds === "include",
         );
         const projectSessions = sessionVisibility.sessions;
@@ -2286,6 +2291,39 @@ const recordControl = (sessionId: SessionId, kind: SessionControlKind, refId: st
     });
   });
 
+/**
+ * Who launched each session's executor (`Session.workspaceLauncherUserId`): the only person
+ * Remote-SSH admits into it, in either harness layout. The view reads compute it in their own
+ * statement; every other read that hands sessions out (the plain reads, retained additions) gets it
+ * here, in one batched read, so a client never sees null for a launcher Mend knows.
+ */
+const withLaunchers = (rows: ReadonlyArray<Session>) =>
+  Effect.gen(function* () {
+    const missing = [
+      ...new Set(
+        rows.flatMap((row) =>
+          row.workspaceLauncherUserId === null && row.sealantWorkspaceId !== null
+            ? [row.sealantWorkspaceId]
+            : [],
+        ),
+      ),
+    ];
+    if (missing.length === 0) return rows;
+    const launchers = yield* (yield* SessionsRepo).launchersOf(missing);
+    return rows.map((row) => {
+      const launcher =
+        row.workspaceLauncherUserId === null && row.sealantWorkspaceId !== null
+          ? launchers.get(row.sealantWorkspaceId)
+          : undefined;
+      return launcher === undefined
+        ? row
+        : new Session({ ...row, workspaceLauncherUserId: launcher });
+    });
+  });
+
+const withLauncher = (session: Session) =>
+  withLaunchers([session]).pipe(Effect.map((rows) => rows[0] ?? session));
+
 export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (handlers) =>
   handlers
     .handle("listActive", ({ query }) =>
@@ -2294,10 +2332,12 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         const access = yield* ProjectAccess;
         // With the people live in each executor (docs/adr/0016, decision 13), in the same query,
         // when per-person homes are possible at all; otherwise the plain read, at no cost.
-        const active = yield* access.filterByProject(
-          (yield* (yield* SessionEngine).personLayoutPossible())
-            ? yield* sessions.listActiveView()
-            : yield* sessions.listActive(),
+        const active = yield* withLaunchers(
+          yield* access.filterByProject(
+            (yield* (yield* SessionEngine).personLayoutPossible())
+              ? yield* sessions.listActiveView()
+              : yield* sessions.listActive(),
+          ),
         );
         if (query.retained === undefined) return active;
 
@@ -2320,7 +2360,7 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
             .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
           if (session !== null) retained.push(session);
         }
-        return yield* access.filterByProject(retained);
+        return yield* withLaunchers(yield* access.filterByProject(retained));
       }),
     )
     .handle("create", ({ params, payload }) =>
@@ -2344,9 +2384,11 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         const checkpoints = yield* CheckpointsRepo;
         const changes = yield* WorktreeChangesRepo;
         const landings = yield* ChangeLandingsRepo;
-        const session = (yield* (yield* SessionEngine).personLayoutPossible())
-          ? yield* (yield* ProjectAccess).sessionView(params.id)
-          : yield* (yield* ProjectAccess).session(params.id);
+        const session = yield* withLauncher(
+          (yield* (yield* SessionEngine).personLayoutPossible())
+            ? yield* (yield* ProjectAccess).sessionView(params.id)
+            : yield* (yield* ProjectAccess).session(params.id),
+        );
         // Someone is looking: read the running executor's capture status (throttled, in the
         // background) so a failing snap shows now, not at the reaper's next read. The answer
         // reaches the view as a session event.
@@ -2717,6 +2759,7 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
             payload.protocol,
             payload.browserScheme,
             caller.user.id,
+            payload.startId,
           )
           .pipe(
             Effect.catchTag("SessionNotFoundError", () =>
@@ -2746,23 +2789,27 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         yield* requireOwnerRuns(yield* steering.session(params.id), "command");
         const engine = yield* SessionEngine;
         const caller = yield* CurrentUser;
-        return yield* engine.runServiceRecipe(params.id, payload.name, caller.user.id).pipe(
-          Effect.catchTag("SessionNotFoundError", () =>
-            Effect.fail(new NotFound({ id: params.id })),
-          ),
-          Effect.catchTag("LegacyBenchReadOnlyError", () =>
-            Effect.fail(new StoreFailure({ message: "Legacy bench sessions are review-only." })),
-          ),
-          Effect.catchTag("SessionNotLiveError", () =>
-            Effect.fail(new SessionNotLive({ id: params.id })),
-          ),
-          Effect.catchTags({
-            SealantPlatformError: (error) =>
-              Effect.fail(new StoreFailure({ message: error.message })),
-            ServiceBindError: (error) => Effect.fail(new StoreFailure({ message: error.message })),
-            ServiceStartError: (error) => Effect.fail(new StoreFailure({ message: error.message })),
-          }),
-        );
+        return yield* engine
+          .runServiceRecipe(params.id, payload.name, caller.user.id, payload.startId)
+          .pipe(
+            Effect.catchTag("SessionNotFoundError", () =>
+              Effect.fail(new NotFound({ id: params.id })),
+            ),
+            Effect.catchTag("LegacyBenchReadOnlyError", () =>
+              Effect.fail(new StoreFailure({ message: "Legacy bench sessions are review-only." })),
+            ),
+            Effect.catchTag("SessionNotLiveError", () =>
+              Effect.fail(new SessionNotLive({ id: params.id })),
+            ),
+            Effect.catchTags({
+              SealantPlatformError: (error) =>
+                Effect.fail(new StoreFailure({ message: error.message })),
+              ServiceBindError: (error) =>
+                Effect.fail(new StoreFailure({ message: error.message })),
+              ServiceStartError: (error) =>
+                Effect.fail(new StoreFailure({ message: error.message })),
+            }),
+          );
       }),
     )
     .handle("listRecipes", ({ params }) =>
@@ -3135,6 +3182,7 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
           Effect.catchTag("GitError", (error) =>
             Effect.fail(new StoreFailure({ message: error.stderr })),
           ),
+          withinCheckpointLimit("The checkpoint"),
         );
       }),
     )
@@ -3355,6 +3403,37 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
 const toFailure = (error: { readonly stderr: string }) =>
   new StoreFailure({ message: error.stderr });
 
+/**
+ * How long a request that takes a checkpoint (a flush of the executor, then the snapshot derived
+ * from the registered head) may run before it answers that it did not finish. Every wait inside
+ * is bounded on its own; this bounds the whole request, its locks included, so none hangs for
+ * minutes. A reference so a test can shorten it.
+ */
+export const CheckpointRequestLimit: Context.Reference<Duration.Duration> =
+  Context.Reference<Duration.Duration>("@mend/api/CheckpointRequestLimit", {
+    defaultValue: () => Duration.seconds(90),
+  });
+
+/**
+ * A request that takes a checkpoint, refused honestly once `CheckpointRequestLimit` passes. What
+ * it held is let go as it is interrupted: a transaction rolls back and its lock goes with it.
+ */
+export const withinCheckpointLimit =
+  (what: string) =>
+  <A, E, R>(self: Effect.Effect<A, E, R>): Effect.Effect<A, E | StoreFailure, R> =>
+    Effect.gen(function* () {
+      const limit = yield* CheckpointRequestLimit;
+      return yield* self.pipe(
+        Effect.timeoutOrElse({
+          duration: limit,
+          orElse: () =>
+            Effect.fail(
+              new StoreFailure({ message: `${what} did not finish in ${Duration.format(limit)}.` }),
+            ),
+        }),
+      );
+    });
+
 const openReviewResult = Effect.fn("SessionChanges.openReviewResult")(function* (
   slice: ReviewSlice,
   reused: boolean,
@@ -3418,26 +3497,33 @@ export const SessionChangesGroupLive = HttpApiBuilder.group(MendApi, "sessionCha
     .handle("openReview", ({ params, payload }) =>
       Effect.gen(function* () {
         yield* (yield* ProjectAccess).change(params.id);
+        const key = payload.idempotencyKey.trim();
+        if (key === "" || key.length > 200) {
+          return yield* new StoreFailure({
+            message: "Review idempotency keys must contain between 1 and 200 characters.",
+          });
+        }
         const slices = yield* ReviewSlicesRepo;
-        return yield* slices.withChangeLock(
+        const checkpoints = yield* CheckpointsRepo;
+        const reads = yield* WorktreeReads;
+        const engine = yield* SessionEngine;
+        // Under the change's lock: a slice this key already opened, or one that still spans the
+        // worktree as it stands, answers at once. Otherwise the lock is let go before the
+        // checkpoint: the engine's checkpoint flushes the executor and publishes its answer, and
+        // inside this transaction that answer's fence was invisible to the drain, its rows held
+        // until the review committed (packaged acceptance, arm64, 2026-10-10).
+        const prepared = yield* slices.withChangeLock(
           params.id,
           Effect.gen(function* () {
-            const key = payload.idempotencyKey.trim();
-            if (key === "" || key.length > 200) {
-              return yield* new StoreFailure({
-                message: "Review idempotency keys must contain between 1 and 200 characters.",
-              });
-            }
             const changes = yield* WorktreeChangesRepo;
             const projects = yield* ProjectsRepo;
-            const checkpoints = yield* CheckpointsRepo;
-            const reads = yield* WorktreeReads;
-            const engine = yield* SessionEngine;
             const change = yield* changes
               .byId(params.id)
               .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
             const existing = yield* slices.byIdempotencyKey(params.id, key);
-            if (existing !== null) return yield* openReviewResult(existing, true);
+            if (existing !== null) {
+              return { opened: yield* openReviewResult(existing, true) } as const;
+            }
 
             const worktrees = yield* WorktreesRepo;
             const worktreeRow = yield* worktrees
@@ -3471,7 +3557,7 @@ export const SessionChangesGroupLive = HttpApiBuilder.group(MendApi, "sessionCha
                     diffDigest: latest.diffDigest,
                     idempotencyKey: key,
                   });
-                  return yield* openReviewResult(reused, true);
+                  return { opened: yield* openReviewResult(reused, true) } as const;
                 }
               }
             }
@@ -3494,7 +3580,7 @@ export const SessionChangesGroupLive = HttpApiBuilder.group(MendApi, "sessionCha
                   diffDigest: DiffDigest.make(digestReviewPatch(patch)),
                   idempotencyKey: key,
                 });
-                return yield* openReviewResult(recovered, true);
+                return { opened: yield* openReviewResult(recovered, true) } as const;
               }
             }
 
@@ -3508,16 +3594,35 @@ export const SessionChangesGroupLive = HttpApiBuilder.group(MendApi, "sessionCha
                 message: "No conversation has inhabited this worktree yet — nothing to review.",
               });
             }
-            const checkpointB = yield* engine.checkpointNow(viaSessionId, "review-open").pipe(
-              Effect.catchTags({
-                SessionNotFoundError: () => Effect.fail(new NotFound({ id: viaSessionId })),
-                ProjectNotFoundError: () => Effect.fail(new NotFound({ id: project.id })),
-                GitError: (error) => Effect.fail(toFailure(error)),
-              }),
-            );
-            const patch = (yield* reads
-              .diffRange(project.id, worktreeRow.id, checkpointA.sha, checkpointB.sha)
-              .pipe(Effect.mapError(readFailure))).value;
+            return {
+              opened: null,
+              projectId: project.id,
+              worktreeId: worktreeRow.id,
+              checkpointA,
+              viaSessionId,
+            } as const;
+          }),
+        );
+        if (prepared.opened !== null) return prepared.opened;
+        const { projectId, worktreeId, checkpointA, viaSessionId } = prepared;
+        // A checkpoint taken here and never sliced (the request gave up, or lost the race below)
+        // is the orphan a later open recovers.
+        const checkpointB = yield* engine.checkpointNow(viaSessionId, "review-open").pipe(
+          Effect.catchTags({
+            SessionNotFoundError: () => Effect.fail(new NotFound({ id: viaSessionId })),
+            ProjectNotFoundError: () => Effect.fail(new NotFound({ id: projectId })),
+            GitError: (error) => Effect.fail(toFailure(error)),
+          }),
+        );
+        const patch = (yield* reads
+          .diffRange(projectId, worktreeId, checkpointA.sha, checkpointB.sha)
+          .pipe(Effect.mapError(readFailure))).value;
+        return yield* slices.withChangeLock(
+          params.id,
+          Effect.gen(function* () {
+            // Another open with this key answered while the checkpoint was taken: its slice.
+            const existing = yield* slices.byIdempotencyKey(params.id, key);
+            if (existing !== null) return yield* openReviewResult(existing, true);
             const slice = yield* slices.create({
               changeId: params.id,
               checkpointAId: checkpointA.id,
@@ -3528,7 +3633,16 @@ export const SessionChangesGroupLive = HttpApiBuilder.group(MendApi, "sessionCha
             return yield* openReviewResult(slice, false);
           }),
         );
-      }),
+      }).pipe(
+        Effect.catchTag("ReviewChangeBusyError", (busy) =>
+          Effect.fail(
+            new StoreFailure({
+              message: `Review did not open: another Review open on this change held its lock for ${busy.lockTimeoutSeconds} s. Nothing was opened; try again.`,
+            }),
+          ),
+        ),
+        withinCheckpointLimit("Review did not open: the request"),
+      ),
     )
     .handle("reviewDiff", ({ params, query }) =>
       Effect.gen(function* () {

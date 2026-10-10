@@ -48,6 +48,7 @@ export const fakeWorkspace = (id = "workspace-1"): Workspace => ({
   runtimeDeadline: async () => null,
   runtime: async () => null,
   processUser: async () => "supported",
+  sshAsRoot: async () => {},
   phase: async () => null,
   launch: undefined,
   recover: never,

@@ -93,6 +93,31 @@ export class HarnessLayoutConfig extends Context.Service<
 /** A person's logins outlive a start by this much before an idle check may release them. */
 export const LOGIN_RELEASE_GRACE: Duration.Duration = Duration.minutes(1);
 
+/**
+ * The waits between attempts to set a fallback executor's SSH user back to root (decision 10),
+ * after the first: about two minutes in all, then again at the executor's next process start.
+ */
+export const SSH_RESET_DELAYS: ReadonlyArray<Duration.Duration> = [1, 2, 4, 8, 16, 32, 60].map(
+  (seconds) => Duration.seconds(seconds),
+);
+
+/**
+ * The session line when Core runs SSH sessions as a user but the launcher's person could not be
+ * bound there (a refused or unanswered binding, a Core without the route): Remote-SSH stays root.
+ */
+export const REMOTE_SSH_ROOT_WORDS = "Remote-SSH: root, Core can't bind your person";
+
+/** The session line when Core runs no SSH session as a user (an older Core or SDK). */
+export const REMOTE_SSH_ROOT_UNSUPPORTED_WORDS = "Remote-SSH: root, this Sealant runs it as root";
+
+/** What a person launch's line says when its Remote-SSH runs as root (docs/adr/0016). */
+export const remoteSshRootWords = (reason: "unbound" | "not-taken"): string =>
+  reason === "unbound" ? REMOTE_SSH_ROOT_WORDS : REMOTE_SSH_ROOT_UNSUPPORTED_WORDS;
+
+/** The session line while a fallback executor's SSH user is not yet back to root. */
+export const REMOTE_SSH_RESET_PENDING_WORDS =
+  "Remote-SSH unavailable · the workspace's SSH user is not yet back to root · retrying";
+
 export const HarnessLayoutConfigLive: Layer.Layer<HarnessLayoutConfig, Config.ConfigError> =
   Layer.effect(
     HarnessLayoutConfig,
@@ -470,6 +495,13 @@ export interface HarnessLayoutSteps {
         readonly bootstrap: boolean;
       }>;
     };
+    /**
+     * Told when a fallback's reset of the workspace's SSH user to root (decision 10) has not
+     * reached Core (`false`: Remote-SSH is unavailable there), and again once it has (`true`).
+     * The reset is tried off the launch path, with backoff, and again at the next process start
+     * in the executor; nothing waits on it.
+     */
+    readonly onSshReset?: (resolved: boolean) => Effect.Effect<void>;
   }) => Effect.Effect<PrepareOutcome, SealantPlatformError>;
   /**
    * A person launch's create, refused for its owner map (decision 13's words): Core's
@@ -517,6 +549,11 @@ export interface HarnessLayoutSteps {
      * home exec confirmed them; the caller completes it with null.
      */
     readonly homeReady?: Deferred.Deferred<PersonHome | null>;
+    /**
+     * Told, as `settlePrepare`'s is, about a fallback executor's SSH reset this start found
+     * pending after a restart (`resetSshUser`).
+     */
+    readonly onSshReset?: (resolved: boolean) => Effect.Effect<void>;
   }) => Effect.Effect<
     {
       readonly user: ProcessUser;
@@ -1161,6 +1198,67 @@ export const makeHarnessLayoutSteps = (deps: {
     return yield* freshLaunchLayout(fresh);
   });
 
+  /**
+   * Executors whose SSH user a fallback set back to root (decision 10) and Core has not confirmed:
+   * by workspace, with who to tell. Re-asserted by `resetSshUser` until Core takes it or the
+   * executor is forgotten.
+   */
+  const sshResets = new Map<
+    string,
+    {
+      readonly workspace: Workspace;
+      readonly notify: (resolved: boolean) => Effect.Effect<void>;
+      running: boolean;
+      told: boolean;
+    }
+  >();
+
+  /**
+   * Sets the workspace's SSH user back to root, retried with backoff (`SSH_RESET_DELAYS`); each
+   * attempt is bounded by the platform. Told `false` while it has not reached Core, `true` once it
+   * has. Still pending after the last attempt, it is tried again at the next process start in the
+   * executor (`processAs`).
+   */
+  const resetSshUser = (workspaceId: string): Effect.Effect<void> =>
+    Effect.gen(function* () {
+      for (const delay of [Duration.zero, ...SSH_RESET_DELAYS]) {
+        yield* Effect.sleep(delay);
+        const entry = sshResets.get(workspaceId);
+        if (entry === undefined) return;
+        if (yield* platform.sshAsRoot(entry.workspace)) {
+          sshResets.delete(workspaceId);
+          if (entry.told) yield* entry.notify(true).pipe(Effect.ignore);
+          return;
+        }
+        entry.told = true;
+        yield* entry.notify(false).pipe(Effect.ignore);
+      }
+    }).pipe(
+      Effect.ensuring(
+        Effect.sync(() => {
+          const entry = sshResets.get(workspaceId);
+          if (entry !== undefined) entry.running = false;
+        }),
+      ),
+      Effect.withSpan("HarnessLayoutSteps.resetSshUser"),
+    );
+
+  /**
+   * Launches whose fallback this process read from the store rather than settled itself (after a
+   * restart): their executor's SSH reset may never have reached Core, so the first process start
+   * there makes it pending again (`processAs`). Idempotent at Core: one call per executor.
+   */
+  const fallbacksFromStore = new Set<string>();
+
+  /** Starts `resetSshUser` for a pending executor that has no attempt under way. */
+  const forkSshReset = (workspaceId: string): Effect.Effect<void> =>
+    Effect.suspend(() => {
+      const entry = sshResets.get(workspaceId);
+      if (entry === undefined || entry.running) return Effect.void;
+      entry.running = true;
+      return deps.fork(resetSshUser(workspaceId));
+    });
+
   const settlePrepare: HarnessLayoutSteps["settlePrepare"] = Effect.fn(
     "HarnessLayoutSteps.settlePrepare",
   )(function* (input) {
@@ -1281,6 +1379,16 @@ export const makeHarnessLayoutSteps = (deps: {
     // not applied. The image's answer is recorded below, so the next launch on it decides shared
     // before create and its dotfiles apply at boot, as before.
     const home = linuxHomeOf(layout.launcher);
+    // The launcher's SSH sessions go back to root with the rest of the executor (decision 10):
+    // the create named their user, which this prepare may not have made. Off the launch path:
+    // nothing here waits on it, and until Core takes it the session says Remote-SSH is down.
+    sshResets.set(input.workspace.id, {
+      workspace: input.workspace,
+      notify: input.onSshReset ?? (() => Effect.void),
+      running: false,
+      told: false,
+    });
+    yield* forkSshReset(input.workspace.id);
     yield* platform.deleteCredentials(input.workspace, { home });
     const rootLogins = homeLoginsOf(input.fallback.credentials);
     if (Object.keys(rootLogins).length > 0) {
@@ -1359,6 +1467,7 @@ export const makeHarnessLayoutSteps = (deps: {
     if (known !== undefined) return known;
     if (nothingRecorded()) return "shared";
     const record = yield* repo.launchLayout(launchId);
+    if (record !== null && record.source === "fallback") fallbacksFromStore.add(launchId);
     // A person record is person, confirmed or still in prepare (decide wrote it before create;
     // a fallback rewrites it as shared): the window between decide and prepare's confirm is
     // person too, so nothing in it ever reads as a shared executor (review 3 of mend#553, P2-1).
@@ -1530,6 +1639,8 @@ export const makeHarnessLayoutSteps = (deps: {
 
   const processAs: HarnessLayoutSteps["processAs"] = Effect.fn("HarnessLayoutSteps.processAs")(
     function* (input) {
+      // A fallback's SSH reset Core has not taken yet: tried again, never awaited.
+      yield* forkSshReset(input.workspace.id);
       if (input.launchId === null) {
         // A launch Mend cannot name: in a worktree that runs per person every executor is a
         // person executor, and a root process there could read every home. Refused.
@@ -1542,7 +1653,20 @@ export const makeHarnessLayoutSteps = (deps: {
         return null;
       }
       const launchId = input.launchId;
-      if ((yield* layoutOfLaunch(launchId)) !== "person") return null;
+      if ((yield* layoutOfLaunch(launchId)) !== "person") {
+        // A fallback executor this process did not settle (a restart since): its reset to root
+        // may be pending, so it is made pending again, from the store's record (decision 10).
+        if (fallbacksFromStore.delete(launchId) && !sshResets.has(input.workspace.id)) {
+          sshResets.set(input.workspace.id, {
+            workspace: input.workspace,
+            notify: input.onSshReset ?? (() => Effect.void),
+            running: false,
+            told: false,
+          });
+          yield* forkSshReset(input.workspace.id);
+        }
+        return null;
+      }
       const identity = yield* repo
         .ensureIdentity(input.accountId)
         .pipe(Effect.mapError((error) => layoutRefused(error.message)));
@@ -1980,6 +2104,7 @@ export const makeHarnessLayoutSteps = (deps: {
     );
 
   const forgetExecutor: HarnessLayoutSteps["forgetExecutor"] = (workspaceId) => {
+    sshResets.delete(workspaceId);
     loginsIn.delete(workspaceId);
     madeIn.delete(workspaceId);
     lastIn.delete(workspaceId);

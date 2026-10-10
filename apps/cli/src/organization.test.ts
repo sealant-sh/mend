@@ -368,7 +368,7 @@ describe("operator", () => {
     expect(lines[4]).toContain(
       "· reassessment                open      no independent reassessment of 0.29.0 is recorded",
     );
-    expect(lines[5]).toBe("1 of 4 items open · 0 this build can observe · 1 it cannot");
+    expect(lines[5]).toBe("1 of 4 items open · 0 refuse a public start · 1 do not");
     expect(lines.join("")).not.toContain("✓");
     expect(lines.join(" ").toLowerCase()).not.toMatch(/\bsafe\b|ready|approved/);
   });
@@ -387,7 +387,7 @@ describe("operator", () => {
       ],
     });
     expect(lines.at(-1)).toBe(
-      "1 of 1 items open · 1 this build can observe; MEND_EXPOSURE=public refuses to start · 0 it cannot",
+      "1 of 1 items open · 1 refuse a public start; MEND_EXPOSURE=public refuses to start · 0 do not",
     );
   });
 

@@ -5,6 +5,7 @@ import * as path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import type { ServerSetupRuntime } from "./server-setup.ts";
+import type { ThisMachineKeyRemoval } from "./ssh-setup.ts";
 import {
   describeUninstall,
   executeUninstall,
@@ -32,7 +33,13 @@ const MANAGED_BLOCK = [
 ].join("\n");
 
 /** A machine with a sign-in and an ssh setup, but no server: the laptop scenario. */
-const laptop = (options: { readonly signedIn?: boolean; readonly extra?: boolean } = {}) => {
+const laptop = (
+  options: {
+    readonly signedIn?: boolean;
+    readonly extra?: boolean;
+    readonly keyRemoval?: ThisMachineKeyRemoval;
+  } = {},
+) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "mend uninstall "));
   roots.push(root);
   const cliHome = path.join(root, "config", "mend");
@@ -47,6 +54,7 @@ const laptop = (options: { readonly signedIn?: boolean; readonly extra?: boolean
   fs.writeFileSync(sshConfigFile, `${MANAGED_BLOCK}Host mine\n  HostName mine.example\n`);
   const lines: Array<string> = [];
   const revoked: Array<string> = [];
+  const order: Array<string> = [];
   const server: ServerSetupRuntime = {
     configDir: path.join(root, "config", "mend"),
     platform: "linux",
@@ -66,10 +74,19 @@ const laptop = (options: { readonly signedIn?: boolean; readonly extra?: boolean
     signedIn: options.signedIn === false ? null : { url: "http://m:3105", deviceId: "dev-1" },
     revokeDevice: async () => {
       revoked.push("dev-1");
+      order.push("revokeDevice");
       return null;
     },
+    removeWorkspaceSshKey: async () => {
+      order.push("removeWorkspaceSshKey");
+      // The key file is still on disk when the server is asked: it names the key to remove.
+      if (!fs.existsSync(path.join(cliHome, "ssh", "id_ed25519"))) {
+        return { removed: [], stillActive: [], problem: "the key was gone before it was named" };
+      }
+      return options.keyRemoval ?? { removed: ["SHA256:laptop"], stillActive: [], problem: null };
+    },
   };
-  return { root, cliHome, sshConfigFile, runtime, lines, revoked };
+  return { root, cliHome, sshConfigFile, runtime, lines, revoked, order };
 };
 
 describe("parseUninstallArgs", () => {
@@ -105,6 +122,7 @@ describe("the home scope", () => {
       `home     ${path.join(f.cliHome, "cli.json")} (signed in to http://m:3105)`,
       `         ${path.join(f.cliHome, "ssh")}`,
       "         1 managed block in ~/.ssh/config",
+      "         this machine's workspace ssh key on http://m:3105, if registered",
     ]);
   });
 
@@ -114,9 +132,52 @@ describe("the home scope", () => {
     const outcome = await executeUninstall(f.runtime, plan);
     expect(outcome).toEqual({ failures: [], leftovers: [] });
     expect(f.revoked).toEqual(["dev-1"]);
+    // The key goes first, while the device token can still ask for it.
+    expect(f.order).toEqual(["removeWorkspaceSshKey", "revokeDevice"]);
+    expect(f.lines[0]).toBe(
+      "removed workspace ssh key SHA256:laptop on http://m:3105 · the gateway refuses it from the next connection",
+    );
     expect(fs.existsSync(f.cliHome)).toBe(false);
     expect(fs.readFileSync(f.sshConfigFile, "utf8")).toBe("Host mine\n  HostName mine.example\n");
     expect(f.lines.at(-1)).toBe(`removed ${f.cliHome}`);
+  });
+
+  it("fails, naming the fingerprint still registered and what removes it, after removing this machine's files", async () => {
+    const f = laptop({
+      keyRemoval: {
+        removed: [],
+        stillActive: ["SHA256:laptop"],
+        problem: "SHA256:laptop was not removed: DELETE → 502",
+      },
+    });
+    const plan = await describeUninstall(f.runtime, "home");
+    const outcome = await executeUninstall(f.runtime, plan);
+    expect(outcome.failures).toEqual([
+      "workspace ssh key SHA256:laptop is still registered on http://m:3105: SHA256:laptop was not removed: DELETE → 502. From another signed-in machine: mend ssh keys remove SHA256:laptop, or use Settings → Workspace SSH",
+    ]);
+    expect(f.revoked).toEqual(["dev-1"]);
+    expect(fs.existsSync(f.cliHome)).toBe(false);
+  });
+
+  it("fails when this machine's key cannot be identified, never taking it for absent", async () => {
+    const f = laptop({
+      keyRemoval: {
+        removed: [],
+        stillActive: [],
+        problem: "this machine's key could not be read (/x/id_ed25519.pub: EACCES)",
+      },
+    });
+    const outcome = await executeUninstall(f.runtime, await describeUninstall(f.runtime, "home"));
+    expect(outcome.failures).toEqual([
+      "this machine's workspace ssh key on http://m:3105 may still be registered: this machine's key could not be read (/x/id_ed25519.pub: EACCES). From another signed-in machine, mend ssh keys lists your keys and mend ssh keys remove <fingerprint> removes one, or use Settings → Workspace SSH",
+    ]);
+  });
+
+  it("says nothing of a key when the server holds none from this machine", async () => {
+    const f = laptop({ keyRemoval: { removed: [], stillActive: [], problem: null } });
+    const outcome = await executeUninstall(f.runtime, await describeUninstall(f.runtime, "home"));
+    expect(outcome).toEqual({ failures: [], leftovers: [] });
+    expect(f.lines.some((line) => line.includes("workspace ssh key"))).toBe(false);
   });
 
   it("keeps what is not the CLI's and names it", async () => {
@@ -124,6 +185,8 @@ describe("the home scope", () => {
     const plan = await describeUninstall(f.runtime, "home");
     const outcome = await executeUninstall(f.runtime, plan);
     expect(f.revoked).toEqual([]);
+    // Signed out: no account to ask, so no key removal is attempted.
+    expect(f.order).toEqual([]);
     expect(outcome.failures).toEqual([]);
     expect(outcome.leftovers).toEqual([
       `${f.cliHome} kept: keys is not this CLI's (a host-run server's store or keys, or another tool's files)`,

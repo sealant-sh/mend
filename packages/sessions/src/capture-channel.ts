@@ -883,6 +883,28 @@ export type CapturePlanNotice =
   | { readonly kind: "blocked"; readonly words: string; readonly launchId: string }
   | { readonly kind: "planned"; readonly launchId: string };
 
+/**
+ * The seal problem a git section Mend's verification failed is named by — at the register (the
+ * section verified there) and on a re-ask (verified again by `lateSealChecks`): a verdict reached
+ * on this capture's bytes in this process, never the row's older word alone.
+ */
+export const GIT_SECTION_FAILED = "git section failed";
+
+/**
+ * What the registrar answered a register about the `final_seal` it carried (`RegisterSealOutcome`),
+ * told to the session the executor saves: `gitSectionFailed` when it was refused because the git
+ * section of this very capture failed verification on this ask (`GIT_SECTION_FAILED`) — git's
+ * word on its content, which no later ask changes. A seal withheld because a check could not
+ * finish (`unavailable`, `verifying`) never says so, whatever the row recorded before.
+ */
+export interface CaptureSealNotice {
+  readonly n: number;
+  readonly captureId: string;
+  readonly epoch: number;
+  readonly outcome: RegisterSealOutcome;
+  readonly gitSectionFailed: boolean;
+}
+
 /** Every `waiting` notice's words begin with this — a launch's words, cleared once it starts. */
 export const PLAN_WAITING_PREFIX = "launch waiting · ";
 
@@ -935,6 +957,8 @@ export interface CaptureScope {
    * 2026-09-28 (13) #1): the engine says it in the session's summary. Absent: logged only.
    */
   readonly planNotice?: (notice: CapturePlanNotice) => Effect.Effect<void>;
+  /** Told every seal answer a register gave (`CaptureSealNotice`). Absent: logged only. */
+  readonly sealNotice?: (notice: CaptureSealNotice) => Effect.Effect<void>;
 }
 
 /** What a standby's `plan.get` is answered with: the base plan Mend prepared for it. */
@@ -2612,7 +2636,7 @@ export const CaptureChannelLive: Layer.Layer<
             if (gitFsck === "unverified") {
               return { problems: [], unavailable: ["the git section could not be verified"] };
             }
-            if (gitFsck !== "verified") return { problems: [`git section ${gitFsck}`] };
+            if (gitFsck !== "verified") return { problems: [GIT_SECTION_FAILED] };
             const meta = yield* verifyWorktreeMeta(manifest.sections.workspace).pipe(Effect.result);
             if (Result.isFailure(meta)) {
               return { problems: [`worktree metadata unrestorable: ${meta.failure._tag}`] };
@@ -3174,7 +3198,7 @@ export const CaptureChannelLive: Layer.Layer<
           // nothing, never pending.
           const bulkCaptured = manifest.sections.bulk !== "pending";
           const factProblems = [
-            gitFsck === "failed" ? "git section failed" : null,
+            gitFsck === "failed" ? GIT_SECTION_FAILED : null,
             bulkCaptured ? null : "bulk class pending",
           ].filter((problem) => problem !== null);
           // What could not be observed is no fact about the capture (review 2026-09-28 (12) #4):
@@ -3372,6 +3396,15 @@ export const CaptureChannelLive: Layer.Layer<
             }),
           );
         }
+        if (sealAnswer !== null && scope.sealNotice !== undefined) {
+          yield* scope.sealNotice({
+            n: input.n,
+            captureId: input.capture_id,
+            epoch: input.epoch,
+            outcome: sealAnswer.outcome,
+            gitSectionFailed: "gitSectionFailed" in sealAnswer && sealAnswer.gitSectionFailed,
+          });
+        }
         if (sealAnswer !== null && sealAnswer.outcome.state !== "recorded") {
           yield* Effect.logInfo(`capture channel: final seal · ${sealAnswer.outcome.state}`).pipe(
             Effect.annotateLogs({
@@ -3420,6 +3453,7 @@ export const CaptureChannelLive: Layer.Layer<
             : {
                 outcome: { state: "refused", reason: "unrestorable" } satisfies RegisterSealOutcome,
                 detail: `not observed restorable: ${problem}`,
+                gitSectionFailed: problem.split("; ").includes(GIT_SECTION_FAILED),
               };
         }
         const standing = yield* sealStandingOf(recorded, Date.now).pipe(

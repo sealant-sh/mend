@@ -284,6 +284,15 @@ export const CAPTURE_INCOMPLETE_REASONS = [
  */
 export const CAPTURE_EXECUTOR_RETAINED = "retained";
 
+/**
+ * What Mend records when a final flush waits on its seal (`sealing`) over a head whose git section
+ * Mend's own verification failed (`captures.git_fsck`): git's word on the capture's content — a
+ * closure missing a parent (a shallow repository), a pack it rejects. The registrar refuses that
+ * seal as `unrestorable` on every ask, and no wait changes it (verify proof run 9, 2026-10-10: a
+ * shallow project's Stop asked 61 times over 5 minutes, then read `final seal not confirmed`).
+ */
+export const CAPTURE_SEAL_UNRESTORABLE = "unrestorable";
+
 /** What Mend records when a final flush's answer carries no `complete` at all. */
 export const CAPTURE_COMPLETION_UNREPORTED = "unreported";
 
@@ -375,8 +384,9 @@ export const captureSnapFailing = (reading: CaptureReading): boolean =>
  * An answer that can never become `complete`, however long the drain waits: the executor did not
  * run a final flush (`complete` absent, `not-final`, or incomplete with no reason — an older
  * daemon), it was fenced or conflicted, it cannot vouch that every writer stopped
- * (`sweep-unavailable`), or its final snapshot failed (`snapshot-failed`, `unreadable`, or any
- * answer that reports a failing snap). A drain reads `not saved` at once and
+ * (`sweep-unavailable`), its final snapshot failed (`snapshot-failed`, `unreadable`, or any
+ * answer that reports a failing snap), or it waits on a seal Mend refuses because the head's git
+ * section failed verification (`CAPTURE_SEAL_UNRESTORABLE`). A drain reads `not saved` at once and
  * keeps the workspace; the kept backoff (10 s doubling to 5 min) asks again.
  */
 const finalFlushCannotComplete = (reading: CaptureReading): boolean => {
@@ -390,6 +400,7 @@ const finalFlushCannotComplete = (reading: CaptureReading): boolean => {
     reason === "snapshot-failed" ||
     reason === "unreadable" ||
     reason === "store-fidelity" ||
+    reason === CAPTURE_SEAL_UNRESTORABLE ||
     (reading.complete !== true && captureSnapFailing(reading))
   );
 };
@@ -636,6 +647,8 @@ export const captureIncompleteWords = (reason: string | null | undefined): strin
       return "executor error";
     case CAPTURE_EXECUTOR_RETAINED:
       return "executor kept for recovery";
+    case CAPTURE_SEAL_UNRESTORABLE:
+      return "final seal refused · git section failed verification";
     default:
       return reason;
   }

@@ -847,6 +847,7 @@ const world = (options: WorldOptions = {}) => {
       sshKeys: () => ({
         ensure: () => Effect.die("not in this test"),
         list: () => Effect.die("not in this test"),
+        remove: () => Effect.die("not in this test"),
       }),
     }),
   );

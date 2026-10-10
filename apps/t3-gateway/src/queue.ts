@@ -20,7 +20,12 @@ import type { PendingRun } from "./shell.ts";
  *   the message fails with Mend's refusal. A relaunch starts that count again: a new agent.
  * - A settled message (taken back, failed) is never rewritten by a late answer.
  *
- * Deadlines and retry times are on a monotonic clock (`performance.now()`), never wall time.
+ * Deadlines and retry times are on a monotonic clock (`performance.now()`), never wall time, so
+ * they are not kept across a restart: a restored message waits for nothing but its turn.
+ *
+ * The queue is kept in the gateway's state file (`StoredEntry`, ADR 0012, "State"), so a restart
+ * loses no message. A message being sent when the gateway stopped cannot be known to have reached
+ * Mend or not; it comes back failed, saying so, and is never sent twice (`restoredEntry`).
  *
  * - `queued`: waiting behind an open turn, for its turn in the queue, or for a retry.
  * - `launching`: the session is being launched again; sent once the agent is live.
@@ -33,10 +38,13 @@ export type EntryState = "queued" | "launching" | "sending" | "failed" | "cancel
 export interface QueueEntry {
   readonly runId: string;
   readonly messageId: string;
-  readonly text: string;
+  /** Rewritten only while the message waits (`edit`). */
+  text: string;
   readonly requestedAt: string;
-  /** The sender's device token: their message is sent as them. */
+  /** The sender's device token: their message is sent as them. Never stored. */
   readonly token: string;
+  /** The sender's bearer session, which the state file keeps instead of the token. */
+  readonly sender: string;
   state: EntryState;
   error: string | null;
   /** How many launches this message asked for. */
@@ -124,6 +132,7 @@ export const newEntry = (input: {
   readonly text: string;
   readonly requestedAt: string;
   readonly token: string;
+  readonly sender: string;
 }): QueueEntry => ({
   ...input,
   state: "queued",
@@ -199,6 +208,39 @@ export const holdIfQueued = (queue: ThreadQueue, holdQueue: boolean) => {
 
 export const resume = (queue: ThreadQueue) => {
   queue.held = false;
+};
+
+/** The message waiting in the queue under `runId`, or undefined once it is on its way or settled. */
+const waiting = (queue: ThreadQueue, runId: string): QueueEntry | undefined =>
+  queue.entries.find((entry) => entry.runId === runId && entry.state === "queued");
+
+/**
+ * New text for a message still waiting (`queued-run.edit`). False once it is on its way: what Mend
+ * may already have is never rewritten.
+ */
+export const edit = (queue: ThreadQueue, runId: string, text: string): boolean => {
+  const entry = waiting(queue, runId);
+  if (entry === undefined) return false;
+  entry.text = text;
+  return true;
+};
+
+/**
+ * Moves a waiting message right before another waiting one, or, when `beforeRunId` is null, after
+ * the last one still waiting or on its way (`queued-run.reorder`, as t3code's own server places
+ * it): never ahead of a message on its way. Messages on their way or settled keep their places.
+ * False when either is not waiting.
+ */
+export const reorder = (queue: ThreadQueue, runId: string, beforeRunId: string | null): boolean => {
+  const entry = waiting(queue, runId);
+  if (entry === undefined) return false;
+  if (beforeRunId === runId) return true;
+  const target = beforeRunId === null ? null : waiting(queue, beforeRunId);
+  if (target === undefined) return false;
+  const rest = queue.entries.filter((candidate) => candidate !== entry);
+  const at = target === null ? rest.findLastIndex(canProgress) + 1 : rest.indexOf(target);
+  queue.entries = [...rest.slice(0, at), entry, ...rest.slice(at)];
+  return true;
 };
 
 /**
@@ -361,4 +403,91 @@ export const pendingStateOf = (entry: QueueEntry): PendingRun["state"] => {
     case "cancelled":
       return "cancelled";
   }
+};
+
+// ─── Kept across a restart ────────────────────────────────────────────────────
+
+/** One message as the state file keeps it: no token, no clock, only what outlives a restart. */
+export interface StoredEntry {
+  readonly runId: string;
+  readonly messageId: string;
+  readonly text: string;
+  readonly requestedAt: string;
+  /** The sender's bearer session; their device token is looked up from it on restore. */
+  readonly sender: string;
+  readonly state: EntryState;
+  readonly error: string | null;
+  readonly launches: number;
+}
+
+export interface StoredQueue {
+  readonly held: boolean;
+  readonly entries: ReadonlyArray<StoredEntry>;
+}
+
+export const storedOf = (queue: ThreadQueue): StoredQueue => ({
+  held: queue.held,
+  entries: queue.entries.map((entry) => ({
+    runId: entry.runId,
+    messageId: entry.messageId,
+    text: entry.text,
+    requestedAt: entry.requestedAt,
+    sender: entry.sender,
+    state: entry.state,
+    error: entry.error,
+    launches: entry.launches,
+  })),
+});
+
+/** What a message being sent when the gateway stopped says: it may or may not be in Mend. */
+export const SENT_BEFORE_RESTART =
+  "The gateway restarted while it was sending this message, so it cannot tell whether Mend took it. Look at the thread before sending it again.";
+/** What a message says whose sender's device is no longer paired with the gateway. */
+export const SENDER_GONE =
+  "The device that sent this message is no longer paired with the gateway.";
+
+/**
+ * A stored message as it comes back, with its sender's token, or null when the device is gone.
+ * Waiting, or being launched for, it waits again from the start of its turn (a launch it asked
+ * for still counts). Being sent, it failed: the gateway never guesses whether Mend took it.
+ */
+export const restoredEntry = (stored: StoredEntry, token: string | null): QueueEntry => {
+  const entry = newEntry({
+    runId: stored.runId,
+    messageId: stored.messageId,
+    text: stored.text,
+    requestedAt: stored.requestedAt,
+    token: token ?? "",
+    sender: stored.sender,
+  });
+  entry.launches = stored.launches;
+  const settle = (state: "failed" | "cancelled", error: string | null) => {
+    entry.state = state;
+    entry.error = error;
+    return entry;
+  };
+  switch (stored.state) {
+    case "failed":
+      return settle("failed", stored.error);
+    case "cancelled":
+      return settle("cancelled", null);
+    case "sending":
+      return settle("failed", SENT_BEFORE_RESTART);
+    case "queued":
+    case "launching":
+      return token === null ? settle("failed", SENDER_GONE) : entry;
+  }
+};
+
+/** A stored queue as it comes back; held only while something is still queued. */
+export const restoredQueue = (
+  stored: StoredQueue,
+  tokenOf: (sender: string) => string | null,
+): ThreadQueue => {
+  const queue: ThreadQueue = {
+    entries: stored.entries.map((entry) => restoredEntry(entry, tokenOf(entry.sender))),
+    held: stored.held,
+  };
+  tidy(queue);
+  return queue;
 };

@@ -18,6 +18,7 @@ const closed: ExposurePosture = {
   errorDetail: "redacted",
   sessionChannelUrl: "https://mend-session.example:3106",
   executorNetwork: undefined,
+  sshPublished: undefined,
   declared: [],
   reassessedVersion: undefined,
   version: "0.29.0",
@@ -27,6 +28,9 @@ const open = (posture: ExposurePosture) =>
   evaluateExposureGate(posture)
     .filter((outcome) => outcome.established === "open")
     .map((outcome) => outcome.id);
+
+const workspaceSshOf = (posture: ExposurePosture) =>
+  evaluateExposureGate(posture).find((outcome) => outcome.id === "workspace-ssh");
 
 describe("the public exposure gate", () => {
   it("with everything observable closed, only what no build can observe stays open", () => {
@@ -53,6 +57,8 @@ describe("the public exposure gate", () => {
     ["no-bearers-in-urls", { urlBearers: "accept" }],
     ["error-redaction", { errorDetail: "verbose" }],
     ["executor-channel-transport", { sessionChannelUrl: "http://mend-api:3106" }],
+    ["workspace-ssh", { sshPublished: "0.0.0.0:2222" }],
+    ["workspace-ssh", { sshPublished: "[fd00::1]:2222" }],
   ])("refuses a public start while %s is open", (id, change) => {
     const gate = evaluateExposureGate({ ...closed, ...change });
     expect(gate.find((outcome) => outcome.id === id)?.established).toBe("open");
@@ -127,7 +133,23 @@ describe("the public exposure gate", () => {
       "no-bearers-in-urls",
       "error-redaction",
       "executor-channel-transport",
+      "workspace-ssh",
     ]);
+  });
+
+  it("names the package mirrors among what core-private covers, when sessions are pointed at them", () => {
+    const without = evaluateExposureGate(closed).find((outcome) => outcome.id === "core-private");
+    expect(without?.detail).toContain("Sealant, its registry and the database are reachable");
+    const gate = evaluateExposureGate({
+      ...closed,
+      mirrors: ["npm-mirror:4873", "docker-mirror:5000"],
+    });
+    const item = gate.find((outcome) => outcome.id === "core-private");
+    expect(item?.detail).toBe(
+      "this process cannot observe whether Sealant, its registry, the database and the package mirrors (npm-mirror:4873, docker-mirror:5000) are reachable from the Internet",
+    );
+    expect(item?.established).toBe("open");
+    expect(item?.blocksStart).toBe(false);
   });
 
   it("closes an unobservable item only on the operator's own statement, and says whose it is", () => {
@@ -145,6 +167,36 @@ describe("the public exposure gate", () => {
     });
     expect(exposureGatePasses(all)).toBe(true);
     expect(all.filter((outcome) => outcome.established === "declared")).toHaveLength(3);
+  });
+
+  it("reports workspace SSH published apart from the web port as declared, observed or open, never as a verdict", () => {
+    // Not published apart (the edge keeps it with the web port, on loopback), or on loopback alone.
+    expect(workspaceSshOf(closed)).toMatchObject({ established: "observed", fix: null });
+    expect(workspaceSshOf({ ...closed, sshPublished: "127.0.0.1:2222" })).toMatchObject({
+      established: "observed",
+      detail: "workspace SSH is published on 127.0.0.1:2222 only",
+    });
+    // Beside a public edge on every interface: open, says what would verify it, refuses `public`.
+    const published = { ...closed, sshPublished: "0.0.0.0:2222" };
+    // It refuses a public start, and no build can observe it: the two are separate facts.
+    expect(workspaceSshOf(published)).toMatchObject({
+      established: "open",
+      blocksStart: true,
+      observable: false,
+    });
+    expect(workspaceSshOf(published)?.fix).toContain("a connection attempt to 0.0.0.0:2222");
+    expect(workspaceSshOf(published)?.fix).toContain("MEND_EXPOSURE_DECLARED");
+    const refusal = exposureRefusal("public", evaluateExposureGate(published));
+    expect(refusal).toContain("workspace-ssh:");
+    expect(refusal).toContain("open items that refuse a public start");
+    expect(refusal).not.toContain("this build can observe");
+    // A private declaration still reports it, and does not refuse.
+    expect(exposureRefusal("private", evaluateExposureGate(published))).toBeNull();
+    // The operator's statement, and only that, makes it declared; this process still cannot check it.
+    const stated: ExposurePosture = { ...published, declared: ["workspace-ssh"] };
+    expect(workspaceSshOf(stated)).toMatchObject({ established: "declared", fix: null });
+    expect(workspaceSshOf(stated)?.detail).toContain("this process cannot check it");
+    expect(exposureRefusal("public", evaluateExposureGate(stated))).toBeNull();
   });
 
   it("an unversioned build has nothing a reassessment could name", () => {

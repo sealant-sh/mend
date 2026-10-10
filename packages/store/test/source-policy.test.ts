@@ -176,3 +176,16 @@ describe("pinning a checked remote (DNS rebinding)", () => {
     ).toEqual(env);
   });
 });
+
+describe("a source with a login or token", () => {
+  it.each([
+    "http://user:se'cret@github.com/org/repo.git",
+    'https://user:"secret"@github.com/org/repo.git',
+    "https://user:<secret>@github.com/org/repo.git",
+    "https://oauth2:TOKEN@github.com/org/repo.git",
+  ])("is refused before anything is resolved or cloned: %s", async (source) => {
+    for (const profile of ["operator", "tenant"] as const) {
+      expect(await outcome(profile, source, { operator: true })).toBe("refused");
+    }
+  });
+});

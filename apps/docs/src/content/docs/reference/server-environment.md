@@ -104,17 +104,35 @@ Workspaces reach their session over a mounted Unix socket by default, or over a 
 | `MEND_SERVICE_PORT_MAX`          | `43999`     | The highest port a Service listener takes.                                                                                                                                                                                                                                                                                       |
 | `MEND_HARNESS_LAYOUT`            | `person`    | `person` gives each person their own Linux user and home in a workspace, for worktrees with no layout yet; `shared` keeps them on one shared home (and keeps Hot sessions' standbys). Unset or empty is `person`. A worktree that has run `person` stays `person`. See [Per-person workspaces](/operate/per-person-workspaces/). |
 
+## Package and image mirrors
+
+`mend server setup` sets these from the install's mirrors; see [npm mirror](/operate/npm-mirror/)
+and [Docker mirror](/operate/docker-mirror/). The `SEALANT_DOCKER_*` variables are read by the
+Sealant worker that runs inside the Mend container.
+
+| Variable                                   | Default | What it does                                                                                                                                                                                        |
+| ------------------------------------------ | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `MEND_NPM_MIRROR_URL`                      | unset   | The npm mirror's origin, such as `http://npm-mirror:4873/`. Each session's dependency install goes through it when nobody set a registry or a login for registry.npmjs.org, and the mirror answers. |
+| `SEALANT_DOCKER_REGISTRY_MIRRORS`          | unset   | Comma-separated http(s) origins every session's Docker daemon asks first for a Docker Hub image. The daemon falls back to Docker Hub when one fails.                                                |
+| `SEALANT_DOCKER_REGISTRY_MIRROR_CONTAINER` | unset   | The container serving those mirrors, which Sealant connects to each session's Docker network, such as `mend-docker-mirror`.                                                                         |
+
+The mirrors' own settings live in the install's `server.env`: `MEND_NPM_MIRROR_MAX_SIZE` and
+`MEND_DOCKER_MIRROR_MAX_SIZE` (their caps), and `MEND_DOCKER_HUB_USERNAME` and
+`MEND_DOCKER_HUB_TOKEN` when the Docker mirror has a Docker Hub login. Only the mirrors' containers
+read them.
+
 ## Exposure
 
 See [Exposure and the public gate](/operate/exposure/) for what each item means.
 
-| Variable                   | Default    | What it does                                                                                                                                        |
-| -------------------------- | ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `MEND_EXPOSURE`            | `private`  | How the instance is reached, as you declare it: `loopback`, `private` or `public`. `public` refuses to start while an observable gate item is open. |
-| `MEND_EXPOSURE_DECLARED`   | empty      | Comma-separated gate items you verified from outside: `core-private`, `edge-tls`. Any other name refuses to start.                                  |
-| `MEND_EXPOSURE_REASSESSED` | unset      | The version you recorded an independent security reassessment of. It counts only while it equals `MEND_VERSION`.                                    |
-| `MEND_URL_BEARERS`         | `accept`   | `accept` still reads a bearer from `?token=` on a socket URL and logs it; `refuse` answers 400.                                                     |
-| `MEND_ERROR_DETAIL`        | `redacted` | `verbose` turns off the scrubbing of error responses, for debugging a private instance.                                                             |
+| Variable                   | Default    | What it does                                                                                                                                             |
+| -------------------------- | ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `MEND_EXPOSURE`            | `private`  | How the instance is reached, as you declare it: `loopback`, `private` or `public`. `public` refuses to start while an observable gate item is open.      |
+| `MEND_EXPOSURE_DECLARED`   | empty      | Comma-separated gate items you verified from outside: `core-private`, `edge-tls`, `workspace-ssh`. Any other name refuses to start.                      |
+| `MEND_SSH_PUBLISHED`       | unset      | Where workspace SSH is published apart from the web port, `<address>:<port>` (`mend server setup --ssh-bind`). The gate's `workspace-ssh` item reads it. |
+| `MEND_EXPOSURE_REASSESSED` | unset      | The version you recorded an independent security reassessment of. It counts only while it equals `MEND_VERSION`.                                         |
+| `MEND_URL_BEARERS`         | `accept`   | `accept` still reads a bearer from `?token=` on a socket URL and logs it; `refuse` answers 400.                                                          |
+| `MEND_ERROR_DETAIL`        | `redacted` | `verbose` turns off the scrubbing of error responses, for debugging a private instance.                                                                  |
 
 ## Budgets
 
@@ -184,6 +202,7 @@ What `server.env` holds, all read by the compose files:
 | `MEND_VERSION`, `MEND_IMAGE_REPOSITORY`                                                                                                                                          | `--version`; `ghcr.io/sealant-sh/mend`                           |
 | `APP_URL`, `MEND_ALLOWED_ORIGINS`                                                                                                                                                | `--url`, `--origin`                                              |
 | `MEND_BIND_HOST`, `MEND_PORT`, `MEND_SSH_PORT`                                                                                                                                   | `--bind` (`127.0.0.1`), `--port` (`3105`), `--ssh-port` (`2222`) |
+| `MEND_SSH_BIND_HOST`                                                                                                                                                             | `--ssh-bind`; absent when workspace SSH is published on `--bind` |
 | `SEALANT_SSH_HOST`                                                                                                                                                               | the host name in `--url`                                         |
 | `MEND_EDGE_HOST`                                                                                                                                                                 | `--edge`; read by `compose.edge.yaml`, absent without an edge    |
 | `MEND_EXPOSURE`, `MEND_TENANCY`                                                                                                                                                  | `--exposure`, `--tenancy`; absent when never declared            |

@@ -17,6 +17,7 @@ import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
 
 import { GatewayConfig } from "./config.ts";
+import type { EntryState, StoredEntry, StoredQueue } from "./queue.ts";
 
 /**
  * The gateway's own state (ADR 0012, "State"): one `node:sqlite` file it owns. Mend's records stay
@@ -62,6 +63,31 @@ export interface TurnIds {
   readonly messageId: string;
 }
 
+/**
+ * What a launch named for its session's agent (`LaunchRequest` in @mend/api-contracts), kept so
+ * every later launch of the thread names the same: a launch that never brought an agent up leaves
+ * Mend nothing recorded to reuse.
+ */
+export const ThreadLaunchOptions = Schema.Struct({
+  model: Schema.optional(Schema.String),
+  effort: Schema.optional(Schema.String),
+  permissionMode: Schema.optional(Schema.Literals(["bypass", "ask"])),
+  speed: Schema.optional(Schema.Literals(["standard", "fast"])),
+});
+export type ThreadLaunchOptions = typeof ThreadLaunchOptions.Type;
+
+/**
+ * A thread a t3code client launched (`orchestration.launchThread`): the client's own thread id,
+ * the Mend session that is it, the launch command (a retry of it is the same thread) and what the
+ * launch named.
+ */
+export interface LaunchedThread {
+  readonly threadId: string;
+  readonly sessionId: string;
+  readonly commandId: string;
+  readonly options: ThreadLaunchOptions;
+}
+
 export class GatewayStateError extends Schema.TaggedError<GatewayStateError>()(
   "GatewayStateError",
   {
@@ -100,6 +126,79 @@ export class GatewayState extends Context.Service<
     readonly recordTurnIds: (ids: TurnIds, at: number) => Effect.Effect<void, GatewayStateError>;
     /** Every turn the gateway sent, with its t3code ids. */
     readonly listTurnIds: () => Effect.Effect<ReadonlyArray<TurnIds>, GatewayStateError>;
+    /**
+     * Records a thread a person launched from t3code; a second record of its command keeps the
+     * first.
+     */
+    readonly recordThread: (
+      mendUserId: string,
+      thread: LaunchedThread,
+      at: number,
+    ) => Effect.Effect<void, GatewayStateError>;
+    /** Every thread a person launched from t3code whose session was not seen removed. */
+    readonly listThreads: (
+      mendUserId: string,
+    ) => Effect.Effect<ReadonlyArray<LaunchedThread>, GatewayStateError>;
+    /** Forgets a person's launched thread whose session Mend removed. */
+    readonly forgetThread: (
+      mendUserId: string,
+      sessionId: string,
+    ) => Effect.Effect<void, GatewayStateError>;
+    /**
+     * Keeps a session a person deleted that Mend keeps until its workspace has stopped, so it stays
+     * hidden from them across a restart.
+     */
+    readonly keepRemoval: (
+      mendUserId: string,
+      sessionId: string,
+      at: number,
+    ) => Effect.Effect<void, GatewayStateError>;
+    /** The sessions a person deleted that Mend had not removed when last read. */
+    readonly listRemovals: (
+      mendUserId: string,
+    ) => Effect.Effect<ReadonlyArray<string>, GatewayStateError>;
+    /** Forgets a pending removal once Mend no longer lists the session. */
+    readonly dropRemoval: (
+      mendUserId: string,
+      sessionId: string,
+    ) => Effect.Effect<void, GatewayStateError>;
+    /**
+     * Keeps one thread's queue in a person's hub as it stands now; an empty queue that is not held
+     * leaves nothing behind.
+     */
+    readonly saveQueue: (
+      mendUserId: string,
+      sessionId: string,
+      queue: StoredQueue,
+    ) => Effect.Effect<void, GatewayStateError>;
+    /**
+     * Every queue kept for a person, by session, with the device tokens of the senders whose
+     * bearer is still live (a sender missing from `senders` is no longer paired).
+     */
+    readonly loadQueues: (mendUserId: string) => Effect.Effect<
+      ReadonlyArray<{
+        readonly sessionId: string;
+        readonly queue: StoredQueue;
+        readonly senders: ReadonlyMap<string, string>;
+      }>,
+      GatewayStateError
+    >;
+    /**
+     * Reserves `count` sequences at or above `from`, from one high-water mark for the whole
+     * gateway, and answers where they start: every sequence a hub stamps comes from a reservation,
+     * so none is stamped twice across hubs, people and restarts, and a client resuming after a
+     * sequence from another hub is never answered by replay. The mark starts at the clock (in
+     * milliseconds), above any sequence a gateway gave before it kept one: those counted from 0.
+     */
+    readonly reserveSequences: (
+      from: number,
+      count: number,
+    ) => Effect.Effect<number, GatewayStateError>;
+    /** The people who have a message kept that can still reach Mend: their hubs start with the gateway. */
+    readonly peopleWithQueuedMessages: () => Effect.Effect<
+      ReadonlyArray<BearerSession>,
+      GatewayStateError
+    >;
   }
 >()("@mend/t3-gateway/GatewayState") {}
 
@@ -107,10 +206,15 @@ export class GatewayState extends Context.Service<
 
 /**
  * Migrations by `PRAGMA user_version`. Append only. t3code shows Mend's projects and sessions by
- * their Mend ids, so `project_ids` and `thread_ids` stay empty until a t3code client creates a
- * thread (phase 2). `message_ids` and `run_ids` carry the ids of every turn a t3code client sent,
- * keyed by the Mend turn: a message id comes from the client, so it is never a key across
- * sessions, and a recorded turn is never replaced (migration 3).
+ * their Mend ids, except a thread a t3code client launched, which keeps the client's own id for
+ * the person who launched it: `thread_ids` maps it to its session, per person, with the launch's
+ * command and options (migration 4). Everyone else sees the session by its Mend id.
+ * `project_ids` stays empty. `message_ids` and `run_ids` carry the ids of every turn a t3code
+ * client sent, keyed by the Mend turn: a message id comes from the client, so it is never a key
+ * across sessions, and a recorded turn is never replaced (migration 3). `pending_removals` keeps
+ * each person's deleted sessions that Mend keeps until their workspace has stopped (migration 5).
+ * `queued_messages` and `queue_holds` keep each person's queues (migration 6): a message names its
+ * sender by bearer session, never by device token.
  */
 const MIGRATIONS: ReadonlyArray<string> = [
   `
@@ -173,7 +277,53 @@ const MIGRATIONS: ReadonlyArray<string> = [
   DROP TABLE message_ids;
   ALTER TABLE message_ids_by_turn RENAME TO message_ids;
   `,
+  `
+  DROP TABLE thread_ids;
+  CREATE TABLE thread_ids (
+    mend_user_id TEXT NOT NULL,
+    thread_id TEXT NOT NULL,
+    mend_session_id TEXT NOT NULL,
+    command_id TEXT NOT NULL,
+    launch_options TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (mend_user_id, thread_id),
+    UNIQUE (mend_user_id, mend_session_id),
+    UNIQUE (mend_user_id, command_id)
+  );
+  `,
+  `
+  CREATE TABLE pending_removals (
+    mend_user_id TEXT NOT NULL,
+    mend_session_id TEXT NOT NULL,
+    deleted_at INTEGER NOT NULL,
+    PRIMARY KEY (mend_user_id, mend_session_id)
+  );
+  `,
+  `
+  CREATE TABLE queued_messages (
+    mend_user_id TEXT NOT NULL,
+    mend_session_id TEXT NOT NULL,
+    position INTEGER NOT NULL,
+    run_id TEXT NOT NULL,
+    message_id TEXT NOT NULL,
+    text TEXT NOT NULL,
+    requested_at TEXT NOT NULL,
+    sender_session_id TEXT NOT NULL,
+    state TEXT NOT NULL,
+    error TEXT,
+    launches INTEGER NOT NULL,
+    PRIMARY KEY (mend_user_id, mend_session_id, position)
+  );
+  CREATE TABLE queue_holds (
+    mend_user_id TEXT NOT NULL,
+    mend_session_id TEXT NOT NULL,
+    PRIMARY KEY (mend_user_id, mend_session_id)
+  );
+  `,
 ];
+
+/** The gateway's sequence high-water mark in `meta` (`reserveSequences`). */
+const SEQUENCE_HIGH = "sequence_high";
 
 const UserVersionRow = Schema.Struct({ user_version: Schema.Number });
 const MetaRow = Schema.Struct({ value: Schema.String });
@@ -203,6 +353,34 @@ const TurnIdsRow = Schema.Struct({
 });
 const decodeTurnIdsRows = Schema.decodeUnknownEffect(Schema.Array(TurnIdsRow));
 const encodeScopes = Schema.encodeSync(Scopes);
+const LaunchOptionsJson = Schema.fromJsonString(ThreadLaunchOptions);
+const encodeLaunchOptions = Schema.encodeSync(LaunchOptionsJson);
+const ThreadRow = Schema.Struct({
+  thread_id: Schema.String,
+  mend_session_id: Schema.String,
+  command_id: Schema.String,
+  launch_options: LaunchOptionsJson,
+});
+const decodeThreadRows = Schema.decodeUnknownEffect(Schema.Array(ThreadRow));
+const RemovalRow = Schema.Struct({ mend_session_id: Schema.String });
+const decodeRemovalRows = Schema.decodeUnknownEffect(Schema.Array(RemovalRow));
+const QueuedRow = Schema.Struct({
+  mend_session_id: Schema.String,
+  run_id: Schema.String,
+  message_id: Schema.String,
+  text: Schema.String,
+  requested_at: Schema.String,
+  sender_session_id: Schema.String,
+  state: Schema.Literals(["queued", "launching", "sending", "failed", "cancelled"]),
+  error: Schema.NullOr(Schema.String),
+  launches: Schema.Number,
+  /** The sender's device token while their bearer is live; null once revoked or gone. */
+  device_token: Schema.NullOr(Schema.String),
+});
+const decodeQueuedRows = Schema.decodeUnknownEffect(Schema.Array(QueuedRow));
+const HoldRow = Schema.Struct({ mend_session_id: Schema.String });
+const decodeHoldRows = Schema.decodeUnknownEffect(Schema.Array(HoldRow));
+const decodeSessionRows = Schema.decodeUnknownEffect(Schema.Array(SessionRow));
 
 const toBearerSession = (decoded: typeof SessionRow.Type): BearerSession => ({
   sessionId: decoded.session_id,
@@ -410,6 +588,232 @@ export const openGatewayState = (
         ),
       );
 
+    const recordThread = (mendUserId: string, thread: LaunchedThread, at: number) =>
+      run("recordThread", () => {
+        database
+          .prepare(
+            `INSERT OR IGNORE INTO thread_ids
+               (mend_user_id, thread_id, mend_session_id, command_id, launch_options, created_at)
+             VALUES (?, ?, ?, ?, ?, ?)`,
+          )
+          .run(
+            mendUserId,
+            thread.threadId,
+            thread.sessionId,
+            thread.commandId,
+            encodeLaunchOptions(thread.options),
+            at,
+          );
+      });
+
+    const listThreads = (mendUserId: string) =>
+      run("listThreads", () =>
+        database
+          .prepare(
+            `SELECT thread_id, mend_session_id, command_id, launch_options FROM thread_ids
+              WHERE mend_user_id = ? ORDER BY created_at`,
+          )
+          .all(mendUserId),
+      ).pipe(
+        Effect.flatMap((rows) =>
+          decodeThreadRows(rows).pipe(
+            Effect.mapError((cause) => new GatewayStateError({ operation: "listThreads", cause })),
+          ),
+        ),
+        Effect.map((rows) =>
+          rows.map(
+            (row): LaunchedThread => ({
+              threadId: row.thread_id,
+              sessionId: row.mend_session_id,
+              commandId: row.command_id,
+              options: row.launch_options,
+            }),
+          ),
+        ),
+      );
+
+    const forgetThread = (mendUserId: string, sessionId: string) =>
+      run("forgetThread", () => {
+        database
+          .prepare("DELETE FROM thread_ids WHERE mend_user_id = ? AND mend_session_id = ?")
+          .run(mendUserId, sessionId);
+      });
+
+    const keepRemoval = (mendUserId: string, sessionId: string, at: number) =>
+      run("keepRemoval", () => {
+        database
+          .prepare(
+            `INSERT OR IGNORE INTO pending_removals (mend_user_id, mend_session_id, deleted_at)
+             VALUES (?, ?, ?)`,
+          )
+          .run(mendUserId, sessionId, at);
+      });
+
+    const listRemovals = (mendUserId: string) =>
+      run("listRemovals", () =>
+        database
+          .prepare("SELECT mend_session_id FROM pending_removals WHERE mend_user_id = ?")
+          .all(mendUserId),
+      ).pipe(
+        Effect.flatMap((rows) =>
+          decodeRemovalRows(rows).pipe(
+            Effect.mapError((cause) => new GatewayStateError({ operation: "listRemovals", cause })),
+          ),
+        ),
+        Effect.map((rows) => rows.map((row) => row.mend_session_id)),
+      );
+
+    const dropRemoval = (mendUserId: string, sessionId: string) =>
+      run("dropRemoval", () => {
+        database
+          .prepare("DELETE FROM pending_removals WHERE mend_user_id = ? AND mend_session_id = ?")
+          .run(mendUserId, sessionId);
+      });
+
+    const transaction = (operation: string, f: () => void) =>
+      run(operation, () => {
+        database.exec("BEGIN");
+        try {
+          f();
+          database.exec("COMMIT");
+        } catch (error) {
+          database.exec("ROLLBACK");
+          throw error;
+        }
+      });
+
+    const saveQueue = (mendUserId: string, sessionId: string, queue: StoredQueue) =>
+      transaction("saveQueue", () => {
+        database
+          .prepare("DELETE FROM queued_messages WHERE mend_user_id = ? AND mend_session_id = ?")
+          .run(mendUserId, sessionId);
+        database
+          .prepare("DELETE FROM queue_holds WHERE mend_user_id = ? AND mend_session_id = ?")
+          .run(mendUserId, sessionId);
+        const insert = database.prepare(
+          `INSERT INTO queued_messages (
+             mend_user_id, mend_session_id, position, run_id, message_id, text, requested_at,
+             sender_session_id, state, error, launches
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        );
+        queue.entries.forEach((entry, position) => {
+          insert.run(
+            mendUserId,
+            sessionId,
+            position,
+            entry.runId,
+            entry.messageId,
+            entry.text,
+            entry.requestedAt,
+            entry.sender,
+            entry.state,
+            entry.error,
+            entry.launches,
+          );
+        });
+        if (queue.held) {
+          database
+            .prepare("INSERT INTO queue_holds (mend_user_id, mend_session_id) VALUES (?, ?)")
+            .run(mendUserId, sessionId);
+        }
+      });
+
+    const decoded =
+      <A>(operation: string, decode: (rows: unknown) => Effect.Effect<A, Schema.SchemaError>) =>
+      (rows: unknown) =>
+        decode(rows).pipe(Effect.mapError((cause) => new GatewayStateError({ operation, cause })));
+
+    const loadQueues = (mendUserId: string) =>
+      Effect.gen(function* () {
+        const rows = yield* run("loadQueues", () =>
+          database
+            .prepare(
+              `SELECT q.mend_session_id, q.run_id, q.message_id, q.text, q.requested_at,
+                      q.sender_session_id, q.state, q.error, q.launches,
+                      CASE WHEN b.revoked_at IS NULL THEN b.device_token END AS device_token
+                 FROM queued_messages q
+                 LEFT JOIN bearer_sessions b ON b.session_id = q.sender_session_id
+                WHERE q.mend_user_id = ?
+                ORDER BY q.mend_session_id, q.position`,
+            )
+            .all(mendUserId),
+        ).pipe(Effect.flatMap(decoded("loadQueues", decodeQueuedRows)));
+        const holds = yield* run("loadQueues", () =>
+          database
+            .prepare("SELECT mend_session_id FROM queue_holds WHERE mend_user_id = ?")
+            .all(mendUserId),
+        ).pipe(Effect.flatMap(decoded("loadQueues", decodeHoldRows)));
+        const held = new Set(holds.map((row) => row.mend_session_id));
+        const bySession = new Map<
+          string,
+          { entries: Array<StoredEntry>; senders: Map<string, string> }
+        >();
+        for (const row of rows) {
+          const fresh: { entries: Array<StoredEntry>; senders: Map<string, string> } = {
+            entries: [],
+            senders: new Map(),
+          };
+          const kept = bySession.get(row.mend_session_id) ?? fresh;
+          const state: EntryState = row.state;
+          kept.entries.push({
+            runId: row.run_id,
+            messageId: row.message_id,
+            text: row.text,
+            requestedAt: row.requested_at,
+            sender: row.sender_session_id,
+            state,
+            error: row.error,
+            launches: row.launches,
+          });
+          if (row.device_token !== null) kept.senders.set(row.sender_session_id, row.device_token);
+          bySession.set(row.mend_session_id, kept);
+        }
+        for (const sessionId of held) {
+          if (!bySession.has(sessionId))
+            bySession.set(sessionId, { entries: [], senders: new Map() });
+        }
+        return Array.from(bySession, ([sessionId, kept]) => ({
+          sessionId,
+          queue: { held: held.has(sessionId), entries: kept.entries },
+          senders: kept.senders,
+        }));
+      });
+
+    const reserveSequences = (from: number, count: number) =>
+      run("reserveSequences", () => {
+        database.exec("BEGIN IMMEDIATE");
+        try {
+          const row = database.prepare("SELECT value FROM meta WHERE key = ?").get(SEQUENCE_HIGH);
+          const high =
+            row === undefined ? Date.now() : Number(Schema.decodeUnknownSync(MetaRow)(row).value);
+          const start = Math.max(high, from);
+          database
+            .prepare("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)")
+            .run(SEQUENCE_HIGH, String(start + count));
+          database.exec("COMMIT");
+          return start;
+        } catch (error) {
+          database.exec("ROLLBACK");
+          throw error;
+        }
+      });
+
+    const peopleWithQueuedMessages = () =>
+      run("peopleWithQueuedMessages", () =>
+        database
+          .prepare(
+            `SELECT b.* FROM bearer_sessions b
+               JOIN (SELECT DISTINCT q.mend_user_id, q.sender_session_id FROM queued_messages q
+                      WHERE q.state IN ('queued', 'launching')) p
+                 ON p.sender_session_id = b.session_id AND p.mend_user_id = b.mend_user_id
+              WHERE b.revoked_at IS NULL`,
+          )
+          .all(),
+      ).pipe(
+        Effect.flatMap(decoded("peopleWithQueuedMessages", decodeSessionRows)),
+        Effect.map((rows) => rows.map(toBearerSession)),
+      );
+
     return {
       environmentId,
       insertSession,
@@ -419,6 +823,16 @@ export const openGatewayState = (
       revokeSessionsForDevice,
       recordTurnIds,
       listTurnIds,
+      recordThread,
+      listThreads,
+      forgetThread,
+      keepRemoval,
+      listRemovals,
+      dropRemoval,
+      saveQueue,
+      loadQueues,
+      reserveSequences,
+      peopleWithQueuedMessages,
     };
   });
 

@@ -46,6 +46,24 @@ does not change a host's kernel settings for you: `mend server setup` and `mend 
 run. See
 [Every session fails to launch on Ubuntu](/operate/troubleshooting/#every-session-fails-to-launch-on-ubuntu).
 
+## Projects adopted with a token in their URL
+
+Applies to projects and reference repositories added before 0.36 from a URL with a login or token in
+it, such as `https://oauth2:TOKEN@gitlab.com/acme/api.git`. Before 0.36 Mend stored that URL as
+typed and returned it to everyone who could see the project; 0.36 refuses such a URL
+([No credentials in repository URLs](/guides/git-access/#no-credentials-in-repository-urls)).
+
+On upgrade, Mend removes the credential from the stored URL. It does not edit the project's Git
+store: a store whose Git config still holds a login or token (or includes another file, which Mend
+never writes) is refused. Fetching, pushing, landing, starting or resuming a session there, and
+adding the project to a session, say what kind of thing Mend found and that an operator must remove
+it. The server log names the exact command, at each such refusal and for every such project at
+start. Nothing in the store or its worktrees is lost.
+
+To fix one, adopt the repository again from its SSH URL with your Mend key (`mend keys`) or the
+agent bridge, or have the operator run the `git --git-dir=… remote set-url …` command the server log
+names. Rotate the token: anyone who could see the project before 0.36 could read it.
+
 ## SHA-256 repositories are not supported
 
 Mend refuses to adopt a repository that uses SHA-256 object names:
@@ -56,9 +74,44 @@ Mend doesn't support SHA-256 repositories yet.
 
 A project adopted before this check is refused the same way when a session starts on it.
 
+Grafts (`info/grafts`) cut history the same way while git calls the repository complete. A clone
+never copies them, so only a project whose repository was edited on the Mend host has them. A
+session start on one is refused:
+
+```text
+Mend doesn't support repositories with grafts (`info/grafts`) yet. Remove the grafts, or convert them with `git replace --convert-graft-file`.
+```
+
+Replace refs (`git replace`) are not refused: Mend saves the real history under them.
+
 Converting a session's repository to SHA-256 while the session runs is not supported. Its later
 saves never seal, so a Stop never finishes: the executor is kept and the session stays `stopping`.
 Discard unsaved and stop is the only way to end it, and it discards what the executor holds.
+
+## Shallow repositories are not supported
+
+A shallow repository holds only part of its history: a `git clone --depth` copy, a CI checkout, a
+mirror made from one. Mend refuses to adopt one:
+
+```text
+Mend doesn't support shallow repositories yet. Make the repository complete where it is hosted (`git fetch --unshallow`), then adopt it again.
+```
+
+Mend clones everything the source holds, so a shallow source gives a shallow project, and fetching
+from that source again adds no history. A session on one could not save: Mend verifies each save by
+walking the git history it names, and the walk reaches commits whose parents the repository does not
+hold. Before this check, a Stop on such a project read `saving` for up to 10 minutes and then
+`not saved · final seal not confirmed · workspace kept`.
+
+A shallow checkout on your own machine is not a problem: `mend adopt` and `mend codex` from inside
+one adopt its `origin` URL, and Mend clones that in full.
+
+A project adopted before this check is refused the same way when a session starts on it.
+
+Whatever the cause, a Stop whose last save failed git verification now reads
+`not saved · final seal refused · git section failed verification · workspace kept` after its first
+final flush, and the workspace is kept. Discard unsaved and stop ends it, and discards what the
+workspace holds.
 
 ## Build output carried from another platform is checked at its top level
 
@@ -367,8 +420,22 @@ is used by the other person's `git push`.
 - **`docker exec` runs as root, with no login.** So does anything else Mend did not start, such as a
   custom image's own entrypoint work: no person's login, no Mend token, and what it writes under
   `/root` is not saved.
-- **VS Code Remote-SSH reaches only workspaces you launched,** as your user. You cannot open
-  Remote-SSH into a workspace someone else launched.
+- **VS Code Remote-SSH reaches only workspaces you launched,** as your user, in your home: you are
+  the launcher of a workspace your launch started, and of the next one when you launch it after the
+  last one stopped. You cannot open Remote-SSH into a workspace someone else launched. Your user is
+  made when the workspace starts; until then the workspace refuses SSH rather than open it as root.
+  Remote-SSH runs as root, as before, in a workspace that fell back to one shared home (until
+  Sealant has taken that change the session says `Remote-SSH unavailable`), on a Sealant that does
+  not report `workspaceSshUser` (the session says `Remote-SSH: root, this Sealant runs it as root`),
+  and where Sealant cannot bind your account to your person (an older Sealant, or a binding it
+  already holds for someone else; the session says `Remote-SSH: root, Core can't bind your person`,
+  and an operator clears a wrong binding in Sealant's database, as Sealant's upgrade guide says).
+- **SFTP is refused in a per-person workspace,** and with it `sftp` and `scp` (which speaks SFTP).
+  The pinned sealantd runs an SFTP bridge only as root. Copy a file with
+  `ssh <host> 'cat > file' < file` until Sealant pins a sealantd that runs SFTP as you.
+- **A removed workspace SSH key ends no connection already open.** The gateway refuses the key from
+  the next connection; a Remote-SSH window connected before the removal stays connected until it
+  disconnects or the workspace stops. The platform does not record when a key was last used.
 - Settings edited by hand in a workspace last until it ends.
 
 ### Images

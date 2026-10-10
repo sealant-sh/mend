@@ -60,7 +60,7 @@ import type {
   SkillId,
   WorktreeId,
 } from "@mend/domain";
-import type { CapturePosition, HarnessLayout } from "@mend/domain/workbench";
+import type { CapturePosition, HarnessLayout, RemoteSsh } from "@mend/domain/workbench";
 import {
   AuditData,
   HotWorkspaceEnvironment,
@@ -85,6 +85,7 @@ import type {
   AgentTurnUsage,
   AutomationChoice,
   CaptureDrainReason,
+  CheckpointSourceKind,
   CheckpointTrigger,
   ClusterBindingKind,
   ContextItem,
@@ -378,6 +379,33 @@ export const auditEvents = pgTable(
 );
 
 /**
+ * The workspace SSH keys Mend still owes a removed member (docs/WORKSPACE-SSH.md): one row per
+ * removed account, written with the membership's deletion and deleted once the platform holds no
+ * active key of theirs. FKs to "user"(id) are declared in the migration.
+ */
+export const sshKeyRevocations = pgTable(
+  "ssh_key_revocations",
+  {
+    /** One obligation; a later removal of the same account replaces the row with a new id. */
+    id: text().primaryKey(),
+    userId: text().notNull().unique(),
+    organizationId: text()
+      .$type<OrganizationId>()
+      .notNull()
+      .references(() => organizations.id, { onDelete: "restrict" }),
+    /** The owner who removed them: the actor of each key's removal in the audit log. */
+    actorUserId: text().notNull(),
+    requestedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+    attempts: integer().notNull().default(0),
+    nextAttemptAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+    /** Keys still active after the last attempt; null while they could not be read. */
+    outstanding: integer(),
+    lastError: text(),
+  },
+  (table) => [index("ssh_key_revocations_next_attempt_at").on(table.nextAttemptAt)],
+);
+
+/**
  * Steering acts on a session beyond turns and approvals (docs/adr/0003): who interrupted, attached
  * a terminal, opened a shell, stopped it, or shared control.
  */
@@ -522,6 +550,8 @@ export const hotWorkspaces = pgTable(
     fingerprint: text().notNull(),
     /** The layout the standby booted in (docs/adr/0016); `shared` for rows from before 0120. */
     harnessLayout: text().$type<HarnessLayout>().notNull().default("shared"),
+    /** Who Remote-SSH into it runs as (`HotWorkspace.remoteSsh`); `not-taken` before 0123. */
+    remoteSsh: text().$type<RemoteSsh>().notNull().default("not-taken"),
     // Null since standby workspaces (0048): the pool no longer pre-creates a worktree.
     worktree: text(),
     branch: text(),
@@ -2016,6 +2046,13 @@ export const checkpoints = pgTable(
     createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
     /** Capture mode: the registered capture this checkpoint came from (ADR-0002); NULL co-located. */
     captureId: text().references(() => captures.id, { onDelete: "set null" }),
+    /**
+     * Taken during a Stop from the Stop's own flush (`CheckpointSource`, 0122): which reading, the
+     * capture it reported and when Mend received it. NULL: observed for the checkpoint itself.
+     */
+    sourceKind: text().$type<CheckpointSourceKind>(),
+    sourceCaptureN: integer(),
+    sourceObservedAt: timestamp({ mode: "date", withTimezone: true }),
   },
   (table) => [
     uniqueIndex("checkpoints_worktree_ordinal_idx").on(table.worktreeId, table.ordinal),

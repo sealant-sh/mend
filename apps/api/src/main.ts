@@ -48,6 +48,7 @@ import {
   PiProfilesRepoLive,
   AgentMemoryRepoLive,
   SecretFilesRepoLive,
+  SshKeyRevocationsRepoLive,
   HarnessModelsRepoLive,
   PushDevicesRepoLive,
   DevicesRepoLive,
@@ -216,7 +217,9 @@ import { TourRequestsLive } from "./landing-tours.ts";
 import { MemberRemovalLive } from "./member-removal.ts";
 import { OwnerLandingLive } from "./owner-landing.ts";
 import { PullRequestAdoptionLive } from "./pull-request-adoption.ts";
+import { RedactingConsoleLive } from "./redacting-console.ts";
 import { RegistrationPolicyLive } from "./registration-policy.ts";
+import { RemoteCredentialCheckLive } from "./remote-credential-check.ts";
 import { boundedWebRequest } from "./request-budgets.ts";
 import { type ReviewPassJob, runReviewPass } from "./review-pass-worker.ts";
 import { MendApiLive } from "./routes/api-live.ts";
@@ -229,6 +232,7 @@ import { SessionStartLive } from "./session-start.ts";
 import { SessionSteeringLive } from "./session-steering.ts";
 import { SlackRunnerLive } from "./slack-runner.ts";
 import { SlackLinkedMentionWorkerLive, SlackSocketsLive } from "./slack-worker.ts";
+import { SshKeyRevocationScheduleLive, SshKeyRevokerLive } from "./ssh-key-revocation.ts";
 import { TenancyConfigLive } from "./tenancy.ts";
 import { WorkspaceLandingLive } from "./workspace-landing.ts";
 
@@ -295,6 +299,7 @@ const DrizzleRepositoriesLive = Layer.mergeAll(
   PiProfilesRepoLive,
   AgentMemoryRepoLive,
   SecretFilesRepoLive,
+  SshKeyRevocationsRepoLive,
   HarnessModelsRepoLive,
   PushDevicesRepoLive,
   DevicesRepoLive,
@@ -424,7 +429,7 @@ const ServerLive = Layer.unwrap(
     ).pipe(
       Layer.provide(NodeHttpServer.layer(createServer, { port })),
       // Removing a member revokes, closes their connections on every process, stops their sessions.
-      Layer.provide(MemberRemovalLive),
+      Layer.provide(MemberRemovalLive.pipe(Layer.provide(SshKeyRevokerLive))),
       Layer.provide(ConnectionRegistryLive),
       // One LISTEN per process, fanned out to every SSE stream; the worker needs none.
       Layer.provide(EventBusLive),
@@ -655,6 +660,8 @@ const WorkerLive = Layer.mergeAll(
   AutomaticLandingLive,
   // Adopts a pull request the agent opened itself, after its push and when its turn ends.
   PullRequestAdoptionLive,
+  // Names the stores whose git config has a login, a token or an include: refused until fixed.
+  RemoteCredentialCheckLive,
   // Answers `mend land` inside a workspace: the change's owner's landing, as the Land panel's.
   WorkspaceLandingLive,
   // Queues tour + suggestion passes at settle, per the automation cascade.
@@ -663,6 +670,9 @@ const WorkerLive = Layer.mergeAll(
   // and the hourly retention sweep. Both are inert under the co-located store.
   SummaryObserveWorkerLive.pipe(Layer.provide(SummaryObserverLive)),
   CaptureRetentionScheduleLive.pipe(Layer.provide(CaptureRetentionLive)),
+  // Archives a removed member's workspace SSH keys the platform did not take at removal, until
+  // none of theirs is active (docs/WORKSPACE-SSH.md).
+  SshKeyRevocationScheduleLive.pipe(Layer.provide(SshKeyRevokerLive)),
   // Stops a protocol agent idle past MEND_PROTOCOL_IDLE_STOP_MINUTES, once across workers.
   ProtocolIdleStopScheduleLive.pipe(Layer.provide(ProtocolIdleStopLive)),
   // The Mend-controlled install that feeds the per-project dependency cache (decision 9).
@@ -862,4 +872,5 @@ for (const signal of ["SIGTERM", "SIGINT"] as const) {
   });
 }
 
-NodeRuntime.runMain(Layer.launch(MainLive));
+// Every log line goes through a console that strips URL credentials.
+NodeRuntime.runMain(Layer.launch(MainLive.pipe(Layer.provide(RedactingConsoleLive))));

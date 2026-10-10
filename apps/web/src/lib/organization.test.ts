@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   describeAudit,
+  describeMemberRemoval,
   formatBytes,
   joinState,
   planUpload,
@@ -95,6 +96,48 @@ describe("describeAudit for Slack (docs/adr/0006)", () => {
         event("slack.link_removed", { slackUserId: "U1", memberRemoved: true }, "Carol"),
       ),
     ).toBe("removed the Slack link of Carol with their membership");
+    const ownKey = event("ssh_key.added", { fingerprint: "SHA256:abc", name: "laptop" }, "Carol");
+    expect(
+      describeAudit({
+        ...ownKey,
+        event: new AuditEvent({ ...ownKey.event, actorUserId: "carol" }),
+      }),
+    ).toBe("registered workspace SSH key SHA256:abc (laptop)");
+    expect(
+      describeAudit(
+        event("ssh_key.removed", { fingerprint: "SHA256:abc", name: "laptop" }, "Carol"),
+      ),
+    ).toBe("removed the workspace SSH key SHA256:abc (laptop) of Carol");
+    expect(
+      describeAudit(
+        event("ssh_key.removed", { fingerprint: "SHA256:abc", memberRemoved: true }, "Carol"),
+      ),
+    ).toBe("removed the workspace SSH key SHA256:abc of Carol with their membership");
+    expect(
+      describeAudit(
+        event(
+          "ssh_key.removed",
+          { fingerprint: "SHA256:abc", memberRemoved: true, attempt: 3 },
+          "Carol",
+        ),
+      ),
+    ).toBe("removed the workspace SSH key SHA256:abc of Carol with their membership · attempt 3");
+    expect(
+      describeAudit(event("ssh_key.revocation_pending", { removed: 99, outstanding: 2 }, "Carol")),
+    ).toBe(
+      "removed Carol · 2 of their workspace SSH keys could not be removed yet; Mend keeps trying",
+    );
+    expect(
+      describeAudit(
+        event("ssh_key.revocation_pending", { removed: 0, outstanding: null }, "Carol"),
+      ),
+    ).toBe(
+      "removed Carol · their workspace SSH keys are not all confirmed removed yet; Mend keeps trying",
+    );
+    expect(describeMemberRemoval({ sshKeysOutstanding: 0 })).toBeNull();
+    expect(describeMemberRemoval({ sshKeysOutstanding: 1 })).toBe(
+      "member removed · 1 of their workspace SSH keys could not be removed yet; Mend keeps trying",
+    );
     expect(
       describeAudit(
         event("slack.session_started", {

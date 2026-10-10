@@ -154,6 +154,7 @@ const WAIT: MendConversationWait = {
   ],
 };
 const sourceWith = (notices: ThreadNotices): ThreadSource => ({
+  threadId: ThreadId.make(session.id),
   project,
   session,
   agent,

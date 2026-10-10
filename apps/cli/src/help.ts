@@ -351,7 +351,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       "The same worktree, record, and review as mend codex, with a command of your own in place of a harness. Everything after -- is the command.",
       "The command's output is printed as the record has it, and mend run exits with the command's exit code. It runs in a terminal, so stdout and stderr arrive together, on stdout. What Mend says itself goes to stderr, so out=$(mend run -- git log -1) holds the command's output and nothing else. Ctrl+C stops watching and puts the terminal back; the command keeps running, and mend logs and mend wait pick it up again. A signal exits 128 + its number: 130 for SIGINT (Ctrl+C), 129 for SIGHUP, 143 for SIGTERM. A second signal exits at once, and an exit waits at most 5 seconds for a reader that takes nothing, then says the output may be incomplete.",
       "Output this terminal could not be given in full (a read the server refused, a reader that went away) fails mend run with exit 1 even when the command succeeded, and the command's own code is said on stderr: a script never takes cut output for the whole of it.",
-      "The platform takes at most 64 words, none empty and none starting or ending with whitespace (a script that starts with a newline, for example). Such a command is refused before anything is created; trim the word and run it again.",
+      "The platform takes at most 64 words and 1 MiB, at most 131,071 bytes a word, a program with no leading or trailing whitespace, and no NUL byte. An argument may be empty, start with a newline or span lines. A command it would refuse is refused before anything is created.",
       "With --detach, mend run returns once the command runs. With --json, stdout carries one JSON object in place of the output: the session id, the process id, the worktree, the branch, and the process's status and exit code as last observed, which is how it ended without --detach (and with it, when the command ended first).",
       "Workspaces set PAGER=cat, so git log and friends print instead of waiting for a pager the image does not have. A project variable of the same name, or the pager in your own git config, wins.",
     ],
@@ -376,31 +376,39 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     name: "logs",
     section: "sessions",
     summary: "print a session's recorded terminal output",
-    synopsis: ["[session] [--follow] [--from <sequence>] [--process <id>]"],
+    synopsis: [
+      "[session] [--follow] [--from <sequence>] [--process <id>]",
+      "[session] --service <name-or-id> [--follow] [--from <sequence>]",
+    ],
     description: [
       "Prints what the session's command (or agent) wrote to its terminal, as the record holds it, on stdout. Settled sessions count: the record outlives the process and the workspace. --follow keeps printing until the process ends. The record is printed as it is, nothing taken out: anyone who can read the project can read it, so what a command printed, a password included, reaches them too. A signal stops it and puts the terminal back, exiting 128 + its number: 130 for SIGINT (Ctrl+C), 129 for SIGHUP, 143 for SIGTERM.",
-      "<session> is the session id, a prefix of it, or the worktree's name. With none, the one live session is taken. --process reads another process of the session, a shell or a Service attempt, by a prefix of its id.",
+      "<session> is the session id, a prefix of it, or the worktree's name. With none, the one live session is taken. --process reads another process of the session, a shell or a Service attempt, by a prefix of its id; a Service's id or name there reads the Service's current attempt.",
+      "--service reads a Service's current attempt, by the Service's id, its name or a prefix of its id, the ids mend service list prints. A full id names its Service before any name does. A name two Services carry is refused, with both ids listed; name one by its id, or name the session. A Service with no attempt (an adopted port, which Mend runs no process for) has nothing recorded, and mend logs says so and exits 1.",
     ],
     options: [
       { flag: "--follow, -f", text: "keep printing until the process ends" },
       { flag: "--from <sequence>", text: "start at a record sequence. Default: 0" },
       { flag: "--process <id>", text: "another process of the session, by a prefix of its id" },
+      { flag: "--service <name-or-id>", text: "a Service's current attempt" },
     ],
-    examples: [{ command: "mend logs 3f2a --follow", text: "" }],
+    examples: [
+      { command: "mend logs 3f2a --follow", text: "" },
+      { command: "mend logs --service web --follow", text: "the Service web's output, live" },
+    ],
     see: ["run", "wait", "service logs"],
   },
   {
     name: "wait",
     section: "sessions",
     summary: "wait for a session's command to end",
-    synopsis: ["[session] [--timeout <seconds>] [--process <id>] [--json]"],
+    synopsis: ["[session] [--timeout <duration>] [--process <id>] [--json]"],
     description: [
       "Returns once the session's command (or agent) has ended, with its exit code: the code the platform reported, or 1 when it reported none. A command that already ended answers at once. While a launch or a resume is starting, the previous process's end does not count. --process waits for one process by its id, the processId mend run --json prints.",
-      "When --timeout passes first, mend wait exits 124, as timeout(1) does, and the command keeps running. Stopped by a signal, it exits 128 + its number (130 for Ctrl+C), and the command keeps running. The timeout covers everything: finding the session, every read and every retry. --json then prints the last state read, and nothing more is asked of the server.",
+      "A session that is still starting (its workspace building, its image pulling) is waited through: only its end counts. When --timeout passes first, mend wait exits 124, as timeout(1) does, and the command keeps running. A duration is seconds (90, 90s or .5), minutes (5m) or hours (1h); with none, mend wait waits as long as the command runs. Stopped by a signal, it exits 128 + its number (130 for Ctrl+C), and the command keeps running. The timeout covers everything: finding the session, every read and every retry. --json then prints the last state read, and nothing more is asked of the server.",
       "<session> is the session id, a prefix of it, or the worktree's name. With none, the one live session is taken.",
     ],
     options: [
-      { flag: "--timeout <seconds>", text: "give up after this long; exit 124" },
+      { flag: "--timeout <duration>", text: "give up after this long (90, 90s, 5m, 1h); exit 124" },
       {
         flag: "--process <id>",
         text: "wait for this process of the session, by a prefix of its id",
@@ -602,18 +610,22 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     section: "services",
     summary: "start and supervise a server in the session's workspace",
     synopsis: [
-      "[session] --port <port> [--name <n>] [--udp] [--http|--https] [--wait] [--no-connect] -- <command...>",
-      "[session] <name> [--wait] [--no-connect]",
+      "[session] --port <port> [--name <n>] [--udp] [--http|--https] [--wait [--timeout <duration>]] [--no-connect] -- <command...>",
+      "[session] <name> [--wait [--timeout <duration>]] [--no-connect]",
     ],
     description: [
       "With --, the command after it is started in the workspace and supervised: its output is recorded, and mend service restart re-runs it. Without --, the name is a Service declared in the worktree's mend.toml. mend service <name> is the shorthand for that.",
-      "Mend waits up to a minute for the port to answer before it returns. --wait makes the exit status say how that ended: 0 once the port answered, 1 when it did not, and 124 when the server gave no answer within 90 seconds. The Service keeps running in every case. A waited start returns and opens no tunnel; mend service connect reaches the port. UDP has no probe, and a recipe that declares only a port is adopted with one probe, so --wait takes neither.",
+      "Mend waits up to a minute for the port to answer before it returns. --wait keeps waiting while the Service is still starting (its process runs and its port has not answered yet: building, installing, booting), however long that takes, up to --timeout (default 10 minutes). Mend probes a started Service's port every 20 seconds, so the wait ends at the first probe that answers. The wait judges the one process this start began, by an id the start sends and the server stamps on it, whatever another client starts, restarts or stops meanwhile. The exit status says how it ended: 0 the port answered for that process; 1 Mend refused the start or could not be asked; 2 the process ended before its port answered (the line says its status and exit code; a process its workspace took reads exited, no exit code reported); 3 the server no longer has the session, its workspace gone with it; 124 the Service was still starting when the timeout passed, and it keeps starting. A server older than this CLI stamps no id: a start whose answer an edge cut is then not followed (1), and a command that exits inside the minute reads as the refusal it answers with (1). A waited start returns and opens no tunnel; mend service connect reaches the port. UDP has no probe, and a recipe that declares only a port is adopted with one probe, so --wait takes neither.",
       "The port is tunnelled to this machine's loopback as soon as it listens, unless --no-connect.",
     ],
     options: [
       {
         flag: "--wait",
-        text: "exit 1 when the port did not answer, 124 with no answer in 90 s; no tunnel",
+        text: "return once the port answers: 0; process ended 2, session gone 3; no tunnel",
+      },
+      {
+        flag: "--timeout <duration>",
+        text: "bound --wait (90, 90s, 5m, 1h); still starting then exits 124. Default: 10m",
       },
       { flag: "--port <port>", text: "the port the command listens on inside the workspace" },
       { flag: "--name <n>", text: "the service's name. Default: the command" },
@@ -624,8 +636,12 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     examples: [
       { command: "mend service run --port 3000 -- pnpm dev", text: "" },
       { command: "mend service web", text: "the Service named web in mend.toml" },
+      {
+        command: "mend service run web --wait --timeout 15m",
+        text: "returns once web answers; 124 if it is still starting after 15 minutes",
+      },
     ],
-    see: ["service init", "service connect", "service logs"],
+    see: ["service init", "service connect", "service logs", "logs"],
   },
   {
     name: "service add",
@@ -658,9 +674,13 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     name: "service list",
     section: "services",
     summary: "every live service and its observed state",
-    synopsis: [],
-    description: ["Name, session, port, whether it listens, and where it is reachable from here."],
-    see: ["service run", "service connect"],
+    synopsis: ["[--json]"],
+    description: [
+      "Name, observed state, port, the Service's id and its current attempt's process id, and where it is reachable from here. The process id is what mend logs --process and mend wait --process take; mend logs --service takes the Service's name or id. An adopted port has no process.",
+      "With --json, stdout carries one JSON object: version 1, and services, each with id, name, sessionId, processId (null for an adopted port), status as last observed, workspacePort, protocol (tcp or udp), and hostPort, authority and browserUrl (null when not bound).",
+    ],
+    options: [{ flag: "--json", text: "print the Services as JSON" }],
+    see: ["service run", "service connect", "logs"],
   },
   {
     name: "service logs",
@@ -1097,7 +1117,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     summary: "how this instance is exposed, as declared and as observed",
     synopsis: [],
     description: [
-      "Operator only. States MEND_EXPOSURE as declared (loopback, private or public) and one line per item of the public exposure gate, with how it was established: observed (this server read it), carried (this build contains it, and the server cannot see it in effect), declared (you stated it and the server cannot check it), or open. MEND_EXPOSURE=public refuses to start while an item the server can observe is open. Items it cannot observe say what would verify them; once you have verified core-private or edge-tls from outside, name it in MEND_EXPOSURE_DECLARED. The report is what was observed; it is not a statement that the instance is fit to expose.",
+      "Operator only. States MEND_EXPOSURE as declared (loopback, private or public) and one line per item of the public exposure gate, with how it was established: observed (this server read it), carried (this build contains it, and the server cannot see it in effect), declared (you stated it and the server cannot check it), or open. MEND_EXPOSURE=public refuses to start while an item that blocks a start is open: every item the server can observe, and workspace-ssh until you declare it. Items it cannot observe say what would verify them; once you have verified core-private, edge-tls or workspace-ssh (SSH published apart from the web port) from outside, name it in MEND_EXPOSURE_DECLARED, or with mend server setup --declare. The report is what was observed; it is not a statement that the instance is fit to expose.",
     ],
     see: ["operator gate", "doctor"],
   },
@@ -1183,13 +1203,14 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     section: "this machine",
     summary: "install or repair the local Mend server",
     synopsis: [
-      "[--context <name>] [--version <version|latest>] [--bind <ip>] [--url <origin>] [--origin <origin>...] [--port <n>] [--ssh-port <n>] [--edge <host> | --no-edge] [--exposure <loopback|private|public>] [--tenancy <single|multi>] [--docker-socket <path>] [--assets-dir <dir>] [--offline]",
+      "[--context <name>] [--version <version|latest>] [--bind <ip>] [--ssh-bind <ip>] [--url <origin>] [--origin <origin>...] [--port <n>] [--ssh-port <n>] [--edge <host> | --no-edge] [--exposure <loopback|private|public>] [--tenancy <single|multi>] [--declare <item>...] [--npm-mirror | --no-npm-mirror] [--npm-mirror-max-size <size>] [--docker-mirror | --no-docker-mirror] [--docker-mirror-max-size <size>] [--docker-hub-username <name> --docker-hub-token-stdin --docker-hub-public-only | --no-docker-hub-login] [--docker-socket <path>] [--assets-dir <dir>] [--offline]",
     ],
     description: [
       "Checks a local Unix-socket Docker context and the Compose plugin, downloads the compose and Postgres initialization assets for one Mend release, preserves existing data and secrets, and starts the server. Re-running repairs the same pinned version. A changed --version is refused; use mend server upgrade. Updating this CLI never updates an existing server pin.",
       "The default listens only on localhost at http://localhost:3105. Non-local access requires both --bind and --url. Every extra browser origin must be named with --origin; setup never guesses from the request Host header or network interfaces.",
       "--edge <host> runs a TLS edge in front of Mend: Caddy on ports 80 and 443 of every interface, which obtains and renews a certificate for the host and proxies to Mend's web tier. Mend's own port stays on loopback and the browser origin is https://<host>. The edge's compose overlay and Caddyfile are written into the generation beside compose.yaml, so start, restart and upgrade run them every time. --no-edge takes it away again, and the edge's container with it. A fresh install cannot start with the edge: until the first account exists, registration is open to whoever reaches the origin first, so set up on localhost, create the account, then add the edge.",
       "--exposure declares how the instance is reached, and --tenancy whether one organization or many use it. Both are written into the generation and kept across reruns and upgrades. public needs the edge and an existing first account. With multi, or with public, the multi mode gate's settings follow: MEND_SOURCE_POLICY=tenant and MEND_CAPTURE_REQUIRE_SIZES=true, and public sets MEND_URL_BEARERS=refuse. The server still decides whether it starts, and mend server status shows what it reports.",
+      "Two mirrors run beside Mend unless turned off: an npm mirror (nginx caching npmjs.org, capped at 10g by default, least recently used out) and a Docker mirror (a pull-through cache of Docker Hub, capped at 20g by default: over the cap its cache is cleared). Both leave 5g free on their disk: below that, nginx evicts and the Docker mirror pauses, and sessions pull from Docker Hub directly. Neither publishes a host port. Sessions install npm packages and pull Docker Hub images through them; a project's own npm settings win, and a mirror that is down sends sessions upstream instead. Both are kept across reruns and upgrades, and an upgrade adds them to an install from before them. The Docker mirror pulls anonymously unless given a Docker Hub login: --docker-hub-username with the access token piped on standard input, kept in server.env only. The mirror has no login of its own, so every session that reaches it can pull whatever that token can read: setup takes a login only with --docker-hub-public-only, your statement that the token's access permission is Public Repo Read-only. Mend cannot check a token's scope.",
       "Docker Desktop on Linux and macOS, and OrbStack on macOS, expose client-side proxy sockets. Containers use the daemon-side /var/run/docker.sock. --docker-socket overrides detection and is retained on reruns.",
       "Setup holds an exclusive process lock through startup and health checks. A busy lock reports its owner and manual recovery steps. Never remove a live lock. Private configuration uses immutable generations and an atomic active pointer; failed attempts retain credentials and never delete Docker volumes.",
     ],
@@ -1203,6 +1224,10 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
         text: "exact Mend server version, or latest; omitted keeps the current pin",
       },
       { flag: "--bind <ip>", text: "published listen address. Default: 127.0.0.1" },
+      {
+        flag: "--ssh-bind <ip>",
+        text: "where workspace SSH is published, when not on --bind; with --edge, Remote-SSH from another machine needs it. Kept across reruns; the --bind address takes it away",
+      },
       { flag: "--url <origin>", text: "advertised browser URL, required with a non-loopback bind" },
       {
         flag: "--origin <origin>",
@@ -1227,6 +1252,39 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
         text: "declare single or multi; kept across reruns and upgrades. multi also sets the multi mode gate's variables",
       },
       {
+        flag: "--declare <item>",
+        text: "state a gate item you verified from outside: core-private, edge-tls or workspace-ssh; repeat for more, none clears. Kept across reruns. public with --ssh-bind beyond loopback needs workspace-ssh",
+      },
+      {
+        flag: "--npm-mirror, --no-npm-mirror",
+        text: "run or stop the npm mirror; kept across reruns and upgrades. Default: on",
+      },
+      {
+        flag: "--npm-mirror-max-size <size>",
+        text: "the npm mirror's disk cap, such as 20g or 1536m, at least 1g. Default: 10g",
+      },
+      {
+        flag: "--docker-mirror, --no-docker-mirror",
+        text: "run or stop the Docker Hub mirror; kept across reruns and upgrades. Default: on",
+      },
+      {
+        flag: "--docker-mirror-max-size <size>",
+        text: "the Docker mirror's cap, such as 40g; over it the cache is cleared and fills again. Default: 20g",
+      },
+      {
+        flag: "--docker-hub-username <name>",
+        text: "the Docker mirror pulls as this Docker Hub account; needs --docker-hub-token-stdin",
+      },
+      {
+        flag: "--docker-hub-token-stdin",
+        text: "read that account's access token from standard input; kept in server.env, never in argv or a session",
+      },
+      {
+        flag: "--docker-hub-public-only",
+        text: "required with a login: you state the token is scoped Public Repo Read-only, since every session can pull what it can read",
+      },
+      { flag: "--no-docker-hub-login", text: "the Docker mirror pulls anonymously again" },
+      {
         flag: "--assets-dir <dir>",
         text: "copy compose.v2.yaml and postgres-init.sh from a release directory; fresh setup requires --version",
       },
@@ -1248,6 +1306,11 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
         text: "install from local release assets and preloaded images",
       },
       {
+        command:
+          "mend server setup --edge mend.example.com --ssh-bind 0.0.0.0 --exposure public --declare workspace-ssh",
+        text: "the TLS edge for the browser and the API, and workspace SSH for Remote-SSH from other machines",
+      },
+      {
         command: "mend server setup --edge mend.example.com",
         text: "a TLS edge for mend.example.com; its DNS points at this machine and 80 and 443 reach it",
       },
@@ -1255,16 +1318,22 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
         command: "mend server setup --exposure public --tenancy multi",
         text: "on an install with an edge and a first account: declare public, many organizations",
       },
+      {
+        command:
+          'printf %s "$DOCKER_HUB_TOKEN" | mend server setup --docker-hub-username mendbot --docker-hub-token-stdin --docker-hub-public-only',
+        text: "the Docker mirror pulls from Docker Hub as mendbot, with a Public Repo Read-only token",
+      },
     ],
     see: ["server", "server status", "login", "doctor", "operator exposure"],
   },
   {
     name: "server status",
     section: "this machine",
-    summary: "show the pin, generation, containers, edge and posture",
+    summary: "show the pin, generation, containers, edge, mirrors and posture",
     synopsis: [""],
     description: [
       "Reads the existing installation without changing its files. A running Mend must answer health with the exact pinned version. A stopped server makes no health claim. Never installs a server implicitly.",
+      "Each mirror the install runs follows, as observed: whether its container runs, what its cache holds, and its traffic. For the npm mirror, the tarball requests in its log for the last 24 hours and how many the cache served; for the Docker mirror, layer and manifest requests since it started and how many the cache served.",
       "Then the posture, declared beside observed. Declared is what this install's configuration says: the edge host, MEND_EXPOSURE and MEND_TENANCY, a default named as one. Observed is what was seen: whether the edge's container runs and whether Caddy's data holds a certificate for the host, and what the running server reports in its health, the exposure it runs with and how many public exposure gate items are open, the tenancy and which multi mode gate items are open. When this machine is signed in to the install as the operator, every item of both gates follows with its detail, as mend operator gate and mend operator exposure print them. None of it is a verdict: the report says what was declared and what was observed.",
     ],
     see: ["server logs", "server start", "operator gate", "operator exposure"],
@@ -1283,7 +1352,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
   {
     name: "server stop",
     section: "this machine",
-    summary: "stop Mend, Postgres, Garage and the edge without deleting data",
+    summary: "stop the server's containers without deleting data",
     synopsis: [""],
     description: [
       "Stops only the installation's Compose services, the edge among them when one is set. Connections are interrupted. Workspace containers and volumes remain, but active work may lose connectivity and need reconnection. No volume deletion or Docker prune is performed.",
@@ -1363,7 +1432,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     summary: "workspace SSH status: gateway, registered keys, ssh config",
     synopsis: ["[status]"],
     description: ["Whether this machine can ssh into workspaces, and what is missing if not."],
-    see: ["ssh setup"],
+    see: ["ssh setup", "ssh keys"],
   },
   {
     name: "ssh setup",
@@ -1377,7 +1446,35 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       { flag: "--key <path>", text: "the public key to register" },
       { flag: "--host <hostname>", text: "override only the SSH hostname" },
     ],
-    see: ["ssh", "shell"],
+    see: ["ssh", "ssh keys", "shell"],
+  },
+  {
+    name: "ssh keys",
+    section: "this machine",
+    summary: "your registered workspace ssh keys, from every machine",
+    synopsis: ["[--json]"],
+    description: [
+      "Every key your account registered with the workspace SSH gateway: fingerprint, name, algorithm and the day it was registered. The key this machine would offer is marked. The platform does not record when a key was last used.",
+    ],
+    options: [{ flag: "--json", text: "the keys as JSON, with thisMachine on each" }],
+    see: ["ssh keys remove", "ssh setup"],
+  },
+  {
+    name: "ssh keys remove",
+    section: "this machine",
+    summary: "stop the workspace ssh gateway accepting one of your keys",
+    synopsis: ["<fingerprint>"],
+    description: [
+      "Removes one of your keys by fingerprint; the SHA256: prefix is optional. The gateway looks a key up on every new connection, so the next connection offering it is refused. A connection already open stays open until it ends.",
+      "Only your own keys are listed and removed. The key file and the ~/.ssh/config block on the machine that registered it stay; mend ssh setup there registers it again. Removing a member from the organization removes all of theirs, and Mend keeps retrying any the platform refused.",
+    ],
+    examples: [
+      {
+        command: "mend ssh keys remove SHA256:Vn6v0P2dHq1n2a5aGQ6L7rKk8sWm0u3x1zYbTq9cE4o",
+        text: "revoke a lost laptop's key",
+      },
+    ],
+    see: ["ssh keys"],
   },
   {
     name: "accounts",
@@ -1403,7 +1500,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     summary: "remove the server, this machine's Mend files, or both",
     synopsis: ["[--all | --server | --home] [--yes]"],
     description: [
-      "Asks which scope to remove when none is given, prints exactly what will go, and requires the word delete before the server is touched. The server scope removes the local Compose installation: its containers, every volume it owns (repositories, worktrees, the database), its release image, and the private configuration with its generations and backups. The home scope revokes this terminal's device token, then removes cli.json, the workspace SSH key, and the managed block in ~/.ssh/config.",
+      "Asks which scope to remove when none is given, prints exactly what will go, and requires the word delete before the server is touched. The server scope removes the local Compose installation: its containers, every volume it owns (repositories, worktrees, the database), its release image, and the private configuration with its generations and backups. The home scope asks the server to remove the workspace SSH key this machine registered and to revoke this terminal's device token, then removes cli.json, the workspace SSH key file, and the managed block in ~/.ssh/config. The key is found by its public half; a key the server refuses to remove, or one this machine cannot read, makes the uninstall exit 1 naming what may still be registered. The account's other keys and devices stay.",
       "Nothing else under the configuration directory is touched; a host-run store or keys root is listed and left in place. Workspace containers carry no label Mend can filter on, so they are named with the command that removes them, never removed.",
     ],
     options: [

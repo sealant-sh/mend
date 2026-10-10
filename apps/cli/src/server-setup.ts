@@ -34,16 +34,46 @@ import {
   EXPOSURES,
   type Exposure,
   healthPosture,
+  DECLARABLE_ITEMS,
+  type DeclarableItem,
+  isDeclarableItem,
   isExposure,
   isTenancy,
   observedEdgeLine,
   observedPostureLines,
   parseEdgeHost,
   postureEnvLines,
+  publishedAddress,
   renderPostureOverlay,
   type Tenancy,
   TENANCIES,
 } from "./server-edge.ts";
+import {
+  DEFAULT_MIRRORS,
+  DEFAULT_NPM_MIRROR_MAX_SIZE,
+  DOCKER_MIRROR_CONTAINER,
+  dockerMirrorTraffic,
+  DEFAULT_DOCKER_MIRROR_MAX_SIZE,
+  DOCKER_MIRROR_GUARD,
+  DOCKER_MIRROR_GUARD_NAME,
+  dockerMirrorLogin,
+  mirrorDiskOf,
+  mirrorDiskProbe,
+  isDockerHubCredential,
+  mirrorImagesOf,
+  mirrorServices,
+  mirrorsEnvLines,
+  MIRRORS_COMPOSE_FILE,
+  NPM_MIRROR_CONF,
+  NPM_MIRROR_CONF_NAME,
+  npmMirrorTraffic,
+  observedDockerMirrorLine,
+  observedNpmMirrorLine,
+  parseMirrorSize,
+  renderMirrorsOverlay,
+  runsMirrors,
+  type ServerMirrors,
+} from "./server-mirrors.ts";
 import {
   runServerProcess,
   serverComposeArgs,
@@ -133,6 +163,23 @@ export interface ServerSetupRuntime {
    * its dockerd argv and daemon.json (`docker-shutdown.ts`). Absent: setup does not read them.
    */
   readonly dockerDaemonFacts?: (infoStdout: string | null) => DockerDaemonFacts;
+  /**
+   * Try workspace SSH where `--ssh-bind` published it, from this machine: the bind itself, or each
+   * of this machine's addresses for an unspecified bind. Each answer is the SSH banner read, or null
+   * when nothing answered. Absent: setup says where it is published and observes nothing.
+   */
+  readonly probeSsh?: (bind: string, port: number) => Promise<ReadonlyArray<SshProbe>>;
+  /** How long setup waits for `probeSsh` altogether; `SSH_PROBE_BOUND_MS` when absent. */
+  readonly sshProbeBoundMs?: number;
+  /** Read standard input to its end: `--docker-hub-token-stdin` takes the token from here. */
+  readonly readStdin?: () => Promise<string>;
+}
+
+/** One address workspace SSH was tried at, and what answered there. */
+export interface SshProbe {
+  readonly address: string;
+  /** The first line the gateway sent (`SSH-2.0-…`), or null when nothing answered in time. */
+  readonly banner: string | null;
 }
 
 /** Observable result of a server command. Expected lifecycle failures do not reject. */
@@ -144,6 +191,8 @@ interface SetupOptions {
   readonly context: string | undefined;
   readonly version: string | undefined;
   readonly bind: string | undefined;
+  /** `--ssh-bind <ip>`: where the SSH gateway is published, when not on `--bind`. */
+  readonly sshBind: string | undefined;
   readonly url: string | undefined;
   readonly origins: ReadonlyArray<string> | undefined;
   readonly appPort: number | undefined;
@@ -158,6 +207,21 @@ interface SetupOptions {
   /** `--exposure`, `--tenancy`: the posture declared; omitted keeps the saved one. */
   readonly exposure: Exposure | undefined;
   readonly tenancy: Tenancy | undefined;
+  /** `--declare <item>`, repeatable: gate items verified from outside. `none` clears; omitted keeps. */
+  readonly declared: ReadonlyArray<DeclarableItem> | undefined;
+  /** `--npm-mirror` (true), `--no-npm-mirror` (false); omitted keeps the saved choice. */
+  readonly npmMirror: boolean | undefined;
+  /** `--npm-mirror-max-size`: the npm mirror's cap; omitted keeps the saved one. */
+  readonly npmMirrorMaxSize: string | undefined;
+  /** `--docker-mirror` (true), `--no-docker-mirror` (false); omitted keeps the saved choice. */
+  readonly dockerMirror: boolean | undefined;
+  /** `--docker-mirror-max-size`: the Docker mirror's cap; omitted keeps the saved one. */
+  readonly dockerMirrorMaxSize: string | undefined;
+  /** `--docker-hub-username` with `--docker-hub-token-stdin`: the Docker mirror's upstream login. */
+  readonly dockerHubUsername: string | undefined;
+  readonly dockerHubTokenStdin: boolean;
+  /** `--no-docker-hub-login`: the Docker mirror pulls anonymously again. */
+  readonly noDockerHubLogin: boolean;
 }
 
 /** Parsed server configuration shared by setup and lifecycle commands. */
@@ -170,6 +234,12 @@ export interface ServerConfig {
   readonly dockerSocket: string;
   readonly dockerSocketSource: "detected" | "override";
   readonly bind: string;
+  /**
+   * Where the workspace SSH gateway is published, when it is not `bind`. An edge keeps the web port
+   * on loopback, but Remote-SSH from another machine needs the gateway's port reachable: the edge
+   * proxies HTTPS only. Absent: the gateway is published on `bind`, as before.
+   */
+  readonly sshBind?: string;
   readonly appUrl: string;
   readonly allowedOrigins: ReadonlyArray<string>;
   readonly appPort: number;
@@ -193,6 +263,16 @@ export interface ServerConfig {
   readonly exposure?: Exposure;
   /** `MEND_TENANCY` as declared on this install; absent, the server's default (`single`). */
   readonly tenancy?: Tenancy;
+  /**
+   * `MEND_EXPOSURE_DECLARED`: the gate items the operator states they verified from outside
+   * (`--declare`). Absent when none.
+   */
+  readonly declared?: ReadonlyArray<DeclarableItem>;
+  /**
+   * The package and image mirrors (server-mirrors.ts). Absent only on a config written before
+   * them: setup and upgrade then write the default, both on.
+   */
+  readonly mirrors?: ServerMirrors;
 }
 
 /** The Garage image the bundle pins; `checkLocalImages` preloads it like Postgres's. */
@@ -214,6 +294,11 @@ interface ServerSecrets {
   readonly sealantCredentialsKey: string;
   readonly sealantServiceKey: string;
   readonly workspaceSshGatewayToken: string;
+  /**
+   * The Docker mirror's Docker Hub access token, when the operator gave one. Kept in `server.env`
+   * only, never in the identity: the identity's bytes anchor volume ownership and never change.
+   */
+  readonly dockerHubToken?: string;
 }
 
 interface DockerContextRow {
@@ -295,6 +380,7 @@ const SETUP_FLAGS = new Set([
   "--context",
   "--version",
   "--bind",
+  "--ssh-bind",
   "--url",
   "--origin",
   "--port",
@@ -306,6 +392,30 @@ const SETUP_FLAGS = new Set([
   "--no-edge",
   "--exposure",
   "--tenancy",
+  "--declare",
+  "--npm-mirror",
+  "--no-npm-mirror",
+  "--npm-mirror-max-size",
+  "--docker-mirror",
+  "--no-docker-mirror",
+  "--docker-mirror-max-size",
+  "--docker-hub-username",
+  "--docker-hub-token-stdin",
+  "--docker-hub-public-only",
+  "--no-docker-hub-login",
+]);
+
+/** Setup flags that take no value. */
+const SWITCHES: ReadonlySet<string> = new Set([
+  "--offline",
+  "--no-edge",
+  "--npm-mirror",
+  "--no-npm-mirror",
+  "--docker-mirror",
+  "--no-docker-mirror",
+  "--docker-hub-token-stdin",
+  "--docker-hub-public-only",
+  "--no-docker-hub-login",
 ]);
 
 const parseExposure = (value: string): Exposure => {
@@ -318,6 +428,23 @@ const parseTenancy = (value: string): Tenancy => {
   if (!isTenancy(value))
     throw setupError(`--tenancy must be one of ${TENANCIES.join(", ")}, not "${value}".`);
   return value;
+};
+
+/** `--declare` values: each a declarable gate item, or `none` alone, which clears the list. */
+const parseDeclared = (values: ReadonlyArray<string>): ReadonlyArray<DeclarableItem> => {
+  if (values.length === 1 && values[0] === "none") return [];
+  return [
+    ...new Set(
+      values.map((value) => {
+        if (!isDeclarableItem(value)) {
+          throw setupError(
+            `--declare takes ${DECLARABLE_ITEMS.join(", ")} or none, not "${value}". Every other gate item is observed by the server, never stated.`,
+          );
+        }
+        return value;
+      }),
+    ),
+  ];
 };
 
 const parseEdge = (value: string): string => {
@@ -337,7 +464,7 @@ const parseSetupOptions = (args: ReadonlyArray<string>): SetupOptions => {
     if (flag === undefined) continue;
     if (!flag.startsWith("--")) throw setupError(`Unexpected server setup argument "${flag}".`);
     if (!SETUP_FLAGS.has(flag)) throw setupError(`Unknown server setup option "${flag}".`);
-    if (flag === "--offline" || flag === "--no-edge") {
+    if (SWITCHES.has(flag)) {
       if (values.has(flag)) throw setupError(`${flag} may be supplied only once.`);
       values.set(flag, ["true"]);
       continue;
@@ -345,7 +472,7 @@ const parseSetupOptions = (args: ReadonlyArray<string>): SetupOptions => {
     const [value, valueIndex] = nextFlagValue(args, index, flag);
     index = valueIndex;
     const previous = values.get(flag) ?? [];
-    if (flag !== "--origin" && previous.length > 0) {
+    if (flag !== "--origin" && flag !== "--declare" && previous.length > 0) {
       throw setupError(`${flag} may be supplied only once.`);
     }
     previous.push(value);
@@ -359,12 +486,60 @@ const parseSetupOptions = (args: ReadonlyArray<string>): SetupOptions => {
   const edge = flagValue("--edge");
   const exposure = flagValue("--exposure");
   const tenancy = flagValue("--tenancy");
+  const declared = values.get("--declare");
   if (edge !== undefined && values.has("--no-edge"))
     throw setupError("--edge and --no-edge contradict each other.");
+  const pair = (on: string, off: string): boolean | undefined => {
+    if (values.has(on) && values.has(off))
+      throw setupError(`${on} and ${off} contradict each other.`);
+    return values.has(on) ? true : values.has(off) ? false : undefined;
+  };
+  const npmMirror = pair("--npm-mirror", "--no-npm-mirror");
+  const dockerMirror = pair("--docker-mirror", "--no-docker-mirror");
+  const maxSize = flagValue("--npm-mirror-max-size");
+  const npmMirrorMaxSize = maxSize === undefined ? undefined : parseMirrorSize(maxSize);
+  if (npmMirrorMaxSize === null)
+    throw setupError(
+      `--npm-mirror-max-size must be a whole number of gibibytes or mebibytes, at least 1g, such as 20g or 1536m, not "${maxSize ?? ""}".`,
+    );
+  if (npmMirrorMaxSize !== undefined && npmMirror === false)
+    throw setupError("--npm-mirror-max-size and --no-npm-mirror contradict each other.");
+  const dockerMaxSize = flagValue("--docker-mirror-max-size");
+  const dockerMirrorMaxSize =
+    dockerMaxSize === undefined ? undefined : parseMirrorSize(dockerMaxSize);
+  if (dockerMirrorMaxSize === null)
+    throw setupError(
+      `--docker-mirror-max-size must be a whole number of gibibytes or mebibytes, at least 1g, such as 40g, not "${dockerMaxSize ?? ""}".`,
+    );
+  if (dockerMirrorMaxSize !== undefined && dockerMirror === false)
+    throw setupError("--docker-mirror-max-size and --no-docker-mirror contradict each other.");
+  const dockerHubUsername = flagValue("--docker-hub-username");
+  const dockerHubTokenStdin = values.has("--docker-hub-token-stdin");
+  const noDockerHubLogin = values.has("--no-docker-hub-login");
+  if ((dockerHubUsername === undefined) !== !dockerHubTokenStdin)
+    throw setupError(
+      "--docker-hub-username and --docker-hub-token-stdin go together: the user name, and the access token on standard input.",
+    );
+  if (dockerHubUsername !== undefined && !isDockerHubCredential(dockerHubUsername))
+    throw setupError(`--docker-hub-username "${dockerHubUsername}" is not a Docker Hub user name.`);
+  const dockerHubPublicOnly = values.has("--docker-hub-public-only");
+  if (dockerHubPublicOnly && dockerHubUsername === undefined)
+    throw setupError(
+      "--docker-hub-public-only goes with --docker-hub-username and --docker-hub-token-stdin: it states what the token you give can read.",
+    );
+  if (dockerHubUsername !== undefined && !dockerHubPublicOnly)
+    throw setupError(
+      'A Docker Hub login needs --docker-hub-public-only. The Docker mirror has no login of its own: every session that reaches it can pull whatever the token can read, private repositories included. Create a Docker Hub personal access token with the access permission "Public Repo Read-only", pipe it on standard input, and add --docker-hub-public-only to state that it is one. Mend cannot check a token\'s scope.',
+    );
+  if (dockerHubUsername !== undefined && (noDockerHubLogin || dockerMirror === false))
+    throw setupError(
+      `--docker-hub-username and ${noDockerHubLogin ? "--no-docker-hub-login" : "--no-docker-mirror"} contradict each other.`,
+    );
   return {
     context: flagValue("--context"),
     version: version === undefined ? undefined : parseVersion(version),
     bind: flagValue("--bind"),
+    sshBind: flagValue("--ssh-bind"),
     url: flagValue("--url"),
     origins: origins === undefined ? undefined : origins,
     appPort: appPort === undefined ? undefined : parsePort(appPort, "--port"),
@@ -376,7 +551,95 @@ const parseSetupOptions = (args: ReadonlyArray<string>): SetupOptions => {
     noEdge: values.has("--no-edge"),
     exposure: exposure === undefined ? undefined : parseExposure(exposure),
     tenancy: tenancy === undefined ? undefined : parseTenancy(tenancy),
+    declared: declared === undefined ? undefined : parseDeclared(declared),
+    npmMirror,
+    npmMirrorMaxSize,
+    dockerMirror,
+    dockerMirrorMaxSize,
+    dockerHubUsername,
+    dockerHubTokenStdin,
+    noDockerHubLogin,
   };
+};
+
+/**
+ * The mirrors a setup writes: each flag given, else what the install saved, else on. A config from
+ * before the mirrors gains both here, on setup and on upgrade alike. A Docker Hub login stays until
+ * `--no-docker-hub-login` or `--no-docker-mirror` takes it away.
+ */
+const resolveMirrors = (
+  saved: ServerMirrors | undefined,
+  options: Pick<
+    SetupOptions,
+    | "npmMirror"
+    | "npmMirrorMaxSize"
+    | "dockerMirror"
+    | "dockerMirrorMaxSize"
+    | "dockerHubUsername"
+    | "noDockerHubLogin"
+  >,
+): ServerMirrors => {
+  const base = saved ?? DEFAULT_MIRRORS;
+  const npmOn = options.npmMirror ?? (options.npmMirrorMaxSize !== undefined || base.npm !== null);
+  const dockerOn =
+    options.dockerMirror ??
+    (options.dockerHubUsername !== undefined ||
+      options.dockerMirrorMaxSize !== undefined ||
+      base.docker !== null);
+  // A login is taken only with --docker-hub-public-only (parseSetupOptions), so one carried here
+  // was declared Public Repo Read-only when it was given.
+  const upstreamUser =
+    options.dockerHubUsername ??
+    (options.noDockerHubLogin ? undefined : dockerMirrorLogin(base.docker));
+  const dockerMaxSize =
+    options.dockerMirrorMaxSize ?? base.docker?.maxSize ?? DEFAULT_DOCKER_MIRROR_MAX_SIZE;
+  return {
+    npm: npmOn
+      ? {
+          maxSize: options.npmMirrorMaxSize ?? base.npm?.maxSize ?? DEFAULT_NPM_MIRROR_MAX_SIZE,
+        }
+      : null,
+    docker: !dockerOn
+      ? null
+      : upstreamUser === undefined
+        ? { maxSize: dockerMaxSize }
+        : { maxSize: dockerMaxSize, upstreamUser, upstreamPublicOnly: true },
+  };
+};
+
+const parseMirrorsField = (value: unknown): ServerMirrors => {
+  const fields = ownFields(value);
+  const corrupt = () =>
+    setupError(
+      "Server config is corrupt: mirrors must hold npm and docker, each an object or null.",
+    );
+  if (fields === null || !fields.has("npm") || !fields.has("docker")) throw corrupt();
+  const npm = fields.get("npm");
+  const docker = fields.get("docker");
+  let parsedNpm: ServerMirrors["npm"] = null;
+  if (npm !== null) {
+    const maxSize = ownFields(npm)?.get("maxSize");
+    if (typeof maxSize !== "string" || parseMirrorSize(maxSize) !== maxSize) throw corrupt();
+    parsedNpm = { maxSize };
+  }
+  let parsedDocker: ServerMirrors["docker"] = null;
+  if (docker !== null) {
+    const dockerFields = ownFields(docker);
+    if (dockerFields === null) throw corrupt();
+    const maxSize = dockerFields.get("maxSize");
+    if (typeof maxSize !== "string" || parseMirrorSize(maxSize) !== maxSize) throw corrupt();
+    const user = dockerFields.get("upstreamUser");
+    if (user !== undefined && (typeof user !== "string" || !isDockerHubCredential(user)))
+      throw corrupt();
+    // A login without the operator's public-only statement is never rendered.
+    if (user !== undefined && dockerFields.get("upstreamPublicOnly") !== true)
+      throw setupError(
+        "Server config is corrupt: the Docker mirror's login lacks upstreamPublicOnly. Run mend server setup with --docker-hub-public-only and a Public Repo Read-only token, or --no-docker-hub-login.",
+      );
+    parsedDocker =
+      user === undefined ? { maxSize } : { maxSize, upstreamUser: user, upstreamPublicOnly: true };
+  }
+  return { npm: parsedNpm, docker: parsedDocker };
 };
 
 const parseUrl = (input: string, label: string): URL => {
@@ -432,14 +695,25 @@ const resolveAppUrl = (
     }
     return origin;
   }
-  const oldLocalUrl = existing === null ? null : `http://localhost:${existing.appPort}`;
-  const portChangedOnLocalhost = options.appPort !== undefined && existing?.appUrl === oldLocalUrl;
   // An edge taken away leaves its https origin behind; the localhost default returns unless
   // --url says otherwise.
-  const fallback =
-    portChangedOnLocalhost || existing?.edgeHost !== undefined
-      ? `http://localhost:${appPort}`
-      : (existing?.appUrl ?? `http://localhost:${appPort}`);
+  if (existing?.edgeHost !== undefined) {
+    return parseHttpOrigin(options.url ?? `http://localhost:${appPort}`, "--url");
+  }
+  // A saved URL that points at the app port directly (plain http, the port written out: the LAN or
+  // tailnet case) moves with --port, on any host: left behind, it would send every client (the
+  // browser, `mend login`, VS Code) to a port nothing publishes. An https origin, or one whose port
+  // is implicit, is an endpoint in front of Mend that --port does not move, so it stays.
+  const saved = existing === null ? null : new URL(existing.appUrl);
+  const savedPointsAtOldPort =
+    saved !== null &&
+    existing !== null &&
+    options.appPort !== undefined &&
+    saved.protocol === "http:" &&
+    saved.port !== "" &&
+    Number(saved.port) === existing.appPort;
+  if (saved !== null && savedPointsAtOldPort) saved.port = String(appPort);
+  const fallback = saved === null ? `http://localhost:${appPort}` : saved.origin;
   return parseHttpOrigin(options.url ?? fallback, "--url");
 };
 
@@ -463,9 +737,11 @@ const checkExposurePair = (bind: string, appUrl: string, requireExplicitUrl: boo
  */
 const checkPosture = (
   bind: string,
+  sshBind: string,
   ports: { readonly appPort: number; readonly sshPort: number },
   edgeHost: string | undefined,
   exposure: Exposure | undefined,
+  declared: ReadonlyArray<DeclarableItem>,
 ): void => {
   if (edgeHost !== undefined && [ports.appPort, ports.sshPort].some((p) => p === 80 || p === 443)) {
     throw setupError(
@@ -487,6 +763,17 @@ const checkPosture = (
       "--exposure loopback contradicts a non-loopback --bind: the port is published beyond this machine.",
     );
   }
+  if (exposure === "loopback" && !isLoopbackBind(sshBind)) {
+    throw setupError(
+      "--exposure loopback contradicts a non-loopback --ssh-bind: the SSH port is published beyond this machine.",
+    );
+  }
+  // The server refuses a public start while the gate's workspace-ssh item is open: say so here.
+  if (exposure === "public" && !isLoopbackBind(sshBind) && !declared.includes("workspace-ssh")) {
+    throw setupError(
+      `--exposure public with workspace SSH published on ${publishedAddress(sshBind, ports.sshPort)} beside the edge needs a statement Mend cannot observe: who reaches that port. Check it from each network that should not reach it, then add --declare workspace-ssh; or publish SSH on loopback.`,
+    );
+  }
   if (exposure === "public" && edgeHost === undefined) {
     throw setupError(
       "--exposure public needs the edge: add --edge <host>. Without it nothing sets MEND_TRUSTED_PROXIES or an https origin, and the server refuses to start as public.",
@@ -499,7 +786,16 @@ const validateExposure = (
   options: SetupOptions,
 ): Pick<
   ServerConfig,
-  "bind" | "appUrl" | "allowedOrigins" | "appPort" | "sshPort" | "edgeHost" | "exposure" | "tenancy"
+  | "bind"
+  | "sshBind"
+  | "appUrl"
+  | "allowedOrigins"
+  | "appPort"
+  | "sshPort"
+  | "edgeHost"
+  | "exposure"
+  | "tenancy"
+  | "declared"
 > => {
   const appPort = options.appPort ?? existing?.appPort ?? DEFAULT_APP_PORT;
   const sshPort = options.sshPort ?? existing?.sshPort ?? DEFAULT_SSH_PORT;
@@ -513,11 +809,20 @@ const validateExposure = (
       "--bind must be a literal IPv4 or IPv6 address, such as 127.0.0.1 or 0.0.0.0.",
     );
   }
+  // Kept across reruns like --bind; naming the same address as --bind takes it away.
+  const requestedSshBind = options.sshBind ?? existing?.sshBind;
+  if (requestedSshBind !== undefined && net.isIP(requestedSshBind) === 0) {
+    throw setupError(
+      "--ssh-bind must be a literal IPv4 or IPv6 address, such as 127.0.0.1 or 0.0.0.0.",
+    );
+  }
+  const sshBind = requestedSshBind === bind ? undefined : requestedSshBind;
   // The edge and the posture are kept across reruns and upgrades; only a flag changes them.
   const edgeHost = options.noEdge ? undefined : (options.edge ?? existing?.edgeHost);
   const exposure = options.exposure ?? existing?.exposure;
   const tenancy = options.tenancy ?? existing?.tenancy;
-  checkPosture(bind, { appPort, sshPort }, edgeHost, exposure);
+  const declared = options.declared ?? existing?.declared ?? [];
+  checkPosture(bind, sshBind ?? bind, { appPort, sshPort }, edgeHost, exposure, declared);
   const appUrl = resolveAppUrl(existing, options, appPort, edgeHost);
   // Behind the edge, loopback bind and https origin is the pair; everywhere else both must agree.
   if (edgeHost === undefined)
@@ -530,6 +835,7 @@ const validateExposure = (
   ];
   return {
     bind,
+    ...(sshBind === undefined ? {} : { sshBind }),
     appUrl,
     allowedOrigins,
     appPort,
@@ -537,6 +843,7 @@ const validateExposure = (
     ...(edgeHost === undefined ? {} : { edgeHost }),
     ...(exposure === undefined ? {} : { exposure }),
     ...(tenancy === undefined ? {} : { tenancy }),
+    ...(declared.length === 0 ? {} : { declared }),
   };
 };
 
@@ -576,6 +883,19 @@ const parseServerConfig = (raw: string): ServerConfig => {
   if (tenancy !== undefined && !isTenancy(tenancy)) {
     throw setupError(`Server config is corrupt: tenancy must be one of ${TENANCIES.join(", ")}.`);
   }
+  const declaredField = fields.get("declared");
+  if (
+    declaredField !== undefined &&
+    (!Array.isArray(declaredField) ||
+      !declaredField.every((item) => typeof item === "string" && isDeclarableItem(item)))
+  ) {
+    throw setupError(
+      `Server config is corrupt: declared must be an array of ${DECLARABLE_ITEMS.join(", ")}.`,
+    );
+  }
+  const declared = Array.isArray(declaredField)
+    ? declaredField.filter((item): item is DeclarableItem => isDeclarableItem(String(item)))
+    : [];
   const config: ServerConfig = {
     schemaVersion: requiredInteger(fields, "schemaVersion"),
     assetContract: requiredString(fields, "assetContract"),
@@ -585,6 +905,7 @@ const parseServerConfig = (raw: string): ServerConfig => {
     dockerSocket: parseDockerSocketPath(requiredString(fields, "dockerSocket")),
     dockerSocketSource,
     bind: requiredString(fields, "bind"),
+    ...(fields.has("sshBind") ? { sshBind: requiredString(fields, "sshBind") } : {}),
     appUrl: parseHttpOrigin(requiredString(fields, "appUrl"), "Server config appUrl"),
     allowedOrigins: origins.map((origin) =>
       parseHttpOrigin(origin, "Server config allowedOrigins"),
@@ -598,6 +919,8 @@ const parseServerConfig = (raw: string): ServerConfig => {
     ...(edgeHost === undefined ? {} : { edgeHost }),
     ...(exposure === undefined ? {} : { exposure }),
     ...(tenancy === undefined ? {} : { tenancy }),
+    ...(declared.length === 0 ? {} : { declared }),
+    ...(fields.has("mirrors") ? { mirrors: parseMirrorsField(fields.get("mirrors")) } : {}),
   };
   if (
     config.schemaVersion !== CONFIG_SCHEMA_VERSION ||
@@ -615,6 +938,7 @@ const parseServerConfig = (raw: string): ServerConfig => {
     context: undefined,
     version: undefined,
     bind: config.bind,
+    sshBind: config.sshBind,
     url: config.appUrl,
     origins: config.allowedOrigins,
     appPort: config.appPort,
@@ -626,6 +950,14 @@ const parseServerConfig = (raw: string): ServerConfig => {
     noEdge: false,
     exposure: config.exposure,
     tenancy: config.tenancy,
+    declared: config.declared,
+    npmMirror: undefined,
+    npmMirrorMaxSize: undefined,
+    dockerMirror: undefined,
+    dockerMirrorMaxSize: undefined,
+    dockerHubUsername: undefined,
+    dockerHubTokenStdin: false,
+    noDockerHubLogin: false,
   });
   return config;
 };
@@ -661,7 +993,13 @@ const parseSecrets = (raw: string): ServerSecrets => {
     sealantCredentialsKey: envValue(fields, "SEALANT_CREDENTIALS_KEY"),
     sealantServiceKey: envValue(fields, "SEALANT_SERVICE_KEY"),
     workspaceSshGatewayToken: envValue(fields, "WORKSPACE_SSH_GATEWAY_TOKEN"),
+    ...(fields.has("MEND_DOCKER_HUB_TOKEN")
+      ? { dockerHubToken: envValue(fields, "MEND_DOCKER_HUB_TOKEN") }
+      : {}),
   };
+  if (secrets.dockerHubToken !== undefined && !isDockerHubCredential(secrets.dockerHubToken)) {
+    throw setupError("Server secrets are corrupt: MEND_DOCKER_HUB_TOKEN has an invalid value.");
+  }
   if (!/^slt_svc_[0-9a-f]{64}$/.test(secrets.sealantServiceKey)) {
     throw setupError("Server secrets are corrupt: SEALANT_SERVICE_KEY has an invalid value.");
   }
@@ -1070,9 +1408,13 @@ const renderGarage = (secrets: ServerSecrets, config: ServerConfig): ReadonlyArr
 const namespaceOf = (config: ServerConfig): ServerDockerNamespace =>
   config.bucket === "garage" ? MEND_DOCKER_NAMESPACE_WITH_GARAGE : MEND_DOCKER_NAMESPACE;
 
+/** An address as Compose's `ports` needs it: IPv6 in brackets. */
+const composeHost = (address: string): string =>
+  net.isIP(address) === 6 ? `[${address}]` : address;
+
 const renderSecrets = (secrets: ServerSecrets, config: ServerConfig): string => {
   const sshHost = parseUrl(config.appUrl, "Server config appUrl").hostname.replace(/^\[|\]$/g, "");
-  const composeBind = net.isIP(config.bind) === 6 ? `[${config.bind}]` : config.bind;
+  const composeBind = composeHost(config.bind);
   return [
     `MEND_VERSION=${config.serverVersion}`,
     "MEND_IMAGE_REPOSITORY=ghcr.io/sealant-sh/mend",
@@ -1080,6 +1422,7 @@ const renderSecrets = (secrets: ServerSecrets, config: ServerConfig): string => 
     `APP_URL=${config.appUrl}`,
     `MEND_ALLOWED_ORIGINS=${JSON.stringify(config.allowedOrigins)}`,
     `MEND_BIND_HOST=${composeBind}`,
+    ...(config.sshBind === undefined ? [] : [`MEND_SSH_BIND_HOST=${composeHost(config.sshBind)}`]),
     `MEND_PORT=${config.appPort}`,
     `MEND_SSH_PORT=${config.sshPort}`,
     ...(config.registryPort === undefined ? [] : [`MEND_REGISTRY_PORT=${config.registryPort}`]),
@@ -1090,6 +1433,9 @@ const renderSecrets = (secrets: ServerSecrets, config: ServerConfig): string => 
     "MEND_STORE_VOLUME_NAME=mend-store",
     "MEND_CONTROL_VOLUME_NAME=mend-control",
     ...renderGarage(secrets, config),
+    // The mirrors' size cap and Docker Hub login (server-mirrors.ts); the token reaches only the
+    // Docker mirror's container.
+    ...mirrorsEnvLines(config.mirrors, secrets.dockerHubToken),
     `DOCKER_SOCKET_PATH=${config.dockerSocket}`,
     "",
   ].join("\n");
@@ -1109,6 +1455,8 @@ export interface ServerInstallation {
    * from this CLI: a newer CLI starting an older generation checks the image that generation runs.
    */
   readonly edgeImage?: string;
+  /** The images this generation's mirrors overlay pins, read from the generation like the edge's. */
+  readonly mirrorImages?: ReadonlyArray<string>;
 }
 
 /** The generation's Compose target: its directory, context and the overlays its config declares. */
@@ -1183,6 +1531,64 @@ const validateOverlays = (
   return edgeImageOf(files.edge);
 };
 
+/**
+ * The generation's mirror files agree with its config: the overlay names each mirror it runs and
+ * Mend's addresses for them, the npm mirror has its nginx configuration, and a Docker Hub login has
+ * both its user name and its token in `server.env`. Returns the images the overlay pins.
+ */
+const validateMirrors = (
+  config: ServerConfig,
+  secrets: ServerSecrets,
+  files: ServerGeneration["files"],
+): ReadonlyArray<string> => {
+  const mirrors = config.mirrors;
+  if (runsMirrors(mirrors) !== (files.mirrors !== undefined)) {
+    throw setupError(
+      `Server generation is corrupt: ${MIRRORS_COMPOSE_FILE} does not match the persisted server config.`,
+    );
+  }
+  if ((mirrors !== undefined && mirrors.npm !== null) !== (files.npmMirrorConf !== undefined)) {
+    throw setupError(
+      `Server generation is corrupt: ${NPM_MIRROR_CONF_NAME} does not match the persisted server config.`,
+    );
+  }
+  if (
+    (dockerMirrorLogin(mirrors?.docker ?? null) === undefined) !==
+    (secrets.dockerHubToken === undefined)
+  ) {
+    throw setupError(
+      "Server secrets are corrupt: a Docker Hub login needs both MEND_DOCKER_HUB_USERNAME and MEND_DOCKER_HUB_TOKEN.",
+    );
+  }
+  if (files.mirrors === undefined) return [];
+  for (const service of mirrorServices(mirrors)) {
+    if (!files.mirrors.includes(`\n  ${service}:\n`))
+      throw setupError(
+        `Server generation is corrupt: ${MIRRORS_COMPOSE_FILE} does not run the ${service} its config declares.`,
+      );
+  }
+  if (
+    (mirrors !== undefined && mirrors.docker !== null) !==
+    (files.dockerMirrorGuard !== undefined)
+  ) {
+    throw setupError(
+      `Server generation is corrupt: ${DOCKER_MIRROR_GUARD_NAME} does not match the persisted server config.`,
+    );
+  }
+  if (
+    files.dockerMirrorGuard !== undefined &&
+    !files.dockerMirrorGuard.includes("registry serve /etc/distribution/config.yml")
+  )
+    throw setupError(
+      `Server generation is corrupt: ${DOCKER_MIRROR_GUARD_NAME} is not the Docker mirror's guard.`,
+    );
+  if (files.npmMirrorConf !== undefined && !files.npmMirrorConf.includes("proxy_cache npm;"))
+    throw setupError(
+      `Server generation is corrupt: ${NPM_MIRROR_CONF_NAME} is not the npm mirror's configuration.`,
+    );
+  return mirrorImagesOf(files.mirrors);
+};
+
 /** Read and validate a complete active generation while holding the lifecycle lock. */
 export const readServerInstallation = (
   store: ServerStore,
@@ -1203,12 +1609,14 @@ export const readServerInstallation = (
     validateComposeAsset(generation.files.compose);
     validatePostgresAsset(generation.files.postgresInit);
     const edgeImage = validateOverlays(config, generation.files);
+    const mirrorImages = validateMirrors(config, secrets, generation.files);
     return {
       _tag: "ok",
       value: {
         config,
         directory: generation.directory,
         ...(edgeImage === undefined ? {} : { edgeImage }),
+        ...(mirrorImages.length === 0 ? {} : { mirrorImages }),
       },
     };
   } catch (cause) {
@@ -1267,6 +1675,15 @@ export const readServerInstallationFacts = async (
           ...(generation.files.posture === undefined
             ? []
             : [{ name: "compose.posture.yaml", content: generation.files.posture }]),
+          ...(generation.files.mirrors === undefined
+            ? []
+            : [{ name: MIRRORS_COMPOSE_FILE, content: generation.files.mirrors }]),
+          ...(generation.files.npmMirrorConf === undefined
+            ? []
+            : [{ name: NPM_MIRROR_CONF_NAME, content: generation.files.npmMirrorConf }]),
+          ...(generation.files.dockerMirrorGuard === undefined
+            ? []
+            : [{ name: DOCKER_MIRROR_GUARD_NAME, content: generation.files.dockerMirrorGuard }]),
         ],
         envKeys: envKeyNames(generation.files.env),
       };
@@ -1280,7 +1697,7 @@ export const readServerInstallationFacts = async (
 /**
  * Every file of a generation, from one config: the release assets, `server.env`, and the overlays
  * the config declares. Setup and upgrade both render through here, so whatever a config carries
- * (the edge, the posture) reaches every generation written from it.
+ * (the edge, the posture, the mirrors) reaches every generation written from it.
  */
 const generationFiles = (
   config: ServerConfig,
@@ -1289,6 +1706,7 @@ const generationFiles = (
   identity: string = renderIdentity(secrets),
 ): ServerFiles => {
   const posture = renderPostureOverlay(config);
+  const mirrors = renderMirrorsOverlay(config.mirrors);
   return {
     identity,
     config: `${JSON.stringify(config, null, 2)}\n`,
@@ -1298,6 +1716,13 @@ const generationFiles = (
     ...(config.edgeHost === undefined
       ? {}
       : { edge: EDGE_COMPOSE_OVERLAY, caddyfile: EDGE_CADDYFILE }),
+    ...(mirrors === undefined ? {} : { mirrors }),
+    ...(config.mirrors === undefined || config.mirrors.npm === null
+      ? {}
+      : { npmMirrorConf: NPM_MIRROR_CONF }),
+    ...(config.mirrors === undefined || config.mirrors.docker === null
+      ? {}
+      : { dockerMirrorGuard: DOCKER_MIRROR_GUARD }),
   };
 };
 
@@ -1419,6 +1844,21 @@ const resolveDockerSocket = (
   };
 };
 
+/**
+ * A release's compose asset from before `--ssh-bind` publishes SSH on `--bind` and would ignore
+ * `MEND_SSH_BIND_HOST`: refused, rather than a gateway quietly left where the operator moved it from.
+ */
+const checkSshBindAsset = (
+  config: Pick<ServerConfig, "sshBind" | "serverVersion">,
+  compose: string,
+): void => {
+  if (config.sshBind !== undefined && !compose.includes("MEND_SSH_BIND_HOST")) {
+    throw setupError(
+      `Mend ${config.serverVersion}'s ${COMPOSE_ASSET} publishes workspace SSH on --bind and cannot honour --ssh-bind ${config.sshBind}. Use a release that supports --ssh-bind, or pass --ssh-bind with the --bind address.`,
+    );
+  }
+};
+
 const resolveAssets = async (
   runtime: ServerSetupRuntime,
   serverVersion: string,
@@ -1484,7 +1924,7 @@ const inspectImage = async (
 
 const checkLocalImages = async (
   runtime: ServerSetupRuntime,
-  installation: Pick<ServerInstallation, "config" | "edgeImage">,
+  installation: Pick<ServerInstallation, "config" | "edgeImage" | "mirrorImages">,
   policy: "local" | "pull-missing" = "local",
 ): Promise<void> => {
   const { config } = installation;
@@ -1533,6 +1973,17 @@ const checkLocalImages = async (
     if (edge.status !== 0)
       throw commandFailure(`Preload ${installation.edgeImage} before continuing`, edge);
   }
+  for (const mirrorImage of installation.mirrorImages ?? []) {
+    const mirror = await inspectImage(
+      runtime,
+      config.dockerContext,
+      mirrorImage,
+      "{{.Id}}",
+      policy,
+    );
+    if (mirror.status !== 0)
+      throw commandFailure(`Preload ${mirrorImage} before continuing`, mirror);
+  }
 };
 
 const checkComposeImages = async (
@@ -1550,10 +2001,11 @@ const checkComposeImages = async (
     "postgres:17-alpine",
     ...(installation.config.bucket === "garage" ? [GARAGE_IMAGE] : []),
     ...(installation.edgeImage === undefined ? [] : [installation.edgeImage]),
+    ...(installation.mirrorImages ?? []),
   ].toSorted();
   if (images.join("\n") !== expected.join("\n")) {
     throw setupError(
-      `Compose must use only the canonical pinned Mend image, official postgres:17-alpine${installation.config.bucket === "garage" ? ` and ${GARAGE_IMAGE}` : ""}${installation.edgeImage === undefined ? "" : ` and the edge's ${installation.edgeImage}`}.`,
+      `Compose must use only the canonical pinned Mend image, official postgres:17-alpine${installation.config.bucket === "garage" ? ` and ${GARAGE_IMAGE}` : ""}${installation.edgeImage === undefined ? "" : ` and the edge's ${installation.edgeImage}`}${installation.mirrorImages === undefined ? "" : ` and the mirrors' ${installation.mirrorImages.join(", ")}`}.`,
     );
   }
 };
@@ -1617,19 +2069,49 @@ const startingNotice = (runtime: ServerSetupRuntime, version: string): void =>
     `Starting Mend ${version} containers; Docker waits up to ${serverProcessDeadlines.composeWaitSeconds}s for them to report healthy`,
   );
 
+/** A service this project may still have a container of after its config stopped running it. */
+interface StrayService {
+  readonly service: string;
+  /** How the container is named in what the operator reads. */
+  readonly label: string;
+  /** What it may still hold while it runs, said when it could not be removed. */
+  readonly holds: string;
+}
+
+/** The optional services this generation does not run: the edge, and each mirror turned off. */
+const strayServices = (config: ServerConfig): ReadonlyArray<StrayService> => [
+  ...(config.edgeHost === undefined
+    ? [{ service: "edge", label: "edge", holds: "It may still hold 80 and 443." }]
+    : []),
+  ...(config.mirrors?.npm === null
+    ? [{ service: "npm-mirror", label: "npm mirror", holds: "It keeps running beside Mend." }]
+    : []),
+  ...(config.mirrors?.docker === null
+    ? [{ service: "docker-mirror", label: "Docker mirror", holds: "It keeps running beside Mend." }]
+    : []),
+];
+
 /**
- * An edge container this project still has while its config declares no edge. The `up` that drops
- * the edge does not know the service any more, so Compose leaves its container running, and Caddy
- * keeps 80 and 443 until something removes it. Every start of an edge-less generation looks for
- * one, by this project's and this service's labels and nothing wider, and removes it, so a start
- * that failed part-way is set right by the next one. An install with an edge, or without a stray
- * container, changes nothing here.
+ * A container this project still has for a service its config no longer runs: the edge, or a
+ * mirror turned off. The `up` that drops the service does not know it any more, so Compose leaves
+ * its container running, and Caddy keeps 80 and 443 until something removes it. Every start looks
+ * for one, by this project's and this service's labels and nothing wider, and removes it, so a start
+ * that failed part-way is set right by the next one. A service the config runs, or one without a
+ * stray container, changes nothing here.
  */
-const removeStrayEdge = async (
+const removeStrayServices = async (
   runtime: ServerSetupRuntime,
   installation: ServerInstallation,
 ): Promise<void> => {
-  if (installation.config.edgeHost !== undefined) return;
+  for (const stray of strayServices(installation.config))
+    await removeStrayService(runtime, installation, stray);
+};
+
+const removeStrayService = async (
+  runtime: ServerSetupRuntime,
+  installation: ServerInstallation,
+  stray: StrayService,
+): Promise<void> => {
   const context = installation.config.dockerContext;
   // Never fatal: this runs after a restart or an upgrade stopped Mend, and a listing the daemon
   // refuses must not keep Mend down. What could not be done is said, and status shows the rest.
@@ -1642,19 +2124,19 @@ const removeStrayEdge = async (
     "--filter",
     "label=com.docker.compose.project=mend",
     "--filter",
-    "label=com.docker.compose.service=edge",
+    `label=com.docker.compose.service=${stray.service}`,
     "--format",
     '{{.Names}}\t{{.Label "com.docker.compose.project.working_dir"}}',
   ]);
   if (listed.status !== 0 || listed.error !== undefined) {
     runtime.writeLine(
-      `Could not list this project's containers: ${outputDetail(listed)}. An edge container left by an earlier generation, if any, stays until the next start. mend server status shows it.`,
+      `Could not list this project's containers: ${outputDetail(listed)}. An ${stray.label} container left by an earlier generation, if any, stays until the next start. mend server status shows it.`,
     );
     return;
   }
   // Only a container Compose started from one of this installation's generations is this
-  // installation's edge: the working directory label names the generation it ran from. A
-  // project of the same name run from somewhere else keeps its container.
+  // installation's: the working directory label names the generation it ran from. A project of the
+  // same name run from somewhere else keeps its container.
   const generations = path.dirname(installation.directory);
   let resolvedGenerations = generations;
   try {
@@ -1673,9 +2155,10 @@ const removeStrayEdge = async (
       return { name, workingDir };
     })
     .filter((row) => row.name !== "");
+  const label = stray.label.charAt(0).toUpperCase() + stray.label.slice(1);
   for (const row of rows.filter((candidate) => !own(candidate.workingDir))) {
     runtime.writeLine(
-      `Edge container ${row.name} was started from ${row.workingDir || "an unknown directory"}, not from this installation's generations. It stays.`,
+      `${label} container ${row.name} was started from ${row.workingDir || "an unknown directory"}, not from this installation's generations. It stays.`,
     );
   }
   const names = rows.filter((row) => own(row.workingDir)).map((row) => row.name);
@@ -1690,12 +2173,12 @@ const removeStrayEdge = async (
   ]);
   if (removed.status !== 0 || removed.error !== undefined) {
     runtime.writeLine(
-      `Could not remove the edge container ${names.join(", ")}: ${outputDetail(removed)}. It may still hold 80 and 443. To remove it: docker --context ${context} container rm --force ${names.join(" ")}`,
+      `Could not remove the ${stray.label} container ${names.join(", ")}: ${outputDetail(removed)}. ${stray.holds} To remove it: docker --context ${context} container rm --force ${names.join(" ")}`,
     );
     return;
   }
   runtime.writeLine(
-    `Removed the edge container ${names.join(", ")}, which this generation does not run.`,
+    `Removed the ${stray.label} container ${names.join(", ")}, which this generation does not run.`,
   );
 };
 
@@ -1703,7 +2186,7 @@ const startCompose = async (
   runtime: ServerSetupRuntime,
   installation: ServerInstallation,
 ): Promise<void> => {
-  await removeStrayEdge(runtime, installation);
+  await removeStrayServices(runtime, installation);
   startingNotice(runtime, installation.config.serverVersion);
   const compose = await runtime.run(
     "docker",
@@ -1722,11 +2205,114 @@ const startCompose = async (
   if (compose.status !== 0) throw commandFailure("Mend containers did not start", compose);
 };
 
+/** How long setup waits for its look at workspace SSH, all addresses together. */
+export const SSH_PROBE_BOUND_MS = 10_000;
+
+/**
+ * What this machine observed of workspace SSH published apart from the web port: where it was
+ * tried and what answered. It says nothing about who else can reach it; that is the network's, and
+ * the gate's workspace-ssh item reports it as declared or open.
+ */
+const sshPublicationLine = async (
+  runtime: ServerSetupRuntime,
+  config: ServerConfig,
+): Promise<string | null> => {
+  if (config.sshBind === undefined || isLoopbackBind(config.sshBind)) return null;
+  const published = publishedAddress(config.sshBind, config.sshPort);
+  if (runtime.probeSsh === undefined) return null;
+  // Bounded as a whole: setup must finish whatever a probe does.
+  const boundMs = runtime.sshProbeBoundMs ?? SSH_PROBE_BOUND_MS;
+  let bound: ReturnType<typeof setTimeout> | undefined;
+  const probes = await Promise.race([
+    runtime.probeSsh(config.sshBind, config.sshPort),
+    new Promise<null>((resolve) => {
+      bound = setTimeout(() => resolve(null), boundMs);
+    }),
+  ]).finally(() => clearTimeout(bound));
+  if (probes === null) {
+    return `Workspace SSH is published on ${published}. This machine's look at it did not finish within ${boundMs / 1000} s. Who reaches it is up to the network and its firewall; mend operator exposure reports it as workspace-ssh.`;
+  }
+  const observed =
+    probes.length === 0
+      ? "this machine has no address to try it at"
+      : probes
+          .map((probe) =>
+            probe.banner === null
+              ? `${publishedAddress(probe.address, config.sshPort)} did not answer`
+              : `${publishedAddress(probe.address, config.sshPort)} answers (${probe.banner})`,
+          )
+          .join(", ");
+  return `Workspace SSH is published on ${published}. From this machine: ${observed}. Who else reaches it is up to the network and its firewall; mend operator exposure reports it as workspace-ssh.`;
+};
+
 /** What setup says once the edge's container is up: what Caddy does next, and where to read it. */
 const edgeStartedLine = (config: ServerConfig): string | null =>
   config.edgeHost === undefined
     ? null
-    : `The edge for ${config.edgeHost} is up on 80 and 443. Caddy asks for its certificate once ${config.edgeHost} resolves to this machine and both ports reach it from the Internet. mend server status says whether it holds one, and mend server logs shows what Caddy tried.`;
+    : `The edge for ${config.edgeHost} is up on 80 and 443. Caddy asks for its certificate once ${config.edgeHost} resolves to this machine and both ports reach it from the Internet. mend server status says whether it holds one, and mend server logs shows what Caddy tried.${
+        config.sshBind === undefined
+          ? ` Workspace SSH is published on ${config.bind}:${config.sshPort} only, so Remote-SSH and mend ssh from another machine cannot reach it; --ssh-bind 0.0.0.0 publishes it.`
+          : ` Workspace SSH is published on ${config.sshBind}:${config.sshPort}.`
+      }`;
+
+/**
+ * The Docker mirror's Docker Hub token: read from standard input with `--docker-hub-token-stdin`,
+ * else the one this install keeps in `server.env` while its login stays, else none. Never taken
+ * from argv or the environment, and never written anywhere but `server.env`.
+ */
+const resolveDockerHubToken = async (
+  runtime: ServerSetupRuntime,
+  options: SetupOptions,
+  mirrors: ServerMirrors,
+  store: ServerStore,
+): Promise<string | undefined> => {
+  if (dockerMirrorLogin(mirrors.docker) === undefined) return undefined;
+  if (options.dockerHubTokenStdin) {
+    if (runtime.readStdin === undefined)
+      throw setupError("--docker-hub-token-stdin needs standard input, and none is available.");
+    const token = (await runtime.readStdin()).trim();
+    if (!isDockerHubCredential(token))
+      throw setupError(
+        "--docker-hub-token-stdin read no Docker Hub access token: pipe the token alone, such as a personal access token (dckr_pat_…).",
+      );
+    return token;
+  }
+  const active = storeValue(store.readActive());
+  return active === null ? undefined : parseSecrets(active.files.env).dockerHubToken;
+};
+
+/** What setup says when a mirror was turned on or off, and where an off mirror's cache stays. */
+const mirrorsChangedLines = (
+  before: ServerMirrors | undefined,
+  config: ServerConfig,
+): ReadonlyArray<string> => {
+  const after = config.mirrors;
+  if (after === undefined) return [];
+  const lines: Array<string> = [];
+  const said = (name: string, was: boolean, is: boolean, volume: string, reach: string): void => {
+    if (is && !was) lines.push(`The ${name} runs on this install. ${reach}`);
+    if (was && !is)
+      lines.push(
+        `The ${name} is off. Its cache stays until you remove it: docker --context ${config.dockerContext} volume rm ${volume}`,
+      );
+  };
+  // A config from before the mirrors had neither.
+  said(
+    "npm mirror",
+    before !== undefined && before.npm !== null,
+    after.npm !== null,
+    "mend_mend-npm-mirror",
+    `New sessions install npm packages through it, capped at ${after.npm?.maxSize ?? ""}.`,
+  );
+  said(
+    "Docker mirror",
+    before !== undefined && before.docker !== null,
+    after.docker !== null,
+    "mend_mend-docker-mirror",
+    `New sessions' Docker daemons pull Docker Hub images through it (${DOCKER_MIRROR_CONTAINER}).`,
+  );
+  return lines;
+};
 
 const setupServer = async (
   args: ReadonlyArray<string>,
@@ -1762,6 +2348,7 @@ const setupServer = async (
   runtime.writeLine(`Using Docker context "${selectedContext.name}" (${selectedContext.endpoint})`);
 
   const serverVersion = await resolveServerVersion(runtime, options, existing?.config ?? null);
+  const mirrors = resolveMirrors(existing?.config.mirrors, options);
   const configWithoutBucket: ServerConfig = {
     schemaVersion: CONFIG_SCHEMA_VERSION,
     assetContract: ASSET_CONTRACT,
@@ -1773,8 +2360,11 @@ const setupServer = async (
       operatingSystem,
     }),
     ...validateExposure(existing?.config ?? null, options),
+    mirrors,
   };
+  const dockerHubToken = await resolveDockerHubToken(runtime, options, mirrors, store);
   const assets = await resolveAssets(runtime, serverVersion, existing, store, options);
+  checkSshBindAsset(configWithoutBucket, assets.compose);
   const bucket = composeBucket(assets.compose);
   // Capture workspaces save on a stop within their long stop grace; a daemon shutdown gives them
   // only the daemon's own timeout. Said once here, where the operator can still raise it.
@@ -1803,7 +2393,10 @@ const setupServer = async (
       `A fresh install cannot start with the edge or as public: until the first account exists, registration is open to whoever reaches the origin first, and the server refuses MEND_EXPOSURE=public without an operator account. Run mend server setup without --edge and --exposure public, create the first account at http://localhost:${config.appPort}, then run mend server setup --edge <host> and declare the posture.`,
     );
   }
-  const secrets = savedSecrets ?? createSecrets(runtime);
+  const secrets: ServerSecrets = {
+    ...(savedSecrets ?? createSecrets(runtime)),
+    ...(dockerHubToken === undefined ? {} : { dockerHubToken }),
+  };
   const generation = persistSetup(store, config, secrets, assets);
   const installation: ServerInstallation = {
     directory: generation.directory,
@@ -1811,6 +2404,9 @@ const setupServer = async (
     ...(generation.files.edge === undefined
       ? {}
       : { edgeImage: edgeImageOf(generation.files.edge) }),
+    ...(generation.files.mirrors === undefined
+      ? {}
+      : { mirrorImages: mirrorImagesOf(generation.files.mirrors) }),
   };
   await checkComposeImages(runtime, installation);
   const ownership = await claimServerDockerVolumes(runtime, {
@@ -1832,11 +2428,14 @@ const setupServer = async (
   runtime.writeLine(reachableLine(config));
   const edgeStarted = edgeStartedLine(config);
   if (edgeStarted !== null) runtime.writeLine(edgeStarted);
+  const sshPublication = await sshPublicationLine(runtime, config);
+  if (sshPublication !== null) runtime.writeLine(sshPublication);
   if (existing?.config.edgeHost !== undefined && config.edgeHost === undefined) {
     runtime.writeLine(
       `The edge for ${existing.config.edgeHost} is gone. Its certificate volumes stay until you remove them: docker --context ${config.dockerContext} volume rm mend_mend-edge-data mend_mend-edge-config`,
     );
   }
+  for (const line of mirrorsChangedLines(existing?.config.mirrors, config)) runtime.writeLine(line);
   runtime.writeLine(
     `Open ${config.appUrl}, create the first account, then run: mend login --url ${config.appUrl}`,
   );
@@ -1924,7 +2523,7 @@ const startInstallation = async (
   installation: ServerInstallation,
   secrets: ServerSecrets,
 ): Promise<void> => {
-  await removeStrayEdge(runtime, installation);
+  await removeStrayServices(runtime, installation);
   startingNotice(runtime, installation.config.serverVersion);
   await composeCommand(runtime, installation, [
     "up",
@@ -2281,6 +2880,7 @@ const upgradeServer = async (
   const previous = storeValue(store.readActive());
   if (previous === null) throw setupError("The active server generation is missing.");
   const assets = await resolveAssets(runtime, version, existing, store, options);
+  checkSshBindAsset({ ...existing.config, serverVersion: version }, assets.compose);
   // The target generation is always on the current contract: a v1 install loses its registry
   // port here (v2 bundles publish none) while its identity, and so its volume ownership, is
   // carried over byte for byte. The bucket follows the target's compose asset: an upgrade
@@ -2296,8 +2896,15 @@ const upgradeServer = async (
     assetContract: ASSET_CONTRACT,
     serverVersion: version,
     ...(bucket === undefined ? {} : { bucket }),
+    // An install from before the mirrors gains both here; one that turned a mirror off keeps it off.
+    mirrors: carried.mirrors ?? DEFAULT_MIRRORS,
   };
-  const secrets = parseSecrets(previous.files.identity);
+  // The identity has no Docker Hub token; a login the install keeps is read from its server.env.
+  const previousToken = parseSecrets(previous.files.env).dockerHubToken;
+  const secrets: ServerSecrets = {
+    ...parseSecrets(previous.files.identity),
+    ...(previousToken === undefined ? {} : { dockerHubToken: previousToken }),
+  };
   // The edge and the posture are in `carried`, so the target renders the same overlays from the
   // same config, with this CLI's copy of the edge files. Identity bytes come only from the old
   // generation.
@@ -2306,7 +2913,10 @@ const upgradeServer = async (
   const parsed = parseServerConfig(files.config);
   if (renderSecrets(parseSecrets(files.env), parsed) !== files.env)
     throw setupError("Invalid upgrade configuration.");
-  const edgeImage = files.edge === undefined ? {} : { edgeImage: edgeImageOf(files.edge) };
+  const edgeImage = {
+    ...(files.edge === undefined ? {} : { edgeImage: edgeImageOf(files.edge) }),
+    ...(files.mirrors === undefined ? {} : { mirrorImages: mirrorImagesOf(files.mirrors) }),
+  };
   await checkLocalImages(
     runtime,
     { config, ...edgeImage },
@@ -2400,6 +3010,7 @@ const upgradeServer = async (
     );
   }
   runtime.writeLine(`Upgraded to ${version}. Retained database backup: ${backup.directory}`);
+  for (const line of mirrorsChangedLines(existing.config.mirrors, config)) runtime.writeLine(line);
   pruneUpgradeBackups(runtime, store, backup, options.keepBackups);
 };
 
@@ -2552,6 +3163,92 @@ const exposureReportOf = (value: unknown): ExposureReport | null => {
   return parsed.length === items.length && parsed.length > 0 ? { declared, items: parsed } : null;
 };
 
+/**
+ * One look at each mirror the install runs: whether its container runs, the bytes on its volume
+ * (`du` inside the container), and its traffic. The npm mirror's comes from its own log of the last
+ * 24 hours, one line per request; the Docker mirror's from the registry's proxy counters, which
+ * count from the container's start. Every read is bounded and none is fatal: what could not be
+ * read is said, never guessed.
+ */
+const mirrorStatusLines = async (
+  runtime: ServerSetupRuntime,
+  installation: ServerInstallation,
+  runningServices: ReadonlyArray<string>,
+): Promise<ReadonlyArray<string>> => {
+  const mirrors = installation.config.mirrors;
+  if (mirrors === undefined) return [];
+  const run = (args: ReadonlyArray<string>) =>
+    runtime.run("docker", serverComposeArgs(composeTarget(installation), args), {
+      timeoutMs: serverProcessDeadlines.ordinary,
+    });
+  const failed = (output: CommandOutput): string | null =>
+    output.status !== 0 || output.error !== undefined ? outputDetail(output) : null;
+  const diskOf = async (service: string, directory: string) => {
+    const probe = await run(["exec", "-T", service, "sh", "-c", mirrorDiskProbe(directory)]);
+    return failed(probe) ?? mirrorDiskOf(probe.stdout) ?? "du and df answered nothing readable";
+  };
+  const lines: Array<string> = [];
+  const npmRunning = runningServices.includes("npm-mirror");
+  if (mirrors.npm === null || !npmRunning) {
+    lines.push(observedNpmMirrorLine(mirrors, { running: false, disk: "", traffic: "" }));
+  } else {
+    const log = await run([
+      "logs",
+      "--no-color",
+      "--no-log-prefix",
+      "--since",
+      "24h",
+      "npm-mirror",
+    ]);
+    lines.push(
+      observedNpmMirrorLine(mirrors, {
+        running: true,
+        disk: await diskOf("npm-mirror", "/var/cache/npm-mirror"),
+        traffic: failed(log) ?? npmMirrorTraffic(log.stdout),
+      }),
+    );
+  }
+  const dockerRunning = runningServices.includes("docker-mirror");
+  if (mirrors.docker === null || !dockerRunning) {
+    lines.push(
+      observedDockerMirrorLine(mirrors, { running: false, disk: "", traffic: "", startedAt: null }),
+    );
+  } else {
+    const metrics = await run([
+      "exec",
+      "-T",
+      "docker-mirror",
+      "wget",
+      "-q",
+      "-O",
+      "-",
+      "http://127.0.0.1:5001/metrics",
+    ]);
+    const started = await runtime.run("docker", [
+      "--context",
+      installation.config.dockerContext,
+      "container",
+      "inspect",
+      "--format",
+      "{{.State.StartedAt}}",
+      DOCKER_MIRROR_CONTAINER,
+    ]);
+    const startedAt = failed(started) === null ? started.stdout.trim().replace(/\.\d+Z$/, "Z") : "";
+    lines.push(
+      observedDockerMirrorLine(mirrors, {
+        running: true,
+        disk: await diskOf("docker-mirror", "/var/lib/registry"),
+        traffic:
+          failed(metrics) ??
+          dockerMirrorTraffic(metrics.stdout) ??
+          "the registry reported no proxy counters",
+        startedAt: startedAt === "" ? null : startedAt,
+      }),
+    );
+  }
+  return lines;
+};
+
 const serverStatus = async (
   runtime: ServerSetupRuntime,
   installation: ServerInstallation,
@@ -2581,6 +3278,8 @@ const serverStatus = async (
       }),
     );
   }
+  for (const line of await mirrorStatusLines(runtime, installation, runningServices))
+    runtime.writeLine(line);
   if (!runningServices.includes("mend")) {
     runtime.writeLine("Mend is stopped. No health claim was made.");
     return;
@@ -2677,6 +3376,9 @@ const manageServer = async (
       "Postgres",
       ...(installation.config.bucket === "garage" ? ["Garage"] : []),
       ...(installation.config.edgeHost === undefined ? [] : ["the edge"]),
+      ...mirrorServices(installation.config.mirrors).map((service) =>
+        service === "npm-mirror" ? "the npm mirror" : "the Docker mirror",
+      ),
     ];
     runtime.writeLine(
       `${stopped.slice(0, -1).join(", ")} and ${stopped.at(-1)} stopped. Volumes, configuration and workspace containers are retained.`,
@@ -2721,7 +3423,69 @@ export const nodeServerRuntime = (): ServerSetupRuntime => {
     writeLine: (line) => process.stdout.write(`${redactCredentials(line)}\n`),
     dockerDaemonFacts: hostDockerDaemonFacts,
     readLogin: (configDir) => savedLogin(configDir, environment),
+    probeSsh: probeSshFromHere,
+    readStdin: async () => {
+      const chunks: Array<Buffer> = [];
+      for await (const chunk of process.stdin)
+        chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : Buffer.from(chunk));
+      return Buffer.concat(chunks).toString("utf8");
+    },
   };
+};
+
+/**
+ * The first line a TCP listener sends within `timeoutMs` of the attempt, or null: nothing answered,
+ * the connection was refused, or the peer closed before it said anything (a gateway restarting, a
+ * listener that drops connections before authentication). It settles exactly once, on every path,
+ * and the deadline does not depend on the socket's own idle timer.
+ */
+export const sshBannerAt = async (
+  host: string,
+  port: number,
+  timeoutMs: number,
+): Promise<string | null> => {
+  const socket = net.connect({ host, port });
+  let deadline: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      new Promise<string | null>((resolve) => {
+        socket.once("data", (bytes: Buffer) =>
+          resolve(bytes.toString("utf8").split(/\r?\n/)[0]?.trim() ?? ""),
+        );
+        socket.once("end", () => resolve(null));
+        socket.once("close", () => resolve(null));
+        socket.once("error", () => resolve(null));
+      }),
+      new Promise<null>((resolve) => {
+        deadline = setTimeout(() => resolve(null), timeoutMs);
+      }),
+    ]);
+  } finally {
+    clearTimeout(deadline);
+    socket.destroy();
+  }
+};
+
+/** `probeSsh` on this machine: the bind, or this machine's own addresses for an unspecified one. */
+const probeSshFromHere = async (bind: string, port: number): Promise<ReadonlyArray<SshProbe>> => {
+  const unspecified = bind === "0.0.0.0" || bind === "::";
+  const addresses = unspecified
+    ? Object.values(os.networkInterfaces())
+        .flatMap((entries) => entries ?? [])
+        .filter(
+          (entry) =>
+            !entry.internal &&
+            (entry.family === "IPv4" || (bind === "::" && !entry.address.startsWith("fe80"))),
+        )
+        .map((entry) => entry.address)
+        .slice(0, 4)
+    : [bind];
+  return Promise.all(
+    addresses.map(async (address) => ({
+      address,
+      banner: await sshBannerAt(address, port, 3_000),
+    })),
+  );
 };
 
 /**

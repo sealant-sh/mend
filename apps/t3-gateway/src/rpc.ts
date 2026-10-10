@@ -19,7 +19,6 @@ import {
   OrchestrationSearchThreadsError,
   OrchestrationV2GetShellSnapshotError,
   OrchestrationV2GetThreadProjectionError,
-  OrchestrationV2ThreadLaunchError,
   PersistChatAttachmentsError,
   ProjectMutationError,
   ProviderSetupError,
@@ -30,6 +29,7 @@ import {
   ServerProviderUpdateError,
   ServerSelfUpdateError,
   ServerSettingsError,
+  type OrchestrationV2ShellStreamItem,
   UsageLimitSourceError,
   VcsUnsupportedOperationError,
   WS_METHODS,
@@ -48,7 +48,8 @@ import type * as RpcGroup from "effect/unstable/rpc/RpcGroup";
 
 import { dispatchCommand } from "./commands.ts";
 import { GatewayEnvironment } from "./environment.ts";
-import type { HubReadError, PersonHub } from "./hub.ts";
+import type { HubReadError, PersonHub, ThreadChange } from "./hub.ts";
+import { launchThread } from "./launch.ts";
 import { makeReviewHandlers } from "./review.ts";
 import { makeServerConfig, makeWelcome, providersFromMend } from "./server-config.ts";
 import type { BearerSession } from "./state.ts";
@@ -86,6 +87,7 @@ export const SERVED_METHODS: ReadonlySet<WsRpcMethod> = new Set<WsRpcMethod>([
   ORCHESTRATION_V2_WS_METHODS.subscribeThread,
   ORCHESTRATION_V2_WS_METHODS.getThreadProjection,
   ORCHESTRATION_V2_WS_METHODS.dispatchCommand,
+  ORCHESTRATION_V2_WS_METHODS.launchThread,
   WS_METHODS.reviewGetDiffPreview,
   WS_METHODS.reviewGetDiffFileContents,
 ]);
@@ -316,16 +318,21 @@ export const makeGatewayRpcHandlers = ({ environment, session, hub }: GatewayRpc
           }),
         ),
       ).pipe(Stream.concat(Stream.never)),
-    // A fresh snapshot whatever sequence the client resumes after (a snapshot is always a legal
-    // reset), the catch-up marker when asked, then every change as the hub publishes it.
+    // What changed after the sequence the client resumes after, when the hub still covers it, else
+    // a fresh snapshot (always a legal reset); the catch-up marker when asked; then every change
+    // as the hub publishes it.
     [ORCHESTRATION_V2_WS_METHODS.subscribeShell]: (input) =>
       Stream.unwrap(
         Effect.gen(function* () {
           yield* authorize(session, READ);
-          const { snapshot, changes } = yield* hub.subscribeShell.pipe(
-            Effect.mapError(shellReadFailure),
-          );
-          return Stream.make({ kind: "snapshot" as const, snapshot }).pipe(
+          const { start, changes } = yield* hub
+            .subscribeShell(input.afterSequence)
+            .pipe(Effect.mapError(shellReadFailure));
+          const opening: ReadonlyArray<OrchestrationV2ShellStreamItem> =
+            start.kind === "snapshot"
+              ? [{ kind: "snapshot", snapshot: start.snapshot }]
+              : start.deltas;
+          return Stream.fromIterable(opening).pipe(
             Stream.concat(
               input.requestCompletionMarker === true
                 ? Stream.make({ kind: "synchronized" as const })
@@ -346,14 +353,7 @@ export const makeGatewayRpcHandlers = ({ environment, session, hub }: GatewayRpc
     // ── Orchestration (phase 1 and later) ───────────────────────────────────
     [ORCHESTRATION_V2_WS_METHODS.dispatchCommand]: (command) =>
       dispatchCommand(hub, session, command),
-    [ORCHESTRATION_V2_WS_METHODS.launchThread]: (input) =>
-      Effect.fail(
-        new OrchestrationV2ThreadLaunchError({
-          commandId: input.commandId,
-          projectId: input.projectId,
-          message: notOfferedText(ORCHESTRATION_V2_WS_METHODS.launchThread),
-        }),
-      ),
+    [ORCHESTRATION_V2_WS_METHODS.launchThread]: (input) => launchThread(hub, session, input),
     [ORCHESTRATION_V2_WS_METHODS.getThreadProjection]: (input) =>
       Effect.gen(function* () {
         yield* authorize(session, READ);
@@ -363,22 +363,20 @@ export const makeGatewayRpcHandlers = ({ environment, session, hub }: GatewayRpc
         if (snapshot === null) return yield* unknownThread(input.threadId);
         return snapshot.projection;
       }),
-    // As the shell: a full snapshot whatever the client resumes after (the replay after a
-    // sequence is phase 2), the marker when asked, then the thread's changes.
+    // As the shell: what changed after the client's sequence while the hub still covers it, else
+    // a full snapshot, the marker when asked, then the thread's changes.
     [ORCHESTRATION_V2_WS_METHODS.subscribeThread]: (input) =>
       Stream.unwrap(
         Effect.gen(function* () {
           yield* authorize(session, READ);
           const subscribed = yield* hub
-            .subscribeThread(input.threadId)
+            .subscribeThread(input.threadId, input.afterSequence)
             .pipe(Effect.mapError(threadReadFailure(input.threadId)));
           if (subscribed === null) return yield* unknownThread(input.threadId);
-          const { snapshot, changes } = subscribed;
-          return Stream.make({
-            kind: "snapshot" as const,
-            snapshotSequence: snapshot.snapshotSequence,
-            projection: snapshot.projection,
-          }).pipe(
+          const { start, changes } = subscribed;
+          const opening: ReadonlyArray<ThreadChange> =
+            start.kind === "snapshot" ? [{ kind: "snapshot", ...start.snapshot }] : start.changes;
+          return Stream.fromIterable(opening).pipe(
             Stream.concat(
               input.requestCompletionMarker === true
                 ? Stream.make({ kind: "synchronized" as const })

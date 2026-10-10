@@ -38,6 +38,9 @@ const call = <A>(run: () => Promise<A>) => Effect.tryPromise({ try: run, catch: 
 const CREDENTIALS_CALL_TIMEOUT = Duration.seconds(30);
 
 /** `call`, bounded by `CREDENTIALS_CALL_TIMEOUT`, failing with words when Core does not answer. */
+/** How long one `sshAsRoot` may take before it counts as not done (and is tried again). */
+export const SSH_USER_CALL_TIMEOUT = Duration.seconds(5);
+
 const boundedCall = <A>(what: string, home: string, run: () => Promise<A>) =>
   call(run).pipe(
     Effect.timeoutOrElse({
@@ -157,6 +160,18 @@ export const controlPlaneObstacleOf = (features: SealantFeatures): string | null
     : `the Sealant control plane lacks what per-person users need (it does not report ${missing.join(", ")})`;
 };
 
+/**
+ * Core runs a workspace's SSH sessions as its owner's user (`features.workspaceSshUser`,
+ * sealant#348); a control plane from before it reports false.
+ */
+export const runsSshAsUser = (features: SealantFeatures): boolean => features.workspaceSshUser;
+
+/** Core binds a user's person (`features.personBinding`, sealant#348). */
+export const bindsPersons = (features: SealantFeatures): boolean => features.personBinding;
+
+/** How long a refused person binding is kept before Core is asked again. */
+const BINDING_REFUSED_MS = 5 * 60_000;
+
 /** The workspace's own answer (`workspace.processUser()`), as a prepare's missing words. */
 export const workspaceProcessUserObstacleOf = (
   capability: WorkspaceProcessUserCapability,
@@ -231,13 +246,25 @@ export const PersonLayoutPlatformLive: Layer.Layer<PersonLayoutPlatform, never, 
         return report;
       });
 
-      let controlPlane: { readonly obstacle: string | null; readonly until: number } | null = null;
-      const controlPlaneObstacle = Effect.gen(function* () {
+      /** Each account's person binding as Core answered it: kept once made, a refusal a while. */
+      const bindings = new Map<string, { readonly bound: boolean; readonly until: number }>();
+
+      let controlPlane: {
+        readonly obstacle: string | null;
+        /** Core runs SSH sessions as the owner's user; null when it could not be asked. */
+        readonly sshUser: boolean | null;
+        /** Core binds a user's person (`users.bindPerson`); null when it could not be asked. */
+        readonly personBinding: boolean | null;
+        readonly until: number;
+      } | null = null;
+      const controlPlaneAnswer = Effect.gen(function* () {
         const now = yield* Clock.currentTimeMillis;
-        if (controlPlane !== null && now < controlPlane.until) return controlPlane.obstacle;
+        if (controlPlane !== null && now < controlPlane.until) return controlPlane;
         const answer = yield* clients.controlPlaneFeatures().pipe(
           Effect.map((features) => ({
             obstacle: controlPlaneObstacleOf(features),
+            sshUser: runsSshAsUser(features),
+            personBinding: bindsPersons(features),
             until: now + CONTROL_PLANE_ANSWER_MS,
           })),
           Effect.catch((error) =>
@@ -245,18 +272,99 @@ export const PersonLayoutPlatformLive: Layer.Layer<PersonLayoutPlatform, never, 
               Effect.annotateLogs({ message: error.message }),
               Effect.as({
                 obstacle: CONTROL_PLANE_UNREADABLE,
+                sshUser: null,
+                personBinding: null,
                 until: now + CONTROL_PLANE_FAILURE_MS,
               }),
             ),
           ),
         );
         controlPlane = answer;
-        return answer.obstacle;
-      }).pipe(Effect.withSpan("PersonLayoutPlatform.controlPlaneObstacle"));
+        return answer;
+      });
+      const controlPlaneObstacle = controlPlaneAnswer.pipe(
+        Effect.map((answer) => answer.obstacle),
+        Effect.withSpan("PersonLayoutPlatform.controlPlaneObstacle"),
+      );
 
       return {
         processUser: true,
         controlPlaneObstacle,
+        sshUser: controlPlaneAnswer.pipe(Effect.map((answer) => answer.sshUser === true)),
+        sshAsOwnerFor: (person) =>
+          Effect.gen(function* () {
+            const answer = yield* controlPlaneAnswer;
+            if (answer.sshUser !== true) return "not-taken" as const;
+            if (answer.personBinding !== true) return "unbound" as const;
+            const now = yield* Clock.currentTimeMillis;
+            const known = bindings.get(person.accountId);
+            if (known !== undefined && (known.bound || now < known.until)) {
+              return known.bound ? ("yes" as const) : ("unbound" as const);
+            }
+            const bound = yield* clients
+              .bindPerson(person.accountId, {
+                id: person.accountId,
+                uid: person.uid,
+                home: person.home,
+              })
+              .pipe(
+                Effect.timeoutOrElse({
+                  duration: SSH_USER_CALL_TIMEOUT,
+                  orElse: () => Effect.succeed("unanswered" as const),
+                }),
+                Effect.catch((error) =>
+                  Effect.logWarning("person layout: the person binding was not made").pipe(
+                    Effect.annotateLogs({ accountId: person.accountId, message: error.message }),
+                    Effect.as("unanswered" as const),
+                  ),
+                ),
+              );
+            if (bound === "bound") {
+              bindings.set(person.accountId, { bound: true, until: Number.POSITIVE_INFINITY });
+              return "yes" as const;
+            }
+            if (bound === "refused") {
+              // Core holds another binding for them, or their uid is another user's: an operator
+              // must look (docs/adr/0016). Asked again in a while, never overwritten.
+              yield* Effect.logWarning(
+                "person layout: Core refused the person binding: Remote-SSH stays root",
+              ).pipe(Effect.annotateLogs({ accountId: person.accountId }));
+              bindings.set(person.accountId, { bound: false, until: now + BINDING_REFUSED_MS });
+            }
+            return "unbound" as const;
+          }).pipe(Effect.withSpan("PersonLayoutPlatform.sshAsOwnerFor")),
+        // `workspace.sshAsRoot` (sealant#348), only where Core said it takes a user.
+        sshAsRoot: (workspace) =>
+          Effect.gen(function* () {
+            // Nothing to set: a Core that says it takes no SSH user never ran this workspace's
+            // sessions as anyone but root.
+            if ((yield* controlPlaneAnswer).sshUser === false) return true;
+            // Core takes one, or could not be asked: tried, and only Core's yes is done. An
+            // unreadable answer never clears the obligation.
+            return yield* call(() => workspace.sshAsRoot()).pipe(
+              Effect.timeoutOrElse({
+                duration: SSH_USER_CALL_TIMEOUT,
+                orElse: () =>
+                  Effect.fail(
+                    new SealantPlatformError({
+                      code: "ssh_user_timeout",
+                      status: null,
+                      message: "Sealant did not answer within 5 s",
+                      cause: null,
+                    }),
+                  ),
+              }),
+              Effect.as(true),
+              Effect.catch((error) =>
+                Effect.logWarning(
+                  "person layout: the workspace's SSH sessions were not set back to root",
+                ).pipe(
+                  Effect.annotateLogs({ workspaceId: workspace.id, message: error.message }),
+                  Effect.as(false),
+                ),
+              ),
+            );
+          }).pipe(Effect.withSpan("PersonLayoutPlatform.sshAsRoot")),
         // Filled in by `ready()` on the handle the create made; asked of Core otherwise (a handle
         // from `get()`). Unreadable is unknown, which is not a yes.
         workspaceProcessUser: (workspace) =>

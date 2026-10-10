@@ -1,3 +1,4 @@
+import { redactRepositoryUrl } from "@mend/domain/workbench";
 import { Effect } from "effect";
 import { SqlClient } from "effect/unstable/sql";
 
@@ -3334,6 +3335,111 @@ const hotWorkspaceLayoutMigration = Effect.gen(function* () {
         CHECK (harness_layout IN ('person', 'shared'))`;
 });
 
+/**
+ * 0122: where a checkpoint's view of the executor came from when it was not observed for the
+ * checkpoint itself (mend#649, `CheckpointSource`). A review or a mark asked while a Stop was
+ * ending the executor is taken from the Stop's own flush, and says so: which reading
+ * (`stop-final` or `stop-reading`), the capture that flush reported, and when Mend received it.
+ * Every earlier checkpoint observed for itself: NULL.
+ */
+const checkpointSourceMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    ALTER TABLE checkpoints
+      ADD COLUMN source_kind text CHECK (source_kind IN ('stop-final', 'stop-reading')),
+      ADD COLUMN source_capture_n integer,
+      ADD COLUMN source_observed_at timestamptz,
+      ADD CONSTRAINT checkpoints_source_whole
+        CHECK ((source_kind IS NULL) = (source_observed_at IS NULL))`;
+});
+
+/**
+ * Who Remote-SSH into a standby runs as, decided at its create (docs/adr/0016, decision 10), so a
+ * claim reports a root SSH on its session line as a cold launch does. Rows from before it never
+ * asked Core for an SSH user: `not-taken`.
+ */
+const hotWorkspaceRemoteSshMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    ALTER TABLE hot_workspaces
+      ADD COLUMN remote_ssh text NOT NULL DEFAULT 'not-taken'
+        CHECK (remote_ssh IN ('owner', 'unbound', 'not-taken'))`;
+});
+
+/**
+ * 0125: the workspace SSH keys Mend still owes a removed member (docs/WORKSPACE-SSH.md). Inserted
+ * in the transaction that deletes the membership, so no removal commits without it; the worker's
+ * sweep archives the person's keys on the platform and deletes the row once none is active.
+ * `outstanding` is the count still active after the last attempt, NULL while they are unread.
+ * `id` names one obligation: a later removal of the same account replaces it with a new id, so an
+ * attempt at the older one can neither settle nor defer the newer.
+ */
+const sshKeyRevocationsMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    CREATE TABLE ssh_key_revocations (
+      id text PRIMARY KEY,
+      user_id text NOT NULL UNIQUE REFERENCES "user" (id) ON DELETE RESTRICT,
+      organization_id text NOT NULL REFERENCES organizations (id) ON DELETE RESTRICT,
+      actor_user_id text NOT NULL REFERENCES "user" (id) ON DELETE RESTRICT,
+      requested_at timestamptz NOT NULL DEFAULT now(),
+      attempts integer NOT NULL DEFAULT 0,
+      next_attempt_at timestamptz NOT NULL DEFAULT now(),
+      outstanding integer,
+      last_error text
+    )`;
+  yield* sql`CREATE INDEX ssh_key_revocations_next_attempt_at ON ssh_key_revocations (next_attempt_at)`;
+});
+
+/**
+ * No login or token in a stored repository URL (docs/GIT-ACCESS.md, "Credentials in repository
+ * URLs"). Servers before 0.36 stored an adopted URL as typed, `https://oauth2:TOKEN@host/…`
+ * included, and returned it to everyone who could see the project. Every URL Mend stores loses its
+ * credential the way `redactRepositoryUrl` takes it (the whole userinfo; over ssh, the password
+ * only): project origins, reference origins, the dotfiles repository a person saved and the one
+ * each session was stamped with. Only rows that change are written. A store's own git config is
+ * never rewritten: a store that still holds a credential is refused (`refuseRemoteCredentials`).
+ */
+const repositoryUrlCredentialsMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  // Only a URL with `://…@` can carry one; SCP-style `git@host:path` holds a login name alone.
+  const projects = yield* sql<{ readonly id: string; readonly url: string }>`
+    SELECT id, origin_url AS url FROM projects WHERE origin_url LIKE '%://%@%'`;
+  for (const row of projects) {
+    const redacted = redactRepositoryUrl(row.url);
+    if (redacted === row.url) continue;
+    yield* sql`UPDATE projects SET origin_url = ${redacted} WHERE id = ${row.id}`;
+  }
+  const referenceRows = yield* sql<{ readonly id: string; readonly url: string }>`
+    SELECT id, origin_url AS url FROM reference_repos WHERE origin_url LIKE '%://%@%'`;
+  for (const row of referenceRows) {
+    const redacted = redactRepositoryUrl(row.url);
+    if (redacted === row.url) continue;
+    yield* sql`UPDATE reference_repos SET origin_url = ${redacted} WHERE id = ${row.id}`;
+  }
+  const dotfiles = yield* sql<{ readonly id: string; readonly url: string }>`
+    SELECT user_id AS id, repository->>'url' AS url FROM user_dotfiles
+    WHERE repository->>'url' LIKE '%://%@%'`;
+  for (const row of dotfiles) {
+    const redacted = redactRepositoryUrl(row.url);
+    if (redacted === row.url) continue;
+    yield* sql`
+      UPDATE user_dotfiles SET repository = jsonb_set(repository, '{url}', to_jsonb(${redacted}::text))
+      WHERE user_id = ${row.id}`;
+  }
+  const stamped = yield* sql<{ readonly id: string; readonly url: string }>`
+    SELECT id, dotfiles->'repository'->>'url' AS url FROM agent_sessions
+    WHERE dotfiles->'repository'->>'url' LIKE '%://%@%'`;
+  for (const row of stamped) {
+    const redacted = redactRepositoryUrl(row.url);
+    if (redacted === row.url) continue;
+    yield* sql`
+      UPDATE agent_sessions
+      SET dotfiles = jsonb_set(dotfiles, '{repository,url}', to_jsonb(${redacted}::text))
+      WHERE id = ${row.id}`;
+  }
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -3455,4 +3561,11 @@ export const migrations = {
   "0118_pre_release_executors": preReleaseExecutorsMigration,
   "0119_image_layout_confirmed": imageLayoutConfirmedMigration,
   "0120_hot_workspace_layout": hotWorkspaceLayoutMigration,
+  // 0121 is unused: it was held for the repository URL credentials work, which landed later as
+  // 0126. The migrator applies only ids above the latest applied, so nothing may take it now.
+  "0122_checkpoint_source": checkpointSourceMigration,
+  "0123_hot_workspace_remote_ssh": hotWorkspaceRemoteSshMigration,
+  // 0124 is unused: mend#640 (repository URL credentials) moved to 0126.
+  "0125_ssh_key_revocations": sshKeyRevocationsMigration,
+  "0126_repository_url_credentials": repositoryUrlCredentialsMigration,
 };

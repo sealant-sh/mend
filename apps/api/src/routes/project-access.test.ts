@@ -79,6 +79,8 @@ const UNSCOPED: ReadonlySet<string> = new Set([
   "sealant.connection",
   "workspaceSsh.get",
   "workspaceSsh.ensureKey",
+  // The caller's own keys only; the platform scopes every call (workspace-ssh.test.ts).
+  "workspaceSsh.removeKey",
   "accounts.identity",
   "accounts.connect",
   "accounts.disconnect",

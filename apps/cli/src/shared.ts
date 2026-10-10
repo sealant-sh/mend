@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import * as path from "node:path";
 
-import { captureStatusLine, servicesHoldLine } from "@mend/domain/workbench";
+import { captureStatusLine, redactUrlCredentials, servicesHoldLine } from "@mend/domain/workbench";
 
 /**
  * Facts both entry points need: how each harness launches and resumes, which
@@ -582,33 +582,48 @@ export const firstPositional = (
   );
 
 /**
- * `text` with the credentials of every URL in it taken out. Adoption accepts a clone URL with a
- * token in it (`https://oauth2:TOKEN@github.com/acme/repo.git`) and the server returns the URL as
- * stored, so anything the CLI prints itself, a project's origin, a server's message or a JSON
- * field, goes through this.
+ * `text` with the credentials of every URL in it taken out. A server before 0.36 stored a clone URL
+ * with a token in it (`https://oauth2:TOKEN@github.com/acme/repo.git`) as typed, and a message may
+ * quote one, so anything the CLI prints itself, a project's origin or a server's message, goes
+ * through this. Recorded output is replayed as recorded and never passes here.
  *
- * A URL's authority runs from `//` to the next `/`, `?` or `#` (or a `"`, `<`, `>` or backtick,
- * which no authority holds and which end a JSON string or a quoted URL), and its userinfo is
- * everything before the LAST `@` in it, as a URL parser reads it: `oauth2:p@tok@github.com` has the
- * userinfo `oauth2:p@tok`. Whitespace and control characters do not end it: a URL parser drops a
- * tab or a newline and percent-encodes a space, so `oauth2:p<TAB>tok@` is a password too (review 3
- * of mend#611). In prose that can take a few words before a later `@` along with the URL's
- * userinfo; text goes, a credential never stays.
- *
- * An http(s) (or any other) URL loses all of its userinfo, since a token can sit in the user part
- * alone. An ssh URL keeps its user and loses only the password (`ssh://git:pw@host` reads
- * `ssh://git@host`), unless the user itself is not a plain name. scp-like `git@host:path` has no
- * `//` and stays as it is.
+ * The rule is the server's, `redactUrlCredentials` in `@mend/domain` (one parser, so the CLI and
+ * the server never disagree on what a credential is): a URL's authority runs from `//` to the next
+ * `/`, `?` or `#`, and its userinfo is everything before the LAST `@` in it, whatever it holds,
+ * whitespace and quotes included (review 3 of mend#611, review of mend#640). An http(s) (or any
+ * other) URL loses all of its userinfo; an ssh URL keeps its user and loses only the password
+ * (`ssh://git:pw@host` reads `ssh://git@host`). scp-like `git@host:path` stays as it is. JSON is
+ * redacted one string at a time (`printJson`), so it stays JSON.
  */
-export const redactCredentials = (text: string): string =>
-  text.replace(
-    // Greedy up to the last `@` before the authority ends: a literal `@` in a password is userinfo.
-    /\b([a-z][a-z0-9+.-]*):\/\/([^/?#"<>`]*)@/giu,
-    (_whole, scheme: string, userinfo: string) => {
-      if (/^(git\+)?ssh$/iu.test(scheme)) {
-        const user = userinfo.split(":")[0] ?? "";
-        if (/^[a-z0-9._~-]+$/iu.test(user)) return `${scheme}://${user}@`;
+export const redactCredentials = (text: string): string => redactUrlCredentials(text);
+
+/** A plain object's keys redacted like its values; two keys that redact alike keep the later. */
+const redactKeys = (field: object): object =>
+  Object.fromEntries(Object.entries(field).map(([key, value]) => [redactCredentials(key), value]));
+
+const isPlainObject = (field: unknown): field is object =>
+  typeof field === "object" &&
+  field !== null &&
+  (Object.getPrototypeOf(field) === Object.prototype || Object.getPrototypeOf(field) === null);
+
+/**
+ * `value` as indented JSON with every string redacted on its own: no credential, still JSON. The
+ * strings are values, the keys of plain objects and boxed strings alike; a value JSON has no
+ * spelling for (`undefined`) prints `null`. A BigInt throws, as `JSON.stringify` does.
+ */
+export const jsonWithoutCredentials = (value: unknown): string => {
+  // `JSON.stringify` answers undefined for a value it cannot spell, whatever its type says.
+  const printed: string | undefined = JSON.stringify(
+    value,
+    (_key, field: unknown) => {
+      if (typeof field === "string") return redactCredentials(field);
+      // A boxed string (`new String(…)`) is unboxed by JSON.stringify after this sees it.
+      if (Object.prototype.toString.call(field) === "[object String]") {
+        return redactCredentials(String(field));
       }
-      return `${scheme}://`;
+      return isPlainObject(field) ? redactKeys(field) : field;
     },
+    2,
   );
+  return printed ?? "null";
+};

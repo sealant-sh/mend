@@ -15,6 +15,7 @@ import {
   serverCommand,
   type ServerSetupRuntime,
 } from "./server-setup.ts";
+import type { ThisMachineKeyRemoval } from "./ssh-setup.ts";
 import { describeUninstall, executeUninstall, planLines } from "./uninstall.ts";
 
 interface DaemonState {
@@ -34,6 +35,11 @@ interface DaemonState {
   readonly healthVersion: string | null;
   /** Fields the health body carries beside status and version: tenancy, its gate, exposure. */
   readonly health?: Readonly<Record<string, unknown>>;
+  /** Each mirror's container, by service, with the generation it was started from. */
+  readonly mirrorContainers?: Readonly<Record<string, string>>;
+  /** What the Docker mirror's guard reports, and the KiB free under the mirrors. */
+  readonly mirrorGuard?: string;
+  readonly mirrorFreeKiB?: number;
   /** The compose files the last `up` and `down` ran with, by name. */
   readonly upFiles?: ReadonlyArray<string>;
   readonly downFiles?: ReadonlyArray<string>;
@@ -1081,7 +1087,13 @@ describe("server lifecycle", { timeout: 30_000 }, () => {
         .every(
           (call) =>
             call.locked &&
-            (call.args[2] === "volume" || ["ps", "logs"].includes(call.command[0] ?? "")),
+            (call.args[2] === "volume" ||
+              ["ps", "logs"].includes(call.command[0] ?? "") ||
+              // The mirrors are read, never changed: their volume's size and the registry's counters.
+              (call.command[0] === "exec" &&
+                (call.command.some((arg) => arg.startsWith("du -sk ")) ||
+                  call.command.includes("wget"))) ||
+              (call.args[2] === "container" && call.args[3] === "inspect")),
         ),
     ).toBe(true);
     for (const command of ["start", "restart"])
@@ -1220,6 +1232,244 @@ describe("server lifecycle", { timeout: 30_000 }, () => {
 const repositoryFile = (name: string): string =>
   fs.readFileSync(new URL(`../../../deploy/docker/${name}`, import.meta.url), "utf8");
 
+/** Turn the active generation into one written before the mirrors: no field, no files, no size. */
+const withoutMirrors = (directory: string): void => {
+  const configFile = path.join(directory, "server.json");
+  const { mirrors: _mirrors, ...config } = JSON.parse(fs.readFileSync(configFile, "utf8"));
+  fs.writeFileSync(configFile, `${JSON.stringify(config, null, 2)}\n`);
+  const envFile = path.join(directory, "server.env");
+  fs.writeFileSync(
+    envFile,
+    fs
+      .readFileSync(envFile, "utf8")
+      .split("\n")
+      .filter((line) => !/^MEND_(NPM|DOCKER)_MIRROR_MAX_SIZE=/.test(line))
+      .join("\n"),
+  );
+  for (const file of ["compose.mirrors.yaml", "npm-mirror.conf", "docker-mirror-guard.sh"])
+    fs.rmSync(path.join(directory, file));
+};
+
+describe("the mirrors", { timeout: 120_000 }, () => {
+  it("runs both on a new install, and status reports each as observed", async () => {
+    const f = await fixture();
+    expect(await f.setup()).toEqual({ _tag: "ok" });
+    const files = f.files();
+    expect(JSON.parse(files["server.json"] ?? "{}").mirrors).toEqual({
+      npm: { maxSize: "10g" },
+      docker: { maxSize: "20g" },
+    });
+    expect(files["compose.mirrors.yaml"]).toContain("\n  npm-mirror:\n");
+    expect(files["compose.mirrors.yaml"]).toContain("\n  docker-mirror:\n");
+    expect(files["npm-mirror.conf"]).toContain("proxy_cache npm;");
+    expect(f.state().upFiles).toEqual(["compose.yaml", "compose.mirrors.yaml"]);
+    // Both images are checked beside the bundle's.
+    expect(f.runCalls.some((call) => call.args.includes("nginx:1.29-alpine"))).toBe(true);
+    expect(f.runCalls.some((call) => call.args.includes("registry:3.1"))).toBe(true);
+
+    f.lines.length = 0;
+    expect(await serverCommand(["status"], f.runtime)).toEqual({ _tag: "ok" });
+    expect(f.lines).toContain(
+      "npm mirror · running · 2.0 MiB cached of 10 GiB · 1.0 GiB free on its disk · last 24 h: 2 tarball requests · 1 served from the cache (50%) · 1 fetched from registry.npmjs.org · observed",
+    );
+    expect(f.lines).toContain(
+      "docker mirror · running · 2.0 MiB cached of 20 GiB · 1.0 GiB free on its disk · layers evicted 7 days after each fetch · since 2026-10-10T08:00:00Z: layers 4 requested · 3 from the cache (75%) · manifests 4 · 2 from the cache · pulls from Docker Hub anonymously · observed",
+    );
+  });
+
+  it("an upgrade adds them to an install from before them, and says so", async () => {
+    const f = await fixture();
+    expect(await f.setup()).toEqual({ _tag: "ok" });
+    withoutMirrors(f.active());
+    f.update({ mirrorContainers: {} });
+    expect(await serverCommand(["status"], f.runtime)).toEqual({ _tag: "ok" });
+    f.lines.length = 0;
+    expect(await f.upgrade()).toEqual({ _tag: "ok" });
+    expect(JSON.parse(f.files()["server.json"] ?? "{}").mirrors).toEqual({
+      npm: { maxSize: "10g" },
+      docker: { maxSize: "20g" },
+    });
+    expect(f.files()["server.env"]).toContain("MEND_NPM_MIRROR_MAX_SIZE=10g\n");
+    expect(f.state().upFiles).toEqual(["compose.yaml", "compose.mirrors.yaml"]);
+    expect(f.lines).toContain(
+      "The npm mirror runs on this install. New sessions install npm packages through it, capped at 10g.",
+    );
+    expect(f.lines).toContain(
+      "The Docker mirror runs on this install. New sessions' Docker daemons pull Docker Hub images through it (mend-docker-mirror).",
+    );
+  });
+
+  it("turned off, a mirror leaves the generation, its container is removed by label, and its cache stays", async () => {
+    const f = await fixture();
+    expect(await f.setup()).toEqual({ _tag: "ok" });
+    f.lines.length = 0;
+    expect(await serverCommand(["setup", "--offline", "--no-npm-mirror"], f.runtime)).toEqual({
+      _tag: "ok",
+    });
+    const files = f.files();
+    expect(files["npm-mirror.conf"]).toBeUndefined();
+    expect(files["compose.mirrors.yaml"]).not.toContain("npm-mirror");
+    expect(files["server.env"]).not.toContain("MEND_NPM_MIRROR_MAX_SIZE");
+    expect(f.state().mirrorContainers).toEqual({ "docker-mirror": expect.any(String) });
+    expect(f.lines).toContain(
+      "Removed the npm mirror container mend-npm-mirror-1, which this generation does not run.",
+    );
+    expect(f.lines).toContain(
+      "The npm mirror is off. Its cache stays until you remove it: docker --context saved-local volume rm mend_mend-npm-mirror",
+    );
+    // Kept off across a rerun and an upgrade.
+    expect(await serverCommand(["setup", "--offline"], f.runtime)).toEqual({ _tag: "ok" });
+    expect(await f.upgrade()).toEqual({ _tag: "ok" });
+    expect(JSON.parse(f.files()["server.json"] ?? "{}").mirrors).toEqual({
+      npm: null,
+      docker: { maxSize: "20g" },
+    });
+    // Both off: no overlay at all, and the generation reads as one from before the mirrors.
+    expect(await serverCommand(["setup", "--offline", "--no-docker-mirror"], f.runtime)).toEqual({
+      _tag: "ok",
+    });
+    expect(f.files()["compose.mirrors.yaml"]).toBeUndefined();
+    expect(f.state().upFiles).toEqual(["compose.yaml"]);
+    f.lines.length = 0;
+    expect(await serverCommand(["status"], f.runtime)).toEqual({ _tag: "ok" });
+    expect(f.lines).toContain(
+      "npm mirror · off on this install · mend server setup --npm-mirror turns it on",
+    );
+    // On again, with a cap of its own.
+    expect(
+      await serverCommand(
+        ["setup", "--offline", "--npm-mirror", "--npm-mirror-max-size", "25G"],
+        f.runtime,
+      ),
+    ).toEqual({ _tag: "ok" });
+    expect(f.files()["server.env"]).toContain("MEND_NPM_MIRROR_MAX_SIZE=25g\n");
+  });
+
+  it("keeps a Docker Hub token in server.env alone, read from standard input, across reruns and upgrades", async () => {
+    const f = await fixture();
+    expect(await f.setup()).toEqual({ _tag: "ok" });
+    const token = "dckr_pat_s3cret-Token";
+    const withStdin: ServerSetupRuntime = { ...f.runtime, readStdin: async () => `${token}\n` };
+    expect(
+      await serverCommand(
+        [
+          "setup",
+          "--offline",
+          "--docker-hub-username",
+          "mendbot",
+          "--docker-hub-token-stdin",
+          "--docker-hub-public-only",
+        ],
+        withStdin,
+      ),
+    ).toEqual({ _tag: "ok" });
+    const files = f.files();
+    expect(files["server.env"]).toContain(`MEND_DOCKER_HUB_TOKEN=${token}\n`);
+    expect(files["server.env"]).toContain("MEND_DOCKER_HUB_USERNAME=mendbot\n");
+    for (const name of ["server.json", "compose.mirrors.yaml", "identity.env"])
+      expect(files[name]).not.toContain(token);
+    expect(JSON.parse(files["server.json"] ?? "{}").mirrors.docker).toEqual({
+      maxSize: "20g",
+      upstreamUser: "mendbot",
+      upstreamPublicOnly: true,
+    });
+    // Never on a command line.
+    expect(f.calls().some((call) => call.args.some((arg) => arg.includes(token)))).toBe(false);
+    // Carried by a rerun and an upgrade, which read it back from server.env.
+    expect(await serverCommand(["setup", "--offline"], f.runtime)).toEqual({ _tag: "ok" });
+    expect(await f.upgrade()).toEqual({ _tag: "ok" });
+    expect(f.files()["server.env"]).toContain(`MEND_DOCKER_HUB_TOKEN=${token}\n`);
+    // And gone again.
+    expect(await serverCommand(["setup", "--offline", "--no-docker-hub-login"], f.runtime)).toEqual(
+      { _tag: "ok" },
+    );
+    expect(f.files()["server.env"]).not.toContain("MEND_DOCKER_HUB");
+    expect(f.files()["compose.mirrors.yaml"]).not.toContain("REGISTRY_PROXY_USERNAME");
+  });
+
+  it("caps the Docker mirror, says when its guard paused it, and never renders an undeclared login", async () => {
+    const f = await fixture();
+    expect(await f.setup()).toEqual({ _tag: "ok" });
+    expect(
+      await serverCommand(["setup", "--offline", "--docker-mirror-max-size", "40G"], f.runtime),
+    ).toEqual({ _tag: "ok" });
+    expect(f.files()["server.env"]).toContain("MEND_DOCKER_MIRROR_MAX_SIZE=40g\n");
+    expect(f.files()["docker-mirror-guard.sh"]).toContain("registry serve");
+    f.update({ mirrorGuard: "paused 3072 5120 none", mirrorFreeKiB: 3 * 1024 * 1024 });
+    f.lines.length = 0;
+    expect(await serverCommand(["status"], f.runtime)).toEqual({ _tag: "ok" });
+    expect(f.lines).toContain(
+      "docker mirror · paused by its disk guard · 3.0 GiB free on its disk, below 5.0 GiB · no cache held · session Docker daemons pull from Docker Hub directly until there is room · observed",
+    );
+    // A saved login without the operator's public-only statement is refused, not rendered.
+    const configFile = path.join(f.active(), "server.json");
+    const config = JSON.parse(fs.readFileSync(configFile, "utf8"));
+    config.mirrors.docker = { maxSize: "40g", upstreamUser: "mendbot" };
+    fs.writeFileSync(configFile, `${JSON.stringify(config, null, 2)}\n`);
+    const refused = await serverCommand(["status"], f.runtime);
+    expect(refused._tag).toBe("error");
+    expect(refused._tag === "error" ? refused.message : "").toContain(
+      "the Docker mirror's login lacks upstreamPublicOnly",
+    );
+  });
+
+  it.each([
+    [
+      ["--npm-mirror", "--no-npm-mirror"],
+      "--npm-mirror and --no-npm-mirror contradict each other.",
+    ],
+    [["--npm-mirror-max-size", "512m"], "--npm-mirror-max-size must be"],
+    [["--no-npm-mirror", "--npm-mirror-max-size", "20g"], "contradict each other"],
+    [["--docker-hub-username", "mendbot"], "go together"],
+    [
+      ["--docker-hub-username", "mendbot", "--docker-hub-token-stdin"],
+      'needs --docker-hub-public-only. The Docker mirror has no login of its own: every session that reaches it can pull whatever the token can read, private repositories included. Create a Docker Hub personal access token with the access permission "Public Repo Read-only"',
+    ],
+    [["--docker-hub-public-only"], "goes with --docker-hub-username"],
+    [["--docker-hub-token-stdin"], "go together"],
+    [
+      [
+        "--docker-hub-username",
+        "mendbot",
+        "--docker-hub-token-stdin",
+        "--docker-hub-public-only",
+        "--no-docker-mirror",
+      ],
+      "--docker-hub-username and --no-docker-mirror contradict each other.",
+    ],
+    [
+      ["--docker-hub-username", "a b", "--docker-hub-token-stdin", "--docker-hub-public-only"],
+      "is not a Docker Hub user name",
+    ],
+  ])("refuses %j before anything is written", async (flags, message) => {
+    const f = await fixture();
+    const result = await serverCommand(["setup", ...flags], f.runtime);
+    expect(result._tag).toBe("error");
+    expect(result._tag === "error" ? result.message : "").toContain(message);
+    expect(fs.existsSync(path.join(f.configDir, "active"))).toBe(false);
+  });
+
+  it("refuses a token that is not one, without writing it", async () => {
+    const f = await fixture();
+    expect(await f.setup()).toEqual({ _tag: "ok" });
+    const before = f.files()["server.env"];
+    const withStdin: ServerSetupRuntime = { ...f.runtime, readStdin: async () => "two words\n" };
+    const result = await serverCommand(
+      [
+        "setup",
+        "--offline",
+        "--docker-hub-username",
+        "mendbot",
+        "--docker-hub-token-stdin",
+        "--docker-hub-public-only",
+      ],
+      withStdin,
+    );
+    expect(result._tag).toBe("error");
+    expect(f.files()["server.env"]).toBe(before);
+  });
+});
+
 describe("the edge and the posture", { timeout: 120_000 }, () => {
   const host = "mend.example.test";
 
@@ -1258,6 +1508,7 @@ describe("the edge and the posture", { timeout: 120_000 }, () => {
       "compose.yaml",
       "compose.edge.yaml",
       "compose.posture.yaml",
+      "compose.mirrors.yaml",
     ]);
     expect(f.state().edgeRunning).toBe(true);
     // Health was read on Mend's own loopback port, never through the edge's public name.
@@ -1291,6 +1542,7 @@ describe("the edge and the posture", { timeout: 120_000 }, () => {
       "compose.yaml",
       "compose.edge.yaml",
       "compose.posture.yaml",
+      "compose.mirrors.yaml",
     ]);
     for (const command of [["restart"], ["stop"], ["start", "--offline"]]) {
       expect(await serverCommand(command, f.runtime)).toEqual({ _tag: "ok" });
@@ -1298,10 +1550,11 @@ describe("the edge and the posture", { timeout: 120_000 }, () => {
         "compose.yaml",
         "compose.edge.yaml",
         "compose.posture.yaml",
+        "compose.mirrors.yaml",
       ]);
     }
     expect(f.lines).toContain(
-      "Mend, Postgres, Garage and the edge stopped. Volumes, configuration and workspace containers are retained.",
+      "Mend, Postgres, Garage, the edge, the npm mirror and the Docker mirror stopped. Volumes, configuration and workspace containers are retained.",
     );
     expect(f.state().edgeRunning).toBe(true);
   });
@@ -1404,7 +1657,11 @@ describe("the edge and the posture", { timeout: 120_000 }, () => {
     expect(await f.setupEdge(host)).toEqual({ _tag: "ok" });
     const plain = f.files();
     expect(plain["compose.posture.yaml"]).toBeUndefined();
-    expect(f.state().upFiles).toEqual(["compose.yaml", "compose.edge.yaml"]);
+    expect(f.state().upFiles).toEqual([
+      "compose.yaml",
+      "compose.edge.yaml",
+      "compose.mirrors.yaml",
+    ]);
     expect(
       await serverCommand(["setup", "--exposure", "public", "--tenancy", "multi"], f.runtime),
     ).toEqual({ _tag: "ok" });
@@ -1457,7 +1714,7 @@ describe("the edge and the posture", { timeout: 120_000 }, () => {
     expect(JSON.parse(files["server.json"] ?? "{}")).not.toHaveProperty("edgeHost");
     expect(files["server.env"]).toContain(`APP_URL=http://127.0.0.1:${f.port}\n`);
     expect(files["server.env"]).not.toContain("MEND_EDGE_HOST");
-    expect(f.state().upFiles).toEqual(["compose.yaml"]);
+    expect(f.state().upFiles).toEqual(["compose.yaml", "compose.mirrors.yaml"]);
     // The edge's container went by its labels, before the edge-less `up`; nothing else was removed.
     const removal = f.runCalls.findIndex(
       (call) => call.args[2] === "container" && call.args[3] === "rm",
@@ -1556,15 +1813,24 @@ describe("the edge and the posture", { timeout: 120_000 }, () => {
       sshConfigFile: path.join(f.root, "home", "ssh-config"),
       signedIn: null,
       revokeDevice: async () => null,
+      removeWorkspaceSshKey: async (): Promise<ThisMachineKeyRemoval> => ({
+        removed: [],
+        stillActive: [],
+        problem: null,
+      }),
     };
     const plan = await describeUninstall(runtime, "server");
     expect(plan.server).toMatchObject({ edgeHost: host });
     expect(planLines(plan, f.configDir).join("\n")).toContain(
-      `containers mend, postgres, garage, edge · volumes mend-store, mend-control, mend-garage, mend-config, mend-ssh, mend-postgres, mend-edge-data, mend-edge-config · image ghcr.io/sealant-sh/mend:0.23.0 · the edge for ${host}`,
+      `containers mend, postgres, garage, edge, npm-mirror, docker-mirror · volumes mend-store, mend-control, mend-garage, mend-config, mend-ssh, mend-postgres, mend-edge-data, mend-edge-config, mend-npm-mirror, mend-docker-mirror · image ghcr.io/sealant-sh/mend:0.23.0 · the edge for ${host}`,
     );
     const outcome = await executeUninstall(runtime, plan);
     expect(outcome.failures).toEqual([]);
-    expect(f.state().downFiles).toEqual(["compose.yaml", "compose.edge.yaml"]);
+    expect(f.state().downFiles).toEqual([
+      "compose.yaml",
+      "compose.edge.yaml",
+      "compose.mirrors.yaml",
+    ]);
     expect(f.state().edgeRunning).toBe(false);
   });
 });
@@ -1583,6 +1849,11 @@ describe("server uninstall", { timeout: 60_000 }, () => {
       sshConfigFile: path.join(f.root, "home", "ssh-config"),
       signedIn: null,
       revokeDevice: async () => "must not be called",
+      removeWorkspaceSshKey: async (): Promise<ThisMachineKeyRemoval> => ({
+        removed: [],
+        stillActive: [],
+        problem: "must not be called",
+      }),
     };
 
     const plan = await describeUninstall(runtime, "server");
@@ -1592,6 +1863,7 @@ describe("server uninstall", { timeout: 60_000 }, () => {
       appUrl: expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+$/),
       dockerContext: "saved-local",
       edgeHost: null,
+      mirrors: ["npm-mirror", "docker-mirror"],
       generations: 1,
       backups: 0,
     });
@@ -1630,6 +1902,11 @@ describe("server uninstall", { timeout: 60_000 }, () => {
       sshConfigFile: path.join(f.root, "home", "ssh-config"),
       signedIn: null,
       revokeDevice: async () => null,
+      removeWorkspaceSshKey: async (): Promise<ThisMachineKeyRemoval> => ({
+        removed: [],
+        stillActive: [],
+        problem: null,
+      }),
     };
     const outcome = await executeUninstall(runtime, await describeUninstall(runtime, "server"));
     expect(outcome.failures).toEqual([expect.stringContaining("docker compose down failed")]);

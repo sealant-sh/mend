@@ -62,7 +62,9 @@ if (operation === "oversized-generation") {
       } else if (args[2] === "info") stdout = "Docker Engine - Community";
       else if (args.includes("image")) stdout = "0.23.0";
       else if (args.includes("compose") && args.includes("config"))
-        stdout = "ghcr.io/sealant-sh/mend:0.23.0\npostgres:17-alpine\ndxflrs/garage:v2.4.1\n";
+        // The mirrors overlay a fresh setup writes brings nginx and the registry into the project.
+        stdout =
+          "ghcr.io/sealant-sh/mend:0.23.0\npostgres:17-alpine\ndxflrs/garage:v2.4.1\nnginx:1.29-alpine\nregistry:3.1\n";
       else if (args.includes("compose") && args.includes("exec") && args.includes("garage")) {
         // The bucket init after `up`: the node for `status`, Mend's key for `bucket info`.
         const sub = args.slice(args.indexOf("/etc/garage.toml") + 1);

@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import * as fs from "node:fs";
+import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 
@@ -8,7 +9,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { DockerProtocol } from "../test-fixtures/docker-protocol.ts";
 import { type HostFile, parseDockerInfo } from "./docker-shutdown.ts";
 import { SERVER_VOLUME_OWNER_LABEL } from "./server-docker-volumes.ts";
-import { serverCommand, type ServerSetupRuntime } from "./server-setup.ts";
+import { serverCommand, sshBannerAt, type ServerSetupRuntime } from "./server-setup.ts";
 
 const composeAsset = fs.readFileSync(
   new URL("../test-fixtures/docker/compose.v2.yaml", import.meta.url),
@@ -44,6 +45,28 @@ interface RuntimeControl {
   readonly garageCalls: ReadonlyArray<ReadonlyArray<string>>;
   readonly randomCalls: () => number;
 }
+
+/** A TCP listener on loopback that does `onConnection` with each connection. */
+const listen = (onConnection: (socket: net.Socket) => void) =>
+  new Promise<{ readonly port: number; readonly close: () => Promise<void> }>((resolve) => {
+    const sockets = new Set<net.Socket>();
+    const server = net.createServer((socket) => {
+      sockets.add(socket);
+      socket.on("close", () => sockets.delete(socket));
+      onConnection(socket);
+    });
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      resolve({
+        port: typeof address === "object" && address !== null ? address.port : 0,
+        close: () =>
+          new Promise<void>((done) => {
+            for (const socket of sockets) socket.destroy();
+            server.close(() => done());
+          }),
+      });
+    });
+  });
 
 const makeRuntime = (
   options: {
@@ -127,9 +150,17 @@ const makeRuntime = (
           composeFile !== undefined && fs.readFileSync(composeFile, "utf8").includes("\n  garage:");
         // The edge overlay, when the generation has one, brings Caddy's image into the project.
         const withEdge = args.some((arg) => arg.endsWith("/compose.edge.yaml"));
+        // So does the mirrors overlay, with each mirror's image.
+        const mirrorsFile = args.find((arg) => arg.endsWith("/compose.mirrors.yaml"));
+        const mirrorImages =
+          mirrorsFile === undefined
+            ? []
+            : [...fs.readFileSync(mirrorsFile, "utf8").matchAll(/^ {4}image: (\S+)$/gm)].map(
+                (match) => `${match[1]}\n`,
+              );
         return {
           status: 0,
-          stdout: `ghcr.io/sealant-sh/mend:${version}\npostgres:17-alpine\n${withGarage ? "dxflrs/garage:v2.4.1\n" : ""}${withEdge ? "caddy:2.10-alpine\n" : ""}`,
+          stdout: `ghcr.io/sealant-sh/mend:${version}\npostgres:17-alpine\n${withGarage ? "dxflrs/garage:v2.4.1\n" : ""}${withEdge ? "caddy:2.10-alpine\n" : ""}${mirrorImages.join("")}`,
           stderr: "",
         };
       }
@@ -276,8 +307,11 @@ describe("mend server setup", () => {
           const identity = fs.readFileSync(path.join(configDir, "identity.env"));
           expect(fs.readFileSync(path.join(directory, "identity.env"))).toEqual(identity);
           expect(fs.readdirSync(directory).toSorted()).toEqual([
+            "compose.mirrors.yaml",
             "compose.yaml",
+            "docker-mirror-guard.sh",
             "identity.env",
+            "npm-mirror.conf",
             "postgres-init.sh",
             "server.env",
             "server.json",
@@ -754,12 +788,14 @@ describe("mend server setup", () => {
         "MEND_BIND_HOST",
         "MEND_CONTROL_VOLUME_NAME",
         "MEND_DB_PASSWORD",
+        "MEND_DOCKER_MIRROR_MAX_SIZE",
         "MEND_GARAGE_ADMIN_TOKEN",
         "MEND_GARAGE_KEY_ID",
         "MEND_GARAGE_KEY_SECRET",
         "MEND_GARAGE_RPC_SECRET",
         "MEND_GARAGE_VOLUME_NAME",
         "MEND_IMAGE_REPOSITORY",
+        "MEND_NPM_MIRROR_MAX_SIZE",
         "MEND_PORT",
         "MEND_POSTGRES_ADMIN_PASSWORD",
         "MEND_SSH_PORT",
@@ -772,6 +808,12 @@ describe("mend server setup", () => {
         "WORKSPACE_SSH_GATEWAY_TOKEN",
       ].toSorted(),
     );
+    expect(env.get("MEND_NPM_MIRROR_MAX_SIZE")).toBe("10g");
+    expect(
+      JSON.parse(fs.readFileSync(activeFile(control.runtime.configDir, "server.json"), "utf8"))
+        .mirrors,
+    ).toEqual({ npm: { maxSize: "10g" }, docker: { maxSize: "20g" } });
+    expect(modeOf(activeFile(control.runtime.configDir, "npm-mirror.conf"))).toBe(0o644);
     expect(
       fs.readFileSync(activeFile(control.runtime.configDir, "compose.yaml"), "utf8"),
     ).toContain("mend-postgres");
@@ -782,6 +824,8 @@ describe("mend server setup", () => {
       "Starting Mend 0.23.0 containers; Docker waits up to 120s for them to report healthy",
       "Capture store bucket mend is laid out in Garage",
       "Mend 0.23.0 is reachable at http://localhost:3105",
+      "The npm mirror runs on this install. New sessions install npm packages through it, capped at 10g.",
+      "The Docker mirror runs on this install. New sessions' Docker daemons pull Docker Hub images through it (mend-docker-mirror).",
       "Open http://localhost:3105, create the first account, then run: mend login --url http://localhost:3105",
     ]);
 
@@ -798,6 +842,8 @@ describe("mend server setup", () => {
       activeFile(control.runtime.configDir, "server.env"),
       "-f",
       activeFile(control.runtime.configDir, "compose.yaml"),
+      "-f",
+      activeFile(control.runtime.configDir, "compose.mirrors.yaml"),
       "up",
       "-d",
       "--wait",
@@ -919,6 +965,271 @@ describe("mend server setup", () => {
     ).toEqual({ _tag: "ok" });
     const env = readEnv(activeFile(exposed.runtime.configDir, "server.env"));
     expect(env.get("MEND_ALLOWED_ORIGINS")).toBe('["https://mend.example.test"]');
+  });
+
+  it("moves a saved non-local URL to the port --port publishes, and keeps one on another port", async () => {
+    const configDir = temporaryDirectory("port-move");
+    expect(
+      await serverCommand(
+        ["setup", "--bind", "0.0.0.0", "--url", "http://mend-mini.local:3105"],
+        makeRuntime({ configDir }).runtime,
+      ),
+    ).toEqual({ _tag: "ok" });
+    expect(
+      await serverCommand(["setup", "--port", "3205"], makeRuntime({ configDir }).runtime),
+    ).toEqual({ _tag: "ok" });
+    const moved = readEnv(activeFile(configDir, "server.env"));
+    expect(moved.get("APP_URL")).toBe("http://mend-mini.local:3205");
+    expect(moved.get("MEND_PORT")).toBe("3205");
+
+    // A URL on a port setup does not publish (a forward in front of it) is the operator's own.
+    const forwarded = temporaryDirectory("port-forwarded");
+    expect(
+      await serverCommand(
+        ["setup", "--bind", "0.0.0.0", "--url", "http://mend-mini.local:8080"],
+        makeRuntime({ configDir: forwarded }).runtime,
+      ),
+    ).toEqual({ _tag: "ok" });
+    expect(
+      await serverCommand(
+        ["setup", "--port", "3206"],
+        makeRuntime({ configDir: forwarded }).runtime,
+      ),
+    ).toEqual({ _tag: "ok" });
+    expect(readEnv(activeFile(forwarded, "server.env")).get("APP_URL")).toBe(
+      "http://mend-mini.local:8080",
+    );
+
+    // An https origin is an endpoint in front of Mend (a TLS terminator of the operator's own),
+    // which --port does not move: not when it names the old port, not when its port is implicit.
+    const cases: ReadonlyArray<readonly [ReadonlyArray<string>, string]> = [
+      [["--port", "3105", "--url", "https://mini.example:3105"], "https://mini.example:3105"],
+      [["--port", "443", "--url", "https://mini.example"], "https://mini.example"],
+      [["--port", "80", "--url", "http://mini.example"], "http://mini.example"],
+    ];
+    for (const [first, kept] of cases) {
+      const directory = temporaryDirectory("port-kept");
+      expect(
+        await serverCommand(
+          ["setup", "--bind", "0.0.0.0", ...first],
+          makeRuntime({ configDir: directory }).runtime,
+        ),
+      ).toEqual({ _tag: "ok" });
+      expect(
+        await serverCommand(
+          ["setup", "--port", "3205"],
+          makeRuntime({ configDir: directory }).runtime,
+        ),
+      ).toEqual({ _tag: "ok" });
+      const env = readEnv(activeFile(directory, "server.env"));
+      expect(env.get("APP_URL")).toBe(kept);
+      expect(env.get("MEND_PORT")).toBe("3205");
+    }
+  });
+
+  it("publishes workspace SSH with --ssh-bind while an edge keeps the web port on loopback", async () => {
+    const configDir = temporaryDirectory("ssh-bind");
+    expect(await serverCommand(["setup"], makeRuntime({ configDir }).runtime)).toEqual({
+      _tag: "ok",
+    });
+    const withSsh = makeRuntime({ configDir });
+    expect(
+      await serverCommand(
+        ["setup", "--edge", "mend.example.test", "--ssh-bind", "0.0.0.0"],
+        withSsh.runtime,
+      ),
+    ).toEqual({ _tag: "ok" });
+    expect(
+      withSsh.lines.some((line) => line.endsWith("Workspace SSH is published on 0.0.0.0:2222.")),
+    ).toBe(true);
+    const env = readEnv(activeFile(configDir, "server.env"));
+    expect(env.get("MEND_BIND_HOST")).toBe("127.0.0.1");
+    expect(env.get("MEND_SSH_BIND_HOST")).toBe("0.0.0.0");
+    expect(JSON.parse(fs.readFileSync(activeFile(configDir, "server.json"), "utf8"))).toMatchObject(
+      { bind: "127.0.0.1", sshBind: "0.0.0.0", edgeHost: "mend.example.test" },
+    );
+    // The compose asset publishes 2222 on it, and 3105 on --bind.
+    const compose = fs.readFileSync(activeFile(configDir, "compose.yaml"), "utf8");
+    expect(compose).toContain('"${MEND_BIND_HOST:-127.0.0.1}:${MEND_PORT:-3105}:3105"');
+    expect(compose).toContain(
+      '"${MEND_SSH_BIND_HOST:-${MEND_BIND_HOST:-127.0.0.1}}:${MEND_SSH_PORT:-2222}:2222"',
+    );
+
+    // Kept across a rerun; the --bind address takes it away.
+    expect(await serverCommand(["setup"], makeRuntime({ configDir }).runtime)).toEqual({
+      _tag: "ok",
+    });
+    expect(readEnv(activeFile(configDir, "server.env")).get("MEND_SSH_BIND_HOST")).toBe("0.0.0.0");
+    expect(
+      await serverCommand(["setup", "--ssh-bind", "127.0.0.1"], makeRuntime({ configDir }).runtime),
+    ).toEqual({ _tag: "ok" });
+    expect(readEnv(activeFile(configDir, "server.env")).has("MEND_SSH_BIND_HOST")).toBe(false);
+    expect(
+      JSON.parse(fs.readFileSync(activeFile(configDir, "server.json"), "utf8")),
+    ).not.toHaveProperty("sshBind");
+
+    const refusals: ReadonlyArray<readonly [ReadonlyArray<string>, string]> = [
+      [["--ssh-bind", "mend-mini.local"], "literal IPv4 or IPv6"],
+      [["--exposure", "loopback", "--ssh-bind", "0.0.0.0"], "non-loopback --ssh-bind"],
+    ];
+    for (const [args, message] of refusals) {
+      const refused = makeRuntime();
+      const result = await serverCommand(["setup", ...args], refused.runtime);
+      expect(result).toMatchObject({ _tag: "error", message: expect.stringContaining(message) });
+      expect(fs.existsSync(path.join(refused.runtime.configDir, "active"))).toBe(false);
+    }
+  });
+
+  it("hands workspace SSH published beside a public edge to the exposure gate, and starts public only once it is declared", async () => {
+    const configDir = temporaryDirectory("ssh-gate");
+    expect(await serverCommand(["setup"], makeRuntime({ configDir }).runtime)).toEqual({
+      _tag: "ok",
+    });
+    // Public, with SSH on every interface beside the edge, and nobody stated who reaches it.
+    const undeclared = makeRuntime({ configDir });
+    const refused = await serverCommand(
+      ["setup", "--edge", "mend.example.test", "--exposure", "public", "--ssh-bind", "0.0.0.0"],
+      undeclared.runtime,
+    );
+    expect(refused).toMatchObject({
+      _tag: "error",
+      message: expect.stringContaining("add --declare workspace-ssh"),
+    });
+    expect(undeclared.commands.some(([, args]) => args.includes("up"))).toBe(false);
+
+    // Declared: the statement and where SSH is published both reach the mend container.
+    const declared = makeRuntime({ configDir });
+    const probed: Array<string> = [];
+    expect(
+      await serverCommand(
+        [
+          "setup",
+          "--edge",
+          "mend.example.test",
+          "--exposure",
+          "public",
+          "--ssh-bind",
+          "0.0.0.0",
+          "--declare",
+          "workspace-ssh",
+          "--declare",
+          "core-private",
+        ],
+        {
+          ...declared.runtime,
+          probeSsh: async (bind, port) => {
+            probed.push(`${bind}:${port}`);
+            return [
+              { address: "192.168.1.20", banner: "SSH-2.0-sealant-gateway" },
+              { address: "100.64.0.7", banner: null },
+            ];
+          },
+        },
+      ),
+    ).toEqual({ _tag: "ok" });
+    const env = readEnv(activeFile(configDir, "server.env"));
+    expect(env.get("MEND_SSH_PUBLISHED")).toBe("0.0.0.0:2222");
+    expect(env.get("MEND_EXPOSURE_DECLARED")).toBe("workspace-ssh,core-private");
+    const overlay = fs.readFileSync(activeFile(configDir, "compose.posture.yaml"), "utf8");
+    expect(overlay).toContain("MEND_SSH_PUBLISHED: ${MEND_SSH_PUBLISHED:?");
+    expect(overlay).toContain("MEND_EXPOSURE_DECLARED: ${MEND_EXPOSURE_DECLARED:?");
+    expect(JSON.parse(fs.readFileSync(activeFile(configDir, "server.json"), "utf8"))).toMatchObject(
+      { sshBind: "0.0.0.0", declared: ["workspace-ssh", "core-private"] },
+    );
+    // What this machine observed, and only that: never a verdict about who else reaches it.
+    expect(probed).toEqual(["0.0.0.0:2222"]);
+    expect(declared.lines).toContain(
+      "Workspace SSH is published on 0.0.0.0:2222. From this machine: 192.168.1.20:2222 answers (SSH-2.0-sealant-gateway), 100.64.0.7:2222 did not answer. Who else reaches it is up to the network and its firewall; mend operator exposure reports it as workspace-ssh.",
+    );
+    for (const line of declared.lines) expect(line).not.toMatch(/\bsafe\b|gate passed/i);
+
+    // Kept across a rerun; taking the declaration away while SSH stays published is refused again.
+    expect(await serverCommand(["setup"], makeRuntime({ configDir }).runtime)).toEqual({
+      _tag: "ok",
+    });
+    expect(readEnv(activeFile(configDir, "server.env")).get("MEND_EXPOSURE_DECLARED")).toBe(
+      "workspace-ssh,core-private",
+    );
+    expect(
+      await serverCommand(["setup", "--declare", "none"], makeRuntime({ configDir }).runtime),
+    ).toMatchObject({ _tag: "error", message: expect.stringContaining("--declare workspace-ssh") });
+    // SSH back on loopback: nothing to declare, and none of it in the environment.
+    expect(
+      await serverCommand(
+        ["setup", "--ssh-bind", "127.0.0.1", "--declare", "none"],
+        makeRuntime({ configDir }).runtime,
+      ),
+    ).toEqual({ _tag: "ok" });
+    const after = readEnv(activeFile(configDir, "server.env"));
+    expect(after.has("MEND_SSH_PUBLISHED")).toBe(false);
+    expect(after.has("MEND_EXPOSURE_DECLARED")).toBe(false);
+
+    const invalid = makeRuntime();
+    expect(await serverCommand(["setup", "--declare", "budgets"], invalid.runtime)).toMatchObject({
+      _tag: "error",
+      message: expect.stringContaining(
+        "--declare takes core-private, edge-tls, workspace-ssh or none",
+      ),
+    });
+  });
+
+  it("reads an SSH banner, and settles on silence, a clean close before any bytes, and a refusal", async () => {
+    const banner = await listen((socket) => socket.end("SSH-2.0-sealant-gateway\r\n"));
+    const silent = await listen(() => undefined);
+    // The reviewer's case: accept, then FIN before any bytes (a gateway restarting).
+    const closing = await listen((socket) => socket.end());
+    try {
+      expect(await sshBannerAt("127.0.0.1", banner.port, 2_000)).toBe("SSH-2.0-sealant-gateway");
+      const started = Date.now();
+      expect(await sshBannerAt("127.0.0.1", silent.port, 300)).toBeNull();
+      expect(Date.now() - started).toBeLessThan(2_000);
+      expect(await sshBannerAt("127.0.0.1", closing.port, 5_000)).toBeNull();
+    } finally {
+      await Promise.all([banner.close(), silent.close(), closing.close()]);
+    }
+    // Nothing listening: refused at once.
+    expect(await sshBannerAt("127.0.0.1", banner.port, 2_000)).toBeNull();
+  });
+
+  it("finishes setup when its look at workspace SSH never answers", async () => {
+    const configDir = temporaryDirectory("ssh-probe-bound");
+    expect(await serverCommand(["setup"], makeRuntime({ configDir }).runtime)).toEqual({
+      _tag: "ok",
+    });
+    const control = makeRuntime({ configDir });
+    expect(
+      await serverCommand(["setup", "--edge", "mend.example.test", "--ssh-bind", "0.0.0.0"], {
+        ...control.runtime,
+        probeSsh: () => new Promise(() => undefined),
+        sshProbeBoundMs: 50,
+      }),
+    ).toEqual({ _tag: "ok" });
+    expect(control.lines).toContain(
+      "Workspace SSH is published on 0.0.0.0:2222. This machine's look at it did not finish within 0.05 s. Who reaches it is up to the network and its firewall; mend operator exposure reports it as workspace-ssh.",
+    );
+  });
+
+  it("refuses --ssh-bind with a release whose compose publishes SSH on --bind only", async () => {
+    const assets = temporaryDirectory("ssh-bind-old-assets");
+    fs.mkdirSync(assets, { recursive: true });
+    fs.writeFileSync(
+      path.join(assets, "compose.v2.yaml"),
+      composeAsset.replace(
+        "${MEND_SSH_BIND_HOST:-${MEND_BIND_HOST:-127.0.0.1}}",
+        "${MEND_BIND_HOST:-127.0.0.1}",
+      ),
+    );
+    fs.writeFileSync(path.join(assets, "postgres-init.sh"), postgresAsset);
+    const control = makeRuntime();
+    const result = await serverCommand(
+      ["setup", "--version", "0.23.0", "--assets-dir", assets, "--ssh-bind", "0.0.0.0"],
+      control.runtime,
+    );
+    expect(result).toMatchObject({
+      _tag: "error",
+      message: expect.stringContaining("cannot honour --ssh-bind 0.0.0.0"),
+    });
+    expect(fs.existsSync(path.join(control.runtime.configDir, "active"))).toBe(false);
   });
 
   it("rejects invalid origins and corrupt or truncated persisted state", async () => {
@@ -1242,8 +1553,11 @@ describe("mend server setup", () => {
     expect(fs.readdirSync(generation).toSorted()).toEqual([
       "Caddyfile",
       "compose.edge.yaml",
+      "compose.mirrors.yaml",
       "compose.yaml",
+      "docker-mirror-guard.sh",
       "identity.env",
+      "npm-mirror.conf",
       "postgres-init.sh",
       "server.env",
       "server.json",
@@ -1269,7 +1583,7 @@ describe("mend server setup", () => {
     expect(env.get("MEND_BIND_HOST")).toBe("127.0.0.1");
     expect(env.has("MEND_EXPOSURE")).toBe(false);
     const up = control.commands.slice(plainCommands).find(([, args]) => args.includes("up"));
-    expect(up?.[1].slice(0, 14)).toEqual([
+    expect(up?.[1].slice(0, 16)).toEqual([
       "--context",
       "default",
       "compose",
@@ -1283,6 +1597,8 @@ describe("mend server setup", () => {
       path.join(generation, "compose.yaml"),
       "-f",
       path.join(generation, "compose.edge.yaml"),
+      "-f",
+      path.join(generation, "compose.mirrors.yaml"),
       "up",
     ]);
     expect(up?.[1]).not.toContain("--remove-orphans");
@@ -1303,6 +1619,14 @@ describe("mend server setup", () => {
     expect(
       control.lines.some((line) =>
         line.startsWith("The edge for mend.example.test is up on 80 and 443."),
+      ),
+    ).toBe(true);
+    // The edge carries HTTPS only: setup says where workspace SSH stayed.
+    expect(
+      control.lines.some((line) =>
+        line.includes(
+          "Workspace SSH is published on 127.0.0.1:2222 only, so Remote-SSH and mend ssh from another machine cannot reach it; --ssh-bind 0.0.0.0 publishes it.",
+        ),
       ),
     ).toBe(true);
     for (const line of control.lines) expect(line).not.toMatch(/\bsafe\b|gate passed/i);

@@ -112,6 +112,72 @@ the origin's host, and its port for ssh. Pushing a mirror or a fork elsewhere fr
 workspace runs without Mend's signer. An operator who alone uses the machine may set
 `MEND_GIT_TRANSPORT_BIND_ORIGIN=false`; `multi` tenancy refuses to start with it.
 
+## Credentials in repository URLs
+
+Since 0.36 (found in the review of mend#611), Mend never stores, returns or logs a repository URL
+with a credential in it. A URL is a credential carrier when it has a password (any scheme) or a user
+over any scheme but ssh: over HTTP(S) the user is where tokens go (`https://oauth2:TOKEN@…`,
+`https://ghp_…@github.com/…`), over ssh it is the login (`ssh://git@host/…`, `git@host:path`) and
+stays. One parser in `@mend/domain` (`repository-url.ts`) decides everywhere. It reads an authority
+as RFC 3986 does: from `scheme://` to the next `/`, `?` or `#`, with everything before the last `@`
+as userinfo, whatever characters it holds (quotes, angle brackets, spaces, unicode, `%`-escapes); no
+character class decides what a credential may contain (review of mend#640). Detection also asks a
+URL parser, and either finding one is enough. `redactRepositoryUrl` handles one URL (a stored
+origin, a git remote, an argument); `redactUrlCredentials` handles free text by the same rule,
+whitespace inside userinfo included (review 3 of mend#611), and the CLI's `redactCredentials`
+delegates to it, so the CLI and the server never disagree. Output that must keep its shape (the
+CLI's `--json`) is redacted one string at a time.
+
+- **Refused where it enters.** `repositoryCloneUrlIssue` refuses such a URL with guidance that names
+  the supported ways (`mend keys`, `--auth bridge`). The adopt route checks it before anything else
+  and answers `StoreFailure` with that sentence and never the URL; the payload's `source` is a plain
+  string so that a client from before the rule reads the reason, not a bare 400. It also backs every
+  client's local check (CLI, dashboard, web, phone, VS Code) and `SourcePolicy.check`, which every
+  adopt, refresh and reference clone passes. Dotfiles keep their own message
+  (`dotfilesRepositoryUrlCredentialIssue`), on the same rule.
+- **Never returned.** `ProjectsRepo` and `ReferencesRepo` strip it on write and on every read, so no
+  response, no Slack inference prompt and no workspace clone (ADR 0011) can carry one an older
+  server stored.
+- **Never logged.** `GitError` is built with its args and stderr redacted (a failed clone's message
+  carries the whole command line), `ReferenceCloneError.source` likewise, and the server's console
+  strips URL credentials from every log line (`RedactingConsoleLive`).
+- **Existing data.** Migration 0126 strips project and reference origins and both dotfiles columns.
+  Mend does not rewrite a store's git config (review 4 of mend#640: four rounds of rewriting it in
+  place kept finding ways to lose or reorder a remote). A store or reference clone whose config has
+  a remote URL with a login or token in it, a `url.<base>.insteadOf` whose base holds one, or any
+  `include`/`includeIf` (Mend never writes one, and a conditional one can turn on in a worktree
+  after a check passed) is refused instead (`refuseRemoteCredentials` in `@mend/store`): every
+  fetch, push, probe, reference refresh, worktree open or reset, and every co-located workspace
+  mount of a project store, a selected reference or a linked project (launch, resume, a launch into
+  an existing worktree, a standby; review 5 of mend#640), and adding the project to a session as a
+  repository. What a person reads names the kind of thing found, a key only when it cannot hold a
+  URL (`remote.origin.url`, `include.path`; otherwise "an includeIf condition", "a url rewrite
+  (insteadOf)", "a remote's url"), that an operator must remove it, and the supported way instead:
+  adopting the project again from its SSH URL with a Mend key or the bridge. No URL, path or command
+  crosses an HTTP response, where the error scrubber would mangle it. The server log carries each
+  finding's file and the exact command, built from clean parts only:
+  `git --git-dir=<store> remote set-url [--push] <name> <clean url>` for a plain-named remote with
+  one value, `config --unset-all include.path`, or `config --edit` for the rest. Stripping the token
+  would break that project's fetch anyway, so nothing is lost: the store and its worktrees stay as
+  they are. The scan is read only (`git config -z --local --includes --show-origin`, so a value with
+  a newline is one value), and `RemoteCredentialCheckLive` logs each refused repository and a count
+  at every worker start.
+- **Known limits.** The gate reads the store's own config. Global and system git config and
+  `GIT_CONFIG_*` in the server's environment are the operator's configuration of their own server,
+  not input from a person, and are outside it. Neither does it judge `http.<url>.extraHeader` or
+  `credential.helper` in a store's config: those predate this rule and are not URL credentials; a
+  policy for them is a 0.37 roadmap item.
+
+Why refuse rather than keep the token sealed beside the URL: Mend holds no HTTPS credential of an
+account's, and a token in a project's URL is the adopter's credential spent by everyone who works in
+the project, including fetches and landings by other members. That is the cross-person spend the
+per-person rules forbid. The supported ways are each person's own: their Mend key or their bridge. A
+per-account HTTPS token, sealed like other credentials, is the planned follow-up (above), and would
+not live in the URL either. A project whose store still holds the token is refused after the upgrade
+until it is adopted again from its SSH URL, or the operator strips it. The owner's box had none (0
+of 6 projects, 0 references; no store with a credential, a token in an insteadOf base or an
+include).
+
 ## Accounts and organizations
 
 Since organizations (`docs/adr/0003-organizations-and-tenancy.md`), every signer belongs to one

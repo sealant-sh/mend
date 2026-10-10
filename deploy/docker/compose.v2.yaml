@@ -1,5 +1,5 @@
 # Mend bundle deployment contract v2. The long-running containers are Mend, official Postgres and
-# Garage. The Mend image supervises its web/API processes plus the Sealant 0.39.0-next.707 API, worker
+# Garage. The Mend image supervises its web/API processes plus the Sealant 0.39.0-next.714 API, worker
 # and SSH gateway. Sealant's job queue lives in Postgres and workspace images live in the host
 # Docker Engine. Garage is the capture store's bucket (docs/adr/0002-session-capture-store.md):
 # every session's work product ships there and the executor is disposable. Generate and persist
@@ -21,7 +21,9 @@ services:
         condition: service_healthy
     ports:
       - "${MEND_BIND_HOST:-127.0.0.1}:${MEND_PORT:-3105}:3105"
-      - "${MEND_BIND_HOST:-127.0.0.1}:${MEND_SSH_PORT:-2222}:2222"
+      # Workspace SSH may be published apart from the web port (`mend server setup --ssh-bind`): an
+      # edge keeps 3105 on loopback, and Remote-SSH from another machine still needs 2222.
+      - "${MEND_SSH_BIND_HOST:-${MEND_BIND_HOST:-127.0.0.1}}:${MEND_SSH_PORT:-2222}:2222"
     environment:
       APP_URL: ${APP_URL:?set APP_URL in .env}
       MEND_ALLOWED_ORIGINS: ${MEND_ALLOWED_ORIGINS:-[]}

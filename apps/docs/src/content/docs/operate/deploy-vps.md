@@ -6,9 +6,11 @@ sidebar:
 ---
 
 A VPS or home server uses the same [Docker installation](/getting-started/install/) as your own
-machine. Run setup on the server over ordinary host SSH. It runs three containers: the Mend
-application (web, API and its pinned Sealant runtime), an official Postgres, and Garage, the bucket
-that holds every session's captured work. You do not install or choose a Sealant version separately.
+machine. Run setup on the server over ordinary host SSH. It runs the Mend application (web, API and
+its pinned Sealant runtime), an official Postgres, Garage (the bucket that holds every session's
+captured work), and two caches that sessions download through: an [npm mirror](/operate/npm-mirror/)
+and a [Docker mirror](/operate/docker-mirror/). You do not install or choose a Sealant version
+separately.
 
 ## Decide how the server is reached
 
@@ -43,10 +45,10 @@ organization and its operator; everyone after it joins through a single-use invi
 `mend invite`. Create the first account before anyone else can reach the server. Read
 [Organizations](/organizations/overview/) for members, roles and invitations.
 
-Postgres and Garage publish no host port, and no image registry is published. Workspace images are
-built and launched in the host Docker Engine through the mounted daemon socket. Workspaces work on
-their own disk and capture their work to the bucket; nothing from the host is bind-mounted into
-them.
+Postgres, Garage and the mirrors publish no host port, and no image registry is published. Workspace
+images are built and launched in the host Docker Engine through the mounted daemon socket.
+Workspaces work on their own disk and capture their work to the bucket; nothing from the host is
+bind-mounted into them.
 
 ### Behind a TLS edge
 

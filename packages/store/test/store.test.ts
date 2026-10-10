@@ -13,7 +13,14 @@ import {
 } from "@mend/domain/workbench";
 import { Effect, Layer, Result } from "effect";
 
-import { Store, StoreConfig } from "../src/store.ts";
+import { remoteCredentialFindings } from "../src/remote-credentials.ts";
+import {
+  GRAFTED_REPOSITORY_REASON,
+  SHALLOW_REPOSITORY_REASON,
+  Store,
+  StoreConfig,
+  unsupportedRepositoryReason,
+} from "../src/store.ts";
 
 const sessionId = SessionId.make("01TEST");
 /** Worktree identity as the engine derives it for unnamed worktrees. */
@@ -194,6 +201,125 @@ describe("Store", () => {
     );
   });
 
+  // Verify proof run 9 (2026-10-10): a project adopted from a shallow repository never saved a
+  // Stop — the base pack stops at the shallow boundary, and the capture's closure walk reads the
+  // boundary's parents. A full clone of a shallow source is shallow too, so adoption refuses it.
+  it("refuses to adopt a shallow repository, and leaves nothing behind", async () => {
+    await withStore((tmp, origin, source) =>
+      Effect.gen(function* () {
+        const store = yield* Store;
+        const commit = (message: string) => {
+          fs.appendFileSync(path.join(origin, "app.ts"), `// ${message}\n`);
+          execFileSync("git", ["add", "-A"], { cwd: origin });
+          execFileSync(
+            "git",
+            ["-c", "user.name=t", "-c", "user.email=t@localhost", "commit", "-q", "-m", message],
+            { cwd: origin },
+          );
+        };
+        commit("two");
+        commit("three");
+        // A shallow repository served beside the origin (a `--depth` mirror, a CI checkout).
+        execFileSync("git", [
+          "clone",
+          "-q",
+          "--bare",
+          "--depth",
+          "1",
+          `file://${origin}`,
+          path.join(tmp, "shallow"),
+        ]);
+        const refused = yield* store
+          .adopt("shallow", RepositoryCloneUrl.make(source.replace(/origin$/, "shallow")), {
+            GIT_TERMINAL_PROMPT: "0",
+          })
+          .pipe(Effect.result);
+        expect(Result.isFailure(refused)).toBe(true);
+        if (Result.isFailure(refused)) {
+          expect(refused.failure.cause.stderr).toBe(SHALLOW_REPOSITORY_REASON);
+        }
+        expect(fs.existsSync(path.join(tmp, "store/shallow"))).toBe(false);
+
+        // A shallow local checkout adopts through its origin (the CLI sends `git remote get-url
+        // origin`; local paths are refused): the store is the origin's full history.
+        const checkout = path.join(tmp, "checkout");
+        execFileSync("git", ["clone", "-q", "--depth", "1", source, checkout]);
+        expect(
+          execFileSync("git", ["rev-parse", "--is-shallow-repository"], { cwd: checkout })
+            .toString()
+            .trim(),
+        ).toBe("true");
+        const originOfCheckout = execFileSync("git", ["remote", "get-url", "origin"], {
+          cwd: checkout,
+        })
+          .toString()
+          .trim();
+        const adopted = yield* store.adopt("checkout", RepositoryCloneUrl.make(originOfCheckout), {
+          GIT_TERMINAL_PROMPT: "0",
+        });
+        expect(
+          execFileSync("git", ["rev-parse", "--is-shallow-repository"], { cwd: adopted.storePath })
+            .toString()
+            .trim(),
+        ).toBe("false");
+        expect(
+          execFileSync("git", ["rev-list", "--count", "HEAD"], { cwd: adopted.storePath })
+            .toString()
+            .trim(),
+        ).toBe("3");
+      }),
+    );
+  });
+
+  // Astra review of mend#654: `info/grafts` cuts the base pack as a shallow boundary does, while
+  // git calls the repository complete. A clone never copies grafts, so only a store edited on the
+  // host has them; a session start refuses it. Replace refs do not cut the pack (`pack-objects`
+  // ignores them) and are not refused.
+  it("refuses a repository whose grafts cut its history, and not one with only replace refs", async () => {
+    await withStore((tmp, _origin, source) =>
+      Effect.gen(function* () {
+        const store = yield* Store;
+        const adopted = yield* store.adopt("grafted", source, { GIT_TERMINAL_PROMPT: "0" });
+        const repo = adopted.storePath;
+        const head = adopted.headSha;
+        const second = execFileSync(
+          "git",
+          [
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@localhost",
+            "commit-tree",
+            `${head}^{tree}`,
+            "-p",
+            head,
+            "-m",
+            "second",
+          ],
+          { cwd: repo },
+        )
+          .toString()
+          .trim();
+        execFileSync("git", ["update-ref", "refs/heads/main", second], { cwd: repo });
+        expect(yield* unsupportedRepositoryReason(repo)).toBeNull();
+        const grafts = path.join(repo, "info", "grafts");
+        // Only comments: no commit is grafted.
+        fs.writeFileSync(grafts, "# no grafts\n\n");
+        expect(yield* unsupportedRepositoryReason(repo)).toBeNull();
+        fs.writeFileSync(grafts, `${second}\n`);
+        expect(
+          execFileSync("git", ["rev-parse", "--is-shallow-repository"], { cwd: repo })
+            .toString()
+            .trim(),
+        ).toBe("false");
+        expect(yield* unsupportedRepositoryReason(repo)).toBe(GRAFTED_REPOSITORY_REASON);
+        fs.rmSync(grafts);
+        execFileSync("git", ["replace", "--graft", second], { cwd: repo });
+        expect(yield* unsupportedRepositoryReason(repo)).toBeNull();
+      }),
+    );
+  });
+
   it("reports actual Git clone transport failures with positional sources", async () => {
     await withStore((tmp, _origin, source) =>
       Effect.gen(function* () {
@@ -238,6 +364,184 @@ describe("Store", () => {
             "access denied or repository not exported",
           );
         }
+      }),
+    );
+  });
+
+  it("keeps a credential out of a failed git run's error: args, stderr and the source", async () => {
+    await withStore(() =>
+      Effect.gen(function* () {
+        const store = yield* Store;
+        // Port 1 refuses: the clone fails before any credential could be offered.
+        const reference = yield* store
+          .cloneReference(
+            "_references/token",
+            "https://oauth2:TOKEN-SECRET@127.0.0.1:1/org/repo.git",
+            null,
+            { GIT_TERMINAL_PROMPT: "0" },
+          )
+          .pipe(Effect.result);
+        expect(Result.isFailure(reference)).toBe(true);
+        if (Result.isFailure(reference)) {
+          expect(JSON.stringify(reference.failure)).not.toContain("TOKEN-SECRET");
+          expect(reference.failure.source).toBe("https://127.0.0.1:1/org/repo.git");
+          expect(reference.failure.cause.args).toContain("https://127.0.0.1:1/org/repo.git");
+        }
+      }),
+    );
+  });
+
+  it("refuses every gated op while a store's git config holds a login, a token or an include, and changes nothing", async () => {
+    await withStore((tmp, _origin, source) =>
+      Effect.gen(function* () {
+        const store = yield* Store;
+        const adopted = yield* store.adopt("refused", source, {});
+        const configFile = path.join(adopted.storePath, "config");
+        const config = (...args: ReadonlyArray<string>) =>
+          execFileSync("git", ["config", ...args], { cwd: adopted.storePath, encoding: "utf8" });
+        const included = path.join(tmp, "included.gitconfig");
+        fs.writeFileSync(included, "[core]\n");
+        // What a server before 0.36, or a person, may have left in a store's config.
+        const cases: ReadonlyArray<{
+          readonly key: string;
+          readonly set: () => void;
+          readonly unset: () => void;
+        }> = [
+          {
+            key: "remote.origin.pushurl",
+            set: () =>
+              config("remote.origin.pushurl", "https://user:TOKEN-SECRET@example.invalid/o/r.git"),
+            unset: () => config("--unset-all", "remote.origin.pushurl"),
+          },
+          {
+            key: "remote.mirror.url",
+            set: () =>
+              config("remote.mirror.url", "http://user:se'TOKEN-SECRET@example.invalid/o/r.git"),
+            unset: () => config("--remove-section", "remote.mirror"),
+          },
+          {
+            // A value with a newline in it is one value (review 2 of mend#640, N2).
+            key: "remote.multi.pushurl",
+            set: () =>
+              config(
+                "remote.multi.pushurl",
+                "https://user:LINE\nTOKEN-SECRET@example.invalid/o/r.git",
+              ),
+            unset: () => config("--remove-section", "remote.multi"),
+          },
+          {
+            // Named with its base redacted: Mend never prints the address that holds the login.
+            key: "a url rewrite (insteadOf)",
+            set: () =>
+              config(
+                "url.https://ghp_TOKEN-SECRET@example.invalid/.insteadOf",
+                "https://example.invalid/",
+              ),
+            unset: () =>
+              config("--remove-section", "url.https://ghp_TOKEN-SECRET@example.invalid/"),
+          },
+          {
+            // Any include, clean or not, conditional or not: Mend never writes one (R3-2).
+            key: "include.path",
+            set: () => config("include.path", included),
+            unset: () => config("--unset-all", "include.path"),
+          },
+          {
+            key: "an includeIf condition",
+            set: () => config("includeIf.onbranch:mend/**.path", included),
+            unset: () => config("--remove-section", "includeIf.onbranch:mend/**"),
+          },
+          {
+            // A condition can hold a URL with a password: named by its kind, never its text (R5-2).
+            key: "an includeIf condition",
+            set: () =>
+              config(
+                'includeIf.hasconfig:remote.*.url:https://u:p"SECRET-TAIL@github.com/review/*.path',
+                included,
+              ),
+            unset: () =>
+              config(
+                "--remove-section",
+                'includeIf.hasconfig:remote.*.url:https://u:p"SECRET-TAIL@github.com/review/*',
+              ),
+          },
+          {
+            // A remote whose name is a URL: its kind, and an edit, not its name.
+            key: "a remote's url",
+            set: () =>
+              config(
+                "remote.https://u:TOKEN-SECRET@example.invalid/x.url",
+                "https://user:TOKEN-SECRET@example.invalid/o/r.git",
+              ),
+            unset: () =>
+              config("--remove-section", "remote.https://u:TOKEN-SECRET@example.invalid/x"),
+          },
+          {
+            // A name git would read as an option gets an edit, never `remote set-url -odd`.
+            key: "a remote's pushurl",
+            set: () =>
+              config("remote.-odd.pushurl", "https://user:TOKEN-SECRET@example.invalid/o/r.git"),
+            unset: () => config("--remove-section", "remote.-odd"),
+          },
+        ];
+        for (const [index, { key, set, unset }] of cases.entries()) {
+          set();
+          const before = fs.readFileSync(configFile, "utf8");
+          const findings = yield* remoteCredentialFindings(adopted.storePath);
+          expect(findings.map((finding) => finding.what)).toEqual([key]);
+          const refusals = [
+            yield* store.refreshFromOrigin(adopted.storePath, {}).pipe(Effect.flip),
+            yield* store
+              .createWorktree(adopted.storePath, wtIdentity(`refused-${index}`), null, null)
+              .pipe(Effect.flip),
+          ];
+          // What a person reads: the kind of thing found and who fixes it; no path, no command.
+          for (const refusal of refusals) {
+            expect(refusal.stderr).toContain(key);
+            expect(refusal.stderr).toContain("mend keys");
+            expect(refusal.stderr).toContain("the server log names the exact command");
+            expect(refusal.stderr).not.toContain(configFile);
+            expect(refusal.stderr).not.toContain("git --git-dir=");
+            expect(JSON.stringify(refusal)).not.toContain("TOKEN-SECRET");
+            expect(JSON.stringify(refusal)).not.toContain("SECRET-TAIL");
+          }
+          expect(JSON.stringify(findings)).not.toContain("TOKEN-SECRET");
+          expect(JSON.stringify(findings)).not.toContain("SECRET-TAIL");
+          // The server log has the file and the command, for the operator.
+          expect(
+            findings.every((finding) => finding.file === configFile || finding.file === included),
+          ).toBe(true);
+          expect(findings.every((finding) => finding.fix.startsWith("git --git-dir="))).toBe(true);
+          // Read only: the config is exactly as it was.
+          expect(fs.readFileSync(configFile, "utf8")).toBe(before);
+          unset();
+        }
+        // An ssh login is not a credential, and a clean config runs.
+        config("remote.ssh.url", "ssh://git@example.invalid/o/r.git");
+        expect(yield* remoteCredentialFindings(adopted.storePath)).toEqual([]);
+        yield* store.refreshFromOrigin(adopted.storePath, {});
+      }),
+    );
+  });
+
+  it("names the command an operator can run, and the gate opens once it ran", async () => {
+    await withStore((_tmp, _origin, source) =>
+      Effect.gen(function* () {
+        const store = yield* Store;
+        const adopted = yield* store.adopt("fixable", source, {});
+        const config = (...args: ReadonlyArray<string>) =>
+          execFileSync("git", ["config", ...args], { cwd: adopted.storePath, encoding: "utf8" });
+        // The origin as an older server cloned it, with a login in it, and a push URL too.
+        config("remote.origin.url", source.replace("git://", "git://user:TOKEN-SECRET@"));
+        config("remote.origin.pushurl", "https://oauth2:TOKEN-SECRET@example.invalid/o/r.git");
+        const findings = yield* remoteCredentialFindings(adopted.storePath);
+        expect(findings.map((finding) => finding.fix)).toEqual([
+          `git --git-dir=${adopted.storePath} remote set-url origin ${source}`,
+          `git --git-dir=${adopted.storePath} remote set-url --push origin https://example.invalid/o/r.git`,
+        ]);
+        for (const finding of findings) execFileSync("sh", ["-c", finding.fix]);
+        expect(yield* remoteCredentialFindings(adopted.storePath)).toEqual([]);
+        yield* store.refreshFromOrigin(adopted.storePath, {});
       }),
     );
   });

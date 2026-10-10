@@ -353,6 +353,7 @@ describe("Mend's items as turn items", () => {
   ) =>
     threadProjectionOf(
       {
+        threadId: ThreadId.make(session.id),
         project,
         session,
         agent,
@@ -445,6 +446,7 @@ describe("Mend's items as turn items", () => {
   it("names what a claude permission request touches", () => {
     const projection = threadProjectionOf(
       {
+        threadId: ThreadId.make(session.id),
         project,
         session,
         agent,

@@ -30,6 +30,12 @@ export const unreachableMend: MendClient["Service"] = {
   conversationWait: () => unavailable("GET /api/sessions/:id/waiting"),
   workspaceRetirement: () => unavailable("GET /api/sessions/:id/workspace-retirement"),
   changeDiff: () => unavailable("GET /api/changes/:id/diff"),
+  worktreeNames: () => unavailable("GET /api/projects/:id/worktrees"),
+  createSession: () => unavailable("POST /api/projects/:id/sessions"),
+  joinWorktree: () => unavailable("POST /api/worktrees/:id/sessions"),
+  labelSession: () => unavailable("POST /api/sessions/:id/label"),
+  stopSession: () => unavailable("POST /api/sessions/:id/stop"),
+  removeSession: () => unavailable("DELETE /api/sessions/:id"),
   submitTurn: () => unavailable("POST /api/sessions/:id/turns"),
   launchProtocol: () => unavailable("POST /api/sessions/:id/launch"),
   interruptTurn: () => unavailable("POST /api/turns/:id/interrupt"),
@@ -45,7 +51,11 @@ const refused = Effect.fail(
 /** A hub with nothing in it. */
 export const emptyHub: PersonHub = {
   shellSnapshot: Effect.succeed(EMPTY_SHELL_SNAPSHOT),
-  subscribeShell: Effect.succeed({ snapshot: EMPTY_SHELL_SNAPSHOT, changes: Stream.never }),
+  subscribeShell: () =>
+    Effect.succeed({
+      start: { kind: "snapshot", snapshot: EMPTY_SHELL_SNAPSHOT },
+      changes: Stream.never,
+    }),
   isRefused: () => false,
   refusal: () => Effect.never,
   mend: gateDeviceCalls(unreachableMend, () => Effect.void),
@@ -57,7 +67,13 @@ export const emptyHub: PersonHub = {
     interrupt: () => refused,
     cancelQueued: () => refused,
     resumeQueue: () => refused,
+    editQueued: () => refused,
+    reorderQueued: () => refused,
     respond: () => refused,
+    launch: () => refused,
+    rename: () => refused,
+    stop: () => refused,
+    remove: () => refused,
   },
 };
 

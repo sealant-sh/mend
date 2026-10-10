@@ -99,6 +99,12 @@ export interface CaptureDrainPolicyShape {
    */
   readonly deferredWorkLimit: Duration.Duration;
   /**
+   * How long a landing waits for a Stop under way on the worktree's executor to settle before it
+   * refuses (`the session is stopping`): a Stop's save and end took 15-19 s on the box
+   * (2026-10-03).
+   */
+  readonly landingStopWait: Duration.Duration;
+  /**
    * How often the reaper reads a running executor's capture status (nothing flushed): what shows
    * a failing snap while it fails. MEND_CAPTURE_STATUS_SECONDS.
    */
@@ -141,6 +147,7 @@ const DEFAULT_DRAIN_POLICY: CaptureDrainPolicyShape = {
   keptRetryFirst: Duration.seconds(10),
   keptRetryMax: Duration.minutes(5),
   deferredWorkLimit: Duration.minutes(2),
+  landingStopWait: Duration.seconds(45),
   statusInterval: Duration.seconds(45),
   statusMinInterval: Duration.seconds(10),
   leaseWait: Duration.minutes(30),

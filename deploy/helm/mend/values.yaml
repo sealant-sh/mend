@@ -251,6 +251,48 @@ networkPolicies:
   # Where the Sealant API lives (the worker and web call it).
   sealantNamespace: sealant
 
+# The package and image mirrors (docs: operate/npm-mirror, operate/docker-mirror). Off by default here; the
+# packaged install (`mend server setup`) runs both. Neither is published beyond its ClusterIP
+# Service, and networkPolicies admits Sealant workspace Pods only.
+mirrors:
+  # The free space both mirrors leave on their claims: nginx evicts to keep it, and the Docker
+  # mirror's guard clears its cache and pauses below it (workspaces then pull from Docker Hub).
+  minFree: 5g
+  npm:
+    # nginx caching registry.npmjs.org; the API tier gets MEND_NPM_MIRROR_URL. Sessions install
+    # through it unless the project names a registry or a login for registry.npmjs.org.
+    enabled: false
+    # The unprivileged nginx image (uid 101): the same configuration as the packaged install's.
+    image: nginxinc/nginx-unprivileged:1.29-alpine
+    # nginx's cap on the cache (least recently used out); keep the claim a little larger.
+    maxSize: 10g
+    storage: 12Gi
+    storageClassName: ""
+    resources: { requests: { cpu: 50m, memory: 64Mi }, limits: { cpu: "1", memory: 256Mi } }
+  docker:
+    # The reference registry in proxy mode for Docker Hub. Point workspace Docker daemons at it
+    # in the SEALANT chart: workspaces.docker.registryMirrors: [http://<release>-docker-mirror.<namespace>.svc:5000]
+    enabled: false
+    image: registry:3.1
+    # The guard's cap: over it the cache is cleared and fills again. Keep it below the claim.
+    maxSize: 40g
+    # Layers are evicted this long after they were fetched. Manifests and tag links stay on the
+    # claim until the guard clears the cache (over maxSize, or below minFree free) or you do (docs:
+    # operate/docker-mirror).
+    ttl: 168h
+    storage: 50Gi
+    storageClassName: ""
+    resources: { requests: { cpu: 50m, memory: 64Mi }, limits: { cpu: "1", memory: 512Mi } }
+    upstreamCredentials:
+      # A Secret with keys `username` and `password` (a Docker Hub access token): the mirror pulls
+      # as that account. Empty pulls anonymously. The mirror has no login of its own, so every
+      # admitted workspace can pull whatever the token can read, private repositories included:
+      # use a token whose access permission is "Public Repo Read-only".
+      existingSecret: ""
+      # Your statement that the token above is scoped Public Repo Read-only. A login without it is
+      # refused at render; the chart cannot check a token's scope.
+      publicReadOnly: false
+
 # Extra API-tier env (plain values only). Not forwarded to the web tier.
 # Configure shared browser origins through web.appUrl / web.allowedOrigins above.
 extraEnv: []

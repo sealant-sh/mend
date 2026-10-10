@@ -1,5 +1,6 @@
 import { execFile, spawn } from "node:child_process";
 
+import { redactRepositoryUrl, redactUrlCredentials } from "@mend/domain/workbench";
 import { Effect, Schema } from "effect";
 
 /** A git invocation that exited nonzero (or could not run at all). */
@@ -16,6 +17,17 @@ export class GitError extends Schema.TaggedErrorClass<GitError>()("GitError", {
    */
   code: Schema.optionalKey(Schema.String),
 }) {}
+
+/**
+ * A `GitError` with no credential in it: a remote URL in the args (a clone's source) or in git's
+ * own words keeps its host and path and loses its userinfo. The error reaches logs and responses.
+ */
+const gitError = (fields: ConstructorParameters<typeof GitError>[0]): GitError =>
+  new GitError({
+    ...fields,
+    args: fields.args.map(redactRepositoryUrl),
+    stderr: redactUrlCredentials(fields.stderr),
+  });
 
 interface ExecFailure {
   readonly code?: number | string | null;
@@ -129,7 +141,7 @@ export const git = (
         }
         resume(
           Effect.fail(
-            new GitError({
+            gitError({
               args: [...args],
               cwd,
               exitCode,
@@ -164,7 +176,7 @@ export const gitBytes = (
         }
         resume(
           Effect.fail(
-            new GitError({
+            gitError({
               args: [...args],
               cwd,
               exitCode: typeof error.code === "number" ? error.code : null,
@@ -202,17 +214,23 @@ export const gitOutput = (
       { cwd, maxBuffer: 64 * 1024 * 1024, env: gitProcessEnv(env) },
       (error, stdout, stderr) => {
         if (error === null) {
-          resume(Effect.succeed({ exitCode: 0, stdout, stderr }));
+          resume(Effect.succeed({ exitCode: 0, stdout, stderr: redactUrlCredentials(stderr) }));
           return;
         }
         const failure = error as ExecFailure;
         if (typeof failure.code === "number") {
-          resume(Effect.succeed({ exitCode: failure.code, stdout, stderr }));
+          resume(
+            Effect.succeed({
+              exitCode: failure.code,
+              stdout,
+              stderr: redactUrlCredentials(stderr),
+            }),
+          );
           return;
         }
         resume(
           Effect.fail(
-            new GitError({
+            gitError({
               args: [...args],
               cwd,
               exitCode: null,
@@ -275,7 +293,7 @@ export const gitQuiet = (
     child.on("error", (error: NodeJS.ErrnoException) =>
       settle(
         Effect.fail(
-          new GitError({
+          gitError({
             args: [...args],
             cwd,
             exitCode: null,
@@ -292,7 +310,7 @@ export const gitQuiet = (
       }
       settle(
         Effect.fail(
-          new GitError({
+          gitError({
             args: [...args],
             cwd,
             exitCode,

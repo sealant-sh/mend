@@ -155,9 +155,16 @@ export class EnsureWorkspaceSshKeyRequest extends Schema.Class<EnsureWorkspaceSs
   name: Schema.optionalKey(Schema.String),
 }) {}
 
+/** No active key of the signed-in user has this id: another account's key answers the same. */
+export class WorkspaceSshKeyNotFound extends Schema.TaggedErrorClass<WorkspaceSshKeyNotFound>()(
+  "WorkspaceSshKeyNotFound",
+  { sshKeyId: Schema.String },
+  { httpApiStatus: 404 },
+) {}
+
 /**
- * Workspace SSH for the signed-in user: gateway discovery plus self-service key registration —
- * what the editor extension's one-time setup runs against (docs/WORKSPACE-SSH.md phase 1).
+ * Workspace SSH for the signed-in user: gateway discovery plus self-service key registration and
+ * removal — what the editor extension's one-time setup runs against (docs/WORKSPACE-SSH.md).
  */
 export const workspaceSshGroup = HttpApiGroup.make("workspaceSsh")
   .add(
@@ -171,6 +178,15 @@ export const workspaceSshGroup = HttpApiGroup.make("workspaceSsh")
       payload: EnsureWorkspaceSshKeyRequest,
       success: WorkspaceSshKey,
       error: [AccountRejected, SealantUnavailable],
+    }),
+  )
+  .add(
+    // Archives the key on the platform. The gateway resolves a key on every new connection, so
+    // the next one offering it is refused; a connection already open stays open until it closes.
+    HttpApiEndpoint.delete("removeKey", "/workspace-ssh/keys/:sshKeyId", {
+      params: Schema.Struct({ sshKeyId: Schema.String }),
+      success: WorkspaceSshKey,
+      error: [WorkspaceSshKeyNotFound, SealantUnavailable],
     }),
   )
   .middleware(AuthMiddleware);

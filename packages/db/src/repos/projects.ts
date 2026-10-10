@@ -2,6 +2,7 @@ import { PgClient } from "@effect/sql-pg";
 import { type OrganizationId, type ProjectId, WorkspaceImage, type Sha } from "@mend/domain";
 import {
   Project,
+  redactNullableUrlCredentials,
   type AutomationChoice,
   type GitAuthMode,
   type ProjectVisibility,
@@ -133,9 +134,12 @@ export class ProjectsRepo extends Context.Service<
 
 const decodeWorkspaceImage = Schema.decodeUnknownSync(WorkspaceImage);
 
+// Every project read reaches everyone who can see the project: a credential in the URL never
+// leaves here, whatever an older server stored.
 const toProject = (row: typeof projects.$inferSelect): Project =>
   new Project({
     ...row,
+    originUrl: redactNullableUrlCredentials(row.originUrl),
     workspaceImage: row.workspaceImage === null ? null : decodeWorkspaceImage(row.workspaceImage),
   });
 
@@ -149,7 +153,7 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
       const create = Effect.fn("ProjectsRepo.create")(function* (project: NewProject) {
         const [row] = yield* db
           .insert(projects)
-          .values(project)
+          .values({ ...project, originUrl: redactNullableUrlCredentials(project.originUrl) })
           .returning()
           .pipe(
             Effect.catchTag("EffectDrizzleQueryError", (error) =>

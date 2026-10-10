@@ -27,6 +27,7 @@ import type { Harness, SealantConfig } from "@sealant/sdk";
 import type { SshKey, WorkspaceSshInfo } from "@sealant/sdk";
 import {
   archiveConnectedAccountOp,
+  archiveSshKeyOp,
   createConnectedAccountOp,
   createRunOp,
   createSshKeyOp,
@@ -580,6 +581,16 @@ export interface WorkspaceCreateLaunch {
    * home for the launcher while the executor lives.
    */
   readonly credentialsHome?: CredentialsHome;
+  /**
+   * `sshAsOwner` (docs/adr/0016, decision 10; sealant#348): Core's SSH gateway runs the
+   * workspace's SSH sessions, VS Code Remote-SSH included, as its owner's own Linux user, the uid
+   * of `credentialsHome`, for a person-layout launch. The owner is its launcher, the person whose
+   * launch this create is (after the workspace stops, whoever launches the next one). Mend names no
+   * user: Core takes the owner's. It does not exist at create; until prepare makes it, the gateway
+   * refuses a session rather than run it as root. Sent only where Core reports `workspaceSshUser`
+   * (`PersonLayoutPlatform.sshUser`), and only with `credentialsHome`.
+   */
+  readonly sshAsOwner?: true;
 }
 
 /** A home and the numeric owner Core writes it as (docs/adr/0016, decision 5). */
@@ -884,6 +895,7 @@ const makeUserClient = (env: SealantEnvShape, ownerUserIdInput: string) =>
               ...(launch.credentialsHome === undefined
                 ? {}
                 : { credentialsHome: launch.credentialsHome }),
+              ...(launch.sshAsOwner === true ? { sshAsOwner: true } : {}),
             };
       if (watch === undefined) {
         return wrap(() => sealant.workspaces.create(keyed)).pipe(
@@ -1258,6 +1270,9 @@ export interface ConnectedAccountsApi {
   readonly disconnect: (id: string) => Effect.Effect<ConnectedAccount, SealantPlatformError>;
 }
 
+/** One SSH public key the platform holds for a user; never carries the key material. */
+export type PlatformSshKey = SshKey;
+
 /** A user's SSH public keys on the platform — what the workspace SSH gateway resolves. */
 export interface SshKeysApi {
   /** Idempotent per owner: re-offering the same key returns the existing row. */
@@ -1266,6 +1281,11 @@ export interface SshKeysApi {
     readonly name?: string;
   }) => Effect.Effect<SshKey, SealantPlatformError>;
   readonly list: () => Effect.Effect<ReadonlyArray<SshKey>, SealantPlatformError>;
+  /**
+   * Archive one of the owner's keys; the gateway resolves keys per connection, so the next
+   * connection offering it is refused. Null when the owner holds no active key with that id.
+   */
+  readonly remove: (sshKeyId: string) => Effect.Effect<SshKey | null, SealantPlatformError>;
 }
 
 /**
@@ -1310,8 +1330,25 @@ export class SealantClients extends Context.Service<
      * logins and the capture owner map. Read once and kept five minutes by the SDK.
      */
     readonly controlPlaneFeatures: () => Effect.Effect<SealantFeatures, SealantPlatformError>;
+    /**
+     * Binds a Mend account's Sealant user to their person, once (`users.bindPerson`, sealant#348):
+     * what Core checks `sshAsOwner` against. `bound` when Core holds exactly this binding,
+     * `refused` when Core holds another (409: a different binding, or this person id or uid is
+     * another user's).
+     */
+    readonly bindPerson: (
+      userId: string,
+      person: PersonBindingInput,
+    ) => Effect.Effect<"bound" | "refused", SealantPlatformError>;
   }
 >()("@mend/sealant/SealantClients") {}
+
+/** A person as Core binds a user to one: owner-map id (the account id), uid and home. */
+export interface PersonBindingInput {
+  readonly id: string;
+  readonly uid: number;
+  readonly home: string;
+}
 
 const toConnectedAccount = (wire: {
   readonly connectedAccountId: string;
@@ -1508,6 +1545,14 @@ export const SealantClientsLive: Layer.Layer<
           withOwner((ownerUserId) =>
             listSshKeysOp(ownerUserId).pipe(Effect.map((response) => response.items.map(toSshKey))),
           ),
+        // Core archives only a row that is the owner's and still active; any other id is its 404.
+        remove: (sshKeyId) =>
+          withOwner((ownerUserId) =>
+            archiveSshKeyOp(sshKeyId, ownerUserId).pipe(
+              Effect.map(toSshKey),
+              Effect.catchTag("SshKeyNotFoundError", () => Effect.succeed(null)),
+            ),
+          ),
       };
     };
 
@@ -1546,6 +1591,20 @@ export const SealantClientsLive: Layer.Layer<
       return yield* wrap(() => admin.features());
     });
 
+    const bindPerson = Effect.fn("SealantClients.bindPerson")(function* (
+      userId: string,
+      person: PersonBindingInput,
+    ) {
+      const sealantUserId = yield* sealantUserIdFor(userId);
+      return yield* wrap(() => admin.users.bindPerson(sealantUserId, person)).pipe(
+        Effect.as("bound" as const),
+        Effect.catchIf(
+          (error) => error.status === 409,
+          () => Effect.succeed("refused" as const),
+        ),
+      );
+    });
+
     return {
       forUser,
       forPrincipal,
@@ -1556,6 +1615,7 @@ export const SealantClientsLive: Layer.Layer<
       imageKey,
       inspectImage,
       controlPlaneFeatures,
+      bindPerson,
     };
   }),
 );

@@ -10,9 +10,11 @@ import {
   verifyServerDockerVolumes,
 } from "./server-docker-volumes.ts";
 import { composeOverlays } from "./server-edge.ts";
+import { mirrorServices } from "./server-mirrors.ts";
 import { serverComposeArgs, serverProcessDeadlines } from "./server-runtime.ts";
 import { readServerInstallation, type ServerSetupRuntime } from "./server-setup.ts";
 import { withServerStore } from "./server-store.ts";
+import type { ThisMachineKeyRemoval } from "./ssh-setup.ts";
 
 /**
  * `mend uninstall`: the one command that deletes. Three scopes, chosen up front and
@@ -22,7 +24,9 @@ import { withServerStore } from "./server-store.ts";
  *   volume it owns, its release image) and the private configuration under the config
  *   directory (identity, generations, backups).
  * - `home`: what this CLI keeps for itself (the sign-in, the workspace SSH key, the
- *   managed block in ~/.ssh/config), with the device token revoked on the server first.
+ *   managed block in ~/.ssh/config). First, while the sign-in still works, the server
+ *   removes the workspace SSH key this machine registered and revokes this terminal's
+ *   device token. The account's other keys and devices are left alone.
  * - `all`: both, server first.
  *
  * Nothing else under the config directory is touched: a host-run store or keys root,
@@ -72,6 +76,8 @@ export interface UninstallRuntime {
   readonly signedIn: { readonly url: string; readonly deviceId: string | null } | null;
   /** Revoke this terminal's device token; resolves to the failure's words, or null when done. */
   revokeDevice(): Promise<string | null>;
+  /** Remove the workspace SSH keys this machine registered, and only those. */
+  removeWorkspaceSshKey(): Promise<ThisMachineKeyRemoval>;
 }
 
 export interface ServerPlan {
@@ -80,6 +86,8 @@ export interface ServerPlan {
   readonly dockerContext: string;
   /** The TLS edge's host when the install runs one; its container and volumes go with the rest. */
   readonly edgeHost: string | null;
+  /** The mirrors' Compose services the install runs; their containers and caches go too. */
+  readonly mirrors?: ReadonlyArray<string>;
   readonly generations: number;
   readonly backups: number;
 }
@@ -167,6 +175,7 @@ export const describeUninstall = async (
         appUrl: read.value.config.appUrl,
         dockerContext: read.value.config.dockerContext,
         edgeHost: read.value.config.edgeHost ?? null,
+        mirrors: mirrorServices(read.value.config.mirrors),
         generations: countEntries(path.join(configDir, "generations")),
         backups: countEntries(path.join(configDir, "backups")),
       };
@@ -199,8 +208,12 @@ export const planLines = (plan: UninstallPlan, configDir: string): ReadonlyArray
       `server   Mend ${version}${appUrl === "" ? "" : ` at ${appUrl}`}${dockerContext === "" ? "" : ` · docker context ${dockerContext}`}`,
     );
     if (dockerContext !== "") {
-      const edge = edgeHost === null ? [] : ["edge"];
-      const edgeVolumes = edgeHost === null ? [] : ["mend-edge-data", "mend-edge-config"];
+      const mirrors = plan.server.mirrors ?? [];
+      const edge = [...(edgeHost === null ? [] : ["edge"]), ...mirrors];
+      const edgeVolumes = [
+        ...(edgeHost === null ? [] : ["mend-edge-data", "mend-edge-config"]),
+        ...mirrors.map((service) => `mend-${service}`),
+      ];
       lines.push(
         `         containers ${["mend", "postgres", "garage", ...edge].join(", ")} · volumes ${[MEND_DOCKER_NAMESPACE_WITH_GARAGE.store, ...secondaryVolumesOf(MEND_DOCKER_NAMESPACE_WITH_GARAGE), "mend-config", "mend-ssh", "mend-postgres", ...edgeVolumes].join(", ")} · image ghcr.io/sealant-sh/mend:${version}${edgeHost === null ? "" : ` · the edge for ${edgeHost}`}`,
       );
@@ -221,6 +234,9 @@ export const planLines = (plan: UninstallPlan, configDir: string): ReadonlyArray
     if (plan.home.sshDirectory !== null) parts.push(plan.home.sshDirectory);
     if (plan.home.managedSshBlocks > 0) {
       parts.push(`${plural(plan.home.managedSshBlocks, "managed block")} in ~/.ssh/config`);
+    }
+    if (plan.home.signedIn !== null) {
+      parts.push(`this machine's workspace ssh key on ${plan.home.signedIn.url}, if registered`);
     }
     lines.push(parts.length === 0 ? "home     nothing of Mend's here" : `home     ${parts[0]}`);
     for (const part of parts.slice(1)) lines.push(`         ${part}`);
@@ -279,7 +295,9 @@ const removeServer = async (
             `docker compose down failed: ${(down.error ?? down.stderr.trim()) || "no output"}. Containers and files are retained; fix Docker and run mend uninstall again.`,
           );
         }
-        server.writeLine("removed containers mend, postgres, garage and the Compose-owned volumes");
+        server.writeLine(
+          `removed containers ${["mend", "postgres", "garage", ...mirrorServices(installation.config.mirrors)].join(", ")} and the Compose-owned volumes`,
+        );
 
         // The external volumes are the data. Only this installation's own label allows their
         // removal; anything else is somebody's data and stays, named. A generation from before
@@ -413,6 +431,27 @@ export const executeUninstall = async (
 ): Promise<UninstallOutcome> => {
   const failures: Array<string> = [];
   const leftovers: Array<string> = [];
+  // The key goes while the sign-in can still ask for it, before the token is revoked; with `all`
+  // the server is about to go too.
+  if (plan.home !== null && plan.home.signedIn !== null) {
+    const { url } = plan.home.signedIn;
+    const removal = await runtime.removeWorkspaceSshKey();
+    for (const fingerprint of removal.removed) {
+      runtime.server.writeLine(
+        `removed workspace ssh key ${fingerprint} on ${url} · the gateway refuses it from the next connection`,
+      );
+    }
+    // A key that may still open workspaces is a failure, named with what removes it; the rest of
+    // the uninstall still runs.
+    if (removal.problem !== null) {
+      const [first] = removal.stillActive;
+      failures.push(
+        first === undefined
+          ? `this machine's workspace ssh key on ${url} may still be registered: ${removal.problem}. From another signed-in machine, mend ssh keys lists your keys and mend ssh keys remove <fingerprint> removes one, or use Settings → Workspace SSH`
+          : `workspace ssh key ${removal.stillActive.join(", ")} is still registered on ${url}: ${removal.problem}. From another signed-in machine: mend ssh keys remove ${first}, or use Settings → Workspace SSH`,
+      );
+    }
+  }
   // The token is revoked while the server can still answer; with `all` it is about to go.
   if (plan.home?.signedIn !== null && plan.home?.signedIn?.deviceId != null) {
     const failure = await runtime.revokeDevice();

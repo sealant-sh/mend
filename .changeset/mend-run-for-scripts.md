@@ -8,9 +8,10 @@
 command runs, and `--json` prints the session and process ids (and, without `--detach`, how the
 command ended).
 
-A command the platform would refuse is refused before anything is created. The platform takes at
-most 64 words, none empty and none starting or ending with whitespace, so a `bash -lc` script that
-starts with a newline used to create a session and then fail its launch.
+A command the platform would refuse is refused before anything is created: more than 64 words or 1
+MiB, a word over 131,071 bytes, a program with leading or trailing whitespace, or a NUL byte. An
+argument may be empty, start with a newline or span lines, so a `bash -lc` script that starts with a
+newline runs (it used to create a session and then fail its launch).
 
 New: `mend logs <session> [--follow]` prints any session's recorded terminal output, and
 `mend wait <session> [--timeout <s>]` returns once its command ended, with its exit code (124 on

@@ -25,6 +25,7 @@ import {
 } from "#/lib/api";
 import {
   describeAudit,
+  describeMemberRemoval,
   formatBytes,
   planUpload,
   stagedPath,
@@ -137,6 +138,7 @@ export const REMOVAL_FACTS = [
   "Their live sessions are checkpointed, then stopped.",
   "Their private projects stay in the organization, hidden. An owner can take one over below.",
   "The account is deactivated and its devices signed out. Links already handed out keep their remaining lifetime.",
+  "Their workspace SSH keys are removed. A key the platform does not remove now, Mend keeps trying until it does.",
 ] as const;
 
 export function RemovalConfirmation({
@@ -192,6 +194,7 @@ function MembersPanel({ view }: { readonly view: OrganizationViewDto }) {
   const [confirming, setConfirming] = useState<string | null>(null);
   const [pending, setPending] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [reset, setReset] = useState<{
     readonly name: string;
     readonly link: string;
@@ -214,6 +217,7 @@ function MembersPanel({ view }: { readonly view: OrganizationViewDto }) {
   const act = (userId: string, work: () => Promise<unknown>, after?: () => void) => {
     setPending(userId);
     setError(null);
+    setNotice(null);
     void work()
       .then(() => {
         setConfirming(null);
@@ -293,7 +297,10 @@ function MembersPanel({ view }: { readonly view: OrganizationViewDto }) {
                 onConfirm={() =>
                   act(
                     member.userId,
-                    () => removeMember(member.userId),
+                    () =>
+                      removeMember(member.userId).then((removed) =>
+                        setNotice(describeMemberRemoval(removed)),
+                      ),
                     self ? () => window.location.assign("/login?reason=access") : undefined,
                   )
                 }
@@ -302,6 +309,14 @@ function MembersPanel({ view }: { readonly view: OrganizationViewDto }) {
           </div>
         );
       })}
+      {notice === null ? null : (
+        <p
+          role="status"
+          className="border-l-2 border-[var(--sw-amber)] pl-3 text-[13px] leading-relaxed text-ink-2"
+        >
+          {notice}
+        </p>
+      )}
       <ErrorLine error={error} />
     </Panel>
   );

@@ -382,15 +382,21 @@ async function collectOwned() {
   return { now, compose };
 }
 
+// The product as setup ships it: Mend, Postgres and Garage, and the npm and Docker mirrors it runs
+// by default.
+const productServices = ["docker-mirror", "garage", "mend", "npm-mirror", "postgres"];
+const mirrorServices = new Set(["docker-mirror", "npm-mirror"]);
+const serviceOf = (item) => item.Config.Labels["com.docker.compose.service"];
+
 async function idle() {
   const { now, compose } = await collectOwned();
-  check(compose.length === 3, "Idle product must have exactly three Compose containers");
   check(
-    compose
-      .map((item) => item.Config.Labels["com.docker.compose.service"])
-      .toSorted()
-      .join(",") === "garage,mend,postgres",
-    "Idle services must be Garage, Mend and Postgres",
+    compose.length === productServices.length,
+    "Idle product must have exactly five Compose containers",
+  );
+  check(
+    compose.map(serviceOf).toSorted().join(",") === productServices.join(","),
+    "Idle services must be Garage, Mend, Postgres and the npm and Docker mirrors",
   );
   check(
     compose.every((item) => item.State.Running && item.State.Health?.Status === "healthy"),
@@ -404,12 +410,105 @@ async function idle() {
     }),
     "External store/control/garage volumes must belong to the unchanged private installation identity",
   );
+  check(
+    compose
+      .filter((item) => mirrorServices.has(serviceOf(item)))
+      .every((item) => {
+        const mounts = item.Mounts.filter((mount) => mount.Type === "volume");
+        const volume = now.volumes.find((candidate) => candidate.Name === mounts[0]?.Name);
+        return mounts.length === 1 && volume && volumes.canRemove(volume, identity);
+      }),
+    "Each mirror's cache must be one Compose volume owned by this installation",
+  );
   const initialIds = new Set(initial.containers.map((item) => item.Id));
   check(
-    now.containers.filter((item) => item.State.Running && !initialIds.has(item.Id)).length === 3,
+    now.containers.filter((item) => item.State.Running && !initialIds.has(item.Id)).length ===
+      productServices.length,
     "Idle product must not leave workspace or fixture containers running",
   );
   return compose;
+}
+
+/**
+ * The mirrors as sessions reach them: Mend carries their addresses, neither publishes a host port,
+ * and each answers from Mend's container on the Compose network. Online, an npm metadata document
+ * comes through the npm mirror and the second fetch is served from its cache, and the Docker mirror
+ * answers for a Docker Hub manifest (a HEAD, which Docker Hub does not count as a pull). Offline,
+ * only the npm mirror's own ping: the registry asks Docker Hub as it starts. The guard and the
+ * cache key run in real containers in scripts/mirrors-runtime.test.mjs.
+ */
+async function mirrorsServe(compose, mend) {
+  stage = "mirrors";
+  const environment = new Set(mend.Config.Env);
+  check(
+    environment.has("MEND_NPM_MIRROR_URL=http://npm-mirror:4873/") &&
+      environment.has("SEALANT_DOCKER_REGISTRY_MIRRORS=http://docker-mirror:5000") &&
+      environment.has("SEALANT_DOCKER_REGISTRY_MIRROR_CONTAINER=mend-docker-mirror"),
+    "Mend must point sessions at the npm and Docker mirrors",
+  );
+  for (const item of compose.filter((candidate) => mirrorServices.has(serviceOf(candidate))))
+    check(
+      Object.keys(item.HostConfig.PortBindings ?? {}).length === 0 &&
+        item.HostConfig.NetworkMode !== "host" &&
+        Object.keys(item.NetworkSettings.Networks).every((name) => name.startsWith("mend_")),
+      "The mirrors must publish no host port and sit on the installation's Compose network only",
+    );
+  // Status and the cache header only: no body leaves the container.
+  const fetchFromMend = async (url, { method = "GET", headers = {} } = {}) =>
+    JSON.parse(
+      await docker([
+        "exec",
+        mend.Id,
+        "node",
+        "-e",
+        "const [url, method, headers] = process.argv.slice(1);" +
+          "fetch(url, { method, headers: JSON.parse(headers), signal: AbortSignal.timeout(30000) })" +
+          ".then(async (r) => { await r.arrayBuffer(); return { status: r.status, cache: r.headers.get('x-mend-mirror') }; }, () => ({ status: 0, cache: null }))" +
+          ".then((result) => console.log(JSON.stringify(result)));",
+        url,
+        method,
+        JSON.stringify(headers),
+      ]),
+    );
+  check(
+    (await fetchFromMend("http://npm-mirror:4873/-/ping")).status === 200,
+    "The npm mirror must answer its ping from Mend's container",
+  );
+  if (offline) {
+    console.log(
+      "PASS mirrors wired and the npm mirror answers; NOT TESTED fetches through the mirrors offline",
+    );
+    return;
+  }
+  const first = await fetchFromMend("http://npm-mirror:4873/is-number");
+  const second = await fetchFromMend("http://npm-mirror:4873/is-number");
+  check(
+    first.status === 200 && second.status === 200 && second.cache === "HIT",
+    "npm metadata must come through the npm mirror and then from its cache",
+  );
+  // The guard starts the registry again every 30 s if Docker Hub did not answer it at start.
+  await until(
+    "the Docker mirror to answer",
+    async () => (await fetchFromMend("http://docker-mirror:5000/v2/")).status === 200,
+    90_000,
+  );
+  const manifest = await fetchFromMend(
+    "http://docker-mirror:5000/v2/library/busybox/manifests/latest",
+    {
+      method: "HEAD",
+      headers: {
+        accept: [
+          "application/vnd.oci.image.index.v1+json",
+          "application/vnd.docker.distribution.manifest.list.v2+json",
+          "application/vnd.docker.distribution.manifest.v2+json",
+        ].join(", "),
+      },
+    },
+  );
+  check(manifest.status === 200, "The Docker mirror must answer for a Docker Hub manifest");
+  console.log(
+    `PASS mirrors wired, no host port; npm metadata through the mirror (${first.cache}, then ${second.cache}); Docker Hub manifest through the Docker mirror`,
+  );
 }
 
 async function installation(expectedVersion = version, expectedAssets = assets, selected) {
@@ -504,7 +603,10 @@ async function printDiagnosis() {
   }
   let detail;
   try {
-    detail = await json(origin, `/sessions/${sessionId}`, { token, timeout: 10_000 });
+    detail = await json(origin, `/sessions/${sessionId}`, {
+      token,
+      timeout: 10_000,
+    });
     console.error(`DIAGNOSIS ${sessionStateEvidence(detail)}`);
   } catch (error) {
     console.error(
@@ -962,8 +1064,9 @@ async function main() {
     "Published bundle must serve the real web application",
   );
   console.log(
-    "PASS exact image/version, official PG, web app, idle three-container product and isolated loopback ports (no registry)",
+    "PASS exact image/version, official PG, web app, idle five-container product and isolated loopback ports (no registry)",
   );
+  await mirrorsServe(compose, mend);
 
   stage = "real authentication";
   const password = randomBytes(32).toString("hex");
@@ -1437,7 +1540,11 @@ async function main() {
       worktree.worktree?.id === worktreeId && worktree.change?.id === detail.change.id,
       "Worktree detail must name the session's worktree and change",
     );
-    return checkpointChainEvidence(worktree.checkpoints, { baseSha, checkpoint, worktreeId });
+    return checkpointChainEvidence(worktree.checkpoints, {
+      baseSha,
+      checkpoint,
+      worktreeId,
+    });
   };
   await chainState();
   const review = await api(`/changes/${detail.change.id}/reviews/open`, {
@@ -1467,7 +1574,12 @@ async function main() {
   // Lifecycle fingerprint of the recorded change: the chain (now including the review-open
   // checkpoint) and the pack-served patch, both read again after every lifecycle operation.
   const changeState = async () =>
-    hash(JSON.stringify({ chain: await chainState(), patch: (await reviewDiff()).patch }));
+    hash(
+      JSON.stringify({
+        chain: await chainState(),
+        patch: (await reviewDiff()).patch,
+      }),
+    );
   const changeBefore = await changeState();
   console.log(
     "PASS network adoption, real mend run, store-less executor, registered capture, completed flush, capture-backed checkpoint chain, pack-served Review patch and replayable record",
@@ -1624,7 +1736,7 @@ async function main() {
   const stopped = await collectOwned();
   check(
     !stopped.compose.some((item) => item.State.Running),
-    "server stop must stop both product containers",
+    "server stop must stop every product container",
   );
   let reachable = false;
   try {
@@ -1665,7 +1777,7 @@ async function main() {
     );
     await retained(target, upgrade.assets);
     console.log(
-      "PASS public two-image upgrade: target health/OCI/pin, private complete cluster dump with both databases and roles, old generation and application/Git/record data retained; two healthy idle containers",
+      "PASS public two-image upgrade: target health/OCI/pin, private complete cluster dump with both databases and roles, old generation and application/Git/record data retained; five healthy idle containers",
     );
 
     async function unchangedCommand(args, expectedOk) {

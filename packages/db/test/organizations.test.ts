@@ -14,6 +14,10 @@ import { InstanceRolesRepo, InstanceRolesRepoLive } from "../src/repos/instance-
 import { OrganizationsRepo, OrganizationsRepoLive } from "../src/repos/organizations.ts";
 import { ProjectsRepo, ProjectsRepoLive } from "../src/repos/projects.ts";
 import { PushDevicesRepo, PushDevicesRepoLive } from "../src/repos/push-devices.ts";
+import {
+  SshKeyRevocationsRepo,
+  SshKeyRevocationsRepoLive,
+} from "../src/repos/ssh-key-revocations.ts";
 
 /**
  * Organizations against the dev Postgres (`compose.dev.yaml`, :5434) in a throwaway database.
@@ -44,6 +48,7 @@ const reposLayer = Layer.mergeAll(
   SessionsRepoLive,
   HotWorkspacesRepoLive,
   AuditEventsRepoLive,
+  SshKeyRevocationsRepoLive,
 ).pipe(Layer.provideMerge(scratchDatabaseLayer));
 
 type Services =
@@ -55,6 +60,7 @@ type Services =
   | SessionsRepo
   | HotWorkspacesRepo
   | AuditEventsRepo
+  | SshKeyRevocationsRepo
   | SqlClient.SqlClient
   | PgClient.PgClient;
 
@@ -147,7 +153,11 @@ describe.skipIf(!reachable)("organizations", () => {
         yield* organizations.addMember(acme, "alice", "owner", null);
         yield* organizations.addMember(acme, "carol", "member", "alice");
         const demoteLast = yield* organizations.setRole(acme, "alice", "member").pipe(Effect.flip);
-        const removeLast = yield* organizations.removeMember(acme, "alice").pipe(Effect.flip);
+        const removeLast = yield* organizations
+          .removeMember(acme, "alice", { actorUserId: "carol", revocationLeaseMs: 0 })
+          .pipe(Effect.flip);
+        // Refused: no key of the owner who stays is owed.
+        const owedAfterRefusal = yield* sql`SELECT user_id FROM ssh_key_revocations`;
         yield* organizations.setRole(acme, "carol", "owner");
         const concurrent = yield* Effect.all(
           [
@@ -163,6 +173,7 @@ describe.skipIf(!reachable)("organizations", () => {
         return {
           demoteLast: demoteLast._tag,
           removeLast: removeLast._tag,
+          owedAfterRefusal: owedAfterRefusal.length,
           demotions: concurrent.filter((outcome) => outcome._tag === "Success").length,
           owners: owners.length,
           notMember: notMember._tag,
@@ -171,6 +182,7 @@ describe.skipIf(!reachable)("organizations", () => {
     );
     expect(result.demoteLast).toBe("LastOwnerError");
     expect(result.removeLast).toBe("LastOwnerError");
+    expect(result.owedAfterRefusal).toBe(0);
     expect(result.demotions).toBe(1);
     expect(result.owners).toBe(1);
     expect(result.notMember).toBe("MemberNotFoundError");
@@ -453,6 +465,47 @@ describe.skipIf(!reachable)("organizations", () => {
     });
   });
 
+  it("a project read never returns a login or token in its origin, whatever the row holds", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const projects = yield* ProjectsRepo;
+        const created = yield* projects.create({
+          id: ProjectId.make("p-acme-token"),
+          organizationId: acme,
+          visibility: "shared",
+          createdByUserId: "alice",
+          name: "token",
+          originUrl: "https://oauth2:TOKEN-SECRET@gitlab.com/acme/token.git",
+          storePath: "/store/p-acme-token/repo.git",
+          defaultBranch: "main",
+          adoptedSha: null,
+          gitAuthMode: "mend-key",
+        });
+        const [stored] = yield* sql<{ readonly url: string }>`
+          SELECT origin_url AS url FROM projects WHERE id = 'p-acme-token'`;
+        // What a server before 0.36 wrote, read back by this one.
+        yield* sql`
+          UPDATE projects SET origin_url = 'https://ghp_TOKEN-SECRET@github.com/acme/token.git'
+          WHERE id = 'p-acme-token'`;
+        const reread = yield* projects.byId(created.id);
+        const listed = yield* projects.listForOrganization(acme);
+        return {
+          created: created.originUrl,
+          stored: stored?.url,
+          reread: reread.originUrl,
+          listed: listed.find((project) => project.id === created.id)?.originUrl,
+        };
+      }),
+    );
+    expect(result).toEqual({
+      created: "https://gitlab.com/acme/token.git",
+      stored: "https://gitlab.com/acme/token.git",
+      reread: "https://github.com/acme/token.git",
+      listed: "https://github.com/acme/token.git",
+    });
+  });
+
   it("the last operator cannot be revoked", async () => {
     const result = await run(
       Effect.gen(function* () {
@@ -644,5 +697,85 @@ describe.skipIf(!reachable)("organizations", () => {
       }),
     );
     expect(pages).toEqual([["audit-c", "audit-b"], ["audit-a"]]);
+  });
+
+  it("a removal owes the member's SSH keys in its own transaction; the sweep claims, defers and settles it", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const organizations = yield* OrganizationsRepo;
+        const revocations = yield* SshKeyRevocationsRepo;
+        yield* sql`DELETE FROM ssh_key_revocations`;
+        yield* sql`DELETE FROM instance_roles`;
+        yield* sql`DELETE FROM organization_members`;
+        yield* organizations.addMember(acme, "alice", "owner", null);
+        yield* organizations.addMember(acme, "erin", "member", "alice");
+        // The remover holds the row for its own first attempt: not due for the sweep.
+        const removed = yield* organizations.removeMember(acme, "erin", {
+          actorUserId: "alice",
+          revocationLeaseMs: 60_000,
+        });
+        const membership = yield* organizations.membershipOf("erin");
+        const owed = yield* revocations.list();
+        const leased = yield* revocations.claimDue(10, 60_000);
+        yield* revocations.defer(removed.revocationId, {
+          outstanding: 2,
+          lastError: "platform down",
+          retryInMs: 0,
+        });
+        // Two sweeps at once: exactly one of them takes the row.
+        const [first, second] = yield* Effect.all(
+          [revocations.claimDue(10, 60_000), revocations.claimDue(10, 60_000)],
+          { concurrency: 2 },
+        );
+        const claimed = [...(first ?? []), ...(second ?? [])];
+        const afterClaim = yield* revocations.claimDue(10, 60_000);
+        const [taken] = claimed;
+        // Erin is re-added and removed again: a new obligation, under a new id.
+        yield* organizations.addMember(acme, "erin", "member", "alice");
+        const again = yield* organizations.removeMember(acme, "erin", {
+          actorUserId: "alice",
+          revocationLeaseMs: 60_000,
+        });
+        // The older attempt can neither settle nor defer the newer obligation.
+        yield* revocations.settle(taken?.id ?? "");
+        yield* revocations.defer(taken?.id ?? "", {
+          outstanding: 9,
+          lastError: "stale",
+          retryInMs: 0,
+        });
+        const newer = yield* revocations.list();
+        yield* revocations.settle(again.revocationId);
+        const settled = yield* revocations.list();
+        return { removed, membership, owed, leased, claimed, afterClaim, newer, again, settled };
+      }),
+    );
+    expect(result.membership).toBeNull();
+    expect(result.owed).toMatchObject([
+      {
+        id: result.removed.revocationId,
+        userId: "erin",
+        organizationId: acme,
+        actorUserId: "alice",
+        attempts: 0,
+        outstanding: null,
+      },
+    ]);
+    expect(result.leased).toEqual([]);
+    expect(result.claimed).toMatchObject([
+      { userId: "erin", attempts: 1, outstanding: 2, lastError: "platform down" },
+    ]);
+    expect(result.afterClaim).toEqual([]);
+    expect(result.newer).toMatchObject([
+      {
+        id: result.again.revocationId,
+        userId: "erin",
+        attempts: 0,
+        outstanding: null,
+        lastError: null,
+      },
+    ]);
+    expect(result.newer[0]?.id).not.toBe(result.claimed[0]?.id);
+    expect(result.settled).toEqual([]);
   });
 });

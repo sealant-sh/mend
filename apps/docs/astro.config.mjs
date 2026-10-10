@@ -89,6 +89,8 @@ export default defineConfig({
             { label: "Deploy on Kubernetes", slug: "operate/deploy-kubernetes" },
             { label: "Exposure and the public gate", slug: "operate/exposure" },
             { label: "Per-person workspaces", slug: "operate/per-person-workspaces" },
+            { label: "npm mirror", slug: "operate/npm-mirror" },
+            { label: "Docker mirror", slug: "operate/docker-mirror" },
             { label: "Troubleshooting", slug: "operate/troubleshooting" },
           ],
         },

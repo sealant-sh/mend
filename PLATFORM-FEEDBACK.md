@@ -7,7 +7,33 @@ around by importing internals.
 Format: date · SDK version · what Mend needed · what exists today · suggested surface. Entries stay
 after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
+## 2026-10-10 · 0.39.0-next.707 · A removed workspace SSH key: open connections and last use
+
+Mend now lists and removes a person's workspace SSH keys (`mend ssh keys`, Settings → Workspace SSH)
+through `sshKeys.list` and `archiveSshKeyOp`. Two things a person revoking a lost laptop's key needs
+are missing.
+
+- **Today, open connections:** the gateway resolves a key through
+  `POST /v1/ssh-keys/resolve-principal` once per connection and caches only within it, so the next
+  connection offering an archived key is refused (Mend drove the gateway's own
+  `startSshGatewayServer` and `createPrincipalResolver` against an archive: refused about 200 ms
+  later). A connection authenticated before the archive keeps running until it ends. VS Code
+  Remote-SSH holds one connection for hours, so a removed key can keep a live editor session.
+- **Today, last use:** `SshKey` carries `createdAt` only. Mend says the platform does not record
+  when a key was last used, and shows nothing in its place.
+- **Suggested:** on archive, the gateway closes the connections that key authenticated (the API
+  could tell it over the gateway token channel, or the gateway could re-resolve each connection's
+  key on a short interval and on every new channel). Record `lastUsedAt` on the key at
+  resolve-principal and return it on `SshKey`; Mend shows it beside each key, as it does for
+  devices.
+
 ## 2026-10-10 · 0.39.0-next.707 · A session's arguments must be trimmed and non-empty
+
+- **Shipped (0.39.0-next.712, sealant#347) and used:** `argv[0]` stays non-empty and trimmed; every
+  later word may be any string except one with a NUL byte or a lone surrogate, at most 131,071 bytes
+  a word and 1 MiB in all (`sessionArgvIssue` in `@sealant/api-contracts`). A refusal names the word
+  by position and size, never its text. `mend run` now checks that rule and takes `bash -lc "\n…"`,
+  `"hi "` and `""`. The engine keeps its base64 prompt chunks: a prompt can outgrow one word.
 
 `mend run -- bash -lc "<script>"` with a script that starts with a newline (pstack's verifier agents
 write them that way) created the session, then failed its launch with
@@ -29,6 +55,31 @@ write them that way) created the session, then failed its launch with
   `NonEmptyString` first and a `Schema.String` rest), on `POST /v1/sessions` and
   `/v1/sessions/as-user` alike. Mend then drops its check for the arguments and keeps the 64-word
   limit.
+
+## 2026-10-10 · 0.39.0-next.707 · Registry mirrors for a workspace's Docker service
+
+Mend 0.36 runs a pull-through cache of Docker Hub beside its server (`docker-mirror`). Every
+workspace's Docker service should ask it first: a session today reports `RegistryConfig.Mirrors=[]`
+and pulls every image anonymously from Docker Hub, and pstack's verifier sessions hit
+`toomanyrequests: unauthenticated pull rate limit`.
+
+- **What existed:** no setting reached the workspace daemon's flags or `daemon.json` on any runtime.
+  The Docker runtime's sidecar is on its own per-workspace network, which cannot resolve a name on
+  Mend's Compose network. Joining the sidecar to that network would let every workspace on it drive
+  the unauthenticated daemon on 2375.
+- **What Mend does:** none of it through the SDK. This is operator configuration of the worker,
+  which runs inside the Mend container. `compose.mirrors.yaml` sets the worker's environment, and
+  the Helm chart's notes name the Sealant chart value.
+- **Added in Core (sealant#346):** `SEALANT_DOCKER_REGISTRY_MIRRORS` (origins, refused with
+  credentials) becomes `--registry-mirror` (plus `--insecure-registry` for http) on the Docker and
+  Kubernetes runtimes. `SEALANT_DOCKER_REGISTRY_MIRROR_CONTAINER` names the container that Core
+  connects to each workspace's Docker network under the mirror's host name, and disconnects before
+  removing it. The Sealant chart gains `workspaces.docker.registryMirrors`. Until a Sealant release
+  that carries it is bundled, the bundled worker ignores both variables and sessions pull from
+  Docker Hub as before.
+- **Suggested next:** a per-workspace mirror list in `CreateOptions.services.docker` if a project
+  ever needs its own mirror, and the mirror on MicroVM guests (`microvm-image/docker-service.mjs`)
+  when they can reach one.
 
 ## 2026-10-08 · 0.39.0-next.706 · `workspaces.imageKey` and `inspectImage` need a source neither reads
 
@@ -283,6 +334,18 @@ exec or a stand-in, and none blocks the build.
   tables from captured databases.
 - **Later:** when the SSH gateway admits more than the workspace's owner, run each principal's
   session as their own user.
+- **2026-10-10, SSH as the owner:** an e2e `ssh` into a per-person workspace printed `root`
+  (mend#621/#622): nothing named a user for the gateway. **Shipped in 0.39.0-next.714**
+  (sealant#348, #352; sealantd#155 in 0.20.0-next.157), and Mend pins it: sealant#348 adds
+  `sshAsOwner` on a create, checked against the person the owner's Sealant user is bound to
+  (`POST /v1/users/:id/person`, once, never changed through the API; `features.personBinding`), and
+  `DELETE /v1/workspaces/:id/ssh-user` (`features.workspaceSshUser`). An operator rebind route is a
+  follow-up. The gateway runs every shell, command and its own disconnect-time capture as that user
+  on a sealantd that reports `exec.user`, asks who for every new channel, and refuses an answer that
+  does not say. sealantd#155 adds `openSftp { user }`, which Core passes (sealant#352), and the
+  Fedora and Ubuntu images carry an sftp-server with every sshd unit masked. Mend asks for the
+  owner's user at create and root on a fallback, behind the feature flag, through the SDK's
+  `sshAsOwner` and `workspace.sshAsRoot`.
 
 ## 2026-10-04 · sealantd 0.19 · opencode's MCP logins and in-app logins ride captures
 

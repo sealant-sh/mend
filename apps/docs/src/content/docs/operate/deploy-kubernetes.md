@@ -343,6 +343,26 @@ rides the same launch as the Pod identity. Read
 [Environment variables and secrets](/guides/environment-variables/#cluster-bindings) for the
 project-side view.
 
+## Package and image mirrors
+
+The chart can run the [npm mirror](/operate/npm-mirror/) and the
+[Docker mirror](/operate/docker-mirror/) beside the API tier, off by default:
+
+```yaml
+mirrors:
+  npm: { enabled: true, maxSize: 10g, storage: 12Gi }
+  docker: { enabled: true, maxSize: 40g, ttl: 168h, storage: 50Gi }
+  minFree: 5g # both leave this free on their claims
+```
+
+Each is one non-root replica on its own ReadWriteOnce claim, behind a ClusterIP Service that admits
+workspace Pods only. The API tier receives `MEND_NPM_MIRROR_URL`, which it hands to each workspace's
+install. A Docker Hub login for the Docker mirror must be a Public Repo Read-only token, declared
+with `mirrors.docker.upstreamCredentials.publicReadOnly: true`: every workspace can pull what it can
+read. Workspace Docker daemons are pointed at the Docker mirror in the Sealant chart, with
+`workspaces.docker.registryMirrors: [http://mend-docker-mirror.mend.svc:5000]`. The Sealant chart's
+workspace egress policy must allow both ports; `helm install` prints the entries.
+
 ## Upgrade and roll back
 
 `helm upgrade` replaces the API Pod (`Recreate`). Database migrations run when the new server

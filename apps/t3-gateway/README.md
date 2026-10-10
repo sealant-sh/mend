@@ -63,8 +63,22 @@ of pointers for one thing is one read. After the stream drops, the hub reconnect
 reads everything again.
 
 Each read rebuilds the t3code entities (`src/shell.ts`), encodes them through the vendored schemas,
-and sends only what changed, each change stamped with the hub's next sequence. A fresh snapshot is
-always a legal reset for a t3code client, so a restarted gateway starts its sequence again.
+and sends only what changed, each change stamped with the hub's next sequence. Sequences come in
+blocks of a million from one high-water mark for the whole gateway, kept in the state file and
+seeded from the clock, so no hub ever stamps one another hub stamped: an earlier hub of the same
+person, another person's, or a gateway from before replay, which counted from 0. A hub reserves its
+next block when half of one is used; blocks are not contiguous, as other hubs reserve in between. A
+hub that runs out with none reserved (the state file refused every reservation) stamps on, says so
+in its log, and answers every resume with a snapshot from then on.
+
+### Replay after a sequence
+
+A client that subscribes with `afterSequence` gets only what changed after it, when the hub still
+holds it: the last 1,000 shell changes, at most 8 MiB encoded, and the last 128 changes of each
+watched thread, at most 1 MiB encoded (t3code's own limits; t3code has no byte limit for the shell).
+Any other sequence (older than that, from another hub, or ahead of the hub) gets a fresh snapshot,
+which t3code always takes as a reset. A thread stays watched for two minutes after its last
+subscriber leaves, so a client that reconnects resumes it without reloading it.
 
 | t3code                                                         | From Mend                                                                                                       |
 | -------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
@@ -85,8 +99,8 @@ keeps its items current: an `agent-conversation` pointer re-reads its turns and 
 items past the last change-feed cursor (`GET /api/sessions/:id/items?after=`). Each entity that
 changed is one upsert event (`run.updated`, `turn-item.updated`, `message.updated`,
 `runtime-request.updated`, …); one that went away sends a fresh snapshot; a session that is no
-longer a thread sends `thread.deleted`. A subscription always opens with a full snapshot, whatever
-sequence the client resumes after: replay after a sequence is phase 2.
+longer a thread sends `thread.deleted`. A subscription opens with a full snapshot, or, resuming
+after a sequence the hub still holds, with only what changed since (see "Replay after a sequence").
 
 | t3code                                     | From Mend                                                                                                                                                                                                                                                 |
 | ------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -105,13 +119,13 @@ sequence the client resumes after: replay after a sequence is phase 2.
 `orchestration.dispatchCommand` takes what Mend can back (`src/commands.ts`); every other command
 answers `OrchestrationV2DispatchCommandError` naming it.
 
-| t3code                              | What the gateway does                                                                                                                                                                                                                                                        |
-| ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `message.dispatch`                  | Checks Mend's steering rule as the sender (`GET /api/sessions/:id`), queues the message, and sends it once no turn is open: `POST /api/sessions/:id/turns`, or, when the agent stopped, `POST /api/sessions/:id/launch` with no prompt and then the turn once the agent runs |
-| `run.interrupt`                     | `POST /api/turns/:id/interrupt`; with `holdQueue` (t3code always sends it) the queue is held before the turn ends. A queued run is taken back instead                                                                                                                        |
-| `queued-run.cancel`, `queue.resume` | The gateway's queue                                                                                                                                                                                                                                                          |
-| `runtime-request.respond`           | `POST /api/requests/:id/respond`: decisions as Mend's (`acceptAlways` is `accept-for-session`), answers as lists of strings                                                                                                                                                  |
-| `thread.user-input.dismiss`         | The same, answering `cancel`                                                                                                                                                                                                                                                 |
+| t3code                                                                       | What the gateway does                                                                                                                                                                                                                                                        |
+| ---------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `message.dispatch`                                                           | Checks Mend's steering rule as the sender (`GET /api/sessions/:id`), queues the message, and sends it once no turn is open: `POST /api/sessions/:id/turns`, or, when the agent stopped, `POST /api/sessions/:id/launch` with no prompt and then the turn once the agent runs |
+| `run.interrupt`                                                              | `POST /api/turns/:id/interrupt`; with `holdQueue` (t3code always sends it) the queue is held before the turn ends. A queued run is taken back instead                                                                                                                        |
+| `queued-run.cancel`, `queue.resume`, `queued-run.edit`, `queued-run.reorder` | The gateway's queue                                                                                                                                                                                                                                                          |
+| `runtime-request.respond`                                                    | `POST /api/requests/:id/respond`: decisions as Mend's (`acceptAlways` is `accept-for-session`), answers as lists of strings                                                                                                                                                  |
+| `thread.user-input.dismiss`                                                  | The same, answering `cancel`                                                                                                                                                                                                                                                 |
 
 The gateway holds the queue (ADR 0012): it never sends a second turn while one is open in Mend,
 whoever opened it. A queued message is a run of the gateway's own (`t3-run:…`) until Mend opens its
@@ -146,8 +160,35 @@ agent up) is taken as under way, and the message waits for the agent. Every wait
   fails what was queued, stops Mend's event stream and lets itself go.
 - A `commandId` is reserved before anything is read, so a command sent twice at once is one message.
 
-Steering mid-turn, images and holding a message for later are refused; queue edit and reorder, and a
-queue that survives a gateway restart, are phase 2.
+`queued-run.edit` rewrites a message still waiting (t3code sees a `message.updated`), and
+`queued-run.reorder` moves one before another waiting message, or after the last one, as t3code's
+own server places it. A message on its way to Mend, or settled, is neither rewritten nor moved.
+
+Steering mid-turn, images and holding a message for later are refused.
+
+### A queue that survives a restart
+
+Each person's queues are kept in the state file (`queued_messages`, `queue_holds`) whenever they
+change, and come back when the person's hub starts. A message names its sender by bearer session;
+the device token is looked up from `bearer_sessions` when the queue comes back, never copied.
+
+| Kept as           | Comes back as                                                                                 |
+| ----------------- | --------------------------------------------------------------------------------------------- |
+| queued, launching | queued again, its launches still counted; failed when its sender's device is no longer paired |
+| sending           | failed, saying the gateway cannot tell whether Mend took it: it is never sent twice           |
+| failed, cancelled | as it was                                                                                     |
+| held              | held, while anything is still queued                                                          |
+
+After a restart, the gateway opens the hub of every person with a queued message on its own, reads
+Mend once, and sends it in order: no client has to come back. Mend not answering yet is tried again
+every 30 seconds.
+
+A message is kept as `sending` before it goes to Mend; when the state file cannot take that write,
+the message fails with a reason and is not sent. A client that sends the same message again (the
+same `messageId`), a restart in between too, gets the message already kept or sent. A kept message
+goes to Mend with its sender's own device token, so Mend's rules apply as they would to a fresh one:
+a session deleted while the gateway was down fails the message, and so does a sender who may no
+longer steer the session.
 
 ### Review
 
@@ -158,6 +199,61 @@ file is that file's section of the patch. Mend serves the change as a patch, so 
 expanding a hunk) come back only for files the patch holds whole, added or deleted; a changed file
 answers `VcsUnsupportedOperationError` until phase 3's worktree read. Whitespace is never ignored:
 Mend's change diff has no such option. Per-turn diffs are phase 3.
+
+## Phase 2: threads from t3code
+
+### Launching a thread
+
+`orchestration.launchThread` (`src/launch.ts`) is how t3code starts a thread with its first message.
+The gateway creates a Mend session as the person who paired, so Mend records them as its owner and
+origin `mend`, and its agent runs as them (docs/adr/0016).
+
+| t3code                                       | Mend                                                                                                                                                                                                                          |
+| -------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `worktree { baseRef, branch? }`              | `POST /api/projects/:id/sessions`: a new worktree from `baseRef`, named from the branch's last segment and a random suffix (`health-check-k3x9qa`), so two launches at once never share one; never an existing worktree       |
+| `existing_worktree { worktreePath }`         | `POST /api/worktrees/:id/sessions`: the worktree of the project's session at that path                                                                                                                                        |
+| `root`                                       | Refused: every Mend session has a worktree of its own                                                                                                                                                                         |
+| model, reasoning effort, `fast` service tier | named on each launch until Mend has recorded the session's agent; after that Mend reuses what it recorded                                                                                                                     |
+| `full-access`, `approval-required`           | `bypass`, `ask`; other runtime modes are refused                                                                                                                                                                              |
+| `title`, `generateTitle`                     | the session's label: the title, or, when t3code asks to generate one, the first line of the first message, cut to Mend's 60 characters; never unlabelled. A title the client sets later renames it (`thread.metadata.update`) |
+| `initialMessage`                             | queued like a follow-up; the run is `preparing` while the session launches                                                                                                                                                    |
+
+The opening message goes through the queue: the queue launches the session
+(`POST /api/sessions/:id/launch`, no prompt) and sends the message with
+`POST /api/sessions/:id/turns` once Mend reports the agent running, so the run is the message's
+exact turn. The launch answers as soon as the session exists, and the thread is in the shell, by the
+client's own thread id, with its message in it: t3code's client opens a launched thread only once
+its shell shows one. Images in the opening message are refused until the gateway sends images.
+
+A launched thread keeps the id its client gave it: `thread_ids` in the state file maps it to its
+session, for the person who launched it only, and every method that names a thread takes that id.
+Anyone else who can read the session sees it by its Mend id. A retry of the same `commandId` is the
+same thread (`resumed: true`), across a restart too.
+
+The opening message is kept from the moment the launch is accepted. When Mend does not answer the
+first reads of the new session, the gateway keeps reading in the background, and fails the message
+with a reason if it still cannot read the session after thirty seconds.
+
+### Rename, stop and delete
+
+Each goes through Mend's own route as the person, so Mend's rules decide: a session that is not
+theirs answers t3code's authorization error.
+
+| t3code                                     | Mend                                                                                               |
+| ------------------------------------------ | -------------------------------------------------------------------------------------------------- |
+| `thread.metadata.update` with only `title` | `POST /api/sessions/:id/label`, its owner's to set. A branch, worktree or pull request is refused  |
+| `provider-session.detach`                  | `POST /api/sessions/:id/stop`; what is still queued is held, so nothing relaunches it unasked      |
+| `thread.delete`                            | `DELETE /api/sessions/:id`; when Mend answers that the session is live, a stop and one more delete |
+
+t3code's client sends `provider-session.detach` before it deletes a thread with a live agent. Mend
+keeps the session's worktree and change after a delete, as it does for every session it removes.
+When Mend keeps the session until its workspace has stopped (`removed: false`), the gateway hides it
+at once: the client has already let it go. The state file keeps it hidden across a restart
+(`pending_removals`) until Mend no longer lists it.
+
+Mend lets a person with shared control stop the owner's session but not delete it. Their delete in
+t3code stops the owner's live session first (the client's `provider-session.detach`), and then
+answers t3code's authorization error.
 
 ## Run it
 
@@ -196,9 +292,12 @@ not as a wrong code. The code is not spent.
 ## State
 
 One `node:sqlite` file the gateway owns: the environment id, bearer sessions (the bearer's sha256
-and the Mend device token it stands for), and the id maps (`run_ids` and `message_ids`, filled by
-every turn a t3code client sends; `project_ids` and `thread_ids` stay empty until phase 2). Mend's
-database is never touched. Losing the file loses pairings and t3code-side ids, never Mend records.
+and the Mend device token it stands for), and the id maps: `run_ids` and `message_ids`, filled by
+every turn a t3code client sends, and `thread_ids`, every thread a t3code client launched (its id,
+its session, the launch command and what the launch named; no secrets). `project_ids` stays empty.
+`queued_messages` and `queue_holds` keep each person's queues: text, ids, state and the sender's
+bearer session, never a device token. Mend's database is never touched. Losing the file loses
+pairings and t3code-side ids, never Mend records.
 
 **The file holds every paired person's Mend device token in clear**, and the token acts as that
 person in Mend until the device is revoked. The gateway needs it usable: it calls Mend for a person

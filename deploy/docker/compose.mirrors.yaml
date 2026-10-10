@@ -1,0 +1,78 @@
+# Written by mend server setup: the package and image mirrors this install runs, on the Compose
+# network only (no host port). Values come from server.env. Sessions install npm packages and
+# pull Docker Hub images through them; a mirror that is down sends them to the registry itself.
+services:
+  mend:
+    environment:
+      MEND_NPM_MIRROR_URL: http://npm-mirror:4873/
+      SEALANT_DOCKER_REGISTRY_MIRRORS: http://docker-mirror:5000
+      SEALANT_DOCKER_REGISTRY_MIRROR_CONTAINER: mend-docker-mirror
+
+  # Read-through cache of registry.npmjs.org (npm-mirror.conf). Size-capped, and it leaves
+  # 5g free on its disk; the least recently used tarballs go first. No credential sent.
+  npm-mirror:
+    image: nginx:1.29-alpine
+    hostname: npm-mirror
+    restart: unless-stopped
+    environment:
+      NGINX_ENTRYPOINT_LOCAL_RESOLVERS: "1"
+      NGINX_ENTRYPOINT_QUIET_LOGS: "1"
+      NPM_MIRROR_MAX_SIZE: ${MEND_NPM_MIRROR_MAX_SIZE:?set MEND_NPM_MIRROR_MAX_SIZE in server.env}
+      NPM_MIRROR_MIN_FREE: 5g
+    volumes:
+      - ./npm-mirror.conf:/etc/nginx/templates/default.conf.template:ro
+      - mend-npm-mirror:/var/cache/npm-mirror
+    # Answered by nginx itself, so it says the mirror is up without asking the registry.
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:4873/-/ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  # Pull-through cache of Docker Hub, run by its guard (docker-mirror-guard.sh): the cache stays
+  # under its cap and leaves 5g free on its disk. Layer data is deleted seven days after a
+  # fetch. The metrics listener stays on the container's loopback.
+  docker-mirror:
+    image: registry:3.1
+    container_name: mend-docker-mirror
+    hostname: docker-mirror
+    restart: unless-stopped
+    init: true
+    entrypoint: ["/bin/sh", "/mend/docker-mirror-guard.sh"]
+    environment:
+      DOCKER_MIRROR_MAX_SIZE:
+        ${MEND_DOCKER_MIRROR_MAX_SIZE:?set MEND_DOCKER_MIRROR_MAX_SIZE in server.env}
+      DOCKER_MIRROR_MIN_FREE: 5g
+      REGISTRY_PROXY_REMOTEURL: https://registry-1.docker.io
+      REGISTRY_PROXY_TTL: 168h
+      REGISTRY_LOG_LEVEL: warn
+      REGISTRY_LOG_ACCESSLOG_DISABLED: "true"
+      REGISTRY_HTTP_DEBUG_ADDR: 127.0.0.1:5001
+      REGISTRY_HTTP_DEBUG_PROMETHEUS_ENABLED: "true"
+    volumes:
+      - ./docker-mirror-guard.sh:/mend/docker-mirror-guard.sh:ro
+      - mend-docker-mirror:/var/lib/registry
+    # Healthy while its guard keeps working, which it records every pass. The registry inside may
+    # be paused for want of disk, or not started because Docker Hub did not answer (it asks Hub as
+    # it starts, and the guard tries again every pass): setup does not wait for it.
+    healthcheck:
+      test: ["CMD-SHELL", 'test -n "$$(find /tmp/mend-mirror-guard -mmin -2)"']
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+volumes:
+  mend-npm-mirror:
+  mend-docker-mirror:

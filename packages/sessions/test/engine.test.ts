@@ -96,6 +96,7 @@ import {
   WorktreeId,
   defaultSettings,
   type DotfilesRepository,
+  ReferenceId,
 } from "@mend/domain";
 import {
   AgentRequest,
@@ -133,9 +134,12 @@ import {
   withUnsavedAnswer,
   type CapturePosition,
   captureDiscardAuditData,
+  CAPTURE_SEAL_UNRESTORABLE,
   captureStatusLine,
   executorEndOf,
+  serviceStartCorrelation,
   withoutAgentStarting,
+  Reference,
 } from "@mend/domain/workbench";
 import {
   LAUNCH_BOOTING,
@@ -168,6 +172,7 @@ import {
   CaptureGitVerifier,
   CaptureGitVerifierOff,
   type GitVerification,
+  type RegisterSealOutcome,
   CaptureRemotesOff,
   CaptureSourcesOff,
   CaptureRuntimeLive,
@@ -228,6 +233,7 @@ import {
   GitOpsRunnerLive,
   MendKeys,
   SecretCipher,
+  SHALLOW_REPOSITORY_REASON,
   Store,
   StoreConfig,
   DeploymentConfigColocated,
@@ -238,6 +244,7 @@ import {
   processStatePathOf,
   makeSourcePolicy,
   SourcePolicy,
+  sha256Hex,
 } from "@mend/store";
 import { buildManifest, snapshotDirectory, uploadObjects } from "@mend/store/testing";
 import type {
@@ -258,6 +265,7 @@ import type {
 } from "@sealant/sdk";
 import {
   Cause,
+  ConfigProvider,
   Context,
   Deferred,
   Duration,
@@ -266,6 +274,7 @@ import {
   Fiber,
   Layer,
   Logger,
+  Option,
   Schedule,
   Stream,
   type Scope,
@@ -273,7 +282,13 @@ import {
 
 import { CONTAINER_TOKEN_REFUSED } from "../src/channel-identity.ts";
 import { installScript } from "../src/dependency-cache.ts";
-import { HarnessLayoutConfig, HarnessLayoutConfigShared } from "../src/harness-layout-steps.ts";
+import {
+  HarnessLayoutConfig,
+  HarnessLayoutConfigShared,
+  REMOTE_SSH_RESET_PENDING_WORDS,
+  REMOTE_SSH_ROOT_UNSUPPORTED_WORDS,
+  REMOTE_SSH_ROOT_WORDS,
+} from "../src/harness-layout-steps.ts";
 import {
   HARNESS_UPDATES_OFF_ENV,
   NO_PAGER_ENV,
@@ -444,6 +459,8 @@ const sealantLaunchLayer = (
     readonly stopOptions?: Array<WorkspaceStopOptions | undefined>;
     /** What the platform answers a stop, given whether it discards; `requested` by default. */
     readonly stopAnswer?: (discard: boolean) => "stopped" | "draining" | "kept" | "requested";
+    /** Holds the platform's answer to a stop until it completes (a Core slow to stop the executor). */
+    readonly aroundStop?: () => Effect.Effect<void>;
     /** Every flush's kind, in order (`suspend` · `final`). */
     readonly flushKinds?: CaptureFlushKind[];
     /**
@@ -477,6 +494,11 @@ const sealantLaunchLayer = (
     readonly createLaunches?: Array<string | undefined>;
     /** Every create's `credentialsHome` (docs/adr/0016), as Mend sent it (`undefined`: none). */
     readonly createHomes?: Array<string | undefined>;
+    /**
+     * Every create's SSH user (docs/adr/0016, decision 10): with `sshAsOwner`, the home whose
+     * owner's uid Core runs the sessions as (`credentialsHome`'s path); `undefined`: root.
+     */
+    readonly createSshUsers?: Array<string | undefined>;
     /** Every exec's user (docs/adr/0016): the login name it ran as, null for root. */
     readonly execUsers?: Array<string | null>;
     /** While true, a create's answer is lost (503) as if the control plane never answered. */
@@ -586,6 +608,7 @@ const sealantLaunchLayer = (
     runtimeDeadline: async () => null,
     runtime: async () => null,
     processUser: async () => "supported",
+    sshAsRoot: async () => {},
     phase: async () => captureOps?.phase?.() ?? null,
     launch: undefined,
     recover: async () => {
@@ -649,6 +672,9 @@ const sealantLaunchLayer = (
         created.push(options);
         captureOps?.createKeys?.push(launch?.idempotencyKey);
         captureOps?.createLaunches?.push(launch?.launchId);
+        captureOps?.createSshUsers?.push(
+          launch?.sshAsOwner === true ? launch.credentialsHome?.path : undefined,
+        );
         captureOps?.createHomes?.push(
           launch?.credentialsHome === undefined
             ? undefined
@@ -749,24 +775,29 @@ const sealantLaunchLayer = (
           ),
     forward: () => Effect.die("not in test"),
     stopWorkspace: (target, options) =>
-      Effect.sync(() => {
-        stopped?.push(target.id);
-        captureOps?.stops?.push(options?.discardUnsaved === true ? "discard" : "drain");
-        captureOps?.stopOptions?.push(options);
-        const answer = captureOps?.stopAnswer?.(options?.discardUnsaved === true) ?? "requested";
-        // A platform that keeps the workspace (its drain did not move) terminates nothing.
-        if (target.id === workspace.id && answer !== "kept") terminated = true;
-        // SDK 0.37.2: the stop is accepted and nothing more is said; the status says the rest.
-        const retained = captureOps?.retained?.() ?? null;
-        return {
-          state: answer,
-          retained,
-          completion:
-            options?.completion === undefined
-              ? null
-              : { outcome: captureOps?.completionOutcome ?? "accepted", detail: null },
-        };
-      }),
+      (captureOps?.aroundStop?.() ?? Effect.void).pipe(
+        Effect.andThen(
+          Effect.sync(() => {
+            stopped?.push(target.id);
+            captureOps?.stops?.push(options?.discardUnsaved === true ? "discard" : "drain");
+            captureOps?.stopOptions?.push(options);
+            const answer =
+              captureOps?.stopAnswer?.(options?.discardUnsaved === true) ?? "requested";
+            // A platform that keeps the workspace (its drain did not move) terminates nothing.
+            if (target.id === workspace.id && answer !== "kept") terminated = true;
+            // SDK 0.37.2: the stop is accepted and nothing more is said; the status says the rest.
+            const retained = captureOps?.retained?.() ?? null;
+            return {
+              state: answer,
+              retained,
+              completion:
+                options?.completion === undefined
+                  ? null
+                  : { outcome: captureOps?.completionOutcome ?? "accepted", detail: null },
+            };
+          }),
+        ),
+      ),
     captureFlush: (target, kind) =>
       Effect.gen(function* () {
         captureOps?.flushed?.push(`flush:${target.id}`);
@@ -2062,6 +2093,7 @@ const referencesEmptyLayer = Layer.succeed(ReferencesRepo, {
   create: () => Effect.die("not in test"),
   byId: (id) => Effect.fail(new ReferenceNotFoundError({ referenceId: id })),
   byName: () => Effect.succeed(null),
+  listAll: () => Effect.succeed([]),
   listForOrganization: () => Effect.succeed([]),
   byIdsInOrganization: () => Effect.succeed([]),
   remove: () => Effect.void,
@@ -2521,6 +2553,15 @@ const sessionsLayer = (world: World) => {
           : { workspaceId: current, launchId: found.launchId };
       }),
     executorSessionOf: (workspaceId) => Effect.sync(() => executorSessionIn(world, workspaceId)),
+    launchersOf: (workspaceIds) =>
+      Effect.sync(() => {
+        const launchers = new Map<string, string>();
+        for (const workspaceId of workspaceIds) {
+          const owner = executorSessionIn(world, workspaceId)?.ownerUserId;
+          if (owner !== undefined && owner !== null) launchers.set(workspaceId, owner);
+        }
+        return launchers;
+      }),
     executorAccessOf: (workspaceId, askerUserId) =>
       Effect.sync(() => {
         const creator = executorSessionIn(world, workspaceId);
@@ -2786,6 +2827,9 @@ const checkpointsLayer = (world: World) =>
             seq: input.seq,
             trigger: input.trigger,
             createdAt: now(),
+            ...(input.source === undefined || input.source === null
+              ? {}
+              : { source: input.source }),
           });
           world.checkpoints.push(checkpoint);
           world.checkpointCaptureIds.set(checkpoint.id, input.captureId ?? null);
@@ -2999,6 +3043,7 @@ const testDrainPolicy = (overrides: Partial<CaptureDrainPolicyShape> = {}) =>
     keptRetryFirst: Duration.seconds(10),
     keptRetryMax: Duration.minutes(5),
     deferredWorkLimit: Duration.seconds(5),
+    landingStopWait: Duration.seconds(10),
     statusInterval: Duration.seconds(45),
     statusMinInterval: Duration.seconds(10),
     // A launch waits this long for a worktree's previous executor before it is refused.
@@ -3177,6 +3222,10 @@ const withEngine = <A, E>(
       }>;
       readonly serviceAccount: string | null;
     };
+    /** The organization's references and each project's selection; none unless a test says. */
+    readonly referencesLayer?: Layer.Layer<ReferencesRepo>;
+    /** The project's links; none unless a test says. */
+    readonly projectLinksLayer?: Layer.Layer<ProjectLinksRepo>;
     /** Seed crash-recovery facts before the SessionEngine layer runs its boot pass. */
     readonly prepareWorld?: (world: World, tmp: string) => void;
     /** Reuse one persisted test world across engine scopes to exercise process restart. */
@@ -3336,9 +3385,9 @@ const withEngine = <A, E>(
         changesLayer(world),
         worktreesLayer(world),
         checkpointsLayer(world),
-        referencesEmptyLayer,
+        options.referencesLayer ?? referencesEmptyLayer,
         projectMountsEmptyLayer,
-        projectLinksEmptyLayer,
+        options.projectLinksLayer ?? projectLinksEmptyLayer,
         SessionRepositoriesRepoMemory,
         organizationsLayer(world),
         auditLayer(world),
@@ -3453,6 +3502,169 @@ describe("SessionEngine", () => {
           shell: "bash",
           services: { docker: true },
         },
+      },
+    );
+  });
+
+  it("refuses to launch into an existing worktree whose store holds a login or token, and mounts nothing", async () => {
+    // Review 5 of mend#640, R5-1: a join returns the worktree without `Store.createWorktree`, so
+    // the store gate alone let an older server's credential reach the workspace's mounts.
+    const created: CreateOptions[] = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const input = {
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            name: "legacy",
+            ownerUserId: "user-fixture",
+            base: null,
+          };
+          const first = yield* engine.provision(input);
+          execFileSync("git", [
+            "-C",
+            project.storePath,
+            "config",
+            "remote.origin.url",
+            "http://user:LEGACY-TOKEN@127.0.0.1:9/repo",
+          ]);
+          const joined = yield* engine.provision(input);
+          expect(joined.worktreeId).toBe(first.worktreeId);
+          const refused = yield* engine.launch(joined.id, ["codex"]).pipe(Effect.flip);
+          expect(
+            refused._tag === "DotfilesResolveError" ? refused.message : refused._tag,
+          ).toContain("remote.origin.url (a login or token");
+          expect(JSON.stringify(refused)).not.toContain("LEGACY-TOKEN");
+          expect(created).toHaveLength(0);
+        }),
+      { sealantLayer: sealantLaunchLayer(created) },
+    );
+  });
+
+  it.each(["references", "links"] as const)(
+    "refuses to launch when the project's %s cannot be read, rather than mount them unchecked",
+    async (failing) => {
+      // A read that fails refuses as a finding does (fail closed): what it could not list would
+      // be mounted without its git config checked.
+      const created: CreateOptions[] = [];
+      const broken = Effect.die("the database is not answering");
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const project = yield* setup(tmp, world);
+            const engine = yield* SessionEngine;
+            const session = yield* engine.provision({
+              projectId: project.id,
+              harness: "codex",
+              label: null,
+              name: null,
+              ownerUserId: "user-fixture",
+              base: null,
+            });
+            const refused = yield* engine.launch(session.id, ["codex"]).pipe(Effect.flip);
+            expect(
+              refused._tag === "DotfilesResolveError" ? refused.message : refused._tag,
+            ).toContain(
+              failing === "references"
+                ? "could not read this project's selected references"
+                : "could not read this project's linked projects",
+            );
+            expect(created).toHaveLength(0);
+          }),
+        {
+          sealantLayer: sealantLaunchLayer(created),
+          ...(failing === "references"
+            ? {
+                referencesLayer: Layer.succeed(ReferencesRepo, {
+                  create: () => Effect.die("not in test"),
+                  byId: (id) => Effect.fail(new ReferenceNotFoundError({ referenceId: id })),
+                  byName: () => Effect.succeed(null),
+                  listAll: () => Effect.succeed([]),
+                  listForOrganization: () => Effect.succeed([]),
+                  byIdsInOrganization: () => Effect.succeed([]),
+                  remove: () => Effect.void,
+                  setHead: () => Effect.void,
+                  listForProject: () => broken,
+                  setForProject: () => Effect.void,
+                }),
+              }
+            : {
+                projectLinksLayer: Layer.succeed(ProjectLinksRepo, {
+                  create: () => Effect.die("not in test"),
+                  byId: (id) => Effect.fail(new ProjectLinkNotFoundError({ linkId: id })),
+                  listForProject: () => broken,
+                  remove: () => Effect.void,
+                }),
+              }),
+        },
+      );
+    },
+  );
+
+  it("refuses to launch with a selected reference whose clone holds a login or token", async () => {
+    const created: CreateOptions[] = [];
+    const selected: Array<Reference> = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const clone = path.join(tmp, "legacy-reference");
+          execFileSync("git", ["clone", "-q", path.join(tmp, "origin"), clone]);
+          execFileSync("git", [
+            "-C",
+            clone,
+            "config",
+            "remote.origin.url",
+            "https://user:REFERENCE-TOKEN@host.invalid/repo",
+          ]);
+          selected.push(
+            new Reference({
+              id: ReferenceId.make("legacy-reference"),
+              name: "legacy-reference",
+              organizationId: project.organizationId,
+              createdByUserId: "user-fixture",
+              originUrl: "https://host.invalid/repo",
+              path: clone,
+              pinnedRef: null,
+              headSha: null,
+              refreshedAt: null,
+              createdAt: new Date(0),
+              updatedAt: new Date(0),
+            }),
+          );
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            name: null,
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+          const refused = yield* engine.launch(session.id, ["codex"]).pipe(Effect.flip);
+          expect(
+            refused._tag === "DotfilesResolveError" ? refused.message : refused._tag,
+          ).toContain("a login or token");
+          expect(JSON.stringify(refused)).not.toContain("REFERENCE-TOKEN");
+          expect(created).toHaveLength(0);
+        }),
+      {
+        sealantLayer: sealantLaunchLayer(created),
+        referencesLayer: Layer.succeed(ReferencesRepo, {
+          create: () => Effect.die("not in test"),
+          byId: (id) => Effect.fail(new ReferenceNotFoundError({ referenceId: id })),
+          byName: () => Effect.succeed(null),
+          listAll: () => Effect.succeed(selected),
+          listForOrganization: () => Effect.succeed(selected),
+          byIdsInOrganization: () => Effect.succeed(selected),
+          remove: () => Effect.void,
+          setHead: () => Effect.void,
+          listForProject: () => Effect.succeed(selected),
+          setForProject: () => Effect.void,
+        }),
       },
     );
   });
@@ -6069,6 +6281,188 @@ describe("SessionEngine", () => {
     );
   });
 
+  it("stamps a start's id on the attempt it began, and refuses the id a second time", async () => {
+    const created: CreateOptions[] = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            name: null,
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+          yield* engine.launch(session.id, ["codex"]);
+          const startId = "5b3f0c1e-8d2a-4f6b-9c7e-1a2b3c4d5e6f";
+
+          const service = yield* engine.runService(
+            session.id,
+            ["pnpm", "dev"],
+            3000,
+            "web",
+            "tcp",
+            null,
+            undefined,
+            startId,
+          );
+          expect(service.attempts.at(-1)?.launchCorrelationId).toBe(
+            serviceStartCorrelation(service.service.id, startId),
+          );
+          yield* engine.stopService(service.service.id);
+
+          const again = yield* engine
+            .runService(session.id, ["pnpm", "dev"], 3000, "web", "tcp", null, undefined, startId)
+            .pipe(Effect.flip);
+          expect(again._tag).toBe("ServiceStartError");
+          expect(again.message).toContain(
+            "This start id was used by an earlier start of this Service",
+          );
+
+          // Another Service of the session takes the same id: the key is the Service and the id.
+          const api = yield* engine.runService(
+            session.id,
+            ["pnpm", "api"],
+            4000,
+            "api",
+            "tcp",
+            null,
+            undefined,
+            startId,
+          );
+          expect(api.attempts.at(-1)?.launchCorrelationId).toBe(
+            serviceStartCorrelation(api.service.id, startId),
+          );
+
+          // A start that names no id carries none: an older client's starts are as before.
+          const unnamed = yield* engine.runService(session.id, ["pnpm", "dev"], 3000, "web");
+          expect(unnamed.attempts.at(-1)?.launchCorrelationId).toBeNull();
+          expect(unnamed.attempts).toHaveLength(2);
+        }),
+      { sealantLayer: sealantLaunchLayer(created) },
+    );
+  });
+
+  // Review 2 of mend#651: an id another person used on their own private work, in the same
+  // organization or another, neither refuses this person's start nor says it was used.
+  it.each([
+    { who: "carol", organization: "org-test" },
+    { who: "bob", organization: "org-bob" },
+  ])(
+    "a start id another person used on hidden work is invisible to $who's own start ($organization)",
+    async ({ who, organization }) => {
+      const created: CreateOptions[] = [];
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const fixture = yield* setup(tmp, world);
+            const alicesProject = new Project({
+              ...fixture,
+              visibility: "private",
+              createdByUserId: "user-fixture",
+            });
+            world.projects.set(alicesProject.id, alicesProject);
+            const sibling = yield* setupSibling(tmp, world, who, fixture.originUrl ?? "");
+            const theirProject = new Project({
+              ...sibling,
+              organizationId: OrganizationId.make(organization),
+              visibility: "private",
+              createdByUserId: `user-${who}`,
+            });
+            world.projects.set(theirProject.id, theirProject);
+            const engine = yield* SessionEngine;
+            const startId = "5b3f0c1e-8d2a-4f6b-9c7e-1a2b3c4d5e6f";
+
+            const alice = yield* engine.provision({
+              projectId: alicesProject.id,
+              harness: "codex",
+              label: null,
+              name: null,
+              ownerUserId: "user-fixture",
+              base: null,
+            });
+            yield* engine.launch(alice.id, ["codex"]);
+            const hers = yield* engine.runService(
+              alice.id,
+              ["pnpm", "dev"],
+              3000,
+              "web",
+              "tcp",
+              null,
+              "user-fixture",
+              startId,
+            );
+            yield* engine.stopService(hers.service.id);
+
+            const theirs = yield* engine.provision({
+              projectId: theirProject.id,
+              harness: "codex",
+              label: null,
+              name: null,
+              ownerUserId: `user-${who}`,
+              base: null,
+            });
+            yield* engine.launch(theirs.id, ["codex"]);
+            // The same name too: nothing of Alice's Service decides theirs.
+            const started = yield* engine.runService(
+              theirs.id,
+              ["pnpm", "dev"],
+              3001,
+              "web",
+              "tcp",
+              null,
+              `user-${who}`,
+              startId,
+            );
+            expect(started.service.sessionId).toBe(theirs.id);
+            expect(started.attempts).toHaveLength(1);
+            expect(started.attempts[0]?.status).toBe("running");
+            expect(started.attempts[0]?.launchCorrelationId).toBe(
+              serviceStartCorrelation(started.service.id, startId),
+            );
+            expect(started.attempts[0]?.launchCorrelationId).not.toBe(
+              hers.attempts[0]?.launchCorrelationId,
+            );
+          }),
+        { sealantLayer: sealantLaunchLayer(created) },
+      );
+    },
+  );
+
+  it("stamps a recipe start's id on its attempt", async () => {
+    const created: CreateOptions[] = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            name: null,
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+          yield* engine.launch(session.id, ["codex"]);
+          const worktree = path.join(tmp, "store", "fixture", "worktrees", session.worktree);
+          fs.writeFileSync(
+            path.join(worktree, "mend.toml"),
+            '[service.web]\ncommand = "pnpm dev"\nport = 3000\n',
+          );
+          const startId = "0e1d2c3b-4a59-4687-9a6b-5c4d3e2f1a0b";
+          const service = yield* engine.runServiceRecipe(session.id, "web", undefined, startId);
+          expect(service.attempts.at(-1)?.launchCorrelationId).toBe(
+            serviceStartCorrelation(service.service.id, startId),
+          );
+        }),
+      { sealantLayer: sealantLaunchLayer(created) },
+    );
+  });
+
   it("stamps server-resolved file recipe provenance", async () => {
     const created: CreateOptions[] = [];
     await withEngine(
@@ -7809,6 +8203,7 @@ describe("SessionEngine hot sessions", () => {
               status: "ready",
               error: null,
               fingerprint: "match-simulated-by-the-fake-claim",
+              remoteSsh: "not-taken",
               harnessLayout: "shared",
               worktree: null,
               branch: null,
@@ -7910,6 +8305,7 @@ describe("SessionEngine hot sessions", () => {
               status: "ready",
               error: null,
               fingerprint: "match-simulated-by-the-fake-claim",
+              remoteSsh: "not-taken",
               harnessLayout: "shared",
               worktree: null,
               branch: null,
@@ -7961,6 +8357,194 @@ describe("SessionEngine hot sessions", () => {
       {
         sealantLayer: sealantLaunchLayer(created, () => false, undefined, spawned),
         hotWorkspacesLayer: hotPoolLayer(pool),
+      },
+    );
+  });
+
+  /** A ready co-located standby over `project`'s worktrees root, as the hot pool keeps one. */
+  const readyStandby = (projectId: ProjectId, id: SessionId) =>
+    new HotWorkspace({
+      id,
+      projectId,
+      worktreeId: null,
+      ownerUserId: "user-fixture",
+      status: "ready",
+      error: null,
+      fingerprint: "match-simulated-by-the-fake-claim",
+      remoteSsh: "not-taken",
+      harnessLayout: "shared",
+      worktree: null,
+      branch: null,
+      baseSha: null,
+      sealantWorkspaceId: SealantWorkspaceId.make("workspace-1"),
+      workspaceImage: defaultSettings.workspaceImage,
+      dotfiles: { repository: null, snapshotSha: null, notApplied: [] },
+      environment: {
+        environmentRevision: 0,
+        environmentVariableNames: [],
+        secretRevision: 0,
+        secretNames: [],
+      },
+      referenceMounts: [],
+      extraMounts: [],
+      createdAt: now(),
+      updatedAt: now(),
+    });
+
+  const LEGACY_URL = "http://user:R6-FIXTURE-TOKEN@127.0.0.1:9/repo";
+
+  it("leaves a standby over a store with a login or token unclaimed, and refuses the launch as a cold one", async () => {
+    // Review 6 of mend#640, R6-1: claiming a surviving co-located standby skipped the gate a
+    // cold launch passes, and the claimed workspace ran a new conversation over that store.
+    const created: CreateOptions[] = [];
+    const spawned: ReadonlyArray<string>[] = [];
+    const pool = { entries: [] as Array<HotWorkspace>, removed: [] as Array<string> };
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          world.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
+          const skeletonId = SessionId.make(crypto.randomUUID());
+          pool.entries.push(readyStandby(project.id, skeletonId));
+          const engine = yield* SessionEngine;
+          const place = yield* engine.ensureWorktree(
+            project.id,
+            { name: "legacy-place", base: null },
+            "user-fixture",
+          );
+          execFileSync("git", ["-C", project.storePath, "config", "remote.origin.url", LEGACY_URL]);
+          const session = yield* engine.provisionSessionIn(place.id, {
+            harness: "codex",
+            label: null,
+            ownerUserId: "user-fixture",
+          });
+          // Not claimed: the standby is left as it was, and the session is a cold one.
+          expect(session.id).not.toBe(skeletonId);
+          expect(pool.entries.map((entry) => [entry.id, entry.status])).toEqual([
+            [skeletonId, "ready"],
+          ]);
+          const refused = yield* engine.launch(session.id, ["codex"]).pipe(Effect.flip);
+          expect(
+            refused._tag === "DotfilesResolveError" ? refused.message : refused._tag,
+          ).toContain("remote.origin.url (a login or token");
+          expect(JSON.stringify(refused)).not.toContain("R6-FIXTURE-TOKEN");
+          expect(created).toHaveLength(0);
+          expect(spawned).toHaveLength(0);
+        }),
+      {
+        sealantLayer: sealantLaunchLayer(created, () => false, undefined, spawned),
+        hotWorkspacesLayer: hotPoolLayer(pool),
+      },
+    );
+  });
+
+  it("refuses to launch into a standby claimed before its store held a token, and lets it go", async () => {
+    const created: CreateOptions[] = [];
+    const spawned: ReadonlyArray<string>[] = [];
+    const pool = { entries: [] as Array<HotWorkspace>, removed: [] as Array<string> };
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          world.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
+          const skeletonId = SessionId.make(crypto.randomUUID());
+          pool.entries.push(readyStandby(project.id, skeletonId));
+          const engine = yield* SessionEngine;
+          const place = yield* engine.ensureWorktree(
+            project.id,
+            { name: "claimed-place", base: null },
+            "user-fixture",
+          );
+          // Claimed while the store was clean (before an upgrade, say)…
+          const session = yield* engine.provisionSessionIn(place.id, {
+            harness: "codex",
+            label: null,
+            ownerUserId: "user-fixture",
+          });
+          expect(session.id).toBe(skeletonId);
+          // …and launched once it is not.
+          execFileSync("git", ["-C", project.storePath, "config", "remote.origin.url", LEGACY_URL]);
+          const refused = yield* engine.launch(session.id, ["codex"]).pipe(Effect.flip);
+          expect(
+            refused._tag === "DotfilesResolveError" ? refused.message : refused._tag,
+          ).toContain("remote.origin.url (a login or token");
+          expect(spawned).toHaveLength(0);
+          expect(created).toHaveLength(0);
+          expect(pool.removed).toContain(skeletonId);
+          expect(world.sessions.get(session.id)?.status).toBe("failed");
+        }),
+      {
+        sealantLayer: sealantLaunchLayer(created, () => false, undefined, spawned),
+        hotWorkspacesLayer: hotPoolLayer(pool),
+      },
+    );
+  });
+
+  it("leaves a standby unclaimed when a selected reference's clone holds a login or token", async () => {
+    const created: CreateOptions[] = [];
+    const spawned: ReadonlyArray<string>[] = [];
+    const pool = { entries: [] as Array<HotWorkspace>, removed: [] as Array<string> };
+    const selected: Array<Reference> = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          world.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
+          const clone = path.join(tmp, "legacy-reference");
+          execFileSync("git", ["clone", "-q", path.join(tmp, "origin"), clone]);
+          execFileSync("git", ["-C", clone, "config", "remote.origin.url", LEGACY_URL]);
+          selected.push(
+            new Reference({
+              id: ReferenceId.make("legacy-reference"),
+              name: "legacy-reference",
+              organizationId: project.organizationId,
+              createdByUserId: "user-fixture",
+              originUrl: "https://host.invalid/repo",
+              path: clone,
+              pinnedRef: null,
+              headSha: null,
+              refreshedAt: null,
+              createdAt: now(),
+              updatedAt: now(),
+            }),
+          );
+          const skeletonId = SessionId.make(crypto.randomUUID());
+          pool.entries.push(readyStandby(project.id, skeletonId));
+          const engine = yield* SessionEngine;
+          const place = yield* engine.ensureWorktree(
+            project.id,
+            { name: "reference-place", base: null },
+            "user-fixture",
+          );
+          const session = yield* engine.provisionSessionIn(place.id, {
+            harness: "codex",
+            label: null,
+            ownerUserId: "user-fixture",
+          });
+          expect(session.id).not.toBe(skeletonId);
+          const refused = yield* engine.launch(session.id, ["codex"]).pipe(Effect.flip);
+          expect(
+            refused._tag === "DotfilesResolveError" ? refused.message : refused._tag,
+          ).toContain("a login or token");
+          expect(JSON.stringify(refused)).not.toContain("R6-FIXTURE-TOKEN");
+          expect(created).toHaveLength(0);
+          expect(spawned).toHaveLength(0);
+        }),
+      {
+        sealantLayer: sealantLaunchLayer(created, () => false, undefined, spawned),
+        hotWorkspacesLayer: hotPoolLayer(pool),
+        referencesLayer: Layer.succeed(ReferencesRepo, {
+          create: () => Effect.die("not in test"),
+          byId: (id) => Effect.fail(new ReferenceNotFoundError({ referenceId: id })),
+          byName: () => Effect.succeed(null),
+          listAll: () => Effect.succeed(selected),
+          listForOrganization: () => Effect.succeed(selected),
+          byIdsInOrganization: () => Effect.succeed(selected),
+          remove: () => Effect.void,
+          setHead: () => Effect.void,
+          listForProject: () => Effect.succeed(selected),
+          setForProject: () => Effect.void,
+        }),
       },
     );
   });
@@ -8456,6 +9040,7 @@ const memoryHotPool = () => {
         const entry = new HotWorkspace({
           ...input,
           status: "warming",
+          remoteSsh: "not-taken",
           error: null,
           sealantWorkspaceId: null,
           workspaceImage: null,
@@ -14773,6 +15358,358 @@ describe("a Stop the person made in Mend (box, 2026-10-05)", () => {
   );
 });
 
+describe("a review opened while a Stop ends the executor (packaged acceptance, arm64, 2026-10-10)", () => {
+  // Release run 38011808256 (0.36.0-next.663): `POST /changes/:id/reviews/open` had no answer in
+  // 120 s. The session was `stopping`: its drain had the final flush's answer (`final ·
+  // completed`), read it saved and was terminating the executor. The review's checkpoint asked
+  // that executor for another final flush and, once it answered, waited to publish the answer on
+  // the executor's evidence permit, which the drain holds for as long as the platform takes to
+  // answer the stop. The final flush the drain saved is the state to review: nothing more is asked.
+  it(
+    "takes the review's checkpoint from the drain's saved final flush, without another flush and without waiting for the stop",
+    { timeout: 20_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const kinds: CaptureFlushKind[] = [];
+      const memory = makeMemoryCaptureStore();
+      const stopAsked = await Effect.runPromise(Deferred.make<void>());
+      const stopHeld = await Effect.runPromise(Deferred.make<void>());
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            yield* engine.launch(session.id, ["codex"]);
+            yield* engine.stop(session.id);
+            // The drain read the executor saved and asked the platform to stop it.
+            yield* Deferred.await(stopAsked);
+            expect(kinds).toEqual(["final"]);
+            const head = memory.chains.get(session.worktreeId)?.headN ?? null;
+            const taken = yield* engine
+              .checkpointNow(session.id, "review-open")
+              .pipe(Effect.timeoutOption(Duration.seconds(5)));
+            expect(Option.isSome(taken)).toBe(true);
+            // No flush of its own: the drain's final one stands for it.
+            expect(kinds).toEqual(["final"]);
+            // And it says so: the Stop's final save, its capture and when Mend received it —
+            // never the checkpoint's own time as a fresh reading (round 2 of the review).
+            if (Option.isSome(taken)) {
+              const source = taken.value.source;
+              expect(source?.kind).toBe("stop-final");
+              expect(source?.captureN).toBe(1);
+              expect(source?.observedAt.getTime()).toBeLessThanOrEqual(
+                taken.value.createdAt.getTime(),
+              );
+            }
+            expect(memory.chains.get(session.worktreeId)?.headN ?? null).toBe(head);
+            yield* Deferred.succeed(stopHeld, undefined);
+            yield* until(
+              () => world.sessions.get(session.id)?.settledAt != null,
+              "the session to settle",
+            );
+            expect(world.sessions.get(session.id)?.status).toBe("stopped");
+          }),
+        {
+          captured: memory,
+          sealantLayer: lifecycleLayer(created, {
+            captureOps: {
+              flushKinds: kinds,
+              flush: () => Effect.succeed(flushReport(0, 1, { headN: 1 })),
+              aroundStop: () =>
+                Deferred.succeed(stopAsked, undefined).pipe(
+                  Effect.andThen(Deferred.await(stopHeld)),
+                ),
+            },
+          }),
+        },
+      );
+    },
+  );
+  it(
+    "waits for the drain's final flush still on its way and takes its word, never asking the executor again",
+    { timeout: 20_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const kinds: CaptureFlushKind[] = [];
+      const logs: Array<string> = [];
+      const memory = makeMemoryCaptureStore();
+      const finalHeld = await Effect.runPromise(Deferred.make<void>());
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            yield* engine.launch(session.id, ["codex"]);
+            yield* engine.stop(session.id);
+            yield* until(() => kinds.includes("final"), "the drain's final flush");
+            const review = yield* Effect.forkChild(engine.checkpointNow(session.id, "review-open"));
+            yield* Effect.sleep(Duration.millis(200));
+            expect(review.pollUnsafe()).toBeUndefined();
+            yield* Deferred.succeed(finalHeld, undefined);
+            const taken = yield* Fiber.join(review).pipe(Effect.timeoutOption(Duration.seconds(5)));
+            expect(Option.isSome(taken)).toBe(true);
+            expect(kinds).toEqual(["final"]);
+            expect(
+              logs.some((line) =>
+                line.includes(
+                  "checkpoint · review-open · from the Stop's final save · capture 1 · ",
+                ),
+              ),
+            ).toBe(true);
+            yield* until(
+              () => world.sessions.get(session.id)?.settledAt != null,
+              "the session to settle",
+            );
+          }),
+        {
+          captured: memory,
+          logs,
+          sealantLayer: lifecycleLayer(created, {
+            captureOps: {
+              flushKinds: kinds,
+              flush: () =>
+                Deferred.await(finalHeld).pipe(Effect.as(flushReport(0, 1, { headN: 1 }))),
+            },
+          }),
+        },
+      );
+    },
+  );
+  // Review of mend#649 (Astra, 2026-10-10): the Stop's final save stands for a review's
+  // checkpoint, never for a landing's barrier. A completed final may later answer `changed` (ADR
+  // 0002 decision 7): the disk moved after the drain read it saved and while the platform was
+  // still stopping the executor. A landing then must not take the old tree as caught up.
+  it(
+    "never lands from the Stop's final save while the Stop is under way: the landing waits for it to settle",
+    { timeout: 20_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const kinds: CaptureFlushKind[] = [];
+      const memory = makeMemoryCaptureStore();
+      const stopAsked = await Effect.runPromise(Deferred.make<void>());
+      const stopHeld = await Effect.runPromise(Deferred.make<void>());
+      let diskChanged = false;
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            yield* engine.launch(session.id, ["codex"]);
+            yield* engine.stop(session.id);
+            yield* Deferred.await(stopAsked);
+            diskChanged = true;
+            const landing = yield* Effect.forkChild(
+              engine.landingCheckpoint(session.id, "user-mark"),
+            );
+            yield* Effect.sleep(Duration.seconds(2));
+            // Neither the old tree nor a flush asked of the executor the Stop holds.
+            expect(landing.pollUnsafe()).toBeUndefined();
+            expect(kinds).toEqual(["final"]);
+            // The Stop settles: the executor ended, its lease released. The landing reads the
+            // chain as the Stop saved it.
+            yield* Deferred.succeed(stopHeld, undefined);
+            const taken = yield* Fiber.join(landing).pipe(
+              Effect.timeoutOption(Duration.seconds(5)),
+            );
+            expect(Option.isSome(taken)).toBe(true);
+            expect(kinds).toEqual(["final"]);
+            expect(world.sessions.get(session.id)?.status).toBe("stopped");
+          }),
+        {
+          captured: memory,
+          sealantLayer: lifecycleLayer(created, {
+            captureOps: {
+              flushKinds: kinds,
+              finalCompletion: "unreported",
+              flush: () =>
+                Effect.succeed(
+                  diskChanged
+                    ? {
+                        ...flushReport(0, 1, { headN: 1 }),
+                        complete: false,
+                        incompleteReason: "changed",
+                        unreadable: 1,
+                        unreadablePaths: ["last-work.txt"],
+                      }
+                    : { ...flushReport(0, 1, { headN: 1 }), complete: true },
+                ),
+              aroundStop: () =>
+                Deferred.succeed(stopAsked, undefined).pipe(
+                  Effect.andThen(Deferred.await(stopHeld)),
+                ),
+            },
+          }),
+        },
+      );
+    },
+  );
+
+  it(
+    "refuses a landing with `stopping` when the Stop has not settled within its wait",
+    { timeout: 20_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const kinds: CaptureFlushKind[] = [];
+      const memory = makeMemoryCaptureStore();
+      const stopAsked = await Effect.runPromise(Deferred.make<void>());
+      const stopHeld = await Effect.runPromise(Deferred.make<void>());
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            yield* engine.launch(session.id, ["codex"]);
+            yield* engine.stop(session.id);
+            yield* Deferred.await(stopAsked);
+            const refused = yield* engine
+              .landingCheckpoint(session.id, "user-mark")
+              .pipe(Effect.flip, Effect.timeoutOption(Duration.seconds(5)));
+            expect(Option.isSome(refused)).toBe(true);
+            if (Option.isSome(refused)) {
+              expect(refused.value._tag).toBe("CapturesBehindError");
+              if (refused.value._tag === "CapturesBehindError") {
+                expect(refused.value.stopping).toBe(true);
+              }
+            }
+            expect(kinds).toEqual(["final"]);
+            yield* Deferred.succeed(stopHeld, undefined);
+            yield* until(
+              () => world.sessions.get(session.id)?.settledAt != null,
+              "the session to settle",
+            );
+          }),
+        {
+          captured: memory,
+          drainPolicy: { landingStopWait: Duration.seconds(1) },
+          sealantLayer: lifecycleLayer(created, {
+            captureOps: {
+              flushKinds: kinds,
+              flush: () => Effect.succeed(flushReport(0, 1, { headN: 1 })),
+              aroundStop: () =>
+                Deferred.succeed(stopAsked, undefined).pipe(
+                  Effect.andThen(Deferred.await(stopHeld)),
+                ),
+            },
+          }),
+        },
+      );
+    },
+  );
+  // Round 2 of the review of mend#649: requests and answers were ordered, and waits timed, by the
+  // wall clock. Set back, it let a review take an answer the drain asked for before the review was
+  // asked, and stretched a landing's wait by as much. Asks are a sequence now, and waits monotonic.
+  it(
+    "never takes a drain's answer asked before the review, whatever the wall clock says",
+    { timeout: 20_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const memory = makeMemoryCaptureStore();
+      const first = Deferred.makeUnsafe<void>();
+      const second = Deferred.makeUnsafe<void>();
+      let asks = 0;
+      const wallClock = Date.now;
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            yield* engine.launch(session.id, ["codex"]);
+            yield* engine.stop(session.id);
+            yield* until(() => asks === 1, "the drain's first final");
+            Date.now = () => wallClock() - 60_000;
+            const review = yield* Effect.forkChild(engine.checkpointNow(session.id, "review-open"));
+            yield* Effect.sleep(Duration.millis(100));
+            // The answer to the final asked before the review: in progress, not saved.
+            yield* Deferred.succeed(first, undefined);
+            yield* until(() => asks >= 2, "the drain's next final");
+            yield* Effect.sleep(Duration.millis(500));
+            expect(review.pollUnsafe()).toBeUndefined();
+            // The final asked after the review saves: that is what the review takes.
+            yield* Deferred.succeed(second, undefined);
+            const taken = yield* Fiber.join(review).pipe(Effect.timeoutOption(Duration.seconds(5)));
+            expect(Option.isSome(taken)).toBe(true);
+            if (Option.isSome(taken)) expect(taken.value.source?.kind).toBe("stop-final");
+          }).pipe(
+            Effect.ensuring(
+              Effect.sync(() => {
+                Date.now = wallClock;
+              }).pipe(Effect.andThen(Deferred.succeed(second, undefined))),
+            ),
+          ),
+        {
+          captured: memory,
+          drainPolicy: { keptRetryFirst: Duration.millis(50), stallSeconds: 600 },
+          sealantLayer: lifecycleLayer(created, {
+            captureOps: {
+              finalCompletion: "unreported",
+              flush: () =>
+                Effect.gen(function* () {
+                  asks += 1;
+                  const ask = asks;
+                  yield* Deferred.await(ask === 1 ? first : second);
+                  return ask === 1
+                    ? {
+                        ...flushReport(1, 1, { headN: 1 }),
+                        complete: false,
+                        incompleteReason: "in-progress",
+                      }
+                    : { ...flushReport(0, 1, { headN: 1 }), complete: true };
+                }),
+            },
+          }),
+        },
+      );
+    },
+  );
+
+  it(
+    "refuses a landing when its wait is over, whatever the wall clock says",
+    { timeout: 20_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const memory = makeMemoryCaptureStore();
+      const stopAsked = Deferred.makeUnsafe<void>();
+      const stopHeld = Deferred.makeUnsafe<void>();
+      const wallClock = Date.now;
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            yield* engine.launch(session.id, ["codex"]);
+            yield* engine.stop(session.id);
+            yield* Deferred.await(stopAsked);
+            const landing = yield* Effect.forkChild(
+              engine.landingCheckpoint(session.id, "user-mark").pipe(Effect.flip),
+            );
+            yield* Effect.sleep(Duration.millis(100));
+            Date.now = () => wallClock() - 60_000;
+            const refused = yield* Fiber.join(landing).pipe(
+              Effect.timeoutOption(Duration.seconds(3)),
+            );
+            expect(Option.isSome(refused)).toBe(true);
+            if (Option.isSome(refused) && refused.value._tag === "CapturesBehindError") {
+              expect(refused.value.stopping).toBe(true);
+            }
+          }).pipe(
+            Effect.ensuring(
+              Effect.sync(() => {
+                Date.now = wallClock;
+              }).pipe(Effect.andThen(Deferred.succeed(stopHeld, undefined))),
+            ),
+          ),
+        {
+          captured: memory,
+          drainPolicy: { landingStopWait: Duration.seconds(1) },
+          sealantLayer: lifecycleLayer(created, {
+            captureOps: {
+              flush: () => Effect.succeed(flushReport(0, 1, { headN: 1 })),
+              aroundStop: () =>
+                Deferred.succeed(stopAsked, undefined).pipe(
+                  Effect.andThen(Deferred.await(stopHeld)),
+                ),
+            },
+          }),
+        },
+      );
+    },
+  );
+});
+
 describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
   it("every planned end asks the executor for a final flush; a checkpoint asks for a suspend one", async () => {
     const created: Array<CreateOptions> = [];
@@ -16349,6 +17286,183 @@ describe("SessionEngine capture failures shown while they happen (e2e run 3, 202
             },
           }),
         },
+      );
+    },
+  );
+
+  /**
+   * Verify proof run 9 (2026-10-10): a shallow project's every capture failed git verification,
+   * the registrar refused the final seal as unrestorable on each of 61 asks, and the Stop read
+   * `saving` for 5 minutes, then `final seal not confirmed`. The executor registers a sealing
+   * FINAL through the session's capture routes, Mend's verification answering as `verdict` says,
+   * then the Stop's FINAL answers `sealing` over it.
+   */
+  const stopOverSealingFinal = async (
+    verdict: GitVerification,
+    body: (at: {
+      readonly world: World;
+      readonly session: Session;
+      readonly memory: MemoryCaptureStore;
+      readonly finals: () => number;
+      readonly events: ReadonlyArray<string>;
+      readonly seal: RegisterSealOutcome | undefined;
+    }) => Effect.Effect<void, unknown, SessionEngine>,
+    // A row an older Mend recorded `failed` before this process checked it.
+    staleFailedRow = false,
+  ) => {
+    const created: Array<CreateOptions> = [];
+    const events: string[] = [];
+    const kinds: CaptureFlushKind[] = [];
+    const memory = makeMemoryCaptureStore();
+    let sealingHead: number | null = null;
+    const verifier = Layer.succeed(CaptureGitVerifier, {
+      verify: () => Effect.succeed(verdict),
+      treePaths: () => Effect.succeed(null),
+      treeObjects: () => Effect.succeed(null),
+    });
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const { engine, session } = yield* launchOnce(world, tmp);
+          yield* engine.launch(session.id, ["codex"]);
+          const lease = memory.leases.get(session.worktreeId);
+          const chain = memory.chains.get(session.worktreeId);
+          const launchId = lease?.launchId ?? null;
+          if (lease === undefined || chain === undefined || launchId === null) {
+            throw new Error("the launch holds no launch-bound lease");
+          }
+          const api = servedSocketApis.get(session.id)?.captureAs?.(launchId);
+          if (api === undefined) throw new Error("no launch-bound capture routes");
+          const tree = path.join(tmp, "sealing-final");
+          fs.mkdirSync(path.join(tree, "tree"), { recursive: true });
+          fs.writeFileSync(path.join(tree, "tree", "edit.txt"), "the session's work\n");
+          const keys = captureKeys(session.worktreeId, lease.epoch);
+          const snapshot = snapshotDirectory(tree, keys, { chunkSize: 64 });
+          const built = buildManifest({
+            worktreeId: session.worktreeId,
+            n: chain.headN + 1,
+            parent: chain.headCapture,
+            epoch: lease.epoch,
+            seq: 50,
+            kind: "final",
+            git: { packs: [], refs: {}, head: "refs/heads/main", fsck: "verified" },
+            workspace: { root: snapshot.root, packs: snapshot.packs },
+            bulk: { root: "", packs: [], platform: "linux-x86_64" },
+          });
+          const manifest = {
+            ...built.manifest,
+            final_seal: { complete: true, epoch: lease.epoch, executor: launchId },
+          };
+          const bytes = new Uint8Array(Buffer.from(JSON.stringify(manifest)));
+          const id = sha256Hex(bytes);
+          const key = keys.manifest(id);
+          yield* uploadObjects(new Map([...snapshot.objects, [key, bytes]])).pipe(
+            Effect.provide(BlobStoreFsLive(path.join(tmp, "blobs"))),
+          );
+          const register = api.register({
+            worktree_id: session.worktreeId,
+            epoch: lease.epoch,
+            n: manifest.n,
+            parent: manifest.parent,
+            capture_id: id,
+            manifest_key: key,
+            manifest: JSON.parse(JSON.stringify(manifest)),
+          });
+          let registered = yield* register;
+          if (staleFailedRow) {
+            const row = memory.captures.get(id);
+            if (row === undefined) throw new Error("the sealing FINAL did not register");
+            memory.captures.set(id, { ...row, gitFsck: "failed" });
+            registered = yield* register;
+          }
+          sealingHead = manifest.n;
+          yield* engine.stop(session.id);
+          yield* body({
+            world,
+            session,
+            memory,
+            finals: () => kinds.filter((kind) => kind === "final").length,
+            events,
+            seal: registered.seal,
+          });
+        }),
+      {
+        captured: memory,
+        verifier,
+        drainPolicy: {
+          pollInterval: Duration.millis(20),
+          keptRetryFirst: Duration.seconds(30),
+          keptRetryMax: Duration.seconds(30),
+        },
+        sealantLayer: lifecycleLayer(created, {
+          events,
+          captureOps: {
+            flushKinds: kinds,
+            finalCompletion: "unreported",
+            // sealantd's own answer: everything registered, the seal not confirmed.
+            flush: () =>
+              Effect.succeed({
+                ...flushReport(0, 7),
+                headN: sealingHead ?? 0,
+                complete: false,
+                incompleteReason: "sealing",
+              }),
+          },
+        }),
+      },
+    );
+  };
+
+  it(
+    "a final flush waiting on a seal Mend refused because this capture's git section failed verification reads not saved at once, says why, and keeps the workspace",
+    { timeout: 20_000 },
+    async () => {
+      await stopOverSealingFinal(
+        { outcome: "failed", detail: "fatal: Failed to traverse parents of commit b67adf47" },
+        ({ world, session, memory, finals, events, seal }) =>
+          Effect.gen(function* () {
+            expect(seal).toEqual({ state: "refused", reason: "unrestorable" });
+            // The default stall window is 600 s: only the refused seal keeps it now.
+            yield* until(
+              () => world.sessions.get(session.id)?.captureNotSavedAt != null,
+              "the kept workspace",
+            );
+            expect(finals()).toBe(1);
+            const kept = world.sessions.get(session.id);
+            expect(kept?.captureIncompleteReason).toBe(CAPTURE_SEAL_UNRESTORABLE);
+            expect(kept === undefined ? null : captureStatusLine(kept)).toBe(
+              "not saved · final seal refused · git section failed verification · 0 pending · workspace kept",
+            );
+            expect(events).not.toContain("workspace-1");
+            expect(leaseHeld(memory, session.worktreeId, session.id)).toBe(true);
+          }),
+      );
+    },
+  );
+
+  // Astra review of mend#654: a row an older Mend recorded `failed`, whose check cannot finish
+  // now, is a seal withheld as unavailable, not refused: the Stop keeps its ordinary wait.
+  it(
+    "a final flush waiting on a seal withheld because its check could not finish keeps saving, whatever the capture's row recorded before",
+    { timeout: 20_000 },
+    async () => {
+      await stopOverSealingFinal(
+        {
+          outcome: "unverified",
+          detail: "index-pack --verify did not finish: signal SIGKILL",
+          transient: true,
+        },
+        ({ world, session, memory, finals, events, seal }) =>
+          Effect.gen(function* () {
+            expect(seal).toEqual({ state: "withheld", reason: "unavailable" });
+            yield* until(() => finals() >= 3, "the drain asking again");
+            const saving = world.sessions.get(session.id);
+            expect(saving?.captureNotSavedAt).toBeNull();
+            expect(saving?.captureIncompleteReason).toBe("sealing");
+            expect(events).not.toContain("workspace-1");
+            expect(leaseHeld(memory, session.worktreeId, session.id)).toBe(true);
+          }),
+        true,
       );
     },
   );
@@ -21207,6 +22321,48 @@ it("refuses to start a session on a SHA-256 project with the reason", async () =
 });
 
 /**
+ * Verify proof run 9 (2026-10-10): a shallow project's Stop never saved. Adoption refuses a shallow
+ * repository now; one adopted before that starts no session, with the reason, before any worktree,
+ * row or executor is made.
+ */
+it("refuses to start a session on a shallow project with the reason", async () => {
+  await withEngine((world, tmp) =>
+    Effect.gen(function* () {
+      const project = yield* setup(tmp, world);
+      const work = path.join(tmp, "shallow-work");
+      const shallow = path.join(tmp, "shallow.git");
+      execFileSync("git", ["init", "-q", "-b", "main", work]);
+      for (const message of ["one", "two"]) {
+        fs.writeFileSync(path.join(work, "app.ts"), `export const answer = "${message}"\n`);
+        execFileSync("git", ["add", "-A"], { cwd: work });
+        execFileSync(
+          "git",
+          ["-c", "user.name=t", "-c", "user.email=t@localhost", "commit", "-q", "-m", message],
+          { cwd: work },
+        );
+      }
+      // As an adoption before the refusal stored it: history stops at the newest commit.
+      execFileSync("git", ["clone", "-q", "--bare", "--depth", "1", `file://${work}`, shallow]);
+      world.projects.set(project.id, new Project({ ...project, storePath: shallow }));
+      const engine = yield* SessionEngine;
+      const refused = yield* engine
+        .provision({
+          projectId: project.id,
+          harness: "codex",
+          label: null,
+          name: null,
+          ownerUserId: "user-fixture",
+          base: null,
+        })
+        .pipe(Effect.flip);
+      expect(refused._tag).toBe("GitError");
+      if (refused._tag === "GitError") expect(refused.stderr).toBe(SHALLOW_REPOSITORY_REASON);
+      expect(world.sessions.size).toBe(0);
+    }),
+  );
+});
+
+/**
  * e2e8 (i), HSB: an executor stopped outside Mend that Core keeps for recovery (exit 75) read
  * `running` beside `retained`. The first word follows the executor: a session whose current
  * executor the platform keeps for recovery reads `stopping · retained`, never `running`.
@@ -22157,6 +23313,80 @@ describe("automatic install", () => {
                           stderr: "",
                         }
                       : { exitCode: 1, stdout: `${RETRY}\n`, stderr: GIVE_UP }
+                    : argv[2] === PNPM
+                      ? { exitCode: 0, stdout: "Done in 20.2s using pnpm v10.32.1\n", stderr: "" }
+                      : undefined,
+            },
+          }),
+        },
+      );
+    });
+  }
+
+  // The server's npm mirror (`MEND_NPM_MIRROR_URL`): the install script carries it, and a run that
+  // failed on the mirror runs again as written, so it reaches the registry itself.
+  for (const mirrored of ["completes", "fails on the mirror"] as const) {
+    it(`with the server's npm mirror, the install goes through it; ${mirrored === "completes" ? "it completes" : "it fails on the mirror and runs again without it"}`, async () => {
+      const PNPM = "pnpm install --frozen-lockfile";
+      const MIRROR = "http://npm-mirror:4873/";
+      const created: Array<CreateOptions> = [];
+      const execCalls: ReadonlyArray<string>[] = [];
+      const memory = makeMemoryCaptureStore();
+      const logs: string[] = [];
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            const project = world.projects.get(session.projectId);
+            if (project === undefined) throw new Error("project missing");
+            world.projects.set(project.id, new Project({ ...project, installCommand: PNPM }));
+            // What `mend server setup`'s mirrors overlay hands the server.
+            yield* engine
+              .launch(session.id, ["codex"])
+              .pipe(
+                Effect.provideService(
+                  ConfigProvider.ConfigProvider,
+                  ConfigProvider.fromEnv({ env: { MEND_NPM_MIRROR_URL: MIRROR } }),
+                ),
+              );
+            const installs = execCalls
+              .filter((argv) => argv[0] === "sh" && argv[1] === "-lc")
+              .map((argv) => argv[2])
+              .filter((script) => script === installScript(PNPM, MIRROR) || script === PNPM);
+            const fellBack = logs.some((line) =>
+              line.includes("dependency install · retried without the npm mirror"),
+            );
+            expect(installs).toEqual(
+              mirrored === "completes"
+                ? [installScript(PNPM, MIRROR)]
+                : [installScript(PNPM, MIRROR), PNPM],
+            );
+            expect(fellBack).toBe(mirrored !== "completes");
+            expect(
+              logs.some((line) => line.includes("dependency install · completed · exit 0")),
+            ).toBe(true);
+          }),
+        {
+          captured: memory,
+          logs,
+          sealantLayer: lifecycleLayer(created, {
+            execCalls,
+            captureOps: {
+              exec: (argv) =>
+                (argv[2] ?? "").startsWith("uname -s; uname -m;")
+                  ? { exitCode: 0, stdout: "Linux\nx86_64\nldd (GNU libc) 2.39\n", stderr: "" }
+                  : argv[2] === installScript(PNPM, MIRROR)
+                    ? mirrored === "completes"
+                      ? {
+                          exitCode: 0,
+                          stdout: "Done in 6.1s using pnpm v10.32.1\n",
+                          stderr: `mend: npm mirror · used · ${MIRROR}\n`,
+                        }
+                      : {
+                          exitCode: 1,
+                          stdout: "",
+                          stderr: `mend: npm mirror · used · ${MIRROR}\n ERR_PNPM_FETCH_502  GET ${MIRROR}a/-/a-1.0.0.tgz: Bad Gateway - 502\n`,
+                        }
                     : argv[2] === PNPM
                       ? { exitCode: 0, stdout: "Done in 20.2s using pnpm v10.32.1\n", stderr: "" }
                       : undefined,
@@ -23499,6 +24729,23 @@ describe("SessionEngine a session and its run settle together (2026-10-03)", () 
  * workspace `unknown` here, as it does on the box. Every lookup's principal lands in `seen`
  * (`none`, or the user id), so a test can say whose the calls were.
  */
+/** Records whose principal each create is made under (`none`, or the user id). */
+const createPrincipals = (
+  inner: Layer.Layer<SealantClient>,
+  seen: Array<string>,
+): Layer.Layer<SealantClient> =>
+  Layer.effect(
+    SealantClient,
+    Effect.map(SealantClient, (client) => ({
+      ...client,
+      createWorkspace: (options, launch, watch) =>
+        Effect.flatMap(SealantPrincipal, (principal) => {
+          seen.push(principal.kind === "none" ? "none" : principal.userId);
+          return client.createWorkspace(options, launch, watch);
+        }),
+    })),
+  ).pipe(Layer.provide(inner));
+
 const principalRequired = (
   inner: Layer.Layer<SealantClient>,
   seen: Array<string>,
@@ -23842,11 +25089,25 @@ const personPlatform = (
   postFails?: (onBehalfOf: string, home: string) => boolean,
   /** What the control plane says of itself, asked each time; it can run per person unless said. */
   controlPlane?: () => string | null,
+  /** Core runs a workspace's SSH sessions as a user (`features.workspaceSshUser`); yes unless said. */
+  sshUserReported = true,
+  /** Core's answer to each `sshAsRoot`: taken unless said. */
+  sshUserTaken: () => boolean = () => true,
+  /** Whether the launcher's person binding is made in Core: yes unless said. */
+  personBound = true,
 ): Layer.Layer<PersonLayoutPlatform> =>
   Layer.succeed(PersonLayoutPlatform, {
     processUser: true,
     dotfilesUser: dotfiles !== undefined,
     controlPlaneObstacle: Effect.sync(() => controlPlane?.() ?? null),
+    sshUser: Effect.succeed(sshUserReported),
+    sshAsOwnerFor: () =>
+      Effect.succeed(!sshUserReported ? "not-taken" : personBound ? "yes" : "unbound"),
+    sshAsRoot: () =>
+      Effect.sync(() => {
+        calls.push("ssh-user:root");
+        return sshUserTaken();
+      }),
     workspaceProcessUser: () => Effect.succeed("supported"),
     // Core 0.39.0-next.696 (sealant#333): the map rides the capture source, as the live layer does.
     withOwnerMap: (options, map) =>
@@ -23912,6 +25173,7 @@ interface Scenario {
   readonly resume: number;
   readonly created: number;
   readonly homes: ReadonlyArray<string | undefined>;
+  readonly sshUsers: ReadonlyArray<string | undefined>;
   readonly opened: ReadonlyArray<PersonSessionOptions>;
   readonly users: ReadonlyArray<string | null>;
   readonly execs: ReadonlyArray<ReadonlyArray<string>>;
@@ -23939,6 +25201,7 @@ const coldJoinResume = async (options: {
   const opened: Array<PersonSessionOptions> = [];
   const users: Array<string | null> = [];
   const homes: Array<string | undefined> = [];
+  const sshUsers: Array<string | undefined> = [];
   const memory = makeMemoryCaptureStore();
   let result: Scenario | null = null;
   await withEngine(
@@ -24002,6 +25265,7 @@ const coldJoinResume = async (options: {
           resume: execCalls.length - beforeResume,
           created: created.length,
           homes,
+          sshUsers,
           opened,
           users,
           execs: execCalls,
@@ -24026,6 +25290,7 @@ const coldJoinResume = async (options: {
         {
           execUsers: users,
           createHomes: homes,
+          createSshUsers: sshUsers,
           ...(options.exec === undefined ? {} : { exec: options.exec }),
         },
       ),
@@ -24075,6 +25340,8 @@ describe("per-person harness homes (docs/adr/0016)", () => {
     expect([other.cold, other.join]).toEqual([BUDGET.cold, BUDGET.otherJoin]);
     for (const run of [same, other]) {
       expect(run.homes.every((home) => home === undefined)).toBe(true);
+      // A shared executor's SSH sessions run as root, as before: no user is named.
+      expect(run.sshUsers.every((user) => user === undefined)).toBe(true);
       expect(run.users.every((user) => user === null)).toBe(true);
       expect(run.opened.some((options) => options.user !== undefined)).toBe(false);
       expect(run.joinRepairs + run.joinPersonHomes).toBe(0);
@@ -24082,6 +25349,90 @@ describe("per-person harness homes (docs/adr/0016)", () => {
     }
     expect(state.launches.size).toBe(0);
     expect(state.identities.size).toBe(0);
+  });
+
+  it("Remote-SSH is the launcher's: whoever launches the executor, and after it stops, whoever launches the next one", async () => {
+    // Alice launches and stops; Maria, a member, then launches the worktree's next executor. Its
+    // create names Maria's user and is made as Maria's Sealant user, so Core's gateway, which
+    // admits only the workspace's owner, admits Maria and refuses Alice (docs/adr/0016, decision
+    // 10: the launcher of the workspace, not the worktree's first-session owner).
+    const sshUsers: Array<string | undefined> = [];
+    const principals: Array<string> = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const first = yield* engine.provision({
+            projectId: project.id,
+            harness: "claude",
+            label: null,
+            name: "remote-ssh-launcher",
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+          yield* engine.launch(first.id, ["claude"]);
+          yield* engine.stop(first.id);
+          const next = yield* engine.provisionSessionIn(first.worktreeId, {
+            harness: "claude",
+            label: null,
+            ownerUserId: MARIA,
+          });
+          yield* engine.launch(next.id, ["claude"]);
+        }),
+      {
+        captured: makeMemoryCaptureStore(),
+        prepareWorld: (world) => world.members.set(MARIA, "member"),
+        sealantLayer: createPrincipals(
+          sealantLaunchLayer(
+            [],
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            {
+              createSshUsers: sshUsers,
+              exec: answerLayout(
+                `mend-layout probed\nmend-layout made ${LAUNCHER}\nmend-layout made ${JOINER}\nmend-layout ready\n`,
+              ),
+            },
+          ),
+          principals,
+        ),
+        harnessLayout: { flag: "person", platform: personPlatform([], { person: true }) },
+      },
+    );
+    expect(sshUsers).toEqual([`/home/${LAUNCHER}`, `/home/${JOINER}`]);
+    expect(principals).toEqual(["user-fixture", MARIA]);
+  });
+
+  it("a person launch names no SSH user where Core does not run SSH sessions as one", async () => {
+    // A control plane from before `workspaceSshUser` (sealant#348): its gateway runs every SSH
+    // session as root, so the create names nobody, and nothing is set later.
+    const calls: Array<string> = [];
+    const run = await coldJoinResume({
+      flag: "person",
+      joiner: "user-fixture",
+      platform: personPlatform(
+        calls,
+        { person: true },
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        false,
+      ),
+      exec: answerLayout(LAYOUT_READY),
+    });
+    expect(run.homes[0]).toBe(`/home/${LAUNCHER} 40001:40000`);
+    expect(run.sshUsers.every((user) => user === undefined)).toBe(true);
+    expect(calls.some((call) => call.startsWith("ssh-user:"))).toBe(false);
   });
 
   it("a person launch runs as the launcher's own user, in no more execs than its budget", async () => {
@@ -24099,6 +25450,8 @@ describe("per-person harness homes (docs/adr/0016)", () => {
     expect(run.resume).toBeLessThanOrEqual(PERSON_BUDGET.resume);
     // The create commits to the layout: the launcher's logins into their own home.
     expect(run.homes[0]).toBe(`/home/${LAUNCHER} 40001:40000`);
+    // And their Remote-SSH: Core's gateway runs the owner's SSH sessions as their user.
+    expect(run.sshUsers[0]).toBe(`/home/${LAUNCHER}`);
     // Users and homes are made in the executor's first exec, beside the helper install.
     const first = run.execs.find((argv) => (argv[2] ?? "").includes("mend-layout"));
     expect(first?.[2]).toContain(`useradd -u "$p_u" -g mend`);
@@ -24477,7 +25830,11 @@ describe("per-person harness homes (docs/adr/0016)", () => {
     ) => { exitCode: number; stdout: string; stderr: string } | undefined;
     readonly before?: (worktreeId: string) => void;
     readonly harnessLayout?: HarnessLayout;
+    /** Read the session line this long after the launch (what work beside it said). */
+    readonly summaryAfter?: Duration.Input;
   }) => {
+    let summary: string | null = null;
+    const sshUsers: Array<string | undefined> = [];
     const created: Array<CreateOptions> = [];
     const opened: Array<PersonSessionOptions> = [];
     const execCalls: Array<ReadonlyArray<string>> = [];
@@ -24505,6 +25862,10 @@ describe("per-person harness homes (docs/adr/0016)", () => {
           options.before?.(session.worktreeId);
           const launched = yield* engine.launch(session.id, ["claude"]).pipe(Effect.result);
           if (launched._tag === "Failure") failure = launched.failure.message;
+          if (options.summaryAfter !== undefined) {
+            yield* Effect.sleep(options.summaryAfter);
+            summary = world.sessions.get(session.id)?.summary ?? null;
+          }
         }),
       {
         captured: makeMemoryCaptureStore(),
@@ -24523,13 +25884,14 @@ describe("per-person harness homes (docs/adr/0016)", () => {
           {
             stops,
             beforeOpen: () => order.push("open"),
+            createSshUsers: sshUsers,
             ...(options.exec === undefined ? {} : { exec: options.exec }),
           },
         ),
         harnessLayout: { flag: options.flag, state: options.state, platform: options.platform },
       },
     );
-    return { created, opened, execCalls, stops, failure, worktreeId, order };
+    return { created, opened, execCalls, stops, failure, worktreeId, order, summary, sshUsers };
   };
 
   it("refuses a person worktree before create when its image is known not to run it", async () => {
@@ -24641,7 +26003,12 @@ describe("per-person harness homes (docs/adr/0016)", () => {
       exec: answerLayout("mend-layout missing no setfacl\nmend-layout probed\n"),
     });
     expect(run.failure).toBeNull();
-    expect(calls).toEqual([`delete:/home/${LAUNCHER}`, "post:user-fixture:/root"]);
+    // The launcher's SSH sessions go back to root with the executor (decision 10), off the
+    // launch path: nothing above waited on it.
+    expect(calls.filter((call) => !call.startsWith("ssh-user:"))).toEqual([
+      `delete:/home/${LAUNCHER}`,
+      "post:user-fixture:/root",
+    ]);
     // The agent starts as root, after its login is written.
     expect(run.order).toContain("open");
     expect(run.opened.some((options) => options.user !== undefined)).toBe(false);
@@ -24650,6 +26017,75 @@ describe("per-person harness homes (docs/adr/0016)", () => {
     ]);
     expect(state.capabilities.get(IMAGE)).toMatchObject({ person: false, missing: ["no setfacl"] });
     expect(state.worktrees.get(run.worktreeId ?? "")?.layout ?? null).toBeNull();
+  });
+
+  it("a launcher whose person Core cannot bind asks for no SSH user: Remote-SSH stays root, and the line says so", async () => {
+    const run = await launchPersonOnce({
+      flag: "person",
+      state: makeHarnessLayoutsMemoryState(),
+      platform: personPlatform(
+        [],
+        { person: true },
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        true,
+        () => true,
+        false,
+      ),
+      exec: answerLayout(LAYOUT_READY),
+      summaryAfter: "100 millis",
+    });
+    expect(run.failure).toBeNull();
+    // Still a person launch (their logins in their own home), but no `sshAsOwner` on the create.
+    expect(run.sshUsers).toEqual([undefined]);
+    expect(run.summary).toContain(REMOTE_SSH_ROOT_WORDS);
+  });
+
+  it("a person launch on a Sealant that runs no SSH session as a user says Remote-SSH is root (review 3 of mend#641, N4)", async () => {
+    const run = await launchPersonOnce({
+      flag: "person",
+      state: makeHarnessLayoutsMemoryState(),
+      platform: personPlatform(
+        [],
+        { person: true },
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        false,
+      ),
+      exec: answerLayout(LAYOUT_READY),
+      summaryAfter: "100 millis",
+    });
+    expect(run.failure).toBeNull();
+    expect(run.sshUsers).toEqual([undefined]);
+    expect(run.summary).toContain(REMOTE_SSH_ROOT_UNSUPPORTED_WORDS);
+  });
+
+  it("a fallback whose SSH reset Core has not taken starts the agent anyway, and says Remote-SSH is down", async () => {
+    const calls: Array<string> = [];
+    const run = await launchPersonOnce({
+      flag: "person",
+      state: makeHarnessLayoutsMemoryState(),
+      platform: personPlatform(
+        calls,
+        { person: true },
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        true,
+        () => false,
+      ),
+      exec: answerLayout("mend-layout missing no setfacl\nmend-layout probed\n"),
+      summaryAfter: "200 millis",
+    });
+    expect(run.failure).toBeNull();
+    expect(run.order).toContain("open");
+    expect(calls).toContain("ssh-user:root");
+    expect(run.summary).toContain(REMOTE_SSH_RESET_PENDING_WORDS);
   });
 
   it("with the flag off, a start interrupted once its operator's person request is written still makes the worktree's next launch person", async () => {
@@ -25548,6 +26984,67 @@ describe("per-person standbys (docs/adr/0016)", () => {
       if (standby === undefined) throw new Error("no person standby");
       return standby;
     });
+
+  /** A person standby warmed while the owner's person is bound in Core (`bound`) or not, then claimed. */
+  const claimStandby = (bound: boolean) => {
+    const sshUsers: Array<string | undefined> = [];
+    const world = personStandbyWorld({
+      report: { person: true, missing: [] },
+      exec: answerLayout(LAYOUT_READY),
+      captureOps: { createSshUsers: sshUsers },
+    });
+    const platform = personPlatform(
+      world.calls,
+      { person: true },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      true,
+      () => true,
+      bound,
+    );
+    let summary: string | null | undefined;
+    return withEngine(
+      (testWorld, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, testWorld);
+          testWorld.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
+          const engine = yield* SessionEngine;
+          const standby = yield* warmPersonStandby(project, world.pool);
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "claude",
+            label: null,
+            name: null,
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+          expect(session.id).toBe(standby.id);
+          world.executor.id = session.id;
+          yield* engine.launch(session.id, ["claude"]);
+          yield* Effect.sleep("200 millis");
+          const launched = testWorld.sessions.get(session.id);
+          expect(launched?.status).not.toBe("failed");
+          expect(launched?.sealantWorkspaceId).toBe(standby.sealantWorkspaceId);
+          summary = launched?.summary;
+        }),
+      { ...world.layers, harnessLayout: { ...world.layers.harnessLayout, platform } },
+    ).then(() => ({ sshUsers, summary }));
+  };
+
+  it("a claimed person standby whose owner's person Core could not bind says Remote-SSH is root (review 3 of mend#641, N4)", async () => {
+    const run = await claimStandby(false);
+    // Its create asked for no SSH user, and the claim says so, as the standby's create decided.
+    expect(run.sshUsers[0]).toBeUndefined();
+    expect(run.summary).toContain(REMOTE_SSH_ROOT_WORDS);
+  });
+
+  it("a claimed person standby whose owner's person is bound keeps their SSH user and says nothing of root", async () => {
+    const run = await claimStandby(true);
+    expect(run.sshUsers[0]).toBe(`/home/${STANDBY_OWNER}`);
+    expect(run.summary).not.toContain("Remote-SSH: root");
+  });
 
   it("a person standby, warmed as its owner, is claimed by their fresh worktree and runs per person: their user, a 0700 home, their own logins, their saved directory under people/", async () => {
     const world = personStandbyWorld({

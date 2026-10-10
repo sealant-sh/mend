@@ -140,8 +140,11 @@ describe("GET /ws", () => {
         const shell = yield* rpc[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({
           requestCompletionMarker: true,
         }).pipe(Stream.take(2), Stream.runCollect, Effect.timeout("5 seconds"));
-        assert.deepStrictEqual(Array.from(shell), [
-          { kind: "snapshot", snapshot: EMPTY_SHELL_SNAPSHOT },
+        // Its sequence is where the hub's reservation starts, which the clock seeds.
+        const opened = Array.from(shell);
+        const sequenceOf = opened[0]?.kind === "snapshot" ? opened[0].snapshot.snapshotSequence : 0;
+        assert.deepStrictEqual(opened, [
+          { kind: "snapshot", snapshot: { ...EMPTY_SHELL_SNAPSHOT, snapshotSequence: sequenceOf } },
           { kind: "synchronized" },
         ]);
 
@@ -160,7 +163,7 @@ describe("GET /ws", () => {
             [ORCHESTRATION_PROTOCOL_HEADER]: ORCHESTRATION_PROTOCOL_VERSION_TEXT,
           },
         });
-        assert.deepStrictEqual(viaHttp, EMPTY_SHELL_SNAPSHOT);
+        assert.deepStrictEqual(viaHttp, { ...EMPTY_SHELL_SNAPSHOT, snapshotSequence: sequenceOf });
       }),
     ),
   );

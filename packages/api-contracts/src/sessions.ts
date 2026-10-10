@@ -58,6 +58,14 @@ import {
   StoreFailure,
 } from "./workbench-views.ts";
 
+/**
+ * A client's own id for one Service start (a UUID). The attempt the start begins carries it, keyed
+ * by its Service, as its launch correlation (`serviceStartCorrelation(serviceId, startId)`), so the
+ * client finds that attempt even when an edge cut the start's answer. An id used before by the same
+ * Service is refused; another Service's ids are not seen. A server older than the field ignores it.
+ */
+export const ServiceStartId = Schema.String.check(Schema.isUUID());
+
 export const RespondAgentRequest = Schema.Union([
   Schema.Struct({ decision: AgentApprovalDecision }),
   Schema.Struct({ answers: AgentInputAnswers }),
@@ -349,6 +357,7 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
         name: Schema.NullOr(Schema.String),
         protocol: Schema.optional(Schema.Literals(["tcp", "udp"])),
         browserScheme: Schema.optional(ServiceBrowserScheme),
+        startId: Schema.optional(ServiceStartId),
       }),
       success: ServiceView,
       error: [NotFound, SessionNotSteerable, SessionNotLive, StoreFailure],
@@ -358,7 +367,7 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
     // Resolve the declaration on the server so recipe provenance is a trusted fact.
     HttpApiEndpoint.post("runServiceRecipe", "/sessions/:id/services/recipe", {
       params: { id: SessionId },
-      payload: Schema.Struct({ name: Schema.String }),
+      payload: Schema.Struct({ name: Schema.String, startId: Schema.optional(ServiceStartId) }),
       success: ServiceView,
       error: [NotFound, SessionNotSteerable, SessionNotLive, StoreFailure],
     }),

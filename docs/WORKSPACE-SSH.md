@@ -37,6 +37,51 @@ for identity selection, encrypted keys, configuration conflicts, and verified ho
   an agent. Agents started in that terminal can be observed through the mounted harness home, as
   implemented by the observed-agents work in mend#147 and mend#148.
 
+## Removing a key
+
+```sh
+mend ssh keys                          # every key your account registered, this machine's marked
+mend ssh keys remove SHA256:Vn6v0P2d…  # the SHA256: prefix is optional
+```
+
+Settings → Workspace SSH lists the same keys with a Remove action. A person sees and removes only
+their own keys: Mend asks the platform for the caller's Sealant user's keys, and archiving a key id
+that is not theirs answers 404, as an unknown id does, for an organization owner and the operator
+too. An owner removing one key of a member they keep is not built. The audit log records each key
+registered (`ssh_key.added`) and removed (`ssh_key.removed`).
+
+Removing a member from the organization removes all of their keys. The membership's deletion and a
+row in `ssh_key_revocations` commit in one transaction, so a removal is never recorded without the
+keys it owes. Mend's own revocation follows at once and never waits on the platform: the account is
+deactivated, its sign-ins, devices and Slack links revoked, its connections closed on every process,
+and its sessions set stopping. Only then does the removal ask the platform, archiving every key it
+lists for them, each on its own, so one refused archive does not stop the rest. It waits at most 15
+seconds for that; past it, or if the removal is interrupted, what was archived stays archived and
+the rest is the worker's.
+
+Whatever is still active, unread, or unconfirmed when the removal answers stays owed: the answer
+says how many (`sshKeysOutstanding`, null when Mend could not tell), the audit log records
+`ssh_key.revocation_pending`, and the worker retries every minute it is due (30 seconds after a
+failure, doubling to at most 30 minutes) until the platform holds none of theirs active. There is no
+upper bound on that window while the platform keeps failing; the keys stay owed and the worker keeps
+trying. Each key archived later is its own `ssh_key.removed`, with its attempt number. The retries
+need no membership: they act on the removed account's own Sealant identity, which Mend keeps. Each
+obligation has its own id, so an attempt at an earlier removal of the same account can neither
+settle nor defer a later one. A removal refused for the last owner owes and touches no key.
+
+The gateway looks a key up through the platform on every new connection and caches nothing across
+connections, so the next connection offering a removed key is refused. A connection authenticated
+before the removal stays open until it ends: an editor left connected on a lost laptop keeps its
+session until it disconnects or the workspace stops (PLATFORM-FEEDBACK.md, 2026-10-10). The platform
+does not record when a key was last used.
+
+`mend uninstall --home` removes the key this machine registered, and only that key, before it
+revokes the terminal's device token and deletes the key file. It identifies the key by its public
+half (the managed block's identity and the public keys under the Mend config directory), so an
+encrypted key or a stopped agent still names it. A key it cannot remove, or cannot read well enough
+to name, fails the uninstall with the fingerprint still registered and the command that removes it
+from another signed-in machine. It never revokes the account's other keys or devices.
+
 The gateway authenticates the key's principal, authorizes access to the named workspace, and bridges
 channels onto its `sealantd` connection. Its shell, exec, environment, SFTP, and TCP forwarding
 support are the protocol requirements for Remote-SSH. Protocol support alone does not establish

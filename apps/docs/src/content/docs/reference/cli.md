@@ -58,22 +58,24 @@ context.
 
 Setup options:
 
-| Option                   | Meaning                                                                                                                           |
-| ------------------------ | --------------------------------------------------------------------------------------------------------------------------------- |
-| `--context <name>`       | Local Unix-socket Docker context to persist; the global context is unchanged                                                      |
-| `--version <v>`          | Exact Mend server version, or `latest`; a fresh setup pins the CLI's own version, and a rerun keeps the existing pin              |
-| `--bind <ip>`            | Published listen address for web and SSH; default `127.0.0.1`                                                                     |
-| `--url <origin>`         | Advertised browser URL; required with a non-loopback bind                                                                         |
-| `--origin <origin>`      | Additional exact browser origin; repeat for more than one                                                                         |
-| `--port <n>`             | External web port; default `3105`; must differ from the SSH port                                                                  |
-| `--ssh-port <n>`         | External workspace SSH port; default `2222`                                                                                       |
-| `--edge <host>`          | Run the Caddy TLS edge for this DNS name on ports 80 and 443; the origin becomes `https://<host>` and `--bind` stays on loopback  |
-| `--no-edge`              | Take a saved edge away; the origin returns to `http://localhost`                                                                  |
-| `--exposure <v>`         | Declare `loopback`, `private` or `public`; kept across reruns and upgrades. `public` needs `--edge` and an existing first account |
-| `--tenancy <v>`          | Declare `single` or `multi`; kept across reruns and upgrades. `multi`, like `public`, also sets the multi mode gate's variables   |
-| `--assets-dir <dir>`     | Copy `compose.v2.yaml` and `postgres-init.sh` from a local release directory; a fresh setup then requires `--version`             |
-| `--offline`              | Use retained or supplied assets and preloaded images only; no GitHub requests or release-image pulls                              |
-| `--docker-socket <path>` | Daemon-side socket mount override for diagnostics; retained on reruns                                                             |
+| Option                   | Meaning                                                                                                                                                                                                          |
+| ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--context <name>`       | Local Unix-socket Docker context to persist; the global context is unchanged                                                                                                                                     |
+| `--version <v>`          | Exact Mend server version, or `latest`; a fresh setup pins the CLI's own version, and a rerun keeps the existing pin                                                                                             |
+| `--bind <ip>`            | Published listen address for web and SSH; default `127.0.0.1`                                                                                                                                                    |
+| `--ssh-bind <ip>`        | Published address for workspace SSH alone, when not `--bind`; with `--edge`, Remote-SSH from another machine needs it. Kept across reruns; the `--bind` address takes it away                                    |
+| `--url <origin>`         | Advertised browser URL; required with a non-loopback bind                                                                                                                                                        |
+| `--origin <origin>`      | Additional exact browser origin; repeat for more than one                                                                                                                                                        |
+| `--port <n>`             | External web port; default `3105`; must differ from the SSH port. A saved `--url` on the old port moves to the new one                                                                                           |
+| `--ssh-port <n>`         | External workspace SSH port; default `2222`                                                                                                                                                                      |
+| `--edge <host>`          | Run the Caddy TLS edge for this DNS name on ports 80 and 443; the origin becomes `https://<host>` and `--bind` stays on loopback                                                                                 |
+| `--no-edge`              | Take a saved edge away; the origin returns to `http://localhost`                                                                                                                                                 |
+| `--exposure <v>`         | Declare `loopback`, `private` or `public`; kept across reruns and upgrades. `public` needs `--edge` and an existing first account                                                                                |
+| `--tenancy <v>`          | Declare `single` or `multi`; kept across reruns and upgrades. `multi`, like `public`, also sets the multi mode gate's variables                                                                                  |
+| `--declare <item>`       | State a gate item you verified from outside: `core-private`, `edge-tls` or `workspace-ssh`; repeat for more, `none` clears; kept across reruns. `public` with `--ssh-bind` beyond loopback needs `workspace-ssh` |
+| `--assets-dir <dir>`     | Copy `compose.v2.yaml` and `postgres-init.sh` from a local release directory; a fresh setup then requires `--version`                                                                                            |
+| `--offline`              | Use retained or supplied assets and preloaded images only; no GitHub requests or release-image pulls                                                                                                             |
+| `--docker-socket <path>` | Daemon-side socket mount override for diagnostics; retained on reruns                                                                                                                                            |
 
 Setup holds an exclusive lock through startup and health checks, keeps private configuration in
 immutable generations, and never deletes Docker volumes. A changed `--version` on a rerun is
@@ -207,6 +209,11 @@ Stopped by a signal, `mend run`, `mend logs` and `mend wait` exit 128 + its numb
 terminal back first. A second signal exits at once, and an exit waits at most 5 seconds for a reader
 that takes nothing, then says the output may be incomplete and fails.
 
+A reader that stops reading early (`mend service list | grep -q web`, `| head -1`) closes the pipe,
+and every `mend` command then exits `0` at once, quietly, so a pipeline under `set -o pipefail`
+reads as the reader's own result. `mend run` and `mend logs` are the exception above: the command's
+output is what they deliver, and output that could not be delivered fails them.
+
 `--detach` returns as soon as the command runs. `--json` prints one JSON object on stdout in place
 of the output: `sessionId`, `processId`, `worktree`, `branch`, `url`, and the process's `status` and
 `exitCode` as last observed (`exitCode` is `null` until it ended). With `--detach` it is printed
@@ -219,26 +226,34 @@ mend logs "$id" --follow
 mend wait "$id" --timeout 900   # exits with the test run's exit code, or 124
 ```
 
-| Command                                                               | Purpose                                                                                          |
-| --------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
-| `mend logs [session] [--follow] [--from <seq>] [--process <id>]`      | Print a session's recorded terminal output on stdout; settled sessions count                     |
-| `mend wait [session] [--timeout <seconds>] [--process <id>] [--json]` | Return once the session's command ended, with its exit code; `124` when the timeout passes first |
+| Command                                                                | Purpose                                                                                          |
+| ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `mend logs [session] [--follow] [--from <seq>] [--process <id>]`       | Print a session's recorded terminal output on stdout; settled sessions count                     |
+| `mend logs [session] --service <name-or-id> [--follow]`                | Print a Service's current attempt's recorded output                                              |
+| `mend wait [session] [--timeout <duration>] [--process <id>] [--json]` | Return once the session's command ended, with its exit code; `124` when the timeout passes first |
 
 `mend logs` reads the session's command (or agent) by default, and another of its processes, a shell
-or a Service attempt, with `--process` and a prefix of its id. `--follow` keeps printing until the
-process ends. A record is printed as it is, with nothing taken out, and it is not the session
-owner's alone: anyone who can read the project can read it with `mend logs` or `mend service logs`,
-so what a command printed, a password included, reaches them too. `mend wait` exits with the code
-the platform reported, or `1` when it reported none. While a launch or a resume is starting, the
-previous process's end does not count; `--process` binds the wait to one process, the `processId`
-that `mend run --json` prints. `--timeout` covers everything, finding the session and every read and
-retry; `--json` then prints the last state read. Both take the session id, a prefix of it, or the
-worktree's name.
+or a Service attempt, with `--process` and a prefix of its id; a Service's id or name there reads
+its current attempt. `--service` takes a Service's id, its name or a prefix of its id, the ids
+`mend service list` prints, and reads its current attempt, ended or not. A full id names its Service
+before any name does; a name two Services carry is refused, with both ids listed. A Service with no
+attempt (an adopted port, which Mend runs no process for) has nothing recorded, and `mend logs` says
+so and exits `1`. `--follow` keeps printing until the process ends. A record is printed as it is,
+with nothing taken out, and it is not the session owner's alone: anyone who can read the project can
+read it with `mend logs` or `mend service logs`, so what a command printed, a password included,
+reaches them too. `mend wait` exits with the code the platform reported, or `1` when it reported
+none. A session that is still starting (its workspace building, its image pulling) is waited
+through, and while a launch or a resume is starting the previous process's end does not count;
+`--process` binds the wait to one process, the `processId` that `mend run --json` prints.
+`--timeout` takes seconds (`90`, `90s` or `.5`), minutes (`5m`) or hours (`1h`), and covers
+everything, finding the session and every read and retry; `--json` then prints the last state read.
+Without it, `mend wait` waits as long as the command runs, as `mend run` does. Both take the session
+id, a prefix of it, or the worktree's name.
 
-The platform takes a command of at most 64 words, none of them empty and none starting or ending
-with whitespace. A script passed as `bash -lc "<script>"` that starts with a newline is such a word:
-`mend run` refuses it before anything is created and names the word by its position. Trim it and run
-again.
+The platform takes a command of at most 64 words and 1 MiB, at most 131,071 bytes a word, whose
+program has no leading or trailing whitespace and with no NUL byte in any word. An argument may be
+empty, start with a newline or span lines, so `bash -lc "<script>"` takes any script. `mend run`
+refuses a command outside that before anything is created and names the word by its position.
 
 Workspaces set `PAGER=cat`, because the workspace images carry no `less` and `git log` in a terminal
 would otherwise fail with `unable to execute pager 'less'`. A project variable named `PAGER`, a
@@ -470,8 +485,12 @@ email you registered with. Sessions launched after a change commit as the new au
 | --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `mend ssh [status]`                                 | Report the gateway, this client's registered key, and the managed `~/.ssh/config` block; it does not test a connection or verify the host key                                        |
 | `mend ssh setup [--key <path>] [--host <hostname>]` | Register this client's public key and write a server-specific Host block before wildcard defaults; the hostname defaults to the configured Mend URL and the server supplies the port |
+| `mend ssh keys [--json]`                            | List the keys your account registered from every machine: fingerprint, name, algorithm, the day it was registered, and which one this machine offers                                 |
+| `mend ssh keys remove <fingerprint>`                | Remove one of your keys; the gateway refuses it from the next connection, and a connection already open stays open until it ends                                                     |
 
-The VS Code extension uses the same configuration. Read
+You see and remove only your own keys. `mend uninstall --home` removes the key this machine
+registered before it revokes the terminal's device token. The VS Code extension uses the same
+configuration. Read
 [workspace SSH](https://github.com/sealant-sh/mend/blob/main/docs/WORKSPACE-SSH.md) for identity
 selection and host-key verification.
 
@@ -485,22 +504,59 @@ selection and host-key verification.
 | `mend service <name>`                                                         | Shorthand for a named recipe                                                |
 | `mend service add [session] <port> [--name <name>] [--udp] [--http\|--https]` | Forward an existing workspace listener without supervising it               |
 | `mend service connect [name...] [--port <port>]`                              | Bring live Services to this machine's loopback over an authenticated tunnel |
-| `mend service list`                                                           | List live Services and observed endpoints                                   |
+| `mend service list [--json]`                                                  | List live Services, their process ids and observed endpoints                |
 | `mend service logs <name-or-id> [--from <sequence>]`                          | Replay and follow recorded Service output                                   |
 | `mend service restart <name-or-id>`                                           | Start another attempt for a supervised Service                              |
 | `mend service stop <name-or-id>`                                              | Stop the process and close its host port                                    |
 
-`mend service run` accepts `--name`, `--port`, `--udp`, `--http`, `--https`, `--wait`, and
-`--no-connect`. Mend holds the start for up to a minute until the port answers; with `--wait` the
-exit status says how that ended: `0` once it answered, `1` when it did not, and `124` when the
-server gave no answer within 90 seconds. The Service keeps running in every case. A waited start
-returns and opens no tunnel; `mend service connect` reaches the port. `--wait` takes TCP ports only
-(UDP has no probe), and not a recipe that declares only a port, which Mend adopts with one probe. On
-a server that is not this machine, `mend attach`, `mend codex|claude|opencode`, `mend rejoin`, and
-the dashboard tunnel the session's live Services declared `--http` or `--https` to this machine's
-loopback while attached, on the Service's own port when it is free. One line each says where it
-opens (`web → http://localhost:5173`); a Service that stops closes its tunnel, and detaching closes
-them all. `--no-tunnel` opts out.
+`mend service run` accepts `--name`, `--port`, `--udp`, `--http`, `--https`, `--wait`, `--timeout`
+and `--no-connect`. Mend holds the start for up to a minute until the port answers. `--wait` keeps
+waiting while the Service is still starting, which means its process runs and its port has not
+answered yet (building, installing, booting), up to `--timeout` (a duration as `mend wait` takes it;
+default `10m`). Mend probes a started Service's port every 20 seconds, so the wait ends at the first
+probe that answers. The exit status says how it ended:
+
+| Exit  | What was observed                                                                                            |
+| ----- | ------------------------------------------------------------------------------------------------------------ |
+| `0`   | The port answered                                                                                            |
+| `1`   | Mend refused the start (no such session or recipe, not yours to run, the session not live) or did not answer |
+| `2`   | The Service's process ended before its port answered; the line says its status and exit code                 |
+| `3`   | The server no longer has the session; its workspace went with it                                             |
+| `124` | The Service was still starting when the timeout passed; it keeps starting                                    |
+
+The wait judges the one process this start began: the CLI sends a fresh id with the start, the
+server stamps it on the attempt it begins, keyed by the Service (`launchCorrelationId`
+`service-start:<service id>:<id>`), and the wait finds that attempt by it once, in the session it
+started in, whatever another client starts, restarts or stops meanwhile. An id the same Service took
+before is refused; another Service's ids, another person's included, are neither refused nor seen.
+Its port answering counts only from a probe made after that attempt began. A process its workspace
+took ends as `exited · no exit code reported`, exit `2`: Mend records the end, not its cause. A
+server older than the CLI stamps no id: a start whose answer an edge cut is then not followed, and a
+command that exits inside the server's minute reads as the refusal the server answers with, both
+exit `1`.
+
+A waited start returns and opens no tunnel; `mend service connect` reaches the port. `--wait` takes
+TCP ports only (UDP has no probe), and not a recipe that declares only a port, which Mend adopts
+with one probe.
+
+`mend service list` prints each Service's id beside its current attempt's process id, which is what
+`mend logs --process` and `mend wait --process` take. `--json` prints one object: `version` `1` and
+`services`, each with `id`, `name`, `sessionId`, `processId` (`null` for an adopted port), `status`
+as last observed, `workspacePort`, `protocol`, and `hostPort`, `authority` and `browserUrl` (`null`
+when not bound).
+
+```sh
+mend service run "$id" --port 3000 --name web --wait --timeout 15m -- pnpm dev
+status=$?
+[ "$status" -eq 124 ] && echo "web is still starting; it keeps starting"
+[ "$status" -ne 0 ] && { mend logs --service web; exit "$status"; }
+```
+
+On a server that is not this machine, `mend attach`, `mend codex|claude|opencode`, `mend rejoin`,
+and the dashboard tunnel the session's live Services declared `--http` or `--https` to this
+machine's loopback while attached, on the Service's own port when it is free. One line each says
+where it opens (`web → http://localhost:5173`); a Service that stops closes its tunnel, and
+detaching closes them all. `--no-tunnel` opts out.
 
 Read [Development services](/guides/services/) for network and authentication boundaries.
 

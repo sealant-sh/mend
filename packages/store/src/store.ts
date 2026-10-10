@@ -3,7 +3,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import { Sha } from "@mend/domain";
-import { RepositoryCloneUrl } from "@mend/domain/workbench";
+import { RepositoryCloneUrl, redactRepositoryUrl } from "@mend/domain/workbench";
 import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
@@ -28,6 +28,7 @@ import {
   writeLandingCommit,
 } from "./landing.ts";
 import { mendHome } from "./paths.ts";
+import { refuseRemoteCredentials } from "./remote-credentials.ts";
 
 /** Where the store lives on disk. One root, one directory per project. */
 export class StoreConfig extends Context.Service<
@@ -49,23 +50,69 @@ export class StoreConfig extends Context.Service<
 export const referenceDirectory = (organizationId: string, referenceId: string): string =>
   path.join("_organizations", organizationId, "references", referenceId);
 
+/** What Mend says of a shallow repository, at adoption and at a session's start. */
+export const SHALLOW_REPOSITORY_REASON =
+  "Mend doesn't support shallow repositories yet. Make the repository complete where it is hosted (`git fetch --unshallow`), then adopt it again.";
+
+/** What Mend says of a repository with grafts, at adoption and at a session's start. */
+export const GRAFTED_REPOSITORY_REASON =
+  "Mend doesn't support repositories with grafts (`info/grafts`) yet. Remove the grafts, or convert them with `git replace --convert-graft-file`.";
+
+/**
+ * Whether the grafts file at `file` names any commit: a line that is neither blank nor `#`. One
+ * that is absent or cannot be read names none here; git reading it fails on its own.
+ */
+const graftsNameCommits = (file: string): boolean => {
+  try {
+    return fs
+      .readFileSync(file, "utf8")
+      .split("\n")
+      .some((line) => line.trim() !== "" && !line.trimStart().startsWith("#"));
+  } catch {
+    return false;
+  }
+};
+
 /**
  * Why Mend refuses the repository at `gitDir`, or null (owner, 2026-09-28; e2e8 (d)): SHA-256
- * objects. A SHA-256 session does not survive its capture and restore end to end yet, so a project
- * in that format is refused when it is adopted and when a session starts on it, rather than started
- * and left unable to save. Read through git itself (`rev-parse --show-object-format`). The reason
- * is the sentence a person reads.
+ * objects, shallow history, or grafts. A SHA-256 session does not survive its capture and restore
+ * end to end yet. A shallow one cannot be saved: the base pack Mend makes stops at the shallow
+ * boundary, and the closure walk that verifies a capture (`CaptureGitVerifier`) reads the boundary
+ * commits' parents, which nothing holds, so every save's git section fails and its final seal is
+ * refused (verify proof run 9, 2026-10-10). The store is a full clone of its source, so a shallow
+ * store means a shallow source: nothing fetched from it deepens the history. Grafts
+ * (`info/grafts`, which a clone never copies, so only a store edited on the host has them) cut the
+ * base pack the same way while git calls the repository complete (Astra review of mend#654).
+ * Replace refs do not: `pack-objects` ignores them, and the pack holds the real closure. Such a
+ * project is refused when it is adopted and when a session starts on it, rather than started and
+ * left unable to save. Read through git itself (`rev-parse`, one run). The reason is the sentence
+ * a person reads.
  */
 export const unsupportedRepositoryReason = (
   gitDir: string,
 ): Effect.Effect<string | null, GitError> =>
-  Effect.map(git(["rev-parse", "--show-object-format"], gitDir), (out) => {
-    const objectFormat = out.trim();
-    if (objectFormat === "sha1") return null;
-    return objectFormat === "sha256"
-      ? "Mend doesn't support SHA-256 repositories yet."
-      : `Mend doesn't support ${objectFormat} repositories yet.`;
-  });
+  Effect.flatMap(
+    git(
+      ["rev-parse", "--show-object-format", "--is-shallow-repository", "--git-path", "info/grafts"],
+      gitDir,
+    ),
+    (out) => {
+      const [objectFormat = "", shallow = "", grafts = ""] = out.trim().split("\n");
+      if (objectFormat !== "sha1") {
+        return Effect.succeed(
+          objectFormat === "sha256"
+            ? "Mend doesn't support SHA-256 repositories yet."
+            : `Mend doesn't support ${objectFormat} repositories yet.`,
+        );
+      }
+      if (shallow.trim() === "true") return Effect.succeed(SHALLOW_REPOSITORY_REASON);
+      return Effect.sync(() =>
+        grafts.trim() !== "" && graftsNameCommits(path.resolve(gitDir, grafts.trim()))
+          ? GRAFTED_REPOSITORY_REASON
+          : null,
+      );
+    },
+  );
 
 /** `unsupportedRepositoryReason` as a refusal: a `GitError` whose `stderr` is the reason. */
 export const refuseUnsupportedRepository = (gitDir: string): Effect.Effect<void, GitError> =>
@@ -674,7 +721,8 @@ export class Store extends Context.Service<
         remoteEnv: Record<string, string> | null,
       ) {
         if (remoteEnv === null) return;
-        yield* git(["fetch", "origin", baseRef], storePath, remoteEnv).pipe(
+        yield* refuseRemoteCredentials(storePath).pipe(
+          Effect.andThen(git(["fetch", "origin", baseRef], storePath, remoteEnv)),
           Effect.tapError((error) =>
             Effect.logDebug("store: base freshen skipped").pipe(
               Effect.annotateLogs({ storePath, baseRef, stderr: error.stderr }),
@@ -702,7 +750,10 @@ export class Store extends Context.Service<
         return yield* tryResolve(`refs/remotes/origin/${baseRef}`).pipe(
           Effect.catch(() => tryResolve(baseRef)),
           Effect.catch(() =>
-            git(["fetch", "origin"], storePath, remoteEnv ?? { GIT_TERMINAL_PROMPT: "0" }).pipe(
+            refuseRemoteCredentials(storePath).pipe(
+              Effect.andThen(
+                git(["fetch", "origin"], storePath, remoteEnv ?? { GIT_TERMINAL_PROMPT: "0" }),
+              ),
               Effect.ignore,
               Effect.andThen(
                 tryResolve(baseRef).pipe(Effect.catch(() => tryResolve(`origin/${baseRef}`))),
@@ -727,6 +778,8 @@ export class Store extends Context.Service<
         base: string | null,
         remoteEnv: Record<string, string> | null,
       ) {
+        // The worktree's admin dir, and on the co-located store the whole store, reach a workspace.
+        yield* refuseRemoteCredentials(storePath);
         // Idempotent: stores adopted before the exclude or shared-group policies get them here.
         yield* ensureExcludes(storePath);
         yield* ensureSharedGroup(storePath);
@@ -781,6 +834,7 @@ export class Store extends Context.Service<
         remoteEnv: Record<string, string> | null,
       ) {
         const worktreePath = path.join(path.dirname(storePath), "worktrees", name);
+        yield* refuseRemoteCredentials(storePath);
         const baseRef = base ?? (yield* git(["symbolic-ref", "--short", "HEAD"], storePath));
         yield* freshenBase(storePath, baseRef, remoteEnv);
         const baseSha = yield* resolveBaseSha(storePath, baseRef, remoteEnv);
@@ -799,6 +853,7 @@ export class Store extends Context.Service<
         // landings push `mend/*` to origin (docs/adr/0007-landing.md), so the negative refspec
         // keeps origin's `mend/*` from overwriting, or refusing to fetch into, a session branch a
         // worktree has checked out.
+        yield* refuseRemoteCredentials(storePath);
         yield* git(
           [
             "fetch",
@@ -1106,7 +1161,11 @@ export class Store extends Context.Service<
           return { path: clonePath, headSha: sha(head) };
         });
         return yield* attempt.pipe(
-          Effect.catch((cause) => Effect.fail(new ReferenceCloneError({ name, source, cause }))),
+          Effect.catch((cause) =>
+            Effect.fail(
+              new ReferenceCloneError({ name, source: redactRepositoryUrl(source), cause }),
+            ),
+          ),
         );
       });
 
@@ -1118,6 +1177,8 @@ export class Store extends Context.Service<
         // No pin = follow whatever branch the clone is on. FETCH_HEAD + hard
         // reset handles branches and tags uniformly, force-pushes included —
         // a reference clone has no local work to protect.
+        // A reference clone is mounted into co-located workspaces, its config included.
+        yield* refuseRemoteCredentials(clonePath);
         const target = ref ?? (yield* git(["symbolic-ref", "--short", "HEAD"], clonePath));
         yield* git(["fetch", "--depth", "1", "origin", target], clonePath, remoteEnv);
         yield* git(["reset", "--hard", "FETCH_HEAD"], clonePath);
@@ -1145,6 +1206,7 @@ export class Store extends Context.Service<
       });
 
       const push = Effect.fn("Store.push")(function* (storePath: string, input: PushInput) {
+        yield* refuseRemoteCredentials(storePath);
         return yield* pushBranch(storePath, input);
       });
 
@@ -1152,6 +1214,7 @@ export class Store extends Context.Service<
         storePath: string,
         input: ProbeInput,
       ) {
+        yield* refuseRemoteCredentials(storePath);
         return yield* probeRemoteBranch(storePath, input);
       });
 

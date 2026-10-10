@@ -102,6 +102,43 @@ const posts = (mend: FakeMend, suffix: string) =>
 
 describe("message.dispatch", () => {
   it.live(
+    "never sends a second turn while one is open, though a read from before it was sent lands after",
+    () =>
+      withGateway((mend) =>
+        Effect.gen(function* () {
+          setup(mend);
+          const open = mend.workbench.addTurn("session-1", "A long job");
+          const { rpc } = yield* pairAndConnect(mend, "STALE-READ");
+          yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](
+            message("session-1", "message-first", "First"),
+          );
+          yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](
+            message("session-1", "message-second", "Second"),
+          );
+          // Every read of the turns answers late what it read when asked.
+          mend.workbench.turnsReadDelayMs = 300;
+          mend.workbench.setTurn(open, "completed");
+          // A second pointer while the first read is under way: its read starts once that one
+          // lands, around when "First" is sent, and may answer from before Mend took it.
+          yield* Effect.sleep("100 millis");
+          mend.workbench.emit({
+            type: "agent-conversation",
+            sessionId: "session-1",
+            projectId: "project-1",
+          });
+          yield* eventually(() => posts(mend, "/turns").length === 1, "the first message");
+          // "First" runs in Mend: nothing else goes out, whatever read lands late.
+          yield* Effect.sleep("1500 millis");
+          assert.strictEqual(posts(mend, "/turns").length, 1);
+          mend.workbench.turnsReadDelayMs = 0;
+          const [, first] = mend.workbench.turns.get("session-1") ?? [];
+          if (first !== undefined) mend.workbench.setTurn(first, "completed");
+          yield* eventually(() => posts(mend, "/turns").length === 2, "the second message");
+        }),
+      ),
+  );
+
+  it.live(
     "sends a follow-up as a turn, queues the next behind it, and keeps the client's ids",
     () =>
       withGateway((mend) =>

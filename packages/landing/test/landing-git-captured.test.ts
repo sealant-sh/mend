@@ -41,7 +41,13 @@ describe("a capture-backed landing's checkpoint", () => {
       landingCheckpoint: () =>
         Effect.sync(() => void asked.push("landingCheckpoint")).pipe(
           Effect.andThen(
-            Effect.fail(new CapturesBehindError({ worktreeId: world.worktree.id, attempts: 4 })),
+            Effect.fail(
+              new CapturesBehindError({
+                worktreeId: world.worktree.id,
+                attempts: 4,
+                stopping: false,
+              }),
+            ),
           ),
         ),
     });

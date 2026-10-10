@@ -10,6 +10,7 @@ import {
   captureDrainStep,
   CAPTURE_INCOMPLETE_REASONS,
   captureIncompleteWords,
+  CAPTURE_SEAL_UNRESTORABLE,
   captureHarvestReady,
   captureProgressed,
   captureSaved,
@@ -366,6 +367,28 @@ describe("captureDrainStep when the store cannot keep full fidelity (sealantd `s
       "the store does not read every manifest feature this executor writes",
     );
     expect(captureUnsavedWordsOf(lossy)).toBe("incomplete · store-fidelity");
+  });
+});
+
+/** The first step of a drain over `answer`, inside a 600 s stall window. */
+const firstStepOf = (answer: CaptureReading) =>
+  captureDrainStep({
+    previous: null,
+    reading: answer,
+    progressAtMs: 0,
+    nowMs: 1,
+    stallSeconds: 600,
+    evidenceSaved: false,
+  }).kind;
+
+describe("captureDrainStep when Mend refuses the final seal (the head's git section failed)", () => {
+  it("reads it as not saved at once, with words; a `sealing` answer alone keeps waiting", () => {
+    const refused = reading({ complete: false, incompleteReason: CAPTURE_SEAL_UNRESTORABLE });
+    expect(firstStepOf(refused)).toBe("not-saved");
+    expect(firstStepOf(reading({ complete: false, incompleteReason: "sealing" }))).toBe("saving");
+    expect(captureIncompleteWords(CAPTURE_SEAL_UNRESTORABLE)).toBe(
+      "final seal refused · git section failed verification",
+    );
   });
 });
 

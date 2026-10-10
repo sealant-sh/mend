@@ -20,4 +20,11 @@ export const platformRouter = router({
     .mutation(({ ctx, input: i }) =>
       run(ctx, (api) => api.accounts.disconnect({ params: { id: i.id } })),
     ),
+  /** The gateway and the caller's own workspace SSH keys (docs/WORKSPACE-SSH.md). */
+  workspaceSsh: procedure.query(({ ctx }) => run(ctx, (api) => api.workspaceSsh.get())),
+  removeWorkspaceSshKey: procedure
+    .input(input(Schema.Struct({ sshKeyId: Schema.String })))
+    .mutation(({ ctx, input: i }) =>
+      run(ctx, (api) => api.workspaceSsh.removeKey({ params: { sshKeyId: i.sshKeyId } })),
+    ),
 });
