@@ -158,12 +158,11 @@ Preconditions:
   cannot steer. For a session whose agent runs in a terminal, only its owner sends: everyone else
   reads `Comments stay here.` and an owner-only line.
 - Delivery resumes the agent with the instruction as its first message. Drive it with a `claude` or
-  `codex` session. Delivering to a `mend run` session fails: the web overlay reads
-  `delivery failed · retryable`, `Retry delivery` and
-  `Harness "run" has no known follow-up command.`, the desktop reads the same words, and no comment
-  is marked sent. Yet both offer it: the web's `Send review to session` is shown and enabled, and
-  the desktop's Pinned Review offers `Deliver to session`. Confirmed bug, fix in flight (neither
-  client checks the harness; confirming drive of 2026-10-10).
+  `codex` session. A `mend run` session has no agent to resume: the web and the phone offer no
+  `Send review to session` there and read
+  `Comments stay here. This run session has no agent to send the review to. Start an agent in this worktree, then send it.`
+  The server refuses a delivery to it in the same words and records nothing. The desktop (not
+  shipping) still offers `Deliver to session`; it ends in those words.
 - `mend continue` attaches the terminal after delivery. Run it in its own PTY, and stop the session
   afterwards by its id.
 - A bundle edited after a failed delivery gets a new idempotency key; retrying an unedited one

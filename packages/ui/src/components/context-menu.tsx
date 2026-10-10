@@ -80,8 +80,13 @@ function ContextMenu({
       left: Math.max(8, Math.min(state.x, window.innerWidth - rect.width - 8)),
       top: Math.max(8, Math.min(state.y, window.innerHeight - rect.height - 8)),
     });
-    panel.focus();
   }, [state]);
+
+  // Focus once placed: the measuring render is `visibility: hidden`, and a hidden panel takes no
+  // focus, so Escape and the arrows (handled on the overlay) would never reach the menu.
+  useLayoutEffect(() => {
+    if (position !== null) panelRef.current?.focus();
+  }, [position]);
 
   const moveFocus = (delta: 1 | -1) => {
     const panel = panelRef.current;

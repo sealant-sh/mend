@@ -266,7 +266,9 @@ export const worktreeMenu = (
       }),
     ),
     "separator",
-    { label: "Copy worktree path", flash: "Copied", onSelect: () => copyText(worktree.directory) },
+    // The directory's name, not a path: a captured worktree has no directory on the server, so
+    // the web knows no path a person could use (verify 2026-10-10).
+    { label: "Copy directory name", flash: "Copied", onSelect: () => copyText(worktree.directory) },
     { label: "Copy branch name", flash: "Copied", onSelect: () => copyText(worktree.branch) },
   );
   if (worktree.baseRef !== null) {

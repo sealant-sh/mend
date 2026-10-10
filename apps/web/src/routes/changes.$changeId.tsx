@@ -1,6 +1,8 @@
 import {
   canRelaunchSession,
   checkpointSourceWords,
+  noReviewFollowUpLine,
+  takesReviewFollowUp,
   terminalOwnerOnlyLine,
 } from "@mend/domain/workbench";
 import { queryOptions, useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
@@ -139,6 +141,11 @@ function ChangeReview({
     sessionDetail.control.steer &&
     !canRelaunchSession(sessionDetail.control, sessionDetail.currentAgent?.kind ?? null);
   const ownerName = useOwnerName(sessionDetail?.session.ownerUserId ?? null);
+  // A `mend run` command (or a shell) has no agent for delivery to start: nothing to send to.
+  const noAgentHarness =
+    sessionDetail === undefined || takesReviewFollowUp(sessionDetail.session.harness)
+      ? null
+      : sessionDetail.session.harness;
   const projectDetail = useQuery({
     ...trpc.projects.detail.queryOptions({ id: sessionDetail?.session.projectId ?? "" }),
     enabled: sessionDetail !== undefined,
@@ -250,7 +257,9 @@ function ChangeReview({
               pass={passOf("suggest")}
             />
             <ReadChangeButton changeId={changeId} pass={passOf("read")} />
-            {sessionDetail?.control.steer === false || ownerSends ? null : (
+            {sessionDetail?.control.steer === false ||
+            ownerSends ||
+            noAgentHarness !== null ? null : (
               <button
                 type="button"
                 disabled={openUnsent.length === 0}
@@ -320,7 +329,11 @@ function ChangeReview({
             they share control.
           </p>
         ) : null}
-        {ownerSends ? (
+        {noAgentHarness !== null && sessionDetail?.control.steer !== false ? (
+          <p className="mt-2 max-w-[760px] border-l-2 border-[var(--sw-accent)] pl-3 text-[13px] leading-relaxed text-ink-2">
+            Comments stay here. {noReviewFollowUpLine(noAgentHarness)}
+          </p>
+        ) : ownerSends ? (
           <p className="mt-2 max-w-[760px] border-l-2 border-[var(--sw-accent)] pl-3 text-[13px] leading-relaxed text-ink-2">
             Comments stay here. {terminalOwnerOnlyLine(ownerName ?? "its owner", "send-back")}
           </p>

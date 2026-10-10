@@ -6,6 +6,7 @@ import {
   ProtocolHarnessUnsupportedError,
   composeLaunchArgv,
   composeProtocolArgv,
+  takesReviewFollowUp,
 } from "./harness-launch.ts";
 
 describe("composeLaunchArgv", () => {
@@ -212,5 +213,18 @@ describe("the seed and the composer's own clamp", () => {
     ]);
     const protocol = composeProtocolArgv("claude", { effort: "ultra" }, "provider-1");
     expect(Array.isArray(protocol) && protocol.join(" ")).toContain("--effort max");
+  });
+});
+
+describe("takesReviewFollowUp", () => {
+  it("is offered only where delivery has an agent to start (verify 2026-10-10)", () => {
+    expect(["claude", "codex", "opencode", "pi"].filter(takesReviewFollowUp)).toEqual([
+      "claude",
+      "codex",
+      "opencode",
+      "pi",
+    ]);
+    expect(takesReviewFollowUp("run")).toBe(false);
+    expect(takesReviewFollowUp("shell")).toBe(false);
   });
 });

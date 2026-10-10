@@ -9,7 +9,13 @@ import {
   SessionsRepo,
 } from "@mend/db";
 import type { CheckpointId, ReviewCommentId, ReviewSliceId, SessionId } from "@mend/domain";
-import { type DiffDigest, type FollowUp, isLiveAgentProcess } from "@mend/domain/workbench";
+import {
+  type DiffDigest,
+  type FollowUp,
+  isLiveAgentProcess,
+  noReviewFollowUpLine,
+  takesReviewFollowUp,
+} from "@mend/domain/workbench";
 import { Clock, Duration, Effect, Layer, Option, Result, Schema } from "effect";
 import * as Context from "effect/Context";
 
@@ -231,6 +237,12 @@ export const FollowUpDeliveryLive: Layer.Layer<
                 }),
             ),
           );
+          // Refused before anything is recorded: no follow-up waits on a launch that cannot start.
+          if (!takesReviewFollowUp(session.harness)) {
+            return yield* new FollowUpDeliveryInputError({
+              message: noReviewFollowUpLine(session.harness),
+            });
+          }
           const change = yield* changes.bySession(input.sessionId);
           if (change === null) {
             return yield* new FollowUpDeliveryInputError({

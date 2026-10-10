@@ -701,6 +701,25 @@ describe("FollowUpDelivery", () => {
     }).pipe(Effect.provide(testLayer(world)));
   });
 
+  it.effect(
+    "refuses a session with no agent to start in words, recording nothing (verify 2026-10-10)",
+    () => {
+      const world = makeWorld();
+      world.session = new Session({ ...world.session, harness: "run" });
+      return Effect.gen(function* () {
+        const delivery = yield* FollowUpDelivery;
+        const refused = yield* delivery.deliver(deliveryInput()).pipe(Effect.flip);
+
+        expect(refused.message).toBe(
+          "This run session has no agent to send the review to. Start an agent in this worktree, then send it.",
+        );
+        expect(world.followUp).toBeNull();
+        expect(world.comment.sentToSessionId).toBeNull();
+        expect(world.launches).toBe(0);
+      }).pipe(Effect.provide(testLayer(world)));
+    },
+  );
+
   it.effect("keeps the bundle pending when the session is already active", () => {
     const world = makeWorld();
     world.session = new Session({ ...world.session, status: "running", settledAt: null });
