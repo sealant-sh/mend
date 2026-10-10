@@ -11,6 +11,7 @@ import {
   HotWorkspaceEnvironment,
   SessionDotfiles,
   type SessionExtraMount,
+  type RemoteSsh,
   type SessionReferenceMount,
 } from "@mend/domain/workbench";
 import { and, asc, eq, inArray } from "drizzle-orm";
@@ -42,6 +43,8 @@ export interface HotWorkspaceStamps {
   readonly environment: HotWorkspaceEnvironment;
   readonly referenceMounts: ReadonlyArray<SessionReferenceMount>;
   readonly extraMounts: ReadonlyArray<SessionExtraMount>;
+  /** Who Remote-SSH into it runs as, as its create decided (`HotWorkspace.remoteSsh`). */
+  readonly remoteSsh: RemoteSsh;
 }
 
 /** The pool of pre-provisioned session skeletons (hot sessions). */

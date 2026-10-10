@@ -580,6 +580,16 @@ export interface WorkspaceCreateLaunch {
    * home for the launcher while the executor lives.
    */
   readonly credentialsHome?: CredentialsHome;
+  /**
+   * `sshAsOwner` (docs/adr/0016, decision 10; sealant#348): Core's SSH gateway runs the
+   * workspace's SSH sessions, VS Code Remote-SSH included, as its owner's own Linux user, the uid
+   * of `credentialsHome`, for a person-layout launch. The owner is its launcher, the person whose
+   * launch this create is (after the workspace stops, whoever launches the next one). Mend names no
+   * user: Core takes the owner's. It does not exist at create; until prepare makes it, the gateway
+   * refuses a session rather than run it as root. Sent only where Core reports `workspaceSshUser`
+   * (`PersonLayoutPlatform.sshUser`), and only with `credentialsHome`.
+   */
+  readonly sshAsOwner?: true;
 }
 
 /** A home and the numeric owner Core writes it as (docs/adr/0016, decision 5). */
@@ -874,6 +884,7 @@ const makeUserClient = (env: SealantEnvShape, ownerUserIdInput: string) =>
       const keyed: CreateOptions & {
         readonly idempotencyKey?: string;
         readonly launchId?: string;
+        readonly sshAsOwner?: boolean;
       } =
         launch === undefined
           ? options
@@ -884,6 +895,7 @@ const makeUserClient = (env: SealantEnvShape, ownerUserIdInput: string) =>
               ...(launch.credentialsHome === undefined
                 ? {}
                 : { credentialsHome: launch.credentialsHome }),
+              ...(launch.sshAsOwner === true ? { sshAsOwner: true } : {}),
             };
       if (watch === undefined) {
         return wrap(() => sealant.workspaces.create(keyed)).pipe(
@@ -1310,8 +1322,33 @@ export class SealantClients extends Context.Service<
      * logins and the capture owner map. Read once and kept five minutes by the SDK.
      */
     readonly controlPlaneFeatures: () => Effect.Effect<SealantFeatures, SealantPlatformError>;
+    /**
+     * Binds a Mend account's Sealant user to their person, once (`users.bindPerson`, sealant#348):
+     * what Core checks `sshAsOwner` against. `bound` when Core holds exactly this binding,
+     * `refused` when Core holds another (409: a different binding, or this person id or uid is
+     * another user's), `unsupported` when the SDK has no way to ask.
+     */
+    readonly bindPerson: (
+      userId: string,
+      person: PersonBindingInput,
+    ) => Effect.Effect<"bound" | "refused" | "unsupported", SealantPlatformError>;
   }
 >()("@mend/sealant/SealantClients") {}
+
+/** A person as Core binds a user to one: owner-map id (the account id), uid and home. */
+export interface PersonBindingInput {
+  readonly id: string;
+  readonly uid: number;
+  readonly home: string;
+}
+
+/** The SDK's `users`, where it binds a person (sealant#348; not in the SDK Mend pins yet). */
+interface PersonBindingUsers {
+  readonly bindPerson: (userId: string, person: PersonBindingInput) => Promise<unknown>;
+}
+
+const bindsPerson = (users: object): users is PersonBindingUsers =>
+  "bindPerson" in users && typeof users.bindPerson === "function";
 
 const toConnectedAccount = (wire: {
   readonly connectedAccountId: string;
@@ -1546,6 +1583,22 @@ export const SealantClientsLive: Layer.Layer<
       return yield* wrap(() => admin.features());
     });
 
+    const bindPerson = Effect.fn("SealantClients.bindPerson")(function* (
+      userId: string,
+      person: PersonBindingInput,
+    ) {
+      const users = admin.users;
+      if (!bindsPerson(users)) return "unsupported" as const;
+      const sealantUserId = yield* sealantUserIdFor(userId);
+      return yield* wrap(() => users.bindPerson(sealantUserId, person)).pipe(
+        Effect.as("bound" as const),
+        Effect.catchIf(
+          (error) => error.status === 409,
+          () => Effect.succeed("refused" as const),
+        ),
+      );
+    });
+
     return {
       forUser,
       forPrincipal,
@@ -1556,6 +1609,7 @@ export const SealantClientsLive: Layer.Layer<
       imageKey,
       inspectImage,
       controlPlaneFeatures,
+      bindPerson,
     };
   }),
 );

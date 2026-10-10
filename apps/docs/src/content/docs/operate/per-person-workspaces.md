@@ -109,8 +109,12 @@ sandboxes every new worktree runs with a shared home before any launch is tried.
 | A shell                                                      | the person who opened it                                                              |
 | A Service                                                    | the person who started it, across restarts; a `mend.toml` Service, the launcher       |
 | Dependency install and setup commands                        | the launcher                                                                          |
-| VS Code Remote-SSH                                           | the launcher; nobody else can open Remote-SSH into that workspace                     |
+| VS Code Remote-SSH, `ssh`                                    | the workspace's launcher, as their own user; nobody else can open Remote-SSH into it  |
 | `docker exec` and anything else Mend did not start           | root: no person's login, no Mend token, nothing under `/root` saved                   |
+
+The workspace's launcher is the person whose launch started this workspace; after it stops, whoever
+launches the next one. So a member who starts a worktree's next workspace after the last one stopped
+holds its Remote-SSH, and the person who launched the earlier one no longer does.
 
 Each person has the same login name (`m` and 8 characters), uid (40000–49999) and home
 (`/home/<name>`) in every workspace and project. Their home is 0700 and is not saved; the

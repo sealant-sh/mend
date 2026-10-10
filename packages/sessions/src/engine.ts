@@ -70,6 +70,7 @@ import type {
   Checkpoint,
   CheckpointTrigger,
   HotWorkspace,
+  RemoteSsh,
   Project,
   Service,
   ServiceRecipe,
@@ -342,6 +343,8 @@ import {
   type StandbyLayout,
   type PersonHome,
   type PrepareOutcome,
+  REMOTE_SSH_RESET_PENDING_WORDS,
+  remoteSshRootWords,
   SHARED_AS_BEFORE,
   isAuthenticationFailure,
   layoutRefused,
@@ -10502,6 +10505,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   workspace,
                   stdout,
                   fallback: input.layout.fallback,
+                  onSshReset: remoteSshResetLine(sessionId),
                 })
                 .pipe(Effect.tapError((error) => stop(error.message)));
         // In the person layout the people exist before the setup commands, which run as the
@@ -10984,6 +10988,23 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 gid: MEND_GROUP.gid,
               }
             : undefined;
+        // Remote-SSH is the launcher's (decision 10): the person whose launch started this
+        // workspace, this create's (after it stops, whoever launches the next one; not the
+        // worktree's first session's owner). The create is made as their Sealant user, so Core's
+        // gateway admits them and nobody else, and runs the session as their own user, the uid of
+        // their `credentialsHome` (Mend names none), which prepare makes. Core checks it against
+        // the person their Sealant user is bound to (bound here, once); without that binding the
+        // create asks nothing and Remote-SSH stays root, said on the line. A fallback to one shared
+        // home sets it back to root (`settlePrepare`).
+        const sshOwnerAnswer =
+          credentialsHome !== undefined && launchLayout.layout === "person"
+            ? yield* personPlatform.sshAsOwnerFor({
+                accountId: launchLayout.launcher.accountId,
+                uid: launchLayout.launcher.uid,
+                home: credentialsHome.path,
+              })
+            : ("not-taken" as const);
+        const sshAsOwner = sshOwnerAnswer === "yes";
         if (credentialsHome !== undefined && input.createKey === undefined) {
           return yield* layoutRefused(
             "This launch runs each person as their own user and has no create key to send the launcher's home with, so nothing was created.",
@@ -11060,6 +11081,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                       idempotencyKey: input.createKey.key,
                       launchId: input.launchId,
                       ...(credentialsHome === undefined ? {} : { credentialsHome }),
+                      ...(sshAsOwner ? { sshAsOwner: true as const } : {}),
                     },
                 input.watchCreate,
               ),
@@ -11162,6 +11184,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                       },
                     }),
               });
+        const remoteSsh: RemoteSsh = sshOwnerAnswer === "yes" ? "owner" : sshOwnerAnswer;
         return {
           workspace,
           workspaceImage,
@@ -11171,6 +11194,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           executorLayout: prepared?.layout ?? ("shared" as const),
           /** Why a person prediction fell back to shared, for the session line. */
           layoutFallback: prepared?.fallback ?? null,
+          /**
+           * Who Remote-SSH runs as (docs/adr/0016, decision 10): the launcher's own user, or root
+           * for its reason. Kept on a standby (`HotWorkspace.remoteSsh`) for its claim.
+           */
+          remoteSsh,
           /** People whose restored opencode database prepare found (decision 8a). */
           opencodeRestored: prepared?.opencode ?? [],
           environmentManifest,
@@ -11538,6 +11566,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           // (docs/adr/0016).
           executorLayout: "shared" as const,
           layoutFallback: null,
+          // As the standby's create decided it, never as a binding would answer now.
+          remoteSsh: entry.remoteSsh,
           opencodeRestored: [],
           personDotfiles: [],
         };
@@ -13654,6 +13684,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               harness,
               live: peopleLiveIn(SealantWorkspaceId.make(workspace.id)),
               homeReady,
+              onSshReset: remoteSshResetLine(session.id),
             })
             .pipe(Effect.ensuring(Deferred.succeed(homeReady, null)));
           // Only an agent's start, or a person's first process here, delivers anything.
@@ -16608,6 +16639,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   worktreeId: session.worktreeId,
                   harness: interactiveShell ? "shell" : session.harness,
                   live: peopleLiveIn(SealantWorkspaceId.make(workspace.id)),
+                  onSshReset: remoteSshResetLine(sessionId),
                 })
                 .pipe(
                   Effect.tapError((error) => abandonExecutor(workspace, error.message)),
@@ -16903,6 +16935,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           layoutFallback ?? (launchLayout.layout === "shared" ? launchLayout.reason : null);
         if (layoutWords !== null) {
           yield* noteLaunchWords(sessionId, layoutWords).pipe(Effect.ignore);
+        }
+        // Remote-SSH runs as root while the agent runs as the person: said, whatever the reason.
+        if (executorLayout === "person" && launched.remoteSsh !== "owner") {
+          yield* noteLaunchWords(sessionId, remoteSshRootWords(launched.remoteSsh)).pipe(
+            Effect.ignore,
+          );
         }
         if (dependencyInstallSkipped !== null) {
           yield* noteLaunchWords(sessionId, dependencyInstallSkipped);
@@ -18084,6 +18122,36 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           current.summary === null ? words : `${current.summary} · ${words}`,
         );
       });
+
+      /**
+       * Remote-SSH is down while a fallback's SSH reset has not reached Core: said on the session
+       * line (kept there across retries) and taken off once it has (docs/adr/0016, decision 10).
+       */
+      const remoteSshResetLine =
+        (sessionId: SessionId) =>
+        (resolved: boolean): Effect.Effect<void> =>
+          resolved
+            ? dropLaunchWords(sessionId, REMOTE_SSH_RESET_PENDING_WORDS)
+            : replaceLaunchWords(
+                sessionId,
+                REMOTE_SSH_RESET_PENDING_WORDS,
+                REMOTE_SSH_RESET_PENDING_WORDS,
+              ).pipe(Effect.ignore);
+
+      /** `words` taken off the session line, wherever they are in it; nothing when absent. */
+      const dropLaunchWords = (sessionId: SessionId, words: string): Effect.Effect<void> =>
+        Effect.gen(function* () {
+          const summary = (yield* sessions.byId(sessionId)).summary;
+          if (summary === null || !summary.includes(words)) return;
+          const kept = summary
+            .split(` · ${words}`)
+            .join("")
+            .split(`${words} · `)
+            .join("")
+            .split(words)
+            .join("");
+          yield* sessions.setSummary(sessionId, kept.length === 0 ? null : kept);
+        }).pipe(Effect.ignore);
 
       /** `from` on the session line becomes `to`; said at the end when `from` is gone. */
       const replaceLaunchWords = Effect.fn("SessionEngine.replaceLaunchWords")(function* (
@@ -21295,6 +21363,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             environment: provisioned.environmentManifest,
             referenceMounts: provisioned.referenceMounts,
             extraMounts: provisioned.extraMounts,
+            remoteSsh: provisioned.remoteSsh,
           });
           return true;
         });

@@ -20,6 +20,7 @@ import { SealantPlatformError } from "./errors.ts";
 import {
   CONTROL_PLANE_UNREADABLE,
   controlPlaneObstacleOf,
+  runsSshAsUser,
   PersonLayoutPlatformLive,
   imageLayoutReportOf,
 } from "./person-layout-live.ts";
@@ -652,5 +653,190 @@ describe("a platform with none of the person layout", () => {
       const exit = await Effect.runPromiseExit(call);
       expect(Exit.isFailure(exit)).toBe(true);
     }
+  });
+});
+
+describe("the workspace's SSH user (docs/adr/0016 decision 10, sealant#348)", () => {
+  const reporting = { ...EVERY_FEATURE, workspaceSshUser: true };
+  const platformReporting = (features: SealantFeatures) =>
+    platformWith(
+      PersonLayoutPlatformLive.pipe(
+        Layer.provide(clientsLayer([], inspection("supported"), () => Effect.succeed(features))),
+      ),
+    );
+
+  it("is named only where Core says its gateway runs SSH sessions as one", async () => {
+    expect(runsSshAsUser(reporting)).toBe(true);
+    expect(runsSshAsUser(EVERY_FEATURE)).toBe(false);
+    expect(await Effect.runPromise((await platformReporting(reporting)).sshUser)).toBe(true);
+    expect(await Effect.runPromise((await platformReporting(EVERY_FEATURE)).sshUser)).toBe(false);
+  });
+
+  it("is set back to root through the handle, only where Core takes it, and never fails", async () => {
+    const asked: Array<string | null> = [];
+    const settable = {
+      ...workspaceRecording([], []),
+      sshAsRoot: async () => {
+        asked.push(null);
+      },
+    };
+    expect(await Effect.runPromise((await platformReporting(reporting)).sshAsRoot(settable))).toBe(
+      true,
+    );
+    expect(asked).toEqual([null]);
+    // A control plane that does not take it is not asked: there is nothing to set.
+    expect(
+      await Effect.runPromise((await platformReporting(EVERY_FEATURE)).sshAsRoot(settable)),
+    ).toBe(true);
+    expect(asked).toEqual([null]);
+    // A refusal is an answer of no, for the caller to try again; never a failure.
+    const failing = {
+      ...workspaceRecording([], []),
+      sshAsRoot: async () => {
+        throw new Error("down");
+      },
+    };
+    const platform = await platformReporting(reporting);
+    expect(await Effect.runPromise(platform.sshAsRoot(failing))).toBe(false);
+    // An SDK without the method made no create with a user either.
+    expect(await Effect.runPromise(platform.sshAsRoot(workspaceRecording([], [])))).toBe(true);
+  });
+
+  effectIt.effect("gives up on an attempt Core does not answer within 5 s, as a no", () =>
+    Effect.gen(function* () {
+      const platform = yield* PersonLayoutPlatform.pipe(
+        Effect.provide(
+          PersonLayoutPlatformLive.pipe(
+            Layer.provide(
+              clientsLayer([], inspection("supported"), () => Effect.succeed(reporting)),
+            ),
+          ),
+        ),
+      );
+      const silent = {
+        ...workspaceRecording([], []),
+        sshAsRoot: () => new Promise<void>(() => {}),
+      };
+      const fiber = yield* Effect.forkChild(platform.sshAsRoot(silent));
+      yield* TestClock.adjust("5 seconds");
+      expect(yield* Fiber.join(fiber)).toBe(false);
+    }),
+  );
+
+  effectIt.effect(
+    "is not done while Core cannot be asked: an unreadable feature read keeps the reset pending (review 2 of mend#641, N2)",
+    () =>
+      Effect.gen(function* () {
+        let reads = 0;
+        let resets = 0;
+        const features = () =>
+          ++reads === 1
+            ? Effect.succeed(reporting)
+            : Effect.fail(
+                new SealantPlatformError({ code: "x", status: 503, message: "down", cause: null }),
+              );
+        const platform = yield* PersonLayoutPlatform.pipe(
+          Effect.provide(
+            PersonLayoutPlatformLive.pipe(
+              Layer.provide(clientsLayer([], inspection("supported"), features)),
+            ),
+          ),
+        );
+        const handle = {
+          ...workspaceRecording([], []),
+          sshAsRoot: async () => {
+            resets++;
+            throw new Error("down");
+          },
+        };
+        expect(yield* platform.sshAsRoot(handle)).toBe(false);
+        // The kept answer runs out, and Core cannot be asked: still tried, still not done.
+        yield* TestClock.adjust("6 minutes");
+        expect(yield* platform.sshAsRoot(handle)).toBe(false);
+        expect({ resets, reads }).toEqual({ resets: 2, reads: 2 });
+      }),
+  );
+
+  describe("the launcher's person binding (sealant#348, C2)", () => {
+    const ALICE = { accountId: "acct_alice", uid: 40001, home: "/home/m4lice000" };
+    const withBinding = (
+      features: SealantFeatures,
+      bind: () => Effect.Effect<"bound" | "refused" | "unsupported", SealantPlatformError>,
+      calls: Array<string>,
+    ) =>
+      PersonLayoutPlatformLive.pipe(
+        Layer.provide(
+          Layer.mock(SealantClients, {
+            controlPlaneFeatures: () => Effect.succeed(features),
+            connectedAccounts: () => ({ list: unused, connect: unused, disconnect: unused }),
+            sshKeys: () => ({ ensure: unused, list: unused }),
+            sealantUserId: (userId) => Effect.succeed(`su-${userId}`),
+            bindPerson: (userId, person) =>
+              Effect.suspend(() => {
+                calls.push(`${userId}:${person.id}:${String(person.uid)}:${person.home}`);
+                return bind();
+              }),
+          }),
+        ),
+      );
+    const binding = { ...reporting, personBinding: true };
+
+    effectIt.effect("binds once and asks for the owner's SSH user from then on", () =>
+      Effect.gen(function* () {
+        const calls: Array<string> = [];
+        const platform = yield* PersonLayoutPlatform.pipe(
+          Effect.provide(withBinding(binding, () => Effect.succeed("bound" as const), calls)),
+        );
+        expect(yield* platform.sshAsOwnerFor(ALICE)).toBe("yes");
+        expect(yield* platform.sshAsOwnerFor(ALICE)).toBe("yes");
+        expect(calls).toEqual(["acct_alice:acct_alice:40001:/home/m4lice000"]);
+      }),
+    );
+
+    effectIt.effect(
+      "stays root where Core cannot bind: refused (kept a while), no route, no answer",
+      () =>
+        Effect.gen(function* () {
+          const refusedCalls: Array<string> = [];
+          const refusing = yield* PersonLayoutPlatform.pipe(
+            Effect.provide(
+              withBinding(binding, () => Effect.succeed("refused" as const), refusedCalls),
+            ),
+          );
+          expect(yield* refusing.sshAsOwnerFor(ALICE)).toBe("unbound");
+          expect(yield* refusing.sshAsOwnerFor(ALICE)).toBe("unbound");
+          expect(refusedCalls).toHaveLength(1);
+          yield* TestClock.adjust("6 minutes");
+          expect(yield* refusing.sshAsOwnerFor(ALICE)).toBe("unbound");
+          expect(refusedCalls).toHaveLength(2);
+
+          // A Core that runs SSH as a user but has no binding route: never asks for the user.
+          const noRoute: Array<string> = [];
+          const older = yield* PersonLayoutPlatform.pipe(
+            Effect.provide(withBinding(reporting, () => Effect.succeed("bound" as const), noRoute)),
+          );
+          expect(yield* older.sshAsOwnerFor(ALICE)).toBe("unbound");
+          expect(noRoute).toEqual([]);
+
+          // A binding Core does not answer within 5 s.
+          const silent = yield* PersonLayoutPlatform.pipe(
+            Effect.provide(withBinding(binding, () => Effect.never, [])),
+          );
+          const fiber = yield* Effect.forkChild(silent.sshAsOwnerFor(ALICE));
+          yield* TestClock.adjust("5 seconds");
+          expect(yield* Fiber.join(fiber)).toBe("unbound");
+        }),
+    );
+
+    effectIt.effect("asks nothing where Core runs no SSH session as a user", () =>
+      Effect.gen(function* () {
+        const calls: Array<string> = [];
+        const platform = yield* PersonLayoutPlatform.pipe(
+          Effect.provide(withBinding(EVERY_FEATURE, () => Effect.succeed("bound" as const), calls)),
+        );
+        expect(yield* platform.sshAsOwnerFor(ALICE)).toBe("not-taken");
+        expect(calls).toEqual([]);
+      }),
+    );
   });
 });

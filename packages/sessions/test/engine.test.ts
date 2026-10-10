@@ -276,7 +276,13 @@ import {
 
 import { CONTAINER_TOKEN_REFUSED } from "../src/channel-identity.ts";
 import { installScript } from "../src/dependency-cache.ts";
-import { HarnessLayoutConfig, HarnessLayoutConfigShared } from "../src/harness-layout-steps.ts";
+import {
+  HarnessLayoutConfig,
+  HarnessLayoutConfigShared,
+  REMOTE_SSH_RESET_PENDING_WORDS,
+  REMOTE_SSH_ROOT_UNSUPPORTED_WORDS,
+  REMOTE_SSH_ROOT_WORDS,
+} from "../src/harness-layout-steps.ts";
 import {
   HARNESS_UPDATES_OFF_ENV,
   NO_PAGER_ENV,
@@ -482,6 +488,11 @@ const sealantLaunchLayer = (
     readonly createLaunches?: Array<string | undefined>;
     /** Every create's `credentialsHome` (docs/adr/0016), as Mend sent it (`undefined`: none). */
     readonly createHomes?: Array<string | undefined>;
+    /**
+     * Every create's SSH user (docs/adr/0016, decision 10): with `sshAsOwner`, the home whose
+     * owner's uid Core runs the sessions as (`credentialsHome`'s path); `undefined`: root.
+     */
+    readonly createSshUsers?: Array<string | undefined>;
     /** Every exec's user (docs/adr/0016): the login name it ran as, null for root. */
     readonly execUsers?: Array<string | null>;
     /** While true, a create's answer is lost (503) as if the control plane never answered. */
@@ -654,6 +665,9 @@ const sealantLaunchLayer = (
         created.push(options);
         captureOps?.createKeys?.push(launch?.idempotencyKey);
         captureOps?.createLaunches?.push(launch?.launchId);
+        captureOps?.createSshUsers?.push(
+          launch?.sshAsOwner === true ? launch.credentialsHome?.path : undefined,
+        );
         captureOps?.createHomes?.push(
           launch?.credentialsHome === undefined
             ? undefined
@@ -8000,6 +8014,7 @@ describe("SessionEngine hot sessions", () => {
               status: "ready",
               error: null,
               fingerprint: "match-simulated-by-the-fake-claim",
+              remoteSsh: "not-taken",
               harnessLayout: "shared",
               worktree: null,
               branch: null,
@@ -8101,6 +8116,7 @@ describe("SessionEngine hot sessions", () => {
               status: "ready",
               error: null,
               fingerprint: "match-simulated-by-the-fake-claim",
+              remoteSsh: "not-taken",
               harnessLayout: "shared",
               worktree: null,
               branch: null,
@@ -8647,6 +8663,7 @@ const memoryHotPool = () => {
         const entry = new HotWorkspace({
           ...input,
           status: "warming",
+          remoteSsh: "not-taken",
           error: null,
           sealantWorkspaceId: null,
           workspaceImage: null,
@@ -24116,6 +24133,23 @@ describe("SessionEngine a session and its run settle together (2026-10-03)", () 
  * workspace `unknown` here, as it does on the box. Every lookup's principal lands in `seen`
  * (`none`, or the user id), so a test can say whose the calls were.
  */
+/** Records whose principal each create is made under (`none`, or the user id). */
+const createPrincipals = (
+  inner: Layer.Layer<SealantClient>,
+  seen: Array<string>,
+): Layer.Layer<SealantClient> =>
+  Layer.effect(
+    SealantClient,
+    Effect.map(SealantClient, (client) => ({
+      ...client,
+      createWorkspace: (options, launch, watch) =>
+        Effect.flatMap(SealantPrincipal, (principal) => {
+          seen.push(principal.kind === "none" ? "none" : principal.userId);
+          return client.createWorkspace(options, launch, watch);
+        }),
+    })),
+  ).pipe(Layer.provide(inner));
+
 const principalRequired = (
   inner: Layer.Layer<SealantClient>,
   seen: Array<string>,
@@ -24459,11 +24493,25 @@ const personPlatform = (
   postFails?: (onBehalfOf: string, home: string) => boolean,
   /** What the control plane says of itself, asked each time; it can run per person unless said. */
   controlPlane?: () => string | null,
+  /** Core runs a workspace's SSH sessions as a user (`features.workspaceSshUser`); yes unless said. */
+  sshUserReported = true,
+  /** Core's answer to each `sshAsRoot`: taken unless said. */
+  sshUserTaken: () => boolean = () => true,
+  /** Whether the launcher's person binding is made in Core: yes unless said. */
+  personBound = true,
 ): Layer.Layer<PersonLayoutPlatform> =>
   Layer.succeed(PersonLayoutPlatform, {
     processUser: true,
     dotfilesUser: dotfiles !== undefined,
     controlPlaneObstacle: Effect.sync(() => controlPlane?.() ?? null),
+    sshUser: Effect.succeed(sshUserReported),
+    sshAsOwnerFor: () =>
+      Effect.succeed(!sshUserReported ? "not-taken" : personBound ? "yes" : "unbound"),
+    sshAsRoot: () =>
+      Effect.sync(() => {
+        calls.push("ssh-user:root");
+        return sshUserTaken();
+      }),
     workspaceProcessUser: () => Effect.succeed("supported"),
     // Core 0.39.0-next.696 (sealant#333): the map rides the capture source, as the live layer does.
     withOwnerMap: (options, map) =>
@@ -24529,6 +24577,7 @@ interface Scenario {
   readonly resume: number;
   readonly created: number;
   readonly homes: ReadonlyArray<string | undefined>;
+  readonly sshUsers: ReadonlyArray<string | undefined>;
   readonly opened: ReadonlyArray<PersonSessionOptions>;
   readonly users: ReadonlyArray<string | null>;
   readonly execs: ReadonlyArray<ReadonlyArray<string>>;
@@ -24556,6 +24605,7 @@ const coldJoinResume = async (options: {
   const opened: Array<PersonSessionOptions> = [];
   const users: Array<string | null> = [];
   const homes: Array<string | undefined> = [];
+  const sshUsers: Array<string | undefined> = [];
   const memory = makeMemoryCaptureStore();
   let result: Scenario | null = null;
   await withEngine(
@@ -24619,6 +24669,7 @@ const coldJoinResume = async (options: {
           resume: execCalls.length - beforeResume,
           created: created.length,
           homes,
+          sshUsers,
           opened,
           users,
           execs: execCalls,
@@ -24643,6 +24694,7 @@ const coldJoinResume = async (options: {
         {
           execUsers: users,
           createHomes: homes,
+          createSshUsers: sshUsers,
           ...(options.exec === undefined ? {} : { exec: options.exec }),
         },
       ),
@@ -24692,6 +24744,8 @@ describe("per-person harness homes (docs/adr/0016)", () => {
     expect([other.cold, other.join]).toEqual([BUDGET.cold, BUDGET.otherJoin]);
     for (const run of [same, other]) {
       expect(run.homes.every((home) => home === undefined)).toBe(true);
+      // A shared executor's SSH sessions run as root, as before: no user is named.
+      expect(run.sshUsers.every((user) => user === undefined)).toBe(true);
       expect(run.users.every((user) => user === null)).toBe(true);
       expect(run.opened.some((options) => options.user !== undefined)).toBe(false);
       expect(run.joinRepairs + run.joinPersonHomes).toBe(0);
@@ -24699,6 +24753,90 @@ describe("per-person harness homes (docs/adr/0016)", () => {
     }
     expect(state.launches.size).toBe(0);
     expect(state.identities.size).toBe(0);
+  });
+
+  it("Remote-SSH is the launcher's: whoever launches the executor, and after it stops, whoever launches the next one", async () => {
+    // Alice launches and stops; Maria, a member, then launches the worktree's next executor. Its
+    // create names Maria's user and is made as Maria's Sealant user, so Core's gateway, which
+    // admits only the workspace's owner, admits Maria and refuses Alice (docs/adr/0016, decision
+    // 10: the launcher of the workspace, not the worktree's first-session owner).
+    const sshUsers: Array<string | undefined> = [];
+    const principals: Array<string> = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const first = yield* engine.provision({
+            projectId: project.id,
+            harness: "claude",
+            label: null,
+            name: "remote-ssh-launcher",
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+          yield* engine.launch(first.id, ["claude"]);
+          yield* engine.stop(first.id);
+          const next = yield* engine.provisionSessionIn(first.worktreeId, {
+            harness: "claude",
+            label: null,
+            ownerUserId: MARIA,
+          });
+          yield* engine.launch(next.id, ["claude"]);
+        }),
+      {
+        captured: makeMemoryCaptureStore(),
+        prepareWorld: (world) => world.members.set(MARIA, "member"),
+        sealantLayer: createPrincipals(
+          sealantLaunchLayer(
+            [],
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            {
+              createSshUsers: sshUsers,
+              exec: answerLayout(
+                `mend-layout probed\nmend-layout made ${LAUNCHER}\nmend-layout made ${JOINER}\nmend-layout ready\n`,
+              ),
+            },
+          ),
+          principals,
+        ),
+        harnessLayout: { flag: "person", platform: personPlatform([], { person: true }) },
+      },
+    );
+    expect(sshUsers).toEqual([`/home/${LAUNCHER}`, `/home/${JOINER}`]);
+    expect(principals).toEqual(["user-fixture", MARIA]);
+  });
+
+  it("a person launch names no SSH user where Core does not run SSH sessions as one", async () => {
+    // A control plane from before `workspaceSshUser` (sealant#348): its gateway runs every SSH
+    // session as root, so the create names nobody, and nothing is set later.
+    const calls: Array<string> = [];
+    const run = await coldJoinResume({
+      flag: "person",
+      joiner: "user-fixture",
+      platform: personPlatform(
+        calls,
+        { person: true },
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        false,
+      ),
+      exec: answerLayout(LAYOUT_READY),
+    });
+    expect(run.homes[0]).toBe(`/home/${LAUNCHER} 40001:40000`);
+    expect(run.sshUsers.every((user) => user === undefined)).toBe(true);
+    expect(calls.some((call) => call.startsWith("ssh-user:"))).toBe(false);
   });
 
   it("a person launch runs as the launcher's own user, in no more execs than its budget", async () => {
@@ -24716,6 +24854,8 @@ describe("per-person harness homes (docs/adr/0016)", () => {
     expect(run.resume).toBeLessThanOrEqual(PERSON_BUDGET.resume);
     // The create commits to the layout: the launcher's logins into their own home.
     expect(run.homes[0]).toBe(`/home/${LAUNCHER} 40001:40000`);
+    // And their Remote-SSH: Core's gateway runs the owner's SSH sessions as their user.
+    expect(run.sshUsers[0]).toBe(`/home/${LAUNCHER}`);
     // Users and homes are made in the executor's first exec, beside the helper install.
     const first = run.execs.find((argv) => (argv[2] ?? "").includes("mend-layout"));
     expect(first?.[2]).toContain(`useradd -u "$p_u" -g mend`);
@@ -25094,7 +25234,11 @@ describe("per-person harness homes (docs/adr/0016)", () => {
     ) => { exitCode: number; stdout: string; stderr: string } | undefined;
     readonly before?: (worktreeId: string) => void;
     readonly harnessLayout?: HarnessLayout;
+    /** Read the session line this long after the launch (what work beside it said). */
+    readonly summaryAfter?: Duration.Input;
   }) => {
+    let summary: string | null = null;
+    const sshUsers: Array<string | undefined> = [];
     const created: Array<CreateOptions> = [];
     const opened: Array<PersonSessionOptions> = [];
     const execCalls: Array<ReadonlyArray<string>> = [];
@@ -25122,6 +25266,10 @@ describe("per-person harness homes (docs/adr/0016)", () => {
           options.before?.(session.worktreeId);
           const launched = yield* engine.launch(session.id, ["claude"]).pipe(Effect.result);
           if (launched._tag === "Failure") failure = launched.failure.message;
+          if (options.summaryAfter !== undefined) {
+            yield* Effect.sleep(options.summaryAfter);
+            summary = world.sessions.get(session.id)?.summary ?? null;
+          }
         }),
       {
         captured: makeMemoryCaptureStore(),
@@ -25140,13 +25288,14 @@ describe("per-person harness homes (docs/adr/0016)", () => {
           {
             stops,
             beforeOpen: () => order.push("open"),
+            createSshUsers: sshUsers,
             ...(options.exec === undefined ? {} : { exec: options.exec }),
           },
         ),
         harnessLayout: { flag: options.flag, state: options.state, platform: options.platform },
       },
     );
-    return { created, opened, execCalls, stops, failure, worktreeId, order };
+    return { created, opened, execCalls, stops, failure, worktreeId, order, summary, sshUsers };
   };
 
   it("refuses a person worktree before create when its image is known not to run it", async () => {
@@ -25258,7 +25407,12 @@ describe("per-person harness homes (docs/adr/0016)", () => {
       exec: answerLayout("mend-layout missing no setfacl\nmend-layout probed\n"),
     });
     expect(run.failure).toBeNull();
-    expect(calls).toEqual([`delete:/home/${LAUNCHER}`, "post:user-fixture:/root"]);
+    // The launcher's SSH sessions go back to root with the executor (decision 10), off the
+    // launch path: nothing above waited on it.
+    expect(calls.filter((call) => !call.startsWith("ssh-user:"))).toEqual([
+      `delete:/home/${LAUNCHER}`,
+      "post:user-fixture:/root",
+    ]);
     // The agent starts as root, after its login is written.
     expect(run.order).toContain("open");
     expect(run.opened.some((options) => options.user !== undefined)).toBe(false);
@@ -25267,6 +25421,75 @@ describe("per-person harness homes (docs/adr/0016)", () => {
     ]);
     expect(state.capabilities.get(IMAGE)).toMatchObject({ person: false, missing: ["no setfacl"] });
     expect(state.worktrees.get(run.worktreeId ?? "")?.layout ?? null).toBeNull();
+  });
+
+  it("a launcher whose person Core cannot bind asks for no SSH user: Remote-SSH stays root, and the line says so", async () => {
+    const run = await launchPersonOnce({
+      flag: "person",
+      state: makeHarnessLayoutsMemoryState(),
+      platform: personPlatform(
+        [],
+        { person: true },
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        true,
+        () => true,
+        false,
+      ),
+      exec: answerLayout(LAYOUT_READY),
+      summaryAfter: "100 millis",
+    });
+    expect(run.failure).toBeNull();
+    // Still a person launch (their logins in their own home), but no `sshAsOwner` on the create.
+    expect(run.sshUsers).toEqual([undefined]);
+    expect(run.summary).toContain(REMOTE_SSH_ROOT_WORDS);
+  });
+
+  it("a person launch on a Sealant that runs no SSH session as a user says Remote-SSH is root (review 3 of mend#641, N4)", async () => {
+    const run = await launchPersonOnce({
+      flag: "person",
+      state: makeHarnessLayoutsMemoryState(),
+      platform: personPlatform(
+        [],
+        { person: true },
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        false,
+      ),
+      exec: answerLayout(LAYOUT_READY),
+      summaryAfter: "100 millis",
+    });
+    expect(run.failure).toBeNull();
+    expect(run.sshUsers).toEqual([undefined]);
+    expect(run.summary).toContain(REMOTE_SSH_ROOT_UNSUPPORTED_WORDS);
+  });
+
+  it("a fallback whose SSH reset Core has not taken starts the agent anyway, and says Remote-SSH is down", async () => {
+    const calls: Array<string> = [];
+    const run = await launchPersonOnce({
+      flag: "person",
+      state: makeHarnessLayoutsMemoryState(),
+      platform: personPlatform(
+        calls,
+        { person: true },
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        true,
+        () => false,
+      ),
+      exec: answerLayout("mend-layout missing no setfacl\nmend-layout probed\n"),
+      summaryAfter: "200 millis",
+    });
+    expect(run.failure).toBeNull();
+    expect(run.order).toContain("open");
+    expect(calls).toContain("ssh-user:root");
+    expect(run.summary).toContain(REMOTE_SSH_RESET_PENDING_WORDS);
   });
 
   it("with the flag off, a start interrupted once its operator's person request is written still makes the worktree's next launch person", async () => {
@@ -26165,6 +26388,67 @@ describe("per-person standbys (docs/adr/0016)", () => {
       if (standby === undefined) throw new Error("no person standby");
       return standby;
     });
+
+  /** A person standby warmed while the owner's person is bound in Core (`bound`) or not, then claimed. */
+  const claimStandby = (bound: boolean) => {
+    const sshUsers: Array<string | undefined> = [];
+    const world = personStandbyWorld({
+      report: { person: true, missing: [] },
+      exec: answerLayout(LAYOUT_READY),
+      captureOps: { createSshUsers: sshUsers },
+    });
+    const platform = personPlatform(
+      world.calls,
+      { person: true },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      true,
+      () => true,
+      bound,
+    );
+    let summary: string | null | undefined;
+    return withEngine(
+      (testWorld, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, testWorld);
+          testWorld.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
+          const engine = yield* SessionEngine;
+          const standby = yield* warmPersonStandby(project, world.pool);
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "claude",
+            label: null,
+            name: null,
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+          expect(session.id).toBe(standby.id);
+          world.executor.id = session.id;
+          yield* engine.launch(session.id, ["claude"]);
+          yield* Effect.sleep("200 millis");
+          const launched = testWorld.sessions.get(session.id);
+          expect(launched?.status).not.toBe("failed");
+          expect(launched?.sealantWorkspaceId).toBe(standby.sealantWorkspaceId);
+          summary = launched?.summary;
+        }),
+      { ...world.layers, harnessLayout: { ...world.layers.harnessLayout, platform } },
+    ).then(() => ({ sshUsers, summary }));
+  };
+
+  it("a claimed person standby whose owner's person Core could not bind says Remote-SSH is root (review 3 of mend#641, N4)", async () => {
+    const run = await claimStandby(false);
+    // Its create asked for no SSH user, and the claim says so, as the standby's create decided.
+    expect(run.sshUsers[0]).toBeUndefined();
+    expect(run.summary).toContain(REMOTE_SSH_ROOT_WORDS);
+  });
+
+  it("a claimed person standby whose owner's person is bound keeps their SSH user and says nothing of root", async () => {
+    const run = await claimStandby(true);
+    expect(run.sshUsers[0]).toBe(`/home/${STANDBY_OWNER}`);
+    expect(run.summary).not.toContain("Remote-SSH: root");
+  });
 
   it("a person standby, warmed as its owner, is claimed by their fresh worktree and runs per person: their user, a 0700 home, their own logins, their saved directory under people/", async () => {
     const world = personStandbyWorld({

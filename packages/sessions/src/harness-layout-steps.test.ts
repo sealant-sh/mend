@@ -1,3 +1,4 @@
+import { it as effectIt } from "@effect/vitest";
 import {
   HarnessLayoutsRepo,
   type HarnessLayoutsMemoryState,
@@ -16,6 +17,7 @@ import {
 } from "@mend/sealant";
 import { claudeCode, type Run, type Workspace } from "@sealant/sdk";
 import { ConfigProvider, Deferred, Duration, Effect, Fiber, Layer } from "effect";
+import { TestClock } from "effect/testing";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -25,6 +27,7 @@ import {
   UNKNOWN_LAUNCH_REFUSAL,
   loginNeedOf,
   loginRefusal,
+  type HarnessLayoutSteps,
   makeHarnessLayoutSteps,
   refusedAccountOf,
 } from "./harness-layout-steps.ts";
@@ -129,6 +132,8 @@ interface CoreCalls {
   imageReports: number;
   /** How often the control plane was asked what it can do. */
   controlPlaneReads: number;
+  /** Core's answers to `sshAsRoot`, in order (`never`: no answer); then yes. */
+  sshAnswers: Array<boolean | "never">;
 }
 
 type CoreAnswer = SealantPlatformError | ReadonlyArray<LoginSkip> | null;
@@ -142,6 +147,7 @@ const coreCalls = (): CoreCalls => ({
   postGate: null,
   imageReports: 0,
   controlPlaneReads: 0,
+  sshAnswers: [],
 });
 
 const platformOf = (
@@ -162,6 +168,14 @@ const platformOf = (
   Layer.succeed(PersonLayoutPlatform, {
     processUser: true,
     dotfilesUser: can.dotfilesUser ?? true,
+    sshUser: Effect.succeed(true),
+    sshAsOwnerFor: () => Effect.succeed("yes" as const),
+    sshAsRoot: () =>
+      Effect.suspend(() => {
+        core.calls.push("ssh-user:root");
+        const answer = core.sshAnswers.shift() ?? true;
+        return answer === "never" ? Effect.never : Effect.succeed(answer);
+      }),
     workspaceProcessUser: () => Effect.succeed(can.workspaceProcessUser ?? "supported"),
     controlPlaneObstacle: Effect.sync(() => {
       core.controlPlaneReads++;
@@ -1916,6 +1930,7 @@ describe("logins per person (docs/adr/0016, decision 5)", () => {
     });
     expect(outcome.layout).toBe("shared");
     // The create-time home released, the logins at /root (a partial put), no apply as root.
+    // The launcher's SSH sessions go back to root off the launch path (a fork nothing awaits).
     expect(core.calls).toEqual([`delete:/home/${outcome.alice.name}`, "post:user-alice:/root"]);
     expect(core.posts.map((post) => [post.logins, post.partial])).toEqual([
       [{ claude: true, github: true }, true],
@@ -2055,5 +2070,177 @@ describe("logins per person (docs/adr/0016, decision 5)", () => {
     expect(result.other).toBeNull();
     expect(result.capabilities).toEqual([["its sealantd does not restore files per person"]]);
     expect(result.worktree).toBe("person");
+  });
+});
+
+describe("a fallback's Remote-SSH reset (docs/adr/0016, decision 10)", () => {
+  const fallbackStdout = "mend-layout probed\nmend-layout missing no sudo\n";
+
+  /** A person launch whose prepare falls back, its reset forked into `forks`, told into `told`. */
+  const fallBack = (core: CoreCalls, forks: Array<Effect.Effect<void>>, told: Array<boolean>) =>
+    Effect.gen(function* () {
+      const { steps } = yield* stepsWith("person", makeHarnessLayoutsMemoryState(), {
+        platform: platformOf(core),
+        forks,
+      });
+      const layout = yield* steps.decide(decideInput("launch-ssh"));
+      const settled = yield* steps.settlePrepare({
+        layout,
+        ...settleInput("launch-ssh", fallbackStdout),
+        onSshReset: (resolved) => Effect.sync(() => told.push(resolved)),
+      });
+      return { steps, settled };
+    });
+
+  it("never holds the launch: a reset Core never answers is left running beside it", async () => {
+    const core = coreCalls();
+    core.sshAnswers.push("never");
+    const forks: Array<Effect.Effect<void>> = [];
+    const told: Array<boolean> = [];
+    const { settled } = await Effect.runPromise(fallBack(core, forks, told));
+    expect(settled.layout).toBe("shared");
+    // Settled, logins at /root, and the reset not even begun: it is one fork nothing awaits.
+    expect(core.calls).toEqual([
+      expect.stringMatching(/^delete:/),
+      expect.stringMatching(/^post:.*:\/root$/),
+    ]);
+    expect(forks).toHaveLength(1);
+    expect(told).toEqual([]);
+  });
+
+  effectIt.effect(
+    "is retried with backoff, said on the line until Core takes it, then taken off",
+    () =>
+      Effect.gen(function* () {
+        const core = coreCalls();
+        core.sshAnswers.push(false, false, true);
+        const forks: Array<Effect.Effect<void>> = [];
+        const told: Array<boolean> = [];
+        yield* fallBack(core, forks, told);
+        const [reset] = forks;
+        if (reset === undefined) throw new Error("no reset forked");
+        const fiber = yield* Effect.forkChild(reset);
+        const attempts = () => core.calls.filter((call) => call === "ssh-user:root").length;
+        // Refused at once, then 1 s later: the line says Remote-SSH is down.
+        yield* TestClock.adjust("1 second");
+        expect(attempts()).toBe(2);
+        expect(told).toEqual([false, false]);
+        // Taken 2 s after that: the line is told it is back.
+        yield* TestClock.adjust("2 seconds");
+        yield* Fiber.join(fiber);
+        expect(attempts()).toBe(3);
+        expect(told).toEqual([false, false, true]);
+      }),
+  );
+
+  effectIt.effect(
+    "still pending after its last attempt, is tried again at the executor's next process start",
+    () =>
+      Effect.gen(function* () {
+        const core = coreCalls();
+        core.sshAnswers.push(...Array.from({ length: 8 }, () => false));
+        const forks: Array<Effect.Effect<void>> = [];
+        const told: Array<boolean> = [];
+        const { steps } = yield* fallBack(core, forks, told);
+        const [first] = forks;
+        if (first === undefined) throw new Error("no reset forked");
+        const fiber = yield* Effect.forkChild(first);
+        yield* TestClock.adjust("3 minutes");
+        yield* Fiber.join(fiber);
+        expect(core.calls.filter((call) => call === "ssh-user:root")).toHaveLength(8);
+        expect(told.every((resolved) => !resolved)).toBe(true);
+        // A shell in the fallback executor: its start forks the reset again, and Core takes it.
+        yield* steps.processAs({
+          workspace,
+          launchId: "launch-ssh",
+          accountId: "user-fixture",
+          sessionId: "s-1",
+          worktreeId: "wt-1",
+          harness: "shell",
+          live: Effect.succeed(new Set<string>()),
+        });
+        expect(forks).toHaveLength(2);
+        const [, again] = forks;
+        if (again === undefined) throw new Error("no second reset forked");
+        yield* again;
+        expect(told.at(-1)).toBe(true);
+        // Taken: a later start forks nothing.
+        yield* steps.processAs({
+          workspace,
+          launchId: "launch-ssh",
+          accountId: "user-fixture",
+          sessionId: "s-1",
+          worktreeId: "wt-1",
+          harness: "shell",
+          live: Effect.succeed(new Set<string>()),
+        });
+        expect(forks).toHaveLength(2);
+      }),
+  );
+
+  it("is dropped with the executor", async () => {
+    const core = coreCalls();
+    const forks: Array<Effect.Effect<void>> = [];
+    const told: Array<boolean> = [];
+    const { steps } = await Effect.runPromise(fallBack(core, forks, told));
+    steps.forgetExecutor(workspace.id);
+    const [reset] = forks;
+    if (reset === undefined) throw new Error("no reset forked");
+    await Effect.runPromise(reset);
+    expect(core.calls.filter((call) => call === "ssh-user:root")).toEqual([]);
+  });
+
+  it("survives a restart: the fallback's record makes the reset pending again at the executor's next process start (review 2 of mend#641, N3)", async () => {
+    const state = makeHarnessLayoutsMemoryState();
+    const core = coreCalls();
+    core.sshAnswers.push(false);
+    const forks: Array<Effect.Effect<void>> = [];
+    const told: Array<boolean> = [];
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const { steps } = yield* stepsWith("person", state, { platform: platformOf(core), forks });
+        const layout = yield* steps.decide(decideInput("launch-ssh"));
+        const settled = yield* steps.settlePrepare({
+          layout,
+          ...settleInput("launch-ssh", fallbackStdout),
+          onSshReset: (resolved) => Effect.sync(() => told.push(resolved)),
+        });
+        expect(settled.layout).toBe("shared");
+      }),
+    );
+    expect(forks).toHaveLength(1);
+    // Mend restarts before the reset reached Core (it never ran): new steps over the same store,
+    // and Core takes the reset this time.
+    core.sshAnswers.length = 0;
+    const afterRestart: Array<Effect.Effect<void>> = [];
+    const toldAfter: Array<boolean> = [];
+    const start = (steps: HarnessLayoutSteps) =>
+      steps.processAs({
+        workspace,
+        launchId: "launch-ssh",
+        accountId: "user-fixture",
+        sessionId: "s-1",
+        worktreeId: "wt-1",
+        harness: "shell",
+        live: Effect.succeed(new Set<string>()),
+        onSshReset: (resolved) => Effect.sync(() => toldAfter.push(resolved)),
+      });
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const { steps } = yield* stepsWith("person", state, {
+          platform: platformOf(core),
+          forks: afterRestart,
+        });
+        yield* start(steps);
+        expect(afterRestart).toHaveLength(1);
+        const [reset] = afterRestart;
+        if (reset === undefined) throw new Error("no reset forked");
+        yield* reset;
+        expect(core.calls.filter((call) => call === "ssh-user:root")).toHaveLength(1);
+        // Taken by Core: the next start forks nothing more.
+        yield* start(steps);
+        expect(afterRestart).toHaveLength(1);
+      }),
+    );
   });
 });
