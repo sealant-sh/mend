@@ -44,6 +44,7 @@ verdicts. They never appear in a report.
   .claude/skills/verify/scripts/local-outer.sh up   # Mend 0.36.0-next.658 on 127.0.0.1:23105
   .claude/skills/verify/scripts/local-outer.sh serve HEAD   # prints the served commit, for --expect-mend
   export XDG_CONFIG_HOME=~/.cache/mend-verify/outer-cli   # the mend CLI now talks to it
+  export MEND_VERIFY_OUTER_URL=http://127.0.0.1:23105      # and the guard (Launch) lets it through
   .claude/skills/verify/scripts/local-outer.sh down   # after Cleanup: the container and its volumes
   ```
 
@@ -73,8 +74,9 @@ verdicts. They never appear in a report.
   the evidence directory, and every project a recipe adopts (`st-verify-<run>-<n>`). The stack's own
   inner names (`verify-fixture`, `verifier@verify-stack.invalid`) are the stack's.
 - **Drive only what this run started:** the stack whose doctor matched, the tunnel `tunnel.mjs`
-  recorded, the sessions whose ids you recorded. Never the owner's Mend, and never another
-  verifier's `st-verify-` session.
+  recorded, the sessions whose ids you recorded. Never the owner's Mend (the guard, under Launch,
+  refuses any `mend` not aimed at the declared outer server), and never another verifier's
+  `st-verify-` session.
 - **How many at once: at most 4 stacks live and 2 building, across the machine.** That is the limit
   the verify stack's author recommends from the box's numbers (12 CPUs and 39 GB, shared with the
   server and everyone's sessions). Per stack on the box, in #616's runs: 1.7 to 2.0 GiB idle (every
@@ -101,7 +103,21 @@ P=$(mktemp -d)                                # private: the run's secret regist
 export MEND_VERIFY_PRIVATE=$P                 # every helper redacts the registry's values by value
 mkdir -p "$(dirname "$E")" && mkdir "$E" && mkdir "$E/launch"   # refuses a run that exists
 skill=$PWD/.claude/skills/verify              # absolute, so a later cd cannot lose it
+export PATH=$skill/scripts/guard:$PATH         # every mend below, the helpers' too, passes the guard
+export MEND_VERIFY_OUTER_URL=<the outer server's URL, as its CLI config names it>   # local-outer.sh: http://127.0.0.1:23105
+[ "$(command -v mend)" = "$skill/scripts/guard/mend" ] || { echo "mend does not resolve to the guard: unalias mend, or run this in a bash script" >&2; exit 1; }
 ```
+
+**A verifier never talks to the owner's server; the guard refuses it.** `scripts/guard/mend` stands
+in front of the CLI: it refuses (exit 97, before any request) unless `MEND_VERIFY_OUTER_URL` is
+declared, the CLI config in effect names exactly that server, and neither `MEND_URL` nor
+`MEND_TOKEN` overrides it; then it runs the next `mend` on `PATH`. A command that forgot
+`XDG_CONFIG_HOME` would otherwise reach the CLI's default server, and a shared shim
+(`~/.cache/mend-verify/bin/mend` is any process's to rewrite) cannot point the run anywhere else.
+The box is an outer server only when its operator says so: then declare its URL. An alias or a shell
+function named `mend` outranks `PATH` and skips the guard (an interactive zsh often has one), so the
+check above must print nothing: run the steps in a `bash` script, where aliases do not apply, or
+`unalias mend` first. The helpers start `mend` through `PATH`, so they always meet the guard.
 
 1. **Take a slot.** Count the live verify stacks on the outer Mend before starting one:
 

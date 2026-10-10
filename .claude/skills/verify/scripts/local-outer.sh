@@ -75,7 +75,7 @@ up)
       }
       writeFileSync(process.argv[1], JSON.stringify({ url: "http://127.0.0.1:23105", token, deviceId: randomUUID() }), { mode: 0o600 });
     })();' "$config/mend/cli.json"
-  echo "local-outer · Mend $version on http://127.0.0.1:23105 · CLI config $config"
+  echo "local-outer · Mend $version on http://127.0.0.1:23105 · CLI config $config · MEND_VERIFY_OUTER_URL=http://127.0.0.1:23105"
   ;;
 serve)
   ref=${2:?serve needs a commit-ish}
@@ -120,6 +120,9 @@ serve)
   inner docker start outer-fixture > /dev/null
   inner docker exec outer-fixture sh -c 'rm -rf /fixture/repo.git && mv /fixture/repo.next.git /fixture/repo.git && chown -R root:root /fixture/repo.git'
   export XDG_CONFIG_HOME="$config"
+  # Its own `mend` calls pass the skill's guard too: this outer server and no other.
+  export MEND_VERIFY_OUTER_URL=http://127.0.0.1:23105
+  export PATH="$here/guard:$PATH"
   if mend projects --json | grep -q '"name": "mend"'; then
     mend refresh --project mend > /dev/null
   else

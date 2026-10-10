@@ -1,0 +1,43 @@
+#!/bin/sh
+# The verify skill's guard in front of the `mend` CLI: a verifier never talks to the owner's server.
+#
+# Put this directory first on PATH (`export PATH=<skill>/scripts/guard:$PATH`) and declare the outer
+# server the run uses (`export MEND_VERIFY_OUTER_URL=<its URL, as the CLI config names it>`). Every
+# `mend` the skill runs, its helpers' included, then passes through here. It refuses (exit 97, no
+# request made) when:
+#   - MEND_VERIFY_OUTER_URL is not set;
+#   - MEND_URL or MEND_TOKEN is set (they override the config file);
+#   - the CLI config in effect (resolved as the CLI does: $XDG_CONFIG_HOME/mend, else ~/.config/mend,
+#     with a legacy ~/.mend winning when that directory is missing) names another URL, or none,
+#     which means the CLI's default server.
+# Otherwise it runs the next `mend` on PATH after this directory (or $MEND_VERIFY_REAL_MEND), so a
+# shared shim another process rewrites cannot point the run anywhere else.
+set -u
+here=$(cd "$(dirname "$0")" && pwd -P)
+deny() {
+  echo "mend-guard: $1; refused · a verifier never talks to the owner's server" >&2
+  exit 97
+}
+[ -z "${MEND_URL:-}" ] || deny "MEND_URL is set"
+[ -z "${MEND_TOKEN:-}" ] || deny "MEND_TOKEN is set"
+want=${MEND_VERIFY_OUTER_URL:-}
+[ -n "$want" ] || deny "MEND_VERIFY_OUTER_URL is not set"
+dir=${XDG_CONFIG_HOME:-$HOME/.config}/mend
+[ ! -d "$dir" ] && [ -d "$HOME/.mend" ] && dir=$HOME/.mend
+[ -f "$dir/cli.json" ] || deny "no CLI config at $dir/cli.json"
+url=$(node -e 'try { process.stdout.write(String(JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")).url ?? "")) } catch {}' "$dir/cli.json")
+[ "${url%/}" = "${want%/}" ] || deny "the CLI config in effect ($dir) names ${url:-no server}, not $want"
+real=${MEND_VERIFY_REAL_MEND:-}
+if [ -z "$real" ]; then
+  old_ifs=$IFS
+  IFS=:
+  for d in $PATH; do
+    [ -n "$d" ] && [ -x "$d/mend" ] || continue
+    [ "$(cd "$d" 2>/dev/null && pwd -P)" = "$here" ] && continue
+    real=$d/mend
+    break
+  done
+  IFS=$old_ifs
+fi
+[ -n "$real" ] || deny "no mend on PATH after the guard"
+exec "$real" "$@"
