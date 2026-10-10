@@ -69,11 +69,14 @@ Preconditions:
   on a headless host the app needs a virtual one (for example Xvfb).
 - A scratch directory `<scratch>` holds this run's state. First run `mkdir -p <scratch>/config/mend`
   so neither credential resolver falls back to the owner's `~/.mend`. Sign in with
-  `env -u MEND_TOKEN XDG_CONFIG_HOME=<scratch>/config MEND_URL=<web> mend login --url <web>`. Every
-  CLI invocation and the app launch below use that scratch environment and clear any inherited
-  `MEND_TOKEN`. The app reads `<scratch>/config/mend/cli.json`.
+  `env -u MEND_TOKEN XDG_CONFIG_HOME=<scratch>/config mend login --url <web>`. Every CLI invocation
+  and the app launch below use that scratch environment and clear any inherited `MEND_TOKEN`. The
+  app reads `<scratch>/config/mend/cli.json`. The CLI commands set no `MEND_URL`: the config names
+  `<web>`, and the verify skill's guard refuses a `mend` run with `MEND_URL` set (it allows this
+  first `mend login --url <web>` into the empty `<scratch>/config/mend`). Under the skill,
+  `drive-desktop.sh start` writes that config from the handed-over account instead.
 - A settled session in `<project>` holds a change:
-  `env -u MEND_TOKEN XDG_CONFIG_HOME=<scratch>/config MEND_URL=<web> mend run --project <project> -- sh -c 'printf "verified\n" > VERIFY.md'`.
+  `env -u MEND_TOKEN XDG_CONFIG_HOME=<scratch>/config mend run --project <project> -- sh -c 'printf "verified\n" > VERIFY.md'`.
   Note its id `<id>` and the worktree name `<run-worktree>` from the `✓ worktree` line.
 - No worktree named `verify-desk` exists in `<project>`.
 - Start the app with its own profile and a debugging port, and record its PID:
@@ -113,23 +116,26 @@ Preconditions:
   `const launcher = page.getByRole("dialog", { name: "New session in <project>" })`,
   `await launcher.getByRole("textbox", { name: "worktree name — e.g. fix-auth (empty = auto)" }).fill("verify-desk")`,
   then `await launcher.getByRole("button", { name: "Open a shell" }).click()`. The button reads
-  `Opening…`, the dialog closes, and the tab bar gains a tab whose name contains
-  `shell · mend/verify-desk`. The header strip shows the status word (`starting`, then
-  `running · recorded`) and `mend/verify-desk`. Until the PTY binds, the pane reads
+  `Opening…` and the dialog closes. The tab bar gains a tab whose name contains
+  `shell · mend/verify-desk`, or, until mend#667 lands, may not (Gotchas): when no such tab shows
+  within 20 s, record that, then click the tree row whose name starts `shell · mend/verify-desk`;
+  the tab opens. The header strip shows the status word (`starting`, then `running · recorded`) and
+  `mend/verify-desk`. Until the PTY binds, the pane reads
   `provisioning workspace — the terminal attaches the moment the PTY is live (a first launch can take minutes)…`.
 - **Type in the terminal.** Run
   `await page.getByRole("textbox", { name: "Terminal input" }).focus()` and
   `await page.keyboard.type("printf 'desktop\\n' > DESKTOP.md\n")`. The shell runs the line; the
-  output draws on the terminal canvas (take a screenshot). Run
-  `env -u MEND_TOKEN XDG_CONFIG_HOME=<scratch>/config MEND_URL=<web> mend worktrees --project <project>`:
+  output draws on the terminal canvas, which is not text and which every screenshot masks. Run
+  `env -u MEND_TOKEN XDG_CONFIG_HOME=<scratch>/config mend worktrees --project <project>`:
   `verify-desk` is listed with its `shell` session.
 - **Supporting shell tab.** Run `await page.getByRole("button", { name: "+", exact: true }).click()`
-  (or press `Control+Shift+T`). The button reads `…` while opening. A second tab opens for a
-  supporting shell; its header reads `<label> · session worktree · mend/verify-desk` with the
-  buttons `rename` and `detach tab`. Right-click that tab's button (`click({ button: "right" })`); a
-  menu opens with `Detach tab` and `Stop shell`. Click `Stop shell`: the item now reads
-  `Stop the process group?`. Click it again. The tab closes and the tree no longer lists that shell
-  under the session.
+  (or press `Control+Shift+T`). The button reads `…` while opening, and the tree lists `shell <n>`
+  under the session. A second tab opens for that supporting shell (until mend#667 lands it may not:
+  when none shows within 20 s, record that, then click the `shell <n>` row); its header reads
+  `<label> · session worktree · mend/verify-desk` with the buttons `rename` and `detach tab`.
+  Right-click that tab's button (`click({ button: "right" })`); a menu opens with `Detach tab` and
+  `Stop shell`. Click `Stop shell`: the item now reads `Stop the process group?`. Click it again.
+  The tab closes and the tree no longer lists that shell under the session.
 - **Mark a checkpoint.** On the `verify-desk` session tab, run
   `await page.getByRole("button", { name: "mark checkpoint" }).click()`. It reads `marking…`, then
   `mark checkpoint` again.
@@ -184,12 +190,12 @@ Preconditions:
   `shell · mend/verify-desk`. The menu holds `Open`, `Services`, `Copy branch` and `Stop`. Click
   `Stop`; it reads `Stop the shell?`; click again. The row's status word turns to its settled word,
   and
-  `env -u MEND_TOKEN XDG_CONFIG_HOME=<scratch>/config MEND_URL=<web> mend sessions --project <project> --all --json`
+  `env -u MEND_TOKEN XDG_CONFIG_HOME=<scratch>/config mend sessions --project <project> --all --json`
   shows the session settled.
-- **Proof.** Capture `await page.locator("body").ariaSnapshot()` and
-  `await page.screenshot({ path })` of the cockpit with the live shell tab, of the replay with its
-  scrubber, of the review page, and of the Land sheet. Keep the `mend run`, `mend worktrees` and
-  `mend sessions --json` transcripts and the app's stdout.
+- **Proof.** Run `capture(name)` (the ARIA snapshot, and a screenshot with the terminal canvas
+  masked) for the cockpit with the live shell tab, of the replay with its scrubber, of the review
+  page, and of the Land sheet. Keep the `mend run`, `mend worktrees` and `mend sessions --json`
+  transcripts and the app's stdout.
 
 ## Gotchas
 
@@ -209,8 +215,15 @@ Preconditions:
   opened tab.
 - Stop the app by the PID recorded at launch. Never `pkill -f electron` or a bare `mend` pattern.
 - The terminal draws on a canvas marked `aria-hidden`; its text is not in the accessibility tree.
-  Prove terminal output with a screenshot, or with the session's record and the files it wrote. The
-  `Terminal input` textarea has `pointer-events: none`: use `.focus()`, not `.click()`.
+  Prove terminal output with the session's record and the files it wrote: every screenshot masks the
+  canvas (`drive-web.mjs`, mend#662), and the evidence scan refuses a screenshot the driver did not
+  take. The `Terminal input` textarea has `pointer-events: none`: use `.focus()`, not `.click()`.
+- A new session's or shell's tab may not open. The live pass saw no tab after `Open a shell`, twice,
+  and none after `+` until the tree row was clicked (2026-10-10). On main a project or process read
+  that predates the new session or shell closes the tab just opened
+  (`apps/desktop/src/renderer/src/lib/workbench.ts:204`); a click on the tree row opens it. mend#667
+  keeps the tab open until a read lists it. Until it lands, record whether a tab opened on its own
+  before clicking the row.
 - The tab bar's new-shell button is named `+`, changing to `…` while opening. These are weak names;
   its `title`, `New shell in focused session (Ctrl+Shift+T)`, is a description. Source:
   `components/tab-bar.tsx:91`.
