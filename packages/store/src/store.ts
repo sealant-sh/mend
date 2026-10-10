@@ -49,23 +49,36 @@ export class StoreConfig extends Context.Service<
 export const referenceDirectory = (organizationId: string, referenceId: string): string =>
   path.join("_organizations", organizationId, "references", referenceId);
 
+/** What Mend says of a shallow repository, at adoption and at a session's start. */
+export const SHALLOW_REPOSITORY_REASON =
+  "Mend doesn't support shallow repositories yet. Make the repository complete where it is hosted (`git fetch --unshallow`), then adopt it again.";
+
 /**
  * Why Mend refuses the repository at `gitDir`, or null (owner, 2026-09-28; e2e8 (d)): SHA-256
- * objects. A SHA-256 session does not survive its capture and restore end to end yet, so a project
- * in that format is refused when it is adopted and when a session starts on it, rather than started
- * and left unable to save. Read through git itself (`rev-parse --show-object-format`). The reason
- * is the sentence a person reads.
+ * objects, or shallow history. A SHA-256 session does not survive its capture and restore end to
+ * end yet. A shallow one cannot be saved: the base pack Mend makes stops at the shallow boundary,
+ * and the closure walk that verifies a capture (`CaptureGitVerifier`) reads the boundary commits'
+ * parents, which nothing holds, so every save's git section fails and its final seal is refused
+ * (verify proof run 9, 2026-10-10). The store is a full clone of its source, so a shallow store
+ * means a shallow source: nothing fetched from it deepens the history. Either project is refused
+ * when it is adopted and when a session starts on it, rather than started and left unable to save.
+ * Read through git itself (`rev-parse`, one run). The reason is the sentence a person reads.
  */
 export const unsupportedRepositoryReason = (
   gitDir: string,
 ): Effect.Effect<string | null, GitError> =>
-  Effect.map(git(["rev-parse", "--show-object-format"], gitDir), (out) => {
-    const objectFormat = out.trim();
-    if (objectFormat === "sha1") return null;
-    return objectFormat === "sha256"
-      ? "Mend doesn't support SHA-256 repositories yet."
-      : `Mend doesn't support ${objectFormat} repositories yet.`;
-  });
+  Effect.map(
+    git(["rev-parse", "--show-object-format", "--is-shallow-repository"], gitDir),
+    (out) => {
+      const [objectFormat = "", shallow = ""] = out.trim().split("\n");
+      if (objectFormat !== "sha1") {
+        return objectFormat === "sha256"
+          ? "Mend doesn't support SHA-256 repositories yet."
+          : `Mend doesn't support ${objectFormat} repositories yet.`;
+      }
+      return shallow.trim() === "true" ? SHALLOW_REPOSITORY_REASON : null;
+    },
+  );
 
 /** `unsupportedRepositoryReason` as a refusal: a `GitError` whose `stderr` is the reason. */
 export const refuseUnsupportedRepository = (gitDir: string): Effect.Effect<void, GitError> =>

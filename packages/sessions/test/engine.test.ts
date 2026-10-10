@@ -133,6 +133,7 @@ import {
   withUnsavedAnswer,
   type CapturePosition,
   captureDiscardAuditData,
+  CAPTURE_SEAL_UNRESTORABLE,
   captureStatusLine,
   executorEndOf,
   withoutAgentStarting,
@@ -228,6 +229,7 @@ import {
   GitOpsRunnerLive,
   MendKeys,
   SecretCipher,
+  SHALLOW_REPOSITORY_REASON,
   Store,
   StoreConfig,
   DeploymentConfigColocated,
@@ -16713,6 +16715,88 @@ describe("SessionEngine capture failures shown while they happen (e2e run 3, 202
     },
   );
 
+  // Verify proof run 9 (2026-10-10): a shallow project's every capture failed git verification,
+  // the registrar refused the final seal as unrestorable on each of 61 asks, and the Stop read
+  // `saving` for 5 minutes, then `final seal not confirmed`. A seal Mend itself refuses on a fact
+  // about the content reads `not saved` on the first FINAL, says why, and keeps the workspace;
+  // a `sealing` answer over a head that did not fail keeps waiting as before.
+  it(
+    "a final flush waiting on a seal Mend refused (the head's git section failed verification) reads not saved at once, says why, and keeps the workspace",
+    { timeout: 20_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const events: string[] = [];
+      const kinds: CaptureFlushKind[] = [];
+      const memory = makeMemoryCaptureStore();
+      let failedHead: { worktreeId: WorktreeId; n: number } | null = null;
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            yield* engine.launch(session.id, ["codex"]);
+            // The executor's head as the registrar recorded it: git rejected its closure.
+            const timestamp = new Date();
+            memory.chains.set(session.worktreeId, {
+              headCapture: "shallow-head",
+              headN: 7,
+              headEpoch: 2,
+            });
+            memory.captures.set("shallow-head", {
+              id: "shallow-head",
+              worktreeId: session.worktreeId,
+              n: 7,
+              parent: null,
+              epoch: 2,
+              seq: 7n,
+              kind: "final",
+              manifestKey: "shallow/manifest.json",
+              sections: {
+                git: { packs: [], refs: {}, head: "refs/heads/main", fsck: "failed" },
+                workspace: { root: "", packs: [] },
+                bulk: "pending",
+              },
+              gitFsck: "failed",
+              createdAt: timestamp,
+            });
+            failedHead = { worktreeId: session.worktreeId, n: 7 };
+            yield* engine.stop(session.id);
+            // The default stall window is 600 s: only the refused seal keeps it now.
+            yield* until(
+              () => world.sessions.get(session.id)?.captureNotSavedAt != null,
+              "the kept workspace",
+            );
+            expect(kinds.filter((kind) => kind === "final").length).toBe(1);
+            const kept = world.sessions.get(session.id);
+            expect(kept?.captureIncompleteReason).toBe(CAPTURE_SEAL_UNRESTORABLE);
+            expect(kept === undefined ? null : captureStatusLine(kept)).toBe(
+              "not saved · final seal refused · git section failed verification · 0 pending · workspace kept",
+            );
+            expect(events).not.toContain("workspace-1");
+            expect(leaseHeld(memory, session.worktreeId, session.id)).toBe(true);
+          }),
+        {
+          captured: memory,
+          drainPolicy: { keptRetryFirst: Duration.seconds(30), keptRetryMax: Duration.seconds(30) },
+          sealantLayer: lifecycleLayer(created, {
+            events,
+            captureOps: {
+              flushKinds: kinds,
+              finalCompletion: "unreported",
+              // sealantd's own answer: everything registered, the seal not confirmed.
+              flush: () =>
+                Effect.succeed({
+                  ...flushReport(0, 7),
+                  headN: failedHead?.n ?? 7,
+                  complete: false,
+                  incompleteReason: "sealing",
+                }),
+            },
+          }),
+        },
+      );
+    },
+  );
+
   it(
     "a running session whose snaps fail reads `capture failing since … · <error>` from a status read, and not once they succeed again",
     { timeout: 20_000 },
@@ -21561,6 +21645,48 @@ it("refuses to start a session on a SHA-256 project with the reason", async () =
       if (refused._tag === "GitError") {
         expect(refused.stderr).toBe("Mend doesn't support SHA-256 repositories yet.");
       }
+      expect(world.sessions.size).toBe(0);
+    }),
+  );
+});
+
+/**
+ * Verify proof run 9 (2026-10-10): a shallow project's Stop never saved. Adoption refuses a shallow
+ * repository now; one adopted before that starts no session, with the reason, before any worktree,
+ * row or executor is made.
+ */
+it("refuses to start a session on a shallow project with the reason", async () => {
+  await withEngine((world, tmp) =>
+    Effect.gen(function* () {
+      const project = yield* setup(tmp, world);
+      const work = path.join(tmp, "shallow-work");
+      const shallow = path.join(tmp, "shallow.git");
+      execFileSync("git", ["init", "-q", "-b", "main", work]);
+      for (const message of ["one", "two"]) {
+        fs.writeFileSync(path.join(work, "app.ts"), `export const answer = "${message}"\n`);
+        execFileSync("git", ["add", "-A"], { cwd: work });
+        execFileSync(
+          "git",
+          ["-c", "user.name=t", "-c", "user.email=t@localhost", "commit", "-q", "-m", message],
+          { cwd: work },
+        );
+      }
+      // As an adoption before the refusal stored it: history stops at the newest commit.
+      execFileSync("git", ["clone", "-q", "--bare", "--depth", "1", `file://${work}`, shallow]);
+      world.projects.set(project.id, new Project({ ...project, storePath: shallow }));
+      const engine = yield* SessionEngine;
+      const refused = yield* engine
+        .provision({
+          projectId: project.id,
+          harness: "codex",
+          label: null,
+          name: null,
+          ownerUserId: "user-fixture",
+          base: null,
+        })
+        .pipe(Effect.flip);
+      expect(refused._tag).toBe("GitError");
+      if (refused._tag === "GitError") expect(refused.stderr).toBe(SHALLOW_REPOSITORY_REASON);
       expect(world.sessions.size).toBe(0);
     }),
   );

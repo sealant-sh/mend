@@ -150,6 +150,7 @@ import {
   captureSnapFailing,
   captureStatusLine,
   CAPTURE_EXECUTOR_RETAINED,
+  CAPTURE_SEAL_UNRESTORABLE,
   type CaptureThroughput,
   executorCapDue,
   executorEndOf,
@@ -3160,6 +3161,38 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * throughput, and logged — null when the flush was refused or timed out. Runs as the
        * executor's owner, whatever the caller's principal.
        */
+      /**
+       * A final flush waiting on its seal (`sealing`) over the head capture whose git section
+       * Mend's own verification failed reads `CAPTURE_SEAL_UNRESTORABLE`: the registrar refuses
+       * that seal as unrestorable on every ask (git's word on the capture's content, never a host
+       * fault), so the drain reads `not saved` at once, says why and keeps the workspace, instead
+       * of asking for the whole stall window (verify proof run 9, 2026-10-10: a shallow project's
+       * Stop read `saving` for 5 minutes, then `final seal not confirmed`). Any other answer is
+       * the executor's as given.
+       */
+      const sealRefusedOver = Effect.fn("SessionEngine.sealRefusedOver")(function* (
+        worktreeId: WorktreeId,
+        reading: CaptureReading,
+        kind: CaptureFlushKind,
+      ) {
+        if (
+          capture === null ||
+          kind !== "final" ||
+          reading.complete !== false ||
+          reading.incompleteReason !== "sealing" ||
+          reading.headN === null
+        ) {
+          return reading;
+        }
+        const head = (yield* capture.repo.headOf(worktreeId))?.head ?? null;
+        return head !== null &&
+          head.n === reading.headN &&
+          (reading.epoch ?? head.epoch) === head.epoch &&
+          head.gitFsck === "failed"
+          ? { ...reading, incompleteReason: CAPTURE_SEAL_UNRESTORABLE }
+          : reading;
+      });
+
       const observeCaptureFlush = (
         session: Session,
         workspace: Workspace,
@@ -3215,7 +3248,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           return null;
         }
         const report = outcome.success.value;
-        const reading = readCaptureReport(report);
+        const reading = yield* sealRefusedOver(session.worktreeId, readCaptureReport(report), kind);
         // Published before anything else is done with it: a log is never what decides whether a
         // received answer becomes the executor's evidence.
         yield* recordReading(session, workspace.id, reading, kind, fence);

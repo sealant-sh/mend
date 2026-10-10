@@ -13,7 +13,7 @@ import {
 } from "@mend/domain/workbench";
 import { Effect, Layer, Result } from "effect";
 
-import { Store, StoreConfig } from "../src/store.ts";
+import { SHALLOW_REPOSITORY_REASON, Store, StoreConfig } from "../src/store.ts";
 
 const sessionId = SessionId.make("01TEST");
 /** Worktree identity as the engine derives it for unnamed worktrees. */
@@ -190,6 +190,76 @@ describe("Store", () => {
         // A SHA-1 origin adopts as before.
         const adopted = yield* store.adopt("files", source, { GIT_TERMINAL_PROMPT: "0" });
         expect(adopted.defaultBranch).toBe("main");
+      }),
+    );
+  });
+
+  // Verify proof run 9 (2026-10-10): a project adopted from a shallow repository never saved a
+  // Stop — the base pack stops at the shallow boundary, and the capture's closure walk reads the
+  // boundary's parents. A full clone of a shallow source is shallow too, so adoption refuses it.
+  it("refuses to adopt a shallow repository, and leaves nothing behind", async () => {
+    await withStore((tmp, origin, source) =>
+      Effect.gen(function* () {
+        const store = yield* Store;
+        const commit = (message: string) => {
+          fs.appendFileSync(path.join(origin, "app.ts"), `// ${message}\n`);
+          execFileSync("git", ["add", "-A"], { cwd: origin });
+          execFileSync(
+            "git",
+            ["-c", "user.name=t", "-c", "user.email=t@localhost", "commit", "-q", "-m", message],
+            { cwd: origin },
+          );
+        };
+        commit("two");
+        commit("three");
+        // A shallow repository served beside the origin (a `--depth` mirror, a CI checkout).
+        execFileSync("git", [
+          "clone",
+          "-q",
+          "--bare",
+          "--depth",
+          "1",
+          `file://${origin}`,
+          path.join(tmp, "shallow"),
+        ]);
+        const refused = yield* store
+          .adopt("shallow", RepositoryCloneUrl.make(source.replace(/origin$/, "shallow")), {
+            GIT_TERMINAL_PROMPT: "0",
+          })
+          .pipe(Effect.result);
+        expect(Result.isFailure(refused)).toBe(true);
+        if (Result.isFailure(refused)) {
+          expect(refused.failure.cause.stderr).toBe(SHALLOW_REPOSITORY_REASON);
+        }
+        expect(fs.existsSync(path.join(tmp, "store/shallow"))).toBe(false);
+
+        // A shallow local checkout adopts through its origin (the CLI sends `git remote get-url
+        // origin`; local paths are refused): the store is the origin's full history.
+        const checkout = path.join(tmp, "checkout");
+        execFileSync("git", ["clone", "-q", "--depth", "1", source, checkout]);
+        expect(
+          execFileSync("git", ["rev-parse", "--is-shallow-repository"], { cwd: checkout })
+            .toString()
+            .trim(),
+        ).toBe("true");
+        const originOfCheckout = execFileSync("git", ["remote", "get-url", "origin"], {
+          cwd: checkout,
+        })
+          .toString()
+          .trim();
+        const adopted = yield* store.adopt("checkout", RepositoryCloneUrl.make(originOfCheckout), {
+          GIT_TERMINAL_PROMPT: "0",
+        });
+        expect(
+          execFileSync("git", ["rev-parse", "--is-shallow-repository"], { cwd: adopted.storePath })
+            .toString()
+            .trim(),
+        ).toBe("false");
+        expect(
+          execFileSync("git", ["rev-list", "--count", "HEAD"], { cwd: adopted.storePath })
+            .toString()
+            .trim(),
+        ).toBe("3");
       }),
     );
   });
