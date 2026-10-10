@@ -591,7 +591,7 @@ export const firstPositional = (
  * the server never disagree on what a credential is): a URL's authority runs from `//` to the next
  * `/`, `?` or `#`, and its userinfo is everything before the LAST `@` in it, whatever it holds,
  * whitespace and quotes included (review 3 of mend#611, review of mend#640). An http(s) (or any
- * other) URL loses all of its userinfo; an ssh URL keeps a plain user and loses only the password
+ * other) URL loses all of its userinfo; an ssh URL keeps its user and loses only the password
  * (`ssh://git:pw@host` reads `ssh://git@host`). scp-like `git@host:path` stays as it is. JSON is
  * redacted one string at a time (`printJson`), so it stays JSON.
  */

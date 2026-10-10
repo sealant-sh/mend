@@ -11,7 +11,7 @@ import {
   RepositoryCloneUrl,
   type RepositoryCloneUrl as RepositoryCloneUrlValue,
 } from "@mend/domain/workbench";
-import { Effect, Layer, Result } from "effect";
+import { Effect, Layer, Result, Schedule } from "effect";
 
 import {
   GRAFTED_REPOSITORY_REASON,
@@ -448,6 +448,85 @@ describe("Store", () => {
         expect(config("--get", "remote.origin.pushurl").trim()).toBe(
           "https://example.invalid/o/r.git",
         );
+      }),
+    );
+  });
+
+  it("reads what git reads: a multiline value is cleaned whole, an include or url rewrite with a token refuses", async () => {
+    await withStore((tmp, _origin, source) =>
+      Effect.gen(function* () {
+        const store = yield* Store;
+        const adopted = yield* store.adopt("effective", source, {});
+        const config = (...args: ReadonlyArray<string>) =>
+          execFileSync("git", ["config", ...args], { cwd: adopted.storePath, encoding: "utf8" });
+        // A value with a newline in it is one value (review 2 of mend#640, N2).
+        config("remote.origin.pushurl", "https://user:LINE\nTOKEN-SECRET@example.invalid/o/r.git");
+        expect(yield* store.scrubRemoteCredentials(adopted.storePath)).toBe(1);
+        expect(config("-z", "--get-all", "remote.origin.pushurl")).toBe(
+          "https://example.invalid/o/r.git\0",
+        );
+        yield* store.createWorktree(adopted.storePath, wtIdentity("after-multiline"), null, null);
+
+        // A credential in an included file is not Mend's to edit: nothing runs while it is there (N1).
+        const included = path.join(tmp, "included.gitconfig");
+        fs.writeFileSync(
+          included,
+          `[remote "origin"]\n\tpushurl = http://user:se'TOKEN-SECRET@example.invalid/o/r.git\n`,
+        );
+        config("include.path", included);
+        const refused = yield* store.refreshFromOrigin(adopted.storePath, {}).pipe(Effect.flip);
+        expect(refused.stderr).toContain("has not yet removed a login or token");
+        expect(refused.stderr).toContain("included.gitconfig");
+        expect(JSON.stringify(refused)).not.toContain("TOKEN-SECRET");
+        const worktree = yield* store
+          .createWorktree(adopted.storePath, wtIdentity("included"), null, null)
+          .pipe(Effect.flip);
+        expect(worktree.stderr).toContain("included.gitconfig");
+        expect(fs.readFileSync(included, "utf8")).toContain("TOKEN-SECRET");
+        // The include is cleaned by whoever owns it; then everything runs again.
+        fs.writeFileSync(
+          included,
+          `[remote "origin"]\n\tpushurl = http://example.invalid/o/r.git\n`,
+        );
+        yield* store.refreshFromOrigin(adopted.storePath, {});
+
+        // A url rewrite that puts a token into every matching remote refuses the same way.
+        config(
+          "url.https://ghp_TOKEN-SECRET@example.invalid/.insteadOf",
+          "https://example.invalid/",
+        );
+        const rewrite = yield* store.scrubRemoteCredentials(adopted.storePath).pipe(Effect.flip);
+        expect(rewrite.stderr).toContain("url.insteadOf");
+        expect(JSON.stringify(rewrite)).not.toContain("TOKEN-SECRET");
+      }),
+    );
+  });
+
+  it("cleans a remote once when the sweep and several fetches race for it", async () => {
+    await withStore((_tmp, _origin, source) =>
+      Effect.gen(function* () {
+        const store = yield* Store;
+        const adopted = yield* store.adopt("race", source, {});
+        const config = (...args: ReadonlyArray<string>) =>
+          execFileSync("git", ["config", ...args], { cwd: adopted.storePath, encoding: "utf8" });
+        config("remote.origin.pushurl", "https://user:TOKEN-SECRET@example.invalid/o/r.git");
+        // Everyone queues behind a held lock, then all go at once (review 2 of mend#640, N3).
+        const lock = path.join(adopted.storePath, "config.lock");
+        fs.writeFileSync(lock, "");
+        setTimeout(() => fs.rmSync(lock, { force: true }), 150);
+        yield* Effect.all(
+          [
+            store
+              .scrubRemoteCredentials(adopted.storePath)
+              .pipe(Effect.retry({ times: 20, schedule: Schedule.spaced("25 millis") })),
+            ...Array.from({ length: 6 }, () => store.refreshFromOrigin(adopted.storePath, {})),
+          ],
+          { concurrency: "unbounded" },
+        );
+        expect(config("-z", "--get-all", "remote.origin.pushurl")).toBe(
+          "https://example.invalid/o/r.git\0",
+        );
+        expect(config("--get-all", "remote.origin.url").trim()).toBe(source);
       }),
     );
   });

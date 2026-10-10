@@ -150,6 +150,14 @@ CLI's `--json`) is redacted one string at a time.
   push, a probe, a reference refresh, opening or resetting a worktree) first cleans them
   (`Store.cleanRemotes`), waiting about a second for a held lock. A remote that still cannot be
   cleaned refuses the op with that reason; nothing fetches, pushes or mounts with the token.
+- **What git reads, not what one file says** (review 2 of mend#640). The scrub reads the
+  repository's config with its includes, NUL-delimited (`git config -z --includes --show-origin`),
+  so a value with a newline is one value and a remote from an included file is seen. Remote URLs in
+  the repository's own config are rewritten; a credential in an included file, or in a
+  `url.<base>.insteadOf` base, is not Mend's to edit, and every gated op refuses, naming the file,
+  until its owner removes it. Each value is unset by its exact old spelling and then added clean,
+  under a per-repository lock, so concurrent scrubs never append a value twice, and the scrub
+  answers only after re-reading a config with no credential left.
 
 Why refuse rather than keep the token sealed beside the URL: Mend holds no HTTPS credential of an
 account's, and a token in a project's URL is the adopter's credential spent by everyone who works in

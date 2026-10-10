@@ -256,6 +256,59 @@ describe("a credential in a repository URL", () => {
     );
   });
 
+  // Whitespace of every kind, and what may stand before a scheme in text (review 2 of mend#640, N4).
+  const whitespace = FastCheck.constantFrom(" ", "\t", "\n", "\r", "\u00a0", "\u2003");
+  const before = FastCheck.constantFrom(
+    "",
+    ".",
+    "...",
+    "-",
+    "--",
+    "1",
+    "x",
+    "(",
+    "'",
+    '"',
+    "<",
+    "`",
+  );
+
+  it("redacts text whatever whitespace the userinfo holds and whatever stands before the scheme", () => {
+    FastCheck.assert(
+      FastCheck.property(
+        userinfoPart,
+        whitespace,
+        userinfoPart,
+        before,
+        FastCheck.constantFrom("https", "http", "git"),
+        (head, space, tail, prefix, scheme) => {
+          const secret = `${head}${space}${tail}`;
+          const text = `failed ${prefix}${scheme}://user:${secret}@github.com/org/repo.git: 403`;
+          const redacted = redactUrlCredentials(text);
+          expect(redacted).toBe(`failed ${prefix}${scheme}://github.com/org/repo.git: 403`);
+        },
+      ),
+    );
+  });
+
+  it("finds a URL that starts where another's authority ends, and stays linear in what it reads", () => {
+    expect(redactUrlCredentials("https://user:x://evil:TOKEN@host/")).toBe(
+      "https://user:x://host/",
+    );
+    expect(redactUrlCredentials("https://a:b@c://d:TOKEN@e/")).toBe("https://c://e/");
+    const start = performance.now();
+    for (const text of [
+      `${"a".repeat(1_000_000)}://x`,
+      "a://".repeat(250_000),
+      `https://${"@".repeat(1_000_000)}`,
+      `https://${"u".repeat(1_000_000)}@h/`,
+    ]) {
+      redactUrlCredentials(text);
+    }
+    // Quadratic would be minutes; linear is tens of milliseconds.
+    expect(performance.now() - start).toBeLessThan(2_000);
+  });
+
   it("keeps an ssh login and removes only what follows it", () => {
     FastCheck.assert(
       FastCheck.property(segment, userinfoPart, (login, password) => {

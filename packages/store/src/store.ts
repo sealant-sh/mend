@@ -3,11 +3,15 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import { Sha } from "@mend/domain";
-import { RepositoryCloneUrl, redactRepositoryUrl } from "@mend/domain/workbench";
-import { Effect, Layer, Schedule, Schema } from "effect";
+import {
+  RepositoryCloneUrl,
+  redactRepositoryUrl,
+  repositoryUrlHasCredential,
+} from "@mend/domain/workbench";
+import { Effect, Layer, Schedule, Schema, Semaphore } from "effect";
 import * as Context from "effect/Context";
 
-import { git, GitError, gitHostFaultWords } from "./git.ts";
+import { git, GitError, gitHostFaultWords, gitOutput } from "./git.ts";
 import {
   type BundleEmptyError,
   type BundleInput,
@@ -28,6 +32,54 @@ import {
   writeLandingCommit,
 } from "./landing.ts";
 import { mendHome } from "./paths.ts";
+
+/** The config keys that decide where git's transport goes: remote URLs and URL rewrites. */
+const REMOTE_CONFIG_KEYS = String.raw`^(remote\..*\.(url|pushurl)|url\..*\.(insteadof|pushinsteadof))$`;
+
+/** One config entry, with the file it was read from as git names it (relative to where it ran). */
+interface RemoteConfigEntry {
+  readonly origin: string;
+  readonly key: string;
+  readonly value: string;
+}
+
+/** A file's real path when it exists, so a symlink on the way does not make it another file. */
+const realPath = (file: string): string =>
+  fs.existsSync(file) ? fs.realpathSync(file) : path.resolve(file);
+
+/**
+ * What of `entries` carries a credential: remote URLs in the repository's own config, which
+ * Mend rewrites, and anything else (a remote URL in an included file, a `url.<base>.insteadOf`
+ * whose base holds one), which Mend does not edit and refuses to run with.
+ */
+const credentialsIn = (
+  gitDir: string,
+  entries: ReadonlyArray<RemoteConfigEntry>,
+  ownConfig: string,
+) => {
+  const own = new Set<string>();
+  const elsewhere = new Set<string>();
+  for (const entry of entries) {
+    if (/^url\./iu.test(entry.key)) {
+      const base = entry.key.slice("url.".length, entry.key.lastIndexOf("."));
+      if (repositoryUrlHasCredential(base)) elsewhere.add(entry.origin);
+      continue;
+    }
+    if (redactRepositoryUrl(entry.value) === entry.value) continue;
+    // git names the file as it opened it, relative to where it ran: `gitDir`.
+    if (realPath(path.resolve(gitDir, entry.origin)) === realPath(ownConfig)) own.add(entry.key);
+    else elsewhere.add(entry.origin);
+  }
+  return { own, elsewhere };
+};
+
+const refusedElsewhere = (gitDir: string, files: ReadonlySet<string>) =>
+  new GitError({
+    args: ["mend", "remote-credentials"],
+    cwd: gitDir,
+    exitCode: null,
+    stderr: `a login or token sits in git config Mend does not edit (${[...files].join(", ")}: an included file or a url.insteadOf rewrite). Remove it there.`,
+  });
 
 /** Where the store lives on disk. One root, one directory per project. */
 export class StoreConfig extends Context.Service<
@@ -716,32 +768,116 @@ export class Store extends Context.Service<
         );
       });
 
-      const scrubRemoteCredentials = Effect.fn("Store.scrubRemoteCredentials")(function* (
-        gitDir: string,
-      ) {
-        // `--get-regexp` exits 1 when no remote has a URL: nothing to scrub.
+      /** One permit per repository: Mend's read-and-rewrite of a config never runs twice at once. */
+      const remoteLocks = new Map<string, Semaphore.Semaphore>();
+      const remoteLock = (gitDir: string): Semaphore.Semaphore => {
+        const key = path.resolve(gitDir);
+        const existing = remoteLocks.get(key);
+        if (existing !== undefined) return existing;
+        const created = Semaphore.makeUnsafe(1);
+        remoteLocks.set(key, created);
+        return created;
+      };
+
+      /** Every remote URL and URL rewrite git reads for `gitDir`: its own config and what it includes. */
+      const remoteConfig = Effect.fn("Store.remoteConfig")(function* (gitDir: string) {
+        // `-z`: a value may hold a newline, so entries end in NUL and a key ends at its first newline.
         const listed = yield* git(
-          ["config", "--local", "--get-regexp", String.raw`^remote\..*\.(url|pushurl)$`],
+          [
+            "config",
+            "-z",
+            "--local",
+            "--includes",
+            "--show-origin",
+            "--get-regexp",
+            REMOTE_CONFIG_KEYS,
+          ],
           gitDir,
           undefined,
           [1],
         );
+        const fields = listed.split("\0");
+        const entries: Array<RemoteConfigEntry> = [];
+        for (let index = 0; index + 1 < fields.length; index += 2) {
+          const origin = fields[index] ?? "";
+          const entry = fields[index + 1] ?? "";
+          const newline = entry.indexOf("\n");
+          entries.push({
+            origin: origin.replace(/^file:/u, ""),
+            key: newline === -1 ? entry : entry.slice(0, newline),
+            value: newline === -1 ? "" : entry.slice(newline + 1),
+          });
+        }
+        return entries;
+      });
+
+      /**
+       * Rewrite every value of `key` in the repository's own config to its clean spelling, in
+       * order. Each value is unset by its exact old spelling and then added clean, so a value
+       * another writer already rewrote is skipped, never appended a second time. Answers how many
+       * values changed.
+       */
+      const rewriteKey = Effect.fn("Store.rewriteKey")(function* (gitDir: string, key: string) {
+        const listed = yield* git(
+          ["config", "-z", "--local", "--get-all", key],
+          gitDir,
+          undefined,
+          [1],
+        );
+        const values = listed.split("\0").slice(0, -1);
+        if (values.every((value) => redactRepositoryUrl(value) === value)) return 0;
         let rewritten = 0;
-        for (const line of listed.split("\n")) {
-          const space = line.indexOf(" ");
-          if (space === -1) continue;
-          const key = line.slice(0, space);
-          const url = line.slice(space + 1);
-          const redacted = redactRepositoryUrl(url);
-          if (redacted === url) continue;
-          // `--fixed-value`: replace exactly this value, never another URL under the same key.
-          yield* git(
-            ["config", "--local", "--fixed-value", "--replace-all", key, redacted, url],
+        const seen = new Set<string>();
+        for (const value of values) {
+          if (seen.has(value)) continue;
+          seen.add(value);
+          const unset = yield* gitOutput(
+            ["config", "--local", "--fixed-value", "--unset-all", key, value],
             gitDir,
           );
-          rewritten += 1;
+          // 5: the value is gone already; whoever removed it writes its replacement.
+          if (unset.exitCode === 5) continue;
+          if (unset.exitCode !== 0) {
+            return yield* new GitError({
+              args: ["config", "--unset-all", key],
+              cwd: gitDir,
+              exitCode: unset.exitCode,
+              stderr: unset.stderr.trim(),
+            });
+          }
+          const clean = redactRepositoryUrl(value);
+          yield* git(["config", "--local", "--add", key, clean], gitDir);
+          if (clean !== value) rewritten += 1;
         }
         return rewritten;
+      });
+
+      const scrubRemoteCredentials = Effect.fn("Store.scrubRemoteCredentials")(function* (
+        gitDir: string,
+      ) {
+        const ownConfig = path.join(
+          yield* git(["rev-parse", "--absolute-git-dir"], gitDir),
+          "config",
+        );
+        const scrub = Effect.gen(function* () {
+          const before = credentialsIn(gitDir, yield* remoteConfig(gitDir), ownConfig);
+          if (before.elsewhere.size > 0) return yield* refusedElsewhere(gitDir, before.elsewhere);
+          let rewritten = 0;
+          for (const key of before.own) rewritten += yield* rewriteKey(gitDir, key);
+          // The answer is what git reads now, not what was written: another process may write too.
+          const after = credentialsIn(gitDir, yield* remoteConfig(gitDir), ownConfig);
+          if (after.elsewhere.size > 0) return yield* refusedElsewhere(gitDir, after.elsewhere);
+          if (after.own.size > 0) {
+            return yield* new GitError({
+              args: ["mend", "remote-credentials"],
+              cwd: gitDir,
+              exitCode: null,
+              stderr: "the repository's remotes changed while Mend cleaned them",
+            });
+          }
+          return rewritten;
+        });
+        return yield* remoteLock(gitDir).withPermits(1)(scrub);
       });
 
       /**

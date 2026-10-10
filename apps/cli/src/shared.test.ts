@@ -314,8 +314,8 @@ describe("redactCredentials", () => {
     expect(redactCredentials("ssh://git:secret@github.com/acme/r.git")).toBe(
       "ssh://git@github.com/acme/r.git",
     );
-    // A user that is not a plain name could hold the secret itself: it goes too.
-    expect(redactCredentials("ssh://a b:pw@host/x")).toBe("ssh://host/x");
+    // An ssh login stays and only its password goes, the server's rule (the CLI shares it).
+    expect(redactCredentials("ssh://a b:pw@host/x")).toBe("ssh://a b@host/x");
     // scp-like has no `//`: nothing to take out, nothing changed.
     expect(redactCredentials("git@github.com:acme/r.git and git@[::1]:acme/r.git")).toBe(
       "git@github.com:acme/r.git and git@[::1]:acme/r.git",

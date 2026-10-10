@@ -12,14 +12,11 @@
  * In prose a URL with no path can take the words up to a later `@` with it: text goes, a credential
  * never stays. Output that must keep its shape (JSON) redacts each string on its own.
  *
- * Over ssh the user is a login name (`ssh://git@host/path`, `git@host:path`) and stays when it is a
- * plain name; a password goes. Over every other scheme the user is where tokens go
+ * Over ssh the user is a login name (`ssh://git@host/path`, `git@host:path`) and stays; a password
+ * goes, and a login holding an `@` goes whole. Over every other scheme the user is where tokens go
  * (`https://oauth2:TOKEN@host`, `https://TOKEN@host`), so the whole userinfo goes. scp-like
  * `git@host:path` has no `//` and stays as it is.
  */
-
-/** A `scheme://` whose scheme does not continue a longer word. */
-const SCHEME_START = /(?<![a-z0-9+.-])([a-z][a-z0-9+.-]*):\/\//gi;
 
 const isSshScheme = (scheme: string): boolean => /^(?:git\+)?ssh(?:\+git)?$/i.test(scheme);
 
@@ -31,31 +28,54 @@ const authorityEnd = (text: string, from: number): number => {
 
 /**
  * What an authority keeps of its userinfo: nothing, or an ssh login with its password dropped. A
- * login that is not a plain name (a space, an `@`, a `%`-escape in it) could be the secret itself,
- * so it goes whole.
+ * login holding an `@` is not one name, so it goes whole.
  */
 const keptUserinfo = (scheme: string, userinfo: string): string => {
   if (!isSshScheme(scheme)) return "";
   const user = userinfo.split(":")[0] ?? "";
-  return /^[a-z0-9._~-]+$/iu.test(user) ? `${user}@` : "";
+  return user === "" || user.includes("@") ? "" : `${user}@`;
+};
+
+const isSchemeChar = (char: string): boolean => /[a-z0-9+.-]/iu.test(char);
+
+/**
+ * The scheme that ends at `separator` (the index of a `://`), found no further back than `floor`:
+ * the run of scheme characters before it, from its first letter. A `scheme://` counts wherever it
+ * stands, after a letter, a digit, `.` or `-` too (`...https://`, `-https://`, `1https://`), since
+ * what comes before it in text says nothing of the credential after it (review 2 of mend#640). A
+ * longer spelling only takes more away: every scheme but ssh loses its whole userinfo. Found from
+ * each `://` backwards, so the scan stays linear in the text, whatever it holds.
+ */
+const schemeBefore = (text: string, separator: number, floor: number): string | null => {
+  let start = separator;
+  while (start > floor && isSchemeChar(text.charAt(start - 1))) start -= 1;
+  while (start < separator && !/[a-z]/iu.test(text.charAt(start))) start += 1;
+  return start < separator ? text.slice(start, separator) : null;
 };
 
 /** Redact the userinfo of every `scheme://authority` in `text`. */
 const redact = (text: string): string => {
   let out = "";
   let copied = 0;
-  for (const match of text.matchAll(SCHEME_START)) {
-    const scheme = match[1] ?? "";
-    const authorityStart = match.index + match[0].length;
-    if (authorityStart < copied) continue;
-    const authority = text.slice(authorityStart, authorityEnd(text, authorityStart));
-    const at = authority.lastIndexOf("@");
-    if (at === -1) continue;
-    const userinfo = authority.slice(0, at);
-    const kept = keptUserinfo(scheme, userinfo);
-    if (kept === `${userinfo}@`) continue;
-    out += `${text.slice(copied, authorityStart)}${kept}`;
-    copied = authorityStart + at + 1;
+  // The previous `://` and the text before it are no scheme of the next one.
+  let floor = 0;
+  for (let separator = text.indexOf("://"); separator !== -1; ) {
+    const authorityStart = separator + 3;
+    const scheme = schemeBefore(text, separator, floor);
+    if (scheme !== null) {
+      const authority = text.slice(authorityStart, authorityEnd(text, authorityStart));
+      const at = authority.lastIndexOf("@");
+      if (at !== -1) {
+        const userinfo = authority.slice(0, at);
+        const kept = keptUserinfo(scheme, userinfo);
+        if (kept !== `${userinfo}@`) {
+          out += `${text.slice(copied, authorityStart)}${kept}`;
+          copied = authorityStart + at + 1;
+        }
+      }
+    }
+    floor = authorityStart;
+    separator = text.indexOf("://", authorityStart);
   }
   return copied === 0 ? text : out + text.slice(copied);
 };
