@@ -1437,6 +1437,13 @@ export const gateScopeGaps = (before, after, secondPersonHarnesses = null) => {
       }
     }
   }
+  // Every series of each record, and of each companion, stands for what its record says it is.
+  for (const [who, result] of [
+    ["the shared record", before],
+    ["the person record", after],
+  ]) {
+    for (const reason of seriesDisagreementsOf(result)) gaps.push(`${who}: ${reason}`);
+  }
   // Companions of one name on both sides compare like the main records: one project, one image,
   // the same harness versions.
   for (const [name, ours] of Object.entries(before.companions ?? {})) {
@@ -1553,6 +1560,7 @@ export const companionMismatchOf = (main, companion) => {
       say(`${harness} ran ${ours} in the record and ${version} in it`);
     }
   }
+  for (const reason of seriesDisagreementsOf(companion)) say(reason);
   return reasons;
 };
 
@@ -1601,20 +1609,51 @@ const harnessBound = (name) =>
 export const stampSeriesIdentity = (result) => ({
   ...result,
   measures: Object.fromEntries(
-    Object.entries(result.measures ?? {}).map(([name, measure]) =>
-      harnessBound(name)
-        ? [
-            name,
-            {
-              ...measure,
+    Object.entries(result.measures ?? {}).map(([name, measure]) => [
+      name,
+      {
+        ...measure,
+        // The layout it ran in: a merge must not bring another layout's numbers under this label.
+        layout: measure.layout ?? layoutOf(result),
+        ...(harnessBound(name)
+          ? {
               harness: seriesHarnessOf(result, name),
               harnessVersion: seriesVersionOf(result, name),
-            },
-          ]
-        : [name, measure],
-    ),
+            }
+          : {}),
+      },
+    ]),
   ),
 });
+
+/**
+ * Where a record's own series disagree with what the record says of itself, in words: a series
+ * stamped with another layout than the record's, or with another version of its harness than the
+ * record's (`stampSeriesIdentity`). Each is a series the record's label does not stand for.
+ */
+export const seriesDisagreementsOf = (result) => {
+  const reasons = [];
+  const layout = layoutOf(result);
+  const otherLayout = Object.entries(result.measures ?? {})
+    .filter(([, measure]) => measure.layout !== undefined && measure.layout !== layout)
+    .map(([name, measure]) => `${name} (${measure.layout})`);
+  if (otherLayout.length > 0) {
+    reasons.push(
+      `it holds series of another layout than its own ${layout ?? "unknown"}: ${otherLayout.join(", ")}`,
+    );
+  }
+  for (const [name, measure] of Object.entries(result.measures ?? {})) {
+    if (!harnessBound(name) || measure.harnessVersion === undefined) continue;
+    const harness = seriesHarnessOf(result, name);
+    const said = harness === null ? null : (result.target?.harnessVersions?.[harness] ?? null);
+    if (measure.harnessVersion !== said) {
+      reasons.push(
+        `its ${name} ran ${harness ?? "an unknown harness"} ${measure.harnessVersion ?? "of an unknown version"}, the record says ${said ?? "no version"}`,
+      );
+    }
+  }
+  return reasons;
+};
 
 /** A record's companions of its own run (`companionMismatchOf`), as `[name, record]` pairs. */
 export const sameRunCompanionsOf = (result) =>
@@ -2769,6 +2808,21 @@ export const mergeResults = (unstampedBase, unstampedExtra, takes = null) => {
       ([name, measure]) => accept(name) && (measure.samples ?? []).length > 0,
     ),
   );
+  // A later run stands in for part of the record only if it is of the record's workload: the same
+  // layout, instance, Mend build, workspace image and project, every series of it at the record's
+  // version of its harness (none filled from another version), and none of another layout.
+  const workload = [
+    ...companionMismatchOf(base, extra),
+    ...((base.target?.project?.id ?? null) === null ||
+    base.target?.project?.id !== extra.target?.project?.id
+      ? ["it ran on another project, or one of them does not say which"]
+      : []),
+  ];
+  if (workload.length > 0) {
+    throw new Error(
+      `not merged: the later run is not of the record's workload: ${workload.join("; ")}`,
+    );
+  }
   // A series taken whose harness or version cannot be told, or that ran on another harness or
   // version than the record's series of that name, is not one series with it: refused.
   for (const [name, measure] of Object.entries(taken)) {

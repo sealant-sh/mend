@@ -123,14 +123,25 @@
 //   that what commits after that is left for `cleanup --run <id>`, so the run fails and says so.
 // - A record says the harness its joins, resume and interactive scenarios rode on
 //   (`method.firstHarness`), and each series a harness produced is stamped with that harness and
-//   its version (`harness`, `harnessVersion` on the measure). A merge keeps each series' own stamp
-//   and refuses a series whose harness or version is unknown, or differs from the record's series
-//   of that name. Under gate P1 a series that ran on another harness or version in the other
-//   layout is a miss (NOT ONE WORKLOAD), and a companion's series need versions matching its record.
+//   its version (`harness`, `harnessVersion` on the measure), and every series with the layout it
+//   ran in (`layout`). A merge takes a later run only of the record's workload (its layout,
+//   instance, build, workspace image, project, and every series at the record's version of its
+//   harness, none newly filled from another), keeps each series' own stamp, and refuses a series
+//   whose harness or version is unknown or differs from the record's series of that name. Under
+//   gate P1 a series that ran on another harness or version in the other layout is a miss (NOT ONE
+//   WORKLOAD), and a record or companion holding a series its label does not stand for (another
+//   layout, another version) is not the gate.
 // - A run whose requests may still commit after its cleanup records that on disk
-//   (`~/.cache/st-bench/unresolved/<run id>.json`, or `ST_BENCH_STATE_DIR`). `cleanup` waits that
-//   run's quiet period (5 min) out, sweeps, sweeps again a while later, and only then, finding
-//   nothing more, clears it; otherwise it fails and keeps it.
+//   (`~/.cache/st-bench/unresolved/<run id>.json`, or `ST_BENCH_STATE_DIR`): a private (0700)
+//   directory, files named only by a checked run id, written whole (0600, renamed into place) and
+//   read without following links; whatever a file says is never a path. `cleanup` holds the
+//   directory's lock while it reconciles, waits that run's quiet period (5 min) out, sweeps, sweeps
+//   again a while later, and only then, finding nothing more and the file unchanged since it read
+//   it, clears it. A state file it cannot read, or one owing the second account's artifacts when no
+//   second token was given, is kept and fails the cleanup.
+// - Cleanup stops and removes only worktrees whose sessions are all owned by the bench's own
+//   accounts (`GET /organization`'s user id); an st-bench- worktree of anyone else's is left alone,
+//   and one whose owner cannot be told fails the cleanup.
 
 import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
@@ -154,7 +165,7 @@ import {
   stampSeriesIdentity,
   withCompanion,
 } from "./lib.mjs";
-import { HARNESSES, cleanupAll, makeRecorder, runAll } from "./scenarios.mjs";
+import { HARNESSES, RUN_ID, cleanupAll, makeRecorder, runAll } from "./scenarios.mjs";
 
 const USAGE = `usage: node scripts/bench/bench.mjs <run|table|compare|merge|companion|cleanup|help> [args] [options]
 
@@ -618,6 +629,13 @@ const main = async () => {
           secretFile: false,
         },
       };
+      if (opts.runId !== null && opts.runId !== undefined && !RUN_ID.test(opts.runId)) {
+        log(
+          `not a run id: ${opts.runId} (six lower-case letters and digits, its log's "bench <id>")`,
+        );
+        process.exitCode = 2;
+        return;
+      }
       // A cleanup asked for by hand waits out an interrupted run's unresolved requests and calls it
       // clean only when a second sweep a while later finds nothing more.
       await cleanupAll(ctx, { all: opts.all, reconcile: true });

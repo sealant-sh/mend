@@ -1,6 +1,16 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -516,7 +526,7 @@ test("a later run of one scenario replaces its measures and leaves the launches 
     notes: ["extra"],
     errors: [],
   };
-  const merged = mergeResults(base, extra);
+  const merged = mergeResults(ofWorkload(base), ofWorkload(extra));
   assert.deepEqual(merged.measures["new.claude.first_output"].samples, [1, 2, 3]);
   assert.deepEqual(merged.measures["join.other.first_output"].samples, [7, 8]);
   assert.equal(merged.measures["join.other.stale"], undefined);
@@ -527,7 +537,11 @@ test("a later run of one scenario replaces its measures and leaves the launches 
     { startedAt: "b", only: ["join-other"], measures: ["join.other.first_output"] },
   ]);
   // A re-run of missed measures takes exactly those.
-  const rerun = mergeResults(base, extra, (name) => name === "new.claude.first_output");
+  const rerun = mergeResults(
+    ofWorkload(base),
+    ofWorkload(extra),
+    (name) => name === "new.claude.first_output",
+  );
   assert.deepEqual(rerun.measures["new.claude.first_output"].samples, [9]);
   assert.deepEqual(rerun.measures["join.other.stale"].samples, [1]);
   assert.equal(rerun.measures["join.other.first_output"], undefined);
@@ -654,7 +668,7 @@ test("a re-run for some harnesses replaces only theirs", () => {
     options: { only: ["stop"], harnesses: ["claude"] },
     measures: { "stop.claude.save": { unit: "ms", samples: [9] } },
   };
-  const merged = mergeResults(base, extra);
+  const merged = mergeResults(ofWorkload(base), ofWorkload(extra));
   assert.deepEqual(Object.keys(merged.measures).toSorted(), [
     "stop.claude.save",
     "stop.codex.save",
@@ -787,8 +801,12 @@ const imageBuild = (image) => ({ image, createdAt: "2026-10-06T18:03:20Z", seenB
 
 test("a merge keeps every image built during either run", () => {
   const merged = mergeResults(
-    { measures: {}, imageBuilds: [imageBuild("sha256:a")] },
-    { options: { only: ["new"] }, measures: {}, imageBuilds: [imageBuild("sha256:b")] },
+    ofWorkload({ measures: {}, imageBuilds: [imageBuild("sha256:a")] }),
+    ofWorkload({
+      options: { only: ["new"] },
+      measures: {},
+      imageBuilds: [imageBuild("sha256:b")],
+    }),
   );
   assert.deepEqual(
     merged.imageBuilds.map((entry) => entry.image),
@@ -816,7 +834,7 @@ test("a merge keeps the point each record sampled its executor sizes at", () => 
     options: { only: ["new"], harnesses: ["claude"] },
     method: { executorResources: RESOURCES_AT_FIRST_OUTPUT },
   };
-  const merged = mergeResults(older, newer);
+  const merged = mergeResults(ofWorkload(older), ofWorkload(newer));
   assert.equal(merged.measures["executor.claude.memory_bytes"].sampledAt, "at first output");
   assert.equal(merged.measures["executor.codex.memory_bytes"].sampledAt, "after the answer");
   // Against the older record, claude's is not comparable and codex's is.
@@ -853,6 +871,24 @@ const layoutRecord = (layout, version, measures, extra = {}) => ({
   checks: [],
   ...extra,
 });
+
+/**
+ * A record of one workload (`mergeResults` takes a later run only of the record's): the same
+ * layout, instance, build, workspace image and project as `layoutRecord`'s, its own options and
+ * harness versions kept.
+ */
+const ofWorkload = (result, layout = "person") => {
+  const target = layoutRecord(layout, "1", {}).target;
+  return {
+    ...result,
+    options: { layout, harnesses: [...GATE_HARNESSES], ...result.options },
+    target: {
+      ...target,
+      ...result.target,
+      harnessVersions: { ...target.harnessVersions, ...result.target?.harnessVersions },
+    },
+  };
+};
 
 test("--layout takes person or shared, and the per-person scenarios are scenarios", () => {
   assert.equal(parseOptions(["run"]).layout, null);
@@ -1132,7 +1168,7 @@ test("a merge adds the two runs' check tallies and never drops a failure", () =>
       { check: "handover.claude.back.billed", passed: 1, failed: 0, failures: [] },
     ],
   };
-  const merged = mergeResults(base, extra);
+  const merged = mergeResults(ofWorkload(base), ofWorkload(extra));
   assert.deepEqual(
     merged.checks.map((check) => [check.check, check.passed, check.failed]),
     [
@@ -2439,6 +2475,7 @@ const cleanupWorld = ({ worktrees = "ok", memory = "ok", rid = "proof" } = {}) =
     created: { remoteRefs: new Set(), worktrees: new Map(), sessions: new Set() },
     api: {
       get: async (route) => {
+        if (route === "/organization") return { userId: "bench-1" };
         if (route.endsWith("/worktrees")) {
           if (worktrees === "fails") throw new Error("worktree listing failed");
           return { worktrees: [] };
@@ -2448,6 +2485,7 @@ const cleanupWorld = ({ worktrees = "ok", memory = "ok", rid = "proof" } = {}) =
     },
     api2: {
       get: async (route) => {
+        if (route === "/organization") return { userId: "bench-2" };
         if (route.endsWith("/memory")) {
           if (memory === "fails") throw new Error("memory listing failed");
           return { files: [...stored.values()] };
@@ -2685,6 +2723,7 @@ test('review 624 r2 (N3): a worktree that cannot be read is a cleanup failure, r
   world.ctx.log = (line) => logged.push(line);
   world.ctx.api.get = async (route) => {
     calls.push(`GET ${route}`);
+    if (route === "/organization") return { userId: "bench-1" };
     if (route.endsWith("/worktrees")) {
       return { worktrees: [{ id: "w1", name: "st-bench-proof-claude-1" }] };
     }
@@ -2709,6 +2748,7 @@ test('review 624 r2 (N3): a worktree that cannot be read is a cleanup failure, r
   const goneLog = [];
   gone.ctx.log = (line) => goneLog.push(line);
   gone.ctx.api.get = async (route) => {
+    if (route === "/organization") return { userId: "bench-1" };
     if (route.endsWith("/worktrees"))
       return { worktrees: [{ id: "w2", name: "st-bench-proof-pi-1" }] };
     if (route === "/worktrees/w2") throw new ApiError("GET", route, 404, "{}");
@@ -2846,7 +2886,7 @@ test("review 624 r3 (N8): a merge keeps each series' own harness and version, an
   // The reviewer's case: a Codex re-run whose version is unknown.
   assert.throws(
     () => mergeResults(sharedPair, rerun("codex", { claude: "2.1.287" })),
-    /not merged: the later run's join.other.first_output ran on codex, whose version it does not say/,
+    /not merged: the later run is not of the record's workload: codex's version is not known on both/,
   );
   // A Codex re-run with its version known is still another series than the record's Claude one.
   assert.throws(
@@ -2872,6 +2912,7 @@ test("review 624 r3 (N8): a merge keeps each series' own harness and version, an
   assert.equal(seriesHarnessOf(stamped, "join.other.first_output"), "codex");
   assert.deepEqual(companionMismatchOf(splitGate().sharedMain, stamped), [
     "codex's version is not known on both",
+    "its join.other.first_output ran codex of an unknown version, the record says 0.160.0",
   ]);
 });
 
@@ -2879,7 +2920,7 @@ test("review 624 r3 (N10): a run's unknown requests are waited out on disk befor
   const waits = { pending: 100, final: 50, grace: 50, retry: 1, quiet: 600 };
   // The interrupted run: its import's connection broke, the server commits it 300 ms later, after
   // the run's second sweep.
-  const run = cleanupWorld({ rid: "late" });
+  const run = cleanupWorld({ rid: "late01" });
   run.stored.clear();
   run.ctx.cleanupWaits = waits;
   run.ctx.opts = { only: ["join-other"], layout: "person", secretFile: false, runs: 1 };
@@ -2896,15 +2937,15 @@ test("review 624 r3 (N10): a run's unknown requests are waited out on disk befor
   };
   await runAll(run.ctx).catch(() => null);
   await cleanupAll(run.ctx);
-  const stateFile = path.join(run.ctx.stateDir, "late.json");
-  assert.equal(JSON.parse(readFileSync(stateFile, "utf8")).rid, "late");
+  const stateFile = path.join(run.ctx.stateDir, "late01.json");
+  assert.equal(JSON.parse(readFileSync(stateFile, "utf8")).rid, "late01");
   assert.match(
     run.ctx.result.errors.map((error) => error.message).join("\n"),
-    /`cleanup --run late`, which waits until/,
+    /`cleanup --run late01`, which waits until/,
   );
-  // `cleanup --run late` at once, in a fresh process: it waits the quiet period out, so the late
+  // `cleanup --run late01` at once, in a fresh process: it waits the quiet period out, so the late
   // commit is there to remove, and only a second sweep that finds nothing settles it.
-  const later = cleanupWorld({ rid: "late" });
+  const later = cleanupWorld({ rid: "late01" });
   later.ctx.stateDir = run.ctx.stateDir;
   later.ctx.cleanupWaits = waits;
   later.stored = run.stored;
@@ -2919,12 +2960,12 @@ test("review 624 r3 (N10): a run's unknown requests are waited out on disk befor
   assert.deepEqual(later.result.errors, []);
   assert.throws(() => readFileSync(stateFile));
   // A cleanup by hand whose second sweep still finds something says so and keeps it owed.
-  const appearing = cleanupWorld({ rid: "appearing" });
+  const appearing = cleanupWorld({ rid: "appear" });
   appearing.ctx.cleanupWaits = waits;
   appearing.stored.clear();
-  const seed = ".claude/projects/-workspace-repo/memory/st-bench-appearing.md";
+  const seed = ".claude/projects/-workspace-repo/memory/st-bench-appear.md";
   let deletes = 0;
-  appearing.ctx.api2.delete = async (route) => {
+  appearing.ctx.api2.delete = async () => {
     deletes += 1;
     // Gone at the first sweep; committed by the second.
     if (deletes === 1) {
@@ -2939,9 +2980,258 @@ test("review 624 r3 (N10): a run's unknown requests are waited out on disk befor
     /appeared after the first sweep/,
   );
   assert.ok(
-    JSON.parse(readFileSync(path.join(appearing.ctx.stateDir, "appearing.json"), "utf8"))
-      .quietUntil > Date.now(),
+    JSON.parse(readFileSync(path.join(appearing.ctx.stateDir, "appear.json"), "utf8")).quietUntil >
+      Date.now(),
   );
+});
+
+test("review 624 r4 (N12, N13): a merge refuses another layout or harness version, and the gate a series its label does not stand for", () => {
+  const person = completePerson();
+  const shared = sharedBaseline();
+  // N12: a shared rerun of the launches into the person record.
+  const sharedRerun = {
+    ...shared,
+    options: { ...shared.options, only: ["new"], harnesses: ["claude"] },
+    measures: {
+      "new.claude.first_output_excl_install": {
+        unit: "ms",
+        budget: "start",
+        samples: tenOf(1000),
+      },
+    },
+  };
+  assert.throws(
+    () => mergeResults(person, sharedRerun),
+    /not of the record's workload: it ran the shared layout, the record person/,
+  );
+  // A person record holding a series stamped with the shared layout is not the gate.
+  const relabelled = structuredClone(person);
+  relabelled.measures["new.claude.first_output_excl_install"].layout = "shared";
+  const compared = compareResults(shared, relabelled);
+  assert.ok(
+    compared.label.differs.some((reason) =>
+      /the person record: it holds series of another layout than its own person: new.claude.first_output_excl_install \(shared\)/.test(
+        reason,
+      ),
+    ),
+  );
+  assert.equal(comparisonFails(compared), true);
+  // N13: a growth series newly filled from Claude 2.1.999 into a 2.1.287 workload.
+  const withoutGrowth = structuredClone(person);
+  delete withoutGrowth.measures["growth.claude.extra_person_beyond_state_bytes"];
+  const growthRerun = {
+    ...structuredClone(person),
+    options: { ...person.options, only: ["growth"] },
+    target: {
+      ...person.target,
+      harnessVersions: { ...person.target.harnessVersions, claude: "2.1.999" },
+    },
+    measures: {
+      "growth.claude.extra_person_beyond_state_bytes": {
+        unit: "bytes",
+        budget: "growth",
+        samples: tenOf(1000),
+      },
+    },
+  };
+  assert.throws(
+    () => mergeResults(withoutGrowth, growthRerun),
+    /claude ran 2.1.287 in the record and 2.1.999 in it/,
+  );
+  // A ceiling series stamped with another version than its record's is not the gate either.
+  const ceiling = structuredClone(person);
+  ceiling.measures["growth.claude.extra_person_beyond_state_bytes"].harnessVersion = "2.1.999";
+  const ceilingCompared = compareResults(shared, ceiling);
+  assert.ok(
+    ceilingCompared.label.differs.some((reason) =>
+      /its growth.claude.extra_person_beyond_state_bytes ran claude 2.1.999, the record says 2.1.287/.test(
+        reason,
+      ),
+    ),
+  );
+  assert.equal(comparisonFails(ceilingCompared), true);
+});
+
+test("review 624 r4 (N14): cleanup removes only the bench accounts' worktrees, whatever their names", async () => {
+  const world = cleanupWorld({ rid: "abc123" });
+  world.ctx.cleanupWaits = { retry: 1 };
+  const deleted = [];
+  const logged = [];
+  world.ctx.log = (line) => logged.push(line);
+  const owners = { ours: "bench-2", third: "unrelated-third-account", nobody: null };
+  world.ctx.api.get = async (route) => {
+    if (route === "/organization") return { userId: "bench-1" };
+    if (route.endsWith("/worktrees")) {
+      return {
+        worktrees: Object.keys(owners).map((id) => ({ id, name: `st-bench-abc123-${id}-1` })),
+      };
+    }
+    const id = route.split("/").at(-1);
+    if (route.startsWith("/worktrees/")) {
+      return { sessions: [{ id: `s-${id}`, ownerUserId: owners[id], settledAt: "x" }] };
+    }
+    return { files: [] };
+  };
+  world.ctx.api.delete = async (route) => {
+    deleted.push(route);
+    return {};
+  };
+  await cleanupAll(world.ctx, { all: true });
+  assert.deepEqual(deleted, ["/worktrees/ours?force=true"]);
+  assert.ok(
+    logged.some((line) =>
+      /st-bench-abc123-third-1 left alone: owned by unrelated-third-account, not a bench account/.test(
+        line,
+      ),
+    ),
+  );
+  assert.deepEqual(
+    world.result.errors.map((error) => error.scenario),
+    ["cleanup · worktree st-bench-abc123-nobody-1"],
+  );
+  // The accounts cannot be told: no worktree is touched.
+  const blind = cleanupWorld({ rid: "abc123" });
+  blind.ctx.api.get = async (route) => {
+    if (route === "/organization") throw new ApiError("GET", route, 503, "down");
+    return { worktrees: [{ id: "ours", name: "st-bench-abc123-ours-1" }], files: [] };
+  };
+  blind.ctx.api.delete = async (route) => {
+    deleted.push(route);
+    return {};
+  };
+  await cleanupAll(blind.ctx);
+  assert.deepEqual(deleted, ["/worktrees/ours?force=true"]);
+  assert.deepEqual(
+    blind.result.errors.map((error) => error.scenario),
+    ["cleanup · worktrees"],
+  );
+});
+
+test("review 624 r4 (N11): unresolved state never names a path, never follows a link, and stays private", async () => {
+  const waits = { pending: 50, final: 20, grace: 20, retry: 1, quiet: 400 };
+  const world = cleanupWorld({ rid: "proof1" });
+  world.ctx.cleanupWaits = waits;
+  const dir = world.ctx.stateDir;
+  // A hostile entry naming another file: that file is never touched; the entry is cleared as its own.
+  const victim = path.join(mkdtempSync(path.join(tmpdir(), "st-bench-victim-")), "ordinary.txt");
+  writeFileSync(victim, "keep me\n");
+  writeFileSync(
+    path.join(dir, "proof1.json"),
+    JSON.stringify({
+      rid: "proof1",
+      projectId: "p",
+      quietUntil: 0,
+      accounts: ["owner"],
+      file: victim,
+    }),
+  );
+  await cleanupAll(world.ctx, { reconcile: true });
+  assert.equal(readFileSync(victim, "utf8"), "keep me\n");
+  assert.equal(existsSync(path.join(dir, "proof1.json")), false);
+  // A state file that is a link: read as unknown (kept, a failure), and never written through.
+  const linked = cleanupWorld({ rid: "proof2" });
+  linked.ctx.cleanupWaits = waits;
+  symlinkSync(victim, path.join(linked.ctx.stateDir, "proof2.json"));
+  await cleanupAll(linked.ctx, { reconcile: true });
+  assert.equal(readFileSync(victim, "utf8"), "keep me\n");
+  assert.match(
+    linked.result.errors.map((error) => error.message).join("\n"),
+    /run proof2's unresolved state cannot be read/,
+  );
+  // A run id that is not one is never a path.
+  const traversal = cleanupWorld({ rid: "../ordinary" });
+  traversal.ctx.cleanupWaits = waits;
+  traversal.ctx.unanswered = 1;
+  await cleanupAll(traversal.ctx);
+  assert.match(traversal.result.errors.map((error) => error.message).join("\n"), /not a run id/);
+  assert.equal(existsSync(path.join(path.dirname(traversal.ctx.stateDir), "ordinary.json")), false);
+  // Written private whatever the umask: the directory 0700, the file 0600.
+  const fresh = cleanupWorld({ rid: "proof3" });
+  fresh.ctx.cleanupWaits = waits;
+  fresh.ctx.stateDir = path.join(fresh.ctx.stateDir, "nested");
+  fresh.ctx.unanswered = 1;
+  const umask = process.umask(0o002);
+  try {
+    await cleanupAll(fresh.ctx);
+  } finally {
+    process.umask(umask);
+  }
+  assert.equal((statSync(fresh.ctx.stateDir).mode & 0o777).toString(8), "700");
+  assert.equal(
+    (statSync(path.join(fresh.ctx.stateDir, "proof3.json")).mode & 0o777).toString(8),
+    "600",
+  );
+});
+
+test("review 624 r4 (N15, N17): unreadable state, or state of an account not given, is kept and fails the cleanup", async () => {
+  const waits = { pending: 50, final: 20, grace: 20, retry: 1, quiet: 400 };
+  const corrupt = cleanupWorld({ rid: "proof4" });
+  corrupt.ctx.cleanupWaits = waits;
+  writeFileSync(path.join(corrupt.ctx.stateDir, "proof4.json"), '{"rid":"proof4","proj');
+  await cleanupAll(corrupt.ctx, { reconcile: true });
+  assert.ok(existsSync(path.join(corrupt.ctx.stateDir, "proof4.json")));
+  assert.match(
+    corrupt.result.errors.map((error) => error.message).join("\n"),
+    /run proof4's unresolved state cannot be read \(it is not whole JSON\)/,
+  );
+  // The state says the second account's artifacts are owed; no second token was given.
+  const missing = cleanupWorld({ rid: "proof5" });
+  missing.ctx.cleanupWaits = waits;
+  missing.ctx.api2 = null;
+  writeFileSync(
+    path.join(missing.ctx.stateDir, "proof5.json"),
+    JSON.stringify({ rid: "proof5", projectId: "p", quietUntil: 0, accounts: ["owner", "second"] }),
+  );
+  await cleanupAll(missing.ctx, { reconcile: true });
+  assert.ok(existsSync(path.join(missing.ctx.stateDir, "proof5.json")));
+  assert.match(
+    missing.result.errors.map((error) => error.message).join("\n"),
+    /include the second account's .*pass --second-token-file to check them; kept/,
+  );
+});
+
+const proof6State = (quietUntil) =>
+  JSON.stringify({ rid: "proof6", projectId: "p", quietUntil, accounts: ["owner", "second"] });
+
+test("review 624 r4 (N16): reconciling cleanups take turns, and a renewed obligation is never cleared", async () => {
+  const waits = { pending: 50, final: 20, grace: 100, retry: 1, quiet: 300 };
+  const first = cleanupWorld({ rid: "proof6" });
+  first.ctx.cleanupWaits = waits;
+  const dir = first.ctx.stateDir;
+  writeFileSync(path.join(dir, "proof6.json"), proof6State(Date.now() + 200));
+  const second = cleanupWorld({ rid: "proof6" });
+  second.ctx.cleanupWaits = waits;
+  second.ctx.stateDir = dir;
+  const order = [];
+  first.ctx.log = (line) => order.push(`first: ${line}`);
+  second.ctx.log = (line) => order.push(`second: ${line}`);
+  // While the first waits, another writer renews the obligation; the first must keep it.
+  setTimeout(
+    () => writeFileSync(path.join(dir, "proof6.json"), proof6State(Date.now() + 250)),
+    250,
+  );
+  const one = cleanupAll(first.ctx, { reconcile: true });
+  await sleepMs(50);
+  const two = cleanupAll(second.ctx, { reconcile: true });
+  await Promise.all([one, two]);
+  assert.ok(
+    order.some((line) =>
+      /^second: cleanup · another cleanup .* is reconciling: waiting/.test(line),
+    ),
+  );
+  assert.ok(
+    order.some((line) => /^first: .*its unresolved state changed meanwhile; kept/.test(line)),
+  );
+  // Everything the second did after waiting came after the first let go.
+  const firstKept = order.findIndex((line) => /^first: .*changed meanwhile; kept/.test(line));
+  const secondWorked = order.findIndex(
+    (line) => line.startsWith("second: ") && !/is reconciling: waiting/.test(line),
+  );
+  assert.ok(secondWorked > firstKept);
+  // The second read the renewed state after the first let go, waited it out and settled it.
+  assert.equal(existsSync(path.join(dir, "proof6.json")), false);
+  assert.ok(order.some((line) => /^second: .*nothing more appeared/.test(line)));
+  assert.equal(existsSync(path.join(dir, ".lock")), false);
 });
 
 test("review 624 (6): memory.stat is the executor's own cgroup, v1 read from hierarchical totals only", () => {
@@ -3693,8 +3983,11 @@ test("why a resume reinstalled is what the engine's running line says, tallied p
     ["the engine's line gave no reason", 1],
   ]);
   assert.equal(
-    mergeResults(shared, { resumeReinstalls: [{ run: 4, why: "x", ms: 1 }] }).resumeReinstalls
-      .length,
+    mergeResults(shared, {
+      ...ofWorkload({}, layoutOf(shared)),
+      target: shared.target,
+      resumeReinstalls: [{ run: 4, why: "x", ms: 1 }],
+    }).resumeReinstalls.length,
     4,
   );
   shared.measures["resume.installed.first_output"] = {

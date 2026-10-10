@@ -3,7 +3,22 @@
 // Everything created is named `st-bench-…` and removed, whatever happened.
 
 import { execFile } from "node:child_process";
-import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import {
+  closeSync,
+  constants as fsConstants,
+  fstatSync,
+  fsyncSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeSync,
+  chmodSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -1740,7 +1755,27 @@ const withRetries = async (request, { tries = 3, delayMs = 2000 } = {}) => {
  * Stops a worktree's live sessions and removes it. Gone already (404) is done; any other failure to
  * read it throws (after retries), so cleanup records it and fails instead of saying "removed".
  */
-const removeWorktree = async (ctx, worktreeId) => {
+/**
+ * The user ids of the accounts this bench acts as (`GET /organization`'s `userId`): the owner's,
+ * and the second account's when there is one. One that cannot be read fails the sweep's worktree
+ * part rather than guess.
+ */
+const benchAccountsOf = async (ctx) => {
+  if (ctx.benchAccounts !== undefined) return ctx.benchAccounts;
+  const ids = new Set();
+  for (const api of [ctx.api, ctx.api2 ?? null]) {
+    if (api === null) continue;
+    const view = await api.get("/organization");
+    if (typeof view?.userId !== "string" || view.userId === "") {
+      throw new Error("an account's user id could not be read (GET /organization)");
+    }
+    ids.add(view.userId);
+  }
+  ctx.benchAccounts = ids;
+  return ids;
+};
+
+const removeWorktree = async (ctx, worktreeId, accounts = null) => {
   const delayMs = ctx.cleanupWaits?.retry ?? CLEANUP_WAITS.retry;
   const detail = await withRetries(() => ctx.api.get(`/worktrees/${worktreeId}`), {
     delayMs,
@@ -1749,6 +1784,20 @@ const removeWorktree = async (ctx, worktreeId) => {
     throw error;
   });
   if (detail === null) return "gone";
+  // Whose it is: the owners of its sessions. Anyone else's, or one whose owner cannot be told, is
+  // never stopped or removed (a bench account that manages the project could remove it).
+  if (accounts !== null) {
+    const owners = [
+      ...new Set((detail.sessions ?? []).map((session) => session.ownerUserId ?? null)),
+    ];
+    if (owners.length === 0 || owners.includes(null)) {
+      throw new Error(
+        "whose it is cannot be told (a session names no owner, or it has none): left alone",
+      );
+    }
+    const others = owners.filter((owner) => !accounts.has(owner));
+    if (others.length > 0) return `foreign owned by ${others.join(", ")}, not a bench account`;
+  }
   for (const session of detail.sessions ?? []) {
     if (session.settledAt === null) {
       // The second account's session in a worktree of the first is stopped by its owner when the
@@ -1773,15 +1822,49 @@ const removeWorktree = async (ctx, worktreeId) => {
  * run's: a bench run or a `cleanup` beside a gate run leaves the gate's sessions alone.
  */
 export const cleanupAll = async (ctx, { all = false, reconcile = false } = {}) => {
+  // A cleanup that reconciles holds the state directory's lock throughout: two at once would
+  // each clear what the other just renewed.
+  const release = reconcile ? await lockState(ctx) : () => {};
+  try {
+    await cleanupHeld(ctx, { all, reconcile });
+  } finally {
+    release();
+  }
+};
+
+const cleanupHeld = async (ctx, { all, reconcile }) => {
   const waits = { ...CLEANUP_WAITS, ...ctx.cleanupWaits };
   // An earlier run of this scope left requests whose outcome nobody knows: wait them out first.
+  // A state entry that cannot be read is unknown, never nothing: it is kept and fails the cleanup.
   const owed = unresolvedOf(ctx, { all });
-  const quietUntil = Math.max(0, ...owed.map((entry) => entry.quietUntil));
+  const unreadable = owed.filter((entry) => entry.corrupt !== undefined);
+  for (const entry of unreadable) {
+    ctx.rec.error(
+      "cleanup · unresolved state",
+      new Error(
+        `run ${entry.rid}'s unresolved state cannot be read (${entry.corrupt}): what its requests left may still commit; kept, read it and remove ${entry.rid}.json by hand once its requests are settled`,
+      ),
+    );
+  }
+  const readable = owed.filter((entry) => entry.corrupt === undefined);
+  const quietUntil = Math.max(0, ...readable.map((entry) => entry.quietUntil));
   if (quietUntil > Date.now()) {
     ctx.log(
       `cleanup · an interrupted run's requests may still commit until ${new Date(quietUntil).toISOString()}: waiting`,
     );
     await sleep(quietUntil - Date.now());
+  }
+  // A run whose unresolved requests were the second account's needs that account to be checked.
+  const blind = readable.filter(
+    (entry) => entry.accounts.includes("second") && (ctx.api2 ?? null) === null,
+  );
+  for (const entry of blind) {
+    ctx.rec.error(
+      "cleanup · unresolved state",
+      new Error(
+        `run ${entry.rid}'s unresolved requests include the second account's (the joiner's memory file, its secret file): pass --second-token-file to check them; kept`,
+      ),
+    );
   }
   const errorsBefore = ctx.result?.errors?.length ?? 0;
   // Whatever is in flight first: an import or a create that commits after this would stay.
@@ -1830,8 +1913,8 @@ export const cleanupAll = async (ctx, { all = false, reconcile = false } = {}) =
           `${late} thing(s) of the run appeared after the first sweep and were removed: something may still commit, so run cleanup again later`,
         ),
       );
-    } else if (!failed) {
-      clearUnresolved(ctx, owed);
+    } else if (!failed && blind.length === 0) {
+      clearUnresolved(ctx, readable);
     }
   }
   remoteRefsNote(ctx);
@@ -1839,66 +1922,227 @@ export const cleanupAll = async (ctx, { all = false, reconcile = false } = {}) =
 
 // ─── what an interrupted run leaves unresolved, on disk ─────────────────────
 
+/** A run id as `bench.mjs run` makes it (`Date.now().toString(36).slice(-6)`): the only names used. */
+export const RUN_ID = /^[0-9a-z]{6}$/;
+
 /** Where a run's unresolved requests are kept between processes (`ST_BENCH_STATE_DIR`). */
 const stateDirOf = (ctx) =>
   ctx.stateDir ??
   process.env.ST_BENCH_STATE_DIR ??
   path.join(homedir(), ".cache", "st-bench", "unresolved");
 
+/** A state entry's file: only ever from a checked run id, never from what a file says. */
+const stateFileOf = (dir, rid) => {
+  if (!RUN_ID.test(String(rid))) throw new Error(`not a run id: ${JSON.stringify(rid)}`);
+  return path.join(dir, `${rid}.json`);
+};
+
 /**
- * Records that a run's requests may still commit after its cleanup: its run id, project and when a
- * later cleanup may call it clean. Kept until a cleanup waits that out and its last sweep finds
- * nothing (`cleanupAll`).
+ * The state directory, made private (0700) and checked to be a directory of this user's, not a
+ * link; anything else is refused, since what is read from it decides what cleanup removes.
+ */
+const privateStateDir = (ctx) => {
+  const dir = stateDirOf(ctx);
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const stat = lstatSync(dir);
+  if (!stat.isDirectory() || stat.isSymbolicLink()) {
+    throw new Error(`${dir} is not a directory`);
+  }
+  if (typeof process.getuid === "function" && stat.uid !== process.getuid()) {
+    throw new Error(`${dir} is not this user's`);
+  }
+  if ((stat.mode & 0o777) !== 0o700) chmodSync(dir, 0o700);
+  return dir;
+};
+
+/**
+ * Records that a run's requests may still commit after its cleanup: its run id, project, when a
+ * later cleanup may call it clean, and whose artifacts they may leave. Written whole and private
+ * (a new 0600 file renamed over the old, never through a link), and kept until a cleanup waits it
+ * out and its last sweep finds nothing (`cleanupAll`).
  */
 const markUnresolved = (ctx, quietUntil, why) => {
-  if (typeof ctx.rid !== "string") return;
   try {
-    const dir = stateDirOf(ctx);
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(
-      path.join(dir, `${ctx.rid}.json`),
-      `${JSON.stringify({ rid: ctx.rid, projectId: ctx.project.id, quietUntil, why })}\n`,
+    const dir = privateStateDir(ctx);
+    const file = stateFileOf(dir, ctx.rid);
+    const accounts = ["owner", ...((ctx.api2 ?? null) === null ? [] : ["second"])];
+    const text = `${JSON.stringify({ rid: ctx.rid, projectId: ctx.project.id, quietUntil, why, accounts })}\n`;
+    const temporary = path.join(
+      dir,
+      `.${ctx.rid}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`,
     );
+    const fd = openSync(
+      temporary,
+      fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW,
+      0o600,
+    );
+    try {
+      writeSync(fd, text);
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+    renameSync(temporary, file);
   } catch (error) {
     ctx.rec.error("cleanup · unresolved state", error);
   }
 };
 
-/** The unresolved entries of this cleanup's scope: its run's, or with `all` every run's here. */
+/** A state file's text, read without following a link, from a regular file of this user's. */
+const readStateFile = (file) => {
+  const fd = openSync(file, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile()) throw new Error("not a regular file");
+    if (typeof process.getuid === "function" && stat.uid !== process.getuid()) {
+      throw new Error("not this user's");
+    }
+    return readFileSync(fd, "utf8");
+  } finally {
+    closeSync(fd);
+  }
+};
+
+/**
+ * The unresolved entries of this cleanup's scope: its run's, or with `all` every run's of this
+ * project. One that cannot be read or does not hold what a run writes is returned as `corrupt`,
+ * with its run id from its file name: unknown, never nothing. No directory is no entry; one that
+ * cannot be read is one unknown entry.
+ */
 const unresolvedOf = (ctx, { all }) => {
   const dir = stateDirOf(ctx);
   let names;
   try {
-    names = readdirSync(dir).filter((name) => name.endsWith(".json"));
-  } catch {
-    return [];
+    names = readdirSync(dir);
+  } catch (error) {
+    if (error?.code === "ENOENT") return [];
+    return [{ rid: "?", corrupt: `${dir} cannot be read: ${errorText(error)}` }];
   }
-  return names
-    .map((name) => {
-      try {
-        return {
-          file: path.join(dir, name),
-          ...JSON.parse(readFileSync(path.join(dir, name), "utf8")),
-        };
-      } catch {
-        return null;
-      }
-    })
-    .filter(
-      (entry) =>
-        entry !== null &&
-        entry.projectId === ctx.project.id &&
-        (all || entry.rid === ctx.rid) &&
-        typeof entry.quietUntil === "number",
-    );
+  const entries = [];
+  for (const name of names) {
+    const match = /^([0-9a-z]{6})\.json$/.exec(name);
+    if (match === null) continue;
+    const rid = match[1];
+    if (!all && rid !== ctx.rid) continue;
+    let raw;
+    try {
+      raw = readStateFile(stateFileOf(dir, rid));
+    } catch (error) {
+      entries.push({ rid, corrupt: errorText(error) });
+      continue;
+    }
+    let entry;
+    try {
+      entry = JSON.parse(raw);
+    } catch {
+      entries.push({ rid, corrupt: "it is not whole JSON" });
+      continue;
+    }
+    const valid =
+      entry !== null &&
+      typeof entry === "object" &&
+      entry.rid === rid &&
+      typeof entry.projectId === "string" &&
+      Number.isFinite(entry.quietUntil) &&
+      Array.isArray(entry.accounts);
+    if (!valid) {
+      entries.push({ rid, corrupt: "it does not hold what a run writes" });
+      continue;
+    }
+    if (entry.projectId !== ctx.project.id) continue;
+    entries.push({
+      rid,
+      quietUntil: entry.quietUntil,
+      accounts: entry.accounts.map(String),
+      raw,
+    });
+  }
+  return entries;
 };
 
+/** Clears what was read, only if it is still what was read: a renewed obligation stays. */
 const clearUnresolved = (ctx, owed) => {
+  const dir = stateDirOf(ctx);
   for (const entry of owed) {
-    rmSync(entry.file, { force: true });
+    const file = stateFileOf(dir, entry.rid);
+    let now;
+    try {
+      now = readStateFile(file);
+    } catch {
+      continue;
+    }
+    if (now !== entry.raw) {
+      ctx.log(`cleanup · run ${entry.rid}: its unresolved state changed meanwhile; kept`);
+      continue;
+    }
+    rmSync(file, { force: true });
     ctx.log(
       `cleanup · run ${entry.rid}: nothing more appeared, its unresolved requests are settled`,
     );
+  }
+};
+
+/** How long a reconciling cleanup waits for another to finish before it gives up. */
+const LOCK_WAIT_MS = 30 * 60_000;
+
+/**
+ * The state directory's lock, held by one reconciling cleanup at a time: a `.lock` file made
+ * exclusively, holding its process's id; one left by a process that is gone is taken over.
+ * Returns its release.
+ */
+const lockState = async (ctx) => {
+  let dir;
+  try {
+    dir = privateStateDir(ctx);
+  } catch (error) {
+    ctx.rec.error("cleanup · unresolved state", error);
+    return () => {};
+  }
+  const lock = path.join(dir, ".lock");
+  const deadline = Date.now() + LOCK_WAIT_MS;
+  let said = false;
+  for (;;) {
+    try {
+      const fd = openSync(
+        lock,
+        fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW,
+        0o600,
+      );
+      writeSync(fd, `${process.pid}\n`);
+      closeSync(fd);
+      return () => rmSync(lock, { force: true });
+    } catch (error) {
+      if (error?.code !== "EEXIST") throw error;
+    }
+    let holder = null;
+    try {
+      holder = Number.parseInt(readStateFile(lock), 10);
+    } catch {
+      holder = null;
+    }
+    const alive = (() => {
+      if (!Number.isSafeInteger(holder) || holder <= 0) return false;
+      try {
+        process.kill(holder, 0);
+        return true;
+      } catch (error) {
+        return error?.code === "EPERM";
+      }
+    })();
+    if (!alive && holder !== null) {
+      rmSync(lock, { force: true });
+      continue;
+    }
+    if (Date.now() > deadline) {
+      throw new Error(`another cleanup has held ${lock} for ${LOCK_WAIT_MS / 60_000} min`);
+    }
+    if (!said) {
+      ctx.log(
+        `cleanup · another cleanup (process ${holder ?? "?"}) is reconciling: waiting for it`,
+      );
+      said = true;
+    }
+    await sleep(500);
   }
 };
 
@@ -1910,16 +2154,20 @@ const sweep = async (ctx, { all }) => {
   let found = 0;
   // Each part on its own: one that fails is recorded (cleanup then fails) and the others still run.
   try {
+    // Only what the bench's own accounts own is stopped or removed, whatever its name says.
+    const accounts = await benchAccountsOf(ctx);
     const listing = await ctx.api.get(`/projects/${ctx.project.id}/worktrees`);
     for (const worktree of listing.worktrees ?? []) {
       if (!inCleanupScope(worktree.name, ctx.rid, all)) continue;
       try {
-        const outcome = await removeWorktree(ctx, worktree.id);
+        const outcome = await removeWorktree(ctx, worktree.id, accounts);
         if (outcome === "removed") found += 1;
         ctx.log(
           outcome === "gone"
             ? `cleanup · worktree ${worktree.name} was gone already`
-            : `cleanup · removed worktree ${worktree.name}`,
+            : outcome.startsWith("foreign")
+              ? `cleanup · worktree ${worktree.name} left alone: ${outcome.slice("foreign ".length)}`
+              : `cleanup · removed worktree ${worktree.name}`,
         );
       } catch (error) {
         ctx.rec.error(`cleanup · worktree ${worktree.name}`, error);
