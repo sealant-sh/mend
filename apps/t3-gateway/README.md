@@ -384,9 +384,12 @@ chooses, as Mend decides.
 Mend has no archive, so archiving in t3code is the person's own view, kept by the gateway
 (`archived_threads` in the state file), as ADR 0012 decided. `thread.archive` moves the thread out
 of the active shell (`thread.removed`) into the archived one
-(`orchestration.getArchivedShellSnapshot`, `subscribeArchivedShell`), and takes back what was still
-queued for it, as t3code's own server does; `thread.unarchive` brings it back. The session in Mend
-is not touched, and other clients of Mend and other people see it as before.
+(`orchestration.getArchivedShellSnapshot`, `subscribeArchivedShell`). What is still queued for it is
+held: nothing is sent while it is archived. t3code's own server takes such messages back instead,
+but a message taken back is history, which the gateway caps at 20, so an archive of a long queue
+would lose the oldest; held, every message is still there, across a restart too, and
+`thread.unarchive` brings the thread back with its queue held, to resume or cancel. The session in
+Mend is not touched, and other clients of Mend and other people see it as before.
 
 ## Phase 3: the terminal
 

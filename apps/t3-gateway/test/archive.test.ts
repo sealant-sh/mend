@@ -24,7 +24,7 @@ import { pairAndConnect } from "./support/rpc.ts";
 /**
  * Archive (ADR 0012, phase 3): the person's own view, kept by the gateway, as Mend has none. An
  * archived thread leaves the active shell for the archived one, and what was queued for it is
- * taken back.
+ * held, never sent while it is archived, and never lost.
  */
 
 const THREAD = ThreadId.make("session-1");
@@ -32,6 +32,28 @@ let commands = 0;
 const commandId = () => CommandId.make(`archive-command-${++commands}`);
 const archive = (type: "thread.archive" | "thread.unarchive") =>
   ({ type, commandId: commandId(), threadId: THREAD }) as const;
+
+const eventually = (condition: () => boolean, what: string) =>
+  Effect.gen(function* () {
+    for (let attempt = 0; attempt < 100; attempt++) {
+      if (condition()) return;
+      yield* Effect.sleep("50 millis");
+    }
+    return yield* Effect.die(new Error(`Timed out waiting for ${what}.`));
+  });
+
+const queueBehind = (messageId: string, text: string) =>
+  ({
+    type: "message.dispatch",
+    commandId: commandId(),
+    createdBy: "user",
+    creationSource: "web",
+    threadId: THREAD,
+    messageId: MessageId.make(messageId),
+    text,
+    attachments: [],
+    dispatchMode: { type: "queue_after_active" },
+  }) as const;
 
 type Shell = OrchestrationV2ShellStreamItem;
 type Archived = OrchestrationV2ArchivedShellStreamItem;
@@ -104,7 +126,7 @@ describe("archive", () => {
             "OrchestrationV2DispatchCommandError",
           );
 
-          // What was queued was taken back: nothing reaches Mend when the turn ends.
+          // What was queued is held: nothing reaches Mend when the turn ends.
           mend.workbench.setTurn(open, "completed");
           yield* Effect.sleep("300 millis");
           assert.strictEqual(
@@ -141,8 +163,61 @@ describe("archive", () => {
           assert.isNull(back.thread.archivedAt);
           const empty = yield* rpc[ORCHESTRATION_V2_WS_METHODS.getArchivedShellSnapshot]({});
           assert.deepStrictEqual(empty.threads, []);
+          // The message is still there, held, until the person resumes the queue.
+          const waiting = back.runs.find((run) => run.userMessageId === "message-waiting");
+          assert.strictEqual(waiting?.status, "queued");
+          assert.isTrue(waiting?.queueHeld);
+          yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({
+            type: "queue.resume",
+            commandId: commandId(),
+            threadId: THREAD,
+          });
+          yield* eventually(
+            () =>
+              mend.workbench.calls.filter(
+                (call) => call.method === "POST" && call.path.endsWith("/turns"),
+              ).length === 1,
+            "the resumed message",
+          );
         }).pipe(Effect.scoped, Effect.provide(gatewayTestLayer(mend.url, statePath)));
       });
     },
   );
+
+  it.live("an archive of a long queue loses no message, across a restart too", () => {
+    const statePath = join(mkdtempSync(join(tmpdir(), "t3-gateway-archive-")), "state.sqlite");
+    return Effect.gen(function* () {
+      const mend = yield* startFakeMend;
+      mend.workbench.addProject("project-1", "mend");
+      mend.workbench.addSession({ id: "session-1", projectId: "project-1" });
+      mend.workbench.addTurn("session-1", "A long job");
+      yield* Effect.gen(function* () {
+        const { rpc } = yield* pairAndConnect(mend, "LONG-QUEUE");
+        // More than the 20 settled messages a queue keeps as history.
+        for (let message = 0; message < 25; message++) {
+          yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](
+            queueBehind(`message-${message}`, `Prompt ${message}`),
+          );
+        }
+        yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](archive("thread.archive"));
+      }).pipe(Effect.scoped, Effect.provide(gatewayTestLayer(mend.url, statePath)));
+
+      yield* Effect.gen(function* () {
+        const { rpc } = yield* pairAndConnect(mend, "LONG-QUEUE-AFTER");
+        yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](archive("thread.unarchive"));
+        const back = yield* rpc[ORCHESTRATION_V2_WS_METHODS.getThreadProjection]({
+          threadId: THREAD,
+        });
+        const waiting = back.runs.filter((run) => run.status === "queued");
+        assert.strictEqual(waiting.length, 25);
+        assert.isTrue(waiting.every((run) => run.queueHeld));
+        assert.strictEqual(
+          mend.workbench.calls.filter(
+            (call) => call.method === "POST" && call.path.endsWith("/turns"),
+          ).length,
+          0,
+        );
+      }).pipe(Effect.scoped, Effect.provide(gatewayTestLayer(mend.url, statePath)));
+    });
+  });
 });

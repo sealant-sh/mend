@@ -387,7 +387,7 @@ export interface ThreadCommands {
   /**
    * Archives the thread in the person's view, or takes it out of the archive (`thread.archive`,
    * `thread.unarchive`). Mend has no archive: the session is not touched. What is still queued for
-   * an archived thread is taken back, as t3code's own server does.
+   * an archived thread is held, never sent while it is archived, and still there when it is not.
    */
   readonly setArchived: (input: {
     readonly threadId: string;
@@ -3056,10 +3056,9 @@ export const makePersonHub = (input: {
               archived.delete(sessionId);
             } else {
               archived.set(sessionId, at);
-              const queue = queueOf(sessionId);
-              for (const entry of queue.entries.filter(Queueing.canProgress)) {
-                Queueing.takeBack(queue, entry.runId, false);
-              }
+              // What is still queued waits, held: nothing is sent while the thread is archived,
+              // and nothing is lost (a message taken back is history, and history is capped).
+              Queueing.holdIfQueued(queueOf(sessionId), true);
             }
             yield* publishAll;
             return sequence;
