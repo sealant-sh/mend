@@ -22,13 +22,22 @@ export interface CliCredential {
   readonly token: string | null;
 }
 
+import { normalizeServerUrl } from "./sign-in.js";
+
+/**
+ * The one form a server URL is kept and compared in: what Connect writes (lowercase scheme and
+ * host, no default :80 or :443, no trailing slash; the path's case kept, so instances under
+ * different paths stay apart). Anything that is not an http(s) URL is kept as typed, trimmed.
+ */
+export const canonicalServerUrl = (url: string): string => normalizeServerUrl(url) ?? url.trim();
+
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
 /** One stored entry; entries written before "none" existed are tokens. */
 const credentialOf = (value: unknown): StoredCredential | null => {
   if (!isRecord(value) || typeof value["url"] !== "string") return null;
-  const url = value["url"];
+  const url = canonicalServerUrl(value["url"]);
   const token = value["token"];
   if (typeof token === "string") {
     const deviceId = value["deviceId"];
@@ -41,8 +50,10 @@ const credentialOf = (value: unknown): StoredCredential | null => {
 export type CredentialStore = ReadonlyMap<string, StoredCredential>;
 
 /**
- * Read the stored entries. An editor that signed in before there was one entry per server kept a
- * single entry; it reads as a store of one.
+ * Read the stored entries, each under its canonical URL. An editor that signed in before there was
+ * one entry per server kept a single entry; it reads as a store of one. Entries saved under
+ * spellings of one server (case, a default port, a trailing slash) collapse into one: a signed-out
+ * entry wins over any token, so a stale token cannot undo a sign-out; among tokens, the last saved.
  */
 export const parseCredentialStore = (value: string | undefined): CredentialStore => {
   const store = new Map<string, StoredCredential>();
@@ -57,7 +68,9 @@ export const parseCredentialStore = (value: string | undefined): CredentialStore
     isRecord(parsed) && Array.isArray(parsed["entries"]) ? parsed["entries"] : [parsed];
   for (const entry of entries) {
     const credential = credentialOf(entry);
-    if (credential !== null) store.set(credential.url, credential);
+    if (credential === null) continue;
+    if (store.get(credential.url)?.kind === "none") continue;
+    store.set(credential.url, credential);
   }
   return store;
 };
@@ -75,7 +88,14 @@ export const serializeCredentialStore = (store: CredentialStore): string =>
 export const withCredential = (
   store: CredentialStore,
   credential: StoredCredential,
-): CredentialStore => new Map([...store, [credential.url, credential]]);
+): CredentialStore => {
+  const url = canonicalServerUrl(credential.url);
+  return new Map([...store, [url, { ...credential, url }]]);
+};
+
+/** The editor's own entry for `url`, under any spelling of it. */
+export const credentialFor = (store: CredentialStore, url: string): StoredCredential | null =>
+  store.get(canonicalServerUrl(url)) ?? null;
 
 /** The token for `url`: the editor's own entry for it first, then the CLI's for the same URL. */
 export const tokenFor = (
@@ -83,8 +103,11 @@ export const tokenFor = (
   stored: StoredCredential | null,
   cli: CliCredential | null,
 ): string | null => {
-  if (stored !== null && stored.url === url) return stored.kind === "token" ? stored.token : null;
-  return cli !== null && cli.url === url ? cli.token : null;
+  const server = canonicalServerUrl(url);
+  if (stored !== null && canonicalServerUrl(stored.url) === server) {
+    return stored.kind === "token" ? stored.token : null;
+  }
+  return cli !== null && canonicalServerUrl(cli.url) === server ? cli.token : null;
 };
 
 /**
@@ -98,9 +121,10 @@ export const signOutOf = (
   readonly own: Extract<StoredCredential, { kind: "token" }> | null;
   readonly next: CredentialStore;
 } => {
-  const entry = store.get(url);
+  const server = canonicalServerUrl(url);
+  const entry = store.get(server);
   return {
     own: entry !== undefined && entry.kind === "token" ? entry : null,
-    next: withCredential(store, { kind: "none", url }),
+    next: withCredential(store, { kind: "none", url: server }),
   };
 };

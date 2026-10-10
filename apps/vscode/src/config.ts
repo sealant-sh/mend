@@ -5,6 +5,8 @@ import * as path from "node:path";
 import * as vscode from "vscode";
 
 import {
+  canonicalServerUrl,
+  credentialFor,
   parseCredentialStore,
   serializeCredentialStore,
   signOutOf,
@@ -46,7 +48,7 @@ const cliConfig = (): MendConnection | null => {
     const token = Reflect.get(parsed, "token");
     if (typeof url !== "string" || url.trim() === "") return null;
     return {
-      url: url.replace(/\/$/, ""),
+      url: canonicalServerUrl(url),
       token: typeof token === "string" && token !== "" ? token : null,
     };
   } catch {
@@ -61,12 +63,14 @@ export class ConnectionStore {
   async get(): Promise<MendConnection> {
     const configured = vscode.workspace.getConfiguration("mend").get<string>("serverUrl")?.trim();
     const discovered = cliConfig();
-    const url = (
+    // Every spelling of a server is one server: the setting, the CLI's URL and the stored entries
+    // all compare in the canonical form Connect writes.
+    const url = canonicalServerUrl(
       (configured === undefined || configured === "" ? discovered?.url : configured) ??
-      "http://localhost:3105"
-    ).replace(/\/$/, "");
+        "http://localhost:3105",
+    );
     const store = parseCredentialStore(await this.context.secrets.get(TOKEN_KEY));
-    return { url, token: tokenFor(url, store.get(url) ?? null, discovered) };
+    return { url, token: tokenFor(url, credentialFor(store, url), discovered) };
   }
 
   /**

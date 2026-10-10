@@ -191,6 +191,8 @@ describe("a session terminal's attachment", () => {
     expect(unshared.sockets).toHaveLength(1);
     expect(unshared.mints()).toBe(1);
     expect(unshared.written.join("")).toContain("turned shared control off");
+    // It did not look at the process, so it says nothing about whether it runs.
+    expect(unshared.written.join("")).not.toContain("keeps running");
 
     const refused = harness({ liveness: async () => "refused" });
     refused.attachment.start(null);

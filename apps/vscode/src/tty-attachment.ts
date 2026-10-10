@@ -206,7 +206,8 @@ export class TtyAttachment {
     }
     if (liveness === "not-steerable") {
       this.end(
-        "[the session's owner turned shared control off · its terminal is theirs alone now · the process keeps running]",
+        // Nothing about whether the process runs: admission was read first, so this did not look.
+        "[the session's owner turned shared control off · its terminal is theirs alone now]",
         1,
       );
       return;

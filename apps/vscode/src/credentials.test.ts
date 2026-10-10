@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  canonicalServerUrl,
+  credentialFor,
   parseCredentialStore,
   serializeCredentialStore,
   signOutOf,
@@ -79,5 +81,78 @@ describe("signing out", () => {
     const { own, next } = signOutOf(MINI, store);
     expect(own?.deviceId).toBe("device-mini");
     expect(next.get(MINI)).toEqual({ kind: "none", url: MINI });
+  });
+});
+
+describe("one server, however its URL is spelled", () => {
+  const CANONICAL = "http://review.example";
+  const token: { readonly kind: "token"; readonly token: string; readonly deviceId: string } = {
+    kind: "token",
+    token: "mdt_editor",
+    deviceId: "device-review",
+  };
+
+  it("finds, replaces and signs out the same entry by case, a default port or a trailing slash", () => {
+    const store = withCredential(new Map(), { ...token, url: CANONICAL });
+    for (const alias of [
+      "HTTP://REVIEW.EXAMPLE",
+      "http://review.example:80",
+      "http://review.example/",
+    ]) {
+      expect(canonicalServerUrl(alias)).toBe(CANONICAL);
+      expect(credentialFor(store, alias)).toEqual({ ...token, url: CANONICAL });
+      expect(tokenFor(alias, credentialFor(store, alias), null)).toBe("mdt_editor");
+      // Signing out under the alias revokes the one device and leaves one signed-out entry.
+      const { own, next } = signOutOf(alias, store);
+      expect(own?.deviceId).toBe("device-review");
+      expect([...next.entries()]).toEqual([[CANONICAL, { kind: "none", url: CANONICAL }]]);
+    }
+    const https = withCredential(new Map(), { ...token, url: "https://Review.Example:443/" });
+    expect([...https.keys()]).toEqual(["https://review.example"]);
+    expect(signOutOf("https://review.example", https).own?.deviceId).toBe("device-review");
+    // The path is not a spelling: instances under different paths stay apart, case kept.
+    expect(canonicalServerUrl("https://review.example/Team-A/")).toBe(
+      "https://review.example/Team-A",
+    );
+  });
+
+  it("compares the CLI's sign-in in the same form", () => {
+    expect(
+      tokenFor("http://review.example:80/", null, {
+        url: "HTTP://Review.Example",
+        token: "mdt_cli",
+      }),
+    ).toBe("mdt_cli");
+  });
+
+  it("collapses entries an older editor saved under different spellings, a sign-out winning", () => {
+    const saved = JSON.stringify({
+      entries: [
+        { url: "http://review.example", token: "mdt_stale", deviceId: "device-stale" },
+        { url: "HTTP://REVIEW.EXAMPLE:80/", token: null },
+        { url: "http://review.example/", token: "mdt_later", deviceId: null },
+      ],
+    });
+    const store = parseCredentialStore(saved);
+    expect([...store.entries()]).toEqual([[CANONICAL, { kind: "none", url: CANONICAL }]]);
+    // Among tokens alone, the last saved.
+    const tokens = parseCredentialStore(
+      JSON.stringify({
+        entries: [
+          { url: "http://review.example", token: "mdt_first", deviceId: null },
+          { url: "http://REVIEW.example:80", token: "mdt_last", deviceId: "d" },
+        ],
+      }),
+    );
+    expect(credentialFor(tokens, CANONICAL)).toEqual({
+      kind: "token",
+      url: CANONICAL,
+      token: "mdt_last",
+      deviceId: "d",
+    });
+    // Saved again, the store holds canonical keys only.
+    expect(serializeCredentialStore(tokens)).toBe(
+      JSON.stringify({ entries: [{ url: CANONICAL, token: "mdt_last", deviceId: "d" }] }),
+    );
   });
 });
