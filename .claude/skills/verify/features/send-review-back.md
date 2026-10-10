@@ -161,7 +161,9 @@ Preconditions:
   `codex` session. Delivering to a `mend run` session fails: the web overlay reads
   `delivery failed · retryable`, `Retry delivery` and
   `Harness "run" has no known follow-up command.`, the desktop reads the same words, and no comment
-  is marked sent.
+  is marked sent. Yet both offer it: the web's `Send review to session` is shown and enabled, and
+  the desktop's Pinned Review offers `Deliver to session`. Confirmed bug, fix in flight (neither
+  client checks the harness; confirming drive of 2026-10-10).
 - `mend continue` attaches the terminal after delivery. Run it in its own PTY, and stop the session
   afterwards by its id.
 - A bundle edited after a failed delivery gets a new idempotency key; retrying an unedited one
