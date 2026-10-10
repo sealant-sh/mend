@@ -2,10 +2,10 @@ import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { EnvironmentHttpApi } from "@mend/t3-contracts";
 import type * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as HttpApiClient from "effect/http-api/HttpApiClient";
+import * as HttpRouter from "effect/http/HttpRouter";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
-import * as HttpRouter from "effect/unstable/http/HttpRouter";
-import * as HttpApiClient from "effect/unstable/httpapi/HttpApiClient";
 
 import { GatewayConfig } from "../../src/config.ts";
 import type { QueueTimings } from "../../src/queue.ts";

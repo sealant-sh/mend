@@ -10,8 +10,8 @@ import {
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as HttpClient from "effect/http/HttpClient";
 import * as Option from "effect/Option";
-import * as HttpClient from "effect/unstable/http/HttpClient";
 
 import { detectImageType, IMAGES_NOTE, parseDataUrl, turnInputOf, wordsOf } from "../src/images.ts";
 import { startFakeMend, type FakeMend } from "./support/fake-mend.ts";

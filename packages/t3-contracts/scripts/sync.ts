@@ -1,6 +1,6 @@
 // Copy t3code's contracts into this package, byte for byte, from one tag.
 //
-//   node scripts/sync.ts --tag v0.0.46-nightly.20261003.2623 [--source /path/to/t3code]
+//   node scripts/sync.ts --tag v0.0.46-nightly.20261010.2922 [--source /path/to/t3code]
 //
 // Without --source it fetches the tag from GitHub into a temporary repository. Either way the
 // files are read from the tag's commit (`git show <sha>:<path>`), never from a working tree, so a

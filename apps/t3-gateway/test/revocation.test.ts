@@ -15,10 +15,10 @@ import {
 } from "@mend/t3-contracts";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as HttpClient from "effect/http/HttpClient";
+import * as HttpClientRequest from "effect/http/HttpClientRequest";
 import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
-import * as HttpClient from "effect/unstable/http/HttpClient";
-import * as HttpClientRequest from "effect/unstable/http/HttpClientRequest";
 
 import { DEVICE_CONFIRMED_FOR_MS } from "../src/auth.ts";
 import { startFakeMend, type FakeMend } from "./support/fake-mend.ts";

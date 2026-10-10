@@ -6,8 +6,8 @@ import { assert, describe, it } from "@effect/vitest";
 import { ExecutionEnvironmentDescriptor, ORCHESTRATION_PROTOCOL_VERSION } from "@mend/t3-contracts";
 import pin from "@mend/t3-contracts/pin" with { type: "json" };
 import * as Effect from "effect/Effect";
+import * as HttpClient from "effect/http/HttpClient";
 import * as Schema from "effect/Schema";
-import * as HttpClient from "effect/unstable/http/HttpClient";
 
 import { GatewayState, openGatewayState } from "../src/state.ts";
 import { SERVER_VERSION } from "../src/version.ts";
@@ -30,7 +30,7 @@ describe("GET /.well-known/t3/environment", () => {
         assert.strictEqual(descriptor.orchestrationProtocolVersion, 2);
         assert.strictEqual(descriptor.orchestrationProtocolVersion, ORCHESTRATION_PROTOCOL_VERSION);
         assert.isNull(orchestrationProtocolCompatibilityError(descriptor));
-        assert.strictEqual(descriptor.serverVersion, `${pin.tag}+mend.3`);
+        assert.strictEqual(descriptor.serverVersion, `${pin.tag}+mend.1`);
         assert.strictEqual(descriptor.serverVersion, SERVER_VERSION);
         assert.strictEqual(descriptor.label, "Mend under test");
 

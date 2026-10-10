@@ -2,7 +2,20 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 
 import {
   AuthAccessTokenType,
+  AuthDiagnosticsReadScope,
+  AuthEnvironmentMaintainScope,
   AuthEnvironmentScope,
+  AuthFilesystemReadScope,
+  AuthFilesystemWriteScope,
+  AuthOrchestrationOperateScope,
+  AuthOrchestrationReadScope,
+  AuthPreviewOperateScope,
+  AuthProvidersManageScope,
+  AuthSettingsWriteScope,
+  AuthSourceControlWriteScope,
+  AuthTerminalOperateScope,
+  AuthTerminalReadScope,
+  authScopeResponse,
   AuthSessionId,
   AuthStandardClientScopes,
   DpopFailureReason,
@@ -52,23 +65,66 @@ export const GRANTED_SCOPES: ReadonlyArray<AuthEnvironmentScope> = AuthStandardC
 const isEnvironmentScope = Schema.is(AuthEnvironmentScope);
 
 /**
+ * What a grant made before t3code's granular permissions (v0.0.46-nightly.20261010.2922) stands
+ * for now. Those grants were t3code's standard client scopes of the time, marked by `review:write`,
+ * which no later grant holds; each old scope is read as the scopes t3code split it into (its
+ * `legacyParents`), so a client paired before the split keeps what it could do. Any other grant is
+ * read as stored.
+ */
+const LEGACY_CHILDREN: ReadonlyMap<
+  AuthEnvironmentScope,
+  ReadonlyArray<AuthEnvironmentScope>
+> = new Map([
+  [AuthOrchestrationReadScope, [AuthFilesystemReadScope, AuthDiagnosticsReadScope]],
+  [
+    AuthOrchestrationOperateScope,
+    [
+      AuthSettingsWriteScope,
+      AuthProvidersManageScope,
+      AuthEnvironmentMaintainScope,
+      AuthPreviewOperateScope,
+      AuthSourceControlWriteScope,
+      AuthFilesystemWriteScope,
+    ],
+  ],
+  [AuthTerminalOperateScope, [AuthTerminalReadScope]],
+]);
+const LEGACY_GRANT_MARK: AuthEnvironmentScope = "review:write";
+
+export const grantedScopesOf = (
+  stored: ReadonlyArray<AuthEnvironmentScope>,
+): ReadonlyArray<AuthEnvironmentScope> =>
+  stored.some((scope) => scope === LEGACY_GRANT_MARK)
+    ? [...new Set(stored.flatMap((scope) => [scope, ...(LEGACY_CHILDREN.get(scope) ?? [])]))]
+    : stored;
+
+/**
  * RFC 6749 scope tokens (%x21 / %x23-5B / %x5D-7E), as t3code reads them
  * (`t3:packages/shared/src/oauthScope.ts`).
  */
 const OAUTH_SCOPE_TOKEN = /^[!#-[\]-~]+$/u;
 
-/** The requested scopes, or null when the value is malformed or names a scope t3code lacks. */
+/**
+ * The requested scopes t3code knows, or null when the value is malformed or names none. A name
+ * t3code lacks is dropped, as t3code's own server drops it.
+ */
 export const parseRequestedScopes = (value: string): ReadonlyArray<AuthEnvironmentScope> | null => {
   if (value.length === 0) return null;
   const tokens = value.split(" ");
   if (tokens.some((token) => !OAUTH_SCOPE_TOKEN.test(token))) return null;
-  const scopes: Array<AuthEnvironmentScope> = [];
-  for (const token of new Set(tokens)) {
-    if (!isEnvironmentScope(token)) return null;
-    scopes.push(token);
-  }
-  return scopes;
+  const scopes = [...new Set(tokens)].filter(isEnvironmentScope);
+  return scopes.length === 0 ? null : scopes;
 };
+
+/**
+ * What a token request is granted: the scopes it asked for that the gateway grants, as t3code's
+ * server grants the overlap. `review:write` is kept: a client from before granular permissions asks
+ * with it for the standard grant of its time, which `grantedScopesOf` reads as today's.
+ */
+export const grantFor = (
+  requested: ReadonlyArray<AuthEnvironmentScope>,
+): ReadonlyArray<AuthEnvironmentScope> =>
+  requested.filter((scope) => GRANTED_SCOPES.includes(scope) || scope === LEGACY_GRANT_MARK);
 
 const hashBearer = (token: string): string => createHash("sha256").update(token).digest("hex");
 
@@ -227,8 +283,9 @@ export const GatewayAuthLive: Layer.Layer<
       const requested =
         input.scope === undefined ? GRANTED_SCOPES : parseRequestedScopes(input.scope);
       if (requested === null) return yield* new GatewayRequestInvalid({ reason: "invalid_scope" });
-      // Checked before the code is claimed, so a client that asks for too much keeps its code.
-      if (!requested.every((scope) => GRANTED_SCOPES.includes(scope))) {
+      // Checked before the code is claimed, so a client asking for nothing it can have keeps its code.
+      const granted = grantFor(requested);
+      if (granted.length === 0) {
         return yield* new GatewayRequestInvalid({ reason: "scope_not_granted" });
       }
       if (input.dpop) {
@@ -260,7 +317,7 @@ export const GatewayAuthLive: Layer.Layer<
         deviceToken: claim.token,
         mendUser: claim.user,
         mendDeviceId: claim.device.id,
-        scopes: requested,
+        scopes: granted,
         client: {
           label: input.client.label ?? null,
           deviceType: input.client.deviceType ?? "unknown",
@@ -276,7 +333,7 @@ export const GatewayAuthLive: Layer.Layer<
         issued_token_type: AuthAccessTokenType,
         token_type: "Bearer" as const,
         expires_in: Math.floor(BEARER_TTL_MS / 1000),
-        scope: requested.join(" "),
+        scope: granted.join(" "),
       };
     });
 
@@ -304,7 +361,7 @@ export const GatewayAuthLive: Layer.Layer<
           return yield* new GatewayCredentialInvalid({});
         }
         const bearer: AuthenticatedBearer = {
-          session,
+          session: { ...session, scopes: grantedScopesOf(session.scopes) },
           expiresAt: DateTime.makeUnsafe(session.expiresAt),
         };
         return bearer;
@@ -398,7 +455,7 @@ export const GatewayAuthLive: Layer.Layer<
       const authenticated: AuthSessionState = {
         authenticated: true,
         auth: environment.auth,
-        scopes: session.scopes,
+        ...authScopeResponse(session.scopes),
         sessionMethod: "bearer-access-token",
         expiresAt,
       };

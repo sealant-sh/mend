@@ -6,21 +6,22 @@ import {
   WsRpcGroup,
 } from "@mend/t3-contracts";
 import * as Effect from "effect/Effect";
+import * as HttpRouter from "effect/http/HttpRouter";
+import * as HttpServerRequest from "effect/http/HttpServerRequest";
+import * as HttpServerRespondable from "effect/http/HttpServerRespondable";
+import * as HttpServerResponse from "effect/http/HttpServerResponse";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as RpcSerialization from "effect/rpc/RpcSerialization";
+import * as RpcServer from "effect/rpc/RpcServer";
 import * as Schedule from "effect/Schedule";
-import * as HttpRouter from "effect/unstable/http/HttpRouter";
-import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
-import * as HttpServerRespondable from "effect/unstable/http/HttpServerRespondable";
-import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
-import * as RpcSerialization from "effect/unstable/rpc/RpcSerialization";
-import * as RpcServer from "effect/unstable/rpc/RpcServer";
 
 import { AssetUrls } from "./assets.ts";
 import { GatewayAuth, type AuthenticatedBearer } from "./auth.ts";
 import { GatewayEnvironment } from "./environment.ts";
 import { authInvalid, internal } from "./http-errors.ts";
 import { Projections } from "./hub.ts";
+import { rpcScopeAuthorizationLayer } from "./rpc-scopes.ts";
 import { gatewayRpcHandlersLayer } from "./rpc.ts";
 import { WebSocketTickets } from "./tickets.ts";
 
@@ -156,6 +157,8 @@ export const WebSocketRouteLive: Layer.Layer<
         yield* RpcServer.make(WsRpcGroup, { disableTracing: true }).pipe(
           Effect.provideService(RpcServer.Protocol, tracked),
           Effect.provide(gatewayRpcHandlersLayer(bearer.session, hub)),
+          // Every call's scope, checked against this bearer's before its handler runs.
+          Effect.provide(rpcScopeAuthorizationLayer(bearer.session.scopes)),
           Effect.provideService(GatewayEnvironment, environment),
           Effect.provideService(AssetUrls, assetUrls),
           Effect.forkScoped,

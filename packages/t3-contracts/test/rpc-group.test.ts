@@ -1,5 +1,5 @@
+import * as RpcSchema from "effect/rpc/RpcSchema";
 import * as Schema from "effect/Schema";
-import * as RpcSchema from "effect/unstable/rpc/RpcSchema";
 import { describe, expect, it } from "vitest";
 
 import { DEFAULT_KEYBINDINGS, DEFAULT_RESOLVED_KEYBINDINGS } from "../shared/keybindings.ts";
@@ -12,7 +12,7 @@ import {
   WsRpcGroup,
 } from "../src/index.ts";
 
-// Smoke test of the copy on Mend's `t3` catalog (effect 4.0.0-rc.115): the RPC group the t3code
+// Smoke test of the copy on Mend's `t3` catalog (effect 4.0.2): the RPC group the t3code
 // gateway serves loads, and its schemas build wire codecs and decode real frames.
 
 const rpcs = [...WsRpcGroup.requests.values()];
@@ -24,11 +24,11 @@ const rpc = (tag: string) => {
 };
 
 describe("WsRpcGroup", () => {
-  it("has the pinned tag's 173 methods, 27 of them streams", () => {
-    // ADR 0012 counts these at v0.0.46-nightly.20261003.2623. A pin bump that moves them is a
+  it("has the pinned tag's 188 methods, 29 of them streams", () => {
+    // ADR 0012 counts these at v0.0.46-nightly.20261010.2922. A pin bump that moves them is a
     // protocol change the gateway has to follow.
-    expect(rpcs.length).toBe(173);
-    expect(rpcs.filter((r) => RpcSchema.isStreamSchema(r.successSchema)).length).toBe(27);
+    expect(rpcs.length).toBe(188);
+    expect(rpcs.filter((r) => RpcSchema.isStreamSchema(r.successSchema)).length).toBe(29);
   });
 
   it("carries the methods a client needs before it is connected", () => {

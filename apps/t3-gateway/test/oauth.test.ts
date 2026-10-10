@@ -1,8 +1,8 @@
 import { assert, describe, it } from "@effect/vitest";
 import { AuthStandardClientScopes } from "@mend/t3-contracts";
 import * as Effect from "effect/Effect";
-import * as HttpClient from "effect/unstable/http/HttpClient";
-import * as HttpClientRequest from "effect/unstable/http/HttpClientRequest";
+import * as HttpClient from "effect/http/HttpClient";
+import * as HttpClientRequest from "effect/http/HttpClientRequest";
 
 import { BEARER_TTL_MS } from "../src/auth.ts";
 import { forwardedChain } from "../src/http.ts";
@@ -49,7 +49,15 @@ describe("POST /oauth/token", () => {
         // The session is backed by Mend, called with the device token Mend returned.
         const session = yield* client.auth.session({ headers: bearer(access.access_token) });
         assert.isTrue(session.authenticated);
-        assert.deepStrictEqual(session.scopes, AuthStandardClientScopes);
+        // t3code's standard scopes as permissions; clients from before permissions read the
+        // legacy names among them.
+        assert.deepStrictEqual(session.permissions, AuthStandardClientScopes);
+        assert.deepStrictEqual(session.scopes, [
+          "orchestration:read",
+          "orchestration:operate",
+          "terminal:operate",
+          "relay:read",
+        ]);
         assert.strictEqual(session.sessionMethod, "bearer-access-token");
         assert.isDefined(session.expiresAt);
         assert.deepStrictEqual(mend.deviceChecks, [`Bearer ${claim?.token}`]);
@@ -98,36 +106,58 @@ describe("POST /oauth/token", () => {
     ),
   );
 
-  it.live("refuses scopes it does not grant before spending the code", () =>
+  it.live("grants the overlap of what is asked and what it grants, as t3code does", () =>
     withGateway((mend) =>
       Effect.gen(function* () {
         mend.addPairingCode("KEEPCODE", PERSON);
         const client = yield* t3Client;
 
+        // Malformed: refused before the code is claimed.
         const malformed = yield* Effect.flip(
-          client.auth.token(tokenRequest("KEEPCODE", { scope: "orchestration:read nonsense" })),
+          client.auth.token(tokenRequest("KEEPCODE", { scope: 'orchestration:read "quoted"' })),
         );
-        assert.strictEqual(malformed._tag, "EnvironmentRequestInvalidError");
         assert.strictEqual(
           malformed._tag === "EnvironmentRequestInvalidError" && malformed.reason,
           "invalid_scope",
         );
-
+        // Nothing grantable: refused, and the code is kept.
         const admin = yield* Effect.flip(
-          client.auth.token(tokenRequest("KEEPCODE", { scope: "orchestration:read access:write" })),
+          client.auth.token(tokenRequest("KEEPCODE", { scope: "access:write nonsense" })),
         );
-        assert.strictEqual(admin._tag, "EnvironmentRequestInvalidError");
         assert.strictEqual(
           admin._tag === "EnvironmentRequestInvalidError" && admin.reason,
           "scope_not_granted",
         );
         assert.strictEqual(mend.claims.length, 0);
 
-        // A narrower request is granted as asked, and the code still works.
+        // Names t3code lacks are dropped and admin scopes are not granted; the rest is.
         const narrow = yield* client.auth.token(
-          tokenRequest("KEEPCODE", { scope: "orchestration:read" }),
+          tokenRequest("KEEPCODE", { scope: "orchestration:read access:write nonsense" }),
         );
         assert.strictEqual(narrow.scope, "orchestration:read");
+      }),
+    ),
+  );
+
+  it.live("pairs a client from before granular permissions with today's standard grant", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        mend.addPairingCode("OLDCLIENT", PERSON);
+        const client = yield* t3Client;
+        // What a client of the previous pin asks for: its standard scopes.
+        const access = yield* client.auth.token(
+          tokenRequest("OLDCLIENT", {
+            scope:
+              "orchestration:read orchestration:operate terminal:operate review:write relay:read",
+          }),
+        );
+        assert.strictEqual(
+          access.scope,
+          "orchestration:read orchestration:operate terminal:operate review:write relay:read",
+        );
+        const session = yield* client.auth.session({ headers: bearer(access.access_token) });
+        for (const scope of AuthStandardClientScopes)
+          assert.include(session.permissions ?? [], scope);
       }),
     ),
   );

@@ -1,14 +1,15 @@
 import { assert, describe, it } from "@effect/vitest";
 import { EnvironmentId, WsRpcGroup } from "@mend/t3-contracts";
+import * as Arbitrary from "effect/Arbitrary";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
+import * as Rpc from "effect/rpc/Rpc";
+import type * as RpcGroup from "effect/rpc/RpcGroup";
+import * as RpcSchema from "effect/rpc/RpcSchema";
 import * as Schema from "effect/Schema";
-import * as Arbitrary from "effect/unstable/arbitrary/Arbitrary";
-import * as Rpc from "effect/unstable/rpc/Rpc";
-import * as RpcSchema from "effect/unstable/rpc/RpcSchema";
-import * as Socket from "effect/unstable/socket/Socket";
+import * as Socket from "effect/socket/Socket";
 
 import { makeGatewayEnvironment } from "../src/environment.ts";
 import { makeGatewayRpcHandlers, SERVED_METHODS, SILENT_STREAMS } from "../src/rpc.ts";
@@ -24,7 +25,10 @@ import { emptyHub, testBearerSession } from "./support/stubs.ts";
 
 const groupMethods = () => Array.from(WsRpcGroup.requests.keys()).toSorted();
 
-const isStream = (rpc: Rpc.AnyWithProps) => RpcSchema.isStreamSchema(rpc.successSchema);
+/** A method of the group, with t3code's scope middleware on it. */
+type WsRpc = RpcGroup.Rpcs<typeof WsRpcGroup>;
+
+const isStream = (rpc: WsRpc) => RpcSchema.isStreamSchema(rpc.successSchema);
 
 describe("the RPC surface", () => {
   it("registers a handler for every method in the vendored group, and nothing else", () => {
@@ -100,7 +104,7 @@ const decodeFrame = Schema.decodeUnknownOption(Frame);
  * are encoded and decoded back, and one that does not survive (a string the schema trims to
  * nothing) is skipped, as a real client would never send it.
  */
-const validPayload = (rpc: Rpc.AnyWithProps) =>
+const validPayload = (rpc: WsRpc) =>
   Effect.gen(function* () {
     const schema = Schema.make<Schema.Codec<unknown, unknown>>(rpc.payloadSchema.ast);
     const codec = Schema.toCodecJson(schema);
@@ -140,7 +144,7 @@ describe("every method not served", () => {
           });
           const socket = yield* rawRpcSocket(yield* socketUrl(ticket.ticket));
 
-          const pending = new Map<string, Rpc.AnyWithProps>();
+          const pending = new Map<string, WsRpc>();
           let id = 0;
           for (const rpc of WsRpcGroup.requests.values()) {
             if (SERVED_METHODS.has(rpc._tag)) continue;

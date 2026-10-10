@@ -4,12 +4,12 @@ import {
   WsRpcGroup,
 } from "@mend/t3-contracts";
 import * as Effect from "effect/Effect";
+import * as HttpServer from "effect/http/HttpServer";
 import * as Layer from "effect/Layer";
+import * as RpcClient from "effect/rpc/RpcClient";
+import * as RpcSerialization from "effect/rpc/RpcSerialization";
 import * as Schedule from "effect/Schedule";
-import * as HttpServer from "effect/unstable/http/HttpServer";
-import * as RpcClient from "effect/unstable/rpc/RpcClient";
-import * as RpcSerialization from "effect/unstable/rpc/RpcSerialization";
-import * as Socket from "effect/unstable/socket/Socket";
+import * as Socket from "effect/socket/Socket";
 
 import { WEBSOCKET_TICKET_QUERY_PARAM } from "../../src/ws.ts";
 import type { FakeMend, FakeMendUser } from "./fake-mend.ts";
