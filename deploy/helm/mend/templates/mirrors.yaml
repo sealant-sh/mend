@@ -150,8 +150,12 @@ spec:
             - { name: REGISTRY_HTTP_DEBUG_ADDR, value: 127.0.0.1:5001 }
             - { name: REGISTRY_HTTP_DEBUG_PROMETHEUS_ENABLED, value: "true" }
             {{- with .Values.mirrors.docker.upstreamCredentials.existingSecret }}
-            # A Docker Hub login, from a Secret the operator made: the mirror's alone, never a
-            # workspace's.
+            {{- if ne $.Values.mirrors.docker.upstreamCredentials.publicReadOnly true }}
+            {{ fail "mirrors.docker.upstreamCredentials.existingSecret needs mirrors.docker.upstreamCredentials.publicReadOnly: true. The mirror has no login of its own: every workspace that reaches it can pull whatever the token can read, private repositories included. Use a Docker Hub personal access token with the access permission \"Public Repo Read-only\", and set publicReadOnly: true to state that it is one; the chart cannot check a token's scope." }}
+            {{- end }}
+            # A Docker Hub login, from a Secret the operator made and declared Public Repo
+            # Read-only: the mirror's alone, never a workspace's. Every admitted workspace can pull
+            # whatever it can read.
             - name: REGISTRY_PROXY_USERNAME
               valueFrom: { secretKeyRef: { name: {{ . }}, key: username } }
             - name: REGISTRY_PROXY_PASSWORD

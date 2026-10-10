@@ -45,7 +45,7 @@ Mirrors (ClusterIP only; the workspace NetworkPolicy of the SEALANT chart must l
         port: 4873
 {{- end }}
 {{- if .Values.mirrors.docker.enabled }}
-  docker: http://{{ .Release.Name }}-docker-mirror.{{ .Release.Namespace }}.svc:5000, each layer kept {{ .Values.mirrors.docker.ttl }}{{ if .Values.mirrors.docker.upstreamCredentials.existingSecret }}, pulls as the login in {{ .Values.mirrors.docker.upstreamCredentials.existingSecret }}{{ else }}, pulls anonymously{{ end }}
+  docker: http://{{ .Release.Name }}-docker-mirror.{{ .Release.Namespace }}.svc:5000, layers evicted {{ .Values.mirrors.docker.ttl }} after each fetch{{ if .Values.mirrors.docker.upstreamCredentials.existingSecret }}, pulls as the login in {{ .Values.mirrors.docker.upstreamCredentials.existingSecret }} (declared Public Repo Read-only; every workspace can pull what it can read){{ else }}, pulls anonymously{{ end }}
     In the SEALANT chart, point workspace Docker daemons at it:
       workspaces.docker.registryMirrors: [http://{{ .Release.Name }}-docker-mirror.{{ .Release.Namespace }}.svc:5000]
     networkPolicies.workspaceEgressAllow:

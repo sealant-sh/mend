@@ -777,7 +777,7 @@ test("the mirrors are off unless asked for, and nothing names them", { skip }, (
 });
 
 test(
-  "the mirrors run as optional components: ClusterIP only, non-root, admitted only from the API and workspaces",
+  "the mirrors run as optional components: ClusterIP only, non-root, admitted only from workspaces",
   { skip },
   () => {
     const result = renderFixture(
@@ -785,6 +785,7 @@ test(
       "mirrors.npm.enabled=true",
       "mirrors.docker.enabled=true",
       "mirrors.docker.upstreamCredentials.existingSecret=docker-hub",
+      "mirrors.docker.upstreamCredentials.publicReadOnly=true",
     );
     assert.equal(result.status, 0, result.stderr);
     const manifest = result.stdout;
@@ -803,9 +804,11 @@ test(
       assert.match(deployment, /drop: \[ALL\]/);
       assert.match(deployment, /type: Recreate/);
       documentOf(manifest, "PersistentVolumeClaim", name);
+      // Workspaces only: the API tier hands the URL to a workspace's install and never connects.
       const policy = documentOf(manifest, "NetworkPolicy", name);
-      assert.match(policy, /app.kubernetes.io\/component: api/);
+      assert.doesNotMatch(policy, /app.kubernetes.io\/component: api/);
       assert.match(policy, /app.kubernetes.io\/component: workspace/);
+      assert.equal((policy.match(/- namespaceSelector:/g) ?? []).length, 1);
     }
     // The nginx configuration is the packaged install's, byte for byte.
     const config = documentOf(manifest, "ConfigMap", "mend-npm-mirror");
@@ -829,4 +832,15 @@ test("the chart refuses an npm mirror cap nginx would not read", { skip }, () =>
   const result = renderFixture("obc", "mirrors.npm.enabled=true", "mirrors.npm.maxSize=10GB");
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /mirrors\.npm\.maxSize must be a whole number/);
+});
+
+test("the chart refuses a Docker Hub login not declared Public Repo Read-only", { skip }, () => {
+  const result = renderFixture(
+    "obc",
+    "mirrors.docker.enabled=true",
+    "mirrors.docker.upstreamCredentials.existingSecret=docker-hub",
+  );
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /needs mirrors\.docker\.upstreamCredentials\.publicReadOnly: true/);
+  assert.match(result.stderr, /private repositories included/);
 });
