@@ -99,7 +99,11 @@ process uses, by default and by every path Mend controls.
     tool and passwd probe inside the built image and records the result on the image; it reports ACL
     support per runtime. The SDK exposes both (Delivery 8, 9).
   - **Mend learns it once per image.** Mend records what each executor's prepare actually found, per
-    image digest and runtime, and that record wins over Core's report when they disagree.
+    image digest and runtime, and that record wins over Core's report when they disagree. Core
+    reports a digest only once the image is built, and only to the account that built it; where it
+    reports none, the record is made under the image as Mend asks for it (its spec). A digest with
+    no record of its own, of which Core says nothing either, reads the spec's record: the first
+    launch on a new image answers for the launches after its build.
   - **Unknown means `shared`** for a worktree that has no layout yet: the launch runs as today and
     its prepare records the answer, so the next launch on that image can be `person`.
   - **A wrong prediction never leaves an agent without a login.** If Core said yes and prepare finds

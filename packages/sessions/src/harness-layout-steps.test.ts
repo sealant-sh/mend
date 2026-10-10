@@ -39,6 +39,7 @@ import {
   NO_NEW_PRIVILEGES_MISSING,
   PASSING_NO_KEPT_MS,
   STANDBY_REASON,
+  imageLayoutKeyOf,
   personHomeEnsureScript,
 } from "./harness-layout.ts";
 import { DOTFILES_NOT_TO_ROOT } from "./person-deliveries.ts";
@@ -155,6 +156,14 @@ const coreCalls = (): CoreCalls => ({
   sshAnswers: [],
 });
 
+/** Core's report on an image, as `PersonLayoutPlatform.imageReport` answers. */
+interface ImageReport {
+  readonly digest: string | null;
+  readonly runtime: string | null;
+  readonly person: boolean | null;
+  readonly missing: ReadonlyArray<string>;
+}
+
 const platformOf = (
   core: CoreCalls,
   can: {
@@ -162,12 +171,7 @@ const platformOf = (
     readonly controlPlaneObstacle?: string | null;
     readonly workspaceProcessUser?: "supported" | "unsupported" | "unknown";
     /** Core's report on the image; a Docker image it can run per person unless a test says. */
-    readonly report?: {
-      readonly digest: string | null;
-      readonly runtime: string | null;
-      readonly person: boolean | null;
-      readonly missing: ReadonlyArray<string>;
-    };
+    readonly report?: ImageReport;
   } = {},
 ) =>
   Layer.succeed(PersonLayoutPlatform, {
@@ -504,6 +508,106 @@ describe("the default against images and runtimes that cannot run per person (re
       retire: true,
       recorded: [{ person: true, confirmed: true }],
     });
+  });
+
+  it("a new image's first shared launch answers for the launches after its build, in its own worktree too", async () => {
+    // Core reports a digest only once the image is built: the first launch records under the
+    // image's spec, and the launches after the build ask under its digest (box, next.721).
+    const can: { report: ImageReport } = {
+      report: { digest: null, runtime: "docker", person: null, missing: [] },
+    };
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const state = makeHarnessLayoutsMemoryState();
+        const { steps } = yield* stepsWith("person", state, {
+          platform: platformOf(coreCalls(), can),
+        });
+        const first = yield* steps.decide(decideInput("launch-1", "wt-1"));
+        yield* steps.settlePrepare({
+          layout: first,
+          ...settleInput("launch-1", probedYes, "wt-1"),
+        });
+        can.report = { ...can.report, digest: "sha256:built" };
+        const predicted = (yield* steps.freshLaunchLayout(freshInput))?.layout;
+        // A new executor in the worktree whose first launch ran shared.
+        const again = yield* steps.decide(decideInput("launch-2", "wt-1"));
+        yield* steps.settlePrepare({
+          layout: again,
+          ...settleInput("launch-2", "mend-layout probed\nmend-layout ready\n", "wt-1"),
+        });
+        const fresh = yield* steps.decide(decideInput("launch-3", "wt-2"));
+        return {
+          first:
+            first.layout === "shared" ? { reason: first.reason, imageKey: first.imageKey } : null,
+          predicted,
+          again: again.layout,
+          fresh: fresh.layout,
+          worktree: state.worktrees.get(WorktreeId.make("wt-1"))?.layout ?? null,
+          recorded: [...state.capabilities.values()].map((record) => ({
+            key: record.imageKey,
+            person: record.person,
+            confirmed: record.confirmed,
+          })),
+        };
+      }),
+    );
+    expect(result.first?.reason).toBe(
+      "per-person users not yet known for this image; checked while this workspace starts",
+    );
+    expect(result.first?.imageKey).toMatch(/^spec:/);
+    expect(result).toMatchObject({
+      predicted: "person",
+      again: "person",
+      fresh: "person",
+      worktree: "person",
+    });
+    expect(result.recorded).toEqual([
+      { key: result.first?.imageKey, person: true, confirmed: false },
+      { key: "digest:sha256:built", person: true, confirmed: true },
+    ]);
+  });
+
+  it("Core's own answer for a built image beats what was recorded under its spec", async () => {
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const state = makeHarnessLayoutsMemoryState();
+        const spec = imageLayoutKeyOf(defaultWorkspaceImage, null);
+        state.capabilities.set(`${spec}\u0000docker`, {
+          imageKey: spec,
+          runtime: "docker",
+          person: false,
+          missing: ["no sudo"],
+          confirmed: true,
+          observedAt: new Date(),
+        });
+        const decideWith = (report: ImageReport) =>
+          stepsWith("person", state, { platform: platformOf(coreCalls(), { report }) }).pipe(
+            Effect.flatMap(({ steps }) => steps.decide(decideInput("launch-1"))),
+            Effect.map((layout) => layout.layout),
+          );
+        return {
+          unbuilt: yield* decideWith({
+            digest: null,
+            runtime: "docker",
+            person: null,
+            missing: [],
+          }),
+          silent: yield* decideWith({
+            digest: "sha256:built",
+            runtime: "docker",
+            person: null,
+            missing: [],
+          }),
+          coreYes: yield* decideWith({
+            digest: "sha256:built",
+            runtime: "docker",
+            person: true,
+            missing: [],
+          }),
+        };
+      }),
+    );
+    expect(result).toEqual({ unbuilt: "shared", silent: "shared", coreYes: "person" });
   });
 
   it("a person prepare under no-new-privileges falls back to shared on a fresh worktree, which stays without a layout", async () => {

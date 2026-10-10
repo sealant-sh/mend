@@ -914,6 +914,23 @@ export const makeHarnessLayoutSteps = (deps: {
     return new Map(tickets);
   });
 
+  /**
+   * Mend's record of what a prepare found for this image: under Core's digest, else, while Core
+   * says nothing of that digest, under the image as Mend asks for it. Core reports a digest only
+   * once the image is built, and only to the account that built it, so the first launch on a new
+   * image records under the spec, and every launch after the build would otherwise find nothing
+   * and run shared to learn it again.
+   */
+  const recordedCapabilityOf = Effect.fn("HarnessLayoutSteps.recordedCapabilityOf")(function* (
+    image: WorkspaceImage,
+    report: { readonly digest: string | null; readonly person: boolean | null },
+    runtime: string,
+  ) {
+    const recorded = yield* repo.capabilityOf(imageLayoutKeyOf(image, report.digest), runtime);
+    if (recorded !== null || report.digest === null || report.person !== null) return recorded;
+    return yield* repo.capabilityOf(imageLayoutKeyOf(image, null), runtime);
+  });
+
   const capabilityFor = Effect.fn("HarnessLayoutSteps.capabilityFor")(function* (
     image: WorkspaceImage,
     ownerUserId: string,
@@ -953,7 +970,7 @@ export const makeHarnessLayoutSteps = (deps: {
         : UNKNOWN_CAPABILITY;
     // Mend's record of what a prepare found wins over Core's report for the same image, but for
     // a shared probe's unconfirmed "yes" against Core's explicit "no".
-    const recorded = yield* repo.capabilityOf(imageKey, runtime);
+    const recorded = yield* recordedCapabilityOf(image, report, runtime);
     if (recorded === null || (recorded.person && !recorded.confirmed && report.person === false)) {
       return { capability: core, imageKey, runtime, replaces: null };
     }
@@ -1173,10 +1190,7 @@ export const makeHarnessLayoutSteps = (deps: {
     if (runtimeLayoutObstacle(report.runtime) !== null || report.person === false) {
       return SHARED_STANDBY;
     }
-    const recorded = yield* repo.capabilityOf(
-      imageLayoutKeyOf(image, report.digest),
-      report.runtime ?? "unknown",
-    );
+    const recorded = yield* recordedCapabilityOf(image, report, report.runtime ?? "unknown");
     return recorded !== null && !recorded.person ? SHARED_STANDBY : null;
   });
 
