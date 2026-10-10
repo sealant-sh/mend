@@ -2,7 +2,13 @@
 // The verify skill's web driver: one headless Chromium against the tunnelled stack, one recipe.
 //
 //   node .claude/skills/verify/scripts/drive-web.mjs --web <url> --out <dir> --recipe <file.mjs> \
-//     --private <dir> [--account <file>] [--state <file>] [--timeout <ms>]
+//     --private <dir> [--account <file>] [--state <file>] [--timeout <ms>] [--viewport <w>x<h>] \
+//     [--cdp <url>]
+//
+// --viewport sets the page size (default 1280x900; the map's mobile web runs at 390x844).
+// --cdp attaches to a browser that is already running with a remote debugging port (the desktop
+// app, started by drive-desktop.sh) instead of launching one, and drives its first window. It never
+// closes that browser, and --account and --state do not apply: the app holds its own sign-in.
 //
 // --recipe is a module whose default export is
 // `async ({ page, web, capture, note, typeSecret, registerSecret }) => {}`:
@@ -22,7 +28,7 @@
 // into, a registered value, a QR code, any shape redact.mjs knows, a filled credential field) keeps
 // its redacted snapshot, with every credential field's subtree redacted, and its screenshot is
 // withheld: <name>.png.withheld says which kinds were on the page. A failing recipe is captured as
-// <out>/failure.* (the same rules) before the driver exits 1, and its error is printed redacted.
+// <out>/failure-<n>.* (the same rules; numbered, so earlier failures stay) before the driver exits 1, and its error is printed redacted.
 // No trace, HAR or video is recorded.
 //
 // Playwright comes from $MEND_VERIFY_PLAYWRIGHT (default ~/.cache/mend-verify/playwright), never
@@ -49,12 +55,15 @@ const privateDir = flag("private");
 const state = flag("state");
 const accountFile = flag("account");
 const timeout = Number(flag("timeout") ?? "30000");
-if (!web || !out || !recipe || !privateDir) {
+const cdp = flag("cdp");
+const viewportFlag = /^(\d+)x(\d+)$/.exec(flag("viewport") ?? "1280x900");
+if (!web || !out || !recipe || !privateDir || !viewportFlag || (cdp && (state || accountFile))) {
   process.stderr.write(
-    "usage: drive-web.mjs --web <url> --out <dir> --recipe <file.mjs> --private <dir> [--account <file>] [--state <file>] [--timeout <ms>]\n",
+    "usage: drive-web.mjs --web <url> --out <dir> --recipe <file.mjs> --private <dir> [--account <file>] [--state <file>] [--timeout <ms>] [--viewport <w>x<h>] [--cdp <url>] (--cdp takes neither --account nor --state)\n",
   );
   process.exit(2);
 }
+const viewport = { width: Number(viewportFlag[1]), height: Number(viewportFlag[2]) };
 mkdirSync(out, { recursive: true });
 
 let secrets = loadSecrets(privateDir);
@@ -165,12 +174,15 @@ const playwrightHome =
   process.env.MEND_VERIFY_PLAYWRIGHT ?? join(homedir(), ".cache", "mend-verify", "playwright");
 const { chromium } = createRequire(join(playwrightHome, "package.json"))("playwright-core");
 
-const browser = await chromium.launch();
-const context = await browser.newContext({
-  viewport: { width: 1280, height: 900 },
-  ...(storageState ? { storageState } : {}),
-});
-const page = await context.newPage();
+const browser = cdp ? await chromium.connectOverCDP(cdp) : await chromium.launch();
+const context = cdp
+  ? browser.contexts()[0]
+  : await browser.newContext({ viewport, ...(storageState ? { storageState } : {}) });
+// The desktop's window: the first page that is the app, not a devtools or blank target.
+const page = cdp
+  ? (context.pages().find((candidate) => !candidate.url().startsWith("devtools:")) ??
+    (await context.waitForEvent("page")))
+  : await context.newPage();
 page.setDefaultTimeout(timeout);
 
 const capture = async (name) => {
@@ -236,7 +248,10 @@ try {
   // Playwright's messages carry their call log, arguments included: only the scrubbed text leaves.
   const message = scrub(String(error?.message ?? error));
   note(`FAILED · ${message.split("\n")[0]}`);
-  await capture("failure").catch(() => undefined);
+  // Numbered, so a second failed drive into the same folder keeps the first one's capture.
+  let n = 1;
+  while (existsSync(join(out, `failure-${n}.aria.yml`))) n += 1;
+  await capture(`failure-${n}`).catch(() => undefined);
   process.stderr.write(`drive-web: ${message}\n`);
 } finally {
   if (state) {
@@ -244,6 +259,7 @@ try {
     await context.storageState({ path: state });
     secrets = loadSecrets(privateDir);
   }
+  // Over CDP this only disconnects: the desktop app stays as it was for the next recipe.
   await browser.close();
 }
 process.exit(failed ? 1 : 0);

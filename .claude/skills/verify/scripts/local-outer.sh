@@ -91,8 +91,18 @@ serve)
   [ "$(git -C "$work/repo.git" rev-parse --is-shallow-repository)" = false ]
   git -C "$work/repo.git" update-server-info
   tar -cf "$work/repo.tar" -C "$work" repo.git
-  if ! inner docker inspect outer-fixture > /dev/null 2>&1; then
-    image=$(inner docker ps --filter name=mend-mend-1 --format '{{.Image}}')
+  # A container inspect: a plain `docker inspect` also matches the volume of the same name, which a
+  # first serve that failed after creating it leaves behind.
+  if ! inner docker container inspect outer-fixture > /dev/null 2>&1; then
+    # Right after `up` the server's container may still be restarting: wait for it to be listed.
+    image=
+    i=0
+    while [ -z "$image" ]; do
+      image=$(inner docker ps --filter name=mend-mend-1 --format '{{.Image}}')
+      [ -n "$image" ] && break
+      i=$((i + 1)); [ "$i" -gt 60 ] && { echo "local-outer: mend-mend-1 is not running; nothing served" >&2; exit 1; }
+      sleep 1
+    done
     inner docker volume create outer-fixture > /dev/null
     inner docker create --name outer-fixture --restart unless-stopped --network mend_default \
       -v outer-fixture:/fixture --entrypoint node "$image" /fixture/packaged-git-fixture.mjs > /dev/null

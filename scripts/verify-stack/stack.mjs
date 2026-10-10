@@ -1223,9 +1223,19 @@ async function fixtureProject(state, mendContext) {
   await cliRun(state, ["adopt", url, "--name", FIXTURE_PROJECT, "--shared"], {
     timeout: 5 * 60_000,
   });
+  await projectImage(state, FIXTURE_PROJECT);
+}
+
+/**
+ * Give an inner project the fixture's workspace image: FIXTURE_BASE_IMAGE with no Docker service.
+ * An inner session's workspace cannot start a Docker service of its own (it would be Docker in the
+ * session's Docker in the outer server's), so a project with the default image never launches one
+ * here. Recipes that adopt a project of their own run `project-image <name>` right after adopting.
+ */
+async function projectImage(state, name) {
   const projects = await innerApi(state, "/projects");
-  const project = projects.find((item) => item.name === FIXTURE_PROJECT);
-  if (!project) throw new CommandError("the fixture project is not listed after adoption");
+  const project = projects.find((item) => item.name === name);
+  if (!project) throw new CommandError(`no inner project named ${name}`);
   await innerApi(state, `/projects/${project.id}/workspace-image`, {
     method: "PUT",
     body: {
@@ -1238,6 +1248,7 @@ async function fixtureProject(state, mendContext) {
       },
     },
   });
+  say(`verify stack · project ${name} · workspace image ${FIXTURE_BASE_IMAGE}, no Docker service`);
 }
 
 /** `mend run -- true` on the inner Sealant: the stack launches a session end to end. */
@@ -2050,6 +2061,8 @@ const HELP = `usage: node scripts/verify-stack/stack.mjs <command>
   serve [sources] [--port <n>]             up, then hold; the stack goes when this stops
   mend <args…>                             the inner mend CLI, signed in as the first account
   check                                    inner mend run -- true, until its session settles
+  project-image <name>                     give an inner project the fixture's workspace image
+                                           (no Docker service), so its sessions can launch
   report [--json]                          sources, timings, memory, isolation
   down [--purge] [--force]                 remove the stack (--purge: images, build cache, caches)
 
@@ -2095,6 +2108,14 @@ async function main() {
       if (!state) throw new Error("no verify stack here: `up` starts one");
       await recording(() => check(state));
       await writeState(state);
+      return;
+    }
+    case "project-image": {
+      await lockDaemon("shared");
+      const state = await readState();
+      if (!state) throw new Error("no verify stack here: `up` starts one");
+      if (!args[0]) throw new Error("project-image needs a project name");
+      await projectImage(state, args[0]);
       return;
     }
     case "report":
