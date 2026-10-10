@@ -19,7 +19,10 @@ import {
   HARNESS_COMMANDS,
   isPendingId,
   LIVE_STATUSES,
+  serviceViewHostPort,
+  serviceViewStatus,
   type AgentProcessLike,
+  type ServiceViewLike,
   type SessionCaptureLike,
 } from "./shared.ts";
 
@@ -120,6 +123,33 @@ export interface SessionDetailDto {
   readonly processes: ReadonlyArray<SessionProcessDto>;
 }
 
+/**
+ * One Service as `GET /services` answers it: the Service nested under `service`, beside its
+ * attempts, forward and last observation (api-contracts `ServiceView`). `serviceRowOf` reads it
+ * into the row the dashboard draws.
+ */
+export interface ServiceViewDto extends ServiceViewLike {
+  readonly service: {
+    readonly id: string;
+    readonly sessionId: string;
+    readonly name: string;
+    readonly workspacePort: number;
+    readonly transport: "tcp" | "udp";
+    readonly currentAttemptId: string | null;
+  };
+}
+
+/** The dashboard's row for a Service: what it is called, where it opens, the state it is in. */
+export const serviceRowOf = (view: ServiceViewDto): ServiceDto => ({
+  id: view.service.id,
+  sessionId: view.service.sessionId,
+  label: view.service.name,
+  status: serviceViewStatus(view),
+  workspacePort: view.service.workspacePort,
+  protocol: view.service.transport,
+  hostPort: serviceViewHostPort(view),
+});
+
 export interface ServiceDto {
   readonly id: string;
   readonly sessionId: string;
@@ -179,10 +209,10 @@ export const fetchWorkbench = async (ctx: { readonly api: WorkbenchApi }): Promi
     Promise.all(
       projects.map((project) => ctx.api<ProjectDetailDto>("GET", `/projects/${project.id}`)),
     ),
-    ctx.api<ReadonlyArray<ServiceDto>>("GET", "/services"),
+    ctx.api<ReadonlyArray<ServiceViewDto>>("GET", "/services"),
   ]);
   const servicesBySession = new Map<string, ServiceDto[]>();
-  for (const service of services) {
+  for (const service of services.map(serviceRowOf)) {
     const bucket = servicesBySession.get(service.sessionId) ?? [];
     bucket.push(service);
     servicesBySession.set(service.sessionId, bucket);
@@ -411,8 +441,14 @@ export const pseudoGroup = (
   annotation: item(session).annotation,
 });
 
-/** The picker's rows: resume offers the same harness first, then the crossings. */
-export const deriveHarnesses = (resuming: SessionDto | null): ReadonlyArray<HarnessItem> => {
+/**
+ * The picker's rows: resume offers the same harness first, then the crossings. A new session
+ * either starts a new worktree or joins the one named in `joining`, and its rows say which.
+ */
+export const deriveHarnesses = (
+  resuming: SessionDto | null,
+  joining: string | null = null,
+): ReadonlyArray<HarnessItem> => {
   if (resuming !== null) {
     const others = Object.keys(HARNESS_COMMANDS).filter((h) => h !== resuming.harness);
     return [
@@ -433,14 +469,15 @@ export const deriveHarnesses = (resuming: SessionDto | null): ReadonlyArray<Harn
       ),
     ];
   }
+  const where = joining === null ? "new worktree" : `joins ${joining}`;
   return Object.keys(HARNESS_COMMANDS).map(
     (harness): HarnessItem => ({
       harness,
       label: harness,
       hint:
         harness === "shell"
-          ? "a plain bash session · new worktree, recorded"
-          : `mend ${harness} · new worktree, recorded session`,
+          ? `a plain bash session · ${where}, recorded`
+          : `mend ${harness} · ${where}, recorded session`,
     }),
   );
 };
@@ -946,6 +983,65 @@ export const NAV_SECTIONS: ReadonlyArray<NavSection> = ["projects", "worktrees",
 export const isNavSection = (column: Column): column is NavSection => column !== "detail";
 
 /**
+ * Each pane's number, lazygit's way: the side panels count down the sidebar from 1 and the big
+ * pane on the right is 0. The digit jumps there and the pane's title carries it, so the number on
+ * screen is the key that reaches it.
+ */
+export const PANE_NUMBER: Readonly<Record<Column, string>> = {
+  projects: "1",
+  worktrees: "2",
+  sessions: "3",
+  detail: "0",
+};
+
+/** The pane a digit jumps to; null for a digit no pane carries. */
+export const paneForDigit = (digit: string): Column | null =>
+  COLUMNS.find((column) => PANE_NUMBER[column] === digit) ?? null;
+
+/** A pane's title with its number in front: ` [3] sessions · 2 ` once the frame pads it. */
+export const numberedTitle = (column: Column, title: string): string =>
+  `[${PANE_NUMBER[column]}] ${title}`;
+
+/**
+ * Tab's walk: every pane in order, wrapping at both ends like lazygit's nextBlock. The arrows keep
+ * stepping through the hierarchy and stop at its ends; tab is the one that comes back around.
+ */
+export const cyclePane = (focus: Column, delta: number): Column => {
+  const at = COLUMNS.indexOf(focus);
+  if (at === -1) return "sessions";
+  const next = (((at + delta) % COLUMNS.length) + COLUMNS.length) % COLUMNS.length;
+  return COLUMNS[next] ?? focus;
+};
+
+/**
+ * Where esc goes back to. The session pane returns to the list it was opened from (a digit can
+ * reach it from any of them); a list returns to the one above it, and projects is the top.
+ */
+export const backFrom = (focus: Column, lastNav: NavSection): Column =>
+  focus === "detail" ? lastNav : stepColumn(focus, -1);
+
+/**
+ * lazygit's `+`/`_`. Normal is the quarter sidebar; half gives the sidebar half the width for
+ * long names; full gives the whole screen to the side the keyboard is on.
+ */
+export type ScreenMode = "normal" | "half" | "full";
+
+export const SCREEN_MODES: ReadonlyArray<ScreenMode> = ["normal", "half", "full"];
+
+export const stepScreenMode = (mode: ScreenMode, delta: number): ScreenMode => {
+  const at = SCREEN_MODES.indexOf(mode);
+  const next = (((at + delta) % SCREEN_MODES.length) + SCREEN_MODES.length) % SCREEN_MODES.length;
+  return SCREEN_MODES[next] ?? mode;
+};
+
+/** The `/` filter: a case-insensitive substring of any of the row's words; empty keeps all. */
+export const matchesFilter = (query: string, ...fields: ReadonlyArray<string | null>): boolean => {
+  const needle = query.trim().toLowerCase();
+  if (needle === "") return true;
+  return fields.some((field) => field !== null && field.toLowerCase().includes(needle));
+};
+
+/**
  * Which nav section stands open. The detail pane is not a nav section, so
  * reading a record leaves the sidebar exactly as it was — sessions by default.
  */
@@ -954,6 +1050,8 @@ const expandedSection = (focus: Column, lastNav: NavSection): NavSection =>
 
 /** The session pane is the work; the sidebar is how you point at it. */
 const SIDEBAR_SHARE = 0.25;
+/** Half screen mode: long names get room, and the record still has half. */
+const HALF_SIDEBAR_SHARE = 0.5;
 /** Below this the sidebar stops being a list and starts being a rumour. */
 const MIN_SIDEBAR_WIDTH = 24;
 /** A record pane narrower than this wraps every line into noise. */
@@ -1022,14 +1120,14 @@ export const planLayout = (
   height: number,
   focus: Column,
   lastNav: NavSection,
+  mode: ScreenMode = "normal",
 ): DashboardLayout => {
-  const split = width >= SPLIT_MIN_WIDTH;
+  // Full screen mode is the narrow terminal's answer on purpose: one side, and the breadcrumb.
+  const split = mode !== "full" && width >= SPLIT_MIN_WIDTH;
   const navVisible = split || isNavSection(focus);
+  const share = mode === "half" ? HALF_SIDEBAR_SHARE : SIDEBAR_SHARE;
   const sidebarOuter = split
-    ? Math.max(
-        MIN_SIDEBAR_WIDTH,
-        Math.min(width - MIN_DETAIL_WIDTH, Math.round(width * SIDEBAR_SHARE)),
-      )
+    ? Math.max(MIN_SIDEBAR_WIDTH, Math.min(width - MIN_DETAIL_WIDTH, Math.round(width * share)))
     : navVisible
       ? Math.max(4, width)
       : 0;
@@ -1203,12 +1301,13 @@ export const worktreeJoinRows = (
   return line === null ? [] : wrapWords(line, width);
 };
 
-// ─── the keymap: one table, so the footer cannot drift from the handler ─────
+// ─── the keymap: one table, so the footer and `?` cannot drift from the handler ─
 
 /**
  * Every verb the dashboard's base layer answers to. Modal layers (the harness
- * picker, the creation modal, the adopt offer, the label input) own the
- * keyboard while they are open and are not described here.
+ * picker, the creation modal, the adopt offer, the label input, the `/`
+ * filter, the `?` overlay) own the keyboard while they are open and are not
+ * described here.
  */
 export type DashboardVerb =
   | "quit"
@@ -1218,6 +1317,17 @@ export type DashboardVerb =
   | "pageDown"
   | "columnLeft"
   | "columnRight"
+  | "nextPane"
+  | "prevPane"
+  | "jumpProjects"
+  | "jumpWorktrees"
+  | "jumpSessions"
+  | "jumpDetail"
+  | "back"
+  | "filter"
+  | "nextScreenMode"
+  | "prevScreenMode"
+  | "help"
   | "attach"
   | "resume"
   | "newSession"
@@ -1229,9 +1339,18 @@ export type DashboardVerb =
   | "remove"
   | "refresh";
 
+/** The `?` overlay's sections, lazygit's Local / Global / Navigation in Mend's words. */
+export type KeyGroup = "navigate" | "session" | "dashboard";
+
+export const KEY_GROUP_TITLE: Readonly<Record<KeyGroup, string>> = {
+  navigate: "move around",
+  session: "act on the selection",
+  dashboard: "the dashboard",
+};
+
 export interface KeyBinding {
   readonly verb: DashboardVerb;
-  /** opentui key names this binding answers to. */
+  /** opentui key names this binding answers to (see `strokeName` for the printable symbols). */
   readonly keys: ReadonlyArray<string>;
   /** Whether shift must be held; "any" when the key already encodes it. */
   readonly shift: boolean | "any";
@@ -1240,13 +1359,17 @@ export interface KeyBinding {
    * column still works there — it is simply not worth a line of help.
    */
   readonly hints: Partial<Record<Column, string>>;
+  /** What `?` says the verb does. Bindings of one verb share it; the first one that has it wins. */
+  readonly help?: string;
+  /** Where `?` lists it; bindings of one verb share it too. */
+  readonly group?: KeyGroup;
 }
 
 /**
- * The keymap AND the on-screen help, in one table and in footer order (most
- * essential first, because a narrow footer drops from the end). Nothing else
- * in the dashboard may bind a base-layer key: a binding the footer never
- * names, or help naming a key nothing answers to, is the drift this table
+ * The keymap, the footer AND the `?` overlay, in one table and in footer order
+ * (most essential first, because a narrow footer drops from the end). Nothing
+ * else in the dashboard may bind a base-layer key: a binding the footer or `?`
+ * never names, or help naming a key nothing answers to, is the drift this table
  * exists to make impossible — and `dashboard-model.test.ts` proves it.
  */
 export const KEY_BINDINGS: ReadonlyArray<KeyBinding> = [
@@ -1260,35 +1383,122 @@ export const KEY_BINDINGS: ReadonlyArray<KeyBinding> = [
       sessions: "↑↓ move",
       detail: "↑↓ scroll",
     },
+    help: "up the list, or back through the record",
+    group: "navigate",
   },
-  { verb: "moveDown", keys: ["down", "j"], shift: false, hints: {} },
-  { verb: "pageUp", keys: ["pageup"], shift: false, hints: {} },
-  { verb: "pageDown", keys: ["pagedown"], shift: false, hints: {} },
+  {
+    verb: "moveDown",
+    keys: ["down", "j"],
+    shift: false,
+    hints: {},
+    help: "down the list, or toward the newest line",
+    group: "navigate",
+  },
+  { verb: "pageUp", keys: ["pageup"], shift: false, hints: {}, help: "up ten", group: "navigate" },
+  {
+    verb: "pageDown",
+    keys: ["pagedown"],
+    shift: false,
+    hints: {},
+    help: "down ten",
+    group: "navigate",
+  },
+  {
+    verb: "jumpProjects",
+    keys: ["1"],
+    shift: false,
+    hints: {},
+    help: "jump to [1] projects",
+    group: "navigate",
+  },
+  {
+    verb: "jumpWorktrees",
+    keys: ["2"],
+    shift: false,
+    hints: {},
+    help: "jump to [2] worktrees",
+    group: "navigate",
+  },
+  {
+    verb: "jumpSessions",
+    keys: ["3"],
+    shift: false,
+    hints: {},
+    help: "jump to [3] sessions",
+    group: "navigate",
+  },
+  {
+    verb: "jumpDetail",
+    keys: ["0"],
+    shift: false,
+    hints: {},
+    help: "jump to [0], the session pane",
+    group: "navigate",
+  },
   {
     verb: "columnRight",
-    keys: ["return", "linefeed", "l", "right", "tab"],
+    keys: ["return", "linefeed", "l", "right"],
     shift: false,
     hints: { projects: "→ worktrees", worktrees: "←→ panes", sessions: "←→ panes" },
+    help: "drill in: projects, worktrees, sessions, then [0]",
+    group: "navigate",
   },
   {
     verb: "columnLeft",
     keys: ["left", "h", "-", "backspace"],
     shift: false,
     hints: { detail: "← sessions" },
+    help: "one pane back up the hierarchy",
+    group: "navigate",
   },
-  { verb: "columnLeft", keys: ["backtab"], shift: "any", hints: {} },
-  { verb: "columnLeft", keys: ["tab"], shift: true, hints: {} },
+  {
+    verb: "nextPane",
+    keys: ["tab"],
+    shift: false,
+    hints: {},
+    help: "next pane, round to the first after the last",
+    group: "navigate",
+  },
+  { verb: "prevPane", keys: ["backtab"], shift: "any", hints: {} },
+  {
+    verb: "prevPane",
+    keys: ["tab"],
+    shift: true,
+    hints: {},
+    help: "previous pane, round to the last before the first",
+    group: "navigate",
+  },
+  {
+    verb: "back",
+    keys: ["escape"],
+    shift: false,
+    hints: {},
+    help: "clear the filter, else back to where you came from",
+    group: "navigate",
+  },
+  {
+    verb: "filter",
+    keys: ["/"],
+    shift: false,
+    hints: {},
+    help: "filter this list; enter keeps the filter, esc clears it",
+    group: "navigate",
+  },
   {
     verb: "attach",
     keys: ["a"],
     shift: false,
     hints: { worktrees: "a attach", sessions: "a attach", detail: "a attach" },
+    help: "attach this terminal to the live session",
+    group: "session",
   },
   {
     verb: "resume",
     keys: ["r"],
     shift: false,
     hints: { worktrees: "r resume", sessions: "r resume", detail: "r resume" },
+    help: "resume the settled session, on a harness you pick",
+    group: "session",
   },
   {
     verb: "newSession",
@@ -1299,18 +1509,24 @@ export const KEY_BINDINGS: ReadonlyArray<KeyBinding> = [
       worktrees: "n new session",
       sessions: "n new session",
     },
+    help: "another session in this worktree, or a new worktree",
+    group: "session",
   },
   {
     verb: "newWorktree",
     keys: ["w"],
     shift: false,
     hints: { worktrees: "w new worktree", sessions: "w new worktree" },
+    help: "a new worktree in this project",
+    group: "session",
   },
   {
     verb: "stop",
     keys: ["k"],
     shift: true,
     hints: { worktrees: "⇧K stop all", sessions: "⇧K stop" },
+    help: "stop it, or every live session in [2] (press twice)",
+    group: "session",
   },
   { verb: "stop", keys: ["x"], shift: false, hints: {} },
   {
@@ -1318,33 +1534,86 @@ export const KEY_BINDINGS: ReadonlyArray<KeyBinding> = [
     keys: ["d"],
     shift: true,
     hints: { worktrees: "⇧D remove worktree", sessions: "⇧D remove" },
+    help: "remove it, or the worktree from [2] (press twice)",
+    group: "session",
   },
   {
     verb: "review",
     keys: ["v"],
     shift: false,
     hints: { worktrees: "v review", sessions: "v review", detail: "v review" },
+    help: "review the change in this terminal",
+    group: "session",
   },
   {
     verb: "rename",
     keys: ["e"],
     shift: false,
     hints: { sessions: "e rename", detail: "e rename" },
+    help: "label the session; empty clears it",
+    group: "session",
   },
-  { verb: "openWeb", keys: ["o"], shift: false, hints: { sessions: "o web", detail: "o web" } },
+  {
+    verb: "openWeb",
+    keys: ["o"],
+    shift: false,
+    hints: { sessions: "o web", detail: "o web" },
+    help: "open the session in the browser",
+    group: "session",
+  },
   {
     verb: "refresh",
     keys: ["r"],
     shift: true,
     hints: { projects: "⇧R refresh", worktrees: "⇧R refresh", detail: "⇧R refresh" },
+    help: "read everything from the server again",
+    group: "dashboard",
+  },
+  {
+    verb: "nextScreenMode",
+    keys: ["+"],
+    shift: "any",
+    hints: {},
+    help: "screen mode: normal, half, full",
+    group: "dashboard",
+  },
+  {
+    verb: "prevScreenMode",
+    keys: ["_"],
+    shift: "any",
+    hints: {},
+    help: "screen mode, the other way",
+    group: "dashboard",
+  },
+  {
+    verb: "help",
+    keys: ["?"],
+    shift: "any",
+    hints: {},
+    help: "this list",
+    group: "dashboard",
   },
   {
     verb: "quit",
     keys: ["q"],
     shift: false,
     hints: { projects: "q quit", worktrees: "q quit", sessions: "q quit", detail: "q quit" },
+    help: "quit; sessions keep running",
+    group: "dashboard",
   },
 ];
+
+/**
+ * The key name to look up. A terminal speaking the kitty protocol reports `?` as shift+`/` and `+`
+ * as shift+`=`, with the typed character in the sequence; a legacy terminal names the character
+ * itself. Both answer to the character, so `/` with shift held is `?` and never the filter.
+ */
+const SYMBOL_STROKES: ReadonlySet<string> = new Set(["?", "+", "_"]);
+
+export const strokeName = (key: { readonly name?: string; readonly sequence?: string }): string => {
+  const sequence = key.sequence ?? "";
+  return SYMBOL_STROKES.has(sequence) ? sequence : (key.name ?? "");
+};
 
 /** The verb a keystroke means in the base layer; null = the dashboard ignores it. */
 export const verbForKey = (name: string, shift: boolean): DashboardVerb | null =>
@@ -1357,7 +1626,8 @@ export const verbForKey = (name: string, shift: boolean): DashboardVerb | null =
  * While a game has the keyboard (the `mend snake` overlay, or a starting session's snake in the
  * session pane), the dashboard verbs it keeps from the dashboard: every one. The game's own keys
  * (arrows, h j k l, space, p, enter, esc, q) are read before this; any other bound key would act
- * on a list, a pane or a session behind the game, so none does until esc or q hands it back.
+ * on a list, a pane or a session behind the game, so none does until esc or q hands it back. The
+ * numbered-pane jumps, tab, `?`, `/` and the screen modes are dashboard verbs like any other.
  */
 export const gameSwallows = (verb: DashboardVerb | null): boolean => verb !== null;
 
@@ -1367,3 +1637,86 @@ export const verbHints = (focus: Column): ReadonlyArray<string> =>
     const hint = binding.hints[focus];
     return hint === undefined ? [] : [hint];
   });
+
+/** The footer's last word, kept whatever drops: lazygit's `Keybindings: ?`. */
+export const HELP_HINT = "? keys";
+
+/** The footer line: this pane's hints that fit, then `? keys` always. */
+export const footerHints = (focus: Column, width: number): string => {
+  const tail = ` · ${HELP_HINT}`;
+  return `${fitHints(verbHints(focus), Math.max(1, width - tail.length))}${tail}`;
+};
+
+const KEY_LABEL: Readonly<Record<string, string>> = {
+  up: "↑",
+  down: "↓",
+  left: "←",
+  right: "→",
+  return: "enter",
+  tab: "tab",
+  backtab: "⇧tab",
+  escape: "esc",
+  backspace: "⌫",
+  pageup: "PgUp",
+  pagedown: "PgDn",
+};
+
+/** How `?` writes one key: `↑`, `enter`, `⇧K`. */
+const keyLabel = (key: string, shift: boolean | "any"): string => {
+  const base = KEY_LABEL[key] ?? key;
+  return shift === true ? `⇧${base.length === 1 ? base.toUpperCase() : base}` : base;
+};
+
+export interface HelpRow {
+  readonly verb: DashboardVerb;
+  /** Every key that reaches the verb, `↑ k`. */
+  readonly keys: string;
+  readonly help: string;
+  /** Whether the footer names it in the focused pane: `?` draws those brighter. */
+  readonly here: boolean;
+}
+
+export interface HelpSection {
+  readonly title: string;
+  readonly rows: ReadonlyArray<HelpRow>;
+}
+
+/**
+ * The `?` overlay, read off the keymap: one row per verb with every key that reaches it, by group
+ * and in the keymap's own order. `here` marks the verbs this pane's footer names, which the
+ * overlay draws brighter. `linefeed` is the same key as enter on some terminals and is not listed
+ * twice.
+ */
+export const helpSections = (focus: Column): ReadonlyArray<HelpSection> => {
+  const rows = new Map<
+    DashboardVerb,
+    { keys: Array<string>; help: string; group: KeyGroup | null }
+  >();
+  for (const binding of KEY_BINDINGS) {
+    const entry = rows.get(binding.verb) ?? { keys: [], help: "", group: null };
+    for (const key of binding.keys) {
+      if (key === "linefeed") continue;
+      const label = keyLabel(key, binding.shift);
+      if (!entry.keys.includes(label)) entry.keys.push(label);
+    }
+    if (entry.help === "" && binding.help !== undefined) entry.help = binding.help;
+    if (entry.group === null && binding.group !== undefined) entry.group = binding.group;
+    rows.set(binding.verb, entry);
+  }
+  const all = [...rows].map(([verb, entry]) => ({
+    verb,
+    keys: entry.keys.join(" "),
+    help: entry.help,
+    group: entry.group ?? "dashboard",
+    here: KEY_BINDINGS.some(
+      (binding) => binding.verb === verb && binding.hints[focus] !== undefined,
+    ),
+  }));
+  const groups: ReadonlyArray<KeyGroup> = ["navigate", "session", "dashboard"];
+  return groups.flatMap((group) => {
+    const ordered = all.filter((row) => row.group === group);
+    return ordered.length === 0
+      ? []
+      : [{ title: KEY_GROUP_TITLE[group], rows: ordered.map(({ group: _group, ...row }) => row) }];
+  });
+};

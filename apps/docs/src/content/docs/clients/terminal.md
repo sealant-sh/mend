@@ -28,12 +28,22 @@ session with the conversation record it has written so far. The remaining quarte
 three stacked sections, **Projects**, **Worktrees** and **Sessions**. The section you are in stands
 open, and the other two fold to one line that says what is selected there.
 
+Every pane carries its number in its title, the way lazygit numbers its panels: `[1] projects`,
+`[2] worktrees`, `[3] sessions`, and `[0]` for the session pane. Press the number to jump there. The
+pane the keyboard is in has a yellow border and title.
+
+`+` and `_` cycle the screen mode. Normal gives the sidebar a quarter of the width. Half gives it
+half, for long names. Full gives the whole screen to the side you are on, and the breadcrumb states
+the rest.
+
 The layout never squeezes a pane. A terminal too narrow for both sides gives the whole width to the
 side you are on. A terminal too short for three sections shows the open section alone. A one-line
 breadcrumb states whatever did not fit.
 
 The footer lists the keys for the section you are in, most important first, and drops hints from the
-end when the terminal is narrow. `mend help ui` prints the full description.
+end when the terminal is narrow. It always ends with `? keys`: `?` opens every key the dashboard
+answers to, read from the same table the dashboard runs on, with the keys this pane's footer names
+drawn brighter. `mend help ui` prints the full description.
 
 When you run `mend` inside a checkout whose origin matches no project, the dashboard offers to adopt
 it. Enter or `y` adopts it, the left and right arrows (or Tab) pick its Git access (`ambient`,
@@ -42,23 +52,34 @@ each mode means.
 
 ## Keys
 
-| Key                                  | What it does                                                                                |
-| ------------------------------------ | ------------------------------------------------------------------------------------------- |
-| `↑` `↓` or `k` `j`                   | Move inside the open section, or scroll the session pane                                    |
-| `PageUp` `PageDown`                  | Move ten rows                                                                               |
-| `Enter`, `→`, `l` or `Tab`           | Move one column right: projects, worktrees, sessions, then the session pane                 |
-| `←`, `h`, `-`, `Backspace` or `⇧Tab` | Move one column left                                                                        |
-| `a`                                  | Attach this terminal to the selected live session                                           |
-| `r`                                  | Resume the selected settled session, on a harness you pick                                  |
-| `n`                                  | Start another session in the selected worktree; in Projects, or with no worktree, a new one |
-| `w`                                  | Start a new worktree                                                                        |
-| `e`                                  | Rename the selected session; an empty name clears the label                                 |
-| `v`                                  | Review the session's change in the terminal                                                 |
-| `o`                                  | Open the session in the browser                                                             |
-| `⇧K` or `x`                          | Stop the selected session, or every live session of the selected worktree (press twice)     |
-| `⇧D`                                 | Remove the selected session, or the selected worktree in Worktrees (press twice)            |
-| `⇧R`                                 | Refresh                                                                                     |
-| `q`                                  | Quit                                                                                        |
+| Key                          | What it does                                                                                |
+| ---------------------------- | ------------------------------------------------------------------------------------------- |
+| `↑` `↓` or `k` `j`           | Move inside the open section, or scroll the session pane                                    |
+| `PageUp` `PageDown`          | Move ten rows                                                                               |
+| `1` `2` `3` `0`              | Jump to projects, worktrees, sessions, or the session pane                                  |
+| `Tab`, `⇧Tab`                | Next or previous pane, coming back round at either end                                      |
+| `Enter`, `→` or `l`          | Move one column right: projects, worktrees, sessions, then the session pane                 |
+| `←`, `h`, `-` or `Backspace` | Move one column left                                                                        |
+| `Esc`                        | Clear this list's filter, else go back to the pane you came from                            |
+| `/`                          | Filter the focused list; Enter keeps the filter, Esc clears it                              |
+| `?`                          | List every key                                                                              |
+| `+` `_`                      | Cycle the screen mode: normal, half, full                                                   |
+| `a`                          | Attach this terminal to the selected live session                                           |
+| `r`                          | Resume the selected settled session, on a harness you pick                                  |
+| `n`                          | Start another session in the selected worktree; in Projects, or with no worktree, a new one |
+| `w`                          | Start a new worktree                                                                        |
+| `e`                          | Rename the selected session; an empty name clears the label                                 |
+| `v`                          | Review the session's change in the terminal                                                 |
+| `o`                          | Open the session in the browser                                                             |
+| `⇧K` or `x`                  | Stop the selected session, or every live session of the selected worktree (press twice)     |
+| `⇧D`                         | Remove the selected session, or the selected worktree in Worktrees (press twice)            |
+| `⇧R`                         | Refresh                                                                                     |
+| `q`                          | Quit                                                                                        |
+
+A digit, Tab or an arrow into a starting session's pane hands the keyboard to its snake when the
+terminal can show the board whole. While the game has the keyboard, there or under `mend snake`,
+every dashboard key is the game's, the digits, Tab, `?` and `/` included. Esc or `q` hands it back
+to the pane you came from.
 
 In the Projects section, the verbs that act on a session (`a`, `r`, `e`, `v`, `o`, `⇧K`, `⇧D`) do
 nothing and the dashboard asks you to select a session first. Ctrl chords belong to the terminal and

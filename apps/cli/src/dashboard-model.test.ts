@@ -12,19 +12,30 @@ import {
   fetchWorkbench,
   fetchWorkspaceFacts,
   filterBranches,
+  backFrom,
+  COLUMNS,
+  cyclePane,
+  deriveHarnesses,
+  footerHints,
   foldGroupStatus,
   fitHints,
+  gameSwallows,
+  HELP_HINT,
+  helpSections,
   groupActivityAt,
   groupBaseLabel,
   KEY_BINDINGS,
-  gameSwallows,
   isDeadEnd,
   liveCountWords,
   liveProtocolOf,
   liveShellOf,
   markServicesStopped,
   markSessionStopped,
+  matchesFilter,
   NAV_SECTIONS,
+  numberedTitle,
+  PANE_NUMBER,
+  paneForDigit,
   planAttach,
   planLayout,
   planResume,
@@ -36,6 +47,8 @@ import {
   startingExplanationOf,
   startingWordsOf,
   stepColumn,
+  stepScreenMode,
+  strokeName,
   verbForKey,
   verbHints,
   viewerNeeded,
@@ -44,6 +57,7 @@ import {
   type BranchDto,
   type Column,
   type CreatingState,
+  type DashboardVerb,
   type NavSection,
   type ProjectDetailDto,
   type SessionDto,
@@ -51,6 +65,7 @@ import {
   type Workbench,
   type WorktreeDto,
 } from "./dashboard-model.ts";
+import { snakeKey } from "./snake-play.ts";
 
 const session = (over: Partial<SessionDto> & { readonly id: string }): SessionDto => ({
   harness: "claude",
@@ -489,6 +504,281 @@ describe("stepColumn", () => {
     expect(stepColumn("sessions", 1)).toBe("detail");
     expect(stepColumn("detail", 1)).toBe("detail");
     expect(stepColumn("projects", -1)).toBe("projects");
+  });
+});
+
+describe("the numbered panes", () => {
+  it("numbers the sidebar from 1 and the session pane 0, each digit once", () => {
+    expect(COLUMNS.map((column) => PANE_NUMBER[column])).toEqual(["1", "2", "3", "0"]);
+    for (const column of COLUMNS) expect(paneForDigit(PANE_NUMBER[column])).toBe(column);
+    for (const digit of ["4", "5", "9", "a", ""]) expect(paneForDigit(digit)).toBeNull();
+  });
+
+  it("binds each pane's digit to a jump verb, so the number on screen is the key", () => {
+    const jump: Readonly<Record<Column, DashboardVerb>> = {
+      projects: "jumpProjects",
+      worktrees: "jumpWorktrees",
+      sessions: "jumpSessions",
+      detail: "jumpDetail",
+    };
+    for (const column of COLUMNS) {
+      expect(verbForKey(PANE_NUMBER[column], false)).toBe(jump[column]);
+    }
+  });
+
+  it("writes the number in front of the title", () => {
+    expect(numberedTitle("sessions", "sessions · 2")).toBe("[3] sessions · 2");
+    expect(numberedTitle("detail", "session")).toBe("[0] session");
+  });
+});
+
+describe("cyclePane", () => {
+  it("visits every pane and comes back round, both ways", () => {
+    let focus: Column = "projects";
+    const seen: Array<Column> = [];
+    for (let step = 0; step < COLUMNS.length; step += 1) {
+      seen.push(focus);
+      focus = cyclePane(focus, 1);
+    }
+    expect(seen).toEqual([...COLUMNS]);
+    expect(focus).toBe("projects");
+    expect(cyclePane("projects", -1)).toBe("detail");
+    expect(cyclePane("detail", 1)).toBe("projects");
+  });
+});
+
+describe("backFrom", () => {
+  it("returns the session pane to the list it was read from", () => {
+    for (const last of NAV_SECTIONS) expect(backFrom("detail", last)).toBe(last);
+  });
+
+  it("returns a list to the one above it, and stops at projects", () => {
+    expect(backFrom("sessions", "sessions")).toBe("worktrees");
+    expect(backFrom("worktrees", "sessions")).toBe("projects");
+    expect(backFrom("projects", "sessions")).toBe("projects");
+  });
+});
+
+describe("screen modes", () => {
+  it("cycles normal, half, full and back, both ways", () => {
+    expect(stepScreenMode("normal", 1)).toBe("half");
+    expect(stepScreenMode("half", 1)).toBe("full");
+    expect(stepScreenMode("full", 1)).toBe("normal");
+    expect(stepScreenMode("normal", -1)).toBe("full");
+  });
+
+  it("gives the sidebar half the width in half mode, and the record keeps the rest", () => {
+    const layout = planLayout(160, 40, "sessions", "sessions", "half");
+    expect(layout.split).toBe(true);
+    expect(layout.sidebarWidth).toBe(80);
+    expect(layout.detailWidth).toBe(160 - 80 - 2);
+  });
+
+  it("gives the whole screen to the side in focus in full mode", () => {
+    const record = planLayout(160, 40, "detail", "worktrees", "full");
+    expect(record.sidebarWidth).toBe(0);
+    expect(record.detailWidth).toBe(158);
+    expect(record.offscreen).toEqual(["projects", "worktrees", "sessions"]);
+    const list = planLayout(160, 40, "worktrees", "worktrees", "full");
+    expect(list.sidebarWidth).toBe(160);
+    expect(list.detailWidth).toBe(0);
+    expect(list.sections.find((entry) => entry.expanded)?.section).toBe("worktrees");
+  });
+});
+
+describe("strokeName", () => {
+  it("reads ? + _ off the typed character, whatever the terminal named the key", () => {
+    // The kitty protocol: the base key, shift held, the character in the sequence.
+    expect(strokeName({ name: "/", sequence: "?" })).toBe("?");
+    expect(strokeName({ name: "=", sequence: "+" })).toBe("+");
+    expect(strokeName({ name: "-", sequence: "_" })).toBe("_");
+    // A legacy terminal names the character itself.
+    expect(strokeName({ name: "?", sequence: "?" })).toBe("?");
+    expect(verbForKey(strokeName({ name: "/", sequence: "?" }), true)).toBe("help");
+  });
+
+  it("keeps / the filter and - a step back", () => {
+    expect(verbForKey(strokeName({ name: "/", sequence: "/" }), false)).toBe("filter");
+    expect(verbForKey(strokeName({ name: "-", sequence: "-" }), false)).toBe("columnLeft");
+    expect(strokeName({ name: "escape", sequence: "\u001b" })).toBe("escape");
+  });
+});
+
+describe("a game with the keyboard", () => {
+  it("reads its own keys first: steering, pausing, and esc or q to leave", () => {
+    // The handler asks the game (snakeKey) before the dashboard; these never reach a verb.
+    const own: ReadonlyArray<readonly [string, string]> = [
+      ["up", "steer"],
+      ["down", "steer"],
+      ["left", "steer"],
+      ["right", "steer"],
+      ["h", "steer"],
+      ["j", "steer"],
+      ["k", "steer"],
+      ["l", "steer"],
+      ["space", "togglePause"],
+      ["p", "togglePause"],
+      ["escape", "leave"],
+      ["q", "leave"],
+    ];
+    for (const [key, type] of own) expect(snakeKey(key)?.type, key).toBe(type);
+  });
+
+  it("keeps the numbered panes' keys from the dashboard: digits, tab, ?, / and the screen modes", () => {
+    for (const [key, shift] of [
+      ["1", false],
+      ["2", false],
+      ["3", false],
+      ["0", false],
+      ["tab", false],
+      ["tab", true],
+      ["backtab", true],
+      ["?", true],
+      ["/", false],
+      ["+", true],
+      ["_", true],
+    ] as const) {
+      expect(snakeKey(key), key).toBeNull();
+      expect(gameSwallows(verbForKey(key, shift)), key).toBe(true);
+    }
+  });
+});
+
+const helpRowsOf = (focus: Column) => helpSections(focus).flatMap((section) => section.rows);
+
+describe("the ? overlay", () => {
+  it("lists every verb in the keymap exactly once, with words for what it does", () => {
+    for (const focus of COLUMNS) {
+      const listed = helpRowsOf(focus).map((row) => row.verb);
+      expect(new Set(listed).size).toBe(listed.length);
+      expect(new Set(listed)).toEqual(new Set(KEY_BINDINGS.map((binding) => binding.verb)));
+      for (const row of helpRowsOf(focus)) expect(row.help.length, row.verb).toBeGreaterThan(0);
+    }
+  });
+
+  it("names every key that reaches a verb", () => {
+    const keysOf = new Map(helpRowsOf("sessions").map((row) => [row.verb, row.keys.split(" ")]));
+    for (const binding of KEY_BINDINGS) {
+      const listed = keysOf.get(binding.verb) ?? [];
+      for (const key of binding.keys) {
+        if (key === "linefeed") continue;
+        // The label may draw the key (↑, enter, ⇧K) rather than spell its opentui name.
+        const drawn = listed.some(
+          (label) =>
+            label === key ||
+            label.toLowerCase() === `⇧${key}` ||
+            (
+              {
+                up: "↑",
+                down: "↓",
+                left: "←",
+                right: "→",
+                return: "enter",
+                escape: "esc",
+                backspace: "⌫",
+                pageup: "PgUp",
+                pagedown: "PgDn",
+                backtab: "⇧tab",
+              } as Readonly<Record<string, string>>
+            )[key] === label,
+        );
+        expect(drawn, `${binding.verb}: ${key} in ${listed.join(" ")}`).toBe(true);
+      }
+    }
+  });
+
+  it("keeps the keymap's order, and marks what this pane's footer names", () => {
+    const order = [...new Set(KEY_BINDINGS.map((binding) => binding.verb))];
+    for (const focus of COLUMNS) {
+      for (const section of helpSections(focus)) {
+        const at = section.rows.map((row) => order.indexOf(row.verb));
+        expect(at, section.title).toEqual(at.toSorted((left, right) => left - right));
+      }
+      const here = new Set(
+        helpRowsOf(focus)
+          .filter((row) => row.here)
+          .map((row) => row.verb),
+      );
+      expect(here).toEqual(
+        new Set(
+          KEY_BINDINGS.filter((binding) => binding.hints[focus] !== undefined).map(
+            (binding) => binding.verb,
+          ),
+        ),
+      );
+    }
+  });
+
+  it("writes shifted letters the way the footer does", () => {
+    const keys = new Map(helpRowsOf("sessions").map((row) => [row.verb, row.keys]));
+    expect(keys.get("stop")).toBe("⇧K x");
+    expect(keys.get("remove")).toBe("⇧D");
+    expect(keys.get("prevPane")).toBe("⇧tab");
+  });
+});
+
+describe("footerHints", () => {
+  it("always ends with ? keys, however little room there is", () => {
+    for (const focus of COLUMNS) {
+      for (const width of [12, 30, 60, 200]) {
+        expect(footerHints(focus, width).endsWith(` · ${HELP_HINT}`)).toBe(true);
+      }
+    }
+  });
+
+  it("keeps the pane's own hints first when they fit", () => {
+    expect(footerHints("sessions", 200).startsWith("↑↓ move · ←→ panes · a attach")).toBe(true);
+  });
+});
+
+describe("matchesFilter", () => {
+  it("matches a case-insensitive substring of any field, and keeps everything when empty", () => {
+    expect(matchesFilter("", "anything")).toBe(true);
+    expect(matchesFilter("  ", "anything")).toBe(true);
+    expect(matchesFilter("SNAKE", "tui-snake-countdown")).toBe(true);
+    expect(matchesFilter("codex", "docs pass", null, "codex")).toBe(true);
+    expect(matchesFilter("zzz", "docs pass", null)).toBe(false);
+  });
+});
+
+describe("the verbs that were here before", () => {
+  it("still answer to the keys they always had", () => {
+    // Every base-layer key the dashboard bound before the numbered panes, and what it meant.
+    // Tab is the one that moved: it cycles the panes now (lazygit's nextBlock).
+    const before: ReadonlyArray<readonly [string, boolean, DashboardVerb]> = [
+      ["up", false, "moveUp"],
+      ["k", false, "moveUp"],
+      ["down", false, "moveDown"],
+      ["j", false, "moveDown"],
+      ["pageup", false, "pageUp"],
+      ["pagedown", false, "pageDown"],
+      ["return", false, "columnRight"],
+      ["linefeed", false, "columnRight"],
+      ["l", false, "columnRight"],
+      ["right", false, "columnRight"],
+      ["left", false, "columnLeft"],
+      ["h", false, "columnLeft"],
+      ["-", false, "columnLeft"],
+      ["backspace", false, "columnLeft"],
+      ["a", false, "attach"],
+      ["r", false, "resume"],
+      ["n", false, "newSession"],
+      ["w", false, "newWorktree"],
+      ["k", true, "stop"],
+      ["x", false, "stop"],
+      ["d", true, "remove"],
+      ["v", false, "review"],
+      ["e", false, "rename"],
+      ["o", false, "openWeb"],
+      ["r", true, "refresh"],
+      ["q", false, "quit"],
+    ];
+    for (const [key, shift, verb] of before) {
+      expect(verbForKey(key, shift), `${shift ? "⇧" : ""}${key}`).toBe(verb);
+    }
+    expect(verbForKey("tab", false)).toBe("nextPane");
+    expect(verbForKey("tab", true)).toBe("prevPane");
+    expect(verbForKey("backtab", true)).toBe("prevPane");
   });
 });
 
@@ -1153,6 +1443,95 @@ const fakeApi =
     if (!(route in routes)) throw new Error(`GET ${route} → 404`);
     return JSON.parse(JSON.stringify(routes[route]));
   };
+
+describe("deriveHarnesses", () => {
+  it("says a new session starts a new worktree", () => {
+    for (const item of deriveHarnesses(null)) expect(item.hint).toContain("new worktree");
+  });
+
+  it("says a session started inside a worktree joins it, never a new one", () => {
+    const rows = deriveHarnesses(null, "fix-auth");
+    expect(rows.map((item) => item.harness)).toEqual(
+      deriveHarnesses(null).map((item) => item.harness),
+    );
+    for (const item of rows) {
+      expect(item.hint).toContain("joins fix-auth");
+      expect(item.hint).not.toContain("new worktree");
+    }
+  });
+});
+
+describe("the Services the session pane names", () => {
+  it("reads GET /services as the server answers it, one view per Service", async () => {
+    const routes: Readonly<Record<string, unknown>> = {
+      "/projects": [project],
+      "/services": [
+        {
+          service: {
+            id: "svc-1",
+            sessionId: "a",
+            name: "web",
+            workspacePort: 5173,
+            transport: "tcp",
+            browserScheme: "http",
+            currentAttemptId: "att-1",
+          },
+          attempts: [{ id: "att-1", status: "running", argv: ["pnpm", "dev"], exitCode: null }],
+          currentForward: { id: "fwd-2", hostPort: 41873, state: "bound" },
+          latestObservation: { forwardId: "fwd-2", state: "reachable", lastObservedAt: "now" },
+          endpoints: [
+            { authority: "127.0.0.1:41000", hostPort: 41000, scope: "loopback" },
+            { authority: "box:41873", hostPort: 41873, scope: "private" },
+          ],
+          workspaceExpiresAt: null,
+        },
+        {
+          service: {
+            id: "svc-2",
+            sessionId: "a",
+            name: "db",
+            workspacePort: 5432,
+            transport: "udp",
+            currentAttemptId: "att-2",
+          },
+          attempts: [{ id: "att-2", status: "running" }],
+          // The observation is of an older forward: it says nothing about this one.
+          currentForward: { id: "fwd-3", state: "binding" },
+          latestObservation: { forwardId: "fwd-1", state: "reachable" },
+          endpoints: [],
+        },
+      ],
+      [`/projects/${project.id}`]: {
+        project,
+        sessions: [session({ id: "a", worktreeId: "wt-1", status: "running" })],
+        annotations: [],
+        worktrees: [worktree({ id: "wt-1" })],
+      },
+      "/sessions/a": { session: session({ id: "a", status: "running" }), processes: [] },
+    };
+    const data = await fetchWorkbench({ api: fakeApi(routes) });
+    expect(data.servicesBySession.get("a")).toEqual([
+      {
+        id: "svc-1",
+        sessionId: "a",
+        label: "web",
+        status: "reachable",
+        workspacePort: 5173,
+        protocol: "tcp",
+        hostPort: 41873,
+      },
+      {
+        id: "svc-2",
+        sessionId: "a",
+        label: "db",
+        status: "binding",
+        workspacePort: 5432,
+        protocol: "udp",
+        hostPort: null,
+      },
+    ]);
+  });
+});
 
 describe("people in a workspace (docs/adr/0016, decisions 13 and 14)", () => {
   const anna = { accountId: "anna", name: "Anna" };

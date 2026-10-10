@@ -19,9 +19,11 @@ import {
 import {
   gameSwallows,
   advanceFromBase,
+  backFrom,
   baseStepNotice,
   clampIndex,
   createLaunchGate,
+  cyclePane,
   deriveHarnesses,
   deriveProjects,
   deriveWorktrees,
@@ -30,8 +32,10 @@ import {
   fetchWorkspaceFacts,
   filterBranches,
   fitHints,
+  footerHints,
   elapsedWords,
   foldGroupStatus,
+  helpSections,
   isNavSection,
   groupActivityAt,
   groupBaseLabel,
@@ -40,6 +44,9 @@ import {
   mapWorkbenchSessions,
   markServicesStopped,
   markSessionStopped,
+  matchesFilter,
+  numberedTitle,
+  paneForDigit,
   planAttach,
   planLayout,
   planResume,
@@ -56,8 +63,9 @@ import {
   startingExplanationOf,
   startingWordsOf,
   stepColumn,
+  stepScreenMode,
+  strokeName,
   verbForKey,
-  verbHints,
   VIEWER_KEY,
   viewerNeeded,
   WORKBENCH_KEY,
@@ -70,6 +78,7 @@ import {
   type HarnessItem,
   type NavSection,
   type ProjectItem,
+  type ScreenMode,
   type SectionLayout,
   type SessionDto,
   type SessionItem,
@@ -231,13 +240,6 @@ export interface DashboardContext {
 }
 
 // ─── panes and rows ─────────────────────────────────────────────────────────
-
-const COLUMN_TITLE: Readonly<Record<Column, string>> = {
-  projects: "projects",
-  worktrees: "worktrees",
-  sessions: "sessions",
-  detail: "session",
-};
 
 /** Rows are two lines in the worktree and session columns: a name, then its facts. */
 const WORKTREE_ROW_HEIGHT = 2;
@@ -438,16 +440,19 @@ const HarnessRow = ({
   item,
   selected,
   background,
+  width,
 }: {
   readonly item: HarnessItem;
   readonly selected: boolean;
   readonly background: string;
+  /** The row's inner width: a hint naming a long worktree is cut before the border. */
+  readonly width: number;
 }) => (
   <box height={1} flexShrink={0} backgroundColor={selected ? WASH : background}>
     <text height={1} bg={selected ? WASH : background}>
       <Gutter selected={selected} />
       <span fg={INK}>{item.label.padEnd(12)}</span>
-      <span fg={FAINT}>{item.hint}</span>
+      <span fg={FAINT}>{fit(item.hint, Math.max(4, width - 2 - 12))}</span>
     </text>
   </box>
 );
@@ -725,8 +730,13 @@ const SNAKE_MIN_PANE_COLS = SNAKE_MIN_BOARD_COLS + 4;
 const noShare = (): "off" => "off";
 const NO_TUNNELS: ReadonlyArray<OpenTunnel> = [];
 const noTunnels = (): ReadonlyArray<OpenTunnel> => NO_TUNNELS;
+const NO_FILTERS: Readonly<Record<NavSection, string>> = {
+  projects: "",
+  worktrees: "",
+  sessions: "",
+};
 
-/** Exported for the render tests (dashboard-snake.test.tsx). */
+/** Exported for the render tests (dashboard.test.tsx, dashboard-snake.test.tsx). */
 export const App = ({
   ctx,
   onQuit,
@@ -751,6 +761,15 @@ export const App = ({
    * pane: reading a record must not fold the list you were just walking.
    */
   const [lastNav, setLastNav] = useState<NavSection>("sessions");
+  /** lazygit's `+`/`_`: how much of the screen the side in focus gets. */
+  const [screenMode, setScreenMode] = useState<ScreenMode>("normal");
+  /** Each list's `/` filter; empty shows every row. */
+  const [filters, setFilters] = useState<Readonly<Record<NavSection, string>>>(NO_FILTERS);
+  /** The list whose filter is being typed; the footer is its input meanwhile. */
+  const [filtering, setFiltering] = useState<NavSection | null>(null);
+  /** The `?` overlay, and how far down it has been scrolled. */
+  const [helpOpen, setHelpOpen] = useState(false);
+  const [helpOffset, setHelpOffset] = useState(0);
   const [projectKey, setProjectKey] = useState<string | null>(null);
   const [worktreeKey, setWorktreeKey] = useState<string | null>(null);
   const [sessionKey, setSessionKey] = useState<string | null>(null);
@@ -822,7 +841,9 @@ export const App = ({
   const { width: terminalCols, height: terminalRows } = useTerminalDimensions();
 
   // ── selection, left to right ──
-  const projectItems = deriveProjects(data);
+  const projectItems = deriveProjects(data).filter((item) =>
+    matchesFilter(filters.projects, item.project.name),
+  );
   const homeProject =
     data === undefined ? undefined : matchProjectByCwd(data.projects, cwdFacts(ctx.cwd));
   const projectIndexRaw =
@@ -837,7 +858,9 @@ export const App = ({
         )
       : projectIndexRaw;
   const selectedProject = projectItems[projectIndex] ?? null;
-  const worktreeGroups = deriveWorktrees(data, selectedProject?.project.id ?? null);
+  const worktreeGroups = deriveWorktrees(data, selectedProject?.project.id ?? null).filter(
+    (group) => matchesFilter(filters.worktrees, group.name, groupBaseLabel(group)),
+  );
   const worktreeIndexRaw =
     worktreeKey === null ? -1 : worktreeGroups.findIndex((group) => group.key === worktreeKey);
   const sessionWorktreeIndex = worktreeGroups.findIndex((group) =>
@@ -846,26 +869,38 @@ export const App = ({
   const worktreeIndex =
     worktreeIndexRaw === -1 ? Math.max(0, sessionWorktreeIndex) : worktreeIndexRaw;
   const selectedGroup = worktreeGroups[worktreeIndex] ?? null;
-  const sessionItems = selectedGroup?.sessions ?? [];
+  const sessionItems = (selectedGroup?.sessions ?? []).filter((item) =>
+    matchesFilter(
+      filters.sessions,
+      sessionDisplayName(item.session),
+      item.session.harness,
+      item.session.status,
+    ),
+  );
   const sessionIndexRaw =
     sessionKey === null ? -1 : sessionItems.findIndex((item) => item.session.id === sessionKey);
   const sessionIndex = sessionIndexRaw === -1 ? 0 : sessionIndexRaw;
   const selectedItem = sessionItems[sessionIndex] ?? null;
   const selectedSession = selectedItem?.session ?? null;
-  const pickerItems = picker === null ? [] : deriveHarnesses(picker.session);
+  const pickerItems =
+    picker === null ? [] : deriveHarnesses(picker.session, picker.worktree?.name ?? null);
 
   // A session that is still starting has no record to show. The image builds, then the session
   // boots; a first build on a new setup takes about seven minutes. Snake fills the wait.
   const waiting =
     selectedSession !== null &&
     (selectedSession.status === "starting" || isPendingId(selectedSession.id));
-  // A game never plays under a dialog: it waits for the dialog to close, then counts down.
+  // A game never plays under a dialog: it waits for the dialog to close, then counts down. The
+  // `?` list and a `/` filter being typed are dialogs too: a start that lands meanwhile must not
+  // take the keyboard from under them.
   const dialogOpen =
     picker !== null ||
     editing !== null ||
     creating !== null ||
     adoptOffer !== null ||
-    reviewing !== null;
+    reviewing !== null ||
+    helpOpen ||
+    filtering !== null;
   // A game takes the keyboard only where it can be seen whole. The pane's game is measured on
   // the layout it plays in (the session pane focused), where the facts give way to it; the
   // overlay needs its smallest board inside the terminal. One that does not fit says so.
@@ -884,7 +919,7 @@ export const App = ({
   const focus: Column = snakeFocused ? "detail" : columnFocus;
 
   // ── where every pane sits ──
-  const layout = planLayout(terminalCols, terminalRows, focus, lastNav);
+  const layout = planLayout(terminalCols, terminalRows, focus, lastNav, screenMode);
   const detailWidth = layout.detailWidth;
   const sectionRows = (section: NavSection): number =>
     layout.sections.find((entry) => entry.section === section)?.rows ?? 0;
@@ -1010,6 +1045,13 @@ export const App = ({
     setPreviewOffset(0);
   };
   const say = (text: string): void => setStatus({ text, at: Date.now() });
+  /** A row Mend just put in a list must not land behind a filter that hides it. */
+  const clearFilters = (...sections: ReadonlyArray<NavSection>): void =>
+    setFilters((current) =>
+      sections.every((section) => current[section] === "")
+        ? current
+        : { ...current, ...Object.fromEntries(sections.map((section) => [section, ""])) },
+    );
   const refetch = (): void => void queryClient.invalidateQueries({ queryKey: WORKBENCH_KEY });
 
   // Signature requests are facts from outside React — the status line says them.
@@ -1187,6 +1229,7 @@ export const App = ({
           createdAt: new Date().toISOString(),
         }),
       );
+      clearFilters("worktrees", "sessions");
       setWorktreeKey(vars.pendingKey);
       selectSession(vars.pendingKey);
       setBusy(`provisioning ${vars.harness} workspace ·`);
@@ -1305,6 +1348,7 @@ export const App = ({
         return;
       }
       const project = result.project;
+      clearFilters("projects");
       say(`adopted · ${project.name} · w starts a worktree`);
       setProjectKey(project.id);
       setWorktreeKey(null);
@@ -1413,6 +1457,7 @@ export const App = ({
           createdAt: new Date().toISOString(),
         }),
       );
+      clearFilters("sessions");
       selectSession(vars.pendingKey);
       setBusy(`starting ${vars.harness} in the worktree ·`);
       setBusyStarted(Date.now());
@@ -1874,22 +1919,25 @@ export const App = ({
     }
   };
 
-  const moveColumn = (delta: number): void => {
-    const next = stepColumn(focus, delta);
-    // Into the pane of a starting session is into the game; esc hands back this column. A
-    // game the terminal cannot show whole stays out of it, and the pane says so.
+  /**
+   * Every move between panes (an arrow, tab, a digit, esc) lands here. Into the pane of a
+   * starting session is into the game; esc hands back the column the move came from. A game the
+   * terminal cannot show whole stays out of it, and the pane says so.
+   */
+  const goTo = (next: Column): void => {
     if (next === "detail" && waiting && snakeFits) {
       setSnakeFocus({ returnTo: focus, start: null });
       return;
     }
     setFocus(next);
   };
+  const moveColumn = (delta: number): void => goTo(stepColumn(focus, delta));
 
   useKeyboard((key) => {
     if (reviewing !== null) return;
     if (lockRef.current) return;
     if (key.ctrl && key.name === "c") return onQuit();
-    const verb = verbForKey(key.name ?? "", key.shift === true);
+    const verb = verbForKey(strokeName(key), key.shift === true);
     // A game with the keyboard reads its own keys first: the arrows and h j k l steer, space or
     // p pauses, enter starts again, esc or q hands the keyboard back. No dashboard verb acts
     // behind it (gameSwallows); a key bound to nothing falls through to nothing.
@@ -2008,6 +2056,29 @@ export const App = ({
       }
       return;
     }
+    if (helpOpen) {
+      // The overlay reads; esc, ? or q put it away and the arrows scroll it.
+      if (key.name === "escape" || key.name === "q" || verb === "help") {
+        setHelpOpen(false);
+      } else if (verb === "moveDown" || verb === "pageDown") {
+        setHelpOffset((current) =>
+          Math.max(0, Math.min(helpMaxOffset, current + (verb === "pageDown" ? 10 : 1))),
+        );
+      } else if (verb === "moveUp" || verb === "pageUp") {
+        setHelpOffset((current) => Math.max(0, current - (verb === "pageUp" ? 10 : 1)));
+      }
+      return;
+    }
+    if (filtering !== null) {
+      // The input owns the characters and enter keeps the filter; esc clears it, and the arrows
+      // still walk the narrowing list.
+      if (key.name === "escape") {
+        clearFilters(filtering);
+        setFiltering(null);
+      } else if (key.name === "down") moveSelection(1);
+      else if (key.name === "up") moveSelection(-1);
+      return;
+    }
     if (picker !== null) {
       switch (key.name) {
         case "down":
@@ -2074,6 +2145,37 @@ export const App = ({
         return moveColumn(1);
       case "columnLeft":
         return moveColumn(-1);
+      case "nextPane":
+        return goTo(cyclePane(focus, 1));
+      case "prevPane":
+        return goTo(cyclePane(focus, -1));
+      case "jumpProjects":
+      case "jumpWorktrees":
+      case "jumpSessions":
+      case "jumpDetail":
+        return goTo(paneForDigit(strokeName(key)) ?? focus);
+      case "back":
+        if (isNavSection(focus) && filters[focus] !== "") {
+          clearFilters(focus);
+          return;
+        }
+        return goTo(backFrom(focus, lastNav));
+      case "filter":
+        if (!isNavSection(focus)) {
+          say("/ filters a list · 1 2 3 jump to one");
+          return;
+        }
+        return setFiltering(focus);
+      case "nextScreenMode":
+      case "prevScreenMode": {
+        const next = stepScreenMode(screenMode, verb === "nextScreenMode" ? 1 : -1);
+        setScreenMode(next);
+        say(`screen mode · ${next}${next === "normal" ? "" : " · + and _ cycle it"}`);
+        return;
+      }
+      case "help":
+        setHelpOffset(0);
+        return setHelpOpen(true);
       case "attach":
         return attachSelected();
       case "resume":
@@ -2132,14 +2234,23 @@ export const App = ({
   // ── chrome ──
   const liveTotal = projectItems.reduce((sum, item) => sum + item.live, 0);
   const stoppingTotal = projectItems.reduce((sum, item) => sum + item.stopping, 0);
-  const columnTitle = (column: Column): string => {
+  /**
+   * A filtered list says so in its title, in the words that set it, right after the noun: a
+   * narrow sidebar cuts the counts before it cuts the filter that explains them.
+   */
+  const named = (section: NavSection): string =>
+    filters[section] === "" ? section : `${section} /${filters[section]}`;
+  const columnTitle = (column: Column): string => numberedTitle(column, columnWords(column));
+  const columnWords = (column: Column): string => {
     if (column === "worktrees") {
       return selectedProject === null
-        ? "worktrees"
-        : `worktrees · ${worktreeGroups.length}${selectedProject.live > 0 ? ` · ${selectedProject.live} live` : ""}`;
+        ? named("worktrees")
+        : `${named("worktrees")} · ${worktreeGroups.length}${selectedProject.live > 0 ? ` · ${selectedProject.live} live` : ""}`;
     }
     if (column === "sessions") {
-      return selectedGroup === null ? "sessions" : `sessions · ${sessionItems.length}`;
+      return selectedGroup === null
+        ? named("sessions")
+        : `${named("sessions")} · ${sessionItems.length}`;
     }
     if (column === "detail") {
       if (selectedSession === null) return "session";
@@ -2147,7 +2258,7 @@ export const App = ({
         ? "session · read-only"
         : `session · read-only · ${previewView.later} newer below`;
     }
-    return COLUMN_TITLE[column];
+    return named("projects");
   };
   const pickerTitle =
     picker === null
@@ -2184,6 +2295,9 @@ export const App = ({
   // One big fixed-size modal: every step visible at once, nothing shifts as
   // focus moves through name → base → harness.
   const creatingHeight = 2 + 1 + 1 + 6 + 1 + deriveHarnesses(null).length;
+  // What an input beside a modal's `▌ name     ` label has before the border: a placeholder any
+  // longer is drawn over the frame, so it is cut to this first.
+  const modalFieldWidth = Math.max(4, modalWidth - 2 - 11 - 1);
   const footerText =
     adoptOffer === null
       ? editing === null
@@ -2191,7 +2305,7 @@ export const App = ({
           ? picker === null
             ? overlayFocused || snakeFocused
               ? ` ${snakeHints(overlayFocused ? overlaySnake.play : snake.play)}`
-              : ` ${fitHints(verbHints(focus), Math.max(12, terminalCols - 2))}`
+              : ` ${footerHints(focus, Math.max(12, terminalCols - 2))}`
             : " ↑↓ move · enter start · esc cancel"
           : creating.step === "name"
             ? " enter continue · esc cancel"
@@ -2200,6 +2314,20 @@ export const App = ({
               : " ↑↓ move · enter launch · esc back"
         : " enter save · esc cancel"
       : " enter adopt · ←→ auth mode · esc not now";
+
+  // The `?` overlay: the keymap's own rows, this pane's brighter, scrolled when the terminal is short.
+  const helpWidth = Math.min(96, terminalCols - 4);
+  const helpLines = helpSections(focus).flatMap((section, index) => [
+    ...(index === 0 ? [] : [{ kind: "blank" as const, key: `blank-${section.title}` }]),
+    { kind: "title" as const, key: `title-${section.title}`, text: section.title },
+    ...section.rows.map((row) => ({ kind: "row" as const, key: row.verb, row })),
+  ]);
+  const helpRows = Math.max(1, Math.min(helpLines.length, terminalRows - 6));
+  const helpMaxOffset = Math.max(0, helpLines.length - helpRows);
+  const helpView = helpLines.slice(
+    Math.min(helpOffset, helpMaxOffset),
+    Math.min(helpOffset, helpMaxOffset) + helpRows,
+  );
 
   const loadFailure =
     data === undefined && failureReason !== null ? errorText(failureReason) : null;
@@ -2296,7 +2424,13 @@ export const App = ({
                 />
               ))}
               {data !== undefined && projectItems.length === 0 ? (
-                <EmptyNote text="none adopted yet" />
+                <EmptyNote
+                  text={
+                    filters.projects === ""
+                      ? "none adopted yet"
+                      : `nothing matches /${filters.projects} · esc clears`
+                  }
+                />
               ) : null}
             </scrollbox>
           </Pane>
@@ -2325,7 +2459,13 @@ export const App = ({
                 />
               ))}
               {data !== undefined && worktreeGroups.length === 0 ? (
-                <EmptyNote text="no worktrees · w starts one" />
+                <EmptyNote
+                  text={
+                    filters.worktrees === ""
+                      ? "no worktrees · w starts one"
+                      : `nothing matches /${filters.worktrees} · esc clears`
+                  }
+                />
               ) : null}
             </scrollbox>
           </Pane>
@@ -2356,7 +2496,11 @@ export const App = ({
               {data !== undefined && sessionItems.length === 0 ? (
                 <EmptyNote
                   text={
-                    selectedGroup === null ? "no worktree selected" : "no sessions · n starts one"
+                    selectedGroup === null
+                      ? "no worktree selected"
+                      : filters.sessions === ""
+                        ? "no sessions · n starts one"
+                        : `nothing matches /${filters.sessions} · esc clears`
                   }
                 />
               ) : null}
@@ -2469,7 +2613,7 @@ export const App = ({
           )}
         </text>
         <text height={1} fg={FAINT} bg="transparent">
-          {`${ctx.config.url}  `}
+          {`${screenMode === "normal" ? "" : `${screenMode} screen · `}${ctx.config.url}  `}
         </text>
       </box>
       {!layout.breadcrumb ? null : (
@@ -2584,6 +2728,7 @@ export const App = ({
               item={item}
               selected={index === pickerIndex}
               background={SURFACE}
+              width={modalWidth - 2}
             />
           ))}
         </box>
@@ -2695,7 +2840,10 @@ export const App = ({
               <input
                 focused
                 value={creating.name}
-                placeholder="e.g. fix-auth (empty = auto · an existing name joins it)"
+                placeholder={fit(
+                  "e.g. fix-auth (empty = auto · an existing name joins it)",
+                  modalFieldWidth,
+                )}
                 backgroundColor={SURFACE}
                 focusedBackgroundColor={SURFACE}
                 textColor={INK}
@@ -2731,7 +2879,10 @@ export const App = ({
               <input
                 focused
                 value=""
-                placeholder="type to filter · enter takes the highlighted branch, or the default when empty"
+                placeholder={fit(
+                  "filter · enter takes the highlighted branch, or the default",
+                  modalFieldWidth,
+                )}
                 backgroundColor={SURFACE}
                 focusedBackgroundColor={SURFACE}
                 textColor={INK}
@@ -2774,7 +2925,7 @@ export const App = ({
                   bg={SURFACE}
                   fg={creating.branchError === null ? FAINT : ERROR}
                 >
-                  {index === 0 && notice !== null ? `     ${fit(notice, 66)}` : " "}
+                  {index === 0 && notice !== null ? `     ${fit(notice, modalWidth - 7)}` : " "}
                 </text>
               );
             }
@@ -2801,7 +2952,7 @@ export const App = ({
             <Gutter selected={creating.step === "harness"} />
             <span fg={FAINT}>{"harness"}</span>
           </text>
-          {deriveHarnesses(null).map((item, index) => {
+          {deriveHarnesses(null, creating.joins ? creating.name : null).map((item, index) => {
             const active = creating.step === "harness";
             const highlighted = active && index === creating.harnessIndex;
             return (
@@ -2815,7 +2966,9 @@ export const App = ({
                   <span fg={FAINT}>{"   "}</span>
                   <Gutter selected={highlighted} />
                   <span fg={active ? INK : FAINT}>{item.label.padEnd(12)}</span>
-                  <span fg={FAINT}>{active ? item.hint : ""}</span>
+                  <span fg={FAINT}>
+                    {active ? fit(item.hint, Math.max(4, modalWidth - 2 - 3 - 2 - 12)) : ""}
+                  </span>
                 </text>
               </box>
             );
@@ -2830,9 +2983,74 @@ export const App = ({
           {` could not load workbench · ${loadFailure} · retrying`}
         </text>
       )}
-      <text height={1} fg={FAINT} bg="transparent">
-        {footerText}
-      </text>
+      {helpOpen ? (
+        <box
+          position="absolute"
+          zIndex={14}
+          left={Math.max(1, Math.floor((terminalCols - helpWidth) / 2))}
+          top={Math.max(1, Math.floor((terminalRows - (helpRows + 3)) / 2))}
+          width={helpWidth}
+          height={helpRows + 3}
+          border
+          borderStyle="rounded"
+          borderColor={ACCENT}
+          title={` keys · ${fit(columnTitle(focus), Math.max(6, helpWidth - 14))} `}
+          titleAlignment="left"
+          backgroundColor={SURFACE}
+          flexDirection="column"
+        >
+          {helpView.map((line) =>
+            line.kind === "blank" ? (
+              <text key={line.key} height={1} bg={SURFACE}>
+                {" "}
+              </text>
+            ) : line.kind === "title" ? (
+              <text key={line.key} height={1} bg={SURFACE} fg={MUTED}>
+                {`  ${line.text}`}
+              </text>
+            ) : (
+              <text key={line.key} height={1} bg={SURFACE}>
+                <span fg={INK}>{`  ${fit(line.row.keys, 18).padEnd(19)}`}</span>
+                <span fg={line.row.here ? INK_2 : FAINT}>
+                  {fit(line.row.help, Math.max(8, helpWidth - 25))}
+                </span>
+              </text>
+            ),
+          )}
+          <text height={1} bg={SURFACE} fg={FAINT}>
+            {`  ${helpMaxOffset > 0 ? "↑↓ scroll · " : ""}esc closes`}
+          </text>
+        </box>
+      ) : null}
+      {filtering === null ? (
+        <text height={1} fg={FAINT} bg="transparent">
+          {footerText}
+        </text>
+      ) : (
+        <box height={1} flexShrink={0} flexDirection="row">
+          <text height={1} bg="transparent" fg={ACCENT}>
+            {" / "}
+          </text>
+          <input
+            focused
+            value={filters[filtering]}
+            placeholder={`filter ${columnTitle(filtering)} · enter keeps it · esc clears it`}
+            backgroundColor={CANVAS}
+            focusedBackgroundColor={CANVAS}
+            textColor={INK}
+            focusedTextColor={INK}
+            placeholderColor={FAINT}
+            cursorColor={INK}
+            flexGrow={1}
+            onInput={(value: string) => {
+              const section = filtering;
+              const clean = value.replace(/\t/g, "");
+              setFilters((current) => ({ ...current, [section]: clean }));
+            }}
+            onSubmit={() => setFiltering(null)}
+          />
+        </box>
+      )}
     </box>
   );
 };

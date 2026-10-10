@@ -172,6 +172,8 @@ import {
   parseLaunchArgs,
   servicesHoldOf,
   captureLineOf,
+  serviceViewAttempt,
+  serviceViewStatus,
   type SessionCaptureLike,
   firstPositional,
 } from "./shared.ts";
@@ -1947,14 +1949,7 @@ interface ServiceDto {
 }
 
 const flattenService = (view: ServiceViewDto): ServiceDto => {
-  const attempt =
-    view.service.currentAttemptId === null
-      ? null
-      : (view.attempts.find((candidate) => candidate.id === view.service.currentAttemptId) ?? null);
-  const observation =
-    view.currentForward !== null && view.latestObservation?.forwardId === view.currentForward.id
-      ? view.latestObservation
-      : null;
+  const attempt = serviceViewAttempt(view);
   const endpoint =
     view.endpoints.find((candidate) => candidate.scope === "private") ?? view.endpoints[0] ?? null;
   const browserUrl =
@@ -1964,7 +1959,7 @@ const flattenService = (view: ServiceViewDto): ServiceDto => {
     processId: attempt?.id ?? null,
     sessionId: view.service.sessionId,
     label: view.service.name,
-    status: observation?.state ?? view.currentForward?.state ?? attempt?.status ?? "stopped",
+    status: serviceViewStatus(view),
     workspacePort: view.service.workspacePort,
     hostPort: endpoint?.hostPort ?? null,
     authority: endpoint?.authority ?? null,

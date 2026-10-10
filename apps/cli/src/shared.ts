@@ -627,3 +627,49 @@ export const jsonWithoutCredentials = (value: unknown): string => {
   );
   return printed ?? "null";
 };
+
+// ─── a Service as `GET /services` answers it ────────────────────────────────
+
+/**
+ * The part of a Service's view (`GET /services`, api-contracts `ServiceView`) that says what state
+ * it is in and where it opens. The server answers one view per Service, the Service itself nested
+ * under `service`; every reader goes through `serviceViewStatus` and `serviceViewHostPort`, so
+ * `mend service list` and the dashboard say the same word for the same Service.
+ */
+export interface ServiceViewLike {
+  readonly service: { readonly currentAttemptId: string | null };
+  readonly attempts: ReadonlyArray<{ readonly id: string; readonly status: string }>;
+  readonly currentForward: { readonly id: string; readonly state: string } | null;
+  readonly latestObservation: { readonly forwardId: string; readonly state: string } | null;
+  readonly endpoints: ReadonlyArray<{ readonly scope: string; readonly hostPort: number }>;
+}
+
+/** The Service's process now, if it has one. */
+export const serviceViewAttempt = <View extends ServiceViewLike>(
+  view: View,
+): View["attempts"][number] | null =>
+  view.service.currentAttemptId === null
+    ? null
+    : (view.attempts.find((candidate) => candidate.id === view.service.currentAttemptId) ?? null);
+
+/**
+ * What was last observed of the current forward (`reachable`/`unreachable`), else the forward's
+ * own state, else the process's, else `stopped`. An observation of an older forward says nothing.
+ */
+export const serviceViewStatus = (view: ServiceViewLike): string => {
+  const observation =
+    view.currentForward !== null && view.latestObservation?.forwardId === view.currentForward.id
+      ? view.latestObservation
+      : null;
+  return (
+    observation?.state ??
+    view.currentForward?.state ??
+    serviceViewAttempt(view)?.status ??
+    "stopped"
+  );
+};
+
+/** The port it answers on, the private endpoint first. */
+export const serviceViewHostPort = (view: ServiceViewLike): number | null =>
+  (view.endpoints.find((candidate) => candidate.scope === "private") ?? view.endpoints[0] ?? null)
+    ?.hostPort ?? null;
