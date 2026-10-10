@@ -56,6 +56,29 @@ write them that way) created the session, then failed its launch with
   `/v1/sessions/as-user` alike. Mend then drops its check for the arguments and keeps the 64-word
   limit.
 
+## 2026-10-10 · 0.39.0-next.707 · A workspace's Docker service: no buildx, and no shared files with the daemon
+
+Verify Mend in Mend (`docs/operations/verify-stack.md`) builds sealantd, Core and Mend from source
+in a session's Docker service and installs them with `mend server setup`. Two facts of the Docker
+adapter's workspace Docker shaped it.
+
+- **No buildx in the workspace.** A family or custom image with `services.docker` gets the Docker
+  CLI and the Compose plugin (`buildkit-builder.ts`, both the plan and the image steps), not
+  `docker-buildx`. `docker build` with `DOCKER_BUILDKIT=1`, which every Dockerfile using `--mount`,
+  `COPY --chmod` or `# syntax=` needs, fails with "BuildKit is enabled but the buildx component is
+  missing or broken"; without the variable the CLI falls back to the deprecated legacy builder.
+  **What Mend does:** the script copies `docker-buildx` out of `docker:27.5.1-cli`, over the
+  daemon's API, into a Docker configuration of its own. **Suggested:** copy the plugin beside
+  Compose, from the same CLI image.
+- **The daemon sees none of the workspace's files.** The service is a rootless sidecar reached as
+  `tcp://docker:2375`, so a bind mount names a path of the sidecar, not of the workspace. Compose
+  files that bind a local file (`configs: file:`, a `./x:/y` volume) fail with "bind source path
+  does not exist". **What Mend does:** it runs `mend server setup` in a container whose home is a
+  volume mounted at that volume's own path on the daemon, so every path setup writes is one the
+  daemon resolves. **Suggested:** nothing to change; worth a line in the docs for workspace Docker,
+  with the rootless limits found here: a port cannot be published on loopback and on every interface
+  at once, nor on one interface's address, and `docker stats` reports no memory.
+
 ## 2026-10-10 · 0.39.0-next.707 · Registry mirrors for a workspace's Docker service
 
 Mend 0.36 runs a pull-through cache of Docker Hub beside its server (`docker-mirror`). Every

@@ -49,5 +49,6 @@ jobs:
           scripts/next-version.test.mjs scripts/sealant-pins.test.mjs
           scripts/check-release-pins.test.mjs scripts/mend-migrations.test.mjs
           scripts/republish.test.mjs scripts/preview-deploy.test.mjs scripts/bench/lib.test.mjs
-          scripts/mirrors-runtime.test.mjs
+          scripts/mirrors-runtime.test.mjs scripts/verify-stack/lib.test.mjs
+          scripts/verify-stack/lifecycle.test.mjs scripts/verify-stack/lifecycle.e2e.test.mjs
       - run: helm lint deploy/helm/mend -f deploy/helm/mend/ci/obc-values.yaml
