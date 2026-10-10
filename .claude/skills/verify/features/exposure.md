@@ -3,11 +3,13 @@
 The operator declares how the instance is reached with `MEND_EXPOSURE`: `loopback`, `private` (the
 default: a network they control admission to) or `public`. Mend cannot observe who can reach it, so
 it reports what it observed beside what was declared, item by item, and never a verdict. The public
-exposure gate is that report: fourteen items, each `observed`, `carried`, `declared` or `open`. Only
-`public` refuses to start, and only while an item this build can observe is open. The multi mode
-gate does the same for `MEND_TENANCY=multi`. Budgets bound what a client, an account or an
-organization may ask: reaching one refuses new work and stops nothing that runs. Credentials that
-must ride a URL ride as upgrade tickets: single use, thirty seconds, one target.
+exposure gate is that report: fourteen items (fifteen with the t3code gateway turned on), each
+`observed`, `carried`, `declared` or `open`. Only `public` refuses to start, and only while an item
+that blocks a start is open: any item this build can observe, and `workspace-ssh`, which it cannot,
+while workspace SSH is published off loopback and not declared. The multi mode gate does the same
+for `MEND_TENANCY=multi`. Budgets bound what a client, an account or an organization may ask:
+reaching one refuses new work and stops nothing that runs. Credentials that must ride a URL ride as
+upgrade tickets: single use, thirty seconds, one target.
 
 ## Sub-features
 
@@ -18,8 +20,8 @@ must ride a URL ride as upgrade tickets: single use, thirty seconds, one target.
 - `doctor-line` prints one `exposure` line in `mend doctor` (mapped in [doctor.md](./doctor.md)).
 - `shell-line` shows `exposure · <declared> · <scheme>` in the web sidebar.
 - `public-refusal` refuses to start `MEND_EXPOSURE=public` with the open items and the fix for each.
-- `declared-items` takes `core-private`, `edge-tls` and `workspace-ssh` in `MEND_EXPOSURE_DECLARED`
-  and refuses any other name at start.
+- `declared-items` takes `core-private`, `edge-tls`, `workspace-ssh` and `t3code-gateway` in
+  `MEND_EXPOSURE_DECLARED` and refuses any other name at start.
 - `budget-refusal` refuses new work past a budget with
   `budget reached · <limit> <what> · nothing running was stopped`.
 - `upgrade-tickets` mints a single-use, thirty-second ticket for a socket URL.
@@ -66,9 +68,11 @@ Preconditions:
   after `·`, what would close or observe it where the item names one. The last line reads
   `<k> of 14 items open · <b> refuse a public start; MEND_EXPOSURE=public refuses to start · <u> do not`
   (`8 of 14 items open · 5 refuse a public start; MEND_EXPOSURE=public refuses to start · 3 do not`
-  on the verify stack), or `<k> of 14 items open · 0 refuse a public start · <u> do not` when no
-  open item refuses a public start. Exit code `0`. `core-private`, `edge-tls` and `reassessment`
-  read `open` until declared.
+  on the verify stack, its t3code gateway off), or
+  `<k> of 14 items open · 0 refuse a public start · <u> do not` when no open item refuses a public
+  start. With the gateway turned on (`MEND_T3_GATEWAY_ENABLED`) there are 15 items, the last
+  `t3code-gateway`. Exit code `0`. `core-private`, `edge-tls` and `reassessment` read `open` until
+  declared.
 - **Gate.** Run `mend operator gate`. Ten lines, one per multi mode gate item
   (`cross-organization-authorization` through `operator-present`), each `✓` or `·`, then the detail
   and, where the item names one, its fix. The last line reads
@@ -83,8 +87,8 @@ Preconditions:
 - **Declare an item.** Restart with `MEND_EXPOSURE_DECLARED=edge-tls`. `mend operator exposure`
   shows `○ edge-tls  declared …`. Restart with `MEND_EXPOSURE_DECLARED=budgets`: the server does not
   start, and its log says
-  `MEND_EXPOSURE_DECLARED names budgets: only core-private, edge-tls, workspace-ssh can be declared; every other item is observed by this process or not at all.`
-- **Public is refused while observable items are open.** Restart with `MEND_EXPOSURE=public` on an
+  `MEND_EXPOSURE_DECLARED names budgets: only core-private, edge-tls, workspace-ssh, t3code-gateway can be declared; every other item is observed by this process or not at all.`
+- **Public is refused while a blocking item is open.** Restart with `MEND_EXPOSURE=public` on an
   `http` origin. The server does not start; its log starts with
   `MEND_EXPOSURE=public is refused: the public exposure gate`, lists each open item as
   `<id>: <detail> (<fix>)`, and ends
@@ -132,8 +136,11 @@ Preconditions:
   `nothing open · every item was observed here, is carried by this build, or was declared by the operator`
   is a statement about the list.
 - `loopback` and `private` never refuse to start; they change only the report. Only `public` is
-  refused, and only for items this build can observe. `core-private`, `edge-tls` and `reassessment`
-  never block a start.
+  refused, and only for an open item that blocks a start: any item this build can observe, and one
+  it cannot, `workspace-ssh`, while workspace SSH is published off loopback (`MEND_SSH_PUBLISHED`)
+  and not declared (`apps/api/src/exposure.ts:187-213`). Add `workspace-ssh` to
+  `MEND_EXPOSURE_DECLARED`, or publish it on loopback. `core-private`, `edge-tls`, `t3code-gateway`
+  and `reassessment` never block a start.
 - `/api/health` gives counts for exposure but names the failing multi mode gate items in
   `tenancyGate.failing` (an open question in ADR 0004, left as released).
 - The sidebar's exposure line is an unnamed paragraph (`apps/web/src/components/shell.tsx:186`). The
