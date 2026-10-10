@@ -35,7 +35,7 @@ verdicts. They never appear in a report.
   `st-verify-outer`, serving the tree under test as project `mend`:
 
   ```sh
-  .claude/skills/verify/scripts/local-outer.sh up   # Mend 0.36.0-next.658 on 127.0.0.1:23105
+  .claude/skills/verify/scripts/local-outer.sh up   # Mend 0.36.0-next.658 on 127.0.0.1:23105, budgets for parallel verifiers
   .claude/skills/verify/scripts/local-outer.sh serve HEAD   # prints the served commit, for --expect-mend
   export MEND_VERIFY_MACHINE_XDG=${XDG_CONFIG_HOME:-}      # this machine's own, before it changes
   export XDG_CONFIG_HOME=~/.cache/mend-verify/outer-cli   # the mend CLI now talks to it
@@ -137,7 +137,9 @@ request) when:
   except its help page: those recipes run on a disposable host;
 - `MEND_VERIFY_REAL_MEND` names a Mend session's in-workspace helper (`/run/mend/bin/mend`, which
   every workspace links to `/usr/local/bin/mend`), or a script that starts it: the helper ignores
-  the config and acts on the session it runs in, not on the run's stack.
+  the config and acts on the session it runs in, not on the run's stack;
+- the command is `mend connect github` without `--from-stdin` (or `--remove`, or its help): the CLI
+  would run `gh auth token`, which reads this machine's GitHub login.
 
 Then it becomes the real CLI (`$MEND_VERIFY_REAL_MEND`, else this checkout's `apps/cli` from source;
 never a `mend` from `PATH`, which inside a session is that helper), with no `MEND_SESSION_*`
@@ -147,14 +149,20 @@ of the run's own (`~/.cache/mend-verify/home/<digest>`, with `CLAUDE_CONFIG_DIR`
 `GH_CONFIG_DIR` in it) and none of this machine's session, SSH agent, GitHub or provider variables
 (`GH_TOKEN`, `ANTHROPIC_*`, `OPENAI_*`, `CLAUDE_*`, …): `mend connect github`, `--use-my-login`,
 `memory import`, `dotfiles sync`, `skills push` and `ssh setup` see an empty home, never the owner's
-logins or files. A recipe that needs a login supplies a test one, through the secret registry and
-`--from-stdin`. The drivers hold to the same policy: `drive-tui.sh` puts the guard first on its
-terminal's `PATH` and its bundled CLI behind it, and `drive-tui.sh`, `drive-desktop.sh`,
-`drive-web.mjs` and `drive-mobile.mjs` refuse a `<web>` that is not the run's tunnel. The box is an
-outer server only when its operator says so: then declare its URL. An alias or a shell function
-named `mend` outranks `PATH` and skips the guard (an interactive zsh often has one), so the check
-above must print nothing: run the steps in a `bash` script, where aliases do not apply, or
-`unalias mend` first. The helpers start `mend` through `PATH`, so they always meet the guard.
+logins or files. Nor the keyring: `gh auth token` finds a login in the OS keyring through the
+session D-Bus even with an empty home, so the CLI gets no D-Bus, keyring agent or password manager
+variable (`DBUS_*`, `GNOME_KEYRING_*`, `KWALLET*`, `GPG_AGENT_INFO`, `SSH_AGENT_PID`, `OP_*`,
+`BW_SESSION`), a session bus address that names no socket, and a runtime directory of its own. A
+recipe that needs a login supplies a test one, through the secret registry and `--from-stdin`
+(`fakes.mjs` holds the skill's fake ones, under Drive). The drivers hold to the same policy:
+`drive-tui.sh` puts the guard first on its terminal's `PATH` and its bundled CLI behind it, and
+`drive-tui.sh`, `drive-desktop.sh`, `drive-web.mjs` and `drive-mobile.mjs` refuse a `<web>` that is
+not the run's tunnel (`drive-web.mjs` also takes the mobile proxy `drive-mobile.mjs` started in
+front of it, under Drive). The box is an outer server only when its operator says so: then declare
+its URL. An alias or a shell function named `mend` outranks `PATH` and skips the guard (an
+interactive zsh often has one), so the check above must print nothing: run the steps in a `bash`
+script, where aliases do not apply, or `unalias mend` first. The helpers start `mend` through
+`PATH`, so they always meet the guard.
 
 1. **Take a slot.** Count the live verify stacks on the outer Mend before starting one:
 
@@ -361,6 +369,11 @@ export default async ({ page, web, capture, note }) => {
 `--account` signs in at `/login`; `--state` keeps the browser signed in for the next drive. Both are
 credentials, so both stay in `$P`.
 
+**Fake logins.** A step that needs a provider to refuse a login (a GitHub token GitHub rejects, a
+Claude setup token refused at launch, a Codex `auth.json` Codex refuses) uses `fakes.mjs`'s values
+(`FAKES.github`, `FAKES.claude`, `FAKES.codexAuth`) and no value of your own making. They are
+published, so Cleanup's scan does not count them; any other made-up value counts as a real one.
+
 **Credentials in a recipe.** Type every credential with `typeSecret(locator, name, value)`, never
 `fill`: the value goes into the run's **secret registry** (`$P`, `secrets.mjs`) first, then into the
 field by script, so no Playwright log can carry it, and the page's screenshot is withheld while the
@@ -451,10 +464,11 @@ from a screenshot.
 
 **Mobile web.** `drive-mobile.mjs` serves the Expo app's web build and the stack's API on one local
 origin (the stack trusts only its own origins), and `drive-web.mjs --viewport 390x844` drives it.
-Pair the app with that origin the way the map's pairing recipe says. At Mend main of 2026-10-10 the
-web build does not bundle (Metro: `Importing react-native internals is not supported on web`, from
-`ratex-react-native` through `react-native-nitro-markdown`): the page answers 500, and every mobile
-step is `verified-unreachable` on that product gap until it is fixed.
+Pair the app with that origin the way the map's pairing recipe says. Once the proxy listens it
+records itself in `$P/mobile.json` (its pid and start time, port, the tunnel it fronts), and
+`drive-web.mjs` takes `http://127.0.0.1:<port>` only while that process lives and the run's tunnel
+does; the guard and the other drivers never take it. Start it with `MEND_VERIFY_PRIVATE` set to the
+`$P` that `drive-web.mjs --private` names.
 
 ```sh
 node $skill/scripts/drive-mobile.mjs --app <checkout>/apps/mobile --web "$web" --port 18305 \
@@ -510,9 +524,13 @@ What differs from a `mend` on your own machine:
   waits until its `timeout`. Put the input in a file the command reads, from a step inside the
   session.
 - **One address on a local outer.** Every verifier on this machine reaches a `local-outer.sh` server
-  from 127.0.0.1, and its budget is 1200 requests per minute per address: with four stacks driven at
-  once, a sibling's watch can end `budget reached · 1200 requests per minute from one address` (the
-  inner command keeps running), and the tunnel can drop a request. Read the inner record before
+  from 127.0.0.1, as its one account. The product's budgets (1200 requests per minute per address
+  and per credential) are sized for a small team, and five drivers spent them in seconds (429s,
+  dropped tunnels), so `local-outer.sh up` gives that outer its own (`budgets`: 12000 per minute,
+  and room for more sessions, launches, streams and tunnels), through an extra Compose file of its
+  own; the product's defaults stay. An outer `up` made before this has the defaults: run
+  `local-outer.sh budgets` once. The box keeps its operator's budgets: on it, a sibling's watch can
+  still end `budget reached · …` (the inner command keeps running), so read the inner record before
   calling such a step's result.
 - **One exit code.** `stack.mjs mend` exits 1 for any inner failure, whatever code the inner CLI
   returned. Assert on 0 or not-0, and read the message from stdout.
@@ -569,7 +587,11 @@ the map's proof rules:
   screenshot gets `<name>.png.checked` with its digest. No trace, HAR or video is recorded.
   Cleanup's scan searches every file of `$E` for every registered value and every shape, and counts
   as a hit an archive and any image without a matching `.checked` (one a recipe saved itself, or
-  changed since): a hit fails the run.
+  changed since): a hit fails the run. What the registry takes from the browser state is the cookies
+  and the credentials a page stores (a token under a secret key, an item named for one, a value
+  shaped like one), not its preferences or the project ids it remembers; from a JSON login
+  (`auth.json`), its tokens and the whole text, not its account id. The skill's fake logins
+  (`fakes.mjs`) are never a hit.
 
 ## Cleanup
 

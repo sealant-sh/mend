@@ -515,7 +515,8 @@ const fakeDocker = (images) => {
   return { calls, run };
 };
 
-const GUARD = "busybox:1.37@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e";
+const GUARD =
+  "busybox:1.37@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e";
 
 test("Launch preloads the network guard image the built Mend image names, before the offline setup", async () => {
   const docker = fakeDocker({ "mend:verify": { [NETWORK_GUARD_IMAGE_LABEL]: GUARD } });

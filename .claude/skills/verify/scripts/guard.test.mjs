@@ -1038,8 +1038,14 @@ test("drive-web may drive the mobile proxy this run started, and no other", asyn
     assert.equal(recorded.web, `http://localhost:${tunnelPort}`);
 
     // The run's own proxy, for drive-web only.
-    assert.equal(target(`http://127.0.0.1:${mobilePort}`, true)(), `http://127.0.0.1:${mobilePort}`);
-    assert.equal(target(`http://localhost:${mobilePort}`, true)(), `http://localhost:${mobilePort}`);
+    assert.equal(
+      target(`http://127.0.0.1:${mobilePort}`, true)(),
+      `http://127.0.0.1:${mobilePort}`,
+    );
+    assert.equal(
+      target(`http://localhost:${mobilePort}`, true)(),
+      `http://localhost:${mobilePort}`,
+    );
     assert.throws(target(`http://127.0.0.1:${mobilePort}`, false), Refused);
     assert.throws(target(`http://127.0.0.1:${mobilePort + 1}`, true), Refused);
     const allowed = driveWeb(`http://127.0.0.1:${mobilePort}`);

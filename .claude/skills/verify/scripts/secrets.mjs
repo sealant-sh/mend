@@ -8,14 +8,21 @@
 //   named by a digest of the value, so a second value under a name is added beside the first and
 //   never replaces it;
 // - account.json (handover.mjs), browser.json (drive-web.mjs --state) and any other JSON file
-//   there: each value under a secret key (password, token, …) and each cookie's or stored item's
-//   value. Every one is also kept as a secrets/retained-<file>.<digest>.secret the first time it is
-//   seen, so a state file rewritten later (new cookies) cannot take an earlier value out;
+//   there: each value under a secret key (password, token, access_token, api_key, …) and each
+//   cookie's value. A stored item (a page's localStorage) is app state: it counts when its value is
+//   JSON holding a secret key (the phone app's `mend-config` token), when its name is a
+//   credential's, or when its value looks like a credential (a known prefix, or 20 or more
+//   token characters mixing upper case, lower case and digits); a saved project id or a JSON of
+//   preferences does not. Every value is also kept as a secrets/retained-<file>.<digest>.secret the
+//   first time it is seen, so a state file rewritten later (new cookies) cannot take an earlier
+//   value out;
 // - a private file that is not valid JSON: its whole text, as a secret;
 // - handover.key and any other `*.secret` or `*.key` file: its whole text.
 // A value is kept as written and in the forms an output may encode it in (JSON-escaped,
-// URL-encoded); a multiline value also by each line that holds a credential-looking piece (12
-// characters or more, letters and digits both) and by that piece. A line with none (`[default]`,
+// URL-encoded). A JSON value (an auth.json kept as a .secret) is kept whole and by each value under
+// a secret key, not by its ids and dates; one with no secret key, and any other multiline value,
+// is also kept by each line that holds a credential-looking piece (12 characters or more, letters
+// and digits both) and by that piece. A line with none (`[default]`,
 // `-----BEGIN PRIVATE KEY-----`) is not a secret on its own, and stays readable elsewhere.
 //
 // The private directory is compared by its real path, however it was spelled (`$P/`, `./private`, a
@@ -39,22 +46,49 @@ import { basename, join, sep } from "node:path";
 
 export const MIN_SECRET_LENGTH = 6;
 
+/** A key whose string value is a credential: `token`, `access_token`, `csrfToken`, `OPENAI_API_KEY`. */
 const SECRET_KEY =
-  /^(?:password|token|secret|apiKey|api_key|accessToken|refreshToken|sessionToken|privateKey)$/i;
-
-/** The secret values of a JSON document: by key, and the `value` of a name/value item (cookies). */
+  /(?:password|passphrase|passwd|token|secret|api[_-]?key|private[_-]?key|credentials?|authorization|cookie)$/i;
+/** A stored item's name that says it holds a credential. */
+const SECRET_NAME = /token|secret|password|passwd|credential|auth|session|cookie|api[_-]?key/i;
+/** A value shaped like a credential: a known prefix, or a long run of mixed-case token characters. */
+const CREDENTIAL_PREFIX = /^(?:mdt_|mdc_|sk-|gh[opsur]_|github_pat_|xox[abprs]-|AKIA|eyJ)/;
+const TOKEN_RUN = /^[A-Za-z0-9._~+/=-]{20,}$/;
 // A bare UUID is an id the app keeps (the last project, a session), shown on every page that names
 // it, never a credential. Registered, it would redact ordinary text and make the scan delete
 // evidence captured before the browser state stored it.
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+const credentialShaped = (value) =>
+  !UUID.test(value) &&
+  (CREDENTIAL_PREFIX.test(value) ||
+    (TOKEN_RUN.test(value) && /[a-z]/.test(value) && /[A-Z]/.test(value) && /\d/.test(value)));
+
+/** A JSON object or array, parsed; anything else (a word, a number, not JSON) is null. */
+const jsonDocument = (text) => {
+  try {
+    const parsed = JSON.parse(text);
+    return parsed !== null && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * The secret values of a JSON document: each string under a secret key, each cookie's value, and
+ * what a stored item (localStorage) holds that is a credential (see the header).
+ */
 const fromJson = (node, found = [], key = "") => {
   if (typeof node === "string") {
     if (SECRET_KEY.test(key)) found.push(node);
   } else if (Array.isArray(node)) for (const item of node) fromJson(item, found, key);
   else if (node && typeof node === "object") {
-    if (typeof node.name === "string" && typeof node.value === "string" && !UUID.test(node.value))
-      found.push(node.value);
+    if (typeof node.name === "string" && typeof node.value === "string") {
+      const stored = jsonDocument(node.value);
+      if (key === "cookies") found.push(node.value);
+      else if (stored !== null) fromJson(stored, found);
+      else if (SECRET_NAME.test(node.name) || credentialShaped(node.value)) found.push(node.value);
+    }
     for (const [name, item] of Object.entries(node))
       if (name !== "value") fromJson(item, found, name);
   }
@@ -66,11 +100,18 @@ const credentialPieces = (line) =>
     .split(/[\s=:,"'`]+/)
     .filter((piece) => piece.length >= 12 && /\d/.test(piece) && /[A-Za-z]/.test(piece));
 
-/** A value, and its forms: encoded, and for a multiline value its credential-looking lines. */
-const formsOf = (value) => {
+/**
+ * A value, and its forms: encoded, and the values under a JSON value's secret keys, or else, for a
+ * multiline value, its credential-looking lines.
+ */
+export const formsOf = (value) => {
   const forms = new Set([value, value.trim()]);
+  const document = jsonDocument(value);
+  const keyed = document === null ? [] : fromJson(document);
   const lines = value.split(/\r?\n/);
-  if (lines.length > 1)
+  if (keyed.length > 0) {
+    for (const inner of keyed) for (const form of formsOf(inner)) forms.add(form);
+  } else if (lines.length > 1)
     for (const line of lines) {
       const pieces = credentialPieces(line);
       if (pieces.length === 0) continue;

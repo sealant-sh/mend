@@ -175,13 +175,8 @@ Preconditions:
 
 ## Gotchas
 
-- On this branch the web build does not bundle: every route of `pnpm --filter @mend/mobile web`
-  answers HTTP 500, Metro reporting `Importing react-native internals is not supported on web` for
-  `ratex-react-native` (`lib/RaTeXViewNativeComponent.js` imports
-  `react-native/Libraries/Utilities/codegenNativeComponent`), pulled in through
-  `react-native-nitro-markdown` from `src/components/markdown`. A product gap: until it is fixed,
-  every phone step on the web build is unreachable; `/tty-embed` is a page of the web app and stays
-  drivable.
+- The web build bundles since mend#670 (`apps/mobile/scripts/check-web.mjs` holds it to that in CI).
+  Drive it through `drive-mobile.mjs`, whose proxy `drive-web.mjs` takes while it runs.
 - Most controls are `Pressable`s without a role. React Native Web renders them as focusable `div`s
   with no `button` role, so `getByRole("button")` finds only the few that set one: the session
   header's icon buttons (`Review the change`, `Diff`, `Shell`, `More actions`, …), `Now` in the wide
