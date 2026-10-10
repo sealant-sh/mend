@@ -1,13 +1,17 @@
 # Publishing the VS Code extension
 
-The extension in `apps/vscode` is published as `sealant-sh.mend` to the
-[Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=sealant-sh.mend) and
-[Open VSX](https://open-vsx.org/extension/sealant-sh/mend) (which VSCodium, Cursor and other VS Code
-builds install from). The workflow is `.github/workflows/publish-vscode.yml`. It packages the
+The extension in `apps/vscode` is published as `sealant-sh.mend`, listed as **Mend by Sealant**, to
+the [Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=sealant-sh.mend)
+and [Open VSX](https://open-vsx.org/extension/sealant-sh/mend) (which VSCodium, Cursor and other VS
+Code builds install from). The workflow is `.github/workflows/publish-vscode.yml`. It packages the
 extension with no credential in reach, publishes the `.vsix` to Open VSX from the
 `vscode-marketplace` environment after an approval, and attaches the same `.vsix` to a
 `vscode-vX.Y.Z` GitHub release. The owner uploads that `.vsix` to the Marketplace by hand. Automated
 Marketplace publishing would need Azure DevOps or Microsoft Entra ID, and is deliberately not used.
+
+The listing's name is the `displayName` in `apps/vscode/package.json`. The Marketplace refused
+`Mend`, which another extension already uses, so it is `Mend by Sealant`; inside VS Code the views
+and commands still say Mend.
 
 ## Versions
 
@@ -90,8 +94,8 @@ After Mend's own release of the same minor (the extension needs that server):
 4. **Upload it to the Marketplace** at
    <https://marketplace.visualstudio.com/manage/publishers/sealant-sh>. The first upload, **New
    extension → Visual Studio Code**, creates the listing; later versions use **Update** on the
-   `Mend` row (the **⋯** menu). The Marketplace checks the package before it shows the version,
-   which can take a few minutes. If `OVSX_PAT` is not set, upload the same file at
+   `Mend by Sealant` row (the **⋯** menu). The Marketplace checks the package before it shows the
+   version, which can take a few minutes. If `OVSX_PAT` is not set, upload the same file at
    <https://open-vsx.org/user-settings/extensions> as well.
 
 A re-run, or a dispatch from the existing `vscode-vX.Y.Z` tag, skips what Open VSX already has and

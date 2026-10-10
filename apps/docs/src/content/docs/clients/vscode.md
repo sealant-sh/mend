@@ -21,7 +21,7 @@ your home and logins. Start agents from Mend (**+** → an agent) or in **Mend: 
 
 ## Install
 
-Search for **Mend** (publisher `sealant-sh`) in the Extensions view, or run:
+Search for **Mend by Sealant** (publisher `sealant-sh`) in the Extensions view, or run:
 
 ```sh
 code --install-extension sealant-sh.mend
