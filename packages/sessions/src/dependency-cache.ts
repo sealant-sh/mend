@@ -346,9 +346,32 @@ const said = (words: string) => `echo '${words}' >&2`;
  * (`@scope:registry=…`) are untouched: their packages never go to the default registry. Every
  * outcome is said on one stderr line.
  */
+/**
+ * The flags a command may pass and still be offered the mirror: ones that change neither where the
+ * package manager reads its configuration nor where it fetches from. Any other flag
+ * (`--userconfig`, `--globalconfig`, `--prefix`, `--dir`, `--config.*`, `--registry`, …) may point
+ * at a registry or a login the script cannot see, so the command runs as written. Bare words are
+ * package names or a flag's value.
+ */
+const MIRROR_SAFE_FLAG =
+  /^(?:--frozen-lockfile|--no-frozen-lockfile|--prefer-frozen-lockfile|--prefer-offline|--ignore-scripts|--prod|--production|-P|--dev|-D|--no-optional|--recursive|-r|--strict-peer-dependencies|--no-strict-peer-dependencies|--shamefully-hoist|--fix-lockfile|--silent|-s|--no-audit|--no-fund|--legacy-peer-deps|--foreground-scripts|--(?:reporter|loglevel|fetch-timeout|fetch-retries|fetch-retry-mintimeout|fetch-retry-maxtimeout|fetch-retry-factor|network-concurrency|child-concurrency|omit|include|filter)=[\w@./:+,*-]+)$/;
+
+/** The first argument after the subcommand that could change the configuration read, or null. */
+const unreadFlag = (command: string): string | null =>
+  command
+    .split(/[ \t]+/)
+    .slice(2)
+    .find((arg) => arg.startsWith("-") && !MIRROR_SAFE_FLAG.test(arg)) ?? null;
+
 const npmMirrorLines = (command: string, mirror: string): ReadonlyArray<string> => {
   if (/--registry\b|--config\.registry\b/.test(command))
     return ["mend_registry=", said(`${NPM_MIRROR_NOT_USED} · the command names a registry`)];
+  const flag = unreadFlag(command);
+  if (flag !== null)
+    return [
+      "mend_registry=",
+      said(`${NPM_MIRROR_NOT_USED} · the command passes ${flag}, which may choose its own config`),
+    ];
   const ping = `node -e 'fetch(process.argv[1] + "-/ping", { signal: AbortSignal.timeout(3000) }).then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))' '${mirror}' >/dev/null 2>&1`;
   return [
     "mend_registry=",
@@ -485,24 +508,6 @@ const npmMirrorUseOf = (stderr: string): NpmMirrorUse =>
       ? "not used"
       : "off";
 
-/**
- * A line of the install's output that reports a request to the mirror failing: the mirror's
- * host and port beside an error (pnpm's `ERR_PNPM_FETCH_502 GET http://npm-mirror:4873/…`, npm's
- * `request to http://npm-mirror:4873/… failed, reason: connect ECONNREFUSED`).
- */
-const failedOnMirror = (mirror: string, ...outputs: ReadonlyArray<string>): boolean => {
-  const host = new URL(mirror).host;
-  return outputs
-    .flatMap((output) => output.split("\n"))
-    .some(
-      (line) =>
-        line.includes(host) &&
-        /ERR_|ECONN|ETIMEDOUT|EAI_AGAIN|ENOTFOUND|EHOSTUNREACH|socket hang up|\b5\d\d\b|error/i.test(
-          line,
-        ),
-    );
-};
-
 /** What an install exec answers: the exit code and the output, which is only counted. */
 export interface InstallExecResult {
   readonly exitCode: number;
@@ -527,10 +532,12 @@ export interface InstallOutcome {
  * answer, every time), so the command runs once more exactly as written, with pnpm's defaults,
  * and the outcome is that run's. A command `installScript` leaves alone runs once.
  *
- * With the server's npm mirror (`npmMirror`), a run that went through the mirror and failed on it
- * (its output names the mirror beside an error) runs once more exactly as written, so it reaches
- * the registry itself: a mirror that is down, or one that broke part-way, never fails an install
- * the registry would serve.
+ * With the server's npm mirror (`npmMirror`), any run that went through the mirror and failed runs
+ * once more exactly as written, so it reaches the registry itself: a mirror that is down, that broke
+ * part-way, or that served bytes failing the lockfile's integrity (npm names the URL and the
+ * EINTEGRITY on different lines) never fails an install the registry would serve. A project's own
+ * failure then fails twice; the outcome is the second run's. Either way there is one rerun at most:
+ * the shortened-timeout retry above and this one are the same rerun.
  */
 export const runInstallCommand = <E, R>(
   command: string,
@@ -543,11 +550,7 @@ export const runInstallCommand = <E, R>(
     const first = yield* exec(script);
     const firstRetries = countFetchRetries(first.stdout, first.stderr);
     const mirrorUse = npmMirrorUseOf(first.stderr);
-    const mirrorFailed =
-      mirror !== null &&
-      mirrorUse === "used" &&
-      first.exitCode !== 0 &&
-      failedOnMirror(mirror, first.stdout, first.stderr);
+    const mirrorFailed = mirror !== null && mirrorUse === "used" && first.exitCode !== 0;
     if (script === command || first.exitCode === 0 || (firstRetries === 0 && !mirrorFailed)) {
       return {
         exitCode: first.exitCode,
