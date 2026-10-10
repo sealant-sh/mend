@@ -62,9 +62,9 @@ const fixture = () => {
       return Response.json([
         {
           error: serialize({
-            message: `StoreFailure: ${WORDS}`,
+            message: WORDS,
             code: -32022,
-            data: { code: "UNPROCESSABLE_CONTENT", httpStatus: 422 },
+            data: { code: "UNPROCESSABLE_CONTENT", httpStatus: 422, tag: "StoreFailure" },
           }),
         },
       ]);

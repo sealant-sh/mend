@@ -30,7 +30,7 @@ const failed = (message: string): ReadFacts => ({ status: "error", error: new Er
 describe("the body never dresses a failure as an empty change", () => {
   it("a refused open is a failure with the server's words, not 'nothing changed'", () => {
     const body = changeBody({
-      open: failed("POST /changes/c/reviews/open → 401 · Unauthorized"),
+      open: failed("Signed out — sign in again."),
       diff: pending,
       slice: null,
     });
@@ -38,7 +38,7 @@ describe("the body never dresses a failure as an empty change", () => {
       kind: "failed",
       step: "open",
       line: "review · did not open",
-      detail: "POST /changes/c/reviews/open → 401 · Unauthorized",
+      detail: "Signed out — sign in again.",
     });
   });
 

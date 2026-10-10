@@ -1,4 +1,4 @@
-import { CaptureStoreRepo, CheckpointsRepo, StoreRefsRepo } from "@mend/db";
+import { CaptureStoreRepo, CheckpointsRepo, SessionNotFoundError, StoreRefsRepo } from "@mend/db";
 import { Sha } from "@mend/domain";
 import { CapturesBehindError, SessionEngine } from "@mend/sessions";
 import { BlobStore, GitOpsRunner, landedRefOf as storeLandedRefOf } from "@mend/store";
@@ -74,5 +74,33 @@ describe("a capture-backed landing's checkpoint", () => {
       "the workspace's captures have not caught up · asked 4 times · nothing landed · try again",
     );
     expect(asked).toEqual(["landingCheckpoint"]);
+  });
+
+  it("names what is missing in words, and keeps the error's tag for the log", async () => {
+    const world = makeWorld();
+    const engine = Layer.mock(SessionEngine, {
+      launchUnderWay: () => false,
+      landingCheckpoint: () =>
+        Effect.fail(new SessionNotFoundError({ sessionId: world.session.id })),
+    });
+    const layer = LandingGitCapturedLive.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          engine,
+          Layer.mock(CaptureStoreRepo, {}),
+          Layer.mock(BlobStore, { identity: "test" }),
+          Layer.mock(GitOpsRunner, {}),
+          Layer.mock(StoreRefsRepo, {}),
+          Layer.mock(CheckpointsRepo, {}),
+        ),
+      ),
+    );
+    const failure = await Effect.runPromise(
+      Effect.gen(function* () {
+        return yield* (yield* LandingGit).checkpoint(world, "user-mark").pipe(Effect.flip);
+      }).pipe(Effect.provide(layer)),
+    );
+    expect(failure.message).toBe("the session no longer exists · nothing landed");
+    expect(failure.message).not.toContain("SessionNotFoundError");
   });
 });

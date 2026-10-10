@@ -19,3 +19,20 @@ export const gitWords = (error: GitError, mode: GitAuthMode | null): string => {
 
 export const branchWords = (error: InvalidBranchError): string =>
   `${error.branch} is not a branch name git accepts`;
+
+/**
+ * What a missing record means to the person landing, by its error's tag. The tag names a table
+ * row; the person needs the thing. The tag itself goes to the log, never into these words.
+ */
+export const missingWords = (tag: string): string => {
+  switch (tag) {
+    case "SessionNotFoundError":
+      return "the session no longer exists";
+    case "ProjectNotFoundError":
+      return "the project no longer exists";
+    case "WorktreeNotFoundError":
+      return "the worktree no longer exists";
+    default:
+      return "something the landing needs no longer exists";
+  }
+};

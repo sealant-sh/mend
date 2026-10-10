@@ -12,6 +12,7 @@ import { Panel } from "@/components/panel";
 import { Screen, ScreenHeader } from "@/components/screen";
 import { StatusWord } from "@/components/status";
 import { MonoText, UiText } from "@/components/typography";
+import { failureLogLine, failureWords } from "@/data/failure-words";
 import { clearConfig, saveConfig, useConfig } from "@/data/live";
 import {
   type NotificationSettingsDto,
@@ -235,18 +236,27 @@ export default function SettingsScreen() {
     try {
       const health = await fetch(`${base}/api/health`);
       if (!health.ok) {
-        setCheck({ state: "bad", detail: `server answered ${health.status} on /api/health` });
+        console.warn(failureLogLine("GET /api/health", health.status, null));
+        setCheck({
+          state: "bad",
+          detail: "reachable · health check failed — check the URL; the server log has the detail",
+        });
         return;
       }
       const authed = await fetch(`${base}/api/projects`, {
         headers: { authorization: `Bearer ${token.trim()}` },
       });
       if (authed.status === 401) {
-        setCheck({ state: "bad", detail: "reachable · token rejected (401)" });
+        setCheck({ state: "bad", detail: "reachable · token rejected" });
         return;
       }
       if (!authed.ok) {
-        setCheck({ state: "bad", detail: `reachable · projects answered ${authed.status}` });
+        const body: unknown = await authed.json().catch(() => null);
+        console.warn(failureLogLine("GET /api/projects", authed.status, body));
+        setCheck({
+          state: "bad",
+          detail: `reachable · ${failureWords(authed.status, body).words}`,
+        });
         return;
       }
       const projects = (await authed.json()) as ReadonlyArray<unknown>;

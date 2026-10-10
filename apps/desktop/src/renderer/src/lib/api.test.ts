@@ -1,6 +1,8 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  ApiError,
+  connectAccount,
   createSession,
   landSession,
   processLogPage,
@@ -143,5 +145,54 @@ describe("landing calls (docs/adr/0007-landing.md)", () => {
         },
       },
     ]);
+  });
+});
+
+const refuse = (status: number, body: unknown) =>
+  Object.defineProperty(window, "mend", {
+    configurable: true,
+    value: bridgeFixture(async () => ({ status, ok: false, body })),
+  });
+
+describe("a refused call", () => {
+  beforeEach(() => {
+    Reflect.deleteProperty(window, "mend");
+  });
+
+  it("reads as the server's sentence; the call and the status go to the log", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    refuse(502, {
+      _tag: "SealantUnavailable",
+      code: "rejected",
+      message: "GitHub rejected this token.",
+    });
+    const failure = await connectAccount({ provider: "github", secret: "ghp_x" }).catch(
+      (error: unknown) => error,
+    );
+    expect(failure).toBeInstanceOf(ApiError);
+    expect(failure).toMatchObject({
+      message: "GitHub rejected this token.",
+      status: 502,
+      detail: "GitHub rejected this token.",
+      tag: "SealantUnavailable",
+    });
+    expect(warn).toHaveBeenCalledWith(
+      "POST /api/me/sealant/accounts responded 502 · SealantUnavailable · GitHub rejected this token.",
+    );
+    warn.mockRestore();
+  });
+
+  it("never shows the status line or the tag when the body has no sentence", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    refuse(409, { _tag: "SessionActive", id: "s-1" });
+    const tagged = await sessionLandings("s-1").catch((error: unknown) => error);
+    expect(tagged).toBeInstanceOf(ApiError);
+    expect(tagged instanceof ApiError && tagged.message).not.toMatch(/SessionActive|409|GET|\/api/);
+    refuse(500, null);
+    const bare = await sessionLandings("s-1").catch((error: unknown) => error);
+    expect(bare instanceof ApiError && bare.message).toBe(
+      "Mend could not do that. Try again; the server log has the detail.",
+    );
+    warn.mockRestore();
   });
 });

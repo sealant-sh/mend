@@ -232,9 +232,8 @@ export const useAgentConversationActions = (sessionId: string) => {
 };
 
 const errorText = (error: unknown): string => {
-  // The turn route's 409 (`ProtocolSessionNotLive`) carries no words of its own; `api` falls back
-  // to the status line, which says nothing to a person.
-  if (error instanceof ApiError && error.status === 409 && error.message.startsWith("POST ")) {
+  // The turn route's 409 (`ProtocolSessionNotLive`) carries no words of its own: say what to do.
+  if (error instanceof ApiError && error.status === 409 && !error.serverWords) {
     return "the agent is not running · resume the session, then retry";
   }
   return error instanceof Error && error.message !== ""

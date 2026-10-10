@@ -16,6 +16,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
+import { refusedWith } from "./refusal-fixture.ts";
 import {
   canEndWaitingWork,
   replaceRefusalWords,
@@ -228,11 +229,13 @@ describe("a replacement", () => {
     expect(replaceWorkspaceBody(retirement({ fingerprint: "fp-42" }))).toEqual({ seen: "fp-42" });
   });
 
-  it("shows a refusal in the server's words without the web tier's tag", () => {
+  it("shows a refusal in the server's words", () => {
     const words =
       "What would stop has changed since you looked. Nothing was stopped; look at the list again and replace it from there.";
-    expect(replaceRefusalWords(new Error(`WorkspaceReplaceRefused: ${words}`))).toBe(words);
-    expect(replaceRefusalWords(new Error("mend api unreachable"))).toBe("mend api unreachable");
+    expect(replaceRefusalWords(refusedWith("WorkspaceReplaceRefused", words))).toBe(words);
+    expect(replaceRefusalWords(refusedWith(null, "The Mend server is not answering."))).toBe(
+      "The Mend server is not answering.",
+    );
     expect(replaceRefusalWords(new Error(""))).toBe("The workspace was not replaced.");
   });
 });

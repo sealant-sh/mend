@@ -1,9 +1,11 @@
 import { once } from "node:events";
 import { createServer, type Server } from "node:http";
 
+import { NotFound, SealantUnavailable, StoreFailure } from "@mend/api-contracts";
 import { TRPCError } from "@trpc/server";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
+import { ApiRefusal, toTRPCError } from "./errors.ts";
 import { run } from "./run.ts";
 
 /**
@@ -54,7 +56,7 @@ describe("run + toTRPCError against a real client", () => {
   it("an unreachable API is a clean 'unreachable', never the internal URL", async () => {
     const error = await failure("http://127.0.0.1:1");
     expect(error.code).toBe("INTERNAL_SERVER_ERROR");
-    expect(error.message).toBe("mend api unreachable");
+    expect(error.message).toBe("The Mend server is not answering. Try again in a moment.");
     expect(error.message).not.toContain("127.0.0.1");
   });
 
@@ -62,12 +64,37 @@ describe("run + toTRPCError against a real client", () => {
     mode = "http-503";
     const error = await failure(`http://127.0.0.1:${port}`);
     expect(error.code).toBe("INTERNAL_SERVER_ERROR");
-    expect(error.message).toBe("mend api responded 503");
+    expect(error.message).toBe("Mend could not do that. Try again; the server log has the detail.");
+    expect(error.message).not.toContain("503");
   });
 
   it("an undeclared 401 maps to UNAUTHORIZED so the login walk still fires", async () => {
     mode = "http-401";
     const error = await failure(`http://127.0.0.1:${port}`);
     expect(error.code).toBe("UNAUTHORIZED");
+  });
+});
+
+describe("a refusal the API declared", () => {
+  it("crosses in the server's words, its tag beside them and never in them", () => {
+    const error = toTRPCError(
+      new SealantUnavailable({
+        code: "connected-account-invalid",
+        message: "GitHub rejected this token. Paste a new one.",
+      }),
+    );
+    expect(error.code).toBe("INTERNAL_SERVER_ERROR");
+    expect(error.message).toBe("GitHub rejected this token. Paste a new one.");
+    expect(error.cause).toBeInstanceOf(ApiRefusal);
+    expect(error.cause instanceof ApiRefusal ? error.cause.tag : null).toBe("SealantUnavailable");
+  });
+
+  it("crosses in words when it carries no sentence of its own", () => {
+    const error = toTRPCError(new NotFound({ id: "p1" }));
+    expect(error.code).toBe("NOT_FOUND");
+    expect(error.message).toBe("Not found. It may have been removed.");
+    expect(toTRPCError(new StoreFailure({ message: "" })).message).toBe(
+      "Mend could not do that. Try again; the server log has the detail.",
+    );
   });
 });

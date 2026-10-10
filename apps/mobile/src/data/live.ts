@@ -16,6 +16,7 @@ import { useSyncExternalStore } from "react";
 import { Platform } from "react-native";
 
 import type { StatusTone } from "@/components/status";
+import { failureLogLine, failureWords } from "@/data/failure-words";
 import { harnessName } from "@/data/harness-name";
 import type { LaunchOptions } from "@/data/harness-options";
 import type { ChangeLandingDto, ChangePullRequestDto } from "@/data/pull-requests";
@@ -290,27 +291,29 @@ export interface RemovalReportDto {
   readonly leftover: string | null;
 }
 
-/** The server answered and said no — carries its own words when it gave any. */
+/**
+ * The server answered and said no (or did not answer: status 0). `message` is what a person reads
+ * (`failureWords`): the server's own sentence when it gave one, else words for its tag or status.
+ * The call and the status stay in the log.
+ */
 export class ApiError extends Error {
   constructor(
     message: string,
     readonly status: number,
+    /** The refusal's `_tag`, when the body carried one: for code that branches on it. */
+    readonly tag: string | null = null,
+    /** True when `message` is the server's own sentence; false for words Mend chose. */
+    readonly serverWords: boolean = false,
   ) {
     super(message);
   }
 }
 
-/**
- * The server's own words when it gave any; otherwise the request, the status
- * and the error's tag ("GET /changes/…/diff → 404 · NotFound") — never a
- * bare "failed".
- */
-const failureMessage = (method: string, route: string, status: number, body: unknown): string => {
-  const record = typeof body === "object" && body !== null ? body : null;
-  const message = record !== null && "message" in record ? record.message : null;
-  if (typeof message === "string" && message !== "") return message;
-  const tag = record !== null && "_tag" in record ? record._tag : null;
-  return `${method} ${route} → ${status}${typeof tag === "string" ? ` · ${tag}` : ""}`;
+/** A refusal as an `ApiError` in words, its call, status and tag logged. */
+const refusal = (method: string, route: string, status: number, body: unknown): ApiError => {
+  console.warn(failureLogLine(`${method} ${route}`, status, body));
+  const failure = failureWords(status, body);
+  return new ApiError(failure.words, status, failure.tag, failure.serverWords !== null);
 };
 
 type Method = "GET" | "POST" | "PUT" | "DELETE";
@@ -332,9 +335,9 @@ const send = async (method: Method, route: string, body?: unknown): Promise<Resp
     try {
       parsed = await response.json();
     } catch {
-      // Not JSON — the status line stands.
+      // Not JSON — words for the status stand.
     }
-    throw new ApiError(failureMessage(method, route, response.status, parsed), response.status);
+    throw refusal(method, route, response.status, parsed);
   }
   return response;
 };
@@ -388,22 +391,12 @@ const parsePastedImage = (raw: string): PastedImageDto | null => {
   return null;
 };
 
-const refusalMessage = (raw: string, fallback: string): string => {
+const jsonOrNull = (raw: string): unknown => {
   try {
-    const value: unknown = JSON.parse(raw);
-    if (
-      typeof value === "object" &&
-      value !== null &&
-      "message" in value &&
-      typeof value.message === "string" &&
-      value.message !== ""
-    ) {
-      return value.message;
-    }
+    return JSON.parse(raw);
   } catch {
-    // Not JSON — the fallback stands.
+    return null;
   }
-  return fallback;
 };
 
 /** An upload in flight: its answer, and a way to call it off. */
@@ -452,12 +445,18 @@ export const uploadSessionImage = (
             }
             return;
           }
-          // A 409 here is "no live workspace" (capture mode stores into the running one).
-          const fallback =
-            request.status === 409
-              ? "The session has no live workspace to hold the image. Resume it, then retry."
-              : `POST ${route} → ${request.status}`;
-          reject(new ApiError(refusalMessage(request.responseText, fallback), request.status));
+          const refused = refusal("POST", route, request.status, jsonOrNull(request.responseText));
+          // A 409 without a sentence is "no live workspace" (capture mode stores into the running one).
+          reject(
+            request.status === 409 && !refused.serverWords
+              ? new ApiError(
+                  "The session has no live workspace to hold the image. Resume it, then retry.",
+                  409,
+                  refused.tag,
+                  false,
+                )
+              : refused,
+          );
         });
         request.addEventListener("error", () =>
           reject(new ApiError("The image did not reach the machine.", 0)),
@@ -956,7 +955,7 @@ export const useSessionActions = () => {
   });
   // "Replace this workspace now" (docs/adr/0016, decision 14): the change's owner, with the
   // fingerprint of the list they were shown (`seen`). A refusal (409) carries the server's own
-  // sentence, which `failureMessage` keeps as it is.
+  // sentence, which `failureWords` keeps as it is.
   const replaceWorkspace = useMutation({
     mutationFn: (input: { readonly sessionId: string; readonly body: ReplaceWorkspaceBody }) =>
       apiNoContent("POST", `/sessions/${input.sessionId}/workspace-retirement/replace`, input.body),

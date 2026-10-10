@@ -10,7 +10,7 @@ import {
 } from "@mend/store";
 import { Effect, Layer } from "effect";
 
-import { branchWords, gitWords } from "./git-words.ts";
+import { branchWords, gitWords, missingWords } from "./git-words.ts";
 import { LandingGit, LandingStepError, type LandingPlace } from "./landing.ts";
 
 /**
@@ -85,22 +85,27 @@ export const LandingGitCapturedLive: Layer.Layer<
       checkpoint: (scope, trigger) =>
         Effect.gen(function* () {
           for (let attempt = 1; ; attempt += 1) {
-            const taken = yield* engine
-              .landingCheckpoint(scope.session.id, trigger)
-              .pipe(
-                Effect.mapError((error) =>
-                  stepError(
-                    "checkpoint",
-                    error._tag === "GitError"
-                      ? gitWords(error, null)
-                      : error._tag === "CapturesBehindError"
-                        ? error.stopping
-                          ? "the session is stopping · nothing landed · land after it settles"
-                          : `the workspace's captures have not caught up · asked ${error.attempts} times · nothing landed · try again`
-                        : `${error._tag} · checkpoint`,
-                  ),
+            const taken = yield* engine.landingCheckpoint(scope.session.id, trigger).pipe(
+              Effect.tapError((error) =>
+                error._tag === "GitError" || error._tag === "CapturesBehindError"
+                  ? Effect.void
+                  : Effect.logWarning("landing: no checkpoint taken").pipe(
+                      Effect.annotateLogs({ sessionId: scope.session.id, error: error._tag }),
+                    ),
+              ),
+              Effect.mapError((error) =>
+                stepError(
+                  "checkpoint",
+                  error._tag === "GitError"
+                    ? gitWords(error, null)
+                    : error._tag === "CapturesBehindError"
+                      ? error.stopping
+                        ? "the session is stopping · nothing landed · land after it settles"
+                        : `the workspace's captures have not caught up · asked ${error.attempts} times · nothing landed · try again`
+                      : `${missingWords(error._tag)} · nothing landed`,
                 ),
-              );
+              ),
+            );
             const ready = yield* ensureOf(scope, "checkpoint");
             if (taken.captureId === null || ready.head.id === taken.captureId) {
               return {

@@ -56,6 +56,8 @@ import {
   type Wire,
 } from "#/lib/contract";
 
+import { failureLogLine, failureWords } from "../../../shared/failure-words";
+
 /**
  * The workbench API as the cockpit reads it. Every shape here is the contract's
  * (`@mend/api-contracts`, `@mend/domain/workbench`) as JSON carries it — see
@@ -257,49 +259,30 @@ const decodeProcessLogChunks = (chunks: ReadonlyArray<{ readonly dataBase64: str
 
 // ─── transport ──────────────────────────────────────────────────────────────
 
-/** The server answered and said no — carries its own words when it gave any. */
+/**
+ * The server answered and said no (or did not answer: status 0). `message` is what a person reads
+ * (`failureWords`): the server's own sentence when it gave one, else words for its tag or status.
+ * The call and the status stay in the log.
+ */
 export class ApiError extends Error {
   constructor(
     message: string,
     readonly status: number,
     /** The server's own sentence, when its refusal carried one: what a client shows as is. */
     readonly detail: string | null = null,
+    /** The refusal's `_tag`, when the body carried one: for code that branches on it. */
+    readonly tag: string | null = null,
   ) {
     super(message);
   }
 }
 
-/** A refusal in the server's own words when it gave any, else the request and its status. */
-export const refusalWords = (error: unknown, fallback: string): string => {
-  if (error instanceof ApiError) return error.detail ?? error.message;
-  return error instanceof Error ? error.message : fallback;
-};
+/** A refusal in the words `failureWords` chose; the fallback when there is no error to read. */
+export const refusalWords = (error: unknown, fallback: string): string =>
+  error instanceof Error && error.message !== "" ? error.message : fallback;
 
 export const isUnauthorized = (error: unknown): boolean =>
   error instanceof ApiError && error.status === 401;
-
-/** Tagged errors the contract returns without a sentence of their own. */
-const TAGGED: Readonly<Record<string, string>> = {
-  SessionActive:
-    "the session is still active — it has a live process (a supporting shell, a Service) or an unsettled status; stop those first",
-  NotFound: "not found",
-};
-
-const stringField = (body: object, key: string): string | null => {
-  const value: unknown = Reflect.get(body, key);
-  return typeof value === "string" ? value : null;
-};
-
-const describe = (body: unknown): string | null => {
-  if (typeof body === "string" && body !== "") return body;
-  if (typeof body === "object" && body !== null) {
-    const message = stringField(body, "message") ?? stringField(body, "error");
-    if (message !== null) return message;
-    const tag = stringField(body, "_tag");
-    if (tag !== null) return TAGGED[tag] ?? tag;
-  }
-  return null;
-};
 
 /**
  * One contract call. `method` and `path` must name an endpoint the contract declares (the path
@@ -317,14 +300,9 @@ const call = async <M extends Method, P extends PathOf<M>>(
     raw.body === undefined ? { method, path: filled } : { method, path: filled, body: raw.body },
   );
   if (!response.ok) {
-    const detail = describe(response.body);
-    throw new ApiError(
-      response.status === 0
-        ? (detail ?? "the Mend server did not answer")
-        : `${method} ${filled} responded ${response.status}${detail === null ? "" : ` — ${detail}`}`,
-      response.status,
-      detail,
-    );
+    const failure = failureWords(response.status, response.body);
+    console.warn(failureLogLine(`${method} ${filled}`, response.status, response.body));
+    throw new ApiError(failure.words, response.status, failure.serverWords, failure.tag);
   }
   // The bridge hands back the parsed JSON; its shape is the contract's promise (lib/contract.ts).
   return response.body as Answer<M, P>;

@@ -382,7 +382,7 @@ function ConnectedAccountsSection() {
       {identity.data === undefined ? (
         <RowShell
           label={identity.isError ? "Platform identity unavailable" : "Loading…"}
-          {...(identity.isError ? { hint: String(identity.error) } : {})}
+          {...(identity.isError ? { hint: identity.error.message } : {})}
         >
           <span />
         </RowShell>

@@ -1,6 +1,7 @@
 import { PublicOrigin } from "@mend/network";
 import { Option, Schema } from "effect";
 
+import { failureLogLine, failureWords } from "./failure-words";
 import type { MendConfig } from "./live";
 import type { PairPayload } from "./pairing-code";
 import { CODE_LENGTH, normalizeBaseUrl, normalizeCode } from "./pairing-code";
@@ -104,7 +105,9 @@ export class HttpPairingClient implements PairingClient {
       return { state: "refused", reason: "too many attempts — wait a minute, then try again" };
     }
     if (!response.ok) {
-      return { state: "refused", reason: `server answered ${response.status} on /api/pair` };
+      const body: unknown = await response.json().catch(() => null);
+      console.warn(failureLogLine("POST /api/pair", response.status, body));
+      return { state: "refused", reason: failureWords(response.status, body).words };
     }
     const body = parsePairResponse(await response.json().catch(() => null));
     if (body === null) return { state: "refused", reason: "server answered an unreadable body" };

@@ -1,6 +1,6 @@
-import { TRPCClientError } from "@trpc/client";
 import { describe, expect, it } from "vitest";
 
+import { refusedWith } from "#/lib/refusal-fixture";
 import { forcedRemovalFailureOf, keptNote, removalRefusalOf } from "#/lib/worktree-removal";
 
 const WORDS =
@@ -8,7 +8,7 @@ const WORDS =
 
 describe("removalRefusalOf", () => {
   it("reads the server's words out of a StoreFailure and keeps them verbatim", () => {
-    const refusal = removalRefusalOf(new TRPCClientError(`StoreFailure: ${WORDS}`));
+    const refusal = removalRefusalOf(refusedWith("StoreFailure", WORDS));
     expect(refusal?.words).toBe(WORDS);
     expect(refusal?.forceable).toBe(true);
     expect(refusal?.unlanded).toEqual({
@@ -26,8 +26,9 @@ describe("removalRefusalOf", () => {
 
   it("offers no override for a refusal force does not lift", () => {
     const refusal = removalRefusalOf(
-      new Error(
-        "StoreFailure: not removed · 1 capture saving · the worktree stays until its workspaces have saved and ended, or their owner discards what is unsaved",
+      refusedWith(
+        "StoreFailure",
+        "not removed · 1 capture saving · the worktree stays until its workspaces have saved and ended, or their owner discards what is unsaved",
       ),
     );
     expect(refusal?.forceable).toBe(false);
@@ -35,26 +36,32 @@ describe("removalRefusalOf", () => {
   });
 
   it("after force, says plainly what force never lifts and offers a retry only for transport", () => {
-    expect(forcedRemovalFailureOf(new TRPCClientError(`StoreFailure: ${WORDS}`))).toEqual(
-      removalRefusalOf(new Error(`StoreFailure: ${WORDS}`)),
+    expect(forcedRemovalFailureOf(refusedWith("StoreFailure", WORDS))).toEqual(
+      removalRefusalOf(refusedWith("StoreFailure", WORDS)),
     );
-    expect(forcedRemovalFailureOf(new Error("WorktreeActive"))).toEqual({
+    expect(
+      forcedRemovalFailureOf(
+        refusedWith("WorktreeActive", "A session in this worktree is live. Stop it first."),
+      ),
+    ).toEqual({
       words: "A session in this worktree is live. Stop it first.",
       forceable: false,
       unlanded: null,
     });
-    expect(forcedRemovalFailureOf(new Error("WorktreeNotFound: gone"))).toEqual({
+    expect(forcedRemovalFailureOf(refusedWith("WorktreeNotFound", "gone"))).toEqual({
       words: "This worktree is no longer in the store.",
       forceable: false,
       unlanded: null,
     });
-    expect(forcedRemovalFailureOf(new Error("Forbidden: not the owner"))).toEqual({
-      words: "Forbidden: not the owner",
+    expect(
+      forcedRemovalFailureOf(refusedWith("Forbidden", "Only the worktree's owner removes it.")),
+    ).toEqual({
+      words: "Only the worktree's owner removes it.",
       forceable: false,
       unlanded: null,
     });
-    expect(forcedRemovalFailureOf(new Error("mend api unreachable"))).toEqual({
-      words: "The worktree was not removed · mend api unreachable. Try again.",
+    expect(forcedRemovalFailureOf(refusedWith(null, "The Mend server is not answering."))).toEqual({
+      words: "The worktree was not removed · The Mend server is not answering. Try again.",
       forceable: true,
       unlanded: null,
     });
@@ -72,13 +79,10 @@ describe("removalRefusalOf", () => {
   });
 
   it("is not a refusal for any other failure", () => {
-    expect(removalRefusalOf(new Error("WorktreeActive: 1 live session"))).toBeNull();
-    expect(removalRefusalOf(new Error("mend api unreachable"))).toBeNull();
-    expect(removalRefusalOf(new Error("StoreFailure: "))).toBeNull();
-    expect(removalRefusalOf("StoreFailure: a string, not an Error")).toEqual({
-      words: "a string, not an Error",
-      forceable: false,
-      unlanded: null,
-    });
+    expect(removalRefusalOf(refusedWith("WorktreeActive", "1 live session"))).toBeNull();
+    expect(removalRefusalOf(refusedWith(null, "The Mend server is not answering."))).toBeNull();
+    expect(removalRefusalOf(refusedWith("StoreFailure", ""))).toBeNull();
+    // The words alone never decide: a message that reads like a tag is still no refusal.
+    expect(removalRefusalOf(new Error(`StoreFailure: ${WORDS}`))).toBeNull();
   });
 });

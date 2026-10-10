@@ -1,5 +1,5 @@
 import type { MendConnection } from "./config.js";
-import { requestMend } from "./mend-http.js";
+import { MendApiError, requestMend } from "./mend-http.js";
 import type { SessionProcess } from "./types.js";
 
 /**
@@ -45,6 +45,14 @@ export const mintTtyTicket = async (
   const minted = await requestMend(connection, "/upgrade-tickets", {
     method: "POST",
     body: JSON.stringify({ target: "tty", ...address }),
+  }).catch((error: unknown) => {
+    if (error instanceof MendApiError && error.status === 404) {
+      throw new MendApiError(
+        "This Mend server does not issue terminal tickets. Upgrade it to open terminals here.",
+        404,
+      );
+    }
+    throw error;
   });
   const ticket =
     typeof minted === "object" && minted !== null ? Reflect.get(minted, "ticket") : undefined;
