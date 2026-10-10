@@ -20,6 +20,7 @@ export type DeviceCalls = Omit<MendClient["Service"], "claimPairing">;
 class GatedMendClient {
   readonly #gated = true;
   readonly checkDevice: DeviceCalls["checkDevice"];
+  readonly connectedAccounts: DeviceCalls["connectedAccounts"];
   readonly listHarnessModels: DeviceCalls["listHarnessModels"];
   readonly listProjects: DeviceCalls["listProjects"];
   readonly projectDetail: DeviceCalls["projectDetail"];
@@ -55,6 +56,7 @@ class GatedMendClient {
 
   constructor(calls: DeviceCalls) {
     this.checkDevice = calls.checkDevice;
+    this.connectedAccounts = calls.connectedAccounts;
     this.listHarnessModels = calls.listHarnessModels;
     this.listProjects = calls.listProjects;
     this.projectDetail = calls.projectDetail;
@@ -114,6 +116,7 @@ export const gateDeviceCalls = (
       mend
         .checkDevice(token)
         .pipe(Effect.tap((verdict) => (verdict === "refused" ? onRefused(token) : Effect.void))),
+    connectedAccounts: (token) => guard(token, mend.connectedAccounts(token)),
     listHarnessModels: (token) => guard(token, mend.listHarnessModels(token)),
     listProjects: (token) => guard(token, mend.listProjects(token)),
     projectDetail: (token, projectId) => guard(token, mend.projectDetail(token, projectId)),

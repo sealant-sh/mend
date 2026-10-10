@@ -1,5 +1,6 @@
 import { assert, describe, it } from "@effect/vitest";
 import {
+  type ServerProvider,
   EnvironmentAuthInvalidError,
   ORCHESTRATION_PROTOCOL_HEADER,
   ORCHESTRATION_PROTOCOL_VERSION_TEXT,
@@ -56,6 +57,15 @@ const pairAndTicket = (mend: FakeMend, code: string) =>
     const ticket = yield* client.auth.webSocketTicket({ headers: bearer(access.access_token) });
     return { client, access, ticket: ticket.ticket, url: yield* socketUrl(ticket.ticket) };
   });
+
+/** Each provider's driver, state, login and message, as t3code reads them. */
+const loginOf = (config: { readonly providers: ReadonlyArray<ServerProvider> }) =>
+  config.providers.map((provider) => [
+    provider.driver,
+    provider.status,
+    provider.auth.status,
+    provider.message ?? null,
+  ]);
 
 const first = <A, E, R>(stream: Stream.Stream<A, E, R>) =>
   stream.pipe(Stream.runHead, Effect.map(Option.getOrThrow), Effect.timeout("5 seconds"));
@@ -164,6 +174,51 @@ describe("GET /ws", () => {
           },
         });
         assert.deepStrictEqual(viaHttp, { ...EMPTY_SHELL_SNAPSHOT, snapshotSequence: sequenceOf });
+      }),
+    ),
+  );
+
+  it.live("says which providers Mend holds a login of the person's for, never more", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        const paired = yield* pairAndTicket(mend, "LOGINS");
+        const rpc = yield* connectWsRpc(paired.url);
+        // Both connected and active.
+        assert.deepStrictEqual(loginOf(yield* rpc[WS_METHODS.serverGetConfig]({})), [
+          ["claudeAgent", "ready", "authenticated", null],
+          ["codex", "ready", "authenticated", null],
+        ]);
+
+        // No Codex login that works: t3code must not call it connected.
+        mend.setAccounts([
+          { provider: "claude", status: "active" },
+          { provider: "codex", status: "invalid" },
+        ]);
+        assert.deepStrictEqual(loginOf(yield* rpc[WS_METHODS.serverGetConfig]({})), [
+          ["claudeAgent", "ready", "authenticated", null],
+          [
+            "codex",
+            "warning",
+            "unauthenticated",
+            "Mend holds no Codex login of yours. Connect one with mend connect codex.",
+          ],
+        ]);
+
+        // Mend cannot ask the platform: nothing is claimed either way, and the config still comes.
+        mend.setAccounts(null);
+        assert.deepStrictEqual(loginOf(yield* rpc[WS_METHODS.serverGetConfig]({})), [
+          ["claudeAgent", "ready", "unknown", null],
+          ["codex", "ready", "unknown", null],
+        ]);
+
+        // A slow answer never holds the config back past its deadline.
+        mend.setAccounts([{ provider: "claude", status: "active" }], 10_000);
+        const started = Date.now();
+        assert.deepStrictEqual(loginOf(yield* rpc[WS_METHODS.serverGetConfig]({})), [
+          ["claudeAgent", "ready", "unknown", null],
+          ["codex", "ready", "unknown", null],
+        ]);
+        assert.isBelow(Date.now() - started, 5_000);
       }),
     ),
   );

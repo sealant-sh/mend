@@ -154,15 +154,29 @@ const modelsFor = (
   return models;
 };
 
-/** One t3code provider per Mend harness the gateway can show, in Mend's order. */
+/**
+ * The harnesses Mend holds an active login of the person's for (`GET /api/me/sealant`), or null
+ * when the gateway could not read them.
+ */
+export type PersonLogins = ReadonlySet<string> | null;
+
+/**
+ * One t3code provider per Mend harness the gateway can show, in Mend's order. Its login is what
+ * Mend observed: an active connected account of the person's is `authenticated`; none is
+ * `unauthenticated`, with a warning that says how to connect one (t3code otherwise tells the
+ * person a provider with no login is "Connected"). A warning, not an error: the turn still goes to
+ * Mend, which decides what runs. Unread logins stay `unknown`.
+ */
 export const providersFromMend = (
   catalogs: ReadonlyArray<MendHarnessCatalog>,
   checkedAt: string,
+  logins: PersonLogins,
 ): ReadonlyArray<ServerProvider> => {
   const providers: Array<ServerProvider> = [];
   for (const catalog of catalogs) {
     const driver = HARNESS_DRIVERS[catalog.harness];
     if (driver === undefined) continue;
+    const signedIn = logins === null ? null : logins.has(catalog.harness);
     providers.push({
       instanceId: ProviderInstanceId.make(driver.driver),
       driver: driver.driver,
@@ -181,9 +195,16 @@ export const providersFromMend = (
       enabled: true,
       installed: true,
       version: null,
-      status: "ready",
-      // The gateway cannot see whether the person's login works until a turn runs.
-      auth: { status: "unknown" },
+      status: signedIn === false ? "warning" : "ready",
+      // Whether Mend holds a login, never whether it works: that shows when a turn runs.
+      auth: {
+        status: signedIn === null ? "unknown" : signedIn ? "authenticated" : "unauthenticated",
+      },
+      ...(signedIn === false
+        ? {
+            message: `Mend holds no ${driver.displayName} login of yours. Connect one with mend connect ${catalog.harness}.`,
+          }
+        : {}),
       checkedAt,
       models: modelsFor(catalog, driver),
       slashCommands: [],

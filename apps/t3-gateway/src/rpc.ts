@@ -42,6 +42,7 @@ import {
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import type * as Rpc from "effect/unstable/rpc/Rpc";
@@ -54,7 +55,12 @@ import { makeFileHandlers } from "./files.ts";
 import type { HubReadError, PersonHub, ThreadChange } from "./hub.ts";
 import { launchThread } from "./launch.ts";
 import { makeReviewHandlers } from "./review.ts";
-import { makeServerConfig, makeWelcome, providersFromMend } from "./server-config.ts";
+import {
+  makeServerConfig,
+  makeWelcome,
+  providersFromMend,
+  type PersonLogins,
+} from "./server-config.ts";
 import type { BearerSession } from "./state.ts";
 import { makeVcsHandlers } from "./vcs.ts";
 
@@ -226,6 +232,8 @@ const scopeCheck = (session: BearerSession, requiredScope: AuthEnvironmentScope)
       );
 
 const MODELS_SOURCE = "Mend GET /api/harnesses/models";
+/** How long the config waits for the person's logins (Mend asks the platform) before leaving them unknown. */
+const LOGINS_DEADLINE = "2 seconds";
 const encodeServerConfig = Schema.encodeEffect(Schema.toCodecJson(ServerConfig));
 
 /** A feed whose subscriber fell behind; the only typed failure these feeds declare. */
@@ -296,7 +304,7 @@ export const makeGatewayRpcHandlers = ({
    */
   const loadServerConfig = Effect.gen(function* () {
     yield* authorize(session, READ);
-    const catalogs = yield* mend.listHarnessModels(session.deviceToken).pipe(
+    const catalogRead = mend.listHarnessModels(session.deviceToken).pipe(
       Effect.catchTags({
         MendDeviceRefused: () =>
           Effect.fail(
@@ -319,12 +327,33 @@ export const makeGatewayRpcHandlers = ({
           ),
       }),
     );
+    // Beside the catalog, never in front of it: a slow or failed read leaves the logins unknown.
+    const loginsRead = mend.connectedAccounts(session.deviceToken).pipe(
+      Effect.map(
+        (accounts): PersonLogins =>
+          new Set(
+            accounts
+              .filter((account) => account.status === "active")
+              .map((account) => account.provider),
+          ),
+      ),
+      Effect.timeoutOption(LOGINS_DEADLINE),
+      Effect.map(Option.getOrNull),
+      Effect.catch((cause) =>
+        Effect.logDebug("t3 gateway could not read the person's logins", { cause }).pipe(
+          Effect.as(null),
+        ),
+      ),
+    );
+    const [catalogs, logins] = yield* Effect.all([catalogRead, loginsRead], {
+      concurrency: "unbounded",
+    });
     const checkedAt = DateTime.formatIso(yield* DateTime.now);
     const config = makeServerConfig({
       environment: descriptor,
       auth: environment.auth,
       paths,
-      providers: providersFromMend(catalogs, checkedAt),
+      providers: providersFromMend(catalogs, checkedAt, logins),
     });
     yield* encodeServerConfig(config).pipe(
       Effect.catch((cause) =>

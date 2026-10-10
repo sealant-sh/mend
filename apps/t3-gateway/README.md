@@ -31,14 +31,14 @@ t3code's whole `WsRpcGroup`. Without `orchestrationProtocol=2` it answers 426 wi
 ticket is spent once; a socket without one may use the request's own bearer, as t3code allows. Each
 socket gets its own RPC server, holding the handlers of the person who paired.
 
-| Method                                                  | What the gateway does                                                                                             |
-| ------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
-| `subscribeServerConfig`, `server.getConfig`             | The config: the descriptor, and one provider per Mend harness from `GET /api/harnesses/models` read as the person |
-| `subscribeServerLifecycle`                              | `welcome` with `bootstrapStatus: "complete"`, then open                                                           |
-| `server.probe`                                          | `{}`                                                                                                              |
-| `agentSessions.scan`                                    | No candidates: the gateway has no agent history to scan, and Mend's projects are in the shell already             |
-| every other command or read                             | A typed failure from the method's own contract, never a defect                                                    |
-| feeds of things Mend never has (terminals, previews, …) | Open, and never emit                                                                                              |
+| Method                                                  | What the gateway does                                                                                                                                           |
+| ------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `subscribeServerConfig`, `server.getConfig`             | The config: the descriptor, and one provider per Mend harness from `GET /api/harnesses/models` read as the person; its login from `GET /api/me/sealant` (below) |
+| `subscribeServerLifecycle`                              | `welcome` with `bootstrapStatus: "complete"`, then open                                                                                                         |
+| `server.probe`                                          | `{}`                                                                                                                                                            |
+| `agentSessions.scan`                                    | No candidates: the gateway has no agent history to scan, and Mend's projects are in the shell already                                                           |
+| every other command or read                             | A typed failure from the method's own contract, never a defect                                                                                                  |
+| feeds of things Mend never has (terminals, previews, …) | Open, and never emit                                                                                                                                            |
 
 `codex` is driver `codex` and `claude` is driver `claudeAgent`; other harnesses are left out. The
 capability flags say what Mend does: a session keeps its model (`requiresNewThreadForModelChange`),
@@ -46,6 +46,13 @@ no rollback, no plan mode, runtime modes `full-access` (`bypass`) and `approval-
 and no provider setup through t3code. Mend unreachable answers `ServerSettingsError`, which t3code
 retries; a device revoked in Mend answers `EnvironmentAuthorizationError`, which blocks the
 connection.
+
+A provider's login is what Mend holds for the person (`GET /api/me/sealant`, read beside the
+catalog). An active connected account is `authenticated`. None is `unauthenticated`, with a warning
+that says to run `mend connect <harness>`: without it t3code tells the person a provider is
+"Connected" when Mend has no login of theirs. It is a warning and not an error, as the turn still
+goes to Mend, which decides what runs. When the read fails or takes over two seconds, the login is
+`unknown` and the config comes anyway. Whether a login works shows only when a turn runs.
 
 ## Phase 1: the projection
 
