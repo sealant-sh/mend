@@ -608,6 +608,7 @@ Both are allowed and documented, not refused, and only where the executor shares
   (decision 14);
 - `MEND_HARNESS_LAYOUT=shared`, the operator's opt-out;
 - a custom base without a setuid `sudo` (or `useradd`, or `setfacl`);
+- a nix image, whose passwd is in the read-only store, which cannot hold a setuid `sudo`;
 - a Kubernetes workspace runtime, which imposes no-new-privileges.
 
 The product says so each time. The join line says that what the joiner starts runs on the identity
