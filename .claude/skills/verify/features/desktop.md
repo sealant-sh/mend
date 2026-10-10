@@ -116,11 +116,12 @@ Preconditions:
   `const launcher = page.getByRole("dialog", { name: "New session in <project>" })`,
   `await launcher.getByRole("textbox", { name: "worktree name — e.g. fix-auth (empty = auto)" }).fill("verify-desk")`,
   then `await launcher.getByRole("button", { name: "Open a shell" }).click()`. The button reads
-  `Opening…` and the dialog closes. The tab bar gains a tab whose name contains
-  `shell · mend/verify-desk`, or, until mend#667 lands, may not (Gotchas): when no such tab shows
-  within 20 s, record that, then click the tree row whose name starts `shell · mend/verify-desk`;
-  the tab opens. The header strip shows the status word (`starting`, then `running · recorded`) and
-  `mend/verify-desk`. Until the PTY binds, the pane reads
+  `Opening…` and the dialog closes. The tab bar gains a tab (named `session` until the detail lists
+  the new session, then containing `shell · mend/verify-desk`; mend#667). Before that fix the live
+  pass saw none (Gotchas): when no such tab shows within 20 s, record that, then click the tree row
+  whose name starts `shell · mend/verify-desk`; the tab opens. The header strip shows the status
+  word (`starting`, then `running · recorded`) and `mend/verify-desk`. Until the PTY binds, the pane
+  reads
   `provisioning workspace — the terminal attaches the moment the PTY is live (a first launch can take minutes)…`.
 - **Type in the terminal.** Run
   `await page.getByRole("textbox", { name: "Terminal input" }).focus()` and
@@ -130,9 +131,9 @@ Preconditions:
   `verify-desk` is listed with its `shell` session.
 - **Supporting shell tab.** Run `await page.getByRole("button", { name: "+", exact: true }).click()`
   (or press `Control+Shift+T`). The button reads `…` while opening, and the tree lists `shell <n>`
-  under the session. A second tab opens for that supporting shell (until mend#667 lands it may not:
-  when none shows within 20 s, record that, then click the `shell <n>` row); its header reads
-  `<label> · session worktree · mend/verify-desk` with the buttons `rename` and `detach tab`.
+  under the session. A second tab opens for that supporting shell (mend#667; before it the live pass
+  saw none: when none shows within 20 s, record that, then click the `shell <n>` row); its header
+  reads `<label> · session worktree · mend/verify-desk` with the buttons `rename` and `detach tab`.
   Right-click that tab's button (`click({ button: "right" })`); a menu opens with `Detach tab` and
   `Stop shell`. Click `Stop shell`: the item now reads `Stop the process group?`. Click it again.
   The tab closes and the tree no longer lists that shell under the session.
@@ -218,12 +219,12 @@ Preconditions:
   Prove terminal output with the session's record and the files it wrote: every screenshot masks the
   canvas (`drive-web.mjs`, mend#662), and the evidence scan refuses a screenshot the driver did not
   take. The `Terminal input` textarea has `pointer-events: none`: use `.focus()`, not `.click()`.
-- A new session's or shell's tab may not open. The live pass saw no tab after `Open a shell`, twice,
-  and none after `+` until the tree row was clicked (2026-10-10). On main a project or process read
-  that predates the new session or shell closes the tab just opened
-  (`apps/desktop/src/renderer/src/lib/workbench.ts:204`); a click on the tree row opens it. mend#667
-  keeps the tab open until a read lists it. Until it lands, record whether a tab opened on its own
-  before clicking the row.
+- The live pass (2026-10-10) saw no tab after `Open a shell`, twice, and none after `+` until the
+  tree row was clicked: a project or process read that predated the new session or shell closed the
+  tab just opened, and a click on the tree row opened it. mend#667 (merged after the pass) keeps
+  such a tab open until a read lists it, or for a minute; until the detail lists the new session the
+  tab reads `session` and the pane `reading the session…`. A launch with no tab is a regression of
+  that fix: record it before clicking the row.
 - The tab bar's new-shell button is named `+`, changing to `…` while opening. These are weak names;
   its `title`, `New shell in focused session (Ctrl+Shift+T)`, is a description. Source:
   `components/tab-bar.tsx:91`.
