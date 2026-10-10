@@ -55,15 +55,25 @@ export class ProcessSupervisor {
    * that fails, the first included (review 643-2: a spawn refused for want of processes or
    * descriptors must not stop Mend beside it). It is started again after `backoffMs`, doubled
    * each time it ends before it ran `steadyMs` (to `maxBackoffMs`), until shutdown. For a part an
-   * operator turned on beside Mend (the t3code gateway). Resolves once the first start was tried;
-   * never rejects.
+   * operator turned on beside Mend (the t3code gateway). `beforeStart` runs before each start, the
+   * first and every restart; when it throws, that start fails like a spawn that fails. Resolves
+   * once the first start was tried; never rejects.
    */
   async keepRunning(
     specification,
-    { backoffMs = 1_000, maxBackoffMs = 60_000, steadyMs = 60_000, log = console.error } = {},
+    {
+      backoffMs = 1_000,
+      maxBackoffMs = 60_000,
+      steadyMs = 60_000,
+      log = console.error,
+      beforeStart = async () => {},
+    } = {},
   ) {
     const attempt = async () => {
       try {
+        if (this.#stopping)
+          throw new Error(`cannot start ${specification.name}: shutdown has begun`);
+        await beforeStart();
         return await this.#spawn(specification, false);
       } catch (error) {
         if (!this.#stopping) {

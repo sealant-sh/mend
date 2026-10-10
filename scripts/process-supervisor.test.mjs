@@ -117,6 +117,44 @@ test("an optional process that cannot even start the first time never stops a re
   }
 });
 
+test("a check before each start that fails is a failed start: logged, tried again, never fatal", async () => {
+  const supervisor = new ProcessSupervisor();
+  const logged = [];
+  let checks = 0;
+  try {
+    await supervisor.keepRunning(
+      {
+        name: "optional",
+        command: [process.execPath, "-e", "setInterval(() => {}, 1000)"],
+        env: process.env,
+        stdio: "ignore",
+      },
+      {
+        backoffMs: 20,
+        maxBackoffMs: 40,
+        log: (line) => logged.push(line),
+        beforeStart: async () => {
+          checks += 1;
+          if (checks < 3) throw new Error("its root is not root's alone");
+        },
+      },
+    );
+    await withTimeout(
+      (async () => {
+        while (checks < 3) await new Promise((resolve) => setTimeout(resolve, 20));
+      })(),
+    );
+    assert.ok(logged.some((line) => line.includes("optional did not start: Error: its root")));
+    const settled = await Promise.race([
+      supervisor.failure.then(() => true),
+      new Promise((resolve) => setTimeout(() => resolve(false), 50)),
+    ]);
+    assert.equal(settled, false);
+  } finally {
+    await supervisor.shutdown("SIGTERM", 2_000);
+  }
+});
+
 test("a one-shot failure reports its process and exit code", async () => {
   const supervisor = new ProcessSupervisor();
   await assert.rejects(

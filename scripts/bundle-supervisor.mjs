@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { chmod, chown, mkdir, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, lchown, lstat, mkdir, readdir, rm, stat, writeFile } from "node:fs/promises";
 
 import { supervise } from "./process-supervisor.mjs";
 
@@ -226,16 +226,43 @@ export const t3GatewaySpecification = (
 };
 
 /**
- * The gateway's state directory, its own: made if missing, owned by its uid, `0700`, and what is
- * in it owned by it too (a volume first mounted by root). Nothing above it is touched.
+ * The gateway's state directory, its own: made if missing, then the directory alone owned by its
+ * uid and `0700` (review 643-R2-1). Root never touches what is in it, and never follows a link:
+ * the gateway writes there, so a link it planted would hand root's chown any file it names (the
+ * `setpriv` root runs on the next start). What the gateway creates is its own already.
  */
 export const prepareT3GatewayState = async (root = T3_GATEWAY_ROOT) => {
   const state = `${root}/state`;
   await mkdir(state, { recursive: true });
-  await chown(state, T3_GATEWAY_UID, T3_GATEWAY_UID);
+  // The root above it is root's alone (verifyT3GatewayRoot), so this is the directory, not a link.
+  if (!(await lstat(state)).isDirectory()) throw new Error(`${state} is not a directory`);
+  await lchown(state, T3_GATEWAY_UID, T3_GATEWAY_UID);
   await chmod(state, 0o700);
-  for (const entry of await readdir(state)) {
-    await chown(`${state}/${entry}`, T3_GATEWAY_UID, T3_GATEWAY_UID);
+};
+
+/**
+ * Refuses to start the gateway unless everything in its root but `/state` is root's and nobody
+ * else may write it (review 643-R2-1): root runs `setpriv` and loads libraries from there before
+ * it drops its privileges, so a file the gateway could own or write would be code root runs.
+ */
+export const verifyT3GatewayRoot = async (root = T3_GATEWAY_ROOT) => {
+  const unsafe = [];
+  const visit = async (at) => {
+    const entry = await lstat(at);
+    if (entry.uid !== 0 || (entry.mode & 0o022) !== 0) {
+      unsafe.push(`${at} (${entry.uid}:${entry.gid} ${(entry.mode & 0o7777).toString(8)})`);
+    }
+    if (!entry.isDirectory()) return;
+    for (const name of await readdir(at)) {
+      if (at === root && name === "state") continue;
+      await visit(`${at}/${name}`);
+    }
+  };
+  await visit(root);
+  if (unsafe.length > 0) {
+    throw new Error(
+      `the t3code gateway's root is not root's alone, so it was not started: ${unsafe.slice(0, 5).join(", ")}`,
+    );
   }
 };
 
@@ -350,8 +377,13 @@ const startBundle = async (supervisor) => {
       `[bundle] starting the t3code gateway on 3120 (MEND_T3_GATEWAY_ENABLED), as uid ${T3_GATEWAY_UID} in ${T3_GATEWAY_ROOT}`,
     );
     try {
-      await prepareT3GatewayState();
-      await supervisor.keepRunning(t3Gateway);
+      // Before every start, the restarts too: its root checked, its state directory made its own.
+      await supervisor.keepRunning(t3Gateway, {
+        beforeStart: async () => {
+          await verifyT3GatewayRoot();
+          await prepareT3GatewayState();
+        },
+      });
     } catch (error) {
       // Never in Mend's way: a gateway that cannot even be prepared is reported, and Mend runs on.
       console.error(`[bundle] the t3code gateway was not started: ${String(error)}`);

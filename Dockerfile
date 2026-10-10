@@ -61,7 +61,7 @@ COPY --from=mend-build /app/apps/web/.output ./apps/web/.output
 # scripts/bundle-supervisor.mjs starts it there as its own uid with no capabilities.
 COPY scripts/t3-gateway-root.sh /tmp/t3-gateway-root.sh
 RUN /tmp/t3-gateway-root.sh /opt/mend-t3-gateway && rm /tmp/t3-gateway-root.sh
-COPY --from=mend-build /app/apps/t3-gateway/dist /opt/mend-t3-gateway/app
+COPY --from=mend-build /app/apps/t3-gateway/dist/bin.js /opt/mend-t3-gateway/app/bin.js
 COPY scripts/process-supervisor.mjs scripts/process-supervisor.mjs
 COPY scripts/bundle-supervisor.mjs scripts/bundle-supervisor.mjs
 COPY scripts/bundle-health.mjs scripts/bundle-health.mjs

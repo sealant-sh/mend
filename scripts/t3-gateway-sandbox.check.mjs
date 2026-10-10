@@ -2,9 +2,13 @@
 // root as the Dockerfile does, starts a probe there through the bundle's real start chain
 // (t3GatewaySpecification), and prints what the probe saw of itself and what /proc says of it.
 import { execFileSync, spawn } from "node:child_process";
-import { readFileSync, writeFileSync } from "node:fs";
+import { chownSync, readFileSync, statSync, writeFileSync } from "node:fs";
 
-import { prepareT3GatewayState, t3GatewaySpecification } from "./bundle-supervisor.mjs";
+import {
+  prepareT3GatewayState,
+  t3GatewaySpecification,
+  verifyT3GatewayRoot,
+} from "./bundle-supervisor.mjs";
 
 const root = "/tmp/t3-gateway-root";
 execFileSync("sh", ["/scripts/t3-gateway-root.sh", root], { stdio: "inherit" });
@@ -17,6 +21,9 @@ writeFileSync(
    }
    let wrote = false;
    try { fs.writeFileSync("/state/written", "x"); wrote = true; } catch {}
+   // Review 643-R2-1: the gateway plants links in its state, to what root runs on its next start.
+   fs.symlinkSync("/usr/bin/setpriv", "/state/planted-inside");
+   fs.symlinkSync(${JSON.stringify(`${root}/usr/bin/setpriv`)}, "/state/planted-outside");
    let escaped = false;
    try { fs.writeFileSync("/app/written", "x"); escaped = true; } catch {}
    process.stdout.write(JSON.stringify({
@@ -76,4 +83,24 @@ const status = Object.fromEntries(
 const limits = readFileSync(`/proc/${child.pid}/limits`, "utf8");
 const nice = Number(readFileSync(`/proc/${child.pid}/stat`, "utf8").split(" ")[18]);
 child.kill();
-process.stdout.write(`${JSON.stringify({ seen, status, limits, nice })}\n`);
+
+// The next two starts, as the supervisor runs them: root prepares the state, following nothing.
+const owner = (path) => {
+  const entry = statSync(path);
+  return `${entry.uid}:${entry.gid}`;
+};
+await verifyT3GatewayRoot(root);
+await prepareT3GatewayState(root);
+await prepareT3GatewayState(root);
+const links = {
+  rootSetpriv: owner(`${root}/usr/bin/setpriv`),
+  containerSetpriv: owner("/usr/bin/setpriv"),
+  state: owner(`${root}/state`),
+};
+// A file of the root the gateway owns is refused before anything runs.
+chownSync(`${root}/usr/bin/setpriv`, 10120, 10120);
+const tampered = await verifyT3GatewayRoot(root).then(
+  () => "started",
+  (error) => String(error.message),
+);
+process.stdout.write(`${JSON.stringify({ seen, status, limits, nice, links, tampered })}\n`);

@@ -265,10 +265,12 @@ test("the t3code gateway is in the bundle, and runs only when the operator turne
   assert.match(dockerfile, /dev\.sealant\.mend\.t3-gateway="1"/);
   assert.match(
     dockerfile,
-    /COPY --from=mend-build \/app\/apps\/t3-gateway\/dist \/opt\/mend-t3-gateway\/app/,
+    /COPY --from=mend-build \/app\/apps\/t3-gateway\/dist\/bin\.js \/opt\/mend-t3-gateway\/app\/bin\.js/,
   );
   // Kept running on its own: its exit never stops Mend.
-  assert.match(supervisor, /keepRunning\(t3Gateway\)/);
+  assert.match(supervisor, /keepRunning\(t3Gateway, \{/);
+  // Its root checked and its state prepared before every start (review 643-R2-1).
+  assert.match(supervisor, /beforeStart: async \(\) => \{\s*await verifyT3GatewayRoot\(\);/);
   assert.doesNotMatch(supervisor, /supervisor\.start\(t3Gateway/);
 
   assert.equal(t3GatewayEnvironment({}), null);
@@ -359,5 +361,16 @@ test(
     assert.match(report.limits, /Max processes\s+256\s+256/);
     assert.match(report.limits, /Max data size\s+805306368\s+805306368/);
     assert.equal(report.nice, 10);
+    // Review 643-R2-1: links the gateway planted in its state hand root's chown nothing, and a
+    // root it could write is refused.
+    assert.deepEqual(report.links, {
+      rootSetpriv: "0:0",
+      containerSetpriv: "0:0",
+      state: "10120:10120",
+    });
+    assert.match(
+      report.tampered,
+      /^the t3code gateway's root is not root's alone, so it was not started: .*usr\/bin\/setpriv \(10120:10120/,
+    );
   },
 );
