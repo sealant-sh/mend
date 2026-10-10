@@ -6,6 +6,7 @@
 import {
   canRelaunchSession,
   REPLACE_WORKSPACE_ACTION,
+  resumesOwnHarness,
   terminalOwnerOnlyLine,
   terminalReadOnlyLine,
 } from "@mend/domain/workbench";
@@ -257,14 +258,17 @@ export function SessionPane({
         onPress: () => deliverFollowUp.mutate(followUp),
       });
     }
-    actions.push({
-      key: "resume",
-      label: resume.isPending ? "Resuming…" : "Resume",
-      icon: Play,
-      tone: "accent",
-      disabled: resume.isPending,
-      onPress: () => resume.mutate({ sessionId: session.id, harness: null }),
-    });
+    // A `mend run` command has no agent to resume on its own harness.
+    if (resumesOwnHarness(session.harness)) {
+      actions.push({
+        key: "resume",
+        label: resume.isPending ? "Resuming…" : "Resume",
+        icon: Play,
+        tone: "accent",
+        disabled: resume.isPending,
+        onPress: () => resume.mutate({ sessionId: session.id, harness: null }),
+      });
+    }
   }
   if (change !== null) {
     actions.push({

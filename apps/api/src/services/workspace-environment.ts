@@ -41,10 +41,19 @@ export const resolveWorkspaceEnvironment = <E>(
     if (workspaceImage.mode === "custom") {
       return { workspaceImage, resolutions: [] };
     }
-    const resolutions = yield* Effect.forEach(
+    const resolved = yield* Effect.forEach(
       workspaceImage.packages,
       (packageName) => resolvePackage(packageName, workspaceImage.os),
       { concurrency: 4 },
+    );
+    // A managed family installs the platform catalog's packages only. A name outside it resolves
+    // to Repology's nearest project with no catalog id (`tree` → `python-urwidtrees`), which saved
+    // and then failed every launch (RC 0.36.0-next.754, B-F2): it is not available here.
+    const resolutions = resolved.map(
+      (resolution): WorkspacePackageResolution =>
+        resolution.status === "resolved" && resolution.canonicalId === null
+          ? { ...resolution, status: "unsupported", supported: false }
+          : resolution,
     );
     const canSave = resolutions.every(
       (resolution) => resolution.status === "resolved" && resolution.supported,

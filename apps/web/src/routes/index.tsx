@@ -1,4 +1,4 @@
-import { canRelaunchSession } from "@mend/domain/workbench";
+import { canRelaunchSession, resumesOwnHarness } from "@mend/domain/workbench";
 import { useContextMenu } from "@mend/ui/context-menu";
 import {
   useQuery,
@@ -336,13 +336,14 @@ function HomePage() {
                         );
                         // A resume that opens a terminal is the owner's alone, even while
                         // control is shared (docs/adr/0013). Until the viewer is known, the
-                        // server decides.
+                        // server decides. A `mend run` command has no agent to resume.
                         const resumes =
-                          viewer === null ||
-                          canRelaunchSession(
-                            sessionActions(session, viewer),
-                            annotation?.currentAgent?.kind ?? null,
-                          );
+                          resumesOwnHarness(session.harness) &&
+                          (viewer === null ||
+                            canRelaunchSession(
+                              sessionActions(session, viewer),
+                              annotation?.currentAgent?.kind ?? null,
+                            ));
                         return (
                           <div
                             key={session.id}

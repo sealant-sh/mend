@@ -69,6 +69,9 @@ export const admits = (view: EventView, audience: EventAudience): boolean => {
 /** How often a stream re-reads its view even without a membership or visibility event. */
 const VIEW_REFRESH = "25 seconds";
 
+/** How long a revoked stream stays open for the `access` event that says why it ends. */
+const REVOKED_GRACE = "1 second";
+
 /**
  * Live updates over SSE (ARCHITECTURE.md §4): pointer events from the shared event bus, filtered
  * to what the caller can see (docs/adr/0003). The caller's view is re-read when a `project` event
@@ -128,9 +131,21 @@ export const EventsRoutes = HttpRouter.use((router) =>
           return next;
         });
 
+        /** This account's own removal from its organization: the last thing its stream says. */
+        const ownAccess = (signal: BusSignal | { readonly kind: "tick" }) =>
+          signal.kind === "event" &&
+          signal.event.type === "user" &&
+          signal.event.facet === "access" &&
+          signal.event.userId === userId;
+
+        // Removing the account ends the stream; the client's reconnect is then refused.
+        const revoked = yield* Deferred.make<void>();
+
         /** The SSE frame for one signal, or null when this caller must not see it. */
         const frameFor = (signal: BusSignal | { readonly kind: "tick" }) =>
           Effect.gen(function* () {
+            // A revoked stream says nothing more but why it ended.
+            if ((yield* Deferred.isDone(revoked)) && !ownAccess(signal)) return null;
             if (signal.kind === "tick") {
               yield* refresh;
               return ": ping\n\n";
@@ -157,8 +172,6 @@ export const EventsRoutes = HttpRouter.use((router) =>
             return admits(before, audience) ? frame : null;
           });
 
-        // Removing the account ends the stream; the client's reconnect is then refused.
-        const revoked = yield* Deferred.make<void>();
         const events = Stream.unwrap(
           Effect.gen(function* () {
             const end = Deferred.succeed(revoked, undefined).pipe(Effect.asVoid);
@@ -175,7 +188,12 @@ export const EventsRoutes = HttpRouter.use((router) =>
 
         return HttpServerResponse.stream(
           Stream.merge(events, ticks).pipe(
-            Stream.interruptWhen(Deferred.await(revoked)),
+            // The page hears its `access` event and then the stream ends. Removal closes the
+            // stream on that same event, from a subscriber that may hear it first: the close waits
+            // a beat for the event, or a page is refused before it learns why and lands on a plain
+            // sign-in (RC 0.36.0-next.754, B-F1).
+            Stream.takeUntil(ownAccess),
+            Stream.interruptWhen(Deferred.await(revoked).pipe(Effect.delay(REVOKED_GRACE))),
             Stream.mapEffect(frameFor),
             Stream.filter((frame): frame is string => frame !== null),
             Stream.map((chunk) => encoder.encode(chunk)),

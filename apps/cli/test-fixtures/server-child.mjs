@@ -4,7 +4,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 
 import { serverCommand } from "../src/server-setup.ts";
-import { withServerStore } from "../src/server-store.ts";
+import { whenServerLockReleased, withServerStore } from "../src/server-store.ts";
 import { DockerProtocol } from "./docker-protocol.ts";
 
 const [configDir, operation = "setup", rendezvous = ""] = process.argv.slice(2);
@@ -32,6 +32,24 @@ if (operation === "oversized-generation") {
     return committed;
   });
   console.log(JSON.stringify(result));
+} else if (operation === "exit-under-lock") {
+  // Any `process.exit` while the lock is held, as a CLI's own way out.
+  await withServerStore(configDir, async () => process.exit(0));
+} else if (operation === "reader-gone-under-lock") {
+  // `mend server status | head -1`: main.ts's stream handler exits once the lock is released.
+  process.stdout.on("error", () => whenServerLockReleased(() => process.exit(0)));
+  await withServerStore(configDir, async () => {
+    console.log("first line");
+    await pause("reader");
+    // Write until the closed pipe fails a write, then finish what the command started.
+    for (let line = 0; line < 1000; line += 1) {
+      console.log(`line ${line}`);
+      await sleep(1);
+    }
+    fs.writeFileSync(path.join(rendezvous, "finished"), "yes");
+  });
+  console.log("after the lock");
+  process.exitCode = 3;
 } else {
   const daemon = new DockerProtocol();
   const runtime = {

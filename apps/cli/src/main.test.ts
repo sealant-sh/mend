@@ -2037,3 +2037,33 @@ esac
     }
   });
 });
+
+describe("mend uninstall", spawning, () => {
+  it("refuses in words while the server lock is held, naming its owner and the way out", async () => {
+    // It crashed with an uncaught ServerStoreError and a Node stack trace (RC 0.36.0-next.754, D-F2).
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mend-uninstall-lock-"));
+    try {
+      const lock = path.join(root, "config", "mend", "server.lock");
+      fs.mkdirSync(lock, { recursive: true });
+      // A process that has exited: the lock it names is stale.
+      const gone = spawn(process.execPath, ["-e", ""]);
+      await once(gone, "exit");
+      fs.writeFileSync(
+        path.join(lock, "owner.json"),
+        `${JSON.stringify({ pid: gone.pid, hostname: os.hostname(), token: "t" })}\n`,
+      );
+      const cli = startCli("http://127.0.0.1:9", ["uninstall", "--server", "--yes"], {
+        HOME: root,
+        XDG_CONFIG_HOME: path.join(root, "config"),
+      });
+      expect(await cli.exited).toEqual({ kind: "exit", code: 1 });
+      expect(cli.stderr()).toContain(`mend: Server is busy: ${lock} is locked (PID ${gone.pid}`);
+      expect(cli.stderr()).toContain("the lock may be stale");
+      expect(cli.stderr()).toContain("move only this lock directory aside and retry");
+      expect(cli.stderr()).not.toMatch(/\n\s+at /);
+      expect(fs.existsSync(lock)).toBe(true);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});

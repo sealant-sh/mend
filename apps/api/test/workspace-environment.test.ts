@@ -70,6 +70,27 @@ describe("resolveWorkspaceEnvironment", () => {
     expect(result.resolutions).toHaveLength(2);
   });
 
+  it("refuses a name outside the catalog that the platform matched to another project", async () => {
+    // Repology's nearest project for `tree`, with no catalog id: it saved, then every launch
+    // failed `Unknown workspace package 'python-urwidtrees'` (RC 0.36.0-next.754, B-F2).
+    const result = await Effect.runPromise(
+      resolveWorkspaceEnvironment(workspaceImage(["bat", "tree"]), (packageName) =>
+        Effect.succeed(
+          packageName === "tree"
+            ? resolution("tree", { canonicalId: null, packageName: "python-urwidtrees" })
+            : resolution(packageName),
+        ),
+      ),
+    );
+
+    expect(result.workspaceImage).toBeNull();
+    expect(result.resolutions[1]).toMatchObject({
+      requested: "tree",
+      status: "unsupported",
+      supported: false,
+    });
+  });
+
   it("merges a resolved environment into settings read after validation", async () => {
     let current = new MendSettings({ ...defaultSettings, autoTour: false });
     const requested = workspaceImage(["pnpm"]);

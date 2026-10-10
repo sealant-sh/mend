@@ -125,6 +125,33 @@ describe("the event stream lifecycle", () => {
     await alice.close();
   });
 
+  it("a removed account's stream says why it ended, even when the close comes first", async () => {
+    // Removal closes the account's streams on the same bus event its page must hear. When the
+    // close won, the page was refused before it heard why and landed on a plain sign-in
+    // (RC 0.36.0-next.754, B-F1).
+    const world = await createTenancyApi();
+    api = world;
+    const carol = await api.events("carol");
+    const alice = await api.events("alice");
+
+    expect(await api.closeConnectionsOf("carol")).toBe(1);
+    // Nothing but the reason reaches a revoked stream.
+    await api.notify(sessionEvent);
+    await api.notify({ type: "user", userId: sharedA.session, facet: "access" });
+    await api.notify({ type: "user", userId: "carol", facet: "access" });
+    expect(await arrives(carol)).toBe('data: {"type":"user","userId":"carol","facet":"access"}');
+    // Then the stream ends.
+    expect(await carol.next(SILENCE_MS)).toBeNull();
+    await eventually(
+      "carol's stream released",
+      async () => (await openStreams(world, "carol")) === 0,
+    );
+
+    expect(await arrives(alice)).toContain(sharedA.session);
+    await carol.close();
+    await alice.close();
+  });
+
   it("a stream refused over the account's budget holds nothing and disturbs nothing", async () => {
     api = await createTenancyApi({ accountEventStreams: 1 });
     const open = await api.events("carol");

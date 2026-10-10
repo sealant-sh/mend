@@ -1,6 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
 
-import { checkpointSourceWords, type CheckpointSourceKind } from "@mend/domain/workbench";
+import {
+  checkpointSourceWords,
+  type CheckpointSourceKind,
+  noReviewFollowUpLine,
+  takesReviewFollowUp,
+} from "@mend/domain/workbench";
 import {
   RGBA,
   SyntaxStyle,
@@ -903,6 +908,11 @@ export function ReviewScreen({
 
   const openSendEditor = (): void => {
     if (data === undefined) return;
+    // A `mend run` command or a shell has no agent to send the review to (as the web and phone).
+    if (!takesReviewFollowUp(session.harness)) {
+      setStatus(noReviewFollowUpLine(session.harness));
+      return;
+    }
     // A pending id is an optimistic row the server has not named yet — it
     // cannot ride a follow-up until the settle refetch replaces it.
     const sendable = data.comments.filter(
@@ -1421,7 +1431,7 @@ export function ReviewScreen({
       )}
       <text height={1} fg={status === "" ? FAINT : INK_2} bg="transparent">
         {status === ""
-          ? ` m read · g suggest · t tour · ,/. tour stops · s draft review${data.followUp?.status === "pending" ? " · y deliver & relaunch" : ""} · o web · r refresh`
+          ? ` m read · g suggest · t tour · ,/. tour stops${takesReviewFollowUp(session.harness) ? " · s draft review" : ""}${data.followUp?.status === "pending" ? " · y deliver & relaunch" : ""} · o web · r refresh`
           : ` ${status}`}
       </text>
       <text height={1} fg={FAINT} bg="transparent">

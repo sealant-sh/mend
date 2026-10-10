@@ -1469,6 +1469,17 @@ describe("deriveHarnesses", () => {
       expect(item.hint).not.toContain("new worktree");
     }
   });
+
+  it("offers a resume on the session's own harness first, but never for a `mend run` command", () => {
+    expect(deriveHarnesses(session({ id: "a", harness: "codex" }))[0]).toMatchObject({
+      harness: null,
+      label: "codex",
+    });
+    // `run` · same harness printed `Unknown harness "run"` (RC 0.36.0-next.754, E-F2).
+    const run = deriveHarnesses(session({ id: "b", harness: "run" }));
+    expect(run.some((item) => item.harness === null)).toBe(false);
+    expect(run.map((item) => item.harness)).toContain("shell");
+  });
 });
 
 describe("the Services the session pane names", () => {

@@ -7,6 +7,22 @@ around by importing internals.
 Format: date · SDK version · what Mend needed · what exists today · suggested surface. Entries stay
 after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
+## 2026-10-11 · 0.39.0-next.720 · A package resolves to a project a managed family cannot install
+
+The 0.36.0-next.754 drive saved `tree` on an Arch override as `python-urwidtrees`, and every launch
+then failed
+`Unknown workspace package 'python-urwidtrees'. A managed OS family installs the catalog's packages only`.
+
+- **Today:** `packages.resolvePackage` answers a name outside the catalog from Repology: an exact
+  project, else the best-scored search result, as `status: "resolved"` with no `canonicalId` and the
+  target's `packageName` (`packages/workspaces/src/package-standardization.ts`). For `tree` that was
+  a search neighbour. A managed family's image plan then refuses any id outside the catalog.
+- **Mend now:** a family save refuses a resolution with no `canonicalId`, as not available for the
+  family, so nothing saves that every launch refuses.
+- **Needed:** a resolution that says whether the target can install it (`resolved` only for catalog
+  entries when `targetOs` is a managed family, or a separate `installable` flag), and a search match
+  never reported as `resolved` for a name it does not equal.
+
 ## 2026-10-10 · 0.39.0-next.720 · Arch workspaces are amd64 on ARM hosts
 
 An RC test of Mend 0.36.0-next.754 on a MacBook with Apple silicon (OrbStack) ran every session

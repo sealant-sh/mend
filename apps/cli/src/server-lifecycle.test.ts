@@ -65,6 +65,8 @@ interface DaemonState {
   readonly prunedBuildCache?: boolean;
   /** The bundle's other images uninstall removed. */
   readonly removedImages?: ReadonlyArray<string>;
+  /** false: the edge's Caddy image was never pulled on this daemon. */
+  readonly edgeImage?: boolean;
   /** Images Docker refuses once and removes with another image of the list. */
   readonly imagesRefusedOnce?: ReadonlyArray<string>;
   /** Images a container outside the installation still runs. */
@@ -2364,7 +2366,7 @@ describe("server uninstall with live sessions", { timeout: 60_000 }, () => {
   it("everything also removes Mend's images and the sysctl file setup wrote, restoring the default", async () => {
     const f = await fixture();
     expect(await f.setup()).toEqual({ _tag: "ok" });
-    f.update({ sysctl: "mend", buildCache: "5.075GB" });
+    f.update({ sysctl: "mend", buildCache: "5.075GB", edgeImage: false });
     const runtime = uninstallRuntime(f);
     const plan = await describeUninstall(runtime, "all");
     expect(plan.server).toMatchObject({
@@ -2406,10 +2408,29 @@ describe("server uninstall with live sessions", { timeout: 60_000 }, () => {
     );
   });
 
+  it("everything removes the edge's image too, after --no-edge took the edge away", async () => {
+    // The overlay no longer names Caddy, and uninstall left its image without a word
+    // (RC 0.36.0-next.754, D-F4).
+    const f = await fixture();
+    expect(await f.setup()).toEqual({ _tag: "ok" });
+    const runtime = uninstallRuntime(f);
+    const plan = await describeUninstall(runtime, "all");
+    expect(plan.server).toMatchObject({
+      extras: { images: expect.arrayContaining(["caddy:2.10-alpine"]) },
+    });
+    const outcome = await executeUninstall(runtime, plan);
+    expect(outcome.failures).toEqual([]);
+    expect(f.state().removedImages).toContain("caddy:2.10-alpine");
+  });
+
   it("counts an image Docker refused once and then removed with another as removed, and names one it kept", async () => {
     const f = await fixture();
     expect(await f.setup()).toEqual({ _tag: "ok" });
-    f.update({ imagesRefusedOnce: ["postgres:17-alpine"], imagesInUse: ["registry:3.1"] });
+    f.update({
+      imagesRefusedOnce: ["postgres:17-alpine"],
+      imagesInUse: ["registry:3.1"],
+      edgeImage: false,
+    });
     const runtime = uninstallRuntime(f);
     const outcome = await executeUninstall(runtime, await describeUninstall(runtime, "all"));
     expect(outcome.failures).toEqual([]);
