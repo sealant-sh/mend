@@ -1,3 +1,8 @@
+import { execFileSync } from "node:child_process";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as nodePath from "node:path";
+
 import { projectsGroup, ProjectDetail } from "@mend/api-contracts";
 import { Auth } from "@mend/auth";
 import {
@@ -35,6 +40,7 @@ import {
   type FileListing,
   GitError,
   MendKeys,
+  refuseRemoteCredentials,
   Store,
   SourcePolicy,
 } from "@mend/store";
@@ -300,7 +306,12 @@ type UnusedProjectRouteServices = Exclude<
 
 const unusedProjectRouteLayers: Layer.Layer<UnusedProjectRouteServices> = Layer.mergeAll(
   Layer.mock(AuditEventsRepo, {}),
-  Layer.mock(SourcePolicy, { profile: "operator", pinnedEnv: (_clearance, env) => ({ ...env }) }),
+  Layer.mock(SourcePolicy, {
+    profile: "operator",
+    check: () =>
+      Effect.succeed({ scheme: "https", host: "example.invalid", port: null, addresses: [] }),
+    pinnedEnv: (_clearance, env) => ({ ...env }),
+  }),
   Layer.mock(AgentBridge, { socketPath: () => "/unused/project-detail-agent-bridge.sock" }),
   Layer.mock(Store, {}),
   Layer.mock(UserGitAccessRepo, {}),
@@ -590,6 +601,59 @@ describe("GET /projects/:id response", () => {
       expect(body).not.toContain("leaky.git");
     },
   );
+
+  it("refuses a refresh of a store with a credential in its git config: what and who, no key text, path or command", async () => {
+    // Review 5 of mend#640: an includeIf condition can hold a URL with a password (R5-2), and the
+    // response scrubber mangled a copyable command (R5-3). The response says what and who; the
+    // server log has the command.
+    const gitDir = fs.mkdtempSync(nodePath.join(os.tmpdir(), "mend-refresh-refused-"));
+    try {
+      execFileSync("git", ["init", "--bare", "-q", gitDir]);
+      const config = (...args: ReadonlyArray<string>) =>
+        execFileSync("git", ["config", ...args], { cwd: gitDir });
+      config(
+        'includeIf.hasconfig:remote.*.url:https://u:p"SECRET-TAIL@github.com/review/*.path',
+        "missing.gitconfig",
+      );
+      config("remote.origin.url", "ssh://git:SSH-TOKEN@github.com/review/fixture.git");
+      config(
+        "--add",
+        "remote.origin.pushurl",
+        "https://oauth2:TOKEN-SECRET@github.com/review/x.git",
+      );
+      const { response } = await requestRoute(
+        makeWorld([]),
+        `/api/projects/${PROJECT_ID}/refresh`,
+        AUTHORIZATION,
+        { method: "POST" },
+        Layer.mergeAll(
+          Layer.mock(JobRunner, {}),
+          Layer.mock(Store, { refreshFromOrigin: () => refuseRemoteCredentials(gitDir) }),
+        ),
+      );
+      const body = await response.text();
+      expect(response.status).toBe(422);
+      const { message } = Schema.decodeUnknownSync(
+        Schema.fromJsonString(Schema.Struct({ _tag: Schema.String, message: Schema.String })),
+      )(body);
+      expect(message).toContain("an includeIf condition (an include, which Mend never writes)");
+      expect(message).toContain("remote.origin.url (a login or token");
+      expect(message).toContain("remote.origin.pushurl (a login or token");
+      expect(message).toContain("the server log names the exact command");
+      for (const absent of [
+        "SECRET-TAIL",
+        "SSH-TOKEN",
+        "TOKEN-SECRET",
+        "git --git-dir",
+        gitDir,
+        "<path>",
+      ]) {
+        expect(body).not.toContain(absent);
+      }
+    } finally {
+      fs.rmSync(gitDir, { recursive: true, force: true });
+    }
+  });
 
   it("refuses a local path at adoption with its reason, not a bare 400", async () => {
     const { response } = await requestProject(makeWorld([]), "/api/projects", AUTHORIZATION, {

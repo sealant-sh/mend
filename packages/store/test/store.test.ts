@@ -13,6 +13,7 @@ import {
 } from "@mend/domain/workbench";
 import { Effect, Layer, Result } from "effect";
 
+import { remoteCredentialFindings } from "../src/remote-credentials.ts";
 import {
   GRAFTED_REPOSITORY_REASON,
   SHALLOW_REPOSITORY_REASON,
@@ -430,7 +431,7 @@ describe("Store", () => {
           },
           {
             // Named with its base redacted: Mend never prints the address that holds the login.
-            key: "url.https://example.invalid/.insteadof",
+            key: "a url rewrite (insteadOf)",
             set: () =>
               config(
                 "url.https://ghp_TOKEN-SECRET@example.invalid/.insteadOf",
@@ -446,35 +447,78 @@ describe("Store", () => {
             unset: () => config("--unset-all", "include.path"),
           },
           {
-            key: "includeif.onbranch:mend/**.path",
+            key: "an includeIf condition",
             set: () => config("includeIf.onbranch:mend/**.path", included),
             unset: () => config("--remove-section", "includeIf.onbranch:mend/**"),
+          },
+          {
+            // A condition can hold a URL with a password: named by its kind, never its text (R5-2).
+            key: "an includeIf condition",
+            set: () =>
+              config(
+                'includeIf.hasconfig:remote.*.url:https://u:p"SECRET-TAIL@github.com/review/*.path',
+                included,
+              ),
+            unset: () =>
+              config(
+                "--remove-section",
+                'includeIf.hasconfig:remote.*.url:https://u:p"SECRET-TAIL@github.com/review/*',
+              ),
+          },
+          {
+            // A remote whose name is a URL: its kind, and an edit, not its name.
+            key: "a remote's url",
+            set: () =>
+              config(
+                "remote.https://u:TOKEN-SECRET@example.invalid/x.url",
+                "https://user:TOKEN-SECRET@example.invalid/o/r.git",
+              ),
+            unset: () =>
+              config("--remove-section", "remote.https://u:TOKEN-SECRET@example.invalid/x"),
+          },
+          {
+            // A name git would read as an option gets an edit, never `remote set-url -odd`.
+            key: "a remote's pushurl",
+            set: () =>
+              config("remote.-odd.pushurl", "https://user:TOKEN-SECRET@example.invalid/o/r.git"),
+            unset: () => config("--remove-section", "remote.-odd"),
           },
         ];
         for (const [index, { key, set, unset }] of cases.entries()) {
           set();
           const before = fs.readFileSync(configFile, "utf8");
-          const findings = yield* store.remoteCredentialFindings(adopted.storePath);
-          expect(findings.map((finding) => finding.key)).toEqual([key]);
+          const findings = yield* remoteCredentialFindings(adopted.storePath);
+          expect(findings.map((finding) => finding.what)).toEqual([key]);
           const refusals = [
             yield* store.refreshFromOrigin(adopted.storePath, {}).pipe(Effect.flip),
             yield* store
               .createWorktree(adopted.storePath, wtIdentity(`refused-${index}`), null, null)
               .pipe(Effect.flip),
           ];
+          // What a person reads: the kind of thing found and who fixes it; no path, no command.
           for (const refusal of refusals) {
-            expect(refusal.stderr).toContain(`${key} in ${configFile}`);
+            expect(refusal.stderr).toContain(key);
             expect(refusal.stderr).toContain("mend keys");
-            expect(refusal.stderr).toContain("git --git-dir=");
+            expect(refusal.stderr).toContain("the server log names the exact command");
+            expect(refusal.stderr).not.toContain(configFile);
+            expect(refusal.stderr).not.toContain("git --git-dir=");
             expect(JSON.stringify(refusal)).not.toContain("TOKEN-SECRET");
+            expect(JSON.stringify(refusal)).not.toContain("SECRET-TAIL");
           }
+          expect(JSON.stringify(findings)).not.toContain("TOKEN-SECRET");
+          expect(JSON.stringify(findings)).not.toContain("SECRET-TAIL");
+          // The server log has the file and the command, for the operator.
+          expect(
+            findings.every((finding) => finding.file === configFile || finding.file === included),
+          ).toBe(true);
+          expect(findings.every((finding) => finding.fix.startsWith("git --git-dir="))).toBe(true);
           // Read only: the config is exactly as it was.
           expect(fs.readFileSync(configFile, "utf8")).toBe(before);
           unset();
         }
         // An ssh login is not a credential, and a clean config runs.
         config("remote.ssh.url", "ssh://git@example.invalid/o/r.git");
-        expect(yield* store.remoteCredentialFindings(adopted.storePath)).toEqual([]);
+        expect(yield* remoteCredentialFindings(adopted.storePath)).toEqual([]);
         yield* store.refreshFromOrigin(adopted.storePath, {});
       }),
     );
@@ -490,13 +534,13 @@ describe("Store", () => {
         // The origin as an older server cloned it, with a login in it, and a push URL too.
         config("remote.origin.url", source.replace("git://", "git://user:TOKEN-SECRET@"));
         config("remote.origin.pushurl", "https://oauth2:TOKEN-SECRET@example.invalid/o/r.git");
-        const findings = yield* store.remoteCredentialFindings(adopted.storePath);
+        const findings = yield* remoteCredentialFindings(adopted.storePath);
         expect(findings.map((finding) => finding.fix)).toEqual([
           `git --git-dir=${adopted.storePath} remote set-url origin ${source}`,
           `git --git-dir=${adopted.storePath} remote set-url --push origin https://example.invalid/o/r.git`,
         ]);
         for (const finding of findings) execFileSync("sh", ["-c", finding.fix]);
-        expect(yield* store.remoteCredentialFindings(adopted.storePath)).toEqual([]);
+        expect(yield* remoteCredentialFindings(adopted.storePath)).toEqual([]);
         yield* store.refreshFromOrigin(adopted.storePath, {});
       }),
     );

@@ -146,14 +146,22 @@ CLI's `--json`) is redacted one string at a time.
   place kept finding ways to lose or reorder a remote). A store or reference clone whose config has
   a remote URL with a login or token in it, a `url.<base>.insteadOf` whose base holds one, or any
   `include`/`includeIf` (Mend never writes one, and a conditional one can turn on in a worktree
-  after a check passed) is refused instead: every fetch, push, probe, reference refresh and worktree
-  open or reset says what it found (`remote.origin.url in <config>`, never the URL) and how to fix
-  it, either by adopting the project again from its SSH URL with a Mend key or the bridge, or with
-  the exact `git --git-dir=<store> remote set-url …` (or `config --unset-all`, or `config --edit`)
-  an operator can run. Stripping the token would break that project's fetch anyway, so nothing is
-  lost: the store and its worktrees stay as they are. The scan is read only
-  (`git config -z --local --includes --show-origin`, so a value with a newline is one value), and
-  `RemoteCredentialCheckLive` logs each refused repository and a count at every worker start.
+  after a check passed) is refused instead (`refuseRemoteCredentials` in `@mend/store`): every
+  fetch, push, probe, reference refresh, worktree open or reset, and every co-located workspace
+  mount of a project store, a selected reference or a linked project (launch, resume, a launch into
+  an existing worktree, a standby; review 5 of mend#640), and adding the project to a session as a
+  repository. What a person reads names the kind of thing found, a key only when it cannot hold a
+  URL (`remote.origin.url`, `include.path`; otherwise "an includeIf condition", "a url rewrite
+  (insteadOf)", "a remote's url"), that an operator must remove it, and the supported way instead:
+  adopting the project again from its SSH URL with a Mend key or the bridge. No URL, path or command
+  crosses an HTTP response, where the error scrubber would mangle it. The server log carries each
+  finding's file and the exact command, built from clean parts only:
+  `git --git-dir=<store> remote set-url [--push] <name> <clean url>` for a plain-named remote with
+  one value, `config --unset-all include.path`, or `config --edit` for the rest. Stripping the token
+  would break that project's fetch anyway, so nothing is lost: the store and its worktrees stay as
+  they are. The scan is read only (`git config -z --local --includes --show-origin`, so a value with
+  a newline is one value), and `RemoteCredentialCheckLive` logs each refused repository and a count
+  at every worker start.
 - **Known limits.** The gate reads the store's own config. Global and system git config and
   `GIT_CONFIG_*` in the server's environment are the operator's configuration of their own server,
   not input from a person, and are outside it. Neither does it judge `http.<url>.extraHeader` or

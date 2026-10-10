@@ -6,7 +6,6 @@ import * as path from "node:path";
 import { ProjectsRepo, ReferencesRepo } from "@mend/db";
 import { OrganizationId, ProjectId, ReferenceId } from "@mend/domain";
 import { Reference } from "@mend/domain/workbench";
-import { Store, StoreConfig } from "@mend/store";
 import { Effect, Layer } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -59,7 +58,6 @@ describe("checkRemoteCredentials", () => {
     );
     const now = new Date(0);
     const layer = Layer.mergeAll(
-      Store.layer.pipe(Layer.provide(StoreConfig.layerFor(root))),
       Layer.mock(ProjectsRepo, {
         listAll: () =>
           Effect.succeed([

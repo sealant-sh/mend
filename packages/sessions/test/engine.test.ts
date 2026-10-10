@@ -96,6 +96,7 @@ import {
   WorktreeId,
   defaultSettings,
   type DotfilesRepository,
+  ReferenceId,
 } from "@mend/domain";
 import {
   AgentRequest,
@@ -138,6 +139,7 @@ import {
   executorEndOf,
   serviceStartCorrelation,
   withoutAgentStarting,
+  Reference,
 } from "@mend/domain/workbench";
 import {
   LAUNCH_BOOTING,
@@ -3207,6 +3209,8 @@ const withEngine = <A, E>(
       }>;
       readonly serviceAccount: string | null;
     };
+    /** The organization's references and each project's selection; none unless a test says. */
+    readonly referencesLayer?: Layer.Layer<ReferencesRepo>;
     /** Seed crash-recovery facts before the SessionEngine layer runs its boot pass. */
     readonly prepareWorld?: (world: World, tmp: string) => void;
     /** Reuse one persisted test world across engine scopes to exercise process restart. */
@@ -3366,7 +3370,7 @@ const withEngine = <A, E>(
         changesLayer(world),
         worktreesLayer(world),
         checkpointsLayer(world),
-        referencesEmptyLayer,
+        options.referencesLayer ?? referencesEmptyLayer,
         projectMountsEmptyLayer,
         projectLinksEmptyLayer,
         SessionRepositoriesRepoMemory,
@@ -3483,6 +3487,109 @@ describe("SessionEngine", () => {
           shell: "bash",
           services: { docker: true },
         },
+      },
+    );
+  });
+
+  it("refuses to launch into an existing worktree whose store holds a login or token, and mounts nothing", async () => {
+    // Review 5 of mend#640, R5-1: a join returns the worktree without `Store.createWorktree`, so
+    // the store gate alone let an older server's credential reach the workspace's mounts.
+    const created: CreateOptions[] = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const input = {
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            name: "legacy",
+            ownerUserId: "user-fixture",
+            base: null,
+          };
+          const first = yield* engine.provision(input);
+          execFileSync("git", [
+            "-C",
+            project.storePath,
+            "config",
+            "remote.origin.url",
+            "http://user:LEGACY-TOKEN@127.0.0.1:9/repo",
+          ]);
+          const joined = yield* engine.provision(input);
+          expect(joined.worktreeId).toBe(first.worktreeId);
+          const refused = yield* engine.launch(joined.id, ["codex"]).pipe(Effect.flip);
+          expect(
+            refused._tag === "DotfilesResolveError" ? refused.message : refused._tag,
+          ).toContain("remote.origin.url (a login or token");
+          expect(JSON.stringify(refused)).not.toContain("LEGACY-TOKEN");
+          expect(created).toHaveLength(0);
+        }),
+      { sealantLayer: sealantLaunchLayer(created) },
+    );
+  });
+
+  it("refuses to launch with a selected reference whose clone holds a login or token", async () => {
+    const created: CreateOptions[] = [];
+    const selected: Array<Reference> = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const clone = path.join(tmp, "legacy-reference");
+          execFileSync("git", ["clone", "-q", path.join(tmp, "origin"), clone]);
+          execFileSync("git", [
+            "-C",
+            clone,
+            "config",
+            "remote.origin.url",
+            "https://user:REFERENCE-TOKEN@host.invalid/repo",
+          ]);
+          selected.push(
+            new Reference({
+              id: ReferenceId.make("legacy-reference"),
+              name: "legacy-reference",
+              organizationId: project.organizationId,
+              createdByUserId: "user-fixture",
+              originUrl: "https://host.invalid/repo",
+              path: clone,
+              pinnedRef: null,
+              headSha: null,
+              refreshedAt: null,
+              createdAt: new Date(0),
+              updatedAt: new Date(0),
+            }),
+          );
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            name: null,
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+          const refused = yield* engine.launch(session.id, ["codex"]).pipe(Effect.flip);
+          expect(
+            refused._tag === "DotfilesResolveError" ? refused.message : refused._tag,
+          ).toContain("a login or token");
+          expect(JSON.stringify(refused)).not.toContain("REFERENCE-TOKEN");
+          expect(created).toHaveLength(0);
+        }),
+      {
+        sealantLayer: sealantLaunchLayer(created),
+        referencesLayer: Layer.succeed(ReferencesRepo, {
+          create: () => Effect.die("not in test"),
+          byId: (id) => Effect.fail(new ReferenceNotFoundError({ referenceId: id })),
+          byName: () => Effect.succeed(null),
+          listAll: () => Effect.succeed(selected),
+          listForOrganization: () => Effect.succeed(selected),
+          byIdsInOrganization: () => Effect.succeed(selected),
+          remove: () => Effect.void,
+          setHead: () => Effect.void,
+          listForProject: () => Effect.succeed(selected),
+          setForProject: () => Effect.void,
+        }),
       },
     );
   });

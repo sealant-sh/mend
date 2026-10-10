@@ -55,12 +55,13 @@ typed and returned it to everyone who could see the project; 0.36 refuses such a
 
 On upgrade, Mend removes the credential from the stored URL. It does not edit the project's Git
 store: a store whose Git config still holds a login or token (or includes another file, which Mend
-never writes) is refused. Fetching, pushing, landing and opening a worktree there say what Mend
-found and how to fix it, without the URL, and the server logs every such project at start. Nothing
-in the store or its worktrees is lost.
+never writes) is refused. Fetching, pushing, landing, starting or resuming a session there, and
+adding the project to a session, say what kind of thing Mend found and that an operator must remove
+it. The server log names the exact command, at each such refusal and for every such project at
+start. Nothing in the store or its worktrees is lost.
 
 To fix one, adopt the repository again from its SSH URL with your Mend key (`mend keys`) or the
-agent bridge, or have the operator run the `git --git-dir=… remote set-url …` command the refusal
+agent bridge, or have the operator run the `git --git-dir=… remote set-url …` command the server log
 names. Rotate the token: anyone who could see the project before 0.36 could read it.
 
 ## SHA-256 repositories are not supported

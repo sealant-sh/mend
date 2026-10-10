@@ -3397,8 +3397,8 @@ const sshKeyRevocationsMigration = Effect.gen(function* () {
  * included, and returned it to everyone who could see the project. Every URL Mend stores loses its
  * credential the way `redactRepositoryUrl` takes it (the whole userinfo; over ssh, the password
  * only): project origins, reference origins, the dotfiles repository a person saved and the one
- * each session was stamped with. Only rows that change are written. The git remotes in the store
- * are the server's to fix at start (`RemoteCredentialScrubLive`): a migration runs no git.
+ * each session was stamped with. Only rows that change are written. A store's own git config is
+ * never rewritten: a store that still holds a credential is refused (`refuseRemoteCredentials`).
  */
 const repositoryUrlCredentialsMigration = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;

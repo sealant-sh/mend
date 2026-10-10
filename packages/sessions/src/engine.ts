@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
-import { createWriteStream } from "node:fs";
+import { createWriteStream, existsSync } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { pipeline } from "node:stream/promises";
@@ -211,6 +211,7 @@ import {
   processStatePathOf,
   readCaptureFile,
   readCaptureFileBytes,
+  refuseRemoteCredentials,
   withCaptureReadPass,
   sessionStatePathOf,
   resolveRemoteEnv,
@@ -1848,6 +1849,7 @@ export class RepositoryAddError extends Schema.TaggedErrorClass<RepositoryAddErr
       "no-origin",
       "not-live",
       "private-project",
+      "store-credentials",
     ]),
     message: Schema.String,
   },
@@ -10834,6 +10836,31 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           .pipe(Effect.orElseSucceed(() => []));
         const declaredMounts = yield* declaredMountsOf(project);
         const linkedProjects = yield* resolveLinkedProjects(project, ownerUserId);
+        // A co-located workspace mounts the project's store, the selected references and the linked
+        // projects' stores, git config included: none may hold a login or token or an include
+        // (docs/GIT-ACCESS.md, "Credentials in repository URLs"), or the launch, resume, join or
+        // standby is refused, its commands in the server log. Capture mode mounts none of them.
+        if (!captureStoreOn) {
+          yield* Effect.forEach(
+            [
+              { repository: `project ${project.name}`, gitDir: project.storePath },
+              ...selectedReferences.map((reference) => ({
+                repository: `reference ${reference.name}`,
+                gitDir: reference.path,
+              })),
+              ...linkedProjects.map(({ linked }) => ({
+                repository: `project ${linked.name}`,
+                gitDir: linked.storePath,
+              })),
+            ].filter(({ gitDir }) => existsSync(gitDir)),
+            ({ repository, gitDir }) => refuseRemoteCredentials(gitDir, repository),
+            { discard: true },
+          ).pipe(
+            // The launch-input refusal every caller already answers with its message.
+            Effect.mapError((error) => new DotfilesResolveError({ message: error.stderr })),
+            report,
+          );
+        }
         // The durable harness home (harness-state.ts): a store-backed directory mounted
         // read-write into the workspace; boot symlinks each harness's `$HOME` state dirs into
         // it, so conversation state survives any workspace death. A failed mkdir costs
@@ -15409,6 +15436,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         }
         if (target.originUrl === null) {
           return yield* refuse("no-origin", `project ${target.name} has no origin to clone from`);
+        }
+        // The clone uses the project's clean origin, never its store; a project Mend refuses to run
+        // git with (`refuseRemoteCredentials`) is refused here too, for the same reason.
+        if (existsSync(target.storePath)) {
+          yield* refuseRemoteCredentials(target.storePath, `project ${target.name}`).pipe(
+            Effect.mapError((error) => refuse("store-credentials", error.stderr)),
+          );
         }
         const sessionWorktree = yield* worktreesRepo.byId(session.worktreeId).pipe(Effect.orDie);
         const worktreeName = input.worktree ?? sessionWorktree.name;

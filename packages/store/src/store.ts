@@ -3,11 +3,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import { Sha } from "@mend/domain";
-import {
-  RepositoryCloneUrl,
-  redactRepositoryUrl,
-  repositoryUrlHasCredential,
-} from "@mend/domain/workbench";
+import { RepositoryCloneUrl, redactRepositoryUrl } from "@mend/domain/workbench";
 import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
@@ -32,101 +28,7 @@ import {
   writeLandingCommit,
 } from "./landing.ts";
 import { mendHome } from "./paths.ts";
-
-/** The config keys that decide where git's transport goes: remote URLs and URL rewrites. */
-const REMOTE_CONFIG_KEYS = String.raw`^(remote\..*\.(url|pushurl)|url\..*\.(insteadof|pushinsteadof))$`;
-
-/** The include keys: `include.path` and every `includeIf.<condition>.path`. */
-const INCLUDE_KEYS = String.raw`^include(if\..*)?\.path$`;
-
-/** One config entry, with the file it was read from as git names it (relative to where it ran). */
-interface RemoteConfigEntry {
-  readonly origin: string;
-  readonly key: string;
-  readonly value: string;
-}
-
-/**
- * Why a repository's git config keeps Mend from running git with it: a key that carries a login
- * or token (or an include), the file it sits in, and the command that removes it. No URL with a
- * credential, and no secret, is ever in it: a `url.<base>` key is named with its base redacted.
- */
-export interface RemoteCredentialFinding {
-  readonly key: string;
-  readonly file: string;
-  readonly fix: string;
-}
-
-/** A shell word, quoted only when it has to be. */
-const shellWord = (word: string): string =>
-  /^[\w@%+=:,./-]+$/u.test(word) ? word : `'${word.replaceAll("'", "'\\''")}'`;
-
-/**
- * What in `entries` carries a credential, as findings. A remote URL keeps its key and gets the
- * command that points it at its clean spelling (`git remote set-url`), or, when the key has more
- * than one value, an edit; a `url.<base>.insteadOf` whose base holds one is named with the base
- * redacted and gets an edit, since Mend will not print the base.
- */
-const credentialFindings = (
-  gitDir: string,
-  entries: ReadonlyArray<RemoteConfigEntry>,
-): ReadonlyArray<RemoteCredentialFinding> => {
-  const gitCommand = `git --git-dir=${shellWord(gitDir)}`;
-  const findings = new Map<string, RemoteCredentialFinding>();
-  for (const entry of entries) {
-    // git names the file as it opened it, relative to where it ran: the git dir.
-    const file = path.resolve(gitDir, entry.origin);
-    const id = `${file}\0${entry.key}`;
-    if (/^url\./iu.test(entry.key)) {
-      const dot = entry.key.lastIndexOf(".");
-      const base = entry.key.slice("url.".length, dot);
-      if (!repositoryUrlHasCredential(base)) continue;
-      findings.set(id, {
-        key: `url.${redactRepositoryUrl(base)}${entry.key.slice(dot)}`,
-        file,
-        fix: `${gitCommand} config --edit   # remove the url section whose address holds a login`,
-      });
-      continue;
-    }
-    const clean = redactRepositoryUrl(entry.value);
-    if (clean === entry.value) continue;
-    const name = entry.key.replace(/^remote\./u, "").replace(/\.(url|pushurl)$/u, "");
-    const several = entries.filter((other) => other.key === entry.key).length > 1;
-    const push = entry.key.endsWith(".pushurl") ? " --push" : "";
-    findings.set(id, {
-      key: entry.key,
-      file,
-      fix: several
-        ? `${gitCommand} config --edit   # take the login out of each ${entry.key}`
-        : `${gitCommand} remote set-url${push} ${shellWord(name)} ${shellWord(clean)}`,
-    });
-  }
-  return [...findings.values()];
-};
-
-/**
- * The refusal of a gated op on a repository whose config has `findings`: what Mend found, never a
- * URL with a credential, and how to fix it either way. Mend does not rewrite a store's config.
- */
-const refusedForCredentials = (
-  gitDir: string,
-  findings: ReadonlyArray<RemoteCredentialFinding>,
-): GitError =>
-  new GitError({
-    args: ["mend", "remote-credentials"],
-    cwd: gitDir,
-    exitCode: null,
-    stderr: [
-      `Mend does not fetch, push or open a worktree with this repository: its git config has ${findings
-        .map(
-          (finding) =>
-            `${finding.key} in ${finding.file} (${/^include/iu.test(finding.key) ? "an include, which Mend never writes and does not run git through" : "a login or token, which Mend never stores or uses"})`,
-        )
-        .join("; ")}.`,
-      "Adopt the project again from its SSH URL with your Mend key (`mend keys`) or your own key through the agent bridge (`--auth bridge`), or remove it where the store is:",
-      ...findings.map((finding) => `  ${finding.fix}`),
-    ].join("\n"),
-  });
+import { refuseRemoteCredentials } from "./remote-credentials.ts";
 
 /** Where the store lives on disk. One root, one directory per project. */
 export class StoreConfig extends Context.Service<
@@ -689,17 +591,6 @@ export class Store extends Context.Service<
     /** Delete the clone directory. Selection rows are the caller's concern. */
     readonly removeReference: (clonePath: string) => Effect.Effect<void>;
     /**
-     * What in the git config of the repository at `gitDir` (a project's bare store, a reference
-     * clone) keeps Mend from running git with it: a remote URL with a login or token in it, a
-     * `url.<base>.insteadOf` whose base holds one, or any include (docs/GIT-ACCESS.md,
-     * "Credentials in repository URLs"). Read only: Mend never rewrites a store's config. Servers
-     * before 0.36 cloned an adopted URL as typed, token included; every op that uses or exposes
-     * the remotes refuses with these findings until someone removes them.
-     */
-    readonly remoteCredentialFindings: (
-      gitDir: string,
-    ) => Effect.Effect<ReadonlyArray<RemoteCredentialFinding>, GitError>;
-    /**
      * Landing step 2 (docs/adr/0007-landing.md) in the project store: Mend's commit of the
      * checkpoint's tree, parented by `planLanding` on the last landing and the agent's head, or
      * nothing when an existing commit already is what lands. The session's branch never moves:
@@ -818,74 +709,6 @@ export class Store extends Context.Service<
         );
       });
 
-      /** Every remote URL and URL rewrite git reads for `gitDir`: its own config, NUL-delimited. */
-      const remoteConfig = Effect.fn("Store.remoteConfig")(function* (gitDir: string) {
-        // `-z`: a value may hold a newline, so entries end in NUL and a key ends at its first newline.
-        const listed = yield* git(
-          [
-            "config",
-            "-z",
-            "--local",
-            "--includes",
-            "--show-origin",
-            "--get-regexp",
-            REMOTE_CONFIG_KEYS,
-          ],
-          gitDir,
-          undefined,
-          [1],
-        );
-        const fields = listed.split("\0");
-        const entries: Array<RemoteConfigEntry> = [];
-        for (let index = 0; index + 1 < fields.length; index += 2) {
-          const origin = fields[index] ?? "";
-          const entry = fields[index + 1] ?? "";
-          const newline = entry.indexOf("\n");
-          entries.push({
-            origin: origin.replace(/^file:/u, ""),
-            key: newline === -1 ? entry : entry.slice(0, newline),
-            value: newline === -1 ? "" : entry.slice(newline + 1),
-          });
-        }
-        return entries;
-      });
-
-      const remoteCredentialFindings = Effect.fn("Store.remoteCredentialFindings")(function* (
-        gitDir: string,
-      ) {
-        const absoluteGitDir = yield* git(["rev-parse", "--absolute-git-dir"], gitDir);
-        // Mend never writes an include into a store's config, and a conditional one can turn on
-        // in a worktree after this check passed: any include is a finding, not evaluated.
-        const includes = yield* git(
-          ["config", "--local", "--no-includes", "--name-only", "--get-regexp", INCLUDE_KEYS],
-          gitDir,
-          undefined,
-          [1],
-        );
-        const ownConfig = path.join(absoluteGitDir, "config");
-        const included: ReadonlyArray<RemoteCredentialFinding> = includes
-          .split("\n")
-          .filter((key) => key !== "")
-          .map((key) => ({
-            key,
-            file: ownConfig,
-            fix: `git --git-dir=${shellWord(absoluteGitDir)} config --unset-all ${shellWord(key)}`,
-          }));
-        return [...included, ...credentialFindings(absoluteGitDir, yield* remoteConfig(gitDir))];
-      });
-
-      /**
-       * The gate in front of every git that uses or exposes a remote of `gitDir` (a fetch, a push,
-       * a worktree a workspace mounts): its config holds no login or token and no include, or
-       * nothing runs, with what was found and how to fix it (docs/GIT-ACCESS.md, "Credentials in
-       * repository URLs"). Read only, so a config another git holds locked does not stand in its
-       * way.
-       */
-      const cleanRemotes = Effect.fn("Store.cleanRemotes")(function* (gitDir: string) {
-        const findings = yield* remoteCredentialFindings(gitDir);
-        if (findings.length > 0) return yield* refusedForCredentials(gitDir, findings);
-      });
-
       /**
        * Freshen one base ref from the project origin before resolving it — best-effort by
        * contract: a session must start offline, on a disconnected bridge, or against a gone
@@ -898,7 +721,7 @@ export class Store extends Context.Service<
         remoteEnv: Record<string, string> | null,
       ) {
         if (remoteEnv === null) return;
-        yield* cleanRemotes(storePath).pipe(
+        yield* refuseRemoteCredentials(storePath).pipe(
           Effect.andThen(git(["fetch", "origin", baseRef], storePath, remoteEnv)),
           Effect.tapError((error) =>
             Effect.logDebug("store: base freshen skipped").pipe(
@@ -927,7 +750,7 @@ export class Store extends Context.Service<
         return yield* tryResolve(`refs/remotes/origin/${baseRef}`).pipe(
           Effect.catch(() => tryResolve(baseRef)),
           Effect.catch(() =>
-            cleanRemotes(storePath).pipe(
+            refuseRemoteCredentials(storePath).pipe(
               Effect.andThen(
                 git(["fetch", "origin"], storePath, remoteEnv ?? { GIT_TERMINAL_PROMPT: "0" }),
               ),
@@ -956,7 +779,7 @@ export class Store extends Context.Service<
         remoteEnv: Record<string, string> | null,
       ) {
         // The worktree's admin dir, and on the co-located store the whole store, reach a workspace.
-        yield* cleanRemotes(storePath);
+        yield* refuseRemoteCredentials(storePath);
         // Idempotent: stores adopted before the exclude or shared-group policies get them here.
         yield* ensureExcludes(storePath);
         yield* ensureSharedGroup(storePath);
@@ -1011,7 +834,7 @@ export class Store extends Context.Service<
         remoteEnv: Record<string, string> | null,
       ) {
         const worktreePath = path.join(path.dirname(storePath), "worktrees", name);
-        yield* cleanRemotes(storePath);
+        yield* refuseRemoteCredentials(storePath);
         const baseRef = base ?? (yield* git(["symbolic-ref", "--short", "HEAD"], storePath));
         yield* freshenBase(storePath, baseRef, remoteEnv);
         const baseSha = yield* resolveBaseSha(storePath, baseRef, remoteEnv);
@@ -1030,7 +853,7 @@ export class Store extends Context.Service<
         // landings push `mend/*` to origin (docs/adr/0007-landing.md), so the negative refspec
         // keeps origin's `mend/*` from overwriting, or refusing to fetch into, a session branch a
         // worktree has checked out.
-        yield* cleanRemotes(storePath);
+        yield* refuseRemoteCredentials(storePath);
         yield* git(
           [
             "fetch",
@@ -1355,7 +1178,7 @@ export class Store extends Context.Service<
         // reset handles branches and tags uniformly, force-pushes included —
         // a reference clone has no local work to protect.
         // A reference clone is mounted into co-located workspaces, its config included.
-        yield* cleanRemotes(clonePath);
+        yield* refuseRemoteCredentials(clonePath);
         const target = ref ?? (yield* git(["symbolic-ref", "--short", "HEAD"], clonePath));
         yield* git(["fetch", "--depth", "1", "origin", target], clonePath, remoteEnv);
         yield* git(["reset", "--hard", "FETCH_HEAD"], clonePath);
@@ -1383,7 +1206,7 @@ export class Store extends Context.Service<
       });
 
       const push = Effect.fn("Store.push")(function* (storePath: string, input: PushInput) {
-        yield* cleanRemotes(storePath);
+        yield* refuseRemoteCredentials(storePath);
         return yield* pushBranch(storePath, input);
       });
 
@@ -1391,7 +1214,7 @@ export class Store extends Context.Service<
         storePath: string,
         input: ProbeInput,
       ) {
-        yield* cleanRemotes(storePath);
+        yield* refuseRemoteCredentials(storePath);
         return yield* probeRemoteBranch(storePath, input);
       });
 
@@ -1407,7 +1230,6 @@ export class Store extends Context.Service<
         cloneReference,
         refreshReference,
         removeReference,
-        remoteCredentialFindings,
         adopt,
         createWorktree,
         resolveBase,
