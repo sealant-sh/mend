@@ -100,10 +100,13 @@ Preconditions:
   `XDG_CONFIG_HOME=/tmp/verify-member mend invite`. Exit code `1`, stderr
   `mend: only an owner can invite; mend members shows who`.
 - **Who sees what.** Run `XDG_CONFIG_HOME=/tmp/verify-member mend projects`. `<project>-shared` is
-  listed and `<project>` is not. On `memberPage`, go to `<web>/projects`: a link whose name starts
-  with `<project>-shared` is listed, and
-  `memberPage.getByRole("link", { name: new RegExp("^<project>(?!-shared)") })` has count `0`. A
-  member's Settings shows `Members` without `Make owner`, `Remove…` or the `Invitations` panel.
+  listed and `<project>` is not. On `memberPage`, go to `<web>/projects`: in the directory a row
+  link whose name starts with `<project>-shared` and a space is listed
+  (`memberPage.getByRole("main").getByRole("link", { name: new RegExp("^<project>-shared ") })`),
+  and `memberPage.getByRole("main").getByRole("link", { name: new RegExp("^<project> ") })` has
+  count `0`. Scope both to `main`: at 1024 px and wider the sidebar repeats every project the member
+  can see as a link named exactly by its name. A member's Settings shows `Members` without
+  `Make owner`, `Remove…` or the `Invitations` panel.
 - **Visibility.** As `<owner>`, open `<web>/projects/<id>/setup` for `<project>`. Run
   `await page.getByRole("group", { name: "Visibility" }).getByRole("button", { name: "shared" }).click()`.
   The `shared` button reports `aria-pressed="true"` and the project header line ends `· shared`.
