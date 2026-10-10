@@ -16,7 +16,7 @@ decodes only the Mend fields it reads.
 | --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
 | `GET /.well-known/t3/environment` | The descriptor: a persisted `environmentId`, `orchestrationProtocolVersion` 2, `serverVersion` `<t3code tag>+mend.<n>`, no optional capability |
 | `POST /oauth/token`               | Claims the pairing code through Mend's `POST /api/pair`, keeps the device token, answers a bearer of its own (30 days, standard scopes)        |
-| `POST /api/auth/websocket-ticket` | A gateway-local ticket for `/ws?wsTicket=`: single use, thirty seconds, in memory                                                              |
+| `POST /api/auth/websocket-ticket` | A gateway-local ticket for `/ws?wsTicket=`: single use, thirty seconds, in memory, once Mend still accepts the bearer's device token           |
 | `GET /api/auth/session`           | Authenticated while the bearer is live and Mend still accepts its device token (`GET /api/me/devices`; Mend has no `GET /api/me`)              |
 | `POST /api/auth/browser-session`  | Refused: the gateway offers bearer tokens only                                                                                                 |
 | pairing links and client sessions | Refused with `insufficient_scope`: devices are administered in Mend                                                                            |
@@ -479,7 +479,13 @@ The gateway needs its own origin: t3code forces a remote environment's base path
 
 To pair, mint a code in Mend (`POST /api/me/devices/pairings`, or the devices page) and give t3code
 the gateway's host and that code, or `http://<gateway>/pair#token=<code>`. The device shows in
-Mend's device list as `t3code · <client label>`; revoking it there ends the bearer.
+Mend's device list as `t3code · <client label>`; revoking it there ends the bearer. The gateway
+learns of a revocation from any 401 Mend answers the device token: a call the person's hub makes
+(its event stream, or its device check every minute), a ticket (each asks `GET /api/me/devices`,
+waiting at most two seconds), or `GET /api/auth/session`. The bearers are revoked in the state file
+before the device's sockets close, and a start checks every paired device once, so one revoked while
+the gateway was down ends at its next start. The client is then answered `invalid_credential`, which
+t3code shows as "Connection failed: The environment credential is invalid." and stops reconnecting.
 
 Mend allows ten failed pairing claims a minute per client address. The gateway sends each claim with
 `x-forwarded-for`: the client's own header, if any, then the address the gateway saw. Mend believes

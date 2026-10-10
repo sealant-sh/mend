@@ -178,6 +178,13 @@ const providerSetup = (method: WsRpcMethod, instanceId: ProviderInstanceId) =>
 
 const SELF_UPDATE_REASON = "The gateway updates with Mend, never from a t3code client.";
 
+/**
+ * Why deleting a thread's worktree from t3code is refused, as its toast shows it ("Could not
+ * remove <path>. …"): the worktree and its change are Mend's, removed only in Mend.
+ */
+export const WORKTREE_KEPT =
+  "Mend keeps the worktree and its change. Remove it in Mend, with mend worktrees rm or from the project's page.";
+
 const gitManager = (method: WsRpcMethod, cwd: string) =>
   new GitManagerError({ operation: method, cwd, detail: notOfferedText(method) });
 
@@ -887,7 +894,10 @@ export const makeGatewayRpcHandlers = ({
     [WS_METHODS.vcsListRefs]: (input) =>
       authorize(session, READ).pipe(Effect.andThen(vcs.listRefs(input))),
     [WS_METHODS.vcsCreateWorktree]: () => refuse(WS_METHODS.vcsCreateWorktree, OPERATE),
-    [WS_METHODS.vcsRemoveWorktree]: () => refuse(WS_METHODS.vcsRemoveWorktree, OPERATE),
+    [WS_METHODS.vcsRemoveWorktree]: () =>
+      Effect.fail(
+        new EnvironmentAuthorizationError({ message: WORKTREE_KEPT, requiredScope: OPERATE }),
+      ),
     [WS_METHODS.vcsCreateRef]: () => refuse(WS_METHODS.vcsCreateRef, OPERATE),
     [WS_METHODS.vcsSwitchRef]: () => refuse(WS_METHODS.vcsSwitchRef, OPERATE),
     [WS_METHODS.vcsInit]: () => vcsUnsupported(WS_METHODS.vcsInit),

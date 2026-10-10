@@ -3474,6 +3474,8 @@ export class Projections extends Context.Service<
      * makes, closing its sockets and revoking its bearers.
      */
     readonly refuseDevice: (userId: string, deviceToken: string) => Effect.Effect<void>;
+    /** Whether Mend refused this device token since the gateway started. */
+    readonly isDeviceRefused: (deviceToken: string) => boolean;
   }
 >()("@mend/t3-gateway/Projections") {}
 
@@ -3484,6 +3486,9 @@ const OPENING_READ_BACKGROUND_ATTEMPTS = 60;
 
 /** How long a kept queue waits before its person's hub reads Mend again after a failed read. */
 const QUEUE_RESTORE_RETRY = "30 seconds";
+
+/** How long a start's check of its paired devices waits before asking Mend again. */
+const DEVICE_RECONCILE_RETRY = "30 seconds";
 
 /** Why a change to a queue the state file could not keep was refused: nothing changed. */
 const QUEUE_NOT_KEPT =
@@ -3605,20 +3610,30 @@ export const ProjectionsLive: Layer.Layer<
       },
       live: () => liveOf(userId),
       refuse: (token) =>
-        Effect.suspend(() => {
-          if (isRefused(token)) return Effect.void;
-          Deferred.doneUnsafe(refusalOf(token), Exit.void);
-          // The last device of the person: their hub tears itself down.
-          if (liveOf(userId).length === 0) Deferred.doneUnsafe(exhaustedOf(userId), Exit.void);
-          // The bearers standing for the device stop authenticating too.
-          return state.revokeSessionsForDevice(token, Date.now()).pipe(
-            Effect.catch((error) =>
-              Effect.logError("t3 gateway could not revoke a refused device's bearers", {
-                cause: error.message,
-              }),
-            ),
-          );
-        }),
+        Effect.uninterruptible(
+          Effect.suspend(() => {
+            if (isRefused(token)) return Effect.void;
+            // The bearers standing for the device stop authenticating first. Completing the
+            // refusal closes sockets and can tear the hub down, interrupting whoever found it
+            // (its event stream or device check): written after, the revocation was lost.
+            return state.revokeSessionsForDevice(token, Date.now()).pipe(
+              Effect.catch((error) =>
+                Effect.logError("t3 gateway could not revoke a refused device's bearers", {
+                  cause: error.message,
+                }),
+              ),
+              Effect.andThen(
+                Effect.sync(() => {
+                  Deferred.doneUnsafe(refusalOf(token), Exit.void);
+                  // The last device of the person: their hub tears itself down.
+                  if (liveOf(userId).length === 0) {
+                    Deferred.doneUnsafe(exhaustedOf(userId), Exit.void);
+                  }
+                }),
+              ),
+            );
+          }),
+        ),
       isRefused,
       refusal: (token) => Deferred.await(refusalOf(token)),
       noneLeft: Deferred.await(exhaustedOf(userId)),
@@ -3727,6 +3742,40 @@ export const ProjectionsLive: Layer.Layer<
     const refuseDevice = (userId: string, deviceToken: string) =>
       tokensOf(userId).refuse(deviceToken);
 
-    return { hub, refuseDevice };
+    /**
+     * Every device a live bearer stands for, checked with Mend once on start: one revoked while
+     * the gateway was not running gets its bearers revoked now, before any client of it asks.
+     * Mend not answering yet is tried again; until then, a bearer is checked when it asks for a
+     * ticket.
+     */
+    const reconcileDevices = Effect.gen(function* () {
+      const sessions = yield* state.liveSessions(Date.now());
+      const devices = new Map(sessions.map((session) => [session.deviceToken, session] as const));
+      yield* Effect.forEach(
+        devices.values(),
+        (session) =>
+          mend.checkDevice(session.deviceToken).pipe(
+            Effect.retry({
+              schedule: Schedule.spaced(DEVICE_RECONCILE_RETRY),
+              while: (error) => error._tag === "MendUnavailable",
+            }),
+            Effect.flatMap((verdict) =>
+              verdict === "refused"
+                ? refuseDevice(session.mendUser.id, session.deviceToken)
+                : Effect.void,
+            ),
+          ),
+        { concurrency: 4, discard: true },
+      );
+    }).pipe(
+      Effect.catch((error) =>
+        Effect.logError("t3 gateway could not check its paired devices with Mend", {
+          cause: error.message,
+        }),
+      ),
+    );
+    yield* Effect.forkScoped(reconcileDevices);
+
+    return { hub, refuseDevice, isDeviceRefused: isRefused };
   }),
 );

@@ -233,3 +233,7 @@ its own pull request.
   `GET /api/me/devices` and takes the person from the `POST /api/pair` answer; no new Mend route.
 - 2026-10-03: the Slack runner never carried the recorded permission mode. The resume fix makes any
   relaunch that names no mode reuse the last protocol agent's, which covers Slack and the gateway.
+- 2026-10-10: a device revoked in Mend ends its bearers in the state file before anything closes.
+  The box check found the bearer of a revoked device still getting tickets: the revocation was
+  written after the refusal tore the hub down, and the teardown interrupted it. A ticket now asks
+  `GET /api/me/devices` first, and a start checks every paired device once.

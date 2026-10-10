@@ -194,8 +194,16 @@ export const AuthGroupLive = HttpApiBuilder.group(GatewayHttpApi, "auth", (handl
           Effect.gen(function* () {
             const principal = yield* EnvironmentAuthenticatedPrincipal;
             yield* noStore;
+            // A ticket per connect: the moment to ask Mend whether the device is still paired.
+            const bearer = yield* auth.authenticateSession(principal.sessionId);
+            yield* auth.confirmDevice(bearer);
             return yield* tickets.issue(principal.sessionId);
-          }),
+          }).pipe(
+            Effect.catchTags({
+              GatewayCredentialInvalid: invalidCredential,
+              GatewayStateError: (error) => internal("internal_error", error),
+            }),
+          ),
         )
         // Pairing links and client sessions are administered in Mend (its devices), never here. A
         // paired client never holds the access scopes, so these answer as t3code answers a client

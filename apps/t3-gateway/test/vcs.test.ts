@@ -10,6 +10,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 
+import { WORKTREE_KEPT } from "../src/rpc.ts";
 import { startFakeMend, type FakeMend } from "./support/fake-mend.ts";
 import { feed } from "./support/feed.ts";
 import { gatewayTestLayer } from "./support/gateway.ts";
@@ -272,5 +273,30 @@ describe("VCS status", () => {
           });
         }),
       ),
+  );
+
+  it.live("refuses to remove a worktree, saying where it is removed", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        mend.workbench.addProject("project-1", "mend");
+        mend.workbench.addSession({ id: "session-1", projectId: "project-1" });
+        const { rpc } = yield* pairAndConnect(mend, "KEEPWT");
+        // What t3code sends after deleting a thread, when asked to delete its worktree too.
+        const removal = yield* Effect.exit(
+          rpc[WS_METHODS.vcsRemoveWorktree]({ cwd: STORE, path: WORKTREE, force: true }),
+        );
+        assert.isTrue(Exit.isFailure(removal));
+        if (Exit.isFailure(removal)) {
+          const error = Option.getOrUndefined(Cause.findErrorOption(removal.cause));
+          assert.strictEqual(error?._tag, "EnvironmentAuthorizationError");
+          // t3code's toast reads "Could not remove <path>. " and then this message.
+          assert.strictEqual(error?.message, WORKTREE_KEPT);
+        }
+        assert.isFalse(
+          mend.workbench.calls.some((call) => call.method === "DELETE"),
+          "nothing in Mend is removed",
+        );
+      }),
+    ),
   );
 });

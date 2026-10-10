@@ -30,6 +30,9 @@ import { GatewayState, type BearerSession, type GatewayStateError } from "./stat
  * made with that device token, so Mend's access rules apply unchanged.
  */
 
+/** How long a ticket waits on Mend's answer about the bearer's device before it is issued anyway. */
+export const DEVICE_CHECK_DEADLINE = "2 seconds";
+
 /** As long as t3code's own bearer sessions (`DEFAULT_SESSION_TTL`, 30 days). */
 export const BEARER_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
@@ -152,6 +155,15 @@ export class GatewayAuth extends Context.Service<
       sessionId: AuthSessionId,
     ) => Effect.Effect<AuthenticatedBearer, GatewayCredentialInvalid | GatewayStateError>;
     /**
+     * `POST /api/auth/websocket-ticket`'s check, after the bearer authenticated: Mend still
+     * accepts its device token. A device revoked in Mend ends the bearer, so the client is told
+     * its credential is invalid (t3code's terminal answer) instead of opening a socket that
+     * closes. Mend not answering within `DEVICE_CHECK_DEADLINE` leaves the bearer as it is.
+     */
+    readonly confirmDevice: (
+      bearer: AuthenticatedBearer,
+    ) => Effect.Effect<void, GatewayCredentialInvalid>;
+    /**
      * `GET /api/auth/session`: authenticated only while the bearer is live here and Mend still
      * accepts its device token. A device revoked in Mend ends the bearer too.
      */
@@ -243,13 +255,27 @@ export const GatewayAuthLive: Layer.Layer<
       };
     });
 
-    /** A stored session that is neither revoked nor expired. */
+    /**
+     * A stored session that is neither revoked nor expired, for a device Mend has not refused. A
+     * refusal whose revocation the state file could not write still ends the bearer; the write is
+     * tried again here.
+     */
     const live = (found: Option.Option<BearerSession>) =>
       Effect.gen(function* () {
         if (Option.isNone(found)) return yield* new GatewayCredentialInvalid({});
         const session = found.value;
         const now = yield* Clock.currentTimeMillis;
         if (session.revokedAt !== null || session.expiresAt <= now) {
+          return yield* new GatewayCredentialInvalid({});
+        }
+        if (projections.isDeviceRefused(session.deviceToken)) {
+          yield* state.revokeSessionsForDevice(session.deviceToken, now).pipe(
+            Effect.catch((error) =>
+              Effect.logError("t3 gateway could not revoke a refused device's bearers", {
+                cause: error.message,
+              }),
+            ),
+          );
           return yield* new GatewayCredentialInvalid({});
         }
         const bearer: AuthenticatedBearer = {
@@ -278,6 +304,21 @@ export const GatewayAuthLive: Layer.Layer<
       sessionId: AuthSessionId,
     ) {
       return yield* live(yield* state.findSessionById(sessionId));
+    });
+
+    const confirmDevice = Effect.fn("GatewayAuth.confirmDevice")(function* (
+      bearer: AuthenticatedBearer,
+    ) {
+      const { session } = bearer;
+      const verdict = yield* mend.checkDevice(session.deviceToken).pipe(
+        Effect.timeoutOption(DEVICE_CHECK_DEADLINE),
+        Effect.catchTag("MendUnavailable", () => Effect.succeedNone),
+      );
+      if (Option.isSome(verdict) && verdict.value === "refused") {
+        // As the device gate refuses a token: its bearers are revoked and its sockets close.
+        yield* projections.refuseDevice(session.mendUser.id, session.deviceToken);
+        return yield* new GatewayCredentialInvalid({});
+      }
     });
 
     const sessionState = Effect.fn("GatewayAuth.sessionState")(function* (
@@ -310,6 +351,6 @@ export const GatewayAuthLive: Layer.Layer<
       return authenticated;
     });
 
-    return { exchange, authenticate, authenticateSession, sessionState };
+    return { exchange, authenticate, authenticateSession, confirmDevice, sessionState };
   }),
 );
