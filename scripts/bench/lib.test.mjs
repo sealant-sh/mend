@@ -14,11 +14,15 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { ApiError } from "./host.mjs";
 import {
+  OPENCODE_ANSWER_JS,
+  opencodeAnswerCommand,
+  parseOpencodeAnswer,
   agentIdentityOf,
   companionMismatchOf,
   seriesHarnessOf,
@@ -119,6 +123,7 @@ import {
   recordExcludingInstall,
   recordInstall,
   runAll,
+  waitForAnswer,
 } from "./scenarios.mjs";
 
 // ─── statistics ─────────────────────────────────────────────────────────────
@@ -4231,4 +4236,115 @@ test("an install run again with pnpm's defaults is one install from its running 
     kind: "unknown",
     reason: 'a "retried with defaults" line falls outside the install\'s running and end lines',
   });
+});
+
+/** An opencode 1.18.34 database (its `message` and `part` tables), in WAL mode as opencode runs it. */
+const opencodeTurns = (rows) => {
+  const file = path.join(mkdtempSync(path.join(tmpdir(), "st-bench-opencode-")), "opencode.db");
+  const db = new DatabaseSync(file);
+  db.exec("pragma journal_mode = wal");
+  db.exec(
+    "create table message (id text primary key, session_id text not null, time_created integer not null, time_updated integer not null, data text not null)",
+  );
+  db.exec(
+    "create table part (id text primary key, message_id text not null, session_id text not null, time_created integer not null, time_updated integer not null, data text not null)",
+  );
+  for (const [index, row] of rows.entries()) {
+    db.prepare("insert into message values (?, 's', ?, ?, ?)").run(
+      `m${index}`,
+      row.at,
+      row.at,
+      JSON.stringify({ role: row.role }),
+    );
+    db.prepare("insert into part values (?, ?, 's', ?, ?, ?)").run(
+      `p${index}`,
+      `m${index}`,
+      row.at,
+      row.at + 100,
+      JSON.stringify({ type: "text", text: row.text, time: { start: row.at, end: row.at + 50 } }),
+    );
+  }
+  // Left in the write-ahead log, as a running opencode has it: the reader must take the log too.
+  db.close();
+  return file;
+};
+
+const readOpencodeAnswer = (file, answer, since) =>
+  parseOpencodeAnswer(
+    execFileSync(process.execPath, ["-e", OPENCODE_ANSWER_JS], {
+      env: { ...process.env, ST_ANSWER: answer, ST_SINCE: String(since), ST_DATABASES: file },
+      encoding: "utf8",
+    }),
+  );
+
+test("opencode's answer is read from its record, the assistant's text only, from the turn on", () => {
+  const file = opencodeTurns([
+    { role: "user", at: 1000, text: "What is 2111 + 3036? Reply with only the number. 5147" },
+    { role: "assistant", at: 2000, text: "5,147" },
+    { role: "assistant", at: 9000, text: "5147" },
+  ]);
+  // The assistant's first text holding it, its end; the user's prompt never counts.
+  assert.deepEqual(readOpencodeAnswer(file, "5147", 0), { endedAt: 2050, reason: null });
+  // An earlier turn's is not this one's.
+  assert.deepEqual(readOpencodeAnswer(file, "5147", 5000), { endedAt: 9050, reason: null });
+  assert.deepEqual(readOpencodeAnswer(file, "9999", 0), { endedAt: null, reason: null });
+  assert.equal(
+    readOpencodeAnswer(path.join(tmpdir(), "no-such-st-bench.db"), "1", 0).reason,
+    "no opencode database in the executor",
+  );
+  assert.match(parseOpencodeAnswer("garbage").reason, /could not be read/);
+  // The host command takes a container name, an answer of digits and a time, nothing else.
+  const command = opencodeAnswerCommand("sealant-abc_1", "5147", 1234);
+  assert.match(command, /^docker exec -e ST_ANSWER=5147 -e ST_SINCE=1234 sealant-abc_1 node -e /);
+  assert.equal(
+    Buffer.from(/printf %s '([^']+)'/.exec(command)[1], "base64").toString("utf8"),
+    OPENCODE_ANSWER_JS,
+  );
+  assert.throws(() => opencodeAnswerCommand("a;b", "1", 1), /not a container name/);
+  assert.throws(() => opencodeAnswerCommand("c", "1;rm", 1), /not an answer/);
+});
+
+test("an answer the screen never shows whole is found in the record once the screen has had its time", async () => {
+  const ctx = {
+    result: { target: { harnessVersions: {} } },
+    recordAfterMs: 100,
+    recordEveryMs: 50,
+  };
+  // The screen: opencode's redraw, the answer's digits never contiguous.
+  const api = {
+    get: async () => ({
+      chunks: [{ dataBase64: Buffer.from("5\u001b[2C4\u001b[1C7").toString("base64") }],
+      nextFrom: null,
+      status: "running",
+    }),
+  };
+  let reads = 0;
+  const started = Date.now();
+  const answered = await waitForAnswer(ctx, "process", "5147", 5000, api, async () => {
+    reads += 1;
+    return reads >= 2 ? started + 42 : null;
+  });
+  assert.equal(answered.at, started + 42);
+  assert.ok(Date.now() - started >= 100);
+  // A screen that shows it never reads the record.
+  let untouched = 0;
+  const shown = await waitForAnswer(
+    ctx,
+    "process",
+    "5147",
+    5000,
+    {
+      get: async () => ({
+        chunks: [{ dataBase64: Buffer.from("5147").toString("base64") }],
+        nextFrom: null,
+        status: "running",
+      }),
+    },
+    async () => {
+      untouched += 1;
+      return null;
+    },
+  );
+  assert.notEqual(shown.at, null);
+  assert.equal(untouched, 0);
 });
