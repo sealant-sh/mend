@@ -8,6 +8,7 @@ import {
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Schedule from "effect/Schedule";
 import * as HttpRouter from "effect/unstable/http/HttpRouter";
 import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
 import * as HttpServerRespondable from "effect/unstable/http/HttpServerRespondable";
@@ -31,8 +32,50 @@ import { WebSocketTickets } from "./tickets.ts";
 /** The query parameter t3code's client puts the ticket in (`t3:apps/server/src/auth/EnvironmentAuth.ts`). */
 export const WEBSOCKET_TICKET_QUERY_PARAM = "wsTicket";
 
-/** How long a socket whose device was revoked stays open for in-flight refusals to arrive. */
-const REFUSED_SOCKET_GRACE = "250 millis";
+/**
+ * How long, at most, a socket whose device was revoked stays open for the calls in flight to be
+ * answered: their typed refusals reach the client before the socket closes. A subscription that is
+ * not refused stays open until then.
+ */
+const REFUSED_SOCKET_GRACE = "2 seconds";
+/** How often a refused socket looks whether its calls in flight were answered. */
+const REFUSED_SOCKET_POLL = "10 millis";
+
+/** One call of one client of the socket. */
+const keyOf = (clientId: number, requestId: string | number) => `${clientId}:${requestId}`;
+
+/**
+ * The socket's protocol, counting the calls in flight: a request is in flight from the moment it
+ * arrives until its exit was written to the socket.
+ */
+const trackInFlight = (protocol: RpcServer.Protocol["Service"]) => {
+  const inFlight = new Set<string>();
+  const tracked: RpcServer.Protocol["Service"] = {
+    ...protocol,
+    run: (f) =>
+      protocol.run((clientId, data) => {
+        if (data._tag === "Request") inFlight.add(keyOf(clientId, data.id));
+        return f(clientId, data);
+      }),
+    send: (clientId, response, transferables) =>
+      protocol.send(clientId, response, transferables).pipe(
+        Effect.tap(() =>
+          Effect.sync(() => {
+            if (response._tag === "Exit") inFlight.delete(keyOf(clientId, response.requestId));
+          }),
+        ),
+      ),
+  };
+  /** Waits until every call in flight now has been answered. */
+  const answered = Effect.suspend(() => {
+    const pending = Array.from(inFlight);
+    const done = () => pending.every((key) => !inFlight.has(key));
+    return Effect.void.pipe(
+      Effect.repeat({ until: done, schedule: Schedule.spaced(REFUSED_SOCKET_POLL) }),
+    );
+  });
+  return { tracked, answered };
+};
 
 /** t3code's own check (`hasCompatibleOrchestrationProtocol` in t3:apps/server/src/ws.ts). */
 export const hasCompatibleOrchestrationProtocol = (url: URL): boolean =>
@@ -102,8 +145,9 @@ export const WebSocketRouteLive: Layer.Layer<
         // The person's hub, held while the socket is open (ADR 0012, "Projection").
         const hub = yield* projections.hub(bearer.session);
         const { protocol, httpEffect } = yield* RpcServer.makeProtocolWithHttpEffectWebsocket;
+        const { tracked, answered } = trackInFlight(protocol);
         yield* RpcServer.make(WsRpcGroup, { disableTracing: true }).pipe(
-          Effect.provideService(RpcServer.Protocol, protocol),
+          Effect.provideService(RpcServer.Protocol, tracked),
           Effect.provide(gatewayRpcHandlersLayer(bearer.session, hub)),
           Effect.provideService(GatewayEnvironment, environment),
           Effect.forkScoped,
@@ -113,8 +157,9 @@ export const WebSocketRouteLive: Layer.Layer<
         return yield* Effect.raceFirst(
           httpEffect,
           hub.refusal(bearer.session.deviceToken).pipe(
-            // A moment for the typed refusal of the call that found it to reach the client.
-            Effect.delay(REFUSED_SOCKET_GRACE),
+            // The call that found the refusal, and any other in flight, is answered first: its
+            // typed refusal is written before the socket closes, never lost to the close.
+            Effect.andThen(answered.pipe(Effect.timeoutOption(REFUSED_SOCKET_GRACE))),
             Effect.as(HttpServerResponse.empty({ status: 401 })),
           ),
         );
