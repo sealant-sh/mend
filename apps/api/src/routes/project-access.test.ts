@@ -565,6 +565,13 @@ const CASES: ReadonlyArray<AccessCase> = [
     "/api/worktrees",
     "/diff?to=checkpoint-1",
   )("worktrees.diff"),
+  child(
+    "project-read",
+    "worktree",
+    "GET",
+    "/api/worktrees",
+    "/contents?path=README.md",
+  )("worktrees.contents"),
   child("project-read", "worktree", "POST", "/api/worktrees", "/checkpoints", {
     trigger: "user-mark",
   })("worktrees.checkpoint"),

@@ -11,6 +11,9 @@ import {
   WorktreeListing,
   WorktreeNameTaken,
   WorktreeNotFound,
+  WorktreeContents,
+  WorktreeFile,
+  WorktreeMatch,
   WorktreeRangeDiff,
   WorktreeRangeFile,
 } from "@mend/api-contracts";
@@ -27,13 +30,18 @@ import {
 } from "@mend/db";
 import { currentAgentProcess, heldRepositoriesRefusal } from "@mend/domain/workbench";
 import { captureHoldWords, SessionEngine, WorktreeReads } from "@mend/sessions";
-import { type DiffFileFact, Store } from "@mend/store";
+import { type DiffFileFact, isWorktreeRelativePath, Store } from "@mend/store";
 import { Clock, Duration, Effect } from "effect";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 
 import { ProjectAccess } from "../access.ts";
 import { unlandedWork } from "../landing-state.ts";
 import { LIVE_STATES, observationOf, readFailure, withinCheckpointLimit } from "./workbench.ts";
+
+/** How much of one file a read answers: enough to show it, never a large artifact whole. */
+const FILE_READ_LIMIT = 1024 * 1024;
+/** How many matching lines one search answers at most. */
+const CONTENT_SEARCH_LIMIT = 500;
 
 /**
  * A checkpoint slice's budget (`GET /worktrees/:id/diff`), for the whole request: listing its
@@ -310,6 +318,88 @@ export const WorktreesGroupLive = HttpApiBuilder.group(MendApi, "worktrees", (ha
           omitted,
           listingCut,
           ...(stamp === undefined ? {} : { observation: observationOf(stamp) }),
+        });
+      }),
+    )
+    .handle("contents", ({ params, query }) =>
+      Effect.gen(function* () {
+        const worktree = yield* (yield* ProjectAccess)
+          .worktree(params.id)
+          .pipe(Effect.mapError(() => new WorktreeNotFound({ id: params.id })));
+        const reads = yield* WorktreeReads;
+        if ((query.path === undefined) === (query.query === undefined)) {
+          return yield* new StoreFailure({
+            message: "name either a path to read or a query to search, one of them",
+          });
+        }
+        if (query.query !== undefined) {
+          const pattern = query.query;
+          const limit = query.limit === undefined ? 100 : Number.parseInt(query.limit, 10);
+          if (
+            pattern.length === 0 ||
+            pattern.length > 256 ||
+            !Number.isInteger(limit) ||
+            limit < 1 ||
+            limit > CONTENT_SEARCH_LIMIT ||
+            (query.limit !== undefined && String(limit) !== query.limit)
+          ) {
+            return yield* new StoreFailure({
+              message: `a search needs 1 to 256 characters and a limit from 1 to ${CONTENT_SEARCH_LIMIT}`,
+            });
+          }
+          const found = yield* reads
+            .searchFiles(
+              worktree.projectId,
+              worktree.id,
+              {
+                pattern,
+                caseSensitive: query.caseSensitive === "true",
+                wholeWord: query.wholeWord === "true",
+                regex: query.regex === "true",
+              },
+              limit,
+            )
+            .pipe(Effect.mapError(readFailure));
+          return new WorktreeContents({
+            worktreeId: worktree.id,
+            file: null,
+            search: {
+              matches: found.value.matches.map((match) => new WorktreeMatch(match)),
+              truncated: found.value.truncated,
+            },
+            observation: observationOf(found.stamp),
+          });
+        }
+        const relative = query.path ?? "";
+        if (!isWorktreeRelativePath(relative)) {
+          return yield* new StoreFailure({
+            message: "a path is relative to the worktree, without `..`, and never into `.git`",
+          });
+        }
+        const at =
+          query.at === undefined
+            ? null
+            : (yield* (yield* CheckpointsRepo).listForWorktree(worktree.id)).find(
+                (checkpoint) => checkpoint.id === query.at,
+              );
+        if (at === undefined) return yield* new NotFound({ id: query.at ?? "" });
+        const read = yield* reads
+          .readFile(worktree.projectId, worktree.id, relative, at?.sha ?? null, FILE_READ_LIMIT)
+          .pipe(Effect.mapError(readFailure));
+        if (read.value === null) return yield* new NotFound({ id: relative });
+        const file = read.value;
+        return new WorktreeContents({
+          worktreeId: worktree.id,
+          file: new WorktreeFile({
+            path: relative,
+            at: at?.id ?? null,
+            contents: file.binary ? null : new TextDecoder().decode(file.bytes),
+            size: file.size,
+            truncated: file.truncated,
+            binary: file.binary,
+          }),
+          search: null,
+          observation: observationOf(read.stamp),
         });
       }),
     )

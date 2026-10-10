@@ -99,6 +99,44 @@ export class WorktreeRangeDiff extends Schema.Class<WorktreeRangeDiff>("Worktree
   observation: Schema.optionalKey(ObservationStamp),
 }) {}
 
+/** One file of a worktree, from `GET /api/worktrees/:id/contents?path=`. */
+export class WorktreeFile extends Schema.Class<WorktreeFile>("WorktreeFile")({
+  path: Schema.String,
+  /** The checkpoint it was read at; null for the worktree as it stands. */
+  at: Schema.NullOr(CheckpointId),
+  /** The file as UTF-8 text, at most 1 MiB of it; null for a binary file. */
+  contents: Schema.NullOr(Schema.String),
+  /** The whole file's size in bytes. */
+  size: Schema.Int,
+  /** `contents` holds less than the whole file. */
+  truncated: Schema.Boolean,
+  binary: Schema.Boolean,
+}) {}
+
+/** One line of a worktree that matched, from `GET /api/worktrees/:id/contents?query=`. */
+export class WorktreeMatch extends Schema.Class<WorktreeMatch>("WorktreeMatch")({
+  path: Schema.String,
+  /** From 1. */
+  line: Schema.Int,
+  /** The line, cut at 2,000 characters. */
+  text: Schema.String,
+}) {}
+
+/**
+ * A read of a worktree's files: one file (`path`), or the lines matching a search (`query`), the
+ * worktree as it stands, untracked files included and ignored ones not. Exactly one is answered.
+ * A search is bounded as a whole: at most `limit` matches, 4 MiB of git's output and 10 seconds;
+ * past any, what was found answers and `truncated` says so.
+ */
+export class WorktreeContents extends Schema.Class<WorktreeContents>("WorktreeContents")({
+  worktreeId: WorktreeId,
+  file: Schema.NullOr(WorktreeFile),
+  search: Schema.NullOr(
+    Schema.Struct({ matches: Schema.Array(WorktreeMatch), truncated: Schema.Boolean }),
+  ),
+  observation: Schema.optionalKey(ObservationStamp),
+}) {}
+
 /** Provisioning the container without a conversation; joining happens via sessions. */
 export class NewWorktree extends Schema.Class<NewWorktree>("NewWorktree")({
   /** Null derives an anonymous identity; a given name must be unused (409 otherwise). */
@@ -200,6 +238,24 @@ export const worktreesGroup = HttpApiGroup.make("worktrees")
         path: Schema.optional(Schema.String),
       },
       success: WorktreeRangeDiff,
+      error: [WorktreeNotFound, NotFound, StoreFailure],
+    }),
+  )
+  .add(
+    // A read of the worktree's files: one file, as it stands or at a checkpoint, or a search of
+    // its lines. Visible to whoever sees the worktree (the t3code gateway, ADR 0012 phase 3).
+    HttpApiEndpoint.get("contents", "/worktrees/:id/contents", {
+      params: { id: WorktreeId },
+      query: {
+        path: Schema.optional(Schema.String),
+        at: Schema.optional(CheckpointId),
+        query: Schema.optional(Schema.String),
+        caseSensitive: Schema.optional(Schema.Literals(["true", "false"])),
+        wholeWord: Schema.optional(Schema.Literals(["true", "false"])),
+        regex: Schema.optional(Schema.Literals(["true", "false"])),
+        limit: Schema.optional(Schema.String),
+      },
+      success: WorktreeContents,
       error: [WorktreeNotFound, NotFound, StoreFailure],
     }),
   )

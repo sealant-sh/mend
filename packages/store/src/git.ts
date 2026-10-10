@@ -190,6 +190,56 @@ export const gitBytes = (
     return Effect.sync(() => child.kill());
   });
 
+/**
+ * Run git and keep at most `maxBytes` of its stdout, untouched: for reading the start of a blob
+ * without holding a large one in memory. Git is stopped once enough was read.
+ */
+export const gitHead = (
+  args: ReadonlyArray<string>,
+  cwd: string,
+  maxBytes: number,
+): Effect.Effect<Buffer, GitError> =>
+  Effect.callback<Buffer, GitError>((resume) => {
+    const child = spawn("git", [...args], { cwd, env: gitProcessEnv(undefined) });
+    const chunks: Array<Buffer> = [];
+    const errors: Array<Buffer> = [];
+    let kept = 0;
+    let enough = false;
+    child.stdout.on("data", (chunk: Buffer) => {
+      if (enough) return;
+      const room = maxBytes - kept;
+      chunks.push(chunk.byteLength > room ? chunk.subarray(0, room) : chunk);
+      kept += Math.min(room, chunk.byteLength);
+      if (kept >= maxBytes) {
+        enough = true;
+        child.kill();
+      }
+    });
+    child.stderr.on("data", (chunk: Buffer) => errors.push(chunk));
+    child.on("error", (error) =>
+      resume(
+        Effect.fail(new GitError({ args: [...args], cwd, exitCode: null, stderr: error.message })),
+      ),
+    );
+    child.on("close", (code) => {
+      if (enough || code === 0) {
+        resume(Effect.succeed(Buffer.concat(chunks)));
+        return;
+      }
+      resume(
+        Effect.fail(
+          new GitError({
+            args: [...args],
+            cwd,
+            exitCode: code,
+            stderr: Buffer.concat(errors).toString("utf8").trim(),
+          }),
+        ),
+      );
+    });
+    return Effect.sync(() => child.kill());
+  });
+
 /** What one git call printed and how it exited, whatever the exit code. */
 export interface GitOutput {
   readonly exitCode: number;

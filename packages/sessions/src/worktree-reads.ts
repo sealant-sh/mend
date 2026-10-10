@@ -18,6 +18,9 @@ import {
   type DiffFileFactsOptions,
   type DiffRangeOptions,
   type FileListing,
+  type FileRead,
+  type GrepQuery,
+  type GrepResult,
   type GitError,
   GitOpsRunner,
   type PathsBeyondGit,
@@ -149,6 +152,25 @@ export class WorktreeReads extends Context.Service<
       limit: number,
     ) => Effect.Effect<Stamped<FileListing>, WorktreeReadError>;
     /**
+     * The start of one file, at most `maxBytes`: in the worktree as it stands (`at` null), or in a
+     * commit's tree (a checkpoint's sha). Null when nothing readable is there, or the path leaves
+     * the worktree.
+     */
+    readonly readFile: (
+      projectId: ProjectId,
+      worktreeId: WorktreeId,
+      relative: string,
+      at: string | null,
+      maxBytes: number,
+    ) => Effect.Effect<Stamped<FileRead | null>, WorktreeReadError>;
+    /** Lines of the worktree as it stands that match `query`, at most `limit` (`git grep`). */
+    readonly searchFiles: (
+      projectId: ProjectId,
+      worktreeId: WorktreeId,
+      query: GrepQuery,
+      limit: number,
+    ) => Effect.Effect<Stamped<GrepResult>, WorktreeReadError>;
+    /**
      * Worktree paths too long for git that the chain head carries (`pathsBeyondGit`): saved and
      * restored in the workspace class, and in no diff git computes. Null where Mend cannot tell
      * (a co-located worktree, a worktree with no capture yet).
@@ -213,6 +235,20 @@ export const WorktreeReadsColocatedLive: Layer.Layer<
       listWorktreeFiles: (projectId, worktreeId, limit) =>
         pathOf(projectId, worktreeId).pipe(
           Effect.flatMap((dir) => store.listWorktreeFiles(dir, limit)),
+          Effect.map(stamped),
+        ),
+      readFile: (projectId, worktreeId, relative, at, maxBytes) =>
+        pathOf(projectId, worktreeId).pipe(
+          Effect.flatMap((dir) =>
+            at === null
+              ? store.readWorktreeFile(dir, relative, maxBytes)
+              : store.readBlob(dir, at, relative, maxBytes),
+          ),
+          Effect.map(stamped),
+        ),
+      searchFiles: (projectId, worktreeId, query, limit) =>
+        pathOf(projectId, worktreeId).pipe(
+          Effect.flatMap((dir) => store.grep(dir, null, query, limit)),
           Effect.map(stamped),
         ),
       pathsBeyondGit: () => Effect.succeed(null),
@@ -392,6 +428,23 @@ export const WorktreeReadsCapturedLive: Layer.Layer<
           Effect.flatMap((ready) =>
             runner
               .listTreeFiles(ready.cache, ready.worktreeTree, limit)
+              .pipe(Effect.map((value) => ({ value, stamp: ready.stamp }))),
+          ),
+        ),
+      // The worktree as it stands is the head capture's tree.
+      readFile: (projectId, worktreeId, relative, at, maxBytes) =>
+        prepared(projectId, worktreeId).pipe(
+          Effect.flatMap((ready) =>
+            runner
+              .readBlob(ready.cache, at ?? ready.worktreeTree, relative, maxBytes)
+              .pipe(Effect.map((value) => ({ value, stamp: ready.stamp }))),
+          ),
+        ),
+      searchFiles: (projectId, worktreeId, query, limit) =>
+        prepared(projectId, worktreeId).pipe(
+          Effect.flatMap((ready) =>
+            runner
+              .grep(ready.cache, ready.worktreeTree, query, limit)
               .pipe(Effect.map((value) => ({ value, stamp: ready.stamp }))),
           ),
         ),
