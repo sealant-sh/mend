@@ -192,6 +192,16 @@ export interface PersonHub {
   readonly subscribeShell: (
     afterSequence: number | undefined,
   ) => Effect.Effect<ShellSubscription, HubReadError, Scope.Scope>;
+  /**
+   * A signal each time the person's connected accounts may have changed: Mend's `accounts`
+   * pointer on their event stream, or the stream reconnecting (it may have missed one). What
+   * t3code shows of their logins is read again then (review R650-3).
+   */
+  readonly accountChanges: Effect.Effect<
+    Stream.Stream<"accounts", SubscriberFellBehind>,
+    never,
+    Scope.Scope
+  >;
   /** The person's archived threads, as `orchestration.getArchivedShellSnapshot` answers. */
   readonly archivedShell: Effect.Effect<OrchestrationV2ArchivedShellSnapshot, HubReadError>;
   /** The archived threads now and their changes from here (`subscribeArchivedShell`). */
@@ -1104,6 +1114,7 @@ export const makePersonHub = (input: {
     let shellThreads = new Map<string, Printed<OrchestrationV2ThreadShell>>();
     let shellArchived = new Map<string, Printed<OrchestrationV2ThreadShell>>();
     const archivedChanges = makeFanout<ArchivedShellDelta>();
+    const accountSignals = makeFanout<"accounts">();
     const shellChanges = makeFanout<ShellDelta>();
     const watches = new Map<string, Watch>();
     const threadChanges = makeFanout<{
@@ -2002,6 +2013,9 @@ export const makePersonHub = (input: {
     // ─── Mend's SSE ────────────────────────────────────────────────────────
 
     const onPointer = (pointer: MendEventPointer) => {
+      if (pointer.type === "user" && pointer.facet === "accounts") {
+        return accountSignals.publish(["accounts"]);
+      }
       const key = refreshKeyOf(pointer);
       return key === null ? Effect.void : requestRefresh(key);
     };
@@ -2009,8 +2023,11 @@ export const makePersonHub = (input: {
     const sse = yield* Effect.gen(function* () {
       let failures = 0;
       for (let attempt = 0; ; attempt++) {
-        // A reconnect may have missed pointers: read everything again.
-        if (attempt > 0) yield* requestRefresh("all");
+        // A reconnect may have missed pointers: read everything again, the logins too.
+        if (attempt > 0) {
+          yield* requestRefresh("all");
+          yield* accountSignals.publish(["accounts"]);
+        }
         const startedAt = Date.now();
         const outcome = yield* asPerson((token) =>
           mend.events(token).pipe(Stream.runForEach(onPointer)),
@@ -3423,6 +3440,7 @@ export const makePersonHub = (input: {
     });
 
     return {
+      accountChanges: accountSignals.subscribe(() => true),
       archivedShell,
       subscribeArchivedShell,
       terminals,

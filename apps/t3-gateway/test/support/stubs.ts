@@ -75,6 +75,7 @@ export const emptyHub: PersonHub = {
     projects: [],
     threads: [],
   }),
+  accountChanges: Effect.succeed(Stream.never),
   subscribeArchivedShell: Effect.succeed({
     snapshot: {
       schemaVersion: EMPTY_SHELL_SNAPSHOT.schemaVersion,

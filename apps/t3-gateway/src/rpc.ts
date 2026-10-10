@@ -36,7 +36,8 @@ import {
   WS_METHODS,
   WsRpcGroup,
   type AuthEnvironmentScope,
-  type ProviderInstanceId,
+  ProviderInstanceId,
+  type ServerProvider,
   type ThreadId,
 } from "@mend/t3-contracts";
 import * as DateTime from "effect/DateTime";
@@ -56,6 +57,7 @@ import type { HubReadError, PersonHub, ThreadChange } from "./hub.ts";
 import { launchThread } from "./launch.ts";
 import { makeReviewHandlers } from "./review.ts";
 import {
+  loginsOf,
   makeServerConfig,
   makeWelcome,
   providersFromMend,
@@ -92,6 +94,7 @@ export const SERVED_METHODS: ReadonlySet<WsRpcMethod> = new Set<WsRpcMethod>([
   WS_METHODS.serverProbe,
   WS_METHODS.agentSessionsScan,
   WS_METHODS.serverGetConfig,
+  WS_METHODS.serverRefreshProviders,
   WS_METHODS.subscribeServerConfig,
   WS_METHODS.subscribeServerLifecycle,
   ORCHESTRATION_V2_WS_METHODS.subscribeShell,
@@ -234,6 +237,11 @@ const scopeCheck = (session: BearerSession, requiredScope: AuthEnvironmentScope)
 const MODELS_SOURCE = "Mend GET /api/harnesses/models";
 /** How long the config waits for the person's logins (Mend asks the platform) before leaving them unknown. */
 const LOGINS_DEADLINE = "2 seconds";
+/** What a client is shown of the providers, without when it was read: what a change is. */
+const providersPrint = (providers: ReadonlyArray<ServerProvider>) =>
+  JSON.stringify(providers.map(({ checkedAt: _checkedAt, ...shown }) => shown));
+/** How often a subscribed client's logins are looked at again with nothing said to move them. */
+const LOGINS_LOOK = "5 minutes";
 const encodeServerConfig = Schema.encodeEffect(Schema.toCodecJson(ServerConfig));
 
 /** A feed whose subscriber fell behind; the only typed failure these feeds declare. */
@@ -329,14 +337,7 @@ export const makeGatewayRpcHandlers = ({
     );
     // Beside the catalog, never in front of it: a slow or failed read leaves the logins unknown.
     const loginsRead = mend.connectedAccounts(session.deviceToken).pipe(
-      Effect.map(
-        (accounts): PersonLogins =>
-          new Set(
-            accounts
-              .filter((account) => account.status === "active")
-              .map((account) => account.provider),
-          ),
-      ),
+      Effect.map((accounts): PersonLogins => loginsOf(accounts, Date.now())),
       Effect.timeoutOption(LOGINS_DEADLINE),
       Effect.map(Option.getOrNull),
       Effect.catch((cause) =>
@@ -377,13 +378,43 @@ export const makeGatewayRpcHandlers = ({
     // ── Served ──────────────────────────────────────────────────────────────
     [WS_METHODS.serverProbe]: () => authorize(session, READ).pipe(Effect.as({})),
     [WS_METHODS.serverGetConfig]: () => loadServerConfig,
-    // A snapshot, then open: phase 0 has no provider changes to push.
+    // A snapshot, then the providers again whenever the person's logins may have moved (review
+    // R650-3): Mend says their accounts changed, or the regular look finds them changed (an
+    // expiry passing, a read that failed before). Sent only when something differs.
     [WS_METHODS.subscribeServerConfig]: () =>
-      Stream.fromEffect(
-        loadServerConfig.pipe(
-          Effect.map((config) => ({ version: 1 as const, type: "snapshot" as const, config })),
-        ),
-      ).pipe(Stream.concat(Stream.never)),
+      Stream.unwrap(
+        Effect.gen(function* () {
+          const config = yield* loadServerConfig;
+          const changes = yield* hub.accountChanges;
+          let last = providersPrint(config.providers);
+          const updates = Stream.merge(
+            changes.pipe(Stream.orElseSucceed(() => "accounts" as const)),
+            Stream.tick(LOGINS_LOOK).pipe(Stream.drop(1)),
+          ).pipe(
+            Stream.mapEffect(() =>
+              loadServerConfig.pipe(
+                Effect.map((next) => next.providers),
+                Effect.orElseSucceed(() => null),
+              ),
+            ),
+            Stream.filter((providers): providers is ReadonlyArray<ServerProvider> => {
+              if (providers === null) return false;
+              const print = providersPrint(providers);
+              if (print === last) return false;
+              last = print;
+              return true;
+            }),
+            Stream.map((providers) => ({
+              version: 1 as const,
+              type: "providerStatuses" as const,
+              payload: { providers },
+            })),
+          );
+          return Stream.make({ version: 1 as const, type: "snapshot" as const, config }).pipe(
+            Stream.concat(updates),
+          );
+        }),
+      ).pipe(Stream.scoped),
     [WS_METHODS.subscribeServerLifecycle]: () =>
       Stream.fromEffect(
         authorize(session, READ).pipe(
@@ -559,10 +590,21 @@ export const makeGatewayRpcHandlers = ({
       ),
 
     // ── Providers: Mend's harnesses, set up in Mend ─────────────────────────
+    // A refresh reads the person's logins and Mend's catalog again (review R650-3); it sets up
+    // nothing, as logins are Mend's.
     [WS_METHODS.serverRefreshProviders]: (input) =>
-      input.instanceId === undefined
-        ? refuse(WS_METHODS.serverRefreshProviders, OPERATE)
-        : providerSetup(WS_METHODS.serverRefreshProviders, input.instanceId),
+      loadServerConfig.pipe(
+        Effect.map((config) => ({ providers: config.providers })),
+        Effect.catchTag("ServerSettingsError", (error) =>
+          Effect.fail(
+            new ProviderSetupError({
+              instanceId: input.instanceId ?? ProviderInstanceId.make("codex"),
+              operation: "refresh",
+              detail: `Mend could not answer: ${error.message}`,
+            }),
+          ),
+        ),
+      ),
     [WS_METHODS.serverUpdateProvider]: (input) =>
       Effect.fail(
         new ServerProviderUpdateError({

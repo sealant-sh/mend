@@ -41,10 +41,7 @@ export interface FakeMend {
    * unless set), or null to answer 503 as Mend does when the platform is unreachable. `delayMs`
    * holds the answer back.
    */
-  readonly setAccounts: (
-    accounts: ReadonlyArray<{ readonly provider: string; readonly status: string }> | null,
-    delayMs?: number,
-  ) => void;
+  readonly setAccounts: (accounts: ReadonlyArray<FakeAccount> | null, delayMs?: number) => void;
   /** Projects, sessions and their conversations, and the SSE stream that reports them. */
   readonly workbench: FakeWorkbench;
   /** Shells, `tty` tickets and the `/api/tty` socket. */
@@ -112,6 +109,14 @@ const normalise = (code: string) => code.toUpperCase().replaceAll(/[^0-9A-Z]/g, 
 const asRecord = (value: unknown): Record<string, unknown> =>
   typeof value === "object" && value !== null ? Object.fromEntries(Object.entries(value)) : {};
 
+/** A connected account as `GET /api/me/sealant` answers it; named `default` unless said. */
+export interface FakeAccount {
+  readonly provider: string;
+  readonly status: string;
+  readonly name?: string;
+  readonly metadata?: Readonly<Record<string, unknown>>;
+}
+
 export const startFakeMend: Effect.Effect<FakeMend, never, Scope.Scope> = Effect.gen(function* () {
   const codes = new Map<string, { readonly user: FakeMendUser; spent: boolean }>();
   const tokens = new Map<string, { revoked: boolean; readonly userId: string }>();
@@ -120,7 +125,7 @@ export const startFakeMend: Effect.Effect<FakeMend, never, Scope.Scope> = Effect
   const modelReads: Array<string | undefined> = [];
   const pairForwardedFor: Array<string | undefined> = [];
   let modelsDown = false;
-  let accounts: ReadonlyArray<{ readonly provider: string; readonly status: string }> | null = [
+  let accounts: ReadonlyArray<FakeAccount> | null = [
     { provider: "claude", status: "active" },
     { provider: "codex", status: "active" },
   ];
@@ -186,10 +191,10 @@ export const startFakeMend: Effect.Effect<FakeMend, never, Scope.Scope> = Effect
           accounts: accounts.map((account, index) => ({
             id: `account-${index}`,
             provider: account.provider,
-            name: "default",
+            name: account.name ?? "default",
             kind: "oauth-token",
             status: account.status,
-            metadata: {},
+            metadata: account.metadata ?? {},
             connectedAt: "2026-10-04T12:00:00.000Z",
             updatedAt: "2026-10-04T12:00:00.000Z",
             lastUsedAt: null,
