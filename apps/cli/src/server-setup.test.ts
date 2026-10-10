@@ -1180,9 +1180,61 @@ describe("mend server setup", () => {
     expect(await serverCommand(["setup", "--declare", "budgets"], invalid.runtime)).toMatchObject({
       _tag: "error",
       message: expect.stringContaining(
-        "--declare takes core-private, edge-tls, workspace-ssh or none",
+        "--declare takes core-private, edge-tls, workspace-ssh, t3code-gateway or none",
       ),
     });
+  });
+
+  it("keeps the edge, public exposure, --ssh-bind, every --declare and the t3code gateway together (mend#620 and #644/#645)", async () => {
+    const configDir = temporaryDirectory("ssh-gate-gateway");
+    expect(await serverCommand(["setup"], makeRuntime({ configDir }).runtime)).toEqual({
+      _tag: "ok",
+    });
+    const both = makeRuntime({ configDir, gatewayLabel: "1" });
+    expect(
+      await serverCommand(
+        [
+          "setup",
+          "--edge",
+          "mend.example.test",
+          "--exposure",
+          "public",
+          "--ssh-bind",
+          "0.0.0.0",
+          "--t3-gateway",
+          "--declare",
+          "workspace-ssh",
+          "--declare",
+          "core-private",
+          "--declare",
+          "t3code-gateway",
+        ],
+        { ...both.runtime, probeSsh: async () => [] },
+      ),
+    ).toEqual({ _tag: "ok" });
+    const env = readEnv(activeFile(configDir, "server.env"));
+    expect(env.get("MEND_SSH_PUBLISHED")).toBe("0.0.0.0:2222");
+    expect(env.get("MEND_EXPOSURE_DECLARED")).toBe("workspace-ssh,core-private,t3code-gateway");
+    expect(env.get("MEND_T3_GATEWAY_PORT")).toBe("3120");
+    expect(JSON.parse(fs.readFileSync(activeFile(configDir, "server.json"), "utf8"))).toMatchObject(
+      {
+        sshBind: "0.0.0.0",
+        declared: ["workspace-ssh", "core-private", "t3code-gateway"],
+        t3GatewayPort: 3120,
+        edgeHost: "mend.example.test",
+      },
+    );
+    const up = both.commands.find(([, args]) => args.includes("up"))?.[1] ?? [];
+    for (const overlay of ["compose.edge.yaml", "compose.posture.yaml", "compose.t3.yaml"]) {
+      expect(up.some((arg) => arg.endsWith(overlay))).toBe(true);
+    }
+    // A rerun keeps all of it: the generation reads back as written.
+    expect(
+      await serverCommand(["setup"], makeRuntime({ configDir, gatewayLabel: "1" }).runtime),
+    ).toEqual({ _tag: "ok" });
+    expect(readEnv(activeFile(configDir, "server.env")).get("MEND_EXPOSURE_DECLARED")).toBe(
+      "workspace-ssh,core-private,t3code-gateway",
+    );
   });
 
   it("reads an SSH banner, and settles on silence, a clean close before any bytes, and a refusal", async () => {

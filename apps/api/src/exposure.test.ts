@@ -199,6 +199,28 @@ describe("the public exposure gate", () => {
     expect(exposureRefusal("public", evaluateExposureGate(stated))).toBeNull();
   });
 
+  it("lists the t3code gateway only while it runs, open until the operator states who reaches it", () => {
+    expect(evaluateExposureGate(closed).some((outcome) => outcome.id === "t3code-gateway")).toBe(
+      false,
+    );
+    const on = evaluateExposureGate({ ...closed, t3Gateway: true });
+    const item = on.find((outcome) => outcome.id === "t3code-gateway");
+    expect(item?.established).toBe("open");
+    expect(item?.blocksStart).toBe(false);
+    expect(item?.detail).toContain("cannot observe who reaches that port");
+    expect(item?.fix).toContain("then add t3code-gateway to MEND_EXPOSURE_DECLARED");
+    // It never refuses a start: no build can observe it.
+    expect(exposureRefusal("public", on)).toBe(
+      exposureRefusal("public", evaluateExposureGate(closed)),
+    );
+    const stated = evaluateExposureGate({
+      ...closed,
+      t3Gateway: true,
+      declared: ["t3code-gateway"],
+    });
+    expect(stated.find((outcome) => outcome.id === "t3code-gateway")?.established).toBe("declared");
+  });
+
   it("an unversioned build has nothing a reassessment could name", () => {
     const gate = evaluateExposureGate({ ...closed, version: "dev", reassessedVersion: "dev" });
     const item = gate.find((outcome) => outcome.id === "reassessment");

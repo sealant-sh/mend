@@ -45,7 +45,12 @@ export { EDGE_CADDYFILE, EDGE_COMPOSE_OVERLAY };
  * (`MEND_EXPOSURE_DECLARED`; apps/api/src/exposure.ts `DECLARABLE`). `mend server setup --declare`
  * names them; nothing else reaches the server's statement.
  */
-export const DECLARABLE_ITEMS = ["core-private", "edge-tls", "workspace-ssh"] as const;
+export const DECLARABLE_ITEMS = [
+  "core-private",
+  "edge-tls",
+  "workspace-ssh",
+  "t3code-gateway",
+] as const;
 export type DeclarableItem = (typeof DECLARABLE_ITEMS)[number];
 
 export const isDeclarableItem = (value: string): value is DeclarableItem =>

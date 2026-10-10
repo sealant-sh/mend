@@ -185,7 +185,13 @@ Not observable by this build. Reported, never inferred, and they do not block st
     value equals the running version, and `open` otherwise, so an upgrade reopens it. A build with
     no version of its own (`dev`) has nothing a reassessment could name, and stays `open`.
 
-Items 11 and 12 stay `open` until the operator, having verified them from outside, names them in
+14. **t3code-gateway**, listed while the t3code gateway is enabled (`MEND_T3_GATEWAY_ENABLED`,
+    `mend server setup --t3-gateway`; docs/adr/0012): who reaches the gateway's own port. Setup
+    publishes it on 127.0.0.1 only, which this process cannot see. What would verify it: a
+    connection attempt to its port from another machine, answering nothing or only through what the
+    operator put in front of it. Added 2026-10-10 with the gateway's phase 4.
+
+Items 11, 12 and 14 stay `open` until the operator, having verified them from outside, names them in
 `MEND_EXPOSURE_DECLARED` (the chart's `exposure.declared`, setup's `--declare`); they then read
 `declared`, with the words "this process cannot check it". Besides them only `workspace-ssh` can be
 declared, as above. Nothing else can be declared: an item this process can read is read, never taken
