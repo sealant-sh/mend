@@ -821,6 +821,20 @@ test(
     assert.equal(body.trimEnd(), conf.trimEnd());
     const npm = documentOf(manifest, "Deployment", "mend-npm-mirror");
     assert.match(npm, /name: NPM_MIRROR_MAX_SIZE, value: "10g"/);
+    assert.match(npm, /name: NPM_MIRROR_MIN_FREE, value: "5g"/);
+    // The Docker mirror runs under the packaged install's guard, with its cap and the floor.
+    const guardMap = documentOf(manifest, "ConfigMap", "mend-docker-mirror-guard");
+    const guard = fs.readFileSync(path.join(root, "deploy/docker/docker-mirror-guard.sh"), "utf8");
+    const guardBody = guardMap
+      .split("docker-mirror-guard.sh: |\n")[1]
+      .split("\n")
+      .map((line) => line.replace(/^ {4}/, ""))
+      .join("\n");
+    assert.equal(guardBody.trimEnd(), guard.trimEnd());
+    const registry = documentOf(manifest, "Deployment", "mend-docker-mirror");
+    assert.match(registry, /command: \["\/bin\/sh", "\/mend\/docker-mirror-guard.sh"\]/);
+    assert.match(registry, /name: DOCKER_MIRROR_MAX_SIZE, value: "40g"/);
+    assert.match(registry, /name: DOCKER_MIRROR_MIN_FREE, value: "5g"/);
     // The Docker Hub login reaches the mirror from its Secret, and no other Pod.
     const docker = documentOf(manifest, "Deployment", "mend-docker-mirror");
     assert.match(docker, /secretKeyRef: \{ name: docker-hub, key: password \}/);
@@ -843,4 +857,10 @@ test("the chart refuses a Docker Hub login not declared Public Repo Read-only", 
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /needs mirrors\.docker\.upstreamCredentials\.publicReadOnly: true/);
   assert.match(result.stderr, /private repositories included/);
+});
+
+test("the chart refuses a Docker mirror cap the guard would not read", { skip }, () => {
+  const result = renderFixture("obc", "mirrors.docker.enabled=true", "mirrors.docker.maxSize=40GB");
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /mirrors\.docker\.maxSize must be a whole number/);
 });

@@ -78,6 +78,10 @@ spec:
             {{ fail (printf "mirrors.npm.maxSize must be a whole number of mebibytes or gibibytes, such as 10g (got %q)" .Values.mirrors.npm.maxSize) }}
             {{- end }}
             - { name: NPM_MIRROR_MAX_SIZE, value: {{ .Values.mirrors.npm.maxSize | quote }} }
+            {{- if not (regexMatch "^[1-9][0-9]{0,5}[mg]$" .Values.mirrors.minFree) }}
+            {{ fail (printf "mirrors.minFree must be a whole number of mebibytes or gibibytes, such as 5g (got %q)" .Values.mirrors.minFree) }}
+            {{- end }}
+            - { name: NPM_MIRROR_MIN_FREE, value: {{ .Values.mirrors.minFree | quote }} }
           ports: [{ containerPort: 4873, name: http }]
           readinessProbe:
             httpGet: { path: /-/ping, port: http }
@@ -93,6 +97,17 @@ spec:
           persistentVolumeClaim: { claimName: {{ .Release.Name }}-npm-mirror }
 {{- end }}
 {{- if .Values.mirrors.docker.enabled }}
+---
+# The Docker mirror's entrypoint, the packaged install's docker-mirror-guard.sh byte for byte: it runs
+# the registry and keeps its cache under mirrors.docker.maxSize and the claim above mirrors.minFree.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-docker-mirror-guard
+  labels: {{ include "mend.labels" . | nindent 4 }}
+data:
+  docker-mirror-guard.sh: |
+    {{- .Files.Get "files/docker-mirror-guard.sh" | nindent 4 }}
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -129,6 +144,8 @@ spec:
   template:
     metadata:
       labels: {{ include "mend.component" (dict "root" . "name" "docker-mirror") | nindent 8 }}
+      annotations:
+        checksum/guard: {{ .Files.Get "files/docker-mirror-guard.sh" | sha256sum }}
     spec:
       automountServiceAccountToken: false
       securityContext:
@@ -140,8 +157,16 @@ spec:
       containers:
         - name: registry
           image: {{ .Values.mirrors.docker.image }}
+          # The guard runs the registry: over the cap it clears the cache, below the floor it
+          # clears it and keeps the registry stopped (not ready), and workspaces pull from Docker Hub.
+          command: ["/bin/sh", "/mend/docker-mirror-guard.sh"]
           securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: [ALL] } }
           env:
+            {{- if not (regexMatch "^[1-9][0-9]{0,5}[mg]$" .Values.mirrors.docker.maxSize) }}
+            {{ fail (printf "mirrors.docker.maxSize must be a whole number of mebibytes or gibibytes, such as 40g (got %q)" .Values.mirrors.docker.maxSize) }}
+            {{- end }}
+            - { name: DOCKER_MIRROR_MAX_SIZE, value: {{ .Values.mirrors.docker.maxSize | quote }} }
+            - { name: DOCKER_MIRROR_MIN_FREE, value: {{ .Values.mirrors.minFree | quote }} }
             - { name: REGISTRY_PROXY_REMOTEURL, value: https://registry-1.docker.io }
             - { name: REGISTRY_PROXY_TTL, value: {{ .Values.mirrors.docker.ttl | quote }} }
             - { name: REGISTRY_LOG_LEVEL, value: warn }
@@ -167,8 +192,11 @@ spec:
             periodSeconds: 10
           resources: {{ toYaml .Values.mirrors.docker.resources | nindent 12 }}
           volumeMounts:
+            - { name: guard, mountPath: /mend, readOnly: true }
             - { name: cache, mountPath: /var/lib/registry }
       volumes:
+        - name: guard
+          configMap: { name: {{ .Release.Name }}-docker-mirror-guard }
         - name: cache
           persistentVolumeClaim: { claimName: {{ .Release.Name }}-docker-mirror }
 {{- end }}

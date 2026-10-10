@@ -255,6 +255,9 @@ networkPolicies:
 # packaged install (`mend server setup`) runs both. Neither is published beyond its ClusterIP
 # Service, and networkPolicies admits only the API tier and workspace Pods.
 mirrors:
+  # The free space both mirrors leave on their claims: nginx evicts to keep it, and the Docker
+  # mirror's guard clears its cache and pauses below it (workspaces then pull from Docker Hub).
+  minFree: 5g
   npm:
     # nginx caching registry.npmjs.org; the API tier gets MEND_NPM_MIRROR_URL. Sessions install
     # through it unless the project names a registry or a login for registry.npmjs.org.
@@ -271,6 +274,8 @@ mirrors:
     # in the SEALANT chart: workspaces.docker.registryMirrors: [http://<release>-docker-mirror.<namespace>.svc:5000]
     enabled: false
     image: registry:3.1
+    # The guard's cap: over it the cache is cleared and fills again. Keep it below the claim.
+    maxSize: 40g
     # Layers are evicted this long after they were fetched. Manifests and tag links stay on the
     # claim until the cache is cleared (docs: operate/docker-mirror), and there is no size cap.
     ttl: 168h

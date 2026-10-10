@@ -38,14 +38,14 @@ selector below, narrow it to the RGW Pods: { app: rook-ceph-rgw, rook_object_sto
 
 Mirrors (ClusterIP only; the workspace NetworkPolicy of the SEALANT chart must let workspace Pods reach them):
 {{- if .Values.mirrors.npm.enabled }}
-  npm:    http://{{ .Release.Name }}-npm-mirror.{{ .Release.Namespace }}.svc:4873/ (MEND_NPM_MIRROR_URL), capped at {{ .Values.mirrors.npm.maxSize }}
+  npm:    http://{{ .Release.Name }}-npm-mirror.{{ .Release.Namespace }}.svc:4873/ (MEND_NPM_MIRROR_URL), capped at {{ .Values.mirrors.npm.maxSize }}, leaving {{ .Values.mirrors.minFree }} free
     networkPolicies.workspaceEgressAllow:
       - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: {{ .Release.Namespace }} } }
         podSelector: { matchLabels: { app.kubernetes.io/component: npm-mirror } }
         port: 4873
 {{- end }}
 {{- if .Values.mirrors.docker.enabled }}
-  docker: http://{{ .Release.Name }}-docker-mirror.{{ .Release.Namespace }}.svc:5000, layers evicted {{ .Values.mirrors.docker.ttl }} after each fetch{{ if .Values.mirrors.docker.upstreamCredentials.existingSecret }}, pulls as the login in {{ .Values.mirrors.docker.upstreamCredentials.existingSecret }} (declared Public Repo Read-only; every workspace can pull what it can read){{ else }}, pulls anonymously{{ end }}
+  docker: http://{{ .Release.Name }}-docker-mirror.{{ .Release.Namespace }}.svc:5000, capped at {{ .Values.mirrors.docker.maxSize }} (cleared over it, paused below {{ .Values.mirrors.minFree }} free), layers evicted {{ .Values.mirrors.docker.ttl }} after each fetch{{ if .Values.mirrors.docker.upstreamCredentials.existingSecret }}, pulls as the login in {{ .Values.mirrors.docker.upstreamCredentials.existingSecret }} (declared Public Repo Read-only; every workspace can pull what it can read){{ else }}, pulls anonymously{{ end }}
     In the SEALANT chart, point workspace Docker daemons at it:
       workspaces.docker.registryMirrors: [http://{{ .Release.Name }}-docker-mirror.{{ .Release.Namespace }}.svc:5000]
     networkPolicies.workspaceEgressAllow:
