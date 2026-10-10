@@ -43,11 +43,11 @@ default). The extension uses the first for everything except Remote-SSH, which u
 
 ## 2. Choose how the laptop reaches the mini
 
-| Path                          | URL the laptop uses               | Encrypted            | Setup flags                                                    |
-| ----------------------------- | --------------------------------- | -------------------- | -------------------------------------------------------------- |
-| Same LAN                      | `http://mac-mini.local:3105`      | no                   | `--bind 0.0.0.0 --url http://mac-mini.local:3105`              |
-| Tailnet (Tailscale)           | `http://mac-mini:3105` (MagicDNS) | yes, by the tailnet  | `--bind 0.0.0.0 --url http://mac-mini:3105`                    |
-| Public, through an https edge | `https://mend.example.com`        | yes, TLS at the edge | `--edge mend.example.com --ssh-bind 0.0.0.0 --exposure public` |
+| Path                          | URL the laptop uses               | Encrypted            | Setup flags                                                                            |
+| ----------------------------- | --------------------------------- | -------------------- | -------------------------------------------------------------------------------------- |
+| Same LAN                      | `http://mac-mini.local:3105`      | no                   | `--bind 0.0.0.0 --url http://mac-mini.local:3105`                                      |
+| Tailnet (Tailscale)           | `http://mac-mini:3105` (MagicDNS) | yes, by the tailnet  | `--bind 0.0.0.0 --url http://mac-mini:3105`                                            |
+| Public, through an https edge | `https://mend.example.com`        | yes, TLS at the edge | `--edge mend.example.com --ssh-bind 0.0.0.0 --exposure public --declare workspace-ssh` |
 
 The exposure you declare is `private` for the first two (the default, a network whose admission you
 control) and `public` for the third. Mend reports what it observes beside what you declared; it does
@@ -80,15 +80,33 @@ at login before Docker.
 
 `--edge <host>` runs Caddy on ports 80 and 443 and keeps Mend's own port on loopback. The edge
 carries HTTPS only, so workspace SSH needs its own publish: `--ssh-bind 0.0.0.0` (or a private
-address). Without it, Remote-SSH from the laptop cannot connect. The DNS name must point at the
-mini, and 80 and 443 must reach it from the internet (port forwarding on the router). A fresh
-install refuses `--edge`: set up on localhost, create the first account, then add the edge:
+address). Without it, Remote-SSH from the laptop cannot connect. SSH published beside a public edge
+is an item of the [exposure gate](/operate/exposure/), `workspace-ssh`: Mend cannot see who reaches
+the port, so with `--exposure public` setup asks you to state it with `--declare workspace-ssh`,
+once you have tried the port from each network that should not reach it. The gateway admits
+registered keys only, and a workspace only for its launcher.
+
+The DNS name must point at the mini, and 80 and 443 must reach it from the internet (port forwarding
+on the router). A fresh install refuses `--edge`: set up on localhost, create the first account,
+then add the edge:
 
 ```sh
 mend server setup                                   # http://localhost:3105, loopback only
 # open http://localhost:3105 on the mini and create the first account
-mend server setup --edge mend.example.com --ssh-bind 0.0.0.0 --exposure public
+mend server setup --edge mend.example.com --ssh-bind 0.0.0.0 --exposure public --declare workspace-ssh
 ```
+
+From a LAN or tailnet install (`--bind 0.0.0.0`), say both that the web port goes back to loopback
+and where the origin now is; setup keeps every flag you leave out, and refuses an edge beside a
+non-loopback `--bind`:
+
+```sh
+mend server setup --bind 127.0.0.1 --url https://mend.example.com --edge mend.example.com \
+  --ssh-bind 0.0.0.0 --exposure public --declare workspace-ssh
+```
+
+`--origin` replaces the saved list of alternate origins when you give it, so name every one you want
+to keep.
 
 ## 3. Install the server
 
@@ -138,8 +156,9 @@ Install Microsoft's **Remote - SSH** extension, then the Mend extension from its
 [VS Code extension](/clients/vscode/#install-from-source)). Run **Mend: Connect to server** and
 enter the URL exactly as setup was given it. Choose **Sign in with the browser**. VS Code shows a
 code; the browser opens `http://mac-mini:3105/authorize`, signed in as you. Approve when it shows
-the same code. The extension keeps its token in VS Code's secret storage (the macOS Keychain), and
-lists itself under Settings → Devices as `VS Code on <laptop>`.
+the same code. The extension keeps its token in VS Code's secret storage (encrypted in VS Code's own
+storage, with the key in the macOS Keychain), and lists itself under Settings → Devices as
+`VS Code on <laptop>`.
 
 If you already ran `mend login --url http://mac-mini:3105` on the laptop, the extension uses that
 sign-in and there is nothing to do.
@@ -208,12 +227,15 @@ an agent) or in **Mend: Open terminal**.
 its own Docker daemon (as Docker Desktop runs one in a VM), its ports forwarded from a tailnet
 address only, and the extension inside VS Code under a virtual display. On 2026-10-10 every step
 passed against `0.36.0-next.656`: the browser sign-in, a session created elsewhere reaching the view
-in about half a second, a Workbench session, the Remote-SSH block used by `ssh`, typing in the
-session's terminal over `/api/tty`, review showing the terminal's edit, and a real Remote-SSH window
-that installed VS Code's server in the workspace and read that file. A smoke run against an
-`https://` edge (`alpha.mend.run`) passed the sign-in, the event stream, a session, its terminal and
-review; its SSH port did not answer from outside (a timeout), so Remote-SSH cannot reach that server
-until its port is published, as the edge section above says.
+within a second, a Workbench session, the Remote-SSH block used by `ssh`, typing in the session's
+terminal over `/api/tty`, and review showing the terminal's edit. Then, in a real Remote-SSH window
+(VS Code's server installed in the workspace): editing a file, running a command in its integrated
+terminal (it ran as `root`), and opening a server on the workspace's loopback from this machine
+through the forwarded port; back in Mend, the session's own terminal read the edited file and the
+review listed it. A smoke run against an `https://` edge (`alpha.mend.run`) passed the sign-in, the
+event stream, a session, its terminal and review; its SSH port did not answer from outside (a
+timeout), so Remote-SSH cannot reach that server until its port is published, as the edge section
+above says.
 
 No Mac took part. Docker Desktop's and OrbStack's port forwarding, file sharing and firewall prompt,
 the Keychain, Apple silicon images, and sleep are described here from their documentation; the

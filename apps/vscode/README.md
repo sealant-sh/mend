@@ -35,8 +35,11 @@ inside the workspace — its image, its environment, and the session's harness h
 that holds the harness's state and conversations, captured with the workspace and restored when the
 session launches again). A `claude` or `codex` you run there is observed by Mend: the session shows
 running, the workspace stays leased, and the conversation is recorded and natively resumable from
-any device. A settled session offers a shell resume first — the shell keeps the fresh workspace
-alive while the editor is attached.
+any device. That holds where the workspace shares one home: in a per-person workspace (the 0.36
+default) the Remote-SSH login runs as root until Sealant's gateway takes a user for it, so an agent
+started there does not use your home and logins. Start agents from Mend, or in
+`Mend: Open terminal`. A settled session offers a shell resume first — the shell keeps the fresh
+workspace alive while the editor is attached.
 
 The first open offers "Set up workspace SSH?" Mend registers this client's key and adds a
 server-specific Host block at the start of `~/.ssh/config`, before wildcard defaults. Existing
@@ -70,7 +73,9 @@ reused), and a new integrated terminal runs the harness's own resume — `codex 
 `claude --resume <id>` (the most recent conversation when the id is not yet known). The shell keeps
 the same workspace, and with it the session's harness home, so that resume finds the conversation
 the agent was writing a moment ago, and Mend observes the new process under the same conversation.
-`Mend: Take over session in the editor` on a live session does the same without the question.
+`Mend: Take over session in the editor` on a live session does the same without the question. In a
+per-person workspace the resume runs as root and does not hold your conversation; use `mend attach`
+there.
 
 Cancelling the SSH setup or the confirmation leaves the agent running. The stop ends only the agent:
 the shell keeps the workspace open until you stop the session again.

@@ -116,8 +116,9 @@ On the **MacBook** (VS Code started from the Dock, not a terminal):
 6. `curl -s http://<mini>:3105/api/health`: `{"status":"ok",…}`. `nc -vz <mini> 2222`: succeeded.
 7. Install Remote - SSH and the Mend `.vsix`. **Mend: Connect to server** → `http://<mini>:3105` →
    **Sign in with the browser**. The browser opens `http://<mini>:3105/authorize` with the same code
-   as VS Code; approve. Expect `Signed in to Mend at http://<mini>:3105 as <you>`. Keychain Access
-   then lists a VS Code item for the extension's secret.
+   as VS Code; approve. Expect `Signed in to Mend at http://<mini>:3105 as <you>`. Quit VS Code and
+   open it again: the view is still signed in. (VS Code keeps the token encrypted in its own
+   storage, with the key in the macOS Keychain; there is no Keychain item for the token itself.)
 8. Start a session somewhere else (the web app on the mini, or the phone); it appears in the VS Code
    view within a second or two, with no refresh.
 9. **+** → **Workbench** → the project. Expect **Set up workspace SSH?** → **Set up**, then a new
@@ -135,9 +136,14 @@ On the **MacBook** (VS Code started from the Dock, not a terminal):
 13. Restart the mini. Without anyone logging in, Mend is not reachable (Docker Desktop runs per
     user). With automatic login and "Start Docker Desktop when you sign in" on, it comes back on its
     own.
-14. Optional, the edge: `mend server setup --edge <host> --ssh-bind 0.0.0.0 --exposure public` (DNS
-    and router forwarding for 80 and 443 in place), then repeat 7 to 10 against `https://<host>`.
-    Without `--ssh-bind`, setup says workspace SSH stays on loopback, and step 9 fails to connect.
+14. Optional, the edge (DNS and router forwarding for 80 and 443 in place). From the private install
+    above, the web port goes back to loopback, SSH stays published, and you state who reaches it:
+    `mend server setup --bind 127.0.0.1 --url https://<host> --edge <host> --ssh-bind 0.0.0.0 --exposure public --declare workspace-ssh`.
+    Without `--bind 127.0.0.1` setup refuses (`With an edge, --bind stays on loopback`); without
+    `--declare workspace-ssh` it refuses a public exposure with SSH published. Then
+    `mend operator exposure` lists `workspace-ssh · declared`, and steps 7 to 10 work against
+    `https://<host>`. Without `--ssh-bind`, setup says workspace SSH stays on loopback, and step 9
+    fails to connect.
 15. Clean up: stop the sessions, **Mend: Sign out** (the device disappears from Settings → Devices).
 
 ### Restart and upgrade
