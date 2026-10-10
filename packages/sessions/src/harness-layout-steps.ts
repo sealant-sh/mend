@@ -262,15 +262,24 @@ export const loginRefusal = (provider: LoginProvider, reason: LoginRefusalReason
   const name = PROVIDER_NAMES[provider];
   switch (reason) {
     case "connected-account-invalid":
-      return `Your ${name} login needs reconnecting. Reconnect ${name} to start a session here.`;
+      return `Your ${name} login needs reconnecting. Reconnect ${name} to start a session here. ${connectWay(provider)}`;
     case "connected-account-unsupported":
-      return `Your connected ${name} account cannot be used for this. Connect another to start a session here.`;
+      return `Your connected ${name} account cannot be used for this. Connect another to start a session here. ${connectWay(provider)}`;
     case "login-file-unusable":
       return `Your ${name} login could not be written into your home in this workspace: its file there is not a plain file of yours. Start a new worktree, or remove the file.`;
     case "connected-account-missing":
-      return `Connect ${name} to start a session here.`;
+      return `Connect ${name} to start a session here. ${connectWay(provider)}`;
   }
 };
+
+/**
+ * Where a person connects the account a refusal names: the web's settings or the CLI. pi's and
+ * opencode's ChatGPT logins are made from the person's Codex account (sealant#336).
+ */
+export const connectWay = (provider: LoginProvider): string =>
+  `Connect it in Settings → Connected accounts, or run mend connect ${
+    provider === "pi" || provider === "opencode" ? "codex" : provider
+  }.`;
 
 const CHATGPT_SKIP_WORDS: Readonly<Record<LoginRefusalReason, string>> = {
   "connected-account-missing": "no Codex account is connected",
@@ -349,6 +358,45 @@ export const loginsOfCreate = (
   (["claude", "codex", "github"] as const).filter(
     (provider) => credentials?.[provider] !== undefined && credentials[provider] !== false,
   );
+
+/**
+ * A person launch's create ladder (decision 5): only the attempts that name every provider its
+ * harness needs. The ladder steps down past a provider Core refused, and for a person launch it
+ * stops at the harness's own: below it the agent would start signed out, so the create's refusal
+ * of that account is the launch's (`createLoginRefusal`), as a join's POST refusal is.
+ */
+export const personCreateAttempts = (
+  attempts: ReadonlyArray<WorkspaceCredentialsOptions | undefined>,
+  harness: string,
+): ReadonlyArray<WorkspaceCredentialsOptions | undefined> => {
+  const required = loginNeedOf(harness).required;
+  return attempts.filter((credentials) =>
+    required.every((provider) => loginsOfCreate(credentials).includes(provider)),
+  );
+};
+
+/**
+ * What a person launch's create refused for the account its harness needs: the words a join's
+ * refusal uses (`loginRefusal`). Core names the account (sealant#335); a refusal without its code
+ * that still says a connected account was refused is the harness's own, since the ladder asked
+ * for it on every attempt. Null for any other failure, and for a harness that needs no login.
+ */
+export const createLoginRefusal = (
+  error: SealantPlatformError,
+  harness: string,
+): SealantPlatformError | null => {
+  const required = loginNeedOf(harness).required;
+  const refused = refusedAccountOf(error);
+  if (refused !== null) {
+    return required.includes(refused.provider)
+      ? loginRefused(loginRefusal(refused.provider, refused.reason))
+      : null;
+  }
+  const [provider] = required;
+  return provider !== undefined && error.message.toLowerCase().includes("connected account")
+    ? loginRefused(loginRefusal(provider, "connected-account-missing"))
+    : null;
+};
 
 /** What a fresh worktree's launch is predicted on (`freshLaunchLayout`). */
 export interface FreshLaunchInput {
@@ -482,8 +530,17 @@ export interface HarnessLayoutSteps {
     readonly workspace: Workspace;
     readonly stdout: string;
     readonly fallback: {
-      /** The launcher's create-time logins: what their home holds once the layout is person. */
+      /**
+       * The launcher's create-time logins, as the create that answered named them: what their
+       * home holds once the layout is person. Undefined when unknown (a standby claimed after a
+       * restart): then nothing is taken as held, and their first process asks for their logins.
+       */
       readonly credentials: WorkspaceCredentialsOptions | undefined;
+      /**
+       * What the create's ladder asked for first (`credentialAttempts[0]`): a provider asked for
+       * and not in `credentials` was refused by Core, absent until the home is released.
+       */
+      readonly asked?: WorkspaceCredentialsOptions | undefined;
       /**
        * What the launch starts (`loginNeedOf`): the providers the `/root` write must not leave
        * out. Null when unknown: then every provider the create named is needed.
@@ -1336,10 +1393,13 @@ export const makeHarnessLayoutSteps = (deps: {
       // for them while the executor lives, so it is never released (decision 5).
       const executor = executorOf(input.workspace.id, input.launchId);
       executor.launcher = layout.launcher.accountId;
+      const held = new Set(loginsOfCreate(input.fallback.credentials));
       executor.people.set(layout.launcher.accountId, {
         identity: layout.launcher,
-        held: new Set(loginsOfCreate(input.fallback.credentials)),
-        absent: new Set(),
+        held,
+        absent: new Set(
+          loginsOfCreate(input.fallback.asked).filter((provider) => !held.has(provider)),
+        ),
         unusable: new Set(),
       });
       const opencode = new Set(report.opencode);

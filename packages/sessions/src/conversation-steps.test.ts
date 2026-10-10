@@ -166,7 +166,9 @@ describe("the hand-over (docs/adr/0016, decision 6)", () => {
     expect(result._tag).toBe("Failure");
     if (result._tag === "Failure") {
       expect(result.failure.code).toBe("person_login_refused");
-      expect(result.failure.message).toBe("Connect Claude to start a session here.");
+      expect(result.failure.message).toBe(
+        "Connect Claude to start a session here. Connect it in Settings → Connected accounts, or run mend connect claude.",
+      );
     }
     // Bob's refused write was his own; Alice's login was released and never written for him.
     expect(world.calls.filter((call) => call.startsWith("post:"))).toEqual([

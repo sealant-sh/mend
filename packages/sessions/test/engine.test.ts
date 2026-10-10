@@ -25619,7 +25619,9 @@ describe("per-person harness homes (docs/adr/0016)", () => {
         tokenEvents,
       },
     );
-    expect(failure.message).toContain("Connect Claude to start a session here.");
+    expect(failure.message).toContain(
+      "Connect Claude to start a session here. Connect it in Settings → Connected accounts, or run mend connect claude.",
+    );
     expect(failure.openedForJoin).toBe(0);
     // The line says the start was refused, not that a resume failed.
     expect(failure.summary).toContain("launch refused · Connect Claude to start a session here.");
@@ -25629,6 +25631,65 @@ describe("per-person harness homes (docs/adr/0016)", () => {
       expect.stringContaining(`:${MARIA}`),
     ]);
     expect(calls).toEqual([`post:${MARIA}:/home/${JOINER}`]);
+  });
+
+  it("refuses a fresh worktree's first claude launch the way it refuses a join when the launcher has not connected Claude", async () => {
+    const calls: Array<string> = [];
+    const created: Array<CreateOptions> = [];
+    const opened: Array<PersonSessionOptions> = [];
+    const result = await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "claude",
+            label: null,
+            name: "fresh",
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+          const refused = yield* engine.launch(session.id, ["claude"]).pipe(Effect.flip);
+          return {
+            message: refused.message,
+            summary: world.sessions.get(session.id)?.summary ?? null,
+          };
+        }),
+      {
+        captured: makeMemoryCaptureStore(),
+        sealantLayer: sealantLaunchLayer(
+          created,
+          // Core refuses every create that names Claude: the launcher has none connected.
+          (credentials) => credentials?.claude === true,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          opened,
+          undefined,
+          [],
+          undefined,
+          { exec: answerLayout(LAYOUT_READY) },
+        ),
+        harnessLayout: { flag: "person", platform: personPlatform(calls, { person: true }) },
+      },
+    );
+    expect(result.message).toBe(
+      "Connect Claude to start a session here. Connect it in Settings → Connected accounts, or run mend connect claude.",
+    );
+    expect(result.summary).toContain(
+      "Connect Claude to start a session here. Connect it in Settings → Connected accounts, or run mend connect claude.",
+    );
+    // The ladder never stepped below Claude: no create without it, so no agent started signed out.
+    expect(created.map((options) => options.credentials)).toEqual([
+      { claude: true, github: true },
+      { claude: true },
+    ]);
+    expect(opened).toEqual([]);
+    // Nobody else's login was asked for on the launcher's behalf.
+    expect(calls).toEqual([]);
   });
 
   it("a person launch sends its capture owner map; a shared launch sends none (sealant#333)", async () => {
@@ -32032,7 +32093,8 @@ describe("shared steering through the engine (docs/adr/0016, Delivery 18)", () =
     });
     expect(run.outcome).toEqual({
       code: "person_login_refused",
-      message: "Your Claude login needs reconnecting. Reconnect Claude to steer this session.",
+      message:
+        "Your Claude login needs reconnecting. Reconnect Claude to steer this session. Connect it in Settings → Connected accounts, or run mend connect claude.",
     });
     expect(run.stops).toEqual([]);
     expect(run.attached).toHaveLength(1);
@@ -32078,8 +32140,8 @@ describe("shared steering through the engine (docs/adr/0016, Delivery 18)", () =
       },
     );
     expect(refusals).toEqual([
-      "Connect Claude to steer this session.",
-      "Connect Claude to steer this session.",
+      "Connect Claude to steer this session. Connect it in Settings → Connected accounts, or run mend connect claude.",
+      "Connect Claude to steer this session. Connect it in Settings → Connected accounts, or run mend connect claude.",
     ]);
     expect(calls).toEqual([`login:${MARIA}`, `login:${MARIA}`]);
   }, 30_000);
@@ -32249,7 +32311,9 @@ describe("shared steering through the engine (docs/adr/0016, Delivery 18)", () =
       author: MARIA,
       logins: () => "missing",
     });
-    expect(missing.refused).toBe("Connect Claude to steer this session.");
+    expect(missing.refused).toBe(
+      "Connect Claude to steer this session. Connect it in Settings → Connected accounts, or run mend connect claude.",
+    );
     expect(missing.submitted).toEqual([]);
     const invalid = await submitScenario({
       harness: "claude",
@@ -32257,7 +32321,7 @@ describe("shared steering through the engine (docs/adr/0016, Delivery 18)", () =
       logins: () => "invalid",
     });
     expect(invalid.refused).toBe(
-      "Your Claude login needs reconnecting. Reconnect Claude to steer this session.",
+      "Your Claude login needs reconnecting. Reconnect Claude to steer this session. Connect it in Settings → Connected accounts, or run mend connect claude.",
     );
     // Connected: queued, on the conversation, with one look at Core.
     const active = await submitScenario({ harness: "claude", author: MARIA });

@@ -1368,10 +1368,13 @@ describe("logins per person (docs/adr/0016, decision 5)", () => {
 
   it("refuses a join whose harness login is not connected or needs reconnecting, by Core's reason, and revokes the token minted for it", async () => {
     for (const [failure, words] of [
-      [notConnected("claude"), "Connect Claude to start a session here."],
+      [
+        notConnected("claude"),
+        "Connect Claude to start a session here. Connect it in Settings → Connected accounts, or run mend connect claude.",
+      ],
       [
         needsReconnect("claude"),
-        "Your Claude login needs reconnecting. Reconnect Claude to start a session here.",
+        "Your Claude login needs reconnecting. Reconnect Claude to start a session here. Connect it in Settings → Connected accounts, or run mend connect claude.",
       ],
       [
         skipped("claude", "login-file-unusable"),
@@ -1800,7 +1803,9 @@ describe("logins per person (docs/adr/0016, decision 5)", () => {
           }),
         { prepared: false },
       );
-      expect(result.refused).toBe("Connect Codex to start a session here.");
+      expect(result.refused).toBe(
+        "Connect Codex to start a session here. Connect it in Settings → Connected accounts, or run mend connect codex.",
+      );
       // Her running processes' token stays good.
       expect(result.log.filter((line) => line.startsWith("revoke:"))).toEqual([]);
       // Adopted at startup, she is known to be made: no home exec rewrites her token file.
