@@ -270,6 +270,7 @@ import {
 import { harnessWarmupArgv, isOutputEntry } from "./agent-start.ts";
 import {
   type CapturePlanNotice,
+  type CaptureSealNotice,
   type CaptureRouteError,
   LAUNCH_CLAIM_TTL_SECONDS,
   PLAN_BLOCKED_PREFIX,
@@ -2921,6 +2922,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           yield* sessions.setSummary(sessionId, next);
         });
 
+      /**
+       * The registrar's last answer about a `final_seal`, per worktree (`CaptureSealNotice`): what
+       * `sealRefusedOver` reads. Every register carrying one replaces it, so a refusal stands only
+       * until the next answer about that worktree's seal.
+       */
+      const sealAnswers = new Map<WorktreeId, CaptureSealNotice>();
+
       const captureApiFor = (sessionId: SessionId, launchId?: string): SessionCaptureApi => {
         /**
          * `named`: the worktree the request names (`worktree_id`), when it names one. A claimed
@@ -2998,6 +3006,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               // Drained, kept or recovered: its uploads are what saves it (e2e run 5).
               unmetered: session.captureDrain !== null,
               planNotice: (notice) => noteCapturePlan(sessionId, notice),
+              sealNotice: (notice) =>
+                Effect.sync(() => {
+                  sealAnswers.set(session.worktreeId, notice);
+                }),
               footprintBytes: yield* footprintFor(sessionId, session.projectId),
             });
             return yield* call(api);
@@ -3162,36 +3174,36 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * executor's owner, whatever the caller's principal.
        */
       /**
-       * A final flush waiting on its seal (`sealing`) over the head capture whose git section
-       * Mend's own verification failed reads `CAPTURE_SEAL_UNRESTORABLE`: the registrar refuses
-       * that seal as unrestorable on every ask (git's word on the capture's content, never a host
-       * fault), so the drain reads `not saved` at once, says why and keeps the workspace, instead
-       * of asking for the whole stall window (verify proof run 9, 2026-10-10: a shallow project's
-       * Stop read `saving` for 5 minutes, then `final seal not confirmed`). Any other answer is
-       * the executor's as given.
+       * A final flush waiting on its seal (`sealing`) reads `CAPTURE_SEAL_UNRESTORABLE` when the
+       * registrar's last answer refused the seal of that very capture (its `n`, its epoch) because
+       * its git section failed verification on that ask — git's word on the capture's content,
+       * which no wait changes. The drain then reads `not saved` at once, says why and keeps the
+       * workspace, instead of asking for the whole stall window (verify proof run 9, 2026-10-10: a
+       * shallow project's Stop read `saving` for 5 minutes, then `final seal not confirmed`). A
+       * seal withheld because a check could not finish keeps the ordinary wait, whatever the
+       * capture's row recorded before (Astra review of mend#654). Any other answer is the
+       * executor's as given.
        */
-      const sealRefusedOver = Effect.fn("SessionEngine.sealRefusedOver")(function* (
+      const sealRefusedOver = (
         worktreeId: WorktreeId,
         reading: CaptureReading,
         kind: CaptureFlushKind,
-      ) {
+      ): CaptureReading => {
         if (
-          capture === null ||
           kind !== "final" ||
           reading.complete !== false ||
-          reading.incompleteReason !== "sealing" ||
-          reading.headN === null
+          reading.incompleteReason !== "sealing"
         ) {
           return reading;
         }
-        const head = (yield* capture.repo.headOf(worktreeId))?.head ?? null;
-        return head !== null &&
-          head.n === reading.headN &&
-          (reading.epoch ?? head.epoch) === head.epoch &&
-          head.gitFsck === "failed"
+        const answer = sealAnswers.get(worktreeId);
+        return answer !== undefined &&
+          answer.gitSectionFailed &&
+          answer.n === reading.headN &&
+          (reading.epoch ?? answer.epoch) === answer.epoch
           ? { ...reading, incompleteReason: CAPTURE_SEAL_UNRESTORABLE }
           : reading;
-      });
+      };
 
       const observeCaptureFlush = (
         session: Session,
@@ -3248,7 +3260,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           return null;
         }
         const report = outcome.success.value;
-        const reading = yield* sealRefusedOver(session.worktreeId, readCaptureReport(report), kind);
+        const reading = sealRefusedOver(session.worktreeId, readCaptureReport(report), kind);
         // Published before anything else is done with it: a log is never what decides whether a
         // received answer becomes the executor's evidence.
         yield* recordReading(session, workspace.id, reading, kind, fence);

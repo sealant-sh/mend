@@ -56,6 +56,16 @@ Mend doesn't support SHA-256 repositories yet.
 
 A project adopted before this check is refused the same way when a session starts on it.
 
+Grafts (`info/grafts`) cut history the same way while git calls the repository complete. A clone
+never copies them, so only a project whose repository was edited on the Mend host has them. A
+session start on one is refused:
+
+```text
+Mend doesn't support repositories with grafts (`info/grafts`) yet. Remove the grafts, or convert them with `git replace --convert-graft-file`.
+```
+
+Replace refs (`git replace`) are not refused: Mend saves the real history under them.
+
 Converting a session's repository to SHA-256 while the session runs is not supported. Its later
 saves never seal, so a Stop never finishes: the executor is kept and the session stays `stopping`.
 Discard unsaved and stop is the only way to end it, and it discards what the executor holds.

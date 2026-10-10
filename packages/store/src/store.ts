@@ -53,30 +53,63 @@ export const referenceDirectory = (organizationId: string, referenceId: string):
 export const SHALLOW_REPOSITORY_REASON =
   "Mend doesn't support shallow repositories yet. Make the repository complete where it is hosted (`git fetch --unshallow`), then adopt it again.";
 
+/** What Mend says of a repository with grafts, at adoption and at a session's start. */
+export const GRAFTED_REPOSITORY_REASON =
+  "Mend doesn't support repositories with grafts (`info/grafts`) yet. Remove the grafts, or convert them with `git replace --convert-graft-file`.";
+
+/**
+ * Whether the grafts file at `file` names any commit: a line that is neither blank nor `#`. One
+ * that is absent or cannot be read names none here; git reading it fails on its own.
+ */
+const graftsNameCommits = (file: string): boolean => {
+  try {
+    return fs
+      .readFileSync(file, "utf8")
+      .split("\n")
+      .some((line) => line.trim() !== "" && !line.trimStart().startsWith("#"));
+  } catch {
+    return false;
+  }
+};
+
 /**
  * Why Mend refuses the repository at `gitDir`, or null (owner, 2026-09-28; e2e8 (d)): SHA-256
- * objects, or shallow history. A SHA-256 session does not survive its capture and restore end to
- * end yet. A shallow one cannot be saved: the base pack Mend makes stops at the shallow boundary,
- * and the closure walk that verifies a capture (`CaptureGitVerifier`) reads the boundary commits'
- * parents, which nothing holds, so every save's git section fails and its final seal is refused
- * (verify proof run 9, 2026-10-10). The store is a full clone of its source, so a shallow store
- * means a shallow source: nothing fetched from it deepens the history. Either project is refused
- * when it is adopted and when a session starts on it, rather than started and left unable to save.
- * Read through git itself (`rev-parse`, one run). The reason is the sentence a person reads.
+ * objects, shallow history, or grafts. A SHA-256 session does not survive its capture and restore
+ * end to end yet. A shallow one cannot be saved: the base pack Mend makes stops at the shallow
+ * boundary, and the closure walk that verifies a capture (`CaptureGitVerifier`) reads the boundary
+ * commits' parents, which nothing holds, so every save's git section fails and its final seal is
+ * refused (verify proof run 9, 2026-10-10). The store is a full clone of its source, so a shallow
+ * store means a shallow source: nothing fetched from it deepens the history. Grafts
+ * (`info/grafts`, which a clone never copies, so only a store edited on the host has them) cut the
+ * base pack the same way while git calls the repository complete (Astra review of mend#654).
+ * Replace refs do not: `pack-objects` ignores them, and the pack holds the real closure. Such a
+ * project is refused when it is adopted and when a session starts on it, rather than started and
+ * left unable to save. Read through git itself (`rev-parse`, one run). The reason is the sentence
+ * a person reads.
  */
 export const unsupportedRepositoryReason = (
   gitDir: string,
 ): Effect.Effect<string | null, GitError> =>
-  Effect.map(
-    git(["rev-parse", "--show-object-format", "--is-shallow-repository"], gitDir),
+  Effect.flatMap(
+    git(
+      ["rev-parse", "--show-object-format", "--is-shallow-repository", "--git-path", "info/grafts"],
+      gitDir,
+    ),
     (out) => {
-      const [objectFormat = "", shallow = ""] = out.trim().split("\n");
+      const [objectFormat = "", shallow = "", grafts = ""] = out.trim().split("\n");
       if (objectFormat !== "sha1") {
-        return objectFormat === "sha256"
-          ? "Mend doesn't support SHA-256 repositories yet."
-          : `Mend doesn't support ${objectFormat} repositories yet.`;
+        return Effect.succeed(
+          objectFormat === "sha256"
+            ? "Mend doesn't support SHA-256 repositories yet."
+            : `Mend doesn't support ${objectFormat} repositories yet.`,
+        );
       }
-      return shallow.trim() === "true" ? SHALLOW_REPOSITORY_REASON : null;
+      if (shallow.trim() === "true") return Effect.succeed(SHALLOW_REPOSITORY_REASON);
+      return Effect.sync(() =>
+        grafts.trim() !== "" && graftsNameCommits(path.resolve(gitDir, grafts.trim()))
+          ? GRAFTED_REPOSITORY_REASON
+          : null,
+      );
     },
   );
 
