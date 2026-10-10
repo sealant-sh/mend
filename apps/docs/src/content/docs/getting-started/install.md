@@ -56,7 +56,12 @@ the answer in brackets.
   public internet with HTTPS.
 - For **Tailscale**, setup reads `tailscale status` and offers this machine's MagicDNS name and
   tailnet address. When Tailscale Serve already forwards an https name to Mend's port, it offers
-  that name as a browser origin too. Setup never changes Tailscale's own settings.
+  that name as a browser origin too. A name with Funnel on is public: setup says so, offers it with
+  No as the answer, and not at all on a fresh install. Setup never changes Tailscale's own settings.
+- For a **private network**, setup offers only this machine's private addresses: the tailnet, a LAN
+  or VPN address, carrier-grade NAT space. A public address is never one of them. When the machine
+  has no private address, setup says so and installs on this machine; reach it through a tunnel or
+  Tailscale, or choose public HTTPS.
 - For **public HTTPS**, it asks for your domain, then says where the domain resolves from this
   machine and whether something already listens on ports 80 and 443.
 - For a private network or public HTTPS, it asks whether VS Code Remote-SSH should reach sessions

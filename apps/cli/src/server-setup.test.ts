@@ -984,6 +984,32 @@ describe("mend server setup", () => {
     expect(env.get("MEND_ALLOWED_ORIGINS")).toBe('["https://mend.example.test"]');
   });
 
+  it("a public address on an existing install is said as observed beside the declared exposure, and nothing on a private one", async () => {
+    const configDir = temporaryDirectory("public-bind");
+    const first = makeRuntime({ configDir });
+    expect(
+      await serverCommand(
+        ["setup", "--bind", "10.0.0.4", "--url", "http://10.0.0.4:3105"],
+        first.runtime,
+      ),
+    ).toEqual({ _tag: "ok" });
+    expect(first.lines.some((line) => line.includes("a public address"))).toBe(false);
+
+    const second = makeRuntime({ configDir, daemon: first.daemon });
+    expect(
+      await serverCommand(
+        ["setup", "--bind", "203.0.113.5", "--url", "http://203.0.113.5:3105"],
+        second.runtime,
+      ),
+    ).toEqual({ _tag: "ok" });
+    expect(second.lines).toContain(
+      "Observed: Mend's port is published on 203.0.113.5:3105, a public address; the exposure is declared private (unset), so the public exposure gate is not evaluated.",
+    );
+    expect(second.lines).toContain(
+      "Observed: workspace SSH is published on 203.0.113.5:2222, a public address; the exposure is declared private (unset).",
+    );
+  });
+
   it("moves a saved non-local URL to the port --port publishes, and keeps one on another port", async () => {
     const configDir = temporaryDirectory("port-move");
     expect(
@@ -1623,6 +1649,14 @@ describe("mend server setup", () => {
     [
       ["--exposure", "loopback", "--bind", "0.0.0.0", "--url", "http://10.0.0.4:3105"],
       "contradicts a non-loopback --bind",
+    ],
+    [
+      ["--bind", "203.0.113.5", "--url", "http://203.0.113.5:3105", "--exposure", "private"],
+      "A fresh install is not published on 203.0.113.5, a public address, as private",
+    ],
+    [
+      ["--bind", "2a01:4f8::1", "--url", "http://[2a01:4f8::1]:3105"],
+      "A fresh install is not published on 2a01:4f8::1, a public address, as private",
     ],
     [["--exposure", "sideways"], "--exposure must be one of"],
     [["--tenancy", "both"], "--tenancy must be one of"],

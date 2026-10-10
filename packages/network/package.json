@@ -5,7 +5,8 @@
   "description": "Mend's explicit public URL and browser-origin configuration",
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./address-kind": "./src/address-kind.ts"
   },
   "scripts": {
     "lint": "oxlint . --no-error-on-unmatched-pattern",

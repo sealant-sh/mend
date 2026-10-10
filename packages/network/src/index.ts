@@ -1,3 +1,4 @@
+export * from "./address-kind.ts";
 export * from "./client-address.ts";
 export * from "./public-network.ts";
 export * from "./redact.ts";

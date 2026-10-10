@@ -171,6 +171,169 @@ describe("the guided server setup", () => {
     expect(flagsOf(outcome)).toEqual(["--exposure", "loopback"]);
   });
 
+  it("never offers a public address as a private network: a public-only VPS installs on this machine", async () => {
+    const vps = observe({
+      tailscale: async () => null,
+      localAddresses: () => ["203.0.113.5", "2a01:4f8::1"],
+    });
+    // reach: network · (no network to choose) · T3 · mirrors · tenancy · apply
+    const { outcome, transcript } = await converse(["2", "", "", "", ""], null, vps);
+    expect(transcript).toContain(
+      "Observed: 203.0.113.5 is a public address. Published there, Mend answers the internet, not a network you control who joins, so setup does not offer it here.",
+    );
+    expect(transcript).toContain("This machine has no address on a private network");
+    expect(transcript).toContain("ssh -L 3105:127.0.0.1:3105 <this machine>");
+    expect(transcript).toContain("or choose the public internet, with HTTPS");
+    expect(transcript).toContain("Setup installs Mend on this machine now.");
+    expect(transcript).not.toContain("Which network do people reach it on?");
+    expect(transcript).not.toContain("0.0.0.0");
+    expect(flagsOf(outcome)).toEqual(["--exposure", "loopback"]);
+  });
+
+  it("pre-selects the private address beside a public one, and does not offer every address", async () => {
+    const mixed = observe({
+      tailscale: async () => null,
+      localAddresses: () => ["203.0.113.5", "10.0.0.4"],
+    });
+    // reach: network · which network: enter · URL: enter · SSH: enter · T3 · mirrors · tenancy ·
+    // apply
+    const { outcome, transcript } = await converse(["2", "", "", "", "", "", "", ""], null, mixed);
+    expect(transcript).toContain("  1. on this network address, 10.0.0.4");
+    expect(transcript).toContain("  1 [1]: ");
+    expect(transcript).not.toContain("on this network address, 203.0.113.5");
+    expect(transcript).not.toContain("on every address of this machine");
+    // Every address for SSH is said as what it includes.
+    expect(transcript).toContain(
+      "SSH on 0.0.0.0:2222, every address, and that includes 203.0.113.5, which the internet reaches",
+    );
+    expect(flagsOf(outcome)).toEqual([
+      "--bind",
+      "10.0.0.4",
+      "--url",
+      "http://10.0.0.4:3105",
+      "--exposure",
+      "private",
+    ]);
+  });
+
+  it("offers carrier-grade NAT space and the tailnet, and pre-selects the tailnet over a public address", async () => {
+    const cgnat = observe({
+      tailscale: async () => null,
+      localAddresses: () => ["203.0.113.5", "100.70.1.2"],
+    });
+    const carrier = await converse(["2", "", "", "", "", "", "", ""], null, cgnat);
+    expect(flagsOf(carrier.outcome)).toEqual([
+      "--bind",
+      "100.70.1.2",
+      "--url",
+      "http://100.70.1.2:3105",
+      "--exposure",
+      "private",
+    ]);
+    // The default observations hold a public address, a LAN address and the tailnet.
+    const tailnet = await converse(["2", "", "", "", "n", "", "", "", ""], null);
+    expect(tailnet.transcript).toContain("  1. over Tailscale, as mend-box.tailc79e49.ts.net");
+    expect(tailnet.transcript).toContain("  2. on this network address, 192.168.1.20");
+    expect(tailnet.transcript).not.toContain("on this network address, 203.0.113.7");
+    expect(flagsOf(tailnet.outcome)).toEqual([
+      "--bind",
+      "100.94.101.28",
+      "--url",
+      "http://mend-box.tailc79e49.ts.net:3105",
+      "--exposure",
+      "private",
+    ]);
+  });
+
+  it("re-run on a public address: no private network to move to, so how it is reached stays as it is", async () => {
+    const { tenancy: _t, declared: _d, edgeHost: _e, sshBind: _s, ...rest } = BOX;
+    const exposed: ServerConfig = {
+      ...rest,
+      bind: "203.0.113.5",
+      appUrl: "http://203.0.113.5:3105",
+      allowedOrigins: [],
+      exposure: "private",
+    };
+    // change · reach · network · nothing else · apply
+    const { outcome, transcript } = await converse(
+      ["2", "1", "2", "", ""],
+      exposed,
+      observe({ tailscale: async () => null, localAddresses: () => ["203.0.113.5"] }),
+    );
+    expect(transcript).not.toContain("where it listens now, 203.0.113.5");
+    expect(transcript).toContain("How Mend is reached stays as it is.");
+    expect(flagsOf(outcome)).toEqual([]);
+  });
+
+  it("a Funnel route is public: No by default under this machine, and not offered on a fresh install", async () => {
+    const funnel = observe({
+      tailscale: async () =>
+        tailscaleFactsOf(
+          TAILSCALE_STATUS,
+          JSON.stringify({
+            Web: {
+              "mend-box.tailc79e49.ts.net:443": {
+                Handlers: { "/": { Proxy: "http://127.0.0.1:3105" } },
+              },
+            },
+            AllowFunnel: { "mend-box.tailc79e49.ts.net:443": true },
+          }),
+        ),
+    });
+    const { tenancy: _t, declared: _d, edgeHost: _e, sshBind: _s, ...rest } = BOX;
+    const machine: ServerConfig = {
+      ...rest,
+      bind: "127.0.0.1",
+      appUrl: "http://localhost:3105",
+      allowedOrigins: [],
+      exposure: "loopback",
+    };
+    // every question · reach: enter (this machine) · Funnel origin: enter · T3 · mirrors ·
+    // tenancy · apply
+    const rerun = await converse(["3", "", "", "", "", "", ""], machine, funnel);
+    expect(rerun.transcript).toContain(
+      "and Tailscale's settings have Funnel on for it: it is public, reached from the internet as well as your tailnet.",
+    );
+    expect(rerun.transcript).toContain("while the exposure is declared loopback");
+    expect(rerun.transcript).toContain(
+      "Allow https://mend-box.tailc79e49.ts.net, a public origin, as a browser origin? [y/N] ",
+    );
+    expect(flagsOf(rerun.outcome)).toEqual([]);
+
+    // Fresh: reach: enter · T3 · mirrors · tenancy · apply. No question about the Funnel origin.
+    const fresh = await converse(["", "", "", "", ""], null, funnel);
+    expect(fresh.transcript).toContain("Setup does not add a public origin to a fresh install");
+    expect(fresh.transcript).not.toContain("as a browser origin?");
+    expect(flagsOf(fresh.outcome)).toEqual(["--exposure", "loopback"]);
+  });
+
+  it("moving the web on a rerun keeps SSH where it was published by default (review B-N1)", async () => {
+    const { tenancy: _t, declared: _d, edgeHost: _e, sshBind: _s, ...rest } = BOX;
+    const tailnet: ServerConfig = {
+      ...rest,
+      bind: "100.94.101.28",
+      appUrl: "http://mend-box.tailc79e49.ts.net:3105",
+      allowedOrigins: [],
+      exposure: "private",
+    };
+    // change · reach · network · every address (3) · a URL · SSH: enter · Serve origin: no ·
+    // nothing else · apply
+    const { outcome, transcript } = await converse(
+      ["2", "1", "2", "3", "http://mend.lan:3105", "", "n", "", ""],
+      tailnet,
+      observe({ localAddresses: () => ["192.168.1.20", "100.94.101.28"] }),
+    );
+    expect(transcript).toContain("  1-3 [2]: ");
+    expect(flagsOf(outcome)).toEqual([
+      "--bind",
+      "0.0.0.0",
+      "--url",
+      "http://mend.lan:3105",
+      "--ssh-bind",
+      "100.94.101.28",
+    ]);
+  });
+
   it("re-running shows the current setup and changes one thing, keeping every declaration", async () => {
     // change something · the T3 Code gateway (3rd: reach, ssh, t3) · yes · nothing else · apply
     const { outcome, transcript } = await converse(["2", "3", "y", "", ""], BOX);

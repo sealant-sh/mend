@@ -88,6 +88,7 @@ import {
 import {
   changeLines,
   type GuideObservations,
+  isPublicAddress,
   runGuide,
   type SetupSettings,
   tailscaleFactsOf,
@@ -810,6 +811,37 @@ const checkExposurePair = (bind: string, appUrl: string, requireExplicitUrl: boo
       "--bind and --url must both describe localhost exposure or both describe non-local exposure.",
     );
   }
+};
+
+/** Which of Mend's own ports a config publishes on a public address, outside the edge's posture. */
+const publicPublications = (
+  config: Pick<ServerConfig, "bind" | "sshBind" | "edgeHost" | "exposure">,
+): { readonly web: boolean; readonly ssh: boolean } => {
+  if (config.exposure === "public") return { web: false, ssh: false };
+  return {
+    web: config.edgeHost === undefined && isPublicAddress(config.bind),
+    ssh: isPublicAddress(config.sshBind ?? config.bind),
+  };
+};
+
+/** What was observed beside what was declared (ADR 0004), one line per public publication. */
+const publicPublicationLines = (
+  config: Pick<ServerConfig, "bind" | "sshBind" | "appPort" | "sshPort" | "exposure">,
+  published: { readonly web: boolean; readonly ssh: boolean },
+): ReadonlyArray<string> => {
+  const declared = config.exposure ?? "private (unset)";
+  return [
+    ...(published.web
+      ? [
+          `Observed: Mend's port is published on ${publishedAddress(config.bind, config.appPort)}, a public address; the exposure is declared ${declared}, so the public exposure gate is not evaluated.`,
+        ]
+      : []),
+    ...(published.ssh
+      ? [
+          `Observed: workspace SSH is published on ${publishedAddress(config.sshBind ?? config.bind, config.sshPort)}, a public address; the exposure is declared ${declared}.`,
+        ]
+      : []),
+  ];
 };
 
 /**
@@ -2725,6 +2757,16 @@ const setupServer = async (
       for (const line of changes) runtime.writeLine(line);
     }
   }
+  // Published on a public address without the edge, the server answers the internet while the
+  // exposure reads private: a fresh install's registration would be open to whoever reaches it
+  // first, so that is refused; an existing one is told what was observed beside what was declared.
+  const publicBinds = publicPublications(config);
+  if (existing === null && publicBinds.web) {
+    throw setupError(
+      `A fresh install is not published on ${config.bind}, a public address, as ${config.exposure ?? "private"}: until the first account exists, registration is open to whoever reaches it first, and the internet reaches that address. Run mend server setup on this machine first and create the first account at http://localhost:${config.appPort}. Then publish it on a private address (a tailnet, a LAN or a VPN), or choose the public internet with --edge <host> --exposure public.`,
+    );
+  }
+  for (const line of publicPublicationLines(config, publicBinds)) runtime.writeLine(line);
   // Until the first account exists, registration is open to whoever arrives first, and the
   // server refuses `public` without an operator (ADR 0004, decision 16). Said before anything
   // is written, with the order that works.
