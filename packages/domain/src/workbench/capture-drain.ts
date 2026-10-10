@@ -758,6 +758,16 @@ export const captureStatusLine = (facts: SessionCaptureFacts): string | null => 
 };
 
 /**
+ * Whether "Discard unsaved and stop" is offered: the exit from a drain that is stuck, `not saved ·
+ * … · workspace kept` or a step past its bound. A drain still moving is saving, and a discard
+ * asked of it waits for the flush under way, which may save everything first (RC
+ * 0.36.0-next.761: offered while saving, it settled 82 s later with every file saved).
+ */
+export const captureDiscardOffered = (facts: SessionCaptureFacts): boolean =>
+  facts.captureDrain !== null &&
+  (facts.captureNotSavedAt !== null || (facts.captureOverdueStep ?? null) !== null);
+
+/**
  * What Mend knows when an executor ended without Mend asking (a `docker stop`, a SIGKILL, a lost
  * machine) and the platform confirmed it gone.
  */

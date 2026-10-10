@@ -5323,6 +5323,46 @@ describe("SessionEngine", () => {
     );
   });
 
+  it("runs `bash -c` as bash, its argv untouched, in a zsh image (RC 0.36.0-next.761)", async () => {
+    const created: CreateOptions[] = [];
+    const spawned: ReadonlyArray<string>[] = [];
+    // bash-only builtins: zsh answers "command not found" for both.
+    const argv = ["bash", "-c", "echo $0; shopt -s extglob && shopt -q extglob && echo ok"];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "run",
+            label: null,
+            name: null,
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+
+          // Only the bare `["bash"]` sentinel is the login shell; a bash with arguments is the
+          // person's own program.
+          yield* engine.launch(session.id, argv);
+          const ran = spawned.at(-1);
+          expect(ran).toEqual(argv);
+          const [program, ...args] = ran ?? [];
+          expect(execFileSync(program ?? "", args, { encoding: "utf8" })).toBe("bash\nok\n");
+        }),
+      {
+        sealantLayer: sealantLaunchLayer(created, undefined, undefined, spawned),
+        workspaceImage: {
+          mode: "family",
+          os: "arch",
+          packages: [],
+          shell: "zsh",
+          services: { docker: false },
+        },
+      },
+    );
+  });
+
   it("keeps the GitHub token when the harness account is unavailable", async () => {
     const created: CreateOptions[] = [];
     await withEngine(
@@ -14228,6 +14268,64 @@ describe("SessionEngine capture drain (no loss of work product)", () => {
   });
 
   it(
+    "a discard asked while the save is still moving says nothing was discarded once that save ends the workspace (RC 0.36.0-next.761)",
+    { timeout: 20_000 },
+    async () => {
+      // RC 2 client pass: the discard waited 82 s for the drain's final flush, which saved every
+      // file and ended the workspace, and the session line then read `unsaved work discarded`.
+      const created: Array<CreateOptions> = [];
+      const events: string[] = [];
+      const kinds: CaptureFlushKind[] = [];
+      const memory = makeMemoryCaptureStore();
+      const finalAsked = await Effect.runPromise(Deferred.make<void>());
+      const finishSave = await Effect.runPromise(Deferred.make<void>());
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            yield* engine.launch(session.id, ["codex"]);
+            yield* engine.stop(session.id);
+            yield* Deferred.await(finalAsked);
+            const discarding = yield* engine
+              .discardUnsavedAndStop(session.id, "Ada Lovelace")
+              .pipe(Effect.forkChild({ startImmediately: true }));
+            yield* Effect.sleep(Duration.millis(100));
+            yield* Deferred.succeed(finishSave, undefined);
+            const result = yield* Fiber.join(discarding);
+            expect(result.discardedAt).toBeNull();
+            expect(events).toContain("workspace-1");
+            yield* until(
+              () => world.sessions.get(session.id)?.settledAt != null,
+              "the session to settle",
+            );
+            const settled = world.sessions.get(session.id);
+            expect(settled?.captureDrain).toBeNull();
+            expect(settled?.captureDiscardedAt ?? null).toBeNull();
+            expect(settled === undefined ? null : captureStatusLine(settled)).toBeNull();
+            expect(settled?.status).toBe("stopped");
+          }),
+        {
+          captured: memory,
+          sealantLayer: lifecycleLayer(created, {
+            events,
+            captureOps: {
+              flushed: events,
+              flushKinds: kinds,
+              flush: () =>
+                kinds.at(-1) === "final"
+                  ? Deferred.succeed(finalAsked, undefined).pipe(
+                      Effect.andThen(Deferred.await(finishSave)),
+                      Effect.as(flushReport(0, 1, { headN: 1 })),
+                    )
+                  : Effect.succeed(flushReport(0, 1, { headN: 1 })),
+            },
+          }),
+        },
+      );
+    },
+  );
+
+  it(
     "a drain that stops moving keeps the workspace and reads `not saved · N pending · workspace kept`; only the owner's discard ends it",
     { timeout: 20_000 },
     async () => {
@@ -15919,6 +16017,73 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
                 Effect.sync(() => {
                   if (created.length > 1) firstEnded = false;
                 }),
+            },
+          }),
+        },
+      );
+    },
+  );
+
+  it(
+    "a join under way keeps the holder's Stop from flushing the executor shut under it (RC 0.36.0-next.761)",
+    { timeout: 20_000 },
+    async () => {
+      // RC 2 client pass: back-to-back `mend run` in a worktree with 1.5 GB untracked. The first
+      // run's settle tail harvested for seconds before its drain began; the second run looked at
+      // the holder meanwhile, read it live and joined, and the drain then found no process in the
+      // executor, sent its final flush, and the join's PTY was refused ("the executor is ending: a
+      // final capture flush closed admission"), the second session recorded failed.
+      const created: Array<CreateOptions> = [];
+      const events: string[] = [];
+      const kinds: CaptureFlushKind[] = [];
+      const memory = makeMemoryCaptureStore();
+      const joinOpening = await Effect.runPromise(Deferred.make<void>());
+      const releaseJoin = await Effect.runPromise(Deferred.make<void>());
+      let opens = 0;
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            yield* engine.launch(session.id, ["codex"]);
+            const second = yield* engine.provisionSessionIn(session.worktreeId, {
+              harness: "run",
+              label: null,
+              ownerUserId: "user-fixture",
+            });
+            const launching = yield* engine
+              .launch(second.id, ["bash", "-c", "true"])
+              .pipe(Effect.forkChild({ startImmediately: true }));
+            // The join looked at its holder and is opening its process there.
+            yield* Deferred.await(joinOpening);
+            yield* engine.stop(session.id);
+            yield* until(
+              () => world.sessions.get(session.id)?.status === "stopped",
+              "the first session, stopped",
+            );
+            yield* Effect.sleep(Duration.millis(200));
+            // Its Stop found the join in the executor: nothing flushed it shut, nothing stopped it.
+            expect(kinds).not.toContain("final");
+            expect(events).not.toContain("workspace-1");
+            yield* Deferred.succeed(releaseJoin, undefined);
+            const launched = yield* Fiber.join(launching);
+            expect(launched.status).toBe("running");
+            expect(created).toHaveLength(1);
+          }),
+        {
+          captured: memory,
+          sealantLayer: lifecycleLayer(created, {
+            events,
+            captureOps: {
+              flushed: events,
+              flushKinds: kinds,
+              aroundOpen: () => {
+                opens += 1;
+                return opens === 1
+                  ? Effect.void
+                  : Deferred.succeed(joinOpening, undefined).pipe(
+                      Effect.andThen(Deferred.await(releaseJoin)),
+                    );
+              },
             },
           }),
         },
@@ -18078,9 +18243,10 @@ describe("SessionEngine lifecycle after a final flush (e2e run 4, 2026-09-27)", 
             );
             const askedAt = Date.now();
             const result = yield* engine.discardUnsavedAndStop(session.id, "Ada Lovelace");
-            const { facts } = result;
+            const { facts, discardedAt } = result;
+            if (discardedAt === null) return expect.fail("the discard discarded nothing");
             expect(facts.requestedAt.getTime()).toBeGreaterThanOrEqual(askedAt);
-            expect(result.discardedAt.getTime() - facts.requestedAt.getTime()).toBeGreaterThan(250);
+            expect(discardedAt.getTime() - facts.requestedAt.getTime()).toBeGreaterThan(250);
             expect(facts.lastSaved?.n).toBe(saved.manifest.n);
             expect(facts.failingSince?.getTime()).toBe(failingSince);
             expect(facts.failingError).toBe("EACCES: permission denied");
@@ -18088,7 +18254,7 @@ describe("SessionEngine lifecycle after a final flush (e2e run 4, 2026-09-27)", 
             expect(facts.queue?.pending).toBe(0);
             expect(facts.workspaceId).toBe("workspace-1");
             // What the audit keeps: no `0 pending` for edits a failing snap never staged.
-            const data = captureDiscardAuditData(facts, result.discardedAt);
+            const data = captureDiscardAuditData(facts, discardedAt);
             expect(data["pending"]).toBeNull();
             expect(data["lastSavedN"]).toBe(saved.manifest.n);
             expect(data["finalCompleted"]).toBe(false);
