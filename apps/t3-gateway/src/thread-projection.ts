@@ -1,5 +1,8 @@
 import {
+  CheckpointRef,
+  CheckpointScopeId,
   MessageId,
+  NodeId,
   ProviderDriverKind,
   RunId,
   RuntimeRequestId,
@@ -7,6 +10,8 @@ import {
   type ProviderThreadId,
   type ThreadId,
   type ChatAttachment,
+  type OrchestrationV2Checkpoint,
+  type OrchestrationV2CheckpointScope,
   type OrchestrationV2ConversationMessage,
   type OrchestrationV2ProjectedTurnItem,
   type OrchestrationV2ProviderCapabilities,
@@ -27,6 +32,7 @@ import { harnessProvider } from "./server-config.ts";
 import {
   appThreadOf,
   byOrdinal,
+  checkpointIdOf,
   isActiveRunStatus,
   providerSessionIdOf,
   providerThreadIdOf,
@@ -41,6 +47,7 @@ import {
   type ThreadSource,
 } from "./shell.ts";
 import type { StoredImage } from "./state.ts";
+import { SHARED_CHAIN_NOTICE } from "./turn-checkpoints.ts";
 
 /**
  * One thread in full (ADR 0012, "Concepts"): the session, a run per turn, the turn's input as a
@@ -739,6 +746,9 @@ const noticeItems = (
   });
   const out: Array<OrchestrationV2TurnItem> = [];
   const sessionAt = utc(source.session.updatedAt);
+  if (source.sharedWorktree && source.turnCheckpoints.size > 0) {
+    out.push(notice("shared-worktree", SHARED_CHAIN_NOTICE, null, endBase + 3, sessionAt));
+  }
   if (notices.sharedWorkspace !== null) {
     out.push(notice("shared-workspace", notices.sharedWorkspace, null, endBase, sessionAt));
   }
@@ -857,6 +867,54 @@ const visibleOf = (
     }));
 };
 
+/**
+ * Each ended turn's checkpoint, in t3code's terms: one root scope for the thread, and a `ready`
+ * checkpoint per turn whose files Mend read, numbered by its run, so the changed-files card shows
+ * under the turn's last assistant message.
+ */
+const checkpointsOf = (
+  source: ThreadSource,
+  turns: ReadonlyArray<MendTurn>,
+): Pick<OrchestrationV2ThreadProjection, "checkpointScopes" | "checkpoints"> => {
+  if (source.turnCheckpoints.size === 0) return { checkpointScopes: [], checkpoints: [] };
+  const threadId = threadIdOf(source);
+  const scopeId = CheckpointScopeId.make(`scope:${source.threadId}`);
+  const scope: OrchestrationV2CheckpointScope = {
+    id: scopeId,
+    threadId,
+    runId: null,
+    nodeId: NodeId.make(`root:${source.threadId}`),
+    parentScopeId: null,
+    providerThreadId: providerThreadIdOf(source.session),
+    kind: "root_run",
+    ordinalWithinParent: 0,
+    advancesAppRunCount: true,
+    cwd: worktreePathOf(source.project, source.session),
+    createdAt: utc(source.session.createdAt),
+  };
+  const checkpoints: Array<OrchestrationV2Checkpoint> = [];
+  turns.forEach((turn, index) => {
+    const checkpoint = source.turnCheckpoints.get(turn.id);
+    if (checkpoint === undefined) return;
+    const runId = runIdOf(source, turn);
+    checkpoints.push({
+      id: checkpointIdOf(checkpoint.id),
+      threadId,
+      scopeId,
+      runId,
+      nodeId: NodeId.make(`run:${runId}`),
+      parentCheckpointId: checkpoints.at(-1)?.id ?? null,
+      ordinalWithinScope: checkpoints.length + 1,
+      appRunOrdinal: index + 1,
+      ref: CheckpointRef.make(checkpoint.ref),
+      status: "ready",
+      files: checkpoint.files.filter((file) => file.path.trim().length > 0),
+      capturedAt: utc(checkpoint.capturedAt),
+    });
+  });
+  return { checkpointScopes: [scope], checkpoints };
+};
+
 export const threadProjectionOf = (
   source: ThreadSource,
   items: ReadonlyArray<MendItem>,
@@ -912,8 +970,7 @@ export const threadProjectionOf = (
     messages,
     plans: [],
     turnItems,
-    checkpointScopes: [],
-    checkpoints: [],
+    ...checkpointsOf(source, turns),
     contextHandoffs: [],
     contextTransfers: [],
     visibleTurnItems: visibleOf(turnItems, runs),

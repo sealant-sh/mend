@@ -92,6 +92,8 @@ export const SERVED_METHODS: ReadonlySet<WsRpcMethod> = new Set<WsRpcMethod>([
   ORCHESTRATION_V2_WS_METHODS.getThreadProjection,
   ORCHESTRATION_V2_WS_METHODS.dispatchCommand,
   ORCHESTRATION_V2_WS_METHODS.launchThread,
+  ORCHESTRATION_V2_WS_METHODS.getTurnDiff,
+  ORCHESTRATION_V2_WS_METHODS.getFullThreadDiff,
   WS_METHODS.assetsCreateUrl,
   WS_METHODS.assetsPersistChatAttachments,
   WS_METHODS.projectsSearchEntries,
@@ -212,6 +214,13 @@ const scopeCheck = (session: BearerSession, requiredScope: AuthEnvironmentScope)
 
 const MODELS_SOURCE = "Mend GET /api/harnesses/models";
 const encodeServerConfig = Schema.encodeEffect(Schema.toCodecJson(ServerConfig));
+
+/** Mend no longer takes the socket's device: t3code blocks the connection. */
+const deviceRefused = (requiredScope: AuthEnvironmentScope) =>
+  new EnvironmentAuthorizationError({
+    message: "Mend no longer accepts this device. Pair again from Mend.",
+    requiredScope,
+  });
 
 /** A device Mend refused blocks the connection; Mend not answering is a failure t3code retries. */
 const shellReadFailure = (error: HubReadError) =>
@@ -415,18 +424,53 @@ export const makeGatewayRpcHandlers = ({
           );
         }),
       ),
-    [ORCHESTRATION_V2_WS_METHODS.getTurnDiff]: () =>
-      Effect.fail(
-        new OrchestrationGetTurnDiffError({
-          message: notOfferedText(ORCHESTRATION_V2_WS_METHODS.getTurnDiff),
-        }),
-      ),
-    [ORCHESTRATION_V2_WS_METHODS.getFullThreadDiff]: () =>
-      Effect.fail(
-        new OrchestrationGetFullThreadDiffError({
-          message: notOfferedText(ORCHESTRATION_V2_WS_METHODS.getFullThreadDiff),
-        }),
-      ),
+    // One turn's work, or the thread's up to a turn, from the worktree's checkpoint chain
+    // (`turn-checkpoints.ts`); a revoked device blocks, anything else is the method's own error.
+    [ORCHESTRATION_V2_WS_METHODS.getTurnDiff]: (input) =>
+      Effect.gen(function* () {
+        yield* authorize(session, READ);
+        const diff = yield* hub
+          .turnDiff({
+            session,
+            threadId: input.threadId,
+            fromTurnCount: input.fromTurnCount,
+            toTurnCount: input.toTurnCount,
+            ignoreWhitespace: input.ignoreWhitespace === true,
+          })
+          .pipe(
+            Effect.mapError((error) =>
+              error._tag === "MendDeviceRefused"
+                ? deviceRefused(READ)
+                : new OrchestrationGetTurnDiffError({ message: error.message }),
+            ),
+          );
+        return {
+          threadId: input.threadId,
+          fromTurnCount: input.fromTurnCount,
+          toTurnCount: input.toTurnCount,
+          diff,
+        };
+      }),
+    [ORCHESTRATION_V2_WS_METHODS.getFullThreadDiff]: (input) =>
+      Effect.gen(function* () {
+        yield* authorize(session, READ);
+        const diff = yield* hub
+          .turnDiff({
+            session,
+            threadId: input.threadId,
+            fromTurnCount: 0,
+            toTurnCount: input.toTurnCount,
+            ignoreWhitespace: input.ignoreWhitespace === true,
+          })
+          .pipe(
+            Effect.mapError((error) =>
+              error._tag === "MendDeviceRefused"
+                ? deviceRefused(READ)
+                : new OrchestrationGetFullThreadDiffError({ message: error.message }),
+            ),
+          );
+        return { threadId: input.threadId, fromTurnCount: 0, toTurnCount: input.toTurnCount, diff };
+      }),
     [ORCHESTRATION_V2_WS_METHODS.searchThreads]: () =>
       Effect.fail(
         new OrchestrationSearchThreadsError({

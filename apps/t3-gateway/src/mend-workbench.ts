@@ -263,6 +263,44 @@ export const MendPastedImage = Schema.Struct({
 });
 export type MendPastedImage = typeof MendPastedImage.Type;
 
+/**
+ * `Checkpoint` in @mend/domain/workbench: a snapshot of a worktree. The chain is the worktree's,
+ * shared by every session in it; a `turn-boundary` one is taken when a turn ends.
+ */
+export const MendCheckpoint = Schema.Struct({
+  id: Schema.String,
+  sessionId: Schema.NullOr(Schema.String),
+  ordinal: Schema.Number,
+  ref: Schema.String,
+  trigger: Schema.String,
+  createdAt: Schema.String,
+});
+export type MendCheckpoint = typeof MendCheckpoint.Type;
+
+/** What the gateway reads of `WorktreeDetail` (`GET /api/worktrees/:id`): its chain. */
+export const MendWorktreeDetail = Schema.Struct({
+  checkpoints: Schema.Array(MendCheckpoint),
+});
+
+/** One file of a slice (`WorktreeRangeFile` in @mend/api-contracts). */
+export const MendRangeFile = Schema.Struct({
+  oldPath: Schema.NullOr(Schema.String),
+  newPath: Schema.NullOr(Schema.String),
+  status: Schema.String,
+  additions: Schema.Number,
+  deletions: Schema.Number,
+});
+export type MendRangeFile = typeof MendRangeFile.Type;
+
+/** `WorktreeRangeDiff` in @mend/api-contracts, from `GET /api/worktrees/:id/diff`. */
+export const MendRangeDiff = Schema.Struct({
+  diff: Schema.String,
+  files: Schema.Array(MendRangeFile),
+  /** Mend rendered the patches of only some files (its file cap, byte budget or deadline). */
+  truncated: Schema.Boolean,
+});
+export type MendRangeDiff = typeof MendRangeDiff.Type;
+
 /** `RemovalReport` in @mend/api-contracts, from `DELETE /api/sessions/:id`. */
 export const MendRemovalReport = Schema.Struct({
   removed: Schema.Boolean,

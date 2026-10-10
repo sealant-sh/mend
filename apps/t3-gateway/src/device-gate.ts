@@ -34,6 +34,8 @@ class GatedMendClient {
   readonly worktreeNames: DeviceCalls["worktreeNames"];
   readonly projectFiles: DeviceCalls["projectFiles"];
   readonly changeStats: DeviceCalls["changeStats"];
+  readonly worktreeCheckpoints: DeviceCalls["worktreeCheckpoints"];
+  readonly worktreeDiff: DeviceCalls["worktreeDiff"];
   readonly createSession: DeviceCalls["createSession"];
   readonly joinWorktree: DeviceCalls["joinWorktree"];
   readonly labelSession: DeviceCalls["labelSession"];
@@ -62,6 +64,8 @@ class GatedMendClient {
     this.worktreeNames = calls.worktreeNames;
     this.projectFiles = calls.projectFiles;
     this.changeStats = calls.changeStats;
+    this.worktreeCheckpoints = calls.worktreeCheckpoints;
+    this.worktreeDiff = calls.worktreeDiff;
     this.createSession = calls.createSession;
     this.joinWorktree = calls.joinWorktree;
     this.labelSession = calls.labelSession;
@@ -115,6 +119,10 @@ export const gateDeviceCalls = (
     changeDiff: (token, changeId) => guard(token, mend.changeDiff(token, changeId)),
     worktreeNames: (token, projectId) => guard(token, mend.worktreeNames(token, projectId)),
     changeStats: (token, changeId) => guard(token, mend.changeStats(token, changeId)),
+    worktreeCheckpoints: (token, worktreeId) =>
+      guard(token, mend.worktreeCheckpoints(token, worktreeId)),
+    worktreeDiff: (token, worktreeId, range) =>
+      guard(token, mend.worktreeDiff(token, worktreeId, range)),
     projectFiles: (token, projectId, sessionId) =>
       guard(token, mend.projectFiles(token, projectId, sessionId)),
     submitTurn: (token, sessionId, input) => guard(token, mend.submitTurn(token, sessionId, input)),

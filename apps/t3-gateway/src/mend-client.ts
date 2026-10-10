@@ -17,6 +17,9 @@ import {
   MendItem,
   MendProject,
   MendChangeStats,
+  MendCheckpoint,
+  MendRangeDiff,
+  MendWorktreeDetail,
   MendFileListing,
   MendPastedImage,
   MendProjectDetail,
@@ -272,6 +275,24 @@ export class MendClient extends Context.Service<
       projectId: string,
       sessionId: string | null,
     ) => MendRead<MendFileListing>;
+    /** The worktree's checkpoint chain, oldest first (`GET /api/worktrees/:id`). */
+    readonly worktreeCheckpoints: (
+      deviceToken: string,
+      worktreeId: string,
+    ) => MendRead<ReadonlyArray<MendCheckpoint>>;
+    /**
+     * `GET /api/worktrees/:id/diff?from=&to=`: a slice of the chain, from a checkpoint (or the
+     * worktree's base, for null) to a later one.
+     */
+    readonly worktreeDiff: (
+      deviceToken: string,
+      worktreeId: string,
+      range: {
+        readonly from: string | null;
+        readonly to: string;
+        readonly ignoreWhitespace: boolean;
+      },
+    ) => MendRead<MendRangeDiff>;
     /** `GET /api/changes/:id/stats`: how many files, lines added and removed, without the patch. */
     readonly changeStats: (deviceToken: string, changeId: string) => MendRead<MendChangeStats>;
     /** `GET /api/changes/:id/diff`: the change against its base, as git answers now. */
@@ -371,6 +392,8 @@ const decodeRemovalReport = Schema.decodeUnknownEffect(MendRemovalReport);
 const decodePastedImage = Schema.decodeUnknownEffect(MendPastedImage);
 const decodeFileListing = Schema.decodeUnknownEffect(MendFileListing);
 const decodeChangeStats = Schema.decodeUnknownEffect(MendChangeStats);
+const decodeWorktreeDetail = Schema.decodeUnknownEffect(MendWorktreeDetail);
+const decodeRangeDiff = Schema.decodeUnknownEffect(MendRangeDiff);
 const MendErrorBody = Schema.Struct({
   _tag: Schema.optional(Schema.String),
   message: Schema.optional(Schema.String),
@@ -626,6 +649,34 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
           decodeFileListing,
         );
 
+      const worktreeCheckpoints = (deviceToken: string, worktreeId: string) =>
+        read(
+          "GET /api/worktrees/:id",
+          `/api/worktrees/${encodeURIComponent(worktreeId)}`,
+          deviceToken,
+          decodeWorktreeDetail,
+        ).pipe(Effect.map((detail) => detail.checkpoints));
+
+      const worktreeDiff = (
+        deviceToken: string,
+        worktreeId: string,
+        range: {
+          readonly from: string | null;
+          readonly to: string;
+          readonly ignoreWhitespace: boolean;
+        },
+      ) => {
+        const query = new URLSearchParams({ to: range.to });
+        if (range.from !== null) query.set("from", range.from);
+        if (range.ignoreWhitespace) query.set("whitespace", "ignore");
+        return read(
+          "GET /api/worktrees/:id/diff",
+          `/api/worktrees/${encodeURIComponent(worktreeId)}/diff?${query.toString()}`,
+          deviceToken,
+          decodeRangeDiff,
+        );
+      };
+
       const changeStats = (deviceToken: string, changeId: string) =>
         read(
           "GET /api/changes/:id/stats",
@@ -859,6 +910,8 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
         changeDiff,
         worktreeNames,
         changeStats,
+        worktreeCheckpoints,
+        worktreeDiff,
         projectFiles,
         createSession,
         joinWorktree,
