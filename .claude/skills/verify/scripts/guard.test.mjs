@@ -732,14 +732,33 @@ test("the real CLI runs in a home of the run's own, with no login or provider va
 });
 
 // R2-2: a tunnel counts only when its own child holds the port.
-const freePort = () =>
-  new Promise((done) => {
-    const probe = createServer();
-    probe.listen(0, "127.0.0.1", () => {
-      const { port } = probe.address();
-      probe.close(() => done(port));
+/**
+ * A port below the kernel's ephemeral range that nothing holds, its probe closed before it returns.
+ * Never port 0: the other test files, running beside this one, take their ports from the ephemeral
+ * range, and one of them could take a port between this pick and the tunnel's bind.
+ */
+const quietPort = async () => {
+  let low = 32768;
+  try {
+    low = Number(
+      readFileSync("/proc/sys/net/ipv4/ip_local_port_range", "utf8").trim().split(/\s+/)[0],
+    );
+  } catch {
+    // Not Linux: the usual default.
+  }
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const port = 20000 + Math.floor(Math.random() * Math.max(1, low - 20000));
+    const free = await new Promise((done) => {
+      const probe = createServer();
+      probe.once("error", () => done(false));
+      probe.listen({ port, host: "127.0.0.1", exclusive: true }, () =>
+        probe.close(() => done(true)),
+      );
     });
-  });
+    if (free) return port;
+  }
+  throw new Error("no free port below the ephemeral range");
+};
 
 /** A `mend` whose `service connect … --port <p>` listens on 127.0.0.1:<p> and answers health. */
 const FAKE_CONNECT = `#!/usr/bin/env node
@@ -769,7 +788,7 @@ test("a tunnel counts only when its own child holds the port", async () => {
       MEND_VERIFY_OUTER_URL: outer,
       MEND_VERIFY_PRIVATE: w.P,
     });
-  const squatPort = await freePort();
+  const squatPort = await quietPort();
   const squatter = spawn(process.execPath, [
     "-e",
     `require("node:http").createServer((q, r) => r.end("{}")).listen(${squatPort}, "127.0.0.1", () => console.log("up"))`,
@@ -793,7 +812,7 @@ test("a tunnel counts only when its own child holds the port", async () => {
     assert.ok(!existsSync(join(w.P, "tunnel.json")));
     assert.throws(target(squatPort), Refused);
     // Its own child's listener: bound, allowed while it lives, refused once stopped.
-    const port = await freePort();
+    const port = await quietPort();
     const own = await tunnel(
       "start",
       "--service",

@@ -119,16 +119,23 @@ if (command === "start") {
       stopChild();
       fail("ss cannot list this machine's listeners; the tunnel cannot be proven to be this run's");
     }
+    // A listener another process visibly owns, or on another address, ends the start at once. One
+    // whose owner `ss` cannot see yet (it maps sockets to pids by walking /proc, and can miss a
+    // listener just made) is only waited on: health counts once every listener is the child's, and
+    // one that never shows an owner (another user's process) runs out the deadline.
     const foreign = held.filter(
-      (at) => at.address !== `127.0.0.1:${port}` || !at.pids.some((pid) => under(pid, child.pid)),
+      (at) =>
+        at.address !== `127.0.0.1:${port}` ||
+        (at.pids.length > 0 && !at.pids.some((pid) => under(pid, child.pid))),
     );
     if (foreign.length > 0) {
       stopChild();
       fail(
-        `another process listens on ${foreign.map((at) => at.address).join(", ")}; not this run's tunnel`,
+        `another process listens on ${foreign.map((at) => `${at.address}${at.pids.length > 0 ? ` (pid ${at.pids.join(", ")})` : ""}`).join(", ")}; not this run's tunnel (pid ${child.pid})`,
       );
     }
-    const ours = held.length > 0;
+    const ours =
+      held.length > 0 && held.every((at) => at.pids.some((pid) => under(pid, child.pid)));
     const answered =
       ours &&
       (await fetch(`http://127.0.0.1:${port}/api/health`, {
@@ -144,7 +151,9 @@ if (command === "start") {
     }
     if (Date.now() >= deadline) {
       stopChild();
-      fail(`127.0.0.1:${port} did not answer within 60 s; read ${log}`);
+      fail(
+        `127.0.0.1:${port} did not answer as this run's tunnel within 60 s (its listener's owner may not be visible); read ${log}`,
+      );
     }
     await new Promise((done) => setTimeout(done, 1000));
   }
