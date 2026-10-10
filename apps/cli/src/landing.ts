@@ -104,6 +104,7 @@ const BUNDLE_HEADERS = {
   base: "x-mend-bundle-base",
   tip: "x-mend-bundle-tip",
   commits: "x-mend-bundle-commits",
+  onto: "x-mend-bundle-onto",
 };
 
 // ─── arguments ──────────────────────────────────────────────────────────────
@@ -123,6 +124,8 @@ export interface PullArgs {
   readonly session: string;
   readonly force: boolean;
   readonly project: string | null;
+  /** The local branch to fetch into; null for the session's own branch name. */
+  readonly branch: string | null;
 }
 
 type Parsed<T> = { readonly args: T } | { readonly error: string };
@@ -192,18 +195,21 @@ export const parseLandArgs = (args: ReadonlyArray<string>): Parsed<LandArgs> => 
   };
 };
 
-/** `mend pull <session> [--force] [--project <p>]`. */
+/** `mend pull <session> [--branch <name>] [--force] [--project <p>]`. */
 export const parsePullArgs = (args: ReadonlyArray<string>): Parsed<PullArgs> => {
-  const flags = parseFlags(args, ["--project"], ["--force"]);
+  const flags = parseFlags(args, ["--project", "--branch"], ["--force"]);
   if ("error" in flags) return flags;
   const [session, extra] = flags.positional;
   if (session === undefined) return { error: "name the session to pull" };
   if (extra !== undefined) return { error: `one session only; "${extra}" is extra` };
+  const branch = flags.values.get("--branch")?.trim() ?? null;
+  if (branch === "") return { error: "--branch needs a name" };
   return {
     args: {
       session,
       force: flags.on.has("--force"),
       project: flags.values.get("--project") ?? null,
+      branch,
     },
   };
 };
@@ -458,7 +464,10 @@ export interface BundleFacts {
   readonly branch: string;
   readonly base: string;
   readonly tip: string;
+  /** Commits the bundle carries; the change's own count (`base..tip`) is taken in the clone. */
   readonly commits: number;
+  /** The earlier pull the server built the change on; null when it built on none. */
+  readonly onto?: string | null;
 }
 
 export type Fetched =
@@ -469,64 +478,172 @@ export type Fetched =
       readonly previous: string | null;
       readonly tip: string;
       readonly base: string;
+      /** The change's commits from its base (`base..tip`), counted in the clone. */
       readonly commits: number;
       /** `<short sha> <subject>`, newest first, at most ten. */
       readonly log: ReadonlyArray<string>;
+    }
+  | {
+      /**
+       * The local branch already holds the change: the same tree on the same parents, in a
+       * commit Mend wrote at an earlier pull. Nothing moved.
+       */
+      readonly _tag: "unchanged";
+      readonly branch: string;
+      /** Where the local branch stays. */
+      readonly here: string;
+      /** The commit this pull's bundle carried for the same change. */
+      readonly tip: string;
+    }
+  | {
+      /**
+       * The local branch holds a commit the change does not build on, so it cannot fast-forward.
+       * `moved`: the branch is not where the last `mend pull` left it (`pulled`, null when no pull
+       * here recorded it). `not-built-on`: it is, but the server did not build on that pull (it
+       * no longer holds the commit, or it predates building on one).
+       */
+      readonly _tag: "diverged";
+      readonly branch: string;
+      readonly here: string;
+      readonly tip: string;
+      readonly reason: "moved" | "not-built-on";
+      readonly pulled: string | null;
     }
   | { readonly _tag: "refused"; readonly message: string };
 
 const LOG_LINES = 10;
 
+/**
+ * Where a clone records the commit `mend pull` last left a branch at, one ref per local branch
+ * under Mend's own namespace. The next pull asks the server to build on it.
+ */
+export const pulledRefOf = (branch: string): string => `refs/mend/pulled/${branch}`;
+
+const commitAt = (cwd: string, ref: string): string | null => {
+  const run = git(cwd, ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]);
+  return run.status === 0 ? run.stdout.trim() : null;
+};
+
+/**
+ * The commit the next bundle should build on: the branch's head, when the last `mend pull` left it
+ * there. Null when the branch is new, moved since, or no pull here recorded it.
+ */
+export const lastPullOf = (cwd: string, branch: string): string | null => {
+  const pulled = commitAt(cwd, pulledRefOf(branch));
+  return pulled !== null && pulled === commitAt(cwd, `refs/heads/${branch}`) ? pulled : null;
+};
+
+/** Why a pull cannot move the branch, and how to go on. */
+export const divergedMessage = (
+  diverged: Extract<Fetched, { _tag: "diverged" }>,
+  session: string,
+): string => {
+  const { branch, here, tip, pulled } = diverged;
+  const why =
+    diverged.reason === "not-built-on"
+      ? `the server did not build the change on ${branch}'s last pull ${short(here)}: it no longer holds that commit, or it predates building on one`
+      : pulled === null
+        ? `${branch} here is at ${short(here)}, which no mend pull in this clone left there`
+        : `${branch} moved since the last mend pull: it is at ${short(here)}, the pull left ${short(pulled)}`;
+  return `${why} · the change's ${short(tip)} does not build on it, so nothing moved · pull into a new branch with mend pull ${session} --branch <name>, or delete ${branch} and pull again`;
+};
+
+/** A commit's tree and parents, the parts that make it the same change. */
+const treeAndParents = (cwd: string, sha: string): string | null => {
+  const run = git(cwd, ["show", "-s", "--format=%T %P", `${sha}^{commit}`]);
+  return run.status === 0 ? run.stdout.trim() : null;
+};
+
 const refusedWith = (message: string): Fetched => ({ _tag: "refused", message });
 
 /**
- * Fetch a change's bundle into the clone at `cwd` as `refs/heads/<branch>`. Only that branch
- * moves, and only by a fast-forward: the working tree, the index and the checked-out branch are
- * never touched, and no remote-tracking ref or FETCH_HEAD is written.
+ * Fetch a change's bundle into the clone at `cwd` as `refs/heads/<into>` (the bundle's branch by
+ * default). Only that branch moves, and only by a fast-forward: the working tree, the index and the
+ * checked-out branch are never touched, and no remote-tracking ref or FETCH_HEAD is written. The
+ * commit the branch is left at is recorded under `pulledRefOf`, for the next pull to build on.
  */
 export const fetchBundle = (
   cwd: string,
   bundle: BundleFacts & { readonly bytes: Uint8Array },
+  into: string = bundle.branch,
 ): Fetched => {
-  if (git(cwd, ["check-ref-format", "--branch", bundle.branch]).status !== 0) {
-    return refusedWith(`the bundle names a branch git does not accept: ${bundle.branch}`);
+  for (const name of new Set([bundle.branch, into])) {
+    if (git(cwd, ["check-ref-format", "--branch", name]).status !== 0) {
+      return refusedWith(
+        name === bundle.branch
+          ? `the bundle names a branch git does not accept: ${name}`
+          : `git does not accept ${name} as a branch name`,
+      );
+    }
   }
   if (git(cwd, ["cat-file", "-e", `${bundle.base}^{commit}`]).status !== 0) {
     return refusedWith(
       `this clone lacks the change's base ${short(bundle.base)} · fetch it from origin, then run mend pull again`,
     );
   }
-  if (gitCurrentBranch(cwd) === bundle.branch) {
+  if (gitCurrentBranch(cwd) === into) {
     return refusedWith(
-      `${bundle.branch} is checked out here · switch to another branch first; mend pull does not touch the working tree`,
+      `${into} is checked out here · switch to another branch first; mend pull does not touch the working tree`,
     );
   }
-  const ref = `refs/heads/${bundle.branch}`;
-  const before = git(cwd, ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]);
-  const previous = before.status === 0 ? before.stdout.trim() : null;
-  if (previous !== bundle.tip) {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mend-pull-"));
-    try {
-      const file = path.join(dir, "change.bundle");
-      fs.writeFileSync(file, bundle.bytes, { mode: 0o600 });
-      const fetched = git(cwd, [
-        "fetch",
-        "--no-tags",
-        "--no-write-fetch-head",
-        file,
-        `${ref}:${ref}`,
-      ]);
-      if (fetched.status !== 0) return refusedWith(gitWords(fetched));
-    } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
+  const ref = `refs/heads/${into}`;
+  const source = `refs/heads/${bundle.branch}`;
+  const previous = commitAt(cwd, ref);
+  const recordAt = (sha: string): void => {
+    git(cwd, ["update-ref", pulledRefOf(into), sha]);
+  };
+  if (previous === bundle.tip) {
+    // A server that builds on the last pull answers an unchanged session with that pull's commit.
+    recordAt(previous);
+    return { _tag: "unchanged", branch: into, here: previous, tip: bundle.tip };
+  }
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mend-pull-"));
+  try {
+    const file = path.join(dir, "change.bundle");
+    fs.writeFileSync(file, bundle.bytes, { mode: 0o600 });
+    if (previous !== null) {
+      // Read the bundle's objects without moving any ref, then decide: a fast-forward moves
+      // the branch, the same change committed anew leaves it, and anything else says why not.
+      const objects = git(cwd, ["fetch", "--no-tags", "--no-write-fetch-head", file, source]);
+      if (objects.status !== 0) return refusedWith(gitWords(objects));
+      if (git(cwd, ["merge-base", "--is-ancestor", previous, bundle.tip]).status !== 0) {
+        // Mend commits the checkpoint anew for every bundle, so a session that has not moved
+        // since the last pull arrives as a different commit of the same tree on the same
+        // parents (from a server that does not build on the last pull).
+        const here = treeAndParents(cwd, previous);
+        if (here !== null && here === treeAndParents(cwd, bundle.tip)) {
+          recordAt(previous);
+          return { _tag: "unchanged", branch: into, here: previous, tip: bundle.tip };
+        }
+        const pulled = commitAt(cwd, pulledRefOf(into));
+        return {
+          _tag: "diverged",
+          branch: into,
+          here: previous,
+          tip: bundle.tip,
+          reason: pulled === previous && bundle.onto !== previous ? "not-built-on" : "moved",
+          pulled,
+        };
+      }
     }
+    const fetched = git(cwd, [
+      "fetch",
+      "--no-tags",
+      "--no-write-fetch-head",
+      file,
+      `${source}:${ref}`,
+    ]);
+    if (fetched.status !== 0) return refusedWith(gitWords(fetched));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
   }
-  const after = git(cwd, ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]).stdout.trim();
+  const after = commitAt(cwd, ref) ?? "";
   if (after !== bundle.tip) {
-    return refusedWith(
-      `${bundle.branch} is at ${short(after)} after the fetch, not ${short(bundle.tip)}`,
-    );
+    return refusedWith(`${into} is at ${short(after)} after the fetch, not ${short(bundle.tip)}`);
   }
+  recordAt(after);
+  // Counted here, from the base: a bundle built on the last pull carries only what is new.
+  const counted = Number(git(cwd, ["rev-list", "--count", `${bundle.base}..${bundle.tip}`]).stdout);
   const log = git(cwd, [
     "log",
     `--max-count=${LOG_LINES}`,
@@ -535,25 +652,26 @@ export const fetchBundle = (
   ]);
   return {
     _tag: "fetched",
-    branch: bundle.branch,
+    branch: into,
     previous,
     tip: bundle.tip,
     base: bundle.base,
-    commits: bundle.commits,
+    commits: Number.isInteger(counted) && counted > 0 ? counted : bundle.commits,
     log: log.stdout.split("\n").filter((line) => line !== ""),
   };
 };
 
 /** What `mend pull` prints once the branch is here. */
 export const fetchedLines = (
-  fetched: Extract<Fetched, { _tag: "fetched" }>,
+  fetched: Extract<Fetched, { _tag: "fetched" | "unchanged" }>,
 ): ReadonlyArray<string> => {
-  const moved =
-    fetched.previous === null
-      ? "created"
-      : fetched.previous === fetched.tip
-        ? "already here"
-        : `moved from ${short(fetched.previous)}`;
+  if (fetched._tag === "unchanged") {
+    return [
+      `${green("✓")} ${fetched.branch} · ${short(fetched.here)} · unchanged since the last pull · nothing moved`,
+      `${dim("  switch to it")} git switch ${fetched.branch}`,
+    ];
+  }
+  const moved = fetched.previous === null ? "created" : `moved from ${short(fetched.previous)}`;
   const commits = `${fetched.commits} ${fetched.commits === 1 ? "commit" : "commits"}`;
   const lines = [
     `${green("✓")} fetched ${fetched.branch} · ${short(fetched.tip)} · ${commits} on ${short(fetched.base)} · ${moved}`,
@@ -617,7 +735,7 @@ export const bundleFactsOf = (downloaded: Downloaded): BundleFacts | null => {
   const tip = downloaded.header(BUNDLE_HEADERS.tip);
   const commits = Number(downloaded.header(BUNDLE_HEADERS.commits));
   if (branch === null || base === null || tip === null || !Number.isInteger(commits)) return null;
-  return { branch, base, tip, commits };
+  return { branch, base, tip, commits, onto: downloaded.header(BUNDLE_HEADERS.onto) };
 };
 
 export const pullCommand = async (
@@ -653,11 +771,20 @@ export const pullCommand = async (
       `  pulling ${session.branch} · ${project.name} · session ${session.id.slice(0, 8)}${remote === null ? " · remotes not checked (--force)" : ` · ${remote.name} is the project's origin`}`,
     ),
   );
-  const downloaded = await download(`/changes/${view.changeId}/bundle`);
+  const into = parsed.args.branch ?? session.branch;
+  // The commit this clone pulled last: a server that still holds it builds the change on it, so
+  // pull, keep working, pull again fast-forwards. An older server ignores the question.
+  const onto = lastPullOf(top, into);
+  const downloaded = await download(
+    `/changes/${view.changeId}/bundle${onto === null ? "" : `?onto=${onto}`}`,
+  );
   if (downloaded.status < 200 || downloaded.status >= 300) return fail(bundleRefusal(downloaded));
   const facts = bundleFactsOf(downloaded);
   if (facts === null) return fail("the server sent a bundle without its branch, base and tip");
-  const fetched = fetchBundle(top, { ...facts, bytes: downloaded.bytes });
+  const fetched = fetchBundle(top, { ...facts, bytes: downloaded.bytes }, into);
   if (fetched._tag === "refused") return fail(`nothing fetched · ${fetched.message}`);
+  if (fetched._tag === "diverged") {
+    return fail(`nothing fetched · ${divergedMessage(fetched, parsed.args.session)}`);
+  }
   for (const line of fetchedLines(fetched)) say(line);
 };

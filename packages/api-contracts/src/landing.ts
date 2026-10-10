@@ -182,7 +182,18 @@ export const BUNDLE_HEADERS = {
   branch: "x-mend-bundle-branch",
   base: "x-mend-bundle-base",
   tip: "x-mend-bundle-tip",
+  /** Commits the bundle carries: only the new ones when it builds on an earlier pull. */
   commits: "x-mend-bundle-commits",
+  /** The earlier pull the bundle builds on (`?onto=`), when the server still held it. */
+  onto: "x-mend-bundle-onto",
+};
+
+/**
+ * `?onto=<sha>`: the commit the clone pulled last for this change. A server that still holds it
+ * builds on it, so the pull fast-forwards; one that does not (or predates this) bundles as before.
+ */
+const bundleQuery = {
+  onto: Schema.optional(Schema.String.check(Schema.isPattern(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u))),
 };
 
 const probeQuery = { probe: Schema.optional(Schema.Literals(["true", "false"])) };
@@ -231,10 +242,12 @@ export const landingsGroup = HttpApiGroup.make("landings")
     }),
   )
   .add(
-    // `mend pull`: the commits from the session's base to its latest checkpoint, committed as
-    // a landing's step 2 does, never pushed. Authorized like the review diff.
+    // `mend pull`: the commits from the session's base (or the clone's last pull) to its latest
+    // checkpoint, committed as a landing's step 2 does, never pushed. Authorized like the review
+    // diff.
     HttpApiEndpoint.get("bundle", "/changes/:id/bundle", {
       params: { id: ChangeId },
+      query: bundleQuery,
       success: ChangeBundleBytes,
       error: [NotFound, StoreFailure, BundleTooLarge],
     }),

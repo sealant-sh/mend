@@ -13,7 +13,7 @@ import { composeOverlays, T3_GATEWAY_VOLUME } from "./server-edge.ts";
 import { mirrorServices } from "./server-mirrors.ts";
 import { serverComposeArgs, serverProcessDeadlines } from "./server-runtime.ts";
 import { readServerInstallation, type ServerSetupRuntime } from "./server-setup.ts";
-import { withServerStore } from "./server-store.ts";
+import { ServerRefusal, withServerStore } from "./server-store.ts";
 import type { ThisMachineKeyRemoval } from "./ssh-setup.ts";
 
 /**
@@ -313,8 +313,9 @@ const removeServer = async (
           { timeoutMs: serverProcessDeadlines.stop },
         );
         if (down.status !== 0) {
-          throw new Error(
-            `docker compose down failed: ${(down.error ?? down.stderr.trim()) || "no output"}. Containers and files are retained; fix Docker and run mend uninstall again.`,
+          // Docker, not Mend: a refusal in Mend's words, never "failed unexpectedly".
+          throw new ServerRefusal(
+            `Docker did not take the server down (docker compose down: ${(down.error ?? down.stderr.trim()) || "no output"}). Containers, volumes and files are kept; get Docker answering, then run mend uninstall again.`,
           );
         }
         server.writeLine(

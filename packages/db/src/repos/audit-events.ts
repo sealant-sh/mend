@@ -37,8 +37,22 @@ export class AuditEventsRepo extends Context.Service<
       organizationId: OrganizationId,
       page: { readonly beforeId: string | null; readonly limit: number },
     ) => Effect.Effect<ReadonlyArray<AuditEvent>>;
+    /**
+     * Whether `action` was recorded on `subjectId` for `actorUserId` with `data[field]` equal to
+     * `value`: a bundle tip the change's endpoint served this person, say.
+     */
+    readonly recorded: (query: AuditLookup) => Effect.Effect<boolean>;
   }
 >()("@mend/db/AuditEventsRepo") {}
+
+export interface AuditLookup {
+  readonly organizationId: OrganizationId;
+  readonly actorUserId: string;
+  readonly action: AuditAction;
+  readonly subjectId: string;
+  readonly field: string;
+  readonly value: string;
+}
 
 const decodeEvent = Schema.decodeUnknownSync(AuditEvent);
 
@@ -90,6 +104,25 @@ export const AuditEventsRepoLive: Layer.Layer<AuditEventsRepo, never, MendDB> = 
       return rows.map((row) => decodeEvent(row));
     });
 
-    return { record, listForOrganization };
+    const recorded = Effect.fn("AuditEventsRepo.recorded")(function* (query: AuditLookup) {
+      // The organization first, so the lookup walks that organization's index.
+      const rows = yield* db
+        .select({ id: auditEvents.id })
+        .from(auditEvents)
+        .where(
+          and(
+            eq(auditEvents.organizationId, query.organizationId),
+            eq(auditEvents.action, query.action),
+            eq(auditEvents.subjectId, query.subjectId),
+            eq(auditEvents.actorUserId, query.actorUserId),
+            sql`${auditEvents.data} ->> ${query.field} = ${query.value}`,
+          ),
+        )
+        .limit(1)
+        .pipe(Effect.orDie);
+      return rows.length > 0;
+    });
+
+    return { record, listForOrganization, recorded };
   }),
 );

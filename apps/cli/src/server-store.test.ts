@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
+  ServerRefusal,
   withServerStore,
   type ServerFiles,
   type ServerGeneration,
@@ -274,6 +275,75 @@ describe("server filesystem transactions", () => {
       "replacement-owner",
     );
     expect(escaped?.readActive()._tag).toBe("error");
+  });
+
+  it("says a refusal under the lock as it was written, and gives filesystem advice only for the system's failures", async () => {
+    const root = temporary();
+    const messageOf = async (operation: () => Promise<unknown>): Promise<string> => {
+      const result = await withServerStore(root, operation);
+      if (result._tag !== "error") throw new Error("expected a failure");
+      return result.error.message;
+    };
+    const refusal = 'Unknown server setup option "--bogus".';
+    expect(
+      await messageOf(async () => {
+        throw new ServerRefusal(refusal);
+      }),
+    ).toBe(refusal);
+    // A bug is no refusal, and no filesystem problem either.
+    expect(
+      await messageOf(async () => {
+        throw new TypeError("Cannot read properties of undefined (reading 'x')");
+      }),
+    ).toBe("Server command failed unexpectedly: Cannot read properties of undefined (reading 'x')");
+    // Node's own ERR_* codes are not the operating system's.
+    expect(
+      await messageOf(async () => {
+        throw Object.assign(new TypeError("The path argument must be a string"), {
+          code: "ERR_INVALID_ARG_TYPE",
+        });
+      }),
+    ).toBe("Server command failed unexpectedly: The path argument must be a string");
+    const failure = await messageOf(async () => fs.readFileSync(path.join(root, "missing.env")));
+    expect(failure).toMatch(
+      /^Server storage operation failed: ENOENT: no such file or directory, open '.*missing\.env'\. Retain the identity and generations; fix the filesystem problem and retry\.$/u,
+    );
+    expect(failure).not.toContain("..");
+
+    // Another command holds the lock: its guidance, unwrapped.
+    fs.mkdirSync(path.join(root, "server.lock"));
+    const busy = await messageOf(async () => undefined);
+    expect(busy).toMatch(/^Server is busy: /u);
+    expect(busy).not.toContain("Server storage operation failed");
+    fs.rmdirSync(path.join(root, "server.lock"));
+
+    const none = await withServerStore(path.join(root, "absent"), async () => undefined, {
+      create: false,
+    });
+    expect(none._tag === "error" && none.error.message).toBe(
+      "No Mend server is configured. Run mend server setup explicitly to install one.",
+    );
+  });
+
+  it("raises no plain Error on a server command's path, so no refusal reads as a bug", () => {
+    // Under the lock, a plain Error prints as "Server command failed unexpectedly"; a refusal is
+    // a ServerRefusal (review 2 of mend#666: uninstall's Docker failure read as a Mend bug).
+    const src = path.dirname(fileURLToPath(import.meta.url));
+    const sources = fs
+      .readdirSync(src)
+      .filter(
+        (name) =>
+          (name.startsWith("server-") ||
+            name === "uninstall.ts" ||
+            name === "docker-shutdown.ts") &&
+          name.endsWith(".ts") &&
+          !name.endsWith(".test.ts"),
+      );
+    expect(sources).toContain("server-setup.ts");
+    for (const name of sources) {
+      const text = fs.readFileSync(path.join(src, name), "utf8");
+      expect(text.match(/throw new Error\(/gu) ?? [], name).toEqual([]);
+    }
   });
 
   it("releases its lock when the callback fails and refuses missing identity or corrupt pointers", async () => {

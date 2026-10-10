@@ -170,7 +170,8 @@ mend projects                         adopted projects and their live sessions
 mend refresh [project]                fetch origin's branches into the store
 mend land <session> [--branch b] [--no-pr] [--title t] | --check
                                       push the change to origin, open or update its pull request
-mend pull <session> [--force]         fetch the change into this clone as mend/<name>
+mend pull <session> [--branch b] [--force]
+                                      fetch the change into this clone as mend/<name>
 mend workspace replace <session> [--yes]
                                       replace a workspace that started before Mend 0.36
 

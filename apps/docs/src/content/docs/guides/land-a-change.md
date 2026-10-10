@@ -381,6 +381,13 @@ landing, without origin, and for projects nobody can push to.
   Mend takes a checkpoint first. Anyone else gets the latest checkpoint that already exists.
 - Your working tree, index, and current branch are not touched. An existing local branch of the same
   name only fast-forwards.
+- Pull again after more work and the branch fast-forwards. The clone records the commit each pull
+  left (`refs/mend/pulled/<branch>`), and the next pull asks the server to commit the new checkpoint
+  on top of it. When nothing changed since the last pull, the branch stays where it is and the CLI
+  says `unchanged since the last pull · nothing moved`.
+- A branch that cannot fast-forward is left alone, and the CLI says why: you committed on it, or the
+  server no longer holds the last pull's commit. Pull into a new branch with
+  `mend pull <session> --branch <name>`, or delete the branch and pull again.
 - The clone needs the session's base commit, so fetch from origin first when it is missing.
 - One of the clone's remotes must be the project's origin, compared by host and path so SSH and
   HTTPS spellings match. `--force` skips that check.

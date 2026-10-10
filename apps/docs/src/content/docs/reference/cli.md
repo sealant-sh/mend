@@ -341,7 +341,7 @@ removes the worktree anyway. A worktree whose workspace is still saving is refus
 ```text
 mend land <session> [--branch <name>] [--no-pr] [--title <text>] [--project <name>]
 mend land <session> --check [--project <name>]
-mend pull <session> [--force] [--project <name>]
+mend pull <session> [--branch <name>] [--force] [--project <name>]
 ```
 
 `<session>` is a prefix of the session ID or the worktree's name; settled sessions count.
@@ -382,8 +382,11 @@ the session's base as a git bundle, so it works before landing and without origi
 owner gets a checkpoint taken first; anyone else gets the latest one, and pulling moves nothing on
 the server. One of the clone's remotes must be the project's origin (ssh and https spellings match;
 `--force` skips the check), and the clone needs the session's base commit. The working tree, the
-index and the current branch are not touched, and an existing local branch only fast-forwards. A
-bundle over the server's `MEND_BUDGET_BUNDLE_BYTES` limit is refused with its size.
+index and the current branch are not touched, and an existing local branch only fast-forwards. The
+clone records each pull under `refs/mend/pulled/<branch>`, and the next pull asks the server to
+build on it, so pulling again after more work fast-forwards. `--branch <name>` fetches into another
+local branch, for when the existing one has moved. A bundle over the server's
+`MEND_BUDGET_BUNDLE_BYTES` limit is refused with its size.
 
 ## Dashboard keys
 

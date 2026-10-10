@@ -166,7 +166,10 @@ export class LandingGit extends Context.Service<
         readonly remoteEnv: Readonly<Record<string, string>>;
       },
     ) => Effect.Effect<RemoteBranchState, LandingStepError>;
-    /** The `mend pull` bundle of `base..tip`, naming the branch; refused over the limit. */
+    /**
+     * The `mend pull` bundle of `base..tip`, naming the branch, without what `have` (the
+     * recipient's last pull) reaches; refused over the limit.
+     */
     readonly bundle: (
       scope: LandingScope,
       input: {
@@ -174,8 +177,17 @@ export class LandingGit extends Context.Service<
         readonly tip: Sha;
         readonly branch: string;
         readonly limitBytes: number;
+        readonly have?: Sha;
       },
     ) => Effect.Effect<ChangeBundle, LandingStepError | BundleTooLargeError | BundleEmptyError>;
+    /**
+     * Whether the store holds `sha` as a commit on `base`: a commit an earlier `mend pull` carried,
+     * which the next one builds on. False when it is not there, or no longer is.
+     */
+    readonly holds: (
+      scope: LandingScope,
+      input: { readonly sha: Sha; readonly base: Sha },
+    ) => Effect.Effect<boolean>;
   }
 >()("@mend/landing/LandingGit") {}
 
@@ -301,6 +313,16 @@ export interface BundleChangeInput {
   readonly webOrigin: string | null;
   /** The largest bundle handed back; a larger one is refused with its size. */
   readonly limitBytes: number;
+  /**
+   * The commit the asker's clone pulled last for this change. When the store still holds it,
+   * Mend's commit builds on it as a landing builds on the last one, so the pull fast-forwards.
+   */
+  readonly onto?: Sha;
+}
+
+/** A `mend pull` bundle, and the earlier pull it builds on when it does. */
+export interface PullBundle extends ChangeBundle {
+  readonly onto: Sha | null;
 }
 
 export class Landing extends Context.Service<
@@ -316,7 +338,7 @@ export class Landing extends Context.Service<
     readonly bundle: (
       input: BundleChangeInput,
     ) => Effect.Effect<
-      ChangeBundle,
+      PullBundle,
       LandingNotStartedError | LandingStepError | BundleTooLargeError | BundleEmptyError
     >;
     /**
@@ -751,6 +773,14 @@ export const LandingLive: Layer.Layer<
           "bundle not made · the worktree has no checkpoint yet",
         );
       }
+      // A clone that pulled before has that pull's commit: building on it, as a landing builds on
+      // the last landing, makes this pull a fast-forward of the last. A store that no longer holds
+      // it (or never did) bundles as for a first pull, and the clone says why it cannot move.
+      const onto =
+        input.onto !== undefined &&
+        (yield* git.holds(scope, { sha: input.onto, base: worktree.baseSha }))
+          ? input.onto
+          : null;
       const lastPush = (yield* landings.listForChange(change.id)).find(
         (landing) => landing.pushedSha !== null,
       );
@@ -758,18 +788,21 @@ export const LandingLive: Layer.Layer<
       const { head } = yield* commitWork(scope, {
         checkpoint,
         agentHead,
-        lastLanded: lastPush?.pushedSha ?? null,
+        lastLanded: onto ?? lastPush?.pushedSha ?? null,
         keep: false,
         authorUserId: owner ?? input.actorUserId,
         tourSummary: tour?.summary ?? null,
         sessionUrl: linksOf(input.webOrigin, session.id, change.id, checkpoint.ordinal).session,
       });
-      return yield* git.bundle(scope, {
+      const bundled = yield* git.bundle(scope, {
         base: worktree.baseSha,
         tip: head,
         branch: worktree.branch,
         limitBytes: input.limitBytes,
+        // Nothing new since that pull: the bundle carries its commit again, and the clone stays.
+        ...(onto !== null && onto !== head ? { have: onto } : {}),
       });
+      return { ...bundled, onto } satisfies PullBundle;
     });
 
     const adoptPullRequest = Effect.fn("Landing.adoptPullRequest")(function* (input: AdoptInput) {

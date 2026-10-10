@@ -291,6 +291,36 @@ describe("a credential in a repository URL", () => {
     );
   });
 
+  // Review of mend#666: a rule that ended an authority at whitespace unless a host and a path
+  // followed printed each of these whole. Every one stays redacted.
+  it("redacts a password holding whitespace whatever follows the host", () => {
+    const cases: ReadonlyArray<readonly [string, string]> = [
+      ["https://user:pa ss@host", "https://host"],
+      ["https://oauth2:p\ttok@github.com", "https://github.com"],
+      ["https://user:pa ss@host:8080", "https://host:8080"],
+      ["fatal: https://user:pa ss@host refused", "fatal: https://host refused"],
+      [
+        "fatal: unable to access 'https://user:pa ss@host': 403",
+        "fatal: unable to access 'https://host': 403",
+      ],
+      ['{"url":"https://user:pa ss@host"}', '{"url":"https://host"}'],
+      ['{"url":"https://user:pa ss@host","path":"/x"}', '{"url":"https://host","path":"/x"}'],
+      [
+        "remote https://user:pa ss@host\nnext line /var/log",
+        "remote https://host\nnext line /var/log",
+      ],
+      ["https://to ken@host", "https://host"],
+      ["https:// user:tok@host", "https://host"],
+      ["https://user:pa ss@[fe80::1%25eth0]/repo", "https://[fe80::1%25eth0]/repo"],
+      ["https://user:pa ss@[v1.x]/repo", "https://[v1.x]/repo"],
+    ];
+    for (const [text, shown] of cases) {
+      const redacted = redactUrlCredentials(text);
+      expect(redacted, text).toBe(shown);
+      expect(redacted, text).not.toMatch(/pa ss|p\ttok|to ken|user:tok/u);
+    }
+  });
+
   it("finds a URL that starts where another's authority ends, and stays linear in what it reads", () => {
     expect(redactUrlCredentials("https://user:x://evil:TOKEN@host/")).toBe(
       "https://user:x://host/",

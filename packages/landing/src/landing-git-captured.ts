@@ -1,6 +1,13 @@
 import { CaptureStoreRepo, CheckpointsRepo, StoreRefsRepo } from "@mend/db";
 import { derivedPackPrefix, ensureCaptureCache, SessionEngine } from "@mend/sessions";
-import { BlobStore, GitOpsRunner, landedRefOf, packIdxKeyOf, type RunnerCache } from "@mend/store";
+import {
+  BlobStore,
+  GitOpsRunner,
+  holdsCommitOn,
+  landedRefOf,
+  packIdxKeyOf,
+  type RunnerCache,
+} from "@mend/store";
 import { Effect, Layer } from "effect";
 
 import { branchWords, gitWords } from "./git-words.ts";
@@ -222,6 +229,11 @@ export const LandingGitCapturedLive: Layer.Layer<
               ),
             );
         }),
+      holds: (scope, input) =>
+        Effect.gen(function* () {
+          const cache = yield* cacheOf(scope, "bundle");
+          return yield* holdsCommitOn(cache.path, input.sha, input.base);
+        }).pipe(Effect.catch(() => Effect.succeed(false))),
       bundle: (scope, input) =>
         Effect.gen(function* () {
           const cache = yield* cacheOf(scope, "bundle");
