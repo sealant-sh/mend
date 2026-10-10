@@ -24,7 +24,7 @@
 // reaches them, so nothing of the stack holds a credential of the outer server.
 
 import { spawn } from "node:child_process";
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
   closeSync,
   constants,
@@ -36,7 +36,7 @@ import {
   openSync,
   readFileSync,
 } from "node:fs";
-import { lstat, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { cp, lstat, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -58,7 +58,9 @@ import {
   STACK_LABEL,
   STATE_VOLUME,
   VERIFIER_PREFIX,
+  VENDOR_DIR,
   beyondRetention,
+  buildKey,
   composeImages,
   defaultSpec,
   describeSource,
@@ -77,9 +79,12 @@ import {
   insideCaptureRoot,
   isolationFindings,
   mendBuildArgs,
+  packageOverrides,
   parseMemory,
   parseSource,
   relayEndpoint,
+  runtimeConsumers,
+  withOverrides,
 } from "./lib.mjs";
 import {
   claim,
@@ -407,6 +412,123 @@ async function ensureBuildx() {
   say("  buildx · copied from " + DOCKER_CLI_IMAGE + " (this Docker CLI has none)");
 }
 
+// ─── packages from source ───────────────────────────────────────────────────
+
+const COREPACK_STAGE = `FROM node:26-bookworm-slim AS build
+ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+RUN npm install --global corepack && corepack enable`;
+
+/**
+ * The npm packages one repository publishes and another installs, packed from source: sealantd's
+ * `@sealant/runtime-*` (Core installs them) and Core's `@sealant/api-contracts` and `@sealant/sdk`
+ * (Mend installs them). Packed with `pnpm pack`, as the release workflows publish them, so
+ * `publishConfig` applies.
+ */
+const PACK_DOCKERFILES = {
+  sealantd: `${COREPACK_STAGE}
+WORKDIR /src
+COPY . .
+RUN pnpm install --frozen-lockfile --ignore-scripts
+RUN pnpm --filter "./packages/*" run build \\
+  && mkdir /out && pnpm --filter "./packages/*" exec pnpm pack --pack-destination /out
+FROM scratch
+COPY --from=build /out /
+`,
+  sealant: `${COREPACK_STAGE}
+WORKDIR /src
+COPY . .
+RUN pnpm install --frozen-lockfile --ignore-scripts --filter "@sealant/sdk..."
+RUN pnpm --filter @sealant/api-contracts --filter @sealant/sdk run build \\
+  && mkdir /out && pnpm --filter @sealant/api-contracts --filter @sealant/sdk exec pnpm pack --pack-destination /out
+FROM scratch
+COPY --from=build /out /
+`,
+};
+
+/** A lockfile for a context whose workspace file gained overrides; nothing else is installed. */
+const LOCK_DOCKERFILE = `${COREPACK_STAGE}
+WORKDIR /app
+COPY . .
+RUN pnpm install --lockfile-only --ignore-scripts
+FROM scratch
+COPY --from=build /app/pnpm-lock.yaml /
+`;
+
+/** Pack one repository's packages from its source, once per tree; answers the tarballs' paths. */
+async function packFromSource(logs, resolved, context) {
+  const dir = join(cacheDir, "packages", `${resolved.repository}-${resolved.tree}`);
+  if (!existsSync(dir)) {
+    const partial = `${dir}.partial-${randomUUID()}`;
+    await mkdir(partial, { recursive: true });
+    await docker(["build", "--file", "-", "--output", `type=local,dest=${partial}`, context], {
+      log: join(logs, `packages-${resolved.repository}.log`),
+      input: PACK_DOCKERFILES[resolved.repository],
+    });
+    await rename(partial, dir);
+  }
+  const files = (await readdir(dir)).filter((file) => file.endsWith(".tgz")).toSorted();
+  if (files.length === 0) throw new CommandError(`${resolved.repository} packed no package`);
+  return { dir, files };
+}
+
+/**
+ * A copy of a context that installs `packed` in place of the published packages: the tarballs in
+ * VENDOR_DIR, the overrides in pnpm-workspace.yaml, and a lockfile made for them, so the
+ * repository's own Dockerfile, `--frozen-lockfile` and all, builds it unchanged.
+ *
+ * The lockfile is made against the registry as it is now: a dependency the packed packages bring in
+ * that the consumer's own lockfile lacks resolves to the newest version its range allows. So the
+ * build key covers the lockfile's bytes too, beside the tree and every tarball's: two starts that
+ * resolved differently build two images, and the report names the lockfile each one built from.
+ */
+async function linkedContext(logs, resolved, context, packed, overrides) {
+  const digests = await Promise.all(
+    packed.files.map(async (file) =>
+      createHash("sha256")
+        .update(await readFile(join(packed.dir, file)))
+        .digest("hex"),
+    ),
+  );
+  const inputs = digestOf(resolved.tree, ...packed.files, ...digests);
+  const dir = join(cacheDir, "contexts", `${resolved.repository}-${inputs}`);
+  if (!existsSync(dir)) {
+    const partial = `${dir}.partial-${randomUUID()}`;
+    await cp(context, partial, { recursive: true });
+    await mkdir(join(partial, VENDOR_DIR), { recursive: true });
+    for (const file of packed.files)
+      await cp(join(packed.dir, file), join(partial, VENDOR_DIR, file));
+    const workspace = join(partial, "pnpm-workspace.yaml");
+    await writeFile(workspace, withOverrides(await readFile(workspace, "utf8"), overrides));
+    const lock = join(partial, VENDOR_DIR, "lock");
+    await docker(["build", "--file", "-", "--output", `type=local,dest=${lock}`, partial], {
+      log: join(logs, `lockfile-${resolved.repository}.log`),
+      input: LOCK_DOCKERFILE,
+    });
+    await rename(join(lock, "pnpm-lock.yaml"), join(partial, "pnpm-lock.yaml"));
+    await rm(lock, { recursive: true, force: true });
+    await rename(partial, dir);
+  }
+  const lock = createHash("sha256")
+    .update(await readFile(join(dir, "pnpm-lock.yaml")))
+    .digest("hex");
+  return { dir, key: digestOf(inputs, lock), lock };
+}
+
+/** Every package manifest of a context's workspace (apps/*, packages/*). */
+async function workspaceManifests(context) {
+  const manifests = [];
+  for (const group of ["apps", "packages"]) {
+    const entries = await readdir(join(context, group)).catch(() => []);
+    for (const entry of entries) {
+      const text = await readFile(join(context, group, entry, "package.json"), "utf8").catch(
+        () => null,
+      );
+      if (text !== null) manifests.push(JSON.parse(text));
+    }
+  }
+  return manifests;
+}
+
 // ─── the stack's state ──────────────────────────────────────────────────────
 
 const readState = async () => {
@@ -553,6 +675,7 @@ function parseFlags(args) {
     purge: false,
     force: false,
     keep: false,
+    packages: "source",
   };
   const sources = {};
   for (let i = 0; i < args.length; i++) {
@@ -564,6 +687,7 @@ function parseFlags(args) {
     if (arg === "--mend" || arg === "--sealant" || arg === "--sealantd")
       sources[arg.slice(2)] = value();
     else if (arg === "--port") flags.port = Number(value());
+    else if (arg === "--packages") flags.packages = value();
     else if (arg === "--no-check") flags.check = false;
     else if (arg === "--json") flags.json = true;
     else if (arg === "--purge") flags.purge = true;
@@ -573,6 +697,8 @@ function parseFlags(args) {
   }
   if (!Number.isInteger(flags.port) || flags.port < 1024 || flags.port + SERVER_PORT_OFFSET > 65535)
     throw new Error(`--port takes a port between 1024 and ${65535 - SERVER_PORT_OFFSET}`);
+  if (flags.packages !== "source" && flags.packages !== "npm")
+    throw new Error("--packages takes source or npm");
   return { flags, sources };
 }
 
@@ -696,57 +822,108 @@ async function upClaimed(flags, specs, { started, phases, logs }) {
   const relay = relayEndpoint(process.env.DOCKER_HOST, flags.port);
   const { socket, rootless } = await daemonSocket();
 
-  // Every build starts at once. The bundle copies Core's three images in, so it waits for them;
-  // it only names the sealantd image (the bundled worker bakes it into workspace images when an
-  // inner session first launches), so sealantd's cargo build runs on beside the bundle and the
-  // install, and the stack is ready once it is done too.
+  // Every build starts as soon as what it needs exists. sealantd's cargo build needs nothing. With
+  // `--packages source`, Core's images wait for sealantd's packages packed from source and Mend's
+  // for Core's (the context each installs them from is derived first). The bundle copies Core's
+  // three images in, so it waits for them; it only names the sealantd image (the bundled worker
+  // bakes it into workspace images when an inner session first launches), so the cargo build runs
+  // on beside the bundle and the install, and the stack is ready once it is done too.
   say("verify stack · building images (logs: " + logs + ")");
   await ensureBuildx();
   const outcomes = {};
-  const upstream = imageNames(resolved, { cliVersion, upstreamIds: [] });
   const component = async (name, work) => {
     const outcome = await timed(phases, `build:${name}`, work);
     outcomes[name] = outcome;
     say(`  ${name} · ${outcome} · ${formatSeconds(phases[`build:${name}`])}`);
   };
+  const fromSource = (name) => resolved[name].kind !== "pinned";
+  const linking = {
+    runtime: flags.packages === "source" && fromSource("sealantd") && fromSource("sealant"),
+    sdk: flags.packages === "source" && fromSource("sealant"),
+  };
+  const packed = (name, wanted) =>
+    wanted
+      ? timed(phases, `packages:${name}`, () =>
+          packFromSource(logs, resolved[name], contexts[name]),
+        )
+      : Promise.resolve(null);
+  const runtimePacked = packed("sealantd", linking.runtime);
+  const sdkPacked = packed("sealant", linking.sdk);
+  const coreContext = (async () => {
+    const runtime = await runtimePacked;
+    if (runtime === null) return contexts.sealant;
+    const consumers = runtimeConsumers(await workspaceManifests(contexts.sealant));
+    const linked = await linkedContext(
+      logs,
+      resolved.sealant,
+      contexts.sealant,
+      runtime,
+      packageOverrides(runtime.files, consumers),
+    );
+    resolved.sealant.buildKey = linked.key;
+    resolved.sealant.lock = linked.lock;
+    return linked.dir;
+  })();
+  const mendContext = (async () => {
+    const sdk = await sdkPacked;
+    if (sdk === null) return contexts.mend;
+    const linked = await linkedContext(
+      logs,
+      resolved.mend,
+      contexts.mend,
+      sdk,
+      packageOverrides(sdk.files),
+    );
+    resolved.mend.buildKey = linked.key;
+    resolved.mend.lock = linked.lock;
+    return linked.dir;
+  })();
+  const sealantdTag = imageNames(resolved, { cliVersion, upstreamIds: [] }).sealantd;
   const sealantdBuild =
-    upstream.sealantd === null
+    sealantdTag === null
       ? Promise.resolve()
       : component("sealantd", () =>
           build(logs, "sealantd", {
             context: contexts.sealantd,
             dockerfile: "docker/Dockerfile",
-            tag: upstream.sealantd,
+            tag: sealantdTag,
             labels: { [`${STACK_LABEL}.source`]: `sealantd@${resolved.sealantd.commit}` },
           }),
         );
-
-  const coreBuilds =
-    upstream.sealantApi === null
-      ? []
-      : [
-          ["api", upstream.sealantApi],
-          ["worker", upstream.sealantWorker],
-          ["ssh-gateway", upstream.sealantSshGateway],
-        ].map(([app, tag]) =>
-          component(`sealant-${app}`, () =>
-            build(logs, `sealant-${app}`, {
-              context: contexts.sealant,
-              dockerfile: `apps/${app}/Dockerfile`,
-              tag,
-              labels: { [`${STACK_LABEL}.source`]: `sealant@${resolved.sealant.commit}` },
-            }),
-          ),
-        );
-  const cliBuild = component("mend-cli", () =>
-    build(logs, "mend-cli", {
-      context: contexts.mend,
-      dockerfile: { text: CLI_DOCKERFILE },
-      tag: upstream.cli,
-    }),
-  );
-  // Both are awaited below; a failure before then is not an unhandled rejection.
-  for (const pending of [sealantdBuild, cliBuild]) pending.catch(() => undefined);
+  const coreBuilt = (async () => {
+    if (!fromSource("sealant")) return;
+    const context = await coreContext;
+    const names = imageNames(resolved, { cliVersion, upstreamIds: [] });
+    await Promise.all(
+      [
+        ["api", names.sealantApi],
+        ["worker", names.sealantWorker],
+        ["ssh-gateway", names.sealantSshGateway],
+      ].map(([app, tag]) =>
+        component(`sealant-${app}`, () =>
+          build(logs, `sealant-${app}`, {
+            context,
+            dockerfile: `apps/${app}/Dockerfile`,
+            tag,
+            labels: { [`${STACK_LABEL}.source`]: `sealant@${resolved.sealant.commit}` },
+          }),
+        ),
+      ),
+    );
+  })();
+  const cliBuild = (async () => {
+    const context = await mendContext;
+    await component("mend-cli", () =>
+      build(logs, "mend-cli", {
+        context,
+        dockerfile: { text: CLI_DOCKERFILE },
+        tag: imageNames(resolved, { cliVersion, upstreamIds: [] }).cli,
+      }),
+    );
+  })();
+  // Each is awaited below; a failure before then is not an unhandled rejection.
+  for (const pending of [sealantdBuild, coreBuilt, cliBuild, mendContext])
+    pending.catch(() => undefined);
   const pulls = timed(phases, "pulls", () =>
     Promise.all(
       composeImages(composeYaml).map((image) =>
@@ -754,12 +931,14 @@ async function upClaimed(flags, specs, { started, phases, logs }) {
       ),
     ),
   );
-  await Promise.all([...coreBuilds, pulls]);
+  await Promise.all([coreBuilt, pulls]);
+  const bundleContext = await mendContext;
   // sealantd by its tree (its tag), Core by the image ids the bundle copies.
+  const coreTags = imageNames(resolved, { cliVersion, upstreamIds: [] });
   const upstreamIds = [
-    resolved.sealantd.kind === "pinned" ? "pinned" : resolved.sealantd.tree,
+    fromSource("sealantd") ? buildKey(resolved.sealantd) : "pinned",
     ...(await Promise.all(
-      [upstream.sealantApi, upstream.sealantWorker, upstream.sealantSshGateway].map((tag) =>
+      [coreTags.sealantApi, coreTags.sealantWorker, coreTags.sealantSshGateway].map((tag) =>
         tag === null ? "pinned" : imageId(tag),
       ),
     )),
@@ -767,7 +946,7 @@ async function upClaimed(flags, specs, { started, phases, logs }) {
   const images = imageNames(resolved, { cliVersion, upstreamIds });
   const bundleBuild = component("mend", () =>
     build(logs, "mend", {
-      context: contexts.mend,
+      context: bundleContext,
       dockerfile: "Dockerfile",
       tag: images.mend,
       args: mendBuildArgs(images),
@@ -775,6 +954,15 @@ async function upClaimed(flags, specs, { started, phases, logs }) {
     }),
   );
   await Promise.all([cliBuild, bundleBuild]);
+  const packages = {
+    runtime: linking.runtime
+      ? `@sealant/runtime-* from sealantd@${resolved.sealantd.commit.slice(0, 12)} (Core's lockfile ${resolved.sealant.lock.slice(0, 12)})`
+      : "@sealant/runtime-* from npm, as Core pins them",
+    sdk: linking.sdk
+      ? `@sealant/sdk and @sealant/api-contracts from sealant@${resolved.sealant.commit.slice(0, 12)} (Mend's lockfile ${resolved.mend.lock.slice(0, 12)})`
+      : "@sealant/sdk and @sealant/api-contracts from npm, as Mend pins them",
+  };
+  say(`  packages · ${packages.sdk}; ${packages.runtime}`);
 
   // Setup: the product's own install, run where its files are the daemon's files.
   const origins = innerOrigins(relay);
@@ -803,6 +991,7 @@ async function upClaimed(flags, specs, { started, phases, logs }) {
     ),
     images,
     builds: outcomes,
+    packages,
     relay,
     url: origins.url,
     dockerSocket: socket,
@@ -1406,6 +1595,7 @@ async function report(args) {
   say(`verify stack · ${state.phase ?? "ready"}`);
   for (const source of Object.values(state.sources))
     say(`  ${source.description ?? "pinned (the release Mend pins)"}`);
+  if (state.packages) say(`  packages · ${state.packages.sdk}; ${state.packages.runtime}`);
   say(`  web · ${state.url} (from the session: ${relayOrigin(state)})`);
   for (const [phase, seconds] of Object.entries(state.phases))
     say(`  ${phase.padEnd(22)} ${formatSeconds(seconds)}`);
@@ -1864,6 +2054,7 @@ const HELP = `usage: node scripts/verify-stack/stack.mjs <command>
   down [--purge] [--force]                 remove the stack (--purge: images, build cache, caches)
 
 sources: --mend|--sealant|--sealantd <path|#pr|ref|pinned> (pinned: Core and sealantd only)
+--packages source|npm: install @sealant/sdk, api-contracts and runtime-* from the sources (default)
 docs/operations/verify-stack.md has the rest.`;
 
 async function main() {

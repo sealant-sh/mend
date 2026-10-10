@@ -128,15 +128,39 @@ Refs are fetched anonymously from `github.com/sealant-sh/*` (all three are publi
 cache, one commit deep. A working tree is read through a private index: your index, branch and files
 are not touched.
 
+## Packages from source
+
+A change that spans the repositories often spans their npm packages too: Core's `@sealant/sdk` and
+`@sealant/api-contracts`, which Mend installs, and sealantd's `@sealant/runtime-client` and
+`@sealant/runtime-protocol`, which Core installs. A preview build takes them from npm at the
+versions each repository pins ([Preview builds](preview-builds.md), "Limits"); the stack, by default
+(`--packages source`), takes them from the sources it builds:
+
+- it packs each repository's packages with `pnpm pack`, as the release workflows publish them;
+- it copies the consumer's context, puts the tarballs under `.verify-stack/packages/`, adds pnpm
+  overrides for them to `pnpm-workspace.yaml`, and makes a lockfile for that, so the consumer's own
+  Dockerfile (`--frozen-lockfile` included) builds unchanged;
+- Mend takes Core's two packages everywhere it uses them; Core takes sealantd's only in the packages
+  that track sealantd's `next` line (`npm:@sealant/runtime-*-next@…`, today `@sealant/workspaces`),
+  so `apps/ssh-gateway`, pinned to `^0.6.0`, keeps what Core ships it with.
+
+The consumer's lockfile is made against the registry as it is when the stack starts: a dependency
+the packed packages bring in that the consumer's lockfile lacks resolves to the newest version its
+range allows then. Each image's tag covers that lockfile's bytes, and `report` names the lockfile
+(by digest) each consumer was built from, so two runs that resolved differently say so. `report`
+says where the packages came from. `--packages npm` installs the pinned ones, as a preview does. A
+pinned source links nothing.
+
 ## What it does
 
 1. Resolves each source to a commit and a tree, and writes each tree out once as a build context.
-2. Builds the images, all at once: `docker/Dockerfile` of sealantd; `apps/{api,worker,ssh-gateway}`
-   of Core; Mend's root `Dockerfile` with the build arguments `preview.yml` passes
-   (`SEALANT_*_IMAGE`, `MEND_PREVIEW_SEALANTD_IMAGE`) once Core's three exist; and the inner CLI,
-   the `@sealant/mend` package packed from the same Mend source and installed with npm. An image
-   whose tree this daemon built before is reused. Mend's version is its CLI version marked
-   `-verify.t<digest>`, which no release carries.
+2. Packs the npm packages from source (above), then builds the images, each as soon as what it needs
+   exists: `docker/Dockerfile` of sealantd; `apps/{api,worker,ssh-gateway}` of Core; Mend's root
+   `Dockerfile` with the build arguments `preview.yml` passes (`SEALANT_*_IMAGE`,
+   `MEND_PREVIEW_SEALANTD_IMAGE`) once Core's three exist; and the inner CLI, the `@sealant/mend`
+   package packed from the same Mend source and installed with npm. An image whose tree this daemon
+   built before is reused. Mend's version is its CLI version marked `-verify.t<digest>`, which no
+   release carries.
 3. Runs `mend server setup --offline` with that version, from the inner CLI's container.
 4. Starts a relay that publishes the web where the session reaches the daemon, creates the first
    account (its password and token stay in a Docker volume), and adopts `verify-fixture`, a
@@ -285,9 +309,6 @@ Docker service capped at 12 CPUs; Core and sealantd at main, Mend at this branch
   beside a container named `mend-…` it did not make.
 - The fixture's sessions run without a Docker service: a Docker daemon inside the session's own
   rootless one was not tried.
-- Mend's image installs `@sealant/sdk` and `@sealant/api-contracts` from npm at the version Mend
-  pins, and Core's images install `@sealant/runtime-*` from npm, as a preview build does
-  ([Preview builds](preview-builds.md), "Limits").
 - A session's workspace image has the Docker CLI and Compose but no buildx; the script copies the
   plugin out of `docker:27.5.1-cli` into its own Docker configuration.
 - Images are pulled anonymously; until the server's mirrors exist, a cold start pulls `rust`,
