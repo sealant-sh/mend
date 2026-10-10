@@ -14,8 +14,8 @@ argument may be empty, start with a newline or span lines, so a `bash -lc` scrip
 newline runs (it used to create a session and then fail its launch).
 
 New: `mend logs <session> [--follow]` prints any session's recorded terminal output, and
-`mend wait <session> [--timeout <s>]` returns once its command ended, with its exit code (124 on
-timeout).
+`mend wait <session> [--timeout <duration>]` (`90`, `90s`, `5m`, `1h`) returns once its command
+ended, with its exit code (124 on timeout).
 
 `mend run` and `mend logs` give stdout no more than a slow reader takes and exit only once it has
 all of it, waiting at most 5 seconds at exit for a reader that takes nothing. A signal stops
