@@ -375,7 +375,9 @@ chooses, as Mend decides.
   until then", in Mend's own words for its modes.
 - The next launch the gateway makes for the thread names the chosen mode; once a live agent runs
   with it, the line goes. Choosing the mode it already runs with is nothing to wait for.
-- The choice is kept per person and session in the state file (`next_modes`), across a restart.
+- The choice is kept per person and session in the state file (`next_modes`), across a restart. It
+  is written before it is acknowledged: a choice the file does not take is refused with a reason and
+  changes nothing, so a restart never brings back a mode the person moved away from.
 
 ## Phase 3: the terminal
 

@@ -961,8 +961,10 @@ export const makePersonHub = (input: {
             source.agent.status === "running" &&
             modeOf(source.agent) === mode;
           if (!applied || keeper === null) return Effect.void;
-          nextModes.delete(sessionId);
+          // Let go of in the state file first: a row left behind would choose a mode again after
+          // a restart. Kept in memory until then, and tried again on the next read.
           return state.setNextMode(keeper.id, sessionId, null).pipe(
+            Effect.tap(() => Effect.sync(() => nextModes.delete(sessionId))),
             Effect.catch((error) =>
               Effect.logWarning("t3 gateway could not let go of a next-start mode", {
                 cause: error.message,
@@ -2925,15 +2927,25 @@ export const makePersonHub = (input: {
             }
             // The mode it already runs with is nothing to wait for.
             const next = command.mode === modeOf(source.agent) ? null : command.mode;
-            if (next === null) nextModes.delete(sessionId);
-            else nextModes.set(sessionId, next);
+            // Kept first: a choice the state file did not take is refused, never acknowledged and
+            // then lost to a restart (an `ask` that came back as full access).
             yield* state.setNextMode(keeper.id, sessionId, next).pipe(
-              Effect.catch((error) =>
+              Effect.tapError((error) =>
                 Effect.logError("t3 gateway could not keep a next-start mode", {
                   cause: error.message,
                 }),
               ),
+              Effect.mapError(
+                () =>
+                  new ThreadCommandRefused({
+                    reason:
+                      "The gateway could not keep this mode for the agent's next start, so it did not change it. Try again.",
+                    authorization: false,
+                  }),
+              ),
             );
+            if (next === null) nextModes.delete(sessionId);
+            else nextModes.set(sessionId, next);
             yield* publishAll;
             return sequence;
           }),

@@ -1,3 +1,8 @@
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
+
 import { assert, describe, it } from "@effect/vitest";
 import {
   CommandId,
@@ -114,6 +119,55 @@ describe("the runtime-mode switch", () => {
       }),
     ),
   );
+
+  it.live("refuses a mode the state file cannot keep, so a restart never loosens it", () => {
+    const statePath = join(mkdtempSync(join(tmpdir(), "t3-gateway-mode-")), "state.sqlite");
+    const runningAs = (mend: FakeMend) =>
+      Effect.gen(function* () {
+        const { rpc } = yield* pairAndConnect(mend, `MODE-${++commands}`);
+        const projection = yield* rpc[ORCHESTRATION_V2_WS_METHODS.getThreadProjection]({
+          threadId: THREAD,
+        });
+        return { rpc, mode: projection.thread.runtimeMode };
+      });
+    return Effect.gen(function* () {
+      const mend = yield* startFakeMend;
+      mend.workbench.addProject("project-1", "mend");
+      mend.workbench.addSession({ id: "session-1", projectId: "project-1" });
+      yield* Effect.gen(function* () {
+        const { rpc, mode } = yield* runningAs(mend);
+        assert.strictEqual(mode, "full-access");
+        // The state file stops taking next-start modes (a full disk, say).
+        const database = new DatabaseSync(statePath);
+        database.exec(
+          "CREATE TRIGGER refuse BEFORE INSERT ON next_modes BEGIN SELECT RAISE(ABORT, 'disk full'); END;",
+        );
+        database.close();
+        const refused = yield* Effect.exit(
+          rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](setMode("approval-required")),
+        );
+        assert.strictEqual(tagOf(refused), "OrchestrationV2DispatchCommandError");
+        const after = yield* rpc[ORCHESTRATION_V2_WS_METHODS.getThreadProjection]({
+          threadId: THREAD,
+        });
+        assert.strictEqual(after.thread.runtimeMode, "full-access");
+        assert.notInclude(notices(after), nextModeLineOf("ask"));
+      }).pipe(Effect.scoped, Effect.provide(gatewayTestLayer(mend.url, statePath)));
+
+      // Once the file takes it, the choice is kept across a restart.
+      const database = new DatabaseSync(statePath);
+      database.exec("DROP TRIGGER refuse;");
+      database.close();
+      yield* Effect.gen(function* () {
+        const { rpc } = yield* runningAs(mend);
+        yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](setMode("approval-required"));
+      }).pipe(Effect.scoped, Effect.provide(gatewayTestLayer(mend.url, statePath)));
+      yield* Effect.gen(function* () {
+        const { mode } = yield* runningAs(mend);
+        assert.strictEqual(mode, "approval-required");
+      }).pipe(Effect.scoped, Effect.provide(gatewayTestLayer(mend.url, statePath)));
+    });
+  });
 
   it.live("refuses modes Mend has not, and sessions the person may not steer", () =>
     withGateway((mend) =>
