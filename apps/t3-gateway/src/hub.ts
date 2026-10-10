@@ -212,6 +212,17 @@ export interface PersonHub {
   readonly changeOfWorktree: (
     worktreePath: string,
   ) => Effect.Effect<WorktreeChange | null, HubReadError>;
+  /**
+   * What a t3code `cwd` is in Mend: a thread's worktree (its session), or a project's store path
+   * (the project alone, read at its default branch). Null when it is neither of the person's.
+   */
+  readonly locationOf: (cwd: string) => Effect.Effect<CwdLocation | null, HubReadError>;
+}
+
+export interface CwdLocation {
+  readonly projectId: string;
+  /** The thread's session; null for the project's own root. */
+  readonly sessionId: string | null;
 }
 
 export interface WorktreeChange {
@@ -2801,7 +2812,29 @@ export const makePersonHub = (input: {
       );
     }
 
+    const locationOf = (cwd: string) =>
+      Effect.gen(function* () {
+        yield* ensureLoaded;
+        return yield* locked(
+          Effect.sync((): CwdLocation | null => {
+            const thread = threadSources().find(
+              (candidate) => worktreePathOf(candidate.project, candidate.session) === cwd,
+            );
+            if (thread !== undefined) {
+              return { projectId: thread.project.id, sessionId: thread.session.id };
+            }
+            const project = Array.from(projects.values()).find(
+              (entry) => entry.project.storePath === cwd,
+            );
+            return project === undefined
+              ? null
+              : { projectId: project.project.id, sessionId: null };
+          }),
+        );
+      });
+
     return {
+      locationOf,
       shellSnapshot,
       subscribeShell,
       threadSnapshot: (threadId: string) => threadSnapshot(sessionIdOf(threadId)),

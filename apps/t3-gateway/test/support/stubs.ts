@@ -31,6 +31,8 @@ export const unreachableMend: MendClient["Service"] = {
   workspaceRetirement: () => unavailable("GET /api/sessions/:id/workspace-retirement"),
   changeDiff: () => unavailable("GET /api/changes/:id/diff"),
   worktreeNames: () => unavailable("GET /api/projects/:id/worktrees"),
+
+  projectFiles: () => unavailable("GET /api/projects/:id/files"),
   createSession: () => unavailable("POST /api/projects/:id/sessions"),
   joinWorktree: () => unavailable("POST /api/worktrees/:id/sessions"),
   labelSession: () => unavailable("POST /api/sessions/:id/label"),
@@ -65,6 +67,7 @@ export const emptyHub: PersonHub = {
   threadSnapshot: () => Effect.succeed(null),
   subscribeThread: () => Effect.succeed(null),
   changeOfWorktree: () => Effect.succeed(null),
+  locationOf: () => Effect.succeed(null),
   commands: {
     send: () => refused,
     interrupt: () => refused,

@@ -286,6 +286,24 @@ Mend lets a person with shared control stop the owner's session but not delete i
 t3code stops the owner's live session first (the client's `provider-session.detach`), and then
 answers t3code's authorization error.
 
+### Project files and `@`-mentions
+
+`projects.searchEntries` (the composer's `@`) and `projects.listEntries` (the file tree) name the
+thread's worktree, or the project's root, as `cwd` (`src/files.ts`). The gateway answers from Mend's
+`GET /api/projects/:id/files`, read as the person: the session's worktree for a thread, the default
+branch for the project's root, both under Mend's visibility rules. Any other `cwd` answers
+`workspace_root_not_found`.
+
+- A search ranks a name that starts with what was typed first, then a name that contains it, a path
+  that contains it, and its letters in order anywhere; shorter paths win a tie. An empty query lists
+  the shallowest entries first. `kind` and `imageOnly` filter as t3code's own index does.
+- Directories are every directory above a listed file.
+- A listing answers for 15 seconds, so typing after `@` reads Mend once.
+- Mend lists at most 20,000 files, sorted, with no paging and no listing by directory. In a larger
+  tree a file past the cut cannot be found or browsed here, and every search or directory listing
+  over a cut list says `truncated`, even when nothing matched, so the composer never presents it as
+  complete.
+
 ## Run it
 
 Nothing in Mend starts the gateway. Run it beside a Mend server:

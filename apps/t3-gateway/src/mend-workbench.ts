@@ -236,6 +236,16 @@ export const MendWorktreeListing = Schema.Struct({
   worktrees: Schema.Array(Schema.Struct({ name: Schema.String })),
 });
 
+/**
+ * `ProjectFileListing` in @mend/api-contracts, from `GET /api/projects/:id/files`: every file of a
+ * session's worktree, or of the project's default branch, flat and sorted.
+ */
+export const MendFileListing = Schema.Struct({
+  files: Schema.Array(Schema.String),
+  truncated: Schema.Boolean,
+});
+export type MendFileListing = typeof MendFileListing.Type;
+
 /** `PastedImage` in @mend/api-contracts, from `POST /api/sessions/:id/images`. */
 export const MendPastedImage = Schema.Struct({
   /** The file as the session's workspace sees it: what the turn names. */

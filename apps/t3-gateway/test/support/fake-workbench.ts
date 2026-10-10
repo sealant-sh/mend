@@ -514,6 +514,22 @@ export class FakeWorkbench {
       this.projectDetailFailures -= 1;
       return json(502, { _tag: "BadGateway" });
     }
+    if (method === "GET" && collection === "projects" && sub === "files") {
+      if (this.projectView(id) === null) return json(404, { _tag: "NotFound" });
+      const sessionId = url.searchParams.get("session");
+      if (sessionId !== null && this.sessions.get(sessionId)?.projectId !== id) {
+        return json(404, { _tag: "NotFound" });
+      }
+      // Mend's own cap: the sorted list, cut at its limit.
+      const all = (this.files.get(sessionId ?? id) ?? []).toSorted();
+      return json(200, {
+        source: sessionId === null ? "branch" : "worktree",
+        label: sessionId === null ? "main" : sessionId,
+        rootPath: null,
+        files: all.slice(0, this.fileListingLimit),
+        truncated: all.length > this.fileListingLimit,
+      });
+    }
     if (method === "GET" && collection === "projects" && sub === undefined) {
       const project = this.projectView(id);
       if (project === null) return json(404, { _tag: "NotFound" });
@@ -868,6 +884,13 @@ export class FakeWorkbench {
     return json(200, { ...session });
   }
 
+  /**
+   * `GET /api/projects/:id/files`: a session's worktree files by session id, and the default
+   * branch's by project id.
+   */
+  readonly files = new Map<string, ReadonlyArray<string>>();
+  /** How many files `GET /api/projects/:id/files` lists before it cuts (Mend's is 20,000). */
+  fileListingLimit = 20_000;
   /** How many images were pasted into workspaces. */
   pastedImages = 0;
   /** The Mend account a request's bearer belongs to (set by the fake Mend that pairs devices). */
