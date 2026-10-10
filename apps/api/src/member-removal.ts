@@ -13,6 +13,7 @@ import {
   UsersRepo,
 } from "@mend/db";
 import type { OrganizationId } from "@mend/domain";
+import { SealantClients } from "@mend/sealant";
 import { SessionEngine } from "@mend/sessions";
 import { Effect, Layer } from "effect";
 import * as Context from "effect/Context";
@@ -29,7 +30,8 @@ export interface RemoveMemberInput {
 /**
  * Removing a member (docs/adr/0003-organizations-and-tenancy.md): the membership goes, the account
  * is deactivated, every way it signs in is revoked, its open connections close on every process,
- * its Slack links go (docs/adr/0006-slack.md), and its unsettled sessions stop. Stopping flushes
+ * its Slack links go (docs/adr/0006-slack.md), the workspace SSH gateway stops accepting its keys
+ * (docs/WORKSPACE-SSH.md), and its unsettled sessions stop. Stopping flushes
  * and checkpoints like any stop, so the work so far stays reviewable. Private projects stay where
  * they are until an owner takes them over.
  */
@@ -55,6 +57,7 @@ export const MemberRemovalLive: Layer.Layer<
   | OrganizationsRepo
   | ProjectsRepo
   | PushDevicesRepo
+  | SealantClients
   | SessionControlEventsRepo
   | SessionEngine
   | SessionsRepo
@@ -71,6 +74,7 @@ export const MemberRemovalLive: Layer.Layer<
     const organizations = yield* OrganizationsRepo;
     const projects = yield* ProjectsRepo;
     const pushDevices = yield* PushDevicesRepo;
+    const sealantClients = yield* SealantClients;
     const engine = yield* SessionEngine;
     const sessions = yield* SessionsRepo;
     const slackLinks = yield* SlackLinksRepo;
@@ -151,6 +155,42 @@ export const MemberRemovalLive: Layer.Layer<
           data: { teamId: link.teamId, slackUserId: link.slackUserId, memberRemoved: true },
         });
       }
+      // No workspace SSH key of theirs opens a new connection at the gateway. A platform failure
+      // leaves the keys registered and says so; it never undoes the removal.
+      const sshKeys = sealantClients.sshKeys(input.userId);
+      yield* sshKeys.list().pipe(
+        Effect.flatMap((held) =>
+          Effect.forEach(
+            held,
+            (key) =>
+              sshKeys.remove(key.sshKeyId).pipe(
+                Effect.flatMap((removed) =>
+                  removed === null
+                    ? Effect.void
+                    : audit.record({
+                        organizationId: input.organizationId,
+                        actorUserId: input.actorUserId,
+                        action: "ssh_key.removed",
+                        subjectType: "member",
+                        subjectId: input.userId,
+                        data: {
+                          sshKeyId: removed.sshKeyId,
+                          fingerprint: removed.fingerprint,
+                          name: removed.name,
+                          memberRemoved: true,
+                        },
+                      }),
+                ),
+              ),
+            { discard: true },
+          ),
+        ),
+        Effect.catchTag("SealantPlatformError", (error) =>
+          Effect.logWarning("member removal: workspace SSH keys not removed").pipe(
+            Effect.annotateLogs({ userId: input.userId, code: error.code, cause: error.message }),
+          ),
+        ),
+      );
       // Other processes close on the event; this one closes now.
       yield* userEvents.changed(input.userId, "access");
       yield* connections.closeForUser(input.userId);

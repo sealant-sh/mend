@@ -171,6 +171,16 @@ export const describeAudit = (entry: Pick<AuditEntryDto, "event" | "subjectName"
     }
     case "change.pull_request_adopted":
       return `recorded pull request #${String(event.data["pullRequest"])} of change ${event.subjectId}, opened outside Mend · ${text(event.data["state"]) ?? "?"}`;
+    case "ssh_key.added":
+    case "ssh_key.removed": {
+      const key = `workspace SSH key ${text(event.data["fingerprint"]) ?? "?"}${name === null ? "" : ` (${name})`}`;
+      const verb = event.action === "ssh_key.added" ? "registered" : "removed";
+      if (event.data["memberRemoved"] === true)
+        return `removed the ${key} of ${subject} with their membership`;
+      return event.actorUserId === event.subjectId
+        ? `${verb} ${key}`
+        : `${verb} the ${key} of ${subject}`;
+    }
   }
 };
 

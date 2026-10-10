@@ -13,6 +13,7 @@ import {
 } from "@mend/db";
 import { OrganizationId, ProjectId, SessionId, WorktreeId } from "@mend/domain";
 import { Organization, Session } from "@mend/domain/workbench";
+import { SealantClients, SealantPlatformError } from "@mend/sealant";
 import { SessionEngine } from "@mend/sessions";
 import { Deferred, Effect, Exit, Layer, Queue, Scope, Stream } from "effect";
 import * as Context from "effect/Context";
@@ -33,7 +34,9 @@ const ACME = OrganizationId.make("org-acme");
 const PROJECT = ProjectId.make("project-acme");
 
 /** A removal whose every effect is appended, in order, as `service.method:subject`. */
-const removalWorld = (options: { readonly lastOwner?: boolean } = {}) => {
+const removalWorld = (
+  options: { readonly lastOwner?: boolean; readonly platformDown?: boolean } = {},
+) => {
   const effects: Array<string> = [];
   const woundDown = Effect.runSync(Deferred.make<void>());
   const note = (entry: string) => Effect.sync(() => void effects.push(entry));
@@ -124,6 +127,47 @@ const removalWorld = (options: { readonly lastOwner?: boolean } = {}) => {
           unlink: (teamId, slackUserId) =>
             note(`slackLinks.unlink:${teamId}:${slackUserId}`).pipe(Effect.as(null)),
         }),
+        Layer.mock(SealantClients, {
+          connectedAccounts: () => ({
+            list: () => Effect.die("not in this test"),
+            connect: () => Effect.die("not in this test"),
+            disconnect: () => Effect.die("not in this test"),
+          }),
+          sshKeys: (userId) => ({
+            ensure: () => Effect.die("not in this test"),
+            list: () =>
+              options.platformDown === true
+                ? Effect.fail(
+                    new SealantPlatformError({
+                      code: "UNREACHABLE",
+                      status: null,
+                      message: "platform down",
+                      cause: null,
+                    }),
+                  )
+                : Effect.succeed([
+                    {
+                      sshKeyId: `key-${userId}`,
+                      ownerUserId: `sealant-${userId}`,
+                      name: "laptop",
+                      algorithm: "ssh-ed25519",
+                      fingerprint: "SHA256:laptop",
+                      createdAt: "2026-10-01T00:00:00.000Z",
+                    },
+                  ]),
+            remove: (sshKeyId) =>
+              note(`sshKeys.remove:${userId}:${sshKeyId}`).pipe(
+                Effect.as({
+                  sshKeyId,
+                  ownerUserId: `sealant-${userId}`,
+                  name: "laptop",
+                  algorithm: "ssh-ed25519",
+                  fingerprint: "SHA256:laptop",
+                  createdAt: "2026-10-01T00:00:00.000Z",
+                }),
+              ),
+          }),
+        }),
         Layer.mock(SessionEngine, {
           launchUnderWay: () => false,
           cancelQueuedTurnsBy: (userId, sessionIds) =>
@@ -174,11 +218,23 @@ describe("member removal (docs/adr/0003)", () => {
       "audit.record:member.removed:carol",
       "slackLinks.unlink:T-acme:U-carol",
       "audit.record:slack.link_removed:carol",
+      // The gateway refuses Carol's keys from the next connection on.
+      "sshKeys.remove:carol:key-carol",
+      "audit.record:ssh_key.removed:carol",
       "userEvents.changed:carol:access",
       "connections.closeForUser:carol",
       "engine.windDownPerson:carol",
       `engine.reconcileHotSessions:${PROJECT}`,
     ]);
+  });
+
+  it("still removes the member when the platform cannot archive their workspace SSH keys", async () => {
+    const world = removalWorld({ platformDown: true });
+    const exit = await remove(world);
+    expect(Exit.isSuccess(exit)).toBe(true);
+    expect(world.effects).toContain("users.revokeAuthSessions:carol");
+    expect(world.effects).toContain("connections.closeForUser:carol");
+    expect(world.effects.filter((entry) => entry.includes("ssh"))).toEqual([]);
   });
 
   it("refusing the last owner moves nothing", async () => {

@@ -23,7 +23,9 @@ import { withServerStore } from "./server-store.ts";
  *   volume it owns, its release image) and the private configuration under the config
  *   directory (identity, generations, backups).
  * - `home`: what this CLI keeps for itself (the sign-in, the workspace SSH key, the
- *   managed block in ~/.ssh/config), with the device token revoked on the server first.
+ *   managed block in ~/.ssh/config). First, while the sign-in still works, the server
+ *   removes the workspace SSH key this machine registered and revokes this terminal's
+ *   device token. The account's other keys and devices are left alone.
  * - `all`: both, server first.
  *
  * Nothing else under the config directory is touched: a host-run store or keys root,
@@ -73,7 +75,16 @@ export interface UninstallRuntime {
   readonly signedIn: { readonly url: string; readonly deviceId: string | null } | null;
   /** Revoke this terminal's device token; resolves to the failure's words, or null when done. */
   revokeDevice(): Promise<string | null>;
+  /** Remove the workspace SSH key this machine registered, and only that key. */
+  removeWorkspaceSshKey(): Promise<WorkspaceSshKeyRemoval>;
 }
+
+/** What removing this machine's workspace SSH key came to. */
+export type WorkspaceSshKeyRemoval =
+  | { readonly kind: "removed"; readonly fingerprint: string }
+  /** The server holds no key matching the one this machine would offer. */
+  | { readonly kind: "none" }
+  | { readonly kind: "failed"; readonly message: string };
 
 export interface ServerPlan {
   readonly version: string;
@@ -229,6 +240,9 @@ export const planLines = (plan: UninstallPlan, configDir: string): ReadonlyArray
     if (plan.home.sshDirectory !== null) parts.push(plan.home.sshDirectory);
     if (plan.home.managedSshBlocks > 0) {
       parts.push(`${plural(plan.home.managedSshBlocks, "managed block")} in ~/.ssh/config`);
+    }
+    if (plan.home.signedIn !== null) {
+      parts.push(`this machine's workspace ssh key on ${plan.home.signedIn.url}, if registered`);
     }
     lines.push(parts.length === 0 ? "home     nothing of Mend's here" : `home     ${parts[0]}`);
     for (const part of parts.slice(1)) lines.push(`         ${part}`);
@@ -423,6 +437,21 @@ export const executeUninstall = async (
 ): Promise<UninstallOutcome> => {
   const failures: Array<string> = [];
   const leftovers: Array<string> = [];
+  // The key goes while the sign-in can still ask for it, before the token is revoked; with `all`
+  // the server is about to go too.
+  if (plan.home !== null && plan.home.signedIn !== null) {
+    const { url } = plan.home.signedIn;
+    const removal = await runtime.removeWorkspaceSshKey();
+    if (removal.kind === "removed") {
+      runtime.server.writeLine(
+        `removed workspace ssh key ${removal.fingerprint} on ${url} · the gateway refuses it from the next connection`,
+      );
+    } else if (removal.kind === "failed") {
+      leftovers.push(
+        `workspace ssh key on ${url}: ${removal.message} (remove it with mend ssh keys remove, or under Settings → Workspace SSH)`,
+      );
+    }
+  }
   // The token is revoked while the server can still answer; with `all` it is about to go.
   if (plan.home?.signedIn !== null && plan.home?.signedIn?.deviceId != null) {
     const failure = await runtime.revokeDevice();

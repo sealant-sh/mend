@@ -51,6 +51,10 @@ export const AuditAction = Schema.Literals([
   "change.bundle_downloaded",
   // A pull request opened outside Mend was read with the owner's `gh` and recorded.
   "change.pull_request_adopted",
+  // docs/WORKSPACE-SSH.md: a key the workspace SSH gateway accepts for an account was registered,
+  // or archived so the gateway refuses it. The subject is the member who holds the key.
+  "ssh_key.added",
+  "ssh_key.removed",
 ]);
 export type AuditAction = typeof AuditAction.Type;
 

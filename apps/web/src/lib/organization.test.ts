@@ -95,6 +95,23 @@ describe("describeAudit for Slack (docs/adr/0006)", () => {
         event("slack.link_removed", { slackUserId: "U1", memberRemoved: true }, "Carol"),
       ),
     ).toBe("removed the Slack link of Carol with their membership");
+    const ownKey = event("ssh_key.added", { fingerprint: "SHA256:abc", name: "laptop" }, "Carol");
+    expect(
+      describeAudit({
+        ...ownKey,
+        event: new AuditEvent({ ...ownKey.event, actorUserId: "carol" }),
+      }),
+    ).toBe("registered workspace SSH key SHA256:abc (laptop)");
+    expect(
+      describeAudit(
+        event("ssh_key.removed", { fingerprint: "SHA256:abc", name: "laptop" }, "Carol"),
+      ),
+    ).toBe("removed the workspace SSH key SHA256:abc (laptop) of Carol");
+    expect(
+      describeAudit(
+        event("ssh_key.removed", { fingerprint: "SHA256:abc", memberRemoved: true }, "Carol"),
+      ),
+    ).toBe("removed the workspace SSH key SHA256:abc of Carol with their membership");
     expect(
       describeAudit(
         event("slack.session_started", {

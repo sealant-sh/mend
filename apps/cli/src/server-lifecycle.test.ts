@@ -15,7 +15,12 @@ import {
   serverCommand,
   type ServerSetupRuntime,
 } from "./server-setup.ts";
-import { describeUninstall, executeUninstall, planLines } from "./uninstall.ts";
+import {
+  describeUninstall,
+  executeUninstall,
+  planLines,
+  type WorkspaceSshKeyRemoval,
+} from "./uninstall.ts";
 
 interface DaemonState {
   readonly appRunning: boolean;
@@ -1812,6 +1817,7 @@ describe("the edge and the posture", { timeout: 120_000 }, () => {
       sshConfigFile: path.join(f.root, "home", "ssh-config"),
       signedIn: null,
       revokeDevice: async () => null,
+      removeWorkspaceSshKey: async (): Promise<WorkspaceSshKeyRemoval> => ({ kind: "none" }),
     };
     const plan = await describeUninstall(runtime, "server");
     expect(plan.server).toMatchObject({ edgeHost: host });
@@ -1843,6 +1849,10 @@ describe("server uninstall", { timeout: 60_000 }, () => {
       sshConfigFile: path.join(f.root, "home", "ssh-config"),
       signedIn: null,
       revokeDevice: async () => "must not be called",
+      removeWorkspaceSshKey: async (): Promise<WorkspaceSshKeyRemoval> => ({
+        kind: "failed",
+        message: "must not be called",
+      }),
     };
 
     const plan = await describeUninstall(runtime, "server");
@@ -1891,6 +1901,7 @@ describe("server uninstall", { timeout: 60_000 }, () => {
       sshConfigFile: path.join(f.root, "home", "ssh-config"),
       signedIn: null,
       revokeDevice: async () => null,
+      removeWorkspaceSshKey: async (): Promise<WorkspaceSshKeyRemoval> => ({ kind: "none" }),
     };
     const outcome = await executeUninstall(runtime, await describeUninstall(runtime, "server"));
     expect(outcome.failures).toEqual([expect.stringContaining("docker compose down failed")]);

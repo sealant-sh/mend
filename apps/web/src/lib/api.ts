@@ -49,6 +49,8 @@ export type BriefVersionDto = Outputs["queue"]["briefVersions"][number];
 export type SealantConnectionDto = Outputs["platform"]["sealantConnection"];
 export type SealantIdentityDto = Outputs["platform"]["sealantIdentity"];
 export type ConnectedAccountDto = SealantIdentityDto["accounts"][number];
+export type WorkspaceSshDto = Outputs["platform"]["workspaceSsh"];
+export type WorkspaceSshKeyDto = WorkspaceSshDto["keys"][number];
 export type ConnectedAccountProviderDto = ConnectedAccountDto["provider"];
 export type MachineDto = Outputs["platform"]["machine"];
 export type InstanceDto = Outputs["platform"]["instance"];
@@ -209,6 +211,8 @@ export const connectAccount = (input: {
 }) => orLogin(trpcClient.platform.connectAccount.mutate(input));
 export const disconnectAccount = (id: string) =>
   orLogin(trpcClient.platform.disconnectAccount.mutate({ id }));
+export const removeWorkspaceSshKey = (sshKeyId: string) =>
+  orLogin(trpcClient.platform.removeWorkspaceSshKey.mutate({ sshKeyId }));
 
 // ─── Projects ───────────────────────────────────────────────────────────────
 

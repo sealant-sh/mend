@@ -9,15 +9,10 @@ import { fileURLToPath } from "node:url";
 import { parseWorkspaceSshTarget, workspaceSshPublicKeyFingerprint } from "@mend/workspace-ssh";
 import { expect, it } from "vitest";
 
-const runSshCommand = async (home: string, url: string, args: ReadonlyArray<string>) => {
+const runMend = async (home: string, url: string, args: ReadonlyArray<string>) => {
   const child = spawn(
     process.execPath,
-    [
-      "--experimental-strip-types",
-      fileURLToPath(new URL("./main.ts", import.meta.url)),
-      "ssh",
-      ...args,
-    ],
+    ["--experimental-strip-types", fileURLToPath(new URL("./main.ts", import.meta.url)), ...args],
     {
       cwd: home,
       env: {
@@ -45,6 +40,9 @@ const runSshCommand = async (home: string, url: string, args: ReadonlyArray<stri
   const [code] = await once(child, "exit");
   return { code, stdout, stderr };
 };
+
+const runSshCommand = (home: string, url: string, args: ReadonlyArray<string>) =>
+  runMend(home, url, ["ssh", ...args]);
 
 it("mend ssh setup/status reconcile real OpenSSH config without claiming host trust or rotating keys", async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "mend-ssh-cli-test-"));
@@ -150,3 +148,162 @@ it("mend ssh setup/status reconcile real OpenSSH config without claiming host tr
     fs.rmSync(home, { recursive: true, force: true });
   }
 }, 20_000);
+
+it("mend ssh keys lists only what the server returns for this account and removes one by fingerprint", async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "mend-ssh-keys-test-"));
+  interface Key {
+    sshKeyId: string;
+    name: string;
+    algorithm: string;
+    fingerprint: string;
+    createdAt: string;
+  }
+  // Another machine of the same account, registered before this one.
+  const keys: Array<Key> = [
+    {
+      sshKeyId: "key-other",
+      name: "old-laptop",
+      algorithm: "ssh-ed25519",
+      fingerprint: "SHA256:0ld+laptop/key",
+      createdAt: "2026-09-01T10:00:00.000Z",
+    },
+  ];
+  const deleted: Array<string> = [];
+  const server = createServer(async (request, response) => {
+    response.setHeader("content-type", "application/json");
+    if (request.method === "GET" && request.url === "/api/workspace-ssh") {
+      response.end(
+        JSON.stringify({ gateway: { host: "0.0.0.0", port: 22444, usernamePrefix: "ws" }, keys }),
+      );
+      return;
+    }
+    if (request.method === "POST" && request.url === "/api/workspace-ssh/keys") {
+      let body = "";
+      for await (const chunk of request) body += String(chunk);
+      const parsed: unknown = JSON.parse(body);
+      const publicKey =
+        typeof parsed === "object" && parsed !== null && "publicKey" in parsed
+          ? String(parsed.publicKey)
+          : "";
+      const fingerprint = workspaceSshPublicKeyFingerprint(publicKey);
+      if (!fingerprint.ok) {
+        response.writeHead(400).end();
+        return;
+      }
+      const key = {
+        sshKeyId: "key-this",
+        name: "this-laptop",
+        algorithm: "ssh-ed25519",
+        fingerprint: fingerprint.value,
+        createdAt: "2026-10-10T10:00:00.000Z",
+      };
+      keys.push(key);
+      response.end(JSON.stringify(key));
+      return;
+    }
+    if (request.method === "DELETE" && request.url === "/api/me/devices/dev-1") {
+      deleted.push("device:dev-1");
+      response.end(JSON.stringify({ revoked: true }));
+      return;
+    }
+    const removal = /^\/api\/workspace-ssh\/keys\/([^/]+)$/.exec(request.url ?? "");
+    if (request.method === "DELETE" && removal !== null) {
+      const id = decodeURIComponent(removal[1] ?? "");
+      deleted.push(id);
+      const index = keys.findIndex((key) => key.sshKeyId === id);
+      if (index === -1) {
+        response
+          .writeHead(404)
+          .end(JSON.stringify({ _tag: "WorkspaceSshKeyNotFound", sshKeyId: id }));
+        return;
+      }
+      const [removed] = keys.splice(index, 1);
+      response.end(JSON.stringify(removed));
+      return;
+    }
+    response.writeHead(404).end();
+  });
+  try {
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const address = server.address();
+    if (address === null || typeof address === "string") throw new Error("Missing test port");
+    const url = `http://127.0.0.1:${address.port}`;
+    fs.mkdirSync(path.join(home, ".ssh"));
+
+    const setup = await runSshCommand(home, url, ["setup"]);
+    expect(setup.code, setup.stderr + setup.stdout).toBe(0);
+    const local = keys.find((key) => key.sshKeyId === "key-this")?.fingerprint;
+    if (local === undefined) throw new Error("setup registered no key");
+
+    const listed = await runSshCommand(home, url, ["keys"]);
+    expect(listed.code, listed.stderr + listed.stdout).toBe(0);
+    const lines = listed.stdout.trim().split("\n");
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toContain("SHA256:0ld+laptop/key  old-laptop");
+    expect(lines[0]).toContain("registered 2026-09-01");
+    expect(lines[0]).not.toContain("this machine");
+    expect(lines[1]).toContain(local);
+    expect(lines[1]).toContain("● this machine");
+
+    const json = await runSshCommand(home, url, ["keys", "--json"]);
+    expect(JSON.parse(json.stdout)).toEqual([
+      { ...keys[0], thisMachine: false },
+      { ...keys[1], thisMachine: true },
+    ]);
+
+    // A fingerprint the account does not hold is refused before anything is deleted.
+    const unknown = await runSshCommand(home, url, ["keys", "remove", "SHA256:nobody"]);
+    expect(unknown.code).toBe(1);
+    expect(unknown.stdout).toContain("none of your registered keys has fingerprint SHA256:nobody");
+    const usage = await runSshCommand(home, url, ["keys", "remove"]);
+    expect(usage.code).toBe(1);
+    expect(usage.stdout).toContain("usage: mend ssh keys remove <fingerprint>");
+    expect(deleted).toEqual([]);
+
+    // The SHA256: prefix is optional, and the key id travels URL-encoded.
+    const other = await runSshCommand(home, url, ["keys", "remove", "0ld+laptop/key"]);
+    expect(other.code, other.stderr + other.stdout).toBe(0);
+    expect(other.stdout).toContain("removed         SHA256:0ld+laptop/key");
+    expect(other.stdout).toContain("the gateway refuses it from the next connection");
+    expect(other.stdout).not.toContain("this machine's key");
+    expect(deleted).toEqual(["key-other"]);
+
+    const mine = await runSshCommand(home, url, ["keys", "remove", local]);
+    expect(mine.code, mine.stderr + mine.stdout).toBe(0);
+    expect(mine.stdout).toContain("this machine's key");
+    expect(deleted).toEqual(["key-other", "key-this"]);
+
+    const empty = await runSshCommand(home, url, ["keys"]);
+    expect(empty.stdout).toContain("no workspace ssh keys registered");
+
+    // `mend uninstall --home` removes this machine's key, and only it, before the device token.
+    const again = await runSshCommand(home, url, ["setup"]);
+    expect(again.code, again.stderr + again.stdout).toBe(0);
+    keys.unshift({
+      sshKeyId: "key-desk",
+      name: "desk",
+      algorithm: "ssh-ed25519",
+      fingerprint: "SHA256:desk",
+      createdAt: "2026-09-02T10:00:00.000Z",
+    });
+    const cliHome = path.join(home, "config", "mend");
+    fs.writeFileSync(
+      path.join(cliHome, "cli.json"),
+      JSON.stringify({ url, token: "test-token", deviceId: "dev-1" }),
+    );
+    const uninstalled = await runMend(home, url, ["uninstall", "--home", "--yes"]);
+    expect(uninstalled.code, uninstalled.stderr + uninstalled.stdout).toBe(0);
+    expect(uninstalled.stdout).toContain(
+      `removed workspace ssh key ${local} on ${url} · the gateway refuses it from the next connection`,
+    );
+    expect(deleted).toEqual(["key-other", "key-this", "key-this", "device:dev-1"]);
+    expect(keys.map((key) => key.sshKeyId)).toEqual(["key-desk"]);
+    expect(fs.existsSync(path.join(cliHome, "ssh"))).toBe(false);
+  } finally {
+    const closed = once(server, "close");
+    server.close();
+    await closed;
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+}, 30_000);

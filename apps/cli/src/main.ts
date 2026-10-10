@@ -176,7 +176,7 @@ import {
 } from "./shared.ts";
 import { type AttachOutcome } from "./shared.ts";
 import { DEFAULT_SKILLS_DIR, scanSkillLibrary } from "./skills.ts";
-import { sshCommand } from "./ssh-setup.ts";
+import { removeThisMachineKey, sshCommand } from "./ssh-setup.ts";
 import {
   describeUninstall,
   executeUninstall,
@@ -185,6 +185,7 @@ import {
   planLines,
   UNINSTALL_USAGE,
   type UninstallScope,
+  type WorkspaceSshKeyRemoval,
 } from "./uninstall.ts";
 import {
   MINT_REFUSED_IN_TRANSIT,
@@ -3591,6 +3592,20 @@ const uninstallCommand = async (config: CliConfig, args: ReadonlyArray<string>) 
         return null;
       } catch (error) {
         return error instanceof Error ? error.message : String(error);
+      }
+    },
+    removeWorkspaceSshKey: async (): Promise<WorkspaceSshKeyRemoval> => {
+      try {
+        const removed = await removeThisMachineKey(
+          (method, route, body) => request(config, method, route, body),
+          mendCliHome(),
+          config.url,
+        );
+        return removed === null
+          ? { kind: "none" }
+          : { kind: "removed", fingerprint: removed.fingerprint };
+      } catch (error) {
+        return { kind: "failed", message: error instanceof Error ? error.message : String(error) };
       }
     },
   };

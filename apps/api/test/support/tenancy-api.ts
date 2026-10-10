@@ -197,6 +197,9 @@ export const createTenancyApi = async (
       readonly secretFiles?: Layer.PartialEffectful<SecretFilesRepo["Service"]>;
       readonly cipher?: Layer.PartialEffectful<SecretCipher["Service"]>;
       readonly harnessModels?: Layer.PartialEffectful<HarnessModelsRepo["Service"]>;
+      /** Each account's workspace SSH keys on the platform, and the gateway it reports. */
+      readonly sshKeys?: SealantClients["Service"]["sshKeys"];
+      readonly workspaceSshInfo?: SealantClients["Service"]["workspaceSshInfo"];
     };
   } = {},
 ): Promise<TenancyApi> => {
@@ -315,9 +318,14 @@ export const createTenancyApi = async (
           connectedAccounts: () => {
             throw new Error("the harness does not implement sealantClients.connectedAccounts");
           },
-          sshKeys: () => {
-            throw new Error("the harness does not implement sealantClients.sshKeys");
-          },
+          sshKeys:
+            options.implement?.sshKeys ??
+            (() => {
+              throw new Error("the harness does not implement sealantClients.sshKeys");
+            }),
+          ...(options.implement?.workspaceSshInfo === undefined
+            ? {}
+            : { workspaceSshInfo: options.implement.workspaceSshInfo }),
         },
         calls,
       ),

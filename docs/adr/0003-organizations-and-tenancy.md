@@ -212,10 +212,10 @@ is cold and starts warming for them. The setup page counts the viewer's own stan
 ### Audit log
 
 Owners see their organization's events: membership, invitations, role and visibility changes, shared
-control, recovery takeovers, folders and references. The operator's acts on an organization (naming
-it, inviting or granting an owner, a password reset) are recorded in that organization's log, so its
-owners see what the operator did; the operator reads no organization content. Stored in Postgres and
-kept indefinitely in v1.
+control, recovery takeovers, folders and references, and workspace SSH keys registered or removed.
+The operator's acts on an organization (naming it, inviting or granting an owner, a password reset)
+are recorded in that organization's log, so its owners see what the operator did; the operator reads
+no organization content. Stored in Postgres and kept indefinitely in v1.
 
 ### Interface
 

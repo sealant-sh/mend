@@ -27,6 +27,7 @@ import type { Harness, SealantConfig } from "@sealant/sdk";
 import type { SshKey, WorkspaceSshInfo } from "@sealant/sdk";
 import {
   archiveConnectedAccountOp,
+  archiveSshKeyOp,
   createConnectedAccountOp,
   createRunOp,
   createSshKeyOp,
@@ -1270,6 +1271,9 @@ export interface ConnectedAccountsApi {
   readonly disconnect: (id: string) => Effect.Effect<ConnectedAccount, SealantPlatformError>;
 }
 
+/** One SSH public key the platform holds for a user; never carries the key material. */
+export type PlatformSshKey = SshKey;
+
 /** A user's SSH public keys on the platform — what the workspace SSH gateway resolves. */
 export interface SshKeysApi {
   /** Idempotent per owner: re-offering the same key returns the existing row. */
@@ -1278,6 +1282,11 @@ export interface SshKeysApi {
     readonly name?: string;
   }) => Effect.Effect<SshKey, SealantPlatformError>;
   readonly list: () => Effect.Effect<ReadonlyArray<SshKey>, SealantPlatformError>;
+  /**
+   * Archive one of the owner's keys; the gateway resolves keys per connection, so the next
+   * connection offering it is refused. Null when the owner holds no active key with that id.
+   */
+  readonly remove: (sshKeyId: string) => Effect.Effect<SshKey | null, SealantPlatformError>;
 }
 
 /**
@@ -1544,6 +1553,14 @@ export const SealantClientsLive: Layer.Layer<
         list: () =>
           withOwner((ownerUserId) =>
             listSshKeysOp(ownerUserId).pipe(Effect.map((response) => response.items.map(toSshKey))),
+          ),
+        // Core archives only a row that is the owner's and still active; any other id is its 404.
+        remove: (sshKeyId) =>
+          withOwner((ownerUserId) =>
+            archiveSshKeyOp(sshKeyId, ownerUserId).pipe(
+              Effect.map(toSshKey),
+              Effect.catchTag("SshKeyNotFoundError", () => Effect.succeed(null)),
+            ),
           ),
       };
     };

@@ -1432,7 +1432,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     summary: "workspace SSH status: gateway, registered keys, ssh config",
     synopsis: ["[status]"],
     description: ["Whether this machine can ssh into workspaces, and what is missing if not."],
-    see: ["ssh setup"],
+    see: ["ssh setup", "ssh keys"],
   },
   {
     name: "ssh setup",
@@ -1446,7 +1446,35 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       { flag: "--key <path>", text: "the public key to register" },
       { flag: "--host <hostname>", text: "override only the SSH hostname" },
     ],
-    see: ["ssh", "shell"],
+    see: ["ssh", "ssh keys", "shell"],
+  },
+  {
+    name: "ssh keys",
+    section: "this machine",
+    summary: "your registered workspace ssh keys, from every machine",
+    synopsis: ["[--json]"],
+    description: [
+      "Every key your account registered with the workspace SSH gateway: fingerprint, name, algorithm and the day it was registered. The key this machine would offer is marked. The platform does not record when a key was last used.",
+    ],
+    options: [{ flag: "--json", text: "the keys as JSON, with thisMachine on each" }],
+    see: ["ssh keys remove", "ssh setup"],
+  },
+  {
+    name: "ssh keys remove",
+    section: "this machine",
+    summary: "stop the workspace ssh gateway accepting one of your keys",
+    synopsis: ["<fingerprint>"],
+    description: [
+      "Removes one of your keys by fingerprint; the SHA256: prefix is optional. The gateway looks a key up on every new connection, so the next connection offering it is refused. A connection already open stays open until it ends.",
+      "Only your own keys are listed and removed. The key file and the ~/.ssh/config block on the machine that registered it stay; mend ssh setup there registers it again. Removing a member from the organization removes all of theirs.",
+    ],
+    examples: [
+      {
+        command: "mend ssh keys remove SHA256:Vn6v0P2dHq1n2a5aGQ6L7rKk8sWm0u3x1zYbTq9cE4o",
+        text: "revoke a lost laptop's key",
+      },
+    ],
+    see: ["ssh keys"],
   },
   {
     name: "accounts",
@@ -1472,7 +1500,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     summary: "remove the server, this machine's Mend files, or both",
     synopsis: ["[--all | --server | --home] [--yes]"],
     description: [
-      "Asks which scope to remove when none is given, prints exactly what will go, and requires the word delete before the server is touched. The server scope removes the local Compose installation: its containers, every volume it owns (repositories, worktrees, the database), its release image, and the private configuration with its generations and backups. The home scope revokes this terminal's device token, then removes cli.json, the workspace SSH key, and the managed block in ~/.ssh/config.",
+      "Asks which scope to remove when none is given, prints exactly what will go, and requires the word delete before the server is touched. The server scope removes the local Compose installation: its containers, every volume it owns (repositories, worktrees, the database), its release image, and the private configuration with its generations and backups. The home scope asks the server to remove the workspace SSH key this machine registered and to revoke this terminal's device token, then removes cli.json, the workspace SSH key file, and the managed block in ~/.ssh/config. The account's other keys and devices stay.",
       "Nothing else under the configuration directory is touched; a host-run store or keys root is listed and left in place. Workspace containers carry no label Mend can filter on, so they are named with the command that removes them, never removed.",
     ],
     options: [

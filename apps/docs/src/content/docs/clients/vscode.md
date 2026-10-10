@@ -87,6 +87,23 @@ Run **Mend: Set up workspace SSH**, or `mend ssh setup` in a terminal, to redo i
 comes from the Mend server URL, and the server supplies the port. Set `mend.workspaceSshHost` to use
 another hostname.
 
+### Removing a key
+
+Each machine that ran setup registered its own key with your account. To stop a machine opening
+workspaces, for a lost laptop, remove its key under **Settings → Workspace SSH** in the web app, or
+from any signed-in terminal:
+
+```sh
+mend ssh keys                   # every key you registered; the one this machine offers is marked
+mend ssh keys remove SHA256:…   # the SHA256: prefix is optional
+```
+
+The gateway checks a key on every new connection, so the next Remote-SSH connection with a removed
+key is refused. A window already connected stays connected until it disconnects or the workspace
+stops. You can remove only your own keys; removing a member from the organization removes theirs.
+`mend uninstall --home` removes the key of the machine it runs on. The mobile app does not list
+keys.
+
 ## Take over a running session
 
 Opening a session whose agent Mend is running elsewhere, such as a `mend codex` in a terminal or a
