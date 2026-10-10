@@ -191,15 +191,15 @@ starts. A person's live process, Services included, keeps their user's logins he
   copy of every file Claude edits, secret files included, so it is never saved, here or anywhere
   else, `people/*/` included (`HARNESS_CREDENTIALS`, sealantd#136 and #144). It stays in `R` and
   ends with the executor. Mend's per-person saved records are `P/.mend-saved/`, addressed by their
-  absolute path, never through `~/.mend`. An image a person pastes is written as them into
-  `P/paste/` (0770 when made, the image 0640, both group `mend`, so another person's agent reads
-  it). The writer enters no link below `P`, never changes a directory's mode, keeps the image 0600
-  until it is proved in place, and refuses a write whose directory moved meanwhile, taking back only
-  what it proves is its own file (mend#597 review, finding 2; mend#615 reviews 1 and 2). A first
-  paste makes only the person's user and home, with a Mend token of that write's own in a file of
-  its own, writes none of their logins and delivers nothing. That token, exactly, is revoked when
-  the write ends on any path; a revocation that fails is retried until done (mend#615 reviews 1 and
-  2, finding 3, 615-r2-2 and 615-r2-3).
+  absolute path, never through `~/.mend`. An image a person pastes is written by their own process,
+  as them, into `P/paste/` (0700 when made, the image 0600: only their own processes read it, and
+  the turn an image is attached to runs as its sender), created exclusively at its name, through no
+  link, and never by root (mend#597 review, finding 2; mend#615 review 3). A paste makes only the
+  person's user and home (`personHomeEnsureScript`), writes none of their logins and delivers
+  nothing. It redeems its image with a Mend token of its own, which root writes into root's own
+  `/run/mend/write-tokens/`: that token redeems pickups only, is never reached by a bulk revocation
+  of the person's tokens, is revoked when its paste ends on any path, and lapses 15 minutes after it
+  is issued in any case.
 
 - **The conversations a session shares,** `P_owner/conversations/<session id>/` (`C`): owned by the
   session's owner, group `mend`, setgid, mode 2770 with a default ACL granting the group `rwX`,

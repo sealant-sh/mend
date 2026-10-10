@@ -1,8 +1,13 @@
 /**
  * The two writers that keep a pasted image inside its directory (`writeContained` on this machine,
  * `containedPut` in a workspace), raced the way the reviews of mend#615 raced them: real renames,
- * directories and files, made at the moment the writer checks a directory's path, makes a
- * directory, renames the file into place or takes it back.
+ * directories and files, made at the moment the writer makes a directory or creates the file.
+ *
+ * Since review 3 a writer creates one new file, exclusively, and does nothing else by name: no
+ * staging, no rename, no take-back. A race can move that file with its directory, among files the
+ * racer holds already (in a person executor the writer is that person; on this machine a rename
+ * cannot leave the workspace's mount), but it can never make the writer follow a link, replace,
+ * remove or change the mode of anything else. That is what these tests hold it to.
  */
 
 import * as fs from "node:fs";
@@ -19,10 +24,9 @@ const require = createRequire(import.meta.url);
 /** The `fs` both writers call: its functions replaced here reach them. */
 const nodeFs: typeof fs = require("node:fs");
 const original = {
-  lstatSync: nodeFs.lstatSync,
   statSync: nodeFs.statSync,
   mkdirSync: nodeFs.mkdirSync,
-  renameSync: nodeFs.renameSync,
+  openSync: nodeFs.openSync,
 };
 
 /** `fs[name]` replaced, for both writers, by `replacement` (given the original). */
@@ -77,10 +81,6 @@ const racing =
 
 afterEach(unhook);
 
-/** Every name in `dir` the writers leave only while they work. */
-const leftovers = (dir: string) =>
-  fs.readdirSync(dir).filter((entry) => entry.startsWith(".mend-"));
-
 const fixture = () => {
   const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "mend-contained-")));
   const root = path.join(dir, "root");
@@ -103,105 +103,96 @@ const writers = [
   },
 ] as const;
 
+/** Every entry under `dir`, with its kind and bytes, so a test can say nothing else changed. */
+const snapshot = (dir: string): Record<string, string> => {
+  const seen: Record<string, string> = {};
+  const walk = (at: string) => {
+    for (const entry of fs.readdirSync(at).toSorted()) {
+      const full = path.join(at, entry);
+      const stat = fs.lstatSync(full);
+      if (stat.isDirectory()) {
+        seen[full] = `dir ${(stat.mode & 0o7777).toString(8)}`;
+        walk(full);
+      } else if (stat.isSymbolicLink()) {
+        seen[full] = `link ${fs.readlinkSync(full)}`;
+      } else {
+        seen[full] = `file ${(stat.mode & 0o7777).toString(8)} ${fs.readFileSync(full, "utf8")}`;
+      }
+    }
+  };
+  walk(dir);
+  return seen;
+};
+
+/** Whether `fs.openSync` is about to create the image (its last argument names no directory). */
+const creatingImage = (args: ReadonlyArray<unknown>) => String(args[0]).endsWith("/a.png");
+
 describe.each(writers)("a contained write $name", ({ write }) => {
-  it("refuses, and takes its file back, when the directory is moved out after its path was checked (finding 1)", () => {
+  it("moved out while it writes, moves only its own new file, and changes nothing else (review 3)", () => {
     const { dir, root, outside, paste } = fixture();
     fs.mkdirSync(paste);
     const moved = path.join(outside, "moved");
+    fs.writeFileSync(path.join(outside, "theirs"), "someone else's");
     hook(
-      "lstatSync",
+      "openSync",
       racing(
-        (args) => args[0] === paste,
+        creatingImage,
         () => {
-          original.renameSync(paste, moved);
+          nodeFs.renameSync(paste, moved);
           original.mkdirSync(paste);
-        },
-      ),
-    );
-    const refused = write(root);
-    unhook();
-    expect(refused).toBe("its directory moved during the write");
-    expect(fs.readdirSync(moved)).toEqual([]);
-    expect(fs.readdirSync(paste)).toEqual([]);
-    fs.rmSync(dir, { recursive: true, force: true });
-  });
-
-  it("refuses, and takes its file back, when the directory is moved out just after the rename (finding 1)", () => {
-    const { dir, root, outside, paste } = fixture();
-    fs.mkdirSync(paste);
-    const moved = path.join(outside, "moved");
-    hook(
-      "renameSync",
-      racing(
-        (args) => String(args[1]).endsWith("/a.png"),
-        () => {
-          original.renameSync(paste, moved);
-          original.mkdirSync(paste);
-        },
-      ),
-    );
-    const refused = write(root);
-    unhook();
-    expect(refused).toBe("its directory moved during the write");
-    expect(fs.readdirSync(moved)).toEqual([]);
-    expect(fs.existsSync(path.join(paste, "a.png"))).toBe(false);
-    fs.rmSync(dir, { recursive: true, force: true });
-  });
-
-  it("keeps the file readable by its writer alone until it is proved in place (review 2, 615-1a)", () => {
-    const { dir, root, paste } = fixture();
-    fs.mkdirSync(paste);
-    const seen: Array<number> = [];
-    hook(
-      "renameSync",
-      racing(
-        (args) => String(args[1]).endsWith("/a.png"),
-        () => seen.push(modeOf(path.join(paste, "a.png"))),
-      ),
-    );
-    expect(write(root)).toBeNull();
-    unhook();
-    expect(seen).toEqual([0o600]);
-    expect(modeOf(path.join(paste, "a.png"))).toBe(0o644);
-    fs.rmSync(dir, { recursive: true, force: true });
-  });
-
-  it("takes back only its own file: one swapped in at the name stays, and its own bytes are gone (review 2, 615-r2-1)", () => {
-    const { dir, root, outside, paste } = fixture();
-    fs.mkdirSync(paste);
-    const moved = path.join(outside, "moved");
-    const theirs = path.join(outside, "theirs.png");
-    const oursAside = path.join(outside, "ours-aside");
-    fs.writeFileSync(theirs, "someone else's file");
-    hook(
-      "lstatSync",
-      racing(
-        (args) => args[0] === paste,
-        () => {
-          original.renameSync(paste, moved);
-          original.mkdirSync(paste);
-        },
-      ),
-    );
-    // The take-back starts: the writer's file is moved away and another put at its name.
-    hook(
-      "renameSync",
-      racing(
-        (args) => String(args[1]).includes("/.mend-quarantine-"),
-        () => {
-          original.renameSync(path.join(moved, "a.png"), oursAside);
-          original.renameSync(theirs, path.join(moved, "a.png"));
         },
         "before",
       ),
     );
-    const refused = write(root);
+    const before = snapshot(dir);
+    const result = write(root);
     unhook();
-    expect(refused).toBe("its directory moved during the write");
-    expect(fs.readFileSync(path.join(moved, "a.png"), "utf8")).toBe("someone else's file");
-    expect(leftovers(moved)).toEqual([]);
-    // The writer's own file, wherever it went, holds none of the image.
-    expect(fs.statSync(oursAside).size).toBe(0);
+    expect(result).toBeNull();
+    // The only entries that were not there: the racer's renamed directory, and in it the image,
+    // created in the directory the writer entered, wherever that went. Everything else is as it
+    // was, the racer's own new `paste` aside.
+    const after = snapshot(dir);
+    const added = Object.keys(after).filter((entry) => !(entry in before));
+    expect(added.toSorted()).toEqual([moved, path.join(moved, "a.png")].toSorted());
+    expect(new Uint8Array(fs.readFileSync(path.join(moved, "a.png")))).toEqual(BYTES);
+    for (const [entry, was] of Object.entries(before)) {
+      if (entry !== paste) expect(after[entry]).toBe(was);
+    }
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("refuses a name taken just before it creates the file, and leaves what is there as it was", () => {
+    const { dir, root, outside, paste } = fixture();
+    fs.mkdirSync(paste);
+    const victim = path.join(outside, "victim");
+    fs.writeFileSync(victim, "untouched");
+    // A link to someone else's file, put at the name the moment before the writer creates it.
+    hook(
+      "openSync",
+      racing(creatingImage, () => fs.symlinkSync(victim, path.join(paste, "a.png")), "before"),
+    );
+    const before = snapshot(dir);
+    const result = write(root);
+    unhook();
+    expect(result).toBe(`already there: ${root}/paste/a.png`);
+    const after = snapshot(dir);
+    expect(after[victim]).toBe(before[victim]);
+    expect(after[path.join(paste, "a.png")]).toBe(`link ${victim}`);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("refuses a name already taken by a link or a hard link, writing through neither", () => {
+    const { dir, root, outside, paste } = fixture();
+    fs.mkdirSync(paste);
+    const victim = path.join(outside, "victim");
+    fs.writeFileSync(victim, "untouched");
+    fs.linkSync(victim, path.join(paste, "a.png"));
+    expect(write(root)).toBe(`already there: ${root}/paste/a.png`);
+    fs.rmSync(path.join(paste, "a.png"));
+    fs.symlinkSync(victim, path.join(paste, "a.png"));
+    expect(write(root)).toBe(`already there: ${root}/paste/a.png`);
+    expect(fs.readFileSync(victim, "utf8")).toBe("untouched");
+    expect(modeOf(victim)).toBe(0o644 & ~process.umask(process.umask()));
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
@@ -232,34 +223,31 @@ describe.each(writers)("a contained write $name", ({ write }) => {
       racing(
         (args) => String(args[0]).endsWith("/paste"),
         () => {
-          original.renameSync(paste, path.join(root, "discarded-new"));
-          original.renameSync(privateDir, paste);
+          nodeFs.renameSync(paste, path.join(root, "discarded-new"));
+          nodeFs.renameSync(privateDir, paste);
         },
       ),
     );
     const refused = write(root);
     unhook();
-    // The directory now at `paste` is the private one: still 0700, the image in it, where the
-    // path says.
+    // The directory now at `paste` is the private one: still 0700, the image in it.
     expect(refused).toBeNull();
     expect(modeOf(paste)).toBe(0o700);
     expect(new Uint8Array(fs.readFileSync(path.join(paste, "a.png")))).toEqual(BYTES);
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  it("makes a missing directory with its mode in the one mkdir, and replaces a hard link at the name without touching its other name", () => {
-    const { dir, root, outside, paste } = fixture();
+  it("makes a missing directory with its mode in the one mkdir, and the file with its own, created once", () => {
+    const { dir, root, paste } = fixture();
     expect(write(root)).toBeNull();
     // Never wider than asked for: the umask may narrow it on this machine.
     expect(modeOf(paste) & ~0o755).toBe(0);
     expect(modeOf(path.join(paste, "a.png"))).toBe(0o644);
-    fs.rmSync(path.join(paste, "a.png"));
-    fs.writeFileSync(path.join(outside, "victim"), "untouched");
-    fs.linkSync(path.join(outside, "victim"), path.join(paste, "a.png"));
-    expect(write(root)).toBeNull();
-    expect(fs.readFileSync(path.join(outside, "victim"), "utf8")).toBe("untouched");
     expect(new Uint8Array(fs.readFileSync(path.join(paste, "a.png")))).toEqual(BYTES);
-    expect(leftovers(paste)).toEqual([]);
+    expect(fs.readdirSync(paste)).toEqual(["a.png"]);
+    // The same name again is refused, the first file kept.
+    expect(write(root)).toBe(`already there: ${root}/paste/a.png`);
+    expect(new Uint8Array(fs.readFileSync(path.join(paste, "a.png")))).toEqual(BYTES);
     fs.rmSync(dir, { recursive: true, force: true });
   });
 });

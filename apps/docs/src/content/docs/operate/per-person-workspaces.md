@@ -117,8 +117,8 @@ Each person has the same login name (`m` and 8 characters), uid (40000–49999) 
 (`/home/<name>`) in every workspace and project. Their home is 0700 and is not saved; the
 conversation state Mend saves for them lives in `/workspace/harness-home/people/<account id>`,
 linked from their home. Logins are never saved, with one narrow exception: a login made inside
-opencode (see [Known issues](/reference/known-issues/#harnesses)). An image a person pastes goes
-into `paste/` there (group `mend`, 0770; the image 0640), so anyone's agent in the workspace can
+opencode (see [Known issues](/reference/known-issues/#harnesses)). An image a person pastes is
+written by their own process into `paste/` there (0700; the image 0600), so only their own processes
 read it.
 
 The worktree is shared: everyone in the `mend` group can write it. Toolchains and caches live in

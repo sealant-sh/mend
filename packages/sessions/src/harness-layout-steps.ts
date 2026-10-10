@@ -527,16 +527,17 @@ export interface HarnessLayoutSteps {
   >;
   /**
    * The user a one-off write of a person's (a pasted image) runs as in a person-layout executor,
-   * for the scope it is acquired in. When nothing of theirs was made here, only their user and home
-   * are made (`personHomeScript`, as root, one exec), with a Mend token of the write's own, in a file
-   * of its own (`tokenFile`, which the write's exec names): none of their logins is written,
-   * nothing is delivered (no dotfiles or install.sh, skills, secret files or shell profile) and the
-   * worktree repair does not start. The person is not recorded as made, so their first process here
-   * still makes them and gets its first-process deliveries. That token, and only it, is revoked
-   * when the scope closes, on every path: success, failure or interruption, the exec's included
-   * (mend#615 review 2, findings 615-r2-2 and 615-r2-3; `endWriteToken`). A person already made
-   * writes with their own token (`tokenFile` null). Null in a shared executor; refused where
-   * `processAs` refuses.
+   * for the scope it is acquired in, with a Mend token of that write's own (mend#615 reviews 2
+   * and 3). One root exec ensures their user and home as a start's retry does
+   * (`personHomeEnsureScript`: made whole when missing, nothing in a home already made changed) and
+   * writes the token into root's own `WRITE_TOKENS_DIR` (`tokenFile`, which the write's exec
+   * names): root writes nothing of the person's. None of their logins is written, nothing is
+   * delivered (no dotfiles or install.sh, skills, secret files or shell profile) and the worktree
+   * repair does not start; the person is not recorded as made, so their first process here still
+   * makes them and gets its first-process deliveries. The token redeems pickups only, lapses
+   * `WRITE_TOKEN_TTL_MS` after it is issued, is never reached by a bulk revocation of the person's
+   * tokens, and is revoked, exactly it, when the scope closes, on every path (`endWriteToken`).
+   * Null in a shared executor; refused where `processAs` refuses.
    */
   readonly homeForWrite: (input: {
     readonly workspace: Workspace;
@@ -548,7 +549,7 @@ export interface HarnessLayoutSteps {
     {
       readonly identity: LinuxIdentity;
       readonly user: ProcessUser;
-      readonly tokenFile: string | null;
+      readonly tokenFile: string;
     } | null,
     SealantPlatformError,
     Scope.Scope
@@ -1488,12 +1489,11 @@ export const makeHarnessLayoutSteps = (deps: {
       .pipe(Effect.mapError((error) => layoutRefused(error.message)));
     const user = processUserOf(identity);
     const workspaceId = input.workspace.id;
-    if (madeIn.get(workspaceId)?.has(identity.accountId) === true) {
-      return { identity, user, tokenFile: null };
-    }
-    const tokenFile = writeTokenFileOf(identity, randomBytes(16).toString("hex"));
+    // Every write its own token, a person already made here included: the token their processes
+    // hold is theirs to lose to an idle release meanwhile (mend#615 review 3, 615-r3-2).
+    const tokenFile = writeTokenFileOf(randomBytes(16).toString("hex"));
     // The ticket and its end together, before anything can redeem it: whatever happens after,
-    // the token it mints is revoked when the scope closes.
+    // the token it mints is revoked when the scope closes, and none is minted once it has.
     const ticket = yield* Effect.acquireRelease(
       deps.writeTokenTicket({
         sessionId: input.sessionId,
@@ -1504,11 +1504,14 @@ export const makeHarnessLayoutSteps = (deps: {
       }),
       (minted) => deps.endWriteToken(minted),
     );
+    // As root, one exec: their user and home ensured as a start's retry ensures them (#619), which
+    // changes nothing in a home already made, and the token written into root's own directory.
+    // Nothing of the person's is written by root.
     const result = yield* lockOf(homeKey(workspaceId, linuxHomeOf(identity))).withPermit(
       sealant.exec(input.workspace, [
         "sh",
         "-c",
-        `${personHomeScript(identity, { harnessHome: deps.harnessHome })}\n` +
+        `${personHomeEnsureScript(identity, { harnessHome: deps.harnessHome })}\n` +
           writeTokenPickupScript(identity, ticket, tokenFile),
       ]),
     );

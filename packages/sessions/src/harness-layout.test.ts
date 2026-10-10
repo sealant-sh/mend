@@ -24,6 +24,7 @@ import {
   gitAuthorConfigText,
   identityFilesOf,
   identityPickupScript,
+  writeTokenFileOf,
   writeTokenPickupScript,
   personPrepareScript,
   personProcessEnv,
@@ -1155,28 +1156,56 @@ describe("a person's Mend identity in their home (decision 4)", () => {
       opened.env,
     );
 
-  it("writes a one-off write's own token 0600 from its pickup, beside their home's, never in the arguments (mend#615 review 2)", async () => {
-    const { home, script } = homeOf(null);
-    expect(sh(script).status).toBe(0);
+  it("writes a one-off write's own token into root's own directory, 0400, from its pickup, never in the arguments (mend#615 review 3)", async () => {
+    const { dir: scratch, home } = homeOf(null);
+    const dir = path.join(scratch, "run-mend", "write-tokens");
     const opened = await channel();
-    const file = `${home}/.mend/write-token-${"0123456789abcdef".repeat(2)}`;
+    const nonce = "0123456789abcdef".repeat(2);
+    const file = writeTokenFileOf(nonce, dir);
     const ticket = opened.mint([{ path: file, bytes: new TextEncoder().encode(TOKEN) }]);
-    const argv = ["sh", "-c", writeTokenPickupScript(alice, ticket, file, home)];
+    const argv = ["sh", "-c", writeTokenPickupScript(alice, ticket, file, dir)];
     for (const arg of argv) expect(arg).not.toContain(TOKEN);
+    // A lapsed token file of an earlier write is removed on the way.
+    fs.mkdirSync(dir, { recursive: true });
+    const stale = path.join(dir, "f".repeat(32));
+    fs.writeFileSync(stale, "lapsed");
+    fs.utimesSync(stale, new Date(0), new Date(0));
     const run = await runExec(argv, opened.env);
     expect(run.stderr).toBe("");
     expect(run.status).toBe(0);
     expect(fs.readFileSync(file, "utf8")).toBe(TOKEN);
-    expect(fs.statSync(file).mode & 0o777).toBe(0o600);
+    expect(fs.statSync(file).mode & 0o777).toBe(0o400);
+    expect(fs.statSync(dir).mode & 0o777).toBe(0o711);
+    expect(fs.existsSync(stale)).toBe(false);
+    // Nothing of the person's is touched: no token in their home.
     expect(fs.existsSync(path.join(home, ".mend/session-token"))).toBe(false);
     // Spent: a second run is refused, and says so.
     const again = await runExec(argv, opened.env);
     expect(again.status).toBe(3);
     expect(again.stderr).toContain(`${alice.name}'s write token: the pickup was refused`);
-    // A file anywhere but a name of its own in their .mend is refused before anything runs.
+    // A file anywhere but a name of its own in that directory is refused before anything runs.
     expect(() =>
-      writeTokenPickupScript(alice, ticket, `${home}/.mend/session-token`, home),
+      writeTokenPickupScript(alice, ticket, path.join(home, ".mend/session-token"), dir),
     ).toThrow();
+  });
+
+  it("refuses a write-token directory that is a link, writing nothing through it", async () => {
+    const { dir: scratch } = homeOf(null);
+    const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), "mend-write-token-elsewhere-"));
+    const parent = path.join(scratch, "run-mend");
+    fs.mkdirSync(parent);
+    const dir = path.join(parent, "write-tokens");
+    fs.symlinkSync(elsewhere, dir);
+    const opened = await channel();
+    const file = writeTokenFileOf("0123456789abcdef".repeat(2), dir);
+    const ticket = opened.mint([{ path: file, bytes: new TextEncoder().encode(TOKEN) }]);
+    const run = await runExec(
+      ["sh", "-c", writeTokenPickupScript(alice, ticket, file, dir)],
+      opened.env,
+    );
+    expect(run.status).toBe(3);
+    expect(run.stderr).toContain(`not a directory of its own: ${dir}`);
+    expect(fs.readdirSync(elsewhere)).toEqual([]);
   });
 
   it("makes a real ~/.mend (0700) and ~/.config/git for them, with no file in either yet", () => {

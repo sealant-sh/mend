@@ -38,7 +38,13 @@ export const PICKUP_TICKET_SHAPE = /^[A-Za-z0-9_-]{43}$/;
  * session token and git author for their home, minted only when the ticket is redeemed, so a
  * person prepare skips gets no token.
  */
-export type PickupPurpose = "secret-files" | "pi-profile" | "workspace-files" | "session-token";
+export type PickupPurpose =
+  | "secret-files"
+  | "pi-profile"
+  | "workspace-files"
+  | "session-token"
+  /** A one-off write's own Mend token (`write-tokens.ts`), minted only while that write is open. */
+  | "write-token";
 
 /** What a ticket is bound to. */
 export interface PickupBinding {

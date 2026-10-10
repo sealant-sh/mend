@@ -920,6 +920,71 @@ describe("SessionChannelNetworkHost", () => {
     );
   });
 
+  it("a one-off write's token redeems its pickups and nothing else (mend#615 review 3)", async () => {
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const network = yield* SessionChannelNetworkHost;
+          const sockets = yield* SessionSocketHost;
+          const tokens = yield* SessionChannelTokensRepo;
+          const address = network.address ?? "";
+          const redeemed: Array<string> = [];
+          const asMaria: unknown[] = [];
+          yield* sockets.start(SESSION, {
+            ...api([]),
+            channelFor: (scope) =>
+              Effect.succeed({
+                ok: true,
+                api: {
+                  ...api(scope.accountId === null ? [] : asMaria),
+                  pickup: (ticket: string) =>
+                    Effect.sync(() => {
+                      redeemed.push(`${scope.accountId ?? "nobody"}:${ticket}`);
+                      return { files: [] };
+                    }),
+                },
+              } as const),
+          });
+          const token = yield* tokens.issueWrite("launch-1", "user-maria");
+          const auth = { authorization: `Bearer ${token}`, "x-mend-session-id": SESSION };
+          const picked = yield* Effect.promise(() =>
+            call(address, "POST", "/pickup", auth, { ticket: "t".repeat(43) }),
+          );
+          expect(picked.status).toBe(200);
+          expect(redeemed).toEqual([`user-maria:${"t".repeat(43)}`]);
+          // Anything else a person's token could ask is refused, before the session sees it.
+          for (const [method, route] of [
+            ["GET", "/services"],
+            ["POST", "/services/run"],
+            ["POST", "/land"],
+          ] as const) {
+            const refused = yield* Effect.promise(() =>
+              method === "GET"
+                ? call(address, method, route, auth)
+                : call(address, method, route, auth, { argv: ["true"] }),
+            );
+            expect(refused).toEqual({
+              status: 403,
+              json: { message: "session channel: this token redeems pickups only" },
+            });
+          }
+          expect(asMaria).toEqual([]);
+          // Its own write's end, and it no longer answers.
+          yield* tokens.revokeToken(token);
+          expect(
+            (yield* Effect.promise(() =>
+              call(address, "POST", "/pickup", auth, { ticket: "t".repeat(43) }),
+            )).status,
+          ).toBe(401);
+        }).pipe(
+          Effect.provide(
+            layers({ listen: "127.0.0.1:0", url: "http://127.0.0.1:0" }, "kubernetes"),
+          ),
+        ),
+      ),
+    );
+  });
+
   it("the staged scripts present the token in the file a person's process names, never the workspace's", async () => {
     await Effect.runPromise(
       Effect.scoped(

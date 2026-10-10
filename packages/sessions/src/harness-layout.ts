@@ -1109,29 +1109,62 @@ next(0);
 /** The identity pickup's node, before its words: `ticket name home uid` per person. */
 const IDENTITY_COMMAND = `node -e ${shellQuote(IDENTITY_PROGRAM)} --`;
 
-/** Where a one-off write's own Mend token goes in a person's home: a name of its own. */
-export const writeTokenFileOf = (person: LinuxIdentity, nonce: string): string =>
-  `${linuxHomeOf(person)}/.mend/write-token-${nonce}`;
+/**
+ * Where one-off writes' Mend tokens wait for their writes (mend#615 review 3): root's own
+ * directory, 0711, beside the conversation homes, never anywhere a person owns, so no person can
+ * rename, link or replace anything on the way to a token's file. Not saved; gone with the executor.
+ */
+export const WRITE_TOKENS_DIR = "/run/mend/write-tokens";
+
+/** A one-off write's own token file: a name of its own in `WRITE_TOKENS_DIR`. */
+export const writeTokenFileOf = (nonce: string, dir: string = WRITE_TOKENS_DIR): string =>
+  `${dir}/${nonce}`;
+
+/** How long a token file is kept before a later write's exec removes it (it has lapsed by then). */
+const WRITE_TOKEN_FILE_KEPT_MS = 30 * 60_000;
 
 const WRITE_TOKEN_PROGRAM = [
   SCRIPT_TRANSPORT_PRELUDE,
   SCRIPT_PICKUP_FUNCTION,
-  SCRIPT_PINNED_PUT_FUNCTION,
-  `const [ticket, name, home, uid, file] = process.argv.slice(1);
+  `const [ticket, name, uid, dir, nonce] = process.argv.slice(1);
+const c = fs.constants;
 const root = typeof process.getuid === "function" && process.getuid() === 0;
 const fail = (why) => { process.stderr.write("mend: " + name + "'s write token: " + why + "\\n"); process.exit(3); };
-let made = false;
-try { made = fs.lstatSync(home + "/.mend").isDirectory(); } catch {}
-if (!made) fail("their home is not made");
+const file = dir + "/" + nonce;
+// Root's own directories, each a real directory of root's, never through a link.
+const own = (path, mode) => {
+  try { fs.mkdirSync(path, { mode }); } catch (error) { if (error.code !== "EEXIST") fail("could not make " + path + " (" + (error.code || "error") + ")"); }
+  let fd;
+  try { fd = fs.openSync(path, c.O_RDONLY | c.O_DIRECTORY | c.O_NOFOLLOW); } catch { fail("not a directory of its own: " + path); }
+  const held = fs.fstatSync(fd);
+  if (root && held.uid !== 0) fail("not root's: " + path);
+  fs.fchmodSync(fd, mode);
+  fs.closeSync(fd);
+};
+own(dir.slice(0, dir.lastIndexOf("/")), 0o755);
+own(dir, 0o711);
+// Token files left by earlier writes have lapsed: removed from root's own directory.
+for (const entry of fs.readdirSync(dir)) {
+  try { if (Date.now() - fs.lstatSync(dir + "/" + entry).mtimeMs > ${WRITE_TOKEN_FILE_KEPT_MS}) fs.unlinkSync(dir + "/" + entry); } catch {}
+}
 const passing = (reason) => !reason.startsWith("the pickup was refused: this pickup ticket");
 const written = (reason, files) => {
   if (reason !== null) return fail(reason);
   const bytes = files.get(file);
   if (bytes === undefined) return fail("the pickup carried no token");
-  const staging = ".mend-write-token-part-" + process.pid + "-" + require("node:crypto").randomBytes(4).toString("hex");
-  const why = pinnedPut(home + "/.mend", file.slice(file.lastIndexOf("/") + 1), staging, bytes);
-  if (why !== null) return fail(file + ": " + why);
-  if (root) { try { fs.lchownSync(file, Number(uid), ${MEND_GROUP.gid}); } catch { return fail(file + ": could not give it to its person"); } }
+  let fd;
+  try {
+    fd = fs.openSync(file, c.O_WRONLY | c.O_CREAT | c.O_EXCL | c.O_NOFOLLOW, 0o600);
+    let done = 0;
+    while (done < bytes.length) done += fs.writeSync(fd, bytes, done, bytes.length - done);
+    // Given to its person through the file it made: never a name someone could have replaced.
+    if (root) fs.fchownSync(fd, Number(uid), ${MEND_GROUP.gid});
+    fs.fchmodSync(fd, 0o400);
+  } catch (error) {
+    return fail(file + ": could not be written (" + (error && error.code ? error.code : "error") + ")");
+  } finally {
+    if (fd !== undefined) { try { fs.closeSync(fd); } catch {} }
+  }
   process.exit(0);
 };
 redeemPickup(ticket, (reason, files) => {
@@ -1143,27 +1176,29 @@ redeemPickup(ticket, (reason, files) => {
 
 /**
  * What writes a one-off write's own Mend token (`HarnessLayoutSteps.homeForWrite`; mend#615
- * review 2): as root, once the person's home is made (`personHomeScript`), it redeems `ticket` and
- * writes the token it carries to `file` (`writeTokenFileOf`), 0600 and the person's, never through
- * a link. The write's own exec names that file (`MEND_SESSION_TOKEN_FILE`), so no other write or
- * process of theirs shares it. Exits 0 once written; else says why on stderr and exits 3.
+ * review 3): as root, it redeems `ticket` and writes the token it carries to `file`
+ * (`writeTokenFileOf`) in root's own `WRITE_TOKENS_DIR`, created exclusively, never through a link,
+ * then gives it to the person and makes it 0400 through its own descriptor. Nothing of the
+ * person's is touched. The write's exec, as the person, names that file (`MEND_SESSION_TOKEN_FILE`),
+ * so no other write or process of theirs shares it. Exits 0 once written; else says why on stderr
+ * and exits 3.
  */
 export const writeTokenPickupScript = (
   person: LinuxIdentity,
   ticket: string,
   file: string,
-  /** `R`; the passwd home unless a test names another. */
-  home: string = linuxHomeOf(person),
+  /** `WRITE_TOKENS_DIR` unless a test names another. */
+  dir: string = WRITE_TOKENS_DIR,
 ): string => {
   assertScriptSafe(person);
   if (!SAFE_TICKET.test(ticket)) throw new Error("a pickup ticket is 43 base64url characters");
-  const prefix = `${home}/.mend/write-token-`;
-  if (!file.startsWith(prefix) || !/^[0-9a-f]{32}$/.test(file.slice(prefix.length))) {
-    throw new Error("a write token goes in its person's .mend, under a name of its own");
+  const nonce = file.slice(dir.length + 1);
+  if (!file.startsWith(`${dir}/`) || !/^[0-9a-f]{32}$/.test(nonce)) {
+    throw new Error("a write token goes in the write tokens directory, under a name of its own");
   }
   return [
     `node -e ${shellQuote(WRITE_TOKEN_PROGRAM)} --`,
-    ...[ticket, person.name, home, String(person.uid), file].map(shellQuote),
+    ...[ticket, person.name, String(person.uid), dir, nonce].map(shellQuote),
   ].join(" ");
 };
 

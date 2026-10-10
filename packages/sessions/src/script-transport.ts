@@ -171,31 +171,29 @@ export const SCRIPT_PINNED_PUT_FUNCTION = `const pinnedPut = (dir, name, staging
 `;
 
 /**
- * `containedPut(root, directoryMode, fileMode, target, bytes)`, for a file that must land
- * physically inside `root` (a pasted image, mend#597 review finding 2): `null` once `bytes` are at
- * `target`, `fileMode`, else why not, naming paths only. `target` must be a plain absolute path
- * below `root`.
+ * `containedPut(root, directoryMode, fileMode, target, bytes)`, for a file that must land inside
+ * `root` (a pasted image, mend#597 review finding 2): `null` once `bytes` are at `target`,
+ * `fileMode`, else why not, naming paths only. `target` must be a plain absolute path below `root`.
  *
  * - Every directory is reached through the descriptor of the one above it (`/proc/self/fd/<n>/…`,
  *   or `/dev/fd/<n>/…` where that is proved to reach the same directory), opened through no link
- *   (`O_NOFOLLOW`), from `root`'s real path down. With neither, nothing is written (mend#615
- *   review 2, 615-1b): a write by literal path follows whatever a parent became meanwhile.
+ *   (`O_NOFOLLOW`), from `root`'s real path down; with neither, nothing is written. A link planted
+ *   anywhere below `root` refuses the write instead of leading it elsewhere.
  * - A directory missing is made with `directoryMode` in its one `mkdir` (the umask cleared around
- *   it), and no directory's mode is ever changed after: one put in place of the new directory
- *   keeps its own (mend#615 review, 615-2; `mkdir` sets no setgid bit).
- * - The file is staged exclusively, through no link, 0600, and its descriptor kept: it is renamed
- *   into place inside the pinned directory, and only once the pinned directory is still at the
- *   path `target` names and that path holds the staged file is it set `fileMode`. Until then
- *   nobody but its writer can read it, wherever the directory was moved (615-1a).
- * - A write refused after staging truncates its file through that descriptor, so its bytes are
- *   gone wherever the file is, then takes its names back: each is first renamed to a private
- *   quarantine name inside the pinned directory, and only what is proved there to be the staged
- *   file is removed; anything else is put back (615-r2-1).
+ *   it); no directory's mode is changed after (mend#615 review, 615-2).
+ * - The file is created once, at its name, exclusively and through no link (`O_EXCL|O_NOFOLLOW`),
+ *   0600, written, and set `fileMode` through its own descriptor. A refused write empties it.
+ *
+ * What it does not do is guard against the directory being renamed while it writes: it needs no
+ * guard (mend#615 review 3). In a person-layout executor this runs as the person, into their own
+ * saved directory, so only they (or `sudo`, which ADR 0016 accepts) could rename it, and a rename
+ * moves their own file among their own files. In a shared one it runs as root, where every
+ * process is root. Nothing is renamed, staged or taken back by name, so no race can lead it to
+ * remove or change anyone else's file.
  */
 export const SCRIPT_CONTAINED_PUT_FUNCTION = `const containedPut = (root, directoryMode, fileMode, target, bytes) => {
   const c = fs.constants;
   const path = require("path");
-  const crypto = require("crypto");
   if (!path.isAbsolute(root) || path.normalize(root) !== root || path.normalize(target) !== target) return "not a plain absolute path";
   if (!target.startsWith(root === "/" ? "/" : root + "/")) return "not inside " + root;
   const parts = target.slice(root === "/" ? 1 : root.length + 1).split("/");
@@ -234,47 +232,19 @@ export const SCRIPT_CONTAINED_PUT_FUNCTION = `const containedPut = (root, direct
       dfd = next;
       shown = shown + "/" + part;
     }
-    const expected = path.join(real, ...parts);
-    // The directory at the path \`target\` names, reached through no link, is the pinned one.
-    const inPlace = () => {
-      try {
-        const held = fs.fstatSync(dfd);
-        const named = fs.lstatSync(expected);
-        return named.isDirectory() && named.dev === held.dev && named.ino === held.ino && fs.realpathSync(expected) === expected;
-      } catch { return false; }
-    };
-    const moved = "its directory moved during the write";
-    if (!inPlace()) return moved;
-    const staging = ".mend-part-" + crypto.randomBytes(8).toString("hex");
-    let staged = null;
-    const ours = (stat) => staged !== null && stat.dev === staged.dev && stat.ino === staged.ino;
-    // A name of the staged file taken back: renamed aside first, removed only once proved ours.
-    const takeBack = (entry) => {
-      const aside = ".mend-quarantine-" + crypto.randomBytes(8).toString("hex");
-      try { fs.renameSync(at(entry), at(aside)); } catch { return; }
-      let stat;
-      try { stat = fs.lstatSync(at(aside)); } catch { return; }
-      if (ours(stat)) { try { fs.unlinkSync(at(aside)); } catch {} return; }
-      try { if (stat.isDirectory()) fs.renameSync(at(aside), at(entry)); else { fs.linkSync(at(aside), at(entry)); fs.unlinkSync(at(aside)); } } catch {}
-    };
-    const refuse = (why, entry) => {
-      try { if (fd !== undefined) fs.ftruncateSync(fd, 0); } catch {}
-      takeBack(entry);
-      return why;
-    };
     try {
-      fd = fs.openSync(at(staging), c.O_WRONLY | c.O_CREAT | c.O_EXCL | c.O_NOFOLLOW, 0o600);
-      staged = fs.fstatSync(fd);
+      fd = fs.openSync(at(name), c.O_WRONLY | c.O_CREAT | c.O_EXCL | c.O_NOFOLLOW, 0o600);
+    } catch (error) {
+      return (error.code === "EEXIST" ? "already there: " : "could not create: ") + shown + "/" + name;
+    }
+    try {
       let done = 0;
       while (done < bytes.length) done += fs.writeSync(fd, bytes, done, bytes.length - done);
+      fs.fchmodSync(fd, fileMode);
     } catch (error) {
-      return refuse("could not write (" + (error.code || "error") + ")", staging);
+      try { fs.ftruncateSync(fd, 0); } catch {}
+      return "could not write (" + (error.code || "error") + ")";
     }
-    try { fs.renameSync(at(staging), at(name)); } catch (error) { return refuse("could not write (" + (error.code || "error") + ")", staging); }
-    let landed = false;
-    try { landed = inPlace() && ours(fs.lstatSync(path.join(expected, name))); } catch {}
-    if (!landed) return refuse(moved, name);
-    try { fs.fchmodSync(fd, fileMode); } catch (error) { return refuse("could not set its mode (" + (error.code || "error") + ")", name); }
     return null;
   } finally {
     if (fd !== undefined) { try { fs.closeSync(fd); } catch {} }

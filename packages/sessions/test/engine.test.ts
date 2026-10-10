@@ -3028,6 +3028,14 @@ const recordingTokens = (events: Array<string>): Layer.Layer<SessionChannelToken
               Effect.sync(() => events.push(`issuePerson:${launchId}:${accountId}:${token}`)),
             ),
           ),
+      issueWrite: (launchId: string, accountId: string) =>
+        inner
+          .issueWrite(launchId, accountId)
+          .pipe(
+            Effect.tap((token) =>
+              Effect.sync(() => events.push(`issueWrite:${launchId}:${accountId}:${token}`)),
+            ),
+          ),
       revoke: (sessionId: string) =>
         Effect.sync(() => events.push(`revoke:${sessionId}`)).pipe(
           Effect.andThen(inner.revoke(sessionId)),
@@ -28394,8 +28402,8 @@ describe("deliveries per person (docs/adr/0016, Delivery 15)", () => {
       expect(own).toMatch(new RegExp(`^${P_LAUNCHER}/paste/\\d{8}-\\d{6}-\\w{4}\\.png$`));
       expect(steered).toMatch(new RegExp(`^${P_JOINER}/paste/\\d{8}-\\d{6}-\\w{4}\\.png$`));
       expect(pastes(run, from)).toEqual([
-        { user: LAUNCHER, within: `C770:640:${P_LAUNCHER}`, path: own, session: holder },
-        { user: JOINER, within: `C770:640:${P_JOINER}`, path: steered, session: holder },
+        { user: LAUNCHER, within: `C700:600:${P_LAUNCHER}`, path: own, session: holder },
+        { user: JOINER, within: `C700:600:${P_JOINER}`, path: steered, session: holder },
       ]);
       // Maria's user and home were made before her paste, by root, as prepare makes anyone.
       expect(
@@ -28440,7 +28448,7 @@ describe("deliveries per person (docs/adr/0016, Delivery 15)", () => {
           exec: (argv) =>
             fails &&
             named(argv, "mend-write") &&
-            argv.some((part) => part.startsWith(`C770:640:${P_JOINER}`))
+            argv.some((part) => part.startsWith(`C700:600:${P_JOINER}`))
               ? { exitCode: 3, stdout: "", stderr: "mend-write: not written\n" }
               : undefined,
           inspect: (engine, world, ids, current) =>
@@ -28476,12 +28484,12 @@ describe("deliveries per person (docs/adr/0016, Delivery 15)", () => {
         expect(homes).toHaveLength(1);
         const [write] = after.execs.filter((argv) => named(argv, "mend-write"));
         const file = tokenFileNamed(write ?? []);
-        expect(file).toMatch(new RegExp(`^/home/${JOINER}/\\.mend/write-token-[0-9a-f]{32}$`));
-        expect(homes[0]?.[2]).toContain(`'${file}'`);
+        expect(file).toMatch(/^\/run\/mend\/write-tokens\/[0-9a-f]{32}$/);
+        expect(homes[0]?.[2]).toContain(`'${file?.slice("/run/mend/write-tokens/".length)}'`);
         // One token minted for Maria, and exactly that one revoked; nobody's else, and no bulk
         // revocation of hers.
         const minted = tokenEvents.flatMap((event) => {
-          const match = new RegExp(`^issuePerson:.+:${MARIA}:([^:]+)$`).exec(event);
+          const match = new RegExp(`^issueWrite:.+:${MARIA}:([^:]+)$`).exec(event);
           return match?.[1] === undefined ? [] : [match[1]];
         });
         expect(minted).toHaveLength(1);

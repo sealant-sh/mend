@@ -28,7 +28,6 @@
  * it).
  */
 
-import { randomBytes } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { posix } from "node:path";
@@ -120,10 +119,10 @@ export const pastedImageWorkspacePath = (name: string): string =>
 /**
  * Where a paste goes in a live workspace, and what keeps it there (`ContainedPlacement`). A shared
  * executor: the harness home's `paste/`, written as root, a new directory 0755 and the file 0644,
- * as before. A person executor (docs/adr/0016): the sender's own saved directory, written as them;
- * a new `paste/` is 0770 and the file 0640, both in the group `mend` (every person's own group),
- * so a process of anyone in the workspace reads it. No setgid bit: `mkdir` cannot set one, and the
- * writer changes the mode of no directory after making it (mend#615 review, finding 2).
+ * as before. A person executor (docs/adr/0016): the sender's own saved directory, written as them
+ * alone: a new `paste/` is 0700 and the file 0600 (mend#615 review 3). Only the sender's own
+ * processes read it, and only theirs need to: the turn a person attaches an image to runs as that
+ * person (decision 6), and a terminal paste is the session owner's, into their own terminal.
  */
 export const pastedImagePlacement = (
   name: string,
@@ -139,7 +138,7 @@ export const pastedImagePlacement = (
   const saved = savedDirOf(HARNESS_HOME_MOUNT_PATH, person);
   return {
     path: posix.join(saved, PASTED_IMAGE_DIR, name),
-    within: { root: saved, directoryMode: 0o770, fileMode: 0o640 },
+    within: { root: saved, directoryMode: 0o700, fileMode: 0o600 },
   };
 };
 
@@ -222,18 +221,17 @@ const codeOf = (error: unknown): string =>
     : "error";
 
 /**
- * `bytes` as `<within.root>/<directories…>/<name>` on this machine, kept there as the workspace's
- * writer keeps a file (`SCRIPT_CONTAINED_PUT_FUNCTION`), with the same rules:
+ * `bytes` as `<within.root>/<directories…>/<name>` on this machine, the way the workspace's writer
+ * puts a file (`SCRIPT_CONTAINED_PUT_FUNCTION`): each directory reached through the descriptor of
+ * the one above it and through no link (`/proc/self/fd/<n>/…`, or `/dev/fd/<n>/…` where that is
+ * proved to reach it; with neither, nothing is written), a missing one made with `directoryMode`
+ * in its `mkdir` (under this process's umask, as before) and none changed after, and the file
+ * created once at its name, exclusively and through no link, 0600, then set `fileMode` through its
+ * own descriptor. A link planted in the harness home refuses the write.
  *
- * - every directory reached through the descriptor of the one above it (`/proc/self/fd/<n>/…`, or
- *   `/dev/fd/<n>/…` where that is proved to reach the same directory), through no link, from the
- *   root's real path; with neither, nothing is written (mend#615 review 2, 615-1b);
- * - a missing directory made with `directoryMode` in its `mkdir` (under this process's umask, as
- *   before), and no directory's mode changed after (615-2);
- * - the file staged 0600 through no link and set `fileMode` through its own descriptor only once
- *   it is renamed into place and proved there (615-1a);
- * - a refused write truncates its file and takes its names back through a private quarantine name,
- *   removing only what is proved to be its own file (615-r2-1).
+ * A rename of a directory while it writes needs no guard: the harness home is mounted into the
+ * workspace, and `rename(2)` never crosses a mount (`EXDEV`), so a workspace can only move the file
+ * among the files it already holds there. Nothing is renamed or removed by name here.
  *
  * Null once written; else why not, naming paths only.
  */
@@ -302,82 +300,21 @@ export const writeContained = (
       dfd = next;
       shown = `${shown}/${part}`;
     }
-    const expected = path.join(real, ...directories);
-    // The directory at the path the file names, reached through no link, is the pinned one.
-    const inPlace = () => {
-      try {
-        const held = fs.fstatSync(dfd);
-        const named = fs.lstatSync(expected);
-        return (
-          named.isDirectory() &&
-          named.dev === held.dev &&
-          named.ino === held.ino &&
-          fs.realpathSync(expected) === expected
-        );
-      } catch {
-        return false;
-      }
-    };
-    const moved = "its directory moved during the write";
-    if (!inPlace()) return moved;
-    const staging = `.mend-part-${randomBytes(8).toString("hex")}`;
-    let staged: fs.Stats | null = null;
-    const ours = (stat: fs.Stats) =>
-      staged !== null && stat.dev === staged.dev && stat.ino === staged.ino;
-    /** A name of the staged file taken back: renamed aside first, removed only once proved ours. */
-    const takeBack = (entry: string) => {
-      const aside = `.mend-quarantine-${randomBytes(8).toString("hex")}`;
-      try {
-        fs.renameSync(at(entry), at(aside));
-      } catch {
-        return;
-      }
-      try {
-        const stat = fs.lstatSync(at(aside));
-        if (ours(stat)) {
-          fs.unlinkSync(at(aside));
-        } else if (stat.isDirectory()) {
-          fs.renameSync(at(aside), at(entry));
-        } else {
-          fs.linkSync(at(aside), at(entry));
-          fs.unlinkSync(at(aside));
-        }
-      } catch {
-        // Left where it is: what is not proved ours is never removed.
-      }
-    };
-    const refuse = (why: string, entry: string) => {
-      try {
-        if (fd !== undefined) fs.ftruncateSync(fd, 0);
-      } catch {
-        // The file goes with its names below.
-      }
-      takeBack(entry);
-      return why;
-    };
     try {
-      fd = fs.openSync(at(staging), c.O_WRONLY | c.O_CREAT | c.O_EXCL | c.O_NOFOLLOW, 0o600);
-      staged = fs.fstatSync(fd);
+      fd = fs.openSync(at(name), c.O_WRONLY | c.O_CREAT | c.O_EXCL | c.O_NOFOLLOW, 0o600);
+    } catch (error) {
+      return `${codeOf(error) === "EEXIST" ? "already there" : "could not create"}: ${shown}/${name}`;
+    }
+    try {
       fs.writeFileSync(fd, bytes);
-    } catch (error) {
-      return refuse(`could not write (${codeOf(error)})`, staging);
-    }
-    try {
-      fs.renameSync(at(staging), at(name));
-    } catch (error) {
-      return refuse(`could not write (${codeOf(error)})`, staging);
-    }
-    let landed = false;
-    try {
-      landed = inPlace() && ours(fs.lstatSync(path.join(expected, name)));
-    } catch {
-      landed = false;
-    }
-    if (!landed) return refuse(moved, name);
-    try {
       fs.fchmodSync(fd, within.fileMode);
     } catch (error) {
-      return refuse(`could not set its mode (${codeOf(error)})`, name);
+      try {
+        fs.ftruncateSync(fd, 0);
+      } catch {
+        // Nothing more to take back.
+      }
+      return `could not write (${codeOf(error)})`;
     }
     return null;
   } finally {

@@ -119,13 +119,13 @@ describe("pastedImagePlacement", () => {
     });
   });
 
-  it("puts a person's paste in their own saved directory, the group's to read", () => {
+  it("puts a person's paste in their own saved directory, theirs alone to read", () => {
     expect(pastedImagePlacement("a.png", "user-maria")).toEqual({
       path: `${HARNESS_HOME_MOUNT_PATH}/people/user-maria/paste/a.png`,
       within: {
         root: `${HARNESS_HOME_MOUNT_PATH}/people/user-maria`,
-        directoryMode: 0o770,
-        fileMode: 0o640,
+        directoryMode: 0o700,
+        fileMode: 0o600,
       },
     });
   });

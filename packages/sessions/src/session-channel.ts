@@ -412,7 +412,12 @@ export const SessionChannelNetworkHostLive: Layer.Layer<
     const authenticate = async (
       headers: http.IncomingHttpHeaders,
     ): Promise<
-      | { readonly ok: true; readonly api: SessionSocketApi }
+      | {
+          readonly ok: true;
+          readonly api: SessionSocketApi;
+          /** A one-off write's token: its pickups, and nothing else (mend#615 review 3). */
+          readonly pickupOnly: boolean;
+        }
       | { readonly ok: false; readonly status: number; readonly message: string }
     > => {
       const credentials = parseChannelCredentials(headers);
@@ -455,7 +460,7 @@ export const SessionChannelNetworkHostLive: Layer.Layer<
       const scope = { launchId: resolved.launchId, accountId: resolved.accountId };
       if (api.channelFor !== undefined) {
         const grant = await Effect.runPromise(api.channelFor(scope));
-        return grant.ok ? { ok: true, api: grant.api } : grant;
+        return grant.ok ? { ok: true, api: grant.api, pickupOnly: resolved.writeOnly } : grant;
       }
       // A session served without a grant takes its launch's own token, as before, and no
       // person's.
@@ -469,8 +474,10 @@ export const SessionChannelNetworkHostLive: Layer.Layer<
       // for a person's token, only for that person (`pickupChannelMatch`). The launch's own token
       // names nobody.
       const pickup = api.pickupAs?.({ launchId: resolved.launchId, accountId: null });
-      return { ok: true, api: { ...api, capture, pickup } };
+      return { ok: true, api: { ...api, capture, pickup }, pickupOnly: false };
     };
+    /** What a one-off write's token may ask: its pickup, nothing else. */
+    const pickupOnlyRefusal = { message: "session channel: this token redeems pickups only" };
 
     const onRequest = (request: http.IncomingMessage, response: http.ServerResponse): void => {
       authenticate(request.headers)
@@ -478,6 +485,15 @@ export const SessionChannelNetworkHostLive: Layer.Layer<
           if (!auth.ok) {
             response.writeHead(auth.status, { "content-type": "application/json" });
             response.end(JSON.stringify({ message: auth.message }));
+            return;
+          }
+          if (
+            auth.pickupOnly &&
+            (request.method !== "POST" ||
+              new URL(request.url ?? "/", "http://x").pathname !== "/pickup")
+          ) {
+            response.writeHead(403, { "content-type": "application/json" });
+            response.end(JSON.stringify(pickupOnlyRefusal));
             return;
           }
           return handleSessionRequest(auth.api, request, response);
@@ -505,6 +521,9 @@ export const SessionChannelNetworkHostLive: Layer.Layer<
               `${auth.status} ${auth.status === 401 ? "Unauthorized" : "Conflict"}`,
               auth.message,
             );
+          }
+          if (auth.pickupOnly) {
+            return refuseConnect(socket, "403 Forbidden", pickupOnlyRefusal.message);
           }
           return handleGitConnect(auth.api, request, socket, head);
         })

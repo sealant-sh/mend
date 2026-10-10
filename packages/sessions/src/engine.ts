@@ -47,6 +47,7 @@ import {
   UserDotfilesRepo,
   UserGitAuthorRepo,
   SessionChannelTokensRepo,
+  WRITE_TOKEN_TTL_MS,
   HarnessLayoutsRepo,
   type ExecutorRetirementRecord,
   type PreReleaseMigrationRecord,
@@ -6920,12 +6921,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const writeTokens = makeWriteTokens({
         revoke: (token) => channelTokens.revokeToken(token),
         fork: (effect) => Effect.suspend(() => effect.pipe(Effect.forkIn(scope), Effect.asVoid)),
+        ttl: Duration.millis(WRITE_TOKEN_TTL_MS),
       });
 
       /**
-       * A one-off write's token ticket (`HarnessLayoutSteps.homeForWrite`): purpose
-       * `session-token`, bound as an identity ticket is, with one file, the write's own token file,
-       * whose bytes are minted only when it is redeemed (`identityFilesAt`).
+       * A one-off write's token ticket (`HarnessLayoutSteps.homeForWrite`): purpose `write-token`,
+       * bound to the person, the session and the launch, with one file, the write's own token file,
+       * whose bytes are minted when it is redeemed and only while the write is open
+       * (`write-tokens.ts`).
        */
       const mintWriteTokenTicket = (input: {
         readonly sessionId: string;
@@ -6937,7 +6940,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         Effect.sync(() => {
           const ticket = pickups.mint(
             {
-              purpose: "session-token",
+              purpose: "write-token",
               sessionId: input.sessionId,
               worktreeId: input.worktreeId,
               personId: input.person.accountId,
@@ -6958,8 +6961,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
 
       /**
        * What an identity ticket answers, made now: the person's Mend token of the launch, and
-       * their git author when they have one (a one-off write's ticket names its token file alone).
-       * Nothing is minted for a ticket nobody redeems.
+       * their git author when they have one. Nothing is minted for a ticket nobody redeems.
        */
       const identityFilesAt = Effect.fn("SessionEngine.identityFilesAt")(function* (
         binding: PickupBinding,
@@ -6969,12 +6971,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           return yield* Effect.fail(new Error("this identity ticket names no person or launch"));
         }
         const [tokenFile, configFile] = files;
-        if (tokenFile === undefined) {
+        if (tokenFile === undefined || configFile === undefined) {
           return yield* Effect.fail(new Error("this identity ticket names no files"));
-        }
-        if (configFile === undefined) {
-          const token = yield* channelTokens.issuePerson(binding.launchId, binding.personId);
-          return [{ path: tokenFile.path, bytes: new TextEncoder().encode(token) }];
         }
         // The author first: the token is minted last, so nothing after it can fail and leave a
         // token nobody received.
@@ -7084,6 +7082,37 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               return yield* refuse(entry.binding, "this pickup ticket is another session's");
             }
           }
+          if (entry.binding.purpose === "write-token") {
+            // A one-off write's own token (`write-tokens.ts`): minted only while its write is
+            // open, and that write's alone; one that ended meanwhile has it revoked at once.
+            const key = ticketKeyOf(ticket);
+            const [file] = entry.files;
+            const { personId, launchId } = entry.binding;
+            if (file === undefined || personId === null || launchId === null) {
+              return yield* refuse(entry.binding, "this write's ticket names no person or file");
+            }
+            if (!writeTokens.beginMint(key)) {
+              return yield* refuse(entry.binding, "this write has ended; nothing was minted");
+            }
+            const token = yield* channelTokens
+              .issueWrite(launchId, personId)
+              .pipe(
+                Effect.onExit((exit) =>
+                  Exit.isSuccess(exit)
+                    ? Effect.void
+                    : Effect.sync(() => writeTokens.mintFailed(key)),
+                ),
+              );
+            yield* writeTokens.minted(key, token);
+            yield* Effect.logInfo("session engine: pickup redeemed").pipe(
+              Effect.annotateLogs({
+                sessionId: entry.binding.sessionId,
+                purpose: entry.binding.purpose,
+                files: 1,
+              }),
+            );
+            return pickupAnswerOf([{ path: file.path, bytes: new TextEncoder().encode(token) }]);
+          }
           if (entry.binding.purpose === "session-token") {
             const key = ticketKeyOf(ticket);
             const done = yield* Deferred.make<ReturnType<typeof pickupAnswerOf>, Error>();
@@ -7111,11 +7140,6 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               yield* Deferred.fail(done, made.failure);
               identityInFlight.delete(key);
               return yield* Effect.fail(made.failure);
-            }
-            // A one-off write's token is that write's: kept for its end, or revoked now if it ended.
-            const [mintedToken] = made.success;
-            if (mintedToken !== undefined) {
-              yield* writeTokens.minted(key, new TextDecoder().decode(mintedToken.bytes));
             }
             const answer = pickupAnswerOf(made.success);
             const kept = {
@@ -14953,10 +14977,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         }
         const checked = yield* checkPastedImage(bytes);
         const workspace = yield* workspaceForSupportingProcess(session);
-        // A person executor (docs/adr/0016): the write runs as the sender. If nothing of theirs
-        // was made here yet, only their user and home are, with a Mend token of this write's own,
-        // revoked when the write ends on any path (mend#615 review 2). Null: a shared executor,
-        // where it runs as root, as before.
+        // A person executor (docs/adr/0016): the write runs as the sender, their user and home
+        // ensured first, with a Mend token of this write's own that redeems its pickup and nothing
+        // else, revoked when the write ends on any path and lapsing on its own soon after (mend#615
+        // reviews 2 and 3). Root writes nothing of theirs. Null: a shared executor, where it runs as
+        // root, as before.
         const placement = yield* Effect.scoped(
           Effect.gen(function* () {
             const home = yield* layoutSteps.homeForWrite({
@@ -14974,7 +14999,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                     user: home.user,
                     sessionId: session.id,
                     places: personPlacesOf(HARNESS_HOME_MOUNT_PATH, home.identity),
-                    ...(home.tokenFile === null ? {} : { tokenFile: home.tokenFile }),
+                    tokenFile: home.tokenFile,
                   };
             const placed = pastedImagePlacement(checked.name, as === undefined ? null : sender);
             yield* writeWorkspaceFiles(
