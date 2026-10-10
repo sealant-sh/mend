@@ -105,13 +105,13 @@ sequence the client resumes after: replay after a sequence is phase 2.
 `orchestration.dispatchCommand` takes what Mend can back (`src/commands.ts`); every other command
 answers `OrchestrationV2DispatchCommandError` naming it.
 
-| t3code                              | What the gateway does                                                                                                                                                                                                                                                        |
-| ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `message.dispatch`                  | Checks Mend's steering rule as the sender (`GET /api/sessions/:id`), queues the message, and sends it once no turn is open: `POST /api/sessions/:id/turns`, or, when the agent stopped, `POST /api/sessions/:id/launch` with no prompt and then the turn once the agent runs |
-| `run.interrupt`                     | `POST /api/turns/:id/interrupt`; with `holdQueue` (t3code always sends it) the queue is held before the turn ends. A queued run is taken back instead                                                                                                                        |
-| `queued-run.cancel`, `queue.resume` | The gateway's queue                                                                                                                                                                                                                                                          |
-| `runtime-request.respond`           | `POST /api/requests/:id/respond`: decisions as Mend's (`acceptAlways` is `accept-for-session`), answers as lists of strings                                                                                                                                                  |
-| `thread.user-input.dismiss`         | The same, answering `cancel`                                                                                                                                                                                                                                                 |
+| t3code                                                                       | What the gateway does                                                                                                                                                                                                                                                        |
+| ---------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `message.dispatch`                                                           | Checks Mend's steering rule as the sender (`GET /api/sessions/:id`), queues the message, and sends it once no turn is open: `POST /api/sessions/:id/turns`, or, when the agent stopped, `POST /api/sessions/:id/launch` with no prompt and then the turn once the agent runs |
+| `run.interrupt`                                                              | `POST /api/turns/:id/interrupt`; with `holdQueue` (t3code always sends it) the queue is held before the turn ends. A queued run is taken back instead                                                                                                                        |
+| `queued-run.cancel`, `queue.resume`, `queued-run.edit`, `queued-run.reorder` | The gateway's queue                                                                                                                                                                                                                                                          |
+| `runtime-request.respond`                                                    | `POST /api/requests/:id/respond`: decisions as Mend's (`acceptAlways` is `accept-for-session`), answers as lists of strings                                                                                                                                                  |
+| `thread.user-input.dismiss`                                                  | The same, answering `cancel`                                                                                                                                                                                                                                                 |
 
 The gateway holds the queue (ADR 0012): it never sends a second turn while one is open in Mend,
 whoever opened it. A queued message is a run of the gateway's own (`t3-run:…`) until Mend opens its
@@ -146,8 +146,11 @@ agent up) is taken as under way, and the message waits for the agent. Every wait
   fails what was queued, stops Mend's event stream and lets itself go.
 - A `commandId` is reserved before anything is read, so a command sent twice at once is one message.
 
-Steering mid-turn, images and holding a message for later are refused; queue edit and reorder are
-phase 2.
+`queued-run.edit` rewrites a message still waiting (t3code sees a `message.updated`), and
+`queued-run.reorder` moves one before another waiting message, or after the last one, as t3code's
+own server places it. A message on its way to Mend, or settled, is neither rewritten nor moved.
+
+Steering mid-turn, images and holding a message for later are refused.
 
 ### A queue that survives a restart
 

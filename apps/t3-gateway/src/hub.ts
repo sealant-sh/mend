@@ -206,6 +206,18 @@ export interface ThreadCommands {
     runId: string,
   ) => Effect.Effect<number, ThreadCommandFailure>;
   readonly resumeQueue: (threadId: string) => Effect.Effect<number, ThreadCommandFailure>;
+  /** New text for a message still waiting in the gateway's queue (`queued-run.edit`). */
+  readonly editQueued: (
+    threadId: string,
+    runId: string,
+    text: string,
+  ) => Effect.Effect<number, ThreadCommandFailure>;
+  /** Moves a waiting message before another, or last (`queued-run.reorder`). */
+  readonly reorderQueued: (
+    threadId: string,
+    runId: string,
+    beforeRunId: string | null,
+  ) => Effect.Effect<number, ThreadCommandFailure>;
   readonly respond: (input: {
     readonly session: BearerSession;
     readonly threadId: string;
@@ -1926,6 +1938,19 @@ export const makePersonHub = (input: {
         }),
       );
 
+    /** A change to what is still waiting in a thread's queue, published at once. */
+    /** An edit or a reorder, kept before it is acknowledged (594-R2-1): refused, nothing changed. */
+    const changeQueue = (sessionId: string, change: (queue: Queueing.ThreadQueue) => boolean) =>
+      locked(
+        Effect.gen(function* () {
+          if (!(yield* changeKept(sessionId, change))) {
+            return yield* refused("That message is not waiting in the queue any more.");
+          }
+          yield* publishAll;
+          return sequence;
+        }),
+      );
+
     const respond: ThreadCommands["respond"] = (command) =>
       Effect.gen(function* () {
         const known = yield* locked(
@@ -2254,6 +2279,10 @@ export const makePersonHub = (input: {
       interrupt: (command) => interrupt({ ...command, threadId: sessionIdOf(command.threadId) }),
       cancelQueued: (threadId, runId) => cancelQueued(sessionIdOf(threadId), runId),
       resumeQueue: (threadId) => resumeQueue(sessionIdOf(threadId)),
+      editQueued: (threadId, runId, text) =>
+        changeQueue(sessionIdOf(threadId), (queue) => Queueing.edit(queue, runId, text)),
+      reorderQueued: (threadId, runId, beforeRunId) =>
+        changeQueue(sessionIdOf(threadId), (queue) => Queueing.reorder(queue, runId, beforeRunId)),
       respond: (command) => respond({ ...command, threadId: sessionIdOf(command.threadId) }),
       launch,
       rename,

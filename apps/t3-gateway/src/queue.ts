@@ -38,7 +38,8 @@ export type EntryState = "queued" | "launching" | "sending" | "failed" | "cancel
 export interface QueueEntry {
   readonly runId: string;
   readonly messageId: string;
-  readonly text: string;
+  /** Rewritten only while the message waits (`edit`). */
+  text: string;
   readonly requestedAt: string;
   /** The sender's device token: their message is sent as them. Never stored. */
   readonly token: string;
@@ -207,6 +208,39 @@ export const holdIfQueued = (queue: ThreadQueue, holdQueue: boolean) => {
 
 export const resume = (queue: ThreadQueue) => {
   queue.held = false;
+};
+
+/** The message waiting in the queue under `runId`, or undefined once it is on its way or settled. */
+const waiting = (queue: ThreadQueue, runId: string): QueueEntry | undefined =>
+  queue.entries.find((entry) => entry.runId === runId && entry.state === "queued");
+
+/**
+ * New text for a message still waiting (`queued-run.edit`). False once it is on its way: what Mend
+ * may already have is never rewritten.
+ */
+export const edit = (queue: ThreadQueue, runId: string, text: string): boolean => {
+  const entry = waiting(queue, runId);
+  if (entry === undefined) return false;
+  entry.text = text;
+  return true;
+};
+
+/**
+ * Moves a waiting message right before another waiting one, or, when `beforeRunId` is null, after
+ * the last one still waiting or on its way (`queued-run.reorder`, as t3code's own server places
+ * it): never ahead of a message on its way. Messages on their way or settled keep their places.
+ * False when either is not waiting.
+ */
+export const reorder = (queue: ThreadQueue, runId: string, beforeRunId: string | null): boolean => {
+  const entry = waiting(queue, runId);
+  if (entry === undefined) return false;
+  if (beforeRunId === runId) return true;
+  const target = beforeRunId === null ? null : waiting(queue, beforeRunId);
+  if (target === undefined) return false;
+  const rest = queue.entries.filter((candidate) => candidate !== entry);
+  const at = target === null ? rest.findLastIndex(canProgress) + 1 : rest.indexOf(target);
+  queue.entries = [...rest.slice(0, at), entry, ...rest.slice(at)];
+  return true;
 };
 
 /**
