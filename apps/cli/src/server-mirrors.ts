@@ -128,6 +128,14 @@ const LOGGING = [
   '        max-file: "5"',
 ];
 
+/** How often each mirror's healthcheck runs, and how long setup's `--wait` gives it. */
+const HEALTH_TIMING = [
+  "      interval: 10s",
+  "      timeout: 5s",
+  "      retries: 3",
+  "      start_period: 10s",
+];
+
 const npmMirrorService = (): ReadonlyArray<string> => [
   "  # Read-through cache of registry.npmjs.org (npm-mirror.conf). Size-capped, and it leaves",
   `  # ${MIRROR_MIN_FREE} free on its disk; the least recently used tarballs go first. No credential sent.`,
@@ -143,6 +151,10 @@ const npmMirrorService = (): ReadonlyArray<string> => [
   "    volumes:",
   `      - ./${NPM_MIRROR_CONF_NAME}:/etc/nginx/templates/default.conf.template:ro`,
   "      - mend-npm-mirror:/var/cache/npm-mirror",
+  "    # Answered by nginx itself, so it says the mirror is up without asking the registry.",
+  "    healthcheck:",
+  '      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:4873/-/ping"]',
+  ...HEALTH_TIMING,
   ...LOGGING,
 ];
 
@@ -177,6 +189,12 @@ const dockerMirrorService = (mirrors: ServerMirrors): ReadonlyArray<string> => [
   "    volumes:",
   `      - ./${DOCKER_MIRROR_GUARD_NAME}:/mend/${DOCKER_MIRROR_GUARD_NAME}:ro`,
   "      - mend-docker-mirror:/var/lib/registry",
+  "    # Healthy while its guard keeps working, which it records every pass. The registry inside may",
+  "    # be paused for want of disk, or not started because Docker Hub did not answer (it asks Hub as",
+  "    # it starts, and the guard tries again every pass): setup does not wait for it.",
+  "    healthcheck:",
+  `      test: ["CMD-SHELL", 'test -n "$$(find /tmp/mend-mirror-guard -mmin -2)"']`,
+  ...HEALTH_TIMING,
   ...LOGGING,
 ];
 
