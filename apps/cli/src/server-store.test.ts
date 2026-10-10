@@ -276,6 +276,40 @@ describe("server filesystem transactions", () => {
     expect(escaped?.readActive()._tag).toBe("error");
   });
 
+  it("says a refusal under the lock as it was written, and gives filesystem advice only for the system's failures", async () => {
+    const root = temporary();
+    const messageOf = async (operation: () => Promise<unknown>): Promise<string> => {
+      const result = await withServerStore(root, operation);
+      if (result._tag !== "error") throw new Error("expected a failure");
+      return result.error.message;
+    };
+    const refusal = 'Unknown server setup option "--bogus".';
+    expect(
+      await messageOf(async () => {
+        throw new Error(refusal);
+      }),
+    ).toBe(refusal);
+    const failure = await messageOf(async () => fs.readFileSync(path.join(root, "missing.env")));
+    expect(failure).toMatch(
+      /^Server storage operation failed: ENOENT: no such file or directory, open '.*missing\.env'\. Retain the identity and generations; fix the filesystem problem and retry\.$/u,
+    );
+    expect(failure).not.toContain("..");
+
+    // Another command holds the lock: its guidance, unwrapped.
+    fs.mkdirSync(path.join(root, "server.lock"));
+    const busy = await messageOf(async () => undefined);
+    expect(busy).toMatch(/^Server is busy: /u);
+    expect(busy).not.toContain("Server storage operation failed");
+    fs.rmdirSync(path.join(root, "server.lock"));
+
+    const none = await withServerStore(path.join(root, "absent"), async () => undefined, {
+      create: false,
+    });
+    expect(none._tag === "error" && none.error.message).toBe(
+      "No Mend server is configured. Run mend server setup explicitly to install one.",
+    );
+  });
+
   it("releases its lock when the callback fails and refuses missing identity or corrupt pointers", async () => {
     const root = temporary();
     expect(

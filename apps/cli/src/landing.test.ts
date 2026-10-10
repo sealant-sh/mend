@@ -438,6 +438,57 @@ describe("fetchBundle", () => {
     expect(run(local, ["rev-parse", "refs/heads/mend/fix-login"])).toBe(bundle.tip);
   });
 
+  it("leaves the branch where it is when the session's change has not moved since the last pull", () => {
+    const { local, store, root, bundle } = world();
+    expect(fetchBundle(local, bundle)._tag).toBe("fetched");
+
+    // The next pull's bundle: Mend commits the same checkpoint again, a second later.
+    const recommit = (tree: string, message: string, date: string): string =>
+      execFileSync(
+        "git",
+        [...IDENTITY, "commit-tree", tree, "-p", `${bundle.tip}~1`, "-m", message],
+        {
+          cwd: store,
+          encoding: "utf8",
+          env: { ...process.env, GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date },
+        },
+      ).trim();
+    const bundleOf = (tip: string) => {
+      run(store, ["update-ref", "refs/heads/mend/fix-login", tip]);
+      const file = path.join(root, `${tip}.bundle`);
+      run(store, ["bundle", "create", "-q", file, "mend/fix-login", `^${bundle.base}`]);
+      return { ...bundle, tip, bytes: new Uint8Array(fs.readFileSync(file)) };
+    };
+    const again = bundleOf(
+      recommit(`${bundle.tip}^{tree}`, "Mend: work left uncommitted", "2026-10-10T12:00:01Z"),
+    );
+    expect(again.tip).not.toBe(bundle.tip);
+
+    const unchanged = fetchBundle(local, again);
+    expect(unchanged).toEqual({
+      _tag: "unchanged",
+      branch: "mend/fix-login",
+      here: bundle.tip,
+      tip: again.tip,
+    });
+    expect(run(local, ["rev-parse", "refs/heads/mend/fix-login"])).toBe(bundle.tip);
+    expect(fs.existsSync(path.join(local, ".git", "FETCH_HEAD"))).toBe(false);
+    if (unchanged._tag !== "unchanged") throw new Error("expected no move");
+    expect(fetchedLines(unchanged)[0]).toBe(
+      `✓ mend/fix-login · ${bundle.tip.slice(0, 7)} · unchanged since the last pull · nothing moved`,
+    );
+
+    // A change that did move, on the same parents, is not a fast-forward: still refused.
+    fs.writeFileSync(path.join(store, "login.test.ts"), "test 2\n");
+    run(store, ["add", "-A"]);
+    const moved = bundleOf(
+      recommit(run(store, ["write-tree"]), "Mend: work left uncommitted", "2026-10-10T12:00:02Z"),
+    );
+    const refused = fetchBundle(local, moved);
+    expect(refused._tag).toBe("refused");
+    expect(run(local, ["rev-parse", "refs/heads/mend/fix-login"])).toBe(bundle.tip);
+  });
+
   it("refuses to move a local branch with commits the change does not have", () => {
     const { local, bundle } = world();
     run(local, ["switch", "-q", "-c", "mend/fix-login"]);

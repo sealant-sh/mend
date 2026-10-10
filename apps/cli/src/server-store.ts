@@ -151,9 +151,18 @@ interface OwnedLock {
   release(): ServerStoreResult<void>;
 }
 
+/** A failure the operating system raised (`EACCES`, `ENOSPC`, …): it carries an errno code. */
+const isSystemError = (cause: Error): boolean => "code" in cause && typeof cause.code === "string";
+
+/**
+ * A storage failure says what failed and how to recover from it. A refusal raised under the lock
+ * (another command holds it, an unknown flag, no server configured) already says what to do, so
+ * it arrives as it was written; the filesystem advice is for the operating system's failures.
+ */
 const storeError = (cause: unknown): ServerStoreError => {
   if (cause instanceof ServerStoreError) return cause;
-  const detail = cause instanceof Error ? cause.message : "unknown filesystem error";
+  if (cause instanceof Error && !isSystemError(cause)) return new ServerStoreError(cause.message);
+  const detail = cause instanceof Error ? cause.message.replace(/\.+$/u, "") : "unknown failure";
   return new ServerStoreError(
     `Server storage operation failed: ${detail}. Retain the identity and generations; fix the filesystem problem and retry.`,
   );

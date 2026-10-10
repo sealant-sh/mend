@@ -473,9 +473,27 @@ export type Fetched =
       /** `<short sha> <subject>`, newest first, at most ten. */
       readonly log: ReadonlyArray<string>;
     }
+  | {
+      /**
+       * The local branch already holds the change: the same tree on the same parents, in a
+       * commit Mend wrote at an earlier pull. Nothing moved.
+       */
+      readonly _tag: "unchanged";
+      readonly branch: string;
+      /** Where the local branch stays. */
+      readonly here: string;
+      /** The commit this pull's bundle carried for the same change. */
+      readonly tip: string;
+    }
   | { readonly _tag: "refused"; readonly message: string };
 
 const LOG_LINES = 10;
+
+/** A commit's tree and parents, the parts that make it the same change. */
+const treeAndParents = (cwd: string, sha: string): string | null => {
+  const run = git(cwd, ["show", "-s", "--format=%T %P", `${sha}^{commit}`]);
+  return run.status === 0 ? run.stdout.trim() : null;
+};
 
 const refusedWith = (message: string): Fetched => ({ _tag: "refused", message });
 
@@ -509,6 +527,17 @@ export const fetchBundle = (
     try {
       const file = path.join(dir, "change.bundle");
       fs.writeFileSync(file, bundle.bytes, { mode: 0o600 });
+      if (previous !== null) {
+        // Mend commits the checkpoint anew for every bundle, so a session that has not moved
+        // since the last pull arrives as a different commit of the same tree on the same
+        // parents. Read its objects without moving any ref, and leave the branch where it is.
+        const objects = git(cwd, ["fetch", "--no-tags", "--no-write-fetch-head", file, ref]);
+        if (objects.status !== 0) return refusedWith(gitWords(objects));
+        const here = treeAndParents(cwd, previous);
+        if (here !== null && here === treeAndParents(cwd, bundle.tip)) {
+          return { _tag: "unchanged", branch: bundle.branch, here: previous, tip: bundle.tip };
+        }
+      }
       const fetched = git(cwd, [
         "fetch",
         "--no-tags",
@@ -546,8 +575,14 @@ export const fetchBundle = (
 
 /** What `mend pull` prints once the branch is here. */
 export const fetchedLines = (
-  fetched: Extract<Fetched, { _tag: "fetched" }>,
+  fetched: Exclude<Fetched, { _tag: "refused" }>,
 ): ReadonlyArray<string> => {
+  if (fetched._tag === "unchanged") {
+    return [
+      `${green("✓")} ${fetched.branch} · ${short(fetched.here)} · unchanged since the last pull · nothing moved`,
+      `${dim("  switch to it")} git switch ${fetched.branch}`,
+    ];
+  }
   const moved =
     fetched.previous === null
       ? "created"

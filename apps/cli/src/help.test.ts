@@ -14,6 +14,7 @@ import {
   usageOf,
   wrap,
 } from "./help.ts";
+import { redactCredentials } from "./shared.ts";
 
 const visible = COMMANDS.filter((doc) => !doc.hidden);
 
@@ -135,6 +136,36 @@ describe("renderCommand", () => {
     expect(page).toContain("\nexamples\n");
     expect(page).toContain("\nsee also\n  mend attach");
     for (const line of page.split("\n")) expect(line.length, line).toBeLessThanOrEqual(80);
+  });
+
+  it("prints mend help adopt whole: file:// in the prose and the scp-style example both stay", () => {
+    const page = renderCommand(findCommand(["adopt"])!, 80);
+    const words = page.replace(/\s+/gu, " ");
+    for (const part of [
+      "local paths and file:// URLs do not.",
+      "--auth says how the store fetches from the remote.",
+      " options ",
+      "--name <name>",
+      " examples ",
+      "mend adopt git@github.com:acme/api.git --auth mend-key",
+      " see also ",
+    ]) {
+      expect(words).toContain(part);
+    }
+    // The live pass's cut-off page came from the credential redactor. Pages print without it now,
+    // and it changes none but the one that shows a sample credential being redacted.
+    expect(redactCredentials(page)).toBe(page);
+    for (const doc of COMMANDS) {
+      const each = renderCommand(doc, 80);
+      if (doc.name === "projects") {
+        expect(each.replace(/\s+/gu, " ")).toContain(
+          "https://oauth2:TOKEN@github.com/acme/repo.git reads as https://github.com/acme/repo.git",
+        );
+        continue;
+      }
+      expect(redactCredentials(each), doc.name).toBe(each);
+    }
+    expect(redactCredentials(renderIndex(80))).toBe(renderIndex(80));
   });
 
   it("documents landing: mend land, mend pull, and the launch override", () => {

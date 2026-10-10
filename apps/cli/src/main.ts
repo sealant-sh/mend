@@ -394,6 +394,11 @@ const amber = paint("33");
 const cobalt = paint("34");
 /** Everything the CLI says itself; a URL's credentials never reach a terminal or a log. */
 const say = (line: string) => chrome.write(`${redactCredentials(line)}\n`);
+/**
+ * A help page, printed as the catalog wrote it. It quotes no URL Mend was given, so it never needs
+ * the credential redactor, whose reading of free text must not cut a page short.
+ */
+const sayPage = (page: string) => chrome.write(`${page}\n`);
 const detachKeyEnabled = process.env["MEND_DETACH_KEY"] !== "none";
 const detachHint = () => (detachKeyEnabled ? ` · detach: ${dim("Ctrl+]")}` : "");
 
@@ -5655,7 +5660,7 @@ const dashboard = async (
   options: { readonly openSnake?: boolean; readonly noTunnel?: boolean } = {},
 ) => {
   if (process.stdout.isTTY !== true) {
-    say(renderIndex());
+    sayPage(renderIndex());
     return;
   }
   if (!hasNodeFfi()) {
@@ -5742,21 +5747,21 @@ const withAgentShare = async <T>(config: CliConfig, work: () => Promise<T>): Pro
 /** `mend help [command...]`: the index, a group, or one page. */
 const helpCommand = (words: ReadonlyArray<string>) => {
   if (words.length === 0) {
-    say(renderIndex());
+    sayPage(renderIndex());
     return;
   }
   const doc = findCommand(words);
   if (doc !== null && (doc.name.split(" ").length > 1 || words.length === 1)) {
-    say(renderCommand(doc));
+    sayPage(renderCommand(doc));
     return;
   }
   const group = renderGroup(words[0] ?? "");
   if (doc !== null) {
-    say(renderCommand(doc));
+    sayPage(renderCommand(doc));
     return;
   }
   if (group !== null) {
-    say(group);
+    sayPage(group);
     return;
   }
   return fail(`no command "${words.join(" ")}" · mend help lists them`);
@@ -5775,7 +5780,7 @@ const manCommand = (words: ReadonlyArray<string>) => {
   const result = spawnSync("man", ["-l", file], { stdio: "inherit" });
   fs.rmSync(file, { force: true });
   if (result.error !== undefined || result.status !== 0) {
-    say(doc === null ? renderIndex() : renderCommand(doc));
+    sayPage(doc === null ? renderIndex() : renderCommand(doc));
   }
 };
 
