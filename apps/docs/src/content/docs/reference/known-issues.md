@@ -471,8 +471,9 @@ A new worktree can use that image. A Mend older than 0.36 cannot resume the work
 - A session once shared stays neutral: after shared control is turned off, its agent still runs
   without the owner's personal memory and instructions until the session ends. A new session has
   them.
-- While control is shared, no personal memory, instructions, skills or MCP servers apply, and
-  scheduled prompts are off. What the owner's agent loaded before sharing stays in the history.
+- While control is shared, no personal memory, instructions, skills, plugins or MCP servers apply,
+  and scheduled prompts are off. Mend installs no Claude plugin there, the repository's included.
+  What the owner's agent loaded before sharing stays in the history.
 - A change of sender waits for the previous sender's background work and holds the turns behind it.
   It restarts the agent process, which ends "accept for session" approvals and MCP sign-ins made in
   the previous process.
