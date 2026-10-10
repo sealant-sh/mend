@@ -13,7 +13,10 @@ import {
   type OrchestrationV2Run,
   type OrchestrationV2ThreadStreamItem,
 } from "@mend/t3-contracts";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import * as Option from "effect/Option";
 
 import {
   restoredQueue,
@@ -310,6 +313,84 @@ describe("a kept message is sent once, by someone who may", () => {
       assert.lengthOf(mend.workbench.turns.get("session-1") ?? [], 1);
     });
   });
+
+  it.live("never acknowledges a queued message the state file refused (593-R2-1)", () => {
+    const statePath = freshStatePath();
+    return Effect.gen(function* () {
+      const mend = yield* startFakeMend;
+      mend.workbench.addProject("project-1", "mend");
+      mend.workbench.addSession({ id: "session-1", projectId: "project-1" });
+      mend.workbench.addTurn("session-1", "A long job");
+      yield* gateway(
+        mend,
+        statePath,
+        Effect.gen(function* () {
+          const { rpc } = yield* pairAndConnect(mend, "REFUSED-QUEUE");
+          const database = new DatabaseSync(statePath);
+          database.exec(
+            "CREATE TRIGGER refuse_queue BEFORE INSERT ON queued_messages BEGIN SELECT RAISE(ABORT, 'disk failure'); END",
+          );
+          database.close();
+          // Behind an open turn: before, it showed as queued and was gone after a restart.
+          const exit = yield* Effect.exit(
+            rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](
+              message("message-refused", "Must be kept"),
+            ),
+          );
+          assert.isTrue(Exit.isFailure(exit));
+          const error = Exit.isFailure(exit)
+            ? Option.getOrUndefined(Cause.findErrorOption(exit.cause))
+            : undefined;
+          assert.include(JSON.stringify(error), "could not write this to its state file");
+          const projection = yield* rpc[ORCHESTRATION_V2_WS_METHODS.getThreadProjection]({
+            threadId: ThreadId.make("session-1"),
+          });
+          assert.isFalse(projection.runs.some((run) => run.userMessageId === "message-refused"));
+        }),
+      );
+    });
+  });
+
+  it.live(
+    "sends a taken message once even when its turn's ids could not be kept (593-R2-2)",
+    () => {
+      const statePath = freshStatePath();
+      return Effect.gen(function* () {
+        const mend = yield* startFakeMend;
+        mend.workbench.addProject("project-1", "mend");
+        mend.workbench.addSession({ id: "session-1", projectId: "project-1" });
+        const command = message("message-once", "Only once");
+        yield* gateway(
+          mend,
+          statePath,
+          Effect.gen(function* () {
+            const { rpc } = yield* pairAndConnect(mend, "UNRECORDED");
+            const database = new DatabaseSync(statePath);
+            database.exec(
+              "CREATE TRIGGER refuse_ids BEFORE INSERT ON message_ids BEGIN SELECT RAISE(ABORT, 'disk failure'); END",
+            );
+            database.close();
+            yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](command);
+            yield* eventually(() => turnPosts(mend).length === 1, "the turn");
+            yield* Effect.sleep("100 millis");
+          }),
+        );
+        const first = mend.workbench.turns.get("session-1")?.[0];
+        if (first !== undefined) mend.workbench.setTurn(first, "completed");
+        // The client re-sends the exact command after the restart: it is the message Mend took.
+        yield* gateway(
+          mend,
+          statePath,
+          Effect.gen(function* () {
+            const { rpc } = yield* pairAndConnect(mend, "UNRECORDED-AFTER");
+            yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](command);
+            yield* Effect.sleep("400 millis");
+            assert.strictEqual(turnPosts(mend).length, 1);
+          }),
+        );
+      });
+    },
+  );
 
   it.live("never sends a message it could not keep as on its way", () => {
     const statePath = freshStatePath();
