@@ -123,8 +123,10 @@ On the **MacBook** (VS Code started from the Dock, not a terminal):
    view within a second or two, with no refresh.
 9. **+** → **Workbench** → the project. Expect **Set up workspace SSH?** → **Set up**, then a new
    window `[SSH: mend-ws-…]` with `/workspace/repo` open. In its terminal: `uname -sm` prints
-   `Linux aarch64`; `id -un` prints `root` (expected today; see the guide). `cat ~/.ssh/config` on
-   the MacBook starts with the `# >>> mend workspace ssh mend-ws-…` block, before anything you had.
+   `Linux aarch64`; `id -un` prints your login name in the workspace (`m` and 8 characters); `root`
+   means the server's Sealant could not bind you, and the session line says so. `cat ~/.ssh/config`
+   on the MacBook starts with the `# >>> mend workspace ssh mend-ws-…` block, before anything you
+   had.
 10. In the first window, **Mend: Open terminal** on that session → the shell → type
     `echo hi > hi.txt`. **Mend: Review change** opens `http://<mini>:3105/changes/<id>` and lists
     `hi.txt`.

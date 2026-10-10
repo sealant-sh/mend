@@ -207,10 +207,10 @@ over Remote-SSH, your own session included, and starting another session there d
 To open the workspace yourself, launch it: once the running workspace stops, whoever launches the
 next one opens that one. The extension says so before Remote-SSH would refuse you. It also offers
 the session's terminal when the server would let you in: always for your own session, and for
-someone else's only while its owner has shared control on, read-only. The Remote-SSH login itself
-runs as root inside the workspace until Sealant's gateway takes a user for it: an agent you start in
-that terminal does not use your per-person home and logins. Start agents from Mend (**+** → an
-agent) or in **Mend: Open terminal**.
+someone else's only while its owner has shared control on, read-only. The Remote-SSH login is the
+launcher's own Linux user (`m` and 8 characters), on their home and logins, so an agent they start
+in its terminal runs as them. A server whose Sealant cannot bind the person (an older Core) logs in
+as root instead, and the session line says `Remote-SSH: root, Core can't bind your person`.
 
 ## Troubleshooting
 
@@ -236,12 +236,17 @@ passed against `0.36.0-next.656`: the browser sign-in, a session created elsewhe
 within a second, a Workbench session, the Remote-SSH block used by `ssh`, typing in the session's
 terminal over `/api/tty`, and review showing the terminal's edit. Then, in a real Remote-SSH window
 (VS Code's server installed in the workspace): editing a file, running a command in its integrated
-terminal (it ran as `root`), and opening a server on the workspace's loopback from this machine
-through the forwarded port; back in Mend, the session's own terminal read the edited file and the
-review listed it. A smoke run against an `https://` edge (`alpha.mend.run`) passed the sign-in, the
-event stream, a session, its terminal and review; its SSH port did not answer from outside (a
-timeout), so Remote-SSH cannot reach that server until its port is published, as the edge section
-above says.
+terminal (it ran as `root`: that build predates Remote-SSH as the launcher, mend#641), and opening a
+server on the workspace's loopback from this machine through the forwarded port; back in Mend, the
+session's own terminal read the edited file and the review listed it.
+
+From outside, over the public internet, against an `https://` edge (`alpha.mend.run`, set up with
+`--edge alpha.mend.run --ssh-bind 0.0.0.0 --exposure public --declare workspace-ssh`, 2026-10-10):
+`mend ssh setup` wrote the block and registered a key; a session ran in 7.4 s; `ssh` to
+`alpha.mend.run:2222` answered in about a second; SFTP put and got files; and a real VS Code
+Remote-SSH window opened `/workspace/repo` in 19 s (its server install included), edited a file, ran
+its terminal and forwarded a port, and Mend's review listed every file written. That server predated
+mend#641, so the login was root.
 
 No Mac took part. Docker Desktop's and OrbStack's port forwarding, file sharing and firewall prompt,
 the Keychain, Apple silicon images, and sleep are described here from their documentation; the

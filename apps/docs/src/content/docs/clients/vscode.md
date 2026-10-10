@@ -13,11 +13,11 @@ terminal runs in the workspace, with the workspace image, environment and harnes
 or `codex` you run in that terminal is observed by Mend: the session shows running, the workspace
 stays up, and the conversation is recorded and can be resumed from any device.
 
-That holds where the workspace shares one home (the `shared` layout). In a
-[per-person workspace](/operate/per-person-workspaces/), the 0.36 default, the Remote-SSH login runs
-as root until Sealant's gateway takes a user for it: an agent you start in that terminal does not
-use your home and logins, and is not recorded as your conversation. Start agents from Mend (**+** →
-an agent), or in **Mend: Open terminal**, which attaches to the session's own processes.
+In a [per-person workspace](/operate/per-person-workspaces/), the 0.36 default, the Remote-SSH login
+is the workspace's launcher, as their own Linux user, on their home and logins. Where the server's
+Sealant cannot bind the person (an older Core), it runs as root instead and the session line says
+`Remote-SSH: root, Core can't bind your person`; an agent started in that terminal then does not use
+your home and logins. Start agents from Mend (**+** → an agent) or in **Mend: Open terminal** there.
 
 The extension is not published on the Visual Studio Marketplace. Build and install it from source as
 described [below](#install-from-source).
@@ -135,8 +135,8 @@ and Mend observes the new process as the same conversation. Cancelling the SSH s
 confirmation leaves the agent running. The stop ends only the agent; the shell keeps the workspace
 open until you stop the session.
 
-In a per-person workspace the resume runs in the Remote-SSH terminal as root, which does not hold
-your conversation, so take such a session over with `mend attach` instead.
+Where the session line says `Remote-SSH: root, Core can't bind your person`, the resume runs as
+root, which does not hold your conversation; take such a session over with `mend attach` instead.
 
 Only `claude` and `codex` sessions can be taken over here. The extension says so and gives the
 `mend attach` command to use from a terminal instead.
