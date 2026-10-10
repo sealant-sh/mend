@@ -10836,31 +10836,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           .pipe(Effect.orElseSucceed(() => []));
         const declaredMounts = yield* declaredMountsOf(project);
         const linkedProjects = yield* resolveLinkedProjects(project, ownerUserId);
-        // A co-located workspace mounts the project's store, the selected references and the linked
-        // projects' stores, git config included: none may hold a login or token or an include
-        // (docs/GIT-ACCESS.md, "Credentials in repository URLs"), or the launch, resume, join or
-        // standby is refused, its commands in the server log. Capture mode mounts none of them.
-        if (!captureStoreOn) {
-          yield* Effect.forEach(
-            [
-              { repository: `project ${project.name}`, gitDir: project.storePath },
-              ...selectedReferences.map((reference) => ({
-                repository: `reference ${reference.name}`,
-                gitDir: reference.path,
-              })),
-              ...linkedProjects.map(({ linked }) => ({
-                repository: `project ${linked.name}`,
-                gitDir: linked.storePath,
-              })),
-            ].filter(({ gitDir }) => existsSync(gitDir)),
-            ({ repository, gitDir }) => refuseRemoteCredentials(gitDir, repository),
-            { discard: true },
-          ).pipe(
-            // The launch-input refusal every caller already answers with its message.
-            Effect.mapError((error) => new DotfilesResolveError({ message: error.stderr })),
-            report,
-          );
-        }
+        yield* refuseWorkspaceRepositories(project, ownerUserId).pipe(report);
         // The durable harness home (harness-state.ts): a store-backed directory mounted
         // read-write into the workspace; boot symlinks each harness's `$HOME` state dirs into
         // it, so conversation state survives any workspace death. A failed mkdir costs
@@ -11356,6 +11332,44 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           })),
         ];
       });
+
+      /**
+       * The one gate in front of what a co-located workspace mounts (docs/GIT-ACCESS.md,
+       * "Credentials in repository URLs"): the project's store, every selected reference and every
+       * linked project's store, git config included, must hold no login, token or include, or the
+       * caller is refused with the message a person may read, the commands in the server log.
+       * Every path that hands a workspace a worktree calls it before it does: a new workspace
+       * (`provisionWorkspace`: a launch, a resume, a join, a standby warming), the claim of a
+       * standby at provision, and the adoption of a claimed standby at launch (review 6 of
+       * mend#640). Capture mode mounts none of them: it passes.
+       */
+      const refuseWorkspaceRepositories = Effect.fn("SessionEngine.refuseWorkspaceRepositories")(
+        function* (project: Project, ownerUserId: string | null) {
+          if (captureStoreOn) return;
+          const selectedReferences = yield* references
+            .listForProject(project.id)
+            .pipe(Effect.orElseSucceed(() => []));
+          const linkedProjects = yield* resolveLinkedProjects(project, ownerUserId);
+          yield* Effect.forEach(
+            [
+              { repository: `project ${project.name}`, gitDir: project.storePath },
+              ...selectedReferences.map((reference) => ({
+                repository: `reference ${reference.name}`,
+                gitDir: reference.path,
+              })),
+              ...linkedProjects.map(({ linked }) => ({
+                repository: `project ${linked.name}`,
+                gitDir: linked.storePath,
+              })),
+            ].filter(({ gitDir }) => existsSync(gitDir)),
+            ({ repository, gitDir }) => refuseRemoteCredentials(gitDir, repository),
+            { discard: true },
+          ).pipe(
+            // The launch-input refusal every caller already answers with its message.
+            Effect.mapError((error) => new DotfilesResolveError({ message: error.stderr })),
+          );
+        },
+      );
 
       /**
        * The project's links with their projects, as the session owner may use them
@@ -15815,6 +15829,20 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 .pipe(settleOnFailure);
         const claimedEntry =
           manifest === null && nativeImport === null ? yield* hotWorkspaces.byId(sessionId) : null;
+        // A standby claimed before this check existed, or before its repositories changed, is
+        // checked as a cold launch is before it runs anything: refused, it goes, worktree kept.
+        if (claimedEntry !== null && claimedEntry.status === "claimed") {
+          yield* refuseWorkspaceRepositories(project, ownerUserId).pipe(
+            Effect.tapError((error) =>
+              drainHotWorkspace(claimedEntry, { keepWorktree: true }).pipe(
+                Effect.andThen(
+                  settleSession(sessionId, "failed", `launch failed: ${error.message}`),
+                ),
+                Effect.ignore,
+              ),
+            ),
+          );
+        }
         const adoptedStandby =
           claimedEntry !== null && claimedEntry.status === "claimed"
             ? yield* adoptClaimedWorkspace(claimedEntry)
@@ -21730,6 +21758,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           if (changeOwner !== null && changeOwner !== ownerUserId) return null;
         }
         if (!(yield* mayRunIn(organizations, project, ownerUserId))) return null;
+        // A standby already mounts the project's store and references: one Mend would refuse is
+        // left untouched, unclaimed, and the launch goes cold, where the same gate refuses it.
+        const refused = yield* refuseWorkspaceRepositories(project, ownerUserId).pipe(
+          Effect.as(false),
+          Effect.catchTag("DotfilesResolveError", () => Effect.succeed(true)),
+        );
+        if (refused) return null;
         const inputs = yield* hotInputsFor(project, ownerUserId);
         const entry = yield* hotWorkspaces.claim(
           project.id,

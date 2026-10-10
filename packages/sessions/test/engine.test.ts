@@ -8283,6 +8283,194 @@ describe("SessionEngine hot sessions", () => {
       },
     );
   });
+
+  /** A ready co-located standby over `project`'s worktrees root, as the hot pool keeps one. */
+  const readyStandby = (projectId: ProjectId, id: SessionId) =>
+    new HotWorkspace({
+      id,
+      projectId,
+      worktreeId: null,
+      ownerUserId: "user-fixture",
+      status: "ready",
+      error: null,
+      fingerprint: "match-simulated-by-the-fake-claim",
+      remoteSsh: "not-taken",
+      harnessLayout: "shared",
+      worktree: null,
+      branch: null,
+      baseSha: null,
+      sealantWorkspaceId: SealantWorkspaceId.make("workspace-1"),
+      workspaceImage: defaultSettings.workspaceImage,
+      dotfiles: { repository: null, snapshotSha: null, notApplied: [] },
+      environment: {
+        environmentRevision: 0,
+        environmentVariableNames: [],
+        secretRevision: 0,
+        secretNames: [],
+      },
+      referenceMounts: [],
+      extraMounts: [],
+      createdAt: now(),
+      updatedAt: now(),
+    });
+
+  const LEGACY_URL = "http://user:R6-FIXTURE-TOKEN@127.0.0.1:9/repo";
+
+  it("leaves a standby over a store with a login or token unclaimed, and refuses the launch as a cold one", async () => {
+    // Review 6 of mend#640, R6-1: claiming a surviving co-located standby skipped the gate a
+    // cold launch passes, and the claimed workspace ran a new conversation over that store.
+    const created: CreateOptions[] = [];
+    const spawned: ReadonlyArray<string>[] = [];
+    const pool = { entries: [] as Array<HotWorkspace>, removed: [] as Array<string> };
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          world.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
+          const skeletonId = SessionId.make(crypto.randomUUID());
+          pool.entries.push(readyStandby(project.id, skeletonId));
+          const engine = yield* SessionEngine;
+          const place = yield* engine.ensureWorktree(
+            project.id,
+            { name: "legacy-place", base: null },
+            "user-fixture",
+          );
+          execFileSync("git", ["-C", project.storePath, "config", "remote.origin.url", LEGACY_URL]);
+          const session = yield* engine.provisionSessionIn(place.id, {
+            harness: "codex",
+            label: null,
+            ownerUserId: "user-fixture",
+          });
+          // Not claimed: the standby is left as it was, and the session is a cold one.
+          expect(session.id).not.toBe(skeletonId);
+          expect(pool.entries.map((entry) => [entry.id, entry.status])).toEqual([
+            [skeletonId, "ready"],
+          ]);
+          const refused = yield* engine.launch(session.id, ["codex"]).pipe(Effect.flip);
+          expect(
+            refused._tag === "DotfilesResolveError" ? refused.message : refused._tag,
+          ).toContain("remote.origin.url (a login or token");
+          expect(JSON.stringify(refused)).not.toContain("R6-FIXTURE-TOKEN");
+          expect(created).toHaveLength(0);
+          expect(spawned).toHaveLength(0);
+        }),
+      {
+        sealantLayer: sealantLaunchLayer(created, () => false, undefined, spawned),
+        hotWorkspacesLayer: hotPoolLayer(pool),
+      },
+    );
+  });
+
+  it("refuses to launch into a standby claimed before its store held a token, and lets it go", async () => {
+    const created: CreateOptions[] = [];
+    const spawned: ReadonlyArray<string>[] = [];
+    const pool = { entries: [] as Array<HotWorkspace>, removed: [] as Array<string> };
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          world.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
+          const skeletonId = SessionId.make(crypto.randomUUID());
+          pool.entries.push(readyStandby(project.id, skeletonId));
+          const engine = yield* SessionEngine;
+          const place = yield* engine.ensureWorktree(
+            project.id,
+            { name: "claimed-place", base: null },
+            "user-fixture",
+          );
+          // Claimed while the store was clean (before an upgrade, say)…
+          const session = yield* engine.provisionSessionIn(place.id, {
+            harness: "codex",
+            label: null,
+            ownerUserId: "user-fixture",
+          });
+          expect(session.id).toBe(skeletonId);
+          // …and launched once it is not.
+          execFileSync("git", ["-C", project.storePath, "config", "remote.origin.url", LEGACY_URL]);
+          const refused = yield* engine.launch(session.id, ["codex"]).pipe(Effect.flip);
+          expect(
+            refused._tag === "DotfilesResolveError" ? refused.message : refused._tag,
+          ).toContain("remote.origin.url (a login or token");
+          expect(spawned).toHaveLength(0);
+          expect(created).toHaveLength(0);
+          expect(pool.removed).toContain(skeletonId);
+          expect(world.sessions.get(session.id)?.status).toBe("failed");
+        }),
+      {
+        sealantLayer: sealantLaunchLayer(created, () => false, undefined, spawned),
+        hotWorkspacesLayer: hotPoolLayer(pool),
+      },
+    );
+  });
+
+  it("leaves a standby unclaimed when a selected reference's clone holds a login or token", async () => {
+    const created: CreateOptions[] = [];
+    const spawned: ReadonlyArray<string>[] = [];
+    const pool = { entries: [] as Array<HotWorkspace>, removed: [] as Array<string> };
+    const selected: Array<Reference> = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          world.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
+          const clone = path.join(tmp, "legacy-reference");
+          execFileSync("git", ["clone", "-q", path.join(tmp, "origin"), clone]);
+          execFileSync("git", ["-C", clone, "config", "remote.origin.url", LEGACY_URL]);
+          selected.push(
+            new Reference({
+              id: ReferenceId.make("legacy-reference"),
+              name: "legacy-reference",
+              organizationId: project.organizationId,
+              createdByUserId: "user-fixture",
+              originUrl: "https://host.invalid/repo",
+              path: clone,
+              pinnedRef: null,
+              headSha: null,
+              refreshedAt: null,
+              createdAt: now(),
+              updatedAt: now(),
+            }),
+          );
+          const skeletonId = SessionId.make(crypto.randomUUID());
+          pool.entries.push(readyStandby(project.id, skeletonId));
+          const engine = yield* SessionEngine;
+          const place = yield* engine.ensureWorktree(
+            project.id,
+            { name: "reference-place", base: null },
+            "user-fixture",
+          );
+          const session = yield* engine.provisionSessionIn(place.id, {
+            harness: "codex",
+            label: null,
+            ownerUserId: "user-fixture",
+          });
+          expect(session.id).not.toBe(skeletonId);
+          const refused = yield* engine.launch(session.id, ["codex"]).pipe(Effect.flip);
+          expect(
+            refused._tag === "DotfilesResolveError" ? refused.message : refused._tag,
+          ).toContain("a login or token");
+          expect(JSON.stringify(refused)).not.toContain("R6-FIXTURE-TOKEN");
+          expect(created).toHaveLength(0);
+          expect(spawned).toHaveLength(0);
+        }),
+      {
+        sealantLayer: sealantLaunchLayer(created, () => false, undefined, spawned),
+        hotWorkspacesLayer: hotPoolLayer(pool),
+        referencesLayer: Layer.succeed(ReferencesRepo, {
+          create: () => Effect.die("not in test"),
+          byId: (id) => Effect.fail(new ReferenceNotFoundError({ referenceId: id })),
+          byName: () => Effect.succeed(null),
+          listAll: () => Effect.succeed(selected),
+          listForOrganization: () => Effect.succeed(selected),
+          byIdsInOrganization: () => Effect.succeed(selected),
+          remove: () => Effect.void,
+          setHead: () => Effect.void,
+          listForProject: () => Effect.succeed(selected),
+          setForProject: () => Effect.void,
+        }),
+      },
+    );
+  });
 });
 
 /**
