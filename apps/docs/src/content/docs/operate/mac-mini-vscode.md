@@ -26,12 +26,8 @@ default). The extension uses the first for everything except Remote-SSH, which u
 ## 1. Prepare the Mac mini
 
 - Install [Docker Desktop](https://docs.docker.com/desktop/setup/install/mac-install/) or
-  [OrbStack](https://orbstack.dev). On Apple silicon, Mend, Postgres, Garage and each workspace's
-  Docker service run as `arm64` images. Workspaces built on Arch Linux, Mend's default OS family,
-  are `amd64`: Docker Hub's `archlinux` image is x86_64 only, so Sealant builds that family for
-  `amd64` and the workspace runs under emulation (Rosetta, in both Docker Desktop and OrbStack). The
-  first build of a workspace image takes a few minutes. The other OS families build for the host's
-  architecture.
+  [OrbStack](https://orbstack.dev). Apple silicon runs Mend's `arm64` images natively: Mend,
+  Postgres, Garage and every workspace, whichever OS family it is built on, Arch Linux included.
 - Docker Desktop is an app that runs when a person is logged in. For a server, turn on **Start
   Docker Desktop when you sign in** (Settings → General) and automatic login for the mini's user
   (System Settings → Users & Groups). After a power cut, Mend comes back when Docker does.
@@ -266,8 +262,9 @@ mend#641, so the login was root.
 On a MacBook with Apple silicon and OrbStack (0.36.0-next.754, 2026-10-10), one machine played both
 parts: setup on loopback and then on a tailnet, a shell session and `mend run`, `ssh` into a shared
 and a per-person workspace through the published port, a Remote-SSH window (its x64 server installed
-as the person's own user), and `mend uninstall --all`. The workspaces ran `x86_64` under Rosetta, as
-above. Docker Desktop's port forwarding, file sharing and firewall prompt, the Keychain, and sleep
-are described here from their documentation; the
+as the person's own user), and `mend uninstall --all`. On that release the Arch workspaces still ran
+`x86_64` under Rosetta; Sealant 0.39.0-next.721 builds them for `arm64`. Docker Desktop's port
+forwarding, file sharing and firewall prompt, the Keychain, and sleep are described here from their
+documentation; the
 [macOS checklist](https://github.com/sealant-sh/Mend/blob/main/docs/MACOS-VALIDATION.md) covers
 them.
