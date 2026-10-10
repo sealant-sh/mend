@@ -96,7 +96,8 @@ Preconditions:
 - A package that fails to install leaves the session running without it, with
   `mend: pi package <spec> did not install, so this session runs without it: <reason>` in the
   terminal. A profile that cannot be set up at all stops the launch with `PI_PROFILE_NOT_DELIVERED`.
-- A pi session needs the Codex login: without `mend connect codex` it does not start, whatever the
-  profile.
+- A pi session starts without `mend connect codex`: pi needs no login to launch, and the dashboard's
+  session pane then reads `pi's ChatGPT login not written · no Codex account is connected`. The
+  profile is delivered either way.
 - In a workspace that shares one home, a pi session that joins a running pi runs on the profile
   already there, which may be another person's.
