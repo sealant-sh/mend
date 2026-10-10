@@ -1,7 +1,7 @@
 import { ProjectEnvironmentVariableId } from "@mend/domain";
 import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
-import { useReducer, useRef, useState } from "react";
+import { useId, useReducer, useRef, useState } from "react";
 
 import {
   DotfilesSection,
@@ -190,6 +190,7 @@ function WorkspaceImagePanel({ project }: { readonly project: ProjectDto }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [rejections, setRejections] = useState<ReadonlyArray<WorkspacePackageResolutionDto>>([]);
+  const dockerLabelId = useId();
 
   const openEditor = () => {
     const from = effective;
@@ -267,6 +268,7 @@ function WorkspaceImagePanel({ project }: { readonly project: ProjectDto }) {
         <>
           <p className="mt-2.5 font-mono text-xs text-ink-2">
             {effective === null ? "inherited default" : workspaceImageSummary(effective)}
+            {effective === null || effective.services.docker ? null : " · docker disabled"}
             {project.workspaceImage === null ? (
               <span className="text-faint"> · inherited</span>
             ) : (
@@ -367,6 +369,32 @@ function WorkspaceImagePanel({ project }: { readonly project: ProjectDto }) {
               />
             </>
           )}
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <p id={dockerLabelId} className="font-sans text-xs font-medium text-foreground">
+                Docker service
+              </p>
+              <p className="mt-0.5 text-[11px] leading-relaxed text-muted-foreground">
+                A disposable daemon belongs to the workspace. Mend never mounts the host Docker
+                socket.
+              </p>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={draft.docker}
+              aria-labelledby={dockerLabelId}
+              disabled={busy}
+              onClick={() => setDraft({ ...draft, docker: !draft.docker })}
+              className={`shrink-0 rounded-lg border px-2 py-1 font-mono text-[11px] transition-colors disabled:opacity-50 ${
+                draft.docker
+                  ? "border-[color-mix(in_oklab,var(--sw-accent)_45%,transparent)] bg-wash text-foreground"
+                  : "border-border bg-card text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              {draft.docker ? "enabled" : "disabled"}
+            </button>
+          </div>
           <textarea
             value={draft.packagesDraft}
             disabled={busy}
@@ -1469,6 +1497,7 @@ function VariablesComposer({ projectId }: { readonly projectId: string }) {
   const queryClient = useQueryClient();
   const [state, dispatch] = useReducer(composerReducer, initialComposer);
   const [phase, setPhase] = useState<"idle" | "saving">("idle");
+  const sensitiveLabelId = useId();
   const [report, setReport] = useState<EnvironmentLoadReportView | null>(null);
   const [error, setError] = useState<string | null>(null);
   const fileInput = useRef<HTMLInputElement | null>(null);
@@ -1535,7 +1564,9 @@ function VariablesComposer({ projectId }: { readonly projectId: string }) {
 
       <div className="mt-4 flex items-start justify-between gap-4 rounded-xl border border-border bg-card p-3">
         <div>
-          <p className="font-sans text-[13px] font-medium text-foreground">Sensitive</p>
+          <p id={sensitiveLabelId} className="font-sans text-[13px] font-medium text-foreground">
+            Sensitive
+          </p>
           <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">
             On: every row is stored as a secret — encrypted here, never persisted by the platform,
             not readable after saving, only replaceable. Off: ordinary names become plaintext
@@ -1546,6 +1577,7 @@ function VariablesComposer({ projectId }: { readonly projectId: string }) {
           type="button"
           role="switch"
           aria-checked={state.allSecret}
+          aria-labelledby={sensitiveLabelId}
           disabled={phase === "saving"}
           onClick={() => dispatch({ type: "all-secret-toggled" })}
           className={`shrink-0 rounded-xl border px-3 py-1.5 font-sans text-xs font-medium shadow-xs transition-colors disabled:opacity-60 ${

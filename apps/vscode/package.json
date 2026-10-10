@@ -23,7 +23,7 @@
   },
   "publisher": "sealant-sh",
   "files": [
-    "dist",
+    "dist/extension.js",
     "resources",
     "README.md",
     "LICENSE"
