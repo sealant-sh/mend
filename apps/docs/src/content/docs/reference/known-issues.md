@@ -56,9 +56,44 @@ Mend doesn't support SHA-256 repositories yet.
 
 A project adopted before this check is refused the same way when a session starts on it.
 
+Grafts (`info/grafts`) cut history the same way while git calls the repository complete. A clone
+never copies them, so only a project whose repository was edited on the Mend host has them. A
+session start on one is refused:
+
+```text
+Mend doesn't support repositories with grafts (`info/grafts`) yet. Remove the grafts, or convert them with `git replace --convert-graft-file`.
+```
+
+Replace refs (`git replace`) are not refused: Mend saves the real history under them.
+
 Converting a session's repository to SHA-256 while the session runs is not supported. Its later
 saves never seal, so a Stop never finishes: the executor is kept and the session stays `stopping`.
 Discard unsaved and stop is the only way to end it, and it discards what the executor holds.
+
+## Shallow repositories are not supported
+
+A shallow repository holds only part of its history: a `git clone --depth` copy, a CI checkout, a
+mirror made from one. Mend refuses to adopt one:
+
+```text
+Mend doesn't support shallow repositories yet. Make the repository complete where it is hosted (`git fetch --unshallow`), then adopt it again.
+```
+
+Mend clones everything the source holds, so a shallow source gives a shallow project, and fetching
+from that source again adds no history. A session on one could not save: Mend verifies each save by
+walking the git history it names, and the walk reaches commits whose parents the repository does not
+hold. Before this check, a Stop on such a project read `saving` for up to 10 minutes and then
+`not saved · final seal not confirmed · workspace kept`.
+
+A shallow checkout on your own machine is not a problem: `mend adopt` and `mend codex` from inside
+one adopt its `origin` URL, and Mend clones that in full.
+
+A project adopted before this check is refused the same way when a session starts on it.
+
+Whatever the cause, a Stop whose last save failed git verification now reads
+`not saved · final seal refused · git section failed verification · workspace kept` after its first
+final flush, and the workspace is kept. Discard unsaved and stop ends it, and discards what the
+workspace holds.
 
 ## Build output carried from another platform is checked at its top level
 

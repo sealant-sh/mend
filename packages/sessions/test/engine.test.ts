@@ -133,6 +133,7 @@ import {
   withUnsavedAnswer,
   type CapturePosition,
   captureDiscardAuditData,
+  CAPTURE_SEAL_UNRESTORABLE,
   captureStatusLine,
   executorEndOf,
   serviceStartCorrelation,
@@ -169,6 +170,7 @@ import {
   CaptureGitVerifier,
   CaptureGitVerifierOff,
   type GitVerification,
+  type RegisterSealOutcome,
   CaptureRemotesOff,
   CaptureSourcesOff,
   CaptureRuntimeLive,
@@ -229,6 +231,7 @@ import {
   GitOpsRunnerLive,
   MendKeys,
   SecretCipher,
+  SHALLOW_REPOSITORY_REASON,
   Store,
   StoreConfig,
   DeploymentConfigColocated,
@@ -239,6 +242,7 @@ import {
   processStatePathOf,
   makeSourcePolicy,
   SourcePolicy,
+  sha256Hex,
 } from "@mend/store";
 import { buildManifest, snapshotDirectory, uploadObjects } from "@mend/store/testing";
 import type {
@@ -16913,6 +16917,183 @@ describe("SessionEngine capture failures shown while they happen (e2e run 3, 202
     },
   );
 
+  /**
+   * Verify proof run 9 (2026-10-10): a shallow project's every capture failed git verification,
+   * the registrar refused the final seal as unrestorable on each of 61 asks, and the Stop read
+   * `saving` for 5 minutes, then `final seal not confirmed`. The executor registers a sealing
+   * FINAL through the session's capture routes, Mend's verification answering as `verdict` says,
+   * then the Stop's FINAL answers `sealing` over it.
+   */
+  const stopOverSealingFinal = async (
+    verdict: GitVerification,
+    body: (at: {
+      readonly world: World;
+      readonly session: Session;
+      readonly memory: MemoryCaptureStore;
+      readonly finals: () => number;
+      readonly events: ReadonlyArray<string>;
+      readonly seal: RegisterSealOutcome | undefined;
+    }) => Effect.Effect<void, unknown, SessionEngine>,
+    // A row an older Mend recorded `failed` before this process checked it.
+    staleFailedRow = false,
+  ) => {
+    const created: Array<CreateOptions> = [];
+    const events: string[] = [];
+    const kinds: CaptureFlushKind[] = [];
+    const memory = makeMemoryCaptureStore();
+    let sealingHead: number | null = null;
+    const verifier = Layer.succeed(CaptureGitVerifier, {
+      verify: () => Effect.succeed(verdict),
+      treePaths: () => Effect.succeed(null),
+      treeObjects: () => Effect.succeed(null),
+    });
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const { engine, session } = yield* launchOnce(world, tmp);
+          yield* engine.launch(session.id, ["codex"]);
+          const lease = memory.leases.get(session.worktreeId);
+          const chain = memory.chains.get(session.worktreeId);
+          const launchId = lease?.launchId ?? null;
+          if (lease === undefined || chain === undefined || launchId === null) {
+            throw new Error("the launch holds no launch-bound lease");
+          }
+          const api = servedSocketApis.get(session.id)?.captureAs?.(launchId);
+          if (api === undefined) throw new Error("no launch-bound capture routes");
+          const tree = path.join(tmp, "sealing-final");
+          fs.mkdirSync(path.join(tree, "tree"), { recursive: true });
+          fs.writeFileSync(path.join(tree, "tree", "edit.txt"), "the session's work\n");
+          const keys = captureKeys(session.worktreeId, lease.epoch);
+          const snapshot = snapshotDirectory(tree, keys, { chunkSize: 64 });
+          const built = buildManifest({
+            worktreeId: session.worktreeId,
+            n: chain.headN + 1,
+            parent: chain.headCapture,
+            epoch: lease.epoch,
+            seq: 50,
+            kind: "final",
+            git: { packs: [], refs: {}, head: "refs/heads/main", fsck: "verified" },
+            workspace: { root: snapshot.root, packs: snapshot.packs },
+            bulk: { root: "", packs: [], platform: "linux-x86_64" },
+          });
+          const manifest = {
+            ...built.manifest,
+            final_seal: { complete: true, epoch: lease.epoch, executor: launchId },
+          };
+          const bytes = new Uint8Array(Buffer.from(JSON.stringify(manifest)));
+          const id = sha256Hex(bytes);
+          const key = keys.manifest(id);
+          yield* uploadObjects(new Map([...snapshot.objects, [key, bytes]])).pipe(
+            Effect.provide(BlobStoreFsLive(path.join(tmp, "blobs"))),
+          );
+          const register = api.register({
+            worktree_id: session.worktreeId,
+            epoch: lease.epoch,
+            n: manifest.n,
+            parent: manifest.parent,
+            capture_id: id,
+            manifest_key: key,
+            manifest: JSON.parse(JSON.stringify(manifest)),
+          });
+          let registered = yield* register;
+          if (staleFailedRow) {
+            const row = memory.captures.get(id);
+            if (row === undefined) throw new Error("the sealing FINAL did not register");
+            memory.captures.set(id, { ...row, gitFsck: "failed" });
+            registered = yield* register;
+          }
+          sealingHead = manifest.n;
+          yield* engine.stop(session.id);
+          yield* body({
+            world,
+            session,
+            memory,
+            finals: () => kinds.filter((kind) => kind === "final").length,
+            events,
+            seal: registered.seal,
+          });
+        }),
+      {
+        captured: memory,
+        verifier,
+        drainPolicy: {
+          pollInterval: Duration.millis(20),
+          keptRetryFirst: Duration.seconds(30),
+          keptRetryMax: Duration.seconds(30),
+        },
+        sealantLayer: lifecycleLayer(created, {
+          events,
+          captureOps: {
+            flushKinds: kinds,
+            finalCompletion: "unreported",
+            // sealantd's own answer: everything registered, the seal not confirmed.
+            flush: () =>
+              Effect.succeed({
+                ...flushReport(0, 7),
+                headN: sealingHead ?? 0,
+                complete: false,
+                incompleteReason: "sealing",
+              }),
+          },
+        }),
+      },
+    );
+  };
+
+  it(
+    "a final flush waiting on a seal Mend refused because this capture's git section failed verification reads not saved at once, says why, and keeps the workspace",
+    { timeout: 20_000 },
+    async () => {
+      await stopOverSealingFinal(
+        { outcome: "failed", detail: "fatal: Failed to traverse parents of commit b67adf47" },
+        ({ world, session, memory, finals, events, seal }) =>
+          Effect.gen(function* () {
+            expect(seal).toEqual({ state: "refused", reason: "unrestorable" });
+            // The default stall window is 600 s: only the refused seal keeps it now.
+            yield* until(
+              () => world.sessions.get(session.id)?.captureNotSavedAt != null,
+              "the kept workspace",
+            );
+            expect(finals()).toBe(1);
+            const kept = world.sessions.get(session.id);
+            expect(kept?.captureIncompleteReason).toBe(CAPTURE_SEAL_UNRESTORABLE);
+            expect(kept === undefined ? null : captureStatusLine(kept)).toBe(
+              "not saved · final seal refused · git section failed verification · 0 pending · workspace kept",
+            );
+            expect(events).not.toContain("workspace-1");
+            expect(leaseHeld(memory, session.worktreeId, session.id)).toBe(true);
+          }),
+      );
+    },
+  );
+
+  // Astra review of mend#654: a row an older Mend recorded `failed`, whose check cannot finish
+  // now, is a seal withheld as unavailable, not refused: the Stop keeps its ordinary wait.
+  it(
+    "a final flush waiting on a seal withheld because its check could not finish keeps saving, whatever the capture's row recorded before",
+    { timeout: 20_000 },
+    async () => {
+      await stopOverSealingFinal(
+        {
+          outcome: "unverified",
+          detail: "index-pack --verify did not finish: signal SIGKILL",
+          transient: true,
+        },
+        ({ world, session, memory, finals, events, seal }) =>
+          Effect.gen(function* () {
+            expect(seal).toEqual({ state: "withheld", reason: "unavailable" });
+            yield* until(() => finals() >= 3, "the drain asking again");
+            const saving = world.sessions.get(session.id);
+            expect(saving?.captureNotSavedAt).toBeNull();
+            expect(saving?.captureIncompleteReason).toBe("sealing");
+            expect(events).not.toContain("workspace-1");
+            expect(leaseHeld(memory, session.worktreeId, session.id)).toBe(true);
+          }),
+        true,
+      );
+    },
+  );
+
   it(
     "a running session whose snaps fail reads `capture failing since … · <error>` from a status read, and not once they succeed again",
     { timeout: 20_000 },
@@ -21761,6 +21942,48 @@ it("refuses to start a session on a SHA-256 project with the reason", async () =
       if (refused._tag === "GitError") {
         expect(refused.stderr).toBe("Mend doesn't support SHA-256 repositories yet.");
       }
+      expect(world.sessions.size).toBe(0);
+    }),
+  );
+});
+
+/**
+ * Verify proof run 9 (2026-10-10): a shallow project's Stop never saved. Adoption refuses a shallow
+ * repository now; one adopted before that starts no session, with the reason, before any worktree,
+ * row or executor is made.
+ */
+it("refuses to start a session on a shallow project with the reason", async () => {
+  await withEngine((world, tmp) =>
+    Effect.gen(function* () {
+      const project = yield* setup(tmp, world);
+      const work = path.join(tmp, "shallow-work");
+      const shallow = path.join(tmp, "shallow.git");
+      execFileSync("git", ["init", "-q", "-b", "main", work]);
+      for (const message of ["one", "two"]) {
+        fs.writeFileSync(path.join(work, "app.ts"), `export const answer = "${message}"\n`);
+        execFileSync("git", ["add", "-A"], { cwd: work });
+        execFileSync(
+          "git",
+          ["-c", "user.name=t", "-c", "user.email=t@localhost", "commit", "-q", "-m", message],
+          { cwd: work },
+        );
+      }
+      // As an adoption before the refusal stored it: history stops at the newest commit.
+      execFileSync("git", ["clone", "-q", "--bare", "--depth", "1", `file://${work}`, shallow]);
+      world.projects.set(project.id, new Project({ ...project, storePath: shallow }));
+      const engine = yield* SessionEngine;
+      const refused = yield* engine
+        .provision({
+          projectId: project.id,
+          harness: "codex",
+          label: null,
+          name: null,
+          ownerUserId: "user-fixture",
+          base: null,
+        })
+        .pipe(Effect.flip);
+      expect(refused._tag).toBe("GitError");
+      if (refused._tag === "GitError") expect(refused.stderr).toBe(SHALLOW_REPOSITORY_REASON);
       expect(world.sessions.size).toBe(0);
     }),
   );

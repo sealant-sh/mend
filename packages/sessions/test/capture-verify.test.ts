@@ -45,6 +45,7 @@ import {
   PUT_URL_CLOCK_MARGIN_SECONDS,
   PUT_URL_TTL_MIN_SECONDS,
   putUrlTtlSeconds,
+  type CaptureSealNotice,
   type SessionCaptureApi,
   UNEXPLAINED_CHECKS_BOUND,
   UPLOAD_ANSWER_PRESENT,
@@ -2384,6 +2385,8 @@ interface SealHarness {
     readonly cap0Id: string;
     readonly git: object;
   }>;
+  /** Every seal answer a register gave, in order (`CaptureScope.sealNotice`). */
+  readonly notices: ReadonlyArray<CaptureSealNotice>;
 }
 
 const describeSeals = (
@@ -2418,6 +2421,7 @@ const describeSeals = (
       await Effect.runPromise(Scope.close(scope, Exit.void));
       fs.rmSync(world.scratch, { recursive: true, force: true });
     });
+    const notices: Array<CaptureSealNotice> = [];
     const claimed = async () => {
       const worktreeId = newWorktreeId();
       const branch = `mend/wt/${worktreeId}`;
@@ -2446,6 +2450,7 @@ const describeSeals = (
             projectId: world.project.id,
             executorId: "executor-1",
             footprintBytes: 0,
+            sealNotice: (notice) => Effect.sync(() => notices.push(notice)),
           });
           return { epoch: lease.epoch, api: routes };
         }),
@@ -2468,7 +2473,7 @@ const describeSeals = (
         },
       };
     };
-    body({ world, run, claimed });
+    body({ world, run, claimed, notices });
   });
 
 /** A final capture sealing one workspace file: its snapshot, its pack's key and bytes. */
@@ -4069,13 +4074,19 @@ describeSeals(
         })),
       ).pipe(Layer.provide(BlobStoreFsLive(root))),
   },
-  ({ world, run, claimed }) => {
+  ({ world, run, claimed, notices }) => {
     const MEMBERS = 12;
     /**
      * The shape e2e8 hit: tracked files pnpm hardlinks into `node_modules` (`shared` links), the
      * bulk members spread over several packs that each hold many of them.
      */
-    const sharedLinksCapture = (at: Awaited<ReturnType<typeof claimed>>, tag: string) => {
+    const sharedLinksCapture = (
+      at: Awaited<ReturnType<typeof claimed>>,
+      tag: string,
+      // Leave the base pack out: the closure walk misses the base commit, as it misses a shallow
+      // boundary's parent.
+      withoutBase = false,
+    ) => {
       const keys = captureKeys(at.worktreeId, at.epoch);
       const names = Array.from(
         { length: MEMBERS },
@@ -4116,7 +4127,9 @@ describeSeals(
           seq: 10,
           kind: "final",
           git: {
-            packs: [packsOf(world.memory.captures.get(at.cap0Id)?.sections)[0] ?? "", edited.key],
+            packs: withoutBase
+              ? [edited.key]
+              : [packsOf(world.memory.captures.get(at.cap0Id)?.sections)[0] ?? "", edited.key],
             refs: {
               [`refs/heads/mend/wt/${at.worktreeId}`]: world.baseSha,
               [WORKTREE_TREE_REF]: edited.tree,
@@ -4368,6 +4381,71 @@ describeSeals(
       } finally {
         faults.remove();
       }
+    });
+
+    // Astra review of mend#654: the session reads a refused seal as final only when the registrar
+    // refused it because this capture's git section failed verification on that ask. A row an
+    // older Mend recorded `failed`, whose check now cannot finish, is withheld as unavailable and
+    // says nothing of the git section; the next healthy ask records the seal.
+    it("mend#654: a seal notice says the git section failed only when this ask's verification failed it, never from a stale `failed` row", async () => {
+      passBucketReplaceable = () => 0;
+      const at = await claimed();
+      const capture = sharedLinksCapture(at, "review654-stale");
+      await run(uploadObjects(capture.objects));
+      const faults = hostGitFaults();
+      const register = registerOn(at.worktreeId, at.epoch, at.api)(capture.built);
+      const lastNotice = () => notices.at(-1);
+      try {
+        faults.arm("index-pack", "kill");
+        const first = await run(register);
+        expect(faults.recover("index-pack", "kill")).toBe(true);
+        expect(first.seal).toEqual({ state: "withheld", reason: "unavailable" });
+        // An older Mend's word on the row; this process's check cannot finish again.
+        await run(
+          Effect.flatMap(CaptureStoreRepo, (repo) => repo.setGitFsck(capture.built.id, "failed")),
+        );
+        faults.arm("index-pack", "kill");
+        const current = await run(register);
+        expect(faults.recover("index-pack", "kill")).toBe(true);
+        expect(current.seal).toEqual({ state: "withheld", reason: "unavailable" });
+        expect(world.memory.captures.get(capture.built.id)?.gitFsck).toBe("failed");
+        expect(lastNotice()).toEqual({
+          n: 1,
+          captureId: capture.built.id,
+          epoch: at.epoch,
+          outcome: { state: "withheld", reason: "unavailable" },
+          gitSectionFailed: false,
+        });
+        const recovered = await run(register);
+        expect(recovered.seal).toEqual({ state: "recorded" });
+        expect(world.memory.captures.get(capture.built.id)?.gitFsck).toBe("verified");
+        expect(lastNotice()?.outcome).toEqual({ state: "recorded" });
+        expect(lastNotice()?.gitSectionFailed).toBe(false);
+      } finally {
+        faults.remove();
+      }
+    });
+
+    it("mend#654: a sealing FINAL whose git section git rejects is refused, and the notice says the git section failed on the register and on every re-ask", async () => {
+      passBucketReplaceable = () => 0;
+      const at = await claimed();
+      const capture = sharedLinksCapture(at, "review654-failed", true);
+      await run(uploadObjects(capture.objects));
+      const register = registerOn(at.worktreeId, at.epoch, at.api)(capture.built);
+      const first = await run(register);
+      expect(first.seal).toEqual({ state: "refused", reason: "unrestorable" });
+      expect(world.memory.captures.get(capture.built.id)?.gitFsck).toBe("failed");
+      expect(notices.at(-1)).toEqual({
+        n: 1,
+        captureId: capture.built.id,
+        epoch: at.epoch,
+        outcome: { state: "refused", reason: "unrestorable" },
+        gitSectionFailed: true,
+      });
+      // The re-ask verifies the row again before it refuses.
+      const again = await run(register);
+      expect(again.seal).toEqual({ state: "refused", reason: "unrestorable" });
+      expect(notices.at(-1)?.gitSectionFailed).toBe(true);
     });
 
     it("review 12 #4: a read the store failed during the seal checks withholds the seal (unavailable), and the next ask checks again and records it", async () => {
