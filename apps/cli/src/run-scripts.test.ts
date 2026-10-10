@@ -15,6 +15,8 @@ import {
   pickProcess,
   pickServiceAttempt,
   runArgvIssue,
+  answeredAttemptId,
+  findStartAttempt,
   type ServiceStartRead,
   type ServiceViewSlice,
   waitForCommand,
@@ -426,48 +428,59 @@ describe("arguments", () => {
 
 type Attempt = ServiceViewSlice["attempts"][number];
 
+const correlation = "service-start:5b3f0c1e-8d2a-4f6b-9c7e-1a2b3c4d5e6f";
+
+/** An attempt begun at `began` (ms), running, or ended with `end`'s status and code. */
 const attemptOf = (
   id: string,
-  ended: { status: string; exitCode: number | null } | null = null,
+  options: {
+    readonly end?: { readonly status: string; readonly exitCode: number | null };
+    readonly began?: number;
+    readonly correlation?: string | null;
+  } = {},
 ): Attempt => ({
   id,
-  status: ended?.status ?? "running",
-  exitCode: ended?.exitCode ?? null,
-  exitedAt: ended === null ? null : "now",
+  status: options.end?.status ?? "running",
+  exitCode: options.end?.exitCode ?? null,
+  exitedAt: options.end === undefined ? null : new Date(9000).toISOString(),
   sealantSessionId: `pty-${id}`,
+  createdAt: new Date(options.began ?? 1000).toISOString(),
+  launchCorrelationId: options.correlation ?? null,
 });
 
+/** The Service web, its last attempt current, its port last observed `observed` at `at` (ms). */
 const serviceOf = (
   observed: "reachable" | "unreachable",
-  attempts: ReadonlyArray<Attempt> = [attemptOf("attempt-2")],
-  overrides: Partial<ServiceViewSlice["service"]> = {},
-): ServiceViewSlice => ({
-  service: {
-    id: "service-1",
-    sessionId: "session-1",
-    name: "web",
-    currentAttemptId: attempts.at(-1)?.id ?? null,
-    ...overrides,
-  },
-  attempts,
-  currentForward: { id: "forward-1" },
-  latestObservation: { forwardId: "forward-1", state: observed },
-});
+  attempts: ReadonlyArray<Attempt> = [attemptOf("attempt-a", { correlation })],
+  overrides: Partial<ServiceViewSlice["service"]> & { readonly observedAt?: number } = {},
+): ServiceViewSlice => {
+  const { observedAt, ...service } = overrides;
+  return {
+    service: {
+      id: "service-1",
+      sessionId: "session-1",
+      name: "web",
+      currentAttemptId: attempts.at(-1)?.id ?? null,
+      ...service,
+    },
+    attempts,
+    currentForward: { id: "forward-1" },
+    latestObservation: {
+      forwardId: "forward-1",
+      state: observed,
+      lastObservedAt: new Date(observedAt ?? 2000).toISOString(),
+    },
+  };
+};
 
 const startRead = (
   service: ServiceViewSlice | null,
   sessionStatus: string | null = "idle",
-): ServiceStartRead => ({
-  services: service === null ? [] : [service],
-  sessionStatus,
-});
+): ServiceStartRead => ({ services: service === null ? [] : [service], sessionStatus });
 
-const target = {
-  sessionId: "session-1",
-  name: "web",
-  attemptId: "attempt-2",
-  priorAttemptId: null,
-};
+const pinned = { attemptId: "attempt-a", correlation };
+/** A start an edge cut: the attempt is found by the start's id alone. */
+const unpinned = { attemptId: null, correlation };
 
 describe("waitForServiceStart", () => {
   it("keeps waiting while the Service builds past the server's minute, and returns once it answers", async () => {
@@ -475,11 +488,11 @@ describe("waitForServiceStart", () => {
     // 64 s of a cold build (verify stack, mend#642), then the 20 s probe sees the port.
     const outcome = await waitForServiceStart({
       read: async () => startRead(serviceOf(clock.now() < 84_000 ? "unreachable" : "reachable")),
-      target,
+      target: pinned,
       deadline: 600_000,
       ...clock,
     });
-    expect(outcome).toEqual({ kind: "answered", processId: "attempt-2" });
+    expect(outcome).toMatchObject({ kind: "answered", processId: "attempt-a" });
     expect(clock.now()).toBe(84_000);
   });
 
@@ -488,45 +501,128 @@ describe("waitForServiceStart", () => {
     const outcome = await waitForServiceStart({
       read: async () =>
         startRead(
-          serviceOf(
-            "unreachable",
+          serviceOf("unreachable", [
             clock.now() < 6000
-              ? [attemptOf("attempt-2")]
-              : [attemptOf("attempt-2", { status: "exited", exitCode: 1 })],
-          ),
+              ? attemptOf("attempt-a", { correlation })
+              : attemptOf("attempt-a", { correlation, end: { status: "exited", exitCode: 1 } }),
+          ]),
         ),
-      target,
+      target: pinned,
       deadline: 600_000,
       ...clock,
     });
     expect(outcome).toEqual({
       kind: "process-ended",
-      processId: "attempt-2",
+      processId: "attempt-a",
       status: "exited",
       exitCode: 1,
     });
   });
 
-  it("says the workspace ended when the session settled with the attempt, or is gone", async () => {
-    const ended = serviceOf("unreachable", [
-      attemptOf("attempt-2", { status: "exited", exitCode: null }),
-    ]);
-    const cases: ReadonlyArray<{
-      readonly read: ServiceStartRead;
-      readonly status: string | null;
-    }> = [
-      { read: startRead(ended, "stopped"), status: "stopped" },
-      { read: startRead(serviceOf("unreachable"), null), status: null },
-    ];
-    for (const { read, status } of cases) {
-      const outcome = await waitForServiceStart({
-        read: async () => read,
-        target,
-        deadline: null,
-        ...fakeClock(),
-      });
-      expect(outcome).toEqual({ kind: "workspace-ended", sessionStatus: status });
-    }
+  it("pins the attempt an edge-cut start began: A failing is the end, not B answering after a restart", async () => {
+    const clock = fakeClock();
+    const outcome = await waitForServiceStart({
+      read: async () =>
+        startRead(
+          clock.now() < 2000
+            ? serviceOf("unreachable", [attemptOf("attempt-a", { correlation })])
+            : // Another client restarted the Service: A stopped, B (no id of ours) answers.
+              serviceOf(
+                "reachable",
+                [
+                  attemptOf("attempt-a", {
+                    correlation,
+                    end: { status: "stopped", exitCode: null },
+                  }),
+                  attemptOf("attempt-b", { began: 3000 }),
+                ],
+                { observedAt: 4000 },
+              ),
+        ),
+      target: unpinned,
+      deadline: null,
+      ...clock,
+    });
+    expect(outcome).toEqual({
+      kind: "process-ended",
+      processId: "attempt-a",
+      status: "stopped",
+      exitCode: null,
+    });
+  });
+
+  it("reads a stop that cleared the current attempt as the pinned attempt's end, never as no attempt", async () => {
+    const clock = fakeClock();
+    const outcome = await waitForServiceStart({
+      read: async () =>
+        startRead(
+          clock.now() < 2000
+            ? serviceOf("unreachable")
+            : serviceOf(
+                "unreachable",
+                [
+                  attemptOf("attempt-a", {
+                    correlation,
+                    end: { status: "stopped", exitCode: null },
+                  }),
+                ],
+                { currentAttemptId: null },
+              ),
+        ),
+      target: unpinned,
+      deadline: null,
+      ...clock,
+    });
+    expect(outcome).toMatchObject({ kind: "process-ended", status: "stopped" });
+  });
+
+  it("does not take the predecessor's reachable observation for this attempt's answer", async () => {
+    const clock = fakeClock();
+    // A restart keeps the forward and its last observation, made before A began at 5 s.
+    const outcome = await waitForServiceStart({
+      read: async () =>
+        startRead(
+          serviceOf("reachable", [attemptOf("attempt-a", { correlation, began: 5000 })], {
+            observedAt: clock.now() < 6000 ? 1000 : 7000,
+          }),
+        ),
+      target: pinned,
+      deadline: null,
+      ...clock,
+    });
+    expect(outcome).toMatchObject({ kind: "answered", processId: "attempt-a" });
+    expect(clock.now()).toBe(6000);
+  });
+
+  it("an exit that settles the session is the process's end, with its code, not the workspace's", async () => {
+    const outcome = await waitForServiceStart({
+      read: async () =>
+        startRead(
+          serviceOf("unreachable", [
+            attemptOf("attempt-a", { correlation, end: { status: "exited", exitCode: 7 } }),
+          ]),
+          "completed",
+        ),
+      target: pinned,
+      deadline: null,
+      ...fakeClock(),
+    });
+    expect(outcome).toEqual({
+      kind: "process-ended",
+      processId: "attempt-a",
+      status: "exited",
+      exitCode: 7,
+    });
+  });
+
+  it("says the workspace ended when the server no longer has the session", async () => {
+    const outcome = await waitForServiceStart({
+      read: async () => startRead(serviceOf("unreachable"), null),
+      target: pinned,
+      deadline: null,
+      ...fakeClock(),
+    });
+    expect(outcome).toEqual({ kind: "workspace-ended", sessionStatus: null });
   });
 
   it("does not take a retained session's settled status for the end while its attempt runs", async () => {
@@ -537,53 +633,34 @@ describe("waitForServiceStart", () => {
           serviceOf(clock.now() < 4000 ? "unreachable" : "reachable"),
           clock.now() < 2000 ? "completed" : "idle",
         ),
-      target,
+      target: pinned,
       deadline: null,
       ...clock,
     });
-    expect(outcome).toEqual({ kind: "answered", processId: "attempt-2" });
+    expect(outcome).toMatchObject({ kind: "answered", processId: "attempt-a" });
   });
 
   it("times out while still starting, never sleeping past the deadline, with the last state", async () => {
     const clock = fakeClock();
     const outcome = await waitForServiceStart({
       read: async () => startRead(serviceOf("unreachable")),
-      target,
+      target: pinned,
       deadline: 5000,
       ...clock,
     });
     expect(outcome).toEqual({
       kind: "timeout",
-      last: { kind: "starting", processId: "attempt-2" },
+      last: { kind: "starting", processId: "attempt-a" },
     });
     expect(clock.slept).toEqual([2000, 2000, 1000]);
   });
 
-  it("an earlier attempt's answer is not this start's: it waits for the attempt that began after", async () => {
+  it("never takes an attempt without the start's id, however current, and gives up after a minute", async () => {
     const clock = fakeClock();
     const outcome = await waitForServiceStart({
-      read: async () =>
-        startRead(
-          clock.now() < 4000
-            ? serviceOf("reachable", [attemptOf("attempt-1")])
-            : serviceOf("reachable", [
-                attemptOf("attempt-1", { status: "stopped", exitCode: null }),
-                attemptOf("attempt-2"),
-              ]),
-        ),
-      target: { ...target, attemptId: null, priorAttemptId: "attempt-1" },
-      deadline: null,
-      ...clock,
-    });
-    expect(outcome).toEqual({ kind: "answered", processId: "attempt-2" });
-    expect(clock.now()).toBe(4000);
-  });
-
-  it("gives up looking when a start that got no answer left no attempt within a minute", async () => {
-    const clock = fakeClock();
-    const outcome = await waitForServiceStart({
-      read: async () => startRead(serviceOf("unreachable", [attemptOf("attempt-1")])),
-      target: { ...target, attemptId: null, priorAttemptId: "attempt-1" },
+      // Another client's attempt, current and answering.
+      read: async () => startRead(serviceOf("reachable", [attemptOf("attempt-b")])),
+      target: unpinned,
       deadline: null,
       ...clock,
     });
@@ -600,7 +677,7 @@ describe("waitForServiceStart", () => {
         if (calls === 1) throw new MendRequestError("http", "bad gateway", 502);
         return startRead(serviceOf("reachable"));
       },
-      target,
+      target: pinned,
       deadline: null,
       ...clock,
     });
@@ -610,11 +687,34 @@ describe("waitForServiceStart", () => {
         read: async () => {
           throw new MendRequestError("http", "forbidden", 403);
         },
-        target,
+        target: pinned,
         deadline: null,
         ...fakeClock(),
       }),
     ).rejects.toThrow("forbidden");
+  });
+});
+
+describe("the attempt a start answered with", () => {
+  it("is the one carrying the start's id", () => {
+    const view = serviceOf("unreachable", [
+      attemptOf("attempt-a", { correlation }),
+      attemptOf("attempt-b", { correlation: "service-start:other" }),
+    ]);
+    expect(answeredAttemptId(view, correlation)).toBe("attempt-a");
+  });
+
+  it("from a server that stamps no start ids, is the current attempt that answer read", () => {
+    const view = serviceOf("unreachable", [attemptOf("attempt-z")]);
+    expect(answeredAttemptId(view, correlation)).toBe("attempt-z");
+  });
+
+  it("is unknown when the server stamps ids and none is this start's", () => {
+    const view = serviceOf("unreachable", [
+      attemptOf("attempt-b", { correlation: "service-start:other" }),
+    ]);
+    expect(answeredAttemptId(view, correlation)).toBe(null);
+    expect(findStartAttempt([view], unpinned)).toBe(undefined);
   });
 });
 
@@ -623,21 +723,36 @@ describe("pickServiceAttempt", () => {
     const web = serviceOf("reachable");
     expect(pickServiceAttempt([web], "web", null)).toEqual({
       service: web,
-      processId: "attempt-2",
+      processId: "attempt-a",
     });
     expect(pickServiceAttempt([web], "service-", null)).toEqual({
       service: web,
-      processId: "attempt-2",
+      processId: "attempt-a",
     });
+  });
+
+  it("takes a Service by its full id before one named like that id", () => {
+    const fullId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const wanted = serviceOf("reachable", [attemptOf("attempt-a")], { id: fullId, name: "wanted" });
+    const impostor = serviceOf("reachable", [attemptOf("attempt-b")], {
+      id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      name: fullId,
+    });
+    for (const session of [null, "session-1"]) {
+      expect(pickServiceAttempt([impostor, wanted], fullId, session)).toEqual({
+        service: wanted,
+        processId: "attempt-a",
+      });
+    }
   });
 
   it("reads an ended attempt: the record outlives the process", () => {
     const web = serviceOf("unreachable", [
-      attemptOf("attempt-2", { status: "exited", exitCode: 1 }),
+      attemptOf("attempt-a", { end: { status: "exited", exitCode: 1 } }),
     ]);
     expect(pickServiceAttempt([web], "web", null)).toEqual({
       service: web,
-      processId: "attempt-2",
+      processId: "attempt-a",
     });
   });
 
@@ -652,31 +767,26 @@ describe("pickServiceAttempt", () => {
 
   it("refuses an attempt whose terminal has not opened", () => {
     const opening = serviceOf("unreachable", [
-      { ...attemptOf("attempt-2"), sealantSessionId: null },
+      { ...attemptOf("attempt-a"), sealantSessionId: null },
     ]);
     const picked = pickServiceAttempt([opening], "web", null);
     expect("error" in picked && picked.error).toContain("has not opened its terminal yet");
   });
 
-  it("takes the running one of two Services of one name, and asks for the session otherwise", () => {
+  it("refuses a name two Services carry, listing each by its full id; a session scopes it", () => {
     const live = serviceOf("reachable");
-    const ended = serviceOf(
-      "unreachable",
-      [attemptOf("attempt-9", { status: "exited", exitCode: 0 })],
-      { id: "service-2", sessionId: "session-2" },
-    );
-    expect(pickServiceAttempt([live, ended], "web", null)).toEqual({
-      service: live,
-      processId: "attempt-2",
+    const other = serviceOf("reachable", [attemptOf("attempt-c")], {
+      id: "service-2",
+      sessionId: "session-2",
     });
-    const twin = serviceOf("reachable", [attemptOf("attempt-5")], {
-      id: "service-3",
-      sessionId: "session-3",
+    expect(pickServiceAttempt([live, other], "web", null)).toEqual({
+      error:
+        '"web" names 2 Services · name one by its id: service-1 (session session-), service-2 (session session-)',
+      named: true,
     });
-    expect(pickServiceAttempt([live, twin], "web", null)).toMatchObject({ named: true });
-    expect(pickServiceAttempt([live, twin], "web", "session-3")).toEqual({
-      service: twin,
-      processId: "attempt-5",
+    expect(pickServiceAttempt([live, other], "web", "session-2")).toEqual({
+      service: other,
+      processId: "attempt-c",
     });
     expect(pickServiceAttempt([live], "api", null)).toMatchObject({ named: false });
   });

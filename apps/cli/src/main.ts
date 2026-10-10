@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { spawn, spawnSync } from "node:child_process";
+import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import { createRequire } from "node:module";
 import * as net from "node:net";
@@ -15,6 +16,7 @@ import {
   narrowCredential,
   repositoryCloneUrlIssue,
   sameGrant,
+  serviceStartCorrelation,
   validatePiProfile,
 } from "@mend/domain/workbench";
 
@@ -104,9 +106,12 @@ import {
   runArgvIssue,
   SERVICE_PROCESS_ENDED,
   SERVICE_WORKSPACE_ENDED,
+  answeredAttemptId,
+  findStartAttempt,
+  readWithin,
+  serviceStartStateOf,
   type ServiceStartRead,
   type ServiceWaitOutcome,
-  targetServiceOf,
   WAIT_TIMED_OUT,
   waitForCommand,
   waitForServiceStart,
@@ -1881,6 +1886,8 @@ interface ServiceViewDto {
     readonly exitCode: number | null;
     readonly exitedAt: string | null;
     readonly sealantSessionId: string | null;
+    readonly createdAt: string;
+    readonly launchCorrelationId: string | null;
   }>;
   readonly currentForward: {
     readonly id: string;
@@ -1890,6 +1897,7 @@ interface ServiceViewDto {
   readonly latestObservation: {
     readonly forwardId: string;
     readonly state: "reachable" | "unreachable";
+    readonly lastObservedAt: string;
   } | null;
   readonly workspaceExpiresAt: string | null;
   readonly workspaceTtlRenewedAt: string | null;
@@ -2290,7 +2298,7 @@ const exitCodeText = (exitCode: number | null): string =>
 const readServiceStart = async (
   config: CliConfig,
   sessionId: string,
-): Promise<ServiceStartRead> => {
+): Promise<ServiceStartRead<ServiceViewDto>> => {
   const [services, sessionStatus] = await Promise.all([
     request<ReadonlyArray<ServiceViewDto>>(config, "GET", "/services?all=1"),
     request<CommandDetail>(config, "GET", `/sessions/${sessionId}`).then(
@@ -2322,10 +2330,11 @@ const reportAnswered = (config: CliConfig, service: ServiceDto): void => {
 };
 
 /**
- * Start a Service and wait until its port answers, its process or its workspace ends, or the
- * timeout passes; exit with which (see `SERVICE_WAIT_DEFAULT_MS`). `start` is the request that
- * starts it. The attempt before the start is read first, so a start Mend refused after it began
- * (the command exited before its port answered) reads as the process's end, not as a refusal.
+ * Start a Service and wait until its port answers, the attempt this start began ends, its session
+ * goes, or the timeout passes; exit with which (see `SERVICE_WAIT_DEFAULT_MS`). `start` sends the
+ * request with this start's own id, which the server stamps on the attempt it begins: that attempt
+ * is found once and judged alone, whatever another client starts, restarts or stops meanwhile.
+ * Every request is under the wait's one deadline.
  */
 const startServiceWaited = async (
   config: CliConfig,
@@ -2333,22 +2342,26 @@ const startServiceWaited = async (
   target: { readonly name: string; readonly port: number },
   wait: ServiceWait,
   spinner: string,
-  start: () => Promise<ServiceViewDto>,
+  start: (startId: string) => Promise<ServiceViewDto>,
 ): Promise<void> => {
   const { name, port } = target;
-  const before = await withinServiceWait(fetchServiceViews(config, true), wait);
-  const priorAttemptId =
-    targetServiceOf(before, { sessionId: session.id, name })?.service.currentAttemptId ?? null;
+  const correlation = serviceStartCorrelation(crypto.randomUUID());
+  const startId = correlation.slice(correlation.indexOf(":") + 1);
   const after = durationLine(wait.timeoutMs);
   const stillStarting = (processId: string | null, more = ""): Promise<never> =>
     failWith(
       WAIT_TIMED_OUT,
       `${name} · still starting after ${after} · ${processId === null ? "" : `process ${processId.slice(0, 8)} runs · `}:${port} has not answered${more} · the Service keeps starting · mend logs --service ${name} --follow`,
     );
+  const ended = (processId: string, status: string, exitCode: number | null, more: string) =>
+    failWith(
+      SERVICE_PROCESS_ENDED,
+      `${name} · process ${processId.slice(0, 8)} ${status} · ${exitCodeText(exitCode)} · before :${port} answered · ${more}`,
+    );
   const posted = await withSpinner(
     spinner,
     beforeDeadline(
-      start().then(
+      start(startId).then(
         (view): StartAnswer => ({ ok: true, view }),
         (error: unknown): StartAnswer => ({ ok: false, error }),
       ),
@@ -2359,31 +2372,41 @@ const startServiceWaited = async (
   if (!posted.done) return stillStarting(null, " · the start request has not returned");
   let attemptId: string | null = null;
   if (posted.value.ok) {
-    const service = flattenService(posted.value.view);
-    if (service.status === "reachable") return reportAnswered(config, service);
-    attemptId = service.processId;
+    const { view } = posted.value;
+    attemptId = answeredAttemptId(view, correlation);
+    if (attemptId !== null) {
+      const first = serviceStartStateOf(
+        { services: [view], sessionStatus: session.status },
+        { attemptId, correlation },
+      );
+      if (first.kind === "answered") return reportAnswered(config, flattenService(view));
+      if (first.kind === "process-ended") {
+        return ended(first.processId, first.status, first.exitCode, `mend logs --service ${name}`);
+      }
+    }
     say(
       `${amber("·")} ${name} · ${attemptId === null ? "started" : `process ${attemptId.slice(0, 8)} runs`} · :${port} has not answered yet · waiting up to ${after}; Mend probes the port every 20 s`,
     );
   } else {
     const { error } = posted.value;
     if (!mayStillBeWorking(error)) {
-      // A start Mend began and then saw end leaves an attempt that ended; anything else is a refusal.
-      const views = await request<ReadonlyArray<ServiceViewDto>>(
-        config,
-        "GET",
-        "/services?all=1",
-      ).catch((): ReadonlyArray<ServiceViewDto> => []);
-      const view = targetServiceOf(views, { sessionId: session.id, name });
-      const current = view?.service.currentAttemptId ?? null;
-      const attempt =
-        current === null || current === priorAttemptId
-          ? undefined
-          : view?.attempts.find((candidate) => candidate.id === current);
-      if (current !== null && attempt !== undefined && attempt.exitedAt !== null) {
-        return failWith(
-          SERVICE_PROCESS_ENDED,
-          `${name} · process ${current.slice(0, 8)} ${attempt.status} · ${exitCodeText(attempt.exitCode)} · before :${port} answered · ${errorText(error)}`,
+      // A refusal is this start's process ending only when the attempt carrying its id ended: a
+      // Service another client started and stopped meanwhile proves nothing about this start.
+      const read = await readWithin(
+        () => request<ReadonlyArray<ServiceViewDto>>(config, "GET", "/services?all=1"),
+        clock,
+        wait.deadline,
+      ).catch(() => null);
+      const found =
+        read?.done === true
+          ? findStartAttempt(read.value, { attemptId: null, correlation })
+          : undefined;
+      if (found !== undefined && found.attempt.exitedAt !== null) {
+        return ended(
+          found.attempt.id,
+          found.attempt.status,
+          found.attempt.exitCode,
+          errorText(error),
         );
       }
       return failWith(1, errorText(error));
@@ -2393,11 +2416,11 @@ const startServiceWaited = async (
   const started = clock.now();
   let line = `${name} · starting · waiting for :${port} to answer…`;
   let nextReport = started + 60_000;
-  const outcome: ServiceWaitOutcome = await withSpinner(
+  const outcome: ServiceWaitOutcome<ServiceViewDto> = await withSpinner(
     () => line,
     waitForServiceStart({
       read: () => readServiceStart(config, session.id),
-      target: { sessionId: session.id, name, attemptId, priorAttemptId },
+      target: { attemptId, correlation },
       deadline: wait.deadline,
       ...clock,
       onStarting: (state) => {
@@ -2413,29 +2436,27 @@ const startServiceWaited = async (
     }),
   ).catch((error: unknown) => failFlushed(errorText(error)));
   switch (outcome.kind) {
-    case "answered": {
-      const views = await fetchServiceViews(config, false);
-      const view = targetServiceOf(views, { sessionId: session.id, name });
-      if (view !== undefined) return reportAnswered(config, flattenService(view));
-      say(`${green("✓")} Service ${name} · reachable`);
-      return;
-    }
+    case "answered":
+      // The view the answer was read in: nothing more is asked of the server.
+      return reportAnswered(config, flattenService(outcome.view));
     case "process-ended":
-      return failWith(
-        SERVICE_PROCESS_ENDED,
-        `${name} · process ${outcome.processId.slice(0, 8)} ${outcome.status} · ${exitCodeText(outcome.exitCode)} · before :${port} answered · mend logs --service ${name}`,
+      return ended(
+        outcome.processId,
+        outcome.status,
+        outcome.exitCode,
+        `mend logs --service ${name}`,
       );
     case "workspace-ended":
       return failWith(
         SERVICE_WORKSPACE_ENDED,
-        `${name} · the session's workspace ended before :${port} answered · session ${session.id.slice(0, 8)} ${outcome.sessionStatus ?? "no longer exists"}`,
+        `${name} · session ${session.id.slice(0, 8)} no longer exists, and its workspace went with it · before :${port} answered`,
       );
     case "timeout":
       return stillStarting(outcome.last?.kind === "starting" ? outcome.last.processId : null);
     case "no-attempt":
       return failWith(
         1,
-        `${name} · the start got no answer, and no attempt of it appeared within a minute · mend service list`,
+        `${name} · the start got no answer, and no attempt carrying its id appeared within a minute (a server older than this CLI stamps none) · mend service list`,
       );
   }
 };
@@ -2469,9 +2490,10 @@ const serviceRun = async (config: CliConfig, args: ReadonlyArray<string>) => {
           : `no recipe named "${name}" — declared: ${known}`,
       );
     }
-    const startRecipe = () =>
+    const startRecipe = (startId: string) =>
       request<ServiceViewDto>(config, "POST", `/sessions/${session.id}/services/recipe`, {
         name: recipe.name,
+        startId,
       });
     if (wait !== null) {
       if (recipe.protocol === "udp") {
@@ -2537,7 +2559,11 @@ const serviceRun = async (config: CliConfig, args: ReadonlyArray<string>) => {
       { name: name ?? argv[0] ?? "service", port },
       wait,
       `starting ${name ?? argv[0]} — waiting for :${port} to answer…`,
-      () => request<ServiceViewDto>(config, "POST", `/sessions/${session.id}/services/run`, body),
+      (startId) =>
+        request<ServiceViewDto>(config, "POST", `/sessions/${session.id}/services/run`, {
+          ...body,
+          startId,
+        }),
     );
   }
   const service = await withSpinner(

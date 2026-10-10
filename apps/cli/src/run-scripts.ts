@@ -449,15 +449,22 @@ const DURATION_UNIT_MS: Readonly<Record<string, number>> = { s: 1000, m: 60_000,
 
 /**
  * A `--timeout` in milliseconds, or null when it is not one: `90` and `90s` are seconds, `5m`
- * minutes, `1h` hours, fractions allowed, above 0. `mend wait` and `mend service run --wait` read
+ * minutes, `1h` hours, fractions allowed (`.5`, `1.5m`), above 0. `mend wait` and `mend service run --wait` read
  * it the same way.
  */
 export const parseDuration = (text: string): number | null => {
-  const match = /^(\d+(?:\.\d+)?)(s|m|h)?$/u.exec(text.trim());
-  if (match === null) return null;
-  const amount = Number(match[1]);
-  const unit = DURATION_UNIT_MS[match[2] ?? "s"] ?? 1000;
-  const ms = Math.ceil(amount * unit);
+  const trimmed = text.trim();
+  const unit = DURATION_UNIT_MS[trimmed.slice(-1)];
+  // A bare number is seconds, read as `mend wait` always read it (`.5`, `1e2`).
+  const amount =
+    unit === undefined
+      ? trimmed === ""
+        ? Number.NaN
+        : Number(trimmed)
+      : /^(?:\d+\.?\d*|\.\d+)$/u.test(trimmed.slice(0, -1))
+        ? Number(trimmed.slice(0, -1))
+        : Number.NaN;
+  const ms = Math.ceil(amount * (unit ?? 1000));
   return Number.isFinite(ms) && ms > 0 ? ms : null;
 };
 
@@ -507,32 +514,95 @@ export interface ServiceViewSlice {
     readonly exitCode?: number | null;
     readonly exitedAt: string | null;
     readonly sealantSessionId: string | null;
+    readonly createdAt?: string;
+    /** `service-start:<startId>` on an attempt a start began under its client's id. */
+    readonly launchCorrelationId?: string | null;
   }>;
   readonly currentForward: { readonly id: string } | null;
-  readonly latestObservation: { readonly forwardId: string; readonly state: string } | null;
+  readonly latestObservation: {
+    readonly forwardId: string;
+    readonly state: string;
+    readonly lastObservedAt?: string;
+  } | null;
 }
 
 /** One read of a starting Service: every Service listed, ended ones included, and its session. */
-export interface ServiceStartRead {
-  readonly services: ReadonlyArray<ServiceViewSlice>;
+export interface ServiceStartRead<V extends ServiceViewSlice = ServiceViewSlice> {
+  readonly services: ReadonlyArray<V>;
   /** The session's status, or null once the server no longer has the session. */
   readonly sessionStatus: string | null;
 }
 
 /**
- * The attempt a wait is for: the one the start answered with, or, when the start got no answer
- * (an edge cut it, a timeout), whichever attempt of the Service is current and was not before the
- * start.
+ * The one attempt a wait judges: the attempt this client's start began. `attemptId` once known
+ * (the start answered with it, or a read found it); until then `correlation`, the launch
+ * correlation the server stamps on the attempt a start began under its client's id. Never
+ * whichever attempt is current: another client may have started, restarted or stopped the Service.
  */
 export interface ServiceStartTarget {
-  readonly sessionId: string;
-  readonly name: string;
   readonly attemptId: string | null;
-  readonly priorAttemptId: string | null;
+  /** `serviceStartCorrelation(startId)`; null against a server that answered without one. */
+  readonly correlation: string | null;
 }
 
-export type ServiceStartState =
-  | { readonly kind: "answered"; readonly processId: string }
+/** The attempt `target` names, and the Service it belongs to, in what one read listed. */
+export const findStartAttempt = <V extends ServiceViewSlice>(
+  services: ReadonlyArray<V>,
+  target: ServiceStartTarget,
+): { readonly view: V; readonly attempt: V["attempts"][number] } | undefined => {
+  for (const view of services) {
+    const attempt = view.attempts.find((candidate) =>
+      target.attemptId !== null
+        ? candidate.id === target.attemptId
+        : target.correlation !== null && candidate.launchCorrelationId === target.correlation,
+    );
+    if (attempt !== undefined) return { view, attempt };
+  }
+  return undefined;
+};
+
+/**
+ * The attempt a start answered with: the one carrying the start's correlation, or, from a server
+ * older than start ids, the Service's current attempt as that very answer read it.
+ */
+export const answeredAttemptId = (view: ServiceViewSlice, correlation: string): string | null => {
+  const own = view.attempts.find((attempt) => attempt.launchCorrelationId === correlation);
+  if (own !== undefined) return own.id;
+  // A server that stamps start ids stamped this start's attempt; only an older one stamps none.
+  const kind = correlation.slice(0, correlation.indexOf(":") + 1);
+  const stamps = view.attempts.some(
+    (attempt) => attempt.launchCorrelationId?.startsWith(kind) === true,
+  );
+  return stamps ? null : view.service.currentAttemptId;
+};
+
+const timeOf = (iso: string | undefined): number | null => {
+  if (iso === undefined) return null;
+  const at = Date.parse(iso);
+  return Number.isFinite(at) ? at : null;
+};
+
+/**
+ * Whether the port answered for this attempt: the attempt is the Service's current one, the
+ * observation is of the Service's current forward, says `reachable`, and was made after the
+ * attempt began (a restart keeps its predecessor's forward and, until its own probe, its
+ * predecessor's observation). A server that sends no times is taken at its observation.
+ */
+const answeredFor = (
+  view: ServiceViewSlice,
+  attempt: ServiceViewSlice["attempts"][number],
+): boolean => {
+  const observation = view.latestObservation;
+  if (view.service.currentAttemptId !== attempt.id || view.currentForward === null) return false;
+  if (observation === null || observation.forwardId !== view.currentForward.id) return false;
+  if (observation.state !== "reachable") return false;
+  const began = timeOf(attempt.createdAt);
+  const observed = timeOf(observation.lastObservedAt);
+  return began === null || observed === null || observed >= began;
+};
+
+export type ServiceStartState<V extends ServiceViewSlice = ServiceViewSlice> =
+  | { readonly kind: "answered"; readonly processId: string; readonly view: V }
   /** Its process runs and its port has not answered: building, installing, booting. */
   | { readonly kind: "starting"; readonly processId: string | null }
   | {
@@ -541,62 +611,45 @@ export type ServiceStartState =
       readonly status: string;
       readonly exitCode: number | null;
     }
-  | { readonly kind: "workspace-ended"; readonly sessionStatus: string | null };
-
-/** The Service a target names, in what one read listed. */
-export const targetServiceOf = <V extends ServiceViewSlice>(
-  services: ReadonlyArray<V>,
-  target: Pick<ServiceStartTarget, "sessionId" | "name">,
-): V | undefined =>
-  services.find(
-    (view) => view.service.sessionId === target.sessionId && view.service.name === target.name,
-  );
+  /** The server no longer has the session: it went, its workspace with it. */
+  | { readonly kind: "workspace-ended"; readonly sessionStatus: null };
 
 /**
- * What one read says about a starting Service. Its attempt's end is the process's end, or the
- * workspace's when the session settled with it (or is gone): the workspace and every process in it
- * went together. A settled session alone ends nothing: a retained session reopens once a Service
- * starts in it. Then a probe that answered on the Service's current forward. Anything else is still
- * starting.
+ * What one read says about the attempt a start began. Its own end comes first, whatever the session
+ * reads: a session settles when its last process ends, while a workspace another session shares
+ * stays up, so a settled session is no evidence the workspace ended first. A session the server no
+ * longer has took its workspace with it. Then the port answering for this attempt. Anything else is
+ * still starting.
  */
-export const serviceStartStateOf = (
-  read: ServiceStartRead,
+export const serviceStartStateOf = <V extends ServiceViewSlice>(
+  read: ServiceStartRead<V>,
   target: ServiceStartTarget,
-): ServiceStartState => {
-  if (read.sessionStatus === null) return { kind: "workspace-ended", sessionStatus: null };
-  const view = targetServiceOf(read.services, target);
-  const current = view?.service.currentAttemptId ?? null;
-  const processId =
-    target.attemptId ?? (current !== null && current !== target.priorAttemptId ? current : null);
-  if (view === undefined || processId === null) return { kind: "starting", processId };
-  const attempt = view.attempts.find((candidate) => candidate.id === processId);
-  if (attempt === undefined) return { kind: "starting", processId };
-  if (attempt.exitedAt !== null) {
-    return SETTLED.has(read.sessionStatus)
-      ? { kind: "workspace-ended", sessionStatus: read.sessionStatus }
-      : {
-          kind: "process-ended",
-          processId,
-          status: attempt.status,
-          exitCode: attempt.exitCode ?? null,
-        };
+): ServiceStartState<V> => {
+  const found = findStartAttempt(read.services, target);
+  if (found !== undefined && found.attempt.exitedAt !== null) {
+    return {
+      kind: "process-ended",
+      processId: found.attempt.id,
+      status: found.attempt.status,
+      exitCode: found.attempt.exitCode ?? null,
+    };
   }
-  const answered =
-    view.currentForward !== null &&
-    view.latestObservation?.forwardId === view.currentForward.id &&
-    view.latestObservation.state === "reachable";
-  return answered ? { kind: "answered", processId } : { kind: "starting", processId };
+  if (read.sessionStatus === null) return { kind: "workspace-ended", sessionStatus: null };
+  if (found === undefined) return { kind: "starting", processId: target.attemptId };
+  return answeredFor(found.view, found.attempt)
+    ? { kind: "answered", processId: found.attempt.id, view: found.view }
+    : { kind: "starting", processId: found.attempt.id };
 };
 
-export type ServiceWaitOutcome =
-  | Exclude<ServiceStartState, { readonly kind: "starting" }>
+export type ServiceWaitOutcome<V extends ServiceViewSlice = ServiceViewSlice> =
+  | Exclude<ServiceStartState<V>, { readonly kind: "starting" }>
   /** The deadline passed while the Service was still starting; `last` is the last state read. */
-  | { readonly kind: "timeout"; readonly last: ServiceStartState | null }
-  /** The start got no answer, and no attempt of the Service appeared for `unreachableAfterMs`. */
+  | { readonly kind: "timeout"; readonly last: ServiceStartState<V> | null }
+  /** The start got no answer, and no attempt of it appeared for `unreachableAfterMs`. */
   | { readonly kind: "no-attempt" };
 
-export interface ServiceWaitOptions extends Clock {
-  readonly read: () => Promise<ServiceStartRead>;
+export interface ServiceWaitOptions<V extends ServiceViewSlice> extends Clock {
+  readonly read: () => Promise<ServiceStartRead<V>>;
   readonly target: ServiceStartTarget;
   /** When to give up, on the clock's time; null waits as long as the Service is starting. */
   readonly deadline: number | null;
@@ -605,26 +658,30 @@ export interface ServiceWaitOptions extends Clock {
 }
 
 /**
- * Read a starting Service until its port answers, its process ends, its workspace ends, or the
- * deadline passes. A Service that is building, installing or booting keeps the wait going however
- * long that takes: only the deadline bounds it. Reads that get no answer are retried, as
- * `mend wait` does, and a refusal is thrown.
+ * Read a starting Service until its port answers for the attempt this start began, that attempt
+ * ends, the session goes, or the deadline passes. The attempt is pinned the first time a read finds
+ * it, and only it is judged from then on. A Service that is building, installing or booting keeps
+ * the wait going however long that takes: only the deadline bounds it. Reads that get no answer are
+ * retried, as `mend wait` does, and a refusal is thrown.
  */
-export const waitForServiceStart = async (
-  options: ServiceWaitOptions,
-): Promise<ServiceWaitOutcome> => {
+export const waitForServiceStart = async <V extends ServiceViewSlice>(
+  options: ServiceWaitOptions<V>,
+): Promise<ServiceWaitOutcome<V>> => {
   const pollMs = options.pollMs ?? 2000;
   const discoverWithinMs = options.unreachableAfterMs ?? 60_000;
   const since = options.now();
-  let last: ServiceStartState | null = null;
+  let target = options.target;
+  let last: ServiceStartState<V> | null = null;
   for (;;) {
     const got = await readThrough(options.read, options, options.deadline);
     if (!got.done) return { kind: "timeout", last };
-    const state = serviceStartStateOf(got.value, options.target);
+    const state = serviceStartStateOf(got.value, target);
     if (state.kind !== "starting") return state;
     last = state;
-    if (state.processId === null && options.now() - since >= discoverWithinMs) {
-      return { kind: "no-attempt" };
+    if (state.processId === null) {
+      if (options.now() - since >= discoverWithinMs) return { kind: "no-attempt" };
+    } else if (target.attemptId === null) {
+      target = { ...target, attemptId: state.processId };
     }
     options.onStarting?.(state);
     const left =
@@ -635,9 +692,23 @@ export const waitForServiceStart = async (
 };
 
 /**
- * The process `mend logs --service` reads: the current attempt of the Service whose name is
- * `needle`, or whose id starts with it. Within `sessionId` when one is given. Of several Services
- * with one name (one per session), the one whose attempt runs is taken when it is the only one.
+ * One read, retried while it fails without an answer, within the deadline: the value, or
+ * `{ done: false }` when the deadline passed first. A refusal is thrown at once.
+ */
+export const readWithin = <T>(
+  read: () => Promise<T>,
+  clock: Clock,
+  deadline: number | null,
+): Promise<Bounded<T>> => readThrough(read, clock, deadline);
+
+const candidateLine = (view: ServiceViewSlice): string =>
+  `${view.service.id} (session ${view.service.sessionId.slice(0, 8)})`;
+
+/**
+ * The process `mend logs --service` reads: the current attempt of the Service `needle` names. A
+ * Service's full id names it before anything else (a Service may be named like another's id); then
+ * a name, then a prefix of an id. Within `sessionId` when one is given. Two Services one word names
+ * are refused, each listed by its full id, which names it alone.
  */
 export const pickServiceAttempt = (
   services: ReadonlyArray<ServiceViewSlice>,
@@ -650,24 +721,24 @@ export const pickServiceAttempt = (
   const inScope = services.filter(
     (view) => sessionId === null || view.service.sessionId === sessionId,
   );
+  const byId = inScope.filter((view) => view.service.id === needle);
   const byName = inScope.filter((view) => view.service.name === needle);
   const matches =
-    byName.length > 0 ? byName : inScope.filter((view) => view.service.id.startsWith(needle));
-  const running = matches.filter((view) =>
-    view.attempts.some(
-      (attempt) => attempt.id === view.service.currentAttemptId && attempt.exitedAt === null,
-    ),
-  );
-  const chosen = matches.length === 1 ? matches[0] : running.length === 1 ? running[0] : undefined;
-  if (matches.length === 0) {
+    byId.length > 0
+      ? byId
+      : byName.length > 0
+        ? byName
+        : inScope.filter((view) => view.service.id.startsWith(needle));
+  const [chosen] = matches;
+  if (chosen === undefined) {
     return {
       error: `no Service ${sessionId === null ? "" : "of this session "}is named "${needle}" or has an id starting with it`,
       named: false,
     };
   }
-  if (chosen === undefined) {
+  if (matches.length > 1) {
     return {
-      error: `"${needle}" matches ${matches.length} Services · name the session (mend logs <session> --service ${needle}) or use more of the Service id`,
+      error: `"${needle}" names ${matches.length} Services · name one by its id: ${matches.map(candidateLine).join(", ")}`,
       named: true,
     };
   }

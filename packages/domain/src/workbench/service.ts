@@ -193,3 +193,10 @@ export const serviceReach = (
 
 /** The CLI command that brings a Service to the client's own loopback. */
 export const serviceConnectCommand = (name: string): string => `mend service connect ${name}`;
+
+/**
+ * The launch correlation a Service attempt carries when its start named a `startId`: the client's
+ * own id for that start, so the client finds the attempt its request began (an edge that cut the
+ * start included) and judges that attempt alone, never whichever is current.
+ */
+export const serviceStartCorrelation = (startId: string): string => `service-start:${startId}`;

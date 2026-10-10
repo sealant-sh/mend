@@ -121,6 +121,7 @@ import {
   type ServiceBrowserScheme,
   type ServiceDeclarationSource,
   resolveServiceEndpoints,
+  serviceStartCorrelation,
   ServiceView,
   SessionExtraMount,
   SessionReferenceMount,
@@ -2168,6 +2169,8 @@ export class SessionEngine extends Context.Service<
       browserScheme?: ServiceBrowserScheme,
       /** Who started it: in a person-layout executor it runs as them, restarts too (docs/adr/0016). */
       startedBy?: string,
+      /** The client's id for this start; the attempt carries `serviceStartCorrelation(startId)`. */
+      startId?: string,
     ) => Effect.Effect<
       ServiceView,
       | SessionNotFoundError
@@ -2195,6 +2198,8 @@ export class SessionEngine extends Context.Service<
       name: string,
       /** Who started it: in a person-layout executor it runs as them, restarts too (docs/adr/0016). */
       startedBy?: string,
+      /** The client's id for this start; the attempt carries `serviceStartCorrelation(startId)`. */
+      startId?: string,
     ) => Effect.Effect<
       ServiceView,
       | SessionNotFoundError
@@ -20001,10 +20006,22 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         browserScheme: ServiceBrowserScheme = null,
         declarationSource: ServiceDeclarationSource = "explicit-run",
         startedBy: string | null = null,
+        startId: string | null = null,
       ) {
         const session = yield* sessions.byId(sessionId);
         if (isLegacyBench(session)) {
           return yield* new LegacyBenchReadOnlyError({ sessionId });
+        }
+        // A start id names one start: a second start under it would make "the attempt this start
+        // began" two attempts.
+        const launchCorrelationId = startId === null ? null : serviceStartCorrelation(startId);
+        if (
+          launchCorrelationId !== null &&
+          (yield* processes.byLaunchCorrelation(launchCorrelationId)) !== null
+        ) {
+          return yield* new ServiceStartError({
+            message: "This start id was used by an earlier start; send a new one.",
+          });
         }
         const workspace = yield* workspaceForSupportingProcess(session);
         const workspaceId = SealantWorkspaceId.make(workspace.id);
@@ -20045,6 +20062,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           label,
           argv,
           status: "starting",
+          launchCorrelationId,
         });
         yield* services.setCurrentAttempt(service.id, attempt.id);
         const pty = yield* startAsPerson(session, workspace, Effect.succeed(runsAs), "shell").pipe(
@@ -20115,6 +20133,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         browserScheme: ServiceBrowserScheme = null,
         declarationSource: ServiceDeclarationSource = "explicit-run",
         startedBy: string | null = null,
+        startId: string | null = null,
       ) =>
         withServiceLifecycle(
           runServiceUnlocked(
@@ -20126,6 +20145,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             browserScheme,
             declarationSource,
             startedBy,
+            startId,
           ),
         );
 
@@ -20133,6 +20153,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         sessionId: SessionId,
         name: string,
         startedBy: string | null = null,
+        startId: string | null = null,
       ) {
         const session = yield* sessions.byId(sessionId);
         const fromFile = yield* fileRecipesOf(session).pipe(
@@ -20184,6 +20205,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               recipe.browserScheme,
               declarationSource,
               startedBy,
+              startId,
             );
       });
 
@@ -22217,7 +22239,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         stopShell: (processId) => ownedByProcess(processId)(stopShell(processId)),
         renameShell: (processId, label) => ownedByProcess(processId)(renameShell(processId, label)),
         addService: (sessionId, ...rest) => owned(sessionId)(addService(sessionId, ...rest)),
-        runService: (sessionId, argv, port, name, protocol, browserScheme, startedBy) =>
+        runService: (sessionId, argv, port, name, protocol, browserScheme, startedBy, startId) =>
           owned(sessionId)(
             runService(
               sessionId,
@@ -22228,11 +22250,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               browserScheme ?? null,
               "explicit-run",
               startedBy ?? null,
+              startId ?? null,
             ),
           ),
         listServiceRecipes: (sessionId) => owned(sessionId)(listServiceRecipes(sessionId)),
-        runServiceRecipe: (sessionId, name, startedBy) =>
-          owned(sessionId)(runServiceRecipe(sessionId, name, startedBy ?? null)),
+        runServiceRecipe: (sessionId, name, startedBy, startId) =>
+          owned(sessionId)(runServiceRecipe(sessionId, name, startedBy ?? null, startId ?? null)),
         restartService: (serviceId) => ownedByService(serviceId)(restartService(serviceId)),
         stopService: (serviceId) => ownedByService(serviceId)(stopService(serviceId)),
         stopServices: (sessionId) => owned(sessionId)(stopServices(sessionId)),

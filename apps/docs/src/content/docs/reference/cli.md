@@ -227,20 +227,21 @@ mend wait "$id" --timeout 900   # exits with the test run's exit code, or 124
 
 `mend logs` reads the session's command (or agent) by default, and another of its processes, a shell
 or a Service attempt, with `--process` and a prefix of its id; a Service's id or name there reads
-its current attempt. `--service` takes a Service's name or a prefix of its id, the ids
-`mend service list` prints, and reads its current attempt, ended or not; name the session only when
-two sessions run a Service of that name. A Service with no attempt (an adopted port, which Mend runs
-no process for) has nothing recorded, and `mend logs` says so and exits `1`. `--follow` keeps
-printing until the process ends. A record is printed as it is, with nothing taken out, and it is not
-the session owner's alone: anyone who can read the project can read it with `mend logs` or
-`mend service logs`, so what a command printed, a password included, reaches them too. `mend wait`
-exits with the code the platform reported, or `1` when it reported none. A session that is still
-starting (its workspace building, its image pulling) is waited through, and while a launch or a
-resume is starting the previous process's end does not count; `--process` binds the wait to one
-process, the `processId` that `mend run --json` prints. `--timeout` takes seconds (`90` or `90s`),
-minutes (`5m`) or hours (`1h`), and covers everything, finding the session and every read and retry;
-`--json` then prints the last state read. Without it, `mend wait` waits as long as the command runs,
-as `mend run` does. Both take the session id, a prefix of it, or the worktree's name.
+its current attempt. `--service` takes a Service's id, its name or a prefix of its id, the ids
+`mend service list` prints, and reads its current attempt, ended or not. A full id names its Service
+before any name does; a name two Services carry is refused, with both ids listed. A Service with no
+attempt (an adopted port, which Mend runs no process for) has nothing recorded, and `mend logs` says
+so and exits `1`. `--follow` keeps printing until the process ends. A record is printed as it is,
+with nothing taken out, and it is not the session owner's alone: anyone who can read the project can
+read it with `mend logs` or `mend service logs`, so what a command printed, a password included,
+reaches them too. `mend wait` exits with the code the platform reported, or `1` when it reported
+none. A session that is still starting (its workspace building, its image pulling) is waited
+through, and while a launch or a resume is starting the previous process's end does not count;
+`--process` binds the wait to one process, the `processId` that `mend run --json` prints.
+`--timeout` takes seconds (`90`, `90s` or `.5`), minutes (`5m`) or hours (`1h`), and covers
+everything, finding the session and every read and retry; `--json` then prints the last state read.
+Without it, `mend wait` waits as long as the command runs, as `mend run` does. Both take the session
+id, a prefix of it, or the worktree's name.
 
 The platform takes a command of at most 64 words, none of them empty and none starting or ending
 with whitespace. A script passed as `bash -lc "<script>"` that starts with a newline is such a word:
@@ -509,8 +510,16 @@ probe that answers. The exit status says how it ended:
 | `0`   | The port answered                                                                                            |
 | `1`   | Mend refused the start (no such session or recipe, not yours to run, the session not live) or did not answer |
 | `2`   | The Service's process ended before its port answered; the line says its status and exit code                 |
-| `3`   | The session's workspace ended before the port answered                                                       |
+| `3`   | The server no longer has the session; its workspace went with it                                             |
 | `124` | The Service was still starting when the timeout passed; it keeps starting                                    |
+
+The wait judges the one process this start began: the CLI sends an id with the start, the server
+stamps it on the attempt it begins (`launchCorrelationId` `service-start:<id>`), and the wait finds
+that attempt by it once, whatever another client starts, restarts or stops meanwhile. Its port
+answering counts only from a probe made after that attempt began. A process its workspace took ends
+as `exited · no exit code reported`, exit `2`: Mend records the end, not its cause. A server older
+than the CLI stamps no id: a start whose answer an edge cut is then not followed, and a command that
+exits inside the server's minute reads as the refusal the server answers with, both exit `1`.
 
 A waited start returns and opens no tunnel; `mend service connect` reaches the port. `--wait` takes
 TCP ports only (UDP has no probe), and not a recipe that declares only a port, which Mend adopts
