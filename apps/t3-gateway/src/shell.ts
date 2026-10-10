@@ -34,6 +34,7 @@ import type {
 } from "./mend-workbench.ts";
 import type { ThreadNotices } from "./notices.ts";
 import { harnessProvider } from "./server-config.ts";
+import type { StoredImage } from "./state.ts";
 
 /**
  * Mend's projects and protocol sessions as t3code's shell (ADR 0012, "Concepts"): a project is a
@@ -87,6 +88,13 @@ export interface ThreadSource {
   readonly messageIds: ReadonlyMap<string, string>;
   /** Messages a t3code client sent that are not a Mend turn yet: the gateway's queue. */
   readonly pending: ReadonlyArray<PendingRun>;
+  /**
+   * The images a message the gateway sent carried when Mend took its turn, by the message's
+   * t3code id (`images.ts`), each with the path its turn named.
+   */
+  readonly imagesOf: (
+    messageId: string,
+  ) => ReadonlyArray<{ readonly image: StoredImage; readonly path: string }>;
   /** An interrupt held the queue; nothing queued is sent until the client resumes it. */
   readonly queueHeld: boolean;
   /**
@@ -106,6 +114,7 @@ export interface PendingRun {
   readonly runId: string;
   readonly messageId: string;
   readonly text: string;
+  readonly images: ReadonlyArray<StoredImage>;
   readonly requestedAt: string;
   readonly state: "queued" | "starting" | "preparing" | "failed" | "cancelled";
   readonly error: string | null;

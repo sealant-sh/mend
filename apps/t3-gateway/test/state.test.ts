@@ -147,3 +147,50 @@ describe("sequence reservations", () => {
     ),
   );
 });
+
+/** A kept image of one byte, for a person's message. */
+const keptImage = (id: string, messageId: string) => ({
+  id,
+  threadId: "session-1",
+  messageId,
+  position: 0,
+  name: `${id}.png`,
+  mimeType: "image/png",
+  sizeBytes: 1,
+  placement: null,
+  bytes: new Uint8Array([1]),
+});
+
+describe("kept images", () => {
+  it.effect(
+    "lets go of a dropped draft's images, and keeps what a message sent or waits with",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const state = yield* openGatewayState(":memory:");
+          yield* state.saveImages(
+            "user-1",
+            [keptImage("draft", "message-draft"), keptImage("sent", "message-sent")],
+            1,
+          );
+          yield* state.saveImages("user-2", [keptImage("other", "message-other")], 1);
+          yield* state.recordSentImages("user-1", "message-sent", [
+            { imageId: "sent", path: "/workspace/harness-home/paste/a.png" },
+          ]);
+          // A person's own sweep touches only their images.
+          assert.deepStrictEqual(yield* state.pruneImages(10, "user-1"), ["draft"]);
+          assert.deepStrictEqual(
+            (yield* state.listImages("user-1")).map((kept) => kept.id),
+            ["sent"],
+          );
+          assert.deepStrictEqual(yield* state.pruneImages(10, null), ["other"]);
+          assert.deepStrictEqual(
+            (yield* state.listSentImages("user-1"))
+              .get("message-sent")
+              ?.map((sent) => sent.imageId),
+            ["sent"],
+          );
+        }),
+      ),
+  );
+});

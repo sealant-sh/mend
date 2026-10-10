@@ -35,6 +35,10 @@ describe("the RPC surface", () => {
         host: "127.0.0.1",
         statePath: ":memory:",
       }),
+      assetUrls: {
+        issue: () => Effect.succeed({ relativeUrl: "/api/assets/x/y", expiresAt: 0 }),
+        resolve: () => Effect.succeedNone,
+      },
       session: testBearerSession,
       hub: emptyHub,
     });

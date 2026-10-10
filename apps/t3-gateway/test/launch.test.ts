@@ -732,23 +732,29 @@ describe("planLaunch", () => {
     });
   });
 
-  it("refuses images until the gateway sends them", () => {
-    const plan = planLaunch(
-      launchInput({
-        initialMessage: {
-          text: "See this",
-          attachments: [
-            {
-              type: "image",
-              id: "image-1",
-              name: "screen.png",
-              mimeType: "image/png",
-              sizeBytes: 10,
-            },
-          ],
-        },
-      }),
-    );
-    assert.strictEqual(plan.kind, "refused");
+  it("carries the opening message's images by id, and refuses a file", () => {
+    const withAttachment = (type: "image" | "file") =>
+      planLaunch(
+        launchInput({
+          initialMessage: {
+            text: "See this",
+            attachments: [
+              {
+                type,
+                id: "image-1",
+                name: "screen.png",
+                mimeType: type === "image" ? "image/png" : "text/plain",
+                sizeBytes: 10,
+              },
+            ],
+          },
+        }),
+      );
+    const image = withAttachment("image");
+    assert.strictEqual(image.kind, "launch");
+    assert.deepStrictEqual(image.kind === "launch" ? image.launch.message?.imageIds : null, [
+      "image-1",
+    ]);
+    assert.strictEqual(withAttachment("file").kind, "refused");
   });
 });

@@ -37,6 +37,7 @@ class GatedMendClient {
   readonly labelSession: DeviceCalls["labelSession"];
   readonly stopSession: DeviceCalls["stopSession"];
   readonly removeSession: DeviceCalls["removeSession"];
+  readonly pasteImage: DeviceCalls["pasteImage"];
   readonly submitTurn: DeviceCalls["submitTurn"];
   readonly launchProtocol: DeviceCalls["launchProtocol"];
   readonly interruptTurn: DeviceCalls["interruptTurn"];
@@ -62,6 +63,7 @@ class GatedMendClient {
     this.labelSession = calls.labelSession;
     this.stopSession = calls.stopSession;
     this.removeSession = calls.removeSession;
+    this.pasteImage = calls.pasteImage;
     this.submitTurn = calls.submitTurn;
     this.launchProtocol = calls.launchProtocol;
     this.interruptTurn = calls.interruptTurn;
@@ -117,6 +119,7 @@ export const gateDeviceCalls = (
       guard(token, mend.labelSession(token, sessionId, label)),
     stopSession: (token, sessionId) => guard(token, mend.stopSession(token, sessionId)),
     removeSession: (token, sessionId) => guard(token, mend.removeSession(token, sessionId)),
+    pasteImage: (token, sessionId, bytes) => guard(token, mend.pasteImage(token, sessionId, bytes)),
     launchProtocol: (token, sessionId, prompt, options) =>
       guard(token, mend.launchProtocol(token, sessionId, prompt, options)),
     interruptTurn: (token, turnId) => guard(token, mend.interruptTurn(token, turnId)),

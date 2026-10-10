@@ -354,6 +354,7 @@ describe("Mend's items as turn items", () => {
     threadProjectionOf(
       {
         threadId: ThreadId.make(session.id),
+        imagesOf: () => [],
         project,
         session,
         agent,
@@ -447,6 +448,7 @@ describe("Mend's items as turn items", () => {
     const projection = threadProjectionOf(
       {
         threadId: ThreadId.make(session.id),
+        imagesOf: () => [],
         project,
         session,
         agent,

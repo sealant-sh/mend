@@ -650,6 +650,32 @@ export class FakeWorkbench {
           );
         });
       }
+      if (method === "POST" && sub === "images") {
+        return body().then((value) => {
+          record(value);
+          if (this.control.get(id) === false) return notOwner();
+          const agent = this.agents.get(id);
+          if (agent === undefined || agent.exitedAt !== null) {
+            return json(409, { _tag: "SessionNotLive", id });
+          }
+          const payload = typeof value === "object" && value !== null ? value : {};
+          const encoded = Object.entries(payload).find(([key]) => key === "contentsBase64")?.[1];
+          const bytes = Buffer.from(typeof encoded === "string" ? encoded : "", "base64");
+          if (bytes.byteLength === 0) {
+            return json(422, { _tag: "PastedImageRejected", message: "not an image" });
+          }
+          this.pastedImages += 1;
+          // As mend#615 places a paste: in a per-person executor, in the sender's own directory;
+          // in a shared one, in the shared paste directory.
+          const account = this.accountOf(request.headers.authorization);
+          const directory =
+            this.sharedExecutor || account === null
+              ? "/workspace/harness-home/paste"
+              : `/workspace/harness-home/people/${account}/paste`;
+          const placed = `${directory}/20261010-090000-${this.pastedImages}.png`;
+          return json(200, { path: placed, mediaType: "image/png", bytes: bytes.byteLength });
+        });
+      }
       if (method === "POST" && (sub === "turns" || sub === "launch")) {
         return body().then((value) => {
           record(value);
@@ -842,6 +868,12 @@ export class FakeWorkbench {
     return json(200, { ...session });
   }
 
+  /** How many images were pasted into workspaces. */
+  pastedImages = 0;
+  /** The Mend account a request's bearer belongs to (set by the fake Mend that pairs devices). */
+  accountOf: (authorization: string | undefined) => string | null = () => null;
+  /** The session's executor is shared (ADR 0016's shared layout), not per person. */
+  sharedExecutor = false;
   /** Every launch Mend took, with what it named. */
   readonly launches: Array<{ readonly sessionId: string; readonly body: object }> = [];
 

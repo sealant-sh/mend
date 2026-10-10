@@ -40,6 +40,8 @@ export interface QueueEntry {
   readonly messageId: string;
   /** Rewritten only while the message waits (`edit`). */
   text: string;
+  /** The images it carries, by id (`images.ts`); replaced only while it waits. */
+  imageIds: ReadonlyArray<string>;
   readonly requestedAt: string;
   /** The sender's device token: their message is sent as them. Never stored. */
   readonly token: string;
@@ -133,7 +135,9 @@ export const newEntry = (input: {
   readonly requestedAt: string;
   readonly token: string;
   readonly sender: string;
+  readonly imageIds?: ReadonlyArray<string>;
 }): QueueEntry => ({
+  imageIds: [],
   ...input,
   state: "queued",
   error: null,
@@ -218,10 +222,17 @@ const waiting = (queue: ThreadQueue, runId: string): QueueEntry | undefined =>
  * New text for a message still waiting (`queued-run.edit`). False once it is on its way: what Mend
  * may already have is never rewritten.
  */
-export const edit = (queue: ThreadQueue, runId: string, text: string): boolean => {
+export const edit = (
+  queue: ThreadQueue,
+  runId: string,
+  text: string,
+  imageIds?: ReadonlyArray<string>,
+): boolean => {
   const entry = waiting(queue, runId);
   if (entry === undefined) return false;
   entry.text = text;
+  // Absent leaves the images as they are, as t3code's own server does.
+  if (imageIds !== undefined) entry.imageIds = imageIds;
   return true;
 };
 
@@ -418,6 +429,7 @@ export interface StoredEntry {
   readonly state: EntryState;
   readonly error: string | null;
   readonly launches: number;
+  readonly imageIds: ReadonlyArray<string>;
 }
 
 export interface StoredQueue {
@@ -436,6 +448,7 @@ export const storedOf = (queue: ThreadQueue): StoredQueue => ({
     state: entry.state,
     error: entry.error,
     launches: entry.launches,
+    imageIds: entry.imageIds,
   })),
 });
 
@@ -459,6 +472,7 @@ export const restoredEntry = (stored: StoredEntry, token: string | null): QueueE
     requestedAt: stored.requestedAt,
     token: token ?? "",
     sender: stored.sender,
+    imageIds: stored.imageIds,
   });
   entry.launches = stored.launches;
   const settle = (state: "failed" | "cancelled", error: string | null) => {

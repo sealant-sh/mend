@@ -1,6 +1,7 @@
 import {
   AcpRegistryOperationError,
   AgentSessionImportProjectNotFoundError,
+  AssetAttachmentNotFoundError,
   AssetWorkspaceContextNotFoundError,
   AuthAccessReadScope,
   AuthOrchestrationOperateScope,
@@ -46,6 +47,7 @@ import * as Stream from "effect/Stream";
 import type * as Rpc from "effect/unstable/rpc/Rpc";
 import type * as RpcGroup from "effect/unstable/rpc/RpcGroup";
 
+import { AssetUrls } from "./assets.ts";
 import { dispatchCommand } from "./commands.ts";
 import { GatewayEnvironment } from "./environment.ts";
 import type { HubReadError, PersonHub, ThreadChange } from "./hub.ts";
@@ -88,6 +90,8 @@ export const SERVED_METHODS: ReadonlySet<WsRpcMethod> = new Set<WsRpcMethod>([
   ORCHESTRATION_V2_WS_METHODS.getThreadProjection,
   ORCHESTRATION_V2_WS_METHODS.dispatchCommand,
   ORCHESTRATION_V2_WS_METHODS.launchThread,
+  WS_METHODS.assetsCreateUrl,
+  WS_METHODS.assetsPersistChatAttachments,
   WS_METHODS.reviewGetDiffPreview,
   WS_METHODS.reviewGetDiffFileContents,
 ]);
@@ -181,6 +185,8 @@ const unknownThread = (threadId: ThreadId) =>
 
 export interface GatewayRpcInput {
   readonly environment: GatewayEnvironment["Service"];
+  /** Signs the URLs a client fetches a message's images from. */
+  readonly assetUrls: AssetUrls["Service"];
   /** The paired person behind this socket; every Mend call is theirs. */
   readonly session: BearerSession;
   /** The person's projection of Mend, shared with their other sockets. */
@@ -223,7 +229,12 @@ const threadReadFailure = (threadId: ThreadId) => (error: HubReadError) =>
         cause: error,
       });
 
-export const makeGatewayRpcHandlers = ({ environment, session, hub }: GatewayRpcInput) => {
+export const makeGatewayRpcHandlers = ({
+  environment,
+  assetUrls,
+  session,
+  hub,
+}: GatewayRpcInput) => {
   // Mend only through the person's gate: a 401 on any call refuses this socket's token.
   const { mend } = hub;
   const { descriptor, paths } = environment;
@@ -654,14 +665,45 @@ export const makeGatewayRpcHandlers = ({ environment, session, hub }: GatewayRpc
     [WS_METHODS.agentSessionsScan]: () => refuse(WS_METHODS.agentSessionsScan, READ),
     [WS_METHODS.agentSessionsImport]: (input) =>
       Effect.fail(new AgentSessionImportProjectNotFoundError({ projectId: input.projectId })),
+    // A message's images, kept by the gateway until the message is sent (`images.ts`); files in
+    // a workspace are not served.
     [WS_METHODS.assetsCreateUrl]: (input) =>
-      Effect.fail(new AssetWorkspaceContextNotFoundError({ resource: input.resource })),
-    [WS_METHODS.assetsPersistChatAttachments]: () =>
-      Effect.fail(
-        new PersistChatAttachmentsError({
-          message: notOfferedText(WS_METHODS.assetsPersistChatAttachments),
-        }),
-      ),
+      Effect.gen(function* () {
+        yield* authorize(session, READ);
+        const resource = input.resource;
+        if (resource._tag !== "attachment") {
+          return yield* new AssetWorkspaceContextNotFoundError({ resource });
+        }
+        const image = hub.imageOf(resource.attachmentId);
+        if (image === null) return yield* new AssetAttachmentNotFoundError({ resource });
+        return yield* assetUrls.issue({
+          mendUserId: session.mendUser.id,
+          imageId: image.id,
+          fileName: image.name,
+        });
+      }),
+    [WS_METHODS.assetsPersistChatAttachments]: (input) =>
+      Effect.gen(function* () {
+        yield* authorize(session, OPERATE);
+        const kept = yield* hub
+          .persistImages({
+            threadId: input.threadId,
+            messageId: input.messageId,
+            uploads: input.attachments,
+          })
+          .pipe(
+            Effect.mapError((error) => new PersistChatAttachmentsError({ message: error.message })),
+          );
+        return {
+          attachments: kept.map((image) => ({
+            type: "image" as const,
+            id: image.id,
+            name: image.name,
+            mimeType: image.mimeType,
+            sizeBytes: image.sizeBytes,
+          })),
+        };
+      }),
     [WS_METHODS.attachmentsCreateUploadUrl]: () =>
       refuse(WS_METHODS.attachmentsCreateUploadUrl, OPERATE),
     [WS_METHODS.attachmentsDelete]: () => refuse(WS_METHODS.attachmentsDelete, OPERATE),
@@ -740,10 +782,11 @@ export type GatewayRpcHandlers = ReturnType<typeof makeGatewayRpcHandlers>;
 export const gatewayRpcHandlersLayer = (
   session: BearerSession,
   hub: PersonHub,
-): Layer.Layer<Rpc.ToHandler<WsRpc>, never, GatewayEnvironment> =>
+): Layer.Layer<Rpc.ToHandler<WsRpc>, never, GatewayEnvironment | AssetUrls> =>
   WsRpcGroup.toLayer(
     Effect.gen(function* () {
       const environment = yield* GatewayEnvironment;
-      return makeGatewayRpcHandlers({ environment, session, hub });
+      const assetUrls = yield* AssetUrls;
+      return makeGatewayRpcHandlers({ environment, assetUrls, session, hub });
     }),
   );

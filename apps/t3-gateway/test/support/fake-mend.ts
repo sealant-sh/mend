@@ -102,7 +102,7 @@ const asRecord = (value: unknown): Record<string, unknown> =>
 
 export const startFakeMend: Effect.Effect<FakeMend, never, Scope.Scope> = Effect.gen(function* () {
   const codes = new Map<string, { readonly user: FakeMendUser; spent: boolean }>();
-  const tokens = new Map<string, { revoked: boolean }>();
+  const tokens = new Map<string, { revoked: boolean; readonly userId: string }>();
   const claims: Array<FakeMend["claims"][number]> = [];
   const deviceChecks: Array<string | undefined> = [];
   const modelReads: Array<string | undefined> = [];
@@ -111,6 +111,10 @@ export const startFakeMend: Effect.Effect<FakeMend, never, Scope.Scope> = Effect
   let pairingRateLimited = false;
   let devices = 0;
   const workbench = new FakeWorkbench();
+  workbench.accountOf = (authorization) => {
+    const token = authorization?.startsWith("Bearer ") ? authorization.slice(7) : undefined;
+    return token === undefined ? null : (tokens.get(token)?.userId ?? null);
+  };
 
   const accepted = (authorization: string | undefined) => {
     const token = authorization?.startsWith("Bearer ") ? authorization.slice(7) : undefined;
@@ -137,7 +141,7 @@ export const startFakeMend: Effect.Effect<FakeMend, never, Scope.Scope> = Effect
         if (entry.spent) return json(410, { _tag: "PairingCodeSpent" });
         entry.spent = true;
         const token = `mdt_${randomBytes(16).toString("base64url")}`;
-        tokens.set(token, { revoked: false });
+        tokens.set(token, { revoked: false, userId: entry.user.id });
         devices += 1;
         const name = String(payload["name"]);
         claims.push({ code, name, platform: String(payload["platform"]), token });

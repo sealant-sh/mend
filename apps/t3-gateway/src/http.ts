@@ -17,6 +17,7 @@ import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
 import * as HttpApi from "effect/unstable/httpapi/HttpApi";
 import * as HttpApiBuilder from "effect/unstable/httpapi/HttpApiBuilder";
 
+import { AssetRouteLive } from "./assets.ts";
 import {
   GatewayAuth,
   type GatewayCredentialInvalid,
@@ -340,5 +341,6 @@ export const GatewayRoutesLive = Layer.mergeAll(
     Layer.provide(EnvironmentAuthenticatedAuthLive),
   ),
   WebSocketRouteLive,
+  AssetRouteLive,
   GatewayCorsLive,
 );

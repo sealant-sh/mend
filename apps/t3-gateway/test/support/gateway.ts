@@ -3,6 +3,7 @@ import { EnvironmentHttpApi } from "@mend/t3-contracts";
 import type * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
 import * as HttpRouter from "effect/unstable/http/HttpRouter";
 import * as HttpApiClient from "effect/unstable/httpapi/HttpApiClient";
 
@@ -21,10 +22,21 @@ export const gatewayTestLayer = (
   options: {
     readonly hubIdleTimeToLive?: Duration.Input;
     readonly queueTimings?: Partial<QueueTimings>;
+    /**
+     * Serves with the request logger on, as production does, and collects every log line (JSON)
+     * here. Without it, nothing is logged.
+     */
+    readonly logs?: Array<string>;
   } = {},
 ) =>
-  HttpRouter.serve(GatewayAppLive, { disableLogger: true, disableListenLog: true }).pipe(
+  HttpRouter.serve(GatewayAppLive, {
+    disableLogger: options.logs === undefined,
+    disableListenLog: true,
+  }).pipe(
     Layer.provideMerge(NodeHttpServer.layerTest),
+    Layer.provide(
+      options.logs === undefined ? Layer.empty : Logger.layer([collectingLogger(options.logs)]),
+    ),
     Layer.provideMerge(
       Layer.succeed(GatewayConfig, {
         mendUrl,
@@ -41,6 +53,12 @@ export const gatewayTestLayer = (
   );
 
 export const t3Client = HttpApiClient.make(EnvironmentHttpApi);
+
+/** A logger that keeps each line as `Logger.formatJson` writes it. */
+const collectingLogger = (lines: Array<string>) =>
+  Logger.make((options) => {
+    lines.push(String(Logger.formatJson.log(options)));
+  });
 
 /** The token request a t3code client sends when it pairs (`bootstrapRemoteBearerSession`). */
 export const tokenRequest = (

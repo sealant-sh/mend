@@ -108,8 +108,9 @@ export const planLaunch = (input: OrchestrationV2ThreadLaunchInput): LaunchPlan 
     );
   }
   const message = input.initialMessage;
-  if (message !== undefined && message.attachments.length > 0) {
-    return refusedPlan("Mend's t3code gateway does not send images or files yet.");
+  const attachments = message?.attachments ?? [];
+  if (attachments.some((attachment) => attachment.type !== "image")) {
+    return refusedPlan("Mend's t3code gateway sends images, not other files.");
   }
   const selections = input.modelSelection.options ?? [];
   const effort = selections.find((option) => option.id === provider.effortOptionId)?.value;
@@ -141,9 +142,13 @@ export const planLaunch = (input: OrchestrationV2ThreadLaunchInput): LaunchPlan 
           : { kind: "join", worktreePath: strategy.worktreePath },
       options,
       message:
-        message === undefined || text.trim().length === 0
+        message === undefined || (text.trim().length === 0 && attachments.length === 0)
           ? null
-          : { messageId: message.messageId ?? `t3-message:${randomUUID()}`, text },
+          : {
+              messageId: message.messageId ?? `t3-message:${randomUUID()}`,
+              text,
+              imageIds: attachments.map((attachment) => attachment.id),
+            },
     },
   };
 };
