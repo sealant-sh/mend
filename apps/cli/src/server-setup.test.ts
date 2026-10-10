@@ -9,7 +9,14 @@ import { afterEach, describe, expect, it } from "vitest";
 import { DockerProtocol } from "../test-fixtures/docker-protocol.ts";
 import { type HostFile, parseDockerInfo } from "./docker-shutdown.ts";
 import { SERVER_VOLUME_OWNER_LABEL } from "./server-docker-volumes.ts";
-import { serverCommand, sshBannerAt, type ServerSetupRuntime } from "./server-setup.ts";
+import {
+  instanceIdOf,
+  nodeServerRuntime,
+  reachableAddressesOf,
+  serverCommand,
+  sshBannerAt,
+  type ServerSetupRuntime,
+} from "./server-setup.ts";
 
 const composeAsset = fs.readFileSync(
   new URL("../test-fixtures/docker/compose.v2.yaml", import.meta.url),
@@ -109,6 +116,8 @@ const makeRuntime = (
     readonly instanceBody?: string;
     /** Origins whose health does not answer from this machine. */
     readonly unreachable?: ReadonlyArray<string>;
+    /** Health bodies by origin, where another server answers; elsewhere `healthBody`. */
+    readonly healthAt?: Readonly<Record<string, string>>;
   } = {},
 ): RuntimeControl => {
   const commands: Array<readonly [string, ReadonlyArray<string>]> = [];
@@ -278,9 +287,15 @@ const makeRuntime = (
         return { status: 200, body: options.instanceBody };
       }
       if (url.endsWith("/api/health")) {
+        const elsewhere = Object.entries(options.healthAt ?? {}).find(([origin]) =>
+          url.startsWith(`${origin}/`),
+        );
         return {
           status: options.healthStatus ?? 200,
-          body: options.healthBody ?? JSON.stringify({ status: "ok", version: "0.23.0" }),
+          body:
+            elsewhere?.[1] ??
+            options.healthBody ??
+            JSON.stringify({ status: "ok", version: "0.23.0" }),
         };
       }
       if (url.endsWith("/compose.v2.yaml")) {
@@ -878,7 +893,9 @@ describe("mend server setup", () => {
       operatingSystem: "Docker Desktop",
       inspectedEndpoint: "unix:///home/alice/.docker/desktop/docker.sock",
     });
-    expect(await serverCommand(["setup", "--context", "my-desktop"], control.runtime)).toEqual({
+    expect(
+      await serverCommand(["setup", "--yes", "--context", "my-desktop"], control.runtime),
+    ).toEqual({
       _tag: "ok",
     });
     expect(
@@ -1016,7 +1033,7 @@ describe("mend server setup", () => {
     const control = makeRuntime({ hostKernel: UBUNTU_REFUSES });
     expect(await serverCommand(["setup", "--allow-userns"], control.runtime)).toMatchObject({
       _tag: "error",
-      message: expect.stringContaining("No terminal to ask on and no flags"),
+      message: expect.stringContaining("No terminal to ask on, and no flag says how"),
     });
     expect(privilegedRuns(control)).toEqual([]);
   });
@@ -1795,7 +1812,9 @@ describe("mend server setup", () => {
         "unix:///Users/alice/Library/Containers/com.docker.docker/Data/docker-cli.sock",
     });
 
-    expect(await serverCommand(["setup", "--context", "desktop-linux"], control.runtime)).toEqual({
+    expect(
+      await serverCommand(["setup", "--yes", "--context", "desktop-linux"], control.runtime),
+    ).toEqual({
       _tag: "ok",
     });
 
@@ -1814,7 +1833,7 @@ describe("mend server setup", () => {
 
     expect(
       await serverCommand(
-        ["setup", "--context", "default", "--docker-socket", socket],
+        ["setup", "--yes", "--context", "default", "--docker-socket", socket],
         control.runtime,
       ),
     ).toEqual({ _tag: "ok" });
@@ -1826,7 +1845,7 @@ describe("mend server setup", () => {
   it("rejects a requested remote daemon before writing state", async () => {
     const control = makeRuntime({ inspectedEndpoint: "ssh://docker@example.test" });
 
-    const result = await serverCommand(["setup", "--context", "remote"], control.runtime);
+    const result = await serverCommand(["setup", "--yes", "--context", "remote"], control.runtime);
 
     expect(result).toMatchObject({ _tag: "error" });
     if (result._tag === "error") expect(result.message).toContain("remote SSH/TCP daemons");
@@ -1946,7 +1965,7 @@ describe("mend server setup", () => {
       configDir,
       inspectedEndpoint: "unix:///run/user/1000/docker.sock",
     });
-    expect(await serverCommand(["setup", "--context", "local"], first.runtime)).toEqual({
+    expect(await serverCommand(["setup", "--yes", "--context", "local"], first.runtime)).toEqual({
       _tag: "ok",
     });
     expect(readEnv(activeFile(configDir, "server.env")).get("DOCKER_SOCKET_PATH")).toBe(
@@ -2195,7 +2214,7 @@ describe("mend server setup", () => {
       ...control.runtime,
       portTaken: async (port) => {
         taken.push(port);
-        return true;
+        return port === 3120;
       },
     });
     expect(result).toMatchObject({
@@ -2204,7 +2223,8 @@ describe("mend server setup", () => {
         "127.0.0.1:3120 is already in use on this machine, so the t3code gateway cannot be published there and Mend would not start",
       ),
     });
-    expect(taken).toEqual([3120]);
+    // Mend's own ports first, then the gateway's.
+    expect(taken).toEqual([3105, 2222, 3120]);
     expect(fs.existsSync(path.join(control.runtime.configDir, "active"))).toBe(false);
     expect(control.commands.some(([, args]) => args.includes("up"))).toBe(false);
   });
@@ -2541,5 +2561,296 @@ describe("mend server setup, guided and unasked", () => {
     ).toEqual({ _tag: "ok" });
     expect(control.lines.at(-1)).toBe("Nothing changed.");
     expect(fs.existsSync(path.join(control.runtime.configDir, "active"))).toBe(false);
+  });
+});
+
+/** One IPv4 interface address, as `os.networkInterfaces()` gives it. */
+const v4 = (address: string, cidr: string, internal = false) => ({
+  address,
+  netmask: "255.255.255.0",
+  family: "IPv4" as const,
+  mac: "00:00:00:00:00:00",
+  internal,
+  cidr,
+});
+
+/** What another Mend's health says: Docker Desktop's 0.27.4 in the RC on a Mac. */
+const OTHER_MEND = JSON.stringify({ status: "ok", version: "0.27.4" });
+
+/** A runtime whose random bytes are fixed, so the install's instance id is known before it runs. */
+const fixedSecrets = (control: RuntimeControl): ServerSetupRuntime => ({
+  ...control.runtime,
+  randomBytes: (size) => Buffer.alloc(size, 7),
+});
+/** `instanceIdOf` of the Better Auth secret `fixedSecrets` gives: bytes 128 to 160, as hex. */
+const FIXED_INSTANCE = instanceIdOf("07".repeat(32));
+
+describe("mend server setup beside another server (the RC on a Mac with two Docker engines)", () => {
+  // The same vector is in apps/api/src/instance-id.test.ts: setup and the server must agree.
+  it("derives the instance id the server reports", () => {
+    expect(instanceIdOf("ab".repeat(32))).toBe("95478bc04554a28d7584e2e232e451e0");
+  });
+
+  it("refuses a web port another Mend holds, naming it, before anything is pulled or written", async () => {
+    const control = makeRuntime({ healthAt: { "http://127.0.0.1:3105": OTHER_MEND } });
+    const asked: Array<string> = [];
+    const result = await serverCommand(["setup", "--yes"], {
+      ...control.runtime,
+      portTaken: async (port, address) => {
+        asked.push(`${address}:${port}`);
+        return port === 3105 || port === 2222;
+      },
+    });
+    expect(result).toEqual({
+      _tag: "error",
+      message:
+        "127.0.0.1:3105, Mend's web port, is taken: another Mend, 0.27.4, answers there. 127.0.0.1:2222, workspace SSH, is taken: something else listens there. Setup changed nothing. Choose other ports with --port <n> --ssh-port <n>, or stop what holds them, then run mend server setup again.",
+    });
+    expect(asked).toEqual(["127.0.0.1:3105", "127.0.0.1:2222"]);
+    expect(control.commands.some(([, args]) => args.includes("pull") || args.includes("up"))).toBe(
+      false,
+    );
+    expect(fs.existsSync(path.join(control.runtime.configDir, "active"))).toBe(false);
+  });
+
+  it("checks where the ports are published, and leaves the ports its own install publishes", async () => {
+    const configDir = temporaryDirectory("ports-own");
+    expect(await serverCommand(["setup", "--yes"], makeRuntime({ configDir }).runtime)).toEqual({
+      _tag: "ok",
+    });
+    const asked: Array<string> = [];
+    const rerun = makeRuntime({ configDir, unreachable: ["http://10.0.0.52:3115"] });
+    const taken = {
+      ...rerun.runtime,
+      portTaken: async (port: number, address?: string) => {
+        asked.push(`${address}:${port}`);
+        return true;
+      },
+    };
+    // Its own ports: compose frees them when it recreates Mend.
+    expect(await serverCommand(["setup", "--yes"], taken)).toEqual({ _tag: "ok" });
+    expect(asked).toEqual([]);
+    // A port it does not publish yet is checked where it is to be published.
+    const moved = await serverCommand(
+      ["setup", "--bind", "10.0.0.52", "--url", "http://10.0.0.52:3115", "--port", "3115"],
+      taken,
+    );
+    expect(moved).toMatchObject({
+      _tag: "error",
+      message: expect.stringContaining(
+        "10.0.0.52:3115, Mend's web port, is taken: something else listens there.",
+      ),
+    });
+    expect(moved).toMatchObject({ message: expect.stringContaining("with --port <n>,") });
+    expect(asked).toEqual(["10.0.0.52:3115"]);
+  });
+
+  it("does not take another Mend's health for its own: another version", async () => {
+    const control = makeRuntime({ healthBody: OTHER_MEND });
+    const result = await serverCommand(["setup", "--yes"], control.runtime);
+    expect(result).toEqual({
+      _tag: "error",
+      message:
+        "Mend started, but http://localhost:3105/api/health is not the Mend setup just started: Mend 0.27.4 answers there, not 0.23.0. When another server holds port 3105 on this machine (another Docker engine, an older install), Docker cannot publish this one there. Choose another port with --port <n>, or stop what holds it, then run mend server setup again.",
+    });
+    expect(control.lines.some((line) => line.includes("is reachable at"))).toBe(false);
+  });
+
+  it("does not take another Mend's health for its own: the same version, another install", async () => {
+    const other = makeRuntime({
+      healthBody: JSON.stringify({ status: "ok", version: "0.23.0", instance: "f".repeat(32) }),
+    });
+    expect(await serverCommand(["setup", "--yes"], fixedSecrets(other))).toMatchObject({
+      _tag: "error",
+      message: expect.stringContaining(
+        "is not the Mend setup just started: another Mend install, 0.23.0, answers there.",
+      ),
+    });
+    const own = makeRuntime({
+      healthBody: JSON.stringify({ status: "ok", version: "0.23.0", instance: FIXED_INSTANCE }),
+    });
+    expect(await serverCommand(["setup", "--yes"], fixedSecrets(own))).toEqual({ _tag: "ok" });
+    expect(own.lines).toContain("Mend 0.23.0 is reachable at http://localhost:3105");
+  });
+
+  it("--context chooses the engine and answers no question: the guide still asks", async () => {
+    const contexts = [
+      {
+        Name: "desktop-linux",
+        DockerEndpoint: "unix:///Users/a/.docker/run/docker.sock",
+        Current: true,
+      },
+      {
+        Name: "orbstack",
+        DockerEndpoint: "unix:///Users/a/.orbstack/run/docker.sock",
+        Current: false,
+      },
+    ]
+      .map((row) => JSON.stringify(row))
+      .join("\n");
+    const control = makeRuntime({
+      platform: "darwin",
+      contextList: `${contexts}\n`,
+      inspectedEndpoint: "unix:///Users/a/.orbstack/run/docker.sock",
+    });
+    const transcript: Array<string> = [];
+    const result = await serverCommand(["setup", "--context", "orbstack"], {
+      ...control.runtime,
+      // reach: this machine · T3: no · mirrors: keep · one organization · apply
+      prompter: scriptedPrompter(["1", "", "", "", ""], transcript),
+    });
+    expect(result).toEqual({ _tag: "ok" });
+    expect(transcript[0]).toContain("1-3 [1]: 1");
+    expect(transcript.at(-1)).toBe("Apply? [Y/n] ");
+    expect(serverJson(control.runtime.configDir)).toMatchObject({ dockerContext: "orbstack" });
+
+    // No terminal: refused, as with no flags at all.
+    const unasked = makeRuntime();
+    expect(
+      await serverCommand(
+        ["setup", "--context", "orbstack", "--docker-socket", "/s.sock"],
+        unasked.runtime,
+      ),
+    ).toMatchObject({ _tag: "error", message: expect.stringMatching(/^No terminal to ask on/) });
+    expect(unasked.commands).toEqual([]);
+    // A bad engine flag is said before any question.
+    const asked: Array<string> = [];
+    expect(
+      await serverCommand(["setup", "--context"], {
+        ...makeRuntime().runtime,
+        prompter: scriptedPrompter([], asked),
+      }),
+    ).toEqual({ _tag: "error", message: "--context needs a value." });
+    expect(asked).toEqual([]);
+  });
+
+  it("DOCKER_CONTEXT picks a fresh install's engine; an install stays on its own", async () => {
+    const configDir = temporaryDirectory("docker-context");
+    const fresh = makeRuntime({ configDir });
+    expect(
+      await serverCommand(["setup", "--yes"], {
+        ...fresh.runtime,
+        dockerContextVariable: "orbstack",
+      }),
+    ).toEqual({ _tag: "ok" });
+    expect(serverJson(configDir)).toMatchObject({ dockerContext: "orbstack" });
+    expect(fresh.lines).toContain(
+      'Using Docker context "orbstack" (unix:///var/run/docker.sock), from DOCKER_CONTEXT',
+    );
+    const rerun = makeRuntime({ configDir, daemon: fresh.daemon });
+    expect(
+      await serverCommand(["setup", "--yes"], {
+        ...rerun.runtime,
+        dockerContextVariable: "desktop-linux",
+      }),
+    ).toEqual({ _tag: "ok" });
+    expect(serverJson(configDir)).toMatchObject({ dockerContext: "orbstack" });
+    expect(rerun.lines).toContain(
+      'DOCKER_CONTEXT is "desktop-linux"; this install runs on Docker context "orbstack", where its data is, and stays there. --context moves it.',
+    );
+  });
+
+  it("offers to point this machine's CLI at the server it installed", async () => {
+    const control = makeRuntime({
+      healthAt: { "http://localhost:3105": OTHER_MEND },
+      instanceBody: '{"users":"none","registration":"open"}',
+    });
+    const repointed: Array<readonly [string, boolean | undefined]> = [];
+    const prompts: Array<string> = [];
+    expect(
+      await serverCommand(
+        ["setup", "--port", "3115", "--ssh-port", "2232", "--url", "http://localhost:3115"],
+        {
+          ...control.runtime,
+          savedCliLogin: () => null,
+          repointCliLogin: (_dir, url, options) => repointed.push([url, options?.keepSignIn]),
+          prompter: async (prompt) => {
+            prompts.push(prompt);
+            return "";
+          },
+        },
+      ),
+    ).toEqual({ _tag: "ok" });
+    expect(prompts).toEqual([
+      "This machine's CLI points at http://localhost:3105, where another Mend, 0.27.4, answers. Point it at http://localhost:3115? [Y/n] ",
+    ]);
+    expect(repointed).toEqual([["http://localhost:3115", false]]);
+    expect(control.lines.slice(-2)).toEqual([
+      "This machine's CLI now points at http://localhost:3115.",
+      "Open http://localhost:3115, create the first account, then run: mend login --url http://localhost:3115",
+    ]);
+  });
+
+  it("leads with no when the CLI is signed in at another server that answers, and keeps it with --yes", async () => {
+    const control = makeRuntime({ healthAt: { "http://localhost:3105": OTHER_MEND } });
+    const flags = ["--port", "3115", "--ssh-port", "2232", "--url", "http://localhost:3115"];
+    const repointed: Array<string> = [];
+    const prompts: Array<string> = [];
+    const runtime: ServerSetupRuntime = {
+      ...control.runtime,
+      savedCliLogin: () => ({ url: "http://localhost:3105", signedIn: true }),
+      repointCliLogin: (_dir, url) => repointed.push(url),
+    };
+    expect(
+      await serverCommand(["setup", ...flags], {
+        ...runtime,
+        prompter: async (prompt) => {
+          prompts.push(prompt);
+          return "";
+        },
+      }),
+    ).toEqual({ _tag: "ok" });
+    expect(prompts).toEqual([
+      "This machine's CLI points at http://localhost:3105, where another Mend, 0.27.4, answers. Point it at http://localhost:3115? Its sign-in at http://localhost:3105 stays behind. [y/N] ",
+    ]);
+    expect(await serverCommand(["setup", "--yes", ...flags], runtime)).toEqual({ _tag: "ok" });
+    expect(repointed).toEqual([]);
+    // Nothing answers where it points and nothing is signed in: --yes moves it.
+    const quiet = makeRuntime({ unreachable: ["http://localhost:3105"] });
+    expect(
+      await serverCommand(["setup", "--yes", ...flags], {
+        ...quiet.runtime,
+        savedCliLogin: () => null,
+        repointCliLogin: (_dir, url) => repointed.push(url),
+      }),
+    ).toEqual({ _tag: "ok" });
+    expect(repointed).toEqual(["http://localhost:3115"]);
+  });
+
+  it("writes cli.json as mend login does: a new one, or the sign-in left out when it does not carry over", () => {
+    const configDir = temporaryDirectory("cli-json");
+    const write = nodeServerRuntime().repointCliLogin;
+    if (write === undefined) throw new Error("the node runtime points cli.json");
+    const file = path.join(configDir, "cli.json");
+    write(configDir, "http://localhost:3115", { keepSignIn: false });
+    expect(JSON.parse(fs.readFileSync(file, "utf8"))).toEqual({ url: "http://localhost:3115" });
+    expect(modeOf(file)).toBe(0o600);
+    fs.writeFileSync(
+      file,
+      JSON.stringify({ url: "http://localhost:3105", token: "t", deviceId: "d", theme: "x" }),
+    );
+    write(configDir, "http://localhost:3115", { keepSignIn: false });
+    expect(JSON.parse(fs.readFileSync(file, "utf8"))).toEqual({
+      url: "http://localhost:3115",
+      theme: "x",
+    });
+    fs.writeFileSync(file, "{ not json");
+    write(configDir, "http://localhost:3116");
+    expect(fs.readFileSync(file, "utf8")).toBe("{ not json");
+  });
+
+  it("offers neither Docker's, OrbStack's nor vmnet's bridges, nor network addresses, as where people reach Mend", () => {
+    expect(
+      reachableAddressesOf({
+        lo0: [v4("127.0.0.1", "127.0.0.1/8", true)],
+        en0: [v4("192.168.1.184", "192.168.1.184/24")],
+        utun4: [v4("100.64.135.118", "100.64.135.118/32")],
+        bridge100: [v4("192.168.139.3", "192.168.139.3/24")],
+        bridge101: [v4("192.168.97.0", "192.168.97.0/24")],
+        en9: [v4("192.168.107.0", "192.168.107.0/24"), v4("10.8.0.64", "10.8.0.64/26")],
+        docker0: [v4("172.17.0.1", "172.17.0.1/16")],
+        vmnet8: [v4("172.16.5.1", "172.16.5.1/24")],
+      }),
+    ).toEqual(["192.168.1.184", "100.64.135.118"]);
   });
 });

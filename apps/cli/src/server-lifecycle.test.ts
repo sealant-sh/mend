@@ -212,12 +212,18 @@ const fixture = async () => {
     },
     configDir,
     cliVersion: "99.0.0",
+    // The fixture's health listener holds the web port before setup "starts" Mend there, and this
+    // machine's own ports say nothing about the fixture.
+    portTaken: async () => false,
     sleep: async () => undefined,
     writeLine: (line) => {
       lines.push(line);
     },
     fetchText: async (request, timeout, headers) => {
       fetched.push(request);
+      // Where this machine's CLI points by default, nothing answers on the fixture's machine.
+      if (request.startsWith("http://localhost:3105/"))
+        return { status: 0, body: "", error: "connection refused" };
       if (!request.startsWith(url)) throw new Error("Unexpected network request");
       return base.fetchText(request, timeout, headers);
     },
@@ -1535,12 +1541,13 @@ describe("the edge and the posture", { timeout: 120_000 }, () => {
     ]);
     expect(f.state().edgeRunning).toBe(true);
     // Health and the accounts question were read on Mend's own loopback port, never through the
-    // edge's public name.
+    // edge's public name; beside them only where this machine's CLI points by default.
     expect(
       f.fetched.every(
         (request) =>
           request === `http://127.0.0.1:${f.port}/api/health` ||
-          request === `http://127.0.0.1:${f.port}/api/instance`,
+          request === `http://127.0.0.1:${f.port}/api/instance` ||
+          request === "http://localhost:3105/api/health",
       ),
     ).toBe(true);
     expect(f.fetched.some((request) => request.includes(host))).toBe(false);

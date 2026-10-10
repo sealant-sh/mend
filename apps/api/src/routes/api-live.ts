@@ -43,12 +43,13 @@ import {
   SealantPrincipal,
 } from "@mend/sealant";
 import { DeploymentConfig, StoreConfig } from "@mend/store";
-import { Config, Effect, Layer, Option, Stream } from "effect";
+import { Config, Effect, Layer, Option, Redacted, Stream } from "effect";
 import { HttpServerRequest } from "effect/unstable/http";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 
 import { ProjectAccess } from "../access.ts";
 import { ExposureConfig } from "../exposure.ts";
+import { instanceIdOf } from "../instance-id.ts";
 import { TenancyConfig } from "../tenancy.ts";
 import { AgentMemoryGroupLive } from "./agent-memory.ts";
 import { DevicePairingLive } from "./devices.ts";
@@ -109,6 +110,9 @@ export const HealthGroupLive = HttpApiBuilder.group(MendApi, "health", (handlers
         Config.orElse(() => Config.succeed("dev")),
         Effect.orDie,
       );
+      const authSecret = yield* Config.option(Config.redacted("BETTER_AUTH_SECRET")).pipe(
+        Effect.orDie,
+      );
       const deployment = yield* DeploymentConfig;
       const store = yield* StoreConfig;
       const tenancy = yield* TenancyConfig;
@@ -131,6 +135,10 @@ export const HealthGroupLive = HttpApiBuilder.group(MendApi, "health", (handlers
           failing: tenancyGate.filter((outcome) => !outcome.ok).map((outcome) => outcome.id),
         },
         upgradeTickets: true,
+        ...Option.match(authSecret, {
+          onNone: () => ({}),
+          onSome: (secret) => ({ instance: instanceIdOf(Redacted.value(secret)) }),
+        }),
         exposure: {
           declared: exposure.exposure,
           // Counts, not ids: this answer needs no sign-in (see the contract).

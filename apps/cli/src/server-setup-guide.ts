@@ -362,8 +362,17 @@ export interface GuideObservations {
   readonly lookupHost: (host: string) => Promise<ReadonlyArray<string> | null>;
   /** This machine's own addresses, loopback excluded. */
   readonly localAddresses: () => ReadonlyArray<string>;
-  /** Whether something on this machine already listens on the port. */
-  readonly portTaken: (port: number) => Promise<boolean>;
+  /** Whether something on this machine already holds the port, on 127.0.0.1 unless given. */
+  readonly portTaken: (port: number, address?: string) => Promise<boolean>;
+  /**
+   * What holds `address:port` here, in words ("another Mend, 0.27.4, answers there"), or null
+   * when it is free.
+   */
+  readonly portHolder: (
+    address: string,
+    port: number,
+    what: "web" | "ssh",
+  ) => Promise<string | null>;
 }
 
 /** Where the guide talks: a line out, and one answer in (null: the terminal closed, or Ctrl+C). */
@@ -816,7 +825,13 @@ const askSsh = async (
             value: at,
           },
         ];
-  const current = isLoopbackAddress(at) ? 0 : choices.findIndex((choice) => choice.value === at);
+  // On a public install, SSH beyond this machine needs a statement the next question asks for and
+  // leaves unmade by default; the default here is where that leaves it, this machine.
+  const stated = settings.declared.includes("workspace-ssh");
+  const current =
+    isLoopbackAddress(at) || (settings.exposure === "public" && !stated)
+      ? 0
+      : choices.findIndex((choice) => choice.value === at);
   const chosen = await choose(
     io,
     `Should VS Code Remote-SSH and mend ssh reach sessions from other machines?${settings.edgeHost === undefined ? " Workspace SSH" : " The edge carries HTTPS only; workspace SSH"} is a port of its own.`,
@@ -831,7 +846,7 @@ const askSsh = async (
     });
   if (isLoopbackAddress(chosen)) return onLoopback();
   if (settings.exposure !== "public") return settled({ ...settings, sshBind: chosen });
-  const declared = settings.declared.includes("workspace-ssh") && at === chosen;
+  const declared = stated && at === chosen;
   const checked = await choose(
     io,
     `Mend cannot see who reaches ${publishedAddress(chosen, port)} from outside, and a public server does not start until you state that you checked (the exposure gate's workspace-ssh item).`,
@@ -1122,11 +1137,14 @@ const askOrigins = async (asked: Asked, settings: SetupSettings): Promise<SetupS
 const walk = async (asked: Asked, settings: SetupSettings): Promise<SetupSettings> => {
   let next = await askReach(asked, settings);
   next = await askT3(asked, next);
-  if (
-    next.exposure === "public" &&
-    (await yesNo(asked.io, "State what you have checked from outside the network now?", false))
-  )
-    next = await askDeclarations(asked, next);
+  if (next.exposure === "public") {
+    asked.io.write("");
+    asked.io.write(
+      "The public exposure gate has items Mend cannot observe from inside; each stays open until you state you checked it from outside. You can state them now, or later with mend server setup --declare.",
+    );
+    if (await yesNo(asked.io, "State what you have checked from outside the network now?", false))
+      next = await askDeclarations(asked, next);
+  }
   next = await askMirrors(asked, next, true);
   return askTenancy(asked, next);
 };
@@ -1178,6 +1196,77 @@ const changeOne = async (asked: Asked, settings: SetupSettings): Promise<SetupSe
   }
 };
 
+/** A port as typed: a whole number from 1 to 65535. */
+const portOf = (input: string): number | null => {
+  if (!/^\d+$/.test(input)) return null;
+  const port = Number(input);
+  return port >= 1 && port <= 65_535 ? port : null;
+};
+
+/** The settings with the web on another port: a URL that named the old port names the new one. */
+const withAppPort = (settings: SetupSettings, port: number): SetupSettings => {
+  const url = new URL(settings.appUrl);
+  if (settings.edgeHost === undefined && url.port === String(settings.appPort))
+    url.port = String(port);
+  return { ...settings, appPort: port, appUrl: url.origin };
+};
+
+/**
+ * Mend's web and SSH ports, where the answers publish them: one something else holds is said with
+ * what holds it, and another port is offered, the first free one after it. A port the saved
+ * install publishes is its own, and setup frees it when it recreates Mend.
+ */
+const settlePorts = async (asked: Asked, settings: SetupSettings): Promise<SetupSettings> => {
+  const { io, context } = asked;
+  const ours = (port: number): boolean =>
+    context.saved !== null && (context.saved.appPort === port || context.saved.sshPort === port);
+  let next = settings;
+  for (const what of ["web", "ssh"] as const) {
+    const port = what === "web" ? next.appPort : next.sshPort;
+    const other = what === "web" ? next.sshPort : next.appPort;
+    const address = what === "web" ? next.bind : (next.sshBind ?? next.bind);
+    if (ours(port)) continue;
+    const holder = await context.observe.portHolder(address, port, what);
+    if (holder === null) continue;
+    io.write("");
+    io.write(`Observed: ${publishedAddress(address, port)} is taken: ${holder}.`);
+    const usable = async (candidate: number): Promise<boolean> =>
+      candidate !== other &&
+      candidate !== next.t3GatewayPort &&
+      (ours(candidate) || !(await context.observe.portTaken(candidate, address)));
+    let free: number | undefined;
+    for (let candidate = port + 1; candidate <= Math.min(port + 100, 65_535); candidate += 1)
+      if (await usable(candidate)) {
+        free = candidate;
+        break;
+      }
+    let picked: number | undefined;
+    while (picked === undefined) {
+      const answered = await typed(
+        io,
+        what === "web" ? "Mend's web port" : "The workspace SSH port",
+        free === undefined ? undefined : String(free),
+        (input): { readonly value: number } | { readonly refused: string } => {
+          const parsed = portOf(input);
+          if (parsed === null) return { refused: "A port is a whole number from 1 to 65535." };
+          if (parsed === other)
+            return { refused: `${parsed} is the ${what === "web" ? "SSH" : "web"} port.` };
+          if (parsed === next.t3GatewayPort)
+            return { refused: `${parsed} is the T3 Code gateway's port.` };
+          return { value: parsed };
+        },
+      );
+      const taken = ours(answered)
+        ? null
+        : await context.observe.portHolder(address, answered, what);
+      if (taken === null) picked = answered;
+      else io.write(`  ${publishedAddress(address, answered)} is taken too: ${taken}.`);
+    }
+    next = what === "web" ? withAppPort(next, picked) : { ...next, sshPort: picked };
+  }
+  return next;
+};
+
 /**
  * The conversation: on a fresh install every question; on a saved one, the current settings as
  * the defaults, and the choice to keep them, change one thing, or go through every question.
@@ -1221,7 +1310,7 @@ export const runGuide = async (io: GuideIo, context: GuideContext): Promise<Guid
             ? await changeOne(asked, base)
             : await walk(asked, base);
     }
-    target = settled(target);
+    target = await settlePorts(asked, settled(target));
     const flags = flagsFor(base, target);
     let resolved: SetupSettings;
     try {

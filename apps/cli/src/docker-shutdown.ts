@@ -462,19 +462,26 @@ export const observeDockerd = (proc: ProcView, host: string): DockerdObservation
 };
 
 /** The endpoint the docker client uses: DOCKER_HOST, else the current context's, else docker's default. */
-export const hostDockerEndpoint = (): string => {
-  const fromEnv = process.env["DOCKER_HOST"];
+export const hostDockerEndpoint = (context: string | null = null): string => {
+  // A named context is what docker talks to whatever DOCKER_HOST says, as with `--context`.
+  const fromEnv = context === null ? process.env["DOCKER_HOST"] : undefined;
   if (fromEnv !== undefined && fromEnv.trim() !== "") return fromEnv.trim();
-  const context = spawnSync(
+  const inspected = spawnSync(
     "docker",
-    ["context", "inspect", "--format", "{{.Endpoints.docker.Host}}"],
+    [
+      "context",
+      "inspect",
+      ...(context === null ? [] : [context]),
+      "--format",
+      "{{.Endpoints.docker.Host}}",
+    ],
     {
       encoding: "utf8",
       timeout: 3_000,
       stdio: ["ignore", "pipe", "ignore"],
     },
   );
-  const endpoint = context.status === 0 ? context.stdout.trim() : "";
+  const endpoint = inspected.status === 0 ? inspected.stdout.trim() : "";
   return endpoint === "" ? DOCKER_DEFAULT_HOST : endpoint;
 };
 
@@ -493,20 +500,34 @@ export const dockerdFactsOf = (
 };
 
 /** This machine's facts, with `docker info`'s stdout already in hand (null when it failed). */
-export const hostDockerDaemonFacts = (infoStdout: string | null): DockerDaemonFacts => ({
+export const hostDockerDaemonFacts = (
+  infoStdout: string | null,
+  context: string | null = null,
+): DockerDaemonFacts => ({
   info: infoStdout === null ? null : parseDockerInfo(infoStdout),
-  ...dockerdFactsOf(observeDockerd(hostProcView, hostDockerEndpoint())),
+  ...dockerdFactsOf(observeDockerd(hostProcView, hostDockerEndpoint(context))),
   readFile: readHostFile,
   home: os.homedir(),
   xdgConfigHome: process.env["XDG_CONFIG_HOME"] ?? null,
 });
 
-/** The doctor's read of this machine's daemon: `docker info`, bounded at 3 s. */
-export const observeHostShutdownTimeout = (): ShutdownTimeoutReading => {
-  const info = spawnSync("docker", ["info", "--format", "{{json .}}"], {
-    encoding: "utf8",
-    timeout: 3_000,
-    stdio: ["ignore", "pipe", "ignore"],
-  });
-  return readShutdownTimeout(hostDockerDaemonFacts(info.status === 0 ? info.stdout : null));
+/**
+ * The doctor's read of a daemon on this machine: `docker info` through the context named, else the
+ * current one, bounded at 3 s.
+ */
+export const observeHostShutdownTimeout = (
+  context: string | null = null,
+): ShutdownTimeoutReading => {
+  const info = spawnSync(
+    "docker",
+    [...(context === null ? [] : ["--context", context]), "info", "--format", "{{json .}}"],
+    {
+      encoding: "utf8",
+      timeout: 3_000,
+      stdio: ["ignore", "pipe", "ignore"],
+    },
+  );
+  return readShutdownTimeout(
+    hostDockerDaemonFacts(info.status === 0 ? info.stdout : null, context),
+  );
 };

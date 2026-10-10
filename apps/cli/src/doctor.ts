@@ -55,16 +55,28 @@ export interface DoctorProbes {
   readonly claudeGrant: () => string | null;
   readonly onPath: (command: string) => boolean;
   /**
-   * This machine's Docker daemon `shutdown-timeout` (`docker-shutdown.ts`), read only when docker
-   * is on PATH. Absent: the line is left out.
+   * A Docker daemon's `shutdown-timeout` (`docker-shutdown.ts`), read only when docker is on PATH:
+   * the daemon of the context named, the server's own when one is installed here, else the current
+   * one. Absent: the line is left out.
    */
-  readonly dockerShutdown?: () => ShutdownTimeoutReading;
+  readonly dockerShutdown?: (context: string | null) => ShutdownTimeoutReading;
   /**
-   * The URL the Mend server installed on this machine (`mend server setup`) is served at, or null
-   * when there is none here. Read only when the configured URL does not answer: a setup that moved
-   * the server leaves this machine's CLI on the old URL. Absent: not read.
+   * The Mend server installed on this machine (`mend server setup`), or null when there is none
+   * here. A setup that moved the server leaves this machine's CLI on the old URL, and a second
+   * server on this machine (another Docker engine) may answer where the CLI points. Absent: not
+   * read.
    */
-  readonly localServerUrl?: () => Promise<string | null>;
+  readonly localServer?: () => Promise<LocalServerFacts | null>;
+}
+
+/** What doctor reads of the server `mend server setup` installed here. */
+export interface LocalServerFacts {
+  readonly url: string;
+  /** The Docker context it runs on: the daemon whose settings its workspaces live by. */
+  readonly dockerContext: string;
+  readonly version: string;
+  /** What its health reports as `instance`. */
+  readonly instance: string;
 }
 
 const MARKS: Record<CheckState, string> = { ok: "✓", todo: "○", failed: "✗" };
@@ -112,6 +124,8 @@ const getJson = async <T>(config: DoctorConfig, route: string): Promise<Fetched<
 interface HealthDto {
   readonly status: string;
   readonly version: string;
+  /** Which install answered; absent on an older server. */
+  readonly instance?: string;
 }
 
 interface ProjectSummaryDto {
@@ -178,7 +192,7 @@ export const exposureCheck = (exposure: NonNullable<MachineDto["exposure"]>): Ch
     state: plainBeyondMachine ? "todo" : "ok",
     detail: facts,
     fix: plainBeyondMachine
-      ? "serve it over https and set APP_URL to that origin"
+      ? "serve it over https: on the server's machine, mend server setup --edge <domain>, or mend server setup --url https://<origin> behind HTTPS you run"
       : gateOpen === 0
         ? null
         : "mend operator exposure",
@@ -239,16 +253,18 @@ const identityOf = (account: AccountDto): string | null => {
  * machine answers at another URL, setup moved it and this CLI still points at the old one: that is
  * said, rather than asking for a server that is running to be started.
  */
-const unreachedServer = async (config: DoctorConfig, probes: DoctorProbes): Promise<Check> => {
-  const local = probes.localServerUrl === undefined ? null : await probes.localServerUrl();
-  if (local !== null && local !== config.url) {
-    const there = await getJson<HealthDto>({ url: local, token: null }, "/health");
+const unreachedServer = async (
+  config: DoctorConfig,
+  local: LocalServerFacts | null,
+): Promise<Check> => {
+  if (local !== null && local.url !== config.url) {
+    const there = await getJson<HealthDto>({ url: local.url, token: null }, "/health");
     if (there.value !== null) {
       return {
         label: "server",
         state: "failed",
-        detail: `cannot reach ${config.url} · the Mend server on this machine answers at ${local}, and this CLI points at the old URL`,
-        fix: `mend login --url ${local}`,
+        detail: `cannot reach ${config.url} · the Mend server on this machine answers at ${local.url}, and this CLI points at the old URL`,
+        fix: `mend login --url ${local.url}`,
       };
     }
   }
@@ -260,6 +276,48 @@ const unreachedServer = async (config: DoctorConfig, probes: DoctorProbes): Prom
   };
 };
 
+const isLoopbackUrl = (url: string): boolean => {
+  try {
+    const host = new URL(url).hostname;
+    return host === "localhost" || host === "[::1]" || host.startsWith("127.");
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * The server line when the CLI's URL answered. On this machine's loopback, beside a server
+ * `mend server setup` installed at another URL, what answers may be another server (another
+ * Docker engine's, an older install's): said when it is not the one installed here, as far as
+ * its health tells.
+ */
+const answeredServer = async (
+  config: DoctorConfig,
+  health: HealthDto,
+  local: LocalServerFacts | null,
+): Promise<Check> => {
+  const ok: Check = {
+    label: "server",
+    state: "ok",
+    detail: `${config.url} · mend ${health.version}`,
+    fix: null,
+  };
+  if (local === null || local.url === config.url || !isLoopbackUrl(config.url)) return ok;
+  const same =
+    health.instance === undefined
+      ? health.version === local.version
+      : health.instance === local.instance;
+  if (same) return ok;
+  const there = await getJson<HealthDto>({ url: local.url, token: null }, "/health");
+  if (there.value === null) return ok;
+  return {
+    label: "server",
+    state: "todo",
+    detail: `${config.url} · mend ${health.version} · not the server installed on this machine, which answers at ${local.url} (mend ${there.value.version})`,
+    fix: `mend login --url ${local.url}`,
+  };
+};
+
 /** Every fact the checklist prints, in the order a first run needs them. */
 export const runChecks = async (
   config: DoctorConfig,
@@ -268,15 +326,11 @@ export const runChecks = async (
   const checks: Array<Check> = [];
 
   const health = await getJson<HealthDto>(config, "/health");
+  const local = probes.localServer === undefined ? null : await probes.localServer();
   checks.push(
     health.value === null
-      ? await unreachedServer(config, probes)
-      : {
-          label: "server",
-          state: "ok",
-          detail: `${config.url} · mend ${health.value.version}`,
-          fix: null,
-        },
+      ? await unreachedServer(config, local)
+      : await answeredServer(config, health.value, local),
   );
 
   // Projects double as the cheapest authenticated read there is: it proves the token
@@ -456,9 +510,10 @@ export const runChecks = async (
   if (userNamespaces !== undefined) checks.push(userNamespacesCheck(userNamespaces));
 
   // A daemon shutdown (host restart, Docker Desktop quit) kills workspaces after the daemon's own
-  // timeout, whatever their stop grace: read where this machine's daemon sets it.
+  // timeout, whatever their stop grace: read where the daemon of the server installed here sets
+  // it (OrbStack's beside Docker Desktop's on one Mac), else the current context's.
   if (probes.dockerShutdown !== undefined && probes.onPath("docker")) {
-    checks.push(dockerShutdownCheck(probes.dockerShutdown()));
+    checks.push(dockerShutdownCheck(probes.dockerShutdown(local?.dockerContext ?? null)));
   }
 
   return checks;
@@ -489,14 +544,14 @@ export const doctorCommand = async (
   config: DoctorConfig,
   localCredential: (provider: Provider) => string | null,
   claudeGrant: () => string | null,
-  localServerUrl?: () => Promise<string | null>,
+  localServer?: () => Promise<LocalServerFacts | null>,
 ): Promise<void> => {
   const checks = await runChecks(config, {
     localCredential,
     claudeGrant,
     onPath,
     dockerShutdown: observeHostShutdownTimeout,
-    ...(localServerUrl === undefined ? {} : { localServerUrl }),
+    ...(localServer === undefined ? {} : { localServer }),
   });
   for (const check of checks) {
     process.stdout.write(`${redactCredentials(formatCheck(check, paintMark))}\n`);

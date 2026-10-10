@@ -58,6 +58,7 @@ const observe = (overrides: Partial<GuideObservations> = {}): GuideObservations 
   lookupHost: async () => ["203.0.113.7"],
   localAddresses: () => ["203.0.113.7", "192.168.1.20", "100.94.101.28"],
   portTaken: async () => false,
+  portHolder: async () => null,
   ...overrides,
 });
 
@@ -396,6 +397,89 @@ describe("the guided server setup", () => {
     ]);
     expect(transcript).toContain("  you declared: workspace-ssh, core-private → core-private");
     expect(resolveSetupSettings(BOX, flags).declared).toEqual(["core-private"]);
+  });
+
+  // The RC on a Mac: SSH over Tailscale was the default, and the next question's default took
+  // it back to loopback. Unstated, the default is where the answers leave it: this machine.
+  it("on the public walk, SSH defaults to this machine until workspace-ssh is stated", async () => {
+    const { sshBind: _ssh, edgeHost: _edge, tenancy: _tenancy, declared: _declared, ...rest } = BOX;
+    const tailnet: ServerConfig = {
+      ...rest,
+      appUrl: "http://mend-box.tailc79e49.ts.net:3105",
+      bind: "100.94.101.28",
+      allowedOrigins: [],
+      exposure: "private",
+    };
+    // every question · public · domain · SSH: enter · T3: enter · state now: enter · mirrors:
+    // keep · one organization · apply
+    const { outcome, transcript } = await converse(
+      ["3", "3", "mend.example.com", "", "", "", "", "", ""],
+      tailnet,
+      observe({ tailscale: async () => tailscaleFactsOf(TAILSCALE_STATUS, "") }),
+    );
+    expect(transcript).toContain("  2. yes, over Tailscale only · SSH on 100.94.101.28:2222");
+    expect(transcript).toContain("  1-3 [1]: ");
+    expect(transcript).not.toContain("Mend cannot see who reaches");
+    expect(transcript).toContain(
+      "The public exposure gate has items Mend cannot observe from inside; each stays open until you state you checked it from outside. You can state them now, or later with mend server setup --declare.\nState what you have checked from outside the network now? [y/N] ",
+    );
+    expect(flagsOf(outcome)).toEqual([
+      "--edge",
+      "mend.example.com",
+      "--bind",
+      "127.0.0.1",
+      "--exposure",
+      "public",
+    ]);
+  });
+
+  // The RC on a Mac: Docker Desktop's old Mend held 127.0.0.1:3105 and OrbStack's could not
+  // publish there. The guide says what holds the port and offers the next free one.
+  it("offers a free port when another server holds Mend's", async () => {
+    const holders: Record<number, string> = {
+      3105: "another Mend, 0.27.4, answers there",
+      3106: "something else listens there",
+    };
+    const { outcome, transcript } = await converse(
+      // reach: this machine · T3: no · mirrors: keep · one organization · port: 3106, then enter
+      // (the free one) · apply
+      ["", "", "", "", "3106", "", ""],
+      null,
+      observe({
+        tailscale: async () => null,
+        portTaken: async (port) => port in holders,
+        portHolder: async (_address, port) => holders[port] ?? null,
+      }),
+    );
+    expect(transcript).toContain(
+      "Observed: 127.0.0.1:3105 is taken: another Mend, 0.27.4, answers there.",
+    );
+    expect(transcript).toContain("Mend's web port [3107]: 3106");
+    expect(transcript).toContain("  127.0.0.1:3106 is taken too: something else listens there.");
+    expect(flagsOf(outcome)).toEqual([
+      "--url",
+      "http://localhost:3107",
+      "--port",
+      "3107",
+      "--exposure",
+      "loopback",
+    ]);
+  });
+
+  it("leaves the ports the saved install publishes alone: they are its own", async () => {
+    const asked: Array<number> = [];
+    const { outcome } = await converse(
+      ["1", ""],
+      BOX,
+      observe({
+        portHolder: async (_address, port) => {
+          asked.push(port);
+          return "another Mend, 0.36.0, answers there";
+        },
+      }),
+    );
+    expect(outcome._tag).toBe("apply");
+    expect(asked).toEqual([]);
   });
 
   it("checks the domain's DNS and the edge's ports when public HTTPS is chosen", async () => {

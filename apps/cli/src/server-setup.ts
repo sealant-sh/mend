@@ -179,7 +179,7 @@ export interface ServerSetupRuntime {
    * This host's Docker daemon facts beside `docker info`'s JSON (null when it did not answer):
    * its dockerd argv and daemon.json (`docker-shutdown.ts`). Absent: setup does not read them.
    */
-  readonly dockerDaemonFacts?: (infoStdout: string | null) => DockerDaemonFacts;
+  readonly dockerDaemonFacts?: (infoStdout: string | null, context: string) => DockerDaemonFacts;
   /**
    * Try workspace SSH where `--ssh-bind` published it, from this machine: the bind itself, or each
    * of this machine's addresses for an unspecified bind. Each answer is the SSH banner read, or null
@@ -187,10 +187,16 @@ export interface ServerSetupRuntime {
    */
   readonly probeSsh?: (bind: string, port: number) => Promise<ReadonlyArray<SshProbe>>;
   /**
-   * Whether something on this machine already listens on `127.0.0.1:<port>` (the t3code gateway's
-   * port, before it is first published there). Absent, nothing is checked.
+   * Whether something on this machine already holds `<address>:<port>` (127.0.0.1 when no address
+   * is given): Mend's web and SSH ports before setup publishes them, the t3code gateway's before it
+   * is first published. Absent, nothing is checked.
    */
-  readonly portTaken?: (port: number) => Promise<boolean>;
+  readonly portTaken?: (port: number, address?: string) => Promise<boolean>;
+  /**
+   * `DOCKER_CONTEXT` as the person's shell set it, when set: a fresh install takes it as docker
+   * itself does, as if `--context` named it. Absent: the context comes from flags and Docker.
+   */
+  readonly dockerContextVariable?: string;
   /** How long setup waits for `probeSsh` altogether; `SSH_PROBE_BOUND_MS` when absent. */
   readonly sshProbeBoundMs?: number;
   /** Read standard input to its end: `--docker-hub-token-stdin` takes the token from here. */
@@ -211,8 +217,16 @@ export interface ServerSetupRuntime {
    * Absent: setup does not read it.
    */
   readonly savedCliLogin?: (configDir: string) => SavedCliLogin | null;
-  /** Point `cli.json` at another URL, keeping its token and device. Absent: setup only says how. */
-  readonly repointCliLogin?: (configDir: string, url: string) => void;
+  /**
+   * Point `cli.json` at another URL, writing the file when there is none. Its token and device
+   * stay unless `keepSignIn` is false: a sign-in made at another server means nothing to this one.
+   * Absent: setup only says how.
+   */
+  readonly repointCliLogin?: (
+    configDir: string,
+    url: string,
+    options?: { readonly keepSignIn: boolean },
+  ) => void;
 }
 
 /** This machine's CLI sign-in, as `cli.json` holds it. */
@@ -685,6 +699,26 @@ const parseSetupOptions = (args: ReadonlyArray<string>): SetupOptions => {
 
 /** Flags about this host rather than about the install: they do not say how Mend is reached. */
 const HOST_FLAGS: ReadonlySet<string> = new Set(["--allow-userns", "--no-allow-userns"]);
+
+/**
+ * Flags that choose the Docker engine setup works through, each with its value. On a Mac with
+ * Docker Desktop and OrbStack, `--context` is how one is picked; it answers none of the questions.
+ */
+const ENGINE_FLAGS: ReadonlySet<string> = new Set(["--context", "--docker-socket"]);
+
+/**
+ * Whether these arguments leave every question open: only host flags and engine flags with their
+ * values. Such a run is still guided on a terminal, and a fresh install without one is refused.
+ */
+const answersNoQuestion = (args: ReadonlyArray<string>): boolean => {
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index] ?? "";
+    if (HOST_FLAGS.has(arg)) continue;
+    if (!ENGINE_FLAGS.has(arg)) return false;
+    index += 1;
+  }
+  return true;
+};
 
 /**
  * The mirrors a setup writes: each flag given, else what the install saved, else on. A config from
@@ -2027,6 +2061,36 @@ export const envKeyNames = (env: string): ReadonlyArray<string> =>
     return match?.[1] === undefined ? [] : [match[1]];
   });
 
+/** The Mend server `mend server setup` installed on this machine, as `mend doctor` reads it. */
+export interface LocalServer {
+  readonly url: string;
+  readonly dockerContext: string;
+  readonly version: string;
+  /** What its `/api/health` reports as `instance` (`instanceIdOf`). */
+  readonly instance: string;
+}
+
+/** The server installed here, or null when there is none; a busy lock or a missing store throws. */
+export const readLocalServer = async (configDir: string): Promise<LocalServer | null> => {
+  const result = await withServerStore(
+    configDir,
+    async (store) => {
+      const installation = storeValue(readServerInstallation(store));
+      const identity = storeValue(store.readIdentity());
+      if (installation === null || identity === null) return null;
+      return {
+        url: installation.config.appUrl,
+        dockerContext: installation.config.dockerContext,
+        version: installation.config.serverVersion,
+        instance: instanceIdOf(parseSecrets(identity).betterAuthSecret),
+      };
+    },
+    { create: false },
+  );
+  if (result._tag === "error") throw result.error;
+  return result.value;
+};
+
 /**
  * Read the active generation under the same lock every lifecycle command holds, then let go: the
  * bundle's Docker reads run unlocked. Null when this machine has a store but no active
@@ -2156,28 +2220,142 @@ const observeT3Gateway = async (runtime: ServerSetupRuntime, port: number): Prom
   return `The t3code gateway did not answer at 127.0.0.1:${port} from this machine within about a minute. Mend runs without it; mend server logs shows what it said, and mend server status looks again.`;
 };
 
+/**
+ * The id `/api/health` reports for one install: an HMAC of its Better Auth secret under a fixed
+ * label, so two Mends of one version (Docker Desktop's and OrbStack's on one Mac) are told apart
+ * while the secret stays where it is. The API derives it the same way (apps/api, health route).
+ */
+export const instanceIdOf = (betterAuthSecret: string): string =>
+  createHmac("sha256", betterAuthSecret).update("mend instance id").digest("hex").slice(0, 32);
+
+/** What a health request observed: a Mend, with its version and instance when it says them. */
+type HealthAnswer =
+  | {
+      readonly kind: "mend";
+      readonly ok: boolean;
+      readonly version: string;
+      readonly instance: string | undefined;
+    }
+  | { readonly kind: "other"; readonly failure: string };
+
+const readHealth = (response: FetchOutput): HealthAnswer => {
+  if (response.error !== undefined) return { kind: "other", failure: response.error };
+  if (response.status < 200 || response.status >= 300)
+    return { kind: "other", failure: `HTTP ${response.status}` };
+  let fields: ReadonlyMap<string, unknown> | null;
+  try {
+    fields = ownFields(JSON.parse(response.body));
+  } catch {
+    return { kind: "other", failure: "health response is not valid JSON" };
+  }
+  const version = fields?.get("version");
+  const instance = fields?.get("instance");
+  if (fields === null || typeof version !== "string")
+    return { kind: "other", failure: "health response names no Mend version" };
+  return {
+    kind: "mend",
+    ok: fields.get("status") === "ok",
+    version,
+    instance: typeof instance === "string" ? instance : undefined,
+  };
+};
+
+/**
+ * Whether the answer is this install: the version it pins, and its instance id when the server
+ * reports one. A server from before the id is matched on its version alone.
+ */
+const isThisInstall = (answer: HealthAnswer, version: string, instance: string): boolean =>
+  answer.kind === "mend" &&
+  answer.ok &&
+  answer.version === version &&
+  (answer.instance === undefined || answer.instance === instance);
+
+/** An address to connect to for a port published there: loopback for every address. */
+const connectHost = (address: string): string =>
+  address === "0.0.0.0" ? "127.0.0.1" : address === "::" ? "::1" : address;
+
+/**
+ * What holds `address:port` on this machine, in words, or null when it is free. The web port's
+ * holder is asked for its health, so another Mend is named with its version; anything else is
+ * something else.
+ */
+const portHolder = async (
+  runtime: ServerSetupRuntime,
+  address: string,
+  port: number,
+  what: "web" | "ssh",
+): Promise<string | null> => {
+  if (runtime.portTaken === undefined || !(await runtime.portTaken(port, address))) return null;
+  if (what === "ssh") return "something else listens there";
+  const host = connectHost(address);
+  const answer = readHealth(
+    await runtime.fetchText(
+      `http://${net.isIPv6(host) ? `[${host}]` : host}:${port}/api/health`,
+      2_000,
+    ),
+  );
+  return answer.kind === "mend"
+    ? `another Mend, ${answer.version}, answers there`
+    : "something else listens there";
+};
+
+/**
+ * Refuse, before anything changes, to publish Mend's web or SSH port where something already
+ * holds it. A port the install publishes now is its own: compose frees it when it recreates Mend.
+ */
+const refuseTakenPorts = async (
+  runtime: ServerSetupRuntime,
+  wanted: Pick<ServerConfig, "bind" | "sshBind" | "appPort" | "sshPort">,
+  existing: ServerConfig | null,
+): Promise<void> => {
+  const ours = (port: number): boolean =>
+    existing !== null && (existing.appPort === port || existing.sshPort === port);
+  const taken: Array<string> = [];
+  const flags: Array<string> = [];
+  for (const [what, address, port, flag, name] of [
+    ["web", wanted.bind, wanted.appPort, "--port <n>", "Mend's web port"],
+    ["ssh", wanted.sshBind ?? wanted.bind, wanted.sshPort, "--ssh-port <n>", "workspace SSH"],
+  ] as const) {
+    if (ours(port)) continue;
+    const holder = await portHolder(runtime, address, port, what);
+    if (holder === null) continue;
+    taken.push(`${publishedAddress(address, port)}, ${name}, is taken: ${holder}.`);
+    flags.push(flag);
+  }
+  if (taken.length === 0) return;
+  throw setupError(
+    `${taken.join(" ")} Setup changed nothing. Choose ${flags.length === 1 ? "another port" : "other ports"} with ${flags.join(" ")}, or stop what holds ${flags.length === 1 ? "it" : "them"}, then run mend server setup again.`,
+  );
+};
+
 const probeHealth = async (
   runtime: ServerSetupRuntime,
-  appUrl: string,
-  expectedVersion: string,
+  config: ServerConfig,
+  instance: string,
 ): Promise<void> => {
-  const healthUrl = `${appUrl}/api/health`;
+  const healthUrl = `${healthOrigin(config)}/api/health`;
+  const expectedVersion = config.serverVersion;
   let lastFailure = "request did not complete";
+  let other: HealthAnswer | undefined;
   for (let attempt = 0; attempt < 30; attempt += 1) {
-    const response = await runtime.fetchText(healthUrl, 2_000);
-    lastFailure = response.error ?? `HTTP ${response.status}`;
-    if (response.error === undefined && response.status >= 200 && response.status < 300) {
-      try {
-        const decoded: unknown = JSON.parse(response.body);
-        const fields = ownFields(decoded);
-        if (fields?.get("status") === "ok" && fields.get("version") === expectedVersion) return;
-        lastFailure = `health response must report status ok and version ${expectedVersion}`;
-      } catch {
-        lastFailure = "health response is not valid JSON";
-      }
-    }
+    const answer = readHealth(await runtime.fetchText(healthUrl, 2_000));
+    if (isThisInstall(answer, expectedVersion, instance)) return;
+    other = undefined;
+    if (answer.kind === "other") lastFailure = answer.failure;
+    else if (answer.ok && answer.instance !== undefined && answer.instance !== instance) {
+      other = answer;
+      lastFailure = `another Mend install, ${answer.version}, answers there`;
+    } else if (answer.ok && answer.version !== expectedVersion) {
+      other = answer;
+      lastFailure = `Mend ${answer.version} answers there, not ${expectedVersion}`;
+    } else lastFailure = `health response must report status ok and version ${expectedVersion}`;
     if (attempt % 10 === 0) runtime.writeLine(`Waiting for ${healthUrl} (${lastFailure})`);
     if (attempt < 29) await runtime.sleep(2_000);
+  }
+  if (other !== undefined) {
+    throw setupError(
+      `Mend started, but ${healthUrl} is not the Mend setup just started: ${lastFailure}. When another server holds port ${config.appPort} on this machine (another Docker engine, an older install), Docker cannot publish this one there. Choose another port with --port <n>, or stop what holds it, then run mend server setup again.`,
+    );
   }
   throw setupError(
     `Mend started, but ${healthUrl} did not answer successfully (${lastFailure}). Check the Mend container logs in Docker, then retry mend server setup.`,
@@ -2761,11 +2939,12 @@ const mirrorsChangedLines = (
 };
 
 /**
- * Said when setup has nothing to go on: no terminal to ask on, no flags, and no install whose
- * settings it could keep. It names the flags that answer the one question that has no safe guess.
+ * Said when setup has nothing to go on: no terminal to ask on, no flag that answers a question, and
+ * no install whose settings it could keep. It names the flags that answer the one question that
+ * has no safe guess.
  */
 const UNASKED_FRESH_SETUP =
-  "No terminal to ask on and no flags, so setup does not guess how this Mend is reached. Run mend server setup in a terminal to answer its questions, or say it with flags: --yes takes the defaults (this machine only, http://localhost:3105); --bind <address> --url <origin> serves a private network (a tailnet, a LAN, a VPN); for public HTTPS, set up on this machine first, create the first account, then run mend server setup --edge <host> --exposure public. mend help server setup lists every flag.";
+  "No terminal to ask on, and no flag says how this Mend is reached (--context and --docker-socket only choose the Docker engine), so setup does not guess. Run mend server setup in a terminal to answer its questions, or say it with flags: --yes takes the defaults (this machine only, http://localhost:3105); --bind <address> --url <origin> serves a private network (a tailnet, a LAN, a VPN); for public HTTPS, set up on this machine first, create the first account, then run mend server setup --edge <host> --exposure public. mend help server setup lists every flag.";
 
 /** How this setup run came about. */
 interface SetupRun {
@@ -2797,6 +2976,7 @@ const guideObservations = (runtime: ServerSetupRuntime): GuideObservations => ({
   lookupHost: runtime.lookupHost ?? (async () => null),
   localAddresses: runtime.localAddresses ?? (() => []),
   portTaken: runtime.portTaken ?? (async () => false),
+  portHolder: (address, port, what) => portHolder(runtime, address, port, what),
 });
 
 /**
@@ -2886,11 +3066,7 @@ const setupServer = async (
       "The install changed while you answered: another mend server setup or upgrade ran. This one changed nothing; run mend server setup again to see the install as it is now.",
     );
   }
-  if (
-    run.askedAgainst === undefined &&
-    args.every((arg) => HOST_FLAGS.has(arg)) &&
-    existing === null
-  ) {
+  if (run.askedAgainst === undefined && answersNoQuestion(args) && existing === null) {
     throw setupError(UNASKED_FRESH_SETUP);
   }
   const savedIdentity = storeValue(store.readIdentity());
@@ -2905,12 +3081,35 @@ const setupServer = async (
     );
   }
   refuseLegacyContract(existing);
+  // DOCKER_CONTEXT picks a fresh install's engine as it picks docker's own. An install stays on the
+  // engine its volumes are on: only --context moves it.
+  const variable = runtime.dockerContextVariable;
+  const fromVariable = options.context === undefined && existing === null && variable !== undefined;
   const selectedContext = await selectDockerContext(
     runtime,
-    options.context ?? existing?.config.dockerContext,
+    options.context ?? (fromVariable ? variable : existing?.config.dockerContext),
   );
   const operatingSystem = await checkDocker(runtime, selectedContext.name);
-  runtime.writeLine(`Using Docker context "${selectedContext.name}" (${selectedContext.endpoint})`);
+  runtime.writeLine(
+    `Using Docker context "${selectedContext.name}" (${selectedContext.endpoint})${fromVariable ? ", from DOCKER_CONTEXT" : ""}`,
+  );
+  if (
+    existing !== null &&
+    options.context === undefined &&
+    variable !== undefined &&
+    variable !== existing.config.dockerContext
+  ) {
+    runtime.writeLine(
+      `DOCKER_CONTEXT is "${variable}"; this install runs on Docker context "${existing.config.dockerContext}", where its data is, and stays there. --context moves it.`,
+    );
+  }
+  // Before anything is pulled or written: a port another server holds would leave this one
+  // unpublished, and its health answered by the other (two Docker engines on one Mac).
+  await refuseTakenPorts(
+    runtime,
+    validateExposure(existing?.config ?? null, options),
+    existing?.config ?? null,
+  );
   // Before the Mend image is pulled or anything is written: a host that refuses user namespaces
   // starts no session, and the person decides about it while it is still the first thing said.
   const userNamespaces = await settleHostUserNamespaces(runtime, options, selectedContext.name);
@@ -2945,7 +3144,9 @@ const setupServer = async (
       "{{json .}}",
     ]);
     const line = dockerShutdownSetupLine(
-      readShutdownTimeout(runtime.dockerDaemonFacts(info.status === 0 ? info.stdout : null)),
+      readShutdownTimeout(
+        runtime.dockerDaemonFacts(info.status === 0 ? info.stdout : null, selectedContext.name),
+      ),
     );
     if (line !== null) runtime.writeLine(line);
   }
@@ -3023,7 +3224,8 @@ const setupServer = async (
   storeValue(store.activate(generation));
   await startCompose(runtime, installation);
   await initGarage(runtime, installation, secrets);
-  await probeHealth(runtime, healthOrigin(config), config.serverVersion);
+  const instance = instanceIdOf(secrets.betterAuthSecret);
+  await probeHealth(runtime, config, instance);
   runtime.writeLine(reachableLine(config));
   const edgeStarted = edgeStartedLine(config);
   if (edgeStarted !== null) runtime.writeLine(edgeStarted);
@@ -3047,8 +3249,8 @@ const setupServer = async (
   // the first account only while there is none.
   const urlChanged = existing !== null && existing.config.appUrl !== config.appUrl;
   const cliHere = urlChanged
-    ? await followUrlChange(runtime, options, existing.config, config)
-    : (runtime.savedCliLogin?.(runtime.configDir) ?? null);
+    ? await followUrlChange(runtime, options, existing.config, config, instance)
+    : await offerCliHere(runtime, options, existing?.config ?? null, config, instance);
   const users = await instanceUsers(runtime, healthOrigin(config));
   if (users === "none" || (users === null && existing === null)) {
     runtime.writeLine(
@@ -3059,7 +3261,7 @@ const setupServer = async (
   } else if (
     cliHere === null ||
     !cliHere.signedIn ||
-    !(await answersAs(runtime, cliHere.url, config.serverVersion))
+    !(await answersAs(runtime, cliHere.url, config.serverVersion, instance))
   ) {
     runtime.writeLine(
       `Open ${config.appUrl} to sign in. To sign in this machine's CLI, run: mend login --url ${config.appUrl}`,
@@ -3092,15 +3294,59 @@ const answersAs = async (
   runtime: ServerSetupRuntime,
   url: string,
   version: string,
-): Promise<boolean> => {
-  const response = await runtime.fetchText(`${url.replace(/\/+$/, "")}/api/health`, 3_000);
-  if (response.error !== undefined || response.status !== 200) return false;
-  try {
-    const fields = ownFields(JSON.parse(response.body));
-    return fields?.get("status") === "ok" && fields.get("version") === version;
-  } catch {
-    return false;
+  instance: string,
+): Promise<boolean> => isThisInstall(await healthAt(runtime, url), version, instance);
+
+const healthAt = async (runtime: ServerSetupRuntime, url: string): Promise<HealthAnswer> =>
+  readHealth(await runtime.fetchText(`${url.replace(/\/+$/, "")}/api/health`, 3_000));
+
+/** The URL this machine's CLI uses when `cli.json` names none (main.ts). */
+const DEFAULT_CLI_URL = `http://localhost:${DEFAULT_APP_PORT}`;
+
+/**
+ * This machine's CLI points where this install does not answer: at another server, or at nothing.
+ * Setup offers to point it here (`--yes` answers for a script). A sign-in made at another server
+ * that still answers stays behind, so then the offer leads with no. One where nothing answers now
+ * carries over on an existing install, as on a URL change, and is dropped on a fresh one, which
+ * has no accounts. Returns this machine's sign-in as it stands afterwards.
+ */
+const offerCliHere = async (
+  runtime: ServerSetupRuntime,
+  options: SetupOptions,
+  existing: ServerConfig | null,
+  config: ServerConfig,
+  instance: string,
+): Promise<SavedCliLogin | null> => {
+  if (runtime.savedCliLogin === undefined) return null;
+  const saved = runtime.savedCliLogin(runtime.configDir);
+  if (runtime.repointCliLogin === undefined) return saved;
+  const url = saved?.url ?? DEFAULT_CLI_URL;
+  const there = await healthAt(runtime, url);
+  if (isThisInstall(there, config.serverVersion, instance)) return saved;
+  const signedIn = saved?.signedIn === true;
+  const keepSignIn = signedIn && there.kind === "other" && existing !== null;
+  const preferred = !(signedIn && there.kind === "mend");
+  const what =
+    there.kind === "mend" ? `another Mend, ${there.version}, answers` : "nothing answers";
+  const signIn = keepSignIn
+    ? " Its sign-in carries over."
+    : signedIn
+      ? ` Its sign-in at ${url} stays behind.`
+      : "";
+  let move = options.yes && preferred;
+  if (!options.yes && runtime.prompter !== undefined) {
+    const answer = await runtime.prompter(
+      `This machine's CLI points at ${url}, where ${what}. Point it at ${config.appUrl}?${signIn} ${preferred ? "[Y/n]" : "[y/N]"} `,
+    );
+    const given = answer?.trim() ?? "";
+    move = answer !== null && (given === "" ? preferred : /^y/i.test(given));
   }
+  if (!move) return saved;
+  runtime.repointCliLogin(runtime.configDir, config.appUrl, { keepSignIn });
+  runtime.writeLine(
+    `This machine's CLI now points at ${config.appUrl}${keepSignIn ? "; its sign-in carried over" : ""}.`,
+  );
+  return { url: config.appUrl, signedIn: keepSignIn };
 };
 
 /**
@@ -3135,6 +3381,7 @@ const followUrlChange = async (
   options: SetupOptions,
   before: ServerConfig,
   after: ServerConfig,
+  instance: string,
 ): Promise<SavedCliLogin | null> => {
   runtime.writeLine(
     `Mend's URL changed from ${before.appUrl} to ${after.appUrl}. Browsers open ${after.appUrl}. A CLI signed in at the old URL (another account on this machine, another machine) moves with: mend login --url ${after.appUrl}`,
@@ -3144,7 +3391,7 @@ const followUrlChange = async (
     saved === null ||
     !saved.signedIn ||
     !reachedBefore(saved.url, before) ||
-    (await answersAs(runtime, saved.url, after.serverVersion))
+    (await answersAs(runtime, saved.url, after.serverVersion, instance))
   ) {
     return saved;
   }
@@ -3259,7 +3506,7 @@ const startInstallation = async (
     "--no-build",
   ]);
   await initGarage(runtime, installation, secrets);
-  await probeHealth(runtime, healthOrigin(installation.config), installation.config.serverVersion);
+  await probeHealth(runtime, installation.config, instanceIdOf(secrets.betterAuthSecret));
   runtime.writeLine(reachableLine(installation.config));
 };
 
@@ -4163,6 +4410,9 @@ export const nodeServerRuntime = (): ServerSetupRuntime => {
     repointCliLogin: repointCliLoginHere,
     probeSsh: probeSshFromHere,
     portTaken: portTakenHere,
+    ...(environment["DOCKER_CONTEXT"] === undefined || environment["DOCKER_CONTEXT"].trim() === ""
+      ? {}
+      : { dockerContextVariable: environment["DOCKER_CONTEXT"].trim() }),
     ...(process.stdin.isTTY === true && process.stdout.isTTY === true
       ? { prompter: askOnTerminal }
       : {}),
@@ -4173,13 +4423,7 @@ export const nodeServerRuntime = (): ServerSetupRuntime => {
         return null;
       }
     },
-    // Container and VM bridges (Docker's own among them) are never where people reach Mend.
-    localAddresses: () =>
-      Object.entries(os.networkInterfaces())
-        .filter(([name]) => !/^(docker|br-|veth|virbr|cni|flannel|vmnet|vboxnet)/.test(name))
-        .flatMap(([, entries]) => entries ?? [])
-        .filter((entry) => !entry.internal)
-        .map((entry) => entry.address),
+    localAddresses: () => reachableAddressesOf(os.networkInterfaces()),
     readStdin: async () => {
       const chunks: Array<Buffer> = [];
       for await (const chunk of process.stdin)
@@ -4240,13 +4484,60 @@ export const sshBannerAt = async (
   }
 };
 
-/** Whether binding `127.0.0.1:<port>` here fails because something holds it. */
-const portTakenHere = (port: number): Promise<boolean> =>
-  new Promise((resolve) => {
+/**
+ * Interfaces people never reach Mend on: Docker's, OrbStack's and other container and VM bridges
+ * (`bridge100` and up on macOS: OrbStack, vmnet, the Virtualization framework).
+ */
+const BRIDGE_INTERFACE = /^(docker|br-|veth|virbr|cni|flannel|vmnet|vboxnet|bridge\d)/;
+
+/** An IPv4 address as one number. */
+const ipv4Value = (address: string): number =>
+  address.split(".").reduce((sum, octet) => sum * 256 + Number(octet), 0);
+
+/** An IPv4 address that names a network rather than a host on it: x.y.z.0, or its subnet's base. */
+const isNetworkAddress = (entry: os.NetworkInterfaceInfo): boolean => {
+  if (entry.family !== "IPv4") return false;
+  if (entry.address.endsWith(".0")) return true;
+  const prefix = Number(entry.cidr?.split("/")[1] ?? "32");
+  return prefix < 31 && ipv4Value(entry.address) % 2 ** (32 - prefix) === 0;
+};
+
+/**
+ * This machine's addresses where people may reach Mend: loopback, bridges and network addresses
+ * left out. Tailscale's interface (`tailscale0`, `utun` on macOS) and the LAN's stay.
+ */
+export const reachableAddressesOf = (
+  interfaces: NodeJS.Dict<ReadonlyArray<os.NetworkInterfaceInfo>>,
+): ReadonlyArray<string> =>
+  Object.entries(interfaces)
+    .filter(([name]) => !BRIDGE_INTERFACE.test(name))
+    .flatMap(([, entries]) => entries ?? [])
+    .filter((entry) => !entry.internal && !isNetworkAddress(entry))
+    .map((entry) => entry.address);
+
+/**
+ * Whether something here holds `<address>:<port>`: binding it fails as in use, or a connection to
+ * it is answered. Both, since a listener on one address does not always stop a bind on another
+ * (macOS lets 0.0.0.0 and 127.0.0.1 share a port), and a published port is not always a socket.
+ */
+const portTakenHere = async (port: number, address = "127.0.0.1"): Promise<boolean> => {
+  const bindFails = await new Promise<boolean>((resolve) => {
     const server = net.createServer();
     server.once("error", (error: NodeJS.ErrnoException) => resolve(error.code === "EADDRINUSE"));
-    server.listen(port, "127.0.0.1", () => server.close(() => resolve(false)));
+    server.listen(port, address, () => server.close(() => resolve(false)));
   });
+  if (bindFails) return true;
+  return new Promise<boolean>((resolve) => {
+    const socket = net.connect({ host: connectHost(address), port });
+    const done = (answered: boolean): void => {
+      socket.destroy();
+      resolve(answered);
+    };
+    socket.setTimeout(1_000, () => done(false));
+    socket.once("connect", () => done(true));
+    socket.once("error", () => done(false));
+  });
+};
 
 /** `probeSsh` on this machine: the bind, or this machine's own addresses for an unspecified one. */
 const probeSshFromHere = async (bind: string, port: number): Promise<ReadonlyArray<SshProbe>> => {
@@ -4309,12 +4600,25 @@ const savedCliLoginHere = (configDir: string): SavedCliLogin | null => {
     : null;
 };
 
-/** Rewrite `cli.json`'s URL in place, as `mend login` writes the file: 0600, the rest kept. */
-const repointCliLoginHere = (configDir: string, url: string): void => {
-  const fields = cliJsonFields(configDir);
-  if (fields === null) return;
+/**
+ * Write `cli.json`'s URL, as `mend login` writes the file: 0600, the rest kept, or the token and
+ * device left out when the sign-in does not carry over. A missing file is written; an unreadable
+ * one is left for the person to see.
+ */
+const repointCliLoginHere = (
+  configDir: string,
+  url: string,
+  options: { readonly keepSignIn: boolean } = { keepSignIn: true },
+): void => {
   const file = path.join(configDir, "cli.json");
-  fs.writeFileSync(file, `${JSON.stringify({ ...Object.fromEntries(fields), url }, null, 2)}\n`, {
+  const fields =
+    cliJsonFields(configDir) ?? (fs.existsSync(file) ? null : new Map<string, unknown>());
+  if (fields === null) return;
+  const kept = [...fields].filter(
+    ([key]) => options.keepSignIn || (key !== "token" && key !== "deviceId"),
+  );
+  fs.mkdirSync(configDir, { recursive: true, mode: 0o700 });
+  fs.writeFileSync(file, `${JSON.stringify({ ...Object.fromEntries(kept), url }, null, 2)}\n`, {
     mode: 0o600,
   });
   fs.chmodSync(file, 0o600);
@@ -4339,12 +4643,10 @@ export const serverCommand = async (
     };
   }
   try {
-    // Flags about this host alone (`--allow-userns`) still leave the questions to the guide.
-    if (
-      command === "setup" &&
-      rest.every((arg) => HOST_FLAGS.has(arg)) &&
-      runtime.prompter !== undefined
-    ) {
+    // Flags about this host (`--allow-userns`) or its Docker engine (`--context`) still leave the
+    // questions to the guide. They are read first, so a bad one is said before any question.
+    if (command === "setup" && answersNoQuestion(rest) && runtime.prompter !== undefined) {
+      parseSetupOptions(rest);
       return await guidedSetup(runtime, runtime.prompter, rest);
     }
     return await underLock(

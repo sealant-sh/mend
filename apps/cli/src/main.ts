@@ -127,7 +127,12 @@ import {
 } from "./secret-files.ts";
 import { mayStillBeWorking, MendRequestError, noAnswerError, spoken } from "./server-request.ts";
 import { runServerProcess } from "./server-runtime.ts";
-import { nodeServerRuntime, readServerInstallationFacts, serverCommand } from "./server-setup.ts";
+import {
+  nodeServerRuntime,
+  readLocalServer,
+  readServerInstallationFacts,
+  serverCommand,
+} from "./server-setup.ts";
 import {
   isComposeFile,
   proposeFromCompose,
@@ -5996,10 +6001,7 @@ const main = async () => {
         // The server `mend server setup` installed here, when there is one; a missing store or a
         // busy lock is nothing to say.
         try {
-          return (
-            (await readServerInstallationFacts(nodeServerRuntime().configDir))?.config.appUrl ??
-            null
-          );
+          return await readLocalServer(nodeServerRuntime().configDir);
         } catch {
           return null;
         }
