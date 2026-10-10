@@ -15,7 +15,8 @@
 // - FAKE_DOCKER_PAUSE_RM (a file holding a container or volume name): while the file exists, an
 //   `rm` or `volume rm` of that name writes `<file>.paused` and waits, before it removes anything;
 // - FAKE_DOCKER_PAUSE_PULL (a file): while it exists, a `pull` writes `<file>.paused` and waits;
-// - FAKE_DOCKER_RUN (a file holding `{ containers, volumes, networks }` of names): a `run` of the
+// - FAKE_DOCKER_RUN (a file holding `{ containers, volumes, networks }` of names, a container's
+//   name optionally with its labels as `[name, labels]`): a `run` of the
 //   inner CLI makes them, as an inner session would; then, while FAKE_DOCKER_PAUSE_RUN (a file)
 //   exists, it writes `<file>.paused` and waits;
 // - FAKE_DOCKER_BUILD: `hang` makes `build` wait a minute; otherwise `build` fails at once.
@@ -107,7 +108,14 @@ const volumeNamed = (name) => (volume) => volume.Name === name;
 const render = (template, item) =>
   template
     .replaceAll("\\t", "\t")
+    .replace(/\{\{\.Label "([^"]+)"\}\}/g, (_, label) => String(item.Labels?.[label] ?? ""))
     .replace(/\{\{\.(\w+)\}\}/g, (_, field) => String(item[field] ?? ""));
+/** A container as `docker ps --format` sees it. */
+const listed = (item) => ({
+  ID: item.Id,
+  Names: item.Name.slice(1),
+  Labels: item.Config?.Labels ?? {},
+});
 const formatOf = () => (args.includes("--format") ? args[args.indexOf("--format") + 1] : null);
 const newId = (state, fill) => `${String(state.next++).padStart(4, "0")}${fill.repeat(60)}`;
 
@@ -128,8 +136,14 @@ else if (verb === "run" && args.some((arg) => arg.includes("umask 077"))) {
   if (script && exists(script)) {
     const made = JSON.parse(readFileSync(script, "utf8"));
     await locked((state) => {
-      for (const name of made.containers ?? [])
-        state.containers.push({ Id: newId(state, "a"), Name: `/${name}`, Config: { Labels: {} } });
+      for (const made1 of made.containers ?? []) {
+        const [name, labels = {}] = Array.isArray(made1) ? made1 : [made1];
+        state.containers.push({
+          Id: newId(state, "a"),
+          Name: `/${name}`,
+          Config: { Labels: labels },
+        });
+      }
       for (const name of made.volumes ?? [])
         state.volumes.push({
           Name: name,
@@ -185,7 +199,10 @@ else if (verb === "create") {
     if (label) return item.Config.Labels?.[label[1]] === label[2];
     return true;
   });
-  console.log(shown.map((item) => item.Id).join("\n"));
+  const format = formatOf();
+  console.log(
+    shown.map((item) => (format === null ? item.Id : render(format, listed(item)))).join("\n"),
+  );
 } else if (verb === "inspect") {
   const list = await locked((state) => state.containers);
   console.log(JSON.stringify(list.filter((item) => args.includes(item.Id))));
@@ -226,9 +243,16 @@ else if (verb === "volume" && sub === "inspect") {
   await locked((state) => {
     state.volumes = state.volumes.filter((volume) => !args.includes(volume.Name));
   });
-else if (verb === "network" && sub === "ls")
-  console.log((await locked((state) => state.networks)).map((network) => network.Id).join("\n"));
-else if (verb === "network" && sub === "inspect") {
+else if (verb === "network" && sub === "ls") {
+  const format = formatOf();
+  console.log(
+    (await locked((state) => state.networks))
+      .map((network) =>
+        format === null ? network.Id : render(format, { ID: network.Id, Name: network.Name }),
+      )
+      .join("\n"),
+  );
+} else if (verb === "network" && sub === "inspect") {
   const list = await locked((state) => state.networks);
   const asked = args.slice(2);
   const found = list.filter(

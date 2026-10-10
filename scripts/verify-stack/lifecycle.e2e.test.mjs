@@ -12,6 +12,7 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  renameSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -22,7 +23,7 @@ import { join } from "node:path";
 import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { OWNER_CONTAINER, STACK_LABEL, STATE_VOLUME } from "./lib.mjs";
+import { OWNER_CONTAINER, STACK_LABEL, STATE_VOLUME, digestOf } from "./lib.mjs";
 import { CLAIM_LABEL } from "./lifecycle.mjs";
 
 const stack = fileURLToPath(new URL("stack.mjs", import.meta.url));
@@ -78,6 +79,8 @@ function daemon({
   containers = [],
   volumes = [],
   networks = [],
+  files = {},
+  cache = null,
   failLookups = 0,
   createDelayMs = 0,
   build = "fail",
@@ -94,6 +97,7 @@ function daemon({
       ),
       volumes: volumes.map(asVolume),
       networks,
+      files,
     }),
   );
   const file = (name) => join(root, name);
@@ -124,7 +128,7 @@ function daemon({
   const env = {
     PATH: `${bin}:${process.env.PATH}`,
     HOME: file("home"),
-    MEND_VERIFY_STACK_CACHE: file("cache"),
+    MEND_VERIFY_STACK_CACHE: cache ?? file("cache"),
   };
   const read = () => JSON.parse(readFileSync(state, "utf8"));
   const run = (args) => {
@@ -451,14 +455,21 @@ const product = {
 const productNames = names({
   containers: product.containers.map(([name]) => ({ Name: `/${name}` })),
 });
+/** The fake daemon's ledger directory (stack.mjs `ledgerDirectory`: its id is `FAKE:<state>`). */
+const ledgerDirOf = (fakeDaemon) =>
+  join(
+    fakeDaemon.env.MEND_VERIFY_STACK_CACHE,
+    "ledger",
+    digestOf(`FAKE:${join(fakeDaemon.root, "state.json")}`).slice(0, 16),
+  );
 /** Write a recording window's ledger file into the stack's cache, as `recording` does. */
-function ledger(fakeDaemon, entries, { closed = true } = {}) {
-  const dir = join(fakeDaemon.env.MEND_VERIFY_STACK_CACHE, "ledger");
+function ledger(fakeDaemon, entries, { closed = true, window = "window" } = {}) {
+  const dir = ledgerDirOf(fakeDaemon);
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   writeFileSync(
-    join(dir, "window.json"),
+    join(dir, `${window}.json`),
     JSON.stringify({
-      window: "window",
+      window,
       startedAt: "2026-10-10T00:00:00Z",
       closed,
       containers: [],
@@ -466,10 +477,11 @@ function ledger(fakeDaemon, entries, { closed = true } = {}) {
       volumes: [],
       ...entries,
     }),
+    { mode: 0o600 },
   );
 }
 const ledgerWindows = (fakeDaemon) => {
-  const dir = join(fakeDaemon.env.MEND_VERIFY_STACK_CACHE, "ledger");
+  const dir = ledgerDirOf(fakeDaemon);
   return existsSync(dir)
     ? readdirSync(dir)
         .filter((name) => name.endsWith(".json"))
@@ -488,7 +500,10 @@ test("down --force on a daemon with no stack of its own removes nothing of a pro
   assert.deepEqual(volumeNames(left), volumeNames(before));
   assert.deepEqual(left.networks, before.networks);
   // Reported, with how to remove them by hand, and never touched.
-  assert.match(sweep.output(), /left alone, not recorded as the stack's: .*container mend-mend-1/);
+  assert.match(
+    sweep.output(),
+    /left alone \(shaped like the stack's, but never recorded as made by it\): container mend-mend-1/,
+  );
   assert.match(sweep.output(), /docker volume rm .*mend-store/);
 });
 
@@ -598,11 +613,12 @@ test("a teardown removes the ledger's entries whose identity still matches, and 
   const left = fakeDaemon.read();
   assert.deepEqual(names(left), ["attached-later"]);
   assert.deepEqual(volumeNames(left), ["mend-garage", "unrecorded-data"]);
-  assert.match(down.output(), /volume mend-garage was made again after the stack recorded it/);
+  assert.match(down.output(), /made again after the stack recorded it\): volume mend-garage/);
+  assert.match(down.output(), /removed container mend-mend-1/);
   assert.deepEqual(ledgerWindows(fakeDaemon), [], "the ledger goes with the stack");
 });
 
-test("an inner session made while `mend` runs is recorded, and a teardown removes it", async () => {
+test("a `mend` window records an inner session, and nothing another client makes meanwhile (R7-1)", async () => {
   const fakeDaemon = daemon({
     containers: generation("a"),
     volumes: [STATE_VOLUME, ...product.volumes.slice(2)],
@@ -610,12 +626,17 @@ test("an inner session made while `mend` runs is recorded, and a teardown remove
   const cache = fakeDaemon.env.MEND_VERIFY_STACK_CACHE;
   mkdirSync(cache, { recursive: true });
   writeFileSync(join(cache, "stack.json"), JSON.stringify({ images: { cli: "c" } }));
+  // While the window is open: an inner session, and the person's `pnpm dev` database beside it.
   writeFileSync(
     fakeDaemon.file("run"),
     JSON.stringify({
-      containers: ["sealant-5e55", "sealant-5e55-docker"],
-      volumes: ["sealant-5e55-home"],
-      networks: ["sealant-5e55-network"],
+      containers: [
+        "sealant-5e55",
+        "sealant-5e55-docker",
+        ["mend-dev-postgres-1", { [COMPOSE]: "mend-dev" }],
+      ],
+      volumes: ["mend-dev_mend-dev-pgdata"],
+      networks: ["sealant-5e55-network", "mend-dev_default"],
     }),
   );
   const inner = fakeDaemon.run(["mend", "run", "--", "true"]);
@@ -623,18 +644,22 @@ test("an inner session made while `mend` runs is recorded, and a teardown remove
   const [window] = ledgerWindows(fakeDaemon);
   assert.equal(window.closed, true);
   assert.equal(window.containers.length, 2);
-  assert.deepEqual(
-    window.volumes.map((item) => item.name),
-    ["sealant-5e55-home"],
-  );
+  assert.deepEqual(window.volumes, []);
   assert.equal(window.networks.length, 1);
   const down = fakeDaemon.run(["down"]);
   assert.equal(await down.done, 0, down.output());
   const left = fakeDaemon.read();
-  assert.deepEqual(names(left), []);
-  // What was there before the window, unrecorded and not the stack's own, stays.
-  assert.deepEqual(volumeNames(left), volumeNames({ volumes: product.volumes.slice(2) }));
-  assert.deepEqual(left.networks, []);
+  assert.deepEqual(names(left), ["mend-dev-postgres-1"]);
+  assert.deepEqual(
+    volumeNames(left),
+    volumeNames({ volumes: [...product.volumes.slice(2), volume("mend-dev_mend-dev-pgdata")] }),
+  );
+  assert.deepEqual(
+    left.networks.map((network) => network.Name),
+    ["mend-dev_default"],
+  );
+  assert.match(down.output(), /removed container sealant-5e55 /);
+  assert.match(down.output(), /removed network sealant-5e55-network/);
 });
 
 test("a recording cut short by a kill keeps what it saw, and says so", async () => {
@@ -648,6 +673,10 @@ test("a recording cut short by a kill keeps what it saw, and says so", async () 
   await until("the session to be recorded", () =>
     ledgerWindows(fakeDaemon).some((window) => window.containers.length === 1),
   );
+  // The window holds the daemon's lock shared: a `down` cannot race it (NIT-5).
+  const busy = fakeDaemon.run(["down"]);
+  assert.notEqual(await busy.done, 0);
+  assert.match(busy.output(), /stack is busy/);
   inner.child.kill("SIGKILL");
   // The inner CLI's run holds the killed process's output open until it ends.
   rmSync(fakeDaemon.file("pause-run"));
@@ -657,6 +686,96 @@ test("a recording cut short by a kill keeps what it saw, and says so", async () 
   assert.equal(await down.done, 0, down.output());
   assert.deepEqual(names(fakeDaemon.read()), []);
   assert.match(down.output(), /was cut short/);
+});
+
+test("a volume the stack made twice under one name is removed whichever record is read first (R7-2)", async () => {
+  const fakeDaemon = daemon({
+    containers: generation("a"),
+    volumes: [STATE_VOLUME, volume("mend-store", {}, "2026-10-10T02:00:00Z")],
+  });
+  for (const [window, createdAt] of [
+    ["a", "2026-10-10T01:00:00Z"],
+    ["b", "2026-10-10T02:00:00Z"],
+    ["c", "2026-10-10T00:30:00Z"],
+  ])
+    ledger(fakeDaemon, { volumes: [{ name: "mend-store", createdAt }] }, { window });
+  const down = fakeDaemon.run(["down"]);
+  assert.equal(await down.done, 0, down.output());
+  assert.deepEqual(volumeNames(fakeDaemon.read()), []);
+});
+
+test("a teardown on one daemon leaves another daemon's ledger alone (R7-3)", async () => {
+  const first = daemon({
+    containers: [...generation("a"), ["sealant-5e55", {}]],
+    volumes: [STATE_VOLUME],
+  });
+  const ids = Object.fromEntries(
+    first.read().containers.map((item) => [item.Name.slice(1), item.Id]),
+  );
+  ledger(first, { containers: [ids["sealant-5e55"]] });
+  // Another daemon, the same cache directory.
+  const second = daemon({ cache: first.env.MEND_VERIFY_STACK_CACHE });
+  const sweep = second.run(["down", "--force"]);
+  assert.equal(await sweep.done, 0, sweep.output());
+  assert.equal(ledgerWindows(first).length, 1, "the first daemon's ledger stays");
+  const down = first.run(["down"]);
+  assert.equal(await down.done, 0, down.output());
+  assert.deepEqual(names(first.read()), []);
+});
+
+test("a ledger that is planted, open to others or unreadable removes nothing (NIT-2, NIT-3)", async () => {
+  const setup = () => {
+    const fakeDaemon = daemon({
+      containers: [
+        ["verify-stack-relay", { [STACK_LABEL]: "1" }],
+        ["sealant-5e55", {}],
+      ],
+      volumes: [STATE_VOLUME],
+    });
+    const id = fakeDaemon.read().containers[1].Id;
+    ledger(fakeDaemon, { containers: [id] });
+    return fakeDaemon;
+  };
+  const untouched = async (fakeDaemon, pattern) => {
+    const sweep = fakeDaemon.run(["down", "--force"]);
+    assert.notEqual(await sweep.done, 0);
+    assert.match(sweep.output(), pattern);
+    assert.deepEqual(names(fakeDaemon.read()), ["sealant-5e55", "verify-stack-relay"]);
+    assert.deepEqual(volumeNames(fakeDaemon.read()), [STATE_VOLUME]);
+  };
+  // A directory in the ledger's place that is a symlink.
+  const linked = setup();
+  const elsewhere = join(linked.root, "elsewhere");
+  renameSync(ledgerDirOf(linked), elsewhere);
+  symlinkSync(elsewhere, ledgerDirOf(linked));
+  await untouched(linked, /no symlink/);
+  // A window file others can write.
+  const open = setup();
+  chmodSync(join(ledgerDirOf(open), "window.json"), 0o666);
+  await untouched(open, /window\.json must be this user's own file/);
+  // A window file that is not JSON: the error names it.
+  const torn = setup();
+  writeFileSync(join(ledgerDirOf(torn), "window.json"), "{", { mode: 0o600 });
+  await untouched(torn, /the ledger in .*window\.json cannot be read/);
+});
+
+test("the ledger is this cache's windows and the state volume's copy, merged (NIT-4)", async () => {
+  const fakeDaemon = daemon({
+    containers: [...generation("a"), ["sealant-5e55", {}]],
+    volumes: [STATE_VOLUME, volume("mend-store", {}, "2026-10-10T01:00:00Z")],
+    files: {
+      [`/fake/volumes/${STATE_VOLUME}/_data/ledger.json`]: JSON.stringify({
+        containers: [],
+        networks: [],
+        volumes: [{ name: "mend-store", createdAt: "2026-10-10T01:00:00Z" }],
+      }),
+    },
+  });
+  ledger(fakeDaemon, { containers: [fakeDaemon.read().containers.at(-1).Id] });
+  const down = fakeDaemon.run(["down"]);
+  assert.equal(await down.done, 0, down.output());
+  assert.deepEqual(names(fakeDaemon.read()), []);
+  assert.deepEqual(volumeNames(fakeDaemon.read()), []);
 });
 
 test("the lock lives in a private directory of the caller's, in a file only they can open (N14)", async () => {

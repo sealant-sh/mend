@@ -326,18 +326,54 @@ export const VERIFIER_PREFIX = "verify-stack-";
  */
 export const volumeIdentity = (volume) => `${volume.name}\u0000${volume.createdAt}`;
 
+// What the stack makes on a daemon is shaped by `mend server setup` and the inner Sealant: Compose
+// project `mend` (its containers, its `mend_…` volumes and network), the volumes setup claims, and an
+// inner session's `sealant-<run>` container, its `-docker` sidecar and its `-network`. A session's
+// Docker daemon is shared with its agent and its person, so a recording window takes only what has
+// that shape, and a teardown removes only what was both recorded and has it (`planTeardown`).
+const SESSION_CONTAINER = /^sealant-[a-z0-9][a-z0-9_.-]*$/i;
+const SESSION_NETWORK = /^sealant-[a-z0-9][a-z0-9_.-]*-network$/i;
+const PRODUCT_VOLUME = /^(mend-(store|control|garage)|mend_.+)$/;
+const COMPOSE_NETWORK_NAME = /^mend_.+$/;
+
 /**
- * What appeared on the daemon between two snapshots (`{ containers, networks, volumes }`, as
- * stack.mjs `snapshot` takes them): the entries a recording window adds to the stack's ledger.
+ * What a recording window may take, by kind, from snapshot entries (`{ id, name, compose }` for a
+ * container, `{ id, name }` for a network, `{ name, createdAt }` for a volume):
+ * - `install` (`up`): the inner server's and its sessions' shapes;
+ * - `session` (`mend`, `check`): an inner session's only.
  */
-export function madeSince(before, after) {
-  const containers = new Set(before.containers);
-  const networks = new Set(before.networks);
+export const SHAPES = {
+  install: {
+    container: (item) => item.compose === COMPOSE_PROJECT || SESSION_CONTAINER.test(item.name),
+    network: (item) => COMPOSE_NETWORK_NAME.test(item.name) || SESSION_NETWORK.test(item.name),
+    volume: (item) => PRODUCT_VOLUME.test(item.name),
+  },
+  session: {
+    container: (item) => SESSION_CONTAINER.test(item.name),
+    network: (item) => SESSION_NETWORK.test(item.name),
+    volume: () => false,
+  },
+};
+
+/**
+ * What appeared on the daemon between two snapshots and has the window's `shape`: the entries a
+ * recording window adds to the stack's ledger, by identity (container and network ids, volume
+ * identities). Anything else that appeared (another client's database, say) is not the stack's.
+ */
+export function madeSince(before, after, shape = SHAPES.install) {
+  const containers = new Set(before.containers.map((item) => item.id));
+  const networks = new Set(before.networks.map((item) => item.id));
   const volumes = new Set(before.volumes.map(volumeIdentity));
   return {
-    containers: after.containers.filter((id) => !containers.has(id)),
-    networks: after.networks.filter((id) => !networks.has(id)),
-    volumes: after.volumes.filter((volume) => !volumes.has(volumeIdentity(volume))),
+    containers: after.containers
+      .filter((item) => !containers.has(item.id) && shape.container(item))
+      .map((item) => item.id),
+    networks: after.networks
+      .filter((item) => !networks.has(item.id) && shape.network(item))
+      .map((item) => item.id),
+    volumes: after.volumes.filter(
+      (volume) => !volumes.has(volumeIdentity(volume)) && shape.volume(volume),
+    ),
   };
 }
 
@@ -361,62 +397,70 @@ const own = (item) =>
   labelsOf(item)[STACK_LABEL] === "1" && nameOf(item).startsWith(VERIFIER_PREFIX);
 /** Docker's own networks, which every daemon has. */
 const PREDEFINED_NETWORKS = new Set(["bridge", "host", "none"]);
-/** Names the inner server's resources take, which a product server shares: reported, never inferred. */
-const looksLikeTheStacks = (item) =>
+/** `docker inspect` output as snapshot entries, which the shapes read. */
+const entry = {
+  container: (item) => ({
+    id: item.Id,
+    name: nameOf(item),
+    compose: labelsOf(item)["com.docker.compose.project"] ?? "",
+  }),
+  network: (item) => ({ id: item.Id, name: nameOf(item) }),
+  volume: (item) => ({ name: item.Name, createdAt: item.CreatedAt }),
+};
+/** Names the stack's resources take, which another server or client may share: reported only. */
+const looksLikeTheStacks = (kind, item) =>
   labelsOf(item)[STACK_LABEL] !== undefined ||
   nameOf(item).startsWith(VERIFIER_PREFIX) ||
-  labelsOf(item)["com.docker.compose.project"] === COMPOSE_PROJECT ||
-  /^(mend-(store|control|garage)|mend_.+|sealant-[0-9a-f-]+(-docker|-network)?)$/i.test(
-    nameOf(item),
-  );
+  SHAPES.install[kind](entry[kind](item));
 
 /**
  * What a teardown removes, from the stack's ledger and `docker inspect` of what is on the daemon
- * now (containers, volumes, networks): the ledger's entries whose identity still matches exactly,
- * and the stack's own infrastructure (its label and its prefix). Nothing is followed from there: not
- * a network, a mount, a label or a path. Besides the plan:
- * - `changed`: volumes the ledger names whose creation time differs: another volume, left alone;
- * - `suspects`: what looks like the stack's (its label or prefix alone, Compose project `mend`, the
- *   product's volume names, an inner session's names) and is in neither: reported, left alone.
+ * now (containers, volumes, networks):
+ * - the stack's own infrastructure (its label and its prefix, both);
+ * - what the ledger recorded, by an identity that still matches exactly (any of a volume name's
+ *   recorded creation times), and that has the stack's shape (`SHAPES.install`).
+ * Nothing is followed from there: not a network, a mount, a label or a path. Left alone, with the
+ * commands that remove each by hand (`leftAlone`, by `reason`):
+ * - `made again`: a volume of a recorded name whose creation time is none recorded;
+ * - `not the stack's shape`: recorded, but shaped like nothing the stack makes;
+ * - `not recorded`: shaped like the stack's (or carrying its label or prefix alone), never recorded.
  * The owner container is never in it: the teardown that holds it removes it, last, by id.
  */
 export function planTeardown({ ledger, containers, volumes, networks }) {
   const recorded = {
     containers: new Set(ledger.containers),
     networks: new Set(ledger.networks),
-    volumes: new Map(ledger.volumes.map((volume) => [volume.name, volume.createdAt])),
+    volumes: new Set(ledger.volumes.map(volumeIdentity)),
+    volumeNames: new Set(ledger.volumes.map((volume) => volume.name)),
   };
-  const live = containers.filter((item) => nameOf(item) !== OWNER_CONTAINER);
-  const plan = {
-    containers: live.filter((item) => recorded.containers.has(item.Id) || own(item)),
-    volumes: [],
-    networks: networks.filter(
-      (item) => recorded.networks.has(item.Id) && !PREDEFINED_NETWORKS.has(nameOf(item)),
-    ),
-    changed: [],
-    suspects: [],
-  };
-  for (const volume of volumes) {
-    const createdAt = recorded.volumes.get(volume.Name);
-    if (own(volume) || createdAt === volume.CreatedAt) plan.volumes.push(volume);
-    else if (createdAt !== undefined) plan.changed.push(volume);
+  const plan = { containers: [], volumes: [], networks: [], leftAlone: [] };
+  const leave = (kind, item, reason) =>
+    plan.leftAlone.push({
+      kind,
+      id: kind === "volume" ? item.Name : item.Id,
+      name: nameOf(item),
+      reason,
+    });
+  for (const item of containers.filter((container) => nameOf(container) !== OWNER_CONTAINER)) {
+    const shaped = SHAPES.install.container(entry.container(item));
+    if (own(item) || (recorded.containers.has(item.Id) && shaped)) plan.containers.push(item);
+    else if (recorded.containers.has(item.Id)) leave("container", item, "not the stack's shape");
+    else if (looksLikeTheStacks("container", item)) leave("container", item, "not recorded");
   }
-  const planned = new Set(
-    [...plan.containers, ...plan.networks]
-      .map((item) => item.Id)
-      .concat([...plan.volumes, ...plan.changed].map((item) => item.Name)),
-  );
-  const suspect = (kind) => (item) =>
-    !planned.has(kind === "volume" ? item.Name : item.Id) &&
-    !PREDEFINED_NETWORKS.has(nameOf(item)) &&
-    looksLikeTheStacks(item)
-      ? [{ kind, id: kind === "volume" ? item.Name : item.Id, name: nameOf(item) }]
-      : [];
-  plan.suspects = [
-    ...live.flatMap(suspect("container")),
-    ...volumes.flatMap(suspect("volume")),
-    ...networks.flatMap(suspect("network")),
-  ];
+  for (const item of volumes) {
+    const known = recorded.volumes.has(volumeIdentity(entry.volume(item)));
+    const shaped = SHAPES.install.volume(entry.volume(item));
+    if (own(item) || (known && shaped)) plan.volumes.push(item);
+    else if (known) leave("volume", item, "not the stack's shape");
+    else if (recorded.volumeNames.has(item.Name)) leave("volume", item, "made again");
+    else if (looksLikeTheStacks("volume", item)) leave("volume", item, "not recorded");
+  }
+  for (const item of networks.filter((network) => !PREDEFINED_NETWORKS.has(nameOf(network)))) {
+    const shaped = SHAPES.install.network(entry.network(item));
+    if (recorded.networks.has(item.Id) && shaped) plan.networks.push(item);
+    else if (recorded.networks.has(item.Id)) leave("network", item, "not the stack's shape");
+    else if (looksLikeTheStacks("network", item)) leave("network", item, "not recorded");
+  }
   return plan;
 }
 

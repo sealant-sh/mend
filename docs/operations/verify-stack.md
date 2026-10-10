@@ -33,16 +33,17 @@ a hang-up, then SIGKILL two seconds later), killed, or failed.
 - **One kernel lock per daemon orders everything else.** It is flock(2), through util-linux `flock`,
   on `<cache>/locks/<daemon id hash>.lock`: a directory of the caller's, 0700 and no symlink, and a
   file opened 0600 without following a symlink and checked, once open, to be the caller's own.
-  Nobody else can create it first or hold it. `serve` and `up` hold it shared for their whole life.
-  Every teardown holds it exclusive: the watchdog's (it waits), `down` and `down --force` (refused
-  at once while a start holds it: "stop serve to cancel it"), and a failed start's (it converts its
-  own lock). Every Docker command of a holder's that may change the stack (a create, a run, a
-  removal) carries the locked descriptor, so the lock is held until the last of them exits, even
-  when the holder itself is killed. A pull, a build or a lookup does not carry it: one left stalled
-  by a holder that ended keeps nothing waiting. So a teardown never runs beside a start that is
-  building, a sweep never runs beside a new start, and nothing is admitted while a removal, or a
-  command a killed teardown left running, is still at work. The kernel releases the lock when its
-  holders end, however they end, so no process has to judge whether another is still alive.
+  Nobody else can create it first or hold it. `serve`, `up`, `mend` and `check` hold it shared for
+  their whole life (so `down` waits for no recording window: it is refused while one is open). Every
+  teardown holds it exclusive: the watchdog's (it waits), `down` and `down --force` (refused at once
+  while a start holds it: "stop serve to cancel it"), and a failed start's (it converts its own
+  lock). Every Docker command of a holder's that may change the stack (a create, a run, a removal)
+  carries the locked descriptor, so the lock is held until the last of them exits, even when the
+  holder itself is killed. A pull, a build or a lookup does not carry it: one left stalled by a
+  holder that ended keeps nothing waiting. So a teardown never runs beside a start that is building,
+  a sweep never runs beside a new start, and nothing is admitted while a removal, or a command a
+  killed teardown left running, is still at work. The kernel releases the lock when its holders end,
+  however they end, so no process has to judge whether another is still alive.
 - **`serve`'s watchdog makes the claim, and outlives it.** The watchdog is a process in a session of
   its own, without the lock, and `serve` asks it over IPC to create the claim. So a create still in
   flight when `serve` dies belongs to the watchdog, which waits for it however long it takes. When
@@ -50,25 +51,36 @@ a hang-up, then SIGKILL two seconds later), killed, or failed.
   generation only if the daemon's owner still carries its claim id, the state file before the owner
   and the owner last. A start that ends holding no claim stops its watchdog. A reply the watchdog
   cannot deliver (the supervisor is gone) is logged, never fatal.
-- **A teardown removes what the stack recorded making, and nothing it would have to infer.** The
-  inner server carries the product's names, which `mend server setup` fixes (Compose project `mend`,
-  volumes `mend-store`, `mend-control`, `mend-garage`), so no name, label, path or shared network
-  proves whose a resource is. Instead the stack keeps a ledger. Each recording window (`up` from its
-  state volume through setup, the relay, the fixture and the check; every `mend` and `check`)
-  snapshots the daemon before it starts. While it runs, it writes what has appeared since, by
-  identity: container and network ids, and volumes by name and creation time (a volume has no id).
-  It writes every two seconds and once more when it ends, to a file of its own under
-  `<cache>/ledger/` (0700, files 0600). `up` copies the ledger into the state volume, for a `down`
-  run from another cache directory. A teardown, the watchdog's, a failed start's and `down`'s alike,
-  removes the ledger's entries whose identity still matches exactly, plus the stack's own
-  infrastructure (its label and its `verify-stack-` prefix, both). Nothing is followed from there. A
-  recorded volume whose creation time changed is another volume: it is left alone and reported.
-  Anything else that looks like the stack's (Compose project `mend`, the product's volume names, an
-  inner session's names, the label or the prefix alone) is reported with the commands that remove it
-  by hand, and left alone. With no ledger, `down --force` removes the stack's own infrastructure
-  only. When a removal fails, the ledger and the state volume stay, so the next teardown tries
-  again. Every container the stack runs for a moment (the inner CLI, a probe, a copy) carries both
-  the label and the prefix, so one that a killed command left behind is found.
+- **A teardown removes what the stack recorded making and has its shape, and nothing it would have
+  to infer.** The inner server carries the product's names, which `mend server setup` fixes (Compose
+  project `mend`, volumes `mend-store`, `mend-control`, `mend-garage`), so no name, label, path or
+  shared network proves whose a resource is. And a session's Docker service is shared with its agent
+  and its person (`pnpm dev` starts its database there), so neither does appearing while the stack
+  works. A resource is the stack's when both hold:
+  - **It was recorded.** Each recording window (`up` from its state volume through setup, the relay,
+    the fixture and the check; every `mend` and `check`) snapshots the daemon first. While it runs
+    it records, by identity, what has appeared since and has the window's shape: container and
+    network ids, and volumes by name and creation time (a volume has no id). It writes every two
+    seconds and once more when it ends, to a file of its own under `<cache>/ledger/<daemon>/`
+    (directories 0700, files 0600, both checked as the lock's are). `up` copies the ledger into the
+    state volume, and a teardown reads both.
+  - **It has the stack's shape.** `up` records what the inner server and its sessions make: Compose
+    project `mend` and its `mend_…` volumes and network, the volumes setup claims, and `sealant-…`
+    containers and networks. `mend` and `check` record an inner session's `sealant-…` containers and
+    networks only.
+
+  A teardown, the watchdog's, a failed start's and `down`'s alike, removes what passes both, plus
+  the stack's own infrastructure (its label and its `verify-stack-` prefix, both), and prints each
+  removal. Nothing is followed from there. Everything else is left alone and reported with the
+  commands that remove it by hand: a recorded volume made again since (every recorded creation time
+  of a name counts), anything recorded that has no stack shape, and anything stack-shaped that was
+  never recorded. With no ledger, `down --force` removes the stack's own infrastructure only. A
+  ledger that cannot be read, or whose directory or files are not the caller's own and private,
+  stops the teardown before it removes anything. When a removal fails, the ledger and the state
+  volume stay, so the next teardown tries again. Every container the stack runs for a moment (the
+  inner CLI, a probe, a copy) carries both the label and the prefix, so one that a killed command
+  left behind is found.
+
 - **A watchdog retries; it never assumes.** A lookup or teardown that fails is retried every 30 s at
   most, indefinitely: a daemon that does not answer cannot show that the stack is gone.
 
@@ -238,10 +250,16 @@ Docker service capped at 12 CPUs; Core and sealantd at main, Mend at this branch
   `down` or a watchdog's teardown may run first. Each removes only a generation whose claim it holds
   or, for `down`, whatever stack the daemon holds; the failed start then finds its generation gone
   and stops.
-- Run the stack on a daemon of its own: a session's own Docker service is its intended home. A
-  recording window attributes to the stack whatever appears on the daemon while it runs. On a daemon
-  that something else uses at the same time, what that creates during a window is recorded as the
-  stack's and removed with it.
+- A session's Docker service is shared with its agent and its person. What they create while a
+  recording window is open is recorded only if it has the stack's shape: something they start under
+  the product's names (Compose project `mend`, `mend-store`, `sealant-…`) during a window would be
+  taken for the stack's. Mend's own refusal of a second Mend on one daemon covers the product's
+  server; anything else of those names needs a daemon of its own.
+- A volume's identity has one-second resolution (Docker's creation time). A stack-shaped volume that
+  someone else removes and makes again under the same name within the second the stack made it is
+  taken for the stack's.
+- `mend …` holds the daemon's lock for as long as it runs (`mend attach` can last hours), and `down`
+  is refused meanwhile; a watchdog's teardown waits for it.
 - A window cut short by a kill (`serve` stopped during setup, say) has recorded all but its last two
   seconds. The teardown removes what was recorded and says the recording was cut short. What it
   missed is left: product-named leftovers, listed with the commands that remove them by hand. It

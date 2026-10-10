@@ -67,6 +67,7 @@ import {
   fetchRefspec,
   formatKb,
   formatSeconds,
+  SHAPES,
   madeSince,
   manualRemoval,
   mergeLedgers,
@@ -458,7 +459,10 @@ async function cliRun(state, args, { network = "host", home = "client", ...optio
   );
 }
 
-/** Write a private file into the state volume; its content goes over stdin, never argv. */
+/**
+ * Write a private file into the state volume, whole or not at all (written aside, then renamed); its
+ * content goes over stdin, never argv.
+ */
 async function writePrivate(state, path, content) {
   const mount = await stateMount();
   await docker(
@@ -475,7 +479,7 @@ async function writePrivate(state, path, content) {
       "sh",
       state.images.cli,
       "-c",
-      'umask 077 && mkdir -p "$(dirname "$1")" && cat > "$1"',
+      'umask 077 && mkdir -p "$(dirname "$1")" && cat > "$1.tmp" && mv -f "$1.tmp" "$1"',
       "sh",
       `${mount}/${path}`,
     ],
@@ -776,6 +780,7 @@ async function upClaimed(flags, specs, { started, phases, logs }) {
   const origins = innerOrigins(relay);
   const state = {
     version: 1,
+    daemon: await daemonKey(),
     // `building` until every image is built and the stack is installed and set up; then `ready`.
     // The web can answer while sealantd still builds: only `ready` means the stack is whole.
     phase: "building",
@@ -806,7 +811,7 @@ async function upClaimed(flags, specs, { started, phases, logs }) {
     logs,
   };
   await writeState(state);
-  // From here on the stack creates on the daemon: all of it is recorded in the ledger.
+  // From here on the stack creates on the daemon: what has its shape is recorded in the ledger.
   return recording(
     () =>
       install(flags, state, {
@@ -819,9 +824,7 @@ async function upClaimed(flags, specs, { started, phases, logs }) {
         socket,
         sealantdBuild,
       }),
-    {
-      state,
-    },
+    { state, shape: SHAPES.install },
   );
 }
 
@@ -1172,23 +1175,30 @@ async function stackContainers() {
 // ─── the ledger ─────────────────────────────────────────────────────────────
 
 /**
- * What the stack made on the daemon, by exact identity, one file per recording window. A teardown
- * removes those entries and nothing it would have to infer (lib.mjs `planTeardown`).
+ * Where this daemon's ledger lives: what the stack made on it, by exact identity, one file per
+ * recording window, under `<cache>/ledger/<daemon>/` (the daemon as the lock names it), so a
+ * teardown of one daemon never reads or removes another's. Each directory is checked as the lock's
+ * is (`privateDirectory`). A teardown removes only entries that also have the stack's shape
+ * (lib.mjs `planTeardown`).
  */
-const ledgerDir = join(cacheDir, "ledger");
+async function ledgerDirectory() {
+  privateDirectory(join(cacheDir, "ledger"));
+  return privateDirectory(join(cacheDir, "ledger", await daemonKey()));
+}
 
 /**
- * The daemon's containers and networks by id, and its volumes by name and creation time. Retried
- * when a volume goes between its listing and its inspection.
+ * The daemon's containers (id, name, Compose project) and networks (id, name), and its volumes by
+ * name and creation time. Retried when something goes between its listing and its inspection.
  */
 async function snapshot() {
+  const rows = (output) => nonEmptyLines(output).map((line) => line.split("\t"));
   for (let attempt = 0; ; attempt++) {
     try {
       const names = nonEmptyLines(await dockerOut(["volume", "ls", "--quiet"]));
       const volumes =
         names.length === 0
           ? []
-          : nonEmptyLines(
+          : rows(
               await dockerOut([
                 "volume",
                 "inspect",
@@ -1196,15 +1206,20 @@ async function snapshot() {
                 "{{.Name}}\t{{.CreatedAt}}",
                 ...names,
               ]),
-            ).map((line) => {
-              const [name, createdAt] = line.split("\t");
-              return { name, createdAt };
-            });
-      return {
-        containers: nonEmptyLines(await dockerOut(["ps", "--all", "--quiet", "--no-trunc"])),
-        networks: nonEmptyLines(await dockerOut(["network", "ls", "--quiet", "--no-trunc"])),
-        volumes,
-      };
+            ).map(([name, createdAt]) => ({ name, createdAt }));
+      const containers = rows(
+        await dockerOut([
+          "ps",
+          "--all",
+          "--no-trunc",
+          "--format",
+          '{{.ID}}\t{{.Names}}\t{{.Label "com.docker.compose.project"}}',
+        ]),
+      ).map(([id, name, compose = ""]) => ({ id, name, compose }));
+      const networks = rows(
+        await dockerOut(["network", "ls", "--no-trunc", "--format", "{{.ID}}\t{{.Name}}"]),
+      ).map(([id, name]) => ({ id, name }));
+      return { containers, networks, volumes };
     } catch (error) {
       if (attempt >= 4) throw error;
       await pause(500);
@@ -1218,19 +1233,20 @@ async function writeAtomically(file, value) {
 }
 
 /**
- * Run `work` as a recording window: what appears on the daemon while it runs is the stack's (the
- * stack's daemon is a dedicated one: docs/operations/verify-stack.md). The window's ledger file is
- * written when it opens, every two seconds while it runs and once more when it ends, so a window cut
- * short by a kill has recorded all but its last seconds and says so (`closed: false`). When `state`
- * is given, the whole ledger is also copied into the state volume, for a `down` run without this
- * cache directory.
+ * Run `work` as a recording window: what appears on the daemon while it runs and has the window's
+ * `shape` (lib.mjs `SHAPES`: `install` for `up`, `session` for `mend` and `check`) is the stack's.
+ * The session's daemon is shared with its agent and its person, so anything else that appears
+ * meanwhile (a dev database, say) is not recorded. The window's file is written when it opens,
+ * every two seconds while it runs and once more when it ends, so a window cut short by a kill has
+ * recorded all but its last seconds and says so (`closed: false`). When `state` is given, the whole
+ * ledger is also copied into the state volume, for a `down` run without this cache directory.
  */
-async function recording(work, { state = null } = {}) {
-  await mkdir(ledgerDir, { recursive: true, mode: 0o700 });
+async function recording(work, { state = null, shape = SHAPES.session } = {}) {
+  const dir = await ledgerDirectory();
   const window = { window: randomUUID(), startedAt: new Date().toISOString() };
-  const file = join(ledgerDir, `${window.window}.json`);
+  const file = join(dir, `${window.window}.json`);
   const before = await snapshot();
-  let made = madeSince(before, before);
+  let made = madeSince(before, before, shape);
   const save = (closed) => writeAtomically(file, { ...window, closed, ...made });
   await save(false);
   const ticker = { open: true, wake: () => undefined };
@@ -1242,7 +1258,7 @@ async function recording(work, { state = null } = {}) {
       });
       if (!ticker.open) return;
       try {
-        made = madeSince(before, await snapshot());
+        made = madeSince(before, await snapshot(), shape);
         await save(false);
       } catch {
         // The next tick, or the close, records it.
@@ -1256,7 +1272,7 @@ async function recording(work, { state = null } = {}) {
     ticker.wake();
     await ticks;
     try {
-      made = madeSince(before, await snapshot());
+      made = madeSince(before, await snapshot(), shape);
       await save(true);
     } catch (error) {
       say(
@@ -1270,25 +1286,51 @@ async function recording(work, { state = null } = {}) {
   }
 }
 
-/** Every window's file in this cache directory, and the windows that were cut short. */
+/** A ledger file: this user's own regular file, private to them, read without following a link. */
+function readPrivateFile(path) {
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const file = fstatSync(fd);
+    if (!file.isFile() || file.uid !== process.getuid() || (file.mode & 0o077) !== 0)
+      throw new Error(`${path} must be this user's own file, private to them (0600)`);
+    return readFileSync(fd, "utf8");
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/** A ledger's JSON, or a refusal that names where it came from: a teardown removes nothing then. */
+function parseLedger(text, where) {
+  try {
+    const ledger = JSON.parse(text);
+    if (ledger === null || typeof ledger !== "object") throw new Error("not an object");
+    return ledger;
+  } catch (error) {
+    throw new CommandError(
+      `the ledger in ${where} cannot be read (${error.message}); nothing was removed. Move it aside to tear down the stack's own infrastructure only.`,
+    );
+  }
+}
+
+/** Every window's file of this daemon's ledger, and the windows that were cut short. */
 async function readLedgerFiles() {
-  const names = (await readdir(ledgerDir).catch(() => [])).filter((name) => name.endsWith(".json"));
-  const windows = [];
-  for (const name of names) windows.push(JSON.parse(await readFile(join(ledgerDir, name), "utf8")));
+  const dir = await ledgerDirectory();
+  const windows = (await readdir(dir))
+    .filter((name) => name.endsWith(".json"))
+    .map((name) => parseLedger(readPrivateFile(join(dir, name)), join(dir, name)));
   return { windows, cutShort: windows.filter((window) => !window.closed) };
 }
 
 /**
- * The stack's ledger: this cache directory's windows, or, when it has none, the copy in the stack's
- * state volume (read with `--pull never`: a teardown fetches nothing).
+ * The stack's ledger for this daemon: this cache directory's windows and the copy `up` left in the
+ * stack's state volume, merged (the copy read with `--pull never`: a teardown fetches nothing).
  */
 async function readLedger(volumes) {
   const { windows, cutShort } = await readLedgerFiles();
-  if (windows.length > 0) return { ...mergeLedgers(windows), cutShort };
   const stateVolume = volumes.find(
     (volume) => volume.Name === STATE_VOLUME && volume.Labels?.[STACK_LABEL] === "1",
   );
-  if (stateVolume === undefined) return { ...mergeLedgers([]), cutShort };
+  if (stateVolume === undefined) return { ...mergeLedgers(windows), cutShort };
   const copy = await dockerOut([
     "run",
     "--rm",
@@ -1305,7 +1347,8 @@ async function readLedger(volumes) {
     "-c",
     "if [ -f /state/ledger.json ]; then cat /state/ledger.json; fi",
   ]).catch(() => "");
-  return { ...mergeLedgers(copy ? [JSON.parse(copy)] : []), cutShort };
+  const copies = copy ? [parseLedger(copy, `the state volume's ledger.json`)] : [];
+  return { ...mergeLedgers([...windows, ...copies]), cutShort };
 }
 
 async function report(args) {
@@ -1395,43 +1438,59 @@ async function removeResources(ownerId) {
   const ledger = await readLedger(now.volumes);
   const plan = planTeardown({ ledger, ...now });
   const failures = [];
-  const attempt = (args, what) =>
-    docker(args).catch((error) => failures.push(`${what} (${error.message})`));
-  if (plan.containers.length > 0)
-    await attempt(
-      ["rm", "--force", "--volumes", ...plan.containers.map((item) => item.Id)],
-      "containers",
+  const remove = (args, what) =>
+    docker(args).then(
+      () => say(`verify stack · removed ${what}`),
+      (error) => failures.push(`${what} (${error.message})`),
+    );
+  for (const item of plan.containers)
+    await remove(
+      ["rm", "--force", "--volumes", item.Id],
+      `container ${item.Name.replace(/^\//, "")} (${item.Id.slice(0, 12)})`,
     );
   for (const volume of plan.volumes.filter((item) => item.Name !== STATE_VOLUME))
-    await attempt(["volume", "rm", "--force", volume.Name], `volume ${volume.Name}`);
+    await remove(["volume", "rm", "--force", volume.Name], `volume ${volume.Name}`);
   // A network holds no data: one still in use by something unrecorded is reported, not retried.
   for (const network of plan.networks)
-    await docker(["network", "rm", network.Id]).catch(() =>
-      say(`verify stack · left network ${network.Name}: something the stack did not make uses it`),
-    );
-  for (const volume of plan.changed)
-    say(
-      `verify stack · left alone: volume ${volume.Name} was made again after the stack recorded it (now created ${volume.CreatedAt})`,
+    await docker(["network", "rm", network.Id]).then(
+      () => say(`verify stack · removed network ${network.Name}`),
+      () =>
+        say(
+          `verify stack · left network ${network.Name}: something the stack did not make uses it`,
+        ),
     );
   for (const window of ledger.cutShort)
     say(
       `verify stack · a recording that began ${window.startedAt} was cut short: what it made in its last seconds is not recorded`,
     );
-  if (plan.suspects.length > 0) {
-    say(
-      `verify stack · left alone, not recorded as the stack's: ${plan.suspects.map((item) => `${item.kind} ${item.name}`).join(", ")}`,
-    );
-    say("  if they are the stack's, remove them by hand:");
-    for (const line of manualRemoval(plan.suspects)) say(`    ${line}`);
+  const why = {
+    "made again": "made again after the stack recorded it",
+    "not the stack's shape":
+      "made while a recording was open, but shaped like nothing the stack makes",
+    "not recorded": "shaped like the stack's, but never recorded as made by it",
+  };
+  for (const [reason, says] of Object.entries(why)) {
+    const items = plan.leftAlone.filter((item) => item.reason === reason);
+    if (items.length > 0)
+      say(
+        `verify stack · left alone (${says}): ${items.map((item) => `${item.kind} ${item.name}`).join(", ")}`,
+      );
+  }
+  if (plan.leftAlone.length > 0) {
+    say("  to remove them by hand, if they are the stack's:");
+    for (const line of manualRemoval(plan.leftAlone)) say(`    ${line}`);
   }
   if (failures.length > 0)
     throw new CommandError(
       `could not remove ${failures.join("; ")}; the ledger is kept, so the next down tries again`,
     );
   if (plan.volumes.some((item) => item.Name === STATE_VOLUME))
-    await docker(["volume", "rm", "--force", STATE_VOLUME]);
-  await rm(ledgerDir, { recursive: true, force: true });
-  await rm(stateFile, { force: true });
+    await remove(["volume", "rm", "--force", STATE_VOLUME], `volume ${STATE_VOLUME}`);
+  await rm(await ledgerDirectory(), { recursive: true, force: true });
+  // The state file names one daemon's stack: another daemon's teardown leaves it.
+  const state = await readState();
+  if (state !== null && (state.daemon === undefined || state.daemon === (await daemonKey())))
+    await rm(stateFile, { force: true });
   if (ownerId !== null) await docker(["rm", "--force", ownerId]);
   return {
     containers: plan.containers.length + (ownerId === null ? 0 : 1),
@@ -1676,6 +1735,28 @@ async function teardown([claimId]) {
 
 // ─── the daemon's lock ──────────────────────────────────────────────────────
 
+/** This Docker daemon, as the lock and the ledger name it: a digest of `docker info`'s id. */
+let daemonKeyOnce = null;
+const daemonKey = () =>
+  (daemonKeyOnce ??= dockerOut(["info", "--format", "{{.ID}}"]).then((id) =>
+    digestOf(id).slice(0, 16),
+  ));
+
+/**
+ * `dir`, made if it is missing, and checked: a directory of this user's, private to them (0700), and
+ * no symlink. The lock and the ledger live in such directories, so nobody else can plant or hold
+ * them. Returns `dir`.
+ */
+function privateDirectory(dir) {
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const where = lstatSync(dir);
+  if (!where.isDirectory() || where.uid !== process.getuid() || (where.mode & 0o077) !== 0)
+    throw new Error(
+      `${dir} must be a directory of this user's, private to them (0700) and no symlink: the stack's lock and ledger live there`,
+    );
+  return dir;
+}
+
 /**
  * The lock file of this Docker daemon (`docker info` names it), private to the person: in a
  * directory of theirs, 0700, that is no symlink, opened 0600 without following one, and checked once
@@ -1685,19 +1766,11 @@ async function teardown([claimId]) {
  * Returns the open descriptor.
  */
 async function openDaemonLock() {
-  const id = await dockerOut(["info", "--format", "{{.ID}}"]);
-  const dir = join(cacheDir, "locks");
-  mkdirSync(dir, { recursive: true, mode: 0o700 });
-  const uid = process.getuid();
-  const where = lstatSync(dir);
-  if (!where.isDirectory() || where.uid !== uid || (where.mode & 0o077) !== 0)
-    throw new Error(
-      `${dir} must be a directory of this user's, private to them (0700) and no symlink: the stack's lock lives there`,
-    );
-  const path = join(dir, `${digestOf(id).slice(0, 16)}.lock`);
+  const dir = privateDirectory(join(cacheDir, "locks"));
+  const path = join(dir, `${await daemonKey()}.lock`);
   const fd = openSync(path, constants.O_RDONLY | constants.O_CREAT | constants.O_NOFOLLOW, 0o600);
   const file = fstatSync(fd);
-  if (!file.isFile() || file.uid !== uid || (file.mode & 0o077) !== 0) {
+  if (!file.isFile() || file.uid !== process.getuid() || (file.mode & 0o077) !== 0) {
     closeSync(fd);
     throw new Error(`${path} must be this user's own file, private to them (0600)`);
   }
@@ -1705,7 +1778,7 @@ async function openDaemonLock() {
 }
 
 const BUSY =
-  "this daemon's stack is busy: a serve or up holds it (it may be building), or a teardown is under way. Stop serve to cancel it (mend service stop stack); its watchdog takes the stack down.";
+  "this daemon's stack is busy: a serve, up, mend or check holds it (it may be building), or a teardown is under way. Stop serve to cancel it (mend service stop stack); its watchdog takes the stack down.";
 
 /**
  * Take the daemon's lock, flock(2) through util-linux `flock` on a descriptor this process keeps
@@ -1774,6 +1847,7 @@ async function main() {
       await teardown(args);
       return;
     case "mend": {
+      await lockDaemon("shared");
       const state = await readState();
       if (!state) throw new Error("no verify stack here: `up` starts one");
       // The inner CLI's own exit is this command's: its output went straight to the terminal. What
@@ -1790,6 +1864,7 @@ async function main() {
       await watchdog(args);
       return;
     case "check": {
+      await lockDaemon("shared");
       const state = await readState();
       if (!state) throw new Error("no verify stack here: `up` starts one");
       await recording(() => check(state));

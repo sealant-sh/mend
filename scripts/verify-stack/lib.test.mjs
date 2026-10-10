@@ -10,6 +10,7 @@ import {
   fetchRefspec,
   formatKb,
   formatSeconds,
+  SHAPES,
   madeSince,
   manualRemoval,
   mergeLedgers,
@@ -290,54 +291,69 @@ test("memory sums the proportional set sizes of every process read", () => {
 const inspected = (Id, name, labels = {}) => ({ Id, Name: `/${name}`, Config: { Labels: labels } });
 const own = { [STACK_LABEL]: "1" };
 
-test("a recording window records what appeared, by identity", () => {
+test("a recording window records what appeared and has the stack's shape, by identity (R7-1)", () => {
   const before = {
-    containers: ["c1"],
-    networks: ["n1"],
-    volumes: [{ name: "data", createdAt: "t1" }],
+    containers: [{ id: "c1", name: "mend-mend-1", compose: "mend" }],
+    networks: [{ id: "n1", name: "mend_default" }],
+    volumes: [{ name: "mend-store", createdAt: "t1" }],
   };
   const after = {
-    containers: ["c1", "c2"],
-    networks: ["n1", "n2"],
-    // `data` was removed and made again: another volume.
+    containers: [
+      ...before.containers,
+      { id: "c2", name: "sealant-run-5e55", compose: "" },
+      { id: "c3", name: "sealant-run-5e55-docker", compose: "" },
+      { id: "c4", name: "mend-mend-2", compose: "mend" },
+      // Another client on the session's daemon: a dev database, its network and its data.
+      { id: "c5", name: "mend-dev-postgres-1", compose: "mend-dev" },
+    ],
+    networks: [
+      ...before.networks,
+      { id: "n2", name: "sealant-run-5e55-network" },
+      { id: "n3", name: "mend-dev_default" },
+    ],
     volumes: [
-      { name: "data", createdAt: "t2" },
-      { name: "new", createdAt: "t3" },
+      // Removed and made again: another volume.
+      { name: "mend-store", createdAt: "t2" },
+      { name: "mend-dev_mend-dev-pgdata", createdAt: "t3" },
     ],
   };
-  assert.deepEqual(madeSince(before, after), {
-    containers: ["c2"],
+  assert.deepEqual(madeSince(before, after, SHAPES.install), {
+    containers: ["c2", "c3", "c4"],
     networks: ["n2"],
-    volumes: [
-      { name: "data", createdAt: "t2" },
-      { name: "new", createdAt: "t3" },
-    ],
+    volumes: [{ name: "mend-store", createdAt: "t2" }],
   });
-  assert.deepEqual(mergeLedgers([madeSince(before, after), { containers: ["c2", "c3"] }]), {
+  // A `mend` or `check` window takes an inner session's shapes only.
+  assert.deepEqual(madeSince(before, after, SHAPES.session), {
     containers: ["c2", "c3"],
     networks: ["n2"],
-    volumes: [
-      { name: "data", createdAt: "t2" },
-      { name: "new", createdAt: "t3" },
-    ],
+    volumes: [],
   });
+  assert.deepEqual(
+    mergeLedgers([madeSince(before, after, SHAPES.session), { containers: ["c3", "c9"] }]),
+    { containers: ["c2", "c3", "c9"], networks: ["n2"], volumes: [] },
+  );
 });
 
-test("a teardown plans exact identities and its own infrastructure, and follows nothing (N13)", () => {
+test("a teardown removes what was recorded and has the stack's shape, and follows nothing (R7-1, R7-2)", () => {
   const plan = planTeardown({
     ledger: {
-      containers: ["inner", "gone"],
-      networks: ["net-inner", "bridge-id"],
+      containers: ["inner", "gone", "dev"],
+      networks: ["net-inner", "bridge-id", "net-dev"],
+      // One name made twice by the stack: every record counts.
       volumes: [
         { name: "mend-store", createdAt: "t1" },
+        { name: "mend-store", createdAt: "t5" },
         { name: "mend-garage", createdAt: "t1" },
+        { name: "mend-dev_mend-dev-pgdata", createdAt: "t1" },
       ],
     },
     containers: [
       inspected("owner", OWNER_CONTAINER, own),
       inspected("relay", RELAY_CONTAINER, own),
       inspected("inner", "mend-mend-1", { "com.docker.compose.project": "mend" }),
-      // The product's: a Compose project of the same name, an executor, a forged half of the mark.
+      // Recorded by an older window, but nothing the stack makes looks like it.
+      inspected("dev", "mend-dev-postgres-1", { "com.docker.compose.project": "mend-dev" }),
+      // Never recorded: the product's Compose project, an executor, half of the stack's mark.
       inspected("product", "mend-mend-2", { "com.docker.compose.project": "mend" }),
       inspected("executor", "sealant-12ab"),
       inspected("half", "verify-stack-named"),
@@ -345,13 +361,15 @@ test("a teardown plans exact identities and its own infrastructure, and follows 
     ],
     volumes: [
       { Name: STATE_VOLUME, Labels: own, CreatedAt: "t0" },
-      { Name: "mend-store", Labels: {}, CreatedAt: "t1" },
+      { Name: "mend-store", Labels: {}, CreatedAt: "t5" },
       { Name: "mend-garage", Labels: {}, CreatedAt: "t9" },
+      { Name: "mend-dev_mend-dev-pgdata", Labels: {}, CreatedAt: "t1" },
       { Name: "data", Labels: {}, CreatedAt: "t1" },
     ],
     networks: [
       { Id: "net-inner", Name: "mend_default" },
       { Id: "bridge-id", Name: "bridge" },
+      { Id: "net-dev", Name: "mend-dev_default" },
       { Id: "net-product", Name: "sealant-12ab-network" },
     ],
   });
@@ -368,21 +386,22 @@ test("a teardown plans exact identities and its own infrastructure, and follows 
     ["net-inner"],
   );
   assert.deepEqual(
-    plan.changed.map((item) => item.Name),
-    ["mend-garage"],
-  );
-  assert.deepEqual(
-    plan.suspects.map((item) => `${item.kind} ${item.name}`),
+    plan.leftAlone.map((item) => `${item.reason}: ${item.kind} ${item.name}`),
     [
-      "container mend-mend-2",
-      "container sealant-12ab",
-      "container verify-stack-named",
-      "network sealant-12ab-network",
+      "not the stack's shape: container mend-dev-postgres-1",
+      "not recorded: container mend-mend-2",
+      "not recorded: container sealant-12ab",
+      "not recorded: container verify-stack-named",
+      "made again: volume mend-garage",
+      "not the stack's shape: volume mend-dev_mend-dev-pgdata",
+      "not the stack's shape: network mend-dev_default",
+      "not recorded: network sealant-12ab-network",
     ],
   );
-  assert.deepEqual(manualRemoval(plan.suspects), [
-    "docker rm --force product executor half",
-    "docker network rm net-product",
+  assert.deepEqual(manualRemoval(plan.leftAlone), [
+    "docker rm --force dev product executor half",
+    "docker volume rm mend-garage mend-dev_mend-dev-pgdata",
+    "docker network rm net-dev net-product",
   ]);
   // Without a ledger: the stack's own infrastructure only.
   const bare = planTeardown({
