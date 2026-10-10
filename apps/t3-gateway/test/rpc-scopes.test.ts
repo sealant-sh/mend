@@ -74,6 +74,25 @@ describe("per-RPC scopes", () => {
     ]);
     assert.deepStrictEqual(requiredScopesFor(WS_METHODS.terminalObserve, {}), ["terminal:read"]);
     assert.deepStrictEqual(requiredScopesFor("not.a.method", {}), ["access:write"]);
+    // The methods whose scope depends on their input, by t3code's own rule.
+    assert.deepStrictEqual(
+      requiredScopesFor(WS_METHODS.assetsCreateUrl, {
+        resource: { _tag: "workspace-file", threadId: "thread-1", path: "src/a.ts" },
+      }),
+      ["filesystem:read"],
+    );
+    assert.deepStrictEqual(
+      requiredScopesFor(WS_METHODS.assetsCreateUrl, {
+        resource: { _tag: "attachment", attachmentId: "image-1" },
+      }),
+      ["orchestration:read"],
+    );
+    assert.deepStrictEqual(requiredScopesFor(WS_METHODS.serverUpdateSettings, { patch: {} }), [
+      "settings:write",
+    ]);
+    assert.deepStrictEqual(requiredScopesFor(WS_METHODS.serverUpdateSettings, "not a patch"), [
+      "settings:write",
+    ]);
   });
 
   it.live("refuses a call the bearer's grant does not cover, before its handler runs", () =>
