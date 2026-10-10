@@ -10,6 +10,11 @@ is one replica with a ReadWriteOnce claim, reached by a ClusterIP Service and no
   after it was fetched. Workspace Docker daemons are pointed at it by the SEALANT chart's worker
   (SEALANT_DOCKER_REGISTRY_MIRRORS): see NOTES.txt.
 */ -}}
+{{- /* Both mirrors read mirrors.minFree (nginx's min_free, the Docker guard's floor): checked once
+       for either, so a value neither would read never renders. */ -}}
+{{- if and (or .Values.mirrors.npm.enabled .Values.mirrors.docker.enabled) (not (regexMatch "^[1-9][0-9]{0,5}[mg]$" (toString .Values.mirrors.minFree))) }}
+{{- fail (printf "mirrors.minFree must be a whole number of mebibytes or gibibytes, such as 5g (got %q)" (toString .Values.mirrors.minFree)) }}
+{{- end }}
 {{- if .Values.mirrors.npm.enabled }}
 apiVersion: v1
 kind: ConfigMap
@@ -78,9 +83,6 @@ spec:
             {{ fail (printf "mirrors.npm.maxSize must be a whole number of mebibytes or gibibytes, such as 10g (got %q)" .Values.mirrors.npm.maxSize) }}
             {{- end }}
             - { name: NPM_MIRROR_MAX_SIZE, value: {{ .Values.mirrors.npm.maxSize | quote }} }
-            {{- if not (regexMatch "^[1-9][0-9]{0,5}[mg]$" .Values.mirrors.minFree) }}
-            {{ fail (printf "mirrors.minFree must be a whole number of mebibytes or gibibytes, such as 5g (got %q)" .Values.mirrors.minFree) }}
-            {{- end }}
             - { name: NPM_MIRROR_MIN_FREE, value: {{ .Values.mirrors.minFree | quote }} }
           ports: [{ containerPort: 4873, name: http }]
           readinessProbe:

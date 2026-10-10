@@ -864,3 +864,17 @@ test("the chart refuses a Docker mirror cap the guard would not read", { skip },
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /mirrors\.docker\.maxSize must be a whole number/);
 });
+
+test(
+  "the chart refuses a free-space floor neither mirror would read, whichever mirror is on",
+  { skip },
+  () => {
+    for (const mirror of ["npm", "docker"]) {
+      const result = renderFixture("obc", `mirrors.${mirror}.enabled=true`, "mirrors.minFree=5GB");
+      assert.notEqual(result.status, 0, mirror);
+      assert.match(result.stderr, /mirrors\.minFree must be a whole number/);
+    }
+    // With both mirrors off nothing reads it, and nothing is refused.
+    assert.equal(renderFixture("obc", "mirrors.minFree=5GB").status, 0);
+  },
+);
