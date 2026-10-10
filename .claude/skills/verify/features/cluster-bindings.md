@@ -84,7 +84,10 @@ Preconditions:
 - **Local-runner install (cluster-local-runner).** On a non-Kubernetes install, the panel reads
   `This install runs workspaces on the local runner. Cluster bindings do not resolve here; declared bindings block launches — remove them to launch here.`
   `Kind`, `Object name`, `Bind`, the service account textbox and `Set` are disabled; `Remove` and
-  `Clear` stay enabled.
+  `Clear` stay enabled. With a binding added from the CLI, `mend env show` ends
+  `  <n> cluster binding · service account set · local runner — cluster bindings do not resolve here`
+  (` · service account set` only when one is set), and `mend run --project <project> -- true` prints
+  `mend: launch refused · secret/verify-env · service account <sa> · cluster bindings do not resolve on this deployment's workspace runtime — remove them in project setup to launch here`.
 - **Proof.** Save the panel's ARIA snapshot and a screenshot with `secret/verify-env` bound and
   after removal, the `mend env show` and `mend env cluster` transcripts with exit codes, and the
   review page showing `CLUSTER.txt`.

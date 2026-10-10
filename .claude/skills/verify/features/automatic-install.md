@@ -37,7 +37,8 @@ Preconditions:
 
 - **Read the card.** Open `<project>`'s Setup tab. `section("Dependencies")` reads
   `automatic install`, the `on` button reports `aria-pressed="true"`, and the line reads
-  `detected · npm ci · from package-lock.json on origin/<branch>`. The textbox
+  `detected · npm ci · from package-lock.json on <branch>` on a project no session has launched in
+  yet, and `… on origin/<branch>` once a launch has fetched origin into the store. The textbox
   `Custom install command` is empty and its `save` button is disabled.
 - **Install in a session.** Run
   `mend run --project <project> -- sh -c 'if test -d node_modules; then echo present; else echo absent; fi > INSTALL.txt'`.

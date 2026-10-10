@@ -51,9 +51,10 @@ Preconditions:
   and record any sample below `1 ready`, any `1 warming` sample and the return to `1 ready`.
   Replacement warming starts asynchronously; a missed drop or warming state is inconclusive about
   the claim.
-- **Compare with cold.** Lower the count to `0` with `Keep one fewer workspace ready` (status `off`)
-  and run the same `mend run` again. Record both wall-clock times from `time`; report them as
-  observed, not as a speed claim.
+- **Compare with cold.** Lower the count to `0` with `Keep one fewer workspace ready` and wait for
+  the status `off` (it reads `<n> ready` for a few seconds while the pool drains) and run the same
+  `mend run` again. Record both wall-clock times from `time`; report them as observed, not as a
+  speed claim.
 - **Rewarm on a change.** Raise the count to `1` and wait for `1 ready`. Add a variable on the same
   page (see [Project environment](./project-environment.md)). Record sampled transitions and wait
   for `1 ready` again. A missed `warming` state is inconclusive about rewarming.

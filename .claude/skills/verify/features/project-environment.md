@@ -66,8 +66,9 @@ Preconditions:
   switch reports `aria-checked="false"` and reads `Disabled`; the `APP_MODE` line now reads
   `→ configuration · plaintext` and `STRIPE_API_KEY` still reads `→ secret`.
 - **Reveal a value.** Run
-  `await section("Add variables").getByRole("button", { name: "Show value 1" }).click()`. It reports
-  `aria-pressed="true"` and the value field shows `verify-mode` in clear.
+  `await section("Add variables").getByRole("button", { name: "Show value 1" }).click()`. The button
+  is renamed `Hide value 1` and reports `aria-pressed="true"`, and the value field
+  (`getByLabel("Value 1", { exact: true })`) shows `verify-mode` in clear.
 - **Save.** Run `await section("Add variables").getByRole("button", { name: "Save 2" }).click()`.
   The button reads `Saving…`, then the report under the composer reads `Saved 2` with list items
   `APP_MODE · configuration · plaintext · created` and `STRIPE_API_KEY · secret · created`. The

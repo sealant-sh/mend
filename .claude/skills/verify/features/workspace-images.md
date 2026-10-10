@@ -74,17 +74,19 @@ Preconditions:
   `custom · node:22-bookworm · project override`.
 - **Build state.** Start a session that needs the new image:
   `mend run --project <project> -- sh -c 'cat /tmp/setup-ran > IMAGE.txt'` with stdout not a TTY.
-  While the platform builds, and when it reports the phase, stdout prints launch lines such as
-  `  starting · building the workspace image · step <n>/<m>`; the session page's summary paragraph
-  reads `building the workspace image · step <n>/<m>`, and its `Terminal` pane reads
+  While the platform builds, stdout prints `  starting · building the workspace image`, with
+  ` · step <n>/<m>` appended only when the platform reports the step (a local builder reported
+  none); the session page's summary paragraph reads `building the workspace image · step <n>/<m>`,
+  and its `Terminal` pane reads
   `provisioning workspace — a first launch builds the harness image (can take minutes)…`. The run
-  ends with `✓ session completed · recorded · checkpoint taken`, and its change adds `IMAGE.txt`
-  holding `setup-ran`, which only the setup command wrote.
+  ends with `✓ exited · code 0 · recorded`, and its change adds `IMAGE.txt` holding `setup-ran`,
+  which only the setup command wrote.
 - **TUI build state.** Start another cold launch after an image change and, while it builds, run
   `tmux new-session -d -s img -x 200 -y 50 'mend ui'` and read `tmux capture-pane -p -t img`. The
   session's row reads `building the image`; with that row selected the detail pane reads
-  `starting · building the workspace image · step <n>/<m> · the agent starts once it is built and booted`.
-  Close with `tmux kill-session -t img`.
+  `starting · building the workspace image · the agent starts once it is built and booted` (with
+  ` · step <n>/<m>` after `image` when the platform reports the step). Close with
+  `tmux kill-session -t img`.
 - **Use default.** Open `Edit…` and choose `Use default`. The line ends `· inherited` again.
 - **Organization default.** Go to `<web>/settings`.
   `section("Workspace environment · <organization>")` reads `<summary> · instance` and the button
