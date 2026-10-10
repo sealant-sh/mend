@@ -18,11 +18,17 @@ const skip = dockerAvailable ? false : "no Docker daemon";
 const id = randomBytes(4).toString("hex");
 const network = `mend-mirrors-test-${id}`;
 const containers = [];
+const volumes = [];
 const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "mend-mirrors-test-"));
 
 after(() => {
   if (!dockerAvailable) return;
   for (const name of containers) docker("rm", "-f", "-v", name);
+  // After the containers, which hold them: a volume still in use is not removed.
+  for (const volume of volumes) {
+    const removed = docker("volume", "rm", volume);
+    assert.equal(removed.status, 0, removed.stderr);
+  }
   docker("network", "rm", network);
   fs.rmSync(scratch, { recursive: true, force: true });
 });
@@ -177,64 +183,78 @@ test(
   },
 );
 
+/**
+ * A volume holding a Docker mirror cache from before a restart, owned like the chart's (uid 1000);
+ * `seed` runs as root after the cache is written, before the guard starts.
+ */
+const retainedCache = (label, seed = "true") => {
+  const volume = `mend-mirrors-${label}-${id}`;
+  assert.equal(docker("volume", "create", volume).status, 0);
+  volumes.push(volume);
+  const seeded = docker(
+    "run",
+    "--rm",
+    "-v",
+    `${volume}:/r`,
+    "alpine:3.20",
+    "sh",
+    "-c",
+    `mkdir -p /r/docker/registry && echo cached > /r/docker/registry/marker && echo '{}' > /r/scheduler-state.json && chown -R 1000:1000 /r && ${seed}`,
+  );
+  assert.equal(seeded.status, 0, seeded.stderr);
+  return volume;
+};
+
+/**
+ * The guard as the chart runs it (uid 1000, no capabilities) on `volume`, below a hundred MiB floor.
+ * A stand-in df ahead of busybox's on PATH reports the free MiB from a file the test writes, so the
+ * floor is crossed and recovered without filling a disk. Returns a reader for the guard's state.
+ */
+const startGuardBelowFloor = (name, volume) => {
+  if (docker("network", "inspect", network).status !== 0) docker("network", "create", network);
+  const guard = path.join(root, "deploy/docker/docker-mirror-guard.sh");
+  const fakeDf = path.join(scratch, "df");
+  fs.writeFileSync(
+    fakeDf,
+    '#!/bin/sh\nprintf "Filesystem 1M-blocks Used Available Capacity Mounted\\nfake 10000 0 %s 0%% /var/lib/registry\\n" "$(cat /tmp/fake-free 2>/dev/null || echo 1)"\n',
+    { mode: 0o755 },
+  );
+  run(
+    name,
+    "--user",
+    "1000:1000",
+    "--cap-drop",
+    "ALL",
+    "--security-opt",
+    "no-new-privileges",
+    "--network-alias",
+    name,
+    "--entrypoint",
+    "/bin/sh",
+    "-e",
+    "DOCKER_MIRROR_MAX_SIZE=20g",
+    "-e",
+    "DOCKER_MIRROR_MIN_FREE=100m",
+    "-e",
+    "DOCKER_MIRROR_GUARD_INTERVAL=1",
+    "-v",
+    `${guard}:/mend/docker-mirror-guard.sh:ro`,
+    "-v",
+    `${fakeDf}:/usr/local/bin/df:ro`,
+    "-v",
+    `${volume}:/var/lib/registry`,
+    "registry:3.1",
+    "/mend/docker-mirror-guard.sh",
+  );
+  return () => docker("exec", name, "cat", "/tmp/mend-mirror-guard").stdout.trim();
+};
+
 test(
   "the Docker mirror's guard, started below its floor with a cache left over, clears it and resumes once there is room",
   { skip },
   () => {
-    if (docker("network", "inspect", network).status !== 0) docker("network", "create", network);
-    const guard = path.join(root, "deploy/docker/docker-mirror-guard.sh");
-    // A volume holding a cache from before the restart, owned like the chart's (uid 1000).
-    const volume = `mend-mirrors-retained-${id}`;
-    assert.equal(docker("volume", "create", volume).status, 0);
-    after(() => docker("volume", "rm", "-f", volume));
-    const seeded = docker(
-      "run",
-      "--rm",
-      "-v",
-      `${volume}:/r`,
-      "alpine:3.20",
-      "sh",
-      "-c",
-      "mkdir -p /r/docker/registry && echo cached > /r/docker/registry/marker && echo '{}' > /r/scheduler-state.json && chown -R 1000:1000 /r",
-    );
-    assert.equal(seeded.status, 0, seeded.stderr);
-    // A stand-in df ahead of busybox's on PATH: the free MiB it reports come from a file the
-    // test writes, so the floor is crossed and recovered without filling a disk.
-    const fakeDf = path.join(scratch, "df");
-    fs.writeFileSync(
-      fakeDf,
-      '#!/bin/sh\nprintf "Filesystem 1M-blocks Used Available Capacity Mounted\\nfake 10000 0 %s 0%% /var/lib/registry\\n" "$(cat /tmp/fake-free 2>/dev/null || echo 1)"\n',
-      { mode: 0o755 },
-    );
     const name = `mend-mirrors-restart-${id}`;
-    run(
-      name,
-      "--user",
-      "1000:1000",
-      "--cap-drop",
-      "ALL",
-      "--security-opt",
-      "no-new-privileges",
-      "--network-alias",
-      name,
-      "--entrypoint",
-      "/bin/sh",
-      "-e",
-      "DOCKER_MIRROR_MAX_SIZE=20g",
-      "-e",
-      "DOCKER_MIRROR_MIN_FREE=100m",
-      "-e",
-      "DOCKER_MIRROR_GUARD_INTERVAL=1",
-      "-v",
-      `${guard}:/mend/docker-mirror-guard.sh:ro`,
-      "-v",
-      `${fakeDf}:/usr/local/bin/df:ro`,
-      "-v",
-      `${volume}:/var/lib/registry`,
-      "registry:3.1",
-      "/mend/docker-mirror-guard.sh",
-    );
-    const state = () => docker("exec", name, "cat", "/tmp/mend-mirror-guard").stdout.trim();
+    const state = startGuardBelowFloor(name, retainedCache("retained"));
     // One MiB free, below the hundred MiB floor: the retained cache goes, and nothing serves.
     // Paused, and the second look found no cache left.
     until("the guard to pause with no cache held", () => state() === "paused 1 100 none");
@@ -255,5 +275,24 @@ test(
     docker("exec", name, "sh", "-c", "echo 5000 > /tmp/fake-free");
     until("the registry to resume", () => curl(`http://${name}:5000/v2/`).code === "200");
     assert.equal(state(), "running");
+  },
+);
+
+test(
+  "the Docker mirror's guard, below its floor with a cache it cannot remove, says the cache is kept",
+  { skip },
+  () => {
+    const name = `mend-mirrors-kept-${id}`;
+    // A directory in the cache that uid 1000 cannot write, so the marker in it stays.
+    const volume = retainedCache(
+      "kept",
+      "chown 0:0 /r/docker/registry && chmod 555 /r/docker/registry",
+    );
+    const state = startGuardBelowFloor(name, volume);
+    until("the guard to pause with the cache kept", () => state() === "paused 1 100 kept");
+    const logs = docker("logs", name).stderr;
+    assert.match(logs, /below 100 MiB: cache could not be cleared, registry paused/);
+    assert.doesNotMatch(logs, /cache cleared/);
+    assert.equal(curl("--max-time", "3", `http://${name}:5000/v2/`).code, "000");
   },
 );
