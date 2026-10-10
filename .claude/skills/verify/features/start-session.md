@@ -118,9 +118,11 @@ Preconditions:
 - **CLI run.** Run a command as a session. Run
   `mend run --project <project> -- sh -c 'printf "verified\n" > VERIFY.md'`. Stdout shows
   `✓ project <project>`, `✓ worktree <name> · branch <branch>`, `✓ base … · session <id8>`,
-  `  watch · <web>/sessions/<id>`, `✓ recording · run <id8> · workspace mounts the worktree`, and at
-  the end `✓ session completed · recorded · checkpoint taken` and `  review · <web>/sessions/<id>`.
-  Exit code `0`.
+  `  watch · <web>/sessions/<id>`,
+  `✓ recording · sh · workspace mounts the worktree · Ctrl+C stops watching, not the command` (the
+  program's name after `recording ·`), the command's own output, and at the end
+  `✓ exited · code 0 · recorded` and `  review · <web>/sessions/<id>`. Exit code `0`, the command's
+  own.
 - **CLI harness, detached.** Run
   `mend claude "List the files and change nothing." --name verify-claude --project <project> --detach`.
   Stdout shows `✓ worktree verify-claude · branch <branch>`, then `✓ recording · running detached`
@@ -146,16 +148,18 @@ Preconditions:
   ` type to filter · ↑↓ move · enter choose base · esc back`. Once the list shows, press `Enter`
   (the highlighted branch). The harness step lists `codex`, `claude`, `opencode`, `pi` and `shell`,
   with the footer ` ↑↓ move · enter launch · esc back`.
-- **TUI: launch a shell session.** Run `tmux send-keys -t mend-ui Down Down Down Down Enter`. The
-  box closes. The status line reads `provisioning shell workspace · <n>s elapsed`, then
-  `started · shell <id8> · a attaches` (or
+- **TUI: launch a shell session.** Run `tmux send-keys -t mend-ui Down` four times, a moment apart,
+  then `tmux send-keys -t mend-ui Enter` (sent as one `send-keys`, the five keys arrived together,
+  the list stayed on `codex` and `Enter` launched codex). The box closes. The status line reads
+  `provisioning shell workspace · <n>s elapsed`, then `started · shell <id8> · a attaches` (or
   `still starting · shell <id8> · a attaches once the row reads running`). The sessions pane shows
   `shell <id8>` with `starting`, then `running`, and the session pane reads
   `shell · no conversation record; a attaches if live`.
 - **TUI: another session in the worktree.** With the new row selected, run
   `tmux send-keys -t mend-ui n`. A box titled `new session in verify-tui · pick a harness` lists the
   harnesses, with the footer ` ↑↓ move · enter start · esc cancel`. Run
-  `tmux send-keys -t mend-ui Down Down Down Down Enter`. The status line reads
+  `tmux send-keys -t mend-ui Down` four times, a moment apart, then
+  `tmux send-keys -t mend-ui Enter`. The status line reads
   `starting shell in the worktree · <n>s elapsed`, then `started · shell <id8> · a attaches`, and
   the pane title reads `sessions · 2`.
 - **TUI: attach and detach.** Run `tmux send-keys -t mend-ui a`. The dashboard gives way to
@@ -263,9 +267,11 @@ Preconditions:
   given and both stdin and stdout are a TTY; otherwise the name is automatic. Pass `--name` (or
   `--worktree`) in a scripted drive. Without `--detach` they attach the terminal; run them in their
   own PTY.
-- `mend run` refuses a prompt, harness flags, landing flags, `--detach` and `--foreground`. Its help
-  page lists only `--project`; the launch code also reads `--name` for it, which `help.ts` does not
-  document. Drive with the documented form and read the worktree name from the `✓ worktree` line.
+- `mend run` refuses a prompt, harness flags, landing flags and `--foreground`. It takes
+  `--project`, `--name <n>` (an existing name joins it), `--worktree <n>`, `--base <ref>`,
+  `--detach` and `--json` (`mend help run`). `mend run --detach --json -- sleep 1800` returns once
+  the command runs and prints its `sessionId` and `worktree`: a live session without holding a PTY.
+  Without `--name` the worktree name is automatic; read it from the `✓ worktree` line.
 - A first launch builds the harness image and can take minutes ("provisioning workspace — a first
   launch builds the harness image (can take minutes)…"). Wait for the status word, not a fixed
   sleep.

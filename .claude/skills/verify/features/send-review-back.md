@@ -158,7 +158,10 @@ Preconditions:
   cannot steer. For a session whose agent runs in a terminal, only its owner sends: everyone else
   reads `Comments stay here.` and an owner-only line.
 - Delivery resumes the agent with the instruction as its first message. Drive it with a `claude` or
-  `codex` session; this map has not established what delivery does for a `mend run` session.
+  `codex` session. Delivering to a `mend run` session fails: the web overlay reads
+  `delivery failed · retryable`, `Retry delivery` and
+  `Harness "run" has no known follow-up command.`, the desktop reads the same words, and no comment
+  is marked sent.
 - `mend continue` attaches the terminal after delivery. Run it in its own PTY, and stop the session
   afterwards by its id.
 - A bundle edited after a failed delivery gets a new idempotency key; retrying an unedited one

@@ -83,7 +83,10 @@ Preconditions:
   is visible (`page.getByRole("region", { name: "Land" })`). It reads
   `push <branch> to origin · pull request into <base>` and
   `not landed · nothing pushed from Mend yet`.
-- **Title and preview.** Run
+- **Title and preview.** Needs a GitHub origin. With any other origin the panel reads
+  `pull request unavailable · origin is on <host>, not GitHub`, its button is `Push to origin`, and
+  it has neither the textbox `Pull request title` nor `Preview description` (the desktop sheet has
+  no title or description textbox either). Run
   `await page.getByRole("textbox", { name: "Pull request title" }).fill("verify: landing from the review page")`,
   then `await page.getByRole("button", { name: "Preview description" }).click()`. The description
   preview appears, the button reads `Hide description preview`, and its `aria-expanded` is `true`.

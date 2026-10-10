@@ -47,10 +47,10 @@ Preconditions:
 
 - Mend is healthy at `<web>` and the browser is signed in.
 - Say which account each surface is signed in as. The simplest setup is one account on both: run
-  `mend login --url <web>` and approve on `/authorize` in the signed-in browser. When the two
-  surfaces are two accounts (as the verify stack's are: the web joins by invitation, the CLI is the
-  first account), a project adopted `only you` is visible to its creator only, so a check on one
-  surface sees the other surface's adoption only when it was adopted `everyone in <organization>`.
+  `mend login --url <web>` and approve on `/authorize` in the signed-in browser. The verify stack's
+  handover signs both surfaces in as its first account. When the two surfaces are two accounts, a
+  project adopted `only you` is visible to its creator only, so a check on one surface sees the
+  other surface's adoption only when it was adopted `everyone in <organization>`.
 - `<repo-url>` is a disposable repository the server can clone with `ambient` access, and no project
   named `<project>` exists.
 - `mend projects` does not list `<project>`.

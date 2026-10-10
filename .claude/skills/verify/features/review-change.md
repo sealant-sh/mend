@@ -79,9 +79,12 @@ Preconditions:
   `Change-level comments` shows `<your name> · open` and the text, and the heading line now reads
   `1 open comment`.
 - **Inline comment.** Click the line number of the added line in the diff. There is no stable handle
-  for it (see Gotchas). An inline composer opens under the line, headed `comment · VERIFY.md:1`,
-  with focus in its textarea. Run `await page.keyboard.type("Add a trailing newline check.")` and
-  press that composer's `Comment` button. The comment renders under line 1 and the file header shows
+  for it (see Gotchas). An inline composer opens under the line, headed `comment · VERIFY.md:1`. Its
+  textarea has no label and, in a headless drive, did not take focus (typing went nowhere and
+  `Comment` stayed disabled): click it first (`page.locator("textarea:not([placeholder])")`, the
+  only textarea without a placeholder), then run
+  `await page.keyboard.type("Add a trailing newline check.")` and press that composer's `Comment`
+  button, the last one on the page. The comment renders under line 1 and the file header shows
   `1 comment`.
 - **Comment state.** On the change-level card, run
   `await page.getByRole("button", { name: "Dismiss" }).first().click()`. The card's state reads
@@ -121,8 +124,9 @@ Preconditions:
   footer reads
   ` comments · ↑↓/jk move · enter anchor · a accept/address · x dismiss · u reopen · tab pane`, and
   each row reads `<state> · <anchor>` over `You · <body>` or `Mend · <body>`. On a row, `x` sets
-  ` dismissed · <anchor>` and `u` sets ` open · <anchor>`; `a` accepts a draft or marks an open
-  comment addressed.
+  ` dismissed · <anchor>` and moves that comment to the end of the list, leaving the cursor on the
+  row that took its place; move to the dismissed row (`j`) before `u` sets ` open · <anchor>`; `a`
+  accepts a draft or marks an open comment addressed.
 - **TUI: Mend's passes.** Needs inference. Run `tmux send-keys -t mend-review m`. The status line
   reads ` Mend reads the change…`, then ` Mend reads the change · requested`, and the description
   box's last line reads `read queued`, `read running`, then `read observed · <n> drafts`. `g` asks
@@ -242,9 +246,11 @@ Preconditions:
 - In the TUI review screen, `q` quits the whole dashboard; `esc`, `h` or backspace return to it. `v`
   on a session with no change answers `this session has no reviewable change yet`.
 - The TUI editor saves on Ctrl+Enter only. A terminal sends a plain Enter for it unless it reports
-  modified keys, and tmux forwards a modified Enter only with its `extended-keys` option on. This
-  map has not established that `tmux send-keys C-Enter` reaches the editor. If it does not, report
-  the TUI comment steps unreachable from tmux, with that reason.
+  modified keys, and tmux forwards a modified Enter only with its `extended-keys` option on. With
+  `extended-keys` off (tmux's default) `tmux send-keys C-Enter` arrives as a plain Enter and the
+  editor stays open. Run `tmux set -s extended-keys on` before starting the dashboard (a tmux server
+  of the run's own, so no other session is affected); then `C-Enter` saves
+  (` Inline comment added`).
 - The TUI's comments pane labels every person's comment `You · ` (`apps/cli/src/review.tsx:320`);
   only Mend's are told apart. That is a finding.
 - `mend help ui` names `v` but none of the review screen's keys (`apps/cli/src/help.ts:282`); the
