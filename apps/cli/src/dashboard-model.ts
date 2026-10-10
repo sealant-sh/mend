@@ -1353,6 +1353,14 @@ export const verbForKey = (name: string, shift: boolean): DashboardVerb | null =
       binding.keys.includes(name) && (binding.shift === "any" || binding.shift === shift),
   )?.verb ?? null;
 
+/**
+ * While a game has the keyboard (the `mend snake` overlay, or a starting session's snake in the
+ * session pane), the dashboard verbs it keeps from the dashboard: every one. The game's own keys
+ * (arrows, h j k l, space, p, enter, esc, q) are read before this; any other bound key would act
+ * on a list, a pane or a session behind the game, so none does until esc or q hands it back.
+ */
+export const gameSwallows = (verb: DashboardVerb | null): boolean => verb !== null;
+
 /** The footer's hints for one column, most essential first. */
 export const verbHints = (focus: Column): ReadonlyArray<string> =>
   KEY_BINDINGS.flatMap((binding) => {

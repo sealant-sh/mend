@@ -1,140 +1,182 @@
 /**
- * The snake in the detail pane while a session is `starting` (see snake-game.ts for the rules).
- * The dashboard owns the game through `useSnake` so its keyboard handler can steer, pause and put
- * it away; this file only ticks and draws.
+ * The snake in the detail pane while a session is `starting`, and over the dashboard for
+ * `mend snake` (see snake-game.ts for the rules and snake-play.ts for focus and the countdown).
+ * The dashboard decides when the game has the keyboard and routes its keys through `send`;
+ * this file only times the countdown and the ticks, and draws.
  */
 import { useEffect, useState } from "react";
 
-import { newSnakeGame, render, tick, turn, type Direction, type SnakeGame } from "./snake-game.ts";
+import { render } from "./snake-game.ts";
+import {
+  COUNTDOWN_STEP_MS,
+  TICK_MS,
+  countdownArt,
+  countdownLabel,
+  newSnakePlay,
+  overlayArt,
+  reduceSnake,
+  snakeHints,
+  type SnakeEvent,
+  type SnakePlay,
+} from "./snake-play.ts";
 import { ACCENT, FAINT, GREEN, INK, MUTED, RULE } from "./tui-theme.ts";
 
-const TICK_MS = 140;
-
 export interface SnakeHandle {
-  readonly game: SnakeGame;
-  readonly paused: boolean;
-  /** A turn; after the game is over, any turn starts a new one. Steering resumes a pause. */
-  readonly steer: (direction: Direction) => void;
-  readonly togglePause: () => void;
+  readonly play: SnakePlay;
+  readonly send: (event: SnakeEvent) => void;
 }
 
 export const useSnake = (options: {
   readonly width: number;
   readonly height: number;
-  readonly enabled: boolean;
+  /** Whether the game has the keyboard: gaining it counts down, losing it pauses. */
+  readonly focused: boolean;
 }): SnakeHandle => {
-  const { width, height, enabled } = options;
-  const [game, setGame] = useState<SnakeGame>(() => newSnakeGame(width, height, Math.random));
-  const [paused, setPaused] = useState(false);
-  // A new board size, or a game that comes back after the pane was elsewhere, starts fresh.
+  const { width, height, focused } = options;
+  const [stored, setPlay] = useState<SnakePlay>(() => newSnakePlay(width, height, Math.random));
+  // The board size and the focus belong to the dashboard. A change folds in while rendering,
+  // so the countdown and the new board show in the same frame as the focus that caused them.
+  let play = reduceSnake(stored, { type: "resize", width, height }, Math.random);
+  if (play.focused !== focused) {
+    play = reduceSnake(play, { type: focused ? "focus" : "blur" }, Math.random);
+  }
+  if (play !== stored) setPlay(play);
+  const { clock } = play;
+  const step = clock.kind === "countdown" ? clock.step : null;
+  // The timers are the one outside system here: a timeout per countdown step, an interval
+  // while the snake runs, and nothing at all otherwise.
   useEffect(() => {
-    if (enabled) {
-      setGame(newSnakeGame(width, height, Math.random));
-      setPaused(false);
+    if (clock.kind === "countdown") {
+      const timer = setTimeout(
+        () => setPlay((current) => reduceSnake(current, { type: "count" }, Math.random)),
+        COUNTDOWN_STEP_MS,
+      );
+      return () => clearTimeout(timer);
     }
-  }, [width, height, enabled]);
-  useEffect(() => {
-    if (!enabled || paused) return;
-    const timer = setInterval(() => setGame((current) => tick(current, Math.random)), TICK_MS);
-    return () => clearInterval(timer);
-  }, [enabled, paused]);
-  const steer = (direction: Direction): void => {
-    setPaused(false);
-    setGame((current) =>
-      current.over
-        ? newSnakeGame(current.width, current.height, Math.random)
-        : turn(current, direction),
+    if (clock.kind !== "running") return;
+    const timer = setInterval(
+      () => setPlay((current) => reduceSnake(current, { type: "tick" }, Math.random)),
+      TICK_MS,
     );
-  };
-  const togglePause = (): void => setPaused((current) => !current);
-  return { game, paused, steer, togglePause };
+    return () => clearInterval(timer);
+    // `step` restarts the timeout per step; a resize keeps both, so the count carries on.
+  }, [clock.kind, step]);
+  const send = (event: SnakeEvent): void =>
+    setPlay((current) => reduceSnake(current, event, Math.random));
+  return { play, send };
 };
 
-/** The score line and the key hints; the same wording in the pane and over the dashboard. */
-export const SnakeHeading = ({
-  handle,
-  hint,
-}: {
-  readonly handle: SnakeHandle;
-  readonly hint: string;
-}) => {
-  const { game, paused } = handle;
-  const state = game.over ? "over · any arrow starts again" : paused ? "paused" : null;
+/** The score line; the same wording in the pane and over the dashboard. */
+export const SnakeHeading = ({ play }: { readonly play: SnakePlay }) => {
+  const { game, clock } = play;
+  const state = game.over ? "over" : clock.kind === "paused" ? "paused" : null;
   return (
-    <>
-      <text height={1} bg="transparent">
-        <span>{"  "}</span>
-        <span fg={INK}>play snake while you wait</span>
-        <span fg={FAINT}>{" · score "}</span>
-        <span fg={game.over ? MUTED : ACCENT}>{String(game.score)}</span>
-        {state === null ? null : <span fg={FAINT}>{` · ${state}`}</span>}
-      </text>
-      <text height={1} bg="transparent" fg={FAINT}>
-        {`  ${hint}`}
-      </text>
-    </>
+    <text height={1} bg="transparent">
+      <span>{"  "}</span>
+      <span fg={INK}>play snake while you wait</span>
+      <span fg={FAINT}>{" · score "}</span>
+      <span fg={game.over ? MUTED : ACCENT}>{String(game.score)}</span>
+      {state === null ? null : <span fg={FAINT}>{` · ${state}`}</span>}
+    </text>
   );
 };
 
-export const SnakeBoard = ({
-  handle,
-  focused,
+/** Under a board without the keyboard: how to give it the keys. */
+export const SNAKE_IDLE = "enter plays";
+/** Under a board waiting on a dialog: the dialog has the keys until it closes. */
+export const SNAKE_BEHIND_DIALOG = "the countdown starts when this dialog closes";
+
+/** The keys, under the board: the game's own while it has the keyboard, else `idle`. */
+export const SnakeFooter = ({
+  play,
+  idle,
 }: {
-  readonly handle: SnakeHandle;
-  readonly focused: boolean;
-}) => {
-  const { game } = handle;
-  const rows = render(game);
-  return (
-    <>
-      <SnakeHeading
-        handle={handle}
-        hint={
-          focused
-            ? "arrows steer · space pauses · esc puts it away"
-            : "focus this pane to play · esc puts it away"
-        }
-      />
-      <box
-        border
-        borderStyle="rounded"
-        borderColor={focused ? ACCENT : RULE}
-        width={game.width + 2}
-        height={game.height + 2}
-        flexShrink={0}
-        marginLeft={2}
-      >
-        {rows.map((row, index) => (
+  readonly play: SnakePlay;
+  readonly idle: string;
+}) => (
+  <text height={1} bg="transparent" fg={FAINT}>
+    {`  ${play.focused ? snakeHints(play) : idle}`}
+  </text>
+);
+
+const cellColor = (cell: string): string =>
+  cell === "◆" ? ACCENT : cell === "█" ? GREEN : cell === "●" ? INK : FAINT;
+
+/**
+ * The board's rows, with the countdown's digits over them while it counts. The snake and the
+ * food stay on top of the digits, so the player sees where the snake starts and which way it
+ * heads.
+ */
+export const SnakeRows = ({ play }: { readonly play: SnakePlay }) => {
+  const { game, clock } = play;
+  const board = render(game);
+  if (clock.kind !== "countdown") {
+    return (
+      <>
+        {board.map((row, index) => (
           <text key={index} height={1} bg="transparent">
             {[...row].map((cell, x) => (
-              <span
-                key={x}
-                fg={cell === "◆" ? ACCENT : cell === "█" ? GREEN : cell === "●" ? INK : FAINT}
-              >
+              <span key={x} fg={cellColor(cell)}>
                 {cell === "·" ? " " : cell}
               </span>
             ))}
           </text>
         ))}
-      </box>
+      </>
+    );
+  }
+  const cells = overlayArt(
+    board,
+    countdownArt(countdownLabel(clock.step), game.width, game.height),
+  );
+  return (
+    <>
+      {cells.map((row, index) => (
+        <text key={index} height={1} bg="transparent">
+          {row.map((cell, x) =>
+            cell.board !== "·" || cell.art === null ? (
+              <span key={x} fg={cellColor(cell.board)}>
+                {cell.board === "·" ? " " : cell.board}
+              </span>
+            ) : (
+              <span key={x} fg={ACCENT}>
+                {cell.art}
+              </span>
+            ),
+          )}
+        </text>
+      ))}
     </>
   );
 };
 
-/** The rows alone; the overlay draws its own frame around them. */
-export const SnakeRows = ({ game }: { readonly game: SnakeGame }) => (
-  <>
-    {render(game).map((row, index) => (
-      <text key={index} height={1} bg="transparent">
-        {[...row].map((cell, x) => (
-          <span
-            key={x}
-            fg={cell === "◆" ? ACCENT : cell === "█" ? GREEN : cell === "●" ? INK : FAINT}
-          >
-            {cell === "·" ? " " : cell}
-          </span>
-        ))}
-      </text>
-    ))}
-  </>
-);
+/** The game in the detail pane: the score, the board in its own frame, the keys under it. */
+export const SnakeBoard = ({
+  handle,
+  idle,
+}: {
+  readonly handle: SnakeHandle;
+  readonly idle: string;
+}) => {
+  const { play } = handle;
+  return (
+    <>
+      <SnakeHeading play={play} />
+      <box
+        border
+        borderStyle="rounded"
+        borderColor={play.focused ? ACCENT : RULE}
+        title=" snake "
+        titleAlignment="left"
+        width={play.game.width + 2}
+        height={play.game.height + 2}
+        flexShrink={0}
+        marginLeft={2}
+        flexDirection="column"
+      >
+        <SnakeRows play={play} />
+      </box>
+      <SnakeFooter play={play} idle={idle} />
+    </>
+  );
+};

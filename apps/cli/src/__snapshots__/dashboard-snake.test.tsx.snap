@@ -1,0 +1,70 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`snake in the session pane > counts down 3, 2, 1, go once it has the keyboard, and the snake waits for go 1`] = `
+"
+             █████████████
+                        ██
+                        ██
+                        ██
+      ●                 ██
+             ▄▄▄▄▄▄▄▄▄▄▄██
+             ▀▀▀▀▀██◆▀▀▀██
+                        ██
+                        ██
+                        ██
+                        ██
+             █████████████
+
+
+
+             █████████████
+                        ██
+                        ██
+                        ██
+      ●                 ██
+             ▄▄▄▄▄▄▄▄▄▄▄██
+             ██▀▀▀██◆▀▀▀▀▀
+             ██
+             ██
+             ██
+             ██
+             █████████████
+
+
+
+                   ██
+                   ██
+                   ██
+                   ██
+      ●            ██
+                   ██
+                  ██◆
+                   ██
+                   ██
+                   ██
+                   ██
+                   ██
+
+
+
+      █████████████  █████████████
+      ██             ██         ██
+      ██             ██         ██
+      ██             ██         ██
+      ●█             ██         ██
+      ██         ▄▄  ██         ██
+      ██         ███◆██         ██
+      ██         ██  ██         ██
+      ██         ██  ██         ██
+      ██         ██  ██         ██
+      ██         ██  ██         ██
+      █████████████  █████████████
+"
+`;
+
+exports[`snake in the session pane > falls back to small digits in a short terminal 1`] = `
+"                  ▀▀▀█
+                  ●▄▄█
+                  ██◆█
+                  ▀▀▀▀"
+`;

@@ -293,7 +293,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     summary: "the dashboard, with snake over it",
     synopsis: [],
     description: [
-      "Opens the dashboard with a game of snake floating over it. The arrows steer, space pauses, and esc or q closes the game and leaves you in the dashboard, which has been live underneath the whole time. The same game appears on its own in the session pane while a session is starting: a first session on a new project setup builds its image before it boots, about seven minutes on some families.",
+      "Opens the dashboard with a game of snake floating over it. It counts down 3, 2, 1, go before the snake moves. The arrows or h j k l steer, space or p pauses (and counts down again to resume), and esc or q closes the game and leaves you in the dashboard, which has been live underneath the whole time. The same game appears in the session pane while a session is starting: a first session on a new project setup builds its image before it boots, about seven minutes on some families. A start or resume from the dashboard hands the game the keyboard, as does enter or → into that pane; esc or q gives it back to the list you were in.",
       "Needs Node 26 or newer, like the dashboard.",
     ],
     see: ["ui"],
