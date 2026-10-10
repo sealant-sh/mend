@@ -80,7 +80,10 @@ export default defineConfig({
         },
         {
           label: "Integrations",
-          items: [{ label: "Slack", slug: "integrations/slack" }],
+          items: [
+            { label: "Slack", slug: "integrations/slack" },
+            { label: "t3code", slug: "integrations/t3code" },
+          ],
         },
         {
           label: "Operate",
