@@ -12,6 +12,8 @@ export const MendProject = Schema.Struct({
   name: Schema.String,
   /** The bare repository in Mend's store; its worktrees sit beside it in `worktrees/`. */
   storePath: Schema.String,
+  /** Where the project was adopted from; null for one adopted from a local path. */
+  originUrl: Schema.optional(Schema.NullOr(Schema.String)),
   defaultBranch: Schema.String,
   createdAt: Schema.String,
   updatedAt: Schema.String,
@@ -245,6 +247,14 @@ export const MendFileListing = Schema.Struct({
   truncated: Schema.Boolean,
 });
 export type MendFileListing = typeof MendFileListing.Type;
+
+/** `ChangeStats` in @mend/api-contracts, from `GET /api/changes/:id/stats`: the change's totals. */
+export const MendChangeStats = Schema.Struct({
+  files: Schema.Number,
+  additions: Schema.Number,
+  deletions: Schema.Number,
+});
+export type MendChangeStats = typeof MendChangeStats.Type;
 
 /** `PastedImage` in @mend/api-contracts, from `POST /api/sessions/:id/images`. */
 export const MendPastedImage = Schema.Struct({

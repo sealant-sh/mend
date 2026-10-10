@@ -16,6 +16,7 @@ import {
   MendEventPointer,
   MendItem,
   MendProject,
+  MendChangeStats,
   MendFileListing,
   MendPastedImage,
   MendProjectDetail,
@@ -271,6 +272,8 @@ export class MendClient extends Context.Service<
       projectId: string,
       sessionId: string | null,
     ) => MendRead<MendFileListing>;
+    /** `GET /api/changes/:id/stats`: how many files, lines added and removed, without the patch. */
+    readonly changeStats: (deviceToken: string, changeId: string) => MendRead<MendChangeStats>;
     /** `GET /api/changes/:id/diff`: the change against its base, as git answers now. */
     readonly changeDiff: (deviceToken: string, changeId: string) => MendRead<MendChangeDiff>;
     /**
@@ -367,6 +370,7 @@ const decodeRequest = Schema.decodeUnknownEffect(MendRequest);
 const decodeRemovalReport = Schema.decodeUnknownEffect(MendRemovalReport);
 const decodePastedImage = Schema.decodeUnknownEffect(MendPastedImage);
 const decodeFileListing = Schema.decodeUnknownEffect(MendFileListing);
+const decodeChangeStats = Schema.decodeUnknownEffect(MendChangeStats);
 const MendErrorBody = Schema.Struct({
   _tag: Schema.optional(Schema.String),
   message: Schema.optional(Schema.String),
@@ -622,6 +626,14 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
           decodeFileListing,
         );
 
+      const changeStats = (deviceToken: string, changeId: string) =>
+        read(
+          "GET /api/changes/:id/stats",
+          `/api/changes/${encodeURIComponent(changeId)}/stats`,
+          deviceToken,
+          decodeChangeStats,
+        );
+
       const changeDiff = (deviceToken: string, changeId: string) =>
         read(
           "GET /api/changes/:id/diff",
@@ -846,7 +858,7 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
         workspaceRetirement,
         changeDiff,
         worktreeNames,
-
+        changeStats,
         projectFiles,
         createSession,
         joinWorktree,

@@ -223,6 +223,15 @@ export interface CwdLocation {
   readonly projectId: string;
   /** The thread's session; null for the project's own root. */
   readonly sessionId: string | null;
+  /** The thread's worktree's change, when it has one. */
+  readonly changeId: string | null;
+  /** The thread's branch, or the project's default branch for its root. */
+  readonly branch: string;
+  readonly defaultBranch: string;
+  /** What the worktree is based on, when Mend recorded it. */
+  readonly baseRef: string | null;
+  /** Whether the project came from a remote (its origin). */
+  readonly hasOrigin: boolean;
 }
 
 export interface WorktreeChange {
@@ -2821,14 +2830,30 @@ export const makePersonHub = (input: {
               (candidate) => worktreePathOf(candidate.project, candidate.session) === cwd,
             );
             if (thread !== undefined) {
-              return { projectId: thread.project.id, sessionId: thread.session.id };
+              return {
+                projectId: thread.project.id,
+                sessionId: thread.session.id,
+                changeId: thread.changeId,
+                branch: thread.session.branch,
+                defaultBranch: thread.project.defaultBranch,
+                baseRef: thread.session.baseRef,
+                hasOrigin: (thread.project.originUrl ?? null) !== null,
+              };
             }
             const project = Array.from(projects.values()).find(
               (entry) => entry.project.storePath === cwd,
-            );
+            )?.project;
             return project === undefined
               ? null
-              : { projectId: project.project.id, sessionId: null };
+              : {
+                  projectId: project.id,
+                  sessionId: null,
+                  changeId: null,
+                  branch: project.defaultBranch,
+                  defaultBranch: project.defaultBranch,
+                  baseRef: null,
+                  hasOrigin: (project.originUrl ?? null) !== null,
+                };
           }),
         );
       });
