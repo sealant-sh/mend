@@ -47,6 +47,24 @@ describe("dashboard adoption", () => {
     expect(requests).toEqual([]);
   });
 
+  it("never offers or sends a checkout origin that carries a token", async () => {
+    const originUrl = "https://oauth2:TOKEN@github.com/org/repo.git";
+    expect(deriveAdoptOffer({ cwd: "/checkout", repoRoot: "/checkout", originUrl })).toBeNull();
+    const requests: unknown[] = [];
+    const result = await submitDashboardAdoption(
+      async (...args) => {
+        requests.push(args);
+        return project;
+      },
+      { name: "repo", source: originUrl, gitAuthMode: "mend-key" },
+    );
+    expect(result).toEqual({
+      kind: "invalid-source",
+      message: expect.stringContaining("mend keys"),
+    });
+    expect(requests).toEqual([]);
+  });
+
   it.each([
     "https://host/team/repo.git",
     "ssh://git@host:2222/team/repo.git",

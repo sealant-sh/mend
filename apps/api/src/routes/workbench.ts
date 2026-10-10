@@ -141,6 +141,8 @@ import {
   startsInTerminal,
   Session,
   type SessionStatus,
+  RepositoryCloneUrl,
+  repositoryCloneUrlIssue,
 } from "@mend/domain/workbench";
 import { JobRunner, queueReviewPass } from "@mend/jobs";
 import { asSealantUser, SealantClient } from "@mend/sealant";
@@ -499,6 +501,10 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
             message: `"${payload.name}" is not a usable project name (lowercase letters, digits, ".", "_", "-").`,
           });
         }
+        // The route refuses what the schema does not (AdoptProject): the reason, never the URL.
+        const sourceIssue = repositoryCloneUrlIssue(payload.source);
+        if (sourceIssue !== null) return yield* new StoreFailure({ message: sourceIssue });
+        const source = RepositoryCloneUrl.make(payload.source);
         const caller = yield* CurrentUser;
         const organizations = yield* OrganizationsRepo;
         const membership = yield* organizations.membershipOf(caller.user.id);
@@ -514,10 +520,7 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
         if ((yield* projects.byName(organizationId, payload.name)) !== null) {
           return yield* nameTaken;
         }
-        const pinned = yield* reachableSource(
-          payload.source,
-          (message) => new StoreFailure({ message }),
-        );
+        const pinned = yield* reachableSource(source, (message) => new StoreFailure({ message }));
         // The user's git access default decides a new project's mode unless the request says.
         const gitAccess = yield* UserGitAccessRepo;
         const mode = payload.gitAuthMode ?? (yield* gitAccess.mode(caller.user.id)) ?? "mend-key";
@@ -527,9 +530,9 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
         const adopted = yield* withSignerContext(
           mode,
           caller.user.id,
-          `adopt ${payload.name} → ${payload.source}`,
+          `adopt ${payload.name} → ${source}`,
           store
-            .adopt(id, payload.source, remoteEnv)
+            .adopt(id, source, remoteEnv)
             .pipe(Effect.mapError((error) => readableGitFailure(error.cause, mode))),
         );
         return yield* projects
@@ -541,7 +544,7 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
             visibility: payload.visibility ?? "private",
             createdByUserId: caller.user.id,
             name: payload.name,
-            originUrl: payload.source,
+            originUrl: source,
             storePath: adopted.storePath,
             defaultBranch: adopted.defaultBranch,
             adoptedSha: adopted.headSha,

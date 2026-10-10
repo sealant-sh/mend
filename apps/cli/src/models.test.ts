@@ -76,9 +76,7 @@ describe("mend models", () => {
   });
 
   it("keeps the JSON shape the server answered, under a version", () => {
-    const parsed: { version: number; harnesses: ReadonlyArray<{ harness: string }> } = JSON.parse(
-      modelCatalogJson(catalogs),
-    );
+    const parsed = modelCatalogJson(catalogs);
     expect(parsed.version).toBe(1);
     expect(parsed.harnesses.map((catalog) => catalog.harness)).toEqual(["claude", "codex"]);
   });

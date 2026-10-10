@@ -217,7 +217,9 @@ import { TourRequestsLive } from "./landing-tours.ts";
 import { MemberRemovalLive } from "./member-removal.ts";
 import { OwnerLandingLive } from "./owner-landing.ts";
 import { PullRequestAdoptionLive } from "./pull-request-adoption.ts";
+import { RedactingConsoleLive } from "./redacting-console.ts";
 import { RegistrationPolicyLive } from "./registration-policy.ts";
+import { RemoteCredentialCheckLive } from "./remote-credential-check.ts";
 import { boundedWebRequest } from "./request-budgets.ts";
 import { type ReviewPassJob, runReviewPass } from "./review-pass-worker.ts";
 import { MendApiLive } from "./routes/api-live.ts";
@@ -658,6 +660,8 @@ const WorkerLive = Layer.mergeAll(
   AutomaticLandingLive,
   // Adopts a pull request the agent opened itself, after its push and when its turn ends.
   PullRequestAdoptionLive,
+  // Names the stores whose git config has a login, a token or an include: refused until fixed.
+  RemoteCredentialCheckLive,
   // Answers `mend land` inside a workspace: the change's owner's landing, as the Land panel's.
   WorkspaceLandingLive,
   // Queues tour + suggestion passes at settle, per the automation cascade.
@@ -868,4 +872,5 @@ for (const signal of ["SIGTERM", "SIGINT"] as const) {
   });
 }
 
-NodeRuntime.runMain(Layer.launch(MainLive));
+// Every log line goes through a console that strips URL credentials.
+NodeRuntime.runMain(Layer.launch(MainLive.pipe(Layer.provide(RedactingConsoleLive))));

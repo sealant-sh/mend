@@ -3,7 +3,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import { Sha } from "@mend/domain";
-import { RepositoryCloneUrl } from "@mend/domain/workbench";
+import { RepositoryCloneUrl, redactRepositoryUrl } from "@mend/domain/workbench";
 import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
@@ -28,6 +28,7 @@ import {
   writeLandingCommit,
 } from "./landing.ts";
 import { mendHome } from "./paths.ts";
+import { refuseRemoteCredentials } from "./remote-credentials.ts";
 
 /** Where the store lives on disk. One root, one directory per project. */
 export class StoreConfig extends Context.Service<
@@ -720,7 +721,8 @@ export class Store extends Context.Service<
         remoteEnv: Record<string, string> | null,
       ) {
         if (remoteEnv === null) return;
-        yield* git(["fetch", "origin", baseRef], storePath, remoteEnv).pipe(
+        yield* refuseRemoteCredentials(storePath).pipe(
+          Effect.andThen(git(["fetch", "origin", baseRef], storePath, remoteEnv)),
           Effect.tapError((error) =>
             Effect.logDebug("store: base freshen skipped").pipe(
               Effect.annotateLogs({ storePath, baseRef, stderr: error.stderr }),
@@ -748,7 +750,10 @@ export class Store extends Context.Service<
         return yield* tryResolve(`refs/remotes/origin/${baseRef}`).pipe(
           Effect.catch(() => tryResolve(baseRef)),
           Effect.catch(() =>
-            git(["fetch", "origin"], storePath, remoteEnv ?? { GIT_TERMINAL_PROMPT: "0" }).pipe(
+            refuseRemoteCredentials(storePath).pipe(
+              Effect.andThen(
+                git(["fetch", "origin"], storePath, remoteEnv ?? { GIT_TERMINAL_PROMPT: "0" }),
+              ),
               Effect.ignore,
               Effect.andThen(
                 tryResolve(baseRef).pipe(Effect.catch(() => tryResolve(`origin/${baseRef}`))),
@@ -773,6 +778,8 @@ export class Store extends Context.Service<
         base: string | null,
         remoteEnv: Record<string, string> | null,
       ) {
+        // The worktree's admin dir, and on the co-located store the whole store, reach a workspace.
+        yield* refuseRemoteCredentials(storePath);
         // Idempotent: stores adopted before the exclude or shared-group policies get them here.
         yield* ensureExcludes(storePath);
         yield* ensureSharedGroup(storePath);
@@ -827,6 +834,7 @@ export class Store extends Context.Service<
         remoteEnv: Record<string, string> | null,
       ) {
         const worktreePath = path.join(path.dirname(storePath), "worktrees", name);
+        yield* refuseRemoteCredentials(storePath);
         const baseRef = base ?? (yield* git(["symbolic-ref", "--short", "HEAD"], storePath));
         yield* freshenBase(storePath, baseRef, remoteEnv);
         const baseSha = yield* resolveBaseSha(storePath, baseRef, remoteEnv);
@@ -845,6 +853,7 @@ export class Store extends Context.Service<
         // landings push `mend/*` to origin (docs/adr/0007-landing.md), so the negative refspec
         // keeps origin's `mend/*` from overwriting, or refusing to fetch into, a session branch a
         // worktree has checked out.
+        yield* refuseRemoteCredentials(storePath);
         yield* git(
           [
             "fetch",
@@ -1152,7 +1161,11 @@ export class Store extends Context.Service<
           return { path: clonePath, headSha: sha(head) };
         });
         return yield* attempt.pipe(
-          Effect.catch((cause) => Effect.fail(new ReferenceCloneError({ name, source, cause }))),
+          Effect.catch((cause) =>
+            Effect.fail(
+              new ReferenceCloneError({ name, source: redactRepositoryUrl(source), cause }),
+            ),
+          ),
         );
       });
 
@@ -1164,6 +1177,8 @@ export class Store extends Context.Service<
         // No pin = follow whatever branch the clone is on. FETCH_HEAD + hard
         // reset handles branches and tags uniformly, force-pushes included —
         // a reference clone has no local work to protect.
+        // A reference clone is mounted into co-located workspaces, its config included.
+        yield* refuseRemoteCredentials(clonePath);
         const target = ref ?? (yield* git(["symbolic-ref", "--short", "HEAD"], clonePath));
         yield* git(["fetch", "--depth", "1", "origin", target], clonePath, remoteEnv);
         yield* git(["reset", "--hard", "FETCH_HEAD"], clonePath);
@@ -1191,6 +1206,7 @@ export class Store extends Context.Service<
       });
 
       const push = Effect.fn("Store.push")(function* (storePath: string, input: PushInput) {
+        yield* refuseRemoteCredentials(storePath);
         return yield* pushBranch(storePath, input);
       });
 
@@ -1198,6 +1214,7 @@ export class Store extends Context.Service<
         storePath: string,
         input: ProbeInput,
       ) {
+        yield* refuseRemoteCredentials(storePath);
         return yield* probeRemoteBranch(storePath, input);
       });
 

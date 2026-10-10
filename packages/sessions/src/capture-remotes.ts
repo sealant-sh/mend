@@ -1,5 +1,6 @@
 import { ProjectsRepo } from "@mend/db";
 import type { ProjectId } from "@mend/domain";
+import { redactRepositoryUrl } from "@mend/domain/workbench";
 import { Effect, Layer } from "effect";
 import * as Context from "effect/Context";
 
@@ -32,29 +33,14 @@ export const CaptureRemotesOff: Layer.Layer<CaptureRemotes> = Layer.succeed(Capt
   forProject: () => Effect.succeed([]),
 });
 
-/** Schemes whose user name is a login name the transport needs, never a credential. */
-const SSH_SCHEMES = new Set(["ssh:", "git+ssh:", "ssh+git:"]);
-
 /**
  * The URL as the workspace may hold it, and as an exec's argv or a log line may carry it. An
- * adopted origin can hold a credential in its user part: `https://user:token@host/…`,
+ * adopted origin from before 0.36 can hold a credential in its user part: `https://user:token@host/…`,
  * `https://x-access-token:ghs_…@host/…`, `https://oauth2:glpat-…@host/…`, or a token alone as the
  * user name, `https://ghp_…@github.com/…` (review of mend#555, P2-2). Nothing secret enters a
- * workspace: over HTTP(S), and any scheme but SSH, the whole user part goes (the workspace has no
- * HTTPS helper, so a user name alone authenticates nothing there); over SSH the user name stays,
- * since `git@` is how the host is reached, and only a password goes. The rest is kept, so the
- * remote still names the repository. SCP-style `git@host:path` is not a URL and holds no password.
+ * workspace: the rule is `redactRepositoryUrl`, the one every project read applies.
  */
-export const workspaceRemoteUrl = (originUrl: string): string => {
-  if (!originUrl.includes("://") || !URL.canParse(originUrl)) return originUrl;
-  const url = new URL(originUrl);
-  if (url.password === "" && (url.username === "" || SSH_SCHEMES.has(url.protocol))) {
-    return originUrl;
-  }
-  url.password = "";
-  if (!SSH_SCHEMES.has(url.protocol)) url.username = "";
-  return url.toString();
-};
+export const workspaceRemoteUrl = (originUrl: string): string => redactRepositoryUrl(originUrl);
 
 export const CaptureRemotesLive: Layer.Layer<CaptureRemotes, never, ProjectsRepo> = Layer.effect(
   CaptureRemotes,

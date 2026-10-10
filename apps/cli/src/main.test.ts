@@ -309,6 +309,54 @@ describe("Mend CLI session selection", spawning, () => {
     }
   });
 
+  it("prints --json with each field intact: a URL label and an @ in a summary stay theirs", async () => {
+    // Redacting the printed document as text took the summary's `a@b.test` for the label URL's
+    // userinfo and dropped fields (review 3 of mend#640, R3-4); each string is redacted alone now.
+    const labelled = {
+      ...session,
+      worktreeId: "worktree-1",
+      status: "completed",
+      label: "https://example.com",
+      summary: "contact a@b.test, token at https://oauth2:TOKEN@github.com/acme/r.git",
+    };
+    const worktree = {
+      id: "worktree-1",
+      name: "fixture",
+      branch: "mend/fixture",
+      baseSha: "abc123",
+      baseRef: "main",
+      createdAt: new Date(0).toISOString(),
+    };
+    const fake = await startFakeMend((request, response) => {
+      const route = `${request.method ?? "GET"} ${request.url ?? ""}`;
+      if (route === "GET /api/projects") json(response, [project]);
+      else if (route === `GET /api/projects/${project.id}`) {
+        json(response, { project, sessions: [labelled], annotations: [], worktrees: [worktree] });
+      } else if (request.url?.startsWith("/api/sessions") === true) json(response, [labelled]);
+      else response.writeHead(404).end();
+    });
+
+    try {
+      for (const args of [
+        ["worktrees", "--json"],
+        ["sessions", "--json=v2"],
+      ]) {
+        const cli = startCli(fake.url, args);
+        await expectExit(cli.exited, () => cli.stdout() + cli.stderr());
+        expect(cli.stdout()).not.toContain("TOKEN");
+        const printed: unknown = JSON.parse(cli.stdout());
+        expect(JSON.stringify(printed)).toContain('"label":"https://example.com"');
+        expect(JSON.stringify(printed)).toContain('"status":"completed"');
+        expect(JSON.stringify(printed)).toContain(
+          '"summary":"contact a@b.test, token at https://github.com/acme/r.git"',
+        );
+        cli.child.kill("SIGKILL");
+      }
+    } finally {
+      await fake.close();
+    }
+  });
+
   it("names the command it could not disambiguate when no terminal can pick", async () => {
     const second = { ...session, id: "session-5678", worktree: "session-5678" };
     const fake = await startFakeMend((request, response) => {

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
-import { createWriteStream } from "node:fs";
+import { createWriteStream, existsSync } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { pipeline } from "node:stream/promises";
@@ -211,6 +211,7 @@ import {
   processStatePathOf,
   readCaptureFile,
   readCaptureFileBytes,
+  refuseRemoteCredentials,
   withCaptureReadPass,
   sessionStatePathOf,
   resolveRemoteEnv,
@@ -1848,6 +1849,7 @@ export class RepositoryAddError extends Schema.TaggedErrorClass<RepositoryAddErr
       "no-origin",
       "not-live",
       "private-project",
+      "store-credentials",
     ]),
     message: Schema.String,
   },
@@ -10834,6 +10836,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           .pipe(Effect.orElseSucceed(() => []));
         const declaredMounts = yield* declaredMountsOf(project);
         const linkedProjects = yield* resolveLinkedProjects(project, ownerUserId);
+        yield* refuseWorkspaceRepositories(project, ownerUserId).pipe(report);
         // The durable harness home (harness-state.ts): a store-backed directory mounted
         // read-write into the workspace; boot symlinks each harness's `$HOME` state dirs into
         // it, so conversation state survives any workspace death. A failed mkdir costs
@@ -11329,6 +11332,44 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           })),
         ];
       });
+
+      /**
+       * The one gate in front of what a co-located workspace mounts (docs/GIT-ACCESS.md,
+       * "Credentials in repository URLs"): the project's store, every selected reference and every
+       * linked project's store, git config included, must hold no login, token or include, or the
+       * caller is refused with the message a person may read, the commands in the server log.
+       * Every path that hands a workspace a worktree calls it before it does: a new workspace
+       * (`provisionWorkspace`: a launch, a resume, a join, a standby warming), the claim of a
+       * standby at provision, and the adoption of a claimed standby at launch (review 6 of
+       * mend#640). Capture mode mounts none of them: it passes.
+       */
+      const refuseWorkspaceRepositories = Effect.fn("SessionEngine.refuseWorkspaceRepositories")(
+        function* (project: Project, ownerUserId: string | null) {
+          if (captureStoreOn) return;
+          const selectedReferences = yield* references
+            .listForProject(project.id)
+            .pipe(Effect.orElseSucceed(() => []));
+          const linkedProjects = yield* resolveLinkedProjects(project, ownerUserId);
+          yield* Effect.forEach(
+            [
+              { repository: `project ${project.name}`, gitDir: project.storePath },
+              ...selectedReferences.map((reference) => ({
+                repository: `reference ${reference.name}`,
+                gitDir: reference.path,
+              })),
+              ...linkedProjects.map(({ linked }) => ({
+                repository: `project ${linked.name}`,
+                gitDir: linked.storePath,
+              })),
+            ].filter(({ gitDir }) => existsSync(gitDir)),
+            ({ repository, gitDir }) => refuseRemoteCredentials(gitDir, repository),
+            { discard: true },
+          ).pipe(
+            // The launch-input refusal every caller already answers with its message.
+            Effect.mapError((error) => new DotfilesResolveError({ message: error.stderr })),
+          );
+        },
+      );
 
       /**
        * The project's links with their projects, as the session owner may use them
@@ -15410,6 +15451,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if (target.originUrl === null) {
           return yield* refuse("no-origin", `project ${target.name} has no origin to clone from`);
         }
+        // The clone uses the project's clean origin, never its store; a project Mend refuses to run
+        // git with (`refuseRemoteCredentials`) is refused here too, for the same reason.
+        if (existsSync(target.storePath)) {
+          yield* refuseRemoteCredentials(target.storePath, `project ${target.name}`).pipe(
+            Effect.mapError((error) => refuse("store-credentials", error.stderr)),
+          );
+        }
         const sessionWorktree = yield* worktreesRepo.byId(session.worktreeId).pipe(Effect.orDie);
         const worktreeName = input.worktree ?? sessionWorktree.name;
         if (!isRepositoryName(worktreeName)) {
@@ -15781,6 +15829,20 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 .pipe(settleOnFailure);
         const claimedEntry =
           manifest === null && nativeImport === null ? yield* hotWorkspaces.byId(sessionId) : null;
+        // A standby claimed before this check existed, or before its repositories changed, is
+        // checked as a cold launch is before it runs anything: refused, it goes, worktree kept.
+        if (claimedEntry !== null && claimedEntry.status === "claimed") {
+          yield* refuseWorkspaceRepositories(project, ownerUserId).pipe(
+            Effect.tapError((error) =>
+              drainHotWorkspace(claimedEntry, { keepWorktree: true }).pipe(
+                Effect.andThen(
+                  settleSession(sessionId, "failed", `launch failed: ${error.message}`),
+                ),
+                Effect.ignore,
+              ),
+            ),
+          );
+        }
         const adoptedStandby =
           claimedEntry !== null && claimedEntry.status === "claimed"
             ? yield* adoptClaimedWorkspace(claimedEntry)
@@ -21696,6 +21758,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           if (changeOwner !== null && changeOwner !== ownerUserId) return null;
         }
         if (!(yield* mayRunIn(organizations, project, ownerUserId))) return null;
+        // A standby already mounts the project's store and references: one Mend would refuse is
+        // left untouched, unclaimed, and the launch goes cold, where the same gate refuses it.
+        const refused = yield* refuseWorkspaceRepositories(project, ownerUserId).pipe(
+          Effect.as(false),
+          Effect.catchTag("DotfilesResolveError", () => Effect.succeed(true)),
+        );
+        if (refused) return null;
         const inputs = yield* hotInputsFor(project, ownerUserId);
         const entry = yield* hotWorkspaces.claim(
           project.id,

@@ -1,6 +1,10 @@
 import { Effect, Schema } from "effect";
 
 import { OrganizationId, ProjectId, Sha } from "../ids.ts";
+import {
+  REPOSITORY_URL_CREDENTIAL_GUIDANCE,
+  repositoryUrlHasCredential,
+} from "../repository-url.ts";
 import { WorkspaceImage } from "../settings.ts";
 import { Timestamp } from "../timestamp.ts";
 import { ProjectVisibility } from "./organization.ts";
@@ -85,6 +89,8 @@ export const repositoryCloneUrlIssue = (value: string): string | null => {
   ) {
     return REPOSITORY_CLONE_URL_GUIDANCE;
   }
+  // Mend stores the URL and returns it to everyone who can see the project.
+  if (repositoryUrlHasCredential(value)) return REPOSITORY_URL_CREDENTIAL_GUIDANCE;
   return null;
 };
 

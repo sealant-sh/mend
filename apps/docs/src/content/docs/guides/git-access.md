@@ -135,6 +135,30 @@ network position. `MEND_SOURCE_POLICY` decides which addresses those clones may 
 
 Read [Server environment](/reference/server-environment/) for every server variable.
 
+## No credentials in repository URLs
+
+Mend refuses a repository URL that carries a login or token, such as
+`https://oauth2:TOKEN@gitlab.com/acme/api.git` or `https://ghp_…@github.com/acme/api.git`, wherever
+one is typed: adoption, reference repositories and dotfiles, in the CLI, the web, the phone, VS Code
+and the API. Mend shows a project's URL to everyone who can see the project, which on a shared
+project is the whole organization, so a token in it would be theirs to read. `mend adopt` from a
+checkout whose `origin` carries one is refused the same way.
+
+```text
+This URL carries a login or token before the "@". Mend shows a repository URL to everyone who can
+see the repository, so it never stores one. Use the SSH URL (git@host:owner/repo.git) with your Mend
+key (`mend keys` shows it), or your own key through the agent bridge (`--auth bridge`).
+```
+
+An SSH login name is not a credential and stays: `git@github.com:acme/api.git` and
+`ssh://git@example.com/acme/api.git` are accepted as typed. Use the SSH URL with your Mend key or
+the bridge; on a machine you run as your own user, ambient mode can use the host's own credential
+helper for an HTTPS URL without a token in it.
+
+Mend also removes a credential from any repository URL it returns or logs, and from the Git errors
+it reports. For projects adopted before 0.36, see
+[Known issues](/reference/known-issues/#projects-adopted-with-a-token-in-their-url).
+
 ## GitHub connected accounts are separate
 
 `mend connect github` supplies a GitHub token to `gh` and compatible API clients inside workspaces.

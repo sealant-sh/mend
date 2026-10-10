@@ -13,7 +13,6 @@ import {
   GitAuthorSource,
   ProjectVisibility,
   Project,
-  RepositoryCloneUrl,
   Session,
   SessionProcess,
   Worktree,
@@ -71,10 +70,16 @@ export class SettingsFailure extends Schema.TaggedErrorClass<SettingsFailure>()(
 /**
  * Adoption: clone one network Git URL into the store under `name`.
  * Omitted `gitAuthMode` means `ambient` (the login user's git setup).
+ *
+ * `source` is any string here, so a URL Mend refuses (a local path, a login or token in it) is
+ * refused by the route with its reason, `repositoryCloneUrlIssue`'s words, as a `StoreFailure`,
+ * before anything is cloned. A decode failure would answer only "the request's payload is not what
+ * this route takes", which tells a client from before a rule nothing. Clients check the same rule
+ * before they send.
  */
 export class AdoptProject extends Schema.Class<AdoptProject>("AdoptProject")({
   name: Schema.String,
-  source: RepositoryCloneUrl,
+  source: Schema.String,
   gitAuthMode: Schema.optional(GitAuthMode),
   /** `private` (only the adopter sees it) unless the request says `shared`. */
   visibility: Schema.optional(ProjectVisibility),

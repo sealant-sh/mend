@@ -46,6 +46,24 @@ does not change a host's kernel settings for you: `mend server setup` and `mend 
 run. See
 [Every session fails to launch on Ubuntu](/operate/troubleshooting/#every-session-fails-to-launch-on-ubuntu).
 
+## Projects adopted with a token in their URL
+
+Applies to projects and reference repositories added before 0.36 from a URL with a login or token in
+it, such as `https://oauth2:TOKEN@gitlab.com/acme/api.git`. Before 0.36 Mend stored that URL as
+typed and returned it to everyone who could see the project; 0.36 refuses such a URL
+([No credentials in repository URLs](/guides/git-access/#no-credentials-in-repository-urls)).
+
+On upgrade, Mend removes the credential from the stored URL. It does not edit the project's Git
+store: a store whose Git config still holds a login or token (or includes another file, which Mend
+never writes) is refused. Fetching, pushing, landing, starting or resuming a session there, and
+adding the project to a session, say what kind of thing Mend found and that an operator must remove
+it. The server log names the exact command, at each such refusal and for every such project at
+start. Nothing in the store or its worktrees is lost.
+
+To fix one, adopt the repository again from its SSH URL with your Mend key (`mend keys`) or the
+agent bridge, or have the operator run the `git --git-dir=… remote set-url …` command the server log
+names. Rotate the token: anyone who could see the project before 0.36 could read it.
+
 ## SHA-256 repositories are not supported
 
 Mend refuses to adopt a repository that uses SHA-256 object names:
