@@ -739,6 +739,18 @@ describe("a person ensured again while their deliveries run (review of mend#619,
     }
   });
 
+  it("refuses a user with another primary group whose home is not there, and makes nothing (review 3 of mend#619, R4)", () => {
+    const { root, options } = made();
+    root.primaryGroup(alice.name, 40_001);
+    fs.rmSync(options.home, { recursive: true });
+    const logged = root.log();
+    const ensured = root.run(personHomeEnsureScript(alice, options));
+    expect(ensured.status).toBe(1);
+    expect(ensured.stderr).toContain(`user ${alice.name} has another primary group in this image`);
+    expect(fs.existsSync(options.home)).toBe(false);
+    expect(root.log()).toBe(logged);
+  });
+
   it.each(["0755", "0777", "0500", "01700", "02700"])(
     "sets a home of mode %s back to 0700, the directory alone",
     (mode) => {

@@ -893,11 +893,17 @@ export const personHomeEnsureScript = (
     `h=${home}; n=${person.name}; u=${person.uid}`,
     `fail() { printf 'mend: %s\\n' "$1" >&2; exit 1; }`,
     `[ -L "$h" ] && fail "unexpected link: $h"`,
+    `root=0; [ "$(id -u)" = 0 ] && root=1`,
+    // A user that is there is checked first, whether their home is there or not (review 3 of
+    // mend#619, R4): only a user or home that is missing goes to the whole script.
+    `known=0; [ "$root" = 1 ] && id -u "$n" >/dev/null 2>&1 && known=1`,
+    `if [ "$known" = 1 ]; then`,
+    `  [ "$(id -u "$n")" = "$u" ] || fail "user $n has another uid in this image"`,
+    `  [ "$(id -g "$n")" = ${gid} ] || fail "user $n has another primary group in this image"`,
+    `fi`,
     `if [ -d "$h" ]; then`,
-    `  if [ "$(id -u)" != 0 ]; then exit 0; fi`,
-    `  if id -u "$n" >/dev/null 2>&1; then`,
-    `    [ "$(id -u "$n")" = "$u" ] || fail "user $n has another uid in this image"`,
-    `    [ "$(id -g "$n")" = ${gid} ] || fail "user $n has another primary group in this image"`,
+    `  if [ "$root" != 1 ]; then exit 0; fi`,
+    `  if [ "$known" = 1 ]; then`,
     `    [ "$(stat -c %u "$h")" = "$u" ] || fail "the home of $n belongs to someone else: $h"`,
     `    [ "$(stat -c %g "$h")" = ${gid} ] || chgrp -h ${gid} "$h" || fail "the home of $n could not be set to its group"`,
     // `00700`: a numeric `0700` keeps a directory's set-group-ID bit (GNU chmod).
