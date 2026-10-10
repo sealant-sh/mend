@@ -6,7 +6,8 @@ import { useTRPC } from "#/lib/trpc";
 /**
  * The eyebrow as a way back up: projects / <name> / … / leaf. Same mono
  * machine-label voice as the plain eyebrow — the path is a fact, the links
- * are quiet until hovered.
+ * are quiet until hovered. The project's crumb waits for the list: no
+ * "project" placeholder while its name is on the way.
  */
 export function ProjectCrumbs({
   projectId,
@@ -27,14 +28,18 @@ export function ProjectCrumbs({
         projects
       </Link>
       <span className="mx-1.5 text-faint">/</span>
-      <Link
-        to="/projects/$projectId"
-        params={{ projectId }}
-        className="transition-colors hover:text-foreground"
-      >
-        {name ?? "project"}
-      </Link>
-      <span className="mx-1.5 text-faint">/</span>
+      {projects.isPending ? null : (
+        <>
+          <Link
+            to="/projects/$projectId"
+            params={{ projectId }}
+            className="transition-colors hover:text-foreground"
+          >
+            {name ?? "project"}
+          </Link>
+          <span className="mx-1.5 text-faint">/</span>
+        </>
+      )}
       {sessionId !== undefined && (
         <>
           <Link

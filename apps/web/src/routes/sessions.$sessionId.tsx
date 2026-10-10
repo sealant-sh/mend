@@ -1,6 +1,7 @@
 import {
   agentStartingFacts,
   canRelaunchSession,
+  captureDiscardOffered,
   sessionModelLine,
   sharedControlLine,
   sharedWorkspaceLine,
@@ -45,7 +46,7 @@ import { noRunWords } from "#/lib/session-record";
 import { sharedControlClick } from "#/lib/shared-workspace";
 import { useResolvedDark } from "#/lib/theme";
 import { useTRPC } from "#/lib/trpc";
-import { runsAsLine, useViewer } from "#/lib/viewer";
+import { runsAsLine, useViewerState } from "#/lib/viewer";
 import { useWorkbenchEvents } from "#/lib/workbench-events";
 
 export const Route = createFileRoute("/sessions/$sessionId")({
@@ -140,13 +141,17 @@ function SessionPage() {
     preReleaseMemory,
   } = useSuspenseQuery(trpc.sessions.detail.queryOptions({ id: sessionId })).data;
   // Steering is the owner's unless they share control (docs/adr/0003); the API says what this
-  // viewer may do, and the roster names whose credentials the session runs on.
-  const viewer = useViewer();
+  // viewer may do, and the roster names whose credentials the session runs on. Whose it is comes
+  // from `control.own`, read with the session; the viewer and the roster arrive on their own, and
+  // a line that needs them says nothing until they have (undefined), never the not-the-owner view.
+  const viewer = useViewerState();
   const members = useQuery(trpc.organization.members.queryOptions(undefined, { retry: false }));
-  const names = new Map((members.data ?? []).map((member) => [member.userId, member.name]));
-  const runsAs = runsAsLine(session, viewer?.userId ?? null, names);
+  const names = members.isPending
+    ? undefined
+    : new Map((members.data ?? []).map((member) => [member.userId, member.name]));
+  const runsAs = runsAsLine(session, control.own, names);
   const ownerName =
-    session.ownerUserId === null ? null : (names.get(session.ownerUserId) ?? "its owner");
+    session.ownerUserId === null ? null : (names?.get(session.ownerUserId) ?? "its owner");
   // The agent's liveness, not the session fold: a shell holding the workspace keeps the session
   // `idle`, but the terminal, stop, and resume controls are about the AGENT.
   const agentLive = agentIsLive(session, currentAgent);
@@ -156,7 +161,8 @@ function SessionPage() {
   // A stop drains the executor before its workspace goes (docs/adr/0002): what it still holds.
   const captureLine = sessionCaptureLine(session);
   // Another person's process live in this executor (docs/adr/0016, decision 13).
-  const sharedLine = sharedWorkspaceLine(session.livePeople, viewer?.userId ?? null);
+  const sharedLine =
+    viewer === undefined ? null : sharedWorkspaceLine(session.livePeople, viewer?.userId ?? null);
   const followUp = useSuspenseQuery(
     trpc.sessions.pendingFollowUp.queryOptions({ id: sessionId }),
   ).data;
@@ -338,12 +344,12 @@ function SessionPage() {
         <WorkspaceRetirementNote session={session} />
         <SharedControl
           sessionId={sessionId}
-          ownerSteers={viewer !== null && viewer.userId === session.ownerUserId}
+          ownerSteers={control.own}
           shared={session.sharedControlEnabledAt !== null}
           canToggle={control.toggleSharedControl}
           turnsOnSendersLogin={control.turnsOnSendersLogin}
           steer={control.steer}
-          ownerName={ownerName}
+          ownerName={names === undefined ? undefined : ownerName}
         />
         {change !== null && <SessionLanding sessionId={sessionId} changeId={change.id} />}
 
@@ -386,7 +392,7 @@ function SessionPage() {
               {pending === "stop-services" ? "Stopping services…" : "Stop services"}
             </button>
           )}
-          {session.captureDrain !== null && control.own && (
+          {captureDiscardOffered(session) && control.own && (
             <button
               type="button"
               disabled={discarding === "working"}
@@ -704,7 +710,8 @@ export function SharedControl({
   readonly shared: boolean;
   readonly canToggle: boolean;
   readonly steer: boolean;
-  readonly ownerName: string | null;
+  /** Null for a session nobody owns; undefined while the roster is read, which says nothing yet. */
+  readonly ownerName: string | null | undefined;
   /** A steered turn runs on its sender's login (docs/adr/0016, decision 6), not the owner's. */
   readonly turnsOnSendersLogin: boolean;
 }) {
@@ -728,6 +735,8 @@ export function SharedControl({
       });
   };
 
+  // Everyone else's lines name the owner: nothing until the roster says who that is.
+  if (!ownerSteers && ownerName === undefined) return null;
   if (!ownerSteers && !canToggle) {
     if (steer || ownerName === null) return null;
     return (

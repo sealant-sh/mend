@@ -41,22 +41,32 @@ describe("session rows", () => {
 
   it("say whose credentials a session runs on", () => {
     const names = new Map([["alice", "Alice"]]);
-    expect(runsAsLine(owned, "alice", names)).toBeNull();
-    expect(runsAsLine(shared, "alice", names)).toBe("shared control on");
-    expect(runsAsLine(shared, "carol", names)).toBe("runs as Alice · shared control on");
-    expect(runsAsLine({ ...owned, ownerUserId: "zed" }, "carol", names)).toBe(
+    expect(runsAsLine(owned, true, names)).toBeNull();
+    expect(runsAsLine(shared, true, names)).toBe("shared control on");
+    expect(runsAsLine(shared, false, names)).toBe("runs as Alice · shared control on");
+    expect(runsAsLine({ ...owned, ownerUserId: "zed" }, false, names)).toBe(
       "runs as another account",
     );
-    expect(runsAsLine({ ...owned, ownerUserId: null }, "carol", names)).toBe(
+    expect(runsAsLine({ ...owned, ownerUserId: null }, false, names)).toBe(
+      "no owner · nobody steers it",
+    );
+  });
+
+  it("say nothing about another account while the roster is read", () => {
+    expect(runsAsLine(shared, false, undefined)).toBeNull();
+    expect(runsAsLine(fromSlack, false, undefined)).toBeNull();
+    // The owner's own line needs no names.
+    expect(runsAsLine(shared, true, undefined)).toBe("shared control on");
+    expect(runsAsLine({ ...owned, ownerUserId: null }, false, undefined)).toBe(
       "no owner · nobody steers it",
     );
   });
 
   it("say a session came from Slack, beside its owner", () => {
     const names = new Map([["alice", "Alice"]]);
-    expect(runsAsLine(fromSlack, "alice", names)).toBe("from Slack");
-    expect(runsAsLine(fromSlack, "carol", names)).toBe("runs as Alice · from Slack");
-    expect(runsAsLine({ ...fromSlack, sharedControlEnabledAt: new Date() }, "carol", names)).toBe(
+    expect(runsAsLine(fromSlack, true, names)).toBe("from Slack");
+    expect(runsAsLine(fromSlack, false, names)).toBe("runs as Alice · from Slack");
+    expect(runsAsLine({ ...fromSlack, sharedControlEnabledAt: new Date() }, false, names)).toBe(
       "runs as Alice · from Slack · shared control on",
     );
   });
