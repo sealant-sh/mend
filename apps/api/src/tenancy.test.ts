@@ -11,6 +11,9 @@ import {
   type TenancyPosture,
 } from "./tenancy.ts";
 
+/** How many times the operator accounts were counted. */
+const reads = { count: 0 };
+
 const build = (
   env: Record<string, string>,
   organizationCount: number,
@@ -26,7 +29,15 @@ const build = (
           Layer.provide(
             Layer.mock(OrganizationsRepo, { count: () => Effect.succeed(organizationCount) }),
           ),
-          Layer.provide(Layer.mock(InstanceRolesRepo, { operators: () => Effect.sync(operators) })),
+          Layer.provide(
+            Layer.mock(InstanceRolesRepo, {
+              operatorCount: () =>
+                Effect.sync(() => {
+                  reads.count += 1;
+                  return operators().length;
+                }),
+            }),
+          ),
           Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown(env))),
         ),
       ),
@@ -71,7 +82,10 @@ describe("MEND_TENANCY (docs/adr/0003)", () => {
           );
     expect(await operatorPresent()).toMatchObject({ ok: false, detail: "0 operator account(s)" });
     operators = ["first-account"];
+    const before = reads.count;
     expect(await operatorPresent()).toMatchObject({ ok: true, detail: "1 operator account(s)" });
+    // One read is one count of the operator accounts, never their list.
+    expect(reads.count - before).toBe(1);
   });
 
   it("refuses multi until the gate passes, naming each failing item with its fix", async () => {

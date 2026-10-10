@@ -418,6 +418,7 @@ export const createTenancyApi = async (
       Layer.succeed(ExposureConfig, {
         exposure: options.exposure?.exposure ?? "loopback",
         gate: Effect.succeed(options.exposure?.gate ?? []),
+        gateWith: () => options.exposure?.gate ?? [],
       }),
       // Every remote in the harness is public; the policy's own tests cover the refusals.
       Layer.succeed(

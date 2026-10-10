@@ -71,6 +71,8 @@ export class ExposureConfig extends Context.Service<
      * start, the multi mode gate items as they are on each read (`TenancyConfig.gate`).
      */
     readonly gate: Effect.Effect<ReadonlyArray<ExposureOutcome>>;
+    /** The same gate over a multi mode gate already read, so one request reads it once. */
+    readonly gateWith: (tenancyGate: ReadonlyArray<GateOutcome>) => ReadonlyArray<ExposureOutcome>;
   }
 >()("@mend/api/ExposureConfig") {}
 
@@ -476,9 +478,9 @@ export const ExposureConfigLive: Layer.Layer<
       mirrors: mirrorHosts,
       t3Gateway,
     };
-    const currentGate = tenancy.gate.pipe(
-      Effect.map((tenancyGate) => evaluateExposureGate({ ...posture, tenancyGate })),
-    );
+    const gateWith = (tenancyGate: ReadonlyArray<GateOutcome>) =>
+      evaluateExposureGate({ ...posture, tenancyGate });
+    const currentGate = tenancy.gate.pipe(Effect.map(gateWith));
     const gate = yield* currentGate;
     const refusal = exposureRefusal(exposure, gate);
     if (refusal !== null) return yield* new ExposureRefused({ message: refusal });
@@ -492,6 +494,6 @@ export const ExposureConfigLive: Layer.Layer<
           .join(","),
       }),
     );
-    return { exposure, gate: currentGate };
+    return { exposure, gate: currentGate, gateWith };
   }),
 );

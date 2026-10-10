@@ -114,7 +114,8 @@ export const HealthGroupLive = HttpApiBuilder.group(MendApi, "health", (handlers
       const tenancy = yield* TenancyConfig;
       const tenancyGate = yield* tenancy.gate;
       const exposure = yield* ExposureConfig;
-      const exposureGate = yield* exposure.gate;
+      // One read of the operator accounts serves both gates.
+      const exposureGate = exposure.gateWith(tenancyGate);
       return new HealthStatus({
         status: "ok",
         version,

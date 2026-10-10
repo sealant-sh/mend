@@ -208,8 +208,8 @@ export const TenancyConfigLive: Layer.Layer<
     ).pipe(Config.withDefault("captured" as const));
     const organizations = yield* OrganizationsRepo;
     const roles = yield* InstanceRolesRepo;
-    const currentGate = roles.operators().pipe(
-      Effect.map((operators) =>
+    const currentGate = roles.operatorCount().pipe(
+      Effect.map((operatorCount) =>
         evaluateGate({
           serviceHosts,
           sourcePolicy,
@@ -217,7 +217,7 @@ export const TenancyConfigLive: Layer.Layer<
           captureRequireSizes,
           blobStore,
           sessionStore,
-          operatorCount: operators.length,
+          operatorCount,
         }),
       ),
     );

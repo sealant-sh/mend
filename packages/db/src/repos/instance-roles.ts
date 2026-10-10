@@ -22,6 +22,8 @@ export class InstanceRolesRepo extends Context.Service<
     readonly isOperator: (userId: string) => Effect.Effect<boolean>;
     /** Operators by grant time, earliest first. */
     readonly operators: () => Effect.Effect<ReadonlyArray<string>>;
+    /** How many accounts hold the operator role: one count, for the gates read per request. */
+    readonly operatorCount: () => Effect.Effect<number>;
     readonly grantOperator: (userId: string, grantedByUserId: string | null) => Effect.Effect<void>;
     readonly revokeOperator: (userId: string) => Effect.Effect<void, LastOperatorError>;
   }
@@ -50,6 +52,15 @@ export const InstanceRolesRepoLive: Layer.Layer<InstanceRolesRepo, never, MendDB
         .orderBy(asc(instanceRoles.grantedAt), asc(instanceRoles.userId))
         .pipe(Effect.orDie);
       return rows.map((row) => row.userId);
+    });
+
+    const operatorCount = Effect.fn("InstanceRolesRepo.operatorCount")(function* () {
+      const [row] = yield* db
+        .select({ total: count() })
+        .from(instanceRoles)
+        .where(eq(instanceRoles.role, "operator"))
+        .pipe(Effect.orDie);
+      return row?.total ?? 0;
     });
 
     const grantOperator = Effect.fn("InstanceRolesRepo.grantOperator")(function* (
@@ -87,6 +98,6 @@ export const InstanceRolesRepoLive: Layer.Layer<InstanceRolesRepo, never, MendDB
         .pipe(Effect.catchTag("SqlError", (error) => Effect.die(error)));
     });
 
-    return { isOperator, operators, grantOperator, revokeOperator };
+    return { isOperator, operators, operatorCount, grantOperator, revokeOperator };
   }),
 );
