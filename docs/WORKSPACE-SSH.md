@@ -70,10 +70,34 @@ obligation has its own id, so an attempt at an earlier removal of the same accou
 settle nor defer a later one. A removal refused for the last owner owes and touches no key.
 
 The gateway looks a key up through the platform on every new connection and caches nothing across
-connections, so the next connection offering a removed key is refused. A connection authenticated
-before the removal stays open until it ends: an editor left connected on a lost laptop keeps its
-session until it disconnects or the workspace stops (PLATFORM-FEEDBACK.md, 2026-10-10). The platform
-does not record when a key was last used.
+connections, so the next connection offering a removed key is refused. What happens to a connection
+authenticated before the removal depends on the platform, and the removal says which
+(`openConnections` on `DELETE /api/workspace-ssh/keys/:id`, read from the platform's
+`sshKeyRemovalEndsConnections`):
+
+- `end`: the gateway names the key on every new channel and port forward, refuses all of them once
+  the key is removed, and ends the connection. It asks again every minute about a connection that
+  opens nothing new. Connections opened with the key end within a minute (sealant#359).
+- `stay`: on a platform from before that, a connection authenticated before the removal stays open
+  until the workspace it reaches stops. An editor left connected on a lost laptop keeps its session.
+  The removal lists the caller's running sessions (`runningSessions`). The CLI prints `mend stop`
+  for each, and Settings → Workspace SSH offers to stop them all, agent and Services, so their
+  workspaces close and the connections end. A workspace someone else is still working in stays up.
+
+The platform does not record when a key was last used (PLATFORM-FEEDBACK.md, 2026-10-10).
+
+### Limits before login
+
+Workspace SSH may be published to the internet (`mend server setup --ssh-bind`, the `workspace-ssh`
+item of the exposure gate). The platform's gateway in this release sets no limits before login. It
+has no login timeout and no cap on connections or attempts per address. Every key it does not know
+costs one lookup from the single budget all its requests share (Core's
+`SEALANT_BUDGET_PRINCIPAL_REQUESTS_PER_MINUTE`, 12000 a minute). Anyone who reaches the port can
+spend that budget. The gateway then refuses every login, and every new channel on connections
+already open, until the budget refills. Nobody reaches a workspace that way. sealant#359 adds sshd's
+limits: a 30 s login grace time, 10 connections not yet logged in per address (100 in all), 6
+attempts per connection, 60 key lookups a minute per address, and a lookup budget kept apart from
+the one connections already in use.
 
 `mend uninstall --home` removes the key this machine registered, and only that key, before it
 revokes the terminal's device token and deletes the key file. It identifies the key by its public

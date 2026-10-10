@@ -1500,7 +1500,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     summary: "stop the workspace ssh gateway accepting one of your keys",
     synopsis: ["<fingerprint>"],
     description: [
-      "Removes one of your keys by fingerprint; the SHA256: prefix is optional. The gateway looks a key up on every new connection, so the next connection offering it is refused. A connection already open stays open until it ends.",
+      "Removes one of your keys by fingerprint; the SHA256: prefix is optional. The gateway looks a key up on every new connection, so the next connection offering it is refused. The removal then says what happens to connections already open with the key. Where the platform ends them, they end within a minute. Where it cannot, they stay open until you stop your running sessions, and the removal lists each session with the mend stop that ends it.",
       "Only your own keys are listed and removed. The key file and the ~/.ssh/config block on the machine that registered it stay; mend ssh setup there registers it again. Removing a member from the organization removes all of theirs, and Mend keeps retrying any the platform refused.",
     ],
     examples: [

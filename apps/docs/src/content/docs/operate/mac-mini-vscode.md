@@ -86,6 +86,12 @@ the port, so with `--exposure public` setup asks you to state it with `--declare
 once you have tried the port from each network that should not reach it. The gateway admits
 registered keys only, and a workspace only for its launcher.
 
+The gateway in this release sets no limits before login. It has no login timeout and no cap on
+connections or attempts from one address. Every key it does not know costs a lookup from a budget
+that all logins share, so anyone who reaches the port can make the gateway refuse every login for a
+while, connections already open included. Nobody reaches a workspace that way. If that is not
+acceptable, publish SSH on a private address rather than `0.0.0.0`.
+
 The DNS name must point at the mini, and 80 and 443 must reach it from the internet (port forwarding
 on the router). A fresh install refuses `--edge`: set up on localhost, create the first account,
 then add the edge:

@@ -159,6 +159,18 @@ const setup = async (
 
 type RegisteredKey = WorkspaceSshViewDto["keys"][number];
 
+/**
+ * A removal's answer: the key, and what happens to the connections already open with it. A server
+ * from before `openConnections` sends the key alone.
+ */
+interface RemovedKey extends RegisteredKey {
+  readonly openConnections?: "end" | "stay";
+  readonly runningSessions?: ReadonlyArray<{
+    readonly sessionId: string;
+    readonly label: string | null;
+  }>;
+}
+
 /** The public identities this machine holds for one Mend server, and what could not be read. */
 interface ThisMachineKeys {
   readonly fingerprints: ReadonlySet<string>;
@@ -243,8 +255,30 @@ const findKey = (keys: ReadonlyArray<RegisteredKey>, wanted: string): Registered
   return keys.find((key) => key.fingerprint === fingerprint || key.sshKeyId === wanted);
 };
 
-const REMOVED_KEY_EFFECT =
-  "the gateway refuses it from the next connection; a connection already open stays open until it ends";
+/** What removing a key did to the connections already open with it, one line each. */
+const removedKeyEffect = (removed: RemovedKey): ReadonlyArray<string> => {
+  if (removed.openConnections === "end") {
+    return [
+      "the gateway refuses it from the next connection, and ends the connections open with it within a minute",
+    ];
+  }
+  const lines = [
+    "the gateway refuses it from the next connection; connections already open with it stay open until you stop your running sessions",
+  ];
+  // A server from before the answer names no sessions: nothing is said about them.
+  if (removed.runningSessions === undefined) return lines;
+  if (removed.runningSessions.length === 0) {
+    return [...lines, "none of your sessions is running"];
+  }
+  return [
+    ...lines,
+    "stop them to end those connections (--services stops a session's Services, which keep its workspace up):",
+    ...removed.runningSessions.map(
+      (session) =>
+        `  mend stop ${session.sessionId}${session.label === null ? "" : `  · ${session.label}`}`,
+    ),
+  ];
+};
 
 const listKeys = async (
   api: ApiCall,
@@ -293,12 +327,12 @@ const removeKey = async (
       `none of your registered keys has fingerprint ${wanted} · mend ssh keys lists them`,
     );
   }
-  const removed = await api<RegisteredKey>(
+  const removed = await api<RemovedKey>(
     "DELETE",
     `/workspace-ssh/keys/${encodeURIComponent(key.sshKeyId)}`,
   );
   say(`removed         ${removed.fingerprint} ${dim(`· ${removed.name}`)}`);
-  say(dim(REMOVED_KEY_EFFECT));
+  for (const line of removedKeyEffect(removed)) say(dim(line));
   if (thisMachineKeys(view, cliHome, serverUrl).fingerprints.has(removed.fingerprint)) {
     say(
       dim(

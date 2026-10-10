@@ -133,6 +133,29 @@ export class WorkspaceSshKey extends Schema.Class<WorkspaceSshKey>("WorkspaceSsh
   createdAt: Schema.String,
 }) {}
 
+/** One of the caller's sessions still running, as a key removal names it. */
+export class WorkspaceSshRunningSession extends Schema.Class<WorkspaceSshRunningSession>(
+  "WorkspaceSshRunningSession",
+)({
+  sessionId: Schema.String,
+  label: Schema.NullOr(Schema.String),
+}) {}
+
+/** A removed key, and what happens to the connections already open with it. */
+export class WorkspaceSshKeyRemoved extends Schema.Class<WorkspaceSshKeyRemoved>(
+  "WorkspaceSshKeyRemoved",
+)({
+  ...WorkspaceSshKey.fields,
+  /**
+   * `end`: the platform ends the connections opened with the key, within a minute, and none opens
+   * anything new. `stay`: a platform from before that keeps them open until the workspaces they
+   * reach stop.
+   */
+  openConnections: Schema.Literals(["end", "stay"]),
+  /** With `stay`: the caller's sessions still running, whose stop ends those connections. */
+  runningSessions: Schema.Array(WorkspaceSshRunningSession),
+}) {}
+
 /** Everything a client needs to decide whether workspace SSH is ready for this user. */
 export class WorkspaceSshView extends Schema.Class<WorkspaceSshView>("WorkspaceSshView")({
   /** Null when the deployment exposes no workspace SSH gateway. */
@@ -177,10 +200,11 @@ export const workspaceSshGroup = HttpApiGroup.make("workspaceSsh")
   )
   .add(
     // Archives the key on the platform. The gateway resolves a key on every new connection, so
-    // the next one offering it is refused; a connection already open stays open until it closes.
+    // the next one offering it is refused. The answer says what happens to connections already
+    // open with it (`openConnections`).
     HttpApiEndpoint.delete("removeKey", "/workspace-ssh/keys/:sshKeyId", {
       params: Schema.Struct({ sshKeyId: Schema.String }),
-      success: WorkspaceSshKey,
+      success: WorkspaceSshKeyRemoved,
       error: [WorkspaceSshKeyNotFound, SealantUnavailable],
     }),
   )

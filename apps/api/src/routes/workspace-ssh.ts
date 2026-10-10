@@ -6,9 +6,11 @@ import {
   WorkspaceSshGateway,
   WorkspaceSshKey,
   WorkspaceSshKeyNotFound,
+  WorkspaceSshKeyRemoved,
+  WorkspaceSshRunningSession,
   WorkspaceSshView,
 } from "@mend/api-contracts";
-import { AuditEventsRepo, OrganizationsRepo } from "@mend/db";
+import { AuditEventsRepo, OrganizationsRepo, SessionsRepo } from "@mend/db";
 import { type PlatformSshKey, SealantClients } from "@mend/sealant";
 import { Effect } from "effect";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
@@ -21,6 +23,21 @@ const keyView = (key: PlatformSshKey) =>
     fingerprint: key.fingerprint,
     createdAt: key.createdAt,
   });
+
+/**
+ * Whether the platform ends the connections opened with a removed key (Core reports it as
+ * `sshKeyRemovalEndsConnections`). Unknown, as on a platform that cannot be asked, is "no": the
+ * answer then tells the caller how to end them.
+ */
+const removalEndsConnections = (clients: SealantClients["Service"]) =>
+  clients.controlPlaneFeatures().pipe(
+    Effect.map(
+      (features) =>
+        "sshKeyRemovalEndsConnections" in features &&
+        features.sshKeyRemovalEndsConnections === true,
+    ),
+    Effect.orElseSucceed(() => false),
+  );
 
 /**
  * Records a key the caller registered or removed in their organization's audit log. The subject is
@@ -104,7 +121,24 @@ export const WorkspaceSshGroupLive = HttpApiBuilder.group(MendApi, "workspaceSsh
           return yield* new WorkspaceSshKeyNotFound({ sshKeyId: params.sshKeyId });
         }
         yield* recordKeyAudit("ssh_key.removed", caller.user.id, removed);
-        return keyView(removed);
+        if (yield* removalEndsConnections(clients)) {
+          return new WorkspaceSshKeyRemoved({
+            ...keyView(removed),
+            openConnections: "end",
+            runningSessions: [],
+          });
+        }
+        // An older platform keeps them open until the workspaces they reach stop: the caller's
+        // running sessions are what to stop.
+        const running = yield* (yield* SessionsRepo).listUnsettledForOwner(caller.user.id);
+        return new WorkspaceSshKeyRemoved({
+          ...keyView(removed),
+          openConnections: "stay",
+          runningSessions: running.map(
+            (session) =>
+              new WorkspaceSshRunningSession({ sessionId: session.id, label: session.label }),
+          ),
+        });
       }).pipe(
         Effect.catchTag("SealantPlatformError", (error) =>
           Effect.fail(new SealantUnavailable({ code: error.code, message: error.message })),

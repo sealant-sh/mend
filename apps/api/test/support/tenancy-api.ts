@@ -205,6 +205,7 @@ export const createTenancyApi = async (
       /** Each account's workspace SSH keys on the platform, and the gateway it reports. */
       readonly sshKeys?: SealantClients["Service"]["sshKeys"];
       readonly workspaceSshInfo?: SealantClients["Service"]["workspaceSshInfo"];
+      readonly controlPlaneFeatures?: SealantClients["Service"]["controlPlaneFeatures"];
     };
   } = {},
 ): Promise<TenancyApi> => {
@@ -331,6 +332,9 @@ export const createTenancyApi = async (
           ...(options.implement?.workspaceSshInfo === undefined
             ? {}
             : { workspaceSshInfo: options.implement.workspaceSshInfo }),
+          ...(options.implement?.controlPlaneFeatures === undefined
+            ? {}
+            : { controlPlaneFeatures: options.implement.controlPlaneFeatures }),
         },
         calls,
       ),

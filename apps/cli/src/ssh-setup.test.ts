@@ -218,7 +218,19 @@ it("mend ssh keys lists only what the server returns for this account and remove
         return;
       }
       const [removed] = keys.splice(index, 1);
-      response.end(JSON.stringify(removed));
+      // The old laptop's key on a platform that keeps open connections; this machine's on one
+      // that ends them.
+      response.end(
+        JSON.stringify(
+          id === "key-other"
+            ? {
+                ...removed,
+                openConnections: "stay",
+                runningSessions: [{ sessionId: "session-1", label: "reaper retry storm" }],
+              }
+            : { ...removed, openConnections: "end", runningSessions: [] },
+        ),
+      );
       return;
     }
     response.writeHead(404).end();
@@ -266,12 +278,18 @@ it("mend ssh keys lists only what the server returns for this account and remove
     expect(other.code, other.stderr + other.stdout).toBe(0);
     expect(other.stdout).toContain("removed         SHA256:0ld+laptop/key");
     expect(other.stdout).toContain("the gateway refuses it from the next connection");
+    expect(other.stdout).toContain(
+      "connections already open with it stay open until you stop your running sessions",
+    );
+    expect(other.stdout).toContain("mend stop session-1  · reaper retry storm");
     expect(other.stdout).not.toContain("this machine's key");
     expect(deleted).toEqual(["key-other"]);
 
     const mine = await runSshCommand(home, url, ["keys", "remove", local]);
     expect(mine.code, mine.stderr + mine.stdout).toBe(0);
     expect(mine.stdout).toContain("this machine's key");
+    expect(mine.stdout).toContain("ends the connections open with it within a minute");
+    expect(mine.stdout).not.toContain("mend stop");
     expect(deleted).toEqual(["key-other", "key-this"]);
 
     const empty = await runSshCommand(home, url, ["keys"]);
