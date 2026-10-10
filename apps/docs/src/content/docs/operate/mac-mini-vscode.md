@@ -86,6 +86,14 @@ the port, so with `--exposure public` setup asks you to state it with `--declare
 once you have tried the port from each network that should not reach it. The gateway admits
 registered keys only, and a workspace only for its launcher.
 
+Before login, the gateway holds each connection to limits modelled on sshd's. A connection has 60 s
+to log in and 6 attempts. One source may have 10 connections not yet logged in, and may make 60
+lookups a minute of keys nobody holds. A source is an IPv4 address or an IPv6 /64, as the gateway
+sees it. Rootful Docker keeps each client's own address for IPv4; rootless Docker, Docker Desktop
+and docker-proxy for IPv6 clients hide it, and every client then shares one source's limits.
+Removing a key in Settings → Workspace SSH or with `mend ssh keys remove` ends the connections
+opened with it within a minute.
+
 The DNS name must point at the mini, and 80 and 443 must reach it from the internet (port forwarding
 on the router). A fresh install refuses `--edge`: set up on localhost, create the first account,
 then add the edge:

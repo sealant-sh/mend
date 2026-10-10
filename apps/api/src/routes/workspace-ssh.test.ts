@@ -1,11 +1,23 @@
 import { createHash } from "node:crypto";
 
 import type { NewAuditEvent } from "@mend/db";
-import { type PlatformSshKey, SealantPlatformError, type SshKeysApi } from "@mend/sealant";
+import { SessionId } from "@mend/domain";
+import { Session } from "@mend/domain/workbench";
+import {
+  type PlatformSshKey,
+  type SealantClients,
+  SealantPlatformError,
+  type SshKeysApi,
+} from "@mend/sealant";
 import { Effect } from "effect";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { createTenancyApi, type TenancyApi } from "../../test/support/tenancy-api.ts";
+import {
+  CAROL_WORKTREE_IN_SHARED_A,
+  ids,
+  makeSession,
+} from "../../test/support/tenancy-harness.ts";
 
 const LAPTOP =
   "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl laptop";
@@ -106,13 +118,45 @@ const makePlatform = () => {
   };
 };
 
+/** Carol's session still running, and Bob's: a removal names only the caller's. */
+const CAROL_RUNNING = SessionId.make("session-carol-running");
+const BOB_RUNNING = SessionId.make("session-bob-running");
+const running = (id: SessionId, owner: string, label: string) =>
+  new Session({
+    ...makeSession(id, ids("shared-a").project, CAROL_WORKTREE_IN_SHARED_A, owner),
+    label,
+    status: "running",
+    settledAt: null,
+  });
+
+/** What the platform reports; `ends` says whether removing a key ends its connections. */
+const platformFeatures = { ends: false };
+type SealantFeatures = Effect.Success<
+  ReturnType<SealantClients["Service"]["controlPlaneFeatures"]>
+>;
+const featuresOf = (): SealantFeatures => ({
+  processUserRoutes: true,
+  dotfilesApply: true,
+  credentialsPartialPut: true,
+  credentialsPiOpencode: true,
+  captureOwnerMap: true,
+  workspaceSshUser: true,
+  personBinding: true,
+  sshKeyRemovalEndsConnections: platformFeatures.ends,
+});
+
 describe("workspace SSH keys", () => {
   let api: TenancyApi;
   const platform = makePlatform();
   const audited: Array<NewAuditEvent> = [];
   beforeAll(async () => {
     api = await createTenancyApi(undefined, {
+      sessions: [
+        running(CAROL_RUNNING, "carol", "reaper retry storm"),
+        running(BOB_RUNNING, "bob", "bob's work"),
+      ],
       implement: {
+        controlPlaneFeatures: () => Effect.succeed(featuresOf()),
         sshKeys: platform.sshKeys,
         workspaceSshInfo: () =>
           Effect.succeed({ host: "0.0.0.0", port: 2222, usernamePrefix: "workspace" }),
@@ -130,6 +174,7 @@ describe("workspace SSH keys", () => {
   });
   beforeEach(() => {
     platform.setDown(false);
+    platformFeatures.ends = false;
   });
 
   const register = async (user: "carol" | "bob" | "alice", publicKey: string, name: string) => {
@@ -226,6 +271,33 @@ describe("workspace SSH keys", () => {
     const again = await api.request("carol", "DELETE", `/api/workspace-ssh/keys/${carolKey}`);
     expect(again.status).toBe(404);
     expect(audited).toHaveLength(before + 1);
+  });
+
+  it("says connections opened with the key end, on a platform that ends them", async () => {
+    platformFeatures.ends = true;
+    const carolKey = await register("carol", LAPTOP, "carol-laptop");
+    const removed = await api.request("carol", "DELETE", `/api/workspace-ssh/keys/${carolKey}`);
+    expect(removed.status).toBe(200);
+    expect(await removed.json()).toMatchObject({
+      fingerprint: fingerprintOf(LAPTOP),
+      openConnections: "end",
+      runningSessions: [],
+    });
+  });
+
+  it("says they stay open on an older platform, and names the caller's running sessions to stop", async () => {
+    const carolKey = await register("carol", LAPTOP, "carol-laptop");
+    const removed = await api.request("carol", "DELETE", `/api/workspace-ssh/keys/${carolKey}`);
+    expect(removed.status).toBe(200);
+    const body: unknown = await removed.json();
+    expect(body).toMatchObject({ fingerprint: fingerprintOf(LAPTOP), openConnections: "stay" });
+    const named =
+      typeof body === "object" && body !== null && "runningSessions" in body
+        ? body.runningSessions
+        : null;
+    // Carol's own, never Bob's.
+    expect(named).toContainEqual({ sessionId: CAROL_RUNNING, label: "reaper retry storm" });
+    expect(named).not.toContainEqual(expect.objectContaining({ sessionId: BOB_RUNNING }));
   });
 
   it("answers 502 and records nothing when the platform cannot be reached", async () => {

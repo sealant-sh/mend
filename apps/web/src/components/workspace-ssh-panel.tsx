@@ -1,11 +1,24 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
-import { removeWorkspaceSshKey, type WorkspaceSshKeyDto } from "#/lib/api";
+import {
+  removeWorkspaceSshKey,
+  stopSession,
+  stopSessionServices,
+  type WorkspaceSshKeyDto,
+} from "#/lib/api";
 import { useTRPC } from "#/lib/trpc";
 
 const QUIET_BUTTON =
   "font-sans text-xs font-medium text-muted-foreground transition-colors hover:text-foreground disabled:opacity-60";
+
+type RemovedKey = Awaited<ReturnType<typeof removeWorkspaceSshKey>>;
+
+/** What removing a key did to the connections already open with it. */
+const removalLine = (removed: RemovedKey): string =>
+  removed.openConnections === "end"
+    ? `removed ${removed.fingerprint} · the gateway refuses it from the next connection and ends the connections open with it within a minute`
+    : `removed ${removed.fingerprint} · the gateway refuses it from the next connection · connections already open with it stay open until you stop your running sessions${removed.runningSessions.length === 0 ? " · none of yours is running" : ""}`;
 
 /**
  * The account setting "Workspace SSH" (docs/WORKSPACE-SSH.md): the keys the workspace SSH gateway
@@ -20,19 +33,52 @@ export function WorkspaceSshPanel() {
   const [busy, setBusy] = useState<string | null>(null);
   const [said, setSaid] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // The caller's running sessions a removal named, on a platform that keeps open connections.
+  const [toStop, setToStop] = useState<RemovedKey["runningSessions"]>([]);
+  const [stopping, setStopping] = useState(false);
+  const [confirmingStop, setConfirmingStop] = useState(false);
 
   const remove = (key: WorkspaceSshKeyDto) => {
     setBusy(key.sshKeyId);
     setSaid(null);
     setError(null);
+    setToStop([]);
+    setConfirmingStop(false);
     void removeWorkspaceSshKey(key.sshKeyId)
       .then((removed) => {
         setConfirming(null);
-        setSaid(`removed ${removed.fingerprint} · the gateway refuses it from the next connection`);
+        setSaid(removalLine(removed));
+        setToStop(removed.openConnections === "stay" ? removed.runningSessions : []);
         return queryClient.invalidateQueries(trpc.platform.workspaceSsh.queryFilter());
       })
       .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)))
       .finally(() => setBusy(null));
+  };
+
+  // Each session's agent and its Services: a Service still running keeps the workspace up.
+  const stopRunning = () => {
+    setStopping(true);
+    setError(null);
+    void Promise.allSettled(
+      toStop.map((session) =>
+        stopSession(session.sessionId).then(() => stopSessionServices(session.sessionId)),
+      ),
+    )
+      .then((results) => {
+        const failed = results.filter((result) => result.status === "rejected").length;
+        const stopped = results.length - failed;
+        setToStop([]);
+        setSaid(
+          `stopped ${stopped} of ${results.length} sessions · their workspaces close, and the connections into them end, once nothing in them is live`,
+        );
+        if (failed > 0)
+          setError(`${failed} could not be stopped · stop them from the session page`);
+        return undefined;
+      })
+      .finally(() => {
+        setStopping(false);
+        setConfirmingStop(false);
+      });
   };
 
   return (
@@ -42,8 +88,8 @@ export function WorkspaceSshPanel() {
         Keys that open your workspaces over SSH, for VS Code Remote-SSH or plain{" "}
         <span className="font-mono text-[12px]">ssh</span>. A machine registers its key with{" "}
         <span className="font-mono text-[12px]">mend ssh setup</span>. The gateway looks a key up on
-        every new connection, so a removed key is refused from the next one; a connection already
-        open stays open until it ends. Yours alone.
+        every new connection, so a removed key is refused from the next one; removing it says what
+        happens to connections already open. Yours alone.
       </p>
 
       <div className="mt-5 space-y-4 border-t border-[var(--sw-faint-rule)] pt-5">
@@ -109,6 +155,44 @@ export function WorkspaceSshPanel() {
           </>
         )}
         {said === null ? null : <p className="font-mono text-[12px] text-label">{said}</p>}
+        {toStop.length === 0 ? null : (
+          <div className="flex flex-wrap items-center gap-3">
+            {confirmingStop ? (
+              <>
+                <button
+                  type="button"
+                  disabled={stopping}
+                  onClick={stopRunning}
+                  className="font-sans text-xs font-medium text-danger transition-opacity hover:opacity-80 disabled:opacity-60"
+                >
+                  {stopping ? "Stopping…" : "Confirm stop"}
+                </button>
+                <button
+                  type="button"
+                  disabled={stopping}
+                  onClick={() => setConfirmingStop(false)}
+                  className={QUIET_BUTTON}
+                >
+                  Cancel
+                </button>
+                <span className="font-mono text-[12px] text-label">
+                  stops each one&apos;s agent and Services · the record and the review remain
+                </span>
+              </>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setConfirmingStop(true)}
+                className={QUIET_BUTTON}
+              >
+                {`Stop ${toStop.length} running ${toStop.length === 1 ? "session" : "sessions"}…`}
+              </button>
+            )}
+            <span className="truncate font-mono text-[12px] text-label">
+              {toStop.map((session) => session.label ?? session.sessionId).join(" · ")}
+            </span>
+          </div>
+        )}
         {error === null ? null : (
           <p className="font-mono text-[12.5px] text-warning" role="alert">
             {error}

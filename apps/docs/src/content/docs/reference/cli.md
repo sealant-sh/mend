@@ -506,7 +506,7 @@ email you registered with. Sessions launched after a change commit as the new au
 | `mend ssh [status]`                                 | Report the gateway, this client's registered key, and the managed `~/.ssh/config` block; it does not test a connection or verify the host key                                        |
 | `mend ssh setup [--key <path>] [--host <hostname>]` | Register this client's public key and write a server-specific Host block before wildcard defaults; the hostname defaults to the configured Mend URL and the server supplies the port |
 | `mend ssh keys [--json]`                            | List the keys your account registered from every machine: fingerprint, name, algorithm, the day it was registered, and which one this machine offers                                 |
-| `mend ssh keys remove <fingerprint>`                | Remove one of your keys; the gateway refuses it from the next connection, and a connection already open stays open until it ends                                                     |
+| `mend ssh keys remove <fingerprint>`                | Remove one of your keys; the gateway refuses it from the next connection, and the removal says whether connections already open with it end                                          |
 
 You see and remove only your own keys. `mend uninstall --home` removes the key this machine
 registered before it revokes the terminal's device token. The VS Code extension uses the same

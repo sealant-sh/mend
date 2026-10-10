@@ -26,6 +26,25 @@ are missing.
   key on a short interval and on every new channel). Record `lastUsedAt` on the key at
   resolve-principal and return it on `SshKey`; Mend shows it beside each key, as it does for
   devices.
+- **Shipped (0.39.0-next.720, sealant#359) and used, open connections:** the gateway names the
+  connection's key on every `ssh-target` call. Forwards ask too, the removed key's own refusal ends
+  the connection, and it asks again every minute. The control plane reports this as
+  `features().sshKeyRemovalEndsConnections`, and Mend's removal answers `openConnections: "end"`.
+  Last use is still open.
+
+## 2026-10-10 · 0.39.0-next.717 · Workspace SSH has no limits before login
+
+- **Today:** the gateway's `ssh2.Server` runs with no login timeout and no cap on connections or
+  attempts, from one address or in all. Every key offered before login, the probe phase included, is
+  one uncached `resolve-principal` call, billed to the one `gateway` subject (12000 a minute). Once
+  an outsider spends it, every real login is refused, and so is every new channel on a connection
+  already open (the 0.36 security review's probe, budget scaled down to 50). Mend 0.36 offers
+  publishing that port (`--ssh-bind`, `--declare workspace-ssh`).
+- **Shipped (0.39.0-next.720, sealant#359) and used:** sshd-like limits before login (LoginGraceTime
+  60 s, MaxStartups 100, PerSourceMaxStartups 10, MaxAuthTries 6, and 60 lookups a minute of keys
+  nobody holds per IPv4 address or IPv6 /64; the Helm Service keeps client addresses with
+  `externalTrafficPolicy: Local`), and key lookups billed to their own subject (`gateway:keys`).
+  docs/WORKSPACE-SSH.md and the exposure page describe them.
 
 ## 2026-10-10 · 0.39.0-next.707 · A session's arguments must be trimmed and non-empty
 
