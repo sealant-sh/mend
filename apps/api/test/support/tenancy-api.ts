@@ -106,6 +106,7 @@ import { UrlBearers } from "../../src/routes/upgrade-tickets.ts";
 import { CheckpointRequestLimit } from "../../src/routes/workbench.ts";
 import { HostEnvironment } from "../../src/services/host-environment.ts";
 import { SessionSteeringLive } from "../../src/session-steering.ts";
+import { SshKeyRevoker } from "../../src/ssh-key-revocation.ts";
 import { TenancyConfig } from "../../src/tenancy.ts";
 import { createTenancyWorld, type HarnessUser, type TenancyWorld } from "./tenancy-harness.ts";
 import { recording } from "./tenancy-harness.ts";
@@ -391,6 +392,7 @@ export const createTenancyApi = async (
       recording(PiProfilesRepo, "piProfiles", options.implement?.piProfiles ?? {}, calls),
       recording(AgentMemoryRepo, "agentMemory", options.implement?.agentMemory ?? {}, calls),
       recording(SecretFilesRepo, "secretFiles", options.implement?.secretFiles ?? {}, calls),
+      recording(SshKeyRevoker, "sshKeyRevoker", {}, calls),
       recording(
         HarnessModelsRepo,
         "harnessModels",

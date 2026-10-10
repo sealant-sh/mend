@@ -47,6 +47,20 @@ const SLACK_PROJECT_SOURCE_WORDS: Readonly<Record<string, string>> = {
   picked: "picked",
 };
 
+/** The workspace SSH keys a member removal left active, as the owner reads them. */
+const sshKeysPending = (outstanding: string | number | boolean | null): string =>
+  typeof outstanding === "number"
+    ? `${outstanding} of their workspace SSH keys could not be removed yet; Mend keeps trying`
+    : "their workspace SSH keys could not be read yet; Mend keeps trying";
+
+/** What removing a member reports beyond the removal itself: keys still owed, or nothing. */
+export const describeMemberRemoval = (removed: {
+  readonly sshKeysOutstanding: number | null;
+}): string | null =>
+  removed.sshKeysOutstanding === 0
+    ? null
+    : `member removed · ${sshKeysPending(removed.sshKeysOutstanding)}`;
+
 /**
  * One audit event as a plain sentence, without the actor or time (the row shows those). Member
  * events name the account the server resolved, removed members included.
@@ -175,12 +189,16 @@ export const describeAudit = (entry: Pick<AuditEntryDto, "event" | "subjectName"
     case "ssh_key.removed": {
       const key = `workspace SSH key ${text(event.data["fingerprint"]) ?? "?"}${name === null ? "" : ` (${name})`}`;
       const verb = event.action === "ssh_key.added" ? "registered" : "removed";
-      if (event.data["memberRemoved"] === true)
-        return `removed the ${key} of ${subject} with their membership`;
+      if (event.data["memberRemoved"] === true) {
+        const attempt = typeof event.data["attempt"] === "number" ? event.data["attempt"] : 1;
+        return `removed the ${key} of ${subject} with their membership${attempt > 1 ? ` · attempt ${attempt}` : ""}`;
+      }
       return event.actorUserId === event.subjectId
         ? `${verb} ${key}`
         : `${verb} the ${key} of ${subject}`;
     }
+    case "ssh_key.revocation_pending":
+      return `removed ${subject} · ${sshKeysPending(event.data["outstanding"] ?? null)}`;
   }
 };
 

@@ -202,7 +202,10 @@ const dependencies = Layer.mergeAll(
     remove: (input) =>
       input.userId === "alice"
         ? Effect.fail(new LastOwnerError({ organizationId: acme.id }))
-        : Effect.sync(() => void removals.push(input)),
+        : Effect.sync(() => {
+            removals.push(input);
+            return { sshKeys: { removed: 2, outstanding: 1 } };
+          }),
   }),
   Layer.mock(ProjectsRepo, {
     listForOrganization: (organizationId) =>
@@ -398,7 +401,9 @@ describe("removing members, roles and departed members' projects (docs/adr/0003)
 
   it("an owner removes a member as themselves; the last owner cannot go", async () => {
     const removed = await call("alice", "/api/organization/members/carol", { method: "DELETE" });
-    expect(removed.status).toBe(204);
+    expect(removed.status).toBe(200);
+    // The owner learns what the removal could not finish: a key the platform kept, still owed.
+    expect(await removed.json()).toEqual({ sshKeysRemoved: 2, sshKeysOutstanding: 1 });
     expect(removals).toEqual([{ organizationId: acme.id, userId: "carol", actorUserId: "alice" }]);
     const stranger = await call("alice", "/api/organization/members/zed", { method: "DELETE" });
     expect(stranger.status).toBe(404);

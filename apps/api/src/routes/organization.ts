@@ -7,6 +7,7 @@ import {
   InvitationSpent,
   MendApi,
   NotFound,
+  MemberRemoved,
   OrganizationRejected,
   OrganizationView,
 } from "@mend/api-contracts";
@@ -200,7 +201,7 @@ export const OrganizationGroupLive = HttpApiBuilder.group(MendApi, "organization
         const found = yield* ownership(params.userId);
         yield* memberOf(found, params.userId);
         const caller = yield* CurrentUser;
-        yield* (yield* MemberRemoval)
+        const removed = yield* (yield* MemberRemoval)
           .remove({
             organizationId: found.organization.id,
             userId: params.userId,
@@ -213,6 +214,10 @@ export const OrganizationGroupLive = HttpApiBuilder.group(MendApi, "organization
               () => new OrganizationRejected({ message: LAST_OWNER }),
             ),
           );
+        return new MemberRemoved({
+          sshKeysRemoved: removed.sshKeys.removed,
+          sshKeysOutstanding: removed.sshKeys.outstanding,
+        });
       }),
     )
     .handle("setMemberRole", ({ params, payload }) =>

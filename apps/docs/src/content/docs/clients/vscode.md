@@ -100,9 +100,9 @@ mend ssh keys remove SHA256:…   # the SHA256: prefix is optional
 
 The gateway checks a key on every new connection, so the next Remote-SSH connection with a removed
 key is refused. A window already connected stays connected until it disconnects or the workspace
-stops. You can remove only your own keys; removing a member from the organization removes theirs.
-`mend uninstall --home` removes the key of the machine it runs on. The mobile app does not list
-keys.
+stops. You can remove only your own keys; removing a member from the organization removes theirs,
+and Mend keeps retrying any key the platform did not remove at once. `mend uninstall --home` removes
+the key of the machine it runs on. The mobile app does not list keys.
 
 ## Take over a running session
 

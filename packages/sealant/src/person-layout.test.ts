@@ -769,7 +769,7 @@ describe("the workspace's SSH user (docs/adr/0016 decision 10, sealant#348)", ()
           Layer.mock(SealantClients, {
             controlPlaneFeatures: () => Effect.succeed(features),
             connectedAccounts: () => ({ list: unused, connect: unused, disconnect: unused }),
-            sshKeys: () => ({ ensure: unused, list: unused }),
+            sshKeys: () => ({ ensure: unused, list: unused, remove: unused }),
             sealantUserId: (userId) => Effect.succeed(`su-${userId}`),
             bindPerson: (userId, person) =>
               Effect.suspend(() => {

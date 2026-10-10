@@ -21,6 +21,7 @@ import {
   organizationInvitations,
   organizationMembers,
   organizations,
+  sshKeyRevocations,
 } from "../schema/workbench.ts";
 import { isUniqueViolation } from "./unique-violation.ts";
 
@@ -161,11 +162,15 @@ export class OrganizationsRepo extends Context.Service<
     ) => Effect.Effect<OrganizationMember, MemberNotFoundError | LastOwnerError>;
     /**
      * Remove the membership. Deactivating the account, closing its connections and stopping its
-     * sessions are the member-removal service's job; this is only the row, under the owner lock.
+     * sessions are the member-removal service's job; this is only the row, under the owner lock,
+     * and, in the same transaction, the workspace SSH key revocation the removal owes
+     * (`ssh_key_revocations`), held off for `revocationLease` while the remover makes the first
+     * attempt itself.
      */
     readonly removeMember: (
       organizationId: OrganizationId,
       userId: string,
+      revocation: { readonly actorUserId: string; readonly revocationLeaseMs: number },
     ) => Effect.Effect<void, MemberNotFoundError | LastOwnerError>;
     readonly createInvitation: (
       invitation: NewInvitation,
@@ -515,6 +520,7 @@ export const OrganizationsRepoLive: Layer.Layer<
     const removeMember = Effect.fn("OrganizationsRepo.removeMember")(function* (
       organizationId: OrganizationId,
       userId: string,
+      revocation: { readonly actorUserId: string; readonly revocationLeaseMs: number },
     ) {
       yield* db
         .transaction((tx) =>
@@ -535,6 +541,22 @@ export const OrganizationsRepoLive: Layer.Layer<
                   eq(organizationMembers.userId, userId),
                 ),
               )
+              .pipe(Effect.orDie);
+            // The membership never goes without its keys owed: a crash after this commit still
+            // leaves the row for the sweep.
+            const owed = {
+              organizationId,
+              actorUserId: revocation.actorUserId,
+              requestedAt: new Date(),
+              attempts: 0,
+              nextAttemptAt: new Date(Date.now() + revocation.revocationLeaseMs),
+              outstanding: null,
+              lastError: null,
+            };
+            yield* tx
+              .insert(sshKeyRevocations)
+              .values({ userId, ...owed })
+              .onConflictDoUpdate({ target: sshKeyRevocations.userId, set: owed })
               .pipe(Effect.orDie);
           }),
         )

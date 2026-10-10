@@ -1,3 +1,4 @@
+import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
@@ -7,6 +8,7 @@ import {
   parseWorkspaceSshTarget,
   pickWorkspaceSshKey,
   readWorkspaceSshConfig,
+  workspaceSshPublicKeyFingerprint,
   writeWorkspaceSshConfig,
 } from "@mend/workspace-ssh";
 
@@ -157,18 +159,33 @@ const setup = async (
 
 type RegisteredKey = WorkspaceSshViewDto["keys"][number];
 
+/** The public identities this machine holds for one Mend server, and what could not be read. */
+interface ThisMachineKeys {
+  readonly fingerprints: ReadonlySet<string>;
+  /** Paths named as this machine's identity whose public half could not be read, with why. */
+  readonly unreadable: ReadonlyArray<string>;
+}
+
+const errorText = (cause: unknown): string =>
+  cause instanceof Error ? cause.message : String(cause);
+
 /**
- * The fingerprint of the key this machine would offer the gateway: the identity in this server's
- * managed ~/.ssh/config block, else the dedicated key `mend ssh setup` keeps. Nothing is created;
- * an unreadable key or config reads as no key, since a listing must not fail on it.
+ * The keys this machine registered for the server, read from their PUBLIC halves: the identity
+ * in this server's managed ~/.ssh/config block, and every public key `mend ssh setup` keeps under
+ * the config directory (the dedicated key and pinned agent identities). Nothing here signs, so an
+ * encrypted key, a stopped agent or a locked keychain still identifies. A key whose public half is
+ * gone is tried through `pickWorkspaceSshKey`, which can derive it from an unencrypted private key;
+ * what still cannot be read is reported, never taken for absence.
  */
-const thisMachineFingerprint = (
-  view: WorkspaceSshViewDto,
+const thisMachineKeys = (
+  view: WorkspaceSshViewDto | null,
   cliHome: string,
   serverUrl: string,
-): string | null => {
+): ThisMachineKeys => {
+  const fingerprints = new Set<string>();
+  const unreadable: Array<string> = [];
   const target =
-    view.gateway === null
+    view === null || view.gateway === null
       ? null
       : parseWorkspaceSshTarget({ serverUrl, publishedPort: view.gateway.port });
   const config = readWorkspaceSshConfig(sshConfigPath());
@@ -176,12 +193,48 @@ const thisMachineFingerprint = (
     target !== null && target.ok && config.ok
       ? configuredWorkspaceSshIdentityFile(config.value, target.value)
       : null;
-  const picked = pickWorkspaceSshKey({
-    configHome: cliHome,
-    configuredIdentityFile: configured,
-    create: false,
-  });
-  return picked.ok && picked.value !== null ? picked.value.fingerprint : null;
+  const publicPaths = new Set<string>();
+  if (configured !== null) {
+    publicPaths.add(configured.endsWith(".pub") ? configured : `${configured}.pub`);
+  }
+  const keyDirectory = path.join(cliHome, "ssh");
+  try {
+    for (const entry of fs.readdirSync(keyDirectory)) {
+      if (entry.endsWith(".pub")) publicPaths.add(path.join(keyDirectory, entry));
+    }
+  } catch (cause) {
+    const code = cause instanceof Error && "code" in cause ? cause.code : undefined;
+    if (code !== "ENOENT") unreadable.push(`${keyDirectory}: ${errorText(cause)}`);
+  }
+  let missingPublicHalf: string | null = null;
+  for (const publicPath of publicPaths) {
+    let line: string;
+    try {
+      line = fs.readFileSync(publicPath, "utf8");
+    } catch (cause) {
+      const code = cause instanceof Error && "code" in cause ? cause.code : undefined;
+      if (code === "ENOENT") missingPublicHalf = publicPath;
+      else unreadable.push(`${publicPath}: ${errorText(cause)}`);
+      continue;
+    }
+    const fingerprint = workspaceSshPublicKeyFingerprint(line);
+    if (fingerprint.ok) fingerprints.add(fingerprint.value);
+    else unreadable.push(`${publicPath}: ${fingerprint.error.message}`);
+  }
+  if (missingPublicHalf !== null) {
+    const picked = pickWorkspaceSshKey({
+      configHome: cliHome,
+      configuredIdentityFile: configured,
+      create: false,
+    });
+    if (picked.ok && picked.value !== null) fingerprints.add(picked.value.fingerprint);
+    else {
+      unreadable.push(
+        `${missingPublicHalf}: missing${picked.ok ? "" : `, and ${picked.error.message}`}`,
+      );
+    }
+  }
+  return { fingerprints, unreadable };
 };
 
 /** `SHA256:abc…`, `abc…` (the prefix is optional) or the platform's key id. */
@@ -200,11 +253,11 @@ const listKeys = async (
   args: ReadonlyArray<string>,
 ): Promise<void> => {
   const view = await api<WorkspaceSshViewDto>("GET", "/workspace-ssh");
-  const local = thisMachineFingerprint(view, cliHome, serverUrl);
+  const local = thisMachineKeys(view, cliHome, serverUrl).fingerprints;
   if (args.includes("--json")) {
     console.log(
       JSON.stringify(
-        view.keys.map((key) => ({ ...key, thisMachine: key.fingerprint === local })),
+        view.keys.map((key) => ({ ...key, thisMachine: local.has(key.fingerprint) })),
         null,
         2,
       ),
@@ -218,7 +271,7 @@ const listKeys = async (
   const width = Math.max(...view.keys.map((key) => key.name.length));
   for (const key of view.keys) {
     say(
-      `${key.fingerprint}  ${key.name.padEnd(width)}  ${dim(`${key.algorithm} · registered ${key.createdAt.slice(0, 10)}`)}${key.fingerprint === local ? ` ${green("● this machine")}` : ""}`,
+      `${key.fingerprint}  ${key.name.padEnd(width)}  ${dim(`${key.algorithm} · registered ${key.createdAt.slice(0, 10)}`)}${local.has(key.fingerprint) ? ` ${green("● this machine")}` : ""}`,
     );
   }
 };
@@ -246,7 +299,7 @@ const removeKey = async (
   );
   say(`removed         ${removed.fingerprint} ${dim(`· ${removed.name}`)}`);
   say(dim(REMOVED_KEY_EFFECT));
-  if (removed.fingerprint === thisMachineFingerprint(view, cliHome, serverUrl)) {
+  if (thisMachineKeys(view, cliHome, serverUrl).fingerprints.has(removed.fingerprint)) {
     say(
       dim(
         "this machine's key: the file and the ~/.ssh/config block stay; mend ssh setup registers it again",
@@ -255,21 +308,58 @@ const removeKey = async (
   }
 };
 
+/** What removing this machine's workspace SSH keys came to (`mend uninstall --home`). */
+export interface ThisMachineKeyRemoval {
+  /** Fingerprints archived on the server. */
+  readonly removed: ReadonlyArray<string>;
+  /** This machine's fingerprints the server still holds active after the attempt. */
+  readonly stillActive: ReadonlyArray<string>;
+  /** Why a key may still be registered: a refused call, or a key this machine could not read. */
+  readonly problem: string | null;
+}
+
 /**
- * `mend uninstall --home`: remove the key this machine registered, while the sign-in still works.
- * Resolves to the removed key, or null when this machine holds none the server knows; a failed
- * call throws for the caller to report.
+ * `mend uninstall --home`: remove the keys this machine registered, while the sign-in still works.
+ * Each is identified by its public half, removed on its own, and anything left (a refused call,
+ * an unreadable identity) is named in `problem`, never reported as absent. Never throws.
  */
 export const removeThisMachineKey = async (
   api: ApiCall,
   cliHome: string,
   serverUrl: string,
-): Promise<RegisteredKey | null> => {
-  const view = await api<WorkspaceSshViewDto>("GET", "/workspace-ssh");
-  const local = thisMachineFingerprint(view, cliHome, serverUrl);
-  const key = view.keys.find((candidate) => candidate.fingerprint === local);
-  if (key === undefined) return null;
-  return api<RegisteredKey>("DELETE", `/workspace-ssh/keys/${encodeURIComponent(key.sshKeyId)}`);
+): Promise<ThisMachineKeyRemoval> => {
+  let view: WorkspaceSshViewDto;
+  try {
+    view = await api<WorkspaceSshViewDto>("GET", "/workspace-ssh");
+  } catch (cause) {
+    const local = thisMachineKeys(null, cliHome, serverUrl);
+    return {
+      removed: [],
+      stillActive: [...local.fingerprints],
+      problem: `the server's key list could not be read: ${errorText(cause)}`,
+    };
+  }
+  const local = thisMachineKeys(view, cliHome, serverUrl);
+  const removed: Array<string> = [];
+  const stillActive: Array<string> = [];
+  const problems: Array<string> = [];
+  for (const key of view.keys.filter((candidate) =>
+    local.fingerprints.has(candidate.fingerprint),
+  )) {
+    try {
+      await api<RegisteredKey>("DELETE", `/workspace-ssh/keys/${encodeURIComponent(key.sshKeyId)}`);
+      removed.push(key.fingerprint);
+    } catch (cause) {
+      stillActive.push(key.fingerprint);
+      problems.push(`${key.fingerprint} was not removed: ${errorText(cause)}`);
+    }
+  }
+  if (local.unreadable.length > 0) {
+    problems.push(
+      `this machine's key could not be read (${local.unreadable.join("; ")}), so Mend cannot tell which registered key is this machine's`,
+    );
+  }
+  return { removed, stillActive, problem: problems.length === 0 ? null : problems.join("; ") };
 };
 
 const keysCommand = async (

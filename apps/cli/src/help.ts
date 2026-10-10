@@ -1466,7 +1466,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     synopsis: ["<fingerprint>"],
     description: [
       "Removes one of your keys by fingerprint; the SHA256: prefix is optional. The gateway looks a key up on every new connection, so the next connection offering it is refused. A connection already open stays open until it ends.",
-      "Only your own keys are listed and removed. The key file and the ~/.ssh/config block on the machine that registered it stay; mend ssh setup there registers it again. Removing a member from the organization removes all of theirs.",
+      "Only your own keys are listed and removed. The key file and the ~/.ssh/config block on the machine that registered it stay; mend ssh setup there registers it again. Removing a member from the organization removes all of theirs, and Mend keeps retrying any the platform refused.",
     ],
     examples: [
       {
@@ -1500,7 +1500,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     summary: "remove the server, this machine's Mend files, or both",
     synopsis: ["[--all | --server | --home] [--yes]"],
     description: [
-      "Asks which scope to remove when none is given, prints exactly what will go, and requires the word delete before the server is touched. The server scope removes the local Compose installation: its containers, every volume it owns (repositories, worktrees, the database), its release image, and the private configuration with its generations and backups. The home scope asks the server to remove the workspace SSH key this machine registered and to revoke this terminal's device token, then removes cli.json, the workspace SSH key file, and the managed block in ~/.ssh/config. The account's other keys and devices stay.",
+      "Asks which scope to remove when none is given, prints exactly what will go, and requires the word delete before the server is touched. The server scope removes the local Compose installation: its containers, every volume it owns (repositories, worktrees, the database), its release image, and the private configuration with its generations and backups. The home scope asks the server to remove the workspace SSH key this machine registered and to revoke this terminal's device token, then removes cli.json, the workspace SSH key file, and the managed block in ~/.ssh/config. The key is found by its public half; a key the server refuses to remove, or one this machine cannot read, makes the uninstall exit 1 naming what may still be registered. The account's other keys and devices stay.",
       "Nothing else under the configuration directory is touched; a host-run store or keys root is listed and left in place. Workspace containers carry no label Mend can filter on, so they are named with the command that removes them, never removed.",
     ],
     options: [

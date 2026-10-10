@@ -274,9 +274,9 @@ created, revoked and accepted; role changes and removals; visibility changes; pr
 folders and references added or removed; shared control turned on or off; password reset links
 issued; changes to the organization's defaults; Slack app connections, replacements, removals and
 settings, Slack links, channel defaults and sessions started from Slack; workspace SSH keys
-registered and removed, with each key's fingerprint, including the keys removed with a member; and
-what the operator did to the organization (creating or renaming it, granting an owner, issuing a
-reset link).
+registered and removed, with each key's fingerprint, including the keys removed with a member and
+how many of those were still owed when the removal answered; and what the operator did to the
+organization (creating or renaming it, granting an owner, issuing a reset link).
 
 Settings pages refresh on their own when membership, roles, invitations, folders or references
 change.

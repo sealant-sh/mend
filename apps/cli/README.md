@@ -276,8 +276,11 @@ until it ends. The key file and this server's `~/.ssh/config` block stay on the 
 registered it; `mend ssh setup` there registers it again.
 
 `mend uninstall --home` removes the key this machine registered before it revokes the terminal's
-device token, then deletes the key file and the managed block. A key the server could not remove is
-named in what was kept, with the command that removes it.
+device token, then deletes the key file and the managed block. The key is found by its public half,
+so an encrypted private key or a stopped agent does not hide it. When the server refuses the
+removal, or this machine's public key cannot be read, the uninstall still finishes and exits 1,
+naming the fingerprint that may still be registered and `mend ssh keys remove` to run from another
+signed-in machine.
 
 ### Gateway host-key rotation
 

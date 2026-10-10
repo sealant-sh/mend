@@ -14,6 +14,7 @@ import { mirrorServices } from "./server-mirrors.ts";
 import { serverComposeArgs, serverProcessDeadlines } from "./server-runtime.ts";
 import { readServerInstallation, type ServerSetupRuntime } from "./server-setup.ts";
 import { withServerStore } from "./server-store.ts";
+import type { ThisMachineKeyRemoval } from "./ssh-setup.ts";
 
 /**
  * `mend uninstall`: the one command that deletes. Three scopes, chosen up front and
@@ -75,16 +76,9 @@ export interface UninstallRuntime {
   readonly signedIn: { readonly url: string; readonly deviceId: string | null } | null;
   /** Revoke this terminal's device token; resolves to the failure's words, or null when done. */
   revokeDevice(): Promise<string | null>;
-  /** Remove the workspace SSH key this machine registered, and only that key. */
-  removeWorkspaceSshKey(): Promise<WorkspaceSshKeyRemoval>;
+  /** Remove the workspace SSH keys this machine registered, and only those. */
+  removeWorkspaceSshKey(): Promise<ThisMachineKeyRemoval>;
 }
-
-/** What removing this machine's workspace SSH key came to. */
-export type WorkspaceSshKeyRemoval =
-  | { readonly kind: "removed"; readonly fingerprint: string }
-  /** The server holds no key matching the one this machine would offer. */
-  | { readonly kind: "none" }
-  | { readonly kind: "failed"; readonly message: string };
 
 export interface ServerPlan {
   readonly version: string;
@@ -442,13 +436,19 @@ export const executeUninstall = async (
   if (plan.home !== null && plan.home.signedIn !== null) {
     const { url } = plan.home.signedIn;
     const removal = await runtime.removeWorkspaceSshKey();
-    if (removal.kind === "removed") {
+    for (const fingerprint of removal.removed) {
       runtime.server.writeLine(
-        `removed workspace ssh key ${removal.fingerprint} on ${url} · the gateway refuses it from the next connection`,
+        `removed workspace ssh key ${fingerprint} on ${url} · the gateway refuses it from the next connection`,
       );
-    } else if (removal.kind === "failed") {
-      leftovers.push(
-        `workspace ssh key on ${url}: ${removal.message} (remove it with mend ssh keys remove, or under Settings → Workspace SSH)`,
+    }
+    // A key that may still open workspaces is a failure, named with what removes it; the rest of
+    // the uninstall still runs.
+    if (removal.problem !== null) {
+      const [first] = removal.stillActive;
+      failures.push(
+        first === undefined
+          ? `this machine's workspace ssh key on ${url} may still be registered: ${removal.problem}. From another signed-in machine, mend ssh keys lists your keys and mend ssh keys remove <fingerprint> removes one, or use Settings → Workspace SSH`
+          : `workspace ssh key ${removal.stillActive.join(", ")} is still registered on ${url}: ${removal.problem}. From another signed-in machine: mend ssh keys remove ${first}, or use Settings → Workspace SSH`,
       );
     }
   }

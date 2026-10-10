@@ -47,9 +47,22 @@ mend ssh keys remove SHA256:Vn6v0P2d…  # the SHA256: prefix is optional
 Settings → Workspace SSH lists the same keys with a Remove action. A person sees and removes only
 their own keys: Mend asks the platform for the caller's Sealant user's keys, and archiving a key id
 that is not theirs answers 404, as an unknown id does, for an organization owner and the operator
-too. Removing a member from the organization removes all of their keys. An owner removing one key of
-a member they keep is not built. The audit log records each key registered (`ssh_key.added`) and
-removed (`ssh_key.removed`).
+too. An owner removing one key of a member they keep is not built. The audit log records each key
+registered (`ssh_key.added`) and removed (`ssh_key.removed`).
+
+Removing a member from the organization removes all of their keys. The membership's deletion and a
+row in `ssh_key_revocations` commit in one transaction, so a removal is never recorded without the
+keys it owes. The removal then archives every key the platform lists for them, each on its own, so
+one refused archive does not stop the rest. Whatever is still active, or unread because the platform
+did not answer, stays owed: the removal's answer says how many (`sshKeysOutstanding`), the audit log
+records `ssh_key.revocation_pending`, and the worker retries every minute it is due (30 seconds
+after a failure, doubling to at most 30 minutes) until the platform holds none of theirs active.
+Each key archived later is its own `ssh_key.removed`, with its attempt number. The retries need no
+membership: they act on the removed account's own Sealant identity, which Mend keeps.
+
+Mend removes the membership first and archives after, not the other way round. Signing the person
+out, closing their connections and stopping their sessions then never wait on the platform, and a
+removal refused for the last owner touches no key.
 
 The gateway looks a key up through the platform on every new connection and caches nothing across
 connections, so the next connection offering a removed key is refused. A connection authenticated
@@ -58,8 +71,11 @@ session until it disconnects or the workspace stops (PLATFORM-FEEDBACK.md, 2026-
 does not record when a key was last used.
 
 `mend uninstall --home` removes the key this machine registered, and only that key, before it
-revokes the terminal's device token and deletes the key file. It never revokes the account's other
-keys or devices.
+revokes the terminal's device token and deletes the key file. It identifies the key by its public
+half (the managed block's identity and the public keys under the Mend config directory), so an
+encrypted key or a stopped agent still names it. A key it cannot remove, or cannot read well enough
+to name, fails the uninstall with the fingerprint still registered and the command that removes it
+from another signed-in machine. It never revokes the account's other keys or devices.
 
 The gateway authenticates the key's principal, authorizes access to the named workspace, and bridges
 channels onto its `sealantd` connection. Its shell, exec, environment, SFTP, and TCP forwarding

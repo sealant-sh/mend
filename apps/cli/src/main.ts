@@ -185,7 +185,6 @@ import {
   planLines,
   UNINSTALL_USAGE,
   type UninstallScope,
-  type WorkspaceSshKeyRemoval,
 } from "./uninstall.ts";
 import {
   MINT_REFUSED_IN_TRANSIT,
@@ -3594,20 +3593,12 @@ const uninstallCommand = async (config: CliConfig, args: ReadonlyArray<string>) 
         return error instanceof Error ? error.message : String(error);
       }
     },
-    removeWorkspaceSshKey: async (): Promise<WorkspaceSshKeyRemoval> => {
-      try {
-        const removed = await removeThisMachineKey(
-          (method, route, body) => request(config, method, route, body),
-          mendCliHome(),
-          config.url,
-        );
-        return removed === null
-          ? { kind: "none" }
-          : { kind: "removed", fingerprint: removed.fingerprint };
-      } catch (error) {
-        return { kind: "failed", message: error instanceof Error ? error.message : String(error) };
-      }
-    },
+    removeWorkspaceSshKey: () =>
+      removeThisMachineKey(
+        (method, route, body) => request(config, method, route, body),
+        mendCliHome(),
+        config.url,
+      ),
   };
   const plan = await describeUninstall(runtime, scope);
   say(dim(`mend uninstall · ${scope === "all" ? "everything" : scope}`));

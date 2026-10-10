@@ -140,6 +140,16 @@ export class OrganizationWorkspaceEnvironmentSaveResult extends Schema.Class<Org
   resolutions: Schema.Array(WorkspacePackageResolutionView),
 }) {}
 
+/**
+ * A removal's account of the member's workspace SSH keys (docs/WORKSPACE-SSH.md). Keys the
+ * platform did not archive now stay owed and the worker keeps trying; `sshKeysOutstanding` is how
+ * many, or null when they could not be listed. Zero means none of theirs is active.
+ */
+export class MemberRemoved extends Schema.Class<MemberRemoved>("MemberRemoved")({
+  sshKeysRemoved: Schema.Number,
+  sshKeysOutstanding: Schema.NullOr(Schema.Number),
+}) {}
+
 export const organizationGroup = HttpApiGroup.make("organization")
   .add(
     HttpApiEndpoint.get("current", "/organization", {
@@ -179,6 +189,7 @@ export const organizationGroup = HttpApiGroup.make("organization")
     // stops its sessions; refused for the last owner.
     HttpApiEndpoint.delete("removeMember", "/organization/members/:userId", {
       params: Schema.Struct({ userId: Schema.String }),
+      success: MemberRemoved,
       error: [NotFound, OrganizationRejected],
     }),
   )

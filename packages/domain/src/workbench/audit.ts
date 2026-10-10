@@ -55,6 +55,9 @@ export const AuditAction = Schema.Literals([
   // or archived so the gateway refuses it. The subject is the member who holds the key.
   "ssh_key.added",
   "ssh_key.removed",
+  // A member was removed and some of their keys are still active (or unread): Mend keeps trying,
+  // and each key it archives later is its own `ssh_key.removed`.
+  "ssh_key.revocation_pending",
 ]);
 export type AuditAction = typeof AuditAction.Type;
 
