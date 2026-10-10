@@ -19,6 +19,7 @@ import {
   MendChangeStats,
   MendCheckpoint,
   MendRangeDiff,
+  MendWorktreeContents,
   MendWorktreeDetail,
   MendFileListing,
   MendPastedImage,
@@ -293,6 +294,23 @@ export class MendClient extends Context.Service<
         readonly ignoreWhitespace: boolean;
       },
     ) => MendRead<MendRangeDiff>;
+    /**
+     * `GET /api/worktrees/:id/contents`: one file (as it stands, or at a checkpoint) or the lines a
+     * search matches. A path Mend refuses (outside the worktree) is its 422, a refusal.
+     */
+    readonly worktreeContents: (
+      deviceToken: string,
+      worktreeId: string,
+      question:
+        | { readonly path: string; readonly at: string | null }
+        | {
+            readonly query: string;
+            readonly caseSensitive: boolean;
+            readonly wholeWord: boolean;
+            readonly regex: boolean;
+            readonly limit: number;
+          },
+    ) => MendCommand<MendWorktreeContents>;
     /** `GET /api/changes/:id/stats`: how many files, lines added and removed, without the patch. */
     readonly changeStats: (deviceToken: string, changeId: string) => MendRead<MendChangeStats>;
     /** `GET /api/changes/:id/diff`: the change against its base, as git answers now. */
@@ -394,6 +412,7 @@ const decodeFileListing = Schema.decodeUnknownEffect(MendFileListing);
 const decodeChangeStats = Schema.decodeUnknownEffect(MendChangeStats);
 const decodeWorktreeDetail = Schema.decodeUnknownEffect(MendWorktreeDetail);
 const decodeRangeDiff = Schema.decodeUnknownEffect(MendRangeDiff);
+const decodeWorktreeContents = Schema.decodeUnknownEffect(MendWorktreeContents);
 const MendErrorBody = Schema.Struct({
   _tag: Schema.optional(Schema.String),
   message: Schema.optional(Schema.String),
@@ -677,6 +696,63 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
         );
       };
 
+      const worktreeContents = (
+        deviceToken: string,
+        worktreeId: string,
+        question:
+          | { readonly path: string; readonly at: string | null }
+          | {
+              readonly query: string;
+              readonly caseSensitive: boolean;
+              readonly wholeWord: boolean;
+              readonly regex: boolean;
+              readonly limit: number;
+            },
+      ): MendCommand<MendWorktreeContents> => {
+        const operation = "GET /api/worktrees/:id/contents";
+        const query = new URLSearchParams();
+        if ("path" in question) {
+          query.set("path", question.path);
+          if (question.at !== null) query.set("at", question.at);
+        } else {
+          query.set("query", question.query);
+          query.set("caseSensitive", String(question.caseSensitive));
+          query.set("wholeWord", String(question.wholeWord));
+          query.set("regex", String(question.regex));
+          query.set("limit", String(question.limit));
+        }
+        return Effect.gen(function* () {
+          const response = yield* send(
+            operation,
+            HttpClientRequest.get(
+              url(`/api/worktrees/${encodeURIComponent(worktreeId)}/contents?${query.toString()}`),
+            ).pipe(HttpClientRequest.acceptJson, HttpClientRequest.bearerToken(deviceToken)),
+          );
+          if (response.status === 401) return yield* new MendDeviceRefused({ operation });
+          if (response.status === 404) return yield* new MendNotFound({ operation });
+          if (response.status >= 400 && response.status < 500) {
+            const refusal = decodeErrorBody(
+              yield* response.json.pipe(Effect.orElseSucceed((): unknown => null)),
+            );
+            return yield* new MendCommandRefused({
+              operation,
+              status: response.status,
+              tag: refusal._tag === "Some" ? (refusal.value._tag ?? null) : null,
+              detail: refusal._tag === "Some" ? (refusal.value.message ?? null) : null,
+            });
+          }
+          if (response.status !== 200) {
+            return yield* new MendUnavailable({ operation, status: response.status, cause: null });
+          }
+          const body = yield* readJson(operation, response);
+          return yield* decodeWorktreeContents(body).pipe(
+            Effect.mapError(
+              (cause) => new MendUnavailable({ operation, status: response.status, cause }),
+            ),
+          );
+        }).pipe(Effect.withSpan(`MendClient ${operation}`));
+      };
+
       const changeStats = (deviceToken: string, changeId: string) =>
         read(
           "GET /api/changes/:id/stats",
@@ -912,6 +988,7 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
         changeStats,
         worktreeCheckpoints,
         worktreeDiff,
+        worktreeContents,
         projectFiles,
         createSession,
         joinWorktree,

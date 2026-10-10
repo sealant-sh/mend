@@ -98,6 +98,8 @@ export const SERVED_METHODS: ReadonlySet<WsRpcMethod> = new Set<WsRpcMethod>([
   WS_METHODS.assetsPersistChatAttachments,
   WS_METHODS.projectsSearchEntries,
   WS_METHODS.projectsListEntries,
+  WS_METHODS.projectsReadFile,
+  WS_METHODS.projectsSearchContents,
   WS_METHODS.subscribeVcsStatus,
   WS_METHODS.vcsRefreshStatus,
   WS_METHODS.reviewGetDiffPreview,
@@ -687,8 +689,10 @@ export const makeGatewayRpcHandlers = ({
     // ── Projects and files ──────────────────────────────────────────────────
     [WS_METHODS.projectsListEntries]: (input) =>
       authorize(session, READ).pipe(Effect.andThen(files.listEntries(input))),
-    [WS_METHODS.projectsReadFile]: () => refuse(WS_METHODS.projectsReadFile, READ),
-    [WS_METHODS.projectsSearchContents]: () => refuse(WS_METHODS.projectsSearchContents, READ),
+    [WS_METHODS.projectsReadFile]: (input) =>
+      authorize(session, READ).pipe(Effect.andThen(files.readFile(input))),
+    [WS_METHODS.projectsSearchContents]: (input) =>
+      authorize(session, READ).pipe(Effect.andThen(files.searchContents(input))),
     [WS_METHODS.projectsSearchEntries]: (input) =>
       authorize(session, READ).pipe(Effect.andThen(files.searchEntries(input))),
     [WS_METHODS.projectsWriteFile]: () => refuse(WS_METHODS.projectsWriteFile, OPERATE),

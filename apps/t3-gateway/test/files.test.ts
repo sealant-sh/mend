@@ -6,6 +6,7 @@ import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 
 import { entriesOf, listEntries, matchScore, searchEntries } from "../src/files.ts";
+import { highlightLines } from "../src/highlight.ts";
 import { startFakeMend, type FakeMend } from "./support/fake-mend.ts";
 import { gatewayTestLayer } from "./support/gateway.ts";
 import { pairAndConnect } from "./support/rpc.ts";
@@ -130,6 +131,106 @@ describe("a listing Mend cut", () => {
   );
 });
 
+/** What a project file error says went wrong. */
+const failureOf = (exit: Exit.Exit<unknown, unknown>) => {
+  if (!Exit.isFailure(exit)) return undefined;
+  const error = Option.getOrUndefined(Cause.findErrorOption(exit.cause));
+  return typeof error === "object" && error !== null && "failure" in error
+    ? error.failure
+    : undefined;
+};
+
+describe("reading and searching a worktree's files", () => {
+  it.live("reads a file as the worktree stands, and searches its lines", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        mend.workbench.addProject("project-1", "mend");
+        const session = mend.workbench.addSession({ id: "session-1", projectId: "project-1" });
+        mend.workbench.fileContents.set(
+          session.worktreeId,
+          new Map([
+            ["src/parser.ts", "export const parse = (input) => input;\nconst Parse = 1;\n"],
+            ["README.md", "How to parse things\n"],
+          ]),
+        );
+        const { rpc } = yield* pairAndConnect(mend, "CONTENTS");
+
+        const file = yield* rpc[WS_METHODS.projectsReadFile]({
+          cwd: WORKTREE,
+          relativePath: "src/parser.ts",
+        });
+        assert.strictEqual(
+          file.contents,
+          "export const parse = (input) => input;\nconst Parse = 1;\n",
+        );
+        assert.isFalse(file.truncated);
+        assert.strictEqual(
+          failureOf(
+            yield* Effect.exit(
+              rpc[WS_METHODS.projectsReadFile]({ cwd: WORKTREE, relativePath: "src/missing.ts" }),
+            ),
+          ),
+          "path_not_file",
+        );
+        assert.strictEqual(
+          failureOf(
+            yield* Effect.exit(
+              rpc[WS_METHODS.projectsReadFile]({ cwd: WORKTREE, relativePath: "../secret" }),
+            ),
+          ),
+          "workspace_path_outside_root",
+        );
+        // The project's root has no files of its own to read.
+        assert.strictEqual(
+          failureOf(
+            yield* Effect.exit(
+              rpc[WS_METHODS.projectsReadFile]({ cwd: STORE, relativePath: "README.md" }),
+            ),
+          ),
+          "workspace_path_outside_root",
+        );
+
+        const found = yield* rpc[WS_METHODS.projectsSearchContents]({
+          cwd: WORKTREE,
+          query: "parse",
+          limit: 20,
+          caseSensitive: false,
+          wholeWord: false,
+          useRegex: false,
+        });
+        const parser = found.matches.filter((match) => match.path === "src/parser.ts");
+        assert.deepStrictEqual(
+          parser.map((match) => [match.lineNumber, match.matchRanges]),
+          [
+            [1, [{ start: 13, end: 18 }]],
+            [2, [{ start: 6, end: 11 }]],
+          ],
+        );
+        assert.isUndefined(found.regexFallbackError);
+
+        // A regex git cannot read is searched as text, and the client is told so.
+        const fellBack = yield* rpc[WS_METHODS.projectsSearchContents]({
+          cwd: WORKTREE,
+          query: "(input",
+          limit: 20,
+          caseSensitive: true,
+          wholeWord: false,
+          useRegex: true,
+        });
+        assert.isDefined(fellBack.regexFallbackError);
+        assert.deepStrictEqual(
+          fellBack.matches.map((match) => match.lineNumber),
+          [1],
+        );
+      }),
+    ),
+  );
+});
+
+/** One line's highlights. */
+const one = (text: string, asked: Parameters<typeof highlightLines>[1]) =>
+  highlightLines([text], asked).pipe(Effect.map((lines) => lines[0]));
+
 describe("matching", () => {
   it("ranks the name's start, then the name, then the path, then the letters in order", () => {
     assert.strictEqual(matchScore("src/parser.ts", "pars"), 0);
@@ -138,6 +239,43 @@ describe("matching", () => {
     assert.strictEqual(matchScore("src/p-a-r-s.ts", "pars"), 3);
     assert.isNull(matchScore("README.md", "pars"));
   });
+
+  it.effect("highlights what a search matched, as asked", () =>
+    Effect.gen(function* () {
+      const query = { query: "pa.se", caseSensitive: false, wholeWord: false, useRegex: false };
+      assert.deepStrictEqual(yield* one("pa.se parse", query), [{ start: 0, end: 5 }]);
+      assert.deepStrictEqual(yield* one("Pa.Se", query), [{ start: 0, end: 5 }]);
+      assert.deepStrictEqual(yield* one("pa.se parse", { ...query, useRegex: true }), [
+        { start: 0, end: 5 },
+        { start: 6, end: 11 },
+      ]);
+      assert.deepStrictEqual(
+        yield* one("parser parse", { ...query, query: "parse", wholeWord: true }),
+        [{ start: 7, end: 12 }],
+      );
+      assert.deepStrictEqual(yield* one("x", { ...query, query: "(", useRegex: true }), []);
+    }),
+  );
+
+  it.live("never runs the client's regex on the gateway's thread: a slow one is stopped", () =>
+    Effect.gen(function* () {
+      // `(a+)+$` on this line takes JavaScript's engine seconds (review 605-1).
+      const line = `${"a".repeat(27)}!a`;
+      const query = { query: "(a+)+$", caseSensitive: true, wholeWord: false, useRegex: true };
+      let ticks = 0;
+      const timer = setInterval(() => {
+        ticks += 1;
+      }, 10);
+      const started = performance.now();
+      const ranges = yield* highlightLines([line, "aa"], query);
+      const took = performance.now() - started;
+      clearInterval(timer);
+      // Answered within the budget, unhighlighted, and the loop kept running meanwhile.
+      assert.isBelow(took, 2_000);
+      assert.deepStrictEqual(ranges, [[], []]);
+      assert.isAbove(ticks, 5);
+    }),
+  );
 
   it("filters by kind and images, and says when it cut the list", () => {
     const entries = entriesOf(FILES);

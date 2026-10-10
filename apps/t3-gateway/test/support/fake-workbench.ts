@@ -492,6 +492,47 @@ export class FakeWorkbench {
       }
       return json(200, { checkpoints: this.checkpoints.get(id) ?? [] });
     }
+    if (method === "GET" && collection === "worktrees" && sub === "contents") {
+      const asked = url.searchParams.get("path");
+      const query = url.searchParams.get("query");
+      if (asked !== null) {
+        if (asked.includes("..")) return json(422, { _tag: "StoreFailure", message: "outside" });
+        const contents = this.fileContents.get(url.searchParams.get("at") ?? id)?.get(asked);
+        if (contents === undefined) return json(404, { _tag: "NotFound", id: asked });
+        return json(200, {
+          worktreeId: id,
+          file: {
+            path: asked,
+            at: url.searchParams.get("at"),
+            contents,
+            size: Buffer.byteLength(contents),
+            truncated: false,
+            binary: false,
+          },
+          search: null,
+        });
+      }
+      if (query === null) return json(422, { _tag: "StoreFailure", message: "no question" });
+      let pattern: RegExp;
+      try {
+        const source =
+          url.searchParams.get("regex") === "true"
+            ? query
+            : query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        pattern = new RegExp(source, url.searchParams.get("caseSensitive") === "true" ? "" : "i");
+      } catch {
+        return json(422, { _tag: "StoreFailure", message: "fatal: invalid regular expression" });
+      }
+      const matches = Array.from(this.fileContents.get(id) ?? new Map<string, string>()).flatMap(
+        ([file, contents]) =>
+          contents
+            .split("\n")
+            .flatMap((text, index) =>
+              pattern.test(text) ? [{ path: file, line: index + 1, text }] : [],
+            ),
+      );
+      return json(200, { worktreeId: id, file: null, search: { matches, truncated: false } });
+    }
     if (method === "GET" && collection === "worktrees" && sub === "diff") {
       const key = `${url.searchParams.get("from") ?? "base"}..${url.searchParams.get("to") ?? ""}`;
       const range = this.ranges.get(key);
@@ -949,6 +990,11 @@ export class FakeWorkbench {
       truncated?: boolean;
     }
   >();
+  /**
+   * `GET /api/worktrees/:id/contents`: files by path, as the worktree stands (keyed by worktree id)
+   * or at a checkpoint (keyed by checkpoint id).
+   */
+  readonly fileContents = new Map<string, Map<string, string>>();
   /** `GET /api/changes/:id/stats`, by change id. */
   readonly stats = new Map<string, { files: number; additions: number; deletions: number }>();
   /** How many images were pasted into workspaces. */

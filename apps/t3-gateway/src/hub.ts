@@ -256,6 +256,8 @@ export interface CwdLocation {
   readonly baseRef: string | null;
   /** Whether the project came from a remote (its origin). */
   readonly hasOrigin: boolean;
+  /** The thread's worktree; null for the project's root. */
+  readonly worktreeId: string | null;
 }
 
 export interface WorktreeChange {
@@ -3127,6 +3129,7 @@ export const makePersonHub = (input: {
                 defaultBranch: thread.project.defaultBranch,
                 baseRef: thread.session.baseRef,
                 hasOrigin: (thread.project.originUrl ?? null) !== null,
+                worktreeId: thread.session.worktreeId,
               };
             }
             const project = Array.from(projects.values()).find(
@@ -3142,6 +3145,7 @@ export const makePersonHub = (input: {
                   defaultBranch: project.defaultBranch,
                   baseRef: null,
                   hasOrigin: (project.originUrl ?? null) !== null,
+                  worktreeId: null,
                 };
           }),
         );
