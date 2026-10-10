@@ -24,7 +24,9 @@
  *                       non-bridge IPv4 of this machine
  *   MEND_E2E_REPO       the Git URL to adopt; default https://github.com/octocat/Hello-World.git
  *   VSCODE_CLI          the `code` command, for installing Remote-SSH; default `code` on PATH
- *   VSCODE_BIN          the VS Code application (Electron) the suite runs in; default VSCODE_CLI
+ *   VSCODE_BIN          the VS Code application (Electron) the suite runs in; default VSCODE_CLI.
+ *                       Where `code` is a launcher that detaches (Linux packages), point this at
+ *                       the Electron binary itself, e.g. <install>/lib/vscode/code
  *   MEND_E2E_REMOTE_SSH 0 skips the real Remote-SSH window (step 8)
  *   MEND_E2E_KEEP       1 leaves the server and scratch directory up for inspection
  *
@@ -87,7 +89,15 @@ const freePort = (host) =>
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const dindImage = "docker:27.5.1-dind";
-for (const needed of [image, "postgres:17-alpine", "dxflrs/garage:v2.4.1", dindImage]) {
+// Setup's own images: the server, its database and object store, and the package mirrors.
+const serverImages = [
+  image,
+  "postgres:17-alpine",
+  "dxflrs/garage:v2.4.1",
+  "nginx:1.29-alpine",
+  "registry:3.1",
+];
+for (const needed of [...serverImages, dindImage]) {
   docker(["image", "inspect", needed, "--format", "{{.Id}}"]);
 }
 
@@ -189,12 +199,9 @@ const main = async () => {
   }
   log("copying the server's images into its daemon");
   const saved = path.join(scratch, "images.tar");
-  docker(
-    ["save", "-o", saved, image, "postgres:17-alpine", "dxflrs/garage:v2.4.1", "node:26-bookworm"],
-    {
-      timeout: 900_000,
-    },
-  );
+  docker(["save", "-o", saved, ...serverImages, "node:26-bookworm"], {
+    timeout: 900_000,
+  });
   inner(["load", "-i", saved], { timeout: 900_000 });
   fs.rmSync(saved);
   const cli = (args, options = {}) =>
@@ -367,7 +374,17 @@ const main = async () => {
   delete vscodeEnv.WAYLAND_DISPLAY;
   delete vscodeEnv.NIXOS_OZONE_WL;
   delete vscodeEnv.ELECTRON_RUN_AS_NODE;
-  const display = `:${90 + Math.floor(Math.random() * 9)}`;
+  // Electron takes Wayland from the session type even with WAYLAND_DISPLAY unset, opens the
+  // default socket and puts the windows on this machine's own desktop instead of Xvfb. Unseen
+  // there, they get no idle time, and VS Code's idle-time startup work (the remote terminal
+  // backend among it) crawls: the first integrated terminal took 30-50 s to answer.
+  delete vscodeEnv.XDG_SESSION_TYPE;
+  // A display no other Xvfb holds: sharing one puts this run's windows beside another's.
+  const free = [90, 91, 92, 93, 94, 95, 96, 97, 98].filter(
+    (n) => !fs.existsSync(`/tmp/.X11-unix/X${n}`) && !fs.existsSync(`/tmp/.X${n}-lock`),
+  );
+  if (free.length === 0) throw new Error("displays :90 to :98 are all taken");
+  const display = `:${free[Math.floor(Math.random() * free.length)]}`;
   xvfb = spawn("Xvfb", [display, "-screen", "0", "1440x900x24", "-nolisten", "tcp"], {
     stdio: "ignore",
   });
@@ -414,6 +431,7 @@ const main = async () => {
         "--skip-welcome",
         "--skip-release-notes",
         "--disable-gpu",
+        "--ozone-platform=x11",
       ],
       { env: testEnv, stdio: ["ignore", "pipe", "pipe"] },
     );
@@ -440,6 +458,12 @@ const main = async () => {
     }
   }
   if (exit !== 0) throw new Error(`the editor suite exited ${exit}`);
+  if (Object.keys(result).length === 0) {
+    // The `code` launcher detaches the app and exits 0 at once: VSCODE_BIN must be the app itself.
+    throw new Error(
+      "the editor suite recorded nothing; is VSCODE_BIN the Electron app, not `code`?",
+    );
+  }
   log("PASS the editor suite against the non-loopback server");
 };
 
