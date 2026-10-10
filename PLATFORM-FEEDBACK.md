@@ -7,6 +7,29 @@ around by importing internals.
 Format: date · SDK version · what Mend needed · what exists today · suggested surface. Entries stay
 after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
+## 2026-10-10 · 0.39.0-next.707 · A session's arguments must be trimmed and non-empty
+
+`mend run -- bash -lc "<script>"` with a script that starts with a newline (pstack's verifier agents
+write them that way) created the session, then failed its launch with
+`Expected a string with no leading or trailing whitespace`.
+
+- **Today:** Core's `createSessionRequestSchema` types `argv` as
+  `Schema.Array(NonEmptyString).check(Schema.isNonEmpty(), Schema.isMaxLength(64))`, where
+  `NonEmptyString` is `Schema.String.check(Schema.isNonEmpty(), Schema.isTrimmed())`. The rule fits
+  the program (`argv[0]`), the ids and the `cwd`. It does not fit the arguments: an argument is
+  opaque bytes to the program that reads it, and `"\necho hi"`, `"hi "` and `""` (as in
+  `git commit -m ""`) are all legitimate. Core never stores the arguments anyway, only their count
+  and lengths.
+- **What Mend does:** `mend run` checks the command against the same rule before it creates
+  anything, refuses it naming the word by its position (never its text, which can carry a secret),
+  and asks for it trimmed. It does not wrap the command to get past the rule. The engine does that
+  for a prompt (base64 chunks behind an `sh -c` decoder), where Mend composes the command itself,
+  but for a person's own command the record would then show the decoder in place of what they ran.
+- **Suggested:** keep `NonEmptyString` for `argv[0]` and take any string for the rest (a tuple with
+  `NonEmptyString` first and a `Schema.String` rest), on `POST /v1/sessions` and
+  `/v1/sessions/as-user` alike. Mend then drops its check for the arguments and keeps the 64-word
+  limit.
+
 ## 2026-10-08 · 0.39.0-next.706 · `workspaces.imageKey` and `inspectImage` need a source neither reads
 
 Mend asks about an image before a person launch's create (ADR 0016 decision 1), when the create's

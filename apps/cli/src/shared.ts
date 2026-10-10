@@ -74,6 +74,8 @@ export interface LaunchArgs {
    * null follows the project's "Land when a turn completes".
    */
   readonly autoLand: boolean | null;
+  /** `--json`: mend run prints what it started (and how it ended) as JSON on stdout. */
+  readonly json: boolean;
   /** Everything after `--` (mend run's command). */
   readonly custom: ReadonlyArray<string>;
   readonly error: string | null;
@@ -93,6 +95,7 @@ const LAUNCH_ERROR: Omit<LaunchArgs, "error"> = {
   foreground: false,
   noTunnel: false,
   autoLand: null,
+  json: false,
   custom: [],
 };
 
@@ -100,7 +103,7 @@ const LAUNCH_ERROR: Omit<LaunchArgs, "error"> = {
  * `mend claude|codex|opencode ["prompt"] [--model <id>] [--effort <level>]
  * [--base <ref>] [--ask] [--detach|-d] [--foreground] [--no-tunnel] [--land|--no-land]
  * [--project <p>]`, plus
- * `mend run … -- <command...>`.
+ * `mend run [--detach|-d] [--json] … -- <command...>`.
  * The first non-flag positional is the prompt; a second one is an error so a
  * forgotten quote fails loudly instead of launching with half a sentence.
  */
@@ -122,6 +125,7 @@ export const parseLaunchArgs = (args: ReadonlyArray<string>): LaunchArgs => {
   let noTunnel = false;
   let land = false;
   let noLand = false;
+  let json = false;
   for (let index = 0; index < flagArgs.length; index += 1) {
     const arg = flagArgs[index] ?? "";
     if (arg === "--ask") {
@@ -150,6 +154,10 @@ export const parseLaunchArgs = (args: ReadonlyArray<string>): LaunchArgs => {
     }
     if (arg === "--no-land") {
       noLand = true;
+      continue;
+    }
+    if (arg === "--json") {
+      json = true;
       continue;
     }
     if (
@@ -216,6 +224,7 @@ export const parseLaunchArgs = (args: ReadonlyArray<string>): LaunchArgs => {
     foreground,
     noTunnel,
     autoLand: land ? true : noLand ? false : null,
+    json,
     custom,
     error: null,
   };
