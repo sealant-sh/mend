@@ -16,10 +16,10 @@ Before, it opened the page on the far machine's screen. `--open` and `--no-open`
 
 In VS Code, polling no longer waits for the "open the external website?" dialog, which can sit
 behind other windows on Linux. The sign-in shows the link and code with "Copy link" and "Paste a
-device token instead". The plain-http warning is shorter, says nothing over Tailscale (by address
-or `.ts.net` name), and says "anyone on this local network can read the token" on a LAN. "Open in
-VS Code" is in the session row's right-click menu too.
+device token instead". The plain-http warning is shorter, says nothing over Tailscale (by address or
+`.ts.net` name), and says "anyone on this local network can read the token" on a LAN. "Open in VS
+Code" is in the session row's right-click menu too.
 
-The authorize page names the client asking: "Authorize VS Code?" for the extension, "Authorize
-this terminal?" for `mend login` (migration 0128 keeps which client opened a request). A guided
+The authorize page names the client asking: "Authorize VS Code?" for the extension, "Authorize this
+terminal?" for `mend login` (migration 0128 keeps which client opened a request). A guided
 `mend server setup --context orbstack` now puts `--context orbstack` in its "Same as:" command.
