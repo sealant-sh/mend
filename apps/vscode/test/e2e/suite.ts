@@ -212,18 +212,52 @@ const sshIn = (alias: string, user: string, script: string, timeoutMs = 60_000) 
 const remoteWindow = async (): Promise<void> => {
   const folder = vscode.workspace.workspaceFolders?.[0]?.uri;
   if (folder === undefined) throw new Error("the Remote-SSH window has no folder");
-  const typed = await vscode.workspace.fs.readFile(
-    vscode.Uri.joinPath(folder, "st-vscode-typed.txt"),
+  const file = (name: string) => vscode.Uri.joinPath(folder, name);
+  const read = async (name: string) =>
+    new TextDecoder().decode(await vscode.workspace.fs.readFile(file(name))).trim();
+  const typed = await read("st-vscode-typed.txt");
+  // The owner's story, in their own VS Code: edit a file in the workspace…
+  await vscode.workspace.fs.writeFile(
+    file("st-vscode-edited.txt"),
+    new TextEncoder().encode("edited in VS Code over Remote-SSH\n"),
   );
-  const entries = await vscode.workspace.fs.readDirectory(folder);
+  // …use the workspace's terminal (an integrated terminal in a remote window runs there)…
+  const terminal = vscode.window.createTerminal({ name: "st-vscode" });
+  terminal.sendText(
+    "id -un > /workspace/repo/.st-vscode-whoami; echo remote-terminal-$((6*7)) > /workspace/repo/st-vscode-remote-term.txt",
+    true,
+  );
+  const fromTerminal = await until(
+    "the Remote-SSH terminal to write its file",
+    async () => (await read("st-vscode-remote-term.txt")) || null,
+    60_000,
+  );
+  const whoami = await read(".st-vscode-whoami");
+  // …and forward a port: a server on the workspace's loopback, opened from this machine.
+  terminal.sendText(
+    `nohup node -e "require('http').createServer((q,s)=>s.end('st-vscode-port')).listen(8765,'127.0.0.1')" > /dev/null 2>&1 &`,
+    true,
+  );
+  const forwarded = await until(
+    "Remote-SSH to forward the workspace's port 8765",
+    async () => {
+      const external = await vscode.env.asExternalUri(vscode.Uri.parse("http://localhost:8765/"));
+      const response = await fetch(external.toString(true), { signal: AbortSignal.timeout(5_000) });
+      const body = await response.text();
+      return body === "st-vscode-port" ? { url: external.toString(true), body } : null;
+    },
+    120_000,
+  );
   fs.writeFileSync(
     `${resultFile}.remote.json`,
     `${JSON.stringify(
       {
         remoteName: vscode.env.remoteName,
         folder: folder.toString(),
-        readOverRemoteSsh: new TextDecoder().decode(typed).trim(),
-        entries: entries.map(([name]) => name).toSorted(),
+        readOverRemoteSsh: typed,
+        terminal: { wrote: fromTerminal, user: whoami },
+        forwarded,
+        entries: (await vscode.workspace.fs.readDirectory(folder)).map(([name]) => name).toSorted(),
       },
       null,
       2,
@@ -405,6 +439,47 @@ export async function run(): Promise<void> {
     if (field(remote, "readOverRemoteSsh") !== "st-vscode-typed") {
       throw new Error("the Remote-SSH window did not read the terminal's file");
     }
+    if (field(remote, "terminal", "wrote") !== "remote-terminal-42") {
+      throw new Error("the Remote-SSH window's terminal did not run in the workspace");
+    }
+    if (field(remote, "forwarded", "body") !== "st-vscode-port") {
+      throw new Error("Remote-SSH did not forward the workspace's port");
+    }
+
+    // The session sees what the editor wrote: Mend's own terminal into the session reads the file,
+    // and the change review lists it.
+    quickPicks.push(pick((item) => String(item["label"]).includes("Shell")));
+    await vscode.commands.executeCommand("mend.openTerminal", workbenchId);
+    const again = await until("the second Mend terminal", async () => ptys[1], 30_000);
+    let seen = "";
+    again.onDidWrite((data) => {
+      seen += data;
+    });
+    again.open({ columns: 120, rows: 30 });
+    await sleep(1500);
+    again.handleInput?.("cat /workspace/repo/st-vscode-edited.txt; echo seen-$((6*7))\r");
+    await until(
+      "the session to read the editor's file",
+      async () => seen.includes("seen-42"),
+      60_000,
+    );
+    again.close();
+    const edited = await until(
+      "the editor's edit in the change",
+      async () => {
+        const diff = await api(`/changes/${changeId}/diff`);
+        const listed = field(diff, "files");
+        const paths = (Array.isArray(listed) ? listed : []).map((file) =>
+          String(field(file, "path")),
+        );
+        return paths.includes("st-vscode-edited.txt") ? paths : null;
+      },
+      180_000,
+    );
+    if (!seen.includes("edited in VS Code over Remote-SSH")) {
+      throw new Error("the session's terminal did not read the editor's file");
+    }
+    record("sessionSeesEdit", { terminal: "edited in VS Code over Remote-SSH", files: edited });
   }
 
   // 9. Stop what this run started.

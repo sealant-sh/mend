@@ -10,7 +10,10 @@
  * through the browser walk, watches live events, starts a Workbench session, writes the
  * Remote-SSH config and connects with `ssh` through it, types in the session's terminal over
  * /api/tty, opens review, and (MEND_E2E_REMOTE_SSH=1, the default) opens the workspace with the
- * real Remote-SSH extension.
+ * real Remote-SSH extension: the owner's own story, in that window. It edits a file, runs a command
+ * in the workspace's integrated terminal, forwards a port the workspace serves on its loopback and
+ * opens it from this machine; then Mend's terminal into the session reads the edited file and the
+ * change review lists it.
  *
  *   MEND_TEST_VERSION=0.36.0-next.656 [MEND_E2E_HOST=100.101.141.6] \
  *     node scripts/vscode-remote-acceptance.mjs
