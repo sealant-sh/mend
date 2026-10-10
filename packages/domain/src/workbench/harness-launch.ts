@@ -147,6 +147,17 @@ export const PROMPTABLE_HARNESSES: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * Whether review comments can be sent to a session of this harness: delivery starts its agent
+ * again with them as the opening prompt, and a `mend run` command or a shell has no agent to
+ * start (verify 2026-10-10).
+ */
+export const takesReviewFollowUp = (harness: string): boolean => PROMPTABLE_HARNESSES.has(harness);
+
+/** What a review reads where its session has no agent to send it to (`takesReviewFollowUp`). */
+export const noReviewFollowUpLine = (harness: string): string =>
+  `This ${harness} session has no agent to send the review to. Start an agent in this worktree, then send it.`;
+
+/**
  * opencode's permission switch, set at launch (`OPENCODE_PERMISSION`, JSON): `allow` is Mend's
  * stance as for every harness (the workspace is the sandbox), `ask` restores its prompts. Set in
  * the environment, so the user's own opencode config is never written.

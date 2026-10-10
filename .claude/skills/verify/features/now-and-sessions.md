@@ -83,9 +83,8 @@ Preconditions:
   A menu titled `<project>` lists `Open project`, `Start claude session`, `Start codex session`,
   `Start opencode session`, `Start pi session`, `Start shell session`, `Copy store path`,
   `Copy origin URL`, and for someone who may remove it `Remove project…`. Close it with a click
-  outside it. After the right-click, focus stays on the link (or `body`) and `Escape` leaves the
-  menu open; `Escape` closes it only once a menu item has focus. Confirmed bug, fix in flight (the
-  menu focuses itself while it is still hidden; confirming drive of 2026-10-10).
+  outside it. After the right-click the menu has focus: `ArrowDown` moves to its first item and
+  `Escape` closes it.
 - **Session menu.** Right-click a settled row's link. The menu titled `<harness>` (with ` — <label>`
   when labelled) lists `Open session`, `Open review` (with a change), `Resume session` (for the
   owner) and `Delete session…`. On a live card it lists `Mark checkpoint` and `Stop session`

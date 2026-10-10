@@ -4,7 +4,12 @@
 // assemble into a follow-up instruction the reviewer edits before sending.
 // The web review (routes/changes.$changeId.tsx) is the parity reference.
 
-import { canRelaunchSession, terminalOwnerOnlyLine } from "@mend/domain/workbench";
+import {
+  canRelaunchSession,
+  noReviewFollowUpLine,
+  takesReviewFollowUp,
+  terminalOwnerOnlyLine,
+} from "@mend/domain/workbench";
 import { useQuery } from "@tanstack/react-query";
 import { Stack, useLocalSearchParams } from "expo-router";
 import type { ReactNode } from "react";
@@ -580,19 +585,22 @@ export default function ReviewScreen() {
   const sessionDetail = useSession(sessionId).data;
   const session = sessionDetail?.session;
   const sessionActive = agentIsActive(session, sessionDetail?.currentAgent ?? null);
-  // Sending comments to a terminal session starts its agent with them, which is typing there: the
-  // owner's alone, even while control is shared (docs/adr/0013). A conversation takes them as a
-  // turn from any steerer. Null when the viewer may send, or before the session is read.
   const ownerName = useOwnerName(session);
-  const ownerSends =
-    sessionDetail !== undefined &&
-    (sessionDetail.control?.steer ?? true) &&
-    !canRelaunchSession(
-      { steer: true, terminalInput: terminalInputOf(sessionDetail.control) },
-      sessionDetail.currentAgent?.kind ?? null,
-    )
-      ? terminalOwnerOnlyLine(ownerName, "send-back")
-      : null;
+  // Why the viewer cannot send comments; null when they may, or before the session is read. A
+  // `mend run` command (or a shell) has no agent for delivery to start. Sending to a terminal
+  // session starts its agent with them, which is typing there: the owner's alone, even while
+  // control is shared (docs/adr/0013). A conversation takes them as a turn from any steerer.
+  const sendRefusal =
+    sessionDetail !== undefined && !takesReviewFollowUp(sessionDetail.session.harness)
+      ? noReviewFollowUpLine(sessionDetail.session.harness)
+      : sessionDetail !== undefined &&
+          (sessionDetail.control?.steer ?? true) &&
+          !canRelaunchSession(
+            { steer: true, terminalInput: terminalInputOf(sessionDetail.control) },
+            sessionDetail.currentAgent?.kind ?? null,
+          )
+        ? terminalOwnerOnlyLine(ownerName, "send-back")
+        : null;
   const followUp = usePendingFollowUp(sessionId ?? undefined).data ?? null;
   const { deliverFollowUp } = useSessionActions();
 
@@ -795,7 +803,7 @@ export default function ReviewScreen() {
           }
           onPress={() => queuePass.mutate("read")}
         />
-        {ownerSends === null && (
+        {sendRefusal === null && (
           <EvButton
             size="sm"
             label="Send review"
@@ -805,9 +813,9 @@ export default function ReviewScreen() {
         )}
       </View>
 
-      {ownerSends !== null && (
+      {sendRefusal !== null && (
         <UiText size={13} tone="ink2" style={{ lineHeight: 18 }}>
-          Comments stay here. {ownerSends}
+          Comments stay here. {sendRefusal}
         </UiText>
       )}
 
@@ -847,9 +855,9 @@ export default function ReviewScreen() {
                   {deliverFollowUp.error.message}
                 </MonoText>
               ) : null}
-              {ownerSends !== null ? (
+              {sendRefusal !== null ? (
                 <UiText size={13} tone="ink2" style={{ lineHeight: 18 }}>
-                  {ownerSends}
+                  {sendRefusal}
                 </UiText>
               ) : session !== undefined && !sessionActive && canDeliverFollowUp(followUp) ? (
                 <View style={{ flexDirection: "row" }}>

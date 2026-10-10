@@ -21,7 +21,7 @@ const worktree: WorktreeDto = {
   id: WorktreeId.make("worktree-1"),
   projectId: ProjectId.make("project-1"),
   name: "fix-login",
-  directory: "/store/worktrees/fix-login",
+  directory: "fix-login",
   branch: "mend/fix-login",
   baseRef: "main",
   baseSha: Sha.make("0123456789abcdef0123456789abcdef01234567"),
@@ -129,5 +129,21 @@ describe("worktree removal from the menu", () => {
     // A plain removal keeps no force key at all: the server's default is the refusal.
     await expect(removeWorktree(worktree.id)).rejects.toThrow(WORDS);
     expect(f.requests[1]?.body).toEqual({ 0: { json: { id: worktree.id } } });
+  });
+});
+
+describe("worktree menu copies", () => {
+  it("names the directory it copies, not a path the web does not know (verify 2026-10-10)", () => {
+    const f = fixture();
+    const copied: Array<string> = [];
+    vi.stubGlobal("navigator", {
+      clipboard: { writeText: async (text: string) => void copied.push(text) },
+    });
+    const labels = worktreeMenu(worktree, [], undefined, f.navigate, f.context).entries.flatMap(
+      (entry) => (entry === "separator" ? [] : [entry]),
+    );
+    expect(labels.map((entry) => entry.label)).not.toContain("Copy worktree path");
+    labels.find((entry) => entry.label === "Copy directory name")?.onSelect();
+    expect(copied).toEqual(["fix-login"]);
   });
 });

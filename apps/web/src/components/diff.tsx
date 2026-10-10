@@ -10,6 +10,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { CommentStateActions, EvidenceLines, SuggestionBlock } from "#/components/comment-state";
 import { postSliceReviewComment, type ReviewCommentDto, type ReviewDiffFileDto } from "#/lib/api";
+import { focusWhenShown } from "#/lib/focus-when-shown";
 import { useTRPC } from "#/lib/trpc";
 
 /**
@@ -570,6 +571,12 @@ function InlineComposer({
   const queryClient = useQueryClient();
   const [body, setBody] = useState("");
   const [pending, setPending] = useState(false);
+  // The diff slots this composer into its shadow root after the commit, where `autoFocus` finds
+  // nothing rendered to focus: focus it once it shows.
+  const focusOnceShown = useCallback((textarea: HTMLTextAreaElement | null) => {
+    if (textarea === null) return;
+    return focusWhenShown(textarea);
+  }, []);
 
   const submit = () => {
     if (body.trim() === "") return;
@@ -598,7 +605,7 @@ function InlineComposer({
         comment · {anchor.file}:{lineLabel(anchor.line, anchor.endLine)}
       </p>
       <textarea
-        autoFocus
+        ref={focusOnceShown}
         value={body}
         onChange={(event) => setBody(event.target.value)}
         rows={2}

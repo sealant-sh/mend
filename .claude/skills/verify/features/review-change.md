@@ -80,13 +80,11 @@ Preconditions:
   `1 open comment`.
 - **Inline comment.** Click the line number of the added line in the diff. There is no stable handle
   for it (see Gotchas). An inline composer opens under the line, headed `comment · VERIFY.md:1`. Its
-  textarea has no label and does not take focus: after the line-number click focus stays on `body`
-  (also after `page.bringToFront()`), typing goes nowhere and `Comment` stays disabled. Confirmed
-  bug, fix in flight (the textarea sets `autoFocus`, `diff.tsx:601`; confirming drive of
-  2026-10-10). Click it first (`page.locator("textarea:not([placeholder])")`, the only textarea
-  without a placeholder), then run `await page.keyboard.type("Add a trailing newline check.")` and
-  press that composer's `Comment` button, the last one on the page. The comment renders under line 1
-  and the file header shows `1 comment`.
+  textarea has no label and takes focus as it shows, with nothing clicked: the active element is
+  `page.locator("textarea:not([placeholder])")`, the only textarea without a placeholder. Run
+  `await page.keyboard.type("Add a trailing newline check.")` and press that composer's `Comment`
+  button, the last one on the page. The comment renders under line 1 and the file header shows
+  `1 comment`.
 - **Comment state.** On the change-level card, run
   `await page.getByRole("button", { name: "Dismiss" }).first().click()`. The card's state reads
   `dismissed` and a `Reopen` button replaces the actions. Run
@@ -213,10 +211,10 @@ Preconditions:
   way to open the inline composer. That is a finding; until it has a name, a drive has to use the
   library attribute and say so in its report. The desktop's diff uses the same library and has the
   same finding.
-- The inline composer's textarea has no label, and does not take the focus it asks for (confirmed
-  bug, fix in flight): click it before typing. Its `Comment` button shares its name with the
-  sidebar's change-level `Comment` button. Scope by the composer's `comment · <file>:<line>` header,
-  or take the button that appears after the composer opens.
+- The inline composer's textarea has no label (`page.locator("textarea:not([placeholder])")` finds
+  it). Its `Comment` button shares its name with the sidebar's change-level `Comment` button. Scope
+  by the composer's `comment · <file>:<line>` header, or take the button that appears after the
+  composer opens.
 - The change-level textarea has no label either; its accessible name falls back to the placeholder
   `Comment on the change as a whole…` (with a single ellipsis character).
 - Sidebar file buttons are named by the path followed by its counts (`VERIFY.md +1 −0`). Diff file

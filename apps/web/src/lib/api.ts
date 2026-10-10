@@ -696,16 +696,3 @@ const preferredEndpoint = (view: ServiceViewDto): ServiceEndpointDto | null =>
 
 /** What a client would connect to, exactly as the server bound it. */
 export const serviceEndpoint = (view: ServiceViewDto) => preferredEndpoint(view)?.authority ?? null;
-
-/**
- * How each harness takes an instruction as its opening prompt — the same
- * table the CLI's `mend continue` uses. Null: no known resume command.
- */
-export const continueArgv = (harness: string, instruction: string): ReadonlyArray<string> | null =>
-  harness === "codex"
-    ? ["codex", instruction]
-    : harness === "claude"
-      ? ["claude", instruction]
-      : harness === "opencode"
-        ? ["opencode", "run", instruction]
-        : null;

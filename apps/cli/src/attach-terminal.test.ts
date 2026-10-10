@@ -88,11 +88,33 @@ const detailOf = (startedAgo: number) => {
   return { session, currentAgent: agent, processes: [agent] };
 };
 
+const project = {
+  id: "project-1",
+  name: "demo",
+  defaultBranch: "main",
+  storePath: "/var/lib/mend/store/project-1/repo.git",
+  autoLand: "off",
+};
+
 const startFake = async (mode: "stall-ticket" | "open") => {
   let clientBytes = Buffer.alloc(0);
+  const requests: Array<string> = [];
   const server = createServer((request, response) => {
+    requests.push(`${request.method} ${request.url}`);
     if (request.url === "/api/sessions") json(response, [session]);
-    else if (request.url === `/api/sessions/${session.id}`) json(response, detailOf(23_000));
+    else if (request.url === "/api/projects") json(response, [project]);
+    else if (request.url === `/api/projects/${project.id}`) {
+      json(response, { project, worktrees: [], sessions: [] });
+    } else if (
+      request.method === "POST" &&
+      request.url === `/api/projects/${project.id}/sessions`
+    ) {
+      json(response, session);
+    } else if (request.method === "POST" && request.url === `/api/sessions/${session.id}/launch`) {
+      json(response, session);
+    } else if (request.method === "POST" && request.url === `/api/sessions/${session.id}/stop`) {
+      json(response, { ...session, status: "stopped" });
+    } else if (request.url === `/api/sessions/${session.id}`) json(response, detailOf(23_000));
     else if (request.url === "/api/upgrade-tickets" && mode === "open") {
       json(response, { ticket: "ticket-1" });
     } else if (request.url === "/api/upgrade-tickets") {
@@ -114,6 +136,7 @@ const startFake = async (mode: "stall-ticket" | "open") => {
   return {
     url: `http://127.0.0.1:${address.port}`,
     frames: () => clientTextFrames(clientBytes),
+    requests: () => requests,
     /** Send PTY bytes to every attached terminal. */
     output: (text: string) => {
       for (const socket of sockets) socket.write(serverBinaryFrame(Buffer.from(text)));
@@ -127,10 +150,10 @@ const startFake = async (mode: "stall-ticket" | "open") => {
   };
 };
 
-/** `mend attach session-` inside a 100×30 pty; `write` types into it. */
-const attachInTerminal = (url: string) => {
+/** `mend <args>` inside a 100×30 pty (`mend attach session-` by default); `write` types into it. */
+const attachInTerminal = (url: string, args = "attach session-") => {
   const entrypoint = fileURLToPath(new URL("./main.ts", import.meta.url));
-  const command = `stty rows 30 cols 100; exec ${process.execPath} --experimental-strip-types ${entrypoint} attach session-`;
+  const command = `stty rows 30 cols 100; exec ${process.execPath} --experimental-strip-types ${entrypoint} ${args}`;
   const child = spawn("script", ["-qfec", command, "/dev/null"], {
     env: { ...process.env, MEND_URL: url, MEND_TOKEN: "token", TERM: "xterm-256color" },
     stdio: ["pipe", "pipe", "pipe"],
@@ -217,6 +240,24 @@ describe.skipIf(!hasScript)("mend attach in a terminal", () => {
       );
       cli.write("\x1d");
       expect(await cli.exited).toBe(0);
+    } finally {
+      cli.child.kill("SIGKILL");
+      await fake.close();
+    }
+  }, 30_000);
+
+  it("a foreground session stops when its terminal closes, the write to the dead terminal included (verify 2026-10-10)", async () => {
+    const fake = await startFake("open");
+    const cli = attachInTerminal(
+      fake.url,
+      "claude --name wt --project demo --foreground --no-tunnel",
+    );
+    try {
+      await waitFor(() => fake.frames().length >= 2);
+      // The terminal itself goes away (a closed window, `tmux kill-session`): the CLI gets SIGHUP
+      // and every write to the terminal fails with EIO.
+      cli.child.kill("SIGKILL");
+      await waitFor(() => fake.requests().includes(`POST /api/sessions/${session.id}/stop`));
     } finally {
       cli.child.kill("SIGKILL");
       await fake.close();

@@ -1054,6 +1054,9 @@ const launch = async (config: CliConfig, harness: string, args: ReadonlyArray<st
     ...(parsed.autoLand === null ? {} : { autoLand: parsed.autoLand }),
   });
   createdSessionId = session.id;
+  if (lifecycle === "foreground") {
+    stopForegroundSession = () => stopSessionQuickly(config, session.id);
+  }
   say(`${green("✓")} worktree ${session.worktree} ${dim(`· branch ${session.branch}`)}`);
   const landing = autoLandLine(parsed.autoLand, project);
   if (landing !== null) say(landing);
@@ -1479,23 +1482,28 @@ const TERMINAL_MODES_RESET =
  */
 type LifecycleMode = "background" | "foreground";
 
+/** Stops already sent, by session: a signal and a closed terminal arrive together and share one. */
+const quickStops = new Map<string, Promise<boolean>>();
+
 /**
  * Best-effort stop under a signal's short grace window — a SIGHUP handler
  * cannot afford the ordinary retry path. True when the server accepted.
  */
-const stopSessionQuickly = async (config: CliConfig, sessionId: string): Promise<boolean> => {
+const stopSessionQuickly = (config: CliConfig, sessionId: string): Promise<boolean> => {
+  const sent = quickStops.get(sessionId);
+  if (sent !== undefined) return sent;
   const headers: Record<string, string> = { "content-type": "application/json" };
   if (config.token !== null) headers["authorization"] = `Bearer ${config.token}`;
-  try {
-    const response = await fetch(`${config.url}/api/sessions/${sessionId}/stop`, {
-      method: "POST",
-      headers,
-      signal: AbortSignal.timeout(2500),
-    });
-    return response.ok;
-  } catch {
-    return false;
-  }
+  const stopping = fetch(`${config.url}/api/sessions/${sessionId}/stop`, {
+    method: "POST",
+    headers,
+    signal: AbortSignal.timeout(2500),
+  }).then(
+    (response) => response.ok,
+    () => false,
+  );
+  quickStops.set(sessionId, stopping);
+  return stopping;
 };
 
 /** Foreground exit: stop the session, or say honestly that it may still run. */
@@ -4406,20 +4414,47 @@ const restoreTerminal = (): void => {
 // Every way out, `fail` and an uncaught error included: a terminal write is synchronous here.
 process.once("exit", restoreTerminal);
 
+/** The terminal this CLI wrote to went away: nothing it says is read any more. */
+let terminalGone = false;
+/**
+ * Set once a foreground session exists: its stop, which every way this CLI goes away still sends,
+ * a closed terminal included.
+ */
+let stopForegroundSession: (() => Promise<boolean>) | null = null;
+
+/** Exit once the foreground session's stop has an answer: 0 when the server took it. */
+const exitOnceStopped = async (stop: () => Promise<boolean>): Promise<never> =>
+  process.exit((await stop()) ? 0 : 1);
+
 /**
  * A reader that stops reading (`| head -1`, `| grep -q`) closes the pipe early, and the next write
  * fails with EPIPE. That is the reader's choice, not a failure of the command: every command exits
  * 0 at once, quietly, so a pipeline under `set -o pipefail` reads as the reader's own result.
  * Recorded output (`mend run`, `mend logs`) says it itself and exits with the code it documents:
- * there the write reports the closed pipe. Any other stream error is not swallowed.
+ * there the write reports the closed pipe.
+ *
+ * A terminal that closes (its window, `tmux kill-session`) fails the next write with EIO, often
+ * before this CLI's SIGHUP handler has sent what it must: a foreground session's stop goes out
+ * first, as on SIGHUP, and then the CLI exits without another word. Any other stream error is not
+ * swallowed.
  */
-const onClosedPipe = (error: NodeJS.ErrnoException): void => {
-  if (error.code !== "EPIPE") throw error;
-  if (recordedOutput) return;
-  process.exit(0);
-};
-process.stdout.on("error", onClosedPipe);
-process.stderr.on("error", onClosedPipe);
+const onStreamError =
+  (stream: NodeJS.WriteStream) =>
+  (error: NodeJS.ErrnoException): void => {
+    const closedTerminal =
+      stream.isTTY === true && (error.code === "EIO" || error.code === "EPIPE");
+    if (!closedTerminal && error.code !== "EPIPE") throw error;
+    if (recordedOutput) return;
+    if (!closedTerminal) process.exit(0);
+    if (terminalGone) return;
+    terminalGone = true;
+    const stop = stopForegroundSession;
+    if (stop === null) process.exit(0);
+    void exitOnceStopped(stop);
+  };
+
+process.stdout.on("error", onStreamError(process.stdout));
+process.stderr.on("error", onStreamError(process.stderr));
 
 /**
  * Hand recorded bytes to stdout and resolve once they are written: a reader slower than the record
