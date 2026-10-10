@@ -158,11 +158,11 @@ recipe that needs a login supplies a test one, through the secret registry and `
 `drive-tui.sh` puts the guard first on its terminal's `PATH` and its bundled CLI behind it, and
 `drive-tui.sh`, `drive-desktop.sh`, `drive-web.mjs` and `drive-mobile.mjs` refuse a `<web>` that is
 not the run's tunnel (`drive-web.mjs` also takes the mobile proxy `drive-mobile.mjs` started in
-front of it, under Drive). The box is an outer server only when its operator says so: then declare
-its URL. An alias or a shell function named `mend` outranks `PATH` and skips the guard (an
-interactive zsh often has one), so the check above must print nothing: run the steps in a `bash`
-script, where aliases do not apply, or `unalias mend` first. The helpers start `mend` through
-`PATH`, so they always meet the guard.
+front of it or, with `--outer`, in front of the declared outer, under Drive). The box is an outer
+server only when its operator says so: then declare its URL. An alias or a shell function named
+`mend` outranks `PATH` and skips the guard (an interactive zsh often has one), so the check above
+must print nothing: run the steps in a `bash` script, where aliases do not apply, or `unalias mend`
+first. The helpers start `mend` through `PATH`, so they always meet the guard.
 
 1. **Take a slot.** Count the live verify stacks on the outer Mend before starting one:
 
@@ -464,17 +464,26 @@ from a screenshot.
 
 **Mobile web.** `drive-mobile.mjs` serves the Expo app's web build and the stack's API on one local
 origin (the stack trusts only its own origins), and `drive-web.mjs --viewport 390x844` drives it.
-Pair the app with that origin the way the map's pairing recipe says. Once the proxy listens it
-records itself in `$P/mobile.json` (its pid and start time, port, the tunnel it fronts), and
-`drive-web.mjs` takes `http://127.0.0.1:<port>` only while that process lives and the run's tunnel
-does; the guard and the other drivers never take it. Start it with `MEND_VERIFY_PRIVATE` set to the
-`$P` that `drive-web.mjs --private` names.
+Pair the app with that origin the way the map's pairing recipe says. The server answers a pairing
+with its own configured URL, which the web build could not call cross-origin, so the proxy puts its
+own origin in that answer and prints `drive-mobile · pairing saved with <proxy>, not <server>`: the
+app's `mend-config` keeps the proxy, and every later call goes through it. Once the proxy listens it
+records itself in `$P/mobile.json` (its pid and start time, port, the server it fronts), and
+`drive-web.mjs` takes `http://127.0.0.1:<port>` only while that process lives and the server it
+fronts is the run's live tunnel or the declared outer; the guard and the other drivers never take
+it. Start it with `MEND_VERIFY_PRIVATE` set to the `$P` that `drive-web.mjs --private` names.
+
+A client pass on a release candidate drives the outer itself (the server under test): `--outer` in
+place of `--web` fronts `MEND_VERIFY_OUTER_URL`, by the URL the CLI config names (its `https://` one
+behind an edge; the proxy speaks TLS to it). A plain `http://` URL whose edge redirects to https
+gets one line saying so.
 
 ```sh
 node $skill/scripts/drive-mobile.mjs --app <checkout>/apps/mobile --web "$web" --port 18305 \
   --expo-port 8085 --log "$P.mobile.log" &   # a log beside $P, never in it
 node $skill/scripts/drive-web.mjs --web http://127.0.0.1:18305 --viewport 390x844 \
   --out "$E/<feature>/mobile" --private "$P" --recipe <recipe.mjs>
+# a client pass on the declared outer: --outer instead of --web "$web"
 ```
 
 Keep every log and profile **beside** `$P`, never inside it: every file under `$P` joins the secret

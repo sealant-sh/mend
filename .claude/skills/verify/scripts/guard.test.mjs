@@ -1097,3 +1097,171 @@ test("drive-web may drive the mobile proxy this run started, and no other", asyn
     rmSync(w.home, { recursive: true, force: true });
   }
 });
+
+// RC 761 client pass: with --outer the proxy fronts the declared outer by its own URL (https behind
+// an edge, never plain http on port 80), and a pairing saves the proxy's origin, not the server's.
+const noOpenssl =
+  spawnSync("openssl", ["version"]).status === 0
+    ? false
+    : "openssl is not installed on this machine";
+
+test(
+  "drive-mobile --outer fronts the declared outer over https and pairs the app with the proxy",
+  { skip: noOpenssl },
+  async () => {
+    const w = world({});
+    writeFileSync(join(w.bin, "pnpm"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    const app = join(w.home, "app");
+    mkdirSync(app);
+    const key = join(w.home, "key.pem");
+    const cert = join(w.home, "cert.pem");
+    const made = spawnSync(
+      "openssl",
+      [
+        "req",
+        "-x509",
+        "-newkey",
+        "rsa:2048",
+        "-nodes",
+        "-keyout",
+        key,
+        "-out",
+        cert,
+        "-days",
+        "1",
+        "-subj",
+        "/CN=127.0.0.1",
+        "-addext",
+        "subjectAltName=IP:127.0.0.1",
+      ],
+      { encoding: "utf8" },
+    );
+    assert.equal(made.status, 0, made.stderr);
+    const { createServer: createHttpsServer } = await import("node:https");
+    const { request } = await import("node:http");
+    const outerPort = await quietPort();
+    const httpsOuter = `https://127.0.0.1:${outerPort}`;
+    const seen = [];
+    const token = "synthetic-pair-token-0000";
+    const server = createHttpsServer(
+      { key: readFileSync(key), cert: readFileSync(cert) },
+      (req, res) => {
+        seen.push({
+          method: req.method,
+          url: req.url,
+          origin: req.headers.origin,
+          host: req.headers.host,
+        });
+        res.setHeader("content-type", "application/json");
+        if (req.method === "POST" && req.url === "/api/pair")
+          res.end(
+            JSON.stringify({
+              url: "https://mend.example.com",
+              token,
+              device: { name: "web" },
+              user: { id: "u1", name: "Verifier", email: "v@example.com" },
+            }),
+          );
+        else res.end('{"ok":true}');
+      },
+    );
+    await new Promise((done) => server.listen(outerPort, "127.0.0.1", done));
+    const tunnelPort = await quietPort();
+    tunnelTo(w.P, tunnelPort);
+    const env = {
+      ...process.env,
+      PATH: `${w.bin}:${process.env.PATH}`,
+      MEND_VERIFY_PRIVATE: w.P,
+      MEND_VERIFY_OUTER_URL: httpsOuter,
+      NODE_EXTRA_CA_CERTS: cert,
+    };
+    const proxyPort = await quietPort();
+    const mobile = (...extra) => [
+      join(scripts, "drive-mobile.mjs"),
+      "--app",
+      app,
+      "--port",
+      String(proxyPort),
+      "--log",
+      join(w.home, "mobile.log"),
+      ...extra,
+    ];
+    const record = join(w.P, "mobile.json");
+    let proxy;
+    try {
+      // The outer needs --outer; --outer takes the outer only.
+      for (const extra of [
+        ["--web", httpsOuter],
+        ["--outer", "--web", `http://localhost:${tunnelPort}`],
+      ]) {
+        const refusedRun = spawnSync(process.execPath, mobile(...extra), { encoding: "utf8", env });
+        assert.equal(refusedRun.status, 97, refusedRun.stderr);
+        assert.ok(!existsSync(record));
+      }
+
+      proxy = spawn(process.execPath, mobile("--outer"), { env });
+      let out = "";
+      proxy.stdout.on("data", (data) => (out += data));
+      await new Promise((done, fail) => {
+        proxy.stdout.on("data", () => out.includes("drive-mobile ·") && done());
+        proxy.on("exit", (status) => fail(new Error(`drive-mobile exited ${status}: ${out}`)));
+      });
+      assert.equal(JSON.parse(readFileSync(record, "utf8")).web, httpsOuter);
+      // drive-web takes the proxy in front of the declared outer.
+      const proxyUrl = `http://127.0.0.1:${proxyPort}`;
+      assert.equal(
+        checkTarget(
+          proxyUrl,
+          { MEND_VERIFY_OUTER_URL: httpsOuter, MEND_VERIFY_PRIVATE: w.P },
+          { mobile: true },
+        ),
+        proxyUrl,
+      );
+
+      // The API goes to the outer over TLS, with the outer's own host and origin.
+      const health = await fetch(`${proxyUrl}/api/health`);
+      assert.equal(health.status, 200);
+      assert.equal(seen.at(-1).host, `127.0.0.1:${outerPort}`);
+
+      // The pairing answer names the proxy, by the name the browser used, and keeps the token.
+      const paired = await fetch(`${proxyUrl}/api/pair`, {
+        method: "POST",
+        headers: { "content-type": "application/json", origin: proxyUrl },
+        body: JSON.stringify({ code: "ABCDEFGH", name: "web", platform: "web" }),
+      });
+      assert.equal(paired.status, 200);
+      const body = await paired.json();
+      assert.equal(body.url, proxyUrl);
+      assert.equal(body.token, token);
+      assert.equal(seen.at(-1).origin, httpsOuter);
+      const byName = await new Promise((done, fail) => {
+        const req = request(
+          {
+            host: "127.0.0.1",
+            port: proxyPort,
+            method: "POST",
+            path: "/api/pair",
+            headers: { host: `localhost:${proxyPort}`, "content-type": "application/json" },
+          },
+          (res) => {
+            let text = "";
+            res.on("data", (chunk) => (text += chunk));
+            res.on("end", () => done(JSON.parse(text)));
+          },
+        );
+        req.on("error", fail);
+        req.end("{}");
+      });
+      assert.equal(byName.url, `http://localhost:${proxyPort}`);
+      assert.match(
+        out,
+        /pairing saved with http:\/\/127\.0\.0\.1:\d+, not https:\/\/mend\.example\.com/,
+      );
+      assert.doesNotMatch(out, new RegExp(token));
+    } finally {
+      proxy?.kill("SIGKILL");
+      server.close();
+      rmSync(w.home, { recursive: true, force: true });
+    }
+  },
+);

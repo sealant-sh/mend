@@ -176,7 +176,11 @@ Preconditions:
 ## Gotchas
 
 - The web build bundles since mend#670 (`apps/mobile/scripts/check-web.mjs` holds it to that in CI).
-  Drive it through `drive-mobile.mjs`, whose proxy `drive-web.mjs` takes while it runs.
+  Drive it through `drive-mobile.mjs`, whose proxy `drive-web.mjs` takes while it runs. Pair with
+  the proxy's origin: a pairing saves the URL the server picks (its `APP_URL`), and the proxy
+  answers with its own instead, so `mend-config` keeps the proxy and Settings shows it as `<web>`.
+  Against the declared outer (an RC client pass), start it with `--outer`; it reaches the outer by
+  its `https://` URL.
 - Most controls are `Pressable`s without a role. React Native Web renders them as focusable `div`s
   with no `button` role, so `getByRole("button")` finds only the few that set one: the session
   header's icon buttons (`Review the change`, `Diff`, `Shell`, `More actions`, …), `Now` in the wide

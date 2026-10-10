@@ -19,8 +19,9 @@
 // One more, for drive-web.mjs only (checkTarget's `mobile`): the mobile proxy this run started,
 // http://127.0.0.1:<port> or http://localhost:<port>, where $MEND_VERIFY_PRIVATE/mobile.json records
 // <port>, that drive-mobile.mjs bound it itself (`bound`), the recorded pid is still that process,
-// and the stack it fronts (`web`) is this run's tunnel, alive now. drive-mobile.mjs refuses any
-// other stack, and its proxy sends the API to that tunnel and nothing else.
+// and the server it fronts (`web`) is this run's tunnel, alive now, or the declared outer (with
+// drive-mobile.mjs --outer: a server drive-web.mjs may drive directly anyway). drive-mobile.mjs
+// refuses any other server, and its proxy sends the API to that one and nothing else.
 //
 // The CLI check refuses (exit 97, nothing run) when:
 //   - MEND_VERIFY_OUTER_URL is not set, or is not a URL;
@@ -151,9 +152,10 @@ export const MOBILE_RECORD = "mobile.json";
 
 /**
  * The run's mobile proxy URLs, when drive-mobile.mjs bound it itself, its process is still the one
- * recorded, and the stack it fronts is one of `tunnels` (this run's tunnel, alive now).
+ * recorded, and the server it fronts is one of `targets` (the declared outer, or this run's tunnel,
+ * alive now).
  */
-const mobileTargets = (env, tunnels) => {
+const mobileTargets = (env, targets) => {
   const privateDir = env.MEND_VERIFY_PRIVATE ?? "";
   if (privateDir === "" || !isAbsolute(privateDir)) return [];
   const file = join(privateDir, MOBILE_RECORD);
@@ -169,9 +171,9 @@ const mobileTargets = (env, tunnels) => {
   if (!Number.isInteger(proxy.pid) || typeof proxy.identity !== "string") return [];
   if (identityOf(proxy.pid) !== proxy.identity) return [];
   const fronts = normalizeUrl(proxy.web);
-  if (fronts === null || !tunnels.includes(fronts)) return [];
+  if (fronts === null || !targets.includes(fronts)) return [];
   const own = [`http://localhost:${port}`, `http://127.0.0.1:${port}`];
-  if (own.some((url) => tunnels.includes(url))) return [];
+  if (own.some((url) => targets.includes(url))) return [];
   const listening = listenersOn(port);
   if (listening === null || listening.some((at) => at.startsWith("[")))
     refuse(`something listens on [::1]:${port}, where localhost goes first; not this run's proxy`);
@@ -184,7 +186,7 @@ const mobileTargets = (env, tunnels) => {
  */
 export const checkTarget = (url, env, { mobile = false } = {}) => {
   const targets = allowedTargets(env);
-  if (mobile) targets.push(...mobileTargets(env, targets.slice(1)));
+  if (mobile) targets.push(...mobileTargets(env, [...targets]));
   const wanted = normalizeUrl(url);
   if (wanted === null || !targets.includes(wanted))
     refuse(
