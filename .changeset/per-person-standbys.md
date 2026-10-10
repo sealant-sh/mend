@@ -15,7 +15,11 @@ they started: another person's session, the operator's `harnessLayout` asking fo
 or a worktree that has already run per person starts cold, and is never handed a standby that would
 then be stopped. Once claimed, a standby's layout stands: if Mend learns between the claim and the
 launch that the image cannot run per person, the launch runs with one shared home in that standby
-and says why. While the Sealant control plane cannot be asked, the pool keeps the standbys it has.
-The Hot sessions card no longer says `no standby · per-person workspaces launch cold`. A database
-migration records each standby's layout; standbys from before it start with one shared home, as they
-did.
+and says why. While the Sealant control plane cannot be asked, the pool keeps the standbys it has. A
+database migration records each standby's layout; standbys from before it start with one shared
+home, as they did.
+
+A claimed standby whose worktree changed since the claim is stopped before anything runs in it, and
+the session starts cold. A change to a person's dotfiles does not replace their standbys, which
+fetch dotfiles when claimed. While the Sealant control plane cannot be asked, an image known to run
+with one shared home still has its standbys claimed.
