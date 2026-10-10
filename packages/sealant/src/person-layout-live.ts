@@ -14,7 +14,6 @@ import type {
   WorkspaceImageInspection,
   WorkspaceImagePersonLayout,
   SealantFeatures,
-  Workspace,
   WorkspaceProcessUserCapability,
 } from "@sealant/sdk";
 import { Clock, Duration, Effect, Layer, Option } from "effect";
@@ -162,27 +161,16 @@ export const controlPlaneObstacleOf = (features: SealantFeatures): string | null
 };
 
 /**
- * Core runs a workspace's SSH sessions as the user its create names (`features.workspaceSshUser`,
- * sealant#348). Read by name: the SDK Mend pins may not declare it yet, and a control plane from
- * before it does not report it.
+ * Core runs a workspace's SSH sessions as its owner's user (`features.workspaceSshUser`,
+ * sealant#348); a control plane from before it reports false.
  */
-export const runsSshAsUser = (features: SealantFeatures): boolean =>
-  "workspaceSshUser" in features && features.workspaceSshUser === true;
+export const runsSshAsUser = (features: SealantFeatures): boolean => features.workspaceSshUser;
 
-/** Core binds a user's person (`features.personBinding`, sealant#348), read by name likewise. */
-export const bindsPersons = (features: SealantFeatures): boolean =>
-  "personBinding" in features && features.personBinding === true;
+/** Core binds a user's person (`features.personBinding`, sealant#348). */
+export const bindsPersons = (features: SealantFeatures): boolean => features.personBinding;
 
 /** How long a refused person binding is kept before Core is asked again. */
 const BINDING_REFUSED_MS = 5 * 60_000;
-
-/** A workspace handle whose SDK sets its SSH sessions back to root (`sshAsRoot`, sealant#348). */
-interface SshRootSettable {
-  readonly sshAsRoot: () => Promise<void>;
-}
-
-const setsSshRoot = (workspace: Workspace): workspace is Workspace & SshRootSettable =>
-  "sshAsRoot" in workspace && typeof workspace.sshAsRoot === "function";
 
 /** The workspace's own answer (`workspace.processUser()`), as a prepare's missing words. */
 export const workspaceProcessUserObstacleOf = (
@@ -345,13 +333,11 @@ export const PersonLayoutPlatformLive: Layer.Layer<PersonLayoutPlatform, never, 
             }
             return "unbound" as const;
           }).pipe(Effect.withSpan("PersonLayoutPlatform.sshAsOwnerFor")),
-        // `workspace.sshAsRoot` (sealant#348), only where Core said it takes a user; an SDK
-        // from before it has no such method, and its creates never asked for one.
+        // `workspace.sshAsRoot` (sealant#348), only where Core said it takes a user.
         sshAsRoot: (workspace) =>
           Effect.gen(function* () {
-            // Nothing to set: an SDK that cannot ask for a user never asked for one, and a Core
-            // that says it takes none never ran this workspace's sessions as anyone but root.
-            if (!setsSshRoot(workspace)) return true;
+            // Nothing to set: a Core that says it takes no SSH user never ran this workspace's
+            // sessions as anyone but root.
             if ((yield* controlPlaneAnswer).sshUser === false) return true;
             // Core takes one, or could not be asked: tried, and only Core's yes is done. An
             // unreadable answer never clears the obligation.

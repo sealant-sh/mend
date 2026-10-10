@@ -608,6 +608,7 @@ const sealantLaunchLayer = (
     runtimeDeadline: async () => null,
     runtime: async () => null,
     processUser: async () => "supported",
+    sshAsRoot: async () => {},
     phase: async () => captureOps?.phase?.() ?? null,
     launch: undefined,
     recover: async () => {
