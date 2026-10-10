@@ -280,6 +280,12 @@ const FETCH_SETTING_FILES = [
   "/etc/npmrc",
 ].join(" ");
 
+/**
+ * `["']?` inside a single-quoted grep pattern: npm and pnpm's ini parser take a quoted key too
+ * (`"registry"=…`). The single quote closes the pattern, is given in double quotes, and reopens it.
+ */
+const OPTIONAL_QUOTE = `["'"'"']?`;
+
 /** One setting: its `.npmrc` and `pnpm-workspace.yaml` spellings and its environment names. */
 const fetchSettingUnset = (kebab: string, camel: string): string => {
   const snake = kebab.replaceAll("-", "_");
@@ -287,7 +293,8 @@ const fetchSettingUnset = (kebab: string, camel: string): string => {
     .flatMap((name) => [name, name.toUpperCase()])
     .map((name) => `\${${name}-}`)
     .join("");
-  return `[ -z "${env}" ] && ! grep -Eqs '^[[:space:]]*(${kebab}|${camel})[[:space:]]*[=:]' ${FETCH_SETTING_FILES}`;
+  // npm and pnpm's ini parser take a quoted key too (`"fetch-timeout"=…`).
+  return `[ -z "${env}" ] && ! grep -Eqs '^[[:space:]]*${OPTIONAL_QUOTE}(${kebab}|${camel})${OPTIONAL_QUOTE}[[:space:]]*[=:]' ${FETCH_SETTING_FILES}`;
 };
 
 // ─── The npm mirror ─────────────────────────────────────────────────────────
@@ -325,16 +332,40 @@ const NPM_INSTALL = /^npm[ \t]+(?:ci|install|i)(?:[ \t]+[\w@./=:+,-]+)*$/;
 export const NPM_MIRROR_USED = "mend: npm mirror · used";
 export const NPM_MIRROR_NOT_USED = "mend: npm mirror · not used";
 
+/** The public registry, exactly as npm and pnpm print it when nothing else is set. */
+const NPMJS_REGISTRY = "https://registry.npmjs.org/";
+
 /**
- * A login for the public registry, set anywhere the install reads: `//registry.npmjs.org/:…` or
- * an unscoped `_auth`, `_authToken`, `_password`, `username` or `always-auth`. Packages behind such
- * a login are private, and the mirror never sends a credential, so the install stays on the
- * registry itself.
+ * A login for the public registry: `//registry.npmjs.org/:…` or an unscoped `_auth`, `_authToken`,
+ * `_password`, `username` or `always-auth`. Packages behind such a login are private, and the mirror
+ * never sends a credential, so the install stays on the registry itself. Matched in what
+ * `npm config list` prints (every source npm reads, quoted keys normalised, values `(protected)`),
+ * and, as a second denial, in the config files themselves, a quoted key included.
  */
+const NPMJS_LOGIN_KEY =
+  "(//registry\\.npmjs\\.org/:|_auth|_password|username[[:space:]]*=|always-auth)";
 const NPMJS_LOGIN = [
-  `grep -Eqs '^[[:space:]]*(//registry\\.npmjs\\.org/:|_auth|_password|username[[:space:]]*=|always-auth)' ${FETCH_SETTING_FILES}`,
+  `printf '%s\\n' "$mend_npm_config" | grep -Eq '^"?${NPMJS_LOGIN_KEY}'`,
+  `grep -Eqs '^[[:space:]]*${OPTIONAL_QUOTE}${NPMJS_LOGIN_KEY}' ${FETCH_SETTING_FILES}`,
   '[ -n "${npm_config__auth-}${npm_config__authToken-}${NPM_CONFIG__AUTH-}${NPM_CONFIG__AUTHTOKEN-}" ]',
 ].join(" || ");
+
+/**
+ * Ask the package manager, as the person who runs the install, in the project, what it will use:
+ * `npm config list` (every source npm reads: the environment, the project, the person, the global
+ * and builtin files, quoted keys included; secrets printed as `(protected)`), and `<pm> config get
+ * registry`, the default registry the install itself resolves. Each is bounded at 15 s; a missing
+ * `timeout`, an error or a timeout leaves `mend_config_read` empty, and then there is no mirror.
+ * The update check is off for both, so neither asks the registry anything. Measured on node 24:
+ * npm about 50 ms, pnpm 10 about 180 ms.
+ */
+const readPackageManagerConfig = (manager: "npm" | "pnpm"): string =>
+  [
+    "mend_config_read=; mend_npm_config=; mend_pm_registry=",
+    "if command -v timeout >/dev/null 2>&1 &&",
+    "  mend_npm_config=$(npm_config_update_notifier=false timeout 15 npm config list 2>/dev/null) &&",
+    `  mend_pm_registry=$(npm_config_update_notifier=false timeout 15 ${manager} config get registry 2>/dev/null); then mend_config_read=1; fi`,
+  ].join("\n");
 
 /** One line on stderr: what the install script decided about the mirror. */
 const said = (words: string) => `echo '${words}' >&2`;
@@ -373,9 +404,14 @@ const npmMirrorLines = (command: string, mirror: string): ReadonlyArray<string> 
       said(`${NPM_MIRROR_NOT_USED} · the command passes ${flag}, which may choose its own config`),
     ];
   const ping = `node -e 'fetch(process.argv[1] + "-/ping", { signal: AbortSignal.timeout(3000) }).then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))' '${mirror}' >/dev/null 2>&1`;
+  const manager = command.startsWith("pnpm") ? "pnpm" : "npm";
   return [
     "mend_registry=",
-    `if ! { ${fetchSettingUnset("registry", "registries")}; }; then ${said(`${NPM_MIRROR_NOT_USED} · a registry is set`)}`,
+    readPackageManagerConfig(manager),
+    `if [ -z "$mend_config_read" ]; then ${said(`${NPM_MIRROR_NOT_USED} · the configuration ${manager} reports could not be read`)}`,
+    // The package manager's answer decides; the file and environment checks can only add a "no"
+    // (pnpm 10's `config get` does not read pnpm-workspace.yaml, for one).
+    `elif [ "$mend_pm_registry" != "${NPMJS_REGISTRY}" ] || ! { ${fetchSettingUnset("registry", "registries")}; }; then ${said(`${NPM_MIRROR_NOT_USED} · a registry is set`)}`,
     `elif ${NPMJS_LOGIN}; then ${said(`${NPM_MIRROR_NOT_USED} · a login for registry.npmjs.org is set`)}`,
     `elif ${ping}; then mend_registry='--registry=${mirror}'; ${said(`${NPM_MIRROR_USED} · ${mirror}`)}`,
     `else ${said(`${NPM_MIRROR_NOT_USED} · ${mirror} did not answer`)}; fi`,

@@ -327,7 +327,11 @@ const withStandIn = async <A>(
     const repo = path.join(root, "repo");
     const bin = path.join(root, "bin");
     for (const dir of [repo, bin]) fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(path.join(bin, "pnpm"), ["#!/bin/sh", ...pnpm].join("\n"), {
+    // Asked for its configuration (the mirror's check), it reports nothing set.
+    const config =
+      'if [ "$1" = config ]; then [ "$2" = get ] && echo https://registry.npmjs.org/; exit 0; fi';
+    fs.writeFileSync(path.join(bin, "npm"), ["#!/bin/sh", config].join("\n"), { mode: 0o755 });
+    fs.writeFileSync(path.join(bin, "pnpm"), ["#!/bin/sh", config, ...pnpm].join("\n"), {
       mode: 0o755,
     });
     fs.writeFileSync(path.join(bin, "node"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
@@ -418,10 +422,21 @@ describe("runInstallCommand", () => {
 
 const MIRROR = "http://npm-mirror:4873/";
 
+/**
+ * The real npm beside the node running these tests, run by that node: the mirror tests hand it
+ * `npm config …`, so what decides is npm's own reading of the configuration, quoted keys included.
+ */
+const REAL_NPM = path.join(
+  path.dirname(process.execPath),
+  "../lib/node_modules/npm/bin/npm-cli.js",
+);
+
 describe("the npm mirror in the install script", () => {
   /**
    * The script run by a real `sh` in a temporary repo and home, beside a stand-in `pnpm` and `npm`
-   * that record their argv, and a stand-in `node` whose ping answers as `MIRROR_DOWN` says.
+   * that record their install argv, and a stand-in `node` whose ping answers as `MIRROR_DOWN` says.
+   * Their `config` subcommands are the real npm's (pnpm 10 hands `config get` to npm too), unless
+   * `CONFIG_FAILS` makes them fail.
    */
   const run = (setup: {
     readonly command?: string;
@@ -440,9 +455,18 @@ describe("the npm mirror in the install script", () => {
       writeFiles(home, setup.home);
       const out = path.join(root, "argv.out");
       for (const tool of ["pnpm", "npm"])
-        fs.writeFileSync(path.join(bin, tool), `#!/bin/sh\nprintf '%s' "$*" > "${out}"\n`, {
-          mode: 0o755,
-        });
+        fs.writeFileSync(
+          path.join(bin, tool),
+          [
+            "#!/bin/sh",
+            'if [ "$1" = config ]; then',
+            '  [ -n "${CONFIG_FAILS-}" ] && exit 1',
+            `  exec "${process.execPath}" "${REAL_NPM}" "$@"`,
+            "fi",
+            `printf '%s' "$*" > "${out}"`,
+          ].join("\n"),
+          { mode: 0o755 },
+        );
       fs.writeFileSync(
         path.join(bin, "node"),
         '#!/bin/sh\ncase "$*" in *-/ping*) exit "${MIRROR_DOWN:-0}";; esac\nexit 0\n',
@@ -510,6 +534,52 @@ describe("the npm mirror in the install script", () => {
       expect(seen.said).toBe(`${NPM_MIRROR_NOT_USED} · a login for registry.npmjs.org is set`);
     },
   );
+
+  it.each([
+    [
+      "a double-quoted registry",
+      { files: { ".npmrc": '"registry"=https://private-registry.invalid/\n' } },
+    ],
+    [
+      "a single-quoted registry",
+      { files: { ".npmrc": "'registry'=https://private-registry.invalid/\n" } },
+    ],
+    [
+      "a quoted registry in ~/.npmrc",
+      { home: { ".npmrc": '"registry" = https://npm.corp.example/\n' } },
+    ],
+  ])("asks npm, which reads %s as the registry, and leaves it alone", (_what, setup) => {
+    for (const command of ["npm ci", "pnpm install --frozen-lockfile"]) {
+      const seen = run({ command, ...setup });
+      expect(seen.argv).not.toContain("--registry");
+      expect(seen.said).toBe(`${NPM_MIRROR_NOT_USED} · a registry is set`);
+    }
+  });
+
+  it.each([
+    [
+      "a quoted token for registry.npmjs.org",
+      { files: { ".npmrc": '"//registry.npmjs.org/:_authToken"=dummy\n' } },
+    ],
+    [
+      "a single-quoted token in ~/.npmrc",
+      { home: { ".npmrc": "'//registry.npmjs.org/:_authToken'=dummy\n" } },
+    ],
+  ])("asks npm, which reads %s as a login, and stays on the registry", (_what, setup) => {
+    const seen = run({ command: "npm ci", ...setup });
+    expect(seen.argv).not.toContain("--registry");
+    expect(seen.said).toBe(`${NPM_MIRROR_NOT_USED} · a login for registry.npmjs.org is set`);
+  });
+
+  it("offers no mirror when the package manager's configuration cannot be read", () => {
+    for (const command of ["npm ci", "pnpm install --frozen-lockfile"]) {
+      const seen = run({ command, env: { CONFIG_FAILS: "1" } });
+      expect(seen.argv).not.toContain("--registry");
+      expect(seen.said).toBe(
+        `${NPM_MIRROR_NOT_USED} · the configuration ${command.split(" ")[0]} reports could not be read`,
+      );
+    }
+  });
 
   it("uses the mirror beside a scoped private registry, whose packages and login stay its own", () => {
     const seen = run({
@@ -639,6 +709,7 @@ describe("runInstallCommand with the npm mirror", () => {
         path.join(bin, "npm"),
         [
           "#!/bin/sh",
+          'if [ "$1" = config ]; then [ "$2" = get ] && echo https://registry.npmjs.org/; exit 0; fi',
           `case "$*" in *--registry=${MIRROR}*) printf '%s\\n' ${CORRUPT.map((line) => `'${line}'`).join(" ")} >&2; exit 1;; esac`,
           "echo 'added 1 package'",
         ].join("\n"),
