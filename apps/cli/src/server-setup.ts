@@ -319,6 +319,16 @@ export interface ServerConfig {
   readonly t3GatewayPort?: number;
 }
 
+/**
+ * The Mend image's label naming the image its bundled worker runs to refuse the cloud metadata
+ * address in each workspace (the same Dockerfile ARG sets the worker's
+ * SEALANT_DOCKER_NETWORK_GUARD_IMAGE). `checkLocalImages` preloads what the label names, so setup
+ * and the worker cannot disagree. An image from before the guard has no label.
+ */
+const NETWORK_GUARD_IMAGE_LABEL = "dev.sealant.mend.network-guard-image";
+/** An image reference as a label carries it: no space, no option-looking leading dash. */
+const IMAGE_REFERENCE = /^[a-z0-9][A-Za-z0-9._/:@-]*$/;
+
 /** The Garage image the bundle pins; `checkLocalImages` preloads it like Postgres's. */
 const GARAGE_IMAGE = "dxflrs/garage:v2.4.1";
 /** The bucket every install uses; `MEND_BLOB_STORE` in the compose names it. */
@@ -2189,6 +2199,28 @@ const checkLocalImages = async (
         `Mend ${config.serverVersion} has no t3code gateway (its image carries no ${T3_GATEWAY_IMAGE_LABEL} label). Upgrade to a version that has one with mend server upgrade --version <version>, then turn it on; or run mend server setup --no-t3-gateway`,
       );
     }
+  }
+  // Every session's launch runs the guard: preload it with the server, so a host that cannot pull
+  // it fails here, not at the first session.
+  const guardLabel = await runtime.run("docker", [
+    "--context",
+    config.dockerContext,
+    "image",
+    "inspect",
+    image,
+    "--format",
+    `{{index .Config.Labels "${NETWORK_GUARD_IMAGE_LABEL}"}}`,
+  ]);
+  const guardImage = guardLabel.status === 0 ? guardLabel.stdout.trim() : "";
+  if (guardImage !== "") {
+    if (!IMAGE_REFERENCE.test(guardImage))
+      throw setupError(`Image ${image} names an invalid ${NETWORK_GUARD_IMAGE_LABEL}.`);
+    const guard = await inspectImage(runtime, config.dockerContext, guardImage, "{{.Id}}", policy);
+    if (guard.status !== 0)
+      throw commandFailure(
+        `Preload ${guardImage}, which refuses the cloud metadata address in every session, before continuing`,
+        guard,
+      );
   }
   const postgres = await inspectImage(
     runtime,

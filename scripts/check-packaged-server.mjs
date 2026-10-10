@@ -1013,6 +1013,15 @@ async function main() {
   );
   const imageInfo = JSON.parse(await docker(["image", "inspect", image]))[0];
   assertImagePin(mend, imageInfo, image, version);
+  // The cloud metadata guard: the worker runs the image the label names, and setup preloaded it.
+  const guardImage = imageInfo.Config.Labels["dev.sealant.mend.network-guard-image"];
+  check(
+    typeof guardImage === "string" &&
+      guardImage.length > 0 &&
+      new Set(mend.Config.Env).has(`SEALANT_DOCKER_NETWORK_GUARD_IMAGE=${guardImage}`),
+    "Mend must hand its worker the cloud metadata guard image its label names",
+  );
+  await docker(["image", "inspect", "--format", "{{.Id}}", guardImage]);
   check(
     postgres.Config.Image === "postgres:17-alpine",
     "Postgres must be the contract's official image",

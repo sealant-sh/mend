@@ -46,11 +46,11 @@ catalogs:
       specifier: ^1.2.12
       version: 1.3.1
     '@sealant/api-contracts':
-      specifier: npm:@sealant/api-contracts-next@0.39.0-next.717
-      version: 0.39.0-next.717
+      specifier: npm:@sealant/api-contracts-next@0.39.0-next.720
+      version: 0.39.0-next.720
     '@sealant/sdk':
-      specifier: npm:@sealant/sdk-next@0.39.0-next.717
-      version: 0.39.0-next.717
+      specifier: npm:@sealant/sdk-next@0.39.0-next.720
+      version: 0.39.0-next.720
     '@slack/socket-mode':
       specifier: ^3.0.1
       version: 3.0.1
@@ -1068,7 +1068,7 @@ importers:
     dependencies:
       '@sealant/api-contracts':
         specifier: 'catalog:'
-        version: '@sealant/api-contracts-next@0.39.0-next.717(effect@4.0.0-beta.93)'
+        version: '@sealant/api-contracts-next@0.39.0-next.720(effect@4.0.0-beta.93)'
       effect:
         specifier: 'catalog:'
         version: 4.0.0-beta.93
@@ -1111,7 +1111,7 @@ importers:
         version: link:../store
       '@sealant/sdk':
         specifier: 'catalog:'
-        version: '@sealant/sdk-next@0.39.0-next.717(effect@4.0.0-beta.93)'
+        version: '@sealant/sdk-next@0.39.0-next.720(effect@4.0.0-beta.93)'
       effect:
         specifier: 'catalog:'
         version: 4.0.0-beta.93
@@ -1160,7 +1160,7 @@ importers:
         version: link:../store
       '@sealant/sdk':
         specifier: 'catalog:'
-        version: '@sealant/sdk-next@0.39.0-next.717(effect@4.0.0-beta.93)'
+        version: '@sealant/sdk-next@0.39.0-next.720(effect@4.0.0-beta.93)'
       effect:
         specifier: 'catalog:'
         version: 4.0.0-beta.93
@@ -1203,7 +1203,7 @@ importers:
         version: link:../store
       '@sealant/sdk':
         specifier: 'catalog:'
-        version: '@sealant/sdk-next@0.39.0-next.717(effect@4.0.0-beta.93)'
+        version: '@sealant/sdk-next@0.39.0-next.720(effect@4.0.0-beta.93)'
       effect:
         specifier: 'catalog:'
         version: 4.0.0-beta.93
@@ -1253,7 +1253,7 @@ importers:
         version: link:../domain
       '@sealant/sdk':
         specifier: 'catalog:'
-        version: '@sealant/sdk-next@0.39.0-next.717(effect@4.0.0-beta.93)'
+        version: '@sealant/sdk-next@0.39.0-next.720(effect@4.0.0-beta.93)'
       effect:
         specifier: 'catalog:'
         version: 4.0.0-beta.93
@@ -1293,7 +1293,7 @@ importers:
         version: link:../store
       '@sealant/sdk':
         specifier: 'catalog:'
-        version: '@sealant/sdk-next@0.39.0-next.717(effect@4.0.0-beta.93)'
+        version: '@sealant/sdk-next@0.39.0-next.720(effect@4.0.0-beta.93)'
       effect:
         specifier: 'catalog:'
         version: 4.0.0-beta.93
@@ -4941,14 +4941,14 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@sealant/api-contracts-next@0.39.0-next.717':
-    resolution: {integrity: sha512-VPyBYl5DwZE3mATl0YL7/ZHXvP+tipEeKnXxXUWzKfoN4bgFYonQZz0f8SuoeMTqN6qMo0U16ERhRP1ahLQxyQ==}
+  '@sealant/api-contracts-next@0.39.0-next.720':
+    resolution: {integrity: sha512-LKH0NIpeiFHFivRoWiquXidw7hT+WwkcFEeInF6fO+hOTBSJc/hJRo5fXrr41UKWbnEF36ETnlI5Nbsd7RxpAg==}
     engines: {node: '>=20'}
     peerDependencies:
       effect: '>=4.0.0-beta.85 <5'
 
-  '@sealant/sdk-next@0.39.0-next.717':
-    resolution: {integrity: sha512-LdbH7hcsMwBsevNkHYeCHvpzkc1TJ6zwYcb9+Hkx8MFYe8EDnVQS/0AnEzaa/RLz3lrWLVUl8bMPSwiuHSsoHg==}
+  '@sealant/sdk-next@0.39.0-next.720':
+    resolution: {integrity: sha512-72Dxgb/zXH+Dx8Qx/18TBZO/77bvqlC7p3diFHseMD2xHGP3SubIKNebByrBpEtV++tfeUOCXdcl+kHng0HX2g==}
     engines: {node: '>=20'}
     peerDependencies:
       effect: '>=4.0.0-beta.85 <5'
@@ -15825,13 +15825,13 @@ snapshots:
   '@rollup/rollup-win32-x64-msvc@4.62.2':
     optional: true
 
-  '@sealant/api-contracts-next@0.39.0-next.717(effect@4.0.0-beta.93)':
+  '@sealant/api-contracts-next@0.39.0-next.720(effect@4.0.0-beta.93)':
     dependencies:
       effect: 4.0.0-beta.93
 
-  '@sealant/sdk-next@0.39.0-next.717(effect@4.0.0-beta.93)':
+  '@sealant/sdk-next@0.39.0-next.720(effect@4.0.0-beta.93)':
     dependencies:
-      '@sealant/api-contracts': '@sealant/api-contracts-next@0.39.0-next.717(effect@4.0.0-beta.93)'
+      '@sealant/api-contracts': '@sealant/api-contracts-next@0.39.0-next.720(effect@4.0.0-beta.93)'
       effect: 4.0.0-beta.93
 
   '@secretlint/config-creator@10.2.2':

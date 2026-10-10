@@ -470,11 +470,17 @@ describe.skipIf(!composeAvailable)(
       const pulled = new Set<string>();
       let target: string | undefined;
       let runningGeneration = previous;
+      // The Mend image names the cloud metadata guard image; setup preloads it like the others.
+      const guard = `busybox:1.37@sha256:${"0".repeat(64)}`;
+      const images = ["ghcr.io/sealant-sh/mend:0.23.0", guard, "postgres:17-alpine"];
       const result = await serverCommand(
         ["setup", "--port", "4111", ...(scenario.offline ? ["--offline"] : [])],
         {
           ...initial,
           run: async (command, args, options) => {
+            if (args.some((arg) => arg.includes("network-guard-image"))) {
+              return { status: 0, stdout: `${guard}\n`, stderr: "" };
+            }
             if (args.includes("config")) {
               events.push("config");
               target = args[args.indexOf("--project-directory") + 1];
@@ -484,16 +490,14 @@ describe.skipIf(!composeAvailable)(
             }
             if (
               args[2] === "pull" ||
-              (args[2] === "image" &&
-                args[3] === "inspect" &&
-                ["ghcr.io/sealant-sh/mend:0.23.0", "postgres:17-alpine"].includes(args[4] ?? ""))
+              (args[2] === "image" && args[3] === "inspect" && images.includes(args[4] ?? ""))
             ) {
               expect(events[0]).toBe("config");
               expect(fs.realpathSync(path.join(configDir, "active"))).toBe(previous);
               const pulling = args.includes("pull");
               const image = args[args.indexOf(pulling ? "pull" : "inspect") + 1];
               if (image === undefined) throw new Error("missing image reference");
-              expect(["ghcr.io/sealant-sh/mend:0.23.0", "postgres:17-alpine"]).toContain(image);
+              expect(images).toContain(image);
               events.push(`${pulling ? "pull" : "inspect"} ${image}`);
               if (pulling) {
                 pulled.add(image);
@@ -522,6 +526,9 @@ describe.skipIf(!composeAvailable)(
           "inspect ghcr.io/sealant-sh/mend:0.23.0",
           "pull ghcr.io/sealant-sh/mend:0.23.0",
           "inspect ghcr.io/sealant-sh/mend:0.23.0",
+          `inspect ${guard}`,
+          `pull ${guard}`,
+          `inspect ${guard}`,
           "inspect postgres:17-alpine",
           "pull postgres:17-alpine",
           "inspect postgres:17-alpine",

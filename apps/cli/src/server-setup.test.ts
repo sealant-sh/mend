@@ -93,6 +93,12 @@ const makeRuntime = (
     readonly gatewayAnswers?: boolean;
     /** What the host-kernel probe container prints; absent: the probe fails, as on no image. */
     readonly hostKernel?: string;
+    /** The image's cloud metadata guard label: absent, an image from before the guard. */
+    readonly guardLabel?: string;
+    /** Images `image inspect` does not find until a `pull` brings them. */
+    readonly missingImages?: ReadonlyArray<string>;
+    /** Whether a `pull` of a missing image fails. */
+    readonly pullFails?: boolean;
   } = {},
 ): RuntimeControl => {
   const commands: Array<readonly [string, ReadonlyArray<string>]> = [];
@@ -105,6 +111,7 @@ const makeRuntime = (
     `${JSON.stringify({ Name: "default", DockerEndpoint: "unix:///var/run/docker.sock", Current: true })}\n`;
 
   const garageCalls: ReadonlyArray<string>[] = [];
+  const missing = new Set(options.missingImages ?? []);
   const runtime: ServerSetupRuntime = {
     configDir: options.configDir ?? temporaryDirectory(),
     platform: options.platform ?? "linux",
@@ -188,6 +195,18 @@ const makeRuntime = (
             stderr: "",
           };
         return { status: 0, stdout: "", stderr: "" };
+      }
+      if (args.includes("image") && args.some((arg) => arg.includes("network-guard-image"))) {
+        return { status: options.imageStatus ?? 0, stdout: options.guardLabel ?? "", stderr: "" };
+      }
+      if (args.includes("pull") && missing.has(args.at(-1) ?? "")) {
+        if (options.pullFails === true)
+          return { status: 1, stdout: "", stderr: "pull access denied" };
+        missing.delete(args.at(-1) ?? "");
+        return { status: 0, stdout: "", stderr: "" };
+      }
+      if (args.includes("image") && missing.has(args[args.indexOf("inspect") + 1] ?? "")) {
+        return { status: 1, stdout: "", stderr: "No such image" };
       }
       if (args.includes("image") && args.some((arg) => arg.includes("t3-gateway"))) {
         return { status: options.imageStatus ?? 0, stdout: options.gatewayLabel ?? "", stderr: "" };
@@ -638,6 +657,58 @@ describe("mend server setup", () => {
     }
     // Offline never pulls anything.
     expect(control.commands.filter(([, args]) => args.includes("pull"))).toHaveLength(0);
+  });
+
+  it("preloads the cloud metadata guard image the Mend image names, and refuses without it", async () => {
+    const guard =
+      "busybox:1.37@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e";
+    const online = makeRuntime({ guardLabel: guard, missingImages: [guard] });
+    expect(await serverCommand(["setup", "--yes"], online.runtime)).toEqual({ _tag: "ok" });
+    expect(online.lines).toContain(`Pulling ${guard}`);
+    const pull = online.commands.findIndex(
+      ([, args]) => args.includes("pull") && args.includes(guard),
+    );
+    const up = online.commands.findIndex(
+      ([, args]) => args.includes("compose") && args.includes("up"),
+    );
+    expect(pull).toBeGreaterThan(-1);
+    expect(pull).toBeLessThan(up);
+
+    const unreachable = makeRuntime({ guardLabel: guard, missingImages: [guard], pullFails: true });
+    const failed = await serverCommand(["setup", "--yes"], unreachable.runtime);
+    expect(failed).toMatchObject({
+      _tag: "error",
+      message: expect.stringContaining(`Could not pull ${guard}`),
+    });
+    expect(
+      unreachable.commands.some(([, args]) => args.includes("compose") && args.includes("up")),
+    ).toBe(false);
+
+    const assets = temporaryDirectory("assets");
+    fs.mkdirSync(assets, { recursive: true });
+    fs.writeFileSync(path.join(assets, "compose.v2.yaml"), composeAsset);
+    fs.writeFileSync(path.join(assets, "postgres-init.sh"), postgresAsset);
+    const offline = makeRuntime({ guardLabel: guard, missingImages: [guard] });
+    expect(
+      await serverCommand(
+        ["setup", "--assets-dir", assets, "--offline", "--version", "0.23.0"],
+        offline.runtime,
+      ),
+    ).toMatchObject({
+      _tag: "error",
+      message: expect.stringContaining(
+        `Preload ${guard}, which refuses the cloud metadata address`,
+      ),
+    });
+    expect(offline.commands.filter(([, args]) => args.includes("pull"))).toHaveLength(0);
+  });
+
+  it("refuses a guard label that is not an image reference", async () => {
+    const control = makeRuntime({ guardLabel: "--privileged" });
+    expect(await serverCommand(["setup", "--yes"], control.runtime)).toMatchObject({
+      _tag: "error",
+      message: expect.stringContaining("invalid dev.sealant.mend.network-guard-image"),
+    });
   });
 
   it("warns, before starting, when the daemon's shutdown timeout is below the capture grace, and says nothing once it covers it", async () => {

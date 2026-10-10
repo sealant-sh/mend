@@ -21,8 +21,8 @@ catalog:
   "@fontsource/jetbrains-mono": ^5.2.8
   "@fontsource/space-grotesk": ^5.2.8
   "@pierre/diffs": ^1.2.12
-  "@sealant/api-contracts": npm:@sealant/api-contracts-next@0.39.0-next.717
-  "@sealant/sdk": npm:@sealant/sdk-next@0.39.0-next.717
+  "@sealant/api-contracts": npm:@sealant/api-contracts-next@0.39.0-next.720
+  "@sealant/sdk": npm:@sealant/sdk-next@0.39.0-next.720
   "@slack/socket-mode": ^3.0.1
   "@slack/web-api": ^8.1.1
   "@tailwindcss/vite": ^4.1.18
