@@ -12,7 +12,8 @@ const stateFile = path.join(root, "daemon.json");
 const state = JSON.parse(fs.readFileSync(stateFile, "utf8"));
 const args = process.argv.slice(2);
 const directory = args[args.indexOf("--project-directory") + 1];
-const composeIndex = args.indexOf("-f");
+// Only a Compose command takes `-f <file>`; `container rm -f` is a force flag.
+const composeIndex = args[2] === "compose" ? args.indexOf("-f") : -1;
 // The command follows the last `-f <file>` pair: compose.yaml, then the generation's overlays.
 const composeFiles = [];
 let commandIndex = composeIndex;
@@ -60,7 +61,60 @@ const fail = () => {
   process.exit(1);
 };
 
-// Release images live in daemon state, not the probe protocol: uninstall untags them here.
+// Release images live in daemon state, not the probe protocol: uninstall untags them here. The
+// bundle's other images (Postgres, Garage, the mirrors') are always there until something removes
+// them; `removedImages` remembers which did.
+if (
+  args[2] === "image" &&
+  args[3] === "rm" &&
+  !String(args.at(-1)).includes("/mend-registry-probe/") &&
+  !String(args.at(-1)).startsWith("ghcr.io/sealant-sh/mend:")
+) {
+  const image = args.at(-1);
+  if ((state.removedImages ?? []).includes(image)) {
+    process.stderr.write(`Error response from daemon: No such image: ${image}\n`);
+    process.exit(1);
+  }
+  if ((state.imagesInUse ?? []).includes(image)) {
+    process.stderr.write(`Error response from daemon: conflict: unable to remove ${image}\n`);
+    process.exit(1);
+  }
+  state.removedImages = [...(state.removedImages ?? []), image];
+  save();
+  out(`Untagged: ${image}`);
+  process.exit(0);
+}
+if (args[2] === "image" && args[3] === "inspect" && (state.removedImages ?? []).includes(args[4])) {
+  process.stderr.write(`Error: No such image: ${args[4]}\n`);
+  process.exit(1);
+}
+// The host's user-namespace sysctl file, as uninstall's helper container reads and removes it.
+if (args[2] === "run" && args.some((arg) => arg.includes("/host/sysctl.d"))) {
+  const file = state.sysctl ?? "absent";
+  if (args.includes("mend-uninstall-userns")) {
+    if (file !== "mend") process.exit(4);
+    state.sysctl = "absent";
+    state.sysctlRestored = args.slice(args.indexOf("mend-uninstall-userns") + 2);
+    save();
+    process.exit(0);
+  }
+  if (file === "absent") process.exit(3);
+  out(
+    `${file === "mend" ? "# written by mend server setup; mend uninstall removes it\n# previous: kernel.apparmor_restrict_unprivileged_userns = 1\n" : ""}kernel.apparmor_restrict_unprivileged_userns = 0`,
+  );
+  process.exit(0);
+}
+if (args[2] === "system" && args[3] === "df") {
+  if (state.buildCache)
+    out(JSON.stringify({ Type: "Build Cache", TotalCount: "38", Size: state.buildCache }));
+  process.exit(0);
+}
+if (args[2] === "builder" && args[3] === "prune") {
+  state.buildCache = null;
+  state.prunedBuildCache = true;
+  save();
+  process.exit(0);
+}
 if (
   args[2] === "image" &&
   args[3] === "rm" &&
@@ -123,7 +177,7 @@ if (args[2] === "container" && args[3] === "rm" && args.includes("mend-edge-1"))
 const protocolFile = path.join(root, "docker-protocol.json");
 const saved = fs.existsSync(protocolFile) ? JSON.parse(fs.readFileSync(protocolFile, "utf8")) : {};
 const daemon = new DockerProtocol();
-for (const kind of ["volumes", "containers", "networks", "local", "remote"]) {
+for (const kind of ["volumes", "containers", "networks", "facts", "local", "remote"]) {
   for (const [name, value] of saved[kind] ?? []) daemon[kind].set(name, value);
 }
 // Docker cannot observe its caller's timer. Deadline forwarding is recorded at the runtime edge.
@@ -133,7 +187,7 @@ if (protocol !== undefined) {
     protocolFile,
     JSON.stringify({
       ...Object.fromEntries(
-        ["volumes", "containers", "networks", "local", "remote"].map((kind) => [
+        ["volumes", "containers", "networks", "facts", "local", "remote"].map((kind) => [
           kind,
           [...daemon[kind]],
         ]),
@@ -153,20 +207,38 @@ else if (args[2] === "run" && args.at(-1) === "/app/migrations.txt") {
   const manifest = state.manifests?.[version];
   if (manifest === undefined || !state.images[version]) fail();
   out(manifest);
-} else if (args.includes("{{.Client.APIVersion}} {{.Server.APIVersion}}")) out("1.47 1.47");
-else if (args[2] === "info") out("Docker Engine - Community");
+} else if (args.includes("{{.Client.APIVersion}} {{.Server.APIVersion}}")) {
+  // A stopped daemon: the client answers for itself, the server does not.
+  if (state.fail === "docker-down") {
+    out("1.47 ");
+    process.stderr.write(
+      "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?\n",
+    );
+    process.exit(1);
+  }
+  out("1.47 1.47");
+} else if (args[2] === "info") out("Docker Engine - Community");
 else if (args.includes("compose") && args.includes("version")) out("2.35.0");
 else if (args.includes("image")) {
   const image = args[args.indexOf("inspect") + 1];
-  if (image === "postgres:17-alpine") out("sha256:postgres");
-  else if (image === "dxflrs/garage:v2.4.1") out("sha256:garage");
-  else if (image === "caddy:2.10-alpine") out("sha256:caddy");
-  else if (image.startsWith("nginx:") || image.startsWith("registry:")) out("sha256:mirror");
+  // Uninstall reads each image's size beside its id.
+  const sized = (id) => (args.some((arg) => arg.includes("{{.Size}}")) ? `${id}\t100000000` : id);
+  if (image === "postgres:17-alpine") out(sized("sha256:postgres"));
+  else if (image === "dxflrs/garage:v2.4.1") out(sized("sha256:garage"));
+  else if (image === "caddy:2.10-alpine") out(sized("sha256:caddy"));
+  else if (image.startsWith("nginx:") || image.startsWith("registry:"))
+    out(sized(`sha256:${image}`));
   else {
     const version = image.split(":").at(-1);
     if (!state.images[version]) fail();
+    // The image the worker runs to guard each workspace's network, named by its label.
+    if (args.some((arg) => arg.includes("dev.sealant.mend.network-guard-image"))) {
+      out(state.guardImage ?? "");
+    } else if (args.some((arg) => arg.includes("{{.Size}}"))) {
+      out(`sha256:${version}\t${state.imageSize ?? 1000}`);
+    }
     // The t3code gateway's label: "1" on an image that carries it, empty on one before it.
-    if (args.some((arg) => arg.includes("dev.sealant.mend.t3-gateway"))) {
+    else if (args.some((arg) => arg.includes("dev.sealant.mend.t3-gateway"))) {
       out(state.gatewayImages?.includes(version) ? "1" : "");
     } else out(state.images[version]);
   }
@@ -222,6 +294,22 @@ else if (args.includes("image")) {
   out('{"uri":"/a/-/a-1.0.0.tgz","cache":"HIT"}\n{"uri":"/b/-/b-1.0.0.tgz","cache":"MISS"}');
 } else if (command[0] === "logs") out("bounded fixture log");
 else if (command[0] === "down") {
+  // Compose removes its project's networks and volumes, all but those a container still holds.
+  if (fs.existsSync(protocolFile)) {
+    const daemonState = JSON.parse(fs.readFileSync(protocolFile, "utf8"));
+    const held = (kind) =>
+      new Set((daemonState.facts ?? []).flatMap(([, facts]) => facts[kind] ?? []));
+    for (const [kind, holder] of [
+      ["networks", "networks"],
+      ["volumes", "mounts"],
+    ]) {
+      daemonState[kind] = (daemonState[kind] ?? []).filter(
+        ([name, labels]) =>
+          labels?.["com.docker.compose.project"] !== "mend" || held(holder).has(name),
+      );
+    }
+    fs.writeFileSync(protocolFile, JSON.stringify(daemonState));
+  }
   state.appRunning = false;
   state.postgresRunning = false;
   state.edgeRunning = false;

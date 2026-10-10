@@ -24,6 +24,19 @@ export class DockerProtocol {
   readonly containers = new Map<string, Labels>();
   /** Existing networks for the pre-claim project check. */
   readonly networks = new Map<string, Labels>();
+  /**
+   * What a container mounts and joins, its state and image, where a test needs them: a workspace
+   * mounting the control volume. Docker refuses to remove a volume or network a container holds.
+   */
+  readonly facts = new Map<
+    string,
+    {
+      readonly mounts?: ReadonlyArray<string>;
+      readonly networks?: ReadonlyArray<string>;
+      readonly state?: string;
+      readonly image?: string;
+    }
+  >();
   /** Local image tags, distinct from registry manifests. */
   readonly local = new Map<string, Image>();
   /** Registry manifests retained across local removal and retries. */
@@ -71,50 +84,86 @@ export class DockerProtocol {
           const next = args[index + 1];
           return arg === "--filter" && next !== undefined ? [next] : [];
         });
-        const labels = filters.flatMap((value) => {
+        // `label=key` matches any value; `label=key=value` exactly.
+        const labels = filters.flatMap((value): Array<[string, string | undefined]> => {
           if (!value.startsWith("label=")) return [];
           const pair = value.slice("label=".length);
           const separator = pair.indexOf("=");
-          return separator < 0 ? [] : [[pair.slice(0, separator), pair.slice(separator + 1)]];
+          return separator < 0
+            ? [[pair, undefined]]
+            : [[pair.slice(0, separator), pair.slice(separator + 1)]];
         });
+        const mounting = filters
+          .filter((value) => value.startsWith("volume="))
+          .map((value) => value.slice("volume=".length));
         const namePatterns = filters
           .filter((value) => value.startsWith("name="))
           .map((value) => new RegExp(value.replace("name=", "")));
-        // `{{.Names}}` alone or followed by `{{.Label "key"}}` columns, tab separated; else JSON names.
+        // `{{.Names}}`/`{{.Name}}` first, then tab-separated `{{.State}}`, `{{.Image}}` or
+        // `{{.Label "key"}}` columns; else JSON names.
         const format =
           args.indexOf("--format") >= 0 ? (args[args.indexOf("--format") + 1] ?? "") : "";
-        const bare = format.startsWith("{{.Names}}");
-        const labelColumns = [...format.matchAll(/\{\{\.Label "([^"]+)"\}\}/g)].flatMap((match) =>
-          match[1] === undefined ? [] : [match[1]],
-        );
+        const bare = format.startsWith("{{.Names}}") || format.startsWith("{{.Name}}");
+        const columns = format.split("\t").slice(1);
         return ok(
           [...collection]
             .filter(
               ([name, resourceLabels]) =>
-                labels.every(([key, value]) => resourceLabels?.[key ?? ""] === value) &&
-                namePatterns.every((pattern) => pattern.test(name)),
+                labels.every(([key, value]) =>
+                  value === undefined
+                    ? resourceLabels?.[key] !== undefined
+                    : resourceLabels?.[key] === value,
+                ) &&
+                namePatterns.every((pattern) => pattern.test(name)) &&
+                mounting.every((volume) => this.facts.get(name)?.mounts?.includes(volume)),
             )
             .map(([name, resourceLabels]) =>
               bare
-                ? [name, ...labelColumns.map((key) => resourceLabels?.[key] ?? "")].join("\t")
+                ? [
+                    name,
+                    ...columns.map((column) => {
+                      const label = /^\{\{\.Label "([^"]+)"\}\}$/.exec(column)?.[1];
+                      if (label !== undefined) return resourceLabels?.[label] ?? "";
+                      if (column === "{{.State}}") return this.facts.get(name)?.state ?? "running";
+                      if (column === "{{.Image}}") return this.facts.get(name)?.image ?? "";
+                      return "";
+                    }),
+                  ].join("\t")
                 : JSON.stringify(name),
             )
             .join("\n"),
         );
       }
       if (kind === "container" && operation === "rm") {
-        const names = args.slice(4).filter((arg) => !arg.startsWith("--"));
+        const names = args.slice(4).filter((arg) => !arg.startsWith("-"));
         const missing = names.filter((name) => !collection.has(name));
         if (missing.length > 0) return failed(`No such container: ${missing.join(", ")}`);
-        for (const name of names) collection.delete(name);
+        for (const name of names) {
+          collection.delete(name);
+          this.facts.delete(name);
+        }
         return ok(names.join("\n"));
       }
-      if (kind === "volume" && operation === "rm") {
+      if ((kind === "volume" || kind === "network") && operation === "rm") {
+        // Docker removes each it can and fails for the rest: missing, or held by a container.
         const names = args.slice(4);
-        const missing = names.filter((name) => !collection.has(name));
-        if (missing.length > 0) return failed(`No such volume: ${missing.join(", ")}`);
-        for (const name of names) collection.delete(name);
-        return ok(names.join("\n"));
+        const errors: Array<string> = [];
+        for (const name of names) {
+          const holder = [...this.facts].find(([, facts]) =>
+            (kind === "volume" ? facts.mounts : facts.networks)?.includes(name),
+          );
+          if (!collection.has(name)) errors.push(`No such ${kind}: ${name}`);
+          else if (holder !== undefined)
+            errors.push(
+              kind === "volume"
+                ? `remove ${name}: volume is in use - [${holder[0]}]`
+                : `error while removing network: network ${name} has active endpoints (name:"${holder[0]}")`,
+            );
+          else collection.delete(name);
+        }
+        return errors.length > 0
+          ? failed(`Error response from daemon: ${errors.join("; ")}`)
+          : ok(names.join("\n"));
       }
       if (kind === "volume" && operation === "create") {
         const name = args.at(-1);
@@ -139,7 +188,7 @@ export class DockerProtocol {
                 Labels: collection.get(name),
               }),
             )
-          : failed("No such resource");
+          : failed(`No such ${kind}: ${name}`);
       }
     }
     if (kind === "image") {

@@ -184,11 +184,14 @@ import { type AttachOutcome } from "./shared.ts";
 import { DEFAULT_SKILLS_DIR, scanSkillLibrary } from "./skills.ts";
 import { removeThisMachineKey, sshCommand } from "./ssh-setup.ts";
 import {
+  clearBuildCache,
   describeUninstall,
   executeUninstall,
   parseUninstallArgs,
   planDeletesData,
+  planIsEmpty,
   planLines,
+  planRefusal,
   UNINSTALL_USAGE,
   type UninstallScope,
 } from "./uninstall.ts";
@@ -3569,6 +3572,24 @@ const UNINSTALL_CHOICES: ReadonlyArray<{ readonly scope: UninstallScope; readonl
     },
   ];
 
+/**
+ * One line from the terminal, as the terminal's own line discipline delivers it: typed, pasted or
+ * sent as one chunk, edited with backspace, ended by Enter. Null when the input ends first.
+ */
+const readTerminalLine = async (prompt: string): Promise<string | null> => {
+  const readline = await import("node:readline");
+  const rl = readline.createInterface({ input: process.stdin, terminal: false });
+  process.stdout.write(prompt);
+  try {
+    return await new Promise<string | null>((resolve) => {
+      rl.once("line", (line) => resolve(line));
+      rl.once("close", () => resolve(null));
+    });
+  } finally {
+    rl.close();
+  }
+};
+
 /** One question on a terminal; a script must say what it wants with a flag. */
 const askUninstallScope = async (): Promise<UninstallScope> => {
   if (process.stdin.isTTY !== true || process.stdout.isTTY !== true) {
@@ -3576,25 +3597,28 @@ const askUninstallScope = async (): Promise<UninstallScope> => {
   }
   say("what should go?");
   UNINSTALL_CHOICES.forEach((choice, index) => say(`  ${index + 1}. ${choice.text}`));
-  const readline = await import("node:readline/promises");
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-  const answer = (await rl.question("  1, 2 or 3: ")).trim();
-  rl.close();
+  const answer = ((await readTerminalLine("  1, 2 or 3: ")) ?? "").trim();
   const chosen = UNINSTALL_CHOICES[Number(answer) - 1];
-  if (chosen === undefined) return fail(`"${answer}" is not one of the choices`);
+  if (chosen === undefined) return fail(`${JSON.stringify(answer)} is not one of the choices`);
   return chosen.scope;
 };
 
-/** The typed word stands in for a second look: data goes, so "y" is not enough. */
-const confirmUninstall = async (word: string): Promise<boolean> => {
+/**
+ * The typed word stands in for a second look: data goes, so "y" is not enough. Anything else
+ * removes nothing and exits 1, naming what was read, so a stray key is never a silent success.
+ */
+const confirmUninstall = async (word: string): Promise<void> => {
   if (process.stdin.isTTY !== true) return fail("non-interactive — pass --yes to remove");
-  const readline = await import("node:readline/promises");
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-  const answer = (await rl.question(word === "y" ? "remove? [y/N] " : `type ${word} to remove: `))
-    .trim()
-    .toLowerCase();
-  rl.close();
-  return answer === word;
+  const answer = await readTerminalLine(
+    word === "y" ? "remove? [y/N] " : `type ${word} to remove: `,
+  );
+  if (answer === null) return fail("input ended · nothing removed");
+  if (answer.trim().toLowerCase() === word) return;
+  return fail(
+    answer.trim() === ""
+      ? "nothing typed · nothing removed"
+      : `read ${JSON.stringify(answer)}, not ${word} · nothing removed`,
+  );
 };
 
 const uninstallCommand = async (config: CliConfig, args: ReadonlyArray<string>) => {
@@ -3625,34 +3649,74 @@ const uninstallCommand = async (config: CliConfig, args: ReadonlyArray<string>) 
         mendCliHome(),
         config.url,
       ),
+    forgetSignIn: () => saveCliConfig({ ...config, token: null, deviceId: null }),
   };
   const plan = await describeUninstall(runtime, scope);
   say(dim(`mend uninstall · ${scope === "all" ? "everything" : scope}`));
   for (const line of planLines(plan, server.configDir)) say(`  ${line}`);
-  const nothing =
-    (plan.server === null || plan.server === "none") &&
-    (plan.home === null ||
-      (plan.home.cliConfig === null &&
-        plan.home.sshDirectory === null &&
-        plan.home.managedSshBlocks === 0));
-  if (nothing) {
+  if (planIsEmpty(plan)) {
     say(dim("nothing to remove"));
     return;
   }
+  // What the plan needs must answer before anything is touched, and before anyone is asked.
+  const refusal = planRefusal(plan);
+  if (refusal !== null) return fail(refusal);
   if (planDeletesData(plan)) {
-    say("repositories, worktrees, the database and its backups are deleted with the server");
+    say(
+      plan.server !== null && plan.server !== "none" && "kind" in plan.server
+        ? "the volumes listed are deleted with whatever they hold"
+        : "repositories, worktrees, the database and its backups are deleted with the server, and every sign-in to it stops working",
+    );
   }
-  if (!parsed.yes && !(await confirmUninstall(planDeletesData(plan) ? "delete" : "y"))) {
-    say(dim("nothing removed"));
-    return;
-  }
+  if (!parsed.yes) await confirmUninstall(planDeletesData(plan) ? "delete" : "y");
+  // Docker's build cache is the daemon's, not only Mend's: its own question, never under --yes.
+  const extras =
+    plan.server !== null && plan.server !== "none" && !("kind" in plan.server)
+      ? plan.server.extras
+      : undefined;
+  const clearCache =
+    extras?.buildCache != null &&
+    !parsed.yes &&
+    /^y/i.test(
+      (await readTerminalLine(
+        `also clear Docker's build cache (${extras.buildCache}, shared by every build on this daemon)? [y/N] `,
+      )) ?? "",
+    );
   const outcome = await executeUninstall(runtime, plan);
-  for (const line of outcome.leftovers) say(dim(`  kept · ${line}`));
+  const remaining = [...outcome.remaining];
+  const leftovers = [...outcome.leftovers];
+  if (
+    extras?.buildCache != null &&
+    plan.server !== null &&
+    plan.server !== "none" &&
+    !("kind" in plan.server)
+  ) {
+    const context = plan.server.dockerContext;
+    const problem =
+      clearCache && outcome.failures.length === 0
+        ? await clearBuildCache(runtime, context)
+        : "kept";
+    if (problem === null) say(`removed Docker's build cache (${extras.buildCache})`);
+    else {
+      leftovers.push(
+        `Docker's build cache, ${extras.buildCache}${problem === "kept" ? "" : ` (${problem})`}: docker --context ${context} builder prune --all removes it`,
+      );
+      remaining.push(`Docker's build cache (${extras.buildCache})`);
+    }
+  }
+  if (scope === "all") remaining.push("the mend CLI itself (npm uninstall -g @sealant/mend)");
+  for (const line of leftovers) say(dim(`  kept · ${line}`));
   if (outcome.failures.length > 0) {
     return fail(outcome.failures.join("\n"));
   }
+  const removed =
+    scope === "all"
+      ? "Mend's server and this machine's Mend files are removed"
+      : scope === "server"
+        ? "the server is removed from this machine"
+        : "this machine no longer holds Mend's sign-in or ssh files";
   say(
-    `${green("✓")} ${scope === "all" ? "Mend is gone from this machine" : scope === "server" ? "the server is gone from this machine" : "this machine no longer holds Mend files"}`,
+    `${green("✓")} ${removed}${remaining.length === 0 ? "" : ` · still here: ${remaining.join(", ")}`}`,
   );
 };
 

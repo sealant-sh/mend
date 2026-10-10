@@ -282,7 +282,14 @@ mend uninstall
 Choose everything, the server only, or this machine's files only. The plan is printed before
 anything is removed; taking the server down deletes its volumes (repositories, the `mend-garage`
 session captures, the database) and asks for the word `delete`. Data volumes go only when they carry
-this installation's identity label. Workspace containers are listed, not removed.
+this installation's identity label. Live sessions are listed in the plan; uninstall stops their
+workspaces and removes them with their volumes and networks. If Docker is stopped, nothing is
+removed.
+
+If Docker refuses to remove something, uninstall names it and keeps the `mend-store` volume and the
+identity, so running `mend uninstall` again finishes the job, and `mend server setup` can reinstall
+over it. Everything also offers Mend's images, the user-namespace sysctl file setup wrote, and, in
+its own question, Docker's build cache. The CLI stays until `npm uninstall -g @sealant/mend`.
 
 ## Next steps
 

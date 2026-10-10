@@ -101,6 +101,10 @@ let initial;
 let configRoot;
 let fixtureId;
 let gitAccessImage;
+// The release image's run-unique second tag while `mend uninstall` untags the official one; the
+// reinstall after it needs the image, and cleanup puts the official tag back if a failure lands
+// in between.
+let keptImage;
 let setupAttempted = false;
 let cleanupFailed = false;
 const containers = new Set();
@@ -672,6 +676,30 @@ async function cleanup() {
       if (!result.ok) cleanupFailed = true;
     }
     if (pass === 0 && (setupAttempted || fixtureId)) await collectOwned();
+  }
+  if (keptImage) {
+    const official = await start("docker", [
+      "--context",
+      context,
+      "image",
+      "ls",
+      "-q",
+      "--filter",
+      `reference=${keptImage.official}`,
+    ]).result;
+    if (official.ok && lines(official.output).length === 0) {
+      const tagged = await start("docker", [
+        "--context",
+        context,
+        "tag",
+        keptImage.tag,
+        keptImage.official,
+      ]).result;
+      if (!tagged.ok) cleanupFailed = true;
+    }
+    const removed = await start("docker", ["--context", context, "image", "rm", keptImage.tag])
+      .result;
+    if (!removed.ok) cleanupFailed = true;
   }
   if (gitAccessImage) {
     // Built by this run under a run-unique tag; nothing else can reference it. A build that
@@ -1833,6 +1861,96 @@ async function main() {
     );
   } else
     console.log("NOT TESTED version upgrade; set paired MEND_TEST_UPGRADE_IMAGE/VERSION to enable");
+  stage = "uninstall with a live session";
+  // A session that keeps its workspace running while the server is removed under it.
+  const active = upgrade ?? { version, image, assets };
+  keptImage = { official: active.image, tag: `${fixtureName}-kept:${active.version}` };
+  await docker(["tag", keptImage.official, keptImage.tag]);
+  const live = start(
+    process.execPath,
+    [bin, "run", "--project", project.name, "--name", "uninstall-live", "--", "sleep", "900"],
+    { timeout: 900_000 },
+  );
+  const liveWorkspace = await until(
+    "the live session's running workspace",
+    async () => {
+      const { now } = await collectOwned();
+      return now.containers.find(
+        (item) =>
+          item.State.Running &&
+          ownsWorkspaceContainer(item, new Set(initial.containers.map((old) => old.Id))),
+      );
+    },
+    10 * 60_000,
+  );
+  const uninstalled = await serverCli(["uninstall", "--server", "--yes"]);
+  live.terminate();
+  check(
+    /removed \d+ workspace containers?, \d+ of them live, with their volumes/.test(uninstalled),
+    "Uninstall must say it stopped and removed the live session's workspace",
+  );
+  const afterUninstall = await snapshot();
+  assertFreshDocker(afterUninstall);
+  const known = (items, key = "Id") => new Set(items.map((item) => item[key]));
+  const initialContainers = known(initial.containers);
+  const initialNetworks = known(initial.networks);
+  const initialVolumes = known(initial.volumes, "Name");
+  check(
+    !afterUninstall.containers.some((item) => item.Id === liveWorkspace.Id) &&
+      afterUninstall.containers.every((item) => initialContainers.has(item.Id)),
+    "Uninstall must remove the live workspace and every container the installation started",
+  );
+  check(
+    afterUninstall.networks.every((item) => initialNetworks.has(item.Id)),
+    "Uninstall must remove the project network and every workspace network",
+  );
+  check(
+    afterUninstall.volumes.every((item) => initialVolumes.has(item.Name)),
+    "Uninstall must remove every volume the installation and its workspaces created",
+  );
+  check(
+    !(await readdir(configRoot)).some((name) =>
+      ["identity.env", "active", "generations", "uninstall-left.json"].includes(name),
+    ),
+    "Uninstall must remove the identity and generations once nothing is left",
+  );
+  console.log(
+    "PASS uninstall with a live session: workspace, its volumes and networks, the project network, every volume and the identity removed; Docker back to fresh",
+  );
+
+  stage = "reinstall after uninstall";
+  await docker(["tag", keptImage.tag, keptImage.official]);
+  await docker(["image", "rm", keptImage.tag]);
+  keptImage = undefined;
+  // The installation is new: its volumes carry a new identity, so ownership is learned afresh.
+  volumes = createVolumeLedger(afterUninstall.volumes, runId);
+  await serverCli([
+    "server",
+    "setup",
+    "--context",
+    context,
+    ...(offline ? ["--offline"] : []),
+    "--version",
+    active.version,
+    "--assets-dir",
+    active.assets,
+    "--port",
+    String(port),
+    "--ssh-port",
+    String(sshPort),
+    "--url",
+    origin,
+  ]);
+  await health(origin, active.version);
+  const instance = await json(origin, "/instance");
+  check(
+    instance.users === "none" && instance.registration === "open",
+    "A reinstall after uninstall must start with no accounts and open registration",
+  );
+  await idle();
+  console.log(
+    "PASS reinstall after uninstall: a fresh instance, no accounts, five healthy containers",
+  );
   console.log(
     "NOT TESTED macOS or CLI updater; downloaded/build image caches are retained, never pruned",
   );

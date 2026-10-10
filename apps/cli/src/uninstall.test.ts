@@ -4,14 +4,20 @@ import * as path from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import { DockerProtocol } from "../test-fixtures/docker-protocol.ts";
+import { SERVER_VOLUME_OWNER_LABEL } from "./server-docker-volumes.ts";
 import type { ServerSetupRuntime } from "./server-setup.ts";
 import type { ThisMachineKeyRemoval } from "./ssh-setup.ts";
 import {
   describeUninstall,
   executeUninstall,
+  formatBytes,
   parseUninstallArgs,
   planDeletesData,
   planLines,
+  signedInTo,
+  sysctlFileOf,
+  sysctlRestoreCommand,
   type UninstallRuntime,
 } from "./uninstall.ts";
 
@@ -38,6 +44,8 @@ const laptop = (
     readonly signedIn?: boolean;
     readonly extra?: boolean;
     readonly keyRemoval?: ThisMachineKeyRemoval;
+    /** A Docker daemon on this machine's current context; absent, Docker does not answer. */
+    readonly daemon?: DockerProtocol;
   } = {},
 ) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "mend uninstall "));
@@ -59,7 +67,17 @@ const laptop = (
     configDir: path.join(root, "config", "mend"),
     platform: "linux",
     cliVersion: "0.0.0-test",
-    run: async () => ({ status: 1, stdout: "", stderr: "docker must not run here" }),
+    run: async (command, args, runOptions) => {
+      const daemon = options.daemon;
+      if (daemon === undefined)
+        return { status: 1, stdout: "", stderr: "docker must not run here" };
+      if (args[0] === "context" && args[1] === "show") {
+        return { status: 0, stdout: "default\n", stderr: "" };
+      }
+      return (
+        daemon.run(command, args, runOptions) ?? { status: 1, stdout: "", stderr: "unexpected" }
+      );
+    },
     fetchText: async () => ({ status: 0, body: "" }),
     randomBytes: (size) => Buffer.alloc(size),
     sleep: async () => undefined,
@@ -116,6 +134,7 @@ describe("the home scope", () => {
       sshDirectory: path.join(f.cliHome, "ssh"),
       managedSshBlocks: 1,
       signedIn: { url: "http://m:3105", deviceId: "dev-1" },
+      signedInToThisServer: false,
     });
     expect(planDeletesData(plan)).toBe(false);
     expect(planLines(plan, f.runtime.server.configDir)).toEqual([
@@ -130,7 +149,7 @@ describe("the home scope", () => {
     const f = laptop();
     const plan = await describeUninstall(f.runtime, "home");
     const outcome = await executeUninstall(f.runtime, plan);
-    expect(outcome).toEqual({ failures: [], leftovers: [] });
+    expect(outcome).toEqual({ failures: [], leftovers: [], remaining: [] });
     expect(f.revoked).toEqual(["dev-1"]);
     // The key goes first, while the device token can still ask for it.
     expect(f.order).toEqual(["removeWorkspaceSshKey", "revokeDevice"]);
@@ -176,7 +195,7 @@ describe("the home scope", () => {
   it("says nothing of a key when the server holds none from this machine", async () => {
     const f = laptop({ keyRemoval: { removed: [], stillActive: [], problem: null } });
     const outcome = await executeUninstall(f.runtime, await describeUninstall(f.runtime, "home"));
-    expect(outcome).toEqual({ failures: [], leftovers: [] });
+    expect(outcome).toEqual({ failures: [], leftovers: [], remaining: [] });
     expect(f.lines.some((line) => line.includes("workspace ssh key"))).toBe(false);
   });
 
@@ -189,8 +208,9 @@ describe("the home scope", () => {
     expect(f.order).toEqual([]);
     expect(outcome.failures).toEqual([]);
     expect(outcome.leftovers).toEqual([
-      `${f.cliHome} kept: keys is not this CLI's (a host-run server's store or keys, or another tool's files)`,
+      `${f.cliHome}: keys is not Mend's CLI or server configuration (a host-run server's store or keys, or another tool's files), so it stays`,
     ]);
+    expect(outcome.remaining).toEqual([f.cliHome]);
     expect(fs.existsSync(path.join(f.cliHome, "keys", "users"))).toBe(true);
     expect(fs.existsSync(path.join(f.cliHome, "cli.json"))).toBe(false);
   });
@@ -208,5 +228,131 @@ describe("the home scope", () => {
     const outcome = await executeUninstall(f.runtime, plan);
     expect(outcome.failures).toEqual([]);
     expect(fs.existsSync(f.cliHome)).toBe(false);
+  });
+});
+
+/** What an earlier release's partial uninstall left: a live workspace holding the control volume. */
+const leftoversDaemon = (options: { readonly anchor?: boolean } = {}) => {
+  const daemon = new DockerProtocol();
+  const label = { [SERVER_VOLUME_OWNER_LABEL]: "an-identity-long-deleted" };
+  daemon.volumes.set("mend-control", label);
+  if (options.anchor === true) daemon.volumes.set("mend-store", label);
+  daemon.networks.set("mend_default", { "com.docker.compose.project": "mend" });
+  daemon.networks.set("sealant-w1-network", null);
+  daemon.containers.set("sealant-w1", {});
+  daemon.facts.set("sealant-w1", {
+    mounts: ["mend-control"],
+    networks: ["mend_default", "sealant-w1-network"],
+    state: "running",
+    image: "sealant-workspace-arch:latest",
+  });
+  daemon.containers.set("sealant-w1-docker", { "sealant.workspace": "sealant-w1" });
+  daemon.facts.set("sealant-w1-docker", { networks: ["sealant-w1-network"] });
+  // Somebody else's: another Sealant's workspace, another Compose project, an unlabelled volume.
+  daemon.containers.set("sealant-other", {});
+  daemon.facts.set("sealant-other", { mounts: ["other-control"], networks: ["other_default"] });
+  daemon.containers.set("other-db-1", { "com.docker.compose.project": "other" });
+  daemon.networks.set("other_default", { "com.docker.compose.project": "other" });
+  daemon.volumes.set("other-control", null);
+  daemon.volumes.set("pgdata", null);
+  return daemon;
+};
+
+describe("leftovers of an install with no configuration here", () => {
+  it("lists the labelled volumes, the network and the live workspace, then removes only those", async () => {
+    const daemon = leftoversDaemon();
+    const f = laptop({ daemon, signedIn: false });
+    const plan = await describeUninstall(f.runtime, "server");
+    expect(plan.server).toEqual({
+      kind: "leftovers",
+      dockerContext: "default",
+      volumes: ["mend-control"],
+      networks: ["mend_default"],
+      containers: [],
+      holdings: {
+        workspaces: [{ name: "sealant-w1", running: true }],
+        sidecars: ["sealant-w1-docker"],
+        networks: ["sealant-w1-network"],
+        images: ["sealant-workspace-arch:latest"],
+      },
+    });
+    expect(planDeletesData(plan)).toBe(true);
+    expect(planLines(plan, f.runtime.server.configDir)).toEqual([
+      `server   none configured under ${f.runtime.server.configDir}, but docker context default holds what an earlier Mend install left:`,
+      "         volumes mend-control",
+      "         networks mend_default",
+      "sessions 1 live session · 1 workspace container on docker context default (sealant-w1)",
+      "         uninstall stops them, then removes them with their Docker services, volumes and networks; unsaved work in them is lost",
+    ]);
+    const outcome = await executeUninstall(f.runtime, plan);
+    expect(outcome).toEqual({ failures: [], leftovers: [], remaining: [] });
+    expect([...daemon.volumes.keys()]).toEqual(["other-control", "pgdata"]);
+    expect([...daemon.networks.keys()]).toEqual(["other_default"]);
+    expect([...daemon.containers.keys()]).toEqual(["sealant-other", "other-db-1"]);
+    // The workspace's anonymous volumes went with it.
+    expect(
+      daemon.calls.some(({ args }) => args.join(" ").includes("container rm -f -v sealant-w1")),
+    ).toBe(true);
+    expect(f.lines).toEqual([
+      "removed 2 workspace containers, 1 of them live, with their volumes (sealant-w1, sealant-w1-docker)",
+      "removed workspace networks sealant-w1-network",
+      "removed network mend_default",
+      "removed volume mend-control",
+    ]);
+    // A second run finds nothing left.
+    expect((await describeUninstall(f.runtime, "server")).server).toBe("none");
+  });
+
+  it("leaves an installation that still has its anchor alone, whoever's it is", async () => {
+    const f = laptop({ daemon: leftoversDaemon({ anchor: true }) });
+    expect((await describeUninstall(f.runtime, "server")).server).toBe("none");
+  });
+});
+
+describe("words", () => {
+  it("tells a sign-in to the server being removed from one to another server", () => {
+    expect(signedInTo("http://10.0.0.52:3105", "http://10.0.0.52:3105", null)).toBe(true);
+    expect(signedInTo("http://localhost:3105/", "http://10.0.0.52:3105", null)).toBe(true);
+    expect(signedInTo("http://127.0.0.1:3105", "http://localhost:3105", null)).toBe(true);
+    expect(signedInTo("https://mend.example", "http://localhost:3105", "mend.example")).toBe(true);
+    expect(signedInTo("http://localhost:3106", "http://localhost:3105", null)).toBe(false);
+    expect(signedInTo("https://mend.example", "http://localhost:3105", null)).toBe(false);
+    expect(signedInTo("not a url", "http://localhost:3105", null)).toBe(false);
+  });
+
+  it("reads setup's sysctl file by its marker, and puts back the setting it says it replaced", () => {
+    expect(
+      sysctlFileOf(
+        [
+          "# written by mend server setup; mend uninstall removes it",
+          "# previous: kernel.unprivileged_userns_clone = 0",
+          "kernel.unprivileged_userns_clone = 1",
+          "",
+        ].join("\n"),
+      ),
+    ).toEqual({ state: "mend", restore: { key: "kernel.unprivileged_userns_clone", value: "0" } });
+    // Written by hand, as the docs once said: the distribution's default comes back.
+    expect(sysctlFileOf("kernel.apparmor_restrict_unprivileged_userns = 0\n")).toEqual({
+      state: "by-hand",
+      restore: { key: "kernel.apparmor_restrict_unprivileged_userns", value: "1" },
+    });
+    expect(sysctlFileOf("vm.swappiness = 10\n")).toEqual({ state: "by-hand", restore: null });
+  });
+
+  it("names the command that restores a host's own user-namespace setting", () => {
+    expect(
+      sysctlRestoreCommand({ key: "kernel.apparmor_restrict_unprivileged_userns", value: "1" }),
+    ).toBe(
+      "sudo rm /etc/sysctl.d/60-mend-rootless-docker.conf && sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=1",
+    );
+    expect(sysctlRestoreCommand(null)).toBe(
+      "sudo rm /etc/sysctl.d/60-mend-rootless-docker.conf && sudo sysctl --system",
+    );
+  });
+
+  it("prints sizes the way Docker does", () => {
+    expect(formatBytes(512)).toBe("512 B");
+    expect(formatBytes(5_781_000_000)).toBe("5.8 GB");
+    expect(formatBytes(424_000_000)).toBe("424 MB");
   });
 });

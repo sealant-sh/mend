@@ -239,21 +239,45 @@ configuration. Read it before you attach it to an issue.
 
 ```sh
 mend uninstall            # asks: everything, the server only, or this machine's files only
-mend uninstall --server   # the local installation: containers, volumes, image, configuration
+mend uninstall --server   # the local installation: workspaces, containers, volumes, image, configuration
 mend uninstall --home     # this machine's sign-in, workspace SSH key and ~/.ssh/config block
 mend uninstall --all --yes
 ```
 
 The command prints exactly what will go before asking, and the server scope requires typing
-`delete`: it removes the Compose containers and every volume the installation owns, including
-`mend-store` (repositories), `mend-garage` (every session's captures) and the database, plus the
-release image and the private configuration directory's identity, generations and backups. The
-external volumes are removed only when their ownership label matches this installation's identity;
-anything else stays and is named. Workspace containers carry no label Mend can filter on, so they
-are listed with the command that removes them. The home scope revokes this terminal's device token
-while the server can still answer, then removes `cli.json`, the workspace SSH key and the managed
-block. Files under the configuration directory that Mend did not create are left in place and
-listed.
+`delete`; any other answer removes nothing and exits 1. Nothing is touched until Docker answers on
+the installation's context: with Docker stopped, `--server` and `--all` refuse and change nothing,
+neither here nor on the server. `--home` still removes only this machine's files.
+
+The server scope stops and removes the installation's workspaces first, live sessions included (the
+plan lists them): a workspace is the installation's when it mounts its `mend-control` volume. Each
+goes with its Docker service, their anonymous volumes and its network. Then the Compose containers,
+the project network and every volume the installation owns, including `mend-store` (repositories),
+`mend-garage` (every session's captures) and the database, plus the release image and the private
+configuration directory's identity, generations and backups. The external volumes are removed only
+when their ownership label matches this installation's identity; anything else stays and is named.
+
+`mend-store` (the anchor) and `identity.env` go last, once every other volume, network and workspace
+the installation owns is gone. If Docker refuses one, uninstall names it, keeps the anchor and the
+identity, and writes the names to `uninstall-left.json`: `mend uninstall` again finishes the job,
+and `mend server setup` reinstalls over it. With no configuration on the machine, volumes that carry
+Mend's installation label and no anchor are an earlier install's leftovers; setup's refusal points
+at `mend uninstall --server`, which lists and removes them.
+
+When the sign-in is to the server being removed, its device token and workspace SSH key go with that
+server's database. Otherwise the home scope asks the signed-in server to remove this machine's key
+and revoke this terminal's device, after the local server is gone, then removes `cli.json`, the
+workspace SSH key and the managed block. Files under the configuration directory that Mend did not
+create are left in place and listed.
+
+`--all` also offers what else Mend put on the Docker host: the images it pulled and built, selected
+by the names and labels Mend and Sealant use (the bundle's images, `sealant-workspace-*`, the
+workspaces' `docker:*-dind-rootless` service and the network guard), with their size; an image
+another container still uses stays. It removes `/etc/sysctl.d/60-mend-rootless-docker.conf` only
+when setup wrote it (its first line says so) and puts back the setting its second line says it
+replaced; a file written by hand stays, with the command that removes it. Docker's build cache is
+shared by every build on the daemon, so it gets its own question and stays under `--yes`. The CLI
+stays until `npm uninstall -g @sealant/mend`.
 
 ## Offline setup
 
