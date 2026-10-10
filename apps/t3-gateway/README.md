@@ -146,8 +146,32 @@ agent up) is taken as under way, and the message waits for the agent. Every wait
   fails what was queued, stops Mend's event stream and lets itself go.
 - A `commandId` is reserved before anything is read, so a command sent twice at once is one message.
 
-Steering mid-turn, images and holding a message for later are refused; queue edit and reorder, and a
-queue that survives a gateway restart, are phase 2.
+Steering mid-turn, images and holding a message for later are refused; queue edit and reorder are
+phase 2.
+
+### A queue that survives a restart
+
+Each person's queues are kept in the state file (`queued_messages`, `queue_holds`) whenever they
+change, and come back when the person's hub starts. A message names its sender by bearer session;
+the device token is looked up from `bearer_sessions` when the queue comes back, never copied.
+
+| Kept as           | Comes back as                                                                                 |
+| ----------------- | --------------------------------------------------------------------------------------------- |
+| queued, launching | queued again, its launches still counted; failed when its sender's device is no longer paired |
+| sending           | failed, saying the gateway cannot tell whether Mend took it: it is never sent twice           |
+| failed, cancelled | as it was                                                                                     |
+| held              | held, while anything is still queued                                                          |
+
+After a restart, the gateway opens the hub of every person with a queued message on its own, reads
+Mend once, and sends it in order: no client has to come back. Mend not answering yet is tried again
+every 30 seconds.
+
+A message is kept as `sending` before it goes to Mend; when the state file cannot take that write,
+the message fails with a reason and is not sent. A client that sends the same message again (the
+same `messageId`), a restart in between too, gets the message already kept or sent. A kept message
+goes to Mend with its sender's own device token, so Mend's rules apply as they would to a fresh one:
+a session deleted while the gateway was down fails the message, and so does a sender who may no
+longer steer the session.
 
 ### Review
 
@@ -254,8 +278,9 @@ One `node:sqlite` file the gateway owns: the environment id, bearer sessions (th
 and the Mend device token it stands for), and the id maps: `run_ids` and `message_ids`, filled by
 every turn a t3code client sends, and `thread_ids`, every thread a t3code client launched (its id,
 its session, the launch command and what the launch named; no secrets). `project_ids` stays empty.
-Mend's database is never touched. Losing the file loses pairings and t3code-side ids, never Mend
-records.
+`queued_messages` and `queue_holds` keep each person's queues: text, ids, state and the sender's
+bearer session, never a device token. Mend's database is never touched. Losing the file loses
+pairings and t3code-side ids, never Mend records.
 
 **The file holds every paired person's Mend device token in clear**, and the token acts as that
 person in Mend until the device is revoked. The gateway needs it usable: it calls Mend for a person

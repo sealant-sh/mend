@@ -669,6 +669,77 @@ export const makePersonHub = (input: {
       for (const sessionId of sessionIds) opening.delete(sessionId);
     };
     const queues = new Map<string, Queueing.ThreadQueue>();
+    /**
+     * Session id → its queue as the state file last kept it (ADR 0012, "State"): a queue is written
+     * when it changed, and a restart brings back what was kept for this person.
+     */
+    const keptQueues = new Map<string, string>();
+    const keeper = input.viewer;
+    if (keeper !== null) {
+      for (const restored of yield* state.loadQueues(keeper.id).pipe(
+        Effect.catch((error) =>
+          Effect.logError("t3 gateway could not read its kept queues", {
+            cause: error.message,
+          }).pipe(Effect.as([])),
+        ),
+      )) {
+        const queue = Queueing.restoredQueue(
+          restored.queue,
+          (sender) => restored.senders.get(sender) ?? null,
+        );
+        queues.set(restored.sessionId, queue);
+        keptQueues.set(restored.sessionId, JSON.stringify(restored.queue));
+      }
+    }
+    /**
+     * Messages Mend took whose turn ids the state file refused (review 593-R2-2): each is still
+     * kept as being sent, so after a restart it comes back as sent-before-restart and a retry of
+     * it is not taken as new. Every later write of the queue tries the ids again first.
+     */
+    const unrecorded = new Map<
+      string,
+      Array<{ readonly stored: Queueing.StoredEntry; readonly ids: TurnIds }>
+    >();
+    const recordUnrecorded = (sessionId: string) =>
+      Effect.gen(function* () {
+        const waiting = unrecorded.get(sessionId) ?? [];
+        const still: typeof waiting = [];
+        for (const item of waiting) {
+          const recorded = yield* state.recordTurnIds(item.ids, Date.now()).pipe(
+            Effect.as(true),
+            Effect.orElseSucceed(() => false),
+          );
+          if (!recorded) still.push(item);
+        }
+        if (still.length === 0) unrecorded.delete(sessionId);
+        else unrecorded.set(sessionId, still);
+        return still.map((item) => item.stored);
+      });
+    /** Writes one queue if it changed since it was last kept: whether the state file has it now. */
+    const keepQueue = (sessionId: string, queue: Queueing.ThreadQueue): Effect.Effect<boolean> =>
+      Effect.gen(function* () {
+        if (keeper === null) return true;
+        const tombstones = unrecorded.has(sessionId) ? yield* recordUnrecorded(sessionId) : [];
+        const live = Queueing.storedOf(queue);
+        const stored = { ...live, entries: [...tombstones, ...live.entries] };
+        const print = JSON.stringify(stored);
+        if (keptQueues.get(sessionId) === print) return true;
+        return yield* state.saveQueue(keeper.id, sessionId, stored).pipe(
+          Effect.tap(() => Effect.sync(() => keptQueues.set(sessionId, print))),
+          Effect.as(true),
+          Effect.catch((error) =>
+            Effect.logError("t3 gateway could not keep a queue", { cause: error.message }).pipe(
+              Effect.as(false),
+            ),
+          ),
+        );
+      });
+    /** Writes every queue that changed since it was last kept. */
+    const keepQueues = Effect.suspend(() =>
+      Effect.forEach(Array.from(queues), ([sessionId, queue]) => keepQueue(sessionId, queue), {
+        discard: true,
+      }),
+    );
     const handledCommands = new Set<string>();
 
     const projects = new Map<string, ProjectEntry>();
@@ -974,6 +1045,7 @@ export const makePersonHub = (input: {
       return retain(now);
     });
     const publishAll = Effect.suspend(() => settleQueues).pipe(
+      Effect.andThen(keepQueues),
       Effect.andThen(publishShell),
       Effect.andThen(publishThreads),
       Effect.andThen(holdWhileBusy),
@@ -1285,10 +1357,14 @@ export const makePersonHub = (input: {
     const deferredKeys = new Set<string>();
     /** The first full read is done: what arrived during it is read again. */
     const markLoaded = Effect.suspend(() => {
+      const first = !loaded;
       loaded = true;
       const keys = Array.from(deferredKeys);
       deferredKeys.clear();
-      return Effect.forEach(keys, (key) => requestRefresh(key), { discard: true });
+      return Effect.forEach(keys, (key) => requestRefresh(key), { discard: true }).pipe(
+        // A queue kept across a restart waited for this read: it moves now.
+        Effect.andThen(first && queues.size > 0 ? locked(publishAll) : Effect.void),
+      );
     });
     const loadLock = Semaphore.makeUnsafe(1);
     /** The first full read, made once by whoever needs it first; a failure is theirs to see. */
@@ -1475,6 +1551,23 @@ export const makePersonHub = (input: {
           messageId: entry.messageId,
         };
         rememberIds(ids);
+        // The ids first: until they are kept, the message stays kept as being sent (593-R2-2).
+        const recorded = yield* state.recordTurnIds(ids, Date.now()).pipe(
+          Effect.as(true),
+          Effect.catch((error) =>
+            Effect.logError("t3 gateway could not record a turn's ids", {
+              cause: error.message,
+            }).pipe(Effect.as(false)),
+          ),
+        );
+        if (!recorded && keeper !== null) {
+          const [stored] = Queueing.storedOf({ held: false, entries: [entry] }).entries;
+          if (stored !== undefined) {
+            const waiting = unrecorded.get(sessionId) ?? [];
+            waiting.push({ stored: { ...stored, state: "sending" }, ids });
+            unrecorded.set(sessionId, waiting);
+          }
+        }
         Queueing.adopted(queueOf(sessionId), entry);
         const conversation = conversations.get(sessionId) ?? EMPTY_CONVERSATION;
         if (!conversation.turns.some((known) => known.id === turn.id)) {
@@ -1484,13 +1577,6 @@ export const makePersonHub = (input: {
           adopted.set(turn.id, turn);
           adoptedTurns.set(sessionId, adopted);
         }
-        yield* state
-          .recordTurnIds(ids, Date.now())
-          .pipe(
-            Effect.catch((error) =>
-              Effect.logError("t3 gateway could not record a turn's ids", { cause: error.message }),
-            ),
-          );
         // Taken back while it was being sent: its own turn, by id, is interrupted.
         if (entry.takenBack) {
           yield* Effect.forkIn(
@@ -1638,12 +1724,22 @@ export const makePersonHub = (input: {
           const work =
             step === null
               ? Effect.void
-              : Effect.forkIn(
-                  step.kind === "send"
-                    ? sendTurn(sessionId, step.entry)
-                    : launchAgain(sessionId, step.entry),
-                  hubScope,
-                ).pipe(Effect.asVoid);
+              : Effect.gen(function* () {
+                  // The step is kept before it is taken: a message the state file still reads as
+                  // queued would be sent again after a restart. A send it cannot keep never goes.
+                  const kept = yield* keepQueue(sessionId, queue);
+                  if (!kept && step.kind === "send") {
+                    Queueing.fail(queue, step.entry, NOT_KEPT);
+                    yield* keepQueue(sessionId, queue);
+                    return;
+                  }
+                  yield* Effect.forkIn(
+                    step.kind === "send"
+                      ? sendTurn(sessionId, step.entry)
+                      : launchAgain(sessionId, step.entry),
+                    hubScope,
+                  );
+                });
           return Effect.andThen(work, scheduleWake(sessionId, queue));
         },
         { discard: true },
@@ -1656,6 +1752,7 @@ export const makePersonHub = (input: {
         for (const queue of queues.values()) {
           Queueing.failAll(queue, "Every device of this person was revoked in Mend.");
         }
+        yield* keepQueues;
         yield* publishShell;
         yield* publishThreads;
         busy = false;
@@ -1665,6 +1762,26 @@ export const makePersonHub = (input: {
 
     const refused = (reason: string, authorization = false) =>
       Effect.fail(new ThreadCommandRefused({ reason, authorization }));
+
+    /**
+     * Changes a thread's queue and keeps it before anything is acknowledged (review 593-R2-1, the
+     * write-first rule): when the state file refuses the change, the queue is put back as it was,
+     * and the command fails rather than be acknowledged and lost on a restart. `change` answers
+     * false when there was nothing to change; then nothing is written either.
+     */
+    const changeKept = (sessionId: string, change: (queue: Queueing.ThreadQueue) => boolean) =>
+      Effect.gen(function* () {
+        const queue = queueOf(sessionId);
+        const held = queue.held;
+        const entries = [...queue.entries];
+        const fields = queue.entries.map((entry) => [entry, { ...entry }] as const);
+        if (!change(queue)) return false;
+        if (yield* keepQueue(sessionId, queue)) return true;
+        queue.held = held;
+        queue.entries = entries;
+        for (const [entry, before] of fields) Object.assign(entry, before);
+        return yield* refused(QUEUE_NOT_KEPT);
+      });
 
     const send: ThreadCommands["send"] = (command) =>
       Effect.gen(function* () {
@@ -1698,15 +1815,31 @@ export const makePersonHub = (input: {
             if (sourceOf(command.threadId) === null) {
               return yield* refused(`Thread ${command.threadId} is not in this environment.`);
             }
-            queueOf(command.threadId).entries.push(
-              Queueing.newEntry({
-                runId: `t3-run:${randomUUID()}`,
-                messageId: command.messageId,
-                text: command.text,
-                requestedAt: new Date().toISOString(),
-                token: command.session.deviceToken,
-              }),
-            );
+            // A client re-sends a command it saw no answer to, a restart of the gateway in between
+            // too: a message already kept or sent is the same message.
+            if (
+              queueOf(command.threadId).entries.some(
+                (entry) => entry.messageId === command.messageId,
+              ) ||
+              Array.from(turnIds.get(command.threadId)?.messageIds.values() ?? []).includes(
+                command.messageId,
+              )
+            ) {
+              return sequence;
+            }
+            yield* changeKept(command.threadId, (queue) => {
+              queue.entries.push(
+                Queueing.newEntry({
+                  runId: `t3-run:${randomUUID()}`,
+                  messageId: command.messageId,
+                  text: command.text,
+                  requestedAt: new Date().toISOString(),
+                  token: command.session.deviceToken,
+                  sender: command.session.sessionId,
+                }),
+              );
+              return true;
+            });
             yield* publishAll;
             return sequence;
           }),
@@ -1727,9 +1860,10 @@ export const makePersonHub = (input: {
     const takeBack = (threadId: string, runId: string, holdQueue: boolean) =>
       locked(
         Effect.gen(function* () {
-          if (!Queueing.takeBack(queueOf(threadId), runId, holdQueue)) {
-            return yield* refused("That message is not queued any more.");
-          }
+          const taken = yield* changeKept(threadId, (queue) =>
+            Queueing.takeBack(queue, runId, holdQueue),
+          );
+          if (!taken) return yield* refused("That message is not queued any more.");
           yield* publishAll;
           return sequence;
         }),
@@ -1750,7 +1884,10 @@ export const makePersonHub = (input: {
             if (turn === null) return yield* refused(`Run ${command.runId} is not in this thread.`);
             const wasHeld = queue.held;
             // Held before the turn ends, so the next message does not go out behind it.
-            Queueing.holdIfQueued(queue, command.holdQueue);
+            yield* changeKept(command.threadId, (held) => {
+              Queueing.holdIfQueued(held, command.holdQueue);
+              return true;
+            });
             yield* publishAll;
             return { kind: "turn" as const, turn, wasHeld };
           }),
@@ -1780,7 +1917,10 @@ export const makePersonHub = (input: {
     const resumeQueue: ThreadCommands["resumeQueue"] = (threadId) =>
       locked(
         Effect.gen(function* () {
-          Queueing.resume(queueOf(threadId));
+          yield* changeKept(threadId, (queue) => {
+            Queueing.resume(queue);
+            return true;
+          });
           yield* publishAll;
           return sequence;
         }),
@@ -1936,6 +2076,7 @@ export const makePersonHub = (input: {
               text: message.text,
               requestedAt: new Date().toISOString(),
               token,
+              sender: request.session.sessionId,
             }),
           );
         };
@@ -2250,6 +2391,17 @@ const OPENING_READ_RETRY = "500 millis";
 const OPENING_READ_ATTEMPTS = 3;
 const OPENING_READ_BACKGROUND_ATTEMPTS = 60;
 
+/** How long a kept queue waits before its person's hub reads Mend again after a failed read. */
+const QUEUE_RESTORE_RETRY = "30 seconds";
+
+/** Why a change to a queue the state file could not keep was refused: nothing changed. */
+const QUEUE_NOT_KEPT =
+  "The gateway could not write this to its state file, so nothing changed. Try again.";
+
+/** Why a message the state file could not keep was not sent. */
+const NOT_KEPT =
+  "The gateway could not write this message to its state file, so it did not send it. Send it again.";
+
 /** How long a hub outlives its last user: a client reconnecting finds it warm. */
 export const HUB_IDLE_TTL = "2 minutes";
 
@@ -2359,20 +2511,56 @@ export const ProjectionsLive: Layer.Layer<
       idleTimeToLive: config.hubIdleTimeToLive ?? HUB_IDLE_TTL,
     });
 
-    const hub = (session: BearerSession) =>
-      Effect.suspend(() => {
-        const userId = session.mendUser.id;
-        viewers.set(userId, { id: userId, name: session.mendUser.name });
-        const tokens = known.get(userId) ?? new Set<string>();
-        tokens.add(session.deviceToken);
-        known.set(userId, tokens);
-        // A person who pairs again after every device was revoked gets a fresh hub.
-        const done = exhausted.get(userId);
-        if (done !== undefined && Deferred.isDoneUnsafe(done) && liveOf(userId).length > 0) {
-          exhausted.delete(userId);
-        }
-        return RcMap.get(hubs, userId);
-      });
+    /** Makes the gateway hold a bearer's device token for its person. */
+    const know = (session: BearerSession) => {
+      const userId = session.mendUser.id;
+      viewers.set(userId, { id: userId, name: session.mendUser.name });
+      const tokens = known.get(userId) ?? new Set<string>();
+      tokens.add(session.deviceToken);
+      known.set(userId, tokens);
+      // A person who pairs again after every device was revoked gets a fresh hub.
+      const done = exhausted.get(userId);
+      if (done !== undefined && Deferred.isDoneUnsafe(done) && liveOf(userId).length > 0) {
+        exhausted.delete(userId);
+      }
+      return userId;
+    };
+
+    const hub = (session: BearerSession) => Effect.suspend(() => RcMap.get(hubs, know(session)));
+
+    /**
+     * After a restart, every person with a kept message that can still reach Mend gets their hub
+     * back without waiting for a client: it reads Mend once, and holds itself while the message is
+     * on its way (`retain`). Mend not answering yet is tried again; nothing kept is lost meanwhile.
+     */
+    const restoreQueues = Effect.gen(function* () {
+      const senders = yield* state.peopleWithQueuedMessages();
+      const people = new Set(senders.map(know));
+      yield* Effect.forEach(
+        people,
+        (userId) =>
+          Effect.scoped(
+            RcMap.get(hubs, userId).pipe(Effect.flatMap((held) => held.shellSnapshot)),
+          ).pipe(
+            // A device Mend refused will not come back; only Mend not answering is waited out.
+            Effect.retry({
+              schedule: Schedule.spaced(QUEUE_RESTORE_RETRY),
+              while: (error) => error._tag === "MendUnavailable",
+            }),
+            Effect.catch((error) =>
+              Effect.logWarning("t3 gateway could not bring a kept queue back", {
+                cause: error.message,
+              }),
+            ),
+          ),
+        { concurrency: 4, discard: true },
+      );
+    }).pipe(
+      Effect.catch((error) =>
+        Effect.logError("t3 gateway could not read its kept queues", { cause: error.message }),
+      ),
+    );
+    yield* Effect.forkScoped(restoreQueues);
 
     const refuseDevice = (userId: string, deviceToken: string) =>
       tokensOf(userId).refuse(deviceToken);
