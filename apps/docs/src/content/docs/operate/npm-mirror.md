@@ -57,25 +57,33 @@ Mend's dependency install (see [Automatic install](/guides/project-environment/#
 adds `--registry=http://npm-mirror:4873/` to a plain `pnpm install`, `npm ci` or `npm install`, when
 all of these hold:
 
-- The package manager says its registry is the public one. Mend does not read your config files to
-  decide this: before the install, in the project and as the person who runs it, the install script
-  asks `npm config list` and `npm config get registry` (or `pnpm config get registry`). That covers
-  every source the package manager reads, from the environment to the global config, written any way
-  it accepts, quoted keys included. The mirror is offered only when the answer is exactly
-  `https://registry.npmjs.org/`. A registry set anywhere else wins, including a project's
-  `pnpm-workspace.yaml` and a line that names registry.npmjs.org explicitly.
+- The package manager says its registry is the public one. The package manager's answer is what can
+  say yes: before the install, in the project and as the person who runs it, the install script asks
+  `npm config list` and `npm config get registry` (or `pnpm config get registry`). That covers every
+  source the package manager reads, from the environment to the global config, written any way it
+  accepts, quoted keys included. The mirror is offered only when the answer is exactly
+  `https://registry.npmjs.org/`. The script also looks in the usual config files and the environment
+  itself, but only for a reason to say no: a `registry` (or `registries`) key or a login it finds
+  there keeps the mirror out even when the package manager's answer would allow it. pnpm 10's
+  `config get` does not read `pnpm-workspace.yaml`, for one, so for pnpm the script reads the
+  `pnpm-workspace.yaml` of the project and of every directory above it, block or flow form. A
+  registry set anywhere wins, including a line that names registry.npmjs.org explicitly.
 - npm lists no login for registry.npmjs.org: no `//registry.npmjs.org/:…` key, and no unscoped
   `_auth`, `_authToken`, `_password`, `username` or `always-auth`. Packages behind such a login are
   private, and the mirror never forwards a credential, so the install stays on the registry.
-- Both answers came back. If the package manager cannot be asked, fails, or takes more than 15
-  seconds, there is no mirror. Asking costs about 50 ms with npm and about 180 ms with pnpm, once
-  per install.
+- Both answers came back. Each of the two questions has its own 15-second limit, so together they
+  can take up to 30 seconds. If either cannot be asked, fails, or runs past its limit, there is no
+  mirror. Asking costs about 50 ms with npm and about 180 ms with pnpm, once per install.
 - The command passes no flag that could choose its own configuration. The mirror is offered only
   when every flag is one that changes neither where the package manager reads its configuration nor
   where it fetches from: `--frozen-lockfile`, `--prefer-offline`, `--ignore-scripts`, `--prod`,
   `--no-audit`, `--reporter=…`, `--fetch-timeout=…` and the like. `--userconfig`, `--globalconfig`,
   `--prefix`, `--dir`, `--config.…` or any flag not on that list leave the command as written.
 - The mirror answers `/-/ping` within three seconds.
+
+Asking runs project code once more. `pnpm config get` loads the project's top-level `.pnpmfile.cjs`,
+so that file's code runs before the install as well as during it, as the same person the install
+runs as. Nothing runs that the install would not run anyway.
 
 Scoped registries are left alone. With `@corp:registry=https://npm.corp.example/` in `.npmrc`, the
 `@corp` packages and their login go to that registry, and everything else goes through the mirror.

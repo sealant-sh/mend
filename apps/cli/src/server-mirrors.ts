@@ -128,6 +128,14 @@ const LOGGING = [
   '        max-file: "5"',
 ];
 
+/** How often each mirror's healthcheck runs, and how long setup's `--wait` gives it. */
+const HEALTH_TIMING = [
+  "      interval: 10s",
+  "      timeout: 5s",
+  "      retries: 3",
+  "      start_period: 10s",
+];
+
 const npmMirrorService = (): ReadonlyArray<string> => [
   "  # Read-through cache of registry.npmjs.org (npm-mirror.conf). Size-capped, and it leaves",
   `  # ${MIRROR_MIN_FREE} free on its disk; the least recently used tarballs go first. No credential sent.`,
@@ -143,6 +151,10 @@ const npmMirrorService = (): ReadonlyArray<string> => [
   "    volumes:",
   `      - ./${NPM_MIRROR_CONF_NAME}:/etc/nginx/templates/default.conf.template:ro`,
   "      - mend-npm-mirror:/var/cache/npm-mirror",
+  "    # Answered by nginx itself, so it says the mirror is up without asking the registry.",
+  "    healthcheck:",
+  '      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:4873/-/ping"]',
+  ...HEALTH_TIMING,
   ...LOGGING,
 ];
 
@@ -177,6 +189,12 @@ const dockerMirrorService = (mirrors: ServerMirrors): ReadonlyArray<string> => [
   "    volumes:",
   `      - ./${DOCKER_MIRROR_GUARD_NAME}:/mend/${DOCKER_MIRROR_GUARD_NAME}:ro`,
   "      - mend-docker-mirror:/var/lib/registry",
+  "    # Healthy while its guard keeps working, which it records every pass. The registry inside may",
+  "    # be paused for want of disk, or not started because Docker Hub did not answer (it asks Hub as",
+  "    # it starts, and the guard tries again every pass): setup does not wait for it.",
+  "    healthcheck:",
+  `      test: ["CMD-SHELL", 'test -n "$$(find /tmp/mend-mirror-guard -mmin -2)"']`,
+  ...HEALTH_TIMING,
   ...LOGGING,
 ];
 
@@ -352,6 +370,7 @@ stop_registry() {
   pid=
 }
 clear_cache() { rm -rf "$root/docker" "$root/scheduler-state.json"; }
+cache_held() { [ -e "$root/docker" ] || [ -e "$root/scheduler-state.json" ]; }
 trap 'stop_registry; exit 0' TERM INT
 while :; do
   free=$(df -Pm "$root" | awk 'NR == 2 { print $4 }')
@@ -359,19 +378,22 @@ while :; do
     # Below the floor: no registry, and no cache, whether the registry was running or this is a
     # start with a cache left from before. Once the space is back, the next pass starts it again.
     stop_registry
-    if [ -e "$root/docker" ] || [ -e "$root/scheduler-state.json" ]; then
+    # What is left, looked at again after clearing: the log and the status say what this finds,
+    # not what was attempted.
+    if cache_held; then
       clear_cache
-      echo "mend docker mirror guard: \${free} MiB free on its disk, below \${floor} MiB: cache cleared, registry paused" >&2
+      if cache_held; then outcome="cache could not be cleared"; else outcome="cache cleared"; fi
+      echo "mend docker mirror guard: \${free} MiB free on its disk, below \${floor} MiB: \${outcome}, registry paused" >&2
     fi
-    # What is left, looked at again: status says what this finds, not what was attempted.
-    if [ -e "$root/docker" ] || [ -e "$root/scheduler-state.json" ]; then held=kept; else held=none; fi
+    if cache_held; then held=kept; else held=none; fi
     echo "paused \${free} \${floor} \${held}" >"$state"
   else
     used=$(du -sm "$root" | cut -f1)
     if [ "$used" -gt "$cap" ]; then
       stop_registry
       clear_cache
-      echo "mend docker mirror guard: cache \${used} MiB, over its \${cap} MiB cap: cleared" >&2
+      if cache_held; then outcome="could not be cleared"; else outcome="cleared"; fi
+      echo "mend docker mirror guard: cache \${used} MiB, over its \${cap} MiB cap: \${outcome}" >&2
     fi
     if [ -z "$pid" ] || ! kill -0 "$pid" 2>/dev/null; then
       registry serve /etc/distribution/config.yml &

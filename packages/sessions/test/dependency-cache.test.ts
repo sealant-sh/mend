@@ -442,6 +442,8 @@ describe("the npm mirror in the install script", () => {
     readonly command?: string;
     readonly mirror?: string | null;
     readonly files?: Readonly<Record<string, string>>;
+    /** Files in the directory above the project, a workspace root's. */
+    readonly parent?: Readonly<Record<string, string>>;
     readonly home?: Readonly<Record<string, string>>;
     readonly env?: Readonly<Record<string, string>>;
   }) => {
@@ -452,6 +454,7 @@ describe("the npm mirror in the install script", () => {
       const bin = path.join(root, "bin");
       for (const dir of [repo, home, bin]) fs.mkdirSync(dir, { recursive: true });
       writeFiles(repo, setup.files);
+      writeFiles(root, setup.parent);
       writeFiles(home, setup.home);
       const out = path.join(root, "argv.out");
       for (const tool of ["pnpm", "npm"])
@@ -497,6 +500,13 @@ describe("the npm mirror in the install script", () => {
     expect(seen.said).toBe(`${NPM_MIRROR_USED} · ${MIRROR}`);
   });
 
+  it("still offers the mirror to a workspace whose catalog names a package like registry-url", () => {
+    const seen = run({
+      parent: { "pnpm-workspace.yaml": "packages:\n  - repo\ncatalog:\n  registry-url: ^7.0.0\n" },
+    });
+    expect(seen.said).toBe(`${NPM_MIRROR_USED} · ${MIRROR}`);
+  });
+
   it("goes to the registry itself when the mirror does not answer its ping", () => {
     const seen = run({ env: { MIRROR_DOWN: "1" } });
     expect(seen.argv).toBe(`install --frozen-lockfile --fetch-timeout=${INSTALL_FETCH_TIMEOUT_MS}`);
@@ -512,6 +522,24 @@ describe("the npm mirror in the install script", () => {
     ["the person's ~/.npmrc", { home: { ".npmrc": " registry = https://npm.corp.example/\n" } }],
     ["the environment", { env: { npm_config_registry: "https://npm.corp.example/" } }],
     ["pnpm's environment", { env: { PNPM_CONFIG_REGISTRY: "https://npm.corp.example/" } }],
+    [
+      "a flow-form pnpm-workspace.yaml",
+      {
+        files: {
+          "pnpm-workspace.yaml":
+            "{packages: ['.'], registries: {default: 'https://npm.corp.example/'}}\n",
+        },
+      },
+    ],
+    [
+      "the pnpm-workspace.yaml of a directory above",
+      {
+        parent: {
+          "pnpm-workspace.yaml":
+            "packages:\n  - repo\nregistries:\n  default: https://npm.corp.example/\n",
+        },
+      },
+    ],
   ])("leaves a registry set in %s alone", (_where, setup) => {
     const seen = run(setup);
     expect(seen.argv).not.toContain("--registry");

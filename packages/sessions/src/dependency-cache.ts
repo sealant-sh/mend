@@ -356,8 +356,9 @@ const NPMJS_LOGIN = [
  * and builtin files, quoted keys included; secrets printed as `(protected)`), and `<pm> config get
  * registry`, the default registry the install itself resolves. Each is bounded at 15 s; a missing
  * `timeout`, an error or a timeout leaves `mend_config_read` empty, and then there is no mirror.
- * The update check is off for both, so neither asks the registry anything. Measured on node 24:
- * npm about 50 ms, pnpm 10 about 180 ms.
+ * The update check is off for both, so neither asks the registry anything. `pnpm config get` loads
+ * a top-level `.pnpmfile.cjs`: the code the install itself runs next, as the same person. Measured
+ * on node 24: npm about 50 ms, pnpm 10 about 180 ms.
  */
 const readPackageManagerConfig = (manager: "npm" | "pnpm"): string =>
   [
@@ -366,6 +367,21 @@ const readPackageManagerConfig = (manager: "npm" | "pnpm"): string =>
     "  mend_npm_config=$(npm_config_update_notifier=false timeout 15 npm config list 2>/dev/null) &&",
     `  mend_pm_registry=$(npm_config_update_notifier=false timeout 15 ${manager} config get registry 2>/dev/null); then mend_config_read=1; fi`,
   ].join("\n");
+
+/**
+ * A `registry` or `registries` key, in block or flow form, in the `pnpm-workspace.yaml` of the
+ * project or of any directory above it: pnpm reads its workspace's, wherever the root is, and
+ * pnpm 10's `config get registry` does not report it. Leaves `mend_workspace_registry` non-empty
+ * when one is found.
+ */
+const PNPM_WORKSPACE_REGISTRY = [
+  "mend_workspace_registry=; mend_dir=$PWD",
+  "while :; do",
+  `  if grep -Eqs '(^|[[:space:]{,])${OPTIONAL_QUOTE}registr(y|ies)${OPTIONAL_QUOTE}[[:space:]]*:' "$mend_dir/pnpm-workspace.yaml"; then mend_workspace_registry=1; break; fi`,
+  '  if [ "$mend_dir" = / ]; then break; fi',
+  '  mend_dir=$(dirname "$mend_dir")',
+  "done",
+].join("\n");
 
 /** One line on stderr: what the install script decided about the mirror. */
 const said = (words: string) => `echo '${words}' >&2`;
@@ -405,13 +421,15 @@ const npmMirrorLines = (command: string, mirror: string): ReadonlyArray<string> 
     ];
   const ping = `node -e 'fetch(process.argv[1] + "-/ping", { signal: AbortSignal.timeout(3000) }).then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))' '${mirror}' >/dev/null 2>&1`;
   const manager = command.startsWith("pnpm") ? "pnpm" : "npm";
+  // The package manager's answer decides; the file and environment checks can only add a "no"
+  // (pnpm 10's `config get` does not read pnpm-workspace.yaml, for one).
+  const workspaceRegistry = manager === "pnpm" ? ' || [ -n "$mend_workspace_registry" ]' : "";
   return [
     "mend_registry=",
     readPackageManagerConfig(manager),
+    ...(manager === "pnpm" ? [PNPM_WORKSPACE_REGISTRY] : []),
     `if [ -z "$mend_config_read" ]; then ${said(`${NPM_MIRROR_NOT_USED} · the configuration ${manager} reports could not be read`)}`,
-    // The package manager's answer decides; the file and environment checks can only add a "no"
-    // (pnpm 10's `config get` does not read pnpm-workspace.yaml, for one).
-    `elif [ "$mend_pm_registry" != "${NPMJS_REGISTRY}" ] || ! { ${fetchSettingUnset("registry", "registries")}; }; then ${said(`${NPM_MIRROR_NOT_USED} · a registry is set`)}`,
+    `elif [ "$mend_pm_registry" != "${NPMJS_REGISTRY}" ] || ! { ${fetchSettingUnset("registry", "registries")}; }${workspaceRegistry}; then ${said(`${NPM_MIRROR_NOT_USED} · a registry is set`)}`,
     `elif ${NPMJS_LOGIN}; then ${said(`${NPM_MIRROR_NOT_USED} · a login for registry.npmjs.org is set`)}`,
     `elif ${ping}; then mend_registry='--registry=${mirror}'; ${said(`${NPM_MIRROR_USED} · ${mirror}`)}`,
     `else ${said(`${NPM_MIRROR_NOT_USED} · ${mirror} did not answer`)}; fi`,

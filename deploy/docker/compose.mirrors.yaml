@@ -22,6 +22,13 @@ services:
     volumes:
       - ./npm-mirror.conf:/etc/nginx/templates/default.conf.template:ro
       - mend-npm-mirror:/var/cache/npm-mirror
+    # Answered by nginx itself, so it says the mirror is up without asking the registry.
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:4873/-/ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     logging:
       driver: json-file
       options:
@@ -51,6 +58,15 @@ services:
     volumes:
       - ./docker-mirror-guard.sh:/mend/docker-mirror-guard.sh:ro
       - mend-docker-mirror:/var/lib/registry
+    # Healthy while its guard keeps working, which it records every pass. The registry inside may
+    # be paused for want of disk, or not started because Docker Hub did not answer (it asks Hub as
+    # it starts, and the guard tries again every pass): setup does not wait for it.
+    healthcheck:
+      test: ["CMD-SHELL", 'test -n "$$(find /tmp/mend-mirror-guard -mmin -2)"']
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     logging:
       driver: json-file
       options:

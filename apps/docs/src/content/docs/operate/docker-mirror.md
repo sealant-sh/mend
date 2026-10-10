@@ -84,6 +84,11 @@ docker mirror · paused by its disk guard · 3.0 GiB free on its disk, below 5.0
 The counts are the registry's own, read from its metrics listener on the container's loopback, and
 start again when the container restarts.
 
+Docker reports the container healthy while its guard keeps working, whether the registry inside is
+serving or paused. The registry asks Docker Hub as it starts, so on a host that cannot reach Docker
+Hub it does not start, and the guard tries again every 30 seconds; setup and upgrade do not wait for
+it.
+
 ## A Docker Hub login
 
 Anonymous by default. A Docker Hub account raises the pull limit for the mirror, and only for the
