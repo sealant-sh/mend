@@ -97,6 +97,62 @@
 //   with `launch_call_capped` (1 when the call took the whole window) and a note per capped call.
 // - The answer is watched for from the first output on, while the executor is sized beside it.
 // - A merge stamps each executor size with the point its own record sampled it at (`sampledAt`).
+// - Beside each executor's memory, its own cgroup's `memory.stat` parts (`memory_anon_bytes`, the
+//   processes' own; `memory_active_file_bytes`, page cache the total counts; `memory_shmem_bytes`;
+//   `memory_kernel_bytes`, v2 only), unbudgeted, so a difference in the total can be told apart.
+//   Read on the host from the container's cgroup (v2, or v1's hierarchical totals); when it cannot
+//   be read, the parts are not run, with why.
+// - Each shell open counts the person's logins the engine wrote into the executor during it
+//   (`shell.open_credential_writes`, Core's credentials POST), unbudgeted.
+// - The different-person join gets memory of its own: when the second account holds none in the
+//   project, a memory file of the run is imported for it (removed after), in both layouts, so a
+//   person executor's join delivers it and its delivery is timed (`join.other.delivery`,
+//   unbudgeted: an executor that shares one home delivers nothing to another person's join).
+//   `--secret-file` gives the second account the run's secret file too. A launch that delivered
+//   nothing says why (memory already in place, another person's shared home, nothing held).
+// - `companion` keeps only a record of the same run, shown, not assumed: the same known layout,
+//   instance, Mend build (both image ids, else both commits), workspace image and the versions of
+//   the harnesses it names. Under gate P1 what such a companion ran and holds counts toward the set,
+//   every budgeted measure in it needs its baseline counterpart, and the baseline companion's
+//   errors are the baseline's.
+// - Cleanup waits for what is in flight that leaves something or starts work (a create, an import,
+//   a secret file, a launch, a resume, a shell, a turn), refuses new such requests once
+//   interrupted, and removes each kind on its own: the joiner's memory file of a run by its path,
+//   whatever else failed; a worktree it cannot read is retried, then a failure. A request that ran
+//   past the wait or ended with no answer may still commit: cleanup sweeps again later and records
+//   that what commits after that is left for `cleanup --run <id>`, so the run fails and says so.
+// - A record says the harness its joins, resume and interactive scenarios rode on
+//   (`method.firstHarness`), and each series a harness produced is stamped with that harness and
+//   its version (`harness`, `harnessVersion` on the measure), and every series with the layout it
+//   ran in (`layout`). A merge takes a later run only of the record's workload (its layout,
+//   instance, build, workspace image, project, and every series at the record's version of its
+//   harness, none newly filled from another), keeps each series' own stamp, and refuses a series
+//   whose harness or version is unknown or differs from the record's series of that name. Under
+//   gate P1 a series that ran on another harness or version in the other layout is a miss (NOT ONE
+//   WORKLOAD), and a record or companion holding a series its label does not stand for (another
+//   layout, another version) is not the gate.
+// - A run whose requests may still commit after its cleanup records that on disk
+//   (`~/.cache/st-bench/unresolved/<run id>.json`, or `ST_BENCH_STATE_DIR`), with the user ids of
+//   the accounts it acted as (`GET /organization`, read when the run starts): a private (0700)
+//   directory of this user's (one others may read or write is refused, never changed), files named
+//   only by a checked run id, written whole (0600, renamed into place) and read without following
+//   links; whatever a file says is never a path. `cleanup` holds the directory's lock while it
+//   reconciles (flock(2) through util-linux `flock` on a descriptor it keeps: released however the
+//   process ends), waits the entry's quiet period (5 min) out, sweeps, sweeps again a while later,
+//   and only then, finding nothing more and the file unchanged since it read it, clears it. An entry
+//   it cannot read, one renewed meanwhile, or one owed by accounts no token given here is (a token
+//   missing, or of another account), is kept and fails the cleanup. Under `--all`, each run whose
+//   things appear late is owed again, and what cannot be told to a run is owed by the project's
+//   whole scope (`all-<digest>.json`), which every cleanup of the project waits out and only
+//   `--all` clears.
+// - A record merged by a bench before series carried their layout is not the gate: run it again.
+// - Cleanup stops and removes only worktrees whose sessions are all owned by the bench's own
+//   accounts (`GET /organization`'s user id); an st-bench- worktree of anyone else's is left alone
+//   under `--all`, and under `--run` (the run's own, the tokens of other accounts) fails the
+//   cleanup, as one whose owner cannot be told does. Sessions that hold a worktree as a repository
+//   beside their own (ADR 0010) are not in the worktree's detail and cannot be listed by it, so
+//   they are not checked; the server still refuses removal while one is live, and the bench never
+//   makes one.
 
 import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
@@ -106,6 +162,7 @@ import { fileURLToPath } from "node:url";
 
 import { makeApi, makeHost, mendImageCommit } from "./host.mjs";
 import {
+  companionMismatchOf,
   compareResults,
   comparisonFails,
   failedChecks,
@@ -116,9 +173,10 @@ import {
   scenarioOf,
   RESOURCES_AT_FIRST_OUTPUT,
   settleNotRun,
+  stampSeriesIdentity,
   withCompanion,
 } from "./lib.mjs";
-import { HARNESSES, cleanupAll, makeRecorder, runAll } from "./scenarios.mjs";
+import { HARNESSES, benchAccountsOf, cleanupAll, makeRecorder, runAll } from "./scenarios.mjs";
 
 const USAGE = `usage: node scripts/bench/bench.mjs <run|table|compare|merge|companion|cleanup|help> [args] [options]
 
@@ -162,7 +220,10 @@ what runs
                               is this many tokens (default: 45000)
   --handover-seed-turns <n>   at most this many turns grow it, each reading two files of 8 to 32 KB
                               (default: 8)
-  --run <id>                  cleanup: the run whose worktrees to remove (its log's "bench <id>")
+  --run <id>                  cleanup: the run whose worktrees to remove (its log's "bench <id>");
+                              an interrupted run's unresolved requests are waited out first (up
+                              to 5 min after it), and it is clean only when a later sweep finds
+                              nothing
   --all                       cleanup: every st-bench worktree of the project, any run's
   --flag <text>               the harness layout under test (default: read from the server's env).
                               Run against MEND_MODE=all: with MEND_MODE=api beside MEND_MODE=worker,
@@ -188,11 +249,16 @@ gate P1 (docs/adr/0016): person launches against shared launches at one commit
   a miss, and the baseline's errors fail it too. A per-round series (launches and Stops, the
   hand-over's differences, growth, joins, resumes) that kept fewer than 80% of its rounds, or
   fewer than 5, is a miss (SHORT), and a record of fewer than 10 rounds is not the gate. A
-  companion record's failed checks and errors count, on either side. Ceiling budgets (the hand-over's 5 s over the own
-  turn, growth's 64 KB) are checked on the record under test alone. It also fails on a failed or
-  unverified check and on an error in the record under test. It says what it does not cover: P1's
-  restore wall time on the box's largest worktree, interleaved between the layouts. The last line
-  is the verdict; exit 0 only when it says passed
+  companion of the same run (\`companion\`: the same known layout, instance, Mend image or
+  commit, workspace image and versions of the harnesses it names; another project) counts toward
+  the set: what it ran and holds is compared against the baseline's companion of that name, under
+  the same floors, a budgeted measure of it the baseline's companion lacks is a miss, and the
+  baseline companion's errors fail it; one not shown to be of the run makes it "not the gate". A
+  companion's failed checks and errors count, on either side. Ceiling budgets (the hand-over's 5 s
+  over the own turn, growth's 64 KB) are checked on the record under test alone. It also fails on
+  a failed or unverified check and on an error in the record under test. It says what it does
+  not cover: P1's restore wall time on the box's largest worktree, interleaved between the
+  layouts. The last line is the verdict; exit 0 only when it says passed
 
 what the record keeps apart
   executor sizes              taken at each launch's first output; memory_after_answer_bytes is what
@@ -385,31 +451,46 @@ const runBench = async (opts) => {
       remoteRefs: new Set(),
       secretFile: false,
     },
+    // What is in flight that leaves something behind, and whether new such work is refused.
+    pending: new Set(),
+    stopping: false,
   };
+  // One cleanup, whoever asks first: the signal's and the run's own wait for the same one.
+  let cleaning = null;
+  const cleanupOnce = () => (cleaning ??= cleanupAll(ctx));
   let interrupted = false;
   const onSignal = () => {
     if (interrupted) process.exit(130);
     interrupted = true;
+    // Nothing new that leaves something starts; cleanup waits for what is in flight.
+    ctx.stopping = true;
     log("interrupted: cleaning up (again to quit without it)");
-    cleanupAll(ctx)
+    cleanupOnce()
       .catch((error) => log(`cleanup failed: ${error.message}`))
       .finally(() => {
-        writeJson(opts.out, settleNotRun({ ...result, finishedAt: new Date().toISOString() }));
+        writeJson(
+          opts.out,
+          stampSeriesIdentity(settleNotRun({ ...result, finishedAt: new Date().toISOString() })),
+        );
         process.exit(130);
       });
   };
   process.on("SIGINT", onSignal);
   process.on("SIGTERM", onSignal);
   try {
+    // Whose things this run leaves: the accounts' user ids, recorded with what may still commit,
+    // so only a cleanup acting as them may call it settled.
+    await benchAccountsOf(ctx);
     await runAll(ctx);
   } catch (error) {
     ctx.rec.error("run", error);
   } finally {
-    await cleanupAll(ctx).catch((error) => ctx.rec.error("cleanup", error));
+    await cleanupOnce().catch((error) => ctx.rec.error("cleanup", error));
     process.off("SIGINT", onSignal);
     process.off("SIGTERM", onSignal);
   }
-  return settleNotRun({ ...result, finishedAt: new Date().toISOString() });
+  // Each series says the harness it ran on and its version, so a later merge keeps them.
+  return stampSeriesIdentity(settleNotRun({ ...result, finishedAt: new Date().toISOString() }));
 };
 
 /** The scenarios and harnesses that re-take a set of missed measures. */
@@ -457,14 +538,30 @@ const main = async () => {
       return;
     }
     case "merge": {
-      const merged = mergeResults(readJson(opts.args[0]), readJson(opts.args[1]));
+      let merged;
+      try {
+        merged = mergeResults(readJson(opts.args[0]), readJson(opts.args[1]));
+      } catch (error) {
+        log(error.message);
+        process.exitCode = 1;
+        return;
+      }
       writeJson(opts.out, merged);
       process.stdout.write(`${formatTable(merged)}\n`);
       log(`merged · ${opts.out}`);
       return;
     }
     case "companion": {
-      const joined = withCompanion(readJson(opts.args[0]), readJson(opts.args[1]));
+      const kept = readJson(opts.args[0]);
+      const other = readJson(opts.args[1]);
+      // Only a record of the same run stands in for what the main record did not run.
+      const mismatch = companionMismatchOf(kept, other);
+      if (mismatch.length > 0) {
+        log(`not of the same run, not kept: ${mismatch.join("; ")}`);
+        process.exitCode = 1;
+        return;
+      }
+      const joined = withCompanion(kept, other);
       writeJson(opts.out, joined);
       process.stdout.write(`${formatTable(joined)}\n`);
       log(`with companion · ${opts.out}`);
@@ -546,7 +643,10 @@ const main = async () => {
           secretFile: false,
         },
       };
-      await cleanupAll(ctx, { all: opts.all });
+
+      // A cleanup asked for by hand waits out an interrupted run's unresolved requests and calls it
+      // clean only when a second sweep a while later finds nothing more.
+      await cleanupAll(ctx, { all: opts.all, reconcile: true });
       if (result.errors.length > 0) process.exitCode = 1;
       return;
     }
