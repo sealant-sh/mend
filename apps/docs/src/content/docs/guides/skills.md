@@ -147,6 +147,15 @@ shows one line before Claude starts:
 mend: Claude plugins · installed: pstack@pstack-claude
 ```
 
+The line also names what was already installed, and what was not installed and why:
+
+```text
+mend: Claude plugins · already installed: pstack@pstack-claude · not installed: lint@acme-tools (timed out)
+```
+
+A plugin that wants to run a command of its marketplace's at install is not installed: Mend never
+accepts that command for you.
+
 A conversation session writes the same line to its process's stderr, which the conversation view
 does not show. A new workspace installs the plugins again: Mend does not save `~/.claude/plugins`
 between workspaces yet. A conversation that
