@@ -38,7 +38,8 @@
 // No trace, HAR or video is recorded.
 //
 // --web must be this run's own stack through its tunnel (guard/policy.mjs, with the private
-// directory's tunnel.json and MEND_VERIFY_OUTER_URL): the driver refuses (exit 97) any other server.
+// directory's tunnel.json and MEND_VERIFY_OUTER_URL), or the mobile proxy drive-mobile.mjs started
+// in front of that tunnel (its mobile.json): the driver refuses (exit 97) any other server.
 //
 // Playwright comes from $MEND_VERIFY_PLAYWRIGHT (default ~/.cache/mend-verify/playwright), never
 // from this repository's dependencies.
@@ -76,7 +77,11 @@ if (!web || !out || !recipe || !privateDir || !viewportFlag || (cdp && (state ||
 }
 const viewport = { width: Number(viewportFlag[1]), height: Number(viewportFlag[2]) };
 try {
-  checkTarget(web, { ...process.env, MEND_VERIFY_PRIVATE: privateRoot(privateDir) });
+  checkTarget(
+    web,
+    { ...process.env, MEND_VERIFY_PRIVATE: privateRoot(privateDir) },
+    { mobile: true },
+  );
 } catch (error) {
   if (!(error instanceof Refused)) throw error;
   process.stderr.write(

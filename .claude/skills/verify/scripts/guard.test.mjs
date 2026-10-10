@@ -694,7 +694,7 @@ test("the real CLI runs in a home of the run's own, with no login or provider va
       SSH_AUTH_SOCK: join(w.home, "agent.sock"),
       MEND_URL: "http://127.0.0.1:9",
     };
-    const result = run(w, ["connect", "github"], {
+    const result = run(w, ["connect", "github", "--from-stdin"], {
       MEND_VERIFY_OUTER_URL: outer,
       MEND_VERIFY_REAL_MEND: join(w.bin, "env-mend"),
       ...leaked,
@@ -729,6 +729,123 @@ test("the real CLI runs in a home of the run's own, with no login or provider va
       rmSync(home, { recursive: true, force: true });
     }
   });
+});
+
+// H3: `gh auth token` with an empty GH_CONFIG_DIR still reads the owner's login from the OS keyring,
+// through the secret service on the session D-Bus.
+test("mend connect github needs --from-stdin under the guard: gh would read this machine's login", () => {
+  within({ xdgUrl: outer }, (w) => {
+    const env = { MEND_VERIFY_OUTER_URL: outer };
+    refused(run(w, ["connect", "github"], env), /gh auth token/);
+    refused(run(w, ["connect", "github", "--use-my-login"], env), /--from-stdin/);
+    for (const args of [
+      ["connect", "github", "--from-stdin"],
+      ["connect", "github", "--remove"],
+      ["connect", "github", "--help"],
+      ["connect", "codex", "--from-stdin"],
+      ["run", "--project", "mend", "--", "mend", "connect", "github"],
+    ]) {
+      const result = run(w, args, env);
+      assert.equal(result.status, 0, `${args.join(" ")}: ${result.stderr}`);
+    }
+  });
+});
+
+/**
+ * A `gh` that looks for the keyring the way gh's keyring library does on Linux: the session bus at
+ * DBUS_SESSION_BUS_ADDRESS (empty or `autolaunch:` means look on), else $XDG_RUNTIME_DIR/bus, and
+ * connects to it. It prints what it reached, and the keyring agents' variables it was handed.
+ */
+const KEYRING_GH = `#!/usr/bin/env node
+const { existsSync } = require("node:fs");
+const net = require("node:net");
+const address = process.env.DBUS_SESSION_BUS_ADDRESS ?? "";
+const runtime = process.env.XDG_RUNTIME_DIR ?? "";
+const path =
+  address !== "" && address !== "autolaunch:"
+    ? (/unix:path=([^,;]+)/.exec(address) ?? [])[1]
+    : runtime !== "" && existsSync(runtime + "/bus")
+      ? runtime + "/bus"
+      : undefined;
+const agents = Object.keys(process.env).filter((name) =>
+  /^(?:GNOME_KEYRING_|KWALLET|GPG_AGENT_INFO$|SSH_AGENT_PID$|SSH_AUTH_SOCK$|OP_|BW_SESSION$)/.test(name),
+);
+const done = (line) => {
+  console.log(line + " · agents " + (agents.join(",") || "none"));
+  process.exit(line.startsWith("keyring reached") ? 0 : 1);
+};
+if (path === undefined) done("no D-Bus · nothing to look at");
+const socket = net.connect(path);
+socket.on("connect", () => done("keyring reached " + path));
+socket.on("error", (error) => done("no D-Bus · " + error.code));
+`;
+
+test("under the guard, a gh that tries the keyring finds no D-Bus and no keyring agent", async () => {
+  const w = world({ xdgUrl: outer });
+  const servers = [];
+  try {
+    writeFileSync(join(w.bin, "gh"), KEYRING_GH, { mode: 0o755 });
+    // The real CLI as `mend connect github` is without --from-stdin: it runs `gh auth token`.
+    writeFileSync(join(w.bin, "gh-mend"), "#!/bin/sh\nexec gh auth token\n", { mode: 0o755 });
+    // The owner's session bus, and the runtime directory's `bus` a D-Bus client tries next.
+    const runtime = join(w.home, "owner-run");
+    mkdirSync(runtime, { mode: 0o700 });
+    const reached = [];
+    for (const path of [join(w.home, "owner-bus"), join(runtime, "bus")]) {
+      const server = createServer((socket) => {
+        reached.push(path);
+        socket.destroy();
+      });
+      await new Promise((done) => server.listen(path, done));
+      servers.push(server);
+    }
+    const owner = {
+      DBUS_SESSION_BUS_ADDRESS: `unix:path=${join(w.home, "owner-bus")},guid=0123456789abcdef`,
+      DBUS_SYSTEM_BUS_ADDRESS: `unix:path=${join(w.home, "owner-bus")}`,
+      XDG_RUNTIME_DIR: runtime,
+      GNOME_KEYRING_CONTROL: join(runtime, "keyring"),
+      GNOME_KEYRING_PID: "4242",
+      KWALLET_SESSION: "kwallet6",
+      GPG_AGENT_INFO: join(runtime, "gnupg", "S.gpg-agent"),
+      SSH_AGENT_PID: "4243",
+      SSH_AUTH_SOCK: join(runtime, "ssh-agent.sock"),
+      OP_SESSION_owner: "synthetic-op-session",
+      BW_SESSION: "synthetic-bw-session",
+    };
+    const gh = (command, env) =>
+      new Promise((done) => {
+        const child = spawn(command[0], command.slice(1), { cwd: w.home, env });
+        let out = "";
+        child.stdout.on("data", (data) => (out += data));
+        child.stderr.on("data", (data) => (out += data));
+        child.on("exit", (status) => done({ status, out }));
+      });
+    const base = {
+      PATH: `${guardDir}:${w.bin}:${process.env.PATH}`,
+      HOME: w.home,
+      XDG_CONFIG_HOME: w.xdg,
+      MEND_VERIFY_PRIVATE: w.P,
+      MEND_VERIFY_OUTER_URL: outer,
+      ...owner,
+    };
+    // Without the guard, the same gh reaches the owner's bus: the stub can tell.
+    const bare = await gh([join(w.bin, "gh"), "auth", "token"], base);
+    assert.match(bare.out, /keyring reached/, bare.out);
+    assert.equal(reached.length, 1);
+    reached.length = 0;
+    // Under the guard: no bus, no runtime `bus`, no agent.
+    track(w.xdg);
+    const guarded = await gh([join(guardDir, "mend"), "connect", "github", "--from-stdin"], {
+      ...base,
+      MEND_VERIFY_REAL_MEND: join(w.bin, "gh-mend"),
+    });
+    assert.equal(guarded.status, 1, guarded.out);
+    assert.match(guarded.out, /^no D-Bus · ENOENT · agents none$/m, guarded.out);
+    assert.deepEqual(reached, []);
+  } finally {
+    for (const server of servers) server.close();
+    rmSync(w.home, { recursive: true, force: true });
+  }
 });
 
 // R2-2: a tunnel counts only when its own child holds the port.
@@ -845,6 +962,138 @@ test("a tunnel counts only when its own child holds the port", async () => {
     assert.throws(target(port), Refused);
   } finally {
     squatter.kill();
+    rmSync(w.home, { recursive: true, force: true });
+  }
+});
+
+// H2: drive-web.mjs drives the mobile proxy drive-mobile.mjs started in front of the run's tunnel,
+// and no other.
+test("drive-web may drive the mobile proxy this run started, and no other", async () => {
+  const w = world({});
+  // Expo is not what is under test: a pnpm that exits.
+  writeFileSync(join(w.bin, "pnpm"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  const app = join(w.home, "app");
+  mkdirSync(app);
+  const tunnelPort = await quietPort();
+  tunnelTo(w.P, tunnelPort);
+  const env = {
+    ...process.env,
+    PATH: `${w.bin}:${process.env.PATH}`,
+    MEND_VERIFY_PRIVATE: w.P,
+    MEND_VERIFY_OUTER_URL: outer,
+  };
+  const policyEnv = { MEND_VERIFY_OUTER_URL: outer, MEND_VERIFY_PRIVATE: w.P };
+  const target = (url, mobile) => () => checkTarget(url, policyEnv, { mobile });
+  const driveWeb = (url) =>
+    spawnSync(
+      process.execPath,
+      [
+        join(scripts, "drive-web.mjs"),
+        "--web",
+        url,
+        "--out",
+        join(w.home, "out"),
+        "--recipe",
+        join(w.home, "none.mjs"),
+        "--private",
+        w.P,
+      ],
+      { encoding: "utf8", env: { ...env, MEND_VERIFY_PLAYWRIGHT: join(w.home, "no-playwright") } },
+    );
+  const mobilePort = await quietPort();
+  const mobileArgs = (web) => [
+    join(scripts, "drive-mobile.mjs"),
+    "--app",
+    app,
+    "--web",
+    web,
+    "--port",
+    String(mobilePort),
+    "--log",
+    join(w.home, "mobile.log"),
+  ];
+  const record = join(w.P, "mobile.json");
+  let proxy;
+  try {
+    // Before any proxy: refused.
+    assert.throws(target(`http://127.0.0.1:${mobilePort}`, true), Refused);
+    assert.equal(driveWeb(`http://127.0.0.1:${mobilePort}`).status, 97);
+    // A proxy in front of the declared outer is no proxy of the run's: refused before it listens.
+    const onOuter = spawnSync(process.execPath, mobileArgs(outer), { encoding: "utf8", env });
+    assert.equal(onOuter.status, 97, onOuter.stderr);
+    assert.ok(!existsSync(record));
+
+    proxy = spawn(process.execPath, mobileArgs(`http://localhost:${tunnelPort}`), { env });
+    await new Promise((done, fail) => {
+      let out = "";
+      proxy.stdout.on("data", (data) => {
+        out += data;
+        if (out.includes("drive-mobile ·")) done();
+      });
+      proxy.on("exit", (status) => fail(new Error(`drive-mobile exited ${status}: ${out}`)));
+    });
+    const recorded = JSON.parse(readFileSync(record, "utf8"));
+    assert.equal(recorded.pid, proxy.pid);
+    assert.equal(recorded.bound, true);
+    assert.equal(recorded.web, `http://localhost:${tunnelPort}`);
+
+    // The run's own proxy, for drive-web only.
+    assert.equal(
+      target(`http://127.0.0.1:${mobilePort}`, true)(),
+      `http://127.0.0.1:${mobilePort}`,
+    );
+    assert.equal(
+      target(`http://localhost:${mobilePort}`, true)(),
+      `http://localhost:${mobilePort}`,
+    );
+    assert.throws(target(`http://127.0.0.1:${mobilePort}`, false), Refused);
+    assert.throws(target(`http://127.0.0.1:${mobilePort + 1}`, true), Refused);
+    const allowed = driveWeb(`http://127.0.0.1:${mobilePort}`);
+    assert.notEqual(allowed.status, 97, allowed.stderr);
+    assert.doesNotMatch(allowed.stderr, /refused · a verifier/);
+    // The guard and the terminal's check (`policy.mjs target`) never take it.
+    const cli = spawnSync(
+      process.execPath,
+      [join(guardDir, "policy.mjs"), "target", `http://127.0.0.1:${mobilePort}`],
+      { encoding: "utf8", env },
+    );
+    assert.equal(cli.status, 97, cli.stderr);
+
+    // Once the run's tunnel is gone, the proxy in front of it no longer counts.
+    tunnelTo(w.P, tunnelPort, { bound: false });
+    assert.throws(target(`http://127.0.0.1:${mobilePort}`, true), Refused);
+    tunnelTo(w.P, tunnelPort);
+
+    // A record drive-mobile did not write, or that fronts another server, counts for nothing.
+    const forged = (fields) =>
+      writeFileSync(
+        record,
+        JSON.stringify({
+          pid: proxy.pid,
+          identity: identityOf(proxy.pid),
+          port: String(mobilePort),
+          web: `http://localhost:${tunnelPort}`,
+          bound: true,
+          ...fields,
+        }),
+      );
+    forged({ web: owner });
+    assert.throws(target(`http://127.0.0.1:${mobilePort}`, true), Refused);
+    forged({ bound: false });
+    assert.throws(target(`http://127.0.0.1:${mobilePort}`, true), Refused);
+    forged({ identity: "Thu Jan  1 00:00:00 1970" });
+    assert.throws(target(`http://127.0.0.1:${mobilePort}`, true), Refused);
+    forged({});
+
+    // The proxy ends: its record goes, and its port is refused again.
+    const ended = new Promise((done) => proxy.once("exit", done));
+    proxy.kill("SIGTERM");
+    await ended;
+    proxy = undefined;
+    assert.ok(!existsSync(record));
+    assert.throws(target(`http://127.0.0.1:${mobilePort}`, true), Refused);
+  } finally {
+    proxy?.kill("SIGKILL");
     rmSync(w.home, { recursive: true, force: true });
   }
 });

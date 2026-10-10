@@ -82,6 +82,7 @@ import {
   packageOverrides,
   parseMemory,
   parseSource,
+  preloadNetworkGuardImage,
   relayEndpoint,
   runtimeConsumers,
   withOverrides,
@@ -954,6 +955,12 @@ async function upClaimed(flags, specs, { started, phases, logs }) {
     }),
   );
   await Promise.all([cliBuild, bundleBuild]);
+  // Setup runs offline and refuses a network guard image the daemon lacks (mend#692): the one the
+  // Mend image just built names in its label, read the way setup reads it.
+  const guardImage = await timed(phases, "guard-image", () =>
+    preloadNetworkGuardImage(images.mend, (args) => dockerOut(args, { timeout: 15 * 60_000 })),
+  );
+  say(`  network guard image · ${guardImage ?? "none named (a Mend from before the guard)"}`);
   const packages = {
     runtime: linking.runtime
       ? `@sealant/runtime-* from sealantd@${resolved.sealantd.commit.slice(0, 12)} (Core's lockfile ${resolved.sealant.lock.slice(0, 12)})`

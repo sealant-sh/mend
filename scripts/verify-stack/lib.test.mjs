@@ -22,6 +22,8 @@ import {
   mendBuildArgs,
   parseMemory,
   parseSource,
+  preloadNetworkGuardImage,
+  NETWORK_GUARD_IMAGE_LABEL,
   relayEndpoint,
   beyondRetention,
   FIXTURE_CONTAINER,
@@ -494,4 +496,62 @@ test("overrides join the workspace file's own block, or start one", async () => 
     'packages:\n  - a\n\noverrides:\n  "b": file:./b.tgz\n',
   );
   assert.equal(withOverrides("packages: []\n", {}), "packages: []\n");
+});
+
+/** A docker that answers from `images` (tag → labels), records every call, and pulls into it. */
+const fakeDocker = (images) => {
+  const calls = [];
+  const run = async (args) => {
+    calls.push(args.join(" "));
+    if (args[0] === "pull") {
+      images[args.at(-1)] = {};
+      return "";
+    }
+    const [, , , format, image] = args;
+    if (!(image in images)) throw new Error(`No such image: ${image}`);
+    const label = /index \.Config\.Labels "([^"]+)"/.exec(format)?.[1];
+    return label === undefined ? "sha256:0123\n" : `${images[image][label] ?? ""}\n`;
+  };
+  return { calls, run };
+};
+
+const GUARD =
+  "busybox:1.37@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e";
+
+test("Launch preloads the network guard image the built Mend image names, before the offline setup", async () => {
+  const docker = fakeDocker({ "mend:verify": { [NETWORK_GUARD_IMAGE_LABEL]: GUARD } });
+  assert.equal(await preloadNetworkGuardImage("mend:verify", docker.run), GUARD);
+  assert.deepEqual(docker.calls, [
+    `image inspect --format {{index .Config.Labels "${NETWORK_GUARD_IMAGE_LABEL}"}} mend:verify`,
+    `image inspect --format {{.Id}} ${GUARD}`,
+    `pull --quiet ${GUARD}`,
+  ]);
+  // Held already: inspected, not pulled again.
+  const held = fakeDocker({ "mend:verify": { [NETWORK_GUARD_IMAGE_LABEL]: GUARD }, [GUARD]: {} });
+  assert.equal(await preloadNetworkGuardImage("mend:verify", held.run), GUARD);
+  assert.ok(!held.calls.some((call) => call.startsWith("pull")));
+});
+
+test("a Mend image from before the guard needs none, and an invalid label is refused unpulled", async () => {
+  const old = fakeDocker({ "mend:old": {} });
+  assert.equal(await preloadNetworkGuardImage("mend:old", old.run), null);
+  assert.equal(old.calls.length, 1);
+  const bad = fakeDocker({ "mend:bad": { [NETWORK_GUARD_IMAGE_LABEL]: "--privileged busybox" } });
+  await assert.rejects(preloadNetworkGuardImage("mend:bad", bad.run), /invalid/);
+  assert.ok(!bad.calls.some((call) => call.startsWith("pull")));
+  // A pull that fails fails the start, before setup runs.
+  const offline = fakeDocker({ "mend:verify": { [NETWORK_GUARD_IMAGE_LABEL]: GUARD } });
+  const failing = async (args) => {
+    if (args[0] === "pull") throw new Error("pull refused");
+    return offline.run(args);
+  };
+  await assert.rejects(preloadNetworkGuardImage("mend:verify", failing), /pull refused/);
+});
+
+test("stack.mjs preloads the guard image after the Mend image is built and before setup", async () => {
+  const source = await readFile(new URL("stack.mjs", import.meta.url), "utf8");
+  const preload = source.indexOf("preloadNetworkGuardImage(images.mend");
+  const built = source.indexOf("await Promise.all([cliBuild, bundleBuild]);");
+  const setup = source.indexOf('"--offline",');
+  assert.ok(built !== -1 && preload > built && setup > preload, "build → preload → offline setup");
 });

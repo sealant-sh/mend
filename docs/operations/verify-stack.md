@@ -161,7 +161,10 @@ pinned source links nothing.
    package packed from the same Mend source and installed with npm. An image whose tree this daemon
    built before is reused. Mend's version is its CLI version marked `-verify.t<digest>`, which no
    release carries.
-3. Runs `mend server setup --offline` with that version, from the inner CLI's container.
+3. Pulls the images setup starts (the bundle's Compose files) and, once Mend's image is built, the
+   network guard image its `dev.sealant.mend.network-guard-image` label names (pulled only when the
+   daemon lacks it), the way setup reads it. Then runs `mend server setup --offline` with that
+   version, from the inner CLI's container: an offline setup refuses a guard image the daemon lacks.
 4. Starts a relay that publishes the web where the session reaches the daemon, creates the first
    account (its password and token stay in a Docker volume), and adopts `verify-fixture`, a
    one-commit repository served on the stack's network, whose sessions run on `node:26-bookworm`

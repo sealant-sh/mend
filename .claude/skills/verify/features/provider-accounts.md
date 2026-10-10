@@ -46,18 +46,23 @@ Preconditions:
 - The run holds test credentials it may send to this disposable instance, each in a file in the
   private directory, so the secret registry holds them and no command line does: a GitHub token in
   `$P/github-token.secret`, and for the Claude and Codex steps a Claude setup token in
-  `$P/claude-token.secret` and a Codex `auth.json` in `$P/codex-auth.json`. Never this machine's own
-  logins: the verify skill's guard gives the CLI an empty home of the run's own and removes
-  `GH_TOKEN`, `GITHUB_TOKEN` and every provider variable, so `gh` and the providers' files have no
-  login there. The interactive `mend connect claude` and `mend connect codex` flows need a person at
-  the provider's login page; without one, report them unreachable and use `--from-stdin`.
+  `$P/claude-token.secret` and a Codex `auth.json` in `$P/codex-auth.json`. Where the provider is
+  meant to refuse them, they are the skill's fakes (`scripts/fakes.mjs`: `FAKES.github`,
+  `FAKES.claude`, `FAKES.codexAuth`), which the evidence scan does not count. Never this machine's
+  own logins: the verify skill's guard gives the CLI an empty home of the run's own and removes
+  `GH_TOKEN`, `GITHUB_TOKEN`, every provider variable and every way to the OS keyring, so `gh` and
+  the providers' files have no login there. The interactive `mend connect claude` and
+  `mend connect codex` flows need a person at the provider's login page; without one, report them
+  unreachable and use `--from-stdin`.
 - Note what `mend accounts` lists first, and restore it at the end.
 
 - **List.** Run `mend accounts`. Stdout starts with `platform user <id>`, then one line each for
   `claude`, `codex` and `github`: `not connected`, or
   `connected · <account> · …<suffix> · since <day>`. Exit `0`.
-- **Connect GitHub.** Run `mend connect github`. Under the guard the CLI's home has no `gh` login,
-  so it fails with the line below; record it. With a `gh` login, outside the guard, stdout ends
+- **Connect GitHub.** Run `mend connect github` with the inner CLI (`stack.mjs mend`, whose
+  container has no `gh` login): it fails with the line below; record it. This machine's guarded CLI
+  refuses the command before it runs (exit `97`, `… reads this machine's GitHub login`): it would
+  run `gh auth token`. With a `gh` login, outside the guard, stdout ends
   `github   connected · <login> · …<suffix> · since <day>`, exit `0`: the skill does not drive that,
   since it would send this machine's own GitHub login. The failure reads
   ``mend: github: no credential on this machine — `gh auth login` first, or pipe a token: gh auth token | mend connect github --from-stdin``.

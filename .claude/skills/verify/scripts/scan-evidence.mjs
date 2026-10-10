@@ -18,6 +18,11 @@
 // recipe or another tool saved, or one changed since, has no such file. A hit names the file and the
 // kind, never the value.
 //
+// The skill's own fake provider logins (fakes.mjs) are published, not secret: they are taken out of
+// every view before the search, so neither their value nor their shape is a hit, even when a recipe
+// registered them. Nothing else is: a value of the registry, or a credential shape, that is not one
+// of them is a hit.
+//
 // It writes <dir>/scan.json (files, secret count, hits by file and kind; no value) whatever the
 // result. Exit 0: no hit. Exit 1: hits; with --delete-hits, every file that had one is deleted
 // first (scan.json says which). Exit 2: nothing to compare (the registry is empty).
@@ -27,6 +32,7 @@ import { existsSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync 
 import { join } from "node:path";
 import { inflateSync } from "node:zlib";
 
+import { isFake, withoutFakes } from "./fakes.mjs";
 import { CREDENTIAL_PATTERNS } from "./redact.mjs";
 import { loadSecrets } from "./secrets.mjs";
 
@@ -126,10 +132,12 @@ for (const path of evidence) {
   }
   if (isImage(path, bytes) && !vouched(path, bytes))
     hits.push({ file: name, kind: "an image no driver checked, whose pixels cannot be searched" });
-  const views = [bytes.toString("utf8"), bytes.toString("latin1"), ...pngText(bytes)];
+  const views = [bytes.toString("utf8"), bytes.toString("latin1"), ...pngText(bytes)].map(
+    withoutFakes,
+  );
   const sources = new Set();
   for (const [value, source] of secrets)
-    if (views.some((view) => view.includes(value))) sources.add(source);
+    if (!isFake(value) && views.some((view) => view.includes(value))) sources.add(source);
   for (const source of sources) hits.push({ file: name, kind: `a value from ${source}` });
   for (const { kind, pattern } of CREDENTIAL_PATTERNS) {
     // A redacted shape (`/join/<token>`, `mdt_<token>`) is the redaction itself.

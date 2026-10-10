@@ -4,6 +4,7 @@
 #
 #   .claude/skills/verify/scripts/local-outer.sh up [--version <mend version>]
 #   .claude/skills/verify/scripts/local-outer.sh serve <commit-ish>
+#   .claude/skills/verify/scripts/local-outer.sh budgets
 #   .claude/skills/verify/scripts/local-outer.sh down
 #
 # `up` starts the container `st-verify-outer` (privileged docker:27.5.1-dind, the server's web on
@@ -12,6 +13,18 @@
 # signs up its first account with a generated password that is never printed, and writes the CLI
 # config the run uses to $MEND_VERIFY_OUTER_CONFIG/mend/cli.json (default
 # ~/.cache/mend-verify/outer-cli; 0600). Use it with `export XDG_CONFIG_HOME=<that dir>`.
+#
+# `up` then gives the server budgets sized for parallel verifiers (`budgets`, below) before the
+# sign-up. Every verifier on this machine reaches it from one address with one account, and the
+# product's defaults are sized for a small team: 1200 requests per minute from one address, which
+# five drivers' tunnels and watches spent in seconds (429s, dropped tunnels). The product's defaults
+# stay as they are; only this outer gets these.
+#
+# `budgets` recreates the server's `mend` container with the Compose files setup started it with
+# (read from the container's own Compose labels) and one more, /st-verify/compose.budgets.yaml in
+# the outer container, that sets the MEND_BUDGET_* values below; then waits for its health. Run it
+# again after anything that recreates the server from setup's files alone (`mend server restart`
+# or `upgrade` inside the outer).
 #
 # `serve <commit-ish>` puts that commit's tree in front of the server as project `mend`, from a git
 # server on the server's network. The repository is always complete: the first serve is one
@@ -33,6 +46,55 @@ work=${MEND_VERIFY_OUTER_WORK:-$HOME/.cache/mend-verify/outer-work}
 here=$(cd "$(dirname "$0")" && pwd)
 checkout=$(git -C "$here" rev-parse --show-toplevel)
 inner() { docker exec "$name" "$@"; }
+
+# The local outer's budgets (docs/operations/budgets.md): room for at most 4 stacks live (SKILL.md)
+# with a few drivers each, every one from 127.0.0.1 as the outer's one account. Sign-in attempts
+# keep the product's default: no driver signs in to the outer.
+BUDGETS='
+MEND_BUDGET_ADDRESS_REQUESTS_PER_MINUTE=12000
+MEND_BUDGET_CREDENTIAL_REQUESTS_PER_MINUTE=12000
+MEND_BUDGET_ACCOUNT_LIVE_SESSIONS=120
+MEND_BUDGET_ORGANIZATION_LIVE_SESSIONS=240
+MEND_BUDGET_ACCOUNT_LAUNCHES_IN_FLIGHT=16
+MEND_BUDGET_ACCOUNT_EVENT_STREAMS=64
+MEND_BUDGET_ACCOUNT_TERMINALS=64
+MEND_BUDGET_ACCOUNT_TUNNELS=64
+'
+
+budgets() {
+  label() {
+    inner docker inspect -f "{{index .Config.Labels \"com.docker.compose.project.$1\"}}" mend-mend-1
+  }
+  files=$(label config_files)
+  dir=$(label working_dir)
+  envfile=$(label environment_file)
+  if [ -z "$files" ] || [ -z "$dir" ]; then
+    echo "local-outer: mend-mend-1 carries no Compose labels; budgets not set" >&2
+    exit 1
+  fi
+  [ -n "$envfile" ] || envfile=$dir/server.env
+  inner mkdir -p /st-verify
+  {
+    echo "# Written by local-outer.sh budgets: the verify skill's local outer only."
+    echo "services:"
+    echo "  mend:"
+    echo "    environment:"
+    for entry in $BUDGETS; do echo "      ${entry%%=*}: \"${entry#*=}\""; done
+  } | docker exec -i "$name" sh -c 'cat > /st-verify/compose.budgets.yaml'
+  set --
+  old_ifs=$IFS
+  IFS=,
+  for file in $files; do set -- "$@" -f "$file"; done
+  IFS=$old_ifs
+  inner docker compose --project-name mend --project-directory "$dir" --env-file "$envfile" \
+    "$@" -f /st-verify/compose.budgets.yaml up -d --no-deps mend > /dev/null
+  i=0
+  until curl -fsS -o /dev/null "http://127.0.0.1:$port/api/health" 2> /dev/null; do
+    i=$((i + 1)); [ "$i" -gt 120 ] && { echo "local-outer: the server did not answer after its budgets were set" >&2; exit 1; }
+    sleep 1
+  done
+  echo "local-outer · $name · budgets for parallel verifiers: $(echo $BUDGETS | tr ' ' ',' | sed 's/MEND_BUDGET_//g')"
+}
 
 case "${1:-}" in
 up)
@@ -56,6 +118,7 @@ up)
       npm install -g --no-audit --no-fund @sealant/mend@$version > /dev/null 2>&1
       exec mend server setup --version $version --bind 0.0.0.0 --url http://outer.verify.test:3105 --port 3105 --ssh-port 2222" \
     | tail -n 2
+  budgets
   mkdir -p "$config/mend"
   chmod 700 "$config"
   # The first account: a generated password, kept nowhere; its token goes to the CLI config only.
@@ -134,13 +197,16 @@ serve)
   fi
   echo "local-outer · project mend serves $commit (tree of $(git -C "$checkout" rev-parse --short "$ref"), complete history)"
   ;;
+budgets)
+  budgets
+  ;;
 down)
   docker rm -f -v "$name" > /dev/null 2>&1 && echo "local-outer · $name removed, with its volumes" \
     || echo "local-outer · no $name here"
   rm -rf "$config" "$work"
   ;;
 *)
-  echo "usage: local-outer.sh up [--version <v>] | serve <commit-ish> | down" >&2
+  echo "usage: local-outer.sh up [--version <v>] | serve <commit-ish> | budgets | down" >&2
   exit 2
   ;;
 esac

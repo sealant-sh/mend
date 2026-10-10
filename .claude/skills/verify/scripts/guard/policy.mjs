@@ -16,6 +16,11 @@
 //     it (`bound`), and the recorded pid is still that child (its start time). Nothing may listen on
 //     [::1]:<port>, where a browser would try `localhost` first. A loopback URL is not enough on its
 //     own: the owner's own server, or the owner's own stack tunnel, may listen on this machine.
+// One more, for drive-web.mjs only (checkTarget's `mobile`): the mobile proxy this run started,
+// http://127.0.0.1:<port> or http://localhost:<port>, where $MEND_VERIFY_PRIVATE/mobile.json records
+// <port>, that drive-mobile.mjs bound it itself (`bound`), the recorded pid is still that process,
+// and the stack it fronts (`web`) is this run's tunnel, alive now. drive-mobile.mjs refuses any
+// other stack, and its proxy sends the API to that tunnel and nothing else.
 //
 // The CLI check refuses (exit 97, nothing run) when:
 //   - MEND_VERIFY_OUTER_URL is not set, or is not a URL;
@@ -41,6 +46,8 @@
 //   - MEND_VERIFY_REAL_MEND names a Mend session's in-workspace helper (/run/mend/bin/mend, linked
 //     to /usr/local/bin/mend in every workspace), or a script that starts it: the helper ignores the
 //     config and acts on the session it runs in.
+//   - the command is `mend connect github` without `--from-stdin` (or `--remove`, or a help page):
+//     without it the CLI runs `gh auth token`, which reads this machine's GitHub login.
 // The real CLI is $MEND_VERIFY_REAL_MEND, else this checkout's apps/cli from source; PATH is never
 // searched, since inside a session the next `mend` on it is that helper.
 // `mend login` is covered by the same rules: it signs in to its `--url`, else to the config's URL.
@@ -52,6 +59,15 @@
 // (ANTHROPIC_*, OPENAI_*, CLAUDE_*, CODEX_*, …). So `mend connect github`, `--use-my-login`,
 // `memory import`, `dotfiles sync`, `skills push` and `ssh setup` see an empty home, never the
 // owner's logins and files.
+//
+// No keyring either. `gh auth token` with an empty GH_CONFIG_DIR still finds the owner's login in
+// the OS keyring, through the secret service on the session D-Bus. So the real CLI gets no D-Bus,
+// keyring agent or password manager variable (DBUS_*, GNOME_KEYRING_*, KWALLET*, GPG_AGENT_INFO,
+// SSH_AGENT_PID, OP_*, BW_SESSION), DBUS_SESSION_BUS_ADDRESS pointing at a socket that does not
+// exist (set, so no D-Bus client autolaunches or looks elsewhere), and XDG_RUNTIME_DIR in its own
+// home (a D-Bus client's next place to look is $XDG_RUNTIME_DIR/bus). A keyring this cannot reach
+// by environment (macOS's Keychain) is why `mend connect github` is refused without
+// `--from-stdin`: the one way it reads a login of this machine is `gh auth token`.
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -130,13 +146,49 @@ export const allowedTargets = (env) => {
   return [outer, ...tunnelTargets(env)];
 };
 
-/** Refuses unless `url` is one of the run's servers. */
-export const checkTarget = (url, env) => {
+/** The file drive-mobile.mjs records its proxy in, in the private directory. */
+export const MOBILE_RECORD = "mobile.json";
+
+/**
+ * The run's mobile proxy URLs, when drive-mobile.mjs bound it itself, its process is still the one
+ * recorded, and the stack it fronts is one of `tunnels` (this run's tunnel, alive now).
+ */
+const mobileTargets = (env, tunnels) => {
+  const privateDir = env.MEND_VERIFY_PRIVATE ?? "";
+  if (privateDir === "" || !isAbsolute(privateDir)) return [];
+  const file = join(privateDir, MOBILE_RECORD);
+  if (!existsSync(file)) return [];
+  let proxy;
+  try {
+    proxy = JSON.parse(readFileSync(file, "utf8"));
+  } catch {
+    refuse(`${file} is not valid JSON`);
+  }
+  const port = String(proxy.port ?? "");
+  if (!/^\d+$/.test(port) || proxy.bound !== true) return [];
+  if (!Number.isInteger(proxy.pid) || typeof proxy.identity !== "string") return [];
+  if (identityOf(proxy.pid) !== proxy.identity) return [];
+  const fronts = normalizeUrl(proxy.web);
+  if (fronts === null || !tunnels.includes(fronts)) return [];
+  const own = [`http://localhost:${port}`, `http://127.0.0.1:${port}`];
+  if (own.some((url) => tunnels.includes(url))) return [];
+  const listening = listenersOn(port);
+  if (listening === null || listening.some((at) => at.startsWith("[")))
+    refuse(`something listens on [::1]:${port}, where localhost goes first; not this run's proxy`);
+  return own;
+};
+
+/**
+ * Refuses unless `url` is one of the run's servers. `mobile` (drive-web.mjs only) also lets the
+ * run's own mobile proxy through: the page drive-mobile.mjs serves, in front of the run's tunnel.
+ */
+export const checkTarget = (url, env, { mobile = false } = {}) => {
   const targets = allowedTargets(env);
+  if (mobile) targets.push(...mobileTargets(env, targets.slice(1)));
   const wanted = normalizeUrl(url);
   if (wanted === null || !targets.includes(wanted))
     refuse(
-      `${url || "no server"} is neither the declared outer (${targets[0]}) nor this run's tunnel`,
+      `${url || "no server"} is neither the declared outer (${targets[0]}) nor this run's tunnel${mobile ? " or mobile proxy" : ""}`,
     );
   return wanted;
 };
@@ -253,8 +305,19 @@ export const checkCli = (argv, env, homes = machineHomes()) => {
         `the CLI config in effect (${configDir}) names ${url || "no server"}, not ${targets[0]}`,
       );
   }
-  if (MACHINE.has(command ?? "") && !own.some((arg) => arg === "--help" || arg === "-h"))
+  const help = own.some((arg) => arg === "--help" || arg === "-h");
+  if (MACHINE.has(command ?? "") && !help)
     refuse(`mend ${command} acts on this machine's own Mend installation`);
+  if (
+    command === "connect" &&
+    own[0] === "github" &&
+    !help &&
+    !own.includes("--from-stdin") &&
+    !own.includes("--remove")
+  )
+    refuse(
+      "mend connect github without --from-stdin reads this machine's GitHub login (gh auth token); pipe a test token from the secret registry",
+    );
   own.forEach((arg, at) => {
     for (const flag of TARGET_FLAGS) {
       let value;
@@ -323,7 +386,7 @@ export const realCli = (env, guardDir, root = HELPER_ROOT) => {
 // ─── the real CLI's environment ─────────────────────────────────────────────
 
 const SCRUBBED =
-  /^(?:MEND_SESSION_|MEND_URL$|MEND_TOKEN$|SSH_AUTH_SOCK$|GH_|GITHUB_|ANTHROPIC_|OPENAI_|CLAUDE_|CODEX_|OPENCODE_|GEMINI_|GOOGLE_API_KEY$|GOOGLE_GENERATIVE_AI_|AZURE_OPENAI_|OPENROUTER_|XAI_|MISTRAL_|GROQ_|DEEPSEEK_|AWS_)/;
+  /^(?:MEND_SESSION_|MEND_URL$|MEND_TOKEN$|SSH_AUTH_SOCK$|SSH_AGENT_PID$|GH_|GITHUB_|ANTHROPIC_|OPENAI_|CLAUDE_|CODEX_|OPENCODE_|GEMINI_|GOOGLE_API_KEY$|GOOGLE_GENERATIVE_AI_|AZURE_OPENAI_|OPENROUTER_|XAI_|MISTRAL_|GROQ_|DEEPSEEK_|AWS_|DBUS_|GNOME_KEYRING_|KWALLET|GPG_AGENT_INFO$|OP_|BW_SESSION$|XDG_RUNTIME_DIR$)/;
 
 /** The home the real CLI gets: the run's own, outside the private directory. */
 export const runHome = (configHome) =>
@@ -345,10 +408,16 @@ export const childEnv = (env, configHome) => {
   );
   const home = runHome(configHome);
   mkdirSync(home, { recursive: true, mode: 0o700 });
+  const runtime = join(home, "run");
+  mkdirSync(runtime, { recursive: true, mode: 0o700 });
   return {
     ...child,
     XDG_CONFIG_HOME: configHome,
     HOME: home,
+    // No session bus: an address that is set (so nothing autolaunches one or looks elsewhere) and
+    // names a socket nothing makes. The runtime directory is the run's own, with no `bus` in it.
+    DBUS_SESSION_BUS_ADDRESS: `unix:path=${join(home, "no-session-bus")}`,
+    XDG_RUNTIME_DIR: runtime,
     CLAUDE_CONFIG_DIR: join(home, ".claude"),
     CODEX_HOME: join(home, ".codex"),
     GH_CONFIG_DIR: join(home, ".config", "gh"),
