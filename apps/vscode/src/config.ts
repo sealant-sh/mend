@@ -4,6 +4,19 @@ import * as path from "node:path";
 
 import * as vscode from "vscode";
 
+import {
+  canonicalServerUrl,
+  credentialFor,
+  parseCredentialStore,
+  serializeCredentialStore,
+  signOutOf,
+  tokenFor,
+  withCredential,
+  type StoredCredential,
+} from "./credentials.js";
+import { requestMend } from "./mend-http.js";
+import { browserSignIn, normalizeServerUrl, plainHttpWarning, type SignedIn } from "./sign-in.js";
+
 export interface MendConnection {
   readonly url: string;
   readonly token: string | null;
@@ -11,18 +24,9 @@ export interface MendConnection {
 
 const TOKEN_KEY = "mend.serverToken";
 
-const storedToken = (value: string | undefined): MendConnection | null => {
-  if (value === undefined) return null;
-  try {
-    const parsed: unknown = JSON.parse(value);
-    if (typeof parsed !== "object" || parsed === null) return null;
-    const url = Reflect.get(parsed, "url");
-    const token = Reflect.get(parsed, "token");
-    return typeof url === "string" && typeof token === "string" ? { url, token } : null;
-  } catch {
-    return null;
-  }
-};
+interface ConnectPick extends vscode.QuickPickItem {
+  readonly method: "browser" | "token" | "none";
+}
 
 const mendHome = (): string => {
   const xdg = process.env["XDG_CONFIG_HOME"];
@@ -44,7 +48,7 @@ const cliConfig = (): MendConnection | null => {
     const token = Reflect.get(parsed, "token");
     if (typeof url !== "string" || url.trim() === "") return null;
     return {
-      url: url.replace(/\/$/, ""),
+      url: canonicalServerUrl(url),
       token: typeof token === "string" && token !== "" ? token : null,
     };
   } catch {
@@ -59,48 +63,159 @@ export class ConnectionStore {
   async get(): Promise<MendConnection> {
     const configured = vscode.workspace.getConfiguration("mend").get<string>("serverUrl")?.trim();
     const discovered = cliConfig();
-    const url = (
+    // Every spelling of a server is one server: the setting, the CLI's URL and the stored entries
+    // all compare in the canonical form Connect writes.
+    const url = canonicalServerUrl(
       (configured === undefined || configured === "" ? discovered?.url : configured) ??
-      "http://localhost:3105"
-    ).replace(/\/$/, "");
-    const secret = storedToken(await this.context.secrets.get(TOKEN_KEY));
-    const token =
-      secret?.url === url ? secret.token : url === discovered?.url ? discovered.token : null;
-    return { url, token };
+        "http://localhost:3105",
+    );
+    const store = parseCredentialStore(await this.context.secrets.get(TOKEN_KEY));
+    return { url, token: tokenFor(url, credentialFor(store, url), discovered) };
   }
 
+  /**
+   * Point the editor at a server and sign in: through the browser by default (the `mend login`
+   * walk), with a pasted device token, or with none for a local server that needs none.
+   */
   async configure(): Promise<boolean> {
     const current = await this.get();
-    const url = await vscode.window.showInputBox({
+    const typed = await vscode.window.showInputBox({
       title: "Connect Mend",
-      prompt: "Mend server URL",
+      prompt: "Mend server URL, as this machine reaches it (http://mend-mini.local:3105)",
       value: current.url,
       ignoreFocusOut: true,
-      validateInput: (value) => {
-        try {
-          const parsed = new URL(value);
-          return parsed.protocol === "http:" || parsed.protocol === "https:"
-            ? null
-            : "Use an http or https URL.";
-        } catch {
-          return "Enter a valid URL.";
-        }
+      validateInput: (value) =>
+        normalizeServerUrl(value) === null ? "Enter an http or https URL, or host:port." : null,
+    });
+    if (typed === undefined) return false;
+    const url = normalizeServerUrl(typed);
+    if (url === null) return false;
+    const method = await vscode.window.showQuickPick<ConnectPick>(
+      [
+        {
+          label: "$(globe) Sign in with the browser",
+          detail: `Opens ${url}/authorize. Approve there when it shows the same code.`,
+          method: "browser",
+        },
+        {
+          label: "$(key) Paste a device token",
+          detail: "A token minted in Mend under Settings → Devices.",
+          method: "token",
+        },
+        {
+          label: "$(circle-slash) No token",
+          detail: "For a local server that does not require one.",
+          method: "none",
+        },
+      ],
+      {
+        title: `Connect Mend · ${url}`,
+        placeHolder: plainHttpWarning(url) ?? "How this editor signs in",
+        ignoreFocusOut: true,
       },
-    });
-    if (url === undefined) return false;
-    const token = await vscode.window.showInputBox({
-      title: "Connect Mend",
-      prompt: "Access token. Leave empty when the local server does not require one.",
-      password: true,
-      ignoreFocusOut: true,
-    });
-    if (token === undefined) return false;
-    const normalizedUrl = url.replace(/\/$/, "");
+    );
+    if (method === undefined) return false;
+    let stored: StoredCredential;
+    if (method.method === "browser") {
+      const signedIn = await this.browserSignIn(url);
+      if (signedIn === null) return false;
+      stored = { kind: "token", url, token: signedIn.token, deviceId: signedIn.deviceId };
+      void vscode.window.showInformationMessage(
+        `Signed in to Mend at ${url} as ${signedIn.email}. Revoke this editor under Settings → Devices.`,
+      );
+    } else if (method.method === "token") {
+      const token = await vscode.window.showInputBox({
+        title: `Connect Mend · ${url}`,
+        prompt: "Device token",
+        password: true,
+        ignoreFocusOut: true,
+      });
+      if (token === undefined || token.trim() === "") return false;
+      stored = { kind: "token", url, token: token.trim(), deviceId: null };
+    } else {
+      // "No token" means none: not the CLI's sign-in for the same URL either.
+      stored = { kind: "none", url };
+    }
+    // The token first: changing the setting restarts the event stream, which reads it.
+    const store = parseCredentialStore(await this.context.secrets.get(TOKEN_KEY));
+    await this.context.secrets.store(
+      TOKEN_KEY,
+      serializeCredentialStore(withCredential(store, stored)),
+    );
     await vscode.workspace
       .getConfiguration("mend")
-      .update("serverUrl", normalizedUrl, vscode.ConfigurationTarget.Global);
-    if (token === "") await this.context.secrets.delete(TOKEN_KEY);
-    else await this.context.secrets.store(TOKEN_KEY, JSON.stringify({ url: normalizedUrl, token }));
+      .update("serverUrl", url, vscode.ConfigurationTarget.Global);
     return true;
+  }
+
+  private async browserSignIn(url: string): Promise<SignedIn | null> {
+    try {
+      return await vscode.window.withProgress(
+        {
+          location: vscode.ProgressLocation.Notification,
+          title: "Mend sign-in",
+          cancellable: true,
+        },
+        (progress, cancellation) =>
+          browserSignIn(url, {
+            fetch,
+            openExternal: (page) =>
+              Promise.resolve(vscode.env.openExternal(vscode.Uri.parse(page))),
+            onCode: (code) =>
+              progress.report({
+                message: `approve in the browser if it shows ${code}`,
+              }),
+            sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+            deviceName: `VS Code on ${os.hostname()}`,
+            cancelled: () => cancellation.isCancellationRequested,
+          }),
+      );
+    } catch (cause) {
+      void vscode.window.showErrorMessage(
+        cause instanceof Error ? cause.message : "Mend sign-in failed.",
+      );
+      return null;
+    }
+  }
+
+  /**
+   * Forget this editor's token. A browser sign-in's device is revoked on the server first, so the
+   * token stops working everywhere, not only here.
+   */
+  /**
+   * Sign this editor out of the server it is connected to now, and only that one: its own entry for
+   * that URL is revoked (a browser sign-in's device) and replaced by "no token", so the editor does
+   * not fall back to the CLI's sign-in there. Entries for other servers stay as they were.
+   */
+  async signOut(): Promise<string> {
+    const current = await this.get();
+    const { own, next } = signOutOf(
+      current.url,
+      parseCredentialStore(await this.context.secrets.get(TOKEN_KEY)),
+    );
+    if (own === null && current.token === null) {
+      return `This editor holds no Mend sign-in for ${current.url}.`;
+    }
+    let revoked = false;
+    if (own !== null && own.deviceId !== null) {
+      try {
+        await requestMend(own, `/me/devices/${encodeURIComponent(own.deviceId)}`, {
+          method: "DELETE",
+        });
+        revoked = true;
+      } catch {
+        revoked = false;
+      }
+    }
+    await this.context.secrets.store(TOKEN_KEY, serializeCredentialStore(next));
+    if (own === null) {
+      return `Signed out of Mend at ${current.url} in this editor. The Mend CLI on this machine keeps its own sign-in; mend logout ends it.`;
+    }
+    if (own.deviceId === null) {
+      return `Signed out of Mend at ${current.url}. The pasted token stays valid until it is revoked under Settings → Devices.`;
+    }
+    return revoked
+      ? `Signed out of Mend at ${current.url}, and revoked this editor's device.`
+      : `Signed out of Mend at ${current.url}; Mend could not be reached to revoke this editor's device. Revoke it under Settings → Devices.`;
   }
 }

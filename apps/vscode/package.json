@@ -34,7 +34,8 @@
     "lint": "oxlint . --no-error-on-unmatched-pattern",
     "package": "vsce package --no-dependencies",
     "test": "vitest run",
-    "typecheck": "tsgo -p tsconfig.json --noEmit"
+    "test:e2e": "node ../../scripts/vscode-remote-acceptance.mjs",
+    "typecheck": "tsgo -p tsconfig.json --noEmit && tsgo -p test/e2e/tsconfig.json --noEmit"
   },
   "dependencies": {
     "@mend/domain": "workspace:*",
@@ -90,6 +91,10 @@
         "title": "Mend: Connect to server"
       },
       {
+        "command": "mend.signOut",
+        "title": "Mend: Sign out"
+      },
+      {
         "command": "mend.adoptProject",
         "title": "Mend: Adopt a project…",
         "icon": "$(cloud-download)"
@@ -98,6 +103,16 @@
         "command": "mend.openWorktree",
         "title": "Mend: Open in VS Code",
         "icon": "$(vm)"
+      },
+      {
+        "command": "mend.openTerminal",
+        "title": "Mend: Open terminal",
+        "icon": "$(terminal)"
+      },
+      {
+        "command": "mend.reviewChange",
+        "title": "Mend: Review change",
+        "icon": "$(diff)"
       },
       {
         "command": "mend.takeOverSession",
@@ -189,6 +204,16 @@
           "command": "mend.newManualWorktree",
           "when": "view == mend.sessions && viewItem == mend.project",
           "group": "navigation@2"
+        },
+        {
+          "command": "mend.openTerminal",
+          "when": "view == mend.sessions && viewItem == mend.session.live",
+          "group": "1_open@0"
+        },
+        {
+          "command": "mend.reviewChange",
+          "when": "view == mend.sessions && viewItem =~ /^mend\\.session/",
+          "group": "1_open@3"
         },
         {
           "command": "mend.takeOverSession",

@@ -218,6 +218,7 @@ describe("with per-person homes off, no request beyond the project view", () => 
     livePeople: [],
     sharedControlEnabledAt: "2026-10-08T12:00:00.000Z",
     workspaceRetirement: null,
+    workspaceLauncherUserId: null,
     ...over,
   });
   const reading = (sessions: ReadonlyArray<Session>) => {

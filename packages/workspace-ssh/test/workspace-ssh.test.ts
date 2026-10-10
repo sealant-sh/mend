@@ -256,6 +256,67 @@ describe("managed workspace SSH config", () => {
     expect(fs.statSync(path.dirname(configFile)).mode & 0o777).toBe(0o700);
   });
 
+  it("replaces the config whole, never truncated, and writes through a symlink to its target", () => {
+    const root = temporaryDirectory();
+    const configFile = path.join(root, ".ssh", "config");
+    const dotfiles = path.join(root, "dotfiles", "ssh_config");
+    fs.mkdirSync(path.dirname(configFile), { recursive: true });
+    fs.mkdirSync(path.dirname(dotfiles), { recursive: true });
+    fs.writeFileSync(dotfiles, "Host github.com\n  User git\n");
+    fs.symlinkSync(dotfiles, configFile);
+    const server = target("http://mend-mini:3105", 2222);
+
+    expect(writeWorkspaceSshConfig(configFile, server, null).ok).toBe(true);
+    // The link stays a link; its target holds the managed block and the hand-written bytes.
+    expect(fs.lstatSync(configFile).isSymbolicLink()).toBe(true);
+    const written = fs.readFileSync(dotfiles, "utf8");
+    expect(written).toContain(`Host ${server.alias}\n`);
+    expect(written).toContain("Host github.com\n  User git\n");
+    // No temporary file is left beside either.
+    expect(fs.readdirSync(path.dirname(dotfiles))).toEqual(["ssh_config"]);
+    expect(fs.readdirSync(path.dirname(configFile))).toEqual(["config"]);
+
+    // A write that cannot complete leaves the old bytes, whole.
+    const before = fs.readFileSync(dotfiles, "utf8");
+    fs.chmodSync(path.dirname(dotfiles), 0o500);
+    try {
+      const failed = writeWorkspaceSshConfig(
+        configFile,
+        target("http://another-mini:3105", 2222),
+        null,
+      );
+      expect(failed.ok).toBe(false);
+      expect(fs.readFileSync(dotfiles, "utf8")).toBe(before);
+    } finally {
+      fs.chmodSync(path.dirname(dotfiles), 0o700);
+    }
+  });
+
+  it("writes through a dangling config symlink to its target, and refuses one into a missing directory", () => {
+    const root = temporaryDirectory();
+    const configFile = path.join(root, ".ssh", "config");
+    const dotfiles = path.join(root, "dotfiles", "ssh_config");
+    fs.mkdirSync(path.dirname(configFile), { recursive: true });
+    fs.mkdirSync(path.dirname(dotfiles), { recursive: true });
+    // A dotfiles setup links the config to a file it has not created yet.
+    fs.symlinkSync(path.relative(path.dirname(configFile), dotfiles), configFile);
+    const server = target("http://mend-mini:3105", 2222);
+
+    expect(writeWorkspaceSshConfig(configFile, server, null).ok).toBe(true);
+    expect(fs.lstatSync(configFile).isSymbolicLink()).toBe(true);
+    expect(fs.readFileSync(dotfiles, "utf8")).toContain(`Host ${server.alias}\n`);
+
+    const nowhere = path.join(root, "missing", "ssh_config");
+    const elsewhere = path.join(root, ".ssh-elsewhere", "config");
+    fs.mkdirSync(path.dirname(elsewhere), { recursive: true });
+    fs.symlinkSync(nowhere, elsewhere);
+    const refused = writeWorkspaceSshConfig(elsewhere, server, null);
+    expect(refused.ok).toBe(false);
+    if (!refused.ok) expect(refused.error.message).toContain("whose directory does not exist");
+    expect(fs.lstatSync(elsewhere).isSymbolicLink()).toBe(true);
+    expect(fs.existsSync(path.dirname(nowhere))).toBe(false);
+  });
+
   it("keeps separate managed aliases for separate Mend servers", () => {
     const root = temporaryDirectory();
     const configFile = path.join(root, ".ssh", "config");

@@ -61,6 +61,11 @@ export interface Session {
    * with `livePeople`, when per-person homes are possible; null otherwise and from older servers.
    */
   readonly workspaceRetirement: "marked" | "retiring" | null;
+  /**
+   * Who launched the session's executor (the only person Remote-SSH admits into it): a joined
+   * session's is someone else's. Null with no executor, and from older servers.
+   */
+  readonly workspaceLauncherUserId: string | null;
 }
 
 /** A person with a process live in a session's executor, as the server names them. */
@@ -131,6 +136,8 @@ export interface SessionDetail {
   readonly session: Session;
   readonly processes: ReadonlyArray<SessionProcess>;
   readonly currentAgent: SessionProcess | null;
+  /** The worktree's change once it has one: what review opens. Null before, and from older servers. */
+  readonly changeId: string | null;
 }
 
 /** Joining an existing worktree: the new session becomes another conversation inside it. */

@@ -608,10 +608,85 @@ export const writeWorkspaceSshConfig = (
   try {
     fs.mkdirSync(path.dirname(configFile), { recursive: true, mode: 0o700 });
     fs.chmodSync(path.dirname(configFile), 0o700);
-    fs.writeFileSync(configFile, reconciled.value, { mode: 0o600 });
-    fs.chmodSync(configFile, 0o600);
+    replaceFileAtomically(configFile, reconciled.value, 0o600);
     return success(undefined);
   } catch (cause) {
-    return failure(new WorkspaceSshError("config", `Could not write ${configFile}.`, cause));
+    return failure(
+      new WorkspaceSshError(
+        "config",
+        `Could not write ${configFile}${cause instanceof Error ? `: ${cause.message}` : "."}`,
+        cause,
+      ),
+    );
+  }
+};
+
+/**
+ * The file a path's bytes live in: the path itself, or the end of its symlink chain, followed by
+ * reading each link (not by asking whether the target exists, which is false for a dangling link).
+ * A dangling link's target is created where it points, as a plain write would have; when its
+ * directory does not exist, nothing is written and the link stays.
+ */
+const linkTarget = (file: string): string => {
+  let current = file;
+  for (let hops = 0; hops < 40; hops += 1) {
+    let stat: fs.Stats;
+    try {
+      stat = fs.lstatSync(current);
+    } catch {
+      // Nothing here: a new file, or the missing end of a link chain.
+      if (current !== file && !fs.existsSync(path.dirname(current))) {
+        throw new Error(
+          `${file} is a symlink to ${current}, whose directory does not exist. Create it, or replace the link with a file; Mend left the link as it is.`,
+        );
+      }
+      return current;
+    }
+    if (!stat.isSymbolicLink()) return current;
+    current = path.resolve(path.dirname(current), fs.readlinkSync(current));
+  }
+  throw new Error(`${file} is a chain of symlinks too long to follow; Mend left it as it is.`);
+};
+
+/**
+ * Replace a file's contents so that a crash or a failed write leaves either the old bytes or the new,
+ * never a truncated file: write a temporary file beside it, flush it to disk, then rename it over the
+ * original. A symlink is followed to its target, so the link (a dotfiles repository's, say) stays a
+ * link and its target gets the new bytes.
+ */
+const replaceFileAtomically = (file: string, contents: string, mode: number): void => {
+  const destination = linkTarget(file);
+  const temporary = path.join(
+    path.dirname(destination),
+    `.${path.basename(destination)}.mend-${process.pid}-${createHash("sha256")
+      .update(`${Date.now()}:${Math.random()}`)
+      .digest("hex")
+      .slice(0, 12)}`,
+  );
+  let descriptor: number | null = null;
+  try {
+    descriptor = fs.openSync(temporary, "wx", mode);
+    fs.writeFileSync(descriptor, contents);
+    fs.fsyncSync(descriptor);
+    fs.closeSync(descriptor);
+    descriptor = null;
+    // The umask may have narrowed or the open may not have set the mode; make it exactly this.
+    fs.chmodSync(temporary, mode);
+    fs.renameSync(temporary, destination);
+  } catch (cause) {
+    if (descriptor !== null) fs.closeSync(descriptor);
+    fs.rmSync(temporary, { force: true });
+    throw cause;
+  }
+  try {
+    // The rename itself survives a crash only once the directory is on disk too.
+    const directory = fs.openSync(path.dirname(destination), "r");
+    try {
+      fs.fsyncSync(directory);
+    } finally {
+      fs.closeSync(directory);
+    }
+  } catch {
+    // Some platforms cannot fsync a directory; the file itself is already on disk.
   }
 };

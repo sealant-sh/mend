@@ -1,6 +1,7 @@
 import * as path from "node:path";
 
 import {
+  canSteerSession,
   emptyHarnessModelCatalog,
   modelPicker,
   repositoryCloneUrlIssue,
@@ -29,6 +30,9 @@ import {
   type ProjectNode,
   type SessionNode,
 } from "./tree.js";
+import { isRefusal } from "./tty-attachment.js";
+import { attachableProcesses, type TtyAddress } from "./tty-protocol.js";
+import { MendTtyTerminal } from "./tty-terminal.js";
 import type {
   Effort,
   LaunchStart,
@@ -72,9 +76,31 @@ const runContinue = (harness: string, command: string): void => {
 };
 
 const errorMessage = (cause: unknown): string =>
-  cause instanceof MendApiError || cause instanceof Error
-    ? cause.message
-    : "Mend could not complete that action.";
+  cause instanceof MendApiError && cause.status === 401
+    ? `${cause.message} Run Mend: Connect to server to sign in.`
+    : cause instanceof MendApiError || cause instanceof Error
+      ? cause.message
+      : "Mend could not complete that action.";
+
+/** Whether the server lets `viewer` steer, and so attach to the terminal of, `session`. */
+const maySteer = (session: Session, viewer: string): boolean =>
+  canSteerSession(
+    {
+      ownerUserId: session.ownerUserId,
+      sharedControlEnabledAt:
+        session.sharedControlEnabledAt === null ? null : new Date(session.sharedControlEnabledAt),
+    },
+    viewer,
+  );
+
+/** The error, with Connect offered when the server refused the token. */
+const showError = async (cause: unknown): Promise<void> => {
+  const action =
+    cause instanceof MendApiError && cause.status === 401
+      ? await vscode.window.showErrorMessage(errorMessage(cause), "Connect to server")
+      : await vscode.window.showErrorMessage(errorMessage(cause));
+  if (action === "Connect to server") await vscode.commands.executeCommand("mend.connect");
+};
 
 /**
  * The Remote-SSH authority of one workspace through the gateway — the authority the
@@ -240,6 +266,16 @@ interface PermissionPick extends vscode.QuickPickItem {
   readonly permission: "ask" | "bypass";
 }
 
+interface TerminalPick extends vscode.QuickPickItem {
+  readonly address: TtyAddress | "new-shell";
+}
+
+const NEW_SHELL: TerminalPick = {
+  label: "$(add) New shell",
+  detail: "A shell in the session's workspace.",
+  address: "new-shell",
+};
+
 type ScopePick = SessionPick | ActionPick;
 
 class MendCommands {
@@ -260,7 +296,7 @@ class MendCommands {
       await this.client.listProjects();
       void vscode.window.showInformationMessage(`Connected to Mend at ${connection.url}.`);
     } catch (cause) {
-      void vscode.window.showErrorMessage(errorMessage(cause));
+      void showError(cause);
     }
     return true;
   }
@@ -297,7 +333,7 @@ class MendCommands {
       await this.scope.refresh();
       void vscode.window.showInformationMessage(`Adopted ${project.name}.`);
     } catch (cause) {
-      void vscode.window.showErrorMessage(errorMessage(cause));
+      void showError(cause);
     }
   }
 
@@ -340,12 +376,167 @@ class MendCommands {
           }
         }
       }
+      if (!(await this.mayOpenOverSsh(location))) return;
       const workspaceUri = await this.workspaceUri(location);
       if (workspaceUri === "cancelled") return;
       await this.openNamedWorkspace(location, workspaceUri);
     } catch (cause) {
-      void vscode.window.showErrorMessage(errorMessage(cause));
+      void showError(cause);
     }
+  }
+
+  /**
+   * The session's terminal in a VS Code terminal tab, over Mend's terminal data plane: its agent's
+   * PTY or one of its shells, or a new shell. No SSH is involved, so it works wherever the API does.
+   * Only the session's owner types; anyone else watches.
+   */
+  async openTerminal(argument?: unknown): Promise<void> {
+    try {
+      const location = await this.sessionLocation(argument);
+      if (location === null) return;
+      const detail = await this.client.sessionDetail(location.session.id);
+      const live = attachableProcesses(detail.processes);
+      const viewer = this.tree.knownViewer() ?? (await this.client.viewerId());
+      // The server lets into a session's terminal whoever may steer it: its owner, and others only
+      // while shared control is on, and then they watch (`canSteerSession`, apps/api tty route).
+      if (viewer !== null && !maySteer(detail.session, viewer)) {
+        void vscode.window.showInformationMessage(
+          `${displaySession(detail.session)} is ${await this.nameOf(detail.session.ownerUserId)}'s session. Its terminal opens for others only while its owner has shared control on.`,
+        );
+        return;
+      }
+      const owns =
+        viewer === null ||
+        detail.session.ownerUserId === null ||
+        viewer === detail.session.ownerUserId;
+      const picks: TerminalPick[] = [
+        ...live.map((process) => ({
+          // A Workbench's shell is its agent process with the `shell` harness.
+          label:
+            process.kind === "shell" || process.harness === "shell"
+              ? `$(terminal) Shell · ${process.id.slice(0, 8)}`
+              : `$(sparkle) ${process.harness ?? detail.session.harness}`,
+          description: process.status,
+          address: { process: process.id },
+        })),
+        ...(liveStatuses.has(detail.session.status) && owns ? [NEW_SHELL] : []),
+      ];
+      if (picks.length === 0) {
+        void vscode.window.showInformationMessage(
+          `${displaySession(detail.session)} has no live terminal. Resume it to open one.`,
+        );
+        return;
+      }
+      const picked =
+        picks.length === 1 && picks[0]?.address !== "new-shell"
+          ? picks[0]
+          : await vscode.window.showQuickPick<TerminalPick>(picks, {
+              title: `Terminal · ${displaySession(detail.session)}`,
+              ignoreFocusOut: true,
+            });
+      if (picked === undefined) return;
+      const address: TtyAddress =
+        picked.address === "new-shell"
+          ? { process: (await this.client.openShell(detail.session.id)).id }
+          : picked.address;
+      const processId = "process" in address ? address.process : null;
+      const banner = owns
+        ? `Mend · ${displaySession(detail.session)} · closing this tab detaches; the process keeps running`
+        : `Mend · ${displaySession(detail.session)} · read-only: only the session's owner types here`;
+      const terminal = vscode.window.createTerminal({
+        name: `Mend · ${displaySession(detail.session)}`,
+        pty: new MendTtyTerminal({
+          connection: () => this.client.connection(),
+          address,
+          banner,
+          liveness: async () => {
+            try {
+              const now = await this.client.sessionDetail(detail.session.id);
+              // Admission first: the server refuses the upgrade to whoever may no longer steer
+              // (shared control turned off), however live the process is.
+              if (viewer !== null && !maySteer(now.session, viewer)) return "not-steerable";
+              const running =
+                processId === null
+                  ? now.currentAgent !== null && now.currentAgent.exitedAt === null
+                  : attachableProcesses(now.processes).some((process) => process.id === processId);
+              return running ? "live" : "ended";
+            } catch (cause) {
+              return isRefusal(cause) ? "refused" : "unknown";
+            }
+          },
+        }),
+      });
+      terminal.show();
+    } catch (cause) {
+      void showError(cause);
+    }
+  }
+
+  /** The session's change in Mend's review, in the browser. */
+  async reviewChange(argument?: unknown): Promise<void> {
+    try {
+      const location = await this.sessionLocation(argument);
+      if (location === null) return;
+      const detail = await this.client.sessionDetail(location.session.id);
+      const connection = await this.client.connection();
+      if (detail.changeId === null) {
+        void vscode.window.showInformationMessage(
+          `${displaySession(detail.session)} has no change to review yet.`,
+        );
+        return;
+      }
+      await vscode.env.openExternal(
+        vscode.Uri.parse(`${connection.url}/changes/${encodeURIComponent(detail.changeId)}`),
+      );
+    } catch (cause) {
+      void showError(cause);
+    }
+  }
+
+  async signOut(): Promise<void> {
+    const said = await this.connections.signOut();
+    this.tree.refresh();
+    await this.scope.refresh();
+    void vscode.window.showInformationMessage(said);
+  }
+
+  /** A member's name as the organization lists it; "another person" when it cannot say. */
+  private async nameOf(userId: string | null): Promise<string> {
+    if (userId === null) return "another person";
+    const names = await this.client.memberNames();
+    return names.find((member) => member.userId === userId)?.name ?? "another person";
+  }
+
+  /**
+   * Remote-SSH admits only the person who launched the workspace's executor (docs/adr/0016; the
+   * gateway authorizes the workspace's creator). That is not always the session's owner: a session
+   * started in a worktree where another person's session already runs joins that person's
+   * executor. Opening it would end in a bare "Permission denied" from Remote-SSH, so say it first
+   * and offer the terminal where the server lets this person in. Every path that opens a
+   * workspace over SSH asks this, the takeover included.
+   */
+  private async mayOpenOverSsh(location: SessionLocation): Promise<boolean> {
+    const launcher = location.session.workspaceLauncherUserId;
+    const viewer = this.tree.knownViewer() ?? (await this.client.viewerId());
+    if (launcher === null || viewer === null || launcher === viewer) return true;
+    const terminal = maySteer(location.session, viewer);
+    const answer = await vscode.window.showWarningMessage(
+      `${await this.nameOf(launcher)} launched the workspace ${displaySession(location.session)} runs in.`,
+      {
+        modal: true,
+        detail: `Remote-SSH opens a workspace only for the person who launched it, so VS Code would be refused. A session of yours in this worktree joins the same workspace, so it would be refused too.${terminal ? " The session's terminal needs no SSH." : ""}`,
+      },
+      ...(terminal ? ["Open terminal", "Open anyway"] : ["Open anyway"]),
+    );
+    if (answer === "Open terminal") {
+      await this.openTerminal({
+        kind: "session",
+        project: location.project,
+        session: location.session,
+      } satisfies SessionNode);
+      return false;
+    }
+    return answer === "Open anyway";
   }
 
   async openInMend(argument?: unknown): Promise<void> {
@@ -373,7 +564,7 @@ class MendCommands {
           : `/sessions/${location.session.id}`;
       await vscode.env.openExternal(vscode.Uri.parse(`${connection.url}${route}`));
     } catch (cause) {
-      void vscode.window.showErrorMessage(errorMessage(cause));
+      void showError(cause);
     }
   }
 
@@ -398,7 +589,7 @@ class MendCommands {
       this.tree.refresh();
       await this.scope.refresh();
     } catch (cause) {
-      void vscode.window.showErrorMessage(errorMessage(cause));
+      void showError(cause);
     }
   }
 
@@ -417,7 +608,7 @@ class MendCommands {
       }
       await this.takeOver({ ...location, session: detail.session }, agent);
     } catch (cause) {
-      void vscode.window.showErrorMessage(errorMessage(cause));
+      void showError(cause);
     }
   }
 
@@ -437,7 +628,9 @@ class MendCommands {
       );
       return;
     }
-    // Reconcile SSH before ending anything: a cancelled setup must leave the agent running.
+    // Before ending anything: Remote-SSH must admit this person, and SSH must be set up. A refusal
+    // or a cancelled setup leaves the agent running.
+    if (!(await this.mayOpenOverSsh(location))) return;
     const destination = await this.resolveWorkspaceSsh(false);
     if (destination === "cancelled") return;
     const workspaceId = session.sealantWorkspaceId;
@@ -559,7 +752,7 @@ class MendCommands {
         name,
       });
     } catch (cause) {
-      void vscode.window.showErrorMessage(errorMessage(cause));
+      void showError(cause);
     }
   }
 
@@ -608,7 +801,7 @@ class MendCommands {
       await this.scope.refresh();
       await this.openWorktree(session.id);
     } catch (cause) {
-      void vscode.window.showErrorMessage(errorMessage(cause));
+      void showError(cause);
     }
   }
 
@@ -648,7 +841,7 @@ class MendCommands {
       await this.scope.refresh();
       await this.openWorktree(session.id);
     } catch (cause) {
-      void vscode.window.showErrorMessage(errorMessage(cause));
+      void showError(cause);
     }
   }
 
@@ -801,7 +994,7 @@ class MendCommands {
       await this.scope.refresh();
       await this.openWorktree({ kind: "session", project, session } satisfies SessionNode);
     } catch (cause) {
-      void vscode.window.showErrorMessage(errorMessage(cause));
+      void showError(cause);
     }
   }
 
@@ -840,7 +1033,7 @@ class MendCommands {
         session: { ...session, status: "stopped" },
       } satisfies SessionNode);
     } catch (cause) {
-      void vscode.window.showErrorMessage(errorMessage(cause));
+      void showError(cause);
     }
   }
 
@@ -917,7 +1110,7 @@ class MendCommands {
       );
       return item?.project ?? null;
     } catch (cause) {
-      void vscode.window.showErrorMessage(errorMessage(cause));
+      void showError(cause);
       return null;
     }
   }
@@ -992,7 +1185,7 @@ class MendCommands {
     try {
       view = await this.client.workspaceSsh();
     } catch (cause) {
-      void vscode.window.showErrorMessage(errorMessage(cause));
+      void showError(cause);
       return "cancelled";
     }
     const gateway = view.gateway;
@@ -1016,7 +1209,7 @@ class MendCommands {
     try {
       ready = !force && workspaceSshReadiness(view, parsedTarget.value).ready;
     } catch (cause) {
-      void vscode.window.showErrorMessage(errorMessage(cause));
+      void showError(cause);
       return "cancelled";
     }
     if (!ready) {
@@ -1039,7 +1232,7 @@ class MendCommands {
           7_000,
         );
       } catch (cause) {
-        void vscode.window.showErrorMessage(errorMessage(cause));
+        void showError(cause);
         return "cancelled";
       }
     }
@@ -1144,7 +1337,16 @@ class MendCommands {
   }
 }
 
-export function activate(context: vscode.ExtensionContext): void {
+/**
+ * What the extension exports (`vscode.extensions.getExtension("sealant-sh.mend").exports`): the
+ * tree's current read, the way the view shows it. The editor acceptance suite reads it to see
+ * that live events reached the view (apps/vscode/test/e2e).
+ */
+export interface MendExtensionApi {
+  readonly projects: () => Promise<ReadonlyArray<ProjectDetail>>;
+}
+
+export function activate(context: vscode.ExtensionContext): MendExtensionApi {
   const connections = new ConnectionStore(context);
   const client = new MendClient(connections);
   const tree = new MendTreeProvider(client);
@@ -1207,6 +1409,16 @@ export function activate(context: vscode.ExtensionContext): void {
       commands.newManualWorktree(argument),
     ),
     vscode.commands.registerCommand("mend.showQuickPick", () => commands.showQuickPick()),
+    vscode.commands.registerCommand("mend.openTerminal", (argument?: unknown) =>
+      commands.openTerminal(argument),
+    ),
+    vscode.commands.registerCommand("mend.reviewChange", (argument?: unknown) =>
+      commands.reviewChange(argument),
+    ),
+    vscode.commands.registerCommand("mend.signOut", async () => {
+      await commands.signOut();
+      restartEvents();
+    }),
     vscode.window.registerUriHandler({ handleUri: (uri) => commands.openFromUri(uri) }),
     vscode.workspace.onDidChangeWorkspaceFolders(() => void scope.refresh()),
     vscode.workspace.onDidChangeConfiguration((event) => {
@@ -1221,6 +1433,7 @@ export function activate(context: vscode.ExtensionContext): void {
   void scope.refresh();
   void tree.snapshot();
   claimPendingTakeover(context);
+  return { projects: async () => [...(await tree.snapshot()).details.values()] };
 }
 
 /**
