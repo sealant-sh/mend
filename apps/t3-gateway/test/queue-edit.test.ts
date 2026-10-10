@@ -1,8 +1,14 @@
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
+
 import { assert, describe, it } from "@effect/vitest";
 import {
   CommandId,
   MessageId,
   ORCHESTRATION_V2_WS_METHODS,
+  RunId,
   ThreadId,
   type OrchestrationV2ThreadStreamItem,
 } from "@mend/t3-contracts";
@@ -181,6 +187,74 @@ describe("editing and reordering the queue", () => {
         }
       }),
     ),
+  );
+});
+
+describe("an edit is kept before it is acknowledged (594-R2-1)", () => {
+  it.live(
+    "refuses an edit the state file will not keep: the old text stays, live and after a restart",
+    () => {
+      const statePath = join(mkdtempSync(join(tmpdir(), "t3-gateway-edit-")), "state.sqlite");
+      const onGateway = <A, E, R>(mend: FakeMend, test: Effect.Effect<A, E, R>) =>
+        Effect.scoped(test).pipe(Effect.provide(gatewayTestLayer(mend.url, statePath)));
+      return Effect.gen(function* () {
+        const mend = yield* startFakeMend;
+        mend.workbench.addProject("project-1", "mend");
+        mend.workbench.addSession({ id: "session-1", projectId: "project-1" });
+        mend.workbench.addTurn("session-1", "A long job");
+        yield* onGateway(
+          mend,
+          Effect.gen(function* () {
+            const { rpc } = yield* pairAndConnect(mend, "EDIT-KEPT");
+            yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](
+              message("message-edited", "Old instruction"),
+            );
+            const before = yield* rpc[ORCHESTRATION_V2_WS_METHODS.getThreadProjection]({
+              threadId: THREAD,
+            });
+            const run = before.runs.find(
+              (candidate) => candidate.userMessageId === "message-edited",
+            );
+            assert.isDefined(run);
+            const database = new DatabaseSync(statePath);
+            database.exec(
+              "CREATE TRIGGER refuse_edit BEFORE INSERT ON queued_messages BEGIN SELECT RAISE(ABORT, 'disk failure'); END",
+            );
+            database.close();
+            const exit = yield* Effect.exit(
+              rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({
+                type: "queued-run.edit",
+                commandId: commandId(),
+                threadId: THREAD,
+                runId: run?.id ?? RunId.make("missing"),
+                text: "New instruction",
+              }),
+            );
+            assert.strictEqual(errorTag(exit), "OrchestrationV2DispatchCommandError");
+            const after = yield* rpc[ORCHESTRATION_V2_WS_METHODS.getThreadProjection]({
+              threadId: THREAD,
+            });
+            assert.strictEqual(
+              after.messages.find((candidate) => candidate.id === "message-edited")?.text,
+              "Old instruction",
+            );
+          }),
+        );
+        yield* onGateway(
+          mend,
+          Effect.gen(function* () {
+            const { rpc } = yield* pairAndConnect(mend, "EDIT-KEPT-AFTER");
+            const restored = yield* rpc[ORCHESTRATION_V2_WS_METHODS.getThreadProjection]({
+              threadId: THREAD,
+            });
+            assert.strictEqual(
+              restored.messages.find((candidate) => candidate.id === "message-edited")?.text,
+              "Old instruction",
+            );
+          }),
+        );
+      });
+    },
   );
 });
 

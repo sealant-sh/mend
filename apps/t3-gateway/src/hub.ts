@@ -1939,10 +1939,11 @@ export const makePersonHub = (input: {
       );
 
     /** A change to what is still waiting in a thread's queue, published at once. */
+    /** An edit or a reorder, kept before it is acknowledged (594-R2-1): refused, nothing changed. */
     const changeQueue = (sessionId: string, change: (queue: Queueing.ThreadQueue) => boolean) =>
       locked(
         Effect.gen(function* () {
-          if (!change(queueOf(sessionId))) {
+          if (!(yield* changeKept(sessionId, change))) {
             return yield* refused("That message is not waiting in the queue any more.");
           }
           yield* publishAll;
