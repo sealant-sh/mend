@@ -90,32 +90,39 @@ describe("VCS status", () => {
     ),
   );
 
-  it.live("lists the refs Mend knows: the default branch, and the thread's own", () =>
+  it.live("lists the project's branches as Mend reports them, and the thread's own", () =>
     withGateway((mend) =>
       Effect.gen(function* () {
         mend.workbench.addProject("project-1", "mend");
         mend.workbench.addSession({ id: "session-1", projectId: "project-1" });
+        mend.workbench.branches.set("project-1", [
+          { name: "main", isDefault: true },
+          { name: "release/1.x", isDefault: false },
+        ]);
         const { rpc } = yield* pairAndConnect(mend, "REFS");
 
-        // The project's root: its default branch, which t3code takes as a new worktree's base.
+        // The project's root: every branch its store holds, a non-default base among them.
         const root = yield* rpc[WS_METHODS.vcsListRefs]({ cwd: STORE });
         assert.deepStrictEqual(root.refs, [
           { name: "main", current: true, isDefault: true, worktreePath: null },
+          { name: "release/1.x", current: false, isDefault: false, worktreePath: null },
         ]);
         assert.isTrue(root.isRepo);
         assert.isNull(root.nextCursor);
-        assert.strictEqual(root.totalCount, 1);
+        assert.strictEqual(root.totalCount, 2);
+        const release = yield* rpc[WS_METHODS.vcsListRefs]({ cwd: STORE, query: "release/1.x" });
+        assert.deepStrictEqual(
+          release.refs.map((ref) => ref.name),
+          ["release/1.x"],
+        );
 
+        // A thread: its own branch, current in its worktree, before the project's.
         const thread = yield* rpc[WS_METHODS.vcsListRefs]({ cwd: WORKTREE });
         assert.deepStrictEqual(thread.refs, [
-          { name: "main", current: false, isDefault: true, worktreePath: null },
           { name: "mend/wt-session-1", current: true, isDefault: false, worktreePath: WORKTREE },
+          { name: "main", current: false, isDefault: true, worktreePath: null },
+          { name: "release/1.x", current: false, isDefault: false, worktreePath: null },
         ]);
-        const matching = yield* rpc[WS_METHODS.vcsListRefs]({ cwd: WORKTREE, query: "WT-" });
-        assert.deepStrictEqual(
-          matching.refs.map((ref) => ref.name),
-          ["mend/wt-session-1"],
-        );
         // Mend lists no remote refs, so none is claimed.
         const remote = yield* rpc[WS_METHODS.vcsListRefs]({ cwd: WORKTREE, refKind: "remote" });
         assert.deepStrictEqual(remote.refs, []);
@@ -126,6 +133,67 @@ describe("VCS status", () => {
           const error = Option.getOrUndefined(Cause.findErrorOption(elsewhere.cause));
           assert.strictEqual(error?._tag, "GitCommandError");
         }
+      }),
+    ),
+  );
+
+  it.live(
+    "pages many branches as t3code asks: limit, cursor, and the count of them all (R648-2)",
+    () =>
+      withGateway((mend) =>
+        Effect.gen(function* () {
+          mend.workbench.addProject("project-1", "mend");
+          mend.workbench.branches.set("project-1", [
+            { name: "main", isDefault: true },
+            ...Array.from({ length: 30 }, (_, index) => ({
+              name: `feature-${index + 1}`,
+              isDefault: false,
+            })),
+          ]);
+          const { rpc } = yield* pairAndConnect(mend, "REFS-PAGES");
+          const first = yield* rpc[WS_METHODS.vcsListRefs]({ cwd: STORE, limit: 1 });
+          assert.deepStrictEqual(
+            first.refs.map((ref) => ref.name),
+            ["main"],
+          );
+          assert.strictEqual(first.nextCursor, 1);
+          assert.strictEqual(first.totalCount, 31);
+          const next = yield* rpc[WS_METHODS.vcsListRefs]({ cwd: STORE, limit: 1, cursor: 1 });
+          assert.deepStrictEqual(
+            next.refs.map((ref) => ref.name),
+            ["feature-1"],
+          );
+          assert.strictEqual(next.nextCursor, 2);
+          const last = yield* rpc[WS_METHODS.vcsListRefs]({ cwd: STORE, cursor: 30 });
+          assert.deepStrictEqual(
+            last.refs.map((ref) => ref.name),
+            ["feature-30"],
+          );
+          assert.isNull(last.nextCursor);
+          const past = yield* rpc[WS_METHODS.vcsListRefs]({ cwd: STORE, limit: 1, cursor: 999 });
+          assert.deepStrictEqual(past.refs, []);
+          assert.isNull(past.nextCursor);
+          assert.strictEqual(past.totalCount, 31);
+        }),
+      ),
+  );
+
+  it.live("invents no ref when the store holds none", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        mend.workbench.addProject("project-1", "mend");
+        mend.workbench.addSession({ id: "session-1", projectId: "project-1" });
+        mend.workbench.branches.set("project-1", []);
+        const { rpc } = yield* pairAndConnect(mend, "REFS-EMPTY");
+        const root = yield* rpc[WS_METHODS.vcsListRefs]({ cwd: STORE });
+        assert.deepStrictEqual(root.refs, []);
+        assert.strictEqual(root.totalCount, 0);
+        // A thread still has its own branch: Mend's session names it.
+        const thread = yield* rpc[WS_METHODS.vcsListRefs]({ cwd: WORKTREE });
+        assert.deepStrictEqual(
+          thread.refs.map((ref) => ref.name),
+          ["mend/wt-session-1"],
+        );
       }),
     ),
   );

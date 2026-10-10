@@ -568,6 +568,18 @@ export class FakeWorkbench {
       });
     }
 
+    if (method === "GET" && collection === "projects" && sub === "branches") {
+      if (this.projectView(id) === null) return json(404, { _tag: "NotFound" });
+      const branches = this.branches.get(id) ?? [{ name: "main", isDefault: true }];
+      return json(
+        200,
+        branches.map((branch) => ({
+          ...branch,
+          sha: "6abd2ab9fee56f5a5fa3eaafa7bbad52ae65bdd4",
+          committedAt: "2026-10-04T12:00:00.000Z",
+        })),
+      );
+    }
     if (method === "GET" && collection === "projects" && sub === "worktrees") {
       if (this.projectView(id) === null) return json(404, { _tag: "NotFound" });
       const names = new Set(
@@ -967,6 +979,9 @@ export class FakeWorkbench {
   readonly files = new Map<string, ReadonlyArray<string>>();
   /** How many files `GET /api/projects/:id/files` lists before it cuts (Mend's is 20,000). */
   fileListingLimit = 20_000;
+
+  /** `GET /api/projects/:id/branches` by project; absent, the project has `main` alone. */
+  readonly branches = new Map<string, ReadonlyArray<{ name: string; isDefault: boolean }>>();
 
   /** Each worktree's checkpoint chain (`GET /api/worktrees/:id`), oldest first. */
   readonly checkpoints = new Map<

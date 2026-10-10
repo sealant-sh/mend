@@ -14,6 +14,7 @@ import * as Stream from "effect/Stream";
 
 import type { GatedMend } from "./device-gate.ts";
 import type { CwdLocation, PersonHub } from "./hub.ts";
+import type { MendBranch } from "./mend-client.ts";
 import type { BearerSession } from "./state.ts";
 
 /**
@@ -68,34 +69,54 @@ export const localStatusOf = (
       }),
 });
 
+/** A page of refs when t3code asks for no limit: what t3code's own server answers. */
+export const REFS_DEFAULT_LIMIT = 100;
+
 /**
- * The refs Mend knows at `cwd`, for t3code's branch picker: the project's default branch, and the
- * thread's own branch in its worktree. Mend lists no other branch of the project and no remote
- * one, so nothing else is claimed. t3code picks the default as a new worktree's base from this.
+ * The refs at `cwd` for t3code's branch picker, from what Mend reports and nothing invented
+ * (review R648-1): the project's branches as its store holds them (`GET /api/projects/:id/
+ * branches`, never a session branch), each marked default as Mend marks it, and a thread's own
+ * branch, current in its worktree, from Mend's session. No remote refs: Mend lists none.
  */
 export const refsAt = (
   location: CwdLocation,
   cwd: string,
+  branches: ReadonlyArray<MendBranch>,
   request: Pick<VcsListRefsInput, "query" | "refKind">,
 ): ReadonlyArray<VcsRef> => {
   if (request.refKind === "remote") return [];
-  const refs: Array<VcsRef> = [
-    {
-      name: location.defaultBranch,
-      current: location.branch === location.defaultBranch,
-      isDefault: true,
-      // The project's root is Mend's bare store, which t3code must never take for a checkout.
-      worktreePath: null,
-    },
-  ];
-  if (location.sessionId !== null && location.branch !== location.defaultBranch) {
-    refs.push({ name: location.branch, current: true, isDefault: false, worktreePath: cwd });
+  const refs: Array<VcsRef> = branches.map((branch) => ({
+    name: branch.name,
+    current: location.sessionId === null && branch.isDefault,
+    isDefault: branch.isDefault,
+    // The project's root is Mend's bare store, which t3code must never take for a checkout.
+    worktreePath: null,
+  }));
+  if (location.sessionId !== null && location.branch.trim().length > 0) {
+    const own = refs.findIndex((ref) => ref.name === location.branch);
+    const thread = { name: location.branch, current: true, worktreePath: cwd } as const;
+    if (own === -1) refs.unshift({ ...thread, isDefault: false });
+    else refs[own] = { ...thread, isDefault: refs[own]?.isDefault ?? false };
   }
   const query = request.query?.toLowerCase();
   return refs.filter(
     (ref) =>
       ref.name.trim().length > 0 && (query === undefined || ref.name.toLowerCase().includes(query)),
   );
+};
+
+/**
+ * A page of `refs` as t3code's own server answers one (review R648-2): from `cursor`, at most
+ * `limit`, the next cursor while any are left, and the count of every ref the query matched.
+ */
+export const pageOf = (
+  refs: ReadonlyArray<VcsRef>,
+  request: Pick<VcsListRefsInput, "cursor" | "limit">,
+) => {
+  const cursor = request.cursor ?? 0;
+  const page = refs.slice(cursor, cursor + (request.limit ?? REFS_DEFAULT_LIMIT));
+  const next = cursor + page.length;
+  return { refs: page, nextCursor: next < refs.length ? next : null, totalCount: refs.length };
 };
 
 /** `vcs.listRefs` fails as t3code's git commands do; Mend runs no git command for it. */
@@ -204,13 +225,14 @@ export const makeVcsHandlers = (input: {
       if (location === null) {
         return yield* refsFailed(request.cwd)("No Mend thread or project of yours works there.");
       }
-      const refs = refsAt(location, request.cwd, request);
+      const branches = yield* mend
+        .projectBranches(session.deviceToken, location.projectId)
+        .pipe(Effect.mapError((error) => refsFailed(request.cwd)(error.message)));
+      const refs = refsAt(location, request.cwd, branches, request);
       return {
-        refs,
+        ...pageOf(refs, request),
         isRepo: true,
         hasPrimaryRemote: location.hasOrigin,
-        nextCursor: null,
-        totalCount: refs.length,
       } satisfies VcsListRefsResult;
     });
 

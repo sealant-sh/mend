@@ -359,9 +359,12 @@ change Mend keeps for it (`GET /api/changes/:id/stats`), read as the person.
 | `hasPrimaryRemote`                     | the project was adopted from an origin                                                        |
 | the remote half                        | none: Mend tracks no upstream for a session's branch (landing is its own step)                |
 
-`vcs.listRefs` answers the refs Mend knows at a thread or project: the project's default branch,
-marked default, and the thread's own branch in its worktree. t3code takes the default as a new
-worktree's base. Mend lists no other branch and no remote one, so none is claimed.
+`vcs.listRefs` answers the project's branches as its store holds them
+(`GET /api/projects/:id/ branches`, read as the person: no session branch, the default marked as
+Mend marks it), and in a thread its own branch, current in its worktree, from Mend's session.
+Nothing else is invented: no remote ref, and no default when the store holds none. It filters by
+`query` and pages by `cursor` and `limit` (100 by default) as t3code's own server does. t3code takes
+the default as a new worktree's base.
 
 The stream sends a snapshot, then the local half again when any thread in the worktree changes in
 the shell (every session there adds to the one change) or a thread goes, and every 15 seconds
