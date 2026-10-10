@@ -45,6 +45,8 @@ import {
   credentialWriteCount,
   deliveryWindow,
   noDeliveryReasonOf,
+  opencodeAnswerCommand,
+  parseOpencodeAnswer,
   execCount,
   harnessVersionOf,
   liveAgents,
@@ -264,25 +266,54 @@ const waitForAgent = async (ctx, sessionId, sinceMs, timeoutMs = 600_000, api = 
  * null. A harness that says its account hit a usage or rate limit will not answer: the wait ends
  * there, with its words in `limit`.
  */
-const waitForAnswer = async (ctx, processId, answer, timeoutMs = 180_000, api = ctx.api) =>
+export const waitForAnswer = async (
+  ctx,
+  processId,
+  answer,
+  timeoutMs = 180_000,
+  api = ctx.api,
+  fromRecord = null,
+) =>
   waitForOutput(
     ctx,
     processId,
     (plain) => plain.includes(answer) || plain.replace(/\s+/g, "").includes(answer),
     timeoutMs,
     api,
+    fromRecord,
   );
+
+/** How long the screen alone is watched for an answer before the harness's record is read too. */
+export const RECORD_AFTER_MS = 30_000;
+/** How often the record is read once it is. */
+const RECORD_EVERY_MS = 5000;
 
 /**
  * Reads the agent's recorded output until `seen(plain text)` returns something truthy: the local
  * time it was seen (`at`) and what `seen` returned (`value`), or `at` null. A usage limit ends the
  * wait, with its words in `limit`.
  */
-const waitForOutput = async (ctx, processId, seen, timeoutMs = 180_000, api = ctx.api) => {
-  const deadline = Date.now() + timeoutMs;
+const waitForOutput = async (
+  ctx,
+  processId,
+  seen,
+  timeoutMs = 180_000,
+  api = ctx.api,
+  // A harness whose screen may never show the answer whole (opencode): its own record, read once
+  // the screen has had `RECORD_AFTER_MS`, every `RECORD_EVERY_MS`; the local time it holds it, or null.
+  fromRecord = null,
+) => {
+  const started = Date.now();
+  const deadline = started + timeoutMs;
+  let nextRecord = started + (ctx.recordAfterMs ?? RECORD_AFTER_MS);
   let from = "0";
   let text = "";
   while (Date.now() < deadline) {
+    if (fromRecord !== null && Date.now() >= nextRecord) {
+      nextRecord = Date.now() + (ctx.recordEveryMs ?? RECORD_EVERY_MS);
+      const at = await fromRecord().catch(() => null);
+      if (at !== null) return { at, value: true, limit: null };
+    }
     const page = await api.get(`/processes/${processId}/logs?from=${from}&limit=500`);
     for (const chunk of page.chunks ?? []) {
       text += Buffer.from(chunk.dataBase64, "base64").toString("utf8");
@@ -671,13 +702,30 @@ const newSession = async (ctx, harness, run) => {
       `asked ${ctx.opts.layout}, the agent runs as ${runsAsWords(agent.runsAs, session.ownerUserId)}`,
     );
   }
+  // The executor, looked up beside the answer wait (an opencode answer may be read from its record).
+  const lookup = ctx.host === null ? Promise.resolve(null) : executorOf(ctx.host, session.id);
+  lookup.catch(() => {});
+  // opencode's own record of the turn: when it wrote the answer (local time), or null.
+  const opencodeRecord =
+    harness === "opencode" && ctx.host !== null
+      ? async () => {
+          const executor = await lookup;
+          if (executor === null) return null;
+          const read = parseOpencodeAnswer(
+            await ctx.host.shell(
+              opencodeAnswerCommand(executor, answer, Math.round(startedAt + ctx.clockOffsetMs)),
+            ),
+          );
+          return read.endedAt === null ? null : read.endedAt - ctx.clockOffsetMs;
+        }
+      : null;
   // The answer is watched for from here, while the executor is sized beside it: the sampling
   // never delays when the answer is seen.
-  const answering = waitForAnswer(ctx, agent.id, answer);
+  const answering = waitForAnswer(ctx, agent.id, answer, 180_000, ctx.api, opencodeRecord);
   answering.catch(() => {});
   // Never after the answer wait: its length depends on the answer, and a missing one moved the
   // sample 3 minutes on, into the capture's staging (0.36.0-next.628, Claude at its weekly limit).
-  const container = ctx.host === null ? null : await executorOf(ctx.host, session.id);
+  const container = await lookup;
   await recordResources(ctx, `executor.${harness}`, container, "resource");
   const built = await imageBuiltDuring(ctx, container, `${harness} #${run}`, startedAt, outputAt);
   // A launch that waited for its workspace image to be built is kept apart, unbudgeted.
@@ -709,6 +757,24 @@ const newSession = async (ctx, harness, run) => {
   }
   ctx.log(`${harness} #${run} · first output ${(firstOutput / 1000).toFixed(1)} s`);
   const answered = await answering;
+  // opencode's answer is timed by its own record whenever it holds it, however the answer was
+  // found: one clock for every round of the series, the screen's only where the record has none.
+  if (opencodeRecord !== null && answered.limit === null) {
+    const recorded = await opencodeRecord().catch(() => null);
+    if (recorded !== null) {
+      if (answered.at === null) {
+        ctx.rec.note(
+          `opencode #${run}: the answer (${answer}) was read from opencode's record; the screen never showed it whole`,
+        );
+      }
+      answered.at = recorded;
+    } else if (answered.at !== null) {
+      ctx.rec.note(
+        `opencode #${run}: the answer was seen on screen but not in opencode's record; the screen's time is kept`,
+      );
+    }
+    ctx.result.method = { ...ctx.result.method, opencodeAnswer: "opencode's record (opencode.db)" };
+  }
   // After the answer and the sizes, so it never runs inside a measured window.
   await noteHarnessVersion(ctx, container, harness, session.ownerUserId);
   if (answered.at !== null) {

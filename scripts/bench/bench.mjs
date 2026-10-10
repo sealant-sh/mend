@@ -121,6 +121,11 @@
 //   whatever else failed; a worktree it cannot read is retried, then a failure. A request that ran
 //   past the wait or ended with no answer may still commit: cleanup sweeps again later and records
 //   that what commits after that is left for `cleanup --run <id>`, so the run fails and says so.
+// - opencode's answer is timed by its own record (`opencode.db`'s assistant text part, read in the
+//   executor once the turn is answered), not by the terminal stream, whose differential redraw
+//   never shows some answers whole (the same ones missed in both layouts, at next.652, 708 and
+//   754). The stream is still watched; after 30 s without the answer the record is read too, every
+//   5 s. Each round says which one found it (`method.opencodeAnswer`).
 // - A record says the harness its joins, resume and interactive scenarios rode on
 //   (`method.firstHarness`), and each series a harness produced is stamped with that harness and
 //   its version (`harness`, `harnessVersion` on the measure), and every series with the layout it

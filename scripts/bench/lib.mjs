@@ -102,6 +102,81 @@ export const MEMORY_STAT_SH = [
   'echo "cgroup $v $p"; printf "%s\\n" "$stat"',
 ].join("\n");
 
+/**
+ * Reads, inside an executor, when opencode wrote a given answer: its turn from opencode's own
+ * record (its SQLite database, `opencode.db` with its write-ahead log, opencode 1.18.34's `message`
+ * and `part` tables), not from the terminal stream. opencode's TUI redraws only the cells that
+ * change, so an answer whose digits share cells with what was on screen never appears whole in
+ * the stream (the same answers missed in both layouts, round after round: 0.36.0-next.652, 708,
+ * 754). The database is copied (with its log) before it is opened, so opencode's own file is only
+ * read. Environment: `ST_ANSWER` (digits), `ST_SINCE` (server milliseconds: parts older are
+ * another turn's), `ST_DATABASES` (colon-separated paths, tests only). Prints one JSON line:
+ * `{"endedAt": <ms>|null, "databases": n}`, or `{"unavailable": "<why>"}`.
+ */
+export const OPENCODE_ANSWER_JS = [
+  'const fs = require("node:fs"); const os = require("node:os"); const path = require("node:path");',
+  'let sqlite; try { sqlite = require("node:sqlite"); } catch { console.log(JSON.stringify({ unavailable: "node has no node:sqlite" })); process.exit(0); }',
+  'const answer = process.env.ST_ANSWER || ""; const since = Number(process.env.ST_SINCE || 0);',
+  "const found = new Set(); const add = (file) => { try { found.add(fs.realpathSync(file)); } catch {} };",
+  'if (process.env.ST_DATABASES) { for (const file of process.env.ST_DATABASES.split(":")) add(file); } else {',
+  '  add("/root/.local/share/opencode/opencode.db");',
+  '  for (const home of (() => { try { return fs.readdirSync("/home"); } catch { return []; } })()) add(path.join("/home", home, ".local/share/opencode/opencode.db"));',
+  "}",
+  "let endedAt = null;",
+  "for (const file of found) {",
+  '  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "st-bench-opencode-"));',
+  "  try {",
+  '    const copy = path.join(dir, "opencode.db"); fs.copyFileSync(file, copy);',
+  '    try { fs.copyFileSync(file + "-wal", copy + "-wal"); } catch {}',
+  "    const db = new sqlite.DatabaseSync(copy);",
+  "    try {",
+  '      const rows = db.prepare("select p.data as part, p.time_updated as updated, m.data as message from part p join message m on m.id = p.message_id where p.time_updated >= ?").all(since);',
+  "      for (const row of rows) {",
+  "        let part, message; try { part = JSON.parse(row.part); message = JSON.parse(row.message); } catch { continue; }",
+  '        if (message.role !== "assistant" || part.type !== "text" || typeof part.text !== "string") continue;',
+  '        if (!part.text.replace(/[\\s,]/g, "").includes(answer)) continue;',
+  "        const at = Number(part.time?.end ?? row.updated);",
+  "        if (Number.isFinite(at) && (endedAt === null || at < endedAt)) endedAt = at;",
+  "      }",
+  "    } finally { db.close(); }",
+  "  } catch {} finally { fs.rmSync(dir, { recursive: true, force: true }); }",
+  "}",
+  "console.log(JSON.stringify({ endedAt, databases: found.size }));",
+].join("\n");
+
+/** The host command that runs `OPENCODE_ANSWER_JS` in an executor, as root, for one answer. */
+export const opencodeAnswerCommand = (container, answer, sinceMs) => {
+  if (!/^[\w.-]+$/.test(String(container))) throw new Error(`not a container name: ${container}`);
+  if (!/^\d+$/.test(String(answer))) throw new Error(`not an answer: ${answer}`);
+  if (!Number.isSafeInteger(sinceMs)) throw new Error(`not a time: ${sinceMs}`);
+  const encoded = Buffer.from(OPENCODE_ANSWER_JS, "utf8").toString("base64");
+  return `docker exec -e ST_ANSWER=${answer} -e ST_SINCE=${sinceMs} ${container} node -e "$(printf %s '${encoded}' | base64 -d)"`;
+};
+
+/**
+ * `OPENCODE_ANSWER_JS`'s line: when the answer's text part ended (server milliseconds), null when
+ * the record holds no such answer, or why the record could not be read.
+ */
+export const parseOpencodeAnswer = (text) => {
+  const line = (text ?? "").trim().split("\n").at(-1) ?? "";
+  try {
+    const parsed = JSON.parse(line);
+    if (typeof parsed.unavailable === "string")
+      return { endedAt: null, reason: parsed.unavailable };
+    if (parsed.databases === 0)
+      return { endedAt: null, reason: "no opencode database in the executor" };
+    return {
+      endedAt: Number.isFinite(parsed.endedAt) ? parsed.endedAt : null,
+      reason: null,
+    };
+  } catch {
+    return {
+      endedAt: null,
+      reason: `the record could not be read: ${line.slice(0, 120) || "no output"}`,
+    };
+  }
+};
+
 /** The host command that runs `MEMORY_STAT_SH` for one container, the script passed whole. */
 export const memoryStatCommand = (container) => {
   if (!/^[\w.-]+$/.test(String(container))) throw new Error(`not a container name: ${container}`);
