@@ -9,11 +9,8 @@
  * it, whatever characters that holds. Quotes, angle brackets, unicode and `%`-escapes are userinfo
  * like any other character (review of mend#640), and so is whitespace: a URL parser drops a tab or
  * a newline and encodes a space, so `oauth2:p<TAB>tok@` is a password too (review 3 of mend#611).
- * Whitespace is userinfo only in a URL that holds it, though: the authority spans whitespace only
- * when a host (and a numeric port) follows its last `@` and a path, query or fragment follows the
- * host, as in every repository URL. Otherwise the authority ends at the whitespace, so prose such as
- * `file:// URLs do not … git@github.com:acme/api.git` keeps every word (the scp-style `github.com:
- * acme` is no host and port). Output that must keep its shape (JSON) redacts each string on its own.
+ * In prose a URL with no path can take the words up to a later `@` with it: text goes, a credential
+ * never stays. Output that must keep its shape (JSON) redacts each string on its own.
  *
  * Over ssh the user is a login name (`ssh://git@host/path`, `git@host:path`) and stays; a password
  * goes, and a login holding an `@` goes whole. Over every other scheme the user is where tokens go
@@ -37,24 +34,6 @@ const keptUserinfo = (scheme: string, userinfo: string): string => {
   if (!isSshScheme(scheme)) return "";
   const user = userinfo.split(":")[0] ?? "";
   return user === "" || user.includes("@") ? "" : `${user}@`;
-};
-
-/** A host as an authority ends with it: a name or an address in brackets, then a numeric port. */
-const isHostAndPort = (value: string): boolean =>
-  /^(?:\[[0-9a-f:.]+\]|[^\s@:[\]]+)(?::\d*)?$/iu.test(value);
-
-/**
- * The authority starting at `from`, up to `end`, read as free text: whitespace in it is userinfo
- * only when a host follows its last `@` and a path, query or fragment follows that host, else the
- * authority ends at the whitespace.
- */
-const authorityIn = (text: string, from: number, end: number): string => {
-  const authority = text.slice(from, end);
-  const space = authority.search(/\s/u);
-  if (space === -1) return authority;
-  const at = authority.lastIndexOf("@");
-  const holdsWhitespace = at > space && end < text.length && isHostAndPort(authority.slice(at + 1));
-  return holdsWhitespace ? authority : authority.slice(0, space);
 };
 
 const isSchemeChar = (char: string): boolean => /[a-z0-9+.-]/iu.test(char);
@@ -84,7 +63,7 @@ const redact = (text: string): string => {
     const authorityStart = separator + 3;
     const scheme = schemeBefore(text, separator, floor);
     if (scheme !== null) {
-      const authority = authorityIn(text, authorityStart, authorityEnd(text, authorityStart));
+      const authority = text.slice(authorityStart, authorityEnd(text, authorityStart));
       const at = authority.lastIndexOf("@");
       if (at !== -1) {
         const userinfo = authority.slice(0, at);

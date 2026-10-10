@@ -86,6 +86,7 @@ import {
 } from "./server-runtime.ts";
 import {
   withServerStore,
+  ServerRefusal,
   ServerStoreError,
   type ServerFiles,
   type HeldBackup,
@@ -327,7 +328,7 @@ interface DockerContextRow {
   readonly current: boolean;
 }
 
-class ServerSetupError extends Error {
+class ServerSetupError extends ServerRefusal {
   readonly _tag = "ServerSetupError" as const;
 }
 

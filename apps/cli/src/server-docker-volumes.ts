@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
 import type { ServerSetupRuntime } from "./server-setup.ts";
+import { ServerRefusal } from "./server-store.ts";
 
 /** Concrete daemon names. Override together only for an isolated deployment or integration test. */
 export interface ServerDockerNamespace {
@@ -43,7 +44,7 @@ export interface ServerVolumeOwnershipInput {
 }
 
 /** Ownership conflicts require recovery of the original config, not deletion or relabelling. */
-export class ServerVolumeOwnershipError extends Error {
+export class ServerVolumeOwnershipError extends ServerRefusal {
   /** Stable error discriminator. */
   readonly _tag = "ServerVolumeOwnershipError" as const;
 

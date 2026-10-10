@@ -291,59 +291,34 @@ describe("a credential in a repository URL", () => {
     );
   });
 
-  it("ends an authority at whitespace in prose, unless a host and a path follow its last @", () => {
-    // `mend help adopt` lost everything between `file://` and the scp-style example (live pass).
-    const prose =
-      "local paths and file:// URLs do not.\n\n--auth says how the store fetches.\n\n  mend adopt git@github.com:acme/api.git --auth mend-key";
-    expect(redactUrlCredentials(prose)).toBe(prose);
-    for (const text of [
-      "file:// URLs do not; write to ops@example.com",
-      "see git:// and http:// URLs, or mail ops@example.com for more",
-      "https:// then @mend in Slack, and https://github.com/o/r",
-      "ssh:// or git@host:2222x/repo.git",
-    ]) {
-      expect(redactUrlCredentials(text), text).toBe(text);
+  // Review of mend#666: a rule that ended an authority at whitespace unless a host and a path
+  // followed printed each of these whole. Every one stays redacted.
+  it("redacts a password holding whitespace whatever follows the host", () => {
+    const cases: ReadonlyArray<readonly [string, string]> = [
+      ["https://user:pa ss@host", "https://host"],
+      ["https://oauth2:p\ttok@github.com", "https://github.com"],
+      ["https://user:pa ss@host:8080", "https://host:8080"],
+      ["fatal: https://user:pa ss@host refused", "fatal: https://host refused"],
+      [
+        "fatal: unable to access 'https://user:pa ss@host': 403",
+        "fatal: unable to access 'https://host': 403",
+      ],
+      ['{"url":"https://user:pa ss@host"}', '{"url":"https://host"}'],
+      ['{"url":"https://user:pa ss@host","path":"/x"}', '{"url":"https://host","path":"/x"}'],
+      [
+        "remote https://user:pa ss@host\nnext line /var/log",
+        "remote https://host\nnext line /var/log",
+      ],
+      ["https://to ken@host", "https://host"],
+      ["https:// user:tok@host", "https://host"],
+      ["https://user:pa ss@[fe80::1%25eth0]/repo", "https://[fe80::1%25eth0]/repo"],
+      ["https://user:pa ss@[v1.x]/repo", "https://[v1.x]/repo"],
+    ];
+    for (const [text, shown] of cases) {
+      const redacted = redactUrlCredentials(text);
+      expect(redacted, text).toBe(shown);
+      expect(redacted, text).not.toMatch(/pa ss|p\ttok|to ken|user:tok/u);
     }
-    // A credential right after the scheme still goes, whatever prose follows the URL.
-    expect(redactUrlCredentials("clone https://oauth2:tok@github.com and git@github.com:o/r")).toBe(
-      "clone https://github.com and git@github.com:o/r",
-    );
-    expect(redactUrlCredentials("https://user:p tok@[::1]:8080/r.git failed")).toBe(
-      "https://[::1]:8080/r.git failed",
-    );
-  });
-
-  // Prose with every shape that looks like part of a URL but carries no credential: schemes alone,
-  // URLs without userinfo, ssh logins, scp-style remotes, addresses and mentions.
-  const word = FastCheck.oneof(
-    FastCheck.stringMatching(/^[a-z.,;:'"()<>`*-]{1,12}$/u),
-    FastCheck.constantFrom(
-      "file://",
-      "git://",
-      "https://",
-      "https://github.com/acme/api",
-      "http://127.0.0.1:8080/origin.git?x=1#y",
-      "ssh://git@host.example:2222/repo.git",
-      "git+ssh://deploy@host.example/repo.git",
-      "git@github.com:acme/api.git",
-      "deploy@[::1]:srv/repo.git",
-      "ops@example.com",
-      "ops@example.com.",
-      "@mend",
-      "a@b",
-    ),
-  );
-  const prose = FastCheck.array(FastCheck.tuple(word, whitespace), { maxLength: 30 }).map((parts) =>
-    parts.map(([text, space]) => `${text}${space}`).join(""),
-  );
-
-  it("never shortens text that holds no credential", () => {
-    FastCheck.assert(
-      FastCheck.property(prose, (text) => {
-        expect(redactUrlCredentials(text)).toBe(text);
-      }),
-      { numRuns: 2_000 },
-    );
   });
 
   it("finds a URL that starts where another's authority ends, and stays linear in what it reads", () => {

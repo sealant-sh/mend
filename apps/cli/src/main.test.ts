@@ -1241,6 +1241,29 @@ describe("mend help", spawning, () => {
     expect(help).not.toContain("  qr ");
   });
 
+  it("prints mend help adopt whole: help pages never pass through the credential redactor", async () => {
+    // The live pass's cut-off page: the redactor read `file:// … git@github.com:` as one URL with a
+    // password and took everything between. Pages are the static catalog, printed as written.
+    const cli = startCli("http://127.0.0.1:1", ["help", "adopt"]);
+    expect((await cli.exited).code).toBe(0);
+    const page = cli.stdout().replace(/\s+/gu, " ");
+    for (const part of [
+      "local paths and file:// URLs do not.",
+      "--auth says how the store fetches from the remote.",
+      " options ",
+      "--name <name>",
+      "mend adopt git@github.com:acme/api.git --auth mend-key",
+      " see also ",
+    ]) {
+      expect(page).toContain(part);
+    }
+    const projects = startCli("http://127.0.0.1:1", ["help", "projects"]);
+    await projects.exited;
+    expect(projects.stdout().replace(/\s+/gu, " ")).toContain(
+      "https://oauth2:TOKEN@github.com/acme/repo.git reads as https://github.com/acme/repo.git",
+    );
+  });
+
   it("prints one command's page for help <command> and <command> --help alike", async () => {
     const byHelp = startCli("http://127.0.0.1:1", ["help", "service", "run"]);
     const byFlag = startCli("http://127.0.0.1:1", ["service", "run", "--help"]);

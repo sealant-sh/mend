@@ -11,9 +11,9 @@ With nothing new, the branch stays and the CLI says `unchanged since the last pu
 A branch that cannot fast-forward (you committed on it, or the server no longer holds the last pull)
 is left as it is. The CLI says why, and `mend pull <session> --branch <name>` fetches into a new
 branch instead. Mend never force-updates a branch. An older server ignores `onto` and bundles as
-before. `mend help adopt` prints its whole page again: help pages no longer pass through the
-credential redactor, and in free text the redactor now ends a URL's authority at whitespace unless a
-host and a path follow its last `@`, so `file:// … git@github.com:acme/api.git` stays as written.
-`mend server` refusals (an unknown flag, no server configured, a held lock) print just the refusal,
-without `Server storage operation failed:`, a doubled period and filesystem advice that does not
-apply. The advice now follows only the operating system's own failures.
+before. `mend help adopt` prints its whole page again: help pages, which quote no URL Mend was
+given, no longer pass through the credential redactor. `mend server` refusals (an unknown flag, no
+server configured, a held lock) print just the refusal, without `Server storage operation failed:`,
+a doubled period and filesystem advice that does not apply. The advice now follows only the
+operating system's own failures, and anything else under the lock reads as
+`Server command failed unexpectedly`.

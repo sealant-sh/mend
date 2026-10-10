@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
+  ServerRefusal,
   withServerStore,
   type ServerFiles,
   type ServerGeneration,
@@ -286,9 +287,23 @@ describe("server filesystem transactions", () => {
     const refusal = 'Unknown server setup option "--bogus".';
     expect(
       await messageOf(async () => {
-        throw new Error(refusal);
+        throw new ServerRefusal(refusal);
       }),
     ).toBe(refusal);
+    // A bug is no refusal, and no filesystem problem either.
+    expect(
+      await messageOf(async () => {
+        throw new TypeError("Cannot read properties of undefined (reading 'x')");
+      }),
+    ).toBe("Server command failed unexpectedly: Cannot read properties of undefined (reading 'x')");
+    // Node's own ERR_* codes are not the operating system's.
+    expect(
+      await messageOf(async () => {
+        throw Object.assign(new TypeError("The path argument must be a string"), {
+          code: "ERR_INVALID_ARG_TYPE",
+        });
+      }),
+    ).toBe("Server command failed unexpectedly: The path argument must be a string");
     const failure = await messageOf(async () => fs.readFileSync(path.join(root, "missing.env")));
     expect(failure).toMatch(
       /^Server storage operation failed: ENOENT: no such file or directory, open '.*missing\.env'\. Retain the identity and generations; fix the filesystem problem and retry\.$/u,

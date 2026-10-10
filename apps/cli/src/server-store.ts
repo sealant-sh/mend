@@ -3,6 +3,12 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
+/**
+ * A refusal raised under the configuration lock (an unknown flag, no server configured, volumes
+ * another install owns): its message already says what to do, and reaches the person as written.
+ */
+export class ServerRefusal extends Error {}
+
 /** Storage failures include busy locks and recovery guidance; messages never contain file contents. */
 export class ServerStoreError extends Error {
   readonly _tag = "ServerStoreError" as const;
@@ -151,21 +157,28 @@ interface OwnedLock {
   release(): ServerStoreResult<void>;
 }
 
-/** A failure the operating system raised (`EACCES`, `ENOSPC`, …): it carries an errno code. */
-const isSystemError = (cause: Error): boolean => "code" in cause && typeof cause.code === "string";
+/**
+ * A failure the operating system raised (`EACCES`, `ENOSPC`, …): an errno code, not one of Node's
+ * own `ERR_*` codes.
+ */
+const isSystemError = (cause: Error): boolean =>
+  "code" in cause && typeof cause.code === "string" && /^E[A-Z0-9]+$/u.test(cause.code);
 
 /**
- * A storage failure says what failed and how to recover from it. A refusal raised under the lock
- * (another command holds it, an unknown flag, no server configured) already says what to do, so
- * it arrives as it was written; the filesystem advice is for the operating system's failures.
+ * What a failure under the lock says. A refusal (`ServerRefusal`, or the store's own: another
+ * command holds the lock) already says what to do, and arrives as it was written. The filesystem
+ * advice is for the operating system's failures. Anything else is a bug, and says so.
  */
 const storeError = (cause: unknown): ServerStoreError => {
   if (cause instanceof ServerStoreError) return cause;
-  if (cause instanceof Error && !isSystemError(cause)) return new ServerStoreError(cause.message);
-  const detail = cause instanceof Error ? cause.message.replace(/\.+$/u, "") : "unknown failure";
-  return new ServerStoreError(
-    `Server storage operation failed: ${detail}. Retain the identity and generations; fix the filesystem problem and retry.`,
-  );
+  if (cause instanceof ServerRefusal) return new ServerStoreError(cause.message);
+  if (cause instanceof Error && isSystemError(cause)) {
+    return new ServerStoreError(
+      `Server storage operation failed: ${cause.message.replace(/\.+$/u, "")}. Retain the identity and generations; fix the filesystem problem and retry.`,
+    );
+  }
+  const detail = cause instanceof Error ? cause.message : String(cause);
+  return new ServerStoreError(`Server command failed unexpectedly: ${detail}`);
 };
 
 const attempt = <T>(operation: () => T): ServerStoreResult<T> => {
