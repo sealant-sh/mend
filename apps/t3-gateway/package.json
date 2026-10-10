@@ -8,6 +8,7 @@
   },
   "type": "module",
   "scripts": {
+    "build": "BUNDLE_ENTRIES=src/bin.ts BUNDLE_EXTERNAL=bufferutil,utf-8-validate node ../../tooling/scripts/bundle-app.mjs",
     "lint": "oxlint .",
     "start": "node src/bin.ts",
     "test": "vitest run",
@@ -22,6 +23,7 @@
     "@effect/vitest": "catalog:t3",
     "@mend/typescript": "workspace:*",
     "@types/node": "catalog:",
+    "esbuild": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:t3"
   }

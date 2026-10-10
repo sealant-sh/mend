@@ -50,6 +50,60 @@ export class ProcessSupervisor {
     return this.#spawn(specification, true);
   }
 
+  /**
+   * Keep an optional process running: its exit is never fatal to the set, and neither is a start
+   * that fails, the first included (review 643-2: a spawn refused for want of processes or
+   * descriptors must not stop Mend beside it). It is started again after `backoffMs`, doubled
+   * each time it ends before it ran `steadyMs` (to `maxBackoffMs`), until shutdown. For a part an
+   * operator turned on beside Mend (the t3code gateway). `beforeStart` runs before each start, the
+   * first and every restart; when it throws, that start fails like a spawn that fails. Resolves
+   * once the first start was tried; never rejects.
+   */
+  async keepRunning(
+    specification,
+    {
+      backoffMs = 1_000,
+      maxBackoffMs = 60_000,
+      steadyMs = 60_000,
+      log = console.error,
+      beforeStart = async () => {},
+    } = {},
+  ) {
+    const attempt = async () => {
+      try {
+        if (this.#stopping)
+          throw new Error(`cannot start ${specification.name}: shutdown has begun`);
+        await beforeStart();
+        return await this.#spawn(specification, false);
+      } catch (error) {
+        if (!this.#stopping) {
+          log(`[supervisor] ${specification.name} did not start: ${String(error)}`);
+        }
+        return {
+          exited: Promise.resolve({ name: specification.name, code: null, signal: null, error }),
+        };
+      }
+    };
+    let wait = backoffMs;
+    const first = await attempt();
+    void (async () => {
+      let tracked = first;
+      for (;;) {
+        const startedAt = Date.now();
+        const result = await tracked.exited;
+        if (this.#stopping) return;
+        wait = Date.now() - startedAt >= steadyMs ? backoffMs : Math.min(wait * 2, maxBackoffMs);
+        log(
+          `[supervisor] ${specification.name} ended (${describeExit(result)}); again in ${wait} ms`,
+        );
+        await unrefDelay(wait);
+        if (this.#stopping) return;
+        tracked = await attempt();
+      }
+    })();
+    return first;
+  }
+
   /** Run a startup process to completion without treating its expected exit as fatal. */
   async run(specification) {
     const tracked = await this.#spawn(specification, false);

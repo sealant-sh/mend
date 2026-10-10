@@ -35,6 +35,126 @@ test("an unexpected child exit becomes fatal and shutdown stops its sibling", as
   await supervisor.shutdown("SIGTERM", 2_000);
 });
 
+test("an optional process kept running is started again, and its exit is never fatal", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "mend-supervisor-keep-"));
+  const starts = path.join(directory, "starts");
+  const supervisor = new ProcessSupervisor();
+  const logged = [];
+  try {
+    await supervisor.keepRunning(
+      {
+        name: "optional",
+        command: [
+          process.execPath,
+          "-e",
+          `require("node:fs").appendFileSync(${JSON.stringify(starts)}, "x"); setTimeout(()=>process.exit(3), 20)`,
+        ],
+        env: process.env,
+        stdio: "ignore",
+      },
+      { backoffMs: 20, maxBackoffMs: 40, log: (line) => logged.push(line) },
+    );
+    await withTimeout(
+      (async () => {
+        for (;;) {
+          const count = (await readFile(starts, "utf8").catch(() => "")).length;
+          if (count >= 3) return;
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+      })(),
+    );
+    // Nothing fatal: the set's failure never settled.
+    const settled = await Promise.race([
+      supervisor.failure.then(() => true),
+      new Promise((resolve) => setTimeout(() => resolve(false), 50)),
+    ]);
+    assert.equal(settled, false);
+    assert.ok(logged.some((line) => line.includes("optional ended (exit code 3)")));
+  } finally {
+    await supervisor.shutdown("SIGTERM", 2_000);
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("an optional process that cannot even start the first time never stops a required one", async () => {
+  // Review 643-2: the first spawn's failure escaped the retry, ended the bundle's start, and the
+  // supervisor stopped every healthy sibling with exit code 1.
+  const supervisor = new ProcessSupervisor();
+  const logged = [];
+  try {
+    const required = await supervisor.start({
+      name: "mend",
+      command: [process.execPath, "-e", "setInterval(() => {}, 1000)"],
+      env: process.env,
+      stdio: "ignore",
+    });
+    await supervisor.keepRunning(
+      {
+        name: "optional",
+        command: ["/nonexistent/mend-t3-gateway"],
+        env: process.env,
+        stdio: "ignore",
+      },
+      { backoffMs: 20, maxBackoffMs: 40, log: (line) => logged.push(line) },
+    );
+    await withTimeout(
+      (async () => {
+        while (logged.filter((line) => line.includes("optional did not start")).length < 2) {
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+      })(),
+    );
+    // Tried again, nothing fatal, and the required process still runs.
+    const settled = await Promise.race([
+      supervisor.failure.then(() => true),
+      new Promise((resolve) => setTimeout(() => resolve(false), 50)),
+    ]);
+    assert.equal(settled, false);
+    assert.equal(required.child.exitCode, null);
+    assert.equal(required.child.signalCode, null);
+  } finally {
+    await supervisor.shutdown("SIGTERM", 2_000);
+  }
+});
+
+test("a check before each start that fails is a failed start: logged, tried again, never fatal", async () => {
+  const supervisor = new ProcessSupervisor();
+  const logged = [];
+  let checks = 0;
+  try {
+    await supervisor.keepRunning(
+      {
+        name: "optional",
+        command: [process.execPath, "-e", "setInterval(() => {}, 1000)"],
+        env: process.env,
+        stdio: "ignore",
+      },
+      {
+        backoffMs: 20,
+        maxBackoffMs: 40,
+        log: (line) => logged.push(line),
+        beforeStart: async () => {
+          checks += 1;
+          if (checks < 3) throw new Error("its root is not root's alone");
+        },
+      },
+    );
+    await withTimeout(
+      (async () => {
+        while (checks < 3) await new Promise((resolve) => setTimeout(resolve, 20));
+      })(),
+    );
+    assert.ok(logged.some((line) => line.includes("optional did not start: Error: its root")));
+    const settled = await Promise.race([
+      supervisor.failure.then(() => true),
+      new Promise((resolve) => setTimeout(() => resolve(false), 50)),
+    ]);
+    assert.equal(settled, false);
+  } finally {
+    await supervisor.shutdown("SIGTERM", 2_000);
+  }
+});
+
 test("a one-shot failure reports its process and exit code", async () => {
   const supervisor = new ProcessSupervisor();
   await assert.rejects(
