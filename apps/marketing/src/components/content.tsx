@@ -414,8 +414,8 @@ export const FAQ: ReadonlyArray<{ q: string; a: ReactNode }> = [
           the conversation in the editor's terminal.
         </p>
         <p>
-          It's published on the VS Code Marketplace. Search for Mend in the Extensions view to
-          install it.
+          It's published on the VS Code Marketplace. Search for Mend by Sealant in the Extensions
+          view to install it.
         </p>
       </>
     ),
