@@ -3,13 +3,7 @@ import { createRouter as createTanStackRouter } from "@tanstack/react-router";
 import { setupRouterSsrQueryIntegration } from "@tanstack/react-router-ssr-query";
 import { TRPCClientError } from "@trpc/client";
 
-import {
-  loginWalkUrl,
-  makeTrpcProxy,
-  trpcClient,
-  TRPCProvider,
-  type TrpcProxy,
-} from "./lib/trpc.ts";
+import { loginWalk, makeTrpcProxy, trpcClient, TRPCProvider, type TrpcProxy } from "./lib/trpc.ts";
 import { routeTree } from "./routeTree.gen";
 
 /** What every route's loader can reach: `context.queryClient` + `context.trpc`. */
@@ -40,10 +34,9 @@ export function getRouter() {
         if (
           typeof window !== "undefined" &&
           error instanceof TRPCClientError &&
-          error.data?.code === "UNAUTHORIZED" &&
-          window.location.pathname !== "/login"
+          error.data?.code === "UNAUTHORIZED"
         ) {
-          window.location.assign(loginWalkUrl());
+          loginWalk.refused();
         }
       },
     }),

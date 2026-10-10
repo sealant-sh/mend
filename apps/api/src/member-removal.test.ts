@@ -315,6 +315,8 @@ describe("member removal (docs/adr/0003)", () => {
     expect(world.owed.size).toBe(0);
     const mendSide = [
       "organizations.removeMember:carol",
+      // The account's pages hear why before any request of theirs is refused.
+      "userEvents.changed:carol:access",
       "sessions.disableSharedControlForOwner:carol",
       "controlEvents.record:shared-control-off:session-shared",
       // Carol's turns queued in anyone's session go (docs/adr/0016, decision 6).
@@ -326,7 +328,6 @@ describe("member removal (docs/adr/0003)", () => {
       "audit.record:member.removed:carol",
       "slackLinks.unlink:T-acme:U-carol",
       "audit.record:slack.link_removed:carol",
-      "userEvents.changed:carol:access",
       "connections.closeForUser:carol",
     ];
     // Everything Mend revokes itself comes first; the platform is asked only after it.

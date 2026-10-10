@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 
 import { authClient } from "#/lib/auth-client";
 import { useTRPC } from "#/lib/trpc";
+import { useWorkbenchEvents } from "#/lib/workbench-events";
 import { LIVE_STATES } from "#/lib/workbench-menus";
 
 /**
@@ -29,6 +30,9 @@ export function AppShell({
   readonly rail?: ReactNode;
   readonly projectId?: string | undefined;
 }) {
+  // Every signed-in page hears the tab's events through the shell, Settings included: an
+  // account removed from its organization is told why wherever it is (docs/adr/0003).
+  useWorkbenchEvents();
   return (
     <div className="flex min-h-screen">
       <aside className="sticky top-0 hidden h-screen w-[248px] shrink-0 flex-col gap-7 overflow-y-auto border-r border-rule bg-panel px-5 py-6 lg:flex">

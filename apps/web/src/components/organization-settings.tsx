@@ -32,7 +32,7 @@ import {
   toBase64,
   type StagedFile,
 } from "#/lib/organization";
-import { trpcClient, useTRPC } from "#/lib/trpc";
+import { loginWalk, trpcClient, useTRPC } from "#/lib/trpc";
 
 /**
  * The organization in Settings (docs/adr/0003-organizations-and-tenancy.md): who belongs, how
@@ -301,7 +301,7 @@ function MembersPanel({ view }: { readonly view: OrganizationViewDto }) {
                       removeMember(member.userId).then((removed) =>
                         setNotice(describeMemberRemoval(removed)),
                       ),
-                    self ? () => window.location.assign("/login?reason=access") : undefined,
+                    self ? () => loginWalk.accessRemoved() : undefined,
                   )
                 }
               />
