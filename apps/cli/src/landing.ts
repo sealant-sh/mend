@@ -464,6 +464,7 @@ export interface BundleFacts {
   readonly branch: string;
   readonly base: string;
   readonly tip: string;
+  /** Commits the bundle carries; the change's own count (`base..tip`) is taken in the clone. */
   readonly commits: number;
   /** The earlier pull the server built the change on; null when it built on none. */
   readonly onto?: string | null;
@@ -477,6 +478,7 @@ export type Fetched =
       readonly previous: string | null;
       readonly tip: string;
       readonly base: string;
+      /** The change's commits from its base (`base..tip`), counted in the clone. */
       readonly commits: number;
       /** `<short sha> <subject>`, newest first, at most ten. */
       readonly log: ReadonlyArray<string>;
@@ -590,53 +592,58 @@ export const fetchBundle = (
   const recordAt = (sha: string): void => {
     git(cwd, ["update-ref", pulledRefOf(into), sha]);
   };
-  if (previous !== bundle.tip) {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mend-pull-"));
-    try {
-      const file = path.join(dir, "change.bundle");
-      fs.writeFileSync(file, bundle.bytes, { mode: 0o600 });
-      if (previous !== null) {
-        // Read the bundle's objects without moving any ref, then decide: a fast-forward moves
-        // the branch, the same change committed anew leaves it, and anything else says why not.
-        const objects = git(cwd, ["fetch", "--no-tags", "--no-write-fetch-head", file, source]);
-        if (objects.status !== 0) return refusedWith(gitWords(objects));
-        if (git(cwd, ["merge-base", "--is-ancestor", previous, bundle.tip]).status !== 0) {
-          // Mend commits the checkpoint anew for every bundle, so a session that has not moved
-          // since the last pull arrives as a different commit of the same tree on the same
-          // parents (from a server that does not build on the last pull).
-          const here = treeAndParents(cwd, previous);
-          if (here !== null && here === treeAndParents(cwd, bundle.tip)) {
-            recordAt(previous);
-            return { _tag: "unchanged", branch: into, here: previous, tip: bundle.tip };
-          }
-          const pulled = commitAt(cwd, pulledRefOf(into));
-          return {
-            _tag: "diverged",
-            branch: into,
-            here: previous,
-            tip: bundle.tip,
-            reason: pulled === previous && bundle.onto !== previous ? "not-built-on" : "moved",
-            pulled,
-          };
+  if (previous === bundle.tip) {
+    // A server that builds on the last pull answers an unchanged session with that pull's commit.
+    recordAt(previous);
+    return { _tag: "unchanged", branch: into, here: previous, tip: bundle.tip };
+  }
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mend-pull-"));
+  try {
+    const file = path.join(dir, "change.bundle");
+    fs.writeFileSync(file, bundle.bytes, { mode: 0o600 });
+    if (previous !== null) {
+      // Read the bundle's objects without moving any ref, then decide: a fast-forward moves
+      // the branch, the same change committed anew leaves it, and anything else says why not.
+      const objects = git(cwd, ["fetch", "--no-tags", "--no-write-fetch-head", file, source]);
+      if (objects.status !== 0) return refusedWith(gitWords(objects));
+      if (git(cwd, ["merge-base", "--is-ancestor", previous, bundle.tip]).status !== 0) {
+        // Mend commits the checkpoint anew for every bundle, so a session that has not moved
+        // since the last pull arrives as a different commit of the same tree on the same
+        // parents (from a server that does not build on the last pull).
+        const here = treeAndParents(cwd, previous);
+        if (here !== null && here === treeAndParents(cwd, bundle.tip)) {
+          recordAt(previous);
+          return { _tag: "unchanged", branch: into, here: previous, tip: bundle.tip };
         }
+        const pulled = commitAt(cwd, pulledRefOf(into));
+        return {
+          _tag: "diverged",
+          branch: into,
+          here: previous,
+          tip: bundle.tip,
+          reason: pulled === previous && bundle.onto !== previous ? "not-built-on" : "moved",
+          pulled,
+        };
       }
-      const fetched = git(cwd, [
-        "fetch",
-        "--no-tags",
-        "--no-write-fetch-head",
-        file,
-        `${source}:${ref}`,
-      ]);
-      if (fetched.status !== 0) return refusedWith(gitWords(fetched));
-    } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
     }
+    const fetched = git(cwd, [
+      "fetch",
+      "--no-tags",
+      "--no-write-fetch-head",
+      file,
+      `${source}:${ref}`,
+    ]);
+    if (fetched.status !== 0) return refusedWith(gitWords(fetched));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
   }
   const after = commitAt(cwd, ref) ?? "";
   if (after !== bundle.tip) {
     return refusedWith(`${into} is at ${short(after)} after the fetch, not ${short(bundle.tip)}`);
   }
   recordAt(after);
+  // Counted here, from the base: a bundle built on the last pull carries only what is new.
+  const counted = Number(git(cwd, ["rev-list", "--count", `${bundle.base}..${bundle.tip}`]).stdout);
   const log = git(cwd, [
     "log",
     `--max-count=${LOG_LINES}`,
@@ -649,7 +656,7 @@ export const fetchBundle = (
     previous,
     tip: bundle.tip,
     base: bundle.base,
-    commits: bundle.commits,
+    commits: Number.isInteger(counted) && counted > 0 ? counted : bundle.commits,
     log: log.stdout.split("\n").filter((line) => line !== ""),
   };
 };
@@ -664,12 +671,7 @@ export const fetchedLines = (
       `${dim("  switch to it")} git switch ${fetched.branch}`,
     ];
   }
-  const moved =
-    fetched.previous === null
-      ? "created"
-      : fetched.previous === fetched.tip
-        ? "already here"
-        : `moved from ${short(fetched.previous)}`;
+  const moved = fetched.previous === null ? "created" : `moved from ${short(fetched.previous)}`;
   const commits = `${fetched.commits} ${fetched.commits === 1 ? "commit" : "commits"}`;
   const lines = [
     `${green("✓")} fetched ${fetched.branch} · ${short(fetched.tip)} · ${commits} on ${short(fetched.base)} · ${moved}`,

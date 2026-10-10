@@ -325,6 +325,27 @@ describe("server filesystem transactions", () => {
     );
   });
 
+  it("raises no plain Error on a server command's path, so no refusal reads as a bug", () => {
+    // Under the lock, a plain Error prints as "Server command failed unexpectedly"; a refusal is
+    // a ServerRefusal (review 2 of mend#666: uninstall's Docker failure read as a Mend bug).
+    const src = path.dirname(fileURLToPath(import.meta.url));
+    const sources = fs
+      .readdirSync(src)
+      .filter(
+        (name) =>
+          (name.startsWith("server-") ||
+            name === "uninstall.ts" ||
+            name === "docker-shutdown.ts") &&
+          name.endsWith(".ts") &&
+          !name.endsWith(".test.ts"),
+      );
+    expect(sources).toContain("server-setup.ts");
+    for (const name of sources) {
+      const text = fs.readFileSync(path.join(src, name), "utf8");
+      expect(text.match(/throw new Error\(/gu) ?? [], name).toEqual([]);
+    }
+  });
+
   it("releases its lock when the callback fails and refuses missing identity or corrupt pointers", async () => {
     const root = temporary();
     expect(

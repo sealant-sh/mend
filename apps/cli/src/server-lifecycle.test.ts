@@ -2035,7 +2035,9 @@ describe("server uninstall", { timeout: 60_000 }, () => {
       }),
     };
     const outcome = await executeUninstall(runtime, await describeUninstall(runtime, "server"));
-    expect(outcome.failures).toEqual([expect.stringContaining("docker compose down failed")]);
+    expect(outcome.failures).toEqual([
+      "Docker did not take the server down (docker compose down: fixture operation failed). Containers, volumes and files are kept; get Docker answering, then run mend uninstall again.",
+    ]);
     expect(fs.existsSync(path.join(f.configDir, "identity.env"))).toBe(true);
     expect(fs.existsSync(path.join(f.configDir, "server.lock"))).toBe(false);
     const volumes = JSON.parse(fs.readFileSync(path.join(f.root, "docker-protocol.json"), "utf8"));

@@ -122,7 +122,7 @@ export interface ChangeBundle {
   readonly branch: string;
   readonly base: Sha;
   readonly tip: Sha;
-  /** Commits the bundle carries (`base..tip`). */
+  /** Commits the bundle carries: `base..tip`, less what `have` reaches. */
   readonly commits: number;
   readonly bytes: Uint8Array;
 }

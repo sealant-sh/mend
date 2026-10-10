@@ -182,6 +182,7 @@ export const BUNDLE_HEADERS = {
   branch: "x-mend-bundle-branch",
   base: "x-mend-bundle-base",
   tip: "x-mend-bundle-tip",
+  /** Commits the bundle carries: only the new ones when it builds on an earlier pull. */
   commits: "x-mend-bundle-commits",
   /** The earlier pull the bundle builds on (`?onto=`), when the server still held it. */
   onto: "x-mend-bundle-onto",

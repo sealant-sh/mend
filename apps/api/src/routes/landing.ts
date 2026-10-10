@@ -358,6 +358,7 @@ export const LandingsGroupLive = HttpApiBuilder.group(MendApi, "landings", (hand
             branch: bundle.branch,
             base: bundle.base,
             tip: bundle.tip,
+            // What this download carried: only the new commits when it built on `onto`.
             commits: bundle.commits,
             bytes: bundle.bytes.byteLength,
             onto: bundle.onto,

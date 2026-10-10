@@ -451,11 +451,21 @@ describe("fetchBundle", () => {
     expect(fetchedLines(fetched).at(-1)).toBe("  switch to it git switch mend/fix-login");
   });
 
-  it("says a second pull found the branch already here, and fast-forwards an older one", () => {
+  it("says a second pull of the same commit moved nothing, and fast-forwards an older one", () => {
     const { local, bundle } = world();
     expect(fetchBundle(local, bundle)._tag).toBe("fetched");
+    // What a server that builds on the last pull answers for an unchanged session.
     const again = fetchBundle(local, bundle);
-    expect(again._tag === "fetched" && again.previous).toBe(bundle.tip);
+    expect(again).toEqual({
+      _tag: "unchanged",
+      branch: "mend/fix-login",
+      here: bundle.tip,
+      tip: bundle.tip,
+    });
+    if (again._tag !== "unchanged") throw new Error("expected no move");
+    expect(fetchedLines(again)[0]).toBe(
+      `✓ mend/fix-login · ${bundle.tip.slice(0, 7)} · unchanged since the last pull · nothing moved`,
+    );
 
     run(local, ["branch", "-f", "mend/fix-login", `${bundle.tip}~1`]);
     const forward = fetchBundle(local, bundle);
@@ -577,6 +587,49 @@ describe("fetchBundle", () => {
     expect(run(local, ["rev-parse", "refs/heads/mend/fix-login"])).toBe(next);
     expect(run(local, ["show", "mend/fix-login:login.test.ts"])).toBe("test 2");
     expect(lastPullOf(local, "mend/fix-login")).toBe(next);
+  });
+
+  it("counts the change's commits from the base, though the bundle carried only the new ones", () => {
+    const { local, store, root, bundle } = world();
+    expect(fetchBundle(local, bundle)._tag).toBe("fetched");
+    // Eleven more commits, built on the first pull and bundled without what it reaches.
+    let tip = bundle.tip;
+    for (let index = 1; index <= 11; index += 1) {
+      fs.writeFileSync(path.join(store, `step-${index}.ts`), `${index}\n`);
+      run(store, ["add", "-A"]);
+      tip = run(store, [
+        "commit-tree",
+        run(store, ["write-tree"]),
+        "-p",
+        tip,
+        "-m",
+        `Step ${index}`,
+      ]);
+    }
+    run(store, ["update-ref", "refs/heads/mend/fix-login", tip]);
+    const file = path.join(root, "steps.bundle");
+    run(store, [
+      "bundle",
+      "create",
+      "-q",
+      file,
+      "mend/fix-login",
+      `^${bundle.base}`,
+      `^${bundle.tip}`,
+    ]);
+    const fetched = fetchBundle(local, {
+      ...bundle,
+      tip,
+      commits: 11,
+      onto: bundle.tip,
+      bytes: new Uint8Array(fs.readFileSync(file)),
+    });
+
+    if (fetched._tag !== "fetched") throw new Error(`expected a fetch, got ${fetched._tag}`);
+    expect(fetched.commits).toBe(13);
+    const lines = fetchedLines(fetched);
+    expect(lines[0]).toContain(`· 13 commits on ${bundle.base.slice(0, 7)} · moved from`);
+    expect(lines).toContain("    … 3 more");
   });
 
   it("refuses to move a local branch with commits the change does not have, and says how to go on", () => {
