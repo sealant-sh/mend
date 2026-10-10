@@ -29,9 +29,10 @@ mend server setup --t3-gateway
 ```
 
 It runs in the Mend container on a listener of its own and is published on `127.0.0.1:3120` only.
-`--t3-gateway-port <n>` picks another port. The choice is kept across reruns and upgrades.
-`mend server setup --no-t3-gateway` turns it off; its state stays in the config volume and comes
-back if you turn it on again.
+`--t3-gateway-port <n>` picks another port. The choice is kept across reruns and upgrades. Setup
+refuses it on a Mend version whose image has no gateway, and says whether the gateway answered once
+Mend was up. `mend server setup --no-t3-gateway` turns it off; its state stays in its own volume,
+`mend-t3-gateway`, and comes back if you turn it on again.
 
 `mend server status` says it is on, and whether this machine reached it:
 
@@ -118,17 +119,24 @@ container, and the host publishes its port on `127.0.0.1` only. From a checkout 
 `127.0.0.1` unless `MEND_T3_GATEWAY_HOST` says otherwise. A client on another machine needs
 something in front of it that you choose and run: a tunnel, a reverse proxy, or a port on a network
 you control. That is an exposure of its own ([Exposure and the public gate](/operate/exposure/)):
-while the gateway runs, `mend operator exposure` lists `t3code-gateway`, open until you have checked
-from another machine who reaches its port and named it in `MEND_EXPOSURE_DECLARED`.
+while the gateway is enabled, `mend operator exposure` lists `t3code-gateway`, open until you have
+checked from another machine who reaches its port and named it in `MEND_EXPOSURE_DECLARED`.
 
 ## Its state
 
-The gateway keeps one SQLite file of its own, in the config volume on a packaged server
-(`/var/lib/mend/config/t3-gateway/state.sqlite`): its environment id, each paired client, the thread
-ids t3code gave, the queue, images attached to messages, and archive flags. Mend's database is never
-touched; losing the file loses pairings and t3code-side ids, never Mend's records.
+The gateway keeps one SQLite file of its own, in its own volume on a packaged server
+(`mend-t3-gateway`, `/opt/mend-t3-gateway/state/state.sqlite` in the container): its environment id,
+each paired client, the thread ids t3code gave, the queue, images attached to messages, and archive
+flags. Mend's database is never touched; losing the file loses pairings and t3code-side ids, never
+Mend's records.
 
 The file holds each paired person's Mend device token, which acts as that person until the device is
 revoked: the gateway needs it to read Mend and send queued messages when no client is connected. It
 is written with mode `0600`. Keep it out of backups others can read, and revoke a `t3code · …`
 device in Mend to end its token.
+
+On a packaged server the gateway runs confined, apart from the rest of the Mend container: in a root
+of its own holding only node, its own files and that volume, as a user of its own (uid 10120) with
+no capabilities, with only the settings it needs and none of Mend's database or platform secrets,
+and within limits on memory, processes and files. Mend's store, configuration, SSH keys and the
+Docker socket are not visible to it. It reaches Mend over HTTP, as the people who paired.
