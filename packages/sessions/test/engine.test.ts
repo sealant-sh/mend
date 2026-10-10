@@ -280,6 +280,7 @@ import {
   HarnessLayoutConfig,
   HarnessLayoutConfigShared,
   REMOTE_SSH_RESET_PENDING_WORDS,
+  REMOTE_SSH_ROOT_WORDS,
 } from "../src/harness-layout-steps.ts";
 import {
   HARNESS_UPDATES_OFF_ENV,
@@ -24492,12 +24493,16 @@ const personPlatform = (
   sshUserReported = true,
   /** Core's answer to each `sshAsRoot`: taken unless said. */
   sshUserTaken: () => boolean = () => true,
+  /** Whether the launcher's person binding is made in Core: yes unless said. */
+  personBound = true,
 ): Layer.Layer<PersonLayoutPlatform> =>
   Layer.succeed(PersonLayoutPlatform, {
     processUser: true,
     dotfilesUser: dotfiles !== undefined,
     controlPlaneObstacle: Effect.sync(() => controlPlane?.() ?? null),
     sshUser: Effect.succeed(sshUserReported),
+    sshAsOwnerFor: () =>
+      Effect.succeed(!sshUserReported ? "not-taken" : personBound ? "yes" : "unbound"),
     sshAsRoot: () =>
       Effect.sync(() => {
         calls.push("ssh-user:root");
@@ -25229,6 +25234,7 @@ describe("per-person harness homes (docs/adr/0016)", () => {
     readonly summaryAfter?: Duration.Input;
   }) => {
     let summary: string | null = null;
+    const sshUsers: Array<string | undefined> = [];
     const created: Array<CreateOptions> = [];
     const opened: Array<PersonSessionOptions> = [];
     const execCalls: Array<ReadonlyArray<string>> = [];
@@ -25278,13 +25284,14 @@ describe("per-person harness homes (docs/adr/0016)", () => {
           {
             stops,
             beforeOpen: () => order.push("open"),
+            createSshUsers: sshUsers,
             ...(options.exec === undefined ? {} : { exec: options.exec }),
           },
         ),
         harnessLayout: { flag: options.flag, state: options.state, platform: options.platform },
       },
     );
-    return { created, opened, execCalls, stops, failure, worktreeId, order, summary };
+    return { created, opened, execCalls, stops, failure, worktreeId, order, summary, sshUsers };
   };
 
   it("refuses a person worktree before create when its image is known not to run it", async () => {
@@ -25410,6 +25417,30 @@ describe("per-person harness homes (docs/adr/0016)", () => {
     ]);
     expect(state.capabilities.get(IMAGE)).toMatchObject({ person: false, missing: ["no setfacl"] });
     expect(state.worktrees.get(run.worktreeId ?? "")?.layout ?? null).toBeNull();
+  });
+
+  it("a launcher whose person Core cannot bind asks for no SSH user: Remote-SSH stays root, and the line says so", async () => {
+    const run = await launchPersonOnce({
+      flag: "person",
+      state: makeHarnessLayoutsMemoryState(),
+      platform: personPlatform(
+        [],
+        { person: true },
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        true,
+        () => true,
+        false,
+      ),
+      exec: answerLayout(LAYOUT_READY),
+      summaryAfter: "100 millis",
+    });
+    expect(run.failure).toBeNull();
+    // Still a person launch (their logins in their own home), but no `sshAsOwner` on the create.
+    expect(run.sshUsers).toEqual([undefined]);
+    expect(run.summary).toContain(REMOTE_SSH_ROOT_WORDS);
   });
 
   it("a fallback whose SSH reset Core has not taken starts the agent anyway, and says Remote-SSH is down", async () => {

@@ -343,6 +343,7 @@ import {
   type PersonHome,
   type PrepareOutcome,
   REMOTE_SSH_RESET_PENDING_WORDS,
+  REMOTE_SSH_ROOT_WORDS,
   SHARED_AS_BEFORE,
   isAuthenticationFailure,
   layoutRefused,
@@ -10989,9 +10990,19 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // workspace, this create's (after it stops, whoever launches the next one; not the
         // worktree's first session's owner). The create is made as their Sealant user, so Core's
         // gateway admits them and nobody else, and runs the session as their own user, the uid of
-        // their `credentialsHome` (Mend names none), which prepare makes. A fallback to one shared
+        // their `credentialsHome` (Mend names none), which prepare makes. Core checks it against
+        // the person their Sealant user is bound to (bound here, once); without that binding the
+        // create asks nothing and Remote-SSH stays root, said on the line. A fallback to one shared
         // home sets it back to root (`settlePrepare`).
-        const sshAsOwner = credentialsHome !== undefined && (yield* personPlatform.sshUser);
+        const sshOwnerAnswer =
+          credentialsHome !== undefined && launchLayout.layout === "person"
+            ? yield* personPlatform.sshAsOwnerFor({
+                accountId: launchLayout.launcher.accountId,
+                uid: launchLayout.launcher.uid,
+                home: credentialsHome.path,
+              })
+            : ("not-taken" as const);
+        const sshAsOwner = sshOwnerAnswer === "yes";
         if (credentialsHome !== undefined && input.createKey === undefined) {
           return yield* layoutRefused(
             "This launch runs each person as their own user and has no create key to send the launcher's home with, so nothing was created.",
@@ -11180,6 +11191,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           executorLayout: prepared?.layout ?? ("shared" as const),
           /** Why a person prediction fell back to shared, for the session line. */
           layoutFallback: prepared?.fallback ?? null,
+          /** Remote-SSH stays root: Core runs SSH as a user, and the launcher's person is unbound. */
+          remoteSshRoot: sshOwnerAnswer === "unbound",
           /** People whose restored opencode database prepare found (decision 8a). */
           opencodeRestored: prepared?.opencode ?? [],
           environmentManifest,
@@ -11547,6 +11560,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           // (docs/adr/0016).
           executorLayout: "shared" as const,
           layoutFallback: null,
+          remoteSshRoot: false,
           opencodeRestored: [],
           personDotfiles: [],
         };
@@ -16914,6 +16928,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           layoutFallback ?? (launchLayout.layout === "shared" ? launchLayout.reason : null);
         if (layoutWords !== null) {
           yield* noteLaunchWords(sessionId, layoutWords).pipe(Effect.ignore);
+        }
+        if (launched.remoteSshRoot) {
+          yield* noteLaunchWords(sessionId, REMOTE_SSH_ROOT_WORDS).pipe(Effect.ignore);
         }
         if (dependencyInstallSkipped !== null) {
           yield* noteLaunchWords(sessionId, dependencyInstallSkipped);

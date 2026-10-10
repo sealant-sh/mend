@@ -299,14 +299,15 @@ exec or a stand-in, and none blocks the build.
   session as their own user.
 - **2026-10-10, SSH as the owner:** an e2e `ssh` into a per-person workspace printed `root`
   (mend#621/#622): nothing named a user for the gateway. **In review:** sealant#348 adds
-  `sshAsOwner` on a create (Core takes the owner's `credentialsHome` uid; no caller names a user)
-  and `DELETE /v1/workspaces/:id/ssh-user` (`features.workspaceSshUser`). The gateway runs every
-  shell, command and its own disconnect-time capture as that user on a sealantd that reports
-  `exec.user`, asks who for every new channel, and refuses an answer that does not say. sealantd#155
-  adds `openSftp { user }`, which Core passes once it pins it (until then Core refuses SFTP for a
-  workspace with a user). Mend asks for the owner's user at create and root on a fallback, behind
-  the feature flag, through the SDK's `sshAsOwner` and `workspace.sshAsRoot` (read by name until
-  Mend pins an SDK that declares them).
+  `sshAsOwner` on a create, checked against the person the owner's Sealant user is bound to
+  (`POST /v1/users/:id/person`, once, never changed through the API; `features.personBinding`), and
+  `DELETE /v1/workspaces/:id/ssh-user` (`features.workspaceSshUser`). An operator rebind route is a
+  follow-up. The gateway runs every shell, command and its own disconnect-time capture as that user
+  on a sealantd that reports `exec.user`, asks who for every new channel, and refuses an answer that
+  does not say. sealantd#155 adds `openSftp { user }`, which Core passes once it pins it (until then
+  Core refuses SFTP for a workspace with a user). Mend asks for the owner's user at create and root
+  on a fallback, behind the feature flag, through the SDK's `sshAsOwner` and `workspace.sshAsRoot`
+  (read by name until Mend pins an SDK that declares them).
 
 ## 2026-10-04 · sealantd 0.19 · opencode's MCP logins and in-app logins ride captures
 

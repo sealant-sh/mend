@@ -95,6 +95,12 @@ export const SSH_RESET_DELAYS: ReadonlyArray<Duration.Duration> = [1, 2, 4, 8, 1
   (seconds) => Duration.seconds(seconds),
 );
 
+/**
+ * The session line when Core runs SSH sessions as a user but the launcher's person could not be
+ * bound there (an older Core, a refused or unanswered binding): Remote-SSH stays root.
+ */
+export const REMOTE_SSH_ROOT_WORDS = "Remote-SSH: root, Core can't bind your person";
+
 /** The session line while a fallback executor's SSH user is not yet back to root. */
 export const REMOTE_SSH_RESET_PENDING_WORDS =
   "Remote-SSH unavailable · the workspace's SSH user is not yet back to root · retrying";

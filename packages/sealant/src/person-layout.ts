@@ -174,6 +174,19 @@ export class PersonLayoutPlatform extends Context.Service<
      */
     readonly sshUser: Effect.Effect<boolean>;
     /**
+     * Whether a person launch's create asks Core to run Remote-SSH as the launcher
+     * (`sshAsOwner`): `yes` once their person is bound in Core (`users.bindPerson`, once per
+     * account, kept); `not-taken` where Core runs no SSH session as a user (nothing changes, root
+     * as before); `unbound` where it does but the binding could not be made (an older Core
+     * without the route, a 409, no answer within 5 s). Then the create asks nothing and Remote-SSH
+     * stays root, and the session line says so. Never fails.
+     */
+    readonly sshAsOwnerFor: (person: {
+      readonly accountId: string;
+      readonly uid: number;
+      readonly home: string;
+    }) => Effect.Effect<"yes" | "not-taken" | "unbound">;
+    /**
      * Core's gateway runs the workspace's SSH sessions as root from the next session channel on
      * (`workspace.sshAsRoot`), for a person launch whose prepare fell back to one shared home
      * (decision 1), so the launcher's Remote-SSH works there as it did before. One attempt, bounded
@@ -296,6 +309,7 @@ export const PersonLayoutPlatformNone: Layer.Layer<PersonLayoutPlatform> = Layer
     dotfilesUser: false,
     controlPlaneObstacle: Effect.succeed(null),
     sshUser: Effect.succeed(false),
+    sshAsOwnerFor: () => Effect.succeed("not-taken"),
     sshAsRoot: () => Effect.succeed(true),
     workspaceProcessUser: () => Effect.succeed("unsupported"),
     withOwnerMap: (options) => options,

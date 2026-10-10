@@ -349,9 +349,12 @@ is used by the other person's `git push`.
   the launcher of a workspace your launch started, and of the next one when you launch it after the
   last one stopped. You cannot open Remote-SSH into a workspace someone else launched. Your user is
   made when the workspace starts; until then the workspace refuses SSH rather than open it as root.
-  A workspace that fell back to one shared home runs Remote-SSH as root, as before; until Sealant
-  has taken that change the session says `Remote-SSH unavailable`. So does every workspace on a
-  Sealant control plane that does not report `workspaceSshUser`.
+  Remote-SSH runs as root, as before, in a workspace that fell back to one shared home (until
+  Sealant has taken that change the session says `Remote-SSH unavailable`), on a Sealant that does
+  not report `workspaceSshUser`, and where Sealant cannot bind your account to your person (an older
+  Sealant, or a binding it already holds for someone else; the session says
+  `Remote-SSH: root, Core can't bind your person`, and an operator clears a wrong binding in
+  Sealant's database, as Sealant's upgrade guide says).
 - **SFTP is refused in a per-person workspace,** and with it `sftp` and `scp` (which speaks SFTP).
   The pinned sealantd runs an SFTP bridge only as root. Copy a file with
   `ssh <host> 'cat > file' < file` until Sealant pins a sealantd that runs SFTP as you.

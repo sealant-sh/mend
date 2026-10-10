@@ -169,6 +169,13 @@ export const controlPlaneObstacleOf = (features: SealantFeatures): string | null
 export const runsSshAsUser = (features: SealantFeatures): boolean =>
   "workspaceSshUser" in features && features.workspaceSshUser === true;
 
+/** Core binds a user's person (`features.personBinding`, sealant#348), read by name likewise. */
+export const bindsPersons = (features: SealantFeatures): boolean =>
+  "personBinding" in features && features.personBinding === true;
+
+/** How long a refused person binding is kept before Core is asked again. */
+const BINDING_REFUSED_MS = 5 * 60_000;
+
 /** A workspace handle whose SDK sets its SSH sessions back to root (`sshAsRoot`, sealant#348). */
 interface SshRootSettable {
   readonly sshAsRoot: () => Promise<void>;
@@ -251,10 +258,15 @@ export const PersonLayoutPlatformLive: Layer.Layer<PersonLayoutPlatform, never, 
         return report;
       });
 
+      /** Each account's person binding as Core answered it: kept once made, a refusal a while. */
+      const bindings = new Map<string, { readonly bound: boolean; readonly until: number }>();
+
       let controlPlane: {
         readonly obstacle: string | null;
         /** Core runs SSH sessions as the owner's user; null when it could not be asked. */
         readonly sshUser: boolean | null;
+        /** Core binds a user's person (`users.bindPerson`); null when it could not be asked. */
+        readonly personBinding: boolean | null;
         readonly until: number;
       } | null = null;
       const controlPlaneAnswer = Effect.gen(function* () {
@@ -264,6 +276,7 @@ export const PersonLayoutPlatformLive: Layer.Layer<PersonLayoutPlatform, never, 
           Effect.map((features) => ({
             obstacle: controlPlaneObstacleOf(features),
             sshUser: runsSshAsUser(features),
+            personBinding: bindsPersons(features),
             until: now + CONTROL_PLANE_ANSWER_MS,
           })),
           Effect.catch((error) =>
@@ -272,6 +285,7 @@ export const PersonLayoutPlatformLive: Layer.Layer<PersonLayoutPlatform, never, 
               Effect.as({
                 obstacle: CONTROL_PLANE_UNREADABLE,
                 sshUser: null,
+                personBinding: null,
                 until: now + CONTROL_PLANE_FAILURE_MS,
               }),
             ),
@@ -289,6 +303,48 @@ export const PersonLayoutPlatformLive: Layer.Layer<PersonLayoutPlatform, never, 
         processUser: true,
         controlPlaneObstacle,
         sshUser: controlPlaneAnswer.pipe(Effect.map((answer) => answer.sshUser === true)),
+        sshAsOwnerFor: (person) =>
+          Effect.gen(function* () {
+            const answer = yield* controlPlaneAnswer;
+            if (answer.sshUser !== true) return "not-taken" as const;
+            if (answer.personBinding !== true) return "unbound" as const;
+            const now = yield* Clock.currentTimeMillis;
+            const known = bindings.get(person.accountId);
+            if (known !== undefined && (known.bound || now < known.until)) {
+              return known.bound ? ("yes" as const) : ("unbound" as const);
+            }
+            const bound = yield* clients
+              .bindPerson(person.accountId, {
+                id: person.accountId,
+                uid: person.uid,
+                home: person.home,
+              })
+              .pipe(
+                Effect.timeoutOrElse({
+                  duration: SSH_USER_CALL_TIMEOUT,
+                  orElse: () => Effect.succeed("unanswered" as const),
+                }),
+                Effect.catch((error) =>
+                  Effect.logWarning("person layout: the person binding was not made").pipe(
+                    Effect.annotateLogs({ accountId: person.accountId, message: error.message }),
+                    Effect.as("unanswered" as const),
+                  ),
+                ),
+              );
+            if (bound === "bound") {
+              bindings.set(person.accountId, { bound: true, until: Number.POSITIVE_INFINITY });
+              return "yes" as const;
+            }
+            if (bound === "refused") {
+              // Core holds another binding for them, or their uid is another user's: an operator
+              // must look (docs/adr/0016). Asked again in a while, never overwritten.
+              yield* Effect.logWarning(
+                "person layout: Core refused the person binding: Remote-SSH stays root",
+              ).pipe(Effect.annotateLogs({ accountId: person.accountId }));
+              bindings.set(person.accountId, { bound: false, until: now + BINDING_REFUSED_MS });
+            }
+            return "unbound" as const;
+          }).pipe(Effect.withSpan("PersonLayoutPlatform.sshAsOwnerFor")),
         // `workspace.sshAsRoot` (sealant#348), only where Core said it takes a user; an SDK
         // from before it has no such method, and its creates never asked for one.
         sshAsRoot: (workspace) =>

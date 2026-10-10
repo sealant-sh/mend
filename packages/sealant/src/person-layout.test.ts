@@ -756,4 +756,87 @@ describe("the workspace's SSH user (docs/adr/0016 decision 10, sealant#348)", ()
         expect({ resets, reads }).toEqual({ resets: 2, reads: 2 });
       }),
   );
+
+  describe("the launcher's person binding (sealant#348, C2)", () => {
+    const ALICE = { accountId: "acct_alice", uid: 40001, home: "/home/m4lice000" };
+    const withBinding = (
+      features: SealantFeatures,
+      bind: () => Effect.Effect<"bound" | "refused" | "unsupported", SealantPlatformError>,
+      calls: Array<string>,
+    ) =>
+      PersonLayoutPlatformLive.pipe(
+        Layer.provide(
+          Layer.mock(SealantClients, {
+            controlPlaneFeatures: () => Effect.succeed(features),
+            connectedAccounts: () => ({ list: unused, connect: unused, disconnect: unused }),
+            sshKeys: () => ({ ensure: unused, list: unused }),
+            sealantUserId: (userId) => Effect.succeed(`su-${userId}`),
+            bindPerson: (userId, person) =>
+              Effect.suspend(() => {
+                calls.push(`${userId}:${person.id}:${String(person.uid)}:${person.home}`);
+                return bind();
+              }),
+          }),
+        ),
+      );
+    const binding = { ...reporting, personBinding: true };
+
+    effectIt.effect("binds once and asks for the owner's SSH user from then on", () =>
+      Effect.gen(function* () {
+        const calls: Array<string> = [];
+        const platform = yield* PersonLayoutPlatform.pipe(
+          Effect.provide(withBinding(binding, () => Effect.succeed("bound" as const), calls)),
+        );
+        expect(yield* platform.sshAsOwnerFor(ALICE)).toBe("yes");
+        expect(yield* platform.sshAsOwnerFor(ALICE)).toBe("yes");
+        expect(calls).toEqual(["acct_alice:acct_alice:40001:/home/m4lice000"]);
+      }),
+    );
+
+    effectIt.effect(
+      "stays root where Core cannot bind: refused (kept a while), no route, no answer",
+      () =>
+        Effect.gen(function* () {
+          const refusedCalls: Array<string> = [];
+          const refusing = yield* PersonLayoutPlatform.pipe(
+            Effect.provide(
+              withBinding(binding, () => Effect.succeed("refused" as const), refusedCalls),
+            ),
+          );
+          expect(yield* refusing.sshAsOwnerFor(ALICE)).toBe("unbound");
+          expect(yield* refusing.sshAsOwnerFor(ALICE)).toBe("unbound");
+          expect(refusedCalls).toHaveLength(1);
+          yield* TestClock.adjust("6 minutes");
+          expect(yield* refusing.sshAsOwnerFor(ALICE)).toBe("unbound");
+          expect(refusedCalls).toHaveLength(2);
+
+          // A Core that runs SSH as a user but has no binding route: never asks for the user.
+          const noRoute: Array<string> = [];
+          const older = yield* PersonLayoutPlatform.pipe(
+            Effect.provide(withBinding(reporting, () => Effect.succeed("bound" as const), noRoute)),
+          );
+          expect(yield* older.sshAsOwnerFor(ALICE)).toBe("unbound");
+          expect(noRoute).toEqual([]);
+
+          // A binding Core does not answer within 5 s.
+          const silent = yield* PersonLayoutPlatform.pipe(
+            Effect.provide(withBinding(binding, () => Effect.never, [])),
+          );
+          const fiber = yield* Effect.forkChild(silent.sshAsOwnerFor(ALICE));
+          yield* TestClock.adjust("5 seconds");
+          expect(yield* Fiber.join(fiber)).toBe("unbound");
+        }),
+    );
+
+    effectIt.effect("asks nothing where Core runs no SSH session as a user", () =>
+      Effect.gen(function* () {
+        const calls: Array<string> = [];
+        const platform = yield* PersonLayoutPlatform.pipe(
+          Effect.provide(withBinding(EVERY_FEATURE, () => Effect.succeed("bound" as const), calls)),
+        );
+        expect(yield* platform.sshAsOwnerFor(ALICE)).toBe("not-taken");
+        expect(calls).toEqual([]);
+      }),
+    );
+  });
 });

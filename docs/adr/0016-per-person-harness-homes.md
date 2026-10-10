@@ -688,24 +688,36 @@ read it. Known issues says so. sealantd scrubbing those tables from captures is 
   workspace's owner, admits them and nobody else, and runs the session as their own Linux user: the
   create asks for it (`sshAsOwner`, sealant#348) and Core takes the uid of the create's
   `credentialsHome`, the launcher's home; Mend names no user, and no caller can pick another
-  person's. Every shell and command, the Remote-SSH bootstrap's `ssh -T host bash` and the gateway's
-  own disconnect-time capture included, starts as that user with `HOME` and the rest from passwd.
-  The gateway asks Core who for every new channel, so a change reaches a connection already open,
-  and refuses an answer that does not say (an older Core) rather than read it as root. The
-  extension, its terminals and the Claude Code extension then run on the launcher's logins, save
-  into their `P`, and find their tools in their home. A joiner cannot open Remote-SSH into an
-  executor someone else launched. The user does not exist at create; until prepare makes it,
-  sealantd refuses the session, never runs it as root. Mend names the user only where Core reports
-  `workspaceSshUser`; an older control plane's gateway runs the session as root, as before. A
-  prepare that falls back to one shared home sets the sessions back to root (`DELETE .../ssh-user`,
-  the only change Core takes after create), so the launcher's Remote-SSH works there as before. That
-  reset runs off the launch path, each attempt bounded to 5 s and retried with backoff for about two
-  minutes, then again at the executor's next process start; while Core has not taken it the session
-  line says `Remote-SSH unavailable · …`, and nothing else waits on it. The gateway runs a session
-  as a user only on a sealantd that reports `exec.user`, and the API names the user only to a
-  gateway that says it runs sessions as one. SFTP is refused for such a workspace: sealantd's
-  `openSftp` takes a user from sealantd#155, and Core passes it once it pins that sealantd
-  (Follow-ups).
+  person's. Core checks it against the person the launcher's Sealant user is bound to: Mend binds
+  each account once (`users.bindPerson`: account id, uid, home; one Core call per account per Mend
+  process, kept), Core never changes a binding through its API and gives each person id and uid to
+  one user only, and a create whose owner map or `credentialsHome` disagrees is refused. If the
+  binding cannot be made (an older Core, a refusal, no answer within 5 s), the create asks nothing,
+  Remote-SSH stays root as before, and the session says
+  `Remote-SSH: root, Core can't bind your person`. Core checks it against the person the launcher's
+  Sealant user is bound to: Mend binds each account once (`users.bindPerson`: account id, uid, home;
+  one Core call per account per Mend process, kept), Core never changes a binding through its API
+  and gives each person id and uid to one user only, and a create whose owner map or
+  `credentialsHome` disagrees is refused. If the binding cannot be made (an older Core, a refusal,
+  no answer within 5 s), the create asks nothing, Remote-SSH stays root as before, and the session
+  says `Remote-SSH: root, Core can't bind your person`. Every shell and command, the Remote-SSH
+  bootstrap's `ssh -T host bash` and the gateway's own disconnect-time capture included, starts as
+  that user with `HOME` and the rest from passwd. The gateway asks Core who for every new channel,
+  so a change reaches a connection already open, and refuses an answer that does not say (an older
+  Core) rather than read it as root. The extension, its terminals and the Claude Code extension then
+  run on the launcher's logins, save into their `P`, and find their tools in their home. A joiner
+  cannot open Remote-SSH into an executor someone else launched. The user does not exist at create;
+  until prepare makes it, sealantd refuses the session, never runs it as root. Mend names the user
+  only where Core reports `workspaceSshUser`; an older control plane's gateway runs the session as
+  root, as before. A prepare that falls back to one shared home sets the sessions back to root
+  (`DELETE .../ssh-user`, the only change Core takes after create), so the launcher's Remote-SSH
+  works there as before. That reset runs off the launch path, each attempt bounded to 5 s and
+  retried with backoff for about two minutes, then again at the executor's next process start; while
+  Core has not taken it the session line says `Remote-SSH unavailable · …`, and nothing else waits
+  on it. The gateway runs a session as a user only on a sealantd that reports `exec.user`, and the
+  API names the user only to a gateway that says it runs sessions as one. SFTP is refused for such a
+  workspace: sealantd's `openSftp` takes a user from sealantd#155, and Core passes it once it pins
+  that sealantd (Follow-ups).
 - **Anything else** (`docker exec`, a custom image's own entrypoint work) runs as root, which is no
   person: `/root` holds no login and no Mend token, and nothing written under `/root` is saved.
 

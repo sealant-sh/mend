@@ -169,6 +169,7 @@ const platformOf = (
     processUser: true,
     dotfilesUser: can.dotfilesUser ?? true,
     sshUser: Effect.succeed(true),
+    sshAsOwnerFor: () => Effect.succeed("yes" as const),
     sshAsRoot: () =>
       Effect.suspend(() => {
         core.calls.push("ssh-user:root");
