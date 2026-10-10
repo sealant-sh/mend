@@ -327,11 +327,16 @@ const keyServer = async () => {
     },
   ];
   const calls: Array<string> = [];
+  /** Off: the server reports no gateway, as the contract allows, with the same keys. */
+  const gateway = { on: true };
   const server = createServer(async (request, response) => {
     response.setHeader("content-type", "application/json");
     if (request.method === "GET" && request.url === "/api/workspace-ssh") {
       response.end(
-        JSON.stringify({ gateway: { host: "0.0.0.0", port: 22444, usernamePrefix: "ws" }, keys }),
+        JSON.stringify({
+          gateway: gateway.on ? { host: "0.0.0.0", port: 22444, usernamePrefix: "ws" } : null,
+          keys,
+        }),
       );
       return;
     }
@@ -383,6 +388,7 @@ const keyServer = async () => {
     url: `http://127.0.0.1:${address.port}`,
     keys,
     calls,
+    gateway,
     close: async () => {
       const closed = once(server, "close");
       server.close();
@@ -449,3 +455,46 @@ it("mend uninstall --home removes this machine's key by its public half when the
     }
   }
 }, 40_000);
+
+it("mend uninstall --home removes a key chosen with --key outside the config directory when the server reports no gateway", async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "mend-ssh-uninstall-nogw-"));
+  const fake = await keyServer();
+  try {
+    fs.mkdirSync(path.join(home, ".ssh"));
+    const external = path.join(home, "external-key");
+    const generated = spawnSync("ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-f", external], {
+      encoding: "utf8",
+      timeout: 5_000,
+    });
+    expect(generated.status, generated.stderr).toBe(0);
+    const setup = await runSshCommand(home, fake.url, ["setup", "--key", external]);
+    expect(setup.code, setup.stderr + setup.stdout).toBe(0);
+    const local = fake.keys.find((key) => key.sshKeyId === "key-this")?.fingerprint;
+    if (local === undefined) throw new Error("setup registered no key");
+    // Encrypted, no agent, and the server stops reporting a gateway: only the managed block's
+    // IdentityFile and its readable public half name this machine's key.
+    const encrypted = spawnSync(
+      "ssh-keygen",
+      ["-q", "-p", "-P", "", "-N", "review-test-passphrase", "-f", external],
+      { encoding: "utf8", timeout: 5_000 },
+    );
+    expect(encrypted.status, encrypted.stderr).toBe(0);
+    fake.gateway.on = false;
+    const cliHome = path.join(home, "config", "mend");
+    fs.mkdirSync(cliHome, { recursive: true });
+    fs.writeFileSync(
+      path.join(cliHome, "cli.json"),
+      JSON.stringify({ url: fake.url, token: "test-token", deviceId: "dev-1" }),
+    );
+    const uninstalled = await runMend(home, fake.url, ["uninstall", "--home", "--yes"]);
+    expect(uninstalled.code, uninstalled.stderr + uninstalled.stdout).toBe(0);
+    expect(uninstalled.stdout).toContain(`removed workspace ssh key ${local} on ${fake.url}`);
+    expect(fake.calls).toEqual(["key-this", "device:dev-1"]);
+    expect(fake.keys.map((key) => key.sshKeyId)).toEqual(["key-desk"]);
+    // The key file is the person's own, outside Mend's directory: it stays.
+    expect(fs.existsSync(external)).toBe(true);
+  } finally {
+    await fake.close();
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+}, 30_000);

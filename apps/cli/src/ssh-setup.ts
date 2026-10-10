@@ -184,15 +184,15 @@ const thisMachineKeys = (
 ): ThisMachineKeys => {
   const fingerprints = new Set<string>();
   const unreadable: Array<string> = [];
-  const target =
-    view === null || view.gateway === null
-      ? null
-      : parseWorkspaceSshTarget({ serverUrl, publishedPort: view.gateway.port });
+  // The managed block's alias comes from the server URL alone, so the saved identity is found
+  // whether or not the server reports a gateway now (or answers at all); the port only routes.
+  const target = parseWorkspaceSshTarget({
+    serverUrl,
+    publishedPort: view?.gateway?.port ?? 22,
+  });
   const config = readWorkspaceSshConfig(sshConfigPath());
   const configured =
-    target !== null && target.ok && config.ok
-      ? configuredWorkspaceSshIdentityFile(config.value, target.value)
-      : null;
+    target.ok && config.ok ? configuredWorkspaceSshIdentityFile(config.value, target.value) : null;
   const publicPaths = new Set<string>();
   if (configured !== null) {
     publicPaths.add(configured.endsWith(".pub") ? configured : `${configured}.pub`);

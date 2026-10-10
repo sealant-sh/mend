@@ -670,14 +670,14 @@ describe.skipIf(!reachable)("organizations", () => {
         yield* organizations.addMember(acme, "alice", "owner", null);
         yield* organizations.addMember(acme, "erin", "member", "alice");
         // The remover holds the row for its own first attempt: not due for the sweep.
-        yield* organizations.removeMember(acme, "erin", {
+        const removed = yield* organizations.removeMember(acme, "erin", {
           actorUserId: "alice",
           revocationLeaseMs: 60_000,
         });
         const membership = yield* organizations.membershipOf("erin");
         const owed = yield* revocations.list();
         const leased = yield* revocations.claimDue(10, 60_000);
-        yield* revocations.defer("erin", {
+        yield* revocations.defer(removed.revocationId, {
           outstanding: 2,
           lastError: "platform down",
           retryInMs: 0,
@@ -689,14 +689,30 @@ describe.skipIf(!reachable)("organizations", () => {
         );
         const claimed = [...(first ?? []), ...(second ?? [])];
         const afterClaim = yield* revocations.claimDue(10, 60_000);
-        yield* revocations.settle("erin");
+        const [taken] = claimed;
+        // Erin is re-added and removed again: a new obligation, under a new id.
+        yield* organizations.addMember(acme, "erin", "member", "alice");
+        const again = yield* organizations.removeMember(acme, "erin", {
+          actorUserId: "alice",
+          revocationLeaseMs: 60_000,
+        });
+        // The older attempt can neither settle nor defer the newer obligation.
+        yield* revocations.settle(taken?.id ?? "");
+        yield* revocations.defer(taken?.id ?? "", {
+          outstanding: 9,
+          lastError: "stale",
+          retryInMs: 0,
+        });
+        const newer = yield* revocations.list();
+        yield* revocations.settle(again.revocationId);
         const settled = yield* revocations.list();
-        return { membership, owed, leased, claimed, afterClaim, settled };
+        return { removed, membership, owed, leased, claimed, afterClaim, newer, again, settled };
       }),
     );
     expect(result.membership).toBeNull();
     expect(result.owed).toMatchObject([
       {
+        id: result.removed.revocationId,
         userId: "erin",
         organizationId: acme,
         actorUserId: "alice",
@@ -709,6 +725,16 @@ describe.skipIf(!reachable)("organizations", () => {
       { userId: "erin", attempts: 1, outstanding: 2, lastError: "platform down" },
     ]);
     expect(result.afterClaim).toEqual([]);
+    expect(result.newer).toMatchObject([
+      {
+        id: result.again.revocationId,
+        userId: "erin",
+        attempts: 0,
+        outstanding: null,
+        lastError: null,
+      },
+    ]);
+    expect(result.newer[0]?.id).not.toBe(result.claimed[0]?.id);
     expect(result.settled).toEqual([]);
   });
 });

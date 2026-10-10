@@ -165,13 +165,13 @@ export class OrganizationsRepo extends Context.Service<
      * sessions are the member-removal service's job; this is only the row, under the owner lock,
      * and, in the same transaction, the workspace SSH key revocation the removal owes
      * (`ssh_key_revocations`), held off for `revocationLease` while the remover makes the first
-     * attempt itself.
+     * attempt itself. Answers the obligation's id, which fences that attempt.
      */
     readonly removeMember: (
       organizationId: OrganizationId,
       userId: string,
       revocation: { readonly actorUserId: string; readonly revocationLeaseMs: number },
-    ) => Effect.Effect<void, MemberNotFoundError | LastOwnerError>;
+    ) => Effect.Effect<{ readonly revocationId: string }, MemberNotFoundError | LastOwnerError>;
     readonly createInvitation: (
       invitation: NewInvitation,
     ) => Effect.Effect<MintedInvitation, OrganizationNotFoundError>;
@@ -522,6 +522,7 @@ export const OrganizationsRepoLive: Layer.Layer<
       userId: string,
       revocation: { readonly actorUserId: string; readonly revocationLeaseMs: number },
     ) {
+      const revocationId = crypto.randomUUID();
       yield* db
         .transaction((tx) =>
           Effect.gen(function* () {
@@ -545,6 +546,7 @@ export const OrganizationsRepoLive: Layer.Layer<
             // The membership never goes without its keys owed: a crash after this commit still
             // leaves the row for the sweep.
             const owed = {
+              id: revocationId,
               organizationId,
               actorUserId: revocation.actorUserId,
               requestedAt: new Date(),
@@ -562,6 +564,7 @@ export const OrganizationsRepoLive: Layer.Layer<
         )
         .pipe(Effect.catchTag("SqlError", (error) => Effect.die(error)));
       yield* announce(organizationId);
+      return { revocationId };
     });
 
     const createInvitation = Effect.fn("OrganizationsRepo.createInvitation")(function* (

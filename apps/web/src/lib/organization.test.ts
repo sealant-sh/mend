@@ -131,7 +131,9 @@ describe("describeAudit for Slack (docs/adr/0006)", () => {
       describeAudit(
         event("ssh_key.revocation_pending", { removed: 0, outstanding: null }, "Carol"),
       ),
-    ).toBe("removed Carol · their workspace SSH keys could not be read yet; Mend keeps trying");
+    ).toBe(
+      "removed Carol · their workspace SSH keys are not all confirmed removed yet; Mend keeps trying",
+    );
     expect(describeMemberRemoval({ sshKeysOutstanding: 0 })).toBeNull();
     expect(describeMemberRemoval({ sshKeysOutstanding: 1 })).toBe(
       "member removed · 1 of their workspace SSH keys could not be removed yet; Mend keeps trying",

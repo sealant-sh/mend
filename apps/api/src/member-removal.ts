@@ -20,6 +20,7 @@ import * as Context from "effect/Context";
 import { ConnectionRegistry } from "./connections.ts";
 import {
   SSH_KEY_REVOCATION_LEASE,
+  SshKeyFirstAttemptLimit,
   type SshKeyRevocationOutcome,
   SshKeyRevoker,
 } from "./ssh-key-revocation.ts";
@@ -121,10 +122,14 @@ export const MemberRemovalLive: Layer.Layer<
       // The owner lock refuses removing the last owner before anything else moves; the keys owed
       // are recorded in the same transaction as the membership's deletion.
       const requestedAt = new Date();
-      yield* organizations.removeMember(input.organizationId, input.userId, {
-        actorUserId: input.actorUserId,
-        revocationLeaseMs: Duration.toMillis(SSH_KEY_REVOCATION_LEASE),
-      });
+      const { revocationId } = yield* organizations.removeMember(
+        input.organizationId,
+        input.userId,
+        {
+          actorUserId: input.actorUserId,
+          revocationLeaseMs: Duration.toMillis(SSH_KEY_REVOCATION_LEASE),
+        },
+      );
       // Nobody keeps steering on the removed account's credentials, even before their sessions stop.
       const unshared = yield* sessions.disableSharedControlForOwner(input.userId);
       yield* Effect.forEach(
@@ -171,11 +176,28 @@ export const MemberRemovalLive: Layer.Layer<
           data: { teamId: link.teamId, slackUserId: link.slackUserId, memberRemoved: true },
         });
       }
-      // No workspace SSH key of theirs opens a new connection at the gateway. Every key is tried;
-      // what the platform does not archive now stays owed, the worker retries it, and the owner
-      // is told how many.
+      // Mend's own revocation never waits on the platform. Other processes close on the event;
+      // this one closes now, and the sessions begin to stop.
+      yield* userEvents.changed(input.userId, "access");
+      yield* connections.closeForUser(input.userId);
+      yield* Effect.forkIn(
+        windDown(input).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("member removal: winding down the account's sessions failed").pipe(
+              Effect.annotateLogs({ userId: input.userId, cause: String(cause) }),
+            ),
+          ),
+        ),
+        scope,
+      );
+      // Only now the platform: no workspace SSH key of theirs opens a new connection at the
+      // gateway. Every key is tried, for at most `SshKeyFirstAttemptLimit`; what the platform
+      // does not archive in that time stays owed, the worker retries it, and the owner is told.
+      // An interrupted removal leaves the row too, so nothing below this line is lost with it.
+      const firstAttemptLimit = yield* SshKeyFirstAttemptLimit;
       const sshKeys = yield* revoker
         .attempt({
+          id: revocationId,
           userId: input.userId,
           organizationId: input.organizationId,
           actorUserId: input.actorUserId,
@@ -185,6 +207,16 @@ export const MemberRemovalLive: Layer.Layer<
           lastError: null,
         })
         .pipe(
+          Effect.timeoutOrElse({
+            duration: firstAttemptLimit,
+            orElse: () =>
+              Effect.logWarning(
+                "member removal: SSH key revocation still running at the limit; the sweep takes it",
+              ).pipe(
+                Effect.annotateLogs({ userId: input.userId }),
+                Effect.as<SshKeyRevocationOutcome>({ removed: 0, outstanding: null }),
+              ),
+          }),
           Effect.catchCause((cause) =>
             Effect.logWarning("member removal: the first SSH key revocation attempt failed").pipe(
               Effect.annotateLogs({ userId: input.userId, cause: String(cause) }),
@@ -202,19 +234,6 @@ export const MemberRemovalLive: Layer.Layer<
           data: { removed: sshKeys.removed, outstanding: sshKeys.outstanding },
         });
       }
-      // Other processes close on the event; this one closes now.
-      yield* userEvents.changed(input.userId, "access");
-      yield* connections.closeForUser(input.userId);
-      yield* Effect.forkIn(
-        windDown(input).pipe(
-          Effect.catchCause((cause) =>
-            Effect.logWarning("member removal: winding down the account's sessions failed").pipe(
-              Effect.annotateLogs({ userId: input.userId, cause: String(cause) }),
-            ),
-          ),
-        ),
-        scope,
-      );
       return { sshKeys };
     });
 

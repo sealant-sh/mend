@@ -3370,12 +3370,15 @@ const hotWorkspaceRemoteSshMigration = Effect.gen(function* () {
  * in the transaction that deletes the membership, so no removal commits without it; the worker's
  * sweep archives the person's keys on the platform and deletes the row once none is active.
  * `outstanding` is the count still active after the last attempt, NULL while they are unread.
+ * `id` names one obligation: a later removal of the same account replaces it with a new id, so an
+ * attempt at the older one can neither settle nor defer the newer.
  */
 const sshKeyRevocationsMigration = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   yield* sql`
     CREATE TABLE ssh_key_revocations (
-      user_id text PRIMARY KEY REFERENCES "user" (id) ON DELETE RESTRICT,
+      id text PRIMARY KEY,
+      user_id text NOT NULL UNIQUE REFERENCES "user" (id) ON DELETE RESTRICT,
       organization_id text NOT NULL REFERENCES organizations (id) ON DELETE RESTRICT,
       actor_user_id text NOT NULL REFERENCES "user" (id) ON DELETE RESTRICT,
       requested_at timestamptz NOT NULL DEFAULT now(),
@@ -3511,6 +3514,6 @@ export const migrations = {
   // 0121 is taken by the repository URL credentials work in flight (fix/origin-url-credentials).
   "0122_checkpoint_source": checkpointSourceMigration,
   "0123_hot_workspace_remote_ssh": hotWorkspaceRemoteSshMigration,
-  // 0124 is left to mend#640 (repository URL credentials), whose 0123 main has since taken.
+  // 0124 is unused: mend#640 (repository URL credentials) moved to 0126.
   "0125_ssh_key_revocations": sshKeyRevocationsMigration,
 };

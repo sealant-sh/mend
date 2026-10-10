@@ -18,7 +18,7 @@ import { OrganizationId, ProjectId, SessionId, WorktreeId } from "@mend/domain";
 import { Organization, Session } from "@mend/domain/workbench";
 import { SealantClients, SealantPlatformError } from "@mend/sealant";
 import { SessionEngine } from "@mend/sessions";
-import { Deferred, Effect, Exit, Layer, Queue, Scope, Stream } from "effect";
+import { Deferred, Duration, Effect, Exit, Fiber, Layer, Queue, Scope, Stream } from "effect";
 import * as Context from "effect/Context";
 import { Socket } from "effect/unstable/socket";
 import { describe, expect, it } from "vitest";
@@ -32,7 +32,7 @@ import {
 } from "./connections.ts";
 import { EventBus, makeEventBus } from "./events-bus.ts";
 import { MemberRemoval, MemberRemovalLive } from "./member-removal.ts";
-import { SshKeyRevoker, SshKeyRevokerLive } from "./ssh-key-revocation.ts";
+import { SshKeyFirstAttemptLimit, SshKeyRevoker, SshKeyRevokerLive } from "./ssh-key-revocation.ts";
 
 const ACME = OrganizationId.make("org-acme");
 const PROJECT = ProjectId.make("project-acme");
@@ -66,11 +66,21 @@ const removalWorld = (options: { readonly lastOwner?: boolean; readonly keys?: n
   const archiveCalls: Array<string> = [];
   const woundDown = Effect.runSync(Deferred.make<void>());
   const note = (entry: string) => Effect.sync(() => void effects.push(entry));
-  const platform = {
+  const platform: {
+    readonly active: Set<string>;
+    readonly failOnce: Set<string>;
+    listDown: boolean;
+    /** While set, listing waits on it: the platform holding its answer. */
+    listHeld: Deferred.Deferred<void> | null;
+    readonly listAsked: Deferred.Deferred<void>;
+  } = {
     active: new Set(Array.from({ length: options.keys ?? 1 }, (_, index) => `key-${index}`)),
     failOnce: new Set<string>(),
     listDown: false,
+    listHeld: null,
+    listAsked: Effect.runSync(Deferred.make<void>()),
   };
+  let revocations = 0;
   const owed = new Map<string, SshKeyRevocation & { readonly due: boolean }>();
   const deps = Layer.mergeAll(
     Layer.mock(OrganizationsRepo, {
@@ -78,20 +88,22 @@ const removalWorld = (options: { readonly lastOwner?: boolean; readonly keys?: n
         options.lastOwner === true
           ? Effect.fail(new LastOwnerError({ organizationId: ACME }))
           : note(`organizations.removeMember:${userId}`).pipe(
-              Effect.tap(() =>
-                Effect.sync(() =>
-                  owed.set(userId, {
-                    userId,
-                    organizationId,
-                    actorUserId: revocation.actorUserId,
-                    requestedAt: new Date(),
-                    attempts: 0,
-                    outstanding: null,
-                    lastError: null,
-                    due: false,
-                  }),
-                ),
-              ),
+              Effect.map(() => {
+                revocations += 1;
+                const revocationId = `revocation-${revocations}`;
+                owed.set(userId, {
+                  id: revocationId,
+                  userId,
+                  organizationId,
+                  actorUserId: revocation.actorUserId,
+                  requestedAt: new Date(),
+                  attempts: 0,
+                  outstanding: null,
+                  lastError: null,
+                  due: false,
+                });
+                return { revocationId };
+              }),
             ),
     }),
     Layer.mock(SshKeyRevocationsRepo, {
@@ -105,17 +117,22 @@ const removalWorld = (options: { readonly lastOwner?: boolean; readonly keys?: n
               return row;
             }),
         ),
-      settle: (userId) =>
-        note(`revocations.settle:${userId}`).pipe(
-          Effect.tap(() => Effect.sync(() => owed.delete(userId))),
-        ),
-      defer: (userId, input) =>
-        note(`revocations.defer:${userId}:${String(input.outstanding)}`).pipe(
+      // Fenced by the obligation's id, as the real statements are.
+      settle: (id) =>
+        note(`revocations.settle:${id}`).pipe(
           Effect.tap(() =>
             Effect.sync(() => {
-              const row = owed.get(userId);
+              for (const row of owed.values()) if (row.id === id) owed.delete(row.userId);
+            }),
+          ),
+        ),
+      defer: (id, input) =>
+        note(`revocations.defer:${id}:${String(input.outstanding)}`).pipe(
+          Effect.tap(() =>
+            Effect.sync(() => {
+              const row = [...owed.values()].find((candidate) => candidate.id === id);
               if (row === undefined) return;
-              owed.set(userId, {
+              owed.set(row.userId, {
                 ...row,
                 attempts: row.attempts + 1,
                 outstanding: input.outstanding,
@@ -215,10 +232,19 @@ const removalWorld = (options: { readonly lastOwner?: boolean; readonly keys?: n
       sshKeys: (userId) => ({
         ensure: () => Effect.die("not in this test"),
         list: () =>
-          Effect.suspend(() =>
-            platform.listDown
-              ? Effect.fail(unreachable())
-              : Effect.succeed([...platform.active].map((id) => keyView(userId, id))),
+          Deferred.succeed(platform.listAsked, undefined).pipe(
+            Effect.andThen(
+              Effect.suspend(() =>
+                platform.listHeld === null ? Effect.void : Deferred.await(platform.listHeld),
+              ),
+            ),
+            Effect.andThen(
+              Effect.suspend(() =>
+                platform.listDown
+                  ? Effect.fail(unreachable())
+                  : Effect.succeed([...platform.active].map((id) => keyView(userId, id))),
+              ),
+            ),
           ),
         remove: (sshKeyId) =>
           Effect.suspend(() => {
@@ -254,16 +280,23 @@ const removalWorld = (options: { readonly lastOwner?: boolean; readonly keys?: n
   return { effects, audited, archiveCalls, platform, owed, makeDue, woundDown, layer };
 };
 
-const remove = (world: ReturnType<typeof removalWorld>) =>
+const CAROL = { organizationId: ACME, userId: "carol", actorUserId: "alice" };
+
+const remove = (
+  world: ReturnType<typeof removalWorld>,
+  firstAttemptLimit: Duration.Duration = Duration.seconds(15),
+) =>
   Effect.runPromise(
     Effect.gen(function* () {
       const removal = yield* MemberRemoval;
-      const exit = yield* removal
-        .remove({ organizationId: ACME, userId: "carol", actorUserId: "alice" })
-        .pipe(Effect.exit);
+      const exit = yield* removal.remove(CAROL).pipe(Effect.exit);
       if (Exit.isSuccess(exit)) yield* Deferred.await(world.woundDown);
       return exit;
-    }).pipe(Effect.provide(world.layer), Effect.scoped),
+    }).pipe(
+      Effect.provideService(SshKeyFirstAttemptLimit, firstAttemptLimit),
+      Effect.provide(world.layer),
+      Effect.scoped,
+    ),
   );
 
 /** One pass of the worker's sweep over the same world, after the removal answered. */
@@ -280,7 +313,7 @@ describe("member removal (docs/adr/0003)", () => {
     const exit = await remove(world);
     expect(exit).toEqual(Exit.succeed({ sshKeys: { removed: 1, outstanding: 0 } }));
     expect(world.owed.size).toBe(0);
-    expect(world.effects).toEqual([
+    const mendSide = [
       "organizations.removeMember:carol",
       "sessions.disableSharedControlForOwner:carol",
       "controlEvents.record:shared-control-off:session-shared",
@@ -293,15 +326,67 @@ describe("member removal (docs/adr/0003)", () => {
       "audit.record:member.removed:carol",
       "slackLinks.unlink:T-acme:U-carol",
       "audit.record:slack.link_removed:carol",
-      // The gateway refuses Carol's keys from the next connection on, and nothing stays owed.
-      "sshKeys.remove:carol:key-0",
-      "audit.record:ssh_key.removed:carol",
-      "revocations.settle:carol",
       "userEvents.changed:carol:access",
       "connections.closeForUser:carol",
-      "engine.windDownPerson:carol",
-      `engine.reconcileHotSessions:${PROJECT}`,
+    ];
+    // Everything Mend revokes itself comes first; the platform is asked only after it.
+    expect(world.effects.slice(0, mendSide.length)).toEqual(mendSide);
+    // The session wind-down runs beside the key archive, so only their order within each holds.
+    expect(world.effects.slice(mendSide.length).toSorted()).toEqual(
+      [
+        "engine.windDownPerson:carol",
+        `engine.reconcileHotSessions:${PROJECT}`,
+        // The gateway refuses Carol's keys from the next connection on, and nothing stays owed.
+        "sshKeys.remove:carol:key-0",
+        "audit.record:ssh_key.removed:carol",
+        "revocations.settle:revocation-1",
+      ].toSorted(),
+    );
+  });
+
+  it("a platform holding its answer never delays Mend's own revocation; past the limit the removal answers and the sweep finishes", async () => {
+    const world = removalWorld({ keys: 2 });
+    world.platform.listHeld = Effect.runSync(Deferred.make<void>());
+    const exit = await remove(world, Duration.millis(50));
+    expect(exit).toEqual(Exit.succeed({ sshKeys: { removed: 0, outstanding: null } }));
+    expect(world.effects).toContain("connections.closeForUser:carol");
+    expect(world.effects).toContain("engine.windDownPerson:carol");
+    expect(world.effects.filter((entry) => entry.includes("ssh"))).toEqual([
+      "audit.record:ssh_key.revocation_pending:carol",
     ]);
+    // Still owed under the remover's lease; once it runs out, the sweep takes it.
+    expect(world.owed.get("carol")).toMatchObject({ id: "revocation-1", attempts: 0 });
+    world.platform.listHeld = null;
+    world.makeDue("carol");
+    expect(await sweep(world)).toEqual([
+      { userId: "carol", outcome: { removed: 2, outstanding: 0 } },
+    ]);
+    expect(world.owed.size).toBe(0);
+  });
+
+  it("an interrupted removal loses no Mend-side revocation, and the sweep archives the keys", async () => {
+    const world = removalWorld();
+    world.platform.listHeld = Effect.runSync(Deferred.make<void>());
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const removal = yield* MemberRemoval;
+        const removing = yield* Effect.forkChild(removal.remove(CAROL));
+        yield* Deferred.await(world.platform.listAsked);
+        yield* Fiber.interrupt(removing);
+        yield* Deferred.await(world.woundDown);
+      }).pipe(Effect.provide(world.layer), Effect.scoped),
+    );
+    expect(world.effects).toContain("userEvents.changed:carol:access");
+    expect(world.effects).toContain("connections.closeForUser:carol");
+    expect(world.effects).toContain("engine.windDownPerson:carol");
+    expect([...world.platform.active]).toEqual(["key-0"]);
+    world.platform.listHeld = null;
+    world.makeDue("carol");
+    expect(await sweep(world)).toEqual([
+      { userId: "carol", outcome: { removed: 1, outstanding: 0 } },
+    ]);
+    expect(world.platform.active.size).toBe(0);
+    expect(world.owed.size).toBe(0);
   });
 
   it("archives every key past a failure, tells the owner, and the sweep finishes after the membership is gone", async () => {

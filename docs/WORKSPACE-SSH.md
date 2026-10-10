@@ -52,17 +52,22 @@ registered (`ssh_key.added`) and removed (`ssh_key.removed`).
 
 Removing a member from the organization removes all of their keys. The membership's deletion and a
 row in `ssh_key_revocations` commit in one transaction, so a removal is never recorded without the
-keys it owes. The removal then archives every key the platform lists for them, each on its own, so
-one refused archive does not stop the rest. Whatever is still active, or unread because the platform
-did not answer, stays owed: the removal's answer says how many (`sshKeysOutstanding`), the audit log
-records `ssh_key.revocation_pending`, and the worker retries every minute it is due (30 seconds
-after a failure, doubling to at most 30 minutes) until the platform holds none of theirs active.
-Each key archived later is its own `ssh_key.removed`, with its attempt number. The retries need no
-membership: they act on the removed account's own Sealant identity, which Mend keeps.
+keys it owes. Mend's own revocation follows at once and never waits on the platform: the account is
+deactivated, its sign-ins, devices and Slack links revoked, its connections closed on every process,
+and its sessions set stopping. Only then does the removal ask the platform, archiving every key it
+lists for them, each on its own, so one refused archive does not stop the rest. It waits at most 15
+seconds for that; past it, or if the removal is interrupted, what was archived stays archived and
+the rest is the worker's.
 
-Mend removes the membership first and archives after, not the other way round. Signing the person
-out, closing their connections and stopping their sessions then never wait on the platform, and a
-removal refused for the last owner touches no key.
+Whatever is still active, unread, or unconfirmed when the removal answers stays owed: the answer
+says how many (`sshKeysOutstanding`, null when Mend could not tell), the audit log records
+`ssh_key.revocation_pending`, and the worker retries every minute it is due (30 seconds after a
+failure, doubling to at most 30 minutes) until the platform holds none of theirs active. There is no
+upper bound on that window while the platform keeps failing; the keys stay owed and the worker keeps
+trying. Each key archived later is its own `ssh_key.removed`, with its attempt number. The retries
+need no membership: they act on the removed account's own Sealant identity, which Mend keeps. Each
+obligation has its own id, so an attempt at an earlier removal of the same account can neither
+settle nor defer a later one. A removal refused for the last owner owes and touches no key.
 
 The gateway looks a key up through the platform on every new connection and caches nothing across
 connections, so the next connection offering a removed key is refused. A connection authenticated

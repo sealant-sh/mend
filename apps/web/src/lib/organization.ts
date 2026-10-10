@@ -51,7 +51,7 @@ const SLACK_PROJECT_SOURCE_WORDS: Readonly<Record<string, string>> = {
 const sshKeysPending = (outstanding: string | number | boolean | null): string =>
   typeof outstanding === "number"
     ? `${outstanding} of their workspace SSH keys could not be removed yet; Mend keeps trying`
-    : "their workspace SSH keys could not be read yet; Mend keeps trying";
+    : "their workspace SSH keys are not all confirmed removed yet; Mend keeps trying";
 
 /** What removing a member reports beyond the removal itself: keys still owed, or nothing. */
 export const describeMemberRemoval = (removed: {

@@ -386,7 +386,9 @@ export const auditEvents = pgTable(
 export const sshKeyRevocations = pgTable(
   "ssh_key_revocations",
   {
-    userId: text().primaryKey(),
+    /** One obligation; a later removal of the same account replaces the row with a new id. */
+    id: text().primaryKey(),
+    userId: text().notNull().unique(),
     organizationId: text()
       .$type<OrganizationId>()
       .notNull()

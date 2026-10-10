@@ -13,6 +13,15 @@ export interface SshKeyRevocationOutcome {
 
 /** How long the remover's own first attempt holds the row off the sweep. */
 export const SSH_KEY_REVOCATION_LEASE = Duration.minutes(2);
+/**
+ * How long a member removal waits on its own first attempt before it answers. Past it the attempt
+ * stops, what it archived stays archived, and the sweep takes the rest once the lease runs out.
+ * A reference so a test can shorten it.
+ */
+export const SshKeyFirstAttemptLimit: Context.Reference<Duration.Duration> =
+  Context.Reference<Duration.Duration>("@mend/api/SshKeyFirstAttemptLimit", {
+    defaultValue: () => Duration.seconds(15),
+  });
 /** How often the worker looks for due revocations. */
 export const SSH_KEY_REVOCATION_SWEEP_INTERVAL = Duration.minutes(1);
 const RETRY_FLOOR_MS = 30_000;
@@ -55,7 +64,7 @@ export const SshKeyRevokerLive: Layer.Layer<
       const retryInMs = sshKeyRevocationRetryMs(owed.attempts);
       const listed = yield* keys.list().pipe(Effect.result);
       if (Result.isFailure(listed)) {
-        yield* revocations.defer(owed.userId, {
+        yield* revocations.defer(owed.id, {
           outstanding: null,
           lastError: listed.failure.message,
           retryInMs,
@@ -92,9 +101,9 @@ export const SshKeyRevokerLive: Layer.Layer<
         });
       }
       if (lastError === null) {
-        yield* revocations.settle(owed.userId);
+        yield* revocations.settle(owed.id);
       } else {
-        yield* revocations.defer(owed.userId, { outstanding, lastError, retryInMs });
+        yield* revocations.defer(owed.id, { outstanding, lastError, retryInMs });
       }
       return { removed, outstanding };
     });

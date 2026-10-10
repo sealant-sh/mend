@@ -8,6 +8,8 @@ import { sshKeyRevocations } from "../schema/workbench.ts";
 
 /** The workspace SSH keys Mend still owes one removed member (docs/WORKSPACE-SSH.md). */
 export interface SshKeyRevocation {
+  /** This obligation; a later removal of the same account owes under a new id. */
+  readonly id: string;
   readonly userId: string;
   readonly organizationId: OrganizationId;
   /** The owner who removed them. */
@@ -38,11 +40,14 @@ export class SshKeyRevocationsRepo extends Context.Service<
       limit: number,
       leaseMs: number,
     ) => Effect.Effect<ReadonlyArray<SshKeyRevocation>>;
-    /** No key of theirs is active: nothing is owed. */
-    readonly settle: (userId: string) => Effect.Effect<void>;
-    /** Some keys are still active (or unread): try again after `retryInMs`. */
+    /**
+     * No key of theirs is active: the obligation `id` is met. A newer obligation for the same
+     * account has another id and is left alone.
+     */
+    readonly settle: (id: string) => Effect.Effect<void>;
+    /** Some keys are still active (or unread): try obligation `id` again after `retryInMs`. */
     readonly defer: (
-      userId: string,
+      id: string,
       input: {
         readonly outstanding: number | null;
         readonly lastError: string;
@@ -53,6 +58,7 @@ export class SshKeyRevocationsRepo extends Context.Service<
 >()("@mend/db/SshKeyRevocationsRepo") {}
 
 const toRevocation = (row: typeof sshKeyRevocations.$inferSelect): SshKeyRevocation => ({
+  id: row.id,
   userId: row.userId,
   organizationId: row.organizationId,
   actorUserId: row.actorUserId,
@@ -97,15 +103,12 @@ export const SshKeyRevocationsRepoLive: Layer.Layer<SshKeyRevocationsRepo, never
         return rows.map(toRevocation);
       });
 
-      const settle = Effect.fn("SshKeyRevocationsRepo.settle")(function* (userId: string) {
-        yield* db
-          .delete(sshKeyRevocations)
-          .where(eq(sshKeyRevocations.userId, userId))
-          .pipe(Effect.orDie);
+      const settle = Effect.fn("SshKeyRevocationsRepo.settle")(function* (id: string) {
+        yield* db.delete(sshKeyRevocations).where(eq(sshKeyRevocations.id, id)).pipe(Effect.orDie);
       });
 
       const defer = Effect.fn("SshKeyRevocationsRepo.defer")(function* (
-        userId: string,
+        id: string,
         input: {
           readonly outstanding: number | null;
           readonly lastError: string;
@@ -120,7 +123,7 @@ export const SshKeyRevocationsRepoLive: Layer.Layer<SshKeyRevocationsRepo, never
             lastError: input.lastError,
             nextAttemptAt: new Date(Date.now() + input.retryInMs),
           })
-          .where(eq(sshKeyRevocations.userId, userId))
+          .where(eq(sshKeyRevocations.id, id))
           .pipe(Effect.orDie);
       });
 
