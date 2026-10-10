@@ -1,6 +1,10 @@
 #!/usr/bin/env node
 // A `docker` for lifecycle.e2e.test.mjs: containers, volumes and networks in a JSON file
 // ($FAKE_DOCKER_STATE), for the commands the stack's claim, preflight, removal and watchdog send.
+// Containers are kept as `docker inspect` shows them (labels, mounts, networks); volumes as `docker
+// volume inspect` does; `identity` is the hash a `run` over the state volume's identity.env prints.
+// Every call is appended to `<state>.calls`, and to `<state>.locks` with whether it inherited the
+// stack's lock descriptor (FAKE_DOCKER_LOCK, set by the wrapper from fd 9).
 // Faults and pauses, each named by an environment variable:
 // - FAKE_DOCKER_FAIL_LOOKUPS (a file holding a count): that many `ps` calls fail as an unreachable
 //   daemon would;
@@ -10,6 +14,7 @@
 //   writes `<file>.paused` and waits;
 // - FAKE_DOCKER_PAUSE_RM (a file holding a container or volume name): while the file exists, an
 //   `rm` or `volume rm` of that name writes `<file>.paused` and waits, before it removes anything;
+// - FAKE_DOCKER_PAUSE_PULL (a file): while it exists, a `pull` writes `<file>.paused` and waits;
 // - FAKE_DOCKER_BUILD: `hang` makes `build` wait a minute; otherwise `build` fails at once.
 import { appendFileSync, mkdirSync, readFileSync, rmdirSync, writeFileSync } from "node:fs";
 
@@ -17,6 +22,10 @@ const args = process.argv.slice(2);
 const statePath = process.env.FAKE_DOCKER_STATE;
 const lockPath = `${statePath}.lock`;
 appendFileSync(`${statePath}.calls`, `${JSON.stringify(args)}\n`);
+appendFileSync(
+  `${statePath}.locks`,
+  `${JSON.stringify({ args, lock: process.env.FAKE_DOCKER_LOCK === "1" })}\n`,
+);
 
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
 async function locked(work) {
@@ -85,9 +94,20 @@ if ((verb === "rm" || (verb === "volume" && sub === "rm")) && pauseRm && exists(
     await waitFor(() => !exists(pauseRm));
   }
 }
+const pausePull = process.env.FAKE_DOCKER_PAUSE_PULL;
+if (verb === "pull" && pausePull && exists(pausePull)) {
+  writeFileSync(`${pausePull}.paused`, "1");
+  await waitFor(() => !exists(pausePull));
+}
+const networkName = (network) => (typeof network === "string" ? network : network.Name);
+const volumeNamed = (name) => (volume) => volume.Name === name;
+
 if (verb === "version") console.log("27.5.1");
 else if (verb === "pull") console.log(args.at(-1));
-else if (verb === "info" && args.includes("{{.ID}}")) console.log(`FAKE:${statePath}`);
+else if (verb === "run" && args.some((arg) => arg.includes("identity.env"))) {
+  const identity = await locked((state) => state.identity);
+  if (identity) console.log(`${identity}  /state/server/.config/mend/identity.env`);
+} else if (verb === "info" && args.includes("{{.ID}}")) console.log(`FAKE:${statePath}`);
 else if (verb === "info") console.log(JSON.stringify({ SecurityOptions: [] }));
 else if (verb === "build") {
   if (process.env.FAKE_DOCKER_BUILD === "hang") await sleep(60_000);
@@ -137,19 +157,34 @@ else if (verb === "create") {
     );
   });
 } else if (verb === "volume" && sub === "ls")
-  console.log((await locked((state) => state.volumes)).join("\n"));
-else if (verb === "volume" && sub === "create") {
-  await locked((state) => void state.volumes.push(args.at(-1)));
-  console.log(args.at(-1));
+  console.log((await locked((state) => state.volumes)).map((volume) => volume.Name).join("\n"));
+else if (verb === "volume" && sub === "inspect") {
+  const list = await locked((state) => state.volumes);
+  const names = args.slice(2);
+  console.log(JSON.stringify(list.filter((volume) => names.includes(volume.Name))));
+  if (names.some((name) => !list.some(volumeNamed(name)))) fail("Error: no such volume");
+} else if (verb === "volume" && sub === "create") {
+  const name = args.at(-1);
+  await locked((state) => {
+    if (!state.volumes.some(volumeNamed(name)))
+      state.volumes.push({
+        Name: name,
+        Labels: labelsOf(args),
+        Mountpoint: `/fake/volumes/${name}/_data`,
+      });
+  });
+  console.log(name);
 } else if (verb === "volume" && sub === "rm")
   await locked((state) => {
-    state.volumes = state.volumes.filter((name) => !args.includes(name));
+    state.volumes = state.volumes.filter((volume) => !args.includes(volume.Name));
   });
 else if (verb === "network" && sub === "ls")
-  console.log((await locked((state) => state.networks)).join("\n"));
+  console.log((await locked((state) => state.networks)).map(networkName).join("\n"));
 else if (verb === "network" && sub === "rm")
   await locked((state) => {
-    state.networks = state.networks.filter((name) => !args.includes(name));
+    state.networks = state.networks.filter(
+      (network) => !args.includes(networkName(network)) && !args.includes(network.Id),
+    );
   });
 else if (verb === "image") console.log("");
 else fail(`fake docker: unexpected ${args.join(" ")}`, 2);

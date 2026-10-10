@@ -31,15 +31,18 @@ a hang-up, then SIGKILL two seconds later), killed, or failed.
   `verify-stack-owner`, labelled with a claim id made for that start alone. Docker keeps names
   unique, so one generation exists at a time.
 - **One kernel lock per daemon orders everything else.** It is flock(2), through util-linux `flock`,
-  on `/tmp/mend-verify-stack-<daemon id hash>.lock`. `serve` and `up` hold it shared for their whole
-  life. Every teardown holds it exclusive: the watchdog's (it waits), `down` and `down --force`
-  (refused at once while a start holds it: "stop serve to cancel it"), and a failed start's (it
-  converts its own lock). Every Docker command a holder runs carries the locked descriptor, so the
-  lock is held until the last of them exits, even when the holder itself is killed. So a teardown
-  never runs beside a start that is building, a sweep never runs beside a new start, and nothing is
-  admitted while a removal, or a command a killed teardown left running, is still at work. The
-  kernel releases the lock when its holders end, however they end, so no process has to judge
-  whether another is still alive.
+  on `<cache>/locks/<daemon id hash>.lock`: a directory of the caller's, 0700 and no symlink, and a
+  file opened 0600 without following a symlink and checked, once open, to be the caller's own.
+  Nobody else can create it first or hold it. `serve` and `up` hold it shared for their whole life.
+  Every teardown holds it exclusive: the watchdog's (it waits), `down` and `down --force` (refused
+  at once while a start holds it: "stop serve to cancel it"), and a failed start's (it converts its
+  own lock). Every Docker command of a holder's that may change the stack (a create, a run, a
+  removal) carries the locked descriptor, so the lock is held until the last of them exits, even
+  when the holder itself is killed. A pull, a build or a lookup does not carry it: one left stalled
+  by a holder that ended keeps nothing waiting. So a teardown never runs beside a start that is
+  building, a sweep never runs beside a new start, and nothing is admitted while a removal, or a
+  command a killed teardown left running, is still at work. The kernel releases the lock when its
+  holders end, however they end, so no process has to judge whether another is still alive.
 - **`serve`'s watchdog makes the claim, and outlives it.** The watchdog is a process in a session of
   its own, without the lock, and `serve` asks it over IPC to create the claim. So a create still in
   flight when `serve` dies belongs to the watchdog, which waits for it however long it takes. When
@@ -47,6 +50,19 @@ a hang-up, then SIGKILL two seconds later), killed, or failed.
   generation only if the daemon's owner still carries its claim id, the state file before the owner
   and the owner last. A start that ends holding no claim stops its watchdog. A reply the watchdog
   cannot deliver (the supervisor is gone) is logged, never fatal.
+- **A teardown removes what the stack's provenance names, and nothing else.** The inner server
+  carries the product's names, which `mend server setup` fixes (Compose project `mend`, volumes
+  `mend-store`, `mend-control`, `mend-garage`), so a name proves nothing. A teardown, `down --force`
+  included, removes the stack's own containers and volumes (its label and its `verify-stack-`
+  prefix, both); the inner server's containers (Compose project `mend` whose working directory is
+  inside the stack's `verify-stack-state` volume, where the inner setup wrote its generation); the
+  volumes the inner setup claimed (labelled with the hash of the inner install's `identity.env`,
+  hashed inside a container so its bytes never leave the volume); the inner sessions' containers on
+  those networks or volumes, and their Docker sidecars; and the volumes and networks (never Docker's
+  own) all of those use. On a daemon with no `verify-stack-state` volume of the stack's, that is the
+  stack's own resources only: a Mend server of the machine's own is never touched. Every container
+  the stack runs for a moment (the inner CLI, a probe, a copy) is named and labelled too, so one a
+  killed command left behind is found.
 - **A watchdog retries; it never assumes.** A lookup or teardown that fails is retried every 30 s at
   most, indefinitely: a daemon that does not answer cannot show that the stack is gone.
 
@@ -207,12 +223,26 @@ Docker service capped at 12 CPUs; Core and sealantd at main, Mend at this branch
 - Linux only: the daemon's lock needs util-linux `flock(1)`, which Mend's workspace images and CI
   carry. macOS has flock(2) but no `flock` command; the script refuses there and says why.
 - What a `serve` killed together with its watchdog leaves stays until `down` removes it.
+- The lock is per person: two people whose sessions share one Docker daemon hold different locks.
+  The daemon's claim still lets one stack up at a time, but one person's teardown does not wait for
+  the other's start. Mend gives each session its own daemon, so this needs a daemon shared on
+  purpose.
+- A start that fails converts its shared lock to exclusive to remove what it made. flock(2) drops
+  the shared lock while it waits for the exclusive one, so in that window (up to 10 minutes) another
+  `down` or a watchdog's teardown may run first. Each removes only a generation whose claim it holds
+  or, for `down`, whatever stack the daemon holds; the failed start then finds its generation gone
+  and stops.
+- A teardown that fails part way (a volume still in use) is retried. The stack's state volume goes
+  last, so a retry still has its provenance; a Compose volume of the inner server whose containers
+  were already removed has none left, and stays (`docker volume ls`, `mend_…`) until removed by
+  hand.
 
 - One stack per Docker daemon: the inner server uses the product's own names (Compose project
-  `mend`, volumes `mend-store`, `mend-control`, `mend-garage`). On a daemon that already runs a Mend
-  server the script refuses to start. The stack's own containers and volumes are named
-  `verify-stack-…`: `mend server setup` refuses to install beside a container named `mend-…` it did
-  not make.
+  `mend`, volumes `mend-store`, `mend-control`, `mend-garage`), which `mend server setup` does not
+  let a caller change. On a daemon that already has a container of Compose project `mend` or one of
+  those volumes, the script refuses to start, and a teardown never removes them (above). The stack's
+  own containers and volumes are named `verify-stack-…`: `mend server setup` refuses to install
+  beside a container named `mend-…` it did not make.
 - The fixture's sessions run without a Docker service: a Docker daemon inside the session's own
   rootless one was not tried.
 - Mend's image installs `@sealant/sdk` and `@sealant/api-contracts` from npm at the version Mend

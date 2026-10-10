@@ -13,6 +13,7 @@ import {
   readFileSync,
   readdirSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -21,7 +22,7 @@ import { join } from "node:path";
 import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { OWNER_CONTAINER, STACK_LABEL, STATE_VOLUME, digestOf } from "./lib.mjs";
+import { OWNER_CONTAINER, STACK_LABEL, STATE_VOLUME } from "./lib.mjs";
 import { CLAIM_LABEL } from "./lifecycle.mjs";
 
 const stack = fileURLToPath(new URL("stack.mjs", import.meta.url));
@@ -29,32 +30,50 @@ const fake = fileURLToPath(new URL("fixtures/fake-docker.mjs", import.meta.url))
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
 const pinned = ["--no-check", "--sealant", "pinned", "--sealantd", "pinned"];
 
-/** Every fake daemon's directory: their watchdogs are stopped when the file's tests end. */
+/**
+ * Every fake daemon's directory (its state, its `docker`, the stack's cache and lock): when the
+ * file's tests end, their watchdogs and stalled commands are stopped and the directories removed.
+ */
 const roots = [];
 after(() => {
-  // Each fake daemon's lock file (stack.mjs `daemonLockPath`: its id is `FAKE:<state file>`).
-  for (const root of roots)
-    rmSync(
-      `/tmp/mend-verify-stack-${digestOf(`FAKE:${join(root, "state.json")}`).slice(0, 16)}.lock`,
-      {
-        force: true,
-      },
-    );
   for (const pid of readdirSync("/proc").filter((name) => /^\d+$/.test(name))) {
     try {
       const environ = readFileSync(`/proc/${pid}/environ`, "utf8");
-      if (roots.some((root) => environ.includes(`MEND_VERIFY_STACK_CACHE=${join(root, "cache")}`)))
-        process.kill(Number(pid), "SIGKILL");
+      if (roots.some((root) => environ.includes(root))) process.kill(Number(pid), "SIGKILL");
     } catch {
       // Gone, or not ours to read.
     }
   }
+  for (const root of roots) rmSync(root, { recursive: true, force: true });
 });
 
-/** A fake daemon holding `containers` and `volumes`, and a `docker` on PATH that speaks to it. */
+/**
+ * A volume as `docker volume inspect` shows it. A name alone is one the stack made, labelled as it
+ * labels its own; anything else passes `labels`.
+ */
+const volume = (name, labels = name.startsWith("verify-stack-") ? { [STACK_LABEL]: "1" } : {}) => ({
+  Name: name,
+  Labels: labels,
+  Mountpoint: `/fake/volumes/${name}/_data`,
+});
+const asVolume = (item) => (typeof item === "string" ? volume(item) : item);
+/** A container as `docker inspect` shows it; `rest` adds its mounts and networks. */
+const container = (id, name, labels, rest = {}) => ({
+  Id: id,
+  Name: `/${name}`,
+  Config: { Labels: labels },
+  ...rest,
+});
+
+/**
+ * A fake daemon holding `containers` (`[name, labels, rest]`), `volumes` (names or `volume(…)`),
+ * `networks` and the inner install's `identity` hash, and a `docker` on PATH that speaks to it.
+ */
 function daemon({
   containers = [],
   volumes = [],
+  networks = [],
+  identity = null,
   failLookups = 0,
   createDelayMs = 0,
   build = "fail",
@@ -66,13 +85,12 @@ function daemon({
     state,
     JSON.stringify({
       next: 1,
-      containers: containers.map(([name, labels], index) => ({
-        Id: `${String(9000 + index)}${"f".repeat(60)}`,
-        Name: `/${name}`,
-        Config: { Labels: labels },
-      })),
-      volumes,
-      networks: [],
+      containers: containers.map(([name, labels, rest], index) =>
+        container(`${String(9000 + index)}${"f".repeat(60)}`, name, labels, rest),
+      ),
+      volumes: volumes.map(asVolume),
+      networks,
+      identity,
     }),
   );
   const file = (name) => join(root, name);
@@ -83,12 +101,15 @@ function daemon({
     join(bin, "docker"),
     [
       "#!/bin/sh",
+      // Whether this call carries the stack's lock: fd 9, inherited from the process that holds it.
+      "if [ -e /proc/$$/fd/9 ]; then export FAKE_DOCKER_LOCK=1; else export FAKE_DOCKER_LOCK=0; fi",
       `export FAKE_DOCKER_STATE='${state}'`,
       `export FAKE_DOCKER_FAIL_LOOKUPS='${file("fail-lookups")}'`,
       `export FAKE_DOCKER_CREATE_DELAY_MS='${createDelayMs}'`,
       `export FAKE_DOCKER_CREATING='${file("creating")}'`,
       `export FAKE_DOCKER_PAUSE_LIST='${file("pause-list")}'`,
       `export FAKE_DOCKER_PAUSE_RM='${file("pause-rm")}'`,
+      `export FAKE_DOCKER_PAUSE_PULL='${file("pause-pull")}'`,
       `export FAKE_DOCKER_BUILD='${build}'`,
       `exec '${process.execPath}' '${fake}' "$@"`,
       "",
@@ -117,14 +138,13 @@ function daemon({
     }
   };
   /** Add a container (and a volume) to the daemon, as another process would. */
-  const seed = (name, labels, volume) => {
+  const seed = (name, labels, volumeName) => {
     const current = read();
-    current.containers.push({
-      Id: `${String(8000 + current.containers.length)}${"e".repeat(60)}`,
-      Name: `/${name}`,
-      Config: { Labels: labels },
-    });
-    if (volume && !current.volumes.includes(volume)) current.volumes.push(volume);
+    current.containers.push(
+      container(`${String(8000 + current.containers.length)}${"e".repeat(60)}`, name, labels),
+    );
+    if (volumeName && !current.volumes.some((item) => item.Name === volumeName))
+      current.volumes.push(asVolume(volumeName));
     writeFileSync(state, JSON.stringify(current));
   };
   return { root, env, file, read, run, watchdogLog, seed };
@@ -132,6 +152,7 @@ function daemon({
 
 const ownerOf = (state) => state.containers.find((item) => item.Name === `/${OWNER_CONTAINER}`);
 const names = (state) => state.containers.map((item) => item.Name.slice(1)).toSorted();
+const volumeNames = (state) => state.volumes.map((item) => item.Name).toSorted();
 const generation = (claim) => [
   [OWNER_CONTAINER, { [STACK_LABEL]: "1", [CLAIM_LABEL]: claim }],
   ["verify-stack-relay", { [STACK_LABEL]: "1" }],
@@ -186,7 +207,7 @@ test("a serve refused before claiming (a stack already up) leaves it alone too (
   assert.match(serve.output(), /already up/);
   await sleep(3000);
   assert.equal(names(fakeDaemon.read()).length, 2);
-  assert.deepEqual(fakeDaemon.read().volumes, [STATE_VOLUME]);
+  assert.deepEqual(volumeNames(fakeDaemon.read()), [STATE_VOLUME]);
   assert.deepEqual(watchdogsOf(serve.child.pid), []);
 });
 
@@ -389,4 +410,205 @@ test("report reads the stack and writes nothing", async () => {
   assert.equal(await report.done, 0, report.output());
   assert.equal(JSON.parse(report.output()).phase, "ready");
   assert.equal(readFileSync(stateFile, "utf8"), written);
+});
+
+// ─── round 5: what a teardown may remove, the private lock, what carries it ──
+
+const INSTALLATION = "dev.sealant.mend.installation";
+const COMPOSE = "com.docker.compose.project";
+const WORKING_DIR = "com.docker.compose.project.working_dir";
+const STATE_MOUNT = `/fake/volumes/${STATE_VOLUME}/_data`;
+/** The sha256 of an install's identity.env, as setup labels its volumes with. */
+const INNER_INSTALL = "a".repeat(64);
+const PRODUCT_INSTALL = "b".repeat(64);
+const on = (...networks) => ({
+  NetworkSettings: {
+    Networks: Object.fromEntries(networks.map(([name, id]) => [name, { NetworkID: id }])),
+  },
+});
+const mounts = (...volumes) => ({
+  Mounts: volumes.map((name) => ({ Type: "volume", Name: name, Destination: `/${name}` })),
+});
+/** A Mend server of the machine's own on the daemon: the product's names, none of the stack's. */
+const product = {
+  containers: [
+    [
+      "mend-mend-1",
+      { [COMPOSE]: "mend", [WORKING_DIR]: "/home/someone/.config/mend/generations/3" },
+      { ...mounts("mend-store", "mend_mend-postgres"), ...on(["mend_default", "net-product"]) },
+    ],
+    ["sealant-0a1b2c", {}, { ...mounts("mend-control"), ...on(["bridge", "net-bridge"]) }],
+  ],
+  volumes: [
+    volume("mend-store", { [INSTALLATION]: PRODUCT_INSTALL }),
+    volume("mend-control", { [INSTALLATION]: PRODUCT_INSTALL }),
+    volume("mend-garage"),
+    volume("mend_mend-postgres", { [COMPOSE]: "mend" }),
+  ],
+  networks: [{ Name: "mend_default", Id: "net-product" }],
+};
+
+test("down --force on a daemon with no stack of its own removes nothing of a product server (N13)", async () => {
+  const fakeDaemon = daemon(product);
+  const before = fakeDaemon.read();
+  const sweep = fakeDaemon.run(["down", "--force"]);
+  assert.equal(await sweep.done, 0, sweep.output());
+  assert.match(sweep.output(), /removed 0 container\(s\), 0 volume\(s\)/);
+  const left = fakeDaemon.read();
+  assert.deepEqual(names(left), names(before));
+  assert.deepEqual(volumeNames(left), volumeNames(before));
+  assert.deepEqual(left.networks, before.networks);
+});
+
+test("down --force beside a product server removes the stack's leftover state, nothing of the product's (N13)", async () => {
+  const fakeDaemon = daemon({
+    ...product,
+    identity: INNER_INSTALL,
+    volumes: [...product.volumes, STATE_VOLUME],
+  });
+  const sweep = fakeDaemon.run(["down", "--force"]);
+  assert.equal(await sweep.done, 0, sweep.output());
+  const left = fakeDaemon.read();
+  assert.deepEqual(
+    names(left),
+    names({ containers: product.containers.map(([name]) => ({ Name: `/${name}` })) }),
+  );
+  assert.deepEqual(volumeNames(left), volumeNames(product));
+  assert.deepEqual(left.networks, product.networks);
+});
+
+test("a teardown removes its generation by provenance, and only it (N13)", async () => {
+  const inner = {
+    [COMPOSE]: "mend",
+    [WORKING_DIR]: `${STATE_MOUNT}/server/.config/mend/generations/1`,
+  };
+  const fakeDaemon = daemon({
+    identity: INNER_INSTALL,
+    containers: [
+      ...generation("a"),
+      [
+        "mend-mend-1",
+        inner,
+        { ...mounts("mend-store", "mend_mend-postgres"), ...on(["mend_default", "net-inner"]) },
+      ],
+      ["mend-sealant-1", inner, on(["mend_default", "net-inner"])],
+      // An inner session: on the inner network, with its Docker sidecar on its own.
+      [
+        "sealant-5e55",
+        {},
+        {
+          ...mounts("mend-control"),
+          ...on(["mend_default", "net-inner"], ["sealant-5e55-network", "net-session"]),
+        },
+      ],
+      ["sealant-5e55-docker", {}, on(["sealant-5e55-network", "net-session"])],
+      // Not the stack's: a container of the product's name, and one with the stack's name only.
+      ["sealant-0a1b2c", {}, on(["bridge", "net-bridge"])],
+      ["verify-stack-impostor", {}],
+    ],
+    volumes: [
+      STATE_VOLUME,
+      volume("mend-store", { [INSTALLATION]: INNER_INSTALL }),
+      volume("mend-control", { [INSTALLATION]: INNER_INSTALL }),
+      // Claimed by the inner setup, mounted by nothing yet.
+      volume("mend-garage", { [INSTALLATION]: INNER_INSTALL }),
+      volume("mend_mend-postgres", { [COMPOSE]: "mend" }),
+      volume("someone-else", { [COMPOSE]: "mend" }),
+      volume("verify-stack-unlabelled", {}),
+    ],
+    networks: [
+      { Name: "mend_default", Id: "net-inner" },
+      { Name: "sealant-5e55-network", Id: "net-session" },
+      { Name: "bridge", Id: "net-bridge" },
+    ],
+  });
+  const down = fakeDaemon.run(["down"]);
+  assert.equal(await down.done, 0, down.output());
+  const left = fakeDaemon.read();
+  assert.deepEqual(names(left), ["sealant-0a1b2c", "verify-stack-impostor"]);
+  assert.deepEqual(volumeNames(left), ["someone-else", "verify-stack-unlabelled"]);
+  assert.deepEqual(
+    left.networks.map((network) => network.Name),
+    ["bridge"],
+  );
+});
+
+test("the lock lives in a private directory of the caller's, in a file only they can open (N14)", async () => {
+  const fakeDaemon = daemon();
+  const locks = join(fakeDaemon.env.MEND_VERIFY_STACK_CACHE, "locks");
+  const first = fakeDaemon.run(["down", "--force"]);
+  assert.equal(await first.done, 0, first.output());
+  const [lock] = readdirSync(locks);
+  assert.equal(statSync(locks).mode & 0o777, 0o700);
+  assert.equal(statSync(join(locks, lock)).mode & 0o777, 0o600);
+
+  // A directory others can write to is refused, and so is a symlink in its place.
+  chmodSync(locks, 0o777);
+  const open = fakeDaemon.run(["down", "--force"]);
+  assert.notEqual(await open.done, 0);
+  assert.match(open.output(), /private to them \(0700\)/);
+  rmSync(locks, { recursive: true });
+  const elsewhere = join(fakeDaemon.root, "elsewhere");
+  mkdirSync(elsewhere, { mode: 0o700 });
+  symlinkSync(elsewhere, locks);
+  const linked = fakeDaemon.run(["down", "--force"]);
+  assert.notEqual(await linked.done, 0);
+  assert.match(linked.output(), /no symlink/);
+  assert.deepEqual(readdirSync(elsewhere), []);
+
+  // A lock file that is a symlink is not followed.
+  rmSync(locks);
+  mkdirSync(locks, { mode: 0o700 });
+  symlinkSync(join(fakeDaemon.root, "target"), join(locks, lock));
+  const followed = fakeDaemon.run(["down", "--force"]);
+  assert.notEqual(await followed.done, 0);
+  assert.equal(existsSync(join(fakeDaemon.root, "target")), false);
+});
+
+/** Each call the fake daemon received, with whether it carried the stack's lock. */
+const locksOf = (fakeDaemon) =>
+  readFileSync(`${join(fakeDaemon.root, "state.json")}.locks`, "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+
+test("a pull never carries the lock, so one left stalled does not hold the daemon (N16)", async () => {
+  const fakeDaemon = daemon();
+  writeFileSync(fakeDaemon.file("pause-pull"), "1");
+  const serve = fakeDaemon.run(["serve", ...pinned]);
+  await until("the pull to stall", () => existsSync(`${fakeDaemon.file("pause-pull")}.paused`));
+  serve.child.kill("SIGKILL");
+  await serve.done;
+  // The stalled pull lives on; the daemon is free for a teardown all the same.
+  const down = fakeDaemon.run(["down", "--force"]);
+  assert.equal(await down.done, 0, down.output());
+  rmSync(fakeDaemon.file("pause-pull"));
+  const calls = locksOf(fakeDaemon);
+  const pulls = calls.filter((call) => call.args[0] === "pull");
+  assert.ok(pulls.length > 0);
+  assert.ok(
+    pulls.every((call) => !call.lock),
+    "no pull carries the lock",
+  );
+  const lookups = calls.filter((call) =>
+    ["ps", "inspect", "info", "version"].includes(call.args[0]),
+  );
+  assert.ok(
+    lookups.every((call) => !call.lock),
+    "no lookup carries the lock",
+  );
+});
+
+test("every removal a teardown runs carries the lock (N16)", async () => {
+  const fakeDaemon = daemon({ containers: generation("a"), volumes: [STATE_VOLUME] });
+  const down = fakeDaemon.run(["down"]);
+  assert.equal(await down.done, 0, down.output());
+  const removals = locksOf(fakeDaemon).filter(
+    (call) => call.args[0] === "rm" || (call.args[0] === "volume" && call.args[1] === "rm"),
+  );
+  assert.ok(removals.length >= 2);
+  assert.ok(
+    removals.every((call) => call.lock),
+    "every removal carries the lock",
+  );
 });

@@ -10,6 +10,7 @@ import {
   fetchRefspec,
   formatKb,
   formatSeconds,
+  generationOf,
   imageNames,
   innerOrigins,
   insideCaptureRoot,
@@ -23,6 +24,7 @@ import {
   FIXTURE_VOLUME,
   OWNER_CONTAINER,
   RELAY_CONTAINER,
+  STACK_LABEL,
   STATE_VOLUME,
   verifyVersion,
 } from "./lib.mjs";
@@ -279,4 +281,44 @@ test("memory sums the proportional set sizes of every process read", () => {
   assert.equal(formatKb(36_432), "36 MiB");
   assert.equal(formatSeconds(42.4), "42 s");
   assert.equal(formatSeconds(125), "2 min 5 s");
+});
+
+/** A container as `docker inspect` shows it. */
+const inspected = (Id, name, labels, networks = {}, mounts = []) => ({
+  Id,
+  Name: `/${name}`,
+  Config: { Labels: labels },
+  NetworkSettings: { Networks: networks },
+  Mounts: mounts.map((Name) => ({ Type: "volume", Name })),
+});
+
+test("a generation is what the stack's provenance names, and never Docker's own networks (N13)", () => {
+  const own = { [STACK_LABEL]: "1" };
+  const containers = [
+    inspected("owner", OWNER_CONTAINER, own),
+    inspected("relay", RELAY_CONTAINER, own, { bridge: { NetworkID: "bridge" } }, [STATE_VOLUME]),
+    // On the default bridge, beside the relay: Docker's network names nobody's container.
+    inspected("web", "web-1", {}, { bridge: { NetworkID: "bridge" } }, ["data"]),
+    inspected("sealant", "sealant-12ab", {}, { bridge: { NetworkID: "bridge" } }),
+    inspected("named", "verify-stack-named", {}),
+  ];
+  const volumes = [
+    { Name: STATE_VOLUME, Labels: own },
+    { Name: "data", Labels: {} },
+    { Name: "mend-store", Labels: {} },
+  ];
+  // Without the stack's state, its own resources only.
+  assert.deepEqual(
+    generationOf({ containers, volumes, stateMountpoint: null, installation: null }),
+    { containers: ["relay"], volumes: [STATE_VOLUME], networks: [] },
+  );
+  // The owner is never in it; an unlabelled name or a product name never is either.
+  const withState = generationOf({
+    containers,
+    volumes,
+    stateMountpoint: "/var/lib/docker/volumes/verify-stack-state/_data",
+    installation: "f".repeat(64),
+  });
+  assert.deepEqual(withState.containers, ["relay"]);
+  assert.deepEqual(withState.volumes, [STATE_VOLUME]);
 });

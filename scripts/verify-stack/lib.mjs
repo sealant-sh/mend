@@ -314,3 +314,91 @@ export function beyondRetention(entries, keep) {
     .slice(keep)
     .map((entry) => entry.name);
 }
+
+// ─── what a generation owns ─────────────────────────────────────────────────
+
+/** The prefix of every container and volume the stack itself names. */
+export const VERIFIER_PREFIX = "verify-stack-";
+
+/** Compose's label for the directory a project's file was in: setup's generation directory. */
+export const WORKING_DIR_LABEL = "com.docker.compose.project.working_dir";
+
+/** The label setup puts on the volumes it claims: the sha256 of the install's identity file. */
+export const INSTALLATION_LABEL = "dev.sealant.mend.installation";
+
+const nameOf = (item) => String(item.Name ?? "").replace(/^\//, "");
+const labelsOf = (item) => item.Config?.Labels ?? item.Labels ?? {};
+/** Docker's own networks, which every daemon has and nothing of the stack's makes. */
+const PREDEFINED_NETWORKS = new Set(["bridge", "host", "none"]);
+const networksOf = (container) =>
+  Object.entries(container.NetworkSettings?.Networks ?? {})
+    .filter(([name]) => !PREDEFINED_NETWORKS.has(name))
+    .map(([, network]) => network.NetworkID)
+    .filter(Boolean);
+const volumesOf = (container) =>
+  (container.Mounts ?? [])
+    .filter((mount) => mount.Type === "volume" && mount.Name)
+    .map((mount) => mount.Name);
+const own = (item) =>
+  labelsOf(item)[STACK_LABEL] === "1" && nameOf(item).startsWith(VERIFIER_PREFIX);
+
+/**
+ * What the stack owns on a daemon, from `docker inspect` of every container and volume: the
+ * containers, volumes and network ids a teardown may remove, and nothing else. The inner server's
+ * resources carry the product's names (`mend-store`, Compose project `mend`), which `mend server
+ * setup` fixes, so a product server on the same daemon shares them; they are told apart by
+ * provenance only this stack has:
+ * - the stack's own containers and volumes carry its label and its name prefix, both;
+ * - the inner server's containers are Compose project `mend` with a working directory inside the
+ *   stack's state volume (`stateMountpoint`), where the inner setup wrote its generation;
+ * - the volumes the inner setup claimed carry its install's identity hash (`installation`);
+ * - an inner session's container (`sealant-<id>`) is on one of those containers' networks or mounts
+ *   one of those volumes, and its Docker sidecar is `sealant-<id>-docker`;
+ * - the rest are the volumes and networks (never Docker's own) those containers use.
+ * Without the stack's state volume (`stateMountpoint` null) only its own resources qualify. The owner
+ * container is never in the result: the teardown that holds it removes it, last, by id.
+ */
+export function generationOf({ containers, volumes, stateMountpoint, installation }) {
+  const live = containers.filter((container) => nameOf(container) !== OWNER_CONTAINER);
+  const claimed = new Set(
+    volumes
+      .filter(
+        (volume) =>
+          own(volume) || (installation && labelsOf(volume)[INSTALLATION_LABEL] === installation),
+      )
+      .map((volume) => volume.Name),
+  );
+  const chosen = new Map();
+  for (const container of live) {
+    const labels = labelsOf(container);
+    const inner =
+      stateMountpoint !== null &&
+      labels["com.docker.compose.project"] === COMPOSE_PROJECT &&
+      String(labels[WORKING_DIR_LABEL] ?? "").startsWith(`${stateMountpoint}/`);
+    if (own(container) || inner) chosen.set(container.Id, container);
+  }
+  const networks = new Set([...chosen.values()].flatMap(networksOf));
+  const used = new Set([...claimed, ...[...chosen.values()].flatMap(volumesOf)]);
+  const executors = new Set();
+  for (const container of live)
+    if (
+      /^sealant-[0-9a-f-]+$/i.test(nameOf(container)) &&
+      (networksOf(container).some((id) => networks.has(id)) ||
+        volumesOf(container).some((name) => used.has(name)))
+    ) {
+      chosen.set(container.Id, container);
+      executors.add(nameOf(container));
+    }
+  for (const container of live)
+    if (executors.has(nameOf(container).replace(/-docker$/, "")) && !chosen.has(container.Id))
+      chosen.set(container.Id, container);
+  const present = new Set(volumes.map((volume) => volume.Name));
+  const volumeNames = new Set(claimed);
+  for (const container of chosen.values())
+    for (const name of volumesOf(container)) if (present.has(name)) volumeNames.add(name);
+  return {
+    containers: [...chosen.keys()],
+    volumes: [...volumeNames].toSorted(),
+    networks: [...new Set([...chosen.values()].flatMap(networksOf))],
+  };
+}

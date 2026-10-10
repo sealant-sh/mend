@@ -8,7 +8,8 @@
 //
 // Exclusion is a kernel lock, flock(2) on one file per daemon (stack.mjs `withDaemonLock`): a start
 // (`serve`, `up`) holds it shared for its whole life, and every teardown holds it exclusive, and so
-// do the Docker commands each of them runs (they carry the locked descriptor). The kernel releases
+// do the Docker commands of theirs that may change the stack (they carry the locked descriptor; a
+// pull, a build or a lookup does not, so one left stalled holds nothing). The kernel releases
 // it when the last of them exits, however they end. So a teardown never runs beside a start, a
 // replacement is never admitted while a teardown, or a command a killed teardown left running, is
 // still at work, and nothing here has to judge whether some process is still alive.

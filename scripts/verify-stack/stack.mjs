@@ -27,8 +27,11 @@ import { spawn } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
 import {
   closeSync,
+  constants,
   createWriteStream,
   existsSync,
+  fstatSync,
+  lstatSync,
   mkdirSync,
   openSync,
   readFileSync,
@@ -38,7 +41,6 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { isSealantExecutor } from "../packaged-server-assertions.mjs";
 import {
   COMPOSE_NETWORK,
   COMPOSE_PROJECT,
@@ -55,7 +57,7 @@ import {
   SESSION_REPOS,
   STACK_LABEL,
   STATE_VOLUME,
-  OWNER_CONTAINER,
+  VERIFIER_PREFIX,
   beyondRetention,
   composeImages,
   defaultSpec,
@@ -65,6 +67,7 @@ import {
   fetchRefspec,
   formatKb,
   formatSeconds,
+  generationOf,
   imageNames,
   innerOrigins,
   insideCaptureRoot,
@@ -118,20 +121,46 @@ class CommandError extends Error {}
 
 /**
  * The daemon's lock (`lockDaemon`): this process's descriptor of the lock file, open once the lock
- * is taken, and the position it takes in a child's stdio. Every command a holder runs gets it there,
- * so the lock stays held until the last of them has exited, even if this process is killed first: a
- * removal still in flight keeps blocking admission.
+ * is taken, and the position it takes in a child's stdio. Every command of a holder's that may change
+ * the stack gets it there (`holdsLock`), so the lock stays held until the last of them has exited,
+ * even if this process is killed first: a removal still in flight keeps blocking admission.
  */
 let lockFd = null;
 const LOCK_FD = 9;
 
-function stdioFor(stdio, input) {
+function stdioFor(stdio, input, lock) {
   const base = stdio ?? [input === undefined ? "ignore" : "pipe", "pipe", "pipe"];
-  if (lockFd === null || !Array.isArray(base)) return base;
+  if (!lock || lockFd === null || !Array.isArray(base)) return base;
   const withLock = [...base];
   while (withLock.length < LOCK_FD) withLock.push("ignore");
   withLock[LOCK_FD] = lockFd;
   return withLock;
+}
+
+/**
+ * Whether a command carries the daemon's lock: `flock` (it takes it) and every Docker command that
+ * may change the stack's containers, volumes or networks. One that only reads or fetches (a pull, a
+ * build, an inspect) does not, so one left running by a holder that ended (a stalled pull) never
+ * keeps the lock from the teardown that follows.
+ */
+const READ_ONLY_DOCKER = new Set([
+  "build",
+  "buildx",
+  "image",
+  "info",
+  "inspect",
+  "ps",
+  "pull",
+  "stats",
+  "version",
+]);
+function holdsLock(command, [verb, sub] = []) {
+  if (command === "flock") return true;
+  if (command !== "docker") return false;
+  if (READ_ONLY_DOCKER.has(verb)) return false;
+  if ((verb === "volume" || verb === "network") && (sub === "ls" || sub === "inspect"))
+    return false;
+  return true;
 }
 
 /**
@@ -141,8 +170,9 @@ function stdioFor(stdio, input) {
  */
 function exec(command, args, options = {}) {
   const { env = dockerEnv, cwd, input, log, timeout = 30 * 60_000, stdio, reason } = options;
+  const lock = holdsLock(command, args);
   return new Promise((resolvePromise, reject) => {
-    const child = spawn(command, args, { cwd, env, stdio: stdioFor(stdio, input) });
+    const child = spawn(command, args, { cwd, env, stdio: stdioFor(stdio, input, lock) });
     const out = [];
     const err = [];
     const sink = log ? createWriteStream(log, { flags: "a" }) : null;
@@ -184,6 +214,17 @@ const gitOut = async (repo, args, options) => (await git(repo, args, options)).s
 const say = (line) => process.stdout.write(`${line}\n`);
 const since = (start) => (Date.now() - start) / 1000;
 const pause = (ms) => new Promise((done) => setTimeout(done, ms));
+
+/**
+ * The name and label of a container the stack runs for a moment (a copy, a probe, the inner CLI):
+ * both, so a teardown finds one a killed command left behind (lib.mjs `generationOf`).
+ */
+const transient = (purpose) => [
+  "--name",
+  `${VERIFIER_PREFIX}${purpose}-${randomUUID().slice(0, 8)}`,
+  "--label",
+  `${STACK_LABEL}=1`,
+];
 
 async function timed(record, name, work) {
   const start = Date.now();
@@ -348,7 +389,7 @@ async function ensureBuildx() {
   const plugins = join(dockerEnv.DOCKER_CONFIG, "cli-plugins");
   await mkdir(plugins, { recursive: true, mode: 0o700 });
   await docker(["pull", "--quiet", DOCKER_CLI_IMAGE], { timeout: 15 * 60_000 });
-  const id = await dockerOut(["create", "--label", `${STACK_LABEL}=1`, DOCKER_CLI_IMAGE]);
+  const id = await dockerOut(["create", ...transient("buildx"), DOCKER_CLI_IMAGE]);
   try {
     await docker([
       "cp",
@@ -395,8 +436,7 @@ async function cliRun(state, args, { network = "host", home = "client", ...optio
       "--rm",
       "-i",
       ...interactive,
-      "--label",
-      `${STACK_LABEL}=1`,
+      ...transient("cli"),
       "--network",
       network,
       "--volume",
@@ -423,6 +463,7 @@ async function writePrivate(state, path, content) {
       "run",
       "--rm",
       "-i",
+      ...transient("write"),
       "--network",
       "none",
       "--volume",
@@ -444,6 +485,7 @@ async function readPrivate(state, path) {
   return dockerOut([
     "run",
     "--rm",
+    ...transient("read"),
     "--network",
     "none",
     "--volume",
@@ -465,6 +507,7 @@ async function daemonSocket() {
     const runtime = await dockerOut([
       "run",
       "--rm",
+      ...transient("socket"),
       "--network",
       "none",
       "--volume",
@@ -1026,6 +1069,7 @@ async function measureMemory(state) {
       [
         "run",
         "--rm",
+        ...transient("memory"),
         "--privileged",
         "--pid",
         "host",
@@ -1043,7 +1087,7 @@ async function measureMemory(state) {
     return { method: "pss of every process of the session's Docker daemon", ...memory };
   }
   // Any other daemon is shared with the machine: the stack's containers only, as Docker counts.
-  const ids = await stackContainers();
+  const ids = (await generation()).containers;
   if (ids.length === 0) return { method: "docker stats", totalKb: 0, processes: [] };
   const lines = await dockerOut([
     "stats",
@@ -1065,31 +1109,64 @@ async function measureMemory(state) {
   };
 }
 
+const nonEmptyLines = (output) => output.split("\n").filter(Boolean);
+
 async function inspectAll(ids) {
   if (ids.length === 0) return [];
   return JSON.parse(await dockerOut(["inspect", ...ids]));
 }
 
 /**
- * Every container of the stack: its own, the inner server's, and the inner sessions'. With
- * `owners: false`, never an owner or a teardown-lock container: those are removed by id, by the
- * teardown that holds them.
+ * What this daemon's stack owns (lib.mjs `generationOf`), read from Docker: every container and
+ * volume inspected, the state volume's daemon-side path, and the hash of the inner install's
+ * identity, which setup labels its volumes with. Nothing qualifies without the stack's own state
+ * volume, so on a daemon with no stack of its own a teardown removes no product container or volume.
  */
-async function stackContainers({ owners = true } = {}) {
-  const ids = (await dockerOut(["ps", "--all", "--quiet", "--no-trunc"]))
-    .split("\n")
-    .filter(Boolean);
-  const containers = await inspectAll(ids);
-  return containers
-    .filter(
-      (item) =>
-        item.Config?.Labels?.[STACK_LABEL] === "1" ||
-        item.Config?.Labels?.["com.docker.compose.project"] === COMPOSE_PROJECT ||
-        isSealantExecutor(item) ||
-        /^\/sealant-[0-9a-f-]+-docker$/i.test(item.Name ?? ""),
-    )
-    .filter((item) => owners || item.Name !== `/${OWNER_CONTAINER}`)
-    .map((item) => item.Id);
+async function generation() {
+  const containers = await inspectAll(
+    nonEmptyLines(await dockerOut(["ps", "--all", "--quiet", "--no-trunc"])),
+  );
+  const names = nonEmptyLines(await dockerOut(["volume", "ls", "--quiet"]));
+  const volumes =
+    names.length === 0 ? [] : JSON.parse(await dockerOut(["volume", "inspect", ...names]));
+  const state = volumes.find(
+    (volume) => volume.Name === STATE_VOLUME && volume.Labels?.[STACK_LABEL] === "1",
+  );
+  return generationOf({
+    containers,
+    volumes,
+    stateMountpoint: state?.Mountpoint ?? null,
+    installation: state ? await installationOf() : null,
+  });
+}
+
+/**
+ * The sha256 of the inner install's identity.env, hashed inside a container so its bytes (they hold
+ * the install's credentials) never leave the state volume; null before setup wrote one, or when the
+ * image is not on the daemon to hash it with (`--pull never`: a teardown fetches nothing).
+ */
+async function installationOf() {
+  try {
+    const out = await dockerOut([
+      "run",
+      "--rm",
+      "--pull",
+      "never",
+      ...transient("identity"),
+      "--network",
+      "none",
+      "--volume",
+      `${STATE_VOLUME}:/state:ro`,
+      "--entrypoint",
+      "sh",
+      FIXTURE_BASE_IMAGE,
+      "-c",
+      'f=/state/server/.config/mend/identity.env; if [ -f "$f" ]; then sha256sum "$f"; fi',
+    ]);
+    return /^[0-9a-f]{64}\b/.exec(out)?.[0] ?? null;
+  } catch {
+    return null;
+  }
 }
 
 async function report(args) {
@@ -1097,7 +1174,10 @@ async function report(args) {
   const state = await readState();
   if (!state) throw new Error("no verify stack here: `up` starts one");
   const memory = await measureMemory(state);
-  const isolation = isolationFindings(await inspectAll(await stackContainers()), outerSecrets);
+  const isolation = isolationFindings(
+    await inspectAll((await generation()).containers),
+    outerSecrets,
+  );
   // Read-only: what it measures is printed with the stack's state, never written back.
   const measured = {
     memory: {
@@ -1167,39 +1247,26 @@ const takeDown = (claimId, onRemoved = () => {}) =>
   });
 
 /**
- * Everything of the stack on this daemon, then `ownerId` last. It runs only under the daemon's lock
- * held exclusively, so every stack resource here is the generation being removed. The state file
- * goes before the owner, so no later generation's state is ever this one's to remove.
+ * Everything this stack owns on the daemon (`generation`), then `ownerId` last. It runs only under
+ * the daemon's lock held exclusively, so no start of the stack builds meanwhile. The state volume
+ * goes after the rest, so a removal that failed part way is retried with the provenance it needs;
+ * the state file goes before the owner, so no later generation's state is ever this one's to remove.
  */
 async function removeResources(ownerId) {
-  const ids = await stackContainers({ owners: false });
-  if (ids.length > 0) await docker(["rm", "--force", "--volumes", ...ids]);
-  const volumes = await removeStackVolumes();
-  await removeStackNetworks();
+  const owned = await generation();
+  if (owned.containers.length > 0)
+    await docker(["rm", "--force", "--volumes", ...owned.containers]);
+  const volumes = owned.volumes.filter((name) => name !== STATE_VOLUME);
+  if (volumes.length > 0) await docker(["volume", "rm", "--force", ...volumes]);
+  for (const network of owned.networks)
+    await docker(["network", "rm", network]).catch(() => undefined);
+  if (owned.volumes.includes(STATE_VOLUME)) await docker(["volume", "rm", "--force", STATE_VOLUME]);
   await rm(stateFile, { force: true });
   if (ownerId !== null) await docker(["rm", "--force", ownerId]);
-  return { containers: ids.length + (ownerId === null ? 0 : 1), volumes };
-}
-
-async function removeStackVolumes() {
-  const volumes = (await dockerOut(["volume", "ls", "--quiet"])).split("\n").filter(Boolean);
-  const owned = [
-    STATE_VOLUME,
-    FIXTURE_VOLUME,
-    "mend-store",
-    "mend-control",
-    "mend-garage",
-    ...volumes.filter((name) => name.startsWith(`${COMPOSE_PROJECT}_`)),
-  ].filter((name) => volumes.includes(name));
-  if (owned.length > 0) await docker(["volume", "rm", "--force", ...owned]);
-  return owned.length;
-}
-
-async function removeStackNetworks() {
-  const networks = (await dockerOut(["network", "ls", "--format", "{{.Name}}"]))
-    .split("\n")
-    .filter((name) => name === COMPOSE_NETWORK || /^sealant-[0-9a-f-]+-network$/i.test(name));
-  for (const network of networks) await docker(["network", "rm", network]).catch(() => undefined);
+  return {
+    containers: owned.containers.length + (ownerId === null ? 0 : 1),
+    volumes: owned.volumes.length,
+  };
 }
 
 /**
@@ -1440,14 +1507,31 @@ async function teardown([claimId]) {
 // ─── the daemon's lock ──────────────────────────────────────────────────────
 
 /**
- * The lock file of this Docker daemon: one per daemon (`docker info` names it), in /tmp so every
- * person in a session's workspace reaches the same file, readable by all (flock needs no write).
+ * The lock file of this Docker daemon (`docker info` names it), private to the person: in a
+ * directory of theirs, 0700, that is no symlink, opened 0600 without following one, and checked once
+ * open to be their own regular file, so nobody else can create it first or hold it. Two people who
+ * share one daemon therefore hold different locks: the daemon's claim still lets one stack up at a
+ * time, but neither's teardown waits for the other's start (docs/operations/verify-stack.md).
+ * Returns the open descriptor.
  */
-async function daemonLockPath() {
+async function openDaemonLock() {
   const id = await dockerOut(["info", "--format", "{{.ID}}"]);
-  const path = `/tmp/mend-verify-stack-${digestOf(id).slice(0, 16)}.lock`;
-  closeSync(openSync(path, "a", 0o644));
-  return path;
+  const dir = join(cacheDir, "locks");
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const uid = process.getuid();
+  const where = lstatSync(dir);
+  if (!where.isDirectory() || where.uid !== uid || (where.mode & 0o077) !== 0)
+    throw new Error(
+      `${dir} must be a directory of this user's, private to them (0700) and no symlink: the stack's lock lives there`,
+    );
+  const path = join(dir, `${digestOf(id).slice(0, 16)}.lock`);
+  const fd = openSync(path, constants.O_RDONLY | constants.O_CREAT | constants.O_NOFOLLOW, 0o600);
+  const file = fstatSync(fd);
+  if (!file.isFile() || file.uid !== uid || (file.mode & 0o077) !== 0) {
+    closeSync(fd);
+    throw new Error(`${path} must be this user's own file, private to them (0600)`);
+  }
+  return fd;
 }
 
 const BUSY =
@@ -1470,7 +1554,7 @@ async function lockDaemon(mode) {
     throw new Error(
       "the verify stack needs flock(1) (util-linux) to hold its daemon's lock; it runs on Linux, as Mend sessions do",
     );
-  lockFd = openSync(await daemonLockPath(), "r");
+  lockFd = await openDaemonLock();
   const how = {
     shared: ["-s", "-w", "600"],
     exclusive: ["-x", "-n"],
