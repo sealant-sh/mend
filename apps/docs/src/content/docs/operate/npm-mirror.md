@@ -65,8 +65,9 @@ all of these hold:
   `https://registry.npmjs.org/`. The script also looks in the usual config files and the environment
   itself, but only for a reason to say no: a `registry` (or `registries`) key or a login it finds
   there keeps the mirror out even when the package manager's answer would allow it. pnpm 10's
-  `config get` does not read `pnpm-workspace.yaml`, for one. A registry set anywhere wins, including
-  a line that names registry.npmjs.org explicitly.
+  `config get` does not read `pnpm-workspace.yaml`, for one, so for pnpm the script reads the
+  `pnpm-workspace.yaml` of the project and of every directory above it, block or flow form. A
+  registry set anywhere wins, including a line that names registry.npmjs.org explicitly.
 - npm lists no login for registry.npmjs.org: no `//registry.npmjs.org/:…` key, and no unscoped
   `_auth`, `_authToken`, `_password`, `username` or `always-auth`. Packages behind such a login are
   private, and the mirror never forwards a credential, so the install stays on the registry.
@@ -79,6 +80,10 @@ all of these hold:
   `--no-audit`, `--reporter=…`, `--fetch-timeout=…` and the like. `--userconfig`, `--globalconfig`,
   `--prefix`, `--dir`, `--config.…` or any flag not on that list leave the command as written.
 - The mirror answers `/-/ping` within three seconds.
+
+Asking runs project code once more. `pnpm config get` loads the project's top-level `.pnpmfile.cjs`,
+so that file's code runs before the install as well as during it, as the same person the install
+runs as. Nothing runs that the install would not run anyway.
 
 Scoped registries are left alone. With `@corp:registry=https://npm.corp.example/` in `.npmrc`, the
 `@corp` packages and their login go to that registry, and everything else goes through the mirror.
