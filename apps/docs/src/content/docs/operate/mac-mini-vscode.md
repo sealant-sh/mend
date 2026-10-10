@@ -134,15 +134,14 @@ the daemon-side socket `/var/run/docker.sock` into Mend (not the client's
 
 ```text
 Using Docker context "st-vscode-dind" (unix:///home/…/dind-run/docker.sock)
-Docker shutdown-timeout is 15 s (dockerd default · not set in …/daemon.json), below the 3600 s capture grace: a host restart or daemon stop kills capture work
 Starting Mend 0.36.0-next.656 containers; Docker waits up to 120s for them to report healthy
 Capture store bucket mend is laid out in Garage
 Mend 0.36.0-next.656 is reachable at http://100.101.141.6:34131
 Open http://100.101.141.6:34131, create the first account, then run: mend login --url http://100.101.141.6:34131
 ```
 
-The shutdown-timeout line applies to the mini as well: Docker Desktop's daemon settings are under
-Settings → Docker Engine, where `"shutdown-timeout": 3600` gives a stopping workspace time to save.
+Quitting Docker Desktop or OrbStack with a live session stops its workspace within 60 s. What the
+workspace had not saved stays on its disk and is recovered once the server is back.
 
 Open the URL on the mini and create the first account before anyone else can reach it: registration
 is open until then, and closes after it.

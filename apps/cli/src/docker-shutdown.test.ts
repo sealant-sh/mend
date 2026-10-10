@@ -1,157 +1,213 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  type DaemonUnit,
   type DockerDaemonFacts,
-  dockerdFactsOf,
-  dockerShutdownCheck,
-  dockerShutdownSetupLine,
-  type HostFile,
+  dockerStopCheck,
+  dockerStopSetupLine,
   observeDockerd,
+  parseContainerStopTimeouts,
+  parseDaemonUnit,
   parseDockerInfo,
+  parseSystemdTimespan,
   type ProcView,
-  readShutdownTimeout,
+  readDockerStop,
+  WORKSPACE_STOP_TIMEOUT_SECONDS,
 } from "./docker-shutdown.ts";
 
-const NATIVE = { operatingSystem: "Ubuntu 24.04.1 LTS", securityOptions: ["name=seccomp"] };
-const DESKTOP = { operatingSystem: "Docker Desktop", securityOptions: ["name=seccomp"] };
-const ROOTLESS = {
+const NATIVE = {
   operatingSystem: "Ubuntu 24.04.1 LTS",
+  securityOptions: ["name=seccomp"],
+  liveRestore: false,
+};
+const DESKTOP = { ...NATIVE, operatingSystem: "Docker Desktop" };
+const ROOTLESS = {
+  ...NATIVE,
   securityOptions: ["name=seccomp,profile=builtin", "name=rootless"],
 };
 
-const facts = (
-  overrides: Partial<DockerDaemonFacts> & {
-    readonly files?: Readonly<Record<string, HostFile>>;
-  } = {},
-): DockerDaemonFacts => ({
+/** Ubuntu's docker-ce unit: systemd's default 90 s stop timeout. */
+const UNIT: DaemonUnit = {
+  name: "docker.service",
+  activeState: "active",
+  mainPid: "840",
+  timeoutStopSeconds: 90,
+};
+
+/** The RC 2 host: a capture workspace created with the old 3600 s stop timeout, and its sidecar. */
+const OLD_WORKSPACE = [
+  { name: "mend-mend-1", stopTimeout: null },
+  { name: "sealant-266a36ad-e169-4478-971b-41c47d820438", stopTimeout: 3600 },
+  { name: "sealant-266a36ad-e169-4478-971b-41c47d820438-docker", stopTimeout: null },
+];
+
+const facts = (overrides: Partial<DockerDaemonFacts> = {}): DockerDaemonFacts => ({
   info: NATIVE,
-  dockerdArgv: ["/usr/bin/dockerd", "-H", "fd://"],
-  home: "/home/op",
-  xdgConfigHome: null,
-  readFile: (file) => overrides.files?.[file] ?? { kind: "absent" },
+  dockerdPid: "840",
+  containers: [],
+  unit: UNIT,
   ...overrides,
 });
 
-const json = (value: unknown): HostFile => ({ kind: "read", text: JSON.stringify(value) });
-
-describe("the Docker daemon's shutdown timeout", () => {
-  it("a dockerd observed without the flag or the key reads the 15 s default, below the capture grace, with the fix", () => {
-    const reading = readShutdownTimeout(facts());
-    expect(dockerShutdownCheck(reading)).toEqual({
+describe("what a Docker daemon stop waits for", () => {
+  it("a workspace's 3600 s stop timeout outlasts systemd's 90 s: todo, stop that session first (RC 2)", () => {
+    const reading = readDockerStop(facts({ containers: OLD_WORKSPACE }));
+    expect(dockerStopCheck(reading)).toEqual({
       label: "docker",
       state: "todo",
       detail:
-        "shutdown-timeout 15 s · dockerd default · not set in /etc/docker/daemon.json · below the 3600 s capture grace",
-      fix: 'set "shutdown-timeout": 3600 in /etc/docker/daemon.json, then restart dockerd',
+        "a Docker stop waits up to 3600 s · sealant-266a36ad-e169-4478-971b-41c47d820438's stop timeout · systemd kills docker.service after 90 s, and Docker's next start waits for what it left running",
+      fix: "stop that session (mend sessions, then mend stop <session>) before you restart or upgrade Docker",
     });
-    expect(dockerShutdownSetupLine(reading)).toBe(
-      'Docker shutdown-timeout is 15 s (dockerd default · not set in /etc/docker/daemon.json), below the 3600 s capture grace: a host restart or daemon stop kills capture workspaces after 15 s, before they save. To raise it: set "shutdown-timeout": 3600 in /etc/docker/daemon.json, then restart dockerd.',
+    // Setup counts the workspaces it starts beside the ones running, and says it before starting.
+    expect(dockerStopSetupLine(readDockerStop(facts({ containers: OLD_WORKSPACE }), 60))).toBe(
+      "A Docker stop waits up to 3600 s (sealant-266a36ad-e169-4478-971b-41c47d820438's stop timeout), but systemd kills docker.service after 90 s, and Docker's next start waits for what it left running: a restart or upgrade of Docker with a live session leaves Docker down until that workspace ends. To avoid it: stop that session (mend sessions, then mend stop <session>) before you restart or upgrade Docker.",
     );
   });
 
-  it("daemon.json at 3600 covers the grace: ok, and setup says nothing", () => {
-    const reading = readShutdownTimeout(
-      facts({ files: { "/etc/docker/daemon.json": json({ "shutdown-timeout": 3600 }) } }),
-    );
-    expect(dockerShutdownCheck(reading)).toEqual({
+  it("a workspace with the bounded stop timeout fits: ok, and setup says nothing", () => {
+    const containers = [{ name: "sealant-run-1", stopTimeout: WORKSPACE_STOP_TIMEOUT_SECONDS }];
+    expect(dockerStopCheck(readDockerStop(facts({ containers })))).toEqual({
       label: "docker",
       state: "ok",
-      detail: "shutdown-timeout 3600 s · /etc/docker/daemon.json · covers the 3600 s capture grace",
+      detail:
+        "a Docker stop waits up to 60 s · sealant-run-1's stop timeout · systemd allows docker.service 90 s",
       fix: null,
     });
-    expect(dockerShutdownSetupLine(reading)).toBeNull();
-  });
-
-  it("the daemon's --config-file is the one read", () => {
-    const reading = readShutdownTimeout(
-      facts({
-        dockerdArgv: ["/nix/store/x/dockerd", "--config-file=/nix/store/y-daemon.json"],
-        files: { "/nix/store/y-daemon.json": json({ "shutdown-timeout": 60 }) },
-      }),
-    );
-    expect(dockerShutdownCheck(reading).detail).toBe(
-      "shutdown-timeout 60 s · /nix/store/y-daemon.json · below the 3600 s capture grace",
-    );
-  });
-
-  it("the --shutdown-timeout flag wins over daemon.json, and its fix names the flag", () => {
-    const reading = readShutdownTimeout(
-      facts({
-        dockerdArgv: ["dockerd", "--shutdown-timeout", "30"],
-        files: { "/etc/docker/daemon.json": json({ "shutdown-timeout": 3600 }) },
-      }),
-    );
-    expect(dockerShutdownCheck(reading)).toEqual({
-      label: "docker",
-      state: "todo",
-      detail: "shutdown-timeout 30 s · dockerd --shutdown-timeout · below the 3600 s capture grace",
-      fix: "raise dockerd --shutdown-timeout to 3600, then restart dockerd",
+    expect(dockerStopSetupLine(readDockerStop(facts(), WORKSPACE_STOP_TIMEOUT_SECONDS))).toBeNull();
+    expect(dockerStopCheck(readDockerStop(facts()))).toMatchObject({
+      state: "ok",
+      detail: "no container running · systemd allows docker.service 90 s",
     });
+  });
+
+  it("a unit stop timeout too short even for a bounded workspace names the unit setting", () => {
+    const unit = { ...UNIT, timeoutStopSeconds: 45 };
     expect(
-      readShutdownTimeout(facts({ dockerdArgv: ["dockerd", "--shutdown-timeout=7200"] })),
-    ).toMatchObject({ kind: "observed", seconds: 7200, fromFlag: true });
+      dockerStopSetupLine(readDockerStop(facts({ unit }), WORKSPACE_STOP_TIMEOUT_SECONDS)),
+    ).toBe(
+      "A Docker stop waits up to 60 s (a workspace's stop timeout), but systemd kills docker.service after 45 s, and Docker's next start waits for what it left running: a restart or upgrade of Docker with a live session leaves Docker down until that workspace ends. To avoid it: sudo systemctl edit docker.service and set [Service] TimeoutStopSec=95.",
+    );
+    expect(
+      dockerStopCheck(
+        readDockerStop(
+          facts({ unit: { ...UNIT, timeoutStopSeconds: null }, containers: OLD_WORKSPACE }),
+        ),
+      ),
+    ).toMatchObject({
+      state: "ok",
+      detail: expect.stringContaining("systemd waits for docker.service without a limit"),
+    });
+  });
+
+  it("live-restore leaves sessions running through a Docker restart: ok, nothing to say", () => {
+    const live = facts({ info: { ...NATIVE, liveRestore: true }, containers: OLD_WORKSPACE });
+    expect(dockerStopCheck(readDockerStop(live))).toEqual({
+      label: "docker",
+      state: "ok",
+      detail: "live-restore on · a Docker restart leaves sessions running",
+      fix: null,
+    });
+    expect(dockerStopSetupLine(readDockerStop(live, 60))).toBeNull();
   });
 
   it("what could not be read is not observed, never fine", () => {
-    const unreadable = readShutdownTimeout(
-      facts({ files: { "/etc/docker/daemon.json": { kind: "unreadable" } } }),
-    );
-    expect(dockerShutdownCheck(unreadable)).toEqual({
+    expect(dockerStopCheck(readDockerStop(facts({ info: null })))).toEqual({
       label: "docker",
       state: "todo",
-      detail: "shutdown-timeout not observed · /etc/docker/daemon.json unreadable",
+      detail: "Docker stop not observed · docker info did not answer",
       fix: null,
     });
-    expect(dockerShutdownSetupLine(unreadable)).toContain("not observed");
-    // No dockerd process seen here and no key in the file: a flag may still set it.
-    expect(dockerShutdownCheck(readShutdownTimeout(facts({ dockerdArgv: null }))).detail).toBe(
-      "shutdown-timeout not observed · no dockerd process observed here · not set in /etc/docker/daemon.json",
-    );
-    expect(dockerShutdownCheck(readShutdownTimeout(facts({ info: null }))).detail).toBe(
-      "shutdown-timeout not observed · docker info did not answer",
-    );
-    expect(
-      readShutdownTimeout(
-        facts({ files: { "/etc/docker/daemon.json": { kind: "read", text: "{" } } }),
-      ),
-    ).toEqual({ kind: "unknown", why: "/etc/docker/daemon.json is not JSON" });
-  });
-
-  it("Docker Desktop is read from ~/.docker/daemon.json, whatever dockerd runs beside it", () => {
-    const unset = readShutdownTimeout(facts({ info: DESKTOP, dockerdArgv: null }));
-    expect(dockerShutdownCheck(unset)).toEqual({
-      label: "docker",
+    expect(dockerStopCheck(readDockerStop(facts({ containers: null })))).toMatchObject({
       state: "todo",
-      detail:
-        "shutdown-timeout 15 s · dockerd default · not set in /home/op/.docker/daemon.json · below the 3600 s capture grace",
-      fix: 'set "shutdown-timeout": 3600 in /home/op/.docker/daemon.json, then restart Docker Desktop',
+      detail: "Docker stop not observed · its containers could not be read",
     });
-    const set = readShutdownTimeout(
-      facts({
-        info: DESKTOP,
-        // A native dockerd on the same host is not the daemon that answered.
-        dockerdArgv: ["dockerd", "--shutdown-timeout", "5"],
-        files: { "/home/op/.docker/daemon.json": json({ "shutdown-timeout": 3600 }) },
-      }),
-    );
-    expect(dockerShutdownCheck(set).state).toBe("ok");
+    // No unit observed: systemd's default is the limit assumed, and said.
+    expect(
+      dockerStopCheck(readDockerStop(facts({ unit: null, containers: OLD_WORKSPACE }))),
+    ).toMatchObject({
+      state: "todo",
+      detail: expect.stringContaining("no systemd unit observed (systemd's default is 90 s)"),
+    });
+    expect(
+      dockerStopCheck(readDockerStop(facts({ unit: { ...UNIT, activeState: "inactive" } }))).detail,
+    ).toBe("no container running · docker.service is inactive (systemd's default is 90 s)");
   });
 
-  it("a rootless daemon is read from its own daemon.json and restarted as the user's unit", () => {
-    const reading = readShutdownTimeout(facts({ info: ROOTLESS, xdgConfigHome: "/home/op/.xdg" }));
-    expect(dockerShutdownCheck(reading).fix).toBe(
-      'set "shutdown-timeout": 3600 in /home/op/.xdg/docker/daemon.json, then systemctl --user restart docker',
+  it("Docker Desktop has no unit; a rootless daemon's is the user's", () => {
+    const desktop = readDockerStop(facts({ info: DESKTOP, containers: OLD_WORKSPACE }));
+    expect(dockerStopCheck(desktop)).toMatchObject({
+      state: "todo",
+      fix: "stop that session (mend sessions, then mend stop <session>) before you restart or upgrade Docker",
+    });
+    expect(desktop).toMatchObject({
+      limit: { kind: "none", why: "no systemd unit runs this daemon" },
+    });
+    const unit = { ...UNIT, name: "docker.service (user)", mainPid: "rootlesskit" };
+    expect(readDockerStop(facts({ info: ROOTLESS, unit, dockerdPid: "4100" }))).toMatchObject({
+      limit: { kind: "observed", unit: "docker.service (user)", seconds: 90 },
+    });
+    const short = { ...unit, timeoutStopSeconds: 30 };
+    expect(
+      dockerStopCheck(
+        readDockerStop(
+          facts({
+            info: ROOTLESS,
+            unit: short,
+            containers: [{ name: "sealant-run-1", stopTimeout: 60 }],
+          }),
+        ),
+      ).fix,
+    ).toBe("sudo systemctl edit docker.service and set [Service] TimeoutStopSec=95");
+  });
+
+  it("another container's long stop timeout is named, with its own fix", () => {
+    const containers = [{ name: "postgres", stopTimeout: 300 }];
+    expect(dockerStopCheck(readDockerStop(facts({ containers }))).fix).toBe(
+      "docker stop postgres before you restart or upgrade Docker",
     );
   });
 
   it("reads docker info's JSON, and nothing else", () => {
     expect(
       parseDockerInfo(
-        JSON.stringify({ OperatingSystem: "Docker Desktop", SecurityOptions: ["a"] }),
+        JSON.stringify({
+          OperatingSystem: "Docker Desktop",
+          SecurityOptions: ["a"],
+          LiveRestoreEnabled: true,
+        }),
       ),
-    ).toEqual({ operatingSystem: "Docker Desktop", securityOptions: ["a"] });
+    ).toEqual({ operatingSystem: "Docker Desktop", securityOptions: ["a"], liveRestore: true });
+    expect(parseDockerInfo(JSON.stringify({ OperatingSystem: "Ubuntu" }))).toEqual({
+      operatingSystem: "Ubuntu",
+      securityOptions: [],
+      liveRestore: false,
+    });
     expect(parseDockerInfo("Docker Engine - Community")).toBeNull();
     expect(parseDockerInfo(JSON.stringify({ ServerVersion: "29" }))).toBeNull();
+  });
+
+  it("reads docker inspect's stop timeouts, systemctl's timespans and its unit", () => {
+    expect(
+      parseContainerStopTimeouts("/sealant-run-1|3600\n/mend-mend-1|null\n\n/odd|name|60\n"),
+    ).toEqual([
+      { name: "sealant-run-1", stopTimeout: 3600 },
+      { name: "mend-mend-1", stopTimeout: null },
+      { name: "odd|name", stopTimeout: 60 },
+    ]);
+    expect(parseSystemdTimespan("1min 30s")).toBe(90);
+    expect(parseSystemdTimespan("90s")).toBe(90);
+    expect(parseSystemdTimespan("2h")).toBe(7200);
+    expect(parseSystemdTimespan("500ms")).toBe(1);
+    expect(parseSystemdTimespan("infinity")).toBeNull();
+    expect(parseSystemdTimespan("soon")).toBeUndefined();
+    expect(
+      parseDaemonUnit(
+        "docker.service",
+        "ActiveState=active\nMainPID=840\nTimeoutStopUSec=1min 30s\n",
+      ),
+    ).toEqual(UNIT);
+    expect(parseDaemonUnit("docker.service", "")).toBeNull();
   });
 });
 
@@ -225,16 +281,13 @@ describe("which dockerd the docker client talks to", () => {
       pid: "2052",
       argv: HOST_DOCKERD.argv,
     });
-    // And the doctor reads that daemon's own --config-file.
-    const reading = readShutdownTimeout(
-      facts({
-        ...dockerdFactsOf(observeDockerd(proc, "unix:///var/run/docker.sock")),
-        files: { "/etc/docker/host.json": json({ "shutdown-timeout": 3600 }) },
-      }),
-    );
-    expect(dockerShutdownCheck(reading)).toMatchObject({
-      state: "ok",
-      detail: "shutdown-timeout 3600 s · /etc/docker/host.json · covers the 3600 s capture grace",
+    // And the unit's limit is read as that daemon's only when its main process is that one.
+    const unit = { ...UNIT, mainPid: "2052" };
+    expect(readDockerStop(facts({ dockerdPid: "2052", unit }))).toMatchObject({
+      limit: { kind: "observed", unit: "docker.service", seconds: 90 },
+    });
+    expect(readDockerStop(facts({ dockerdPid: "900", unit }))).toMatchObject({
+      limit: { kind: "none", why: "docker.service is not the dockerd docker talks to" },
     });
   });
 
@@ -277,11 +330,6 @@ describe("which dockerd the docker client talks to", () => {
       kind: "unresolved",
       why: "2 dockerd processes · could not tell which serves /run/docker.sock",
     });
-    expect(
-      dockerShutdownCheck(readShutdownTimeout(facts(dockerdFactsOf(observation)))).detail,
-    ).toBe(
-      "shutdown-timeout not observed · 2 dockerd processes · could not tell which serves /run/docker.sock",
-    );
     // A daemon elsewhere: the local ones are not it.
     expect(observeDockerd(proc, "ssh://op@build-host")).toEqual({
       kind: "unresolved",

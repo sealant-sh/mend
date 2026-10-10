@@ -17,9 +17,10 @@ import {
 
 import {
   type DockerDaemonFacts,
-  dockerShutdownSetupLine,
+  dockerStopSetupLine,
   hostDockerDaemonFacts,
-  readShutdownTimeout,
+  readDockerStop,
+  WORKSPACE_STOP_TIMEOUT_SECONDS,
 } from "./docker-shutdown.ts";
 import { renderExposure, renderGate } from "./organization.ts";
 import {
@@ -176,8 +177,9 @@ export interface ServerSetupRuntime {
     configDir: string,
   ) => { readonly url: string; readonly token: string } | null;
   /**
-   * This host's Docker daemon facts beside `docker info`'s JSON (null when it did not answer):
-   * its dockerd argv and daemon.json (`docker-shutdown.ts`). Absent: setup does not read them.
+   * This host's Docker daemon facts beside `docker info`'s JSON (null when it did not answer): its
+   * running containers' stop timeouts and the systemd unit that runs it (`docker-shutdown.ts`).
+   * Absent: setup does not read them.
    */
   readonly dockerDaemonFacts?: (infoStdout: string | null, context: string) => DockerDaemonFacts;
   /**
@@ -3133,8 +3135,9 @@ const setupServer = async (
   const assets = await resolveAssets(runtime, serverVersion, existing, store, options);
   checkSshBindAsset(configWithoutBucket, assets.compose);
   const bucket = composeBucket(assets.compose);
-  // Capture workspaces save on a stop within their long stop grace; a daemon shutdown gives them
-  // only the daemon's own timeout. Said once here, where the operator can still raise it.
+  // A daemon stop waits for each container's own stop timeout, the workspaces this starts
+  // included; one the host's systemd unit cuts short leaves Docker down on its next start. Said
+  // once here, before anything starts.
   if (bucket !== undefined && runtime.dockerDaemonFacts !== undefined) {
     const info = await runtime.run("docker", [
       "--context",
@@ -3143,9 +3146,10 @@ const setupServer = async (
       "--format",
       "{{json .}}",
     ]);
-    const line = dockerShutdownSetupLine(
-      readShutdownTimeout(
+    const line = dockerStopSetupLine(
+      readDockerStop(
         runtime.dockerDaemonFacts(info.status === 0 ? info.stdout : null, selectedContext.name),
+        WORKSPACE_STOP_TIMEOUT_SECONDS,
       ),
     );
     if (line !== null) runtime.writeLine(line);

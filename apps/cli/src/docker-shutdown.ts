@@ -1,88 +1,95 @@
 import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
 
 import type { Check } from "./doctor.ts";
 
 /**
- * The Docker daemon's own shutdown timeout, against the grace a capture workspace needs to save.
+ * What a Docker daemon stop does to the workspaces on it, and whether the host lets it finish.
  *
- * A `docker stop` of a capture workspace waits for the container's own stop timeout, which Core
- * sets long enough for sealantd's final flush. The daemon's shutdown does not: when dockerd itself
- * stops (a host restart, `systemctl stop docker`, quitting Docker Desktop) it gives every container
- * its `shutdown-timeout` (15 s unless configured) and then kills it, whatever the container asked
- * for. A workspace killed there loses what it had not shipped. This reads that timeout where it
- * can be read and says what was observed; what could not be read is reported as not observed.
+ * dockerd's own shutdown (`systemctl stop docker`, an `apt upgrade` of docker-ce, quitting Docker
+ * Desktop) stops every running container with that container's own stop timeout, not with the
+ * daemon's `shutdown-timeout`: it waits for the longest one, plus 5 s. systemd gives
+ * `docker.service` its `TimeoutStopSec` (90 s by default) and then SIGKILLs dockerd, which leaves
+ * that container running. The next start, without `live-restore`, stops it again inside "Restoring
+ * containers" with the same timeout before it starts anything — Mend's own containers included,
+ * while the workspace's final flush waits for them. Sealant created capture workspaces with a
+ * 3600 s stop timeout until it bounded it at `WORKSPACE_STOP_TIMEOUT_SECONDS`; one of those still
+ * running turns a Docker restart into an hour without Docker.
+ *
+ * This reads what decides it and says what was observed: the running containers' stop timeouts,
+ * the systemd unit that runs the daemon, and `live-restore`.
  */
 
 /**
- * The stop grace Core gives a capture workspace container (Core
- * `SEALANT_DOCKER_CAPTURE_STOP_GRACE_SECONDS`, default 3600, set as its StopTimeout at create).
+ * The stop timeout Sealant gives a workspace container (Core
+ * `SEALANT_DOCKER_CONTAINER_STOP_TIMEOUT_SECONDS`, default 60): what a workspace setup starts gets.
  */
-export const DOCKER_CAPTURE_STOP_GRACE_SECONDS = 3600;
+export const WORKSPACE_STOP_TIMEOUT_SECONDS = 60;
 
-/** dockerd's `shutdown-timeout` when neither its flag nor its daemon.json sets one. */
-export const DOCKERD_DEFAULT_SHUTDOWN_TIMEOUT_SECONDS = 15;
+/** Docker's stop timeout for a container that sets none (`default-stop-timeout` unset). */
+export const DOCKER_DEFAULT_STOP_TIMEOUT_SECONDS = 10;
 
-/** One configuration file as this machine answered for it. */
-export type HostFile =
-  | { readonly kind: "absent" }
-  | { readonly kind: "unreadable" }
-  | { readonly kind: "read"; readonly text: string };
+/** What dockerd adds to the longest stop timeout before it gives up on its own shutdown. */
+export const DOCKERD_SHUTDOWN_GRACE_SECONDS = 5;
 
-/** The facts `readShutdownTimeout` works from, gathered by the caller (`gatherDockerDaemonFacts`). */
+/** systemd's `DefaultTimeoutStopSec`: the limit assumed where no unit was observed. */
+export const SYSTEMD_DEFAULT_STOP_SECONDS = 90;
+
+/** Which daemon answered, as far as `docker info` tells. */
+export type DockerDaemonKind = "dockerd" | "rootless" | "desktop" | "orbstack";
+
+/** One running container's stop timeout; null when it sets none. */
+export interface ContainerStopTimeout {
+  readonly name: string;
+  readonly stopTimeout: number | null;
+}
+
+/** The systemd unit's answer for the daemon: `systemctl show` of it. */
+export interface DaemonUnit {
+  /** `docker.service`, or `docker.service (user)` for a rootless daemon. */
+  readonly name: string;
+  readonly activeState: string;
+  readonly mainPid: string;
+  /** `TimeoutStopUSec` in seconds; null for `infinity`. */
+  readonly timeoutStopSeconds: number | null;
+}
+
+/** The facts `readDockerStop` works from, gathered by the caller (`hostDockerDaemonFacts`). */
 export interface DockerDaemonFacts {
   /** `docker info`, parsed; null when docker did not answer or answered something unreadable. */
   readonly info: {
     readonly operatingSystem: string;
     readonly securityOptions: ReadonlyArray<string>;
+    readonly liveRestore: boolean;
   } | null;
-  /**
-   * The argv of the dockerd the docker client talks to (`observeDockerd`); null when none was
-   * observed, or when it could not be told which one it is (`dockerdUnresolved` says why).
-   */
-  readonly dockerdArgv: ReadonlyArray<string> | null;
-  /** Why no dockerd's argv is given although dockerd processes were seen; absent when not so. */
-  readonly dockerdUnresolved?: string | null;
-  readonly readFile: (file: string) => HostFile;
-  readonly home: string;
-  /** `$XDG_CONFIG_HOME`, when set. */
-  readonly xdgConfigHome: string | null;
+  /** The pid of the dockerd the docker client talks to (`observeDockerd`); null when not observed. */
+  readonly dockerdPid: string | null;
+  /** The running containers' stop timeouts; null when they could not be read. */
+  readonly containers: ReadonlyArray<ContainerStopTimeout> | null;
+  /** The systemd unit of that kind of daemon; null when systemctl did not answer for one. */
+  readonly unit: DaemonUnit | null;
 }
 
-/** Which daemon answered, as far as it tells: where its `shutdown-timeout` is configured. */
-export type DockerDaemonKind = "dockerd" | "rootless" | "desktop" | "orbstack";
+/** The limit the host puts on a daemon stop. */
+export type StopLimit =
+  | { readonly kind: "observed"; readonly unit: string; readonly seconds: number | null }
+  | { readonly kind: "none"; readonly why: string };
 
-export type ShutdownTimeoutReading =
+export type DockerStopReading =
+  | { readonly kind: "unknown"; readonly why: string }
+  | { readonly kind: "live-restore" }
   | {
       readonly kind: "observed";
-      readonly seconds: number;
-      /** Where the value came from: `dockerd --shutdown-timeout`, a daemon.json path, or the default. */
-      readonly source: string;
-      readonly daemon: DockerDaemonKind;
-      /** The file that sets it (or would): where the fix goes. */
-      readonly configPath: string;
-      readonly fromFlag: boolean;
-    }
-  | { readonly kind: "unknown"; readonly why: string };
-
-/** `--name=value` or `--name value` from an argv; null when absent. */
-const flagValue = (argv: ReadonlyArray<string>, name: string): string | null => {
-  for (let index = 0; index < argv.length; index += 1) {
-    const arg = argv[index] ?? "";
-    if (arg.startsWith(`${name}=`)) return arg.slice(name.length + 1);
-    if (arg === name) return argv[index + 1] ?? "";
-  }
-  return null;
-};
-
-/** A duration in seconds as dockerd takes it: a non-negative integer. */
-const seconds = (value: unknown): number | null => {
-  if (typeof value === "number" && Number.isInteger(value) && value >= 0) return value;
-  if (typeof value === "string" && /^\d+$/.test(value.trim())) return Number(value.trim());
-  return null;
-};
+      /** The longest stop timeout a daemon stop waits for. */
+      readonly waitSeconds: number;
+      /** Whose it is: a running container, or (setup) the workspaces it is about to start. */
+      readonly longest:
+        | { readonly kind: "container"; readonly name: string }
+        | { readonly kind: "workspaces" }
+        | null;
+      readonly limit: StopLimit;
+    };
 
 const daemonKindOf = (info: NonNullable<DockerDaemonFacts["info"]>): DockerDaemonKind => {
   if (/docker desktop/i.test(info.operatingSystem)) return "desktop";
@@ -91,165 +98,145 @@ const daemonKindOf = (info: NonNullable<DockerDaemonFacts["info"]>): DockerDaemo
   return "dockerd";
 };
 
-/** Where each kind of daemon keeps its daemon.json (Docker Desktop: Settings → Docker Engine). */
-const defaultConfigPath = (facts: DockerDaemonFacts, daemon: DockerDaemonKind): string => {
-  switch (daemon) {
-    case "desktop":
-      return path.join(facts.home, ".docker", "daemon.json");
-    case "orbstack":
-      return path.join(facts.home, ".orbstack", "config", "docker.json");
-    case "rootless":
-      return path.join(
-        facts.xdgConfigHome ?? path.join(facts.home, ".config"),
-        "docker",
-        "daemon.json",
-      );
-    case "dockerd":
-      return "/etc/docker/daemon.json";
+/**
+ * The unit's limit, when it is the daemon's: active, and — for a rootful daemon whose process was
+ * observed — the unit's main process is that dockerd (a rootless unit's main process is
+ * rootlesskit, so it is taken as the daemon's while active).
+ */
+const stopLimitOf = (facts: DockerDaemonFacts, daemon: DockerDaemonKind): StopLimit => {
+  if (daemon === "desktop" || daemon === "orbstack") {
+    return { kind: "none", why: "no systemd unit runs this daemon" };
   }
+  const unit = facts.unit;
+  if (unit === null) return { kind: "none", why: "no systemd unit observed" };
+  if (unit.activeState !== "active") {
+    return { kind: "none", why: `${unit.name} is ${unit.activeState}` };
+  }
+  if (daemon === "dockerd" && facts.dockerdPid !== null && unit.mainPid !== facts.dockerdPid) {
+    return { kind: "none", why: `${unit.name} is not the dockerd docker talks to` };
+  }
+  return { kind: "observed", unit: unit.name, seconds: unit.timeoutStopSeconds };
 };
 
 /**
- * The daemon's shutdown timeout, from what was observed: the running dockerd's
- * `--shutdown-timeout` flag, else its daemon.json (`--config-file`, else the daemon's default
- * location), else the dockerd default — but the default only when nothing else could set it: the
- * dockerd process was observed without the flag, or the daemon is Docker Desktop or OrbStack, whose
- * engine is configured through that one file. Anything else is `unknown`, with what was not seen.
+ * What a daemon stop waits for and what the host allows it, from what was observed. `expected`
+ * is a stop timeout about to exist (setup: the workspaces it starts), counted beside the running
+ * containers'.
  */
-export const readShutdownTimeout = (facts: DockerDaemonFacts): ShutdownTimeoutReading => {
+export const readDockerStop = (
+  facts: DockerDaemonFacts,
+  expected: number | null = null,
+): DockerStopReading => {
   if (facts.info === null) return { kind: "unknown", why: "docker info did not answer" };
-  const daemon = daemonKindOf(facts.info);
-  const managed = daemon === "desktop" || daemon === "orbstack";
-  const argv = managed ? null : facts.dockerdArgv;
-  const unresolved = facts.dockerdUnresolved ?? null;
-  // Another daemon's flags or file would be read as this one's: say what was not seen instead.
-  if (argv === null && !managed && unresolved !== null) return { kind: "unknown", why: unresolved };
-  const configPath =
-    (argv === null ? null : flagValue(argv, "--config-file")) ?? defaultConfigPath(facts, daemon);
-  if (argv !== null) {
-    const flag = flagValue(argv, "--shutdown-timeout");
-    if (flag !== null) {
-      const value = seconds(flag);
-      return value === null
-        ? { kind: "unknown", why: `dockerd --shutdown-timeout ${flag} unreadable` }
-        : {
-            kind: "observed",
-            seconds: value,
-            source: "dockerd --shutdown-timeout",
-            daemon,
-            configPath,
-            fromFlag: true,
-          };
+  if (facts.info.liveRestore) return { kind: "live-restore" };
+  if (facts.containers === null)
+    return { kind: "unknown", why: "its containers could not be read" };
+  let waitSeconds = expected ?? 0;
+  let longest: Extract<DockerStopReading, { readonly kind: "observed" }>["longest"] =
+    expected === null ? null : { kind: "workspaces" };
+  for (const container of facts.containers) {
+    const seconds = container.stopTimeout ?? DOCKER_DEFAULT_STOP_TIMEOUT_SECONDS;
+    if (seconds > waitSeconds) {
+      waitSeconds = seconds;
+      longest = { kind: "container", name: container.name };
     }
-  }
-  const file = facts.readFile(configPath);
-  if (file.kind === "unreadable") return { kind: "unknown", why: `${configPath} unreadable` };
-  if (file.kind === "read") {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(file.text);
-    } catch {
-      return { kind: "unknown", why: `${configPath} is not JSON` };
-    }
-    const configured =
-      typeof parsed === "object" && parsed !== null && "shutdown-timeout" in parsed
-        ? parsed["shutdown-timeout"]
-        : undefined;
-    if (configured !== undefined) {
-      const value = seconds(configured);
-      return value === null
-        ? { kind: "unknown", why: `shutdown-timeout in ${configPath} unreadable` }
-        : {
-            kind: "observed",
-            seconds: value,
-            source: configPath,
-            daemon,
-            configPath,
-            fromFlag: false,
-          };
-    }
-  }
-  if (argv === null && !managed) {
-    return {
-      kind: "unknown",
-      why: `no dockerd process observed here · not set in ${configPath}`,
-    };
   }
   return {
     kind: "observed",
-    seconds: DOCKERD_DEFAULT_SHUTDOWN_TIMEOUT_SECONDS,
-    source: `dockerd default · not set in ${configPath}`,
-    daemon,
-    configPath,
-    fromFlag: false,
+    waitSeconds,
+    longest,
+    limit: stopLimitOf(facts, daemonKindOf(facts.info)),
   };
 };
 
-/** What restarts the daemon so a new `shutdown-timeout` takes effect. */
-const restartWords = (daemon: DockerDaemonKind): string => {
-  switch (daemon) {
-    case "desktop":
-      return "restart Docker Desktop";
-    case "orbstack":
-      return "restart OrbStack";
-    case "rootless":
-      return "systemctl --user restart docker";
-    case "dockerd":
-      return "restart dockerd";
-  }
+/** The seconds a daemon stop may take before the host ends it; null for no limit. */
+const limitSeconds = (limit: StopLimit): number | null =>
+  limit.kind === "observed" ? limit.seconds : SYSTEMD_DEFAULT_STOP_SECONDS;
+
+/** Whether a daemon stop would outlast what the host allows. */
+const outlasts = (reading: Extract<DockerStopReading, { readonly kind: "observed" }>): boolean => {
+  const limit = limitSeconds(reading.limit);
+  return limit !== null && reading.waitSeconds + DOCKERD_SHUTDOWN_GRACE_SECONDS >= limit;
 };
 
-/** The one change that raises it, in the file (or flag) the value came from. */
-export const raiseShutdownTimeoutWords = (
-  reading: Extract<ShutdownTimeoutReading, { readonly kind: "observed" }>,
-  grace: number,
-): string =>
-  reading.fromFlag
-    ? `raise dockerd --shutdown-timeout to ${grace}, then ${restartWords(reading.daemon)}`
-    : `set "shutdown-timeout": ${grace} in ${reading.configPath}, then ${restartWords(reading.daemon)}`;
+const whose = (reading: Extract<DockerStopReading, { readonly kind: "observed" }>): string => {
+  if (reading.longest === null) return "no container running";
+  if (reading.longest.kind === "workspaces") return "a workspace's stop timeout";
+  return `${reading.longest.name}'s stop timeout`;
+};
 
-/** The doctor line (`docker`): what was observed, against the capture grace. */
-export const dockerShutdownCheck = (
-  reading: ShutdownTimeoutReading,
-  grace: number = DOCKER_CAPTURE_STOP_GRACE_SECONDS,
-): Check => {
+/** What a daemon stop waits for. */
+const stopWords = (reading: Extract<DockerStopReading, { readonly kind: "observed" }>): string =>
+  reading.longest === null
+    ? "no container running"
+    : `a Docker stop waits up to ${reading.waitSeconds} s · ${whose(reading)}`;
+
+const limitWords = (limit: StopLimit, ok: boolean): string => {
+  if (limit.kind === "none")
+    return `${limit.why} (systemd's default is ${SYSTEMD_DEFAULT_STOP_SECONDS} s)`;
+  if (limit.seconds === null) return `systemd waits for ${limit.unit} without a limit`;
+  return ok
+    ? `systemd allows ${limit.unit} ${limit.seconds} s`
+    : `systemd kills ${limit.unit} after ${limit.seconds} s, and Docker's next start waits for what it left running`;
+};
+
+/** A workspace container Sealant created, by its name (`sealant-<run>`, its sidecar `-docker`). */
+const isWorkspace = (name: string): boolean => name.startsWith("sealant-");
+
+/** The one change that lets the stop finish: stop the long container, or give the unit room. */
+const fixWords = (reading: Extract<DockerStopReading, { readonly kind: "observed" }>): string => {
+  const longest = reading.longest;
+  if (
+    longest !== null &&
+    longest.kind === "container" &&
+    reading.waitSeconds > WORKSPACE_STOP_TIMEOUT_SECONDS
+  ) {
+    return isWorkspace(longest.name)
+      ? "stop that session (mend sessions, then mend stop <session>) before you restart or upgrade Docker"
+      : `docker stop ${longest.name} before you restart or upgrade Docker`;
+  }
+  const room = reading.waitSeconds + DOCKERD_SHUTDOWN_GRACE_SECONDS + 30;
+  return reading.limit.kind === "observed"
+    ? `sudo systemctl edit ${reading.limit.unit.replace(" (user)", "")} and set [Service] TimeoutStopSec=${room}`
+    : "stop sessions before you restart, upgrade or quit Docker";
+};
+
+/** The doctor line (`docker`): what a daemon stop waits for, against what the host allows. */
+export const dockerStopCheck = (reading: DockerStopReading): Check => {
   if (reading.kind === "unknown") {
     return {
       label: "docker",
       state: "todo",
-      detail: `shutdown-timeout not observed · ${reading.why}`,
+      detail: `Docker stop not observed · ${reading.why}`,
       fix: null,
     };
   }
-  if (reading.seconds >= grace) {
+  if (reading.kind === "live-restore") {
     return {
       label: "docker",
       state: "ok",
-      detail: `shutdown-timeout ${reading.seconds} s · ${reading.source} · covers the ${grace} s capture grace`,
+      detail: "live-restore on · a Docker restart leaves sessions running",
       fix: null,
     };
   }
+  const ok = !outlasts(reading);
   return {
     label: "docker",
-    state: "todo",
-    detail: `shutdown-timeout ${reading.seconds} s · ${reading.source} · below the ${grace} s capture grace`,
-    fix: raiseShutdownTimeoutWords(reading, grace),
+    state: ok ? "ok" : "todo",
+    detail: `${stopWords(reading)} · ${limitWords(reading.limit, ok)}`,
+    fix: ok ? null : fixWords(reading),
   };
 };
 
 /**
- * What `mend server setup` prints about it: nothing when it covers the grace; otherwise one line
- * saying what was observed and, when it is below, what a daemon shutdown does and how to raise it.
+ * What `mend server setup` prints about it, counting the workspaces it is about to start: nothing
+ * when a daemon stop fits what the host allows (or live-restore is on); otherwise one line.
  */
-export const dockerShutdownSetupLine = (
-  reading: ShutdownTimeoutReading,
-  grace: number = DOCKER_CAPTURE_STOP_GRACE_SECONDS,
-): string | null => {
-  if (reading.kind === "unknown") {
-    return `Docker shutdown-timeout not observed (${reading.why}); a daemon shutdown below ${grace} s kills capture workspaces before they save. See docs/SELF-HOSTING.md.`;
-  }
-  if (reading.seconds >= grace) return null;
-  return `Docker shutdown-timeout is ${reading.seconds} s (${reading.source}), below the ${grace} s capture grace: a host restart or daemon stop kills capture workspaces after ${reading.seconds} s, before they save. To raise it: ${raiseShutdownTimeoutWords(reading, grace)}.`;
+export const dockerStopSetupLine = (reading: DockerStopReading): string | null => {
+  if (reading.kind === "live-restore") return null;
+  if (reading.kind === "unknown") return null;
+  if (!outlasts(reading)) return null;
+  return `A Docker stop waits up to ${reading.waitSeconds} s (${whose(reading)}), but ${limitWords(reading.limit, false)}: a restart or upgrade of Docker with a live session leaves Docker down until that workspace ends. To avoid it: ${fixWords(reading)}.`;
 };
 
 /** `docker info --format '{{json .}}'` output, as the fields read here; null when unreadable. */
@@ -269,18 +256,63 @@ export const parseDockerInfo = (stdout: string): DockerDaemonFacts["info"] => {
     securityOptions: Array.isArray(options)
       ? options.filter((option): option is string => typeof option === "string")
       : [],
+    liveRestore: "LiveRestoreEnabled" in parsed && parsed.LiveRestoreEnabled === true,
   };
 };
 
-/** A file on this machine, as absent, unreadable or its text. */
-export const readHostFile = (file: string): HostFile => {
-  try {
-    return { kind: "read", text: fs.readFileSync(file, "utf8") };
-  } catch (cause) {
-    return cause instanceof Error && "code" in cause && cause.code === "ENOENT"
-      ? { kind: "absent" }
-      : { kind: "unreadable" };
+/** `docker inspect --format '{{.Name}}|{{json .Config.StopTimeout}}'` lines, one per container. */
+export const parseContainerStopTimeouts = (stdout: string): ReadonlyArray<ContainerStopTimeout> =>
+  stdout
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line !== "")
+    .map((line) => {
+      const bar = line.lastIndexOf("|");
+      const name = (bar < 0 ? line : line.slice(0, bar)).replace(/^\//, "");
+      const value = bar < 0 ? "" : line.slice(bar + 1).trim();
+      return { name, stopTimeout: /^\d+$/.test(value) ? Number(value) : null };
+    });
+
+const TIMESPAN_UNITS: Record<string, number> = {
+  us: 1e-6,
+  ms: 1e-3,
+  s: 1,
+  sec: 1,
+  m: 60,
+  min: 60,
+  h: 3600,
+  hr: 3600,
+  d: 86400,
+  w: 604800,
+};
+
+/** A systemd timespan as `systemctl show` prints it (`1min 30s`, `infinity`): seconds, null, or undefined when unreadable. */
+export const parseSystemdTimespan = (text: string): number | null | undefined => {
+  const value = text.trim();
+  if (value === "infinity") return null;
+  if (value === "") return undefined;
+  let total = 0;
+  for (const part of value.split(/\s+/)) {
+    const match = /^(\d+(?:\.\d+)?)([a-z]*)$/.exec(part);
+    const unit = match?.[2] === "" ? "s" : match?.[2];
+    const factor = unit === undefined ? undefined : TIMESPAN_UNITS[unit];
+    if (match === null || factor === undefined) return undefined;
+    total += Number(match[1]) * factor;
   }
+  return Math.round(total);
+};
+
+/** `systemctl show <unit> -p ActiveState -p MainPID -p TimeoutStopUSec` output; null when unreadable. */
+export const parseDaemonUnit = (name: string, stdout: string): DaemonUnit | null => {
+  const fields = new Map<string, string>();
+  for (const line of stdout.split("\n")) {
+    const equals = line.indexOf("=");
+    if (equals > 0) fields.set(line.slice(0, equals), line.slice(equals + 1));
+  }
+  const activeState = fields.get("ActiveState");
+  const timeout = parseSystemdTimespan(fields.get("TimeoutStopUSec") ?? "");
+  if (activeState === undefined || timeout === undefined) return null;
+  return { name, activeState, mainPid: fields.get("MainPID") ?? "", timeoutStopSeconds: timeout };
 };
 
 /** What `observeDockerd` reads of `/proc`: entries, file text and link targets; null where unreadable. */
@@ -485,39 +517,78 @@ export const hostDockerEndpoint = (context: string | null = null): string => {
   return endpoint === "" ? DOCKER_DEFAULT_HOST : endpoint;
 };
 
-/** The observation, as `DockerDaemonFacts` carries it. */
-export const dockerdFactsOf = (
-  observation: DockerdObservation,
-): Pick<DockerDaemonFacts, "dockerdArgv" | "dockerdUnresolved"> => {
-  switch (observation.kind) {
-    case "observed":
-      return { dockerdArgv: observation.argv, dockerdUnresolved: null };
-    case "none":
-      return { dockerdArgv: null, dockerdUnresolved: null };
-    case "unresolved":
-      return { dockerdArgv: null, dockerdUnresolved: observation.why };
-  }
+/** A command's stdout, bounded at 3 s; null when it failed. */
+const runBounded = (command: string, args: ReadonlyArray<string>): string | null => {
+  const result = spawnSync(command, [...args], {
+    encoding: "utf8",
+    timeout: 3_000,
+    stdio: ["ignore", "pipe", "ignore"],
+  });
+  return result.status === 0 ? result.stdout : null;
 };
-
 /** This machine's facts, with `docker info`'s stdout already in hand (null when it failed). */
 export const hostDockerDaemonFacts = (
   infoStdout: string | null,
   context: string | null = null,
-): DockerDaemonFacts => ({
-  info: infoStdout === null ? null : parseDockerInfo(infoStdout),
-  ...dockerdFactsOf(observeDockerd(hostProcView, hostDockerEndpoint(context))),
-  readFile: readHostFile,
-  home: os.homedir(),
-  xdgConfigHome: process.env["XDG_CONFIG_HOME"] ?? null,
-});
+): DockerDaemonFacts => {
+  const info = infoStdout === null ? null : parseDockerInfo(infoStdout);
+  const contextArgs = context === null ? [] : ["--context", context];
+
+  const ids = info === null ? null : runBounded("docker", [...contextArgs, "ps", "-q"]);
+  const idList =
+    ids
+      ?.split("\n")
+      .map((id) => id.trim())
+      .filter((id) => id !== "") ?? [];
+  const inspected =
+    ids === null
+      ? null
+      : idList.length === 0
+        ? ""
+        : runBounded("docker", [
+            ...contextArgs,
+            "inspect",
+            "--format",
+            "{{.Name}}|{{json .Config.StopTimeout}}",
+            ...idList,
+          ]);
+  const daemon = info === null ? null : daemonKindOf(info);
+  const unitArgs = [
+    "show",
+    "docker.service",
+    "-p",
+    "ActiveState",
+    "-p",
+    "MainPID",
+    "-p",
+    "TimeoutStopUSec",
+  ];
+  const unitText =
+    daemon === "dockerd"
+      ? runBounded("systemctl", unitArgs)
+      : daemon === "rootless"
+        ? runBounded("systemctl", ["--user", ...unitArgs])
+        : null;
+  const observed = observeDockerd(hostProcView, hostDockerEndpoint(context));
+  return {
+    info,
+    dockerdPid: observed.kind === "observed" ? observed.pid : null,
+    containers: inspected === null ? null : parseContainerStopTimeouts(inspected),
+    unit:
+      unitText === null
+        ? null
+        : parseDaemonUnit(
+            daemon === "rootless" ? "docker.service (user)" : "docker.service",
+            unitText,
+          ),
+  };
+};
 
 /**
  * The doctor's read of a daemon on this machine: `docker info` through the context named, else the
  * current one, bounded at 3 s.
  */
-export const observeHostShutdownTimeout = (
-  context: string | null = null,
-): ShutdownTimeoutReading => {
+export const observeHostDockerStop = (context: string | null = null): DockerStopReading => {
   const info = spawnSync(
     "docker",
     [...(context === null ? [] : ["--context", context]), "info", "--format", "{{json .}}"],
@@ -527,7 +598,5 @@ export const observeHostShutdownTimeout = (
       stdio: ["ignore", "pipe", "ignore"],
     },
   );
-  return readShutdownTimeout(
-    hostDockerDaemonFacts(info.status === 0 ? info.stdout : null, context),
-  );
+  return readDockerStop(hostDockerDaemonFacts(info.status === 0 ? info.stdout : null, context));
 };

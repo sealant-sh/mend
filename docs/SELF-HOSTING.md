@@ -500,40 +500,52 @@ not settled until the platform reports the workspace gone.
 - The worktree lease is released only after the platform reports the workspace gone. A session
   removed while its workspace is up is removed once the workspace has gone.
 
-### The Docker daemon's shutdown timeout
+### Restarting or upgrading Docker
 
-A `docker stop` of a capture workspace waits up to the container's own stop timeout, which Sealant
-sets to `SEALANT_DOCKER_CAPTURE_STOP_GRACE_SECONDS` (default `3600`) so the executor can finish its
-final flush. The daemon's own shutdown does not honor it: when dockerd stops (a host restart,
-`systemctl stop docker`, quitting Docker Desktop) it gives every container its `shutdown-timeout`,
-15 s unless configured, and then kills it. A workspace killed there loses what it had not shipped.
+A planned stop of a capture workspace waits up to `SEALANT_DOCKER_CAPTURE_STOP_GRACE_SECONDS`
+(default `3600`) for the executor's final flush; Sealant passes it to `docker stop -t` from the
+container's `sealant.stop-grace` label. Any other stop gets the container's own stop timeout,
+`SEALANT_DOCKER_CONTAINER_STOP_TIMEOUT_SECONDS` (default `60`). That covers a plain `docker stop`,
+and dockerd's own shutdown and restore (`systemctl stop docker`, an `apt upgrade` of docker-ce,
+quitting Docker Desktop). dockerd honors each container's stop timeout there, not its
+`shutdown-timeout`: it waits for the longest one plus 5 s. Raising `shutdown-timeout` changes
+nothing for workspaces.
 
-`mend doctor` reads the timeout of the daemon on the machine it runs on, and `mend server setup`
-prints a line before it starts the containers when the timeout is below the capture grace or could
-not be read:
+systemd stops `docker.service` with its `TimeoutStopSec`, 90 s unless set. A daemon stop that
+outlasts it is SIGKILLed and leaves the container running. Without `live-restore`, the next start
+then stops that container again, with the same timeout, inside "Restoring containers", before it
+starts anything else. That includes Mend's own containers, which the workspace's final flush is
+waiting for. Until sealant#361, Sealant created capture workspaces with a 3600 s stop timeout, so a
+Docker restart with a live session left Docker down for up to an hour (RC 2 of 0.36, Ubuntu 24.04,
+Docker CE). A workspace stopped at 60 s loses nothing: its capture staging is fsynced on its disk,
+the container is kept, and the exit reconciler records it retained so recovery ships the rest.
+
+`mend doctor` reads what decides it on the machine it runs on, and `mend server setup` prints a line
+before it starts the containers when a daemon stop would outlast the unit:
 
 ```text
-○ docker      shutdown-timeout 15 s · dockerd default · not set in /etc/docker/daemon.json · below the 3600 s capture grace → set "shutdown-timeout": 3600 in /etc/docker/daemon.json, then restart dockerd
+○ docker      a Docker stop waits up to 3600 s · sealant-266a…'s stop timeout · systemd kills docker.service after 90 s, and Docker's next start waits for what it left running → stop that session (mend sessions, then mend stop <session>) before you restart or upgrade Docker
 ```
 
-It reads the running dockerd's `--shutdown-timeout` flag, then its daemon.json (the file named by
-`--config-file`, otherwise the daemon's default location). When no dockerd process is visible and
-the file does not set the key, the line reads `not observed`: a flag may still set the value.
+It reads the running containers' stop timeouts (`docker inspect`), and the `ActiveState`, `MainPID`
+and `TimeoutStopSec` of `docker.service` (the user's unit for rootless Docker). It uses the unit's
+limit only when that unit's main process is the dockerd the client talks to. Docker Desktop and
+OrbStack have no unit; the line names systemd's 90 s default there. With `live-restore` on, a daemon
+stop leaves containers running and the line says so.
 
-To raise it:
-
-- **Linux dockerd**: add `"shutdown-timeout": 3600` to `/etc/docker/daemon.json`, then
-  `sudo systemctl restart docker`. If the unit passes `--shutdown-timeout`, change the flag instead;
-  dockerd refuses to start when both set it. On NixOS set
-  `virtualisation.docker.daemon.settings."shutdown-timeout" = 3600;`.
-- **Rootless Docker**: add it to `~/.config/docker/daemon.json`, then
-  `systemctl --user restart docker`.
-- **Docker Desktop**: Settings → Docker Engine, add `"shutdown-timeout": 3600` (the file is
-  `~/.docker/daemon.json`), then Apply & restart.
-- **OrbStack**: add it to `~/.orbstack/config/docker.json`, then restart OrbStack.
-
-The host's own shutdown must also wait that long: systemd stops `docker.service` with its
-`TimeoutStopSec`, so raise that too when it is shorter than the daemon's timeout.
+- **Before you restart or upgrade Docker**, run `mend doctor`. If its `docker` line is `○`, stop the
+  session it names first. A host reboot is not affected: the shutdown waits at most 90 s more, and
+  nothing is left running for the next boot.
+- **A unit with a shorter `TimeoutStopSec`** than the workspace stop timeout plus 5 s: raise it with
+  `sudo systemctl edit docker.service` (`[Service]` `TimeoutStopSec=95` or more).
+- **`live-restore`** (`"live-restore": true` in `/etc/docker/daemon.json`) keeps sessions running
+  through a Docker restart. It is a host-wide choice, so setup does not make it. Do not turn it off
+  while a session runs: the next start stops that workspace inside "Restoring containers", the same
+  way.
+- **Docker already stuck** in "Restoring containers": find the workspace's task with
+  `sudo ctr -n moby tasks ls` and `sudo ctr -n moby containers ls` (image `sealant-workspace-…`),
+  then `sudo ctr -n moby tasks kill -s KILL <task>`. Docker finishes starting, and the workspace is
+  recovered from its disk.
 
 ## Scope and evidence
 

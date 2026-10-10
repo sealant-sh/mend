@@ -236,6 +236,13 @@ not upgrade the server. Upgrade stops application writers and saves a private da
 activating the target. A post-startup failure keeps the target pin; it never automatically restores
 the database or starts older code.
 
+Before you restart or upgrade Docker itself (`systemctl restart docker`, an `apt upgrade` of
+docker-ce), run `mend doctor` on the server. A Docker stop waits for each container's own stop
+timeout, and systemd kills `docker.service` after 90 s; anything still running then makes Docker's
+next start wait for it. Workspaces stop within 60 s, which fits. The `docker` line names a running
+container that would not, such as a workspace started by a server older than 0.36: stop its session
+first. A host reboot is not affected.
+
 When something misbehaves, `mend doctor --bundle` writes one redacted archive for a bug report: the
 CLI and its environment, the local server's configuration (the names of its `.env` keys, never their
 values), container logs, and every session with its processes and recorded output. Read it before
