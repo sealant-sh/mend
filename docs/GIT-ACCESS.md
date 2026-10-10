@@ -123,8 +123,10 @@ as RFC 3986 does: from `scheme://` to the next `/`, `?` or `#`, with everything 
 as userinfo, whatever characters it holds (quotes, angle brackets, spaces, unicode, `%`-escapes); no
 character class decides what a credential may contain (review of mend#640). Detection also asks a
 URL parser, and either finding one is enough. `redactRepositoryUrl` handles one URL (a stored
-origin, a git remote, an argument); `redactUrlCredentials` handles free text, where whitespace also
-ends a URL.
+origin, a git remote, an argument); `redactUrlCredentials` handles free text by the same rule,
+whitespace inside userinfo included (review 3 of mend#611), and the CLI's `redactCredentials`
+delegates to it, so the CLI and the server never disagree. Output that must keep its shape (the
+CLI's `--json`) is redacted one string at a time.
 
 - **Refused where it enters.** `repositoryCloneUrlIssue` refuses such a URL with guidance that names
   the supported ways (`mend keys`, `--auth bridge`). The adopt route checks it before anything else

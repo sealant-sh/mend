@@ -3,14 +3,19 @@
  * see what it belongs to, so a token or password in one is readable by them all. Mend refuses such
  * a URL where it enters, and redacts any that reaches a response or a log.
  *
- * One parser decides both, read the way RFC 3986 and URL parsers read an authority: it runs from
+ * One parser decides both, for one URL and for free text alike (the server's logs and errors, every
+ * line the CLI prints), read the way RFC 3986 and URL parsers read an authority: it runs from
  * `scheme://` to the next `/`, `?` or `#`, and its userinfo is everything before the LAST `@` in
- * it, whatever characters that holds (quotes, angle brackets, spaces, unicode, `%`-escapes, more
- * `@`s). No character class decides what a credential may contain.
+ * it, whatever characters that holds. Quotes, angle brackets, unicode and `%`-escapes are userinfo
+ * like any other character (review of mend#640), and so is whitespace: a URL parser drops a tab or
+ * a newline and encodes a space, so `oauth2:p<TAB>tok@` is a password too (review 3 of mend#611).
+ * In prose a URL with no path can take the words up to a later `@` with it: text goes, a credential
+ * never stays. Output that must keep its shape (JSON) redacts each string on its own.
  *
- * Over ssh the user is a login name (`ssh://git@host/path`, `git@host:path`) and stays; a password
- * goes. Over every other scheme the user is where tokens go (`https://oauth2:TOKEN@host`,
- * `https://TOKEN@host`), so the whole userinfo goes.
+ * Over ssh the user is a login name (`ssh://git@host/path`, `git@host:path`) and stays when it is a
+ * plain name; a password goes. Over every other scheme the user is where tokens go
+ * (`https://oauth2:TOKEN@host`, `https://TOKEN@host`), so the whole userinfo goes. scp-like
+ * `git@host:path` has no `//` and stays as it is.
  */
 
 /** A `scheme://` whose scheme does not continue a longer word. */
@@ -18,40 +23,32 @@ const SCHEME_START = /(?<![a-z0-9+.-])([a-z][a-z0-9+.-]*):\/\//gi;
 
 const isSshScheme = (scheme: string): boolean => /^(?:git\+)?ssh(?:\+git)?$/i.test(scheme);
 
-/** Where an authority starting at `from` ends: its first `/`, `?` or `#` (or whitespace, in text). */
-const authorityEnd = (text: string, from: number, inText: boolean): number => {
-  for (let index = from; index < text.length; index += 1) {
-    const char = text.charAt(index);
-    if (char === "/" || char === "?" || char === "#") return index;
-    if (inText && /\s/u.test(char)) return index;
-  }
-  return text.length;
+/** Where an authority starting at `from` ends: its first `/`, `?` or `#`. */
+const authorityEnd = (text: string, from: number): number => {
+  const rest = text.slice(from).search(/[/?#]/u);
+  return rest === -1 ? text.length : from + rest;
 };
 
 /**
- * What an authority keeps of its userinfo: nothing, or an ssh login with no password. A login that
- * itself holds an `@` or a `:` is not a plain name, so it goes whole.
+ * What an authority keeps of its userinfo: nothing, or an ssh login with its password dropped. A
+ * login that is not a plain name (a space, an `@`, a `%`-escape in it) could be the secret itself,
+ * so it goes whole.
  */
 const keptUserinfo = (scheme: string, userinfo: string): string => {
   if (!isSshScheme(scheme)) return "";
   const user = userinfo.split(":")[0] ?? "";
-  return user === "" || user.includes("@") ? "" : `${user}@`;
+  return /^[a-z0-9._~-]+$/iu.test(user) ? `${user}@` : "";
 };
 
-/**
- * Redact every `scheme://authority` in `text`. `inText`: free text (a log line, git's stderr),
- * where whitespace also ends an authority so one URL cannot reach into the next word. Without it
- * the string is one URL, and only `/`, `?` and `#` end its authority.
- */
-const redact = (text: string, inText: boolean): string => {
+/** Redact the userinfo of every `scheme://authority` in `text`. */
+const redact = (text: string): string => {
   let out = "";
   let copied = 0;
   for (const match of text.matchAll(SCHEME_START)) {
     const scheme = match[1] ?? "";
     const authorityStart = match.index + match[0].length;
     if (authorityStart < copied) continue;
-    const end = authorityEnd(text, authorityStart, inText);
-    const authority = text.slice(authorityStart, end);
+    const authority = text.slice(authorityStart, authorityEnd(text, authorityStart));
     const at = authority.lastIndexOf("@");
     if (at === -1) continue;
     const userinfo = authority.slice(0, at);
@@ -81,17 +78,18 @@ const clearedByParser = (url: string): string => {
 
 /**
  * `text` with the credential part of every URL in it removed: the password of an ssh URL, the whole
- * userinfo of any other. For free text: git's stderr, a log line, an error message.
+ * userinfo of any other. For free text (git's stderr, a log line, a line the CLI prints) and for a
+ * single URL alike.
  */
-export const redactUrlCredentials = (text: string): string => redact(text, true);
+export const redactUrlCredentials = (text: string): string => redact(text);
 
 /**
  * One repository URL with its credential removed, kept as typed otherwise: a stored origin, a git
- * remote, an argument. Whitespace does not end its authority here, and should a URL parser still
- * find a credential the scan did not, the parser clears it.
+ * remote, an argument. `redactUrlCredentials`, and should a URL parser still find a credential the
+ * scan did not, the parser clears it.
  */
 export const redactRepositoryUrl = (url: string): string => {
-  const scanned = redact(url, false);
+  const scanned = redact(url);
   return parsedCredential(scanned) ? clearedByParser(scanned) : scanned;
 };
 

@@ -9,6 +9,7 @@ import {
   pasteBytes,
   matchProjectByCwd,
   normalizeRemoteUrl,
+  jsonWithoutCredentials,
   redactCredentials,
   trackBracketedPaste,
 } from "./shared.ts";
@@ -330,10 +331,12 @@ describe("redactCredentials", () => {
     ).toBe("mend: unknown argument https://github.com/a/r");
     expect(redactCredentials("https://oauth2:p\nsecret@github.com/a")).toBe("https://github.com/a");
     expect(redactCredentials("https://oauth2:p secret@github.com/a")).toBe("https://github.com/a");
-    // A quote ends it: JSON stays JSON.
-    expect(redactCredentials('{"a": "https://h", "b": "x@y"}')).toBe(
-      '{"a": "https://h", "b": "x@y"}',
+    // Quotes are userinfo like any other character (review of mend#640); JSON output is
+    // redacted one string at a time, so it stays JSON.
+    expect(redactCredentials("http://user:se'cret@127.0.0.1/origin.git")).toBe(
+      "http://127.0.0.1/origin.git",
     );
+    expect(redactCredentials('https://u:"<x>"@h.io/x')).toBe("https://h.io/x");
     // An `@` past the authority (a query, a fragment) is no userinfo.
     expect(redactCredentials("https://h.io/x?u=a@b and https://h.io#f@x")).toBe(
       "https://h.io/x?u=a@b and https://h.io#f@x",
@@ -341,5 +344,27 @@ describe("redactCredentials", () => {
     expect(redactCredentials("http://127.0.0.1:3105/sessions/1")).toBe(
       "http://127.0.0.1:3105/sessions/1",
     );
+  });
+});
+
+describe("jsonWithoutCredentials", () => {
+  it("redacts each string on its own, so the output is still JSON", () => {
+    const printed = jsonWithoutCredentials({
+      originUrl: "https://oauth2:TOKEN@github.com/acme/r.git",
+      host: "https://h",
+      email: "x@y",
+      quoted: 'https://u:"TOKEN"@h.io',
+      nested: [{ remote: "ssh://git:TOKEN@host/x" }],
+      at: new Date("2026-10-10T00:00:00.000Z"),
+    });
+    expect(printed).not.toContain("TOKEN");
+    expect(JSON.parse(printed)).toEqual({
+      originUrl: "https://github.com/acme/r.git",
+      host: "https://h",
+      email: "x@y",
+      quoted: "https://h.io",
+      nested: [{ remote: "ssh://git@host/x" }],
+      at: "2026-10-10T00:00:00.000Z",
+    });
   });
 });

@@ -219,7 +219,11 @@ describe("a credential in a repository URL", () => {
       expect(repositoryCloneUrlIssue(stored), stored).not.toBeNull();
       expect(Result.isFailure(decode(stored)), stored).toBe(true);
     }
-    // In free text, whitespace ends a URL: one with none in it is redacted where it stands.
+    // Free text reads the same way: a URL is redacted where it stands, and whitespace inside its
+    // userinfo does not end it (a URL parser drops a tab and encodes a space; review 3 of mend#611).
+    expect(
+      redactUrlCredentials("mend: unknown argument https://oauth2:p\tse cret@github.com/a/r"),
+    ).toBe("mend: unknown argument https://github.com/a/r");
     expect(
       redactUrlCredentials(
         "fatal: unable to access 'http://user:se'cret<x>@127.0.0.1/origin.git/': 401",
@@ -246,11 +250,7 @@ describe("a credential in a repository URL", () => {
           expect(repositoryUrlHasCredential(stored)).toBe(true);
           expect(redactRepositoryUrl(stored)).toBe(clean);
           expect(repositoryUrlHasCredential(redactRepositoryUrl(stored))).toBe(false);
-          if (!/\s/u.test(stored)) {
-            expect(redactUrlCredentials(`clone '${stored}' failed`)).toBe(
-              `clone '${clean}' failed`,
-            );
-          }
+          expect(redactUrlCredentials(`clone '${stored}' failed`)).toBe(`clone '${clean}' failed`);
         },
       ),
     );

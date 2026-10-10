@@ -166,6 +166,7 @@ import {
   sessionDisplayName,
   matchProjectByCwd,
   normalizeProjectName,
+  jsonWithoutCredentials,
   redactCredentials,
   gitCurrentBranch,
   parseLaunchArgs,
@@ -4364,9 +4365,12 @@ const pause = (ms: number, signal?: AbortSignal): Promise<void> => {
 
 const clock = { sleep: pause, now: Date.now };
 
-/** Print one JSON value on stdout, as the other --json commands do. */
+/**
+ * Print one JSON value on stdout, as the other --json commands do. Each string is redacted on its
+ * own, so a credential never prints and the output is still JSON.
+ */
 const printJson = (value: unknown): void => {
-  process.stdout.write(`${redactCredentials(JSON.stringify(value, null, 2))}\n`);
+  process.stdout.write(`${jsonWithoutCredentials(value)}\n`);
 };
 
 // ─── recorded output on this terminal ───────────────────────────────────────
