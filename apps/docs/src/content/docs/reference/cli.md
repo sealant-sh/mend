@@ -115,9 +115,12 @@ none. The shape is stable:
 | `liveSessions`  | number           | Sessions live in it now                                 |
 | `current`       | boolean          | The current directory is inside it                      |
 
-The CLI never prints a URL's credentials: an origin adopted as
+The CLI never prints a URL's credentials in what it says itself: an origin adopted as
 `https://oauth2:TOKEN@github.com/acme/repo.git` reads as `https://github.com/acme/repo.git` in JSON,
-in tables and in messages.
+in tables, in messages and in the `mend service init` preview. The userinfo is everything before the
+last `@` of the URL's authority; an ssh URL keeps a plain user (`ssh://git@…`). A command's recorded
+output (`mend run`, `mend logs`, `mend attach`) and a file's contents (`mend memory show`) are
+printed as they are.
 
 ## Start agents and commands
 

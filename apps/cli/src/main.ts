@@ -2164,17 +2164,13 @@ const SERVICE_WAIT_MS = (() => {
   return Number.isFinite(configured) && configured > 0 ? configured : 90_000;
 })();
 
-/** The start request, bounded under `--wait`: a start that stalls fails with 124. */
-const startServiceWith = async (
-  label: string,
-  start: Promise<ServiceDto>,
-  wait: boolean,
-): Promise<ServiceDto> => {
-  if (!wait) return withSpinner(label, start);
-  const bounded = await withSpinner(
-    label,
-    beforeDeadline(start, clock, clock.now() + SERVICE_WAIT_MS),
-  );
+/**
+ * One step of a `--wait`: `work`, unless the wait's deadline passes first, which fails with 124.
+ * The deadline is set once, before the first request (the session lookup), so every read and the
+ * start share it (review 2 of mend#611). A null deadline (no `--wait`) waits as before.
+ */
+const withinServiceWait = async <T>(work: Promise<T>, deadline: number | null): Promise<T> => {
+  const bounded = await beforeDeadline(work, clock, deadline);
   if (bounded.done) return bounded.value;
   process.stderr.write(
     `mend: no answer within ${Math.round(SERVICE_WAIT_MS / 1000)} s · the Service may still be starting · mend service list\n`,
@@ -2200,6 +2196,7 @@ const serviceRun = async (config: CliConfig, args: ReadonlyArray<string>) => {
   const dashdash = args.indexOf("--");
   const usage = usageOf("service run");
   const wait = (dashdash === -1 ? args : args.slice(0, dashdash)).includes("--wait");
+  const deadline = wait ? clock.now() + SERVICE_WAIT_MS : null;
   // No explicit command = a DECLARED Service: resolve the name against the
   // session worktree's mend.toml and start (or adopt) its recipe.
   if (dashdash === -1) {
@@ -2207,11 +2204,13 @@ const serviceRun = async (config: CliConfig, args: ReadonlyArray<string>) => {
     const name = positionals.at(-1);
     if (name === undefined) return fail(usage);
     const prefix = positionals.length > 1 ? positionals[0] : undefined;
-    const session = await resolveLiveSession(config, prefix, "service run");
-    const recipes = await api<ReadonlyArray<ServiceRecipeDto>>(
-      config,
-      "GET",
-      `/sessions/${session.id}/recipes`,
+    const session = await withinServiceWait(
+      resolveLiveSession(config, prefix, "service run"),
+      deadline,
+    );
+    const recipes = await withinServiceWait(
+      api<ReadonlyArray<ServiceRecipeDto>>(config, "GET", `/sessions/${session.id}/recipes`),
+      deadline,
     );
     const recipe = recipes.find((entry) => entry.name === name);
     if (recipe === undefined) {
@@ -2230,16 +2229,18 @@ const serviceRun = async (config: CliConfig, args: ReadonlyArray<string>) => {
         `--wait needs a command Mend starts: ${recipe.name} declares only a port, which Mend adopts with one probe · run it without --wait, or give the recipe a command`,
       );
     }
-    const service = await startServiceWith(
+    const service = await withSpinner(
       recipe.command === null
         ? `adopting ${recipe.name} on :${recipe.port}…`
         : recipe.protocol === "udp"
           ? `starting ${recipe.name} (udp :${recipe.port})…`
           : `starting ${recipe.name} — waiting for :${recipe.port} to answer…`,
-      mutateService(config, "POST", `/sessions/${session.id}/services/recipe`, {
-        name: recipe.name,
-      }),
-      wait,
+      withinServiceWait(
+        mutateService(config, "POST", `/sessions/${session.id}/services/recipe`, {
+          name: recipe.name,
+        }),
+        deadline,
+      ),
     );
     const tunneling = willAutoConnect(config, service, args.includes("--no-connect") || wait);
     say(`${green("✓")} Service ${service.label ?? ""} · ${service.status}`);
@@ -2274,20 +2275,25 @@ const serviceRun = async (config: CliConfig, args: ReadonlyArray<string>) => {
       (portFlag === -1 || i !== portFlag + 1) &&
       (nameFlag === -1 || i !== nameFlag + 1),
   );
-  const session = await resolveLiveSession(config, prefix, "service run");
+  const session = await withinServiceWait(
+    resolveLiveSession(config, prefix, "service run"),
+    deadline,
+  );
 
-  const service = await startServiceWith(
+  const service = await withSpinner(
     protocol === "udp"
       ? `starting ${name ?? argv[0]} (udp :${port})…`
       : `starting ${name ?? argv[0]} — waiting for :${port} to answer…`,
-    mutateService(config, "POST", `/sessions/${session.id}/services/run`, {
-      argv,
-      port,
-      name,
-      protocol,
-      browserScheme,
-    }),
-    wait,
+    withinServiceWait(
+      mutateService(config, "POST", `/sessions/${session.id}/services/run`, {
+        argv,
+        port,
+        name,
+        protocol,
+        browserScheme,
+      }),
+      deadline,
+    ),
   );
   const tunneling = willAutoConnect(config, service, head.includes("--no-connect") || wait);
   say(`${green("✓")} Service ${service.label ?? ""} · ${service.status}`);
@@ -2450,7 +2456,9 @@ const serviceInit = async (args: ReadonlyArray<string>) => {
   const toml = renderMendToml(proposals);
   say(dim(`proposed ${target}:`));
   say("");
-  process.stdout.write(toml);
+  // The preview loses URL credentials a package script carries; the file written keeps the
+  // scripts as they are, since it is the project's own configuration.
+  process.stdout.write(redactCredentials(toml));
   say("");
   if (!args.includes("--yes")) {
     if (process.stdin.isTTY !== true) {
@@ -2524,7 +2532,7 @@ const attachTunnels = (config: CliConfig, optOut: boolean): AttachTunnels | null
     // The agent's TUI owns the screen: state it on the bottom row and put the cursor back,
     // so the TUI's own drawing stays where it left it. Its next repaint of that row wins.
     const rows = process.stdout.rows ?? 24;
-    process.stdout.write(`\x1b7\x1b[${rows};1H\x1b[2K${line}\x1b8`);
+    process.stdout.write(`\x1b7\x1b[${rows};1H\x1b[2K${redactCredentials(line)}\x1b8`);
   };
   const tunnels = createServiceTunnels({
     listServices: () => fetchServices(config),
@@ -2908,7 +2916,7 @@ const accountsCommand = async (config: CliConfig) => {
   } catch (error) {
     return fail(error instanceof Error ? error.message : String(error));
   }
-  for (const line of lines) process.stdout.write(`${line}\n`);
+  for (const line of lines) process.stdout.write(`${redactCredentials(line)}\n`);
 };
 
 /** The Claude grant Mend keeps for itself on this machine, for `mend doctor`. */
@@ -2926,7 +2934,7 @@ const doctorBundle = (config: CliConfig, args: ReadonlyArray<string>) =>
     defaultDir: path.join(mendCliHome(), "bundles"),
     now: () => new Date(),
     say,
-    warn: (line) => process.stderr.write(`${line}\n`),
+    warn: (line) => process.stderr.write(`${redactCredentials(line)}\n`),
     collectors: (tail) =>
       bundleCollectors({
         cliVersion: cliVersion(),

@@ -585,17 +585,22 @@ export const firstPositional = (
  * `text` with the credentials of every URL in it taken out. Adoption accepts a clone URL with a
  * token in it (`https://oauth2:TOKEN@github.com/acme/repo.git`) and the server returns the URL as
  * stored, so anything the CLI prints, a project's origin, a server's message or a JSON field, goes
- * through this. An http(s) (or any other) URL loses its whole userinfo, since a token can sit in
- * the user part alone; an ssh URL keeps its user (`git@`), which is no secret, and loses a password.
- * scp-like `git@host:path` has no password to lose and stays as it is.
+ * through this.
+ *
+ * A URL's authority runs from `//` to the next `/`, `?`, `#` or whitespace, and its userinfo is
+ * everything before the LAST `@` in it, as a URL parser reads it: `oauth2:p@tok@github.com` has the
+ * userinfo `oauth2:p@tok`. An http(s) (or any other) URL loses all of it, since a token can sit in
+ * the user part alone. An ssh URL keeps a plain user (`git@`), which is no secret, and loses
+ * userinfo with a password or an `@` in it whole. scp-like `git@host:path` has no password to
+ * lose and stays as it is.
  */
 export const redactCredentials = (text: string): string =>
   text.replace(
-    /\b([a-z][a-z0-9+.-]*):\/\/([^\s/?#@]+)@/giu,
+    // Greedy up to the last `@` before the authority ends: a literal `@` in a password is userinfo.
+    /\b([a-z][a-z0-9+.-]*):\/\/([^\s/?#]*)@/giu,
     (_whole, scheme: string, userinfo: string) => {
-      if (/^(git\+)?ssh$/iu.test(scheme)) {
-        const user = userinfo.split(":")[0] ?? "";
-        return user === "" ? `${scheme}://` : `${scheme}://${user}@`;
+      if (/^(git\+)?ssh$/iu.test(scheme) && /^[^:@]+$/u.test(userinfo)) {
+        return `${scheme}://${userinfo}@`;
       }
       return `${scheme}://`;
     },

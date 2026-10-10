@@ -295,10 +295,29 @@ describe("redactCredentials", () => {
         "origin https://oauth2:TOKEN@github.com/a/r.git · and https://TOKEN@h.io/x",
       ),
     ).toBe("origin https://github.com/a/r.git · and https://h.io/x");
+    // A plain ssh user is no secret and stays; userinfo with a password goes whole.
     expect(redactCredentials("ssh://git:pw@host/x and ssh://git@host/y")).toBe(
-      "ssh://git@host/x and ssh://git@host/y",
+      "ssh://host/x and ssh://git@host/y",
     );
     expect(redactCredentials("git@github.com:a/r.git")).toBe("git@github.com:a/r.git");
+  });
+
+  it("takes userinfo up to the last @ of the authority, as a URL parser reads it", () => {
+    // Adoption accepts both: a literal `@` in a password left the token after it visible.
+    expect(redactCredentials("https://oauth2:p@tok@github.com/acme/repo.git")).toBe(
+      "https://github.com/acme/repo.git",
+    );
+    expect(redactCredentials("ssh://git:p@tok@[::1]:2222/acme/repo.git")).toBe(
+      "ssh://[::1]:2222/acme/repo.git",
+    );
+    expect(redactCredentials("ssh://a@tok@host/x")).toBe("ssh://host/x");
+    expect(redactCredentials("https://u:p%40ss@h.io/x")).toBe("https://h.io/x");
+    expect(redactCredentials("https://u:p@[::1]:8443/x")).toBe("https://[::1]:8443/x");
+    expect(redactCredentials("ssh://git@[::1]:22/x")).toBe("ssh://git@[::1]:22/x");
+    // An `@` past the authority (a query, a fragment) is no userinfo.
+    expect(redactCredentials("https://h.io/x?u=a@b and https://h.io#f@x")).toBe(
+      "https://h.io/x?u=a@b and https://h.io#f@x",
+    );
     expect(redactCredentials("http://127.0.0.1:3105/sessions/1")).toBe(
       "http://127.0.0.1:3105/sessions/1",
     );

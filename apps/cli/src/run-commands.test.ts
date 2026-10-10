@@ -713,6 +713,12 @@ describe("review of mend#610", spawning, () => {
   );
 });
 
+/** An answer that starts and never finishes: headers, one byte, then nothing. */
+const stall = (response: ServerResponse) => {
+  response.writeHead(200, { "content-type": "application/json" });
+  response.write("[");
+};
+
 /** A Service's view as the server answers a start, its port observed `state`. */
 const serviceView = (state: "reachable" | "unreachable") => ({
   service: {
@@ -792,6 +798,93 @@ describe("--json and --wait", spawning, () => {
       expect(table.stdout + table.stderr).not.toContain("s3cret-token");
     } finally {
       await fake.close();
+    }
+  });
+
+  it("never prints a token that follows a literal @ in an origin's password", async () => {
+    const leaky = {
+      ...project,
+      originUrl: "https://oauth2:p@s3cret-token@github.com/acme/fixture.git",
+    };
+    const fake = await startFake((route, _request, response) => {
+      if (route === "GET /api/projects") json(response, [leaky]);
+      else if (route === "GET /api/sessions") json(response, []);
+      else response.writeHead(404).end();
+    });
+    try {
+      const result = await runCli(fake.url, ["projects", "--json"]);
+      expect(result.stdout + result.stderr).not.toContain("s3cret-token");
+      expect(JSON.parse(result.stdout).projects[0].originUrl).toBe(
+        "https://github.com/acme/fixture.git",
+      );
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it("mend service run --wait counts its deadline from the first request, the session lookup", async () => {
+    const lookup = await startFake((route, _request, response) => {
+      if (route === "GET /api/sessions?retained=1") stall(response);
+      else response.writeHead(404).end();
+    });
+    const recipes = await startFake((route, _request, response) => {
+      if (route === "GET /api/sessions?retained=1") json(response, [session]);
+      else if (route === `GET /api/sessions/${sessionId}/recipes`) stall(response);
+      else response.writeHead(404).end();
+    });
+    try {
+      const env = { MEND_SERVICE_WAIT_MS: "500" };
+      const explicit = await runCli(
+        lookup.url,
+        ["service", "run", sessionId.slice(0, 8), "--port", "3000", "--wait", "--", "pnpm", "dev"],
+        env,
+      );
+      expect(explicit.code, explicit.stderr).toBe(124);
+      expect(lookup.routes.filter((route) => route.startsWith("POST "))).toEqual([]);
+      const declared = await runCli(
+        recipes.url,
+        ["service", "run", sessionId.slice(0, 8), "web", "--wait"],
+        env,
+      );
+      expect(declared.code, declared.stderr).toBe(124);
+      expect(recipes.routes.filter((route) => route.startsWith("POST "))).toEqual([]);
+    } finally {
+      await lookup.close();
+      await recipes.close();
+    }
+  });
+
+  it("mend service init shows a proposal without the credentials of URLs in package scripts", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mend-service-init-"));
+    try {
+      fs.writeFileSync(
+        path.join(root, "package.json"),
+        JSON.stringify({
+          name: "fixture",
+          scripts: {
+            dev: "vite --port 3000 --proxy https://oauth2:s3cret-token@github.com/acme/repo.git",
+          },
+        }),
+      );
+      const child = spawn(
+        process.execPath,
+        ["--experimental-strip-types", entrypoint, "service", "init"],
+        { env: cliEnv("http://127.0.0.1:9"), stdio: ["ignore", "pipe", "pipe"], cwd: root },
+      );
+      let output = "";
+      child.stdout.on("data", (chunk: Buffer) => {
+        output += chunk.toString();
+      });
+      child.stderr.on("data", (chunk: Buffer) => {
+        output += chunk.toString();
+      });
+      await once(child, "close");
+      expect(output).toContain("--port 3000");
+      expect(output).toContain("https://github.com/acme/repo.git");
+      expect(output).not.toContain("s3cret-token");
+      expect(fs.existsSync(path.join(root, "mend.toml"))).toBe(false);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
     }
   });
 
