@@ -140,10 +140,11 @@ Preconditions:
   (`tmux send-keys -t wt 'verify-tui' Enter`); the base step shows
   `type to filter · enter takes the highlighted branch, or the default when empty`. Press `Enter`
   for the default. In the harness list (`codex`, `claude`, `opencode`, `pi`, `shell`), pick `shell`
-  (`tmux send-keys -t wt Down Down Down Down Enter`). The status line reads
-  `provisioning shell workspace ·`, then `started · <session display name> · a attaches` or
-  `still starting · <session display name> · a attaches once the row reads running`. The new shell
-  session has no label, so its display name is `shell <id8>`, not `verify-tui`.
+  (`tmux send-keys -t wt Down` four times, a moment apart, then `tmux send-keys -t wt Enter`: sent
+  as one `send-keys`, the keys arrive together and launch the first harness, `codex`). The status
+  line reads `provisioning shell workspace ·`, then `started · <session display name> · a attaches`
+  or `still starting · <session display name> · a attaches once the row reads running`. The new
+  shell session has no label, so its display name is `shell <id8>`, not `verify-tui`.
 - **TUI remove.** Stop the new session first (select it in the sessions section, `Shift+K` twice:
   `press ⇧K again to stop · …`, then `stopped · … · the record and review remain`). In the worktrees
   section select `verify-tui` and press `Shift+D` (`tmux send-keys -t wt D`). The status line reads
@@ -167,8 +168,8 @@ Preconditions:
   copy item to `Copied`.
 - `Remove worktree…` is absent while any session in the worktree is live; the CLI refuses the same
   case itself, before asking the server.
-- `mend run` documents only `--project`; it cannot name its worktree in the documented form. Read
-  the name from the `✓ worktree` line.
+- `mend run --name <n>` names its worktree; without it the name is automatic (`wt-<id>`). Read it
+  from the `✓ worktree` line, or from `worktree` in `mend run --detach --json`.
 - The web has no worktree rename, and neither has any other surface: the dashboard's `e` renames the
   selected session's label, which can change what an unnamed worktree is shown as, and the desktop's
   `rename` names a shell. A worktree's name is set only when it is created.

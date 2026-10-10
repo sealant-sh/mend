@@ -125,7 +125,7 @@ Preconditions:
 - A session whose stop is still saving is not settled (`stopping`), although its agent has ended:
   the page may already offer `resume with:` and `Delete…`. A delete asked mid-drain waits for the
   workspace and says what it waits on under the header.
-- A worktree started without a name (`mend run` takes none in its documented form) is called
-  `wt-<id>` by `mend worktrees`, and the web shows it by the first member with a non-null label,
-  else `session <id8>` using the first member's id. With no members it keeps the worktree name.
+- A worktree started without a name (`mend run` without `--name`) is called `wt-<id>` by
+  `mend worktrees`, and the web shows it by the first member with a non-null label, else
+  `session <id8>` using the first member's id. With no members it keeps the worktree name.
   Right-click the name the web shows.

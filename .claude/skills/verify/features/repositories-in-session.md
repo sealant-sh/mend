@@ -88,7 +88,7 @@ Preconditions:
   `running`, `waiting`, `idle` or `stopping`) and `capture` null or with a null `line` (a stop saves
   the workspace first). Then run `mend worktrees rm <worktree> --project <project>`. Stderr carries
   the server's refusal, which includes
-  `This worktree holds 1 repository added with mend repo add, saved only with it · /workspace/repos/<other> on mend/<worktree> · Mend cannot see whether it holds commits or edits that are not on origin, and removal deletes it. Push what you need from a session in this worktree before removal, or pass force=true to remove it anyway.`,
+  `This worktree holds 1 repository added with mend repo add, saved only with it · <path>/<other> on mend/<worktree> · Mend cannot see whether it holds commits or edits that are not on origin, and removal deletes it. Push what you need from a session in this worktree before removal, or pass force=true to remove it anyway.`,
   then `  mend worktrees rm <worktree> --project <project> --force removes it anyway`. Exit code
   `1`.
 - **Proof.** Capture the session page's `Repositories` card while `adding`, if observed, and once

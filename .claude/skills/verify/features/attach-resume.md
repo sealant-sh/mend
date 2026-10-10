@@ -65,8 +65,11 @@ Preconditions:
   storage holds the URL and a device token), at a 390x844 viewport.
 - A live, detached session:
   `mend claude "Reply with one word and change nothing." --name verify-attach --project <project> --detach`.
-  Note `<id>` and `<id8>` from `  attach · mend attach <id8>`. `<session display name>` is the
-  current nonempty session label, else `<harness> <id8>`; this fixture starts as `claude <id8>`.
+  Note `<id>` and `<id8>` from `  attach · mend attach <id8>`. In the CLI's banners (`attaching to`,
+  `rejoining`), `<session display name>` is a named worktree's name (its branch without `mend/`), so
+  this fixture reads `verify-attach`; for an unnamed worktree it is the session's label, else
+  `session <id8>`. The dashboard's lines use the nonempty session label, else `<harness> <id8>`
+  (`claude <id8>`).
 
 - **Attach.** Run `tmux new-session -d -s att -x 200 -y 50 'mend attach <id8>'`. The pane shows
   `✓ attaching to <session display name> · claude <id8> · detach: Ctrl+]`, then the agent's terminal

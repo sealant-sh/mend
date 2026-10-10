@@ -72,17 +72,18 @@ Preconditions:
   `no active sessions — mend sessions --all includes settled ones` (unless a Service or a save keeps
   one listed).
 - **Projects.** Under `Projects`, the card's link
-  `page.getByRole("link", { name: "<project>", exact: true })` opens `/projects/<projectId>`. Its
+  `page.getByRole("main").getByRole("link", { name: "<project>", exact: true })` opens
+  `/projects/<projectId>` (unscoped, it also matches the sidebar's link of the same name). Its
   recent rows show each settled session's harness, `settled <time>`, status word, `Review` (to the
   change) and `Resume`. `page.getByRole("link", { name: "Adopt a repository" })` opens `/projects`.
   With no paired device, `page.getByRole("link", { name: "Pair your phone · Settings → Devices" })`
   opens `/settings#devices`.
 - **Project menu.** Right-click the project link
-  (`await page.getByRole("link", { name: "<project>", exact: true }).click({ button: "right" })`). A
-  menu titled `<project>` lists `Open project`, `Start claude session`, `Start codex session`,
+  (`await page.getByRole("main").getByRole("link", { name: "<project>", exact: true }).click({ button: "right" })`).
+  A menu titled `<project>` lists `Open project`, `Start claude session`, `Start codex session`,
   `Start opencode session`, `Start pi session`, `Start shell session`, `Copy store path`,
-  `Copy origin URL`, and for someone who may remove it `Remove project…`. Press `Escape` to close
-  it.
+  `Copy origin URL`, and for someone who may remove it `Remove project…`. Close it with a click
+  outside it: in a headless drive focus stayed on the link and `Escape` left the menu open.
 - **Session menu.** Right-click a settled row's link. The menu titled `<harness>` (with ` — <label>`
   when labelled) lists `Open session`, `Open review` (with a change), `Resume session` (for the
   owner) and `Delete session…`. On a live card it lists `Mark checkpoint` and `Stop session`

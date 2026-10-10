@@ -78,13 +78,14 @@ Preconditions:
   follow `page.getByRole("link", { name: "Review the change" })`. The review lists `WEB.md`.
   `mend sessions --project <project>` lists a `shell` session.
 - **Project menu.** On `<web>/`, right-click the project card
-  (`await page.getByRole("link", { name: "<project>", exact: true }).click({ button: "right" })`).
-  The menu offers `Start shell session`
-  (`page.getByRole("menuitem", { name: "Start shell session" })`); choosing it opens another new
-  `shell` session page.
+  (`await page.getByRole("main").getByRole("link", { name: "<project>", exact: true }).click({ button: "right" })`;
+  unscoped, it also matches the sidebar's link of the same name). The menu offers
+  `Start shell session` (`page.getByRole("menuitem", { name: "Start shell session" })`); choosing it
+  opens another new `shell` session page.
 - **Desktop.** With a session tab focused, press `Control+Shift+T`
-  (`await page.keyboard.press("Control+Shift+T")`). A new tab titled `shell` opens with the strip
-  `shell · session worktree · <branch>`, and buttons `rename` and `detach tab`.
+  (`await page.keyboard.press("Control+Shift+T")`). A new tab titled `shell <n>` (`shell 1` for the
+  first) opens with the strip `shell <n> · session worktree · <branch>`, and buttons `rename` and
+  `detach tab`.
 - **Mobile.** At 390x844 on `/session/<id>`, run
   `await page.getByRole("button", { name: "Shell" }).click()`. The app pushes
   `/terminal/<id>?process=<processId>` titled `Shell`. The web build cannot render the terminal (see
