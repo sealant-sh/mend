@@ -7,6 +7,7 @@ import {
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as Option from "effect/Option";
 
 import { ttyUrlOf } from "../src/terminals.ts";
@@ -143,6 +144,50 @@ describe("the terminal", () => {
           rpc[WS_METHODS.terminalWrite]({ threadId: "session-1", terminalId: "term-1", data: "x" }),
         );
         assert.strictEqual(tagOf(gone), "TerminalSessionLookupError");
+      }),
+    ),
+  );
+
+  it.live(
+    "opens one shell for two opens of one terminal at once, and close ends it (607-R2-1)",
+    () =>
+      withGateway((mend) =>
+        Effect.gen(function* () {
+          setup(mend);
+          const { rpc } = yield* pairAndConnect(mend, "TTY-TWICE");
+          const open = () =>
+            rpc[WS_METHODS.terminalOpen]({ threadId: "session-1", terminalId: "term", cwd: CWD });
+          // Before, the second replaced the first's acquisition and its shell ran on untracked.
+          yield* Effect.all([open(), open()], { concurrency: 2 });
+          assert.strictEqual(mend.tty.shells.size, 1);
+          yield* rpc[WS_METHODS.terminalClose]({
+            threadId: "session-1",
+            terminalId: "term",
+            deleteHistory: true,
+          });
+          yield* eventually(
+            () => Array.from(mend.tty.shells.values()).every((shell) => !shell.running),
+            "every shell stopped",
+          );
+        }),
+      ),
+  );
+
+  it.live("a close that comes while a terminal is opening ends what the open brings up", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        setup(mend);
+        const { rpc } = yield* pairAndConnect(mend, "TTY-CLOSE-EARLY");
+        const opening = yield* Effect.forkChild(
+          rpc[WS_METHODS.terminalOpen]({ threadId: "session-1", terminalId: "term", cwd: CWD }),
+        );
+        yield* eventually(() => mend.tty.shells.size === 1, "the shell asked for");
+        yield* rpc[WS_METHODS.terminalClose]({ threadId: "session-1", terminalId: "term" });
+        yield* Fiber.await(opening);
+        yield* eventually(
+          () => Array.from(mend.tty.shells.values()).every((shell) => !shell.running),
+          "every shell stopped",
+        );
       }),
     ),
   );

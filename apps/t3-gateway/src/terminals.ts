@@ -15,6 +15,7 @@ import {
   type TerminalSessionSnapshot,
   type TerminalSummary,
 } from "@mend/t3-contracts";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Redacted from "effect/Redacted";
@@ -327,13 +328,44 @@ export const makeTerminals = (host: TerminalHost): Terminals => {
       }
     });
 
-  const start = (
-    session: BearerSession,
-    input: Pick<
-      TerminalOpenInput,
-      "threadId" | "terminalId" | "cwd" | "worktreePath" | "cols" | "rows"
-    >,
-  ) =>
+  type StartInput = Pick<
+    TerminalOpenInput,
+    "threadId" | "terminalId" | "cwd" | "worktreePath" | "cols" | "rows"
+  >;
+
+  /**
+   * The acquisition under way for each terminal (review 607-R2-1): one at a time per terminal. An
+   * open, attach or restart that finds one joins it rather than starting a second shell that
+   * would replace the first in the map and leave it running; a close waits for it, then ends what
+   * it brought up.
+   */
+  const acquiring = new Map<string, Deferred.Deferred<Terminal, TerminalFailure>>();
+
+  /** Waits for the acquisition under way for a terminal, if any; never fails. */
+  const settled = (key: string) =>
+    Effect.suspend(() => {
+      const inFlight = acquiring.get(key);
+      return inFlight === undefined ? Effect.void : Effect.ignore(Deferred.await(inFlight));
+    });
+
+  const start = (session: BearerSession, input: StartInput) =>
+    Effect.suspend(() => {
+      const key = keyOf(input.threadId, input.terminalId);
+      const inFlight = acquiring.get(key);
+      if (inFlight !== undefined) return Deferred.await(inFlight);
+      // Set in the same step as the look: no second start can slip between them.
+      const done = Deferred.makeUnsafe<Terminal, TerminalFailure>();
+      acquiring.set(key, done);
+      return acquire(session, input).pipe(
+        Effect.onExit((exit) =>
+          Effect.sync(() => {
+            if (acquiring.get(key) === done) acquiring.delete(key);
+          }).pipe(Effect.andThen(Deferred.done(done, exit))),
+        ),
+      );
+    });
+
+  const acquire = (session: BearerSession, input: StartInput) =>
     Effect.gen(function* () {
       const sessionId = yield* host.threadSession(input.threadId);
       if (sessionId === null) return yield* lookup(input.threadId, input.terminalId);
@@ -477,6 +509,8 @@ export const makeTerminals = (host: TerminalHost): Terminals => {
 
   const restart: Terminals["restart"] = (session, input) =>
     Effect.gen(function* () {
+      // What is being opened finishes first: the restart then ends it, never a half-open one.
+      yield* settled(keyOf(input.threadId, input.terminalId));
       const known = terminals.get(keyOf(input.threadId, input.terminalId));
       if (known !== undefined) yield* disconnect(session, known);
       const terminal = yield* start(session, input);
@@ -489,6 +523,19 @@ export const makeTerminals = (host: TerminalHost): Terminals => {
     });
 
   const close: Terminals["close"] = (session, input) =>
+    Effect.gen(function* () {
+      // Any terminal of the thread still being opened finishes first, so what it brings up is
+      // closed too rather than left running behind the close.
+      const pending = Array.from(acquiring.keys()).filter(
+        (key) =>
+          key.startsWith(keyOf(input.threadId, "")) &&
+          (input.terminalId === undefined || key === keyOf(input.threadId, input.terminalId)),
+      );
+      yield* Effect.forEach(pending, settled, { discard: true });
+      yield* closeNow(session, input);
+    });
+
+  const closeNow = (session: BearerSession, input: TerminalCloseInput) =>
     Effect.forEach(
       Array.from(terminals.values()).filter(
         (terminal) =>
@@ -531,10 +578,16 @@ export const makeTerminals = (host: TerminalHost): Terminals => {
   // The terminals as they are when the hub goes, not when it was made: each socket closed and
   // each shell stopped in Mend, with the token of the person who opened it.
   const closeAll = Effect.suspend(() =>
-    Effect.forEach(
-      Array.from(terminals.values()),
-      (terminal) => disconnect(terminal.openedBy, terminal),
-      { discard: true },
+    Effect.forEach(Array.from(acquiring.keys()), settled, { discard: true }).pipe(
+      Effect.andThen(
+        Effect.suspend(() =>
+          Effect.forEach(
+            Array.from(terminals.values()),
+            (terminal) => disconnect(terminal.openedBy, terminal),
+            { discard: true },
+          ),
+        ),
+      ),
     ),
   );
 
