@@ -49,6 +49,87 @@ const RANGE_LIST_BYTES = 8 * 1024 * 1024;
 const RANGE_RENDER_FILES = 200;
 const RANGE_RENDER_BYTES = 8 * 1024 * 1024;
 
+/** A path as git prints it in a patch: bare, or C-quoted (`"a/x\ty"`) when it must be. */
+const unquoted = (raw: string): string => {
+  if (!raw.startsWith('"') || !raw.endsWith('"')) return raw;
+  const bytes: Array<number> = [];
+  const body = raw.slice(1, -1);
+  const escapes: Readonly<Record<string, number>> = {
+    a: 7,
+    b: 8,
+    t: 9,
+    n: 10,
+    v: 11,
+    f: 12,
+    r: 13,
+    '"': 34,
+    "\\": 92,
+  };
+  for (let index = 0; index < body.length; index++) {
+    const char = body[index] ?? "";
+    if (char !== "\\") {
+      bytes.push(...Buffer.from(char, "utf8"));
+      continue;
+    }
+    const next = body[index + 1] ?? "";
+    const octal = /^[0-7]{3}/.exec(body.slice(index + 1, index + 4));
+    if (octal !== null) {
+      bytes.push(Number.parseInt(octal[0], 8));
+      index += 3;
+    } else {
+      bytes.push(escapes[next] ?? next.charCodeAt(0));
+      index += 1;
+    }
+  }
+  return Buffer.from(bytes).toString("utf8");
+};
+
+/** `a/<path>` or `b/<path>` as a patch writes it, quoted or not; null for `/dev/null`. */
+const sidePath = (raw: string): string | null => {
+  const path = unquoted(raw.trim());
+  if (path === "/dev/null") return null;
+  return path.startsWith("a/") || path.startsWith("b/") ? path.slice(2) : path;
+};
+
+/**
+ * Every path the patches in `diff` name: their rename and copy lines, their `---` and `+++`
+ * lines, and the header of a patch with neither (a binary file, a mode change), whose two sides
+ * are the same path.
+ */
+export const patchedPaths = (diff: string): ReadonlySet<string> => {
+  const paths = new Set<string>();
+  for (const section of diff.split(/^diff --git /m).slice(1)) {
+    const lines = section.split("\n");
+    let named = false;
+    for (const line of lines.slice(1)) {
+      if (line.startsWith("@@") || line.startsWith("diff --git ")) break;
+      const match =
+        /^(?:rename|copy) (?:from|to) (.*)$/.exec(line) ?? /^(?:---|\+\+\+) (.*)$/.exec(line);
+      if (match === null) continue;
+      const path =
+        line.startsWith("---") || line.startsWith("+++")
+          ? sidePath(match[1] ?? "")
+          : unquoted(match[1] ?? "");
+      if (path !== null) paths.add(path);
+      named = true;
+    }
+    if (named) continue;
+    // `a/<p> b/<p>`: the same path both sides, so its length decides where it splits.
+    const header = lines[0] ?? "";
+    if (header.startsWith('"')) {
+      const end = header.indexOf('" ', 1);
+      const path = end === -1 ? null : sidePath(header.slice(0, end + 1));
+      if (path !== null) paths.add(path);
+      continue;
+    }
+    const side = (header.length - 5) / 2;
+    if (Number.isInteger(side) && side > 0 && header.startsWith("a/")) {
+      paths.add(header.slice(2, 2 + side));
+    }
+  }
+  return paths;
+};
+
 /** A file of a slice by its path: the new one, else the old. */
 const pathOf = (fact: DiffFileFact) => fact.newPath ?? fact.oldPath ?? "";
 
@@ -204,8 +285,19 @@ export const WorktreesGroupLive = HttpApiBuilder.group(MendApi, "worktrees", (ha
                 );
         const diff = rendered?.value ?? "";
         // One patch per file, in the files' order (both are git's, from the same range).
-        const whole = Math.min(page.length, diff.match(/^diff --git /gm)?.length ?? 0);
-        const omitted = wanted.slice(whole).map(pathOf);
+        // A file has a patch when a patch names it, not by counting patches: past git's rename
+        // limit the listing shows a moved file as deleted and added, while the page, small enough,
+        // renders it as one rename (601-R2-2).
+        const patched = patchedPaths(diff);
+        const omitted = wanted
+          .filter(
+            (fact) =>
+              !(
+                (fact.newPath !== null && patched.has(fact.newPath)) ||
+                (fact.oldPath !== null && patched.has(fact.oldPath))
+              ),
+          )
+          .map(pathOf);
         const stamp = (rendered ?? listed)?.stamp;
         return new WorktreeRangeDiff({
           worktreeId: worktree.id,

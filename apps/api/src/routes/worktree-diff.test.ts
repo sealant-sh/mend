@@ -12,6 +12,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { createTenancyApi, type TenancyApi } from "../../test/support/tenancy-api.ts";
 import { CAROL_WORKTREE_IN_SHARED_A, ids } from "../../test/support/tenancy-harness.ts";
+import { patchedPaths } from "./worktrees.ts";
 
 /**
  * `GET /api/worktrees/:id/diff?from=&to=` (ADR 0012, phase 3): a slice of a worktree's checkpoint
@@ -349,4 +350,133 @@ describe("a slice too wide to list whole (601-R2-1)", () => {
       }
     },
   );
+});
+
+/** A four-digit file number of the rename fixture. */
+const name = (index: number) => String(index).padStart(4, "0");
+
+describe("a slice past git's rename limit (601-R2-2)", () => {
+  it(
+    "names as omitted only files no patch names, however git paired them",
+    { timeout: 120_000 },
+    async () => {
+      // 1,200 files moved with one line added each: the listing, past diff.renameLimit, shows each
+      // as deleted and added; the 200-path page renders them as renames. Counting patches named
+      // files whose patches were there as omitted.
+      const root = mkdtempSync(join(tmpdir(), "mend-rename-limit-"));
+      const inFixture = (args: ReadonlyArray<string>) =>
+        execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@localhost", ...args], {
+          cwd: root,
+          stdio: "pipe",
+          maxBuffer: 64 * 1024 * 1024,
+        })
+          .toString()
+          .trim();
+      let moved: TenancyApi | undefined;
+      try {
+        inFixture(["init", "-q", "-b", "main"]);
+        const body = (index: number) =>
+          Array.from({ length: 40 }, (_, line) => `file ${name(index)} line ${line + 1}`).join(
+            "\n",
+          );
+        for (let index = 0; index < 1_200; index++) {
+          writeFileSync(join(root, `p${name(index)}-old`), `${body(index)}\n`);
+        }
+        inFixture(["add", "-A"]);
+        inFixture(["commit", "-qm", "base"]);
+        const base = inFixture(["rev-parse", "HEAD"]);
+        for (let index = 0; index < 1_200; index++) {
+          rmSync(join(root, `p${name(index)}-old`));
+          writeFileSync(join(root, `p${name(index)}-new`), `${body(index)}\nextra\n`);
+        }
+        inFixture(["add", "-A"]);
+        inFixture(["commit", "-qm", "moved"]);
+        const top = inFixture(["rev-parse", "HEAD"]);
+        const store = await Effect.runPromise(
+          Effect.gen(function* () {
+            return yield* Store;
+          }).pipe(Effect.provide(Store.layer.pipe(Layer.provide(StoreConfig.layerFor(root))))),
+        );
+        const chain = [
+          checkpoint(0, base, WORKTREE, "moved-0"),
+          checkpoint(1, top, WORKTREE, "moved-1"),
+        ];
+        moved = await createTenancyApi(
+          {},
+          {
+            implement: {
+              checkpoints: { listForWorktree: () => Effect.succeed(chain) },
+              reads: {
+                diffRange: (_p, _w, a, b, options) =>
+                  store.diffRange(root, a, b, options).pipe(Effect.map(stamped)),
+                diffFileFactsBounded: (_p, _w, a, b, options) =>
+                  store.diffFileFactsBounded(root, a, b, options).pipe(Effect.map(stamped)),
+              },
+            },
+          },
+        );
+        const response = await moved.request(
+          "alice",
+          "GET",
+          `/api/worktrees/${WORKTREE}/diff?from=moved-0&to=moved-1`,
+        );
+        expect(response.status).toBe(200);
+        const answer = await response.json();
+        expect(answer.files).toHaveLength(2_400);
+        const omitted = new Set<string>(answer.omitted);
+        // Every path a patch names is not omitted, and every file is either patched or omitted.
+        const patched = patchedPaths(answer.diff);
+        expect(patched.size).toBeGreaterThan(0);
+        for (const path of patched) expect(omitted.has(path)).toBe(false);
+        for (const file of answer.files as ReadonlyArray<{
+          newPath: string | null;
+          oldPath: string | null;
+        }>) {
+          const path = file.newPath ?? file.oldPath ?? "";
+          expect(patched.has(path) || omitted.has(path)).toBe(true);
+        }
+        expect(answer.truncated).toBe(true);
+        // The fixture is the reviewer's case: counting patches, as before, named files with patches.
+        const headers = answer.diff.match(/^diff --git /gm)?.length ?? 0;
+        const counted = (
+          answer.files as ReadonlyArray<{ newPath: string | null; oldPath: string | null }>
+        )
+          .slice(Math.min(200, headers))
+          .map((file) => file.newPath ?? file.oldPath ?? "");
+        expect(counted.some((path) => patched.has(path))).toBe(true);
+      } finally {
+        await moved?.dispose();
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it("reads the paths a patch names: renames, quoted names, binaries and mode changes", () => {
+    const diff = [
+      "diff --git a/old name.ts b/new name.ts",
+      "similarity index 90%",
+      "rename from old name.ts",
+      "rename to new name.ts",
+      "@@ -1 +1 @@",
+      "--- not a header, a removed line",
+      'diff --git "a/tab\\there" "b/tab\\there"',
+      "new file mode 100644",
+      "--- /dev/null",
+      '+++ "b/tab\\there"',
+      "@@ -0,0 +1 @@",
+      "+x",
+      "diff --git a/image.png b/image.png",
+      "new file mode 100644",
+      "Binary files /dev/null and b/image.png differ",
+      "diff --git a/run.sh b/run.sh",
+      "old mode 100644",
+      "new mode 100755",
+      'diff --git "a/caf\\303\\251.md" "b/caf\\303\\251.md"',
+      "deleted file mode 100644",
+      "",
+    ].join("\n");
+    expect([...patchedPaths(diff)].toSorted()).toEqual(
+      ["café.md", "image.png", "new name.ts", "old name.ts", "run.sh", "tab\there"].toSorted(),
+    );
+  });
 });
