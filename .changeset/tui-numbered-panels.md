@@ -8,5 +8,4 @@ Shift+Tab cycle through them and come back round, and Esc goes back to the pane 
 lists every key the dashboard answers to, read from the same table it runs on. `/` filters the
 focused list, and `+` and `_` cycle the screen mode: normal, half and full. The footer always ends
 with `? keys`. Tab used to step one pane right and stop at the end; Enter, `l` and `→` still do
-that. A digit or Tab into a starting session's pane hands the keyboard to its snake, as an arrow
-does, and while the game has it every dashboard key is the game's.
+that. A digit or Tab into a starting session's pane hands the keyboard to its snake too.
