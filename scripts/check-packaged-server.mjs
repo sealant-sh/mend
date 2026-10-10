@@ -218,6 +218,8 @@ const docker = (args, options) =>
 const lines = (text) => text.trim().split(/\s+/).filter(Boolean);
 const hash = (text) => createHash("sha256").update(text).digest("hex");
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+/** The ids (or names) of a snapshot's resources, to tell what appeared since. */
+const known = (items, key = "Id") => new Set(items.map((item) => item[key]));
 // How the instance is deployed, not what it found: /health also reports the tenancy and
 // exposure gates as evaluated at start, and an installation with an account and a project
 // answers those differently from the empty one the baseline was read from.
@@ -1891,7 +1893,6 @@ async function main() {
   );
   const afterUninstall = await snapshot();
   assertFreshDocker(afterUninstall);
-  const known = (items, key = "Id") => new Set(items.map((item) => item[key]));
   const initialContainers = known(initial.containers);
   const initialNetworks = known(initial.networks);
   const initialVolumes = known(initial.volumes, "Name");
@@ -1904,9 +1905,16 @@ async function main() {
     afterUninstall.networks.every((item) => initialNetworks.has(item.Id)),
     "Uninstall must remove the project network and every workspace network",
   );
+  // This run's own fixtures (the git remote's volume) are the acceptance's, not Mend's.
+  const volumesLeft = afterUninstall.volumes
+    .filter(
+      (item) =>
+        !initialVolumes.has(item.Name) && item.Labels?.["sh.sealant.mend.acceptance"] !== runId,
+    )
+    .map((item) => `${item.Name}${item.Labels ? ` (${Object.keys(item.Labels).join(", ")})` : ""}`);
   check(
-    afterUninstall.volumes.every((item) => initialVolumes.has(item.Name)),
-    "Uninstall must remove every volume the installation and its workspaces created",
+    volumesLeft.length === 0,
+    `Uninstall must remove every volume the installation and its workspaces created; left: ${volumesLeft.join("; ")}`,
   );
   check(
     !(await readdir(configRoot)).some((name) =>
