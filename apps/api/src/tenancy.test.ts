@@ -11,7 +11,11 @@ import {
   type TenancyPosture,
 } from "./tenancy.ts";
 
-const build = (env: Record<string, string>, organizationCount: number) =>
+const build = (
+  env: Record<string, string>,
+  organizationCount: number,
+  operators: () => ReadonlyArray<string> = () => ["alice"],
+) =>
   Effect.runPromise(
     Effect.gen(function* () {
       const tenancy = yield* TenancyConfig;
@@ -22,9 +26,7 @@ const build = (env: Record<string, string>, organizationCount: number) =>
           Layer.provide(
             Layer.mock(OrganizationsRepo, { count: () => Effect.succeed(organizationCount) }),
           ),
-          Layer.provide(
-            Layer.mock(InstanceRolesRepo, { operators: () => Effect.succeed(["alice"]) }),
-          ),
+          Layer.provide(Layer.mock(InstanceRolesRepo, { operators: () => Effect.sync(operators) })),
           Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown(env))),
         ),
       ),
@@ -53,7 +55,23 @@ describe("MEND_TENANCY (docs/adr/0003)", () => {
     const result = await build({}, 1);
     const tenancy = Result.isSuccess(result) ? result.success : null;
     expect(tenancy?.mode).toBe("single");
-    expect(tenancy?.gate.map((outcome) => outcome.id)).toContain("source-policy");
+    const gate = tenancy === null ? [] : await Effect.runPromise(tenancy.gate);
+    expect(gate.map((outcome) => outcome.id)).toContain("source-policy");
+  });
+
+  it("reads the operator accounts on each read, so the first account counts once it registers", async () => {
+    let operators: ReadonlyArray<string> = [];
+    const result = await build({}, 1, () => operators);
+    const tenancy = Result.isSuccess(result) ? result.success : null;
+    const operatorPresent = async () =>
+      tenancy === null
+        ? undefined
+        : (await Effect.runPromise(tenancy.gate)).find(
+            (outcome) => outcome.id === "operator-present",
+          );
+    expect(await operatorPresent()).toMatchObject({ ok: false, detail: "0 operator account(s)" });
+    operators = ["first-account"];
+    expect(await operatorPresent()).toMatchObject({ ok: true, detail: "1 operator account(s)" });
   });
 
   it("refuses multi until the gate passes, naming each failing item with its fix", async () => {

@@ -53,9 +53,10 @@ export const OperatorGroupLive = HttpApiBuilder.group(MendApi, "operator", (hand
       Effect.gen(function* () {
         yield* operator;
         const exposure = yield* ExposureConfig;
+        const gate = yield* exposure.gate;
         return new ExposureReport({
           declared: exposure.exposure,
-          items: exposure.gate.map(
+          items: gate.map(
             ({ id, established, detail, fix, blocksStart }) =>
               new ExposureGateItem({ id, established, detail, fix, blocksStart }),
           ),
@@ -65,7 +66,8 @@ export const OperatorGroupLive = HttpApiBuilder.group(MendApi, "operator", (hand
     .handle("gate", () =>
       Effect.gen(function* () {
         yield* operator;
-        return (yield* TenancyConfig).gate.map((outcome) => new MultiModeGateItem(outcome));
+        const gate = yield* (yield* TenancyConfig).gate;
+        return gate.map((outcome) => new MultiModeGateItem(outcome));
       }),
     )
     .handle("organizations", () =>

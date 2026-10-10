@@ -335,7 +335,7 @@ const unusedProjectRouteLayers: Layer.Layer<UnusedProjectRouteServices> = Layer.
     sessionEndpoint: undefined,
     sessionStore: "captured",
   }),
-  Layer.succeed(TenancyConfig, { mode: "single", gate: [] }),
+  Layer.succeed(TenancyConfig, { mode: "single", gate: Effect.succeed([]) }),
   Layer.mock(OrganizationsRepo, {
     membershipOf: () =>
       Effect.succeed({

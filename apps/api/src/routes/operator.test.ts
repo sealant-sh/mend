@@ -15,7 +15,7 @@ import { HttpApi, HttpApiBuilder } from "effect/unstable/httpapi";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 
 import { ProjectAccess } from "../access.ts";
-import { ExposureConfig } from "../exposure.ts";
+import { ExposureConfig, type ExposureOutcome } from "../exposure.ts";
 import { TenancyConfig } from "../tenancy.ts";
 import { AuthMiddlewareLive } from "./api-live.ts";
 import { OperatorGroupLive } from "./operator.ts";
@@ -86,10 +86,10 @@ const dependencies = Layer.mergeAll(
   }),
   Layer.mock(UsersRepo, { byEmail: (email) => Effect.succeed(accounts.get(email) ?? null) }),
   Layer.mock(AuditEventsRepo, { record: (event) => Effect.sync(() => void audited.push(event)) }),
-  Layer.succeed(TenancyConfig, { mode: "single", gate: [] }),
+  Layer.succeed(TenancyConfig, { mode: "single", gate: Effect.succeed([]) }),
   Layer.succeed(ExposureConfig, {
     exposure: "private",
-    gate: [
+    gate: Effect.succeed<ReadonlyArray<ExposureOutcome>>([
       {
         id: "https-origin",
         established: "open",
@@ -106,7 +106,7 @@ const dependencies = Layer.mergeAll(
         blocksStart: false,
         observable: false,
       },
-    ],
+    ]),
   }),
 );
 
