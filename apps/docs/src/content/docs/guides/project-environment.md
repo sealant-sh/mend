@@ -218,12 +218,12 @@ or pnpm config, in the image's global `npmrc`, or in the environment. Mend runs 
 other custom command exactly as written.
 
 On a server that runs the [npm mirror](/operate/npm-mirror/), a plain `pnpm install`, `npm ci` or
-`npm install` goes through it, unless the command, the project, your config or the environment names
-a registry or a login for registry.npmjs.org, the command passes a flag that could choose its own
-configuration (such as `--userconfig`), or the mirror does not answer. An install through the mirror
-that fails, for any reason, runs once more as written, against the registry, and is logged as
-`dependency install · retried without the npm mirror`. The server log line for the install ends with
-the number of download retries pnpm reported, for example
+`npm install` goes through it, unless the package manager, asked before the install, reports a
+registry other than registry.npmjs.org or a login for it, the command passes a flag that could
+choose its own configuration (such as `--userconfig`), or the mirror does not answer. An install
+through the mirror that fails, for any reason, runs once more as written, against the registry, and
+is logged as `dependency install · retried without the npm mirror`. The server log line for the
+install ends with the number of download retries pnpm reported, for example
 `dependency install · completed · exit 0 · fetch retries 1`. A rerun with pnpm's defaults is logged
 on its own line, `dependency install · retried with defaults`.
 

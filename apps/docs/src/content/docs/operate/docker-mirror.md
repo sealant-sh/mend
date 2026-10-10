@@ -73,11 +73,12 @@ Sessions running while it is off pull from Docker Hub; relaunch them to use the 
 docker mirror · running · 120 MiB cached of 20 GiB · 412 GiB free on its disk · layers evicted 7 days after each fetch · since 2026-10-10T08:00:00Z: layers 8 requested · 6 from the cache (75%) · manifests 6 · 3 from the cache · pulls from Docker Hub anonymously · observed
 ```
 
-When the guard has paused it for want of space, status says so instead. By then the cache has been
-cleared:
+When the guard has paused it for want of space, status says so instead. After clearing, the guard
+looks at the cache again, and status reports what it found: `no cache held`, or
+`its cache could not be cleared` when a file there could not be removed.
 
 ```
-docker mirror · paused by its disk guard · 3.0 GiB free on its disk, below 5.0 GiB · cache cleared · session Docker daemons pull from Docker Hub directly until there is room · observed
+docker mirror · paused by its disk guard · 3.0 GiB free on its disk, below 5.0 GiB · no cache held · session Docker daemons pull from Docker Hub directly until there is room · observed
 ```
 
 The counts are the registry's own, read from its metrics listener on the container's loopback, and
