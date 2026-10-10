@@ -25,13 +25,13 @@ export const INSTALL_COMMAND = "npm install --global @sealant/mend";
 
 export const SUBLINE =
   "Your coding agents are scattered across laptops, terminals and worktrees. Mend runs them all on one server you own, each session in its own worktree and container. None of the usual remote pain. Your dev setup comes along, dev servers show up on localhost, and you can attach from anywhere.";
-export const REQUIREMENTS_LINE = "Node 22+ · Docker · Linux or macOS";
+export const REQUIREMENTS_LINE = "Node 22.13+ · Docker · Linux or macOS";
 
 /** The three commands from nothing to a running session. */
 export const START_STEPS: ReadonlyArray<{ command: string; text: string }> = [
   {
     command: "npm install --global @sealant/mend",
-    text: "Installs the CLI. Needs Node 22 or newer.",
+    text: "Installs the CLI. Needs Node 22.13 or newer.",
   },
   {
     command: "mend server setup",
@@ -392,8 +392,8 @@ export const FAQ: ReadonlyArray<{ q: string; a: ReactNode }> = [
     a: (
       <>
         <p>
-          Node.js 22 or newer, or 26 if you want the terminal dashboard. The machine that hosts the
-          server needs Docker. It runs on Linux and macOS.
+          Node.js 22.13 or newer, or 26 if you want the terminal dashboard. The machine that hosts
+          the server needs Docker. It runs on Linux and macOS.
         </p>
         <p>
           Install with <code>{INSTALL_COMMAND}</code>, then run <code>mend server setup</code>. The{" "}

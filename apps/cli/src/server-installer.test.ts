@@ -10,7 +10,7 @@ const installer = path.join(repositoryRoot, "install.sh");
 const temporaryDirectories: Array<string> = [];
 
 const makeTools = (
-  nodeMajor: number,
+  nodeVersion: string,
   npmExit = 0,
 ): { readonly bin: string; readonly log: string } => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "mend-installer-"));
@@ -21,7 +21,7 @@ const makeTools = (
   fs.writeFileSync(
     path.join(bin, "node"),
     `#!/bin/sh
-if [ "$1" = -p ]; then printf '%s\\n' '${nodeMajor}'; else printf 'v%s.0.0\\n' '${nodeMajor}'; fi
+if [ "$1" = -p ]; then printf '%s\\n' '${nodeVersion}'; else printf 'v%s\\n' '${nodeVersion}'; fi
 `,
     { mode: 0o755 },
   );
@@ -66,7 +66,7 @@ const runInstaller = (tools: { readonly bin: string; readonly log: string }, ver
 
 describe("the shell installer", () => {
   it("installs only the requested CLI and tells the user how to set up a server", () => {
-    const tools = makeTools(22);
+    const tools = makeTools("22.13.0");
 
     const result = runInstaller(tools);
 
@@ -79,17 +79,32 @@ describe("the shell installer", () => {
   });
 
   it("refuses an old Node with an actionable error before invoking npm", () => {
-    const tools = makeTools(21);
+    for (const version of ["21.0.0", "22.12.0", "18.19.1"]) {
+      const tools = makeTools(version);
 
-    const result = runInstaller(tools);
+      const result = runInstaller(tools);
 
-    expect(result.status).toBe(1);
-    expect(result.stderr).toContain("Node.js 22 or newer is required; found v21.0.0");
-    expect(fs.existsSync(tools.log)).toBe(false);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toBe(
+        `mend install: Node.js 22.13 or newer is required; found v${version}. Upgrade Node.js, then retry.\n`,
+      );
+      expect(fs.existsSync(tools.log)).toBe(false);
+    }
+  });
+
+  it("takes every Node the CLI's engines take (fresh install 2026-10-10)", () => {
+    const manifest: unknown = JSON.parse(
+      fs.readFileSync(path.join(import.meta.dirname, "..", "package.json"), "utf8"),
+    );
+    expect(manifest).toMatchObject({ engines: { node: ">=22.13.0" } });
+    for (const version of ["22.13.0", "22.23.3", "23.0.0", "26.4.0"]) {
+      const result = runInstaller(makeTools(version));
+      expect(result.status, `${version}: ${result.stderr}`).toBe(0);
+    }
   });
 
   it("reports npm global-install failure without starting Docker or the server", () => {
-    const tools = makeTools(26, 1);
+    const tools = makeTools("26.4.0", 1);
 
     const result = runInstaller(tools, "latest");
 

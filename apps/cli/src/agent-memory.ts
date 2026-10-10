@@ -2,7 +2,6 @@ import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import * as zlib from "node:zlib";
 
 import {
@@ -301,6 +300,9 @@ export const scanCodexMemory = async (
   if (!fs.existsSync(memories) || state === null) {
     return { home, files: [], summaries: 0, notes: [] };
   }
+  // Loaded here, not at the top: on Node 22 node:sqlite warns that it is experimental as it loads,
+  // and only this import reads a database (main filters that warning out).
+  const { DatabaseSync } = await import("node:sqlite");
   const threads = new DatabaseSync(state, { readOnly: true });
   // This repository's threads, and where each one's rollout is.
   const inRepo = (() => {

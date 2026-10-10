@@ -16,6 +16,7 @@ import {
   pickProcess,
   pickServiceAttempt,
   RUN_ARGV_MAX_WORD_BYTES,
+  interactiveShellIssue,
   runArgvIssue,
   answeredAttemptId,
   findStartAttempt,
@@ -79,6 +80,43 @@ const detailOf = (
   session: { id: "session-1", status },
   currentAgent: agent,
   ...(processes === undefined ? {} : { processes }),
+});
+
+describe("interactiveShellIssue", () => {
+  it("refuses a shell with no script or -c: nothing typed would reach it (fresh install 2026-10-10)", () => {
+    for (const argv of [
+      ["bash"],
+      ["/bin/bash", "--login"],
+      ["sh", "-l"],
+      ["zsh", "-i"],
+      ["fish"],
+      ["bash", "-s", "arg"],
+      ["bash", "--"],
+    ]) {
+      expect(interactiveShellIssue(argv), argv.join(" ")).toContain("Open a shell");
+    }
+    expect(interactiveShellIssue(["/usr/bin/zsh"])).toBe(
+      `zsh with no script or -c waits for input mend run never sends · for a shell: "Open a shell" on the web, mend shell <session>, or mend run --detach and mend attach · for commands: mend run -- zsh -c '…'`,
+    );
+  });
+
+  it("takes a shell given commands or a script, and every other program", () => {
+    for (const argv of [
+      ["bash", "-c", "echo hi"],
+      ["bash", "-lc", "make test"],
+      ["sh", "-ec", "true"],
+      ["bash", "-ic", "true"],
+      ["fish", "--command", "echo hi"],
+      ["bash", "scripts/check.sh"],
+      ["bash", "-x", "scripts/check.sh"],
+      ["bash", "--norc", "--", "scripts/check.sh"],
+      ["python3"],
+      ["make", "test"],
+      ["bashful"],
+    ]) {
+      expect(interactiveShellIssue(argv), argv.join(" ")).toBeNull();
+    }
+  });
 });
 
 describe("runArgvIssue", () => {

@@ -6,7 +6,7 @@ sidebar:
 ---
 
 The `mend` CLI talks to the Mend server. Run `mend help` for the help text installed with your
-version. One-shot commands require Node 22 or newer. The terminal dashboard requires Node 26 and
+version. One-shot commands require Node 22.13 or newer. The terminal dashboard requires Node 26 and
 `node:ffi`; every other command still works when the dashboard cannot start.
 
 ## Setup commands
@@ -211,10 +211,15 @@ the command's output alone:
 out=$(mend run --project api -- git log -1 --format=%H)
 ```
 
+An attached `mend run` shows output and sends no keys, so a shell given no script and no `-c`
+(`mend run -- bash`) would wait for input forever: it is refused before anything is created. For a
+shell, use **Open a shell** on the web, `mend shell <session>`, or `mend run --detach -- bash`
+followed by `mend attach`; for commands, `mend run -- bash -c '…'`.
+
 `Ctrl+C` stops watching and puts back the terminal modes the command's output set (alternate screen,
-hidden cursor, mouse, keyboard); the command keeps running. Output that could not be given in full,
-because the server refused a read or the reader went away, fails `mend run` with exit `1` even when
-the command succeeded, and stderr says the command's own code.
+hidden cursor, mouse, keyboard); the command keeps running, and `mend stop` ends it. Output that
+could not be given in full, because the server refused a read or the reader went away, fails
+`mend run` with exit `1` even when the command succeeded, and stderr says the command's own code.
 
 Stopped by a signal, `mend run`, `mend logs` and `mend wait` exit 128 + its number: `130` for
 `SIGINT` (`Ctrl+C`), `129` for `SIGHUP`, `143` for `SIGTERM`. `mend run` and `mend logs` put the

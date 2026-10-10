@@ -10,7 +10,7 @@ Session workspaces can create additional containers.
 
 ## Install and start
 
-You need Node.js 22 or newer for the CLI. The optional terminal dashboard requires Node.js 26.
+You need Node.js 22.13 or newer for the CLI. The optional terminal dashboard requires Node.js 26.
 Server setup additionally needs a running local Docker daemon, Docker API 1.45 or newer, and Docker
 Compose v2. Docker Engine, Docker Desktop, and OrbStack must satisfy the actual capability checks;
 see the separate [macOS validation record](MACOS-VALIDATION.md).
