@@ -1,6 +1,7 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 
 import { assert, describe, it } from "@effect/vitest";
 import {
@@ -217,6 +218,104 @@ describe("archive", () => {
           ).length,
           0,
         );
+      }).pipe(Effect.scoped, Effect.provide(gatewayTestLayer(mend.url, statePath)));
+    });
+  });
+
+  it.live("refuses to resume an archived thread's queue, and sends nothing (613-R2-1)", () =>
+    Effect.gen(function* () {
+      const mend = yield* startFakeMend;
+      mend.workbench.addProject("project-1", "mend");
+      mend.workbench.addSession({ id: "session-1", projectId: "project-1" });
+      const open = mend.workbench.addTurn("session-1", "A long job");
+      yield* Effect.gen(function* () {
+        const { rpc } = yield* pairAndConnect(mend, "ARCHIVE-RESUME");
+        yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](
+          queueBehind("message-archived", "Not while archived"),
+        );
+        yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](archive("thread.archive"));
+        // A stale client resumes it: before, the prompt went out while the thread was archived.
+        const resumed = yield* Effect.exit(
+          rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({
+            type: "queue.resume",
+            commandId: commandId(),
+            threadId: THREAD,
+          }),
+        );
+        assert.strictEqual(tagOf(resumed), "OrchestrationV2DispatchCommandError");
+        mend.workbench.setTurn(open, "completed");
+        yield* Effect.sleep("400 millis");
+        assert.strictEqual(
+          mend.workbench.calls.filter(
+            (call) => call.method === "POST" && call.path.endsWith("/turns"),
+          ).length,
+          0,
+        );
+      }).pipe(Effect.scoped, Effect.provide(gatewayTestLayer(mend.url)));
+    }),
+  );
+
+  it.live(
+    "sends nothing for a thread the state file keeps archived, even with its queue not held",
+    () => {
+      const statePath = join(mkdtempSync(join(tmpdir(), "t3-gateway-archive-")), "state.sqlite");
+      return Effect.gen(function* () {
+        const mend = yield* startFakeMend;
+        mend.workbench.addProject("project-1", "mend");
+        mend.workbench.addSession({ id: "session-1", projectId: "project-1" });
+        const open = mend.workbench.addTurn("session-1", "A long job");
+        yield* Effect.gen(function* () {
+          const { rpc } = yield* pairAndConnect(mend, "ARCHIVE-DURABLE");
+          yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](
+            queueBehind("message-archived", "Not while archived"),
+          );
+          yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](archive("thread.archive"));
+        }).pipe(Effect.scoped, Effect.provide(gatewayTestLayer(mend.url, statePath)));
+        // The hold gone from the state file, the archive kept: the archive alone stops the queue.
+        const database = new DatabaseSync(statePath);
+        database.exec("DELETE FROM queue_holds");
+        database.close();
+        mend.workbench.setTurn(open, "completed");
+        yield* Effect.gen(function* () {
+          const { rpc } = yield* pairAndConnect(mend, "ARCHIVE-DURABLE-AFTER");
+          const kept = yield* rpc[ORCHESTRATION_V2_WS_METHODS.getArchivedShellSnapshot]({});
+          assert.strictEqual(kept.threads.length, 1);
+          yield* Effect.sleep("400 millis");
+          assert.strictEqual(
+            mend.workbench.calls.filter(
+              (call) => call.method === "POST" && call.path.endsWith("/turns"),
+            ).length,
+            0,
+          );
+        }).pipe(Effect.scoped, Effect.provide(gatewayTestLayer(mend.url, statePath)));
+      });
+    },
+  );
+
+  it.live("refuses an archive whose hold the state file will not keep: nothing archived", () => {
+    const statePath = join(mkdtempSync(join(tmpdir(), "t3-gateway-archive-")), "state.sqlite");
+    return Effect.gen(function* () {
+      const mend = yield* startFakeMend;
+      mend.workbench.addProject("project-1", "mend");
+      mend.workbench.addSession({ id: "session-1", projectId: "project-1" });
+      mend.workbench.addTurn("session-1", "A long job");
+      yield* Effect.gen(function* () {
+        const { rpc } = yield* pairAndConnect(mend, "ARCHIVE-UNKEPT");
+        yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](
+          queueBehind("message-archived", "Not while archived"),
+        );
+        const database = new DatabaseSync(statePath);
+        database.exec(
+          "CREATE TRIGGER refuse_hold BEFORE INSERT ON queue_holds BEGIN SELECT RAISE(ABORT, 'disk failure'); END",
+        );
+        const refusedArchive = yield* Effect.exit(
+          rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](archive("thread.archive")),
+        );
+        assert.strictEqual(tagOf(refusedArchive), "OrchestrationV2DispatchCommandError");
+        assert.strictEqual(database.prepare("SELECT * FROM archived_threads").all().length, 0);
+        database.close();
+        const snapshot = yield* rpc[ORCHESTRATION_V2_WS_METHODS.getArchivedShellSnapshot]({});
+        assert.deepStrictEqual(snapshot.threads, []);
       }).pipe(Effect.scoped, Effect.provide(gatewayTestLayer(mend.url, statePath)));
     });
   });

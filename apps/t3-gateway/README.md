@@ -388,8 +388,11 @@ of the active shell (`thread.removed`) into the archived one
 held: nothing is sent while it is archived. t3code's own server takes such messages back instead,
 but a message taken back is history, which the gateway caps at 20, so an archive of a long queue
 would lose the oldest; held, every message is still there, across a restart too, and
-`thread.unarchive` brings the thread back with its queue held, to resume or cancel. The session in
-Mend is not touched, and other clients of Mend and other people see it as before.
+`thread.unarchive` brings the thread back with its queue held, to resume or cancel. The archive
+itself stops the queue, held or not: an archived thread's queue never sends or launches, and
+`queue.resume` is refused until it is unarchived. The hold is kept before the archive, and an
+archive whose hold the state file refuses is refused. The session in Mend is not touched, and other
+clients of Mend and other people see it as before.
 
 ## Phase 3: the terminal
 

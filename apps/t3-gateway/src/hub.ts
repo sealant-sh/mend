@@ -2338,8 +2338,9 @@ export const makePersonHub = (input: {
         Array.from(queues),
         ([sessionId, queue]) => {
           // Before the first full read, nothing is known of any session yet; a launched session no
-          // read has shown yet is not gone either.
-          if (!loaded || opening.has(sessionId)) return Effect.void;
+          // read has shown yet is not gone either. An archived thread's queue never moves, held or
+          // not, by the archive the state file keeps (review 613-R2-1).
+          if (!loaded || opening.has(sessionId) || archived.has(sessionId)) return Effect.void;
           const step = Queueing.nextStep(queue, viewOf(sessionId), performance.now(), timings);
           const work =
             step === null
@@ -2543,6 +2544,11 @@ export const makePersonHub = (input: {
     const resumeQueue: ThreadCommands["resumeQueue"] = (threadId) =>
       locked(
         Effect.gen(function* () {
+          if (archived.has(threadId)) {
+            return yield* refused(
+              "The thread is archived: nothing in its queue is sent until it is unarchived. Unarchive it, then resume.",
+            );
+          }
           yield* changeKept(threadId, (queue) => {
             Queueing.resume(queue);
             return true;
@@ -3043,7 +3049,26 @@ export const makePersonHub = (input: {
               );
             }
             const at = command.archived ? new Date().toISOString() : null;
+            // Archived, what is still queued waits held, kept first: nothing is sent while the
+            // thread is archived (the archive itself guards that too), and nothing is lost (a
+            // message taken back is history, and history is capped). Unarchived, it stays held
+            // until the person resumes it.
+            const wasHeld = queueOf(sessionId).held;
+            if (at !== null) {
+              yield* changeKept(sessionId, (queue) => {
+                Queueing.holdIfQueued(queue, true);
+                return true;
+              });
+            }
             yield* state.setArchived(keeper.id, sessionId, at).pipe(
+              Effect.tapError(() =>
+                at === null
+                  ? Effect.void
+                  : changeKept(sessionId, (queue) => {
+                      queue.held = wasHeld;
+                      return true;
+                    }).pipe(Effect.ignore),
+              ),
               Effect.mapError(
                 () =>
                   new ThreadCommandRefused({
@@ -3052,14 +3077,8 @@ export const makePersonHub = (input: {
                   }),
               ),
             );
-            if (at === null) {
-              archived.delete(sessionId);
-            } else {
-              archived.set(sessionId, at);
-              // What is still queued waits, held: nothing is sent while the thread is archived,
-              // and nothing is lost (a message taken back is history, and history is capped).
-              Queueing.holdIfQueued(queueOf(sessionId), true);
-            }
+            if (at === null) archived.delete(sessionId);
+            else archived.set(sessionId, at);
             yield* publishAll;
             return sequence;
           }),
