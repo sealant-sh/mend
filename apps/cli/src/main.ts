@@ -59,6 +59,7 @@ import {
   type DotfilesRepositoryBody,
 } from "./dotfiles.ts";
 import { formatLoadReport, type EnvironmentLoadReportDto } from "./env.ts";
+import { failureWords, noteRefusal } from "./failure-words.ts";
 import { gitAuthorLine, parseGitAuthorArgs, type GitAuthorDto } from "./git-author.ts";
 import {
   findCommand,
@@ -483,14 +484,17 @@ const request = async <T>(
     throw noAnswerError(error, config.url, call, Date.now() - started);
   }
   if (!response.ok) {
-    let message = `${call} → ${response.status}`;
+    let parsed: unknown = null;
     try {
-      const parsed = JSON.parse(text) as { readonly message?: string };
-      message = parsed.message ?? message;
+      parsed = JSON.parse(text);
     } catch {
-      // not JSON — keep the status line
+      // not JSON — words for the status stand
     }
-    throw new MendRequestError("http", message, response.status);
+    const failure = noteRefusal(call, response.status, failureWords(response.status, parsed));
+    throw new MendRequestError("http", failure.words, response.status, {
+      call,
+      tag: failure.tag,
+    });
   }
   // A route with nothing to return answers 204 with no body (`mend workspace replace`).
   if (text === "") return JSON.parse("null");
@@ -570,7 +574,15 @@ const mintTicket =
       }
       return { kind: "unsupported" };
     }
-    if (!response.ok) throw new Error(`upgrade ticket refused (${response.status})`);
+    if (!response.ok) {
+      const body: unknown = await response.json().catch(() => null);
+      const call = "POST /api/upgrade-tickets";
+      const failure = noteRefusal(call, response.status, failureWords(response.status, body));
+      throw new MendRequestError("http", failure.words, response.status, {
+        call,
+        tag: failure.tag,
+      });
+    }
     const minted = (await response.json()) as { readonly ticket?: unknown };
     if (typeof minted.ticket !== "string")
       throw new Error("upgrade ticket missing from the answer");

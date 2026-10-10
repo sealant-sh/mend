@@ -1,5 +1,7 @@
 import type { CliAuthPollView, CliAuthStartView } from "@mend/api-contracts";
 
+import { failureLogLine, failureWords } from "../shared/failure-words";
+
 /**
  * The desktop signs in the way `mend login` does (apps/cli/src/login.ts, the `cliAuth` contract
  * in packages/api-contracts/src/devices.ts): open an authorize request that holds a secret device
@@ -223,9 +225,12 @@ export const openDeviceRequest = async (
     };
   }
   if (started.status < 200 || started.status >= 300) {
+    console.warn(failureLogLine("POST /api/cli/auth", started.status, started.json));
     return {
       ok: false,
-      reason: `the server at ${base} refused to open an authorize request (${started.status})`,
+      reason:
+        failureWords(started.status, started.json).serverWords ??
+        `the server at ${base} did not open an authorize request — try again; its log has the detail`,
     };
   }
   const request = parseOpenedRequest(started.json);
@@ -290,9 +295,12 @@ export const awaitDeviceApproval = async (
       return { ok: false, reason: "the authorize request is no longer open — start again" };
     }
     if (poll.status < 200 || poll.status >= 300) {
+      console.warn(failureLogLine("POST /api/cli/auth/token", poll.status, poll.json));
       return {
         ok: false,
-        reason: `the server answered ${poll.status} while waiting — start again`,
+        reason:
+          failureWords(poll.status, poll.json).serverWords ??
+          "the server refused while waiting — start again; its log has the detail",
       };
     }
     const answer = parsePollAnswer(poll.json);

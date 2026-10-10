@@ -34,8 +34,11 @@ export const legacyBearerAfterMint404 = async (token: string): Promise<string> =
     () => null,
   );
   if (health?.upgradeTickets === true) {
+    console.warn(
+      "POST /api/upgrade-tickets responded 404 on a server that mints them: something between this phone and Mend is refusing it",
+    );
     throw new ApiError(
-      "Upgrade tickets answered 404 on a server that mints them: something between this phone and Mend is refusing them.",
+      "Something between this phone and Mend refused the terminal's connection ticket.",
       404,
     );
   }

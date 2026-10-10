@@ -1,17 +1,5 @@
 import type { MendConnection } from "./config.js";
-
-const responseMessage = (value: unknown, fallback: string): string => {
-  if (
-    typeof value !== "object" ||
-    value === null ||
-    Array.isArray(value) ||
-    !("message" in value)
-  ) {
-    return fallback;
-  }
-  const message = value.message;
-  return typeof message === "string" && message !== "" ? message : fallback;
-};
+import { failureLogLine, failureWords } from "./failure-words.js";
 
 /**
  * Why a request never reached Mend. Node's fetch says only "fetch failed"; the reason that helps on
@@ -88,10 +76,8 @@ export const requestMend = async (
     }
   }
   if (!response.ok) {
-    throw new MendApiError(
-      responseMessage(body, `Mend responded ${response.status}.`),
-      response.status,
-    );
+    console.warn(failureLogLine(`${method} /api${requestPath}`, response.status, body));
+    throw new MendApiError(failureWords(response.status, body).words, response.status);
   }
   return body;
 };

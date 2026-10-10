@@ -7,6 +7,7 @@ import {
 import { useQuery } from "@tanstack/react-query";
 
 import type { SessionDto, WorkspaceRetirementDto } from "./api.ts";
+import { failureWords } from "./refusal.ts";
 import { useTRPC } from "./trpc.ts";
 import { useViewer } from "./viewer.ts";
 import { LIVE_STATES } from "./workbench-menus.ts";
@@ -196,15 +197,10 @@ export const retirementView = (
 
 /**
  * A failed "Replace this workspace now", as the page shows it: a `WorkspaceReplaceRefused` in the
- * server's own words, which the web tier prefixes with the tag (server/api/errors.ts); anything
- * else as it came.
+ * server's own words, anything else in its words too, and a plain sentence when it has none.
  */
-export const replaceRefusalWords = (cause: unknown): string => {
-  const raw = cause instanceof Error ? cause.message : String(cause);
-  const prefix = "WorkspaceReplaceRefused: ";
-  if (raw.startsWith(prefix)) return raw.slice(prefix.length);
-  return raw === "" ? "The workspace was not replaced." : raw;
-};
+export const replaceRefusalWords = (cause: unknown): string =>
+  failureWords(cause, "The workspace was not replaced.");
 
 /**
  * What a click on the Shared control switch does: turning it on asks first, in both layouts, in

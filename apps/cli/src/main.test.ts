@@ -254,6 +254,34 @@ describe("Mend CLI session selection", spawning, () => {
     }
   });
 
+  it("words a refusal that carries no sentence, never the call, the status or the tag", async () => {
+    for (const [status, body] of [
+      [409, { _tag: "SessionNotLive", id: session.id }],
+      [500, null],
+    ] as const) {
+      const fake = await startFakeMend((request, response) => {
+        if (retained(request, response)) return;
+        if (request.url === `/api/sessions/${session.id}/stop`) {
+          response.writeHead(status, { "content-type": "application/json" });
+          response.end(body === null ? "" : JSON.stringify(body));
+        } else response.writeHead(404).end();
+      });
+      const cli = startCli(fake.url, ["stop"]);
+      try {
+        await cli.exited;
+        expect(cli.stderr()).not.toMatch(/SessionNotLive|→|\/sessions\/|409|500/);
+        expect(cli.stderr()).toContain(
+          status === 409
+            ? "The session's workspace is not running — resume the session, then retry."
+            : "Mend could not do that. Try again; the server log has the detail.",
+        );
+      } finally {
+        cli.child.kill("SIGKILL");
+        await fake.close();
+      }
+    }
+  });
+
   it("stop takes the session id it is given, first on the line, with no --project", async () => {
     const second = { ...session, id: "session-5678", worktree: "session-5678" };
     const stopped: Array<string> = [];

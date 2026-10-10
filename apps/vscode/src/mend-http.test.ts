@@ -42,6 +42,41 @@ describe("requestMend", () => {
     );
   });
 
+  it("words a refusal without a sentence, and keeps the call and status for the log", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify({ _tag: "WorktreeActive", id: "w-1", liveSessions: 2 }), {
+            status: 409,
+          }),
+        )
+        .mockResolvedValueOnce(new Response("Bad Gateway", { status: 502 })),
+    );
+    try {
+      await expect(requestMend(connection, "/worktrees/w-1", { method: "DELETE" })).rejects.toEqual(
+        expect.objectContaining({
+          status: 409,
+          message: "The worktree still has live sessions — stop them first.",
+        }),
+      );
+      await expect(requestMend(connection, "/projects")).rejects.toEqual(
+        expect.objectContaining({
+          status: 502,
+          message: "Mend could not do that. Try again; the server log has the detail.",
+        }),
+      );
+      expect(warn.mock.calls).toEqual([
+        ["DELETE /api/worktrees/w-1 responded 409 · WorktreeActive"],
+        ["GET /api/projects responded 502"],
+      ]);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it("sends authentication and returns successful discovery metadata", async () => {
     const body = { gateway: null, keys: [] };
     const fetchMock = vi

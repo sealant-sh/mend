@@ -7,6 +7,7 @@ import Constants from "expo-constants";
 import * as Notifications from "expo-notifications";
 import { Platform } from "react-native";
 
+import { failureLogLine, failureWords } from "@/data/failure-words";
 import { loadConfig } from "@/data/live";
 
 export type PushRegistration =
@@ -42,7 +43,9 @@ export const enablePushNotifications = async (): Promise<PushRegistration> => {
     body: JSON.stringify({ token, platform: Platform.OS }),
   });
   if (!response.ok) {
-    return { state: "unavailable", reason: `server answered ${response.status} on /api/devices` };
+    const body: unknown = await response.json().catch(() => null);
+    console.warn(failureLogLine("POST /api/devices", response.status, body));
+    return { state: "unavailable", reason: failureWords(response.status, body).words };
   }
   return { state: "registered", token };
 };

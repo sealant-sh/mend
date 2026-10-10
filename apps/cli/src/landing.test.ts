@@ -314,7 +314,7 @@ describe("the bundle's answer", () => {
       ),
     ).toBe("nothing to bundle · the change has no commits past its base");
     expect(bundleRefusal({ status: 502, header: () => null, bytes: new Uint8Array() })).toBe(
-      "the bundle request answered 502",
+      "Mend could not do that. Try again; the server log has the detail.",
     );
   });
 

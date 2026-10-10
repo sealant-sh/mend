@@ -4,7 +4,7 @@ import { SessionEngine } from "@mend/sessions";
 import { git as gitIn, type GitError, holdsCommitOn, Store, worktreePathOf } from "@mend/store";
 import { Effect, Layer } from "effect";
 
-import { branchWords, gitWords } from "./git-words.ts";
+import { branchWords, gitWords, missingWords } from "./git-words.ts";
 import { LandingGit, LandingStepError, type LandingPlace } from "./landing.ts";
 
 /**
@@ -58,12 +58,21 @@ export const LandingGitColocatedLive: Layer.Layer<
           const checkpoint = yield* engine.checkpointNow(scope.session.id, trigger);
           return { checkpoint, agentHead };
         }).pipe(
+          Effect.tapError((error) =>
+            error._tag === "GitError"
+              ? Effect.void
+              : Effect.logWarning("landing: no checkpoint taken").pipe(
+                  Effect.annotateLogs({ sessionId: scope.session.id, error: error._tag }),
+                ),
+          ),
           Effect.mapError(
             (error) =>
               new LandingStepError({
                 step: "checkpoint",
                 message:
-                  error._tag === "GitError" ? gitWords(error, null) : `${error._tag} · checkpoint`,
+                  error._tag === "GitError"
+                    ? gitWords(error, null)
+                    : `${missingWords(error._tag)} · nothing landed`,
               }),
           ),
         ),

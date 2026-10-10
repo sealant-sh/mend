@@ -19,3 +19,28 @@ export const gitWords = (error: GitError, mode: GitAuthMode | null): string => {
 
 export const branchWords = (error: InvalidBranchError): string =>
   `${error.branch} is not a branch name git accepts`;
+
+/**
+ * What a missing record means to the person landing, by its error's tag. The tag names a table
+ * row; the person needs the thing. The tag itself goes to the log, never into these words.
+ */
+export const missingWords = (tag: string): string => {
+  switch (tag) {
+    case "SessionNotFoundError":
+      return "the session no longer exists";
+    case "ProjectNotFoundError":
+      return "the project no longer exists";
+    case "WorktreeNotFoundError":
+      return "the worktree no longer exists";
+    default:
+      return "something the landing needs no longer exists";
+  }
+};
+
+/** The landing commit was made but Mend could not keep it in its store (a blob write failed). */
+export const COMMIT_NOT_KEPT =
+  "Mend could not save the landing commit in its store · nothing was pushed";
+
+/** The copy a capture-backed landing commits in could not be prepared. */
+export const CACHE_NOT_READY =
+  "Mend could not prepare the copy it lands from · nothing was pushed · try again";

@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import * as os from "node:os";
 
+import { failureWords, noteRefusal } from "./failure-words.ts";
 import { groupCode } from "./pair.ts";
 import { redactCredentials } from "./shared.ts";
 
@@ -255,7 +256,11 @@ export const loginCommand = async (args: ReadonlyArray<string>, deps: LoginDeps)
     );
   }
   if (started.status < 200 || started.status >= 300) {
-    return fail(`the server at ${base} refused to open an authorize request (${started.status})`);
+    return fail(
+      noteRefusal("POST /api/cli/auth", started.status, failureWords(started.status, started.json))
+        .serverWords ??
+        `the server at ${base} did not open an authorize request — try again; its log has the detail`,
+    );
   }
   const opened =
     parseCliAuthStart(started.json) ??
@@ -285,7 +290,11 @@ export const loginCommand = async (args: ReadonlyArray<string>, deps: LoginDeps)
       return fail("the authorize request is no longer open — run mend login again");
     }
     if (poll.status < 200 || poll.status >= 300) {
-      return fail(`the server answered ${poll.status} while waiting — run mend login again`);
+      return fail(
+        noteRefusal("POST /api/cli/auth/token", poll.status, failureWords(poll.status, poll.json))
+          .serverWords ??
+          "the server refused while waiting — run mend login again; its log has the detail",
+      );
     }
     const result = parseCliAuthPoll(poll.json);
     if (result === null) {

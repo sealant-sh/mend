@@ -5,6 +5,7 @@ import * as path from "node:path";
 
 import { type LandingFact, landingFactLine, landingFactsFromWire } from "@mend/domain/workbench";
 
+import { failureWords, noteRefusal } from "./failure-words.ts";
 import type { ApiCall } from "./pair.ts";
 import { gitCurrentBranch, gitTopLevel, normalizeRemoteUrl, redactCredentials } from "./shared.ts";
 
@@ -703,12 +704,6 @@ const numberField = (value: unknown, key: string): number | null => {
   return typeof field === "number" ? field : null;
 };
 
-const stringField = (value: unknown, key: string): string | null => {
-  if (typeof value !== "object" || value === null || !(key in value)) return null;
-  const field: unknown = Reflect.get(value, key);
-  return typeof field === "string" ? field : null;
-};
-
 const parseJson = (bytes: Uint8Array): unknown => {
   try {
     return JSON.parse(new TextDecoder().decode(bytes));
@@ -725,7 +720,8 @@ export const bundleRefusal = (downloaded: Downloaded): string => {
   if (downloaded.status === 413 && size !== null && limit !== null) {
     return `bundle not sent · ${formatBytes(size)} (${size} bytes) · the server's limit is ${formatBytes(limit)} (MEND_BUDGET_BUNDLE_BYTES) · nothing was fetched`;
   }
-  return stringField(body, "message") ?? `the bundle request answered ${downloaded.status}`;
+  const call = "GET /changes/:changeId/bundle";
+  return noteRefusal(call, downloaded.status, failureWords(downloaded.status, body)).words;
 };
 
 /** The bundle's own facts, from its headers; null when the server sent none. */

@@ -92,7 +92,13 @@ describe("followStart", () => {
 
   it("treats an edge's 504 on the launch as no answer, not a refusal", async () => {
     const run = follow(
-      Promise.reject(new MendRequestError("http", "POST /sessions/session-1/launch → 504", 504)),
+      Promise.reject(
+        new MendRequestError(
+          "http",
+          "Mend could not do that. Try again; the server log has the detail.",
+          504,
+        ),
+      ),
       [{ session: running, currentAgent: ptyAgent }],
     );
     expect((await run.outcome).kind).toBe("live");

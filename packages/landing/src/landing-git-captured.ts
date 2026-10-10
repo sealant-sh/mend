@@ -2,6 +2,7 @@ import { CaptureStoreRepo, CheckpointsRepo, StoreRefsRepo } from "@mend/db";
 import { derivedPackPrefix, ensureCaptureCache, SessionEngine } from "@mend/sessions";
 import {
   BlobStore,
+  type BlobStoreError,
   GitOpsRunner,
   holdsCommitOn,
   landedRefOf,
@@ -10,7 +11,13 @@ import {
 } from "@mend/store";
 import { Effect, Layer } from "effect";
 
-import { branchWords, gitWords } from "./git-words.ts";
+import {
+  branchWords,
+  CACHE_NOT_READY,
+  COMMIT_NOT_KEPT,
+  gitWords,
+  missingWords,
+} from "./git-words.ts";
 import { LandingGit, LandingStepError, type LandingPlace } from "./landing.ts";
 
 /**
@@ -85,22 +92,27 @@ export const LandingGitCapturedLive: Layer.Layer<
       checkpoint: (scope, trigger) =>
         Effect.gen(function* () {
           for (let attempt = 1; ; attempt += 1) {
-            const taken = yield* engine
-              .landingCheckpoint(scope.session.id, trigger)
-              .pipe(
-                Effect.mapError((error) =>
-                  stepError(
-                    "checkpoint",
-                    error._tag === "GitError"
-                      ? gitWords(error, null)
-                      : error._tag === "CapturesBehindError"
-                        ? error.stopping
-                          ? "the session is stopping · nothing landed · land after it settles"
-                          : `the workspace's captures have not caught up · asked ${error.attempts} times · nothing landed · try again`
-                        : `${error._tag} · checkpoint`,
-                  ),
+            const taken = yield* engine.landingCheckpoint(scope.session.id, trigger).pipe(
+              Effect.tapError((error) =>
+                error._tag === "GitError" || error._tag === "CapturesBehindError"
+                  ? Effect.void
+                  : Effect.logWarning("landing: no checkpoint taken").pipe(
+                      Effect.annotateLogs({ sessionId: scope.session.id, error: error._tag }),
+                    ),
+              ),
+              Effect.mapError((error) =>
+                stepError(
+                  "checkpoint",
+                  error._tag === "GitError"
+                    ? gitWords(error, null)
+                    : error._tag === "CapturesBehindError"
+                      ? error.stopping
+                        ? "the session is stopping · nothing landed · land after it settles"
+                        : `the workspace's captures have not caught up · asked ${error.attempts} times · nothing landed · try again`
+                      : `${missingWords(error._tag)} · nothing landed`,
                 ),
-              );
+              ),
+            );
             const ready = yield* ensureOf(scope, "checkpoint");
             if (taken.captureId === null || ready.head.id === taken.captureId) {
               return {
@@ -134,10 +146,21 @@ export const LandingGitCapturedLive: Layer.Layer<
               message: input.message,
             })
             .pipe(
+              Effect.tapError((error) =>
+                error._tag === "GitError"
+                  ? Effect.void
+                  : Effect.logWarning("landing: the runner cache failed at commit").pipe(
+                      Effect.annotateLogs({
+                        sessionId: scope.session.id,
+                        error: error._tag,
+                        cause: String(error.cause),
+                      }),
+                    ),
+              ),
               Effect.mapError((error) =>
                 stepError(
                   "commit",
-                  error._tag === "GitError" ? gitWords(error, null) : String(error.cause),
+                  error._tag === "GitError" ? gitWords(error, null) : CACHE_NOT_READY,
                 ),
               ),
             );
@@ -151,12 +174,24 @@ export const LandingGitCapturedLive: Layer.Layer<
           if (landed.written !== null) {
             const { derived } = landed.written;
             const key = `${derivedPackPrefix(scope.project.id)}${derived.packSha256}`;
-            const bucket = (error: { readonly _tag: string }) =>
-              stepError("commit", `bucket: ${error._tag}`);
-            yield* blobs.put(key, derived.pack, { ifAbsent: true }).pipe(Effect.mapError(bucket));
-            yield* blobs
-              .put(packIdxKeyOf(key), derived.idx, { ifAbsent: true })
-              .pipe(Effect.mapError(bucket));
+            // What failed goes to the log; the landing's record says what it means.
+            const notKept = (error: BlobStoreError) =>
+              Effect.logWarning("landing: the landing commit was not kept").pipe(
+                Effect.annotateLogs({
+                  sessionId: scope.session.id,
+                  error: error._tag,
+                  operation: error.operation,
+                  key: error.key,
+                  cause: String(error.cause),
+                }),
+              );
+            const kept = <A>(write: Effect.Effect<A, BlobStoreError>) =>
+              write.pipe(
+                Effect.tapError(notKept),
+                Effect.mapError(() => stepError("commit", COMMIT_NOT_KEPT)),
+              );
+            yield* kept(blobs.put(key, derived.pack, { ifAbsent: true }));
+            yield* kept(blobs.put(packIdxKeyOf(key), derived.idx, { ifAbsent: true }));
             yield* repo.recordPacks([
               {
                 key,

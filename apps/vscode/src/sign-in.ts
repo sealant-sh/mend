@@ -1,5 +1,6 @@
 import { isIP } from "node:net";
 
+import { failureLogLine, failureWords } from "./failure-words.js";
 import { transportReason } from "./mend-http.js";
 
 /**
@@ -168,7 +169,11 @@ export const browserSignIn = async (base: string, deps: SignInDeps): Promise<Sig
     );
   }
   if (started.status < 200 || started.status >= 300) {
-    throw new SignInError(`Mend at ${base} refused to open a sign-in request (${started.status}).`);
+    console.warn(failureLogLine("POST /api/cli/auth", started.status, started.json));
+    throw new SignInError(
+      failureWords(started.status, started.json).serverWords ??
+        `Mend at ${base} did not open a sign-in request. Try again; the server log has the detail.`,
+    );
   }
   const request = parseAuthorizeRequest(started.json);
   if (request === null) {
@@ -192,7 +197,11 @@ export const browserSignIn = async (base: string, deps: SignInDeps): Promise<Sig
       throw new SignInError("The sign-in request is no longer open. Sign in again.");
     }
     if (poll.status < 200 || poll.status >= 300) {
-      throw new SignInError(`Mend answered ${poll.status} while waiting. Sign in again.`);
+      console.warn(failureLogLine("POST /api/cli/auth/token", poll.status, poll.json));
+      throw new SignInError(
+        failureWords(poll.status, poll.json).serverWords ??
+          "Mend refused while waiting. Sign in again; the server log has the detail.",
+      );
     }
     const result = parsePoll(poll.json);
     if (result === null)

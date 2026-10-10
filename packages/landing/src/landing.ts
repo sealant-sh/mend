@@ -48,6 +48,7 @@ import {
   pullRequestTitle,
 } from "./description.ts";
 import { pullRequestNumbersIn } from "./gh.ts";
+import { missingWords } from "./git-words.ts";
 import { pullRequestAvailability, pullRequestBase } from "./github.ts";
 import { PullRequests, PullRequestStepError } from "./pull-requests.ts";
 
@@ -462,8 +463,13 @@ export const LandingLive: Layer.Layer<
         const worktree = yield* worktrees.byId(session.worktreeId);
         return { session, project, worktree } satisfies LandingScope;
       }).pipe(
+        Effect.tapError((error) =>
+          Effect.logWarning("landing: the session's records could not be read").pipe(
+            Effect.annotateLogs({ sessionId, error: error._tag }),
+          ),
+        ),
         Effect.mapError((error) =>
-          notStarted("not-found", `landing not started · ${error._tag} · ${sessionId}`),
+          notStarted("not-found", `landing not started · ${missingWords(error._tag)}`),
         ),
       );
 

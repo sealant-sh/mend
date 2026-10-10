@@ -32,6 +32,7 @@ import {
   remoteLine,
   type FactTone,
 } from "#/lib/landing";
+import { failureWords } from "#/lib/refusal";
 import { useTRPC } from "#/lib/trpc";
 
 /**
@@ -42,8 +43,7 @@ import { useTRPC } from "#/lib/trpc";
  * them on GitHub.
  */
 
-const errorWords = (cause: unknown): string =>
-  (cause instanceof Error ? cause.message : String(cause)).replace(/^[A-Za-z]+: /, "");
+const errorWords = (cause: unknown): string => failureWords(cause, "Mend could not do that.");
 
 const DOT: Record<FactTone, string> = {
   observed: "bg-success-dot",

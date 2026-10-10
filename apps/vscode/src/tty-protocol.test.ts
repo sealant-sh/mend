@@ -79,6 +79,8 @@ describe("mintTtyTicket", () => {
     );
     await expect(
       mintTtyTicket({ url: "http://192.168.1.20:3105", token: "mdt_x" }, { session: "s-1" }),
-    ).rejects.toThrow("Mend responded 404.");
+    ).rejects.toThrow(
+      "This Mend server does not issue terminal tickets. Upgrade it to open terminals here.",
+    );
   });
 });

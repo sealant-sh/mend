@@ -10,6 +10,7 @@ import type {
   TtyTarget,
   WorkbenchEvent,
 } from "../shared/bridge";
+import { failureLogLine, failureWords } from "../shared/failure-words";
 import { forgetToken, loadConfig, saveConfig, tokenFromEnvironment } from "./config";
 import {
   awaitDeviceApproval,
@@ -180,15 +181,22 @@ export const ttyUrl = async (target: TtyTarget, from: string): Promise<string> =
     // Only a server older than tickets gets the bearer in a URL. One that mints them says so on
     // /health, and then this 404 came from something in between: the bearer stays out of URLs.
     if (await serverMintsTickets(base)) {
+      console.warn(
+        "POST /api/upgrade-tickets responded 404 on a server that mints them: something between this app and Mend is refusing it",
+      );
       throw new Error(
-        "upgrade tickets answered 404 on a server that mints them: something between this app and Mend is refusing POST /api/upgrade-tickets",
+        "Something between this app and Mend refused the terminal's connection ticket.",
       );
     }
     console.warn("this server predates upgrade tickets: the saved token rides the terminal URL");
     url.searchParams.set("token", config.token);
     return url.toString();
   }
-  if (!response.ok) throw new Error(`upgrade ticket refused (${response.status})`);
+  if (!response.ok) {
+    const body: unknown = await response.json().catch(() => null);
+    console.warn(failureLogLine("POST /api/upgrade-tickets", response.status, body));
+    throw new Error(failureWords(response.status, body).words);
+  }
   const minted: unknown = await response.json();
   if (
     typeof minted !== "object" ||

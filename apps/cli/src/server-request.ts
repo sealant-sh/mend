@@ -11,11 +11,19 @@ export type NoAnswer = "unreachable" | "timeout" | "dropped";
 export class MendRequestError extends Error {
   readonly kind: NoAnswer | "http";
   readonly status: number | null;
-  constructor(kind: NoAnswer | "http", message: string, status: number | null = null) {
+  /** The refused call and its tag, for code and diagnostics (`MEND_DEBUG`); never in the words. */
+  readonly refused: { readonly call: string; readonly tag: string | null } | null;
+  constructor(
+    kind: NoAnswer | "http",
+    message: string,
+    status: number | null = null,
+    refused: { readonly call: string; readonly tag: string | null } | null = null,
+  ) {
     super(message);
     this.name = "MendRequestError";
     this.kind = kind;
     this.status = status;
+    this.refused = refused;
   }
 }
 

@@ -4,6 +4,7 @@ import * as path from "node:path";
 import { sharedControlLine } from "@mend/domain/workbench";
 
 import type { ApiCall } from "./pair.ts";
+import { MendRequestError } from "./server-request.ts";
 import {
   askYesNo,
   confirmPlan,
@@ -440,11 +441,15 @@ export const operatorCommand = async (
   // or before the first exists), and only the server knows the role.
   const refused = await tryApi("GET", "/operator/organizations").then(
     () => null,
-    (error: unknown) => (error instanceof Error ? error.message : String(error)),
+    (error: unknown) => error,
   );
   if (refused !== null) {
     return fail(
-      refused.endsWith("→ 404") ? "this account is not the operator of this Mend" : refused,
+      refused instanceof MendRequestError && refused.status === 404
+        ? "this account is not the operator of this Mend"
+        : refused instanceof Error
+          ? refused.message
+          : String(refused),
     );
   }
   const organizationNamed = async (name: string | undefined) => {

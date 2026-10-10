@@ -13,6 +13,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useId, useState } from "react";
 
 import { createWorktree, type ProjectDto, type WorktreeDto } from "#/lib/api";
+import { failureWords, refusalTagOf } from "#/lib/refusal";
 import { useTRPC } from "#/lib/trpc";
 
 /**
@@ -33,20 +34,14 @@ const normalizeName = (value: string): string =>
     .replace(/[^a-z0-9._-]+/g, "-")
     .slice(0, 64);
 
-/**
- * Plain copy for a refused create. The web tier prefixes a contract failure
- * with its tag (server/api/errors.ts), which is not language for a reader.
- */
+/** Plain copy for a refused create, by which refusal it was (`refusalTagOf`). */
 const createFailureMessage = (cause: unknown): string => {
-  const raw = cause instanceof Error ? cause.message : String(cause);
-  const separator = raw.indexOf(": ");
-  const tag = separator === -1 ? raw : raw.slice(0, separator);
-  const detail = separator === -1 ? "" : raw.slice(separator + 2);
+  const tag = refusalTagOf(cause);
   if (tag === "WorktreeNameTaken")
     return "That name is already used in this project. Choose another.";
   if (tag === "NotFound") return "This project is no longer in the store.";
-  if (tag === "StoreFailure") return detail === "" ? "The store refused the worktree." : detail;
-  return raw === "" ? "The worktree was not created." : raw;
+  if (tag === "StoreFailure") return failureWords(cause, "The store refused the worktree.");
+  return failureWords(cause, "The worktree was not created.");
 };
 
 /** How many branch suggestions the base field offers at once. */
