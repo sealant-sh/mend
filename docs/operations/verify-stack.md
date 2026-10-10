@@ -27,16 +27,24 @@ mend service run --port 3305 --http --name stack -- \
 when `serve` goes, however it goes: stopped as a Service (`mend service stop stack`, the web's Stop:
 a hang-up, then SIGKILL two seconds later), killed, or failed.
 
-- Each start claims the daemon with a container named `verify-stack-owner`, labelled with a claim id
-  made for that start alone.
-- `serve` starts a watchdog in a session of its own **before** it claims, so there is no moment at
-  which a claim exists and nothing would remove it. When `serve` ends, the watchdog takes the stack
-  down only if the daemon's owner still carries its claim id. A refused start, or one replaced
-  since, finds another id and touches nothing.
-- A lookup that fails is retried with backoff, never read as "no claim". A claim whose create was
-  still in flight when `serve` died is waited for (a minute) and then removed.
-- A start that ends holding no claim stops its watchdog. A start that fails after claiming removes
-  its own stack before it exits (`--keep` leaves it for a look).
+- **A generation is one start's stack.** Each start claims the daemon with a container named
+  `verify-stack-owner`, labelled with a claim id made for that start alone. Docker keeps names
+  unique, so one generation exists at a time.
+- **`serve`'s watchdog makes the claim, and outlives it.** The watchdog is a process in a session of
+  its own, and `serve` asks it to create the claim. So a create still in flight when `serve` dies
+  belongs to the watchdog, which waits for it however long it takes. When `serve` ends, the watchdog
+  takes down the generation it claimed, and nothing else. A start that ends holding no claim stops
+  its watchdog.
+- **Every teardown holds the generation's lock.** The watchdog, a failed `up` and `down` all first
+  create `verify-stack-teardown-<claim id>`, then check that the daemon's owner is still that
+  generation, then remove, the owner last. While a teardown holds the lock and the owner stands, no
+  other teardown of it can act and no new start can be admitted. A teardown that waited and finds a
+  replacement touches nothing. The product's own volumes and network have fixed names (`mend-store`,
+  `mend_default`, …) that cannot carry a generation, so this exclusion is what keeps a stale
+  teardown off a replacement's.
+- **A watchdog retries; it never assumes.** A lookup or teardown that fails, or that finds another
+  teardown at work, is retried every 30 s at most, indefinitely: a daemon that does not answer
+  cannot show that the stack is gone. A lock left by a holder that is no longer running is cleared.
 
 Images stay, so the next start reuses every image whose source did not change. `up` builds and
 starts without holding (and without a watchdog); `down` removes whatever stack the daemon holds.
@@ -115,9 +123,11 @@ orchestrator).
 node scripts/verify-stack/stack.mjs report          # or --json
 ```
 
-prints the sources (ref, commit, tree), the time of every phase, the check's outcome, the memory of
-every process in the session's Docker daemon (PSS, largest first), and the isolation check below.
-Build logs are under `~/.cache/mend-verify-stack/logs/<run>/`.
+prints the stack's `phase` (`building` until every image is built and the stack is installed;
+`ready` after; the web can answer before sealantd is built), the sources (ref, commit, tree), the
+time of every phase, the check's outcome, the memory of every process in the session's Docker daemon
+(PSS, largest first), and the isolation check below. It only reads: nothing it measures is written
+back. Build logs are under `~/.cache/mend-verify-stack/logs/<run>/`.
 
 ## Disk
 

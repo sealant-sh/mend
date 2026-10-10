@@ -2,16 +2,25 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { OWNER_CONTAINER } from "./lib.mjs";
-import { CLAIM_LABEL, claim, currentClaim, watch } from "./lifecycle.mjs";
+import {
+  CLAIM_LABEL,
+  HOLDER_LABEL,
+  TEARDOWN_PREFIX,
+  claim,
+  currentClaim,
+  removeGeneration,
+  settleClaim,
+  watch,
+} from "./lifecycle.mjs";
 
 /**
  * A daemon in memory: containers by name, and the commands lifecycle.mjs sends. `failures` makes
- * the next N commands fail as an unreachable daemon would; `onCreate` runs before a create lands.
+ * the next N commands fail as an unreachable daemon would.
  */
 function fakeDocker({ failures = 0 } = {}) {
   const containers = new Map();
   let next = 1;
-  const state = { failures, calls: [], onCreate: null };
+  const state = { failures, calls: [] };
   const add = (name, labels) => {
     const id = String(next++).padStart(64, "0");
     containers.set(name, { Id: id, Name: `/${name}`, Config: { Labels: labels } });
@@ -25,26 +34,28 @@ function fakeDocker({ failures = 0 } = {}) {
     }
     const [verb] = args;
     if (verb === "ps") {
-      const filter = args[args.indexOf("--filter") + 1];
-      const name = /^name=\^(.*)\$$/.exec(filter)?.[1];
+      const name = /^name=\^(.*)\$$/.exec(args[args.indexOf("--filter") + 1])?.[1];
       const item = containers.get(name);
       return item ? `${item.Id}\n` : "";
     }
     if (verb === "inspect")
       return JSON.stringify([...containers.values()].filter((item) => item.Id === args[1]));
     if (verb === "create") {
-      if (state.onCreate) await state.onCreate();
       const name = args[args.indexOf("--name") + 1];
       if (containers.has(name))
         throw new Error(`Conflict. The container name "/${name}" is in use`);
       const labels = {};
       args.forEach((arg, index) => {
         if (args[index - 1] === "--label") {
-          const [key, value] = arg.split("=");
-          labels[key] = value;
+          const at = arg.indexOf("=");
+          labels[arg.slice(0, at)] = arg.slice(at + 1);
         }
       });
       return add(name, labels);
+    }
+    if (verb === "rm") {
+      for (const [name, item] of containers) if (args.includes(item.Id)) containers.delete(name);
+      return "";
     }
     throw new Error(`unexpected ${args.join(" ")}`);
   };
@@ -53,6 +64,7 @@ function fakeDocker({ failures = 0 } = {}) {
     state,
     containers,
     claimAs: (claimId) => add(OWNER_CONTAINER, { [CLAIM_LABEL]: claimId }),
+    lockAs: (claimId, holder) => add(`${TEARDOWN_PREFIX}${claimId}`, { [HOLDER_LABEL]: holder }),
   };
 }
 
@@ -62,22 +74,25 @@ function fakeClock() {
   return { now: () => t, pause: async (ms) => void (t += ms) };
 }
 
-const watching = (daemon, clock, overrides) => {
+/** A teardown of `claimId` on `daemon` that records what it removed. */
+function teardown(daemon, claimId, { holderAlive = () => false, onRemove } = {}) {
   const removed = [];
-  const run = watch({
-    docker: daemon.docker,
-    alive: () => false,
-    claimId: "mine",
-    takeDown: async (owner) => {
-      removed.push(owner.claim);
-      daemon.containers.delete(OWNER_CONTAINER);
-    },
-    pause: clock.pause,
-    now: clock.now,
-    ...overrides,
-  });
+  const run = () =>
+    removeGeneration({
+      docker: daemon.docker,
+      claimId,
+      image: "node",
+      holder: "100:1",
+      holderAlive,
+      removeResources: async (ownerId) => {
+        if (onRemove) await onRemove();
+        removed.push(ownerId);
+        for (const [name, item] of daemon.containers)
+          if (item.Id === ownerId) daemon.containers.delete(name);
+      },
+    });
   return { run, removed };
-};
+}
 
 test("the current claim: absent, present with its id and claim, and a failed lookup rejects", async () => {
   const daemon = fakeDocker();
@@ -107,97 +122,132 @@ test("a claim is this start's, refused when another holds it, and never guessed 
   await assert.rejects(claim(down.docker, { claimId: "d", image: "node" }), /Cannot connect/);
 });
 
-test("a refused start's watchdog leaves the stack that holds the claim alone (N1)", async () => {
+test("a teardown removes its own generation, under its lock, and releases the lock", async () => {
   const daemon = fakeDocker();
-  daemon.claimAs("first-start");
-  const clock = fakeClock();
-  const { run, removed } = watching(daemon, clock);
-  assert.equal(await run, "not-ours");
-  assert.deepEqual(removed, []);
-  assert.equal(daemon.containers.has(OWNER_CONTAINER), true);
+  const owner = daemon.claimAs("a");
+  const { run, removed } = teardown(daemon, "a");
+  assert.equal(await run(), "removed");
+  assert.deepEqual(removed, [owner]);
+  assert.equal(daemon.containers.size, 0, "owner and lock both gone");
 });
 
-test("an old watchdog leaves a replacement start's stack alone (N1)", async () => {
+test("a teardown of another generation touches nothing (N1)", async () => {
   const daemon = fakeDocker();
   daemon.claimAs("replacement");
-  const clock = fakeClock();
-  const { run, removed } = watching(daemon, clock, { claimId: "earlier-start" });
-  assert.equal(await run, "not-ours");
+  const { run, removed } = teardown(daemon, "earlier");
+  assert.equal(await run(), "not-ours");
   assert.deepEqual(removed, []);
+  assert.deepEqual([...daemon.containers.keys()], [OWNER_CONTAINER]);
 });
 
-test("a lookup that fails is retried, never taken for no claim (N2)", async () => {
+test("two teardowns of one generation never overlap: the second waits its turn (N4)", async () => {
   const daemon = fakeDocker();
-  daemon.claimAs("mine");
-  daemon.state.failures = 3;
-  const clock = fakeClock();
-  const logs = [];
-  const { run, removed } = watching(daemon, clock, { log: (line) => logs.push(line) });
-  assert.equal(await run, "taken-down");
-  assert.deepEqual(removed, ["mine"]);
-  assert.equal(logs.filter((line) => /lookup failed/.test(line)).length, 3);
+  daemon.claimAs("a");
+  let release;
+  const held = new Promise((done) => (release = done));
+  const first = teardown(daemon, "a", { onRemove: () => held });
+  const firstRun = first.run();
+  // Let the first take its lock and reach its removal.
+  await new Promise((done) => setImmediate(done));
+  await new Promise((done) => setImmediate(done));
+  const second = teardown(daemon, "a", { holderAlive: (holder) => holder === "100:1" });
+  assert.equal(await second.run(), "busy");
+  // Meanwhile no replacement can be admitted: the owner still stands.
+  assert.equal(await claim(daemon.docker, { claimId: "b", image: "node" }), false);
+  release();
+  assert.equal(await firstRun, "removed");
+  assert.deepEqual(second.removed, []);
 });
 
-test("a lookup that keeps failing past the wait for a claim still does not give up (N2)", async () => {
+test("a stale teardown that gets the lock after a replacement was admitted touches nothing (N4)", async () => {
   const daemon = fakeDocker();
-  daemon.claimAs("mine");
-  daemon.state.failures = 20; // longer than appearWithinMs at the retry delays
-  const clock = fakeClock();
-  const { run, removed } = watching(daemon, clock, { appearWithinMs: 5000 });
-  assert.equal(await run, "taken-down");
-  assert.deepEqual(removed, ["mine"]);
+  daemon.claimAs("a");
+  // An earlier teardown of `a` finished; `b` was admitted; then the stale one of `a` runs.
+  assert.equal(await teardown(daemon, "a").run(), "removed");
+  daemon.claimAs("b");
+  const stale = teardown(daemon, "a");
+  assert.equal(await stale.run(), "not-ours");
+  assert.deepEqual(stale.removed, []);
+  assert.deepEqual([...daemon.containers.keys()], [OWNER_CONTAINER]);
 });
 
-test("a claim still in flight when the supervisor died is waited for, then reaped (N2)", async () => {
+test("a lock left by a holder that is gone is cleared and taken", async () => {
   const daemon = fakeDocker();
-  const clock = fakeClock();
-  let lookups = 0;
-  const docker = async (args) => {
-    // The create lands on the third look, after the supervisor is gone.
-    if (args[0] === "ps" && ++lookups === 3) daemon.claimAs("mine");
-    return daemon.docker(args);
-  };
-  const { run, removed } = watching(daemon, clock, { docker });
-  assert.equal(await run, "taken-down");
-  assert.deepEqual(removed, ["mine"]);
+  daemon.claimAs("a");
+  daemon.lockAs("a", "999:1");
+  const { run, removed } = teardown(daemon, "a", { holderAlive: () => false });
+  assert.equal(await run(), "removed");
+  assert.equal(removed.length, 1);
+  assert.equal(daemon.containers.size, 0);
 });
 
-test("a start that never got a claim ends its watchdog after the bounded wait", async () => {
+test("a claim's outcome is waited for however long its create takes (N5)", async () => {
   const daemon = fakeDocker();
   const clock = fakeClock();
-  const { run, removed } = watching(daemon, clock, { appearWithinMs: 10_000 });
-  assert.equal(await run, "never-claimed");
-  assert.deepEqual(removed, []);
-  assert.ok(clock.now() >= 10_000);
-});
-
-test("a teardown that fails is retried until it is done", async () => {
-  const daemon = fakeDocker();
-  daemon.claimAs("mine");
-  const clock = fakeClock();
-  let attempts = 0;
-  const outcome = await watch({
+  let land;
+  const attempt = new Promise((done) => (land = done));
+  const settling = settleClaim({
+    attempt,
     docker: daemon.docker,
-    alive: () => false,
-    claimId: "mine",
-    takeDown: async () => {
-      attempts += 1;
-      if (attempts < 3) throw new Error("volume in use");
-      daemon.containers.delete(OWNER_CONTAINER);
-    },
+    claimId: "a",
     pause: clock.pause,
-    now: clock.now,
   });
-  assert.equal(outcome, "taken-down");
-  assert.equal(attempts, 3);
+  // No deadline: the create lands whenever it lands.
+  setTimeout(() => land(true), 50);
+  assert.equal(await settling, true);
+  assert.equal(await settleClaim({ attempt: null, docker: daemon.docker, claimId: "a" }), false);
 });
 
-test("nothing is looked at while the supervisor lives", async () => {
+test("a claim whose outcome is unknown is decided by the daemon, asked until it answers (N2)", async () => {
   const daemon = fakeDocker();
-  daemon.claimAs("mine");
+  daemon.claimAs("a");
+  daemon.state.failures = 4;
+  const clock = fakeClock();
+  const settled = await settleClaim({
+    attempt: Promise.reject(new Error("docker create timed out")),
+    docker: daemon.docker,
+    claimId: "a",
+    pause: clock.pause,
+  });
+  assert.equal(settled, true);
+});
+
+test("a watchdog waits for the supervisor, then for the claim, then tears down until done", async () => {
   const clock = fakeClock();
   let checks = 0;
-  const { run } = watching(daemon, clock, { alive: () => ++checks < 4 });
-  assert.equal(await run, "taken-down");
-  assert.equal(daemon.state.calls.filter((args) => args[0] === "ps").length, 1);
+  const outcomes = ["busy", "failed", "removed"];
+  const order = [];
+  const outcome = await watch({
+    alive: () => ++checks < 3,
+    claimed: async () => {
+      order.push("claimed");
+      return true;
+    },
+    remove: async () => {
+      order.push("remove");
+      const next = outcomes.shift();
+      if (next === "failed") throw new Error("volume in use");
+      return next;
+    },
+    pause: clock.pause,
+  });
+  assert.equal(outcome, "taken-down");
+  assert.deepEqual(order, ["claimed", "remove", "remove", "remove"]);
+});
+
+test("a watchdog whose start never claimed, or whose generation is gone or another's, stops", async () => {
+  const clock = fakeClock();
+  const base = { alive: () => false, pause: clock.pause };
+  assert.equal(
+    await watch({ ...base, claimed: async () => false, remove: async () => assert.fail() }),
+    "never-claimed",
+  );
+  assert.equal(
+    await watch({ ...base, claimed: async () => true, remove: async () => "gone" }),
+    "gone",
+  );
+  assert.equal(
+    await watch({ ...base, claimed: async () => true, remove: async () => "not-ours" }),
+    "not-ours",
+  );
 });

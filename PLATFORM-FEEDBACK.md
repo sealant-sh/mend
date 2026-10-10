@@ -55,6 +55,7 @@ write them that way) created the session, then failed its launch with
   `NonEmptyString` first and a `Schema.String` rest), on `POST /v1/sessions` and
   `/v1/sessions/as-user` alike. Mend then drops its check for the arguments and keeps the 64-word
   limit.
+
 ## 2026-10-10 · 0.39.0-next.707 · A workspace's Docker service: no buildx, and no shared files with the daemon
 
 Verify Mend in Mend (`docs/operations/verify-stack.md`) builds sealantd, Core and Mend from source

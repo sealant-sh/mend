@@ -1,10 +1,24 @@
 #!/usr/bin/env node
 // A `docker` for lifecycle.e2e.test.mjs: containers, volumes and networks in a JSON file
 // ($FAKE_DOCKER_STATE), for the commands the stack's claim, preflight, removal and watchdog send.
-// Faults: $FAKE_DOCKER_FAIL_LOOKUPS (a file holding a count) makes that many `ps` calls fail as
-// an unreachable daemon; $FAKE_DOCKER_CREATE_DELAY_MS holds a `create` back, and
-// $FAKE_DOCKER_CREATING (a file) is written while it waits; `build` always fails.
-import { appendFileSync, mkdirSync, readFileSync, rmdirSync, writeFileSync } from "node:fs";
+// Faults and pauses, each named by an environment variable:
+// - FAKE_DOCKER_FAIL_LOOKUPS (a file holding a count): that many `ps` calls fail as an unreachable
+//   daemon would;
+// - FAKE_DOCKER_CREATE_DELAY_MS: the owner container's `create` is held back that long, and
+//   FAKE_DOCKER_CREATING (a file) is written while it waits;
+// - FAKE_DOCKER_PAUSE_LIST (a file): while it exists, an unfiltered `ps` (a stack's enumeration)
+//   writes `<file>.paused` and waits;
+// - FAKE_DOCKER_PAUSE_LOCK (a file): the first teardown-lock `create` takes it, writes
+//   `<file>.paused` and waits for `<file>.release`;
+// - FAKE_DOCKER_BUILD: `hang` makes `build` wait a minute; otherwise `build` fails at once.
+import {
+  appendFileSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  rmdirSync,
+  writeFileSync,
+} from "node:fs";
 
 const args = process.argv.slice(2);
 const statePath = process.env.FAKE_DOCKER_STATE;
@@ -54,19 +68,47 @@ if (args[0] === "ps" && failLookups) {
   }
 }
 
+const exists = (path) => {
+  try {
+    readFileSync(path);
+    return true;
+  } catch {
+    return false;
+  }
+};
+const waitFor = async (condition) => {
+  while (!condition()) await sleep(50);
+};
+
 const [verb, sub] = args;
 if (verb === "version") console.log("27.5.1");
 else if (verb === "pull") console.log(args.at(-1));
 else if (verb === "info") console.log(JSON.stringify({ SecurityOptions: [] }));
-else if (verb === "build") fail("ERROR: the fake daemon builds nothing");
-else if (verb === "buildx") console.log("github.com/docker/buildx v0.20.1");
+else if (verb === "build") {
+  if (process.env.FAKE_DOCKER_BUILD === "hang") await sleep(60_000);
+  fail("ERROR: the fake daemon builds nothing");
+} else if (verb === "buildx") console.log("github.com/docker/buildx v0.20.1");
 else if (verb === "create") {
+  const name = args[args.indexOf("--name") + 1];
   const delay = Number(process.env.FAKE_DOCKER_CREATE_DELAY_MS ?? 0);
-  if (delay > 0) {
+  if (delay > 0 && name === "verify-stack-owner") {
     if (process.env.FAKE_DOCKER_CREATING) writeFileSync(process.env.FAKE_DOCKER_CREATING, "1");
     await sleep(delay);
   }
-  const name = args[args.indexOf("--name") + 1];
+  const pauseLock = process.env.FAKE_DOCKER_PAUSE_LOCK;
+  if (pauseLock && name.startsWith("verify-stack-teardown-")) {
+    let took = false;
+    try {
+      renameSync(pauseLock, `${pauseLock}.taken`);
+      took = true;
+    } catch {
+      // Not set, or another create took it: this one goes straight on.
+    }
+    if (took) {
+      writeFileSync(`${pauseLock}.paused`, "1");
+      await waitFor(() => exists(`${pauseLock}.release`));
+    }
+  }
   const created = await locked((state) => {
     if (state.containers.some((item) => item.Name === `/${name}`)) return null;
     const id = `${String(state.next++).padStart(4, "0")}${"c".repeat(60)}`;
@@ -77,11 +119,18 @@ else if (verb === "create") {
   console.log(created);
 } else if (verb === "ps") {
   const filter = args.includes("--filter") ? args[args.indexOf("--filter") + 1] : null;
+  const pauseList = process.env.FAKE_DOCKER_PAUSE_LIST;
+  if (filter === null && pauseList && exists(pauseList)) {
+    writeFileSync(`${pauseList}.paused`, "1");
+    await waitFor(() => !exists(pauseList));
+  }
   const list = await locked((state) => state.containers);
   const shown = list.filter((item) => {
     if (filter === null) return true;
-    const name = /^name=\^(.*)\$$/.exec(filter)?.[1];
-    if (name !== undefined) return item.Name === `/${name}`;
+    const exact = /^name=\^(.*)\$$/.exec(filter)?.[1];
+    if (exact !== undefined) return item.Name === `/${exact}`;
+    const prefix = /^name=\^(.*)$/.exec(filter)?.[1];
+    if (prefix !== undefined) return item.Name.startsWith(`/${prefix}`);
     const label = /^label=([^=]+)=(.*)$/.exec(filter);
     if (label) return item.Config.Labels?.[label[1]] === label[2];
     return true;
