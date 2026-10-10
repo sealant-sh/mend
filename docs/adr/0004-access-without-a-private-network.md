@@ -127,14 +127,15 @@ tailnet is not a failed check. It is not a check.
 
 ### Public exposure gate
 
-Starting with `MEND_EXPOSURE=public` is refused until the items this build can observe are closed,
-in the style of the multi mode gate (`apps/api/src/exposure.ts`). Start-up names each open item with
-its fix; `/health` reports the declaration and how many items are open, never which (it needs no
-sign-in, and on a public instance the ids would be a list of what to try); `GET /operator/exposure`
-(`mend operator exposure`) gives the operator the ids and the detail. Each item carries how it was
-established: `observed` (this process read it, in effect, on this instance), `carried` (this build
-contains it and this process cannot see it in effect; the item says what would observe it),
-`declared` (the operator stated it and this process cannot check it), or `open`.
+Starting with `MEND_EXPOSURE=public` is refused until the items this build can observe are closed
+(and `workspace-ssh`, below, which it cannot observe and which still waits for the operator's
+statement), in the style of the multi mode gate (`apps/api/src/exposure.ts`). Start-up names each
+open item with its fix; `/health` reports the declaration and how many items are open, never which
+(it needs no sign-in, and on a public instance the ids would be a list of what to try);
+`GET /operator/exposure` (`mend operator exposure`) gives the operator the ids and the detail. Each
+item carries how it was established: `observed` (this process read it, in effect, on this instance),
+`carried` (this build contains it and this process cannot see it in effect; the item says what would
+observe it), `declared` (the operator stated it and this process cannot check it), or `open`.
 
 Required to start `public`, and `observed` unless marked:
 
@@ -386,7 +387,10 @@ Choices a reviewer may overturn without touching the rest. Each names what was t
    verdict Mend cannot back. Rejected: inferring from interfaces, which is what `machine.ts` does
    today.
 3. **`public` refuses to start on observed items only.** Taken. Items a build cannot observe are
-   reported as `declared` or `open`. Rejected: blocking on the reassessment record, see above.
+   reported as `declared` or `open`. Rejected: blocking on the reassessment record, see above. One
+   exception, added 2026-10-10 (mend#620): `workspace-ssh`, a port the operator chose to publish
+   beside the edge, refuses a public start until it is declared, though no build can observe who
+   reaches it. The summaries therefore count what refuses a start apart from what is observable.
 4. **Tickets, not signed URLs or a cookie-only rule.** Taken: opaque, hashed, single-use rows, the
    same storage pattern as pairing codes and session channel tokens. Rejected: a signed stateless
    token (cannot be single use without state anyway) and cookie-only browser sockets (the WebView
@@ -459,7 +463,9 @@ Choices a reviewer may overturn without touching the rest. Each names what was t
 18. **The unobservable items can be closed only by the operator's statement.** Without one the gate
     could never read "nothing open", which made that branch dead code and the report less useful to
     an operator who had done the outside checks. Taken: `MEND_EXPOSURE_DECLARED`, limited to
-    `core-private` and `edge-tls`. It never affects whether `public` starts.
+    `core-private` and `edge-tls`. It never affects whether `public` starts. Amended 2026-10-10
+    (mend#620): `workspace-ssh` is declarable too, and for it the statement is what lets `public`
+    start (decision 3's exception).
 19. **`/health` counts open items and does not name them.** It is unauthenticated. The ids are one
     sign-in away, for the operator.
 20. **The default is `private`, not `loopback`.** Owner's call. An unset variable is far more often

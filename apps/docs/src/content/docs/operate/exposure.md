@@ -85,7 +85,7 @@ exposure · declared private · reached over a network you control admission to
 · core-private                open      this process cannot observe whether Sealant, its registry and the database are reachable from the Internet · what would verify it: a connection attempt to each from outside the deployment's network; then add core-private to MEND_EXPOSURE_DECLARED
 · edge-tls                    open      this process cannot observe the edge's certificate, its renewal, or its port 80 redirect · what would verify it: mend doctor run against the origin from another network; then add edge-tls to MEND_EXPOSURE_DECLARED
 · reassessment                open      no independent reassessment of 0.33.0 is recorded · after an independent security reassessment of this exact release, set MEND_EXPOSURE_REASSESSED=0.33.0
-5 of 13 items open · 2 this build can observe; MEND_EXPOSURE=public refuses to start · 3 it cannot
+5 of 14 items open · 2 refuse a public start; MEND_EXPOSURE=public refuses to start · 3 do not
 ```
 
 When nothing is open, the last line reads

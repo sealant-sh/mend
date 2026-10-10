@@ -48,8 +48,18 @@ export interface ExposureOutcome {
   readonly detail: string;
   /** What would close it, when it is open. For an item no build can observe: what would verify it. */
   readonly fix: string | null;
-  /** Whether an open item refuses a `public` start. Items no build can observe never do. */
+  /**
+   * Whether an open item refuses a `public` start. Items no build can observe never do, with one
+   * exception: `workspace-ssh`, which no build can observe either, waits for the operator's
+   * statement because the operator chose to publish the port.
+   */
   readonly blocksStart: boolean;
+  /**
+   * Whether this process can establish the item itself: read it in effect, here. False for what
+   * only a look from outside or the operator's word can settle. What the summaries count as
+   * observable; never inferred from `blocksStart`.
+   */
+  readonly observable: boolean;
 }
 
 export class ExposureConfig extends Context.Service<
@@ -99,6 +109,7 @@ const observed = (id: string, ok: boolean, detail: string, fix: string): Exposur
   detail,
   fix: ok ? null : fix,
   blocksStart: true,
+  observable: true,
 });
 
 /** In this build, and not something this process can see in effect. `verify` says what would. */
@@ -108,6 +119,7 @@ const carried = (id: string, detail: string, verify: string): ExposureOutcome =>
   detail,
   fix: `what would observe it: ${verify}`,
   blocksStart: false,
+  observable: false,
 });
 
 /** Something only a look from outside can establish: open until the operator states they looked. */
@@ -125,6 +137,7 @@ const unobservable = (
         detail: `${stated} (MEND_EXPOSURE_DECLARED); this process cannot check it`,
         fix: null,
         blocksStart: false,
+        observable: false,
       }
     : {
         id,
@@ -132,6 +145,7 @@ const unobservable = (
         detail: cannot,
         fix: `what would verify it: ${verify}; then add ${id} to MEND_EXPOSURE_DECLARED`,
         blocksStart: false,
+        observable: false,
       };
 
 /** A build with no version of its own: nothing a reassessment could name. */
@@ -174,6 +188,7 @@ const workspaceSsh = (posture: ExposurePosture): ExposureOutcome => {
         detail: `workspace SSH is published on ${published} apart from the web port, and the operator states who can reach it (MEND_EXPOSURE_DECLARED); this process cannot check it`,
         fix: null,
         blocksStart: true,
+        observable: false,
       }
     : {
         id: "workspace-ssh",
@@ -181,6 +196,7 @@ const workspaceSsh = (posture: ExposurePosture): ExposureOutcome => {
         detail: `workspace SSH is published on ${published} apart from the web port; this process cannot observe who can reach it`,
         fix: `what would verify it: a connection attempt to ${published} from each network that should not reach it; then add workspace-ssh to MEND_EXPOSURE_DECLARED, or publish it on loopback`,
         blocksStart: true,
+        observable: false,
       };
 };
 
@@ -292,6 +308,7 @@ export const evaluateExposureGate = (posture: ExposurePosture): ReadonlyArray<Ex
               "the session channel is plain http, and the operator declared the executor network private (MEND_EXECUTOR_NETWORK=private)",
             fix: null,
             blocksStart: true,
+            observable: true,
           }
         : observed(
             "executor-channel-transport",
@@ -331,6 +348,7 @@ export const evaluateExposureGate = (posture: ExposurePosture): ReadonlyArray<Ex
           ? "run a released build"
           : `after an independent security reassessment of this exact release, set MEND_EXPOSURE_REASSESSED=${posture.version}`,
       blocksStart: false,
+      observable: false,
     },
   ];
 };
@@ -352,7 +370,7 @@ export const exposureRefusal = (
   if (blocking.length === 0) return null;
   return [
     "MEND_EXPOSURE=public is refused: the public exposure gate",
-    "(docs/adr/0004-access-without-a-private-network.md, 'Public exposure gate') has open items this build can observe.",
+    "(docs/adr/0004-access-without-a-private-network.md, 'Public exposure gate') has open items that refuse a public start.",
     ...blocking.map((outcome) => `\n  ${outcome.id}: ${outcome.detail} (${outcome.fix ?? ""})`),
     "\nStart with MEND_EXPOSURE=private behind a network you control admission to, or close them.",
   ].join(" ");

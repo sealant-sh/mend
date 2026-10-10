@@ -163,10 +163,18 @@ describe("the public exposure gate", () => {
     });
     // Beside a public edge on every interface: open, says what would verify it, refuses `public`.
     const published = { ...closed, sshPublished: "0.0.0.0:2222" };
-    expect(workspaceSshOf(published)).toMatchObject({ established: "open", blocksStart: true });
+    // It refuses a public start, and no build can observe it: the two are separate facts.
+    expect(workspaceSshOf(published)).toMatchObject({
+      established: "open",
+      blocksStart: true,
+      observable: false,
+    });
     expect(workspaceSshOf(published)?.fix).toContain("a connection attempt to 0.0.0.0:2222");
     expect(workspaceSshOf(published)?.fix).toContain("MEND_EXPOSURE_DECLARED");
-    expect(exposureRefusal("public", evaluateExposureGate(published))).toContain("workspace-ssh:");
+    const refusal = exposureRefusal("public", evaluateExposureGate(published));
+    expect(refusal).toContain("workspace-ssh:");
+    expect(refusal).toContain("open items that refuse a public start");
+    expect(refusal).not.toContain("this build can observe");
     // A private declaration still reports it, and does not refuse.
     expect(exposureRefusal("private", evaluateExposureGate(published))).toBeNull();
     // The operator's statement, and only that, makes it declared; this process still cannot check it.

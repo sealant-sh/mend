@@ -96,6 +96,7 @@ const dependencies = Layer.mergeAll(
         detail: "plain http origin(s): http://10.0.0.216:3105",
         fix: "set APP_URL and every MEND_ALLOWED_ORIGINS entry to https",
         blocksStart: true,
+        observable: true,
       },
       {
         id: "reassessment",
@@ -103,6 +104,7 @@ const dependencies = Layer.mergeAll(
         detail: "no independent reassessment of dev is recorded",
         fix: "after an independent security reassessment of this exact release, set MEND_EXPOSURE_REASSESSED=dev",
         blocksStart: false,
+        observable: false,
       },
     ],
   }),

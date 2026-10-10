@@ -142,6 +142,8 @@ export interface ServerSetupRuntime {
    * when nothing answered. Absent: setup says where it is published and observes nothing.
    */
   readonly probeSsh?: (bind: string, port: number) => Promise<ReadonlyArray<SshProbe>>;
+  /** How long setup waits for `probeSsh` altogether; `SSH_PROBE_BOUND_MS` when absent. */
+  readonly sshProbeBoundMs?: number;
 }
 
 /** One address workspace SSH was tried at, and what answered there. */
@@ -1856,6 +1858,9 @@ const startCompose = async (
   if (compose.status !== 0) throw commandFailure("Mend containers did not start", compose);
 };
 
+/** How long setup waits for its look at workspace SSH, all addresses together. */
+export const SSH_PROBE_BOUND_MS = 10_000;
+
 /**
  * What this machine observed of workspace SSH published apart from the web port: where it was
  * tried and what answered. It says nothing about who else can reach it; that is the network's, and
@@ -1868,7 +1873,18 @@ const sshPublicationLine = async (
   if (config.sshBind === undefined || isLoopbackBind(config.sshBind)) return null;
   const published = publishedAddress(config.sshBind, config.sshPort);
   if (runtime.probeSsh === undefined) return null;
-  const probes = await runtime.probeSsh(config.sshBind, config.sshPort);
+  // Bounded as a whole: setup must finish whatever a probe does.
+  const boundMs = runtime.sshProbeBoundMs ?? SSH_PROBE_BOUND_MS;
+  let bound: ReturnType<typeof setTimeout> | undefined;
+  const probes = await Promise.race([
+    runtime.probeSsh(config.sshBind, config.sshPort),
+    new Promise<null>((resolve) => {
+      bound = setTimeout(() => resolve(null), boundMs);
+    }),
+  ]).finally(() => clearTimeout(bound));
+  if (probes === null) {
+    return `Workspace SSH is published on ${published}. This machine's look at it did not finish within ${boundMs / 1000} s. Who reaches it is up to the network and its firewall; mend operator exposure reports it as workspace-ssh.`;
+  }
   const observed =
     probes.length === 0
       ? "this machine has no address to try it at"
@@ -2893,18 +2909,33 @@ export const nodeServerRuntime = (): ServerSetupRuntime => {
   };
 };
 
-/** The first line a TCP listener sends within the time given, or null. */
-const bannerAt = (host: string, port: number, timeoutMs: number): Promise<string | null> =>
+/**
+ * The first line a TCP listener sends within `timeoutMs` of the attempt, or null: nothing answered,
+ * the connection was refused, or the peer closed before it said anything (a gateway restarting, a
+ * listener that drops connections before authentication). It settles exactly once, on every path,
+ * and the deadline does not depend on the socket's own idle timer.
+ */
+export const sshBannerAt = (
+  host: string,
+  port: number,
+  timeoutMs: number,
+): Promise<string | null> =>
   new Promise((resolve) => {
+    let settled = false;
     const socket = net.connect({ host, port });
     const finish = (banner: string | null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(deadline);
       socket.destroy();
       resolve(banner);
     };
-    socket.setTimeout(timeoutMs, () => finish(null));
+    const deadline = setTimeout(() => finish(null), timeoutMs);
     socket.once("data", (bytes: Buffer) =>
       finish(bytes.toString("utf8").split(/\r?\n/)[0]?.trim() ?? ""),
     );
+    socket.once("end", () => finish(null));
+    socket.once("close", () => finish(null));
     socket.once("error", () => finish(null));
   });
 
@@ -2923,7 +2954,10 @@ const probeSshFromHere = async (bind: string, port: number): Promise<ReadonlyArr
         .slice(0, 4)
     : [bind];
   return Promise.all(
-    addresses.map(async (address) => ({ address, banner: await bannerAt(address, port, 3_000) })),
+    addresses.map(async (address) => ({
+      address,
+      banner: await sshBannerAt(address, port, 3_000),
+    })),
   );
 };
 

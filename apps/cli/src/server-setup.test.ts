@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import * as fs from "node:fs";
+import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 
@@ -8,7 +9,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { DockerProtocol } from "../test-fixtures/docker-protocol.ts";
 import { type HostFile, parseDockerInfo } from "./docker-shutdown.ts";
 import { SERVER_VOLUME_OWNER_LABEL } from "./server-docker-volumes.ts";
-import { serverCommand, type ServerSetupRuntime } from "./server-setup.ts";
+import { serverCommand, sshBannerAt, type ServerSetupRuntime } from "./server-setup.ts";
 
 const composeAsset = fs.readFileSync(
   new URL("../test-fixtures/docker/compose.v2.yaml", import.meta.url),
@@ -1125,6 +1126,62 @@ describe("mend server setup", () => {
         "--declare takes core-private, edge-tls, workspace-ssh or none",
       ),
     });
+  });
+
+  it("reads an SSH banner, and settles on silence, a clean close before any bytes, and a refusal", async () => {
+    const listen = (onConnection: (socket: net.Socket) => void) =>
+      new Promise<{ readonly port: number; readonly close: () => Promise<void> }>((resolve) => {
+        const sockets = new Set<net.Socket>();
+        const server = net.createServer((socket) => {
+          sockets.add(socket);
+          socket.on("close", () => sockets.delete(socket));
+          onConnection(socket);
+        });
+        server.listen(0, "127.0.0.1", () => {
+          const address = server.address();
+          resolve({
+            port: typeof address === "object" && address !== null ? address.port : 0,
+            close: () =>
+              new Promise<void>((done) => {
+                for (const socket of sockets) socket.destroy();
+                server.close(() => done());
+              }),
+          });
+        });
+      });
+    const banner = await listen((socket) => socket.end("SSH-2.0-sealant-gateway\r\n"));
+    const silent = await listen(() => undefined);
+    // The reviewer's case: accept, then FIN before any bytes (a gateway restarting).
+    const closing = await listen((socket) => socket.end());
+    try {
+      expect(await sshBannerAt("127.0.0.1", banner.port, 2_000)).toBe("SSH-2.0-sealant-gateway");
+      const started = Date.now();
+      expect(await sshBannerAt("127.0.0.1", silent.port, 300)).toBeNull();
+      expect(Date.now() - started).toBeLessThan(2_000);
+      expect(await sshBannerAt("127.0.0.1", closing.port, 5_000)).toBeNull();
+    } finally {
+      await Promise.all([banner.close(), silent.close(), closing.close()]);
+    }
+    // Nothing listening: refused at once.
+    expect(await sshBannerAt("127.0.0.1", banner.port, 2_000)).toBeNull();
+  });
+
+  it("finishes setup when its look at workspace SSH never answers", async () => {
+    const configDir = temporaryDirectory("ssh-probe-bound");
+    expect(await serverCommand(["setup"], makeRuntime({ configDir }).runtime)).toEqual({
+      _tag: "ok",
+    });
+    const control = makeRuntime({ configDir });
+    expect(
+      await serverCommand(["setup", "--edge", "mend.example.test", "--ssh-bind", "0.0.0.0"], {
+        ...control.runtime,
+        probeSsh: () => new Promise(() => undefined),
+        sshProbeBoundMs: 50,
+      }),
+    ).toEqual({ _tag: "ok" });
+    expect(control.lines).toContain(
+      "Workspace SSH is published on 0.0.0.0:2222. This machine's look at it did not finish within 0.05 s. Who reaches it is up to the network and its firewall; mend operator exposure reports it as workspace-ssh.",
+    );
   });
 
   it("refuses --ssh-bind with a release whose compose publishes SSH on --bind only", async () => {
