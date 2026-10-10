@@ -1201,11 +1201,14 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
   {
     name: "server setup",
     section: "this machine",
-    summary: "install or repair the local Mend server",
+    summary: "install or change the local Mend server, guided",
     synopsis: [
-      "[--context <name>] [--version <version|latest>] [--bind <ip>] [--ssh-bind <ip>] [--url <origin>] [--origin <origin>...] [--port <n>] [--ssh-port <n>] [--edge <host> | --no-edge] [--exposure <loopback|private|public>] [--tenancy <single|multi>] [--declare <item>...] [--t3-gateway [--t3-gateway-port <n>] | --no-t3-gateway] [--npm-mirror | --no-npm-mirror] [--npm-mirror-max-size <size>] [--docker-mirror | --no-docker-mirror] [--docker-mirror-max-size <size>] [--docker-hub-username <name> --docker-hub-token-stdin --docker-hub-public-only | --no-docker-hub-login] [--docker-socket <path>] [--assets-dir <dir>] [--offline]",
+      "",
+      "[--yes] [--context <name>] [--version <version|latest>] [--bind <ip>] [--ssh-bind <ip>] [--url <origin>] [--origin <origin>...] [--port <n>] [--ssh-port <n>] [--edge <host> | --no-edge] [--exposure <loopback|private|public>] [--tenancy <single|multi>] [--declare <item>...] [--undeclare <item>...] [--t3-gateway [--t3-gateway-port <n>] | --no-t3-gateway] [--npm-mirror | --no-npm-mirror] [--npm-mirror-max-size <size>] [--docker-mirror | --no-docker-mirror] [--docker-mirror-max-size <size>] [--docker-hub-username <name> --docker-hub-token-stdin --docker-hub-public-only | --no-docker-hub-login] [--docker-socket <path>] [--assets-dir <dir>] [--offline]",
     ],
     description: [
+      "On a terminal with no flags, setup asks its questions in plain words, one at a time: how people reach this Mend (just this machine, your private network or Tailscale, or the public internet with HTTPS), whether VS Code Remote-SSH reaches it from other machines, the T3 Code gateway, the mirrors, and one organization or several. It looks before it asks and says what it observed: Tailscale's name and address and what Tailscale Serve forwards, where your domain resolves, and whether ports 80 and 443 are taken. It never asks for an address to bind: that follows from the answers. On an existing install it shows what is saved and lets you keep it, change one thing, or go through every question. It ends with what changes, in words, and the same command with flags; nothing applies until you say yes.",
+      "Flags are for scripts and CI, and teach what the questions do. Each changes only what it names; everything else is kept from the saved install, so mend server setup --t3-gateway turns the gateway on and nothing more. When there is an install, a run with flags says what it changes. With no terminal and no flags, a fresh install is refused rather than guessed: --yes takes the defaults.",
       "Checks a local Unix-socket Docker context and the Compose plugin, downloads the compose and Postgres initialization assets for one Mend release, preserves existing data and secrets, and starts the server. Re-running repairs the same pinned version. A changed --version is refused; use mend server upgrade. Updating this CLI never updates an existing server pin.",
       "The default listens only on localhost at http://localhost:3105. Non-local access requires both --bind and --url. Every extra browser origin must be named with --origin; setup never guesses from the request Host header or network interfaces.",
       "--edge <host> runs a TLS edge in front of Mend: Caddy on ports 80 and 443 of every interface, which obtains and renews a certificate for the host and proxies to Mend's web tier. Mend's own port stays on loopback and the browser origin is https://<host>. The edge's compose overlay and Caddyfile are written into the generation beside compose.yaml, so start, restart and upgrade run them every time. --no-edge takes it away again, and the edge's container with it. A fresh install cannot start with the edge: until the first account exists, registration is open to whoever reaches the origin first, so set up on localhost, create the account, then add the edge.",
@@ -1216,6 +1219,10 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       "Setup holds an exclusive process lock through startup and health checks. A busy lock reports its owner and manual recovery steps. Never remove a live lock. Private configuration uses immutable generations and an atomic active pointer; failed attempts retain credentials and never delete Docker volumes.",
     ],
     options: [
+      {
+        flag: "--yes",
+        text: "no questions: a fresh install takes the defaults (this machine only, http://localhost:3105), an existing one keeps what is saved",
+      },
       {
         flag: "--context <name>",
         text: "local Docker context to persist; the global context is unchanged",
@@ -1232,7 +1239,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       { flag: "--url <origin>", text: "advertised browser URL, required with a non-loopback bind" },
       {
         flag: "--origin <origin>",
-        text: "additional exact browser origin; repeat for more than one",
+        text: "additional exact browser origin; repeat for more than one. The list given replaces the saved one; none clears it",
       },
       { flag: "--port <n>", text: "external web port. Default: 3105" },
       {
@@ -1263,7 +1270,11 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       },
       {
         flag: "--declare <item>",
-        text: "state a gate item you verified from outside: core-private, edge-tls or workspace-ssh; repeat for more, none clears. Kept across reruns. public with --ssh-bind beyond loopback needs workspace-ssh",
+        text: "state a gate item you verified from outside: core-private, edge-tls, workspace-ssh or t3code-gateway. Adds to what is saved; repeat for more, none clears. public with --ssh-bind beyond loopback needs workspace-ssh",
+      },
+      {
+        flag: "--undeclare <item>",
+        text: "take one statement back; the others stay. Repeat for more",
       },
       {
         flag: "--npm-mirror, --no-npm-mirror",
@@ -1305,7 +1316,18 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       { flag: "--docker-socket <path>", text: "daemon-side socket mount override for diagnostics" },
     ],
     examples: [
-      { command: "mend server setup", text: "localhost, using the current local Docker context" },
+      {
+        command: "mend server setup",
+        text: "on a terminal: the questions, then what changes and the same command with flags",
+      },
+      {
+        command: "mend server setup --t3-gateway",
+        text: "on an existing install: turn the T3 Code gateway on, and keep everything else",
+      },
+      {
+        command: "mend server setup --yes",
+        text: "no questions: localhost on a fresh install, using the current local Docker context",
+      },
       {
         command:
           "mend server setup --context orbstack --bind 0.0.0.0 --url http://100.70.80.90:3105",

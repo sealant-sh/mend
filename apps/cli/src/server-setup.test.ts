@@ -350,13 +350,13 @@ describe("mend server setup", () => {
         return control.runtime.fetchText(url, timeout);
       },
     };
-    expect(await serverCommand(["setup"], runtime)).toEqual({ _tag: "ok" });
+    expect(await serverCommand(["setup", "--yes"], runtime)).toEqual({ _tag: "ok" });
     const identity = fs.readFileSync(path.join(configDir, "identity.env"));
     const generation = activeDirectory(configDir);
     const env = fs.readFileSync(path.join(generation, "server.env"));
     expect(events).toEqual(["create", "create", "create", "compose", "health"]);
     events.length = 0;
-    expect(await serverCommand(["setup"], runtime)).toEqual({ _tag: "ok" });
+    expect(await serverCommand(["setup", "--yes"], runtime)).toEqual({ _tag: "ok" });
     expect(events).toEqual(["compose", "health"]);
     expect(fs.readFileSync(path.join(configDir, "identity.env"))).toEqual(identity);
     expect(fs.readFileSync(path.join(generation, "server.env"))).toEqual(env);
@@ -377,7 +377,7 @@ describe("mend server setup", () => {
     const containers = [...daemon.containers];
     const networks = [...daemon.networks];
     const control = makeRuntime({ daemon });
-    expect(await serverCommand(["setup"], control.runtime)).toEqual({ _tag: "ok" });
+    expect(await serverCommand(["setup", "--yes"], control.runtime)).toEqual({ _tag: "ok" });
     expect([...daemon.containers]).toEqual(containers);
     expect([...daemon.networks]).toEqual(networks);
     expect(daemon.volumes.get("mend-dev_postgres")).toEqual(labels);
@@ -417,7 +417,7 @@ describe("mend server setup", () => {
             : undefined;
       const before = [...daemon.containers];
       const control = makeRuntime({ daemon });
-      expect(await serverCommand(["setup"], control.runtime)).toMatchObject({
+      expect(await serverCommand(["setup", "--yes"], control.runtime)).toMatchObject({
         _tag: "error",
         message: expect.stringContaining("Docker volume ownership check failed"),
       });
@@ -434,12 +434,12 @@ describe("mend server setup", () => {
   it("a different configDir identity cannot operate an existing daemon's data", async () => {
     const daemon = new DockerProtocol();
     const first = makeRuntime({ daemon });
-    expect(await serverCommand(["setup"], first.runtime)).toEqual({ _tag: "ok" });
+    expect(await serverCommand(["setup", "--yes"], first.runtime)).toEqual({ _tag: "ok" });
     const identity = fs.readFileSync(path.join(first.runtime.configDir, "identity.env"));
     const volumes = [...daemon.volumes];
     const manifests = [...daemon.remote];
     const second = makeRuntime({ daemon });
-    const result = await serverCommand(["setup"], second.runtime);
+    const result = await serverCommand(["setup", "--yes"], second.runtime);
     expect(result).toMatchObject({
       _tag: "error",
       message: expect.stringContaining("Restore the original Mend identity/configuration"),
@@ -464,7 +464,7 @@ describe("mend server setup", () => {
           line.includes("is reachable"),
       ),
     ).toBe(false);
-    expect(await serverCommand(["setup"], first.runtime)).toEqual({ _tag: "ok" });
+    expect(await serverCommand(["setup", "--yes"], first.runtime)).toEqual({ _tag: "ok" });
   });
 
   it.each(["mend-control", "mend-garage"])(
@@ -474,7 +474,7 @@ describe("mend server setup", () => {
       const orphaned = new DockerProtocol();
       orphaned.volumes.set(volume, { [SERVER_VOLUME_OWNER_LABEL]: "another-installation" });
       const first = makeRuntime({ daemon: orphaned });
-      const refused = await serverCommand(["setup"], first.runtime);
+      const refused = await serverCommand(["setup", "--yes"], first.runtime);
       expect(refused).toMatchObject({
         _tag: "error",
         message: expect.stringContaining("Restore the original Mend identity/configuration"),
@@ -486,11 +486,11 @@ describe("mend server setup", () => {
       // Beside an owned anchor: a volume somebody else labelled is a conflict for setup and start.
       const daemon = new DockerProtocol();
       const control = makeRuntime({ daemon });
-      expect(await serverCommand(["setup"], control.runtime)).toEqual({ _tag: "ok" });
+      expect(await serverCommand(["setup", "--yes"], control.runtime)).toEqual({ _tag: "ok" });
       expect([...daemon.volumes.keys()]).toEqual(["mend-store", "mend-control", "mend-garage"]);
       daemon.volumes.set(volume, { [SERVER_VOLUME_OWNER_LABEL]: "another-installation" });
       const ups = control.commands.filter(([, args]) => args.includes("up")).length;
-      const conflict = await serverCommand(["setup"], control.runtime);
+      const conflict = await serverCommand(["setup", "--yes"], control.runtime);
       expect(conflict).toMatchObject({
         _tag: "error",
         message: expect.stringContaining("Restore the original Mend identity/configuration"),
@@ -504,9 +504,9 @@ describe("mend server setup", () => {
         // Word for word the refusal a foreign control volume gets: one ownership rule, three volumes.
         const other = new DockerProtocol();
         other.volumes.set("mend-control", { [SERVER_VOLUME_OWNER_LABEL]: "another-installation" });
-        expect(await serverCommand(["setup"], makeRuntime({ daemon: other }).runtime)).toEqual(
-          refused,
-        );
+        expect(
+          await serverCommand(["setup", "--yes"], makeRuntime({ daemon: other }).runtime),
+        ).toEqual(refused);
       }
     },
   );
@@ -534,7 +534,7 @@ describe("mend server setup", () => {
     "refuses %s without replacing credentials or touching daemon data",
     async (damage) => {
       const first = makeRuntime();
-      expect(await serverCommand(["setup"], first.runtime)).toEqual({ _tag: "ok" });
+      expect(await serverCommand(["setup", "--yes"], first.runtime)).toEqual({ _tag: "ok" });
       const { configDir } = first.runtime;
       const identityFile = path.join(configDir, "identity.env");
       const identity = fs.readFileSync(identityFile);
@@ -550,7 +550,7 @@ describe("mend server setup", () => {
         );
       const before = [...first.daemon.volumes];
       const retry = makeRuntime({ configDir, daemon: first.daemon });
-      expect((await serverCommand(["setup"], retry.runtime))._tag).toBe("error");
+      expect((await serverCommand(["setup", "--yes"], retry.runtime))._tag).toBe("error");
       expect(retry.randomSizes).toEqual([]);
       expect(retry.commands).toEqual([]);
       expect([...first.daemon.volumes]).toEqual(before);
@@ -568,7 +568,7 @@ describe("mend server setup", () => {
     const control = makeRuntime();
     control.daemon.response = (args) =>
       args[3] === "inspect" ? { status: 1, stdout: "", stderr: "permission denied" } : undefined;
-    expect(await serverCommand(["setup"], control.runtime)).toMatchObject({
+    expect(await serverCommand(["setup", "--yes"], control.runtime)).toMatchObject({
       _tag: "error",
       message: expect.stringContaining("Docker volume ownership check failed"),
     });
@@ -584,7 +584,7 @@ describe("mend server setup", () => {
     if (preparedName === undefined) throw new Error("Expected a retained prepared generation");
     const generation = path.join(control.runtime.configDir, "generations", preparedName);
     control.daemon.response = () => undefined;
-    expect(await serverCommand(["setup"], control.runtime)).toEqual({ _tag: "ok" });
+    expect(await serverCommand(["setup", "--yes"], control.runtime)).toEqual({ _tag: "ok" });
     expect(control.randomSizes).toEqual([256]);
     expect(fs.readFileSync(path.join(control.runtime.configDir, "identity.env"))).toEqual(identity);
     expect(activeDirectory(control.runtime.configDir)).not.toBe(generation);
@@ -644,7 +644,10 @@ describe("mend server setup", () => {
     const info = JSON.stringify({ OperatingSystem: "Ubuntu 24.04.1 LTS", SecurityOptions: [] });
     const below = makeRuntime({ operatingSystem: info });
     expect(
-      await serverCommand(["setup"], { ...below.runtime, dockerDaemonFacts: daemonFacts(null) }),
+      await serverCommand(["setup", "--yes"], {
+        ...below.runtime,
+        dockerDaemonFacts: daemonFacts(null),
+      }),
     ).toEqual({ _tag: "ok" });
     const warning = below.lines.findIndex((line) => line.startsWith("Docker shutdown-timeout"));
     expect(below.lines[warning]).toBe(
@@ -653,7 +656,7 @@ describe("mend server setup", () => {
     expect(warning).toBeLessThan(below.lines.findIndex((line) => line.startsWith("Starting")));
     const covered = makeRuntime({ operatingSystem: info });
     expect(
-      await serverCommand(["setup"], {
+      await serverCommand(["setup", "--yes"], {
         ...covered.runtime,
         dockerDaemonFacts: daemonFacts(3600),
       }),
@@ -699,7 +702,7 @@ describe("mend server setup", () => {
 
   it("reports the health wait while it lasts, then fails with the last observation", async () => {
     const control = makeRuntime({ healthStatus: 503, healthBody: "" });
-    expect(await serverCommand(["setup"], control.runtime)).toMatchObject({
+    expect(await serverCommand(["setup", "--yes"], control.runtime)).toMatchObject({
       _tag: "error",
       message: expect.stringContaining("HTTP 503"),
     });
@@ -718,7 +721,9 @@ describe("mend server setup", () => {
     '{"status":"failed","version":"0.23.0"}',
   ])("rejects false health success: %s", async (healthBody) => {
     const control = makeRuntime({ healthBody });
-    expect(await serverCommand(["setup"], control.runtime)).toMatchObject({ _tag: "error" });
+    expect(await serverCommand(["setup", "--yes"], control.runtime)).toMatchObject({
+      _tag: "error",
+    });
     expect(control.lines.some((line) => line.includes("is reachable at"))).toBe(false);
   });
 
@@ -736,7 +741,7 @@ describe("mend server setup", () => {
   });
   it("says last, with the command, when the Docker host refuses user namespaces (Ubuntu 24.04)", async () => {
     const control = makeRuntime({ hostKernel: "1\n|Y\n|1\n|" });
-    const result = await serverCommand(["setup"], control.runtime);
+    const result = await serverCommand(["setup", "--yes"], control.runtime);
     expect(result).toEqual({ _tag: "ok" });
     expect(control.lines.at(-1)).toBe(
       "No session can start on this Docker host yet: its kernel refuses unprivileged user namespaces, which each workspace's rootless Docker service needs. On the host, run: echo 'kernel.apparmor_restrict_unprivileged_userns = 0' | sudo tee /etc/sysctl.d/60-mend-rootless-docker.conf && sudo sysctl --system",
@@ -757,14 +762,14 @@ describe("mend server setup", () => {
 
   it("says nothing about user namespaces on a host that allows them", async () => {
     const control = makeRuntime({ hostKernel: "-|-|-|" });
-    expect(await serverCommand(["setup"], control.runtime)).toEqual({ _tag: "ok" });
+    expect(await serverCommand(["setup", "--yes"], control.runtime)).toEqual({ _tag: "ok" });
     expect(control.lines.some((line) => line.includes("user namespaces"))).toBe(false);
   });
 
   it("creates a pinned localhost installation and starts compose through the selected context", async () => {
     const control = makeRuntime();
 
-    const result = await serverCommand(["setup"], control.runtime);
+    const result = await serverCommand(["setup", "--yes"], control.runtime);
 
     expect(result).toEqual({ _tag: "ok" });
     expect(control.randomSizes).toEqual([256]);
@@ -889,7 +894,7 @@ describe("mend server setup", () => {
       contextList: `${JSON.stringify({ Name: "other", DockerEndpoint: "unix:///tmp/other.sock", Current: true })}\n`,
       inspectedEndpoint: "unix:///var/run/docker.sock",
     });
-    expect(await serverCommand(["setup"], second.runtime)).toEqual({ _tag: "ok" });
+    expect(await serverCommand(["setup", "--yes"], second.runtime)).toEqual({ _tag: "ok" });
 
     expect(second.randomSizes).toEqual([]);
     expect(second.fetched.filter((url) => !url.endsWith("/api/health"))).toEqual([]);
@@ -915,7 +920,7 @@ describe("mend server setup", () => {
   it("directs changed setup pins to upgrade without changing the installation", async () => {
     const configDir = temporaryDirectory("upgrade");
     const first = makeRuntime({ configDir });
-    expect(await serverCommand(["setup"], first.runtime)).toEqual({ _tag: "ok" });
+    expect(await serverCommand(["setup", "--yes"], first.runtime)).toEqual({ _tag: "ok" });
     const secrets = readEnv(activeFile(configDir, "server.env"));
     const previous = activeDirectory(configDir);
 
@@ -1041,7 +1046,7 @@ describe("mend server setup", () => {
 
   it("publishes workspace SSH with --ssh-bind while an edge keeps the web port on loopback", async () => {
     const configDir = temporaryDirectory("ssh-bind");
-    expect(await serverCommand(["setup"], makeRuntime({ configDir }).runtime)).toEqual({
+    expect(await serverCommand(["setup", "--yes"], makeRuntime({ configDir }).runtime)).toEqual({
       _tag: "ok",
     });
     const withSsh = makeRuntime({ configDir });
@@ -1068,7 +1073,7 @@ describe("mend server setup", () => {
     );
 
     // Kept across a rerun; the --bind address takes it away.
-    expect(await serverCommand(["setup"], makeRuntime({ configDir }).runtime)).toEqual({
+    expect(await serverCommand(["setup", "--yes"], makeRuntime({ configDir }).runtime)).toEqual({
       _tag: "ok",
     });
     expect(readEnv(activeFile(configDir, "server.env")).get("MEND_SSH_BIND_HOST")).toBe("0.0.0.0");
@@ -1094,7 +1099,7 @@ describe("mend server setup", () => {
 
   it("hands workspace SSH published beside a public edge to the exposure gate, and starts public only once it is declared", async () => {
     const configDir = temporaryDirectory("ssh-gate");
-    expect(await serverCommand(["setup"], makeRuntime({ configDir }).runtime)).toEqual({
+    expect(await serverCommand(["setup", "--yes"], makeRuntime({ configDir }).runtime)).toEqual({
       _tag: "ok",
     });
     // Public, with SSH on every interface beside the edge, and nobody stated who reaches it.
@@ -1156,7 +1161,7 @@ describe("mend server setup", () => {
     for (const line of declared.lines) expect(line).not.toMatch(/\bsafe\b|gate passed/i);
 
     // Kept across a rerun; taking the declaration away while SSH stays published is refused again.
-    expect(await serverCommand(["setup"], makeRuntime({ configDir }).runtime)).toEqual({
+    expect(await serverCommand(["setup", "--yes"], makeRuntime({ configDir }).runtime)).toEqual({
       _tag: "ok",
     });
     expect(readEnv(activeFile(configDir, "server.env")).get("MEND_EXPOSURE_DECLARED")).toBe(
@@ -1187,7 +1192,7 @@ describe("mend server setup", () => {
 
   it("keeps the edge, public exposure, --ssh-bind, every --declare and the t3code gateway together (mend#620 and #644/#645)", async () => {
     const configDir = temporaryDirectory("ssh-gate-gateway");
-    expect(await serverCommand(["setup"], makeRuntime({ configDir }).runtime)).toEqual({
+    expect(await serverCommand(["setup", "--yes"], makeRuntime({ configDir }).runtime)).toEqual({
       _tag: "ok",
     });
     const both = makeRuntime({ configDir, gatewayLabel: "1" });
@@ -1230,7 +1235,10 @@ describe("mend server setup", () => {
     }
     // A rerun keeps all of it: the generation reads back as written.
     expect(
-      await serverCommand(["setup"], makeRuntime({ configDir, gatewayLabel: "1" }).runtime),
+      await serverCommand(
+        ["setup", "--yes"],
+        makeRuntime({ configDir, gatewayLabel: "1" }).runtime,
+      ),
     ).toEqual({ _tag: "ok" });
     expect(readEnv(activeFile(configDir, "server.env")).get("MEND_EXPOSURE_DECLARED")).toBe(
       "workspace-ssh,core-private,t3code-gateway",
@@ -1289,7 +1297,7 @@ describe("mend server setup", () => {
 
   it("finishes setup when its look at workspace SSH never answers", async () => {
     const configDir = temporaryDirectory("ssh-probe-bound");
-    expect(await serverCommand(["setup"], makeRuntime({ configDir }).runtime)).toEqual({
+    expect(await serverCommand(["setup", "--yes"], makeRuntime({ configDir }).runtime)).toEqual({
       _tag: "ok",
     });
     const control = makeRuntime({ configDir });
@@ -1340,12 +1348,12 @@ describe("mend server setup", () => {
     expect(fs.existsSync(path.join(invalid.runtime.configDir, "active"))).toBe(false);
 
     const configDir = temporaryDirectory("corrupt");
-    expect(await serverCommand(["setup"], makeRuntime({ configDir }).runtime)).toEqual({
+    expect(await serverCommand(["setup", "--yes"], makeRuntime({ configDir }).runtime)).toEqual({
       _tag: "ok",
     });
     fs.writeFileSync(activeFile(configDir, "server.json"), '{"schemaVersion":');
     const corrupt = makeRuntime({ configDir });
-    const corruptResult = await serverCommand(["setup"], corrupt.runtime);
+    const corruptResult = await serverCommand(["setup", "--yes"], corrupt.runtime);
     expect(corruptResult).toMatchObject({ _tag: "error" });
     if (corruptResult._tag === "error") expect(corruptResult.message).toContain("not valid JSON");
     expect(corrupt.commands).toEqual([]);
@@ -1354,7 +1362,7 @@ describe("mend server setup", () => {
   it("rejects truncated secrets instead of replacing them", async () => {
     const configDir = temporaryDirectory("truncated-secrets");
     const first = makeRuntime({ configDir });
-    expect(await serverCommand(["setup"], first.runtime)).toEqual({ _tag: "ok" });
+    expect(await serverCommand(["setup", "--yes"], first.runtime)).toEqual({ _tag: "ok" });
     const envFile = activeFile(configDir, "server.env");
     fs.writeFileSync(
       envFile,
@@ -1364,7 +1372,7 @@ describe("mend server setup", () => {
     );
 
     const rerun = makeRuntime({ configDir });
-    const result = await serverCommand(["setup"], rerun.runtime);
+    const result = await serverCommand(["setup", "--yes"], rerun.runtime);
 
     expect(result).toMatchObject({ _tag: "error" });
     if (result._tag === "error")
@@ -1391,7 +1399,7 @@ describe("mend server setup", () => {
       .join("\n");
     const control = makeRuntime({ platform: "darwin", contextList: `${contexts}\n` });
 
-    expect(await serverCommand(["setup"], control.runtime)).toEqual({ _tag: "ok" });
+    expect(await serverCommand(["setup", "--yes"], control.runtime)).toEqual({ _tag: "ok" });
 
     expect(
       JSON.parse(fs.readFileSync(activeFile(control.runtime.configDir, "server.json"), "utf8")),
@@ -1455,28 +1463,28 @@ describe("mend server setup", () => {
 
   it("fails Docker availability and capability checks before generating secrets or files", async () => {
     const missing = makeRuntime({ contextListStatus: 1 });
-    const missingResult = await serverCommand(["setup"], missing.runtime);
+    const missingResult = await serverCommand(["setup", "--yes"], missing.runtime);
     expect(missingResult).toMatchObject({ _tag: "error" });
     if (missingResult._tag === "error")
       expect(missingResult.message).toContain("docker is not installed");
     expect(fs.existsSync(path.join(missing.runtime.configDir, "active"))).toBe(false);
 
     const stopped = makeRuntime({ dockerVersionStatus: 1 });
-    const stoppedResult = await serverCommand(["setup"], stopped.runtime);
+    const stoppedResult = await serverCommand(["setup", "--yes"], stopped.runtime);
     expect(stoppedResult).toMatchObject({ _tag: "error" });
     if (stoppedResult._tag === "error")
       expect(stoppedResult.message).toContain("Cannot connect to the Docker daemon");
     expect(fs.existsSync(path.join(stopped.runtime.configDir, "active"))).toBe(false);
 
     const oldApi = makeRuntime({ dockerVersion: "1.44 1.44" });
-    const oldResult = await serverCommand(["setup"], oldApi.runtime);
+    const oldResult = await serverCommand(["setup", "--yes"], oldApi.runtime);
     expect(oldResult).toMatchObject({ _tag: "error" });
     if (oldResult._tag === "error") expect(oldResult.message).toContain("Docker API >= 1.45");
     expect(oldApi.randomCalls()).toBe(0);
     expect(fs.existsSync(path.join(oldApi.runtime.configDir, "active"))).toBe(false);
 
     const noCompose = makeRuntime({ composeVersionStatus: 1 });
-    const composeResult = await serverCommand(["setup"], noCompose.runtime);
+    const composeResult = await serverCommand(["setup", "--yes"], noCompose.runtime);
     expect(composeResult).toMatchObject({ _tag: "error" });
     if (composeResult._tag === "error")
       expect(composeResult.message).toContain("Compose v2 plugin");
@@ -1487,7 +1495,7 @@ describe("mend server setup", () => {
   it("leaves no state when release download is interrupted", async () => {
     const control = makeRuntime({ assetFailure: "postgres" });
 
-    const result = await serverCommand(["setup"], control.runtime);
+    const result = await serverCommand(["setup", "--yes"], control.runtime);
 
     expect(result).toMatchObject({ _tag: "error" });
     if (result._tag === "error") expect(result.message).toContain("connection interrupted");
@@ -1530,7 +1538,7 @@ describe("mend server setup", () => {
     fs.mkdirSync(configDir, { recursive: true, mode: 0o700 });
     fs.mkdirSync(path.join(configDir, "generations"), { mode: 0o500 });
     const first = makeRuntime({ configDir });
-    const result = await serverCommand(["setup"], first.runtime);
+    const result = await serverCommand(["setup", "--yes"], first.runtime);
     expect(result._tag).toBe("error");
     expect(first.randomCalls()).toBe(1);
     const identity = fs.readFileSync(path.join(configDir, "identity.env"), "utf8");
@@ -1539,7 +1547,7 @@ describe("mend server setup", () => {
     expect(first.commands.some(([, args]) => args.includes("up"))).toBe(false);
     fs.chmodSync(path.join(configDir, "generations"), 0o700);
     const second = makeRuntime({ configDir });
-    expect(await serverCommand(["setup"], second.runtime)).toEqual({ _tag: "ok" });
+    expect(await serverCommand(["setup", "--yes"], second.runtime)).toEqual({ _tag: "ok" });
     expect(second.randomSizes).toEqual([]);
     expect(fs.readFileSync(activeFile(configDir, "identity.env"), "utf8")).toBe(identity);
     expect(fs.readFileSync(path.join(configDir, "identity.env"), "utf8")).toBe(identity);
@@ -1550,7 +1558,7 @@ describe("mend server setup", () => {
     fs.mkdirSync(control.runtime.configDir, { recursive: true });
     const original = "existing unreleased credentials\n";
     fs.writeFileSync(path.join(control.runtime.configDir, "server.env"), original);
-    const result = await serverCommand(["setup"], control.runtime);
+    const result = await serverCommand(["setup", "--yes"], control.runtime);
     expect(result._tag).toBe("error");
     expect(control.randomCalls()).toBe(0);
     expect(control.commands).toEqual([]);
@@ -1577,14 +1585,14 @@ describe("mend server setup", () => {
       operatingSystem: "Docker Desktop",
       inspectedEndpoint: "unix:///home/alice/.docker/desktop/docker.sock",
     });
-    expect(await serverCommand(["setup"], desktop.runtime)).toEqual({ _tag: "ok" });
+    expect(await serverCommand(["setup", "--yes"], desktop.runtime)).toEqual({ _tag: "ok" });
     expect(readEnv(activeFile(configDir, "server.env")).get("DOCKER_SOCKET_PATH")).toBe(
       "/var/run/docker.sock",
     );
     expect(
       await serverCommand(["setup", "--docker-socket", "/custom/socket"], desktop.runtime),
     ).toEqual({ _tag: "ok" });
-    expect(await serverCommand(["setup"], desktop.runtime)).toEqual({ _tag: "ok" });
+    expect(await serverCommand(["setup", "--yes"], desktop.runtime)).toEqual({ _tag: "ok" });
     expect(readEnv(activeFile(configDir, "server.env")).get("DOCKER_SOCKET_PATH")).toBe(
       "/custom/socket",
     );
@@ -1639,7 +1647,7 @@ describe("mend server setup", () => {
   it("an edge host writes the overlay and the Caddyfile, runs them with compose.yaml, and probes Mend on loopback", async () => {
     const control = makeRuntime();
     // The plain install first, where the first account is created; the edge on a rerun.
-    expect(await serverCommand(["setup"], control.runtime)).toEqual({ _tag: "ok" });
+    expect(await serverCommand(["setup", "--yes"], control.runtime)).toEqual({ _tag: "ok" });
     const plainCommands = control.commands.length;
     expect(await serverCommand(["setup", "--edge", "Mend.Example.Test."], control.runtime)).toEqual(
       { _tag: "ok" },
@@ -1727,7 +1735,7 @@ describe("mend server setup", () => {
     ).toBe(true);
     for (const line of control.lines) expect(line).not.toMatch(/\bsafe\b|gate passed/i);
     // A rerun keeps the edge without being told again, and writes nothing new.
-    expect(await serverCommand(["setup"], control.runtime)).toEqual({ _tag: "ok" });
+    expect(await serverCommand(["setup", "--yes"], control.runtime)).toEqual({ _tag: "ok" });
     expect(activeDirectory(configDir)).toBe(generation);
     expect(fs.readdirSync(path.join(configDir, "generations"))).toHaveLength(2);
   });
@@ -1765,7 +1773,7 @@ describe("mend server setup", () => {
     ).toBe(true);
     for (const line of control.lines) expect(line).not.toMatch(/\bsafe\b|gate passed/i);
     // A rerun keeps it; another port moves it; --no-t3-gateway takes the overlay away.
-    expect(await serverCommand(["setup"], control.runtime)).toEqual({ _tag: "ok" });
+    expect(await serverCommand(["setup", "--yes"], control.runtime)).toEqual({ _tag: "ok" });
     expect(activeDirectory(configDir)).toBe(generation);
     expect(await serverCommand(["setup", "--t3-gateway-port", "3121"], control.runtime)).toEqual({
       _tag: "ok",
@@ -1796,7 +1804,7 @@ describe("mend server setup", () => {
     expect(fs.existsSync(path.join(control.runtime.configDir, "active"))).toBe(false);
     expect(control.commands.some(([, args]) => args.includes("up"))).toBe(false);
     // Without the gateway, the same image sets up as before.
-    expect(await serverCommand(["setup"], control.runtime)).toEqual({ _tag: "ok" });
+    expect(await serverCommand(["setup", "--yes"], control.runtime)).toEqual({ _tag: "ok" });
   });
 
   it("refuses a gateway port something else holds, before anything changes (644 nit)", async () => {
@@ -1852,7 +1860,7 @@ describe("mend server setup", () => {
   it("does not report the advertised URL reachable when every health request fails", async () => {
     const control = makeRuntime({ healthStatus: 503 });
 
-    const result = await serverCommand(["setup"], control.runtime);
+    const result = await serverCommand(["setup", "--yes"], control.runtime);
 
     expect(result).toMatchObject({ _tag: "error" });
     if (result._tag === "error")
@@ -1861,5 +1869,296 @@ describe("mend server setup", () => {
     expect(control.fetched.filter((url) => url.endsWith("/api/health"))).toHaveLength(30);
     expect(control.daemon.calls.some(({ args }) => args[2] === "image")).toBe(false);
     expect(control.randomSizes).toEqual([256]);
+  });
+});
+
+/** A terminal that answers from a script, keeping every prompt with its answer echoed. */
+const scriptedPrompter = (answers: ReadonlyArray<string>, transcript: Array<string>) => {
+  const queue = [...answers];
+  return async (prompt: string): Promise<string | null> => {
+    const given = queue.shift();
+    transcript.push(`${prompt}${given ?? "^D"}`);
+    return given ?? null;
+  };
+};
+
+const serverJson = (configDir: string) =>
+  JSON.parse(fs.readFileSync(activeFile(configDir, "server.json"), "utf8"));
+
+describe("mend server setup, guided and unasked", () => {
+  it("refuses a fresh install with no terminal and no flags, naming the flags, before anything", async () => {
+    const control = makeRuntime();
+    const result = await serverCommand(["setup"], control.runtime);
+    expect(result).toMatchObject({ _tag: "error" });
+    if (result._tag === "error") {
+      // Setup's own words, not a storage failure: nothing is wrong with the filesystem.
+      expect(result.message).toMatch(/^No terminal to ask on/);
+      for (const flag of [
+        "--yes",
+        "--bind <address> --url <origin>",
+        "--edge <host> --exposure public",
+      ])
+        expect(result.message).toContain(flag);
+    }
+    expect(control.commands).toEqual([]);
+    expect(fs.existsSync(path.join(control.runtime.configDir, "active"))).toBe(false);
+    // An install to keep needs no answer: a rerun with no flags repairs it as before.
+    expect(await serverCommand(["setup", "--yes"], control.runtime)).toEqual({ _tag: "ok" });
+    expect(
+      await serverCommand(["setup"], makeRuntime({ configDir: control.runtime.configDir }).runtime),
+    ).toEqual({
+      _tag: "ok",
+    });
+  });
+
+  it("--declare adds to what is saved, --undeclare takes one back, and flags say what they change", async () => {
+    const configDir = temporaryDirectory("declare-additive");
+    expect(await serverCommand(["setup", "--yes"], makeRuntime({ configDir }).runtime)).toEqual({
+      _tag: "ok",
+    });
+    const run = (flags: ReadonlyArray<string>) => {
+      const control = makeRuntime({ configDir });
+      return serverCommand(["setup", ...flags], {
+        ...control.runtime,
+        probeSsh: async () => [],
+      }).then((result) => ({ result, lines: control.lines }));
+    };
+    expect(
+      (
+        await run([
+          "--edge",
+          "mend.example.test",
+          "--exposure",
+          "public",
+          "--ssh-bind",
+          "0.0.0.0",
+          "--declare",
+          "workspace-ssh",
+          "--declare",
+          "core-private",
+        ])
+      ).result,
+    ).toEqual({ _tag: "ok" });
+    // One more statement, alone: the saved ones stay (it used to replace them, and a public
+    // install then refused to start for the workspace-ssh it dropped).
+    const added = await run(["--declare", "edge-tls"]);
+    expect(added.result).toEqual({ _tag: "ok" });
+    expect(serverJson(configDir).declared).toEqual(["workspace-ssh", "core-private", "edge-tls"]);
+    expect(added.lines).toContain("This run changes:");
+    expect(added.lines).toContain(
+      "  you declared: workspace-ssh, core-private → workspace-ssh, core-private, edge-tls",
+    );
+    expect((await run(["--undeclare", "core-private"])).result).toEqual({ _tag: "ok" });
+    expect(serverJson(configDir).declared).toEqual(["workspace-ssh", "edge-tls"]);
+    // One flag on an existing install keeps everything else.
+    const gateway = makeRuntime({ configDir, gatewayLabel: "1" });
+    expect(
+      await serverCommand(["setup", "--t3-gateway"], {
+        ...gateway.runtime,
+        probeSsh: async () => [],
+      }),
+    ).toEqual({ _tag: "ok" });
+    expect(serverJson(configDir)).toMatchObject({
+      edgeHost: "mend.example.test",
+      exposure: "public",
+      sshBind: "0.0.0.0",
+      declared: ["workspace-ssh", "edge-tls"],
+      t3GatewayPort: 3120,
+    });
+    expect(gateway.lines).toContain("  T3 Code gateway: off → on, at 127.0.0.1:3120");
+    for (const [flags, reason] of [
+      [["--declare", "edge-tls", "--undeclare", "edge-tls"], "both name edge-tls"],
+      [["--declare", "none", "--undeclare", "edge-tls"], "drop --undeclare"],
+      [["--undeclare", "none"], "--undeclare takes"],
+      [["--origin", "none", "--origin", "https://a.example"], "goes alone"],
+    ] as const)
+      expect((await run(flags)).result).toMatchObject({
+        _tag: "error",
+        message: expect.stringContaining(reason),
+      });
+  });
+
+  it("guides a fresh install on a terminal and runs the flags its answers became", async () => {
+    const control = makeRuntime();
+    const transcript: Array<string> = [];
+    const result = await serverCommand(["setup"], {
+      ...control.runtime,
+      // reach: this machine · T3: no · mirrors: keep · one organization · apply
+      prompter: scriptedPrompter(["1", "", "", "", ""], transcript),
+    });
+    expect(result).toEqual({ _tag: "ok" });
+    expect(serverJson(control.runtime.configDir)).toMatchObject({
+      bind: "127.0.0.1",
+      appUrl: "http://localhost:3105",
+      exposure: "loopback",
+    });
+    expect(control.lines).toContain("Same as: mend server setup --exposure loopback");
+    expect(control.lines).toContain("Mend 0.23.0 is reachable at http://localhost:3105");
+    expect(control.lines).not.toContain("This run changes:");
+    expect(transcript.at(-1)).toBe("Apply? [Y/n] ");
+  });
+
+  it("guides a rerun: shows what is saved, changes one thing, keeps the rest and every declaration", async () => {
+    const configDir = temporaryDirectory("guided-rerun");
+    expect(await serverCommand(["setup", "--yes"], makeRuntime({ configDir }).runtime)).toEqual({
+      _tag: "ok",
+    });
+    expect(
+      await serverCommand(
+        [
+          "setup",
+          "--edge",
+          "mend.example.test",
+          "--exposure",
+          "public",
+          "--tenancy",
+          "multi",
+          "--ssh-bind",
+          "0.0.0.0",
+          "--origin",
+          "https://box.tail1234.ts.net:8443",
+          "--declare",
+          "workspace-ssh",
+          "--declare",
+          "core-private",
+        ],
+        { ...makeRuntime({ configDir }).runtime, probeSsh: async () => [] },
+      ),
+    ).toEqual({ _tag: "ok" });
+    const before = serverJson(configDir);
+    const control = makeRuntime({ configDir, gatewayLabel: "1" });
+    const transcript: Array<string> = [];
+    // change something · the T3 Code gateway (3rd) · yes · nothing else · apply
+    expect(
+      await serverCommand(["setup"], {
+        ...control.runtime,
+        probeSsh: async () => [],
+        prompter: scriptedPrompter(["2", "3", "y", "", ""], transcript),
+      }),
+    ).toEqual({ _tag: "ok" });
+    expect(control.lines).toContain(
+      "Currently: public HTTPS at mend.example.test, VS Code SSH from other machines on, T3 gateway off.",
+    );
+    expect(control.lines).toContain("Same as: mend server setup --t3-gateway");
+    expect(serverJson(configDir)).toEqual({ ...before, t3GatewayPort: 3120 });
+  });
+
+  it("refuses to apply answers when another setup changed the install meanwhile", async () => {
+    const configDir = temporaryDirectory("guided-race");
+    expect(await serverCommand(["setup", "--yes"], makeRuntime({ configDir }).runtime)).toEqual({
+      _tag: "ok",
+    });
+    // keep it as it is · apply
+    const answers = ["1", ""];
+    const control = makeRuntime({ configDir });
+    const result = await serverCommand(["setup"], {
+      ...control.runtime,
+      prompter: async () => {
+        // While the person answers, a script changes the install: the lock is not held here.
+        if (answers.length === 1)
+          expect(
+            await serverCommand(
+              ["setup", "--tenancy", "multi"],
+              makeRuntime({ configDir }).runtime,
+            ),
+          ).toEqual({ _tag: "ok" });
+        return answers.shift() ?? null;
+      },
+    });
+    expect(result).toMatchObject({
+      _tag: "error",
+      message: expect.stringContaining("The install changed while you answered"),
+    });
+    expect(serverJson(configDir)).toMatchObject({ tenancy: "multi" });
+  });
+
+  it("changing a private install's URL keeps SSH on loopback, in the files too (review 664-1)", async () => {
+    const control = makeRuntime();
+    const { configDir } = control.runtime;
+    const runtime = {
+      ...control.runtime,
+      probeSsh: async () => [],
+      localAddresses: () => ["192.168.1.20"],
+    };
+    expect(
+      await serverCommand(
+        [
+          "setup",
+          "--bind",
+          "192.168.1.20",
+          "--url",
+          "http://192.168.1.20:3105",
+          "--ssh-bind",
+          "127.0.0.1",
+          "--exposure",
+          "private",
+        ],
+        runtime,
+      ),
+    ).toEqual({ _tag: "ok" });
+    // change · reach · network · the same address · a new URL · SSH: enter keeps it on this
+    // machine · nothing else · apply
+    const lines: Array<string> = [];
+    expect(
+      await serverCommand(["setup"], {
+        ...runtime,
+        writeLine: (line) => lines.push(line),
+        prompter: scriptedPrompter(["2", "1", "2", "", "http://mend.lan:3105", "", "", ""], []),
+      }),
+    ).toEqual({ _tag: "ok" });
+    expect(lines).toContain("Same as: mend server setup --url http://mend.lan:3105");
+    expect(serverJson(configDir)).toMatchObject({
+      appUrl: "http://mend.lan:3105",
+      bind: "192.168.1.20",
+      sshBind: "127.0.0.1",
+    });
+    expect(readEnv(activeFile(configDir, "server.env")).get("MEND_SSH_BIND_HOST")).toBe(
+      "127.0.0.1",
+    );
+  });
+
+  it("the documented extra localhost origin does not block going back to this machine (review 664-2)", async () => {
+    const control = makeRuntime();
+    const { configDir } = control.runtime;
+    const runtime = { ...control.runtime, probeSsh: async () => [] };
+    expect(
+      await serverCommand(
+        [
+          "setup",
+          "--bind",
+          "0.0.0.0",
+          "--url",
+          "http://mend-host:3105",
+          "--origin",
+          "http://localhost:3105",
+        ],
+        runtime,
+      ),
+    ).toEqual({ _tag: "ok" });
+    // change · reach · just this machine · nothing else · apply
+    expect(
+      await serverCommand(["setup"], {
+        ...runtime,
+        prompter: scriptedPrompter(["2", "1", "1", "", ""], []),
+      }),
+    ).toEqual({ _tag: "ok" });
+    expect(serverJson(configDir)).toMatchObject({
+      bind: "127.0.0.1",
+      appUrl: "http://localhost:3105",
+      allowedOrigins: [],
+      exposure: "loopback",
+    });
+  });
+
+  it("stopping the guide changes nothing", async () => {
+    const control = makeRuntime();
+    expect(
+      await serverCommand(["setup"], {
+        ...control.runtime,
+        prompter: scriptedPrompter(["2"], []),
+      }),
+    ).toEqual({ _tag: "ok" });
+    expect(control.lines.at(-1)).toBe("Nothing changed.");
+    expect(fs.existsSync(path.join(control.runtime.configDir, "active"))).toBe(false);
   });
 });

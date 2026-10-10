@@ -31,8 +31,10 @@ flowchart LR
 
 ## Reach the server
 
-Web and workspace SSH bind to localhost by default. Binding another address is an explicit choice
-when you set up the server:
+Web and workspace SSH bind to localhost by default. Reaching the server from elsewhere is an
+explicit choice when you set up the server: `mend server setup` asks how people reach it (just this
+machine, your private network or Tailscale, or the public internet with HTTPS) and sets the
+addresses from the answer. With flags:
 
 ```sh
 mend server setup --bind 0.0.0.0 --url http://mend-host:3105 \

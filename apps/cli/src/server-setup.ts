@@ -1,4 +1,5 @@
 import { createHmac, randomBytes } from "node:crypto";
+import * as dns from "node:dns/promises";
 import * as fs from "node:fs";
 import { readFile } from "node:fs/promises";
 import * as net from "node:net";
@@ -84,6 +85,13 @@ import {
   serverProcessDeadlines,
   type ServerProcessOptions,
 } from "./server-runtime.ts";
+import {
+  changeLines,
+  type GuideObservations,
+  runGuide,
+  type SetupSettings,
+  tailscaleFactsOf,
+} from "./server-setup-guide.ts";
 import {
   withServerStore,
   ServerStoreError,
@@ -182,6 +190,16 @@ export interface ServerSetupRuntime {
   readonly sshProbeBoundMs?: number;
   /** Read standard input to its end: `--docker-hub-token-stdin` takes the token from here. */
   readonly readStdin?: () => Promise<string>;
+  /**
+   * A terminal to ask on. Present, `mend server setup` with no flags asks its questions
+   * (server-setup-guide.ts); absent, it asks nothing, and a fresh install with no flags is refused
+   * unless `--yes` takes the defaults.
+   */
+  readonly prompter?: (prompt: string) => Promise<string | null>;
+  /** The addresses a name resolves to from here; null when it does not resolve. */
+  readonly lookupHost?: (host: string) => Promise<ReadonlyArray<string> | null>;
+  /** This machine's own addresses, loopback excluded. */
+  readonly localAddresses?: () => ReadonlyArray<string>;
 }
 
 /** One address workspace SSH was tried at, and what answered there. */
@@ -218,6 +236,10 @@ interface SetupOptions {
   readonly tenancy: Tenancy | undefined;
   /** `--declare <item>`, repeatable: gate items verified from outside. `none` clears; omitted keeps. */
   readonly declared: ReadonlyArray<DeclarableItem> | undefined;
+  /** `--undeclare <item>`, repeatable: take one statement back; the others stay. */
+  readonly undeclared: ReadonlyArray<DeclarableItem>;
+  /** `--yes`: no questions and no confirmation, with no other flag on a fresh install too. */
+  readonly yes: boolean;
   /** `--npm-mirror` (true), `--no-npm-mirror` (false); omitted keeps the saved choice. */
   readonly npmMirror: boolean | undefined;
   /** `--npm-mirror-max-size`: the npm mirror's cap; omitted keeps the saved one. */
@@ -426,6 +448,8 @@ const SETUP_FLAGS = new Set([
   "--t3-gateway",
   "--t3-gateway-port",
   "--no-t3-gateway",
+  "--undeclare",
+  "--yes",
 ]);
 
 /** Setup flags that take no value. */
@@ -441,7 +465,11 @@ const SWITCHES: ReadonlySet<string> = new Set([
   "--no-docker-hub-login",
   "--t3-gateway",
   "--no-t3-gateway",
+  "--yes",
 ]);
+
+/** Setup flags that may be given more than once. */
+const REPEATABLE: ReadonlySet<string> = new Set(["--origin", "--declare", "--undeclare"]);
 
 const parseExposure = (value: string): Exposure => {
   if (!isExposure(value))
@@ -455,15 +483,21 @@ const parseTenancy = (value: string): Tenancy => {
   return value;
 };
 
-/** `--declare` values: each a declarable gate item, or `none` alone, which clears the list. */
-const parseDeclared = (values: ReadonlyArray<string>): ReadonlyArray<DeclarableItem> => {
-  if (values.length === 1 && values[0] === "none") return [];
+/**
+ * `--declare` and `--undeclare` values: each a declarable gate item. `--declare none`, alone,
+ * clears the list, and reads as the empty list.
+ */
+const parseDeclared = (
+  values: ReadonlyArray<string>,
+  flag: "--declare" | "--undeclare",
+): ReadonlyArray<DeclarableItem> => {
+  if (flag === "--declare" && values.length === 1 && values[0] === "none") return [];
   return [
     ...new Set(
       values.map((value) => {
         if (!isDeclarableItem(value)) {
           throw setupError(
-            `--declare takes ${DECLARABLE_ITEMS.join(", ")} or none, not "${value}". Every other gate item is observed by the server, never stated.`,
+            `${flag} takes ${DECLARABLE_ITEMS.join(", ")}${flag === "--declare" ? " or none" : ""}, not "${value}". Every other gate item is observed by the server, never stated.`,
           );
         }
         return value;
@@ -497,7 +531,7 @@ const parseSetupOptions = (args: ReadonlyArray<string>): SetupOptions => {
     const [value, valueIndex] = nextFlagValue(args, index, flag);
     index = valueIndex;
     const previous = values.get(flag) ?? [];
-    if (flag !== "--origin" && flag !== "--declare" && previous.length > 0) {
+    if (!REPEATABLE.has(flag) && previous.length > 0) {
       throw setupError(`${flag} may be supplied only once.`);
     }
     previous.push(value);
@@ -512,6 +546,14 @@ const parseSetupOptions = (args: ReadonlyArray<string>): SetupOptions => {
   const exposure = flagValue("--exposure");
   const tenancy = flagValue("--tenancy");
   const declared = values.get("--declare");
+  const declaredItems = declared === undefined ? undefined : parseDeclared(declared, "--declare");
+  const undeclared = parseDeclared(values.get("--undeclare") ?? [], "--undeclare");
+  const both = undeclared.filter((item) => declaredItems?.includes(item) === true);
+  if (both.length > 0) throw setupError(`--declare and --undeclare both name ${both.join(", ")}.`);
+  if (declaredItems?.length === 0 && undeclared.length > 0)
+    throw setupError("--declare none already clears every statement; drop --undeclare.");
+  if (origins !== undefined && origins.includes("none") && origins.length > 1)
+    throw setupError("--origin none clears the extra origins and goes alone.");
   if (edge !== undefined && values.has("--no-edge"))
     throw setupError("--edge and --no-edge contradict each other.");
   const pair = (on: string, off: string): boolean | undefined => {
@@ -573,7 +615,8 @@ const parseSetupOptions = (args: ReadonlyArray<string>): SetupOptions => {
     bind: flagValue("--bind"),
     sshBind: flagValue("--ssh-bind"),
     url: flagValue("--url"),
-    origins: origins === undefined ? undefined : origins,
+    // `--origin none`: no extra origins at all.
+    origins: origins === undefined ? undefined : origins[0] === "none" ? [] : origins,
     appPort: appPort === undefined ? undefined : parsePort(appPort, "--port"),
     sshPort: sshPort === undefined ? undefined : parsePort(sshPort, "--ssh-port"),
     dockerSocket: flagValue("--docker-socket"),
@@ -583,7 +626,9 @@ const parseSetupOptions = (args: ReadonlyArray<string>): SetupOptions => {
     noEdge: values.has("--no-edge"),
     exposure: exposure === undefined ? undefined : parseExposure(exposure),
     tenancy: tenancy === undefined ? undefined : parseTenancy(tenancy),
-    declared: declared === undefined ? undefined : parseDeclared(declared),
+    declared: declaredItems,
+    undeclared,
+    yes: values.has("--yes"),
     npmMirror,
     npmMirrorMaxSize,
     dockerMirror,
@@ -872,7 +917,16 @@ const validateExposure = (
   if (t3GatewayPort !== undefined && edgeHost !== undefined && [80, 443].includes(t3GatewayPort)) {
     throw setupError("With an edge, --t3-gateway-port must not be 80 or 443: the edge has them.");
   }
-  const declared = options.declared ?? existing?.declared ?? [];
+  // `--declare` adds to what is saved, `--declare none` clears it, and `--undeclare` takes one
+  // statement back: naming one item never drops another.
+  const saved = existing?.declared ?? [];
+  const stated =
+    options.declared === undefined
+      ? saved
+      : options.declared.length === 0
+        ? []
+        : [...new Set([...saved, ...options.declared])];
+  const declared = stated.filter((item) => !options.undeclared.includes(item));
   checkPosture(bind, sshBind ?? bind, { appPort, sshPort }, edgeHost, exposure, declared);
   const appUrl = resolveAppUrl(existing, options, appPort, edgeHost);
   // Behind the edge, loopback bind and https origin is the pair; everywhere else both must agree.
@@ -897,6 +951,42 @@ const validateExposure = (
     ...(declared.length === 0 ? {} : { declared }),
     ...(t3GatewayPort === undefined ? {} : { t3GatewayPort }),
   };
+};
+
+/** The part of a config a person chooses, as the guide compares it. */
+const settingsOf = (
+  config: Pick<ServerConfig, Exclude<keyof SetupSettings, "mirrors">> & {
+    readonly mirrors: ServerMirrors;
+  },
+): SetupSettings => ({
+  bind: config.bind,
+  sshBind: config.sshBind,
+  appUrl: config.appUrl,
+  allowedOrigins: config.allowedOrigins,
+  appPort: config.appPort,
+  sshPort: config.sshPort,
+  edgeHost: config.edgeHost,
+  exposure: config.exposure,
+  tenancy: config.tenancy,
+  declared: config.declared ?? [],
+  t3GatewayPort: config.t3GatewayPort,
+  mirrors: config.mirrors,
+});
+
+/**
+ * What these flags make of the saved config (null: a fresh install), exactly as setup resolves
+ * them: kept where a flag is silent, refused where two settings cannot both hold. The guide's
+ * answers are checked against it before they apply, and its equivalent command round-trips here.
+ */
+export const resolveSetupSettings = (
+  existing: ServerConfig | null,
+  flags: ReadonlyArray<string>,
+): SetupSettings => {
+  const options = parseSetupOptions(flags);
+  return settingsOf({
+    ...validateExposure(existing, options),
+    mirrors: resolveMirrors(existing?.mirrors, options),
+  });
 };
 
 const parseServerConfig = (raw: string): ServerConfig => {
@@ -1009,6 +1099,8 @@ const parseServerConfig = (raw: string): ServerConfig => {
     exposure: config.exposure,
     tenancy: config.tenancy,
     declared: config.declared,
+    undeclared: [],
+    yes: false,
     npmMirror: undefined,
     npmMirrorMaxSize: undefined,
     dockerMirror: undefined,
@@ -2437,16 +2529,132 @@ const mirrorsChangedLines = (
   return lines;
 };
 
+/**
+ * Said when setup has nothing to go on: no terminal to ask on, no flags, and no install whose
+ * settings it could keep. It names the flags that answer the one question that has no safe guess.
+ */
+const UNASKED_FRESH_SETUP =
+  "No terminal to ask on and no flags, so setup does not guess how this Mend is reached. Run mend server setup in a terminal to answer its questions, or say it with flags: --yes takes the defaults (this machine only, http://localhost:3105); --bind <address> --url <origin> serves a private network (a tailnet, a LAN, a VPN); for public HTTPS, set up on this machine first, create the first account, then run mend server setup --edge <host> --exposure public. mend help server setup lists every flag.";
+
+/** How this setup run came about. */
+interface SetupRun {
+  /**
+   * The guide asked its questions against this active generation (null: none yet). Another setup
+   * or upgrade that ran meanwhile changed what the answers were about, so setup refuses.
+   */
+  readonly askedAgainst?: string | null;
+}
+
+const refuseLegacyContract = (existing: ServerInstallation | null): void => {
+  if (existing !== null && existing.config.assetContract !== ASSET_CONTRACT) {
+    throw setupError(
+      `Mend ${existing.config.serverVersion} was installed under the ${existing.config.assetContract} bundle contract. Use mend server upgrade --version latest to move it to ${ASSET_CONTRACT}; setup cannot repair it in place.`,
+    );
+  }
+};
+
+/** What the guide looks at on this machine, through the runtime. */
+const guideObservations = (runtime: ServerSetupRuntime): GuideObservations => ({
+  tailscale: async () => {
+    const status = await runtime.run("tailscale", ["status", "--json"], { timeoutMs: 5_000 });
+    if (status.stdout.trim() === "") return null;
+    const serve = await runtime.run("tailscale", ["serve", "status", "--json"], {
+      timeoutMs: 5_000,
+    });
+    return tailscaleFactsOf(status.stdout, serve.status === 0 ? serve.stdout : "");
+  },
+  lookupHost: runtime.lookupHost ?? (async () => null),
+  localAddresses: runtime.localAddresses ?? (() => []),
+  portTaken: runtime.portTaken ?? (async () => false),
+});
+
+/**
+ * `mend server setup` on a terminal with no flags: read what is saved, let go of the lock while
+ * the person answers, then run the flags the answers became, exactly as a script would.
+ */
+const guidedSetup = async (
+  runtime: ServerSetupRuntime,
+  prompter: (prompt: string) => Promise<string | null>,
+): Promise<ServerCommandResult> => {
+  if (runtime.platform !== "linux" && runtime.platform !== "darwin") {
+    throw setupError(`mend server setup supports Linux and macOS, not ${runtime.platform}.`);
+  }
+  const read = await withServerStore(
+    runtime.configDir,
+    async (store) => storeValue(readServerInstallation(store)),
+    { create: true },
+  );
+  if (read._tag === "error") return { _tag: "error", message: read.error.message };
+  const existing = read.value;
+  refuseLegacyContract(existing);
+  const outcome = await runGuide(
+    { write: runtime.writeLine, ask: prompter },
+    {
+      saved: existing === null ? null : resolveSetupSettings(existing.config, []),
+      defaults: resolveSetupSettings(null, []),
+      observe: guideObservations(runtime),
+      resolve: (flags) => resolveSetupSettings(existing?.config ?? null, flags),
+    },
+  );
+  if (outcome._tag === "refused") return { _tag: "error", message: outcome.message };
+  if (outcome._tag === "stopped") {
+    runtime.writeLine("Nothing changed.");
+    return { _tag: "ok" };
+  }
+  return underLock(
+    runtime.configDir,
+    (store) =>
+      setupServer(outcome.flags, runtime, store, { askedAgainst: existing?.directory ?? null }),
+    { create: true },
+  );
+};
+
+/**
+ * Run a server command under the store's lock. A refusal comes back in setup's own words: the
+ * store reports anything else thrown under its lock as a filesystem failure, which a refused flag
+ * or posture is not.
+ */
+const underLock = async (
+  configDir: string,
+  operation: (store: ServerStore) => Promise<void>,
+  options: { readonly create: boolean },
+): Promise<ServerCommandResult> => {
+  let refused: ServerSetupError | undefined;
+  const result = await withServerStore(
+    configDir,
+    async (store) => {
+      try {
+        await operation(store);
+      } catch (cause) {
+        if (!(cause instanceof ServerSetupError)) throw cause;
+        refused = cause;
+      }
+    },
+    options,
+  );
+  if (result._tag === "error") return { _tag: "error", message: result.error.message };
+  return refused === undefined ? { _tag: "ok" } : { _tag: "error", message: refused.message };
+};
+
 const setupServer = async (
   args: ReadonlyArray<string>,
   runtime: ServerSetupRuntime,
   store: ServerStore,
+  run: SetupRun = {},
 ): Promise<void> => {
   if (runtime.platform !== "linux" && runtime.platform !== "darwin") {
     throw setupError(`mend server setup supports Linux and macOS, not ${runtime.platform}.`);
   }
   const options = parseSetupOptions(args);
   const existing = storeValue(readServerInstallation(store));
+  if (run.askedAgainst !== undefined && (existing?.directory ?? null) !== run.askedAgainst) {
+    throw setupError(
+      "The install changed while you answered: another mend server setup or upgrade ran. This one changed nothing; run mend server setup again to see the install as it is now.",
+    );
+  }
+  if (run.askedAgainst === undefined && args.length === 0 && existing === null) {
+    throw setupError(UNASKED_FRESH_SETUP);
+  }
   const savedIdentity = storeValue(store.readIdentity());
   const savedSecrets = savedIdentity === null ? null : parseSecrets(savedIdentity);
   if (
@@ -2458,11 +2666,7 @@ const setupServer = async (
       `Setup retains Mend ${existing.config.serverVersion}. Use mend server upgrade --version ${options.version} to change the server pin.`,
     );
   }
-  if (existing !== null && existing.config.assetContract !== ASSET_CONTRACT) {
-    throw setupError(
-      `Mend ${existing.config.serverVersion} was installed under the ${existing.config.assetContract} bundle contract. Use mend server upgrade --version latest to move it to ${ASSET_CONTRACT}; setup cannot repair it in place.`,
-    );
-  }
+  refuseLegacyContract(existing);
   const selectedContext = await selectDockerContext(
     runtime,
     options.context ?? existing?.config.dockerContext,
@@ -2508,6 +2712,18 @@ const setupServer = async (
     ...configWithoutBucket,
     ...(bucket === undefined ? {} : { bucket }),
   };
+  // Flags change only what they name: say what this run changes, so a flag that moves more than
+  // its owner expected is read before it applies. The guide has already shown it.
+  if (existing !== null && run.askedAgainst === undefined) {
+    const changes = changeLines(
+      resolveSetupSettings(existing.config, []),
+      settingsOf({ ...configWithoutBucket, mirrors }),
+    );
+    if (changes.length > 0) {
+      runtime.writeLine("This run changes:");
+      for (const line of changes) runtime.writeLine(line);
+    }
+  }
   // Until the first account exists, registration is open to whoever arrives first, and the
   // server refuses `public` without an operator (ADR 0004, decision 16). Said before anything
   // is written, with the order that works.
@@ -3581,6 +3797,23 @@ export const nodeServerRuntime = (): ServerSetupRuntime => {
     readLogin: (configDir) => savedLogin(configDir, environment),
     probeSsh: probeSshFromHere,
     portTaken: portTakenHere,
+    ...(process.stdin.isTTY === true && process.stdout.isTTY === true
+      ? { prompter: askOnTerminal }
+      : {}),
+    lookupHost: async (host) => {
+      try {
+        return (await dns.lookup(host, { all: true })).map((entry) => entry.address);
+      } catch {
+        return null;
+      }
+    },
+    // Container and VM bridges (Docker's own among them) are never where people reach Mend.
+    localAddresses: () =>
+      Object.entries(os.networkInterfaces())
+        .filter(([name]) => !/^(docker|br-|veth|virbr|cni|flannel|vmnet|vboxnet)/.test(name))
+        .flatMap(([, entries]) => entries ?? [])
+        .filter((entry) => !entry.internal)
+        .map((entry) => entry.address),
     readStdin: async () => {
       const chunks: Array<Buffer> = [];
       for await (const chunk of process.stdin)
@@ -3588,6 +3821,24 @@ export const nodeServerRuntime = (): ServerSetupRuntime => {
       return Buffer.concat(chunks).toString("utf8");
     },
   };
+};
+
+/**
+ * One question on the terminal. Null when the terminal closed (Ctrl+D) or the person pressed
+ * Ctrl+C: readline would otherwise only pause on Ctrl+C and leave the question hanging.
+ */
+const askOnTerminal = async (prompt: string): Promise<string | null> => {
+  const readline = await import("node:readline/promises");
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    return await new Promise<string | null>((resolve) => {
+      rl.once("close", () => resolve(null));
+      rl.once("SIGINT", () => rl.close());
+      rl.question(prompt).then(resolve, () => resolve(null));
+    });
+  } finally {
+    rl.close();
+  }
 };
 
 /**
@@ -3693,17 +3944,17 @@ export const serverCommand = async (
     };
   }
   try {
-    const result = await withServerStore(
+    if (command === "setup" && rest.length === 0 && runtime.prompter !== undefined) {
+      return await guidedSetup(runtime, runtime.prompter);
+    }
+    return await underLock(
       runtime.configDir,
-      async (store) => {
-        if (command === "setup") await setupServer(rest, runtime, store);
-        else await manageServer(command, rest, runtime, store);
-      },
+      (store) =>
+        command === "setup"
+          ? setupServer(rest, runtime, store)
+          : manageServer(command, rest, runtime, store),
       { create: command === "setup" },
     );
-    return result._tag === "error"
-      ? { _tag: "error", message: result.error.message }
-      : { _tag: "ok" };
   } catch (cause) {
     if (cause instanceof ServerSetupError) return { _tag: "error", message: cause.message };
     const detail = cause instanceof Error ? cause.message : String(cause);

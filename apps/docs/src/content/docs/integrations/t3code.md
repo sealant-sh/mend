@@ -22,7 +22,9 @@ runs as you, and shows in Mend's web app, CLI and Slack like any other.
 
 ## Turn it on
 
-The gateway is off unless you turn it on. On a server installed with `mend server setup`:
+The gateway is off unless you turn it on. On a server installed with `mend server setup`, run it
+again and answer yes to "Turn on the T3 Code gateway?" (choose "change something", then "the T3 Code
+gateway"). The flag does the same, and keeps everything else as saved:
 
 ```sh
 mend server setup --t3-gateway

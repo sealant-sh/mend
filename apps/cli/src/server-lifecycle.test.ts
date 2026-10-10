@@ -1827,7 +1827,7 @@ describe("the edge and the posture", { timeout: 120_000 }, () => {
       ),
     ).toBe(true);
     // Without a stray edge, a start lists and removes nothing; nothing ever passes --remove-orphans.
-    expect(await serverCommand(["setup"], f.runtime)).toEqual({ _tag: "ok" });
+    expect(await serverCommand(["setup", "--yes"], f.runtime)).toEqual({ _tag: "ok" });
     expect(await serverCommand(["restart"], f.runtime)).toEqual({ _tag: "ok" });
     expect(f.state().removedEdge).toBe(1);
     expect(f.runCalls.some((call) => call.args.includes("--remove-orphans"))).toBe(false);
