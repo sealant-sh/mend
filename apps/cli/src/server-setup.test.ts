@@ -1235,6 +1235,38 @@ describe("mend server setup", () => {
     expect(readEnv(activeFile(configDir, "server.env")).get("MEND_EXPOSURE_DECLARED")).toBe(
       "workspace-ssh,core-private,t3code-gateway",
     );
+
+    // The gateway off: SSH stays published, and every declaration stays.
+    expect(
+      await serverCommand(["setup", "--no-t3-gateway"], {
+        ...makeRuntime({ configDir }).runtime,
+        probeSsh: async () => [],
+      }),
+    ).toEqual({ _tag: "ok" });
+    const off = readEnv(activeFile(configDir, "server.env"));
+    expect(off.get("MEND_SSH_PUBLISHED")).toBe("0.0.0.0:2222");
+    expect(off.get("MEND_EXPOSURE_DECLARED")).toBe("workspace-ssh,core-private,t3code-gateway");
+    expect(off.has("MEND_T3_GATEWAY_PORT")).toBe(false);
+    expect(fs.existsSync(activeFile(configDir, "compose.t3.yaml"))).toBe(false);
+    expect(fs.existsSync(activeFile(configDir, "compose.posture.yaml"))).toBe(true);
+
+    // The gateway on again and SSH back on loopback: the gateway's overlay stays, SSH's goes.
+    expect(
+      await serverCommand(
+        ["setup", "--t3-gateway", "--ssh-bind", "127.0.0.1"],
+        makeRuntime({ configDir, gatewayLabel: "1" }).runtime,
+      ),
+    ).toEqual({ _tag: "ok" });
+    const back = readEnv(activeFile(configDir, "server.env"));
+    expect(back.has("MEND_SSH_PUBLISHED")).toBe(false);
+    expect(back.get("MEND_T3_GATEWAY_PORT")).toBe("3120");
+    expect(fs.readFileSync(activeFile(configDir, "compose.t3.yaml"), "utf8")).toContain(
+      '"127.0.0.1:${MEND_T3_GATEWAY_PORT',
+    );
+    // On loopback, SSH is not published apart: mend#620 keeps no override for it.
+    const config = JSON.parse(fs.readFileSync(activeFile(configDir, "server.json"), "utf8"));
+    expect(config).toMatchObject({ t3GatewayPort: 3120 });
+    expect(config).not.toHaveProperty("sshBind");
   });
 
   it("reads an SSH banner, and settles on silence, a clean close before any bytes, and a refusal", async () => {
