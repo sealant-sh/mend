@@ -112,6 +112,37 @@ the origin's host, and its port for ssh. Pushing a mirror or a fork elsewhere fr
 workspace runs without Mend's signer. An operator who alone uses the machine may set
 `MEND_GIT_TRANSPORT_BIND_ORIGIN=false`; `multi` tenancy refuses to start with it.
 
+## Credentials in repository URLs
+
+Since 0.36 (found in the review of mend#611), Mend never stores, returns or logs a repository URL
+with a credential in it. A URL is a credential carrier when it has a password (any scheme) or a user
+over any scheme but ssh: over HTTP(S) the user is where tokens go (`https://oauth2:TOKEN@…`,
+`https://ghp_…@github.com/…`), over ssh it is the login (`ssh://git@host/…`, `git@host:path`) and
+stays. One rule, `redactUrlCredentials` in `@mend/domain`, decides everywhere:
+
+- **Refused where it enters.** `repositoryCloneUrlIssue` refuses such a URL with guidance that names
+  the supported ways (`mend keys`, `--auth bridge`). It backs the adopt payload's schema, every
+  client's local check (CLI, dashboard, web, phone, VS Code) and `SourcePolicy.check`, which every
+  adopt, refresh and reference clone passes. Dotfiles keep their own message
+  (`dotfilesRepositoryUrlCredentialIssue`), on the same rule.
+- **Never returned.** `ProjectsRepo` and `ReferencesRepo` strip it on write and on every read, so no
+  response, no Slack inference prompt and no workspace clone (ADR 0011) can carry one an older
+  server stored.
+- **Never logged.** `GitError` is built with its args and stderr redacted (a failed clone's message
+  carries the whole command line), `ReferenceCloneError.source` likewise, and the server's console
+  strips URL credentials from every log line (`RedactingConsoleLive`).
+- **Existing data.** Migration 0121 strips project and reference origins and both dotfiles columns.
+  At each worker start `RemoteCredentialScrubLive` rewrites any remote URL (`url`, `pushurl`) in a
+  project store or reference clone that still carries one, and logs the names it changed.
+
+Why refuse rather than keep the token sealed beside the URL: Mend holds no HTTPS credential of an
+account's, and a token in a project's URL is the adopter's credential spent by everyone who works in
+the project, including fetches and landings by other members. That is the cross-person spend the
+per-person rules forbid. The supported ways are each person's own: their Mend key or their bridge. A
+per-account HTTPS token, sealed like other credentials, is the planned follow-up (above), and would
+not live in the URL either. A project whose fetch needed the token stops fetching after the upgrade;
+it is adopted again from its SSH URL. The owner's box had none (0 of 6 projects, 0 references).
+
 ## Accounts and organizations
 
 Since organizations (`docs/adr/0003-organizations-and-tenancy.md`), every signer belongs to one

@@ -560,6 +560,20 @@ describe("GET /projects/:id response", () => {
     expect(JSON.stringify(body)).not.toContain(existing.storePath);
   });
 
+  it("refuses to adopt a URL with a login or token, and clones nothing", async () => {
+    // The mocked store has no `adopt`: reaching it would answer 500, not the decode's 400.
+    const { response } = await requestProject(makeWorld([]), "/api/projects", AUTHORIZATION, {
+      method: "POST",
+      body: JSON.stringify({
+        name: "leaky",
+        source: "https://oauth2:TOKEN-SECRET@github.com/org/leaky.git",
+      }),
+    });
+    const body = await response.text();
+    expect(response.status).toBe(400);
+    expect(body).not.toContain("TOKEN-SECRET");
+  });
+
   it("counts the Services that keep a session's workspace up", async () => {
     const rows = [
       session({ id: "held", status: "idle", hasTranscript: true }),

@@ -465,6 +465,47 @@ describe.skipIf(!reachable)("organizations", () => {
     });
   });
 
+  it("a project read never returns a login or token in its origin, whatever the row holds", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const projects = yield* ProjectsRepo;
+        const created = yield* projects.create({
+          id: ProjectId.make("p-acme-token"),
+          organizationId: acme,
+          visibility: "shared",
+          createdByUserId: "alice",
+          name: "token",
+          originUrl: "https://oauth2:TOKEN-SECRET@gitlab.com/acme/token.git",
+          storePath: "/store/p-acme-token/repo.git",
+          defaultBranch: "main",
+          adoptedSha: null,
+          gitAuthMode: "mend-key",
+        });
+        const [stored] = yield* sql<{ readonly url: string }>`
+          SELECT origin_url AS url FROM projects WHERE id = 'p-acme-token'`;
+        // What a server before 0.36 wrote, read back by this one.
+        yield* sql`
+          UPDATE projects SET origin_url = 'https://ghp_TOKEN-SECRET@github.com/acme/token.git'
+          WHERE id = 'p-acme-token'`;
+        const reread = yield* projects.byId(created.id);
+        const listed = yield* projects.listForOrganization(acme);
+        return {
+          created: created.originUrl,
+          stored: stored?.url,
+          reread: reread.originUrl,
+          listed: listed.find((project) => project.id === created.id)?.originUrl,
+        };
+      }),
+    );
+    expect(result).toEqual({
+      created: "https://gitlab.com/acme/token.git",
+      stored: "https://gitlab.com/acme/token.git",
+      reread: "https://github.com/acme/token.git",
+      listed: "https://github.com/acme/token.git",
+    });
+  });
+
   it("the last operator cannot be revoked", async () => {
     const result = await run(
       Effect.gen(function* () {

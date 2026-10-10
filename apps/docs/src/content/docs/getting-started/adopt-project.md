@@ -42,6 +42,11 @@ mend adopt ssh://git@example.com/acme/api.git
 The server performs the clone. Local paths, Windows paths, `file://` sources, and custom Git remote
 helpers are rejected, even if the files exist on the server. There is no folder-adoption mode.
 
+A URL with a login or token in it (`https://oauth2:TOKEN@…`, `https://ghp_…@github.com/…`) is
+refused: Mend shows a project's URL to everyone who can see the project. Adopt from the SSH URL with
+your Mend key instead. See
+[No credentials in repository URLs](/guides/git-access/#no-credentials-in-repository-urls).
+
 A repository that uses SHA-256 object names, or a shallow one (only part of its history, as a
 `git clone --depth` copy holds), is refused after the clone, which is removed. See
 [Known issues](/reference/known-issues/).

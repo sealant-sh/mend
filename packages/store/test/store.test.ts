@@ -367,6 +367,60 @@ describe("Store", () => {
     );
   });
 
+  it("keeps a credential out of a failed git run's error: args, stderr and the source", async () => {
+    await withStore(() =>
+      Effect.gen(function* () {
+        const store = yield* Store;
+        // Port 1 refuses: the clone fails before any credential could be offered.
+        const reference = yield* store
+          .cloneReference(
+            "_references/token",
+            "https://oauth2:TOKEN-SECRET@127.0.0.1:1/org/repo.git",
+            null,
+            { GIT_TERMINAL_PROMPT: "0" },
+          )
+          .pipe(Effect.result);
+        expect(Result.isFailure(reference)).toBe(true);
+        if (Result.isFailure(reference)) {
+          expect(JSON.stringify(reference.failure)).not.toContain("TOKEN-SECRET");
+          expect(reference.failure.source).toBe("https://127.0.0.1:1/org/repo.git");
+          expect(reference.failure.cause.args).toContain("https://127.0.0.1:1/org/repo.git");
+        }
+      }),
+    );
+  });
+
+  it("takes a login or token out of every remote URL, and leaves a clean config alone", async () => {
+    await withStore((_tmp, _origin, source) =>
+      Effect.gen(function* () {
+        const store = yield* Store;
+        const adopted = yield* store.adopt("scrub", source, {});
+        const config = (...args: ReadonlyArray<string>) =>
+          execFileSync("git", ["config", ...args], { cwd: adopted.storePath, encoding: "utf8" });
+        // What a server before 0.36 left behind for a URL adopted with a token.
+        config(
+          "--add",
+          "remote.origin.pushurl",
+          "https://oauth2:TOKEN-SECRET@example.invalid/o/r.git",
+        );
+        config("remote.mirror.url", "https://ghp_TOKEN-SECRET@example.invalid/o/r.git");
+        config("remote.login.url", "ssh://git:TOKEN-SECRET@example.invalid/o/r.git");
+
+        expect(yield* store.scrubRemoteCredentials(adopted.storePath)).toBe(3);
+        const remotes = config("--get-regexp", String.raw`^remote\.`);
+        expect(remotes).not.toContain("TOKEN-SECRET");
+        expect(remotes).toContain(`remote.origin.url ${source}`);
+        expect(remotes).toContain("remote.origin.pushurl https://example.invalid/o/r.git");
+        expect(remotes).toContain("remote.mirror.url https://example.invalid/o/r.git");
+        expect(remotes).toContain("remote.login.url ssh://git@example.invalid/o/r.git");
+
+        expect(yield* store.scrubRemoteCredentials(adopted.storePath)).toBe(0);
+        // The origin that needed no credential still fetches.
+        yield* store.refreshFromOrigin(adopted.storePath, {});
+      }),
+    );
+  });
+
   it("never consumes a reference source as a clone option", async () => {
     await withStore((tmp) =>
       Effect.gen(function* () {

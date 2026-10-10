@@ -1,5 +1,5 @@
 import { ReferenceId, type OrganizationId, type ProjectId, type Sha } from "@mend/domain";
-import { Reference } from "@mend/domain/workbench";
+import { Reference, redactUrlCredentials } from "@mend/domain/workbench";
 import { and, asc, eq, inArray } from "drizzle-orm";
 import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
@@ -41,6 +41,8 @@ export class ReferencesRepo extends Context.Service<
       organizationId: OrganizationId,
       name: string,
     ) => Effect.Effect<Reference | null>;
+    /** Every reference on the instance, for machine work (sweeps). Never a caller's list. */
+    readonly listAll: () => Effect.Effect<ReadonlyArray<Reference>>;
     readonly listForOrganization: (
       organizationId: OrganizationId,
     ) => Effect.Effect<ReadonlyArray<Reference>>;
@@ -62,7 +64,9 @@ export class ReferencesRepo extends Context.Service<
   }
 >()("@mend/db/ReferencesRepo") {}
 
-const toReference = (row: typeof referenceRepos.$inferSelect): Reference => new Reference(row);
+// A credential in the URL never leaves here, whatever an older server stored.
+const toReference = (row: typeof referenceRepos.$inferSelect): Reference =>
+  new Reference({ ...row, originUrl: redactUrlCredentials(row.originUrl) });
 
 export const ReferencesRepoLive: Layer.Layer<ReferencesRepo, never, MendDB> = Layer.effect(
   ReferencesRepo,
@@ -72,7 +76,11 @@ export const ReferencesRepoLive: Layer.Layer<ReferencesRepo, never, MendDB> = La
     const create = Effect.fn("ReferencesRepo.create")(function* (reference: NewReference) {
       const [row] = yield* db
         .insert(referenceRepos)
-        .values({ ...reference, refreshedAt: new Date() })
+        .values({
+          ...reference,
+          originUrl: redactUrlCredentials(reference.originUrl),
+          refreshedAt: new Date(),
+        })
         .returning()
         .pipe(Effect.orDie);
       if (row === undefined) return yield* Effect.die("reference insert returned no row");
@@ -103,6 +111,11 @@ export const ReferencesRepoLive: Layer.Layer<ReferencesRepo, never, MendDB> = La
         .limit(1)
         .pipe(Effect.orDie);
       return row === undefined ? null : toReference(row);
+    });
+
+    const listAll = Effect.fn("ReferencesRepo.listAll")(function* () {
+      const rows = yield* db.select().from(referenceRepos).pipe(Effect.orDie);
+      return rows.map(toReference);
     });
 
     const listForOrganization = Effect.fn("ReferencesRepo.listForOrganization")(function* (
@@ -181,6 +194,7 @@ export const ReferencesRepoLive: Layer.Layer<ReferencesRepo, never, MendDB> = La
       create,
       byId,
       byName,
+      listAll,
       listForOrganization,
       byIdsInOrganization,
       remove,

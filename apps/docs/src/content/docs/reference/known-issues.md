@@ -46,6 +46,23 @@ does not change a host's kernel settings for you: `mend server setup` and `mend 
 run. See
 [Every session fails to launch on Ubuntu](/operate/troubleshooting/#every-session-fails-to-launch-on-ubuntu).
 
+## Projects adopted with a token in their URL
+
+Applies to projects and reference repositories added before 0.36 from a URL with a login or token in
+it, such as `https://oauth2:TOKEN@gitlab.com/acme/api.git`. Before 0.36 Mend stored that URL as
+typed and returned it to everyone who could see the project; 0.36 refuses such a URL
+([No credentials in repository URLs](/guides/git-access/#no-credentials-in-repository-urls)).
+
+On upgrade, Mend removes the credential from the stored URL and from the Git remotes in its store,
+and logs the names of the projects and references whose remotes it changed (never their URLs). A
+private repository that Mend reached only through that token then no longer fetches or lands: the
+base of a new session is not freshened, a refresh fails with the remote's reason, and a landing push
+is refused. Nothing in a worktree is lost.
+
+To fix one, adopt the repository again from its SSH URL with your Mend key (`mend keys`) or the
+agent bridge, and remove the old project once its sessions are landed or no longer needed. Rotate
+the token: anyone who could see the project before 0.36 could read it.
+
 ## SHA-256 repositories are not supported
 
 Mend refuses to adopt a repository that uses SHA-256 object names:

@@ -3,7 +3,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import { Sha } from "@mend/domain";
-import { RepositoryCloneUrl } from "@mend/domain/workbench";
+import { RepositoryCloneUrl, redactUrlCredentials } from "@mend/domain/workbench";
 import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
@@ -590,6 +590,14 @@ export class Store extends Context.Service<
     /** Delete the clone directory. Selection rows are the caller's concern. */
     readonly removeReference: (clonePath: string) => Effect.Effect<void>;
     /**
+     * Take the credential out of every remote URL of the repository at `gitDir` (a project's bare
+     * store, a reference clone), as `redactUrlCredentials` does: servers before 0.36 cloned the
+     * URL as typed, token included, and git keeps it in the repository's config, which a
+     * workspace can read. Answers the number of URLs it rewrote. A remote that needed the token
+     * will no longer fetch; the caller says so.
+     */
+    readonly scrubRemoteCredentials: (gitDir: string) => Effect.Effect<number, GitError>;
+    /**
      * Landing step 2 (docs/adr/0007-landing.md) in the project store: Mend's commit of the
      * checkpoint's tree, parented by `planLanding` on the last landing and the agent's head, or
      * nothing when an existing commit already is what lands. The session's branch never moves:
@@ -1152,7 +1160,11 @@ export class Store extends Context.Service<
           return { path: clonePath, headSha: sha(head) };
         });
         return yield* attempt.pipe(
-          Effect.catch((cause) => Effect.fail(new ReferenceCloneError({ name, source, cause }))),
+          Effect.catch((cause) =>
+            Effect.fail(
+              new ReferenceCloneError({ name, source: redactUrlCredentials(source), cause }),
+            ),
+          ),
         );
       });
 
@@ -1169,6 +1181,34 @@ export class Store extends Context.Service<
         yield* git(["reset", "--hard", "FETCH_HEAD"], clonePath);
         const head = yield* git(["rev-parse", "HEAD"], clonePath);
         return { path: clonePath, headSha: sha(head) };
+      });
+
+      const scrubRemoteCredentials = Effect.fn("Store.scrubRemoteCredentials")(function* (
+        gitDir: string,
+      ) {
+        // `--get-regexp` exits 1 when no remote has a URL: nothing to scrub.
+        const listed = yield* git(
+          ["config", "--local", "--get-regexp", String.raw`^remote\..*\.(url|pushurl)$`],
+          gitDir,
+          undefined,
+          [1],
+        );
+        let rewritten = 0;
+        for (const line of listed.split("\n")) {
+          const space = line.indexOf(" ");
+          if (space === -1) continue;
+          const key = line.slice(0, space);
+          const url = line.slice(space + 1);
+          const redacted = redactUrlCredentials(url);
+          if (redacted === url) continue;
+          // `--fixed-value`: replace exactly this value, never another URL under the same key.
+          yield* git(
+            ["config", "--local", "--fixed-value", "--replace-all", key, redacted, url],
+            gitDir,
+          );
+          rewritten += 1;
+        }
+        return rewritten;
       });
 
       const removeReference = Effect.fn("Store.removeReference")(function* (clonePath: string) {
@@ -1213,6 +1253,7 @@ export class Store extends Context.Service<
         cloneReference,
         refreshReference,
         removeReference,
+        scrubRemoteCredentials,
         adopt,
         createWorktree,
         resolveBase,

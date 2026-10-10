@@ -2718,3 +2718,103 @@ describe.skipIf(!reachable)("0120 hot workspace layout", () => {
     });
   });
 });
+
+describe.skipIf(!reachable)("0121 repository URL credentials", () => {
+  const DB = `${SCRATCH_DB}_url_credentials`;
+  const layer = (() => {
+    const url = new URL(ADMIN_URL);
+    url.pathname = `/${DB}`;
+    return PgClient.layer({ url: Redacted.make(url.toString()) });
+  })();
+  const withDb = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
+    Effect.runPromise(effect.pipe(Effect.provide(layer), Effect.scoped));
+
+  beforeAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`CREATE DATABASE ${DB}`);
+      }),
+    );
+  });
+  afterAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`DROP DATABASE IF EXISTS ${DB} WITH (FORCE)`);
+      }),
+    );
+  });
+
+  it("strips the login or token from every stored repository URL, and leaves the rest as typed", async () => {
+    const result = await withDb(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* upTo("0120_hot_workspace_layout");
+        const [organization] = yield* sql<{ readonly id: string }>`SELECT id FROM organizations`;
+        const org = organization?.id ?? "";
+        yield* sql`
+          INSERT INTO "user" ("id", "name", "email", "createdAt")
+          VALUES ('anna', 'Anna', 'anna@example.com', '2026-01-01T00:00:00Z')`;
+        yield* sql`
+          INSERT INTO projects (id, name, store_path, default_branch, organization_id, origin_url)
+          VALUES
+            ('p-token', 'token', '/store/p-token/repo.git', 'main', ${org},
+             'https://oauth2:TOKEN-SECRET@gitlab.com/org/repo.git'),
+            ('p-user', 'user', '/store/p-user/repo.git', 'main', ${org},
+             'https://ghp_TOKEN-SECRET@github.com/org/repo.git'),
+            ('p-ssh', 'ssh', '/store/p-ssh/repo.git', 'main', ${org},
+             'ssh://git:TOKEN-SECRET@host.example/srv/repo.git'),
+            ('p-clean', 'clean', '/store/p-clean/repo.git', 'main', ${org},
+             'ssh://git@host.example:2222/srv/repo.git'),
+            ('p-scp', 'scp', '/store/p-scp/repo.git', 'main', ${org}, 'git@github.com:org/repo.git'),
+            ('p-none', 'none', '/store/p-none/repo.git', 'main', ${org}, NULL)`;
+        yield* sql`
+          INSERT INTO reference_repos (id, name, organization_id, origin_url, path)
+          VALUES ('r-token', 'docs', ${org}, 'https://x-access-token:TOKEN-SECRET@github.com/o/docs.git',
+                  '/store/refs/r-token')`;
+        yield* sql`
+          INSERT INTO user_dotfiles (user_id, repository)
+          VALUES ('anna', ${JSON.stringify({ url: "https://anna:TOKEN-SECRET@github.com/anna/dots.git", ref: null })}::jsonb)`;
+        yield* sql`
+          INSERT INTO worktrees (id, project_id, name, directory, branch, base_sha)
+          VALUES ('wt-1', 'p-clean', 'one', 'one', 'mend/one', 'abc')`;
+        yield* sql`
+          INSERT INTO agent_sessions
+            (id, project_id, worktree_id, harness, worktree, branch, base_sha, status, dotfiles)
+          VALUES ('s-1', 'p-clean', 'wt-1', 'claude', 'one', 'mend/one', 'abc', 'running',
+                  ${JSON.stringify({ repository: { url: "https://anna:TOKEN-SECRET@github.com/anna/dots.git", ref: "main" }, snapshotSha: null })}::jsonb)`;
+        yield* migrations["0121_repository_url_credentials"];
+        const projects = yield* sql<{ readonly id: string; readonly url: string | null }>`
+          SELECT id, origin_url AS url FROM projects ORDER BY id`;
+        const [reference] = yield* sql<{ readonly url: string }>`
+          SELECT origin_url AS url FROM reference_repos`;
+        const [dotfiles] = yield* sql<{ readonly url: string }>`
+          SELECT repository->>'url' AS url FROM user_dotfiles`;
+        const [stamped] = yield* sql<{ readonly url: string; readonly ref: string }>`
+          SELECT dotfiles->'repository'->>'url' AS url, dotfiles->'repository'->>'ref' AS ref
+          FROM agent_sessions`;
+        return {
+          projects: projects.map((row) => [row.id, row.url]),
+          reference: reference?.url,
+          dotfiles: dotfiles?.url,
+          stamped: [stamped?.url, stamped?.ref],
+        };
+      }),
+    );
+    expect(JSON.stringify(result)).not.toContain("TOKEN-SECRET");
+    expect(result).toEqual({
+      projects: [
+        ["p-clean", "ssh://git@host.example:2222/srv/repo.git"],
+        ["p-none", null],
+        ["p-scp", "git@github.com:org/repo.git"],
+        ["p-ssh", "ssh://git@host.example/srv/repo.git"],
+        ["p-token", "https://gitlab.com/org/repo.git"],
+        ["p-user", "https://github.com/org/repo.git"],
+      ],
+      reference: "https://github.com/o/docs.git",
+      dotfiles: "https://github.com/anna/dots.git",
+      stamped: ["https://github.com/anna/dots.git", "main"],
+    });
+  });
+});

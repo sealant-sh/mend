@@ -2090,6 +2090,7 @@ const referencesEmptyLayer = Layer.succeed(ReferencesRepo, {
   create: () => Effect.die("not in test"),
   byId: (id) => Effect.fail(new ReferenceNotFoundError({ referenceId: id })),
   byName: () => Effect.succeed(null),
+  listAll: () => Effect.succeed([]),
   listForOrganization: () => Effect.succeed([]),
   byIdsInOrganization: () => Effect.succeed([]),
   remove: () => Effect.void,

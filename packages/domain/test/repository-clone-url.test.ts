@@ -2,6 +2,11 @@ import { Result, Schema } from "effect";
 import { FastCheck } from "effect/testing";
 import { describe, expect, it } from "vitest";
 
+import {
+  redactUrlCredentials,
+  REPOSITORY_URL_CREDENTIAL_GUIDANCE,
+  repositoryUrlHasCredential,
+} from "../src/repository-url.ts";
 import { RepositoryCloneUrl, repositoryCloneUrlIssue } from "../src/workbench/project.ts";
 
 const accepted = [
@@ -136,6 +141,71 @@ describe("RepositoryCloneUrl", () => {
           }
         },
       ),
+    );
+  });
+});
+
+describe("a credential in a repository URL", () => {
+  const withCredential = [
+    "https://oauth2:glpat-xyz@gitlab.com/org/repo.git",
+    "https://ghp_abcdefghijklmnopqrstuvwxyz0123456789@github.com/org/repo.git",
+    "https://x-access-token:ghs_abc@github.com/org/repo.git",
+    "http://deploy:s3cret@git.example.test/team/repo.git",
+    "https://deploy@git.example.test/team/repo.git",
+    "https://:token-only@git.example.test/team/repo.git",
+    "git://user@git.example.test/team/repo.git",
+    "ssh://git:s3cret@git.example.test/team/repo.git",
+  ] as const;
+
+  it.each(withCredential)("refuses %s, naming the supported ways instead", (value) => {
+    expect(repositoryUrlHasCredential(value)).toBe(true);
+    expect(repositoryCloneUrlIssue(value)).toBe(REPOSITORY_URL_CREDENTIAL_GUIDANCE);
+    expect(Result.isFailure(decode(value))).toBe(true);
+    expect(REPOSITORY_URL_CREDENTIAL_GUIDANCE).toContain("mend keys");
+  });
+
+  it("keeps an ssh login name, which is how the host is reached", () => {
+    for (const value of [
+      "ssh://git@git.example.test:2222/team/repo.git",
+      "git@git.example.test:team/repo.git",
+      "https://github.com/sealant-sh/Mend",
+    ]) {
+      expect(repositoryUrlHasCredential(value)).toBe(false);
+      expect(redactUrlCredentials(value)).toBe(value);
+    }
+  });
+
+  it("redacts the credential and keeps where the repository is", () => {
+    const cases: ReadonlyArray<readonly [string, string]> = [
+      ["https://oauth2:glpat-xyz@gitlab.com/org/repo.git", "https://gitlab.com/org/repo.git"],
+      ["https://ghp_abc@github.com/org/repo.git", "https://github.com/org/repo.git"],
+      // A raw `@` in the password: everything up to the last one before the path goes.
+      [
+        "https://user:p@ss@host.example:8443/org/repo.git",
+        "https://host.example:8443/org/repo.git",
+      ],
+      ["ssh://git:s3cret@host.example/srv/repo.git", "ssh://git@host.example/srv/repo.git"],
+      ["git+ssh://:s3cret@host.example/repo.git", "git+ssh://host.example/repo.git"],
+    ];
+    for (const [stored, shown] of cases) expect(redactUrlCredentials(stored), stored).toBe(shown);
+  });
+
+  it("redacts every URL in free text, as git's errors and log lines carry them", () => {
+    expect(
+      redactUrlCredentials(
+        "Command failed: git clone --bare -- https://oauth2:TOKEN@github.com/org/repo.git /store/p/repo.git\nfatal: unable to access 'https://oauth2:TOKEN@github.com/org/repo.git/': 403",
+      ),
+    ).toBe(
+      "Command failed: git clone --bare -- https://github.com/org/repo.git /store/p/repo.git\nfatal: unable to access 'https://github.com/org/repo.git/': 403",
+    );
+  });
+
+  it("never leaves a generated token behind", () => {
+    FastCheck.assert(
+      FastCheck.property(segment, segment, networkUrl, (user, token, url) => {
+        const withToken = url.replace("://", `://${user}:${token}@`).replace("git@", "");
+        expect(redactUrlCredentials(withToken)).not.toContain(`:${token}@`);
+      }),
     );
   });
 });

@@ -1,3 +1,4 @@
+import { redactUrlCredentials } from "@mend/domain/workbench";
 import { Effect } from "effect";
 import { SqlClient } from "effect/unstable/sql";
 
@@ -3390,6 +3391,55 @@ const sshKeyRevocationsMigration = Effect.gen(function* () {
   yield* sql`CREATE INDEX ssh_key_revocations_next_attempt_at ON ssh_key_revocations (next_attempt_at)`;
 });
 
+/**
+ * No login or token in a stored repository URL (docs/GIT-ACCESS.md, "Credentials in repository
+ * URLs"). Servers before 0.36 stored an adopted URL as typed, `https://oauth2:TOKEN@host/…`
+ * included, and returned it to everyone who could see the project. Every URL Mend stores loses its
+ * credential the way `redactUrlCredentials` takes it (the whole userinfo; over ssh, the password
+ * only): project origins, reference origins, the dotfiles repository a person saved and the one
+ * each session was stamped with. Only rows that change are written. The git remotes in the store
+ * are the server's to fix at start (`RemoteCredentialScrubLive`): a migration runs no git.
+ */
+const repositoryUrlCredentialsMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  // Only a URL with `://…@` can carry one; SCP-style `git@host:path` holds a login name alone.
+  const projects = yield* sql<{ readonly id: string; readonly url: string }>`
+    SELECT id, origin_url AS url FROM projects WHERE origin_url LIKE '%://%@%'`;
+  for (const row of projects) {
+    const redacted = redactUrlCredentials(row.url);
+    if (redacted === row.url) continue;
+    yield* sql`UPDATE projects SET origin_url = ${redacted} WHERE id = ${row.id}`;
+  }
+  const referenceRows = yield* sql<{ readonly id: string; readonly url: string }>`
+    SELECT id, origin_url AS url FROM reference_repos WHERE origin_url LIKE '%://%@%'`;
+  for (const row of referenceRows) {
+    const redacted = redactUrlCredentials(row.url);
+    if (redacted === row.url) continue;
+    yield* sql`UPDATE reference_repos SET origin_url = ${redacted} WHERE id = ${row.id}`;
+  }
+  const dotfiles = yield* sql<{ readonly id: string; readonly url: string }>`
+    SELECT user_id AS id, repository->>'url' AS url FROM user_dotfiles
+    WHERE repository->>'url' LIKE '%://%@%'`;
+  for (const row of dotfiles) {
+    const redacted = redactUrlCredentials(row.url);
+    if (redacted === row.url) continue;
+    yield* sql`
+      UPDATE user_dotfiles SET repository = jsonb_set(repository, '{url}', to_jsonb(${redacted}::text))
+      WHERE user_id = ${row.id}`;
+  }
+  const stamped = yield* sql<{ readonly id: string; readonly url: string }>`
+    SELECT id, dotfiles->'repository'->>'url' AS url FROM agent_sessions
+    WHERE dotfiles->'repository'->>'url' LIKE '%://%@%'`;
+  for (const row of stamped) {
+    const redacted = redactUrlCredentials(row.url);
+    if (redacted === row.url) continue;
+    yield* sql`
+      UPDATE agent_sessions
+      SET dotfiles = jsonb_set(dotfiles, '{repository,url}', to_jsonb(${redacted}::text))
+      WHERE id = ${row.id}`;
+  }
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -3511,6 +3561,7 @@ export const migrations = {
   "0118_pre_release_executors": preReleaseExecutorsMigration,
   "0119_image_layout_confirmed": imageLayoutConfirmedMigration,
   "0120_hot_workspace_layout": hotWorkspaceLayoutMigration,
+  "0121_repository_url_credentials": repositoryUrlCredentialsMigration,
   // 0121 is taken by the repository URL credentials work in flight (fix/origin-url-credentials).
   "0122_checkpoint_source": checkpointSourceMigration,
   "0123_hot_workspace_remote_ssh": hotWorkspaceRemoteSshMigration,

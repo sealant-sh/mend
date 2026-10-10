@@ -1,5 +1,7 @@
 import { Effect, Schema } from "effect";
 
+import { repositoryUrlHasCredential } from "./repository-url.ts";
+
 /**
  * PR timing has exactly two modes; there is no third.
  * Default: every successful run opens a draft PR immediately.
@@ -184,20 +186,10 @@ export type DotfilesRepository = typeof DotfilesRepository.Type;
  * name (`git@host:path`, `ssh://git@host/path`); over HTTP(S) the "user" is where tokens go.
  * Malformed URLs are `repositoryCloneUrlIssue`'s to report, not this check's.
  */
-export const dotfilesRepositoryUrlCredentialIssue = (url: string): string | null => {
-  if (!url.includes("://")) return null;
-  let parsed: URL;
-  try {
-    parsed = new URL(url);
-  } catch {
-    return null;
-  }
-  const httpLogin =
-    (parsed.protocol === "http:" || parsed.protocol === "https:") && parsed.username !== "";
-  return parsed.password !== "" || httpLogin
+export const dotfilesRepositoryUrlCredentialIssue = (url: string): string | null =>
+  repositoryUrlHasCredential(url)
     ? "A dotfiles repository URL cannot carry a login or token: Mend stores it and shows it on your sessions. Save the URL without it; Mend clones with your own git access."
     : null;
-};
 
 export const dotfilesRepositoriesEqual = (
   left: DotfilesRepository | null,

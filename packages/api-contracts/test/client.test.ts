@@ -32,6 +32,13 @@ describe("AdoptProject", () => {
   ])("rejects non-network source %s at API ingestion", (source) => {
     expect(() => decode({ name: "mend", source })).toThrow(/Local paths and file:\/\//);
   });
+
+  it.each([
+    "https://oauth2:TOKEN@github.com/sealant-sh/Mend.git",
+    "https://ghp_TOKEN@github.com/sealant-sh/Mend.git",
+  ])("rejects a source that carries a login or token, %s, pointing at mend keys", (source) => {
+    expect(() => decode({ name: "mend", source })).toThrow(/mend keys/);
+  });
 });
 
 describe("errorStatusByTag", () => {
