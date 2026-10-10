@@ -70,37 +70,44 @@ obligation has its own id, so an attempt at an earlier removal of the same accou
 settle nor defer a later one. A removal refused for the last owner owes and touches no key.
 
 The gateway looks a key up through the platform on every new connection and caches nothing across
-connections, so the next connection offering a removed key is refused. What happens to a connection
-authenticated before the removal depends on the platform, and the removal says which
-(`openConnections` on `DELETE /api/workspace-ssh/keys/:id`, read from the platform's
-`sshKeyRemovalEndsConnections`):
+connections, so the next connection offering a removed key is refused. Connections already open with
+it end too. The gateway names the key on every new shell, command, file transfer and port forward,
+and once the key is removed the platform refuses it (`WorkspaceSshKeyNoLongerRegisteredError`); the
+gateway then ends the connection. A connection that opens nothing new is asked again every minute,
+so every connection opened with the key ends within a minute of its removal (sealant#359, Sealant
+0.39.0-next.720). The removal says so (`openConnections: "end"` on
+`DELETE /api/workspace-ssh/keys/:id`, read from the platform's `sshKeyRemovalEndsConnections`).
 
-- `end`: the gateway names the key on every new channel and port forward, refuses all of them once
-  the key is removed, and ends the connection. It asks again every minute about a connection that
-  opens nothing new. Connections opened with the key end within a minute (sealant#359).
-- `stay`: on a platform from before that, a connection authenticated before the removal stays open
-  until the workspace it reaches stops. An editor left connected on a lost laptop keeps its session.
-  The removal lists the caller's running sessions (`runningSessions`). The CLI prints `mend stop`
-  for each, and Settings → Workspace SSH offers to stop them all, agent and Services, so their
-  workspaces close and the connections end. A workspace someone else is still working in stays up.
+On a platform from before that, the removal answers `openConnections: "stay"`: connections already
+open stay open until the workspaces they reach stop. The answer then lists the caller's running
+sessions (`runningSessions`). The CLI prints `mend stop` for each, and Settings → Workspace SSH
+offers to stop them all, agent and Services, after a confirmation. Mend's own packaged server always
+runs the platform it pins, so this applies only to a server pointed at an older Sealant.
 
 The platform does not record when a key was last used (PLATFORM-FEEDBACK.md, 2026-10-10).
 
 ### Limits before login
 
 Workspace SSH may be published to the internet (`mend server setup --ssh-bind`, the `workspace-ssh`
-item of the exposure gate). The platform's gateway in this release sets no limits before login. It
-has no login timeout and no cap on connections or attempts per address. Every key it does not know
-costs one lookup from the single budget all its requests share (Core's
-`SEALANT_BUDGET_PRINCIPAL_REQUESTS_PER_MINUTE`, 12000 a minute). Anyone who reaches the port can
-spend that budget. The gateway then refuses every login, and every new channel on connections
-already open, until the budget refills. Nobody reaches a workspace that way. sealant#359 adds sshd's
-limits: a 60 s login grace time, 10 connections not yet logged in per source (100 in all), 6
-attempts per connection, 60 lookups a minute per source of keys nobody holds, and a lookup budget
-kept apart from the one connections already in use. A source is an IPv4 address or an IPv6 /64:
-every address in one /64 counts as one. The limits need the gateway to see each client's own
-address. Rootful Docker keeps it for IPv4 clients. Rootless Docker, Docker Desktop and docker-proxy
-for IPv6 clients hide it, and every client then counts as one source.
+item of the exposure gate). Until a connection has logged in, the platform's gateway holds it to
+limits modelled on sshd's (sealant#359):
+
+- a connection has 60 s to log in, room for a passphrase or a hardware key's touch;
+- at most 10 connections not yet logged in from one source, and 100 in all; one more is dropped as
+  it arrives;
+- 6 refused attempts per connection;
+- 60 lookups a minute per source of keys nobody holds. A lookup that finds a registered key costs
+  nothing. A source that spends them is refused until they refill.
+
+The gateway's key lookups also have their own budget in Sealant, so a flood of logins can refuse new
+logins for a while but never the shells and forwards of connections already open. Nobody reaches a
+workspace that way.
+
+A source is an IPv4 address or an IPv6 /64: every address in one /64 counts as one. The per-source
+limits need the gateway to see each client's own address. Rootful Docker keeps it for IPv4 clients.
+Rootless Docker, Docker Desktop and docker-proxy for IPv6 clients hide it, and every client then
+counts as one source and shares one budget. The limits are the gateway's `SSH_GATEWAY_*` settings
+(Sealant's environment reference); Mend's bundle keeps their defaults.
 
 `mend uninstall --home` removes the key this machine registered, and only that key, before it
 revokes the terminal's device token and deletes the key file. It identifies the key by its public

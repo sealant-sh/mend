@@ -142,7 +142,7 @@ const featuresOf = (): SealantFeatures => ({
   captureOwnerMap: true,
   workspaceSshUser: true,
   personBinding: true,
-  ...(platformFeatures.ends ? { sshKeyRemovalEndsConnections: true } : {}),
+  sshKeyRemovalEndsConnections: platformFeatures.ends,
 });
 
 describe("workspace SSH keys", () => {

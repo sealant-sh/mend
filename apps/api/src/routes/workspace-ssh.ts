@@ -31,11 +31,7 @@ const keyView = (key: PlatformSshKey) =>
  */
 const removalEndsConnections = (clients: SealantClients["Service"]) =>
   clients.controlPlaneFeatures().pipe(
-    Effect.map(
-      (features) =>
-        "sshKeyRemovalEndsConnections" in features &&
-        features.sshKeyRemovalEndsConnections === true,
-    ),
+    Effect.map((features) => features.sshKeyRemovalEndsConnections),
     Effect.orElseSucceed(() => false),
   );
 
