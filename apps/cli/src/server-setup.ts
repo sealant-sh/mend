@@ -10,6 +10,7 @@ import {
   HOST_USER_NAMESPACE_FILES,
   HOST_USER_NAMESPACE_SYSCTL_FILE,
   type HostUserNamespaces,
+  hostUserNamespacesSysctlLines,
   hostUserNamespacesFix,
   hostUserNamespacesOf,
 } from "@mend/domain/host-user-namespaces";
@@ -1469,7 +1470,9 @@ const rootlessDaemon = async (runtime: ServerSetupRuntime, context: string): Pro
 /**
  * Allow them on the Docker host through the socket setup already drives: a short privileged
  * container with the host's /etc/sysctl.d and /proc/sys mounted writes the setting where it holds
- * across a restart and applies it now. Null when it ran; otherwise what stopped it.
+ * across a restart and applies it now. The file carries setup's marker and the setting it replaced
+ * (`hostUserNamespacesSysctlLines`), so `mend uninstall` can remove it and put the kernel back.
+ * Null when it ran; otherwise what stopped it.
  */
 const allowHostUserNamespaces = async (
   runtime: ServerSetupRuntime,
@@ -1494,11 +1497,12 @@ const allowHostUserNamespaces = async (
     "sh",
     HOST_HELPER_IMAGE,
     "-c",
-    `printf '%s\\n' "$1" > /host/sysctl.d/${path.basename(HOST_USER_NAMESPACE_SYSCTL_FILE)} && printf '%s\\n' "$3" > "/host/proc-sys/$2"`,
+    // $1 and $2: the /proc/sys file and its value; the rest: the file's lines.
+    `file="$1"; value="$2"; shift 2; printf '%s\\n' "$@" > /host/sysctl.d/${path.basename(HOST_USER_NAMESPACE_SYSCTL_FILE)} && printf '%s\\n' "$value" > "/host/proc-sys/$file"`,
     "mend-allow-userns",
-    setting,
     sysctl.file,
     sysctl.value,
+    ...hostUserNamespacesSysctlLines(setting),
   ]);
   return written.status === 0 ? null : outputDetail(written);
 };

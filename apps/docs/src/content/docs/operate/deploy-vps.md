@@ -109,9 +109,11 @@ Allow them now? [Y/n]
 ```
 
 On a yes it applies the setting through the Docker socket it already uses and reads the kernel
-again. `--allow-userns` and `--no-allow-userns` answer for a script. On a no, or without a terminal,
-setup prints the command, and `mend doctor` shows it as `workspaces`. To allow them yourself, on the
-server:
+again. The file it writes starts with `# written by mend server setup; mend uninstall removes it`,
+followed by the setting it replaced (`# previous: …`), so `mend uninstall` can remove it and put the
+kernel back. `--allow-userns` and `--no-allow-userns` answer for a script. On a no, or without a
+terminal, setup prints the command, and `mend doctor` shows it as `workspaces`. To allow them
+yourself, on the server:
 
 ```sh
 echo 'kernel.apparmor_restrict_unprivileged_userns = 0' | sudo tee /etc/sysctl.d/60-mend-rootless-docker.conf
