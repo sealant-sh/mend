@@ -3,6 +3,9 @@
 // Everything created is named `st-bench-…` and removed, whatever happened.
 
 import { execFile } from "node:child_process";
+import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import path from "node:path";
 import { promisify } from "node:util";
 
 import {
@@ -115,10 +118,17 @@ const leaving = (ctx, request) => {
 /**
  * Cleanup's waits: for requests in flight (`pending`), then, when one ran past it or ended with no
  * answer, for a second sweep: the rest of them (`final`) and a server that may still commit one
- * (`grace`); and between retries of a removal (`retry`). A test may shorten them
+ * (`grace`); between retries of a removal (`retry`); and how long a run's unresolved requests are
+ * waited out before a later cleanup may call it clean (`quiet`). A test may shorten them
  * (`ctx.cleanupWaits`).
  */
-export const CLEANUP_WAITS = { pending: 120_000, final: 30_000, grace: 10_000, retry: 2000 };
+export const CLEANUP_WAITS = {
+  pending: 120_000,
+  final: 30_000,
+  grace: 10_000,
+  retry: 2000,
+  quiet: 300_000,
+};
 
 /** A wait that lets go of its timer once it is not needed. */
 const raceWithTimeout = async (promise, ms) => {
@@ -1762,14 +1772,24 @@ const removeWorktree = async (ctx, worktreeId) => {
  * (or with `all`). Never touches anything without the prefix, and without `all` never another
  * run's: a bench run or a `cleanup` beside a gate run leaves the gate's sessions alone.
  */
-export const cleanupAll = async (ctx, { all = false } = {}) => {
+export const cleanupAll = async (ctx, { all = false, reconcile = false } = {}) => {
   const waits = { ...CLEANUP_WAITS, ...ctx.cleanupWaits };
+  // An earlier run of this scope left requests whose outcome nobody knows: wait them out first.
+  const owed = unresolvedOf(ctx, { all });
+  const quietUntil = Math.max(0, ...owed.map((entry) => entry.quietUntil));
+  if (quietUntil > Date.now()) {
+    ctx.log(
+      `cleanup · an interrupted run's requests may still commit until ${new Date(quietUntil).toISOString()}: waiting`,
+    );
+    await sleep(quietUntil - Date.now());
+  }
+  const errorsBefore = ctx.result?.errors?.length ?? 0;
   // Whatever is in flight first: an import or a create that commits after this would stay.
   const settled = await settlePending(ctx, waits.pending);
   await sweep(ctx, { all });
   // A request still in flight, or one that ended with no answer, may commit after that sweep:
-  // wait for it and for the server, and sweep again. Whatever is still unknown then is recorded,
-  // so the cleanup fails and says how to finish it.
+  // wait for it and for the server, and sweep again. Whatever is still unknown then is recorded
+  // here and on disk (`markUnresolved`), so the run fails and a later cleanup waits it out.
   const unanswered = ctx.unanswered ?? 0;
   if (!settled || unanswered > 0) {
     const late = await settlePending(ctx, waits.final);
@@ -1780,14 +1800,106 @@ export const cleanupAll = async (ctx, { all = false } = {}) => {
       ...((ctx.unanswered ?? 0) > 0 ? [`${ctx.unanswered} request(s) ended with no answer`] : []),
       ...(settled ? [] : [`a request ran past ${waits.pending / 1000} s`]),
     ].join(" and ");
+    const unknown = (ctx.unanswered ?? 0) > 0 || !late;
+    const until = Date.now() + waits.quiet;
+    if (unknown) markUnresolved(ctx, until, why);
     ctx.rec.error(
       "cleanup",
       new Error(
-        `${why}: swept again ${late ? "once it settled" : `after ${waits.final / 1000} s, ${left} still in flight`}; what one commits after that stays, and \`cleanup --run ${ctx.rid}\` removes it`,
+        `${why}: swept again ${late ? "once it settled" : `after ${waits.final / 1000} s, ${left} still in flight`}${
+          unknown
+            ? `; what one commits later stays until \`cleanup --run ${ctx.rid}\`, which waits until ${new Date(until).toISOString()} and then removes it`
+            : ""
+        }`,
       ),
     );
+  } else if (reconcile || owed.length > 0) {
+    // Called clean only when a sweep a while after the last finds nothing more.
+    await sleep(waits.grace);
+    const late = await sweep(ctx, { all });
+    const failed = (ctx.result?.errors?.length ?? 0) > errorsBefore;
+    if (late > 0) {
+      markUnresolved(
+        ctx,
+        Date.now() + waits.quiet,
+        `${late} thing(s) appeared after the first sweep`,
+      );
+      ctx.rec.error(
+        "cleanup",
+        new Error(
+          `${late} thing(s) of the run appeared after the first sweep and were removed: something may still commit, so run cleanup again later`,
+        ),
+      );
+    } else if (!failed) {
+      clearUnresolved(ctx, owed);
+    }
   }
   remoteRefsNote(ctx);
+};
+
+// ─── what an interrupted run leaves unresolved, on disk ─────────────────────
+
+/** Where a run's unresolved requests are kept between processes (`ST_BENCH_STATE_DIR`). */
+const stateDirOf = (ctx) =>
+  ctx.stateDir ??
+  process.env.ST_BENCH_STATE_DIR ??
+  path.join(homedir(), ".cache", "st-bench", "unresolved");
+
+/**
+ * Records that a run's requests may still commit after its cleanup: its run id, project and when a
+ * later cleanup may call it clean. Kept until a cleanup waits that out and its last sweep finds
+ * nothing (`cleanupAll`).
+ */
+const markUnresolved = (ctx, quietUntil, why) => {
+  if (typeof ctx.rid !== "string") return;
+  try {
+    const dir = stateDirOf(ctx);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      path.join(dir, `${ctx.rid}.json`),
+      `${JSON.stringify({ rid: ctx.rid, projectId: ctx.project.id, quietUntil, why })}\n`,
+    );
+  } catch (error) {
+    ctx.rec.error("cleanup · unresolved state", error);
+  }
+};
+
+/** The unresolved entries of this cleanup's scope: its run's, or with `all` every run's here. */
+const unresolvedOf = (ctx, { all }) => {
+  const dir = stateDirOf(ctx);
+  let names;
+  try {
+    names = readdirSync(dir).filter((name) => name.endsWith(".json"));
+  } catch {
+    return [];
+  }
+  return names
+    .map((name) => {
+      try {
+        return {
+          file: path.join(dir, name),
+          ...JSON.parse(readFileSync(path.join(dir, name), "utf8")),
+        };
+      } catch {
+        return null;
+      }
+    })
+    .filter(
+      (entry) =>
+        entry !== null &&
+        entry.projectId === ctx.project.id &&
+        (all || entry.rid === ctx.rid) &&
+        typeof entry.quietUntil === "number",
+    );
+};
+
+const clearUnresolved = (ctx, owed) => {
+  for (const entry of owed) {
+    rmSync(entry.file, { force: true });
+    ctx.log(
+      `cleanup · run ${entry.rid}: nothing more appeared, its unresolved requests are settled`,
+    );
+  }
 };
 
 /**
@@ -1795,6 +1907,7 @@ export const cleanupAll = async (ctx, { all = false } = {}) => {
  * memory file. Each part on its own: one that fails is recorded and the others still run.
  */
 const sweep = async (ctx, { all }) => {
+  let found = 0;
   // Each part on its own: one that fails is recorded (cleanup then fails) and the others still run.
   try {
     const listing = await ctx.api.get(`/projects/${ctx.project.id}/worktrees`);
@@ -1802,6 +1915,7 @@ const sweep = async (ctx, { all }) => {
       if (!inCleanupScope(worktree.name, ctx.rid, all)) continue;
       try {
         const outcome = await removeWorktree(ctx, worktree.id);
+        if (outcome === "removed") found += 1;
         ctx.log(
           outcome === "gone"
             ? `cleanup · worktree ${worktree.name} was gone already`
@@ -1830,7 +1944,10 @@ const sweep = async (ctx, { all }) => {
         if (ours) {
           await api
             .delete(`/me/secret-files?path=${encodeURIComponent(file.path)}`)
-            .then(() => ctx.log(`cleanup · removed secret file ${file.path}${who}`))
+            .then(() => {
+              found += 1;
+              return ctx.log(`cleanup · removed secret file ${file.path}${who}`);
+            })
             .catch((error) => ctx.rec.error("cleanup · secret file", error));
         }
       }
@@ -1838,12 +1955,13 @@ const sweep = async (ctx, { all }) => {
       ctx.rec.error(`cleanup · secret files${who}`, error);
     }
   }
-  await removeJoinerMemory(ctx, { all });
+  found += await removeJoinerMemory(ctx, { all });
+  return found;
 };
 
 /**
- * The joiner's memory file: this run's by its path, which needs no listing (gone already is
- * fine), or with `all` every run's in the project. A failure is recorded, so cleanup fails and
+ * The joiner's memory file: this run's by its path, which needs no listing (gone already, a 404 or
+ * `removed: false`, is fine), or with `all` every run's in the project. Returns how many it removed. A failure is recorded, so cleanup fails and
  * says so; it never passes over a seed it could not see.
  */
 const removeJoinerMemory = async (ctx, { all }) => {
@@ -1851,13 +1969,19 @@ const removeJoinerMemory = async (ctx, { all }) => {
     ctx.log(
       "cleanup · the joiner's memory file is the second account's: pass --second-token-file to remove it",
     );
-    return;
+    return 0;
   }
-  const remove = (path) =>
+  let removed = 0;
+  const remove = (memoryPath) =>
     ctx.api2
-      .delete(`/projects/${ctx.project.id}/memory/file?path=${encodeURIComponent(path)}`)
+      .delete(`/projects/${ctx.project.id}/memory/file?path=${encodeURIComponent(memoryPath)}`)
       .then(
-        () => ctx.log(`cleanup · removed the joiner's memory file ${path}`),
+        (answer) => {
+          // The route answers whether there was a file to remove (`AgentMemoryRemoved`).
+          if (answer?.removed === false) return null;
+          removed += 1;
+          return ctx.log(`cleanup · removed the joiner's memory file ${memoryPath}`);
+        },
         (error) => {
           if (error instanceof ApiError && error.status === 404) return;
           ctx.rec.error("cleanup · joiner memory", error);
@@ -1865,7 +1989,7 @@ const removeJoinerMemory = async (ctx, { all }) => {
       );
   if (!all) {
     if (typeof ctx.rid === "string") await remove(joinerMemoryPathOf(ctx.rid));
-    return;
+    return removed;
   }
   try {
     const memory = await ctx.api2.get(`/projects/${ctx.project.id}/memory`);
@@ -1875,6 +1999,7 @@ const removeJoinerMemory = async (ctx, { all }) => {
   } catch (error) {
     ctx.rec.error("cleanup · joiner memory", error);
   }
+  return removed;
 };
 
 const remoteRefsNote = (ctx) => {
@@ -1889,15 +2014,15 @@ const remoteRefsNote = (ctx) => {
 
 /** Puts the benchmark's secret file in place for one account so its delivery is timed. */
 const placeSecretFile = async (ctx, api = ctx.api) => {
-  const path = secretPathOf(ctx.rid);
+  const secretPath = secretPathOf(ctx.rid);
   const existing = await api.get("/me/secret-files");
-  if ((existing.files ?? []).some((file) => file.path === path)) {
-    ctx.rec.note(`a secret file at ${path} already exists; left as it is`);
+  if ((existing.files ?? []).some((file) => file.path === secretPath)) {
+    ctx.rec.note(`a secret file at ${secretPath} already exists; left as it is`);
     return;
   }
   await leaving(ctx, () =>
     api.put("/me/secret-files", {
-      path,
+      path: secretPath,
       encoding: "utf8",
       contents: "st-bench: a secret file to time its delivery\n",
     }),

@@ -10,6 +10,8 @@ import { ApiError } from "./host.mjs";
 import {
   agentIdentityOf,
   companionMismatchOf,
+  seriesHarnessOf,
+  stampSeriesIdentity,
   MEMORY_STAT_SH,
   memoryStatCommand,
   credentialWriteCount,
@@ -485,7 +487,13 @@ test("a not-run entry goes once its measure has samples", () => {
 });
 
 test("a later run of one scenario replaces its measures and leaves the launches it needed alone", () => {
+  // Both say the harness their joins rode on and its version (`stampSeriesIdentity`).
+  const identity = {
+    options: { harnesses: ["claude"] },
+    target: { harnessVersions: { claude: "2.1.292" } },
+  };
   const base = {
+    ...identity,
     startedAt: "a",
     measures: {
       "new.claude.first_output": { unit: "ms", budget: "start", samples: [1, 2, 3] },
@@ -497,8 +505,9 @@ test("a later run of one scenario replaces its measures and leaves the launches 
     errors: [],
   };
   const extra = {
+    ...identity,
     startedAt: "b",
-    options: { only: ["join-other"] },
+    options: { only: ["join-other"], harnesses: ["claude"] },
     measures: {
       "new.claude.first_output": { unit: "ms", budget: "start", samples: [9] },
       "join.other.first_output": { unit: "ms", budget: "join-other", samples: [7, 8] },
@@ -631,7 +640,9 @@ test("a re-run for some harnesses replaces only theirs", () => {
   assert.equal(harnessOf("stop.codex.save"), "codex");
   assert.equal(harnessOf("stop.after_resume.save"), null);
   assert.equal(harnessOf("executor.resumed.disk_bytes"), null);
+  const versions = { target: { harnessVersions: { claude: "2.1.292", codex: "0.160.1" } } };
   const base = {
+    ...versions,
     measures: {
       "stop.claude.save": { unit: "ms", samples: [1] },
       "stop.codex.save": { unit: "ms", samples: [2] },
@@ -639,6 +650,7 @@ test("a re-run for some harnesses replaces only theirs", () => {
     },
   };
   const extra = {
+    ...versions,
     options: { only: ["stop"], harnesses: ["claude"] },
     measures: { "stop.claude.save": { unit: "ms", samples: [9] } },
   };
@@ -790,8 +802,10 @@ test("a merge keeps the point each record sampled its executor sizes at", () => 
     "executor.codex.memory_bytes": { unit: "bytes", budget: "resource", samples: tenOf(value) },
   });
   // An older record (sized after the answer) with a newer run of claude (sized at first output).
-  const older = record(memory(1_100_000_000));
+  const versions = { harnessVersions: { claude: "2.1.292", codex: "0.160.1" } };
+  const older = { ...record(memory(1_100_000_000)), target: versions };
   const newer = {
+    target: versions,
     ...record({
       "executor.claude.memory_bytes": {
         unit: "bytes",
@@ -2419,6 +2433,7 @@ const cleanupWorld = ({ worktrees = "ok", memory = "ok", rid = "proof" } = {}) =
   const ctx = {
     rid,
     project: { id: "p" },
+    stateDir: mkdtempSync(path.join(tmpdir(), "st-bench-state-")),
     log: () => {},
     rec: makeRecorder(result, () => {}),
     created: { remoteRefs: new Set(), worktrees: new Map(), sessions: new Set() },
@@ -2443,9 +2458,8 @@ const cleanupWorld = ({ worktrees = "ok", memory = "ok", rid = "proof" } = {}) =
       delete: async (route) => {
         if (memory === "delete fails") throw new Error("memory delete failed");
         const memoryPath = decodeURIComponent(route.split("?path=")[1]);
-        if (!stored.has(memoryPath)) throw new ApiError("DELETE", route, 404, "{}");
-        stored.delete(memoryPath);
-        return {};
+        // As the route answers (`AgentMemoryRemoved`): whether there was a file, never a 404.
+        return { removed: stored.delete(memoryPath) };
       },
     },
   };
@@ -2775,6 +2789,159 @@ test("review 624 r2 (N2): what may commit after cleanup is swept again, and noth
   };
   await runAll(fenced.ctx).catch(() => null);
   assert.deepEqual(posts, ["POST /projects/p/sessions"]);
+});
+
+test("review 624 r3 (N9): a series that ran on another harness in the other layout is not one workload", () => {
+  const result = splitCase(({ personPair }) => {
+    personPair.method = { firstHarness: "codex" };
+    personPair.options = {
+      ...personPair.options,
+      harnesses: ["codex", "claude", "pi", "opencode"],
+    };
+  });
+  assert.deepEqual(result.label.differs, []);
+  assert.deepEqual(
+    result.misses.map((row) => [row.measure, row.stat, row.identity]),
+    [
+      [
+        "configs: join.other.first_output",
+        "median",
+        "the shared series ran on claude, the person series on codex",
+      ],
+      [
+        "configs: join.other.first_output",
+        "p90",
+        "the shared series ran on claude, the person series on codex",
+      ],
+    ],
+  );
+  assert.equal(comparisonFails(result), true);
+  assert.match(formatComparison(result), /NOT ONE WORKLOAD: the shared series ran on claude/);
+  // A series stamped with another version than its counterpart's is not one workload either.
+  const versions = splitCase(({ personPair }) => {
+    personPair.measures["join.other.first_output"] = {
+      ...personPair.measures["join.other.first_output"],
+      harness: "claude",
+      harnessVersion: "2.1.999",
+    };
+    personPair.target.harnessVersions.claude = "2.1.999";
+  });
+  assert.equal(comparisonFails(versions), true);
+});
+
+test("review 624 r3 (N8): a merge keeps each series' own harness and version, and refuses unknown or other ones", () => {
+  const { sharedPair } = splitGate();
+  const base = stampSeriesIdentity(sharedPair);
+  assert.equal(base.measures["join.other.first_output"].harness, "claude");
+  assert.equal(base.measures["join.other.first_output"].harnessVersion, "2.1.287");
+  const rerun = (harness, versions) => ({
+    ...structuredClone(sharedPair),
+    options: { ...sharedPair.options, only: ["join-other"], harnesses: [harness] },
+    method: { firstHarness: harness },
+    target: { ...sharedPair.target, harnessVersions: versions },
+    measures: {
+      "join.other.first_output": { unit: "ms", budget: "join-other", samples: tenOf(40_000) },
+    },
+  });
+  // The reviewer's case: a Codex re-run whose version is unknown.
+  assert.throws(
+    () => mergeResults(sharedPair, rerun("codex", { claude: "2.1.287" })),
+    /not merged: the later run's join.other.first_output ran on codex, whose version it does not say/,
+  );
+  // A Codex re-run with its version known is still another series than the record's Claude one.
+  assert.throws(
+    () => mergeResults(sharedPair, rerun("codex", { codex: "0.160.0" })),
+    /join.other.first_output ran on claude 2.1.287 in the record and on codex 0.160.0/,
+  );
+  // The same harness at the same version merges, and the series says where it ran.
+  const merged = mergeResults(sharedPair, rerun("claude", { claude: "2.1.287" }));
+  assert.deepEqual(merged.measures["join.other.first_output"].samples, tenOf(40_000));
+  assert.equal(merged.measures["join.other.first_output"].harness, "claude");
+  assert.equal(merged.measures["join.other.first_output"].harnessVersion, "2.1.287");
+  // A stamp wins over the record's first harness: a merged record is read series by series.
+  const stamped = {
+    ...sharedPair,
+    measures: {
+      "join.other.first_output": {
+        ...sharedPair.measures["join.other.first_output"],
+        harness: "codex",
+        harnessVersion: null,
+      },
+    },
+  };
+  assert.equal(seriesHarnessOf(stamped, "join.other.first_output"), "codex");
+  assert.deepEqual(companionMismatchOf(splitGate().sharedMain, stamped), [
+    "codex's version is not known on both",
+  ]);
+});
+
+test("review 624 r3 (N10): a run's unknown requests are waited out on disk before a cleanup calls it clean", async () => {
+  const waits = { pending: 100, final: 50, grace: 50, retry: 1, quiet: 600 };
+  // The interrupted run: its import's connection broke, the server commits it 300 ms later, after
+  // the run's second sweep.
+  const run = cleanupWorld({ rid: "late" });
+  run.stored.clear();
+  run.ctx.cleanupWaits = waits;
+  run.ctx.opts = { only: ["join-other"], layout: "person", secretFile: false, runs: 1 };
+  run.ctx.result = { target: { harnessVersions: {} }, blocked: [], method: {}, errors: [] };
+  run.ctx.rec = makeRecorder(run.ctx.result, () => {});
+  run.ctx.api.call = async () => {
+    throw new ApiError("POST", "/sessions", 400, "no sessions in this test");
+  };
+  run.ctx.api2.post = async (_route, payload) => {
+    setTimeout(() => {
+      for (const file of payload.files) run.stored.set(file.path, file);
+    }, 300);
+    throw new TypeError("fetch failed");
+  };
+  await runAll(run.ctx).catch(() => null);
+  await cleanupAll(run.ctx);
+  const stateFile = path.join(run.ctx.stateDir, "late.json");
+  assert.equal(JSON.parse(readFileSync(stateFile, "utf8")).rid, "late");
+  assert.match(
+    run.ctx.result.errors.map((error) => error.message).join("\n"),
+    /`cleanup --run late`, which waits until/,
+  );
+  // `cleanup --run late` at once, in a fresh process: it waits the quiet period out, so the late
+  // commit is there to remove, and only a second sweep that finds nothing settles it.
+  const later = cleanupWorld({ rid: "late" });
+  later.ctx.stateDir = run.ctx.stateDir;
+  later.ctx.cleanupWaits = waits;
+  later.stored = run.stored;
+  later.ctx.api2 = run.ctx.api2;
+  later.ctx.api2.delete = async (route) => ({
+    removed: run.stored.delete(decodeURIComponent(route.split("?path=")[1])),
+  });
+  const started = Date.now();
+  await cleanupAll(later.ctx, { reconcile: true });
+  assert.ok(Date.now() - started >= 300);
+  assert.equal(run.stored.size, 0);
+  assert.deepEqual(later.result.errors, []);
+  assert.throws(() => readFileSync(stateFile));
+  // A cleanup by hand whose second sweep still finds something says so and keeps it owed.
+  const appearing = cleanupWorld({ rid: "appearing" });
+  appearing.ctx.cleanupWaits = waits;
+  appearing.stored.clear();
+  const seed = ".claude/projects/-workspace-repo/memory/st-bench-appearing.md";
+  let deletes = 0;
+  appearing.ctx.api2.delete = async (route) => {
+    deletes += 1;
+    // Gone at the first sweep; committed by the second.
+    if (deletes === 1) {
+      setTimeout(() => appearing.stored.set(seed, { path: seed }), 10);
+      return { removed: false };
+    }
+    return { removed: appearing.stored.delete(seed) };
+  };
+  await cleanupAll(appearing.ctx, { reconcile: true });
+  assert.match(
+    appearing.result.errors.map((error) => error.message).join("\n"),
+    /appeared after the first sweep/,
+  );
+  assert.ok(
+    JSON.parse(readFileSync(path.join(appearing.ctx.stateDir, "appearing.json"), "utf8"))
+      .quietUntil > Date.now(),
+  );
 });
 
 test("review 624 (6): memory.stat is the executor's own cgroup, v1 read from hierarchical totals only", () => {

@@ -122,7 +122,15 @@
 //   past the wait or ended with no answer may still commit: cleanup sweeps again later and records
 //   that what commits after that is left for `cleanup --run <id>`, so the run fails and says so.
 // - A record says the harness its joins, resume and interactive scenarios rode on
-//   (`method.firstHarness`); a companion's version of it must match.
+//   (`method.firstHarness`), and each series a harness produced is stamped with that harness and
+//   its version (`harness`, `harnessVersion` on the measure). A merge keeps each series' own stamp
+//   and refuses a series whose harness or version is unknown, or differs from the record's series
+//   of that name. Under gate P1 a series that ran on another harness or version in the other
+//   layout is a miss (NOT ONE WORKLOAD), and a companion's series need versions matching its record.
+// - A run whose requests may still commit after its cleanup records that on disk
+//   (`~/.cache/st-bench/unresolved/<run id>.json`, or `ST_BENCH_STATE_DIR`). `cleanup` waits that
+//   run's quiet period (5 min) out, sweeps, sweeps again a while later, and only then, finding
+//   nothing more, clears it; otherwise it fails and keeps it.
 
 import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
@@ -143,6 +151,7 @@ import {
   scenarioOf,
   RESOURCES_AT_FIRST_OUTPUT,
   settleNotRun,
+  stampSeriesIdentity,
   withCompanion,
 } from "./lib.mjs";
 import { HARNESSES, cleanupAll, makeRecorder, runAll } from "./scenarios.mjs";
@@ -189,7 +198,10 @@ what runs
                               is this many tokens (default: 45000)
   --handover-seed-turns <n>   at most this many turns grow it, each reading two files of 8 to 32 KB
                               (default: 8)
-  --run <id>                  cleanup: the run whose worktrees to remove (its log's "bench <id>")
+  --run <id>                  cleanup: the run whose worktrees to remove (its log's "bench <id>");
+                              an interrupted run's unresolved requests are waited out first (up
+                              to 5 min after it), and it is clean only when a later sweep finds
+                              nothing
   --all                       cleanup: every st-bench worktree of the project, any run's
   --flag <text>               the harness layout under test (default: read from the server's env).
                               Run against MEND_MODE=all: with MEND_MODE=api beside MEND_MODE=worker,
@@ -434,7 +446,10 @@ const runBench = async (opts) => {
     cleanupOnce()
       .catch((error) => log(`cleanup failed: ${error.message}`))
       .finally(() => {
-        writeJson(opts.out, settleNotRun({ ...result, finishedAt: new Date().toISOString() }));
+        writeJson(
+          opts.out,
+          stampSeriesIdentity(settleNotRun({ ...result, finishedAt: new Date().toISOString() })),
+        );
         process.exit(130);
       });
   };
@@ -449,7 +464,8 @@ const runBench = async (opts) => {
     process.off("SIGINT", onSignal);
     process.off("SIGTERM", onSignal);
   }
-  return settleNotRun({ ...result, finishedAt: new Date().toISOString() });
+  // Each series says the harness it ran on and its version, so a later merge keeps them.
+  return stampSeriesIdentity(settleNotRun({ ...result, finishedAt: new Date().toISOString() }));
 };
 
 /** The scenarios and harnesses that re-take a set of missed measures. */
@@ -497,7 +513,14 @@ const main = async () => {
       return;
     }
     case "merge": {
-      const merged = mergeResults(readJson(opts.args[0]), readJson(opts.args[1]));
+      let merged;
+      try {
+        merged = mergeResults(readJson(opts.args[0]), readJson(opts.args[1]));
+      } catch (error) {
+        log(error.message);
+        process.exitCode = 1;
+        return;
+      }
       writeJson(opts.out, merged);
       process.stdout.write(`${formatTable(merged)}\n`);
       log(`merged · ${opts.out}`);
@@ -595,7 +618,9 @@ const main = async () => {
           secretFile: false,
         },
       };
-      await cleanupAll(ctx, { all: opts.all });
+      // A cleanup asked for by hand waits out an interrupted run's unresolved requests and calls it
+      // clean only when a second sweep a while later finds nothing more.
+      await cleanupAll(ctx, { all: opts.all, reconcile: true });
       if (result.errors.length > 0) process.exitCode = 1;
       return;
     }

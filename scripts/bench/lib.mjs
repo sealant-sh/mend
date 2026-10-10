@@ -927,9 +927,15 @@ export const compareResults = (
       continue;
     }
     const notRun = current.n === 0 ? notRunReasonOf(after, name) : null;
+    // Under the gate, the two series are of one workload: the same harness at the same version.
+    const identity =
+      (gate || gateMeasures !== null) && current.n > 0
+        ? seriesIdentityDiffers(before, after, name)
+        : null;
     for (const stat of stats) {
       const limit = baseline[stat] + allowance(measure.budget, baseline, stat);
-      rows.push(rowOf({ name, measure, before: baseline[stat], limit, current, stat, notRun }));
+      const row = rowOf({ name, measure, before: baseline[stat], limit, current, stat, notRun });
+      rows.push(identity === null ? row : { ...row, ok: false, identity });
     }
   }
   // Under the gate, a budgeted measure the record under test has and the baseline lacks (a shared
@@ -1107,6 +1113,30 @@ export const compareResults = (
     baselineErrors: [...(before.errors ?? []), ...fromCompanions.baselineErrors],
     notRun: after.notRun ?? [],
   };
+};
+
+/**
+ * Why two series of one measure are not of one workload, in words, or null when they are: under
+ * gate P1 each budgeted series a harness produced must have run on the same harness, at the same
+ * version, in both layouts (`seriesHarnessOf`, `seriesVersionOf`). One that cannot be told is not.
+ */
+const seriesIdentityDiffers = (before, after, name) => {
+  if (!harnessBound(name)) return null;
+  const harnesses = [seriesHarnessOf(before, name), seriesHarnessOf(after, name)];
+  const versions = [seriesVersionOf(before, name), seriesVersionOf(after, name)];
+  if (harnesses[0] === null || harnesses[1] === null) {
+    return "the harness one series ran on is not known";
+  }
+  if (harnesses[0] !== harnesses[1]) {
+    return `the shared series ran on ${harnesses[0]}, the person series on ${harnesses[1]}`;
+  }
+  if (versions[0] === null || versions[1] === null) {
+    return `${harnesses[0]}'s version is not known for both series`;
+  }
+  if (versions[0] !== versions[1]) {
+    return `${harnesses[0]} ran ${versions[0]} before and ${versions[1]} after`;
+  }
+  return null;
 };
 
 /**
@@ -1487,19 +1517,40 @@ export const companionMismatchOf = (main, companion) => {
   } else if (workspaces[0] !== workspaces[1]) {
     reasons.push(`the workspace images differ (${workspaces[0]} and ${workspaces[1]})`);
   }
-  for (const harness of companionHarnessesOf(companion)) {
+  // Each series and check the companion holds: the harness it ran on and that harness's version,
+  // known, and the record's version of it the same.
+  const said = new Set();
+  const say = (reason) => {
+    if (!said.has(reason)) reasons.push(reason);
+    said.add(reason);
+  };
+  const series = [
+    ...Object.keys(companion.measures ?? {})
+      .filter(harnessBound)
+      .map((name) => ({
+        name,
+        harness: seriesHarnessOf(companion, name),
+        version: seriesVersionOf(companion, name),
+      })),
+    ...(companion.checks ?? [])
+      .map((check) => harnessOf(check.check))
+      .filter((harness) => harness !== null)
+      .map((harness) => ({
+        name: null,
+        harness,
+        version: companion.target?.harnessVersions?.[harness] ?? null,
+      })),
+  ];
+  for (const { harness, version } of series) {
     if (harness === null) {
-      reasons.push("the harness its joins ran on is not known (no --harnesses in its options)");
+      say("the harness its joins ran on is not known (no --harnesses in its options)");
       continue;
     }
-    const versions = [
-      main.target?.harnessVersions?.[harness],
-      companion.target?.harnessVersions?.[harness],
-    ];
-    if (!known(versions[0]) || !known(versions[1])) {
-      reasons.push(`${harness}'s version is not known on both`);
-    } else if (versions[0] !== versions[1]) {
-      reasons.push(`${harness} ran ${versions[0]} in the record and ${versions[1]} in it`);
+    const ours = main.target?.harnessVersions?.[harness];
+    if (!known(ours) || !known(version)) {
+      say(`${harness}'s version is not known on both`);
+    } else if (ours !== version) {
+      say(`${harness} ran ${ours} in the record and ${version} in it`);
     }
   }
   return reasons;
@@ -1516,22 +1567,54 @@ export const firstHarnessOf = (result) =>
   result.method?.firstHarness ?? result.options?.harnesses?.[0] ?? null;
 
 /**
- * The harnesses whose versions must match for a companion to stand in for the record: those its
- * measures and checks name (`harnessOf`), and the run's first harness (`firstHarnessOf`) when it
- * holds a measure of a scenario that rode on it, a join's included. One that cannot be told is
- * `null`, which `companionMismatchOf` refuses.
+ * The harness a measure's series ran on: what the series itself says (`stampSeriesIdentity`, which
+ * a merge keeps per series), else its name (`new.codex.…`), else, for a scenario that rode on the
+ * run's first harness (a join, a resume), that harness. Null when nothing tells it, or for a
+ * measure no harness produced.
  */
-const companionHarnessesOf = (companion) => {
-  const names = [
-    ...Object.keys(companion.measures ?? {}),
-    ...(companion.checks ?? []).map((check) => check.check),
-  ];
-  const harnesses = new Set(names.map(harnessOf).filter((harness) => harness !== null));
-  if (names.some((name) => RIDES_ON_FIRST_HARNESS.has(scenarioOf(name)))) {
-    harnesses.add(firstHarnessOf(companion));
-  }
-  return [...harnesses].toSorted((a, b) => String(a).localeCompare(String(b)));
+export const seriesHarnessOf = (result, name) => {
+  const stamped = result.measures?.[name]?.harness;
+  if (stamped !== undefined) return stamped;
+  return (
+    harnessOf(name) ??
+    (RIDES_ON_FIRST_HARNESS.has(scenarioOf(name)) ? firstHarnessOf(result) : null)
+  );
 };
+
+/** The version of the harness a measure's series ran on: its own, else the record's; null unknown. */
+export const seriesVersionOf = (result, name) => {
+  const stamped = result.measures?.[name]?.harnessVersion;
+  if (stamped !== undefined) return stamped;
+  const harness = seriesHarnessOf(result, name);
+  return harness === null ? null : (result.target?.harnessVersions?.[harness] ?? null);
+};
+
+/** Whether a measure is one a harness produced (named, or riding on the first harness). */
+const harnessBound = (name) =>
+  harnessOf(name) !== null || RIDES_ON_FIRST_HARNESS.has(scenarioOf(name));
+
+/**
+ * Every series a harness produced, stamped with that harness and its version as the record says
+ * them now (`seriesHarnessOf`, `seriesVersionOf`), so a merge carries each series' own identity
+ * instead of the record's. A stamp already there stays.
+ */
+export const stampSeriesIdentity = (result) => ({
+  ...result,
+  measures: Object.fromEntries(
+    Object.entries(result.measures ?? {}).map(([name, measure]) =>
+      harnessBound(name)
+        ? [
+            name,
+            {
+              ...measure,
+              harness: seriesHarnessOf(result, name),
+              harnessVersion: seriesVersionOf(result, name),
+            },
+          ]
+        : [name, measure],
+    ),
+  ),
+});
 
 /** A record's companions of its own run (`companionMismatchOf`), as `[name, record]` pairs. */
 export const sameRunCompanionsOf = (result) =>
@@ -2488,15 +2571,17 @@ export const formatComparison = (comparison) => {
   const ordered = [...comparison.misses, ...comparison.rows.filter((row) => row.ok)];
   for (const row of ordered) {
     const verdict =
-      row.short !== undefined && !row.missing
-        ? `SHORT: ${row.short}`
-        : row.missing
-          ? row.notRun === undefined
-            ? "MISSING"
-            : `NOT RUN: ${row.notRun}`
-          : row.ok
-            ? "within"
-            : "OVER";
+      row.identity !== undefined
+        ? `NOT ONE WORKLOAD: ${row.identity}`
+        : row.short !== undefined && !row.missing
+          ? `SHORT: ${row.short}`
+          : row.missing
+            ? row.notRun === undefined
+              ? "MISSING"
+              : `NOT RUN: ${row.notRun}`
+            : row.ok
+              ? "within"
+              : "OVER";
     lines.push(
       `| ${row.measure} | ${row.stat} | ${formatValue(row.before, row.unit)} | ${formatValue(row.after, row.unit)} | ${formatValue(row.limit, row.unit)} | ${verdict} |`,
     );
@@ -2666,7 +2751,10 @@ export const sumChecks = (first, second) => {
  * other measures of those scenarios are dropped, so nothing of the run being replaced stays. Notes,
  * errors and the runs merged are kept beside the base's.
  */
-export const mergeResults = (base, extra, takes = null) => {
+export const mergeResults = (unstampedBase, unstampedExtra, takes = null) => {
+  // Each series keeps the harness and version it ran on, whichever record it comes from.
+  const base = stampSeriesIdentity(unstampedBase);
+  const extra = stampSeriesIdentity(unstampedExtra);
   const only = extra.options?.only ?? null;
   const harnesses = extra.options?.harnesses ?? null;
   const accept =
@@ -2681,6 +2769,24 @@ export const mergeResults = (base, extra, takes = null) => {
       ([name, measure]) => accept(name) && (measure.samples ?? []).length > 0,
     ),
   );
+  // A series taken whose harness or version cannot be told, or that ran on another harness or
+  // version than the record's series of that name, is not one series with it: refused.
+  for (const [name, measure] of Object.entries(taken)) {
+    if (!harnessBound(name)) continue;
+    if (measure.harness === null || measure.harnessVersion === null) {
+      throw new Error(
+        `not merged: the later run's ${name} ran on ${measure.harness ?? "a harness it does not say"}${measure.harness === null ? "" : ", whose version it does not say"}`,
+      );
+    }
+    const ours = base.measures?.[name];
+    if (ours !== undefined && (ours.samples ?? []).length > 0) {
+      if (ours.harness !== measure.harness || ours.harnessVersion !== measure.harnessVersion) {
+        throw new Error(
+          `not merged: ${name} ran on ${ours.harness ?? "?"} ${ours.harnessVersion ?? "?"} in the record and on ${measure.harness} ${measure.harnessVersion} in the later run`,
+        );
+      }
+    }
+  }
   const extraNotRun = (extra.notRun ?? []).filter((entry) => accept(entry.measure));
   // A scenario run again stands whole: its measures the later run did not take go too. Named
   // measures (a re-run of misses) replace only themselves.
