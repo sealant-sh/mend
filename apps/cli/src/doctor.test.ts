@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
-import { readShutdownTimeout } from "./docker-shutdown.ts";
+import { readDockerStop } from "./docker-shutdown.ts";
 import {
   exposureCheck,
   formatCheck,
@@ -360,17 +360,22 @@ const dockerLine = async (
       claudeGrant: () => null,
       onPath,
       localServer: async () => local,
-      dockerShutdown: (context) => {
+      dockerStop: (context) => {
         contexts.push(context);
-        return readShutdownTimeout({
+        return readDockerStop({
           info: {
             operatingSystem: context === "orbstack" ? "OrbStack" : "Ubuntu 24.04.1 LTS",
             securityOptions: [],
+            liveRestore: false,
           },
-          dockerdArgv: ["/usr/bin/dockerd", "-H", "fd://"],
-          readFile: () => ({ kind: "absent" }),
-          home: "/home/op",
-          xdgConfigHome: null,
+          dockerdPid: "840",
+          containers: [{ name: "sealant-run-1", stopTimeout: 3600 }],
+          unit: {
+            name: "docker.service",
+            activeState: "active",
+            mainPid: "840",
+            timeoutStopSeconds: 90,
+          },
         });
       },
     },
@@ -388,10 +393,10 @@ const installedHere = (url: string, more: Partial<LocalServerFacts> = {}): Local
 });
 
 describe("the docker line", () => {
-  it("reads this machine's daemon shutdown timeout against the capture grace when docker is here", async () => {
+  it("reads what a stop of this machine's daemon waits for against its systemd unit when docker is here", async () => {
     const line = await dockerLine((command) => command === "docker");
     expect(line === null ? null : formatCheck(line)).toBe(
-      '○ docker      shutdown-timeout 15 s · dockerd default · not set in /etc/docker/daemon.json · below the 3600 s capture grace → set "shutdown-timeout": 3600 in /etc/docker/daemon.json, then restart dockerd',
+      "○ docker      a Docker stop waits up to 3600 s · sealant-run-1's stop timeout · systemd kills docker.service after 90 s, and Docker's next start waits for what it left running → stop that session (mend sessions, then mend stop <session>) before you restart or upgrade Docker",
     );
   });
 
@@ -400,7 +405,7 @@ describe("the docker line", () => {
   });
 
   // The RC on a Mac: Docker Desktop current, the server on OrbStack. The line read Docker
-  // Desktop's daemon.json and said to restart Docker Desktop.
+  // Desktop's daemon, not the server's.
   it("reads the daemon of the installed server's own context, not the current one", async () => {
     const contexts: Array<string | null> = [];
     const line = await dockerLine(
@@ -409,8 +414,7 @@ describe("the docker line", () => {
       contexts,
     );
     expect(contexts).toEqual(["orbstack"]);
-    expect(line?.detail).toContain("/home/op/.orbstack/config/docker.json");
-    expect(line?.fix).toContain("restart OrbStack");
+    expect(line?.detail).toContain("no systemd unit runs this daemon");
     expect(await dockerLine((command) => command === "docker", null, contexts)).not.toBeNull();
     expect(contexts).toEqual(["orbstack", null]);
   });

@@ -87,9 +87,9 @@ Preconditions:
 - **Edge refused on a fresh install.** Still before any setup has succeeded, run
   `mend server setup --edge verify.example.com` (add the offline flags when offline). It reads the
   release assets, then stderr contains `A fresh install cannot start with the edge or as public:`,
-  exit code `1`. When the daemon's shutdown-timeout is below 3600 s, stdout first shows
-  `Docker shutdown-timeout is <n> s (…), below the 3600 s capture grace: …`. No container starts and
-  no `active` file is written.
+  exit code `1`. When a Docker stop would outlast the daemon's systemd unit, stdout first shows
+  `A Docker stop waits up to <n> s (…), but systemd kills docker.service after <m> s, …`. No
+  container starts and no `active` file is written.
 - **Fresh setup.** Run `mend server setup` (or
   `mend server setup --version <v> --assets-dir deploy/docker --offline`). Stdout shows
   `Using Docker context "<name>" (<endpoint>)`, `Downloading release assets for Mend <v>` (online

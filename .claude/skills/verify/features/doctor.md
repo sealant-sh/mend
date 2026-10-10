@@ -2,12 +2,13 @@
 
 `mend doctor` reads this machine's setup and prints one line per fact: the server, the sign-in, the
 platform connection, each provider account, Mend's Claude grant when it keeps one, the projects, the
-provider CLIs on this machine, the exposure, the server host's user namespaces and this machine's
-Docker shutdown timeout. Many unfinished lines end with `→` and what to do next: a `mend` command, a
-provider's own login command, or an instruction in words. Some end with nothing. It changes nothing,
-and it exits `1` only when a line is `✗`. `mend doctor --bundle` writes the same facts and much more
-into one redacted `tar.gz` with mode 0600, for a bug report. The web Settings page shows the
-platform connection as its own panel, checked live.
+provider CLIs on this machine, the exposure, the server host's user namespaces and what a stop of
+this machine's Docker daemon waits for against its systemd unit. Many unfinished lines end with `→`
+and what to do next: a `mend` command, a provider's own login command, or an instruction in words.
+Some end with nothing. It changes nothing, and it exits `1` only when a line is `✗`.
+`mend doctor --bundle` writes the same facts and much more into one redacted `tar.gz` with mode
+0600, for a bug report. The web Settings page shows the platform connection as its own panel,
+checked live.
 
 ## Sub-features
 
@@ -61,9 +62,10 @@ Preconditions:
   the provider's own login (`claude setup-token`, `codex login`, `gh auth login` on the `cli` lines)
   or an instruction in words (`start the Mend server`,
   `serve it over https and set APP_URL to that origin`, `on the server's host: …`, the `docker`
-  line's `set "shutdown-timeout": …`). Lines with no arrow at all exist too: `not checked`,
-  `not on PATH`, `GET /projects → <status>`, `shutdown-timeout not observed · …`. Assert which kind
-  each line is; do not expect a command on every line.
+  line's `stop that session (mend sessions, then mend stop <session>) …` or
+  `sudo systemctl edit docker.service …`). Lines with no arrow at all exist too: `not checked`,
+  `not on PATH`, `GET /projects → <status>`, `Docker stop not observed · …`. Assert which kind each
+  line is; do not expect a command on every line.
 - **Rejected token.** Make a scratch config home whose `mend/cli.json` names `<web>` and holds a
   bogus token (`{"url":"<web>","token":"verify-not-a-token"}`), and run
   `XDG_CONFIG_HOME=<that home> mend doctor`; the verify skill's guard refuses `MEND_TOKEN`. The
@@ -119,12 +121,15 @@ Preconditions:
 - `mend doctor` routes to the bundle only when `--bundle` is present. `mend doctor --out x` or
   `mend doctor --tail 5` prints the checklist and ignores the flags without a word
   (`apps/cli/src/main.ts:4999-5001`). A product gap: no usage error.
-- The bundle's `doctor.txt` runs the checks without the Docker shutdown probe, so it has no `docker`
+- The bundle's `doctor.txt` runs the checks without the Docker stop probe, so it has no `docker`
   line even when `mend doctor` prints one (`apps/cli/src/main.ts:2838-2844`). Compare the two
   without that line.
-- The troubleshooting page's table of doctor lines has no row for the `docker` line
-  (`shutdown-timeout <n> s · <source> · covers the <n> s capture grace`, or `○` below it), which
-  `apps/cli/src/docker-shutdown.ts:212-238` prints. A docs gap.
+- The `docker` line (`apps/cli/src/docker-shutdown.ts`, `dockerStopCheck`) reads
+  `a Docker stop waits up to <n> s · <container>'s stop timeout · systemd allows docker.service <m> s`
+  when it fits, `○` with
+  `systemd kills docker.service after <m> s, and Docker's next start waits for what it left running`
+  when it does not, or `live-restore on · …`. In a verify session the daemon is the session's own
+  Docker, usually with no systemd unit: expect `no systemd unit observed`.
 - Lines depend on this machine: the `cli` lines read `PATH` and local credential files, the `docker`
   line reads the local daemon, the `grant` line appears only when an older `mend` left
   `~/.config/mend/claude-grant`. Assert the server-side lines exactly and the machine-side lines by

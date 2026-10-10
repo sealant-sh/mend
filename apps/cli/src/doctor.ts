@@ -8,9 +8,9 @@ import {
 } from "@mend/domain/workbench";
 
 import {
-  dockerShutdownCheck,
-  observeHostShutdownTimeout,
-  type ShutdownTimeoutReading,
+  dockerStopCheck,
+  type DockerStopReading,
+  observeHostDockerStop,
 } from "./docker-shutdown.ts";
 import { redactCredentials } from "./shared.ts";
 
@@ -55,11 +55,11 @@ export interface DoctorProbes {
   readonly claudeGrant: () => string | null;
   readonly onPath: (command: string) => boolean;
   /**
-   * A Docker daemon's `shutdown-timeout` (`docker-shutdown.ts`), read only when docker is on PATH:
-   * the daemon of the context named, the server's own when one is installed here, else the current
-   * one. Absent: the line is left out.
+   * What a Docker daemon stop waits for against what its host allows (`docker-shutdown.ts`), read
+   * only when docker is on PATH: the daemon of the context named, the server's own when one is
+   * installed here, else the current one. Absent: the line is left out.
    */
-  readonly dockerShutdown?: (context: string | null) => ShutdownTimeoutReading;
+  readonly dockerStop?: (context: string | null) => DockerStopReading;
   /**
    * The Mend server installed on this machine (`mend server setup`), or null when there is none
    * here. A setup that moved the server leaves this machine's CLI on the old URL, and a second
@@ -509,11 +509,12 @@ export const runChecks = async (
     machine === null || machine.value === null ? undefined : machine.value.userNamespaces;
   if (userNamespaces !== undefined) checks.push(userNamespacesCheck(userNamespaces));
 
-  // A daemon shutdown (host restart, Docker Desktop quit) kills workspaces after the daemon's own
-  // timeout, whatever their stop grace: read where the daemon of the server installed here sets
-  // it (OrbStack's beside Docker Desktop's on one Mac), else the current context's.
-  if (probes.dockerShutdown !== undefined && probes.onPath("docker")) {
-    checks.push(dockerShutdownCheck(probes.dockerShutdown(local?.dockerContext ?? null)));
+  // A daemon stop (`systemctl stop docker`, a docker-ce upgrade) waits for each container's own
+  // stop timeout; one that outlasts systemd's stop of the unit leaves Docker down on its next
+  // start. Read the daemon of the server installed here (OrbStack's beside Docker Desktop's on one
+  // Mac), else the current context's.
+  if (probes.dockerStop !== undefined && probes.onPath("docker")) {
+    checks.push(dockerStopCheck(probes.dockerStop(local?.dockerContext ?? null)));
   }
 
   return checks;
@@ -550,7 +551,7 @@ export const doctorCommand = async (
     localCredential,
     claudeGrant,
     onPath,
-    dockerShutdown: observeHostShutdownTimeout,
+    dockerStop: observeHostDockerStop,
     ...(localServer === undefined ? {} : { localServer }),
   });
   for (const check of checks) {

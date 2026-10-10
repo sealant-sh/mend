@@ -7,7 +7,7 @@ import * as path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { DockerProtocol } from "../test-fixtures/docker-protocol.ts";
-import { type HostFile, parseDockerInfo } from "./docker-shutdown.ts";
+import { parseDockerInfo } from "./docker-shutdown.ts";
 import { SERVER_VOLUME_OWNER_LABEL } from "./server-docker-volumes.ts";
 import {
   instanceIdOf,
@@ -354,17 +354,23 @@ const activeDirectory = (configDir: string): string =>
 const activeFile = (configDir: string, name: string): string =>
   path.join(activeDirectory(configDir), name);
 
-/** This host's daemon facts with a daemon.json that sets `shutdown-timeout` (null: unset). */
-const daemonFacts = (shutdownTimeout: number | null) => (infoStdout: string | null) => ({
-  info: infoStdout === null ? null : parseDockerInfo(infoStdout),
-  dockerdArgv: ["/usr/bin/dockerd", "-H", "fd://"],
-  readFile: (): HostFile =>
-    shutdownTimeout === null
-      ? { kind: "absent" }
-      : { kind: "read", text: JSON.stringify({ "shutdown-timeout": shutdownTimeout }) },
-  home: "/home/op",
-  xdgConfigHome: null,
-});
+/** This host's daemon facts: docker.service stops after `timeoutStop` s, a workspace running. */
+const daemonFacts =
+  (timeoutStop: number, workspaceStopTimeout: number | null = null) =>
+  (infoStdout: string | null) => ({
+    info: infoStdout === null ? null : parseDockerInfo(infoStdout),
+    dockerdPid: "840",
+    containers:
+      workspaceStopTimeout === null
+        ? []
+        : [{ name: "sealant-run-1", stopTimeout: workspaceStopTimeout }],
+    unit: {
+      name: "docker.service",
+      activeState: "active",
+      mainPid: "840",
+      timeoutStopSeconds: timeoutStop,
+    },
+  });
 
 const UBUNTU_REFUSES = "1\n|Y\n|1\n|";
 const UBUNTU_ALLOWS = "0\n|Y\n|1\n|";
@@ -800,28 +806,42 @@ describe("mend server setup", () => {
     });
   });
 
-  it("warns, before starting, when the daemon's shutdown timeout is below the capture grace, and says nothing once it covers it", async () => {
+  it("warns, before starting, when a Docker stop would outlast docker.service's stop timeout, and says nothing when it fits", async () => {
     const info = JSON.stringify({ OperatingSystem: "Ubuntu 24.04.1 LTS", SecurityOptions: [] });
-    const below = makeRuntime({ operatingSystem: info });
+    // A workspace from before Core bounded its stop timeout, still running on a re-run.
+    const old = makeRuntime({ operatingSystem: info });
     expect(
       await serverCommand(["setup", "--yes"], {
-        ...below.runtime,
-        dockerDaemonFacts: daemonFacts(null),
+        ...old.runtime,
+        dockerDaemonFacts: daemonFacts(90, 3600),
       }),
     ).toEqual({ _tag: "ok" });
-    const warning = below.lines.findIndex((line) => line.startsWith("Docker shutdown-timeout"));
-    expect(below.lines[warning]).toBe(
-      'Docker shutdown-timeout is 15 s (dockerd default · not set in /etc/docker/daemon.json), below the 3600 s capture grace: a host restart or daemon stop kills capture workspaces after 15 s, before they save. To raise it: set "shutdown-timeout": 3600 in /etc/docker/daemon.json, then restart dockerd.',
+    const warning = old.lines.findIndex((line) => line.startsWith("A Docker stop waits"));
+    expect(old.lines[warning]).toBe(
+      "A Docker stop waits up to 3600 s (sealant-run-1's stop timeout), but systemd kills docker.service after 90 s, and Docker's next start waits for what it left running: a restart or upgrade of Docker with a live session leaves Docker down until that workspace ends. To avoid it: stop that session (mend sessions, then mend stop <session>) before you restart or upgrade Docker.",
     );
-    expect(warning).toBeLessThan(below.lines.findIndex((line) => line.startsWith("Starting")));
-    const covered = makeRuntime({ operatingSystem: info });
+    expect(warning).toBeLessThan(old.lines.findIndex((line) => line.startsWith("Starting")));
+    // A unit too short for the workspaces this starts.
+    const short = makeRuntime({ operatingSystem: info });
     expect(
       await serverCommand(["setup", "--yes"], {
-        ...covered.runtime,
-        dockerDaemonFacts: daemonFacts(3600),
+        ...short.runtime,
+        dockerDaemonFacts: daemonFacts(45),
       }),
     ).toEqual({ _tag: "ok" });
-    expect(covered.lines.some((line) => line.startsWith("Docker shutdown-timeout"))).toBe(false);
+    expect(short.lines.find((line) => line.startsWith("A Docker stop waits"))).toContain(
+      "sudo systemctl edit docker.service and set [Service] TimeoutStopSec=95",
+    );
+    // Ubuntu's stock unit and workspaces with the bounded stop timeout: nothing to say.
+    const fits = makeRuntime({ operatingSystem: info });
+    expect(
+      await serverCommand(["setup", "--yes"], {
+        ...fits.runtime,
+        dockerDaemonFacts: daemonFacts(90, 60),
+      }),
+    ).toEqual({ _tag: "ok" });
+    expect(fits.lines.some((line) => line.startsWith("A Docker stop waits"))).toBe(false);
+    expect(fits.lines.some((line) => line.includes("shutdown-timeout"))).toBe(false);
   });
 
   it.each([

@@ -33,23 +33,25 @@ One line per fact, in the order a first run needs them:
 ✓ gh cli      on PATH · credential present
 ✓ exposure    declared private · https origin · arrived via a trusted proxy · 5 gate items open → mend operator exposure
 ✓ workspaces  the server's host allows rootless Docker
+✓ docker      a Docker stop waits up to 60 s · sealant-3f2c…'s stop timeout · systemd allows docker.service 90 s
 ```
 
 `✓` means observed working, `○` not set up yet, and `✗` that the workbench cannot run like this. Any
 `✗` line makes the command exit with status 1. No request waits longer than three seconds; a line
 whose check could not run says `not checked`.
 
-| Line                                | What it reads                                                                                                                                                                                                      |
-| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `server`                            | The server's `/health`: its URL and version, or `cannot reach <url>`. When the server installed on this machine answers at another URL (a setup moved it), doctor says so and gives `mend login --url <new>`.      |
-| `signed in`                         | Whether the saved token is accepted: `token accepted`, or `no token saved` and `token rejected`, which point to `mend login`. Another answer prints the status `GET /projects` returned.                           |
-| `sealant`                           | Whether the server reaches the platform: `connected`, or `unauthorized`, `unreachable` or `mismatched` with the platform's message.                                                                                |
-| `claude`, `codex`, `github`         | Your connected accounts on the platform: `connected` with the account's login or email, `not connected`, or the account's status.                                                                                  |
-| `grant`                             | Mend's own Claude grant on this machine. Printed only when Mend keeps one (see below).                                                                                                                             |
-| `projects`                          | How many projects you have adopted, or `none adopted → mend adopt`.                                                                                                                                                |
-| `claude cli`, `codex cli`, `gh cli` | Whether each tool is on this machine's `PATH`, and whether it holds a credential here to forward.                                                                                                                  |
-| `exposure`                          | How the instance is reached, as declared and as observed. See [Exposure and the public gate](/operate/exposure/).                                                                                                  |
-| `workspaces`                        | Whether the server's host lets a workspace's rootless Docker start: `✗` with the command to run when its kernel refuses unprivileged user namespaces. Printed only when workspaces run on the server's own Docker. |
+| Line                                | What it reads                                                                                                                                                                                                                                                                                                    |
+| ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `server`                            | The server's `/health`: its URL and version, or `cannot reach <url>`. When the server installed on this machine answers at another URL (a setup moved it), doctor says so and gives `mend login --url <new>`.                                                                                                    |
+| `signed in`                         | Whether the saved token is accepted: `token accepted`, or `no token saved` and `token rejected`, which point to `mend login`. Another answer prints the status `GET /projects` returned.                                                                                                                         |
+| `sealant`                           | Whether the server reaches the platform: `connected`, or `unauthorized`, `unreachable` or `mismatched` with the platform's message.                                                                                                                                                                              |
+| `claude`, `codex`, `github`         | Your connected accounts on the platform: `connected` with the account's login or email, `not connected`, or the account's status.                                                                                                                                                                                |
+| `grant`                             | Mend's own Claude grant on this machine. Printed only when Mend keeps one (see below).                                                                                                                                                                                                                           |
+| `projects`                          | How many projects you have adopted, or `none adopted → mend adopt`.                                                                                                                                                                                                                                              |
+| `claude cli`, `codex cli`, `gh cli` | Whether each tool is on this machine's `PATH`, and whether it holds a credential here to forward.                                                                                                                                                                                                                |
+| `exposure`                          | How the instance is reached, as declared and as observed. See [Exposure and the public gate](/operate/exposure/).                                                                                                                                                                                                |
+| `workspaces`                        | Whether the server's host lets a workspace's rootless Docker start: `✗` with the command to run when its kernel refuses unprivileged user namespaces. Printed only when workspaces run on the server's own Docker.                                                                                               |
+| `docker`                            | What a stop of this machine's Docker daemon waits for: the longest stop timeout among its running containers, against the `TimeoutStopSec` of the systemd unit that runs it, or `live-restore on`. `○` with what to stop first when a Docker restart would outlast the unit. Printed when `docker` is on `PATH`. |
 
 ### The Claude grant line
 
@@ -194,6 +196,28 @@ sudo sysctl --system
 
 Start the session again. On Debian, the equivalent switch is `kernel.unprivileged_userns_clone`;
 `mend doctor` names the one your host needs.
+
+### Docker hangs on start after a restart or upgrade
+
+`systemctl stop docker` (or an upgrade of docker-ce) took 90 s and the journal says
+`docker.service: State 'stop-sigterm' timed out. Killing.`; then `systemctl start docker` stays
+`activating`, and `journalctl -u docker` stops at `Restoring containers: start.`.
+
+A Docker stop waits for each running container's own stop timeout. A workspace started by a server
+older than 0.36 asks for 3600 s, so systemd killed dockerd and left the workspace running. On the
+next start, Docker stops it again, with the same timeout, before it starts anything else. That
+includes Mend's own containers, which the workspace is waiting for to save its work. It ends on its
+own within the hour. To end it now, kill the workspace's task on the server's host:
+
+```sh
+sudo ctr -n moby tasks ls
+sudo ctr -n moby containers ls   # the workspace's image is sealant-workspace-…
+sudo ctr -n moby tasks kill -s KILL <its task id>
+```
+
+Docker finishes starting within seconds. The workspace's disk is kept, and what it had not saved is
+recovered from it once the server is back. Before the next Docker restart, `mend doctor` says on its
+`docker` line which session to stop first.
 
 ### The database runs out of connections
 
