@@ -48,6 +48,7 @@ import {
 } from "./claude-grant.ts";
 import { readClipboardImage } from "./clipboard.ts";
 import { codexCli, codexGrant, personalCodexHome } from "./codex-grant.ts";
+import { adoptedGitAuth } from "./dashboard-adoption.ts";
 import { bundleCollectors, pathOf } from "./doctor-bundle-collectors.ts";
 import { doctorBundleCommand } from "./doctor-bundle.ts";
 import { doctorCommand, formatCheck, onPath, runChecks } from "./doctor.ts";
@@ -312,6 +313,8 @@ interface SessionDto extends SessionCaptureLike {
   readonly livePeople?: ReadonlyArray<LivePersonDto>;
   /** When shared control was turned on; null while it is off. Absent on older servers. */
   readonly sharedControlEnabledAt?: string | null;
+  /** The workspace the session runs in now; null when none runs. */
+  readonly sealantWorkspaceId?: string | null;
   /**
    * The executor waits to be replaced (docs/adr/0016, decision 14): read with `livePeople`, so
    * the retirement's detail is asked for only when there is one. Absent on older servers.
@@ -765,11 +768,8 @@ const adopt = async (config: CliConfig, args: ReadonlyArray<string>) => {
     `${dim("  visible to")} ${visibility === "private" ? "only you" : "everyone in the organization"}`,
   );
   // Say which signer did the work — the clone already proved it answers.
-  if (project.gitAuthMode === "mend-key") {
-    say(`${dim("  git auth")} mend key ${dim("(your Mend key signed this clone)")}`);
-  } else if (project.gitAuthMode === "bridge") {
-    say(`${dim("  git auth")} bridge ${dim("(signed through the connected `mend keys share`)")}`);
-  }
+  const gitAuth = adoptedGitAuth(source, project.gitAuthMode);
+  if (gitAuth !== null) say(`${dim("  git auth")} ${gitAuth.value} ${dim(`(${gitAuth.note})`)}`);
   say(
     `${dim("  sessions start with:")} mend codex ${dim("(from anywhere —")} --project ${project.name}${dim(")")}`,
   );
@@ -6007,7 +6007,9 @@ const main = async () => {
     case "env":
       return envCommand(config, rest);
     case "ssh":
-      return sshCommand(rest, boundApi(config), mendCliHome(), config.url);
+      return sshCommand(rest, boundApi(config), mendCliHome(), config.url, (prefix) =>
+        resolveLiveSession(config, prefix, "ssh"),
+      );
     case "completions":
       return completionsCommand(rest);
     case "__complete":

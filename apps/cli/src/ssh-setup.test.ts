@@ -81,6 +81,23 @@ it("mend ssh setup/status reconcile real OpenSSH config without claiming host tr
       response.end(JSON.stringify(key));
       return;
     }
+    if (request.method === "GET" && request.url === "/api/sessions?retained=1") {
+      response.end(
+        JSON.stringify([
+          {
+            id: "3f2a9c1e-0000-4000-8000-000000000001",
+            status: "running",
+            sealantWorkspaceId: "wks_7Hq2",
+          },
+          {
+            id: "9b1d0000-0000-4000-8000-000000000002",
+            status: "settled",
+            sealantWorkspaceId: null,
+          },
+        ]),
+      );
+      return;
+    }
     response.writeHead(404).end();
   });
   try {
@@ -107,6 +124,8 @@ it("mend ssh setup/status reconcile real OpenSSH config without claiming host tr
     expect(setup.code, setup.stderr + setup.stdout).toBe(0);
     expect(setup.stdout).toContain("host trust      not checked");
     expect(setup.stdout).not.toContain("SSH is ready");
+    expect(setup.stdout).toContain("mend ssh <session>");
+    expect(setup.stdout).not.toContain("<workspace-id>");
     const config = fs.readFileSync(configFile, "utf8");
     expect(config.endsWith(original)).toBe(true);
     const target = parseWorkspaceSshTarget({ serverUrl: url, publishedPort: 22444 });
@@ -123,6 +142,16 @@ it("mend ssh setup/status reconcile real OpenSSH config without claiming host tr
     expect(status.stdout).toContain("registered");
     expect(status.stdout).toContain("host trust      not checked");
     expect(status.stdout).not.toContain("missing or stale");
+    // The exact command for one session: the user names its workspace, the host this server.
+    const command = await runSshCommand(home, url, ["3f2a"]);
+    expect(command.code, command.stderr + command.stdout).toBe(0);
+    expect(command.stdout).toBe(`ssh workspace-wks_7Hq2@${target.value.alias}\n`);
+    expect(command.stderr).toBe("");
+    const settled = await runSshCommand(home, url, ["9b1d"]);
+    expect(settled.code).toBe(1);
+    expect(settled.stdout).toContain(
+      "session 9b1d0000 has no running workspace to ssh into (settled)",
+    );
     const rerun = await runSshCommand(home, url, ["setup"]);
     expect(rerun.code, rerun.stderr + rerun.stdout).toBe(0);
     expect(fs.readFileSync(configFile, "utf8")).toBe(config);

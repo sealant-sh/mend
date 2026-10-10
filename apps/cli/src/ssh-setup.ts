@@ -153,8 +153,89 @@ const setup = async (
   );
   say("");
   say(
-    `connect with    ssh ${view.gateway.usernamePrefix}-<workspace-id>@${parsedTarget.value.alias} ${dim("· the VS Code extension uses this automatically")}`,
+    `connect with    mend ssh <session> ${dim(`· prints the ssh command for one session's workspace (ssh ${view.gateway.usernamePrefix}-<workspace>@${parsedTarget.value.alias}); the VS Code extension connects by itself`)}`,
   );
+};
+
+/** What `mend ssh <session>` reads of a session. */
+export interface SshSession {
+  readonly id: string;
+  readonly status: string;
+  /** The workspace the session runs in now; null or absent when none is running. */
+  readonly sealantWorkspaceId?: string | null;
+}
+
+/**
+ * The command that reaches a session's workspace through the gateway: the user names the
+ * workspace (not the container, which Docker names differently), the host is this server's block.
+ */
+export const workspaceSshCommand = (
+  usernamePrefix: string,
+  workspaceId: string,
+  alias: string,
+): string => `ssh ${usernamePrefix}-${workspaceId}@${alias}`;
+
+/**
+ * `mend ssh <session>`: the exact ssh command for one session, on stdout alone so a script can
+ * run it. A session without a running workspace is refused in words: the gateway would print its
+ * banner and close.
+ */
+const sessionSsh = async (
+  api: ApiCall,
+  cliHome: string,
+  serverUrl: string,
+  session: SshSession,
+  args: ReadonlyArray<string>,
+): Promise<void> => {
+  const id8 = session.id.slice(0, 8);
+  const workspaceId = session.sealantWorkspaceId ?? null;
+  if (workspaceId === null) {
+    return showFailure(
+      `session ${id8} has no running workspace to ssh into (${session.status}) · resume the session, then run mend ssh ${id8} again`,
+    );
+  }
+  const view = await api<WorkspaceSshViewDto>("GET", "/workspace-ssh");
+  if (view.gateway === null)
+    return showFailure("This deployment exposes no workspace SSH gateway.");
+  const parsedTarget = parseWorkspaceSshTarget({
+    serverUrl,
+    publishedPort: view.gateway.port,
+    hostnameOverride: flagValue(args, "--host"),
+  });
+  if (parsedTarget.ok === false) return showFailure(parsedTarget.error.message);
+  console.log(
+    workspaceSshCommand(view.gateway.usernamePrefix, workspaceId, parsedTarget.value.alias),
+  );
+  // Whether that command can work from here: said on stderr, so stdout stays the command alone.
+  const config = readWorkspaceSshConfig(sshConfigPath());
+  const picked =
+    config.ok === false
+      ? null
+      : pickWorkspaceSshKey({
+          configHome: cliHome,
+          configuredIdentityFile: configuredWorkspaceSshIdentityFile(
+            config.value,
+            parsedTarget.value,
+          ),
+          create: false,
+        });
+  const ready =
+    config.ok &&
+    picked !== null &&
+    picked.ok &&
+    inspectWorkspaceSshReadiness({
+      config: config.value,
+      target: parsedTarget.value,
+      key: picked.value,
+      registeredFingerprints: view.keys.map((key) => key.fingerprint),
+    }).ready;
+  if (!ready) {
+    console.error(
+      redactCredentials(
+        `${warn("not set up")} ${dim(`· this machine has no ready Host ${parsedTarget.value.alias} block or registered key · run: mend ssh setup`)}`,
+      ),
+    );
+  }
 };
 
 type RegisteredKey = WorkspaceSshViewDto["keys"][number];
@@ -424,6 +505,7 @@ export const sshCommand = async (
   api: ApiCall,
   cliHome: string,
   serverUrl: string,
+  findSession: (prefix: string) => Promise<SshSession>,
 ): Promise<void> => {
   const [subcommand, ...rest] = args;
   switch (subcommand) {
@@ -435,8 +517,12 @@ export const sshCommand = async (
     case "keys":
       return keysCommand(api, cliHome, serverUrl, rest);
     default:
+      // A session id or its prefix: hex and dashes, as Mend prints them.
+      if (/^[0-9a-f][0-9a-f-]*$/i.test(subcommand)) {
+        return sessionSsh(api, cliHome, serverUrl, await findSession(subcommand), rest);
+      }
       showFailure(
-        `Unknown ssh subcommand "${subcommand}". Try: mend ssh · mend ssh setup [--key <path>] [--host <hostname>] · mend ssh keys [remove <fingerprint>]`,
+        `Unknown ssh subcommand "${subcommand}". Try: mend ssh · mend ssh <session> · mend ssh setup [--key <path>] [--host <hostname>] · mend ssh keys [remove <fingerprint>]`,
       );
   }
 };

@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
+import { managedWorkspaceSshBlock, parseWorkspaceSshTarget } from "@mend/workspace-ssh";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { DockerProtocol } from "../test-fixtures/docker-protocol.ts";
@@ -16,6 +17,7 @@ import {
   planDeletesData,
   planLines,
   signedInTo,
+  sshBlockOwned,
   sysctlFileOf,
   sysctlRestoreCommand,
   type UninstallRuntime,
@@ -26,17 +28,29 @@ afterEach(() => {
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
 });
 
-const MANAGED_BLOCK = [
-  "# >>> mend workspace ssh mend-ws-mend-example-abcdef12 (managed) >>>",
-  "Host mend-ws-mend-example-abcdef12",
-  "  HostName mend.example",
-  "  Port 2222",
-  "  HostKeyAlias mend-ws-mend-example-abcdef12",
-  "  StrictHostKeyChecking accept-new",
-  "Host *",
-  "# <<< mend workspace ssh mend-ws-mend-example-abcdef12 <<<",
-  "",
-].join("\n");
+/** The block `mend ssh setup` writes for a server, as this machine's ~/.ssh/config holds it. */
+const blockFor = (serverUrl: string, port: number, identityFile: string | null = null) => {
+  const target = parseWorkspaceSshTarget({ serverUrl, publishedPort: port });
+  if (!target.ok) throw target.error;
+  const block = managedWorkspaceSshBlock(target.value, identityFile);
+  if (!block.ok) throw block.error;
+  return { alias: target.value.alias, text: block.value };
+};
+const THIS_SERVER = blockFor("http://m:3105", 2222);
+const MANAGED_BLOCK = THIS_SERVER.text;
+/** What a release before scoped blocks wrote: one block, for whichever server was set up last. */
+const legacyBlock = (identityFile: string) =>
+  [
+    "# >>> mend workspace ssh (managed by `mend ssh setup`) >>>",
+    "Host mend-ws",
+    "  HostName 10.0.0.214",
+    "  Port 2222",
+    `  IdentityFile ${identityFile}`,
+    "  StrictHostKeyChecking accept-new",
+    "Host *",
+    "# <<< mend workspace ssh <<<",
+    "",
+  ].join("\n");
 
 /** A machine with a sign-in and an ssh setup, but no server: the laptop scenario. */
 const laptop = (
@@ -132,7 +146,10 @@ describe("the home scope", () => {
     expect(plan.home).toEqual({
       cliConfig: path.join(f.cliHome, "cli.json"),
       sshDirectory: path.join(f.cliHome, "ssh"),
-      managedSshBlocks: 1,
+      sshBlocks: [
+        { alias: THIS_SERVER.alias, legacy: false, hostname: "m", port: 2222, identityFile: null },
+      ],
+      sshBlocksKept: [],
       signedIn: { url: "http://m:3105", deviceId: "dev-1" },
       signedInToThisServer: false,
     });
@@ -140,7 +157,7 @@ describe("the home scope", () => {
     expect(planLines(plan, f.runtime.server.configDir)).toEqual([
       `home     ${path.join(f.cliHome, "cli.json")} (signed in to http://m:3105)`,
       `         ${path.join(f.cliHome, "ssh")}`,
-      "         1 managed block in ~/.ssh/config",
+      `         ~/.ssh/config Host ${THIS_SERVER.alias} → m:2222`,
       "         this machine's workspace ssh key on http://m:3105, if registered",
     ]);
   });
@@ -159,6 +176,54 @@ describe("the home scope", () => {
     expect(fs.existsSync(f.cliHome)).toBe(false);
     expect(fs.readFileSync(f.sshConfigFile, "utf8")).toBe("Host mine\n  HostName mine.example\n");
     expect(f.lines.at(-1)).toBe(`removed ${f.cliHome}`);
+  });
+
+  it("removes only the signed-in server's block: another server's, the legacy block and the person's hosts stay", async () => {
+    const f = laptop();
+    const other = blockFor("http://other.example:3105", 2200);
+    const mine = "Host mine\n  HostName mine.example\nHost *\n  ServerAliveInterval 30\n";
+    // The legacy block signs with a key outside Mend's directory.
+    const legacy = legacyBlock("~/.ssh/id_ed25519");
+    fs.writeFileSync(f.sshConfigFile, `${MANAGED_BLOCK}${other.text}${legacy}${mine}`);
+    const plan = await describeUninstall(f.runtime, "home");
+    expect(plan.home?.sshBlocks.map((block) => block.alias)).toEqual([THIS_SERVER.alias]);
+    expect(planLines(plan, f.runtime.server.configDir)).toEqual(
+      expect.arrayContaining([
+        `         ~/.ssh/config Host ${THIS_SERVER.alias} → m:2222`,
+        `stays    ~/.ssh/config Host ${other.alias} → other.example:2200: another server's`,
+        "stays    ~/.ssh/config Host mend-ws → 10.0.0.214:2222: an older mend ssh setup wrote it and it names no server",
+      ]),
+    );
+    const outcome = await executeUninstall(f.runtime, plan);
+    expect(outcome.failures).toEqual([]);
+    expect(fs.readFileSync(f.sshConfigFile, "utf8")).toBe(`${other.text}${legacy}${mine}`);
+    expect(f.lines).toContain(`removed Host ${THIS_SERVER.alias} from ${f.sshConfigFile}`);
+    expect(outcome.leftovers).toEqual([
+      `${f.sshConfigFile}: Host mend-ws → 10.0.0.214:2222 stays. An older mend ssh setup wrote it, and nothing in it says which server it is for. If it is this one's, delete it from the line "# >>> mend workspace ssh (managed by \`mend ssh setup\`) >>>" to "# <<< mend workspace ssh <<<"`,
+    ]);
+    expect(outcome.remaining).toEqual([`Host mend-ws in ${f.sshConfigFile}`]);
+    expect(fs.existsSync(f.cliHome)).toBe(false);
+  });
+
+  it("keeps the key directory when a block that stays signs with a key in it", async () => {
+    const f = laptop();
+    const keyDirectory = path.join(f.cliHome, "ssh");
+    const legacy = legacyBlock(path.join(keyDirectory, "id_ed25519"));
+    fs.writeFileSync(f.sshConfigFile, `${MANAGED_BLOCK}${legacy}`);
+    const plan = await describeUninstall(f.runtime, "home");
+    expect(plan.home?.sshDirectory).toBeNull();
+    expect(planLines(plan, f.runtime.server.configDir)).toContain(
+      `stays    ${keyDirectory}: Host mend-ws signs with a key in it`,
+    );
+    const outcome = await executeUninstall(f.runtime, plan);
+    expect(outcome.failures).toEqual([]);
+    expect(fs.readFileSync(f.sshConfigFile, "utf8")).toBe(legacy);
+    expect(fs.existsSync(path.join(keyDirectory, "id_ed25519"))).toBe(true);
+    expect(fs.existsSync(path.join(f.cliHome, "cli.json"))).toBe(false);
+    expect(outcome.leftovers).toContain(
+      `${keyDirectory}: Host mend-ws in ${f.sshConfigFile} signs with a key in it, so it stays`,
+    );
+    expect(outcome.leftovers.some((line) => line.includes("not Mend's CLI"))).toBe(false);
   });
 
   it("fails, naming the fingerprint still registered and what removes it, after removing this machine's files", async () => {
@@ -248,6 +313,18 @@ const leftoversDaemon = (options: { readonly anchor?: boolean } = {}) => {
   });
   daemon.containers.set("sealant-w1-docker", { "sealant.workspace": "sealant-w1" });
   daemon.facts.set("sealant-w1-docker", { networks: ["sealant-w1-network"] });
+  // The server's own app container mounts the control volume too: it is not a session.
+  daemon.containers.set("mend-mend-1", {
+    "com.docker.compose.project": "mend",
+    "com.docker.compose.project.working_dir":
+      "/home/me/.config/mend/generations/gen-00000000-0000-4000-8000-000000000000",
+  });
+  daemon.facts.set("mend-mend-1", {
+    mounts: ["mend-control"],
+    networks: ["mend_default"],
+    state: "running",
+    image: "ghcr.io/sealant-sh/mend:0.36.0",
+  });
   // Somebody else's: another Sealant's workspace, another Compose project, an unlabelled volume.
   daemon.containers.set("sealant-other", {});
   daemon.facts.set("sealant-other", { mounts: ["other-control"], networks: ["other_default"] });
@@ -268,7 +345,7 @@ describe("leftovers of an install with no configuration here", () => {
       dockerContext: "default",
       volumes: ["mend-control"],
       networks: ["mend_default"],
-      containers: [],
+      containers: ["mend-mend-1"],
       holdings: {
         workspaces: [{ name: "sealant-w1", running: true }],
         sidecars: ["sealant-w1-docker"],
@@ -279,6 +356,7 @@ describe("leftovers of an install with no configuration here", () => {
     expect(planDeletesData(plan)).toBe(true);
     expect(planLines(plan, f.runtime.server.configDir)).toEqual([
       `server   none configured under ${f.runtime.server.configDir}, but docker context default holds what an earlier Mend install left:`,
+      "         containers mend-mend-1",
       "         volumes mend-control",
       "         networks mend_default",
       "sessions 1 live session · 1 workspace container on docker context default (sealant-w1)",
@@ -294,6 +372,7 @@ describe("leftovers of an install with no configuration here", () => {
       daemon.calls.some(({ args }) => args.join(" ").includes("container rm -f -v sealant-w1")),
     ).toBe(true);
     expect(f.lines).toEqual([
+      "removed container mend-mend-1",
       "removed 2 workspace containers, 1 of them live, with their volumes (sealant-w1, sealant-w1-docker)",
       "removed workspace networks sealant-w1-network",
       "removed network mend_default",
@@ -306,6 +385,44 @@ describe("leftovers of an install with no configuration here", () => {
   it("leaves an installation that still has its anchor alone, whoever's it is", async () => {
     const f = laptop({ daemon: leftoversDaemon({ anchor: true }) });
     expect((await describeUninstall(f.runtime, "server")).server).toBe("none");
+  });
+});
+
+const facts = (alias: string, hostname: string | null, port: number | null) => ({
+  alias,
+  legacy: false,
+  hostname,
+  port,
+  identityFile: null,
+});
+
+describe("whose ~/.ssh/config block it is", () => {
+  const owned = sshBlockOwned({
+    urls: ["http://mac.tailnet.example:3115"],
+    gateway: { hosts: ["localhost", "127.0.0.1", "::1", "mac.tailnet.example"], port: 2232 },
+  });
+
+  it("claims a block by the alias its server's URL gives", () => {
+    const alias = blockFor("http://mac.tailnet.example:3115", 2232).alias;
+    expect(owned(facts(alias, "elsewhere", 1))).toBe(true);
+  });
+
+  it("claims a block set up under an earlier URL by the gateway it points at", () => {
+    // Set up at http://localhost:3115, before setup moved the URL to the private network.
+    const alias = blockFor("http://localhost:3115", 2232).alias;
+    expect(owned(facts(alias, "localhost", 2232))).toBe(true);
+    expect(owned(facts(alias, "MAC.tailnet.example", 2232))).toBe(true);
+  });
+
+  it("leaves another server's block, and the legacy block, which names none", () => {
+    expect(owned(facts(blockFor("http://10.0.0.214:3105", 2222).alias, "10.0.0.214", 2222))).toBe(
+      false,
+    );
+    // Another server on this machine publishes another port.
+    expect(owned(facts(blockFor("http://localhost:3105", 2222).alias, "localhost", 2222))).toBe(
+      false,
+    );
+    expect(owned({ ...facts("mend-ws", "localhost", 2232), legacy: true })).toBe(false);
   });
 });
 

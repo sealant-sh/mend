@@ -242,6 +242,7 @@ dev instance with `MEND_STATIC_TOKEN` set, `MEND_TOKEN=<that value>` also works.
 ```sh
 mend ssh                          # inspect config and this client's key registration
 mend ssh setup                    # register a key and reconcile this server's Host block
+mend ssh 3f2a9c1e                 # print the exact ssh command for one session's workspace
 mend ssh setup --key ./my-key      # explicitly select private key or its .pub file
 mend ssh setup --host mend.example.com
 mend ssh keys                     # your registered keys, from every machine; this one is marked
@@ -249,9 +250,15 @@ mend ssh keys remove SHA256:…     # stop the gateway accepting one of them
 ```
 
 Setup puts the managed block before wildcard defaults and restores all-host scope before your
-original configuration. It preserves other servers and hand-written Host/Match rules. If moving an
-older block would change the scope of trailing directives, it refuses the write; put those
-directives in an explicit Host or Match block and rerun setup.
+original configuration. It preserves other servers and hand-written Host/Match rules. An older
+release's unscoped `Host mend-ws` block is migrated only when it points at this server's gateway
+(the same HostName and Port); one for another server stays.
+
+The gateway's user names the workspace, `ws-<workspace id>`, and no other output shows that id: the
+Docker container's name is a different one, and the gateway closes such a connection after its
+banner. `mend ssh <session>` prints the exact command, on stdout alone. If moving an older block
+would change the scope of trailing directives, it refuses the write; put those directives in an
+explicit Host or Match block and rerun setup.
 
 Relative `--key` paths resolve against the invoking directory; `~/` resolves against your home.
 Identity paths with spaces, quotes, backslashes and literal `%` are escaped for OpenSSH. Control
@@ -277,11 +284,13 @@ until it ends. The key file and this server's `~/.ssh/config` block stay on the 
 registered it; `mend ssh setup` there registers it again.
 
 `mend uninstall --home` removes the key this machine registered before it revokes the terminal's
-device token, then deletes the key file and the managed block. The key is found by its public half,
-so an encrypted private key or a stopped agent does not hide it. When the server refuses the
-removal, or this machine's public key cannot be read, the uninstall still finishes and exits 1,
-naming the fingerprint that may still be registered and `mend ssh keys remove` to run from another
-signed-in machine.
+device token, then deletes the key file and the signed-in server's managed block. Other servers'
+blocks and an older release's unscoped `Host mend-ws` block stay (uninstall says how to delete the
+latter by hand), and so does the key file while a block that stays signs with it. The key is found
+by its public half, so an encrypted private key or a stopped agent does not hide it. When the server
+refuses the removal, or this machine's public key cannot be read, the uninstall still finishes and
+exits 1, naming the fingerprint that may still be registered and `mend ssh keys remove` to run from
+another signed-in machine.
 
 ### Gateway host-key rotation
 

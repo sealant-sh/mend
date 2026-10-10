@@ -1,4 +1,5 @@
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 
 import {
@@ -6,7 +7,12 @@ import {
   HOST_USER_NAMESPACE_SYSCTL_MARKER,
   HOST_USER_NAMESPACE_SYSCTL_PREVIOUS,
 } from "@mend/domain/workbench";
-import { stripManagedWorkspaceSshBlocks } from "@mend/workspace-ssh";
+import {
+  listManagedWorkspaceSshBlocks,
+  type ManagedWorkspaceSshBlockFacts,
+  stripManagedWorkspaceSshBlocks,
+  workspaceSshAlias,
+} from "@mend/workspace-ssh";
 
 import {
   MEND_DOCKER_NAMESPACE,
@@ -33,10 +39,11 @@ import type { ThisMachineKeyRemoval } from "./ssh-setup.ts";
  * - `server`: the Docker Compose installation on this machine (its live sessions' workspaces,
  *   containers, networks, every volume it owns, its release image) and the private configuration
  *   under the config directory (identity, generations, backups).
- * - `home`: what this CLI keeps for itself (the sign-in, the workspace SSH key, the
- *   managed block in ~/.ssh/config). First, while the sign-in still works, the server
- *   removes the workspace SSH key this machine registered and revokes this terminal's
- *   device token. The account's other keys and devices are left alone.
+ * - `home`: what this CLI keeps for itself (the sign-in, the workspace SSH key, and the
+ *   ~/.ssh/config blocks for the servers going: the signed-in one, and with `all` this machine's).
+ *   First, while the sign-in still works, the server removes the workspace SSH key this machine
+ *   registered and revokes this terminal's device token. The account's other keys and devices,
+ *   other servers' blocks, and the legacy block that names no server are left alone.
  * - `all`: both, server first, and what else Mend put on the Docker host: the images it pulled
  *   and built, and the user-namespace sysctl file setup wrote.
  *
@@ -151,6 +158,8 @@ export interface ServerPlan {
   readonly dockerContext: string;
   /** The TLS edge's host when the install runs one; its container and volumes go with the rest. */
   readonly edgeHost: string | null;
+  /** The port workspace SSH is published on, when known: its ~/.ssh/config block points there. */
+  readonly sshPort?: number;
   /** The mirrors' Compose services the install runs; their containers and caches go too. */
   readonly mirrors?: ReadonlyArray<string>;
   /**
@@ -186,7 +195,18 @@ export interface LeftoversPlan {
 export interface HomePlan {
   readonly cliConfig: string | null;
   readonly sshDirectory: string | null;
-  readonly managedSshBlocks: number;
+  /** The ~/.ssh/config blocks of the servers this uninstall removes or signs out of. */
+  readonly sshBlocks: ReadonlyArray<ManagedWorkspaceSshBlockFacts>;
+  /**
+   * Blocks that stay: other servers', and the legacy block, which names no server. One that uses
+   * a key in `sshDirectory` keeps the directory too.
+   */
+  readonly sshBlocksKept?: ReadonlyArray<ManagedWorkspaceSshBlockFacts>;
+  /** The key directory stays: these kept blocks sign with a key in it. */
+  readonly sshDirectoryKept?: {
+    readonly directory: string;
+    readonly aliases: ReadonlyArray<string>;
+  };
   readonly signedIn: UninstallRuntime["signedIn"];
   /**
    * The sign-in is to the server this uninstall deletes: its device token and workspace ssh key
@@ -291,16 +311,53 @@ const exists = (file: string): boolean => {
   }
 };
 
-const managedBlockCount = (sshConfigFile: string): number => {
-  let config: string;
+const readSshBlocks = (sshConfigFile: string): ReadonlyArray<ManagedWorkspaceSshBlockFacts> => {
   try {
-    config = fs.readFileSync(sshConfigFile, "utf8");
+    return listManagedWorkspaceSshBlocks(fs.readFileSync(sshConfigFile, "utf8"));
   } catch {
-    return 0;
+    return [];
   }
-  const stripped = stripManagedWorkspaceSshBlocks(config);
-  return stripped.ok ? stripped.value.removed : 0;
 };
+
+/** The servers whose ~/.ssh/config blocks go: by their URLs, and by a gateway's endpoint. */
+export interface SshBlockOwners {
+  /** Each server's URLs: `mend ssh setup` names its block after the URL it was signed in to. */
+  readonly urls: ReadonlyArray<string>;
+  /**
+   * This machine's installation's gateway: a block pointing at its port on one of these hosts is
+   * its, whichever URL it was set up under (setup can move the URL afterwards).
+   */
+  readonly gateway: { readonly hosts: ReadonlyArray<string>; readonly port: number } | null;
+}
+
+/** Whether a scoped block is one of these servers'. The legacy block names none, so never. */
+export const sshBlockOwned =
+  (owners: SshBlockOwners) =>
+  (block: ManagedWorkspaceSshBlockFacts): boolean => {
+    if (block.legacy) return false;
+    if (owners.urls.some((url) => workspaceSshAlias(url) === block.alias)) return true;
+    const { gateway } = owners;
+    return (
+      gateway !== null &&
+      block.port === gateway.port &&
+      block.hostname !== null &&
+      gateway.hosts.includes(block.hostname.toLowerCase())
+    );
+  };
+
+const blockLabel = (block: ManagedWorkspaceSshBlockFacts): string =>
+  `Host ${block.alias}${block.hostname === null ? "" : ` → ${block.hostname}${block.port === null ? "" : `:${block.port}`}`}`;
+
+/** Whether an IdentityFile (absolute, or `~/` as older blocks wrote it) lies in a directory. */
+const within = (directory: string, file: string): boolean => {
+  const resolved = file.startsWith("~/") ? path.join(os.homedir(), file.slice(2)) : file;
+  const relative = path.relative(directory, resolved);
+  return relative !== "" && !relative.startsWith("..") && !path.isAbsolute(relative);
+};
+
+/** What `mend uninstall` says of the legacy block it leaves, and how to remove it by hand. */
+export const legacyBlockNote = (block: ManagedWorkspaceSshBlockFacts, sshConfigFile: string) =>
+  `${sshConfigFile}: ${blockLabel(block)} stays. An older mend ssh setup wrote it, and nothing in it says which server it is for. If it is this one's, delete it from the line "# >>> mend workspace ssh (managed by \`mend ssh setup\`) >>>" to "# <<< mend workspace ssh <<<"`;
 
 const plural = (count: number, noun: string): string => `${count} ${noun}${count === 1 ? "" : "s"}`;
 
@@ -394,7 +451,8 @@ const listNamesIn = async (
 
 /**
  * The workspaces that mount the installation's control volume, with their Docker sidecars and
- * networks. Only call it once the volume's label proves it this installation's.
+ * networks. The server's own Compose containers mount it too; they are the server, not sessions,
+ * and Compose takes them down. Only call it once the volume's label proves it this installation's.
  */
 export const findWorkspaces = async (
   run: Run,
@@ -408,14 +466,17 @@ export const findWorkspaces = async (
     "--filter",
     `volume=${controlVolume}`,
     "--format",
-    "{{.Names}}\t{{.State}}\t{{.Image}}",
+    '{{.Names}}\t{{.State}}\t{{.Image}}\t{{.Label "com.docker.compose.project"}}',
   ]);
   if (mounted.status !== 0) return { problem: detail(mounted) };
-  const workspaces = rows(mounted.stdout).flatMap(([name, state]) =>
+  const sessionRows = rows(mounted.stdout).filter(
+    ([, , , project]) => project !== MEND_DOCKER_NAMESPACE.project,
+  );
+  const workspaces = sessionRows.flatMap(([name, state]) =>
     name !== undefined && DOCKER_NAME.test(name) ? [{ name, running: state === "running" }] : [],
   );
   const images = new Set(
-    rows(mounted.stdout).flatMap(([, , image]) =>
+    sessionRows.flatMap(([, , image]) =>
       image !== undefined && IMAGE_REFERENCE.test(image) ? [image] : [],
     ),
   );
@@ -756,6 +817,7 @@ export const describeUninstall = async (
         appUrl: config.appUrl,
         dockerContext: context,
         edgeHost: config.edgeHost ?? null,
+        sshPort: config.sshPort,
         mirrors: mirrorServices(config.mirrors),
         t3GatewayVolume,
         generations: countEntries(path.join(configDir, "generations")),
@@ -771,10 +833,44 @@ export const describeUninstall = async (
   if (scope !== "server") {
     const cliConfig = path.join(runtime.cliHome, "cli.json");
     const sshDirectory = path.join(runtime.cliHome, "ssh");
+    const installed = isInstallation(server) && server.appUrl !== "" ? server : null;
+    const appHost = installed === null ? null : parseUrl(installed.appUrl)?.hostname;
+    const owned = sshBlockOwned({
+      urls: [
+        ...(runtime.signedIn === null ? [] : [runtime.signedIn.url]),
+        ...(installed === null ? [] : [installed.appUrl]),
+        ...(installed?.edgeHost == null ? [] : [`https://${installed.edgeHost}`]),
+      ],
+      gateway:
+        installed?.sshPort === undefined
+          ? null
+          : {
+              hosts: [
+                "localhost",
+                "127.0.0.1",
+                "::1",
+                ...(appHost == null ? [] : [appHost.replace(/^\[|\]$/g, "").toLowerCase()]),
+                ...(installed.edgeHost == null ? [] : [installed.edgeHost.toLowerCase()]),
+              ],
+              port: installed.sshPort,
+            },
+    });
+    const blocks = readSshBlocks(runtime.sshConfigFile);
+    const kept = blocks.filter((block) => !owned(block));
+    // A kept block that signs with a key in the directory keeps the directory: that server still
+    // has the key registered, and the block would stop working without it.
+    const keyUsers = kept
+      .filter((block) => block.identityFile !== null && within(sshDirectory, block.identityFile))
+      .map((block) => block.alias);
+    const sshDirectoryHere = exists(sshDirectory);
     home = {
       cliConfig: exists(cliConfig) ? cliConfig : null,
-      sshDirectory: exists(sshDirectory) ? sshDirectory : null,
-      managedSshBlocks: managedBlockCount(runtime.sshConfigFile),
+      sshDirectory: sshDirectoryHere && keyUsers.length === 0 ? sshDirectory : null,
+      sshBlocks: blocks.filter(owned),
+      sshBlocksKept: kept,
+      ...(sshDirectoryHere && keyUsers.length > 0
+        ? { sshDirectoryKept: { directory: sshDirectory, aliases: keyUsers } }
+        : {}),
       signedIn: runtime.signedIn,
       signedInToThisServer:
         runtime.signedIn !== null &&
@@ -880,14 +976,25 @@ export const planLines = (plan: UninstallPlan, configDir: string): ReadonlyArray
       );
     }
     if (plan.home.sshDirectory !== null) parts.push(plan.home.sshDirectory);
-    if (plan.home.managedSshBlocks > 0) {
-      parts.push(`${plural(plan.home.managedSshBlocks, "managed block")} in ~/.ssh/config`);
-    }
+    for (const block of plan.home.sshBlocks) parts.push(`~/.ssh/config ${blockLabel(block)}`);
     if (plan.home.signedIn !== null && plan.home.signedInToThisServer !== true) {
       parts.push(`this machine's workspace ssh key on ${plan.home.signedIn.url}, if registered`);
     }
     lines.push(parts.length === 0 ? "home     nothing of Mend's here" : `home     ${parts[0]}`);
     for (const part of parts.slice(1)) lines.push(`         ${part}`);
+    for (const block of plan.home.sshBlocksKept ?? []) {
+      lines.push(
+        block.legacy
+          ? `stays    ~/.ssh/config ${blockLabel(block)}: an older mend ssh setup wrote it and it names no server`
+          : `stays    ~/.ssh/config ${blockLabel(block)}: another server's`,
+      );
+    }
+    const keyKept = plan.home.sshDirectoryKept;
+    if (keyKept !== undefined) {
+      lines.push(
+        `stays    ${keyKept.directory}: ${keyKept.aliases.map((alias) => `Host ${alias}`).join(", ")} ${keyKept.aliases.length === 1 ? "signs" : "sign"} with a key in it`,
+      );
+    }
   }
   return lines;
 };
@@ -902,7 +1009,7 @@ export const planIsEmpty = (plan: UninstallPlan): boolean =>
   (plan.home === null ||
     (plan.home.cliConfig === null &&
       plan.home.sshDirectory === null &&
-      plan.home.managedSshBlocks === 0));
+      plan.home.sshBlocks.length === 0));
 
 // ─── carrying it out ────────────────────────────────────────────────────────
 
@@ -1291,21 +1398,30 @@ const removeHostExtras = async (
     report.remaining.push(HOST_USER_NAMESPACE_SYSCTL_FILE);
   }
   const removed: Array<string> = [];
-  const kept: Array<string> = [];
+  let refused: Array<{ readonly image: string; readonly why: string }> = [];
   for (const image of extras.images) {
     const gone = await dockerIn(run, context, ["image", "rm", image]);
     if (gone.status === 0 || notFound(gone)) removed.push(image);
-    else kept.push(image);
+    else refused.push({ image, why: detail(gone) });
   }
+  // A refusal can be one the rest of the list answered: an id still tagged by a name removed
+  // after it, or a parent of an image that went. Ask once more; an image no longer there is gone.
+  const retried: Array<{ readonly image: string; readonly why: string }> = [];
+  for (const { image } of refused) {
+    const gone = await dockerIn(run, context, ["image", "rm", image]);
+    if (gone.status === 0 || notFound(gone)) removed.push(image);
+    else retried.push({ image, why: detail(gone) });
+  }
+  refused = retried;
   if (removed.length > 0) {
     report.write(`removed ${plural(removed.length, "image")} (${listOf(removed, 4)})`);
   }
-  if (kept.length > 0) {
+  for (const { image, why } of refused) {
     report.leftovers.push(
-      `${plural(kept.length, "image")} another container still uses: ${kept.join(", ")}`,
+      `image ${image}: ${why}. To remove it: docker --context ${context} image rm ${image}`,
     );
-    report.remaining.push(plural(kept.length, "image"));
   }
+  if (refused.length > 0) report.remaining.push(plural(refused.length, "image"));
 };
 
 /** Clear Docker's build cache, after the plan's separate question. */
@@ -1339,15 +1455,17 @@ const removeHome = async (
     fs.rmSync(plan.sshDirectory, { recursive: true, force: true });
     server.writeLine(`removed ${plan.sshDirectory}`);
   }
-  if (plan.managedSshBlocks > 0) {
+  if (plan.sshBlocks.length > 0) {
+    // Exactly the blocks the plan named go; the file is read again, so nothing else is touched.
+    const planned = new Set(plan.sshBlocks.map((block) => block.alias));
     try {
       const before = fs.readFileSync(runtime.sshConfigFile, "utf8");
-      const stripped = stripManagedWorkspaceSshBlocks(before);
+      const stripped = stripManagedWorkspaceSshBlocks(before, (block) => planned.has(block.alias));
       if (!stripped.ok) throw stripped.error;
-      if (stripped.value.removed > 0) {
+      if (stripped.value.removed.length > 0) {
         fs.writeFileSync(runtime.sshConfigFile, stripped.value.config, { mode: 0o600 });
         server.writeLine(
-          `removed ${plural(stripped.value.removed, "managed block")} from ${runtime.sshConfigFile}`,
+          `removed ${stripped.value.removed.map((block) => `Host ${block.alias}`).join(", ")} from ${runtime.sshConfigFile}`,
         );
       }
     } catch (cause) {
@@ -1355,6 +1473,17 @@ const removeHome = async (
         `${runtime.sshConfigFile}: ${cause instanceof Error ? cause.message : String(cause)}`,
       );
     }
+  }
+  for (const block of plan.sshBlocksKept ?? []) {
+    if (!block.legacy) continue;
+    report.leftovers.push(legacyBlockNote(block, runtime.sshConfigFile));
+    report.remaining.push(`Host ${block.alias} in ${runtime.sshConfigFile}`);
+  }
+  const keyKept = plan.sshDirectoryKept;
+  if (keyKept !== undefined) {
+    report.leftovers.push(
+      `${keyKept.directory}: ${keyKept.aliases.map((alias) => `Host ${alias}`).join(", ")} in ${runtime.sshConfigFile} ${keyKept.aliases.length === 1 ? "signs" : "sign"} with a key in it, so it stays`,
+    );
   }
   // The directory itself goes only when nothing else lives there.
   let remaining: ReadonlyArray<string> = [];
@@ -1369,7 +1498,8 @@ const removeHome = async (
     return;
   }
   const serverFiles = remaining.filter((name) => SERVER_OWNED.has(name));
-  const others = remaining.filter((name) => !SERVER_OWNED.has(name));
+  const keyDirectory = keyKept === undefined ? null : path.basename(keyKept.directory);
+  const others = remaining.filter((name) => !SERVER_OWNED.has(name) && name !== keyDirectory);
   if (serverFiles.length > 0 && !report.remaining.includes(runtime.cliHome)) {
     report.leftovers.push(
       `${runtime.cliHome}: ${serverFiles.join(", ")} ${serverFiles.length === 1 ? "is" : "are"} the server's configuration, which mend uninstall --server removes`,

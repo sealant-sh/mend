@@ -22,8 +22,11 @@ Managed images support four OS families:
 - Fedora;
 - Nix.
 
-Each family builds for `amd64` and `arm64`. On ARM64, Arch Linux is built from Arch Linux ARM's
-signed root filesystem, because the Docker Hub `archlinux` image is x86_64 only.
+Ubuntu, Fedora and Nix build for the host's architecture, `amd64` or `arm64`. Arch Linux depends on
+where the workspace runs. Docker and Kubernetes workspaces build it for `amd64` everywhere, because
+the Docker Hub `archlinux` image is x86_64 only; on an ARM host, such as a Mac with Apple silicon,
+the workspace runs under emulation. MicroVM workspaces on ARM64 build Arch Linux from Arch Linux
+ARM's signed root filesystem.
 
 For a managed family, choose:
 
