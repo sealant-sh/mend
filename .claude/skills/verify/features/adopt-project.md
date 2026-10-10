@@ -46,6 +46,11 @@ phone adopts from its Adopt project screen, and VS Code from a command.
 Preconditions:
 
 - Mend is healthy at `<web>` and the browser is signed in.
+- Say which account each surface is signed in as. The simplest setup is one account on both: run
+  `mend login --url <web>` and approve on `/authorize` in the signed-in browser. When the two
+  surfaces are two accounts (as the verify stack's are: the web joins by invitation, the CLI is the
+  first account), a project adopted `only you` is visible to its creator only, so a check on one
+  surface sees the other surface's adoption only when it was adopted `everyone in <organization>`.
 - `<repo-url>` is a disposable repository the server can clone with `ambient` access, and no project
   named `<project>` exists.
 - `mend projects` does not list `<project>`.
@@ -59,7 +64,7 @@ Preconditions:
   it.
 
 - **Open Projects.** Go to the directory. Run `await page.goto("<web>/projects")`. The heading
-  `Projects` is visible (`page.getByRole("heading", { name: "Projects" })`).
+  `Projects` is visible (`page.getByRole("heading", { name: "Projects", exact: true })`).
 - **Open the adopt panel.** Choose `Adopt a repository`. Run
   `await page.getByRole("button", { name: "Adopt a repository" }).click()`. The textbox
   `Repository Git URL` appears, and the same button now reads `Close`.
@@ -77,11 +82,14 @@ Preconditions:
   button reads `Adopting…`, then the panel closes and the toggle reads `Adopt a repository` again.
 - **Confirm in the directory.** Run
   `await page.getByRole("searchbox", { name: "Filter projects by name, origin or store path" }).fill("<project>")`.
-  A count `1 of <n>` appears and a link whose name starts with `<project>` is listed
-  (`page.getByRole("link", { name: new RegExp("^<project>") })`).
-- **Open the project.** Choose that link. The project page shows the heading `<project>`, the
-  navigation `Project` with links `Worktrees` and `Setup`, and the heading `Worktrees`
-  (`page.getByRole("heading", { name: "Worktrees" })`).
+  A count `1 of <n>` appears and the directory lists one row link whose name starts with `<project>`
+  and a space (`page.getByRole("main").getByRole("link", { name: new RegExp("^<project> ") })`).
+  Scope it to `main`: the sidebar repeats every project as a link named exactly by the project name.
+- **Open the project.** Choose that link. The project page shows the heading `<project>`
+  (`page.getByRole("heading", { name: "<project>", exact: true })`), the navigation `Project` with
+  links `Worktrees` and `Setup`, and the region `Worktrees` with its heading
+  (`page.getByRole("heading", { name: "Worktrees", exact: true })`). Without `exact: true` the
+  heading also matches `No worktrees yet`.
 - **CLI entry.** Adopt a second copy under another name. Run
   `mend adopt <repo-url> --name <project>-cli --auth ambient`. Exit code `0`, and stdout starts with
   `✓ adopted · <project>-cli · <store path>`, then `  default branch <branch>` and
@@ -122,8 +130,11 @@ Preconditions:
   `Mend: Adopt a project…`, types the URL into the `Git clone URL` box (it refuses a non-network URL
   as they type), accepts or edits the `Project name` box, and sees the notification
   `Adopted <name>.` and the project in the Mend tree.
-- **Read-only second view.** Run `mend projects`. `<project>`, `<project>-cli`, `<project>-tui` and
-  `<project>-mobile` are listed.
+- **Read-only second view.** Run `mend projects`. It lists `<project>-cli` and `<project>-tui` (the
+  CLI's own adoptions). It lists `<project>` only when the CLI and the browser are the same account,
+  and `<project>-mobile` only when the phone is paired as the CLI's account; otherwise their absence
+  is the `only you` rule, not drift. Each surface's own listing (the web directory, the phone's
+  Projects tab) shows what it adopted.
 - **Proof.** Capture the directory and the project page. Save
   `await page.locator("body").ariaSnapshot()` and `await page.screenshot({ path })` for `/projects`
   filtered to `<project>` and for the project page, the TUI offer and the adopted line
@@ -140,7 +151,13 @@ Preconditions:
 - The panel's own title `Adopt a repository` is a plain paragraph, not a heading or a labelled form.
   Do not wait for a heading by that name.
 - A project row's link name is the whole row: name, source, default branch, adoption date and live
-  count. Match it with an anchored regular expression, not an exact string.
+  count. Match it with an anchored regular expression that ends the name with a space
+  (`^<project> `), so `<project>-cli` does not match, and scope it to `page.getByRole("main")`: at
+  viewports 1024 px and wider the sidebar (`complementary`) lists every project as a link named
+  exactly by its name, on every page.
+- Accessible names match as case-blind substrings unless `exact: true`. `Worktrees` matches
+  `No worktrees yet`. On a project page two links are named `Projects` (the sidebar's and the page
+  header's): scope to `main` or the `Primary` navigation.
 - Choosing `mend key` creates the user's Mend key and shows its public key. A private repository
   then needs that key on the git host before the clone succeeds. Use `ambient` with a disposable
   public repository unless the run is about git access.

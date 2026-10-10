@@ -25,6 +25,10 @@ waits on the 0.36 feature "Verify Mend in Mend".
   (`mend connect claude`, `mend connect codex`). Recipes that need no inference use `mend run`.
 - Landing needs a GitHub origin and `mend connect github` to open a pull request. With any other
   origin the push happens and the pull request is reported as unavailable.
+- The CLI and the browser are signed in as the same account unless a recipe says otherwise. When
+  they are two accounts, a project adopted `only you` is visible to its creator only, so a second
+  view on the other surface sees it only when it was shared (`everyone in <organization>`). Report
+  which account each surface used.
 - Never drive an instance this verification run did not start. Never drive the owner's own Mend.
 
 ## Driving conventions
@@ -35,6 +39,13 @@ waits on the 0.36 feature "Verify Mend in Mend".
   position. Where a control has no stable accessible name, its feature file says so in Gotchas; that
   is a finding to fix in the product, not a reason to invent a selector. A name that comes only from
   a placeholder is one Playwright finds, but it is listed in Gotchas as a missing label.
+- A string name matches as a case-blind substring. Pass `exact: true`, or an anchored regular
+  expression, whenever the name could sit inside another (`Worktrees` matches `No worktrees yet`).
+  At viewports 1024 px and wider (below that it is CSS-hidden and out of the accessibility tree),
+  every web page renders the app sidebar (`complementary`): the `Primary` navigation (`Now`,
+  `Projects`, `Skills`, `Settings`), one link per project named exactly by the project name, and
+  `Sign out`. Scope page content to `page.getByRole("main")` so a project, `Projects` or `Settings`
+  link never resolves to the sidebar's.
 - Never wait for `networkidle`. Every workbench page holds an open SSE stream (`/api/events`,
   `apps/web/src/lib/workbench-events.ts`), so the network never goes idle. Wait for the role, name
   or text the step names.

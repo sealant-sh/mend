@@ -79,7 +79,9 @@ Preconditions:
   [Adopt a project](./adopt-project.md).
 
 - **Create a worktree.** Open the project and choose `New worktree`. Run
-  `await page.getByRole("link", { name: new RegExp("^<project>") }).click()` from `/projects`, then
+  `await page.getByRole("main").getByRole("link", { name: new RegExp("^<project> ") }).click()` from
+  `/projects` (scoped to `main`, and ending the name with a space, because the sidebar repeats each
+  project as a link named exactly by its name), then
   `await page.getByRole("button", { name: "New worktree" }).click()`. A dialog named `New worktree`
   opens with focus in the textbox `Name`.
 - **Name it and create.** Run
