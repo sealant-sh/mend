@@ -160,10 +160,10 @@ nc -vz mac-mini 2222                        # succeeded
 
 ## 4. Install the extension on the laptop
 
-Install Microsoft's **Remote - SSH** extension, then the Mend extension from its `.vsix` (see
-[VS Code extension](/clients/vscode/#install-from-source)). Run **Mend: Connect to server** and
-enter the URL exactly as setup was given it. Choose **Sign in with the browser**. VS Code shows a
-code; the browser opens `http://mac-mini:3105/authorize`, signed in as you. Approve when it shows
+Install Microsoft's **Remote - SSH** extension, then the Mend extension (`sealant-sh.mend`) from the
+Extensions view (see [VS Code extension](/clients/vscode/#install)). Run **Mend: Connect to server**
+and enter the URL exactly as setup was given it. Choose **Sign in with the browser**. VS Code shows
+a code; the browser opens `http://mac-mini:3105/authorize`, signed in as you. Approve when it shows
 the same code. The extension keeps its token in VS Code's secret storage (encrypted in VS Code's own
 storage, with the key in the macOS Keychain), and lists itself under Settings → Devices as
 `VS Code on <laptop>`.

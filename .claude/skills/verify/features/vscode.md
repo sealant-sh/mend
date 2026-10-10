@@ -7,11 +7,13 @@ are the session's worktree, and its integrated terminal runs in the workspace, w
 Claude or Codex agent, or an agent with options), starts another session in the same worktree, makes
 a worktree without an agent, takes over an agent Mend is running elsewhere so the conversation
 continues in the editor's terminal, stops a session, and opens it in Mend's web app. The extension
-is not published; it is built and installed from source.
+is published as `sealant-sh.mend`; a verify run builds and installs it from source, so the change
+under test is what runs.
 
 ## Sub-features
 
-- `vscode-install` builds the extension and packages `mend-0.1.0.vsix` from source.
+- `vscode-install` builds the extension and packages `mend-<version>.vsix` from source (`<version>`
+  is `apps/vscode/package.json`'s).
 - `vscode-connect` reads the CLI's connection, or `Mend: Connect to server` overrides it.
 - `vscode-view` shows `Needs you` and the projects with their sessions, scoped to the open folder's
   project unless toggled; the status bar names the project and what waits.
@@ -63,15 +65,16 @@ Preconditions:
 - Mend is healthy at `<web>`, `mend login --url <web>` has been run in the same `XDG_CONFIG_HOME`
   the editor would use, and `<project>` is adopted.
 - The server reports a workspace SSH gateway (see [Workspace SSH](./workspace-ssh.md)).
-- The verify stack has no VS Code harness, and the extension is not on the Marketplace. Every step
-  below except the build is `not drivable yet`: it needs a VS Code 1.100+ window with this `.vsix`
-  installed and Microsoft's Remote - SSH, driven by a person or a VS Code test runner the stack does
-  not have. A run reports each of them with that reason.
+- The verify stack has no VS Code harness, and the Marketplace build is not the change under test.
+  Every step below except the build is `not drivable yet`: it needs a VS Code 1.100+ window with
+  this `.vsix` installed and Microsoft's Remote - SSH, driven by a person or a VS Code test runner
+  the stack does not have. A run reports each of them with that reason.
 
 - **Build and package (drivable).** Run `pnpm --filter mend build`, then
   `pnpm --filter mend package`. Both exit `0`; `apps/vscode/dist/extension.js` and
-  `apps/vscode/mend-0.1.0.vsix` exist. `code --install-extension apps/vscode/mend-0.1.0.vsix` is the
-  install step (not drivable yet: no VS Code in the stack).
+  `apps/vscode/mend-<version>.vsix` exist.
+  `code --install-extension apps/vscode/mend-<version>.vsix` is the install step (not drivable yet:
+  no VS Code in the stack).
 - **Connect.** `not drivable yet`. Run `Mend: Connect to server`. Two inputs titled `Connect Mend`
   ask `Mend server URL`, then
   `Access token. Leave empty when the local server does not require one.`. End state:
@@ -125,7 +128,7 @@ Preconditions:
 - **URI.** `not drivable yet`. Open `vscode://sealant-sh.mend/open?session=<id>`. End state: the
   same as opening the session, with the takeover question when Mend runs its agent elsewhere.
 - **Proof.** For the build: the two commands with stdout, stderr and exit code, and a listing of
-  `apps/vscode/mend-0.1.0.vsix`. For the rest, report
+  `apps/vscode/mend-<version>.vsix`. For the rest, report
   `not drivable yet: no VS Code harness in the verify stack` per step; the CLI's
   `mend sessions --json` and `mend worktrees --json` are the second view once a person has driven a
   step.

@@ -19,8 +19,22 @@ Sealant cannot bind the person (an older Core), it runs as root instead and the 
 `Remote-SSH: root, Core can't bind your person`; an agent started in that terminal then does not use
 your home and logins. Start agents from Mend (**+** → an agent) or in **Mend: Open terminal** there.
 
-The extension is not published on the Visual Studio Marketplace. Build and install it from source as
-described [below](#install-from-source).
+## Install
+
+Search for **Mend** (publisher `sealant-sh`) in the Extensions view, or run:
+
+```sh
+code --install-extension sealant-sh.mend
+```
+
+It is on the
+[Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=sealant-sh.mend) and
+on [Open VSX](https://open-vsx.org/extension/sealant-sh/mend), which VSCodium and other VS Code
+builds install from. Each version's `.vsix` is also attached to its `vscode-v<version>` release on
+[GitHub](https://github.com/sealant-sh/Mend/releases); install one with
+`code --install-extension mend-<version>.vsix`. The extension's version follows the Mend release it
+needs: 0.36.x works with a Mend 0.36 server. To run an unreleased change, build it
+[from source](#install-from-source).
 
 ## Requirements
 
@@ -28,8 +42,8 @@ described [below](#install-from-source).
 - Microsoft's Remote - SSH extension (`ms-vscode-remote.remote-ssh`). Without it, opening a session
   offers **Install Remote SSH** or **Copy code command**, which copies the `code --remote …` command
   that opens the same folder.
-- A Mend server with a workspace SSH gateway. When the server reports none, the extension says
-  `This Mend deployment exposes no workspace SSH gateway.` and opens nothing.
+- A Mend server, version 0.36 or newer, with a workspace SSH gateway. When the server reports none,
+  the extension says `This Mend deployment exposes no workspace SSH gateway.` and opens nothing.
 
 The extension never falls back to opening the worktree's path on the Mend host. A terminal there
 would run outside the workspace, where Mend does not observe it. **Mend: Copy worktree path** copies
@@ -219,7 +233,7 @@ pnpm install
 cd apps/vscode
 pnpm build
 pnpm package
-code --install-extension mend-0.1.0.vsix
+code --install-extension mend-*.vsix
 ```
 
 `pnpm build` bundles the extension into `dist/`, and `pnpm package` writes the `.vsix` named after

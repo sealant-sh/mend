@@ -12,6 +12,8 @@ on:
   push:
     tags:
       - "v*.*.*"
+      # vscode-vX.Y.Z matches the pattern above; publish-vscode.yml releases the extension.
+      - "!vscode-v*"
 
 permissions:
   contents: read

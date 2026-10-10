@@ -16,7 +16,8 @@ Not released yet. Previews (`0.36.0-next.<n>`) carry what is below; see
 Upgrading a server from 0.35.1: read [Upgrade to 0.36](/operate/upgrade-to-0-36/) first. Two things
 need doing before the upgrade: copy out any old upgrade backup you want kept, since the upgrade now
 prunes them, and rotate any token that was in an adopted repository URL. The bundled Sealant is
-0.39. The desktop app and the native phone app are not published with this release.
+0.39. The VS Code extension is published with this release, as `sealant-sh.mend` 0.36.0 on the
+Visual Studio Marketplace and Open VSX. The desktop app and the native phone app are not.
 
 ### Server setup and operation
 
