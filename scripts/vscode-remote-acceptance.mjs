@@ -272,10 +272,18 @@ const main = async () => {
   const token = signup.headers.get("set-auth-token");
   if (!signup.ok || !token) throw new Error(`signup at ${origin} failed: ${signup.status}`);
   const api = async (route, init = {}) => {
-    const response = await fetch(`${origin}/api${route}`, {
-      ...init,
-      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-    });
+    let response;
+    try {
+      response = await fetch(`${origin}/api${route}`, {
+        ...init,
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      });
+    } catch (cause) {
+      // Node says only "fetch failed"; the reason is its cause.
+      throw new Error(
+        `${init.method ?? "GET"} ${route} did not answer: ${cause?.cause?.message ?? cause?.message ?? cause}`,
+      );
+    }
     const text = await response.text();
     if (!response.ok)
       throw new Error(`${init.method ?? "GET"} ${route} → ${response.status} ${text}`);
