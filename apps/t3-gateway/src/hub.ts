@@ -14,6 +14,8 @@ import {
   OrchestrationV2ThreadShell,
   OrchestrationV2TurnItem,
   ThreadId,
+  type OrchestrationV2ArchivedShellSnapshot,
+  type OrchestrationV2ArchivedShellStreamItem,
   type OrchestrationV2DomainEvent,
   type OrchestrationV2ShellSnapshot,
   type OrchestrationV2ShellStreamItem,
@@ -125,6 +127,12 @@ export type ShellDelta = Exclude<
   { readonly kind: "snapshot" } | { readonly kind: "synchronized" }
 >;
 
+/** A change of the archived shell after its snapshot. */
+export type ArchivedShellDelta = Exclude<
+  OrchestrationV2ArchivedShellStreamItem,
+  { readonly kind: "snapshot" }
+>;
+
 /** Mend could not be read as the person: their devices are refused, or Mend did not answer. */
 export type HubReadError = MendDeviceRefused | MendUnavailable;
 
@@ -184,6 +192,17 @@ export interface PersonHub {
   readonly subscribeShell: (
     afterSequence: number | undefined,
   ) => Effect.Effect<ShellSubscription, HubReadError, Scope.Scope>;
+  /** The person's archived threads, as `orchestration.getArchivedShellSnapshot` answers. */
+  readonly archivedShell: Effect.Effect<OrchestrationV2ArchivedShellSnapshot, HubReadError>;
+  /** The archived threads now and their changes from here (`subscribeArchivedShell`). */
+  readonly subscribeArchivedShell: Effect.Effect<
+    {
+      readonly snapshot: OrchestrationV2ArchivedShellSnapshot;
+      readonly changes: Stream.Stream<ArchivedShellDelta, SubscriberFellBehind>;
+    },
+    HubReadError,
+    Scope.Scope
+  >;
   /** Whether Mend has refused this device token: the device was revoked. */
   readonly isRefused: (token: string) => boolean;
   /** Completes once Mend refuses this device token; a socket holding it closes then. */
@@ -364,6 +383,15 @@ export interface ThreadCommands {
     readonly session: BearerSession;
     readonly threadId: string;
     readonly mode: "bypass" | "ask";
+  }) => Effect.Effect<number, ThreadCommandFailure>;
+  /**
+   * Archives the thread in the person's view, or takes it out of the archive (`thread.archive`,
+   * `thread.unarchive`). Mend has no archive: the session is not touched. What is still queued for
+   * an archived thread is held, never sent while it is archived, and still there when it is not.
+   */
+  readonly setArchived: (input: {
+    readonly threadId: string;
+    readonly archived: boolean;
   }) => Effect.Effect<number, ThreadCommandFailure>;
 }
 
@@ -949,6 +977,18 @@ export const makePersonHub = (input: {
             ),
           ),
     );
+    /** Session id → when the person archived its thread (`archived_threads`). */
+    const archived = new Map<string, string>(
+      keeper === null
+        ? []
+        : yield* state.listArchived(keeper.id).pipe(
+            Effect.catch((error) =>
+              Effect.logError("t3 gateway could not read its archive", {
+                cause: error.message,
+              }).pipe(Effect.as(new Map<string, string>())),
+            ),
+          ),
+    );
     /** Lets go of each chosen mode once a live agent runs with it: the next start applied it. */
     const settleNextModes = Effect.suspend(() =>
       Effect.forEach(
@@ -1062,6 +1102,8 @@ export const makePersonHub = (input: {
     const shellLog = makeReplayLog<ShellDelta>(SHELL_REPLAY_LIMITS, sequence);
     let shellProjects = new Map<string, Printed<OrchestrationProjectShell>>();
     let shellThreads = new Map<string, Printed<OrchestrationV2ThreadShell>>();
+    let shellArchived = new Map<string, Printed<OrchestrationV2ThreadShell>>();
+    const archivedChanges = makeFanout<ArchivedShellDelta>();
     const shellChanges = makeFanout<ShellDelta>();
     const watches = new Map<string, Watch>();
     const threadChanges = makeFanout<{
@@ -1130,6 +1172,7 @@ export const makePersonHub = (input: {
             runIds: ids?.runIds ?? NO_IDS,
             messageIds: ids?.messageIds ?? NO_IDS,
             imagesOf: imagesOfMessage,
+            archivedAt: archived.get(session.id) ?? null,
             nextMode: (() => {
               const next = nextModes.get(session.id);
               return next === undefined || next === modeOf(agent) ? null : next;
@@ -1237,6 +1280,7 @@ export const makePersonHub = (input: {
         nextProjects.set(value.id, { value, print });
       }
       const nextThreads = new Map<string, Printed<OrchestrationV2ThreadShell>>();
+      const nextArchived = new Map<string, Printed<OrchestrationV2ThreadShell>>();
       for (const source of threadSources()) {
         const value = threadShellOf(source, {
           itemCount: source.turns.length,
@@ -1250,8 +1294,29 @@ export const makePersonHub = (input: {
           });
           continue;
         }
-        nextThreads.set(value.id, { value, print });
+        // An archived thread leaves the active shell for the archived one, as in t3code.
+        (source.archivedAt === null ? nextThreads : nextArchived).set(value.id, { value, print });
       }
+
+      const archivedDeltas: Array<ArchivedShellDelta> = [];
+      for (const [id, next] of nextArchived) {
+        if (shellArchived.get(id)?.print === next.print) continue;
+        archivedDeltas.push({
+          kind: "thread.updated",
+          sequence: nextSequence(),
+          thread: next.value,
+        });
+      }
+      for (const [id, previous] of shellArchived) {
+        if (nextArchived.has(id)) continue;
+        archivedDeltas.push({
+          kind: "thread.removed",
+          sequence: nextSequence(),
+          threadId: previous.value.id,
+        });
+      }
+      shellArchived = nextArchived;
+      if (archivedDeltas.length > 0) yield* archivedChanges.publish(archivedDeltas);
 
       for (const [id, next] of nextProjects) {
         if (shellProjects.get(id)?.print === next.print) continue;
@@ -1291,6 +1356,13 @@ export const makePersonHub = (input: {
       shellThreads = nextThreads;
       deltas.forEach((delta, index) => shellLog.push(delta.sequence, delta, sizes[index] ?? 0));
       if (deltas.length > 0) yield* shellChanges.publish(deltas);
+    });
+
+    const currentArchivedShell = (): OrchestrationV2ArchivedShellSnapshot => ({
+      schemaVersion: PROJECTION_SCHEMA_VERSION,
+      snapshotSequence: sequence,
+      projects: Array.from(shellProjects.values(), (printed) => printed.value),
+      threads: Array.from(shellArchived.values(), (printed) => printed.value),
     });
 
     const currentShell = (): OrchestrationV2ShellSnapshot => ({
@@ -2266,8 +2338,9 @@ export const makePersonHub = (input: {
         Array.from(queues),
         ([sessionId, queue]) => {
           // Before the first full read, nothing is known of any session yet; a launched session no
-          // read has shown yet is not gone either.
-          if (!loaded || opening.has(sessionId)) return Effect.void;
+          // read has shown yet is not gone either. An archived thread's queue never moves, held or
+          // not, by the archive the state file keeps (review 613-R2-1).
+          if (!loaded || opening.has(sessionId) || archived.has(sessionId)) return Effect.void;
           const step = Queueing.nextStep(queue, viewOf(sessionId), performance.now(), timings);
           const work =
             step === null
@@ -2471,6 +2544,11 @@ export const makePersonHub = (input: {
     const resumeQueue: ThreadCommands["resumeQueue"] = (threadId) =>
       locked(
         Effect.gen(function* () {
+          if (archived.has(threadId)) {
+            return yield* refused(
+              "The thread is archived: nothing in its queue is sent until it is unarchived. Unarchive it, then resume.",
+            );
+          }
           yield* changeKept(threadId, (queue) => {
             Queueing.resume(queue);
             return true;
@@ -2952,6 +3030,61 @@ export const makePersonHub = (input: {
         );
       });
 
+    const setArchived: ThreadCommands["setArchived"] = (command) =>
+      Effect.gen(function* () {
+        yield* ensureLoaded;
+        if (keeper === null)
+          return yield* refused("An archive needs a paired person to keep it for.");
+        const sessionId = sessionIdOf(command.threadId);
+        return yield* locked(
+          Effect.gen(function* () {
+            if (sourceOf(sessionId) === null) {
+              return yield* refused(`Thread ${command.threadId} is not in this environment.`);
+            }
+            if (archived.has(sessionId) === command.archived) {
+              return yield* refused(
+                command.archived
+                  ? "The thread is archived already."
+                  : "The thread is not archived.",
+              );
+            }
+            const at = command.archived ? new Date().toISOString() : null;
+            // Archived, what is still queued waits held, kept first: nothing is sent while the
+            // thread is archived (the archive itself guards that too), and nothing is lost (a
+            // message taken back is history, and history is capped). Unarchived, it stays held
+            // until the person resumes it.
+            const wasHeld = queueOf(sessionId).held;
+            if (at !== null) {
+              yield* changeKept(sessionId, (queue) => {
+                Queueing.holdIfQueued(queue, true);
+                return true;
+              });
+            }
+            yield* state.setArchived(keeper.id, sessionId, at).pipe(
+              Effect.tapError(() =>
+                at === null
+                  ? Effect.void
+                  : changeKept(sessionId, (queue) => {
+                      queue.held = wasHeld;
+                      return true;
+                    }).pipe(Effect.ignore),
+              ),
+              Effect.mapError(
+                () =>
+                  new ThreadCommandRefused({
+                    reason: "The gateway could not keep the archive.",
+                    authorization: false,
+                  }),
+              ),
+            );
+            if (at === null) archived.delete(sessionId);
+            else archived.set(sessionId, at);
+            yield* publishAll;
+            return sequence;
+          }),
+        );
+      });
+
     // A thread a t3code client launched is addressed by the client's id; everything inside the
     // hub is keyed by the Mend session.
     const commands: ThreadCommands = {
@@ -2977,6 +3110,7 @@ export const makePersonHub = (input: {
       stop,
       remove,
       setNextMode,
+      setArchived,
     };
 
     // ─── The hub ───────────────────────────────────────────────────────────
@@ -3278,7 +3412,19 @@ export const makePersonHub = (input: {
     // A hub that goes ends its terminals' sockets.
     yield* Effect.addFinalizer(() => terminals.closeAll);
 
+    const archivedShell = ensureLoaded.pipe(
+      Effect.andThen(locked(Effect.sync(currentArchivedShell))),
+    );
+    const subscribeArchivedShell = Effect.gen(function* () {
+      yield* ensureLoaded;
+      const changes = yield* archivedChanges.subscribe(() => true);
+      const snapshot = yield* locked(Effect.sync(currentArchivedShell));
+      return { snapshot, changes };
+    });
+
     return {
+      archivedShell,
+      subscribeArchivedShell,
       terminals,
       turnDiff,
       locationOf,

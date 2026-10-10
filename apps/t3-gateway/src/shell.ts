@@ -101,6 +101,8 @@ export interface ThreadSource {
    * it runs with (`thread.runtime-mode.set`); null otherwise.
    */
   readonly nextMode: "bypass" | "ask" | null;
+  /** When the person archived the thread in t3code; null while it is not archived. */
+  readonly archivedAt: string | null;
   /**
    * The images a message the gateway sent carried when Mend took its turn, by the message's
    * t3code id (`images.ts`), each with the path its turn named.
@@ -350,7 +352,7 @@ export const appThreadOf = (source: ThreadSource): OrchestrationV2AppThread => {
     forkedFrom: null,
     createdAt: utc(source.session.createdAt),
     updatedAt: utc(threadUpdatedAtOf(source)),
-    archivedAt: null,
+    archivedAt: source.archivedAt === null ? null : utc(source.archivedAt),
     settledOverride: null,
     settledAt: null,
     lastVisitedAt: null,
@@ -601,7 +603,7 @@ export const threadShellOf = (
     visibleItemCount: counts.visibleItemCount,
     createdAt: thread.createdAt,
     updatedAt: thread.updatedAt,
-    archivedAt: null,
+    archivedAt: thread.archivedAt,
     settledOverride: null,
     settledAt: null,
     lastVisitedAt: null,

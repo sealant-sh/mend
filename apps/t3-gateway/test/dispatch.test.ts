@@ -262,7 +262,7 @@ describe("message.dispatch", () => {
           }).pipe(
             Effect.andThen(
               rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({
-                type: "thread.archive",
+                type: "thread.pin",
                 commandId: commandId(),
                 threadId: ThreadId.make("session-1"),
               }),

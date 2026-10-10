@@ -67,6 +67,21 @@ export const emptyHub: PersonHub = {
       changes: Stream.never,
     }),
   isRefused: () => false,
+  archivedShell: Effect.succeed({
+    schemaVersion: EMPTY_SHELL_SNAPSHOT.schemaVersion,
+    snapshotSequence: 0,
+    projects: [],
+    threads: [],
+  }),
+  subscribeArchivedShell: Effect.succeed({
+    snapshot: {
+      schemaVersion: EMPTY_SHELL_SNAPSHOT.schemaVersion,
+      snapshotSequence: 0,
+      projects: [],
+      threads: [],
+    },
+    changes: Stream.never,
+  }),
   terminals: makeTerminals({
     mend: gateDeviceCalls(unreachableMend, () => Effect.void),
     mendUrl: new URL("http://127.0.0.1:0"),
@@ -94,6 +109,7 @@ export const emptyHub: PersonHub = {
     stop: () => refused,
     remove: () => refused,
     setNextMode: () => refused,
+    setArchived: () => refused,
   },
 };
 

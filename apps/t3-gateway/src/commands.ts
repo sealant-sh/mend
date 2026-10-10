@@ -32,6 +32,7 @@ import type { BearerSession } from "./state.ts";
  *   and its change stay in Mend.
  * - `thread.runtime-mode.set`: the permission mode for the agent's next start; Mend sets it per
  *   launch.
+ * - `thread.archive`, `thread.unarchive`: the person's archive, kept by the gateway; Mend has none.
  */
 
 /** t3code's approval decisions as Mend's; Mend has no "always", so it is "for this session". */
@@ -229,6 +230,10 @@ export const dispatchCommand = (
       return answered(hub.commands.stop({ session, threadId: command.threadId }));
     case "thread.delete":
       return answered(hub.commands.remove({ session, threadId: command.threadId }));
+    case "thread.archive":
+      return answered(hub.commands.setArchived({ threadId: command.threadId, archived: true }));
+    case "thread.unarchive":
+      return answered(hub.commands.setArchived({ threadId: command.threadId, archived: false }));
     case "thread.runtime-mode.set": {
       const mode =
         command.runtimeMode === "approval-required"

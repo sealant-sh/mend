@@ -159,6 +159,7 @@ const sourceWith = (notices: ThreadNotices): ThreadSource => ({
   turnCheckpoints: new Map(),
   sharedWorktree: false,
   nextMode: null,
+  archivedAt: null,
   project,
   session,
   agent,
