@@ -1363,6 +1363,11 @@ export interface KeyBinding {
   readonly help?: string;
   /** Where `?` lists it; bindings of one verb share it too. */
   readonly group?: KeyGroup;
+  /**
+   * A hint the footer keeps in every pane, after whatever of the pane's own hints fit: lazygit's
+   * `Keybindings: ?`. Read off the table like every other hint, never written beside it.
+   */
+  readonly footer?: string;
 }
 
 /**
@@ -1592,6 +1597,7 @@ export const KEY_BINDINGS: ReadonlyArray<KeyBinding> = [
     hints: {},
     help: "this list",
     group: "dashboard",
+    footer: "? keys",
   },
   {
     verb: "quit",
@@ -1638,12 +1644,14 @@ export const verbHints = (focus: Column): ReadonlyArray<string> =>
     return hint === undefined ? [] : [hint];
   });
 
-/** The footer's last word, kept whatever drops: lazygit's `Keybindings: ?`. */
-export const HELP_HINT = "? keys";
+/** The footer's last words, kept whatever drops: the keymap's `footer` hints, `? keys`. */
+export const FOOTER_TAIL: ReadonlyArray<string> = KEY_BINDINGS.flatMap((binding) =>
+  binding.footer === undefined ? [] : [binding.footer],
+);
 
-/** The footer line: this pane's hints that fit, then `? keys` always. */
+/** The footer line: this pane's hints that fit, then the keymap's footer hints always. */
 export const footerHints = (focus: Column, width: number): string => {
-  const tail = ` · ${HELP_HINT}`;
+  const tail = FOOTER_TAIL.map((hint) => ` · ${hint}`).join("");
   return `${fitHints(verbHints(focus), Math.max(1, width - tail.length))}${tail}`;
 };
 

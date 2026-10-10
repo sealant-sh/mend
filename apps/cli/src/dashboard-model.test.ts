@@ -20,7 +20,7 @@ import {
   foldGroupStatus,
   fitHints,
   gameSwallows,
-  HELP_HINT,
+  FOOTER_TAIL,
   helpSections,
   groupActivityAt,
   groupBaseLabel,
@@ -719,10 +719,20 @@ describe("the ? overlay", () => {
 
 describe("footerHints", () => {
   it("always ends with ? keys, however little room there is", () => {
+    expect(FOOTER_TAIL).toEqual(["? keys"]);
     for (const focus of COLUMNS) {
       for (const width of [12, 30, 60, 200]) {
-        expect(footerHints(focus, width).endsWith(` · ${HELP_HINT}`)).toBe(true);
+        expect(footerHints(focus, width).endsWith(" · ? keys")).toBe(true);
       }
+    }
+  });
+
+  it("reads its tail off the keymap, naming a key the same binding answers to", () => {
+    for (const binding of KEY_BINDINGS) {
+      if (binding.footer === undefined) continue;
+      const named = binding.footer.split(" ")[0] ?? "";
+      expect(binding.keys, binding.footer).toContain(named);
+      expect(verbForKey(named, true)).toBe(binding.verb);
     }
   });
 
