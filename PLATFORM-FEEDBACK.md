@@ -9,6 +9,12 @@ after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
 ## 2026-10-10 · 0.39.0-next.707 · A session's arguments must be trimmed and non-empty
 
+- **Shipped (0.39.0-next.712, sealant#347) and used:** `argv[0]` stays non-empty and trimmed; every
+  later word may be any string except one with a NUL byte or a lone surrogate, at most 131,071 bytes
+  a word and 1 MiB in all (`sessionArgvIssue` in `@sealant/api-contracts`). A refusal names the word
+  by position and size, never its text. `mend run` now checks that rule and takes `bash -lc "\n…"`,
+  `"hi "` and `""`. The engine keeps its base64 prompt chunks: a prompt can outgrow one word.
+
 `mend run -- bash -lc "<script>"` with a script that starts with a newline (pstack's verifier agents
 write them that way) created the session, then failed its launch with
 `Expected a string with no leading or trailing whitespace`.

@@ -587,9 +587,10 @@ const pushedBranches = (refUpdates: ReadonlyArray<string> | null): boolean =>
   agentPushedBranches(refUpdates ?? []).length > 0;
 
 /**
- * How a harness takes an opening prompt (the cross-harness handoff). The public SDK rejects argv
- * elements with outer whitespace, so the exact user-approved bytes travel as bounded base64 chunks
- * and are decoded in the workspace. The sentinel preserves trailing newlines through POSIX command
+ * How a harness takes an opening prompt (the cross-harness handoff). The exact user-approved bytes
+ * travel as bounded base64 chunks and are decoded in the workspace: a prompt can outgrow one argv
+ * word (Core's `SESSION_ARGV_MAX_WORD_BYTES`), and a control plane before 0.39.0-next.712 refused
+ * arguments with outer whitespace. The sentinel preserves trailing newlines through POSIX command
  * substitution.
  */
 /** A word for `sh -c`, in single quotes, whatever it holds. */

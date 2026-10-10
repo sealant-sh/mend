@@ -11,8 +11,12 @@ import { GATEWAY_STATUSES, MendRequestError } from "./server-request.ts";
 
 // ─── the command a run takes ────────────────────────────────────────────────
 
-/** The most words the platform takes in one command (Core's `createSessionRequestSchema`). */
+/** The most words the platform takes in one command (Core's `SESSION_ARGV_MAX_WORDS`). */
 export const RUN_ARGV_MAX = 64;
+/** The most UTF-8 bytes one word may hold (Core's `SESSION_ARGV_MAX_WORD_BYTES`). */
+export const RUN_ARGV_MAX_WORD_BYTES = 128 * 1024 - 1;
+/** The most UTF-8 bytes the whole command may hold (Core's `SESSION_ARGV_MAX_TOTAL_BYTES`). */
+export const RUN_ARGV_MAX_TOTAL_BYTES = 1024 * 1024;
 
 const whitespaceName = (character: string): string =>
   character === "\n" || character === "\r"
@@ -23,27 +27,48 @@ const whitespaceName = (character: string): string =>
         ? "a space"
         : "whitespace";
 
+/** A UTF-16 surrogate with no partner: it has no UTF-8 form (Core's own test). */
+const LONE_SURROGATE = /[\uD800-\uDFFF]/u;
+
+const utf8Bytes = (value: string): number => Buffer.byteLength(value, "utf8");
+
 /**
- * Why the platform would refuse this command, or null when it takes it. Core's contract
- * (`createSessionRequestSchema`) asks for at most 64 words, each non-empty and with no leading or
- * trailing whitespace (`Schema.isTrimmed`, which is `s.trim() === s`). A refusal there comes after
- * the session exists, so `mend run` asks here first and creates nothing. The word is named by its
- * position, never quoted: a command can carry a secret.
+ * Why the platform would refuse this command, or null when it takes it. Core's rule
+ * (`sessionArgvIssue` in `@sealant/api-contracts`, 0.39.0-next.712): at most 64 words; the program
+ * non-empty with no leading or trailing whitespace; every argument any string (empty,
+ * whitespace-led, multi-line) except one with a NUL byte or a lone surrogate; at most 131,071 bytes
+ * a word and 1 MiB in all. A refusal there comes after the session exists, so `mend run` asks here
+ * first and creates nothing. The word is named by its position, never quoted: a command can carry a
+ * secret.
  */
 export const runArgvIssue = (argv: ReadonlyArray<string>): string | null => {
   if (argv.length > RUN_ARGV_MAX) {
     return `the command has ${argv.length} words and the platform takes at most ${RUN_ARGV_MAX} · put them in a script and run that`;
   }
+  const program = argv[0] ?? "";
+  if (program === "") return "the program is empty";
+  if (program.trim() !== program) {
+    const leading = program.trimStart() !== program;
+    const edge = leading ? program.charAt(0) : program.charAt(program.length - 1);
+    return `the program ${leading ? "starts" : "ends"} with ${whitespaceName(edge)} · trim it and run again`;
+  }
+  let total = 0;
   for (const [index, word] of argv.entries()) {
     const which = index === 0 ? "the program" : `argument ${index}`;
-    if (word === "") {
-      return `${which} is empty · the platform refuses empty arguments`;
+    if (word.includes("\u0000")) {
+      return `${which} contains a NUL byte, which no process argument can carry`;
     }
-    if (word.trim() !== word) {
-      const leading = word.trimStart() !== word;
-      const edge = leading ? word.charAt(0) : word.charAt(word.length - 1);
-      return `${which} ${leading ? "starts" : "ends"} with ${whitespaceName(edge)} · the platform refuses arguments with leading or trailing whitespace · trim it and run again`;
+    if (LONE_SURROGATE.test(word)) {
+      return `${which} is not well-formed Unicode (a lone surrogate)`;
     }
+    const bytes = utf8Bytes(word);
+    if (bytes > RUN_ARGV_MAX_WORD_BYTES) {
+      return `${which} is ${bytes} bytes and the platform takes at most ${RUN_ARGV_MAX_WORD_BYTES} a word · put it in a script and run that`;
+    }
+    total += bytes;
+  }
+  if (total > RUN_ARGV_MAX_TOTAL_BYTES) {
+    return `the command is ${total} bytes and the platform takes at most ${RUN_ARGV_MAX_TOTAL_BYTES} · put it in a script and run that`;
   }
   return null;
 };
