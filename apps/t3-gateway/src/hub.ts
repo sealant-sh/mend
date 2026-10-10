@@ -613,6 +613,26 @@ export const makePersonHub = (input: {
     const projects = new Map<string, ProjectEntry>();
     const conversations = new Map<string, Conversation>();
     /**
+     * Session id → the turns Mend answered `POST /turns` with that no read of Mend has shown yet. A
+     * read that started before Mend took the turn can land after it was adopted; applied as it is,
+     * it would drop the turn, and the queue would send the next message while this one runs.
+     */
+    const adoptedTurns = new Map<string, Map<string, MendTurn>>();
+    /** A conversation as read, with the adopted turns it does not show yet; one it shows is let go. */
+    const withAdopted = (sessionId: string, conversation: Conversation): Conversation => {
+      const adopted = adoptedTurns.get(sessionId);
+      if (adopted === undefined) return conversation;
+      const missing: Array<MendTurn> = [];
+      for (const [turnId, turn] of adopted) {
+        if (conversation.turns.some((known) => known.id === turnId)) adopted.delete(turnId);
+        else missing.push(turn);
+      }
+      if (adopted.size === 0) adoptedTurns.delete(sessionId);
+      return missing.length === 0
+        ? conversation
+        : { ...conversation, turns: [...conversation.turns, ...missing] };
+    };
+    /**
      * Session id → its row of `GET /api/sessions` (docs/adr/0016, decisions 6, 13 and 14): the
      * people live in its executor, whether control is shared, whether its executor waits to be
      * replaced. The project read's sessions carry none of it. What it says decides whether the
@@ -1050,7 +1070,9 @@ export const makePersonHub = (input: {
           applyRetirements(retired);
           conversations.clear();
           for (const [sessionId, conversation] of read) {
-            if (conversation !== null) conversations.set(sessionId, conversation);
+            if (conversation !== null) {
+              conversations.set(sessionId, withAdopted(sessionId, conversation));
+            }
           }
           for (const [sessionId, items] of caughtUp) {
             const watch = watches.get(sessionId);
@@ -1120,10 +1142,15 @@ export const makePersonHub = (input: {
             }
             const kept = new Set(entry?.sessions.map((session) => session.id) ?? []);
             for (const session of previous?.sessions ?? []) {
-              if (!kept.has(session.id)) conversations.delete(session.id);
+              if (!kept.has(session.id)) {
+                conversations.delete(session.id);
+                adoptedTurns.delete(session.id);
+              }
             }
             for (const [sessionId, conversation] of read) {
-              if (conversation !== null) conversations.set(sessionId, conversation);
+              if (conversation !== null) {
+                conversations.set(sessionId, withAdopted(sessionId, conversation));
+              }
             }
             for (const [sessionId, wait] of waits) {
               const conversation = conversations.get(sessionId);
@@ -1174,8 +1201,9 @@ export const makePersonHub = (input: {
           Effect.gen(function* () {
             if (conversation === null) {
               conversations.delete(sessionId);
+              adoptedTurns.delete(sessionId);
             } else if (isKnownThread(sessionId)) {
-              conversations.set(sessionId, conversation);
+              conversations.set(sessionId, withAdopted(sessionId, conversation));
             }
             const current = watches.get(sessionId);
             if (current !== undefined) mergeItems(current, items);
@@ -1384,6 +1412,10 @@ export const makePersonHub = (input: {
         const conversation = conversations.get(sessionId) ?? EMPTY_CONVERSATION;
         if (!conversation.turns.some((known) => known.id === turn.id)) {
           conversations.set(sessionId, { ...conversation, turns: [...conversation.turns, turn] });
+          // Kept until a read shows it: a read from before Mend took it may still land.
+          const adopted = adoptedTurns.get(sessionId) ?? new Map<string, MendTurn>();
+          adopted.set(turn.id, turn);
+          adoptedTurns.set(sessionId, adopted);
         }
         yield* state
           .recordTurnIds(ids, Date.now())

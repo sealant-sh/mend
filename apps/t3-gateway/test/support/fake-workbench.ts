@@ -141,6 +141,8 @@ export class FakeWorkbench {
   private ids = 0;
   /** How long `GET /api/sessions/:id/requests` takes, to hold a read in flight. */
   requestsDelayMs = 0;
+  /** How long `GET /api/sessions/:id/turns` takes to answer what it read when asked. */
+  turnsReadDelayMs = 0;
   /** `GET /api/projects` answers 502, as Mend does while it comes back from a restart. */
   projectsDown = false;
   /** How many `GET /api/projects/:id` reads answer 502 before they answer again. */
@@ -556,7 +558,14 @@ export class FakeWorkbench {
           currentAgent: this.agents.get(id) ?? null,
         });
       }
-      if (method === "GET" && sub === "turns") return json(200, this.turns.get(id) ?? []);
+      if (method === "GET" && sub === "turns") {
+        // As Mend reads them when the request arrives; a delayed answer is that read, late.
+        const answer = structuredClone(this.turns.get(id) ?? []);
+        if (this.turnsReadDelayMs === 0) return json(200, answer);
+        return new Promise<boolean>((resolve) =>
+          setTimeout(() => resolve(json(200, answer)), this.turnsReadDelayMs),
+        );
+      }
       if (method === "GET" && sub === "waiting") return json(200, this.waits.get(id) ?? null);
       if (method === "GET" && sub === "workspace-retirement") {
         return json(200, this.retirements.get(id) ?? null);
