@@ -311,6 +311,22 @@ export const LandingsGroupLive = HttpApiBuilder.group(MendApi, "landings", (hand
         }
         const caller = yield* CurrentUser;
         const { limits } = yield* Budgets;
+        const project = yield* projectOf(change);
+        const audit = yield* AuditEventsRepo;
+        // An earlier pull is something to build on only when this endpoint served it, to this
+        // person, for this change: another session's commit, or one nobody was sent, bundles as
+        // a first pull (review 2 of mend#666).
+        const requested = query.onto === undefined ? null : Sha.make(query.onto);
+        const served =
+          requested !== null &&
+          (yield* audit.recorded({
+            organizationId: project.organizationId,
+            actorUserId: caller.user.id,
+            action: "change.bundle_downloaded",
+            subjectId: change.id,
+            field: "tip",
+            value: requested,
+          }));
         const bundle = yield* (yield* Landing)
           .bundle({
             sessionId: session.id,
@@ -318,7 +334,7 @@ export const LandingsGroupLive = HttpApiBuilder.group(MendApi, "landings", (hand
             webOrigin: yield* webOriginOfRequest,
             // `0` turns the budget off.
             limitBytes: limits.bundleBytes > 0 ? limits.bundleBytes : Number.MAX_SAFE_INTEGER,
-            ...(query.onto === undefined ? {} : { onto: Sha.make(query.onto) }),
+            ...(served ? { onto: requested } : {}),
           })
           .pipe(
             Effect.catchTags({
@@ -346,8 +362,7 @@ export const LandingsGroupLive = HttpApiBuilder.group(MendApi, "landings", (hand
                 ),
             }),
           );
-        const project = yield* projectOf(change);
-        yield* (yield* AuditEventsRepo).record({
+        yield* audit.record({
           organizationId: project.organizationId,
           actorUserId: caller.user.id,
           action: "change.bundle_downloaded",
@@ -361,6 +376,9 @@ export const LandingsGroupLive = HttpApiBuilder.group(MendApi, "landings", (hand
             // What this download carried: only the new commits when it built on `onto`.
             commits: bundle.commits,
             bytes: bundle.bytes.byteLength,
+            // What the clone asked to build on, and what the bundle built on: a request that
+            // was not served here, or no longer held, stays visible.
+            ontoRequested: requested,
             onto: bundle.onto,
           },
         });

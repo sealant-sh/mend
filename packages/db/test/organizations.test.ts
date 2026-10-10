@@ -7,7 +7,11 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { MendDBLive } from "../src/client.ts";
 import { migrations } from "../src/migrations.ts";
 import { SessionsRepo, SessionsRepoLive } from "../src/repos/agent-sessions.ts";
-import { AuditEventsRepo, AuditEventsRepoLive } from "../src/repos/audit-events.ts";
+import {
+  AuditEventsRepo,
+  AuditEventsRepoLive,
+  type AuditLookup,
+} from "../src/repos/audit-events.ts";
 import { FoldersRepo, FoldersRepoLive } from "../src/repos/folders.ts";
 import { HotWorkspacesRepo, HotWorkspacesRepoLive } from "../src/repos/hot-workspaces.ts";
 import { InstanceRolesRepo, InstanceRolesRepoLive } from "../src/repos/instance-roles.ts";
@@ -697,6 +701,45 @@ describe.skipIf(!reachable)("organizations", () => {
       }),
     );
     expect(pages).toEqual([["audit-c", "audit-b"], ["audit-a"]]);
+  });
+
+  it("finds an event by its subject, its actor and one data field, and nothing else", async () => {
+    const tip = "a".repeat(40);
+    const found = await run(
+      Effect.gen(function* () {
+        const audit = yield* AuditEventsRepo;
+        yield* audit.record({
+          organizationId: acme,
+          actorUserId: "alice",
+          action: "change.bundle_downloaded",
+          subjectType: "change",
+          subjectId: "change-1",
+          data: { tip, commits: 2 },
+        });
+        const lookup: AuditLookup = {
+          organizationId: acme,
+          actorUserId: "alice",
+          action: "change.bundle_downloaded",
+          subjectId: "change-1",
+          field: "tip",
+          value: tip,
+        };
+        return {
+          served: yield* audit.recorded(lookup),
+          otherTip: yield* audit.recorded({ ...lookup, value: "b".repeat(40) }),
+          otherChange: yield* audit.recorded({ ...lookup, subjectId: "change-2" }),
+          otherPerson: yield* audit.recorded({ ...lookup, actorUserId: "bob" }),
+          otherField: yield* audit.recorded({ ...lookup, field: "base" }),
+        };
+      }),
+    );
+    expect(found).toEqual({
+      served: true,
+      otherTip: false,
+      otherChange: false,
+      otherPerson: false,
+      otherField: false,
+    });
   });
 
   it("a removal owes the member's SSH keys in its own transaction; the sweep claims, defers and settles it", async () => {

@@ -3,6 +3,7 @@ import {
   AgentTurnId,
   ChangeLandingId,
   CheckpointId,
+  OrganizationId,
   SessionGitOpId,
   SessionId,
   SessionProcessId,
@@ -157,6 +158,18 @@ describe("landing routes", () => {
               Effect.sync(() => {
                 state.audited.push(event);
               }),
+            // Answered from what was recorded, as the repository answers from the table.
+            recorded: (query) =>
+              Effect.sync(() =>
+                state.audited.some(
+                  (event) =>
+                    event.organizationId === query.organizationId &&
+                    event.actorUserId === query.actorUserId &&
+                    event.action === query.action &&
+                    event.subjectId === query.subjectId &&
+                    event.data?.[query.field] === query.value,
+                ),
+              ),
           },
           landing: {
             land: (input) =>
@@ -651,6 +664,7 @@ describe("landing routes", () => {
             tip: PUSHED,
             commits: 2,
             bytes: 4,
+            ontoRequested: null,
             onto: null,
           },
         },
@@ -658,13 +672,46 @@ describe("landing routes", () => {
       expect(response.headers.get("x-mend-bundle-onto")).toBeNull();
     });
 
-    it("builds on the clone's last pull when asked, and says so", async () => {
-      const pulled = "7".repeat(40);
-      const response = await api.request("carol", "GET", `${bundle}?onto=${pulled}`);
+    it("builds on a tip it served this person for this change, and says so", async () => {
+      // The first pull serves PUSHED; the clone sends it back on the next.
+      expect((await api.request("carol", "GET", bundle)).status).toBe(200);
+      const response = await api.request("carol", "GET", `${bundle}?onto=${PUSHED}`);
       expect(response.status).toBe(200);
-      expect(state.bundles).toMatchObject([{ actorUserId: "carol", onto: pulled }]);
-      expect(response.headers.get("x-mend-bundle-onto")).toBe(pulled);
-      expect(state.audited).toMatchObject([{ data: { onto: pulled } }]);
+      expect(state.bundles[1]).toMatchObject({ actorUserId: "carol", onto: PUSHED });
+      expect(response.headers.get("x-mend-bundle-onto")).toBe(PUSHED);
+      expect(state.audited[1]?.data).toMatchObject({ ontoRequested: PUSHED, onto: PUSHED });
+    });
+
+    it("bundles as a first pull for an onto it never served this person for this change", async () => {
+      const elsewhere = "7".repeat(40);
+      // Another session's tip: served, but for another change.
+      state.audited.push({
+        organizationId: OrganizationId.make("org-A"),
+        actorUserId: "carol",
+        action: "change.bundle_downloaded",
+        subjectType: "change",
+        subjectId: "change-shared-b",
+        data: { tip: elsewhere },
+      });
+      // This change's tip, but served to someone else.
+      const alices = "8".repeat(40);
+      state.audited.push({
+        organizationId: OrganizationId.make("org-A"),
+        actorUserId: "alice",
+        action: "change.bundle_downloaded",
+        subjectType: "change",
+        subjectId: sharedA.change,
+        data: { tip: alices },
+      });
+      const neverServed = "9".repeat(40);
+      for (const onto of [elsewhere, alices, neverServed]) {
+        const response = await api.request("carol", "GET", `${bundle}?onto=${onto}`);
+        expect(response.status, onto).toBe(200);
+        expect(response.headers.get("x-mend-bundle-onto"), onto).toBeNull();
+        expect(state.bundles.at(-1), onto).not.toHaveProperty("onto");
+        // The request stays visible beside what the bundle built on.
+        expect(state.audited.at(-1)?.data, onto).toMatchObject({ ontoRequested: onto, onto: null });
+      }
     });
 
     it("refuses an onto that is no commit id", async () => {
