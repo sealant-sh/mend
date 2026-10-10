@@ -70,9 +70,11 @@ In a [per-person workspace](/operate/per-person-workspaces/) only the workspace'
 it over Remote-SSH: the person whose session started the workspace. A session started in a worktree
 where someone else's session already runs joins their workspace, so it is theirs to open, your own
 session included. Opening one says so first, and offers the session's terminal when the server would
-let you in. The Remote-SSH login itself runs as root inside the workspace until Sealant's gateway
-takes a user for it, so an agent you start in that terminal does not run on your per-person home and
-logins.
+let you in. The Remote-SSH login runs as the launcher's own Linux user, on their home and logins, so
+an agent they start in its terminal runs as them. Where the server's Sealant cannot bind the person
+(an older Core), it runs as root instead, and the session line says
+`Remote-SSH: root, Core can't bind your person`; an agent started there then does not use the
+person's home and logins.
 
 ### Workspace SSH setup
 
