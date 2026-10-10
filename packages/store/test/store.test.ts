@@ -424,6 +424,7 @@ describe("Store", () => {
     );
   });
 
+  // Two refusals each wait out the gate's ~1 s for a held lock: longer than the default timeout.
   it("refuses to fetch or open a worktree while a remote still holds a token, and cleans it first once it can", async () => {
     await withStore((_tmp, _origin, source) =>
       Effect.gen(function* () {
@@ -450,7 +451,7 @@ describe("Store", () => {
         );
       }),
     );
-  });
+  }, 30_000);
 
   it("reads what git reads: a multiline value is cleaned whole; an include, or a url rewrite with a token, refuses", async () => {
     await withStore((tmp, _origin, source) =>
