@@ -32,7 +32,10 @@ native phone app are not.
 - **Workspace SSH.** `--ssh-bind <ip>` publishes workspace SSH on its own address, a `workspace-ssh`
   item of the public exposure gate. In a per-person workspace Remote-SSH runs as the launcher, not
   root. `mend ssh keys` lists your workspace SSH keys and removes one.
-- **T3 Code gateway**, opt-in with `--t3-gateway`. See [t3code](/integrations/t3code/).
+- **T3 Code gateway**, opt-in with `--t3-gateway`. T3 Code works as a Mend client for its core
+  workflow: threads, messages and images, the queue, approvals, diffs, files, the terminal, and
+  settle and snooze. More of T3 Code is coming in 0.36 patch releases, before 0.37. See
+  [t3code](/integrations/t3code/).
 - **Upgrade backups** are pruned to the newest two (`--keep-backups`).
 - **Ubuntu 23.10 and later**: setup and `mend doctor` say when the host refuses user namespaces,
   with the command that allows them.
