@@ -14,6 +14,7 @@ import {
   OrchestrationV2ThreadShell,
   OrchestrationV2TurnItem,
   ThreadId,
+  type ModelSelection,
   type OrchestrationV2ArchivedShellSnapshot,
   type OrchestrationV2ArchivedShellStreamItem,
   type OrchestrationV2DomainEvent,
@@ -78,6 +79,7 @@ import type {
   MendTurn,
   MendWorkspaceRetirement,
 } from "./mend-workbench.ts";
+import { optionsChangeOf } from "./model-options.ts";
 import { readsRetirement, readsWaiting, threadNoticesOf } from "./notices.ts";
 import * as Queueing from "./queue.ts";
 import {
@@ -93,6 +95,8 @@ import {
   isProjectable,
   launchingAgentOf,
   PROJECTION_SCHEMA_VERSION,
+  runsOf,
+  threadModelOptionsOf,
   projectShellOf,
   threadShellOf,
   type ThreadSource,
@@ -119,6 +123,7 @@ import {
   turnSlicesOf,
   type TurnSlice,
 } from "./turn-checkpoints.ts";
+import { markedUnread, visitedAfter } from "./visits.ts";
 
 /**
  * The projection hub (ADR 0012, "Projection"): one per paired person, shared by every socket and
@@ -332,6 +337,11 @@ export interface ThreadCommands {
     readonly text: string;
     /** Images kept with `persistImages`, by id. */
     readonly imageIds: ReadonlyArray<string>;
+    /**
+     * The model selection the message carries: an effort changed on the picker is kept for the
+     * agent's next start, a tier changed is refused (`model-options.ts`).
+     */
+    readonly modelSelection?: ModelSelection | undefined;
   }) => Effect.Effect<number, ThreadCommandFailure>;
   /** Interrupts a running run, or takes back a queued one; `holdQueue` holds what is queued. */
   readonly interrupt: (input: {
@@ -419,6 +429,15 @@ export interface ThreadCommands {
   readonly setLifecycle: (input: {
     readonly threadId: string;
     readonly change: LifecycleChange;
+  }) => Effect.Effect<number, ThreadCommandFailure>;
+  /**
+   * Records that the person saw the thread as it stood at `visitedAt` (`thread.visit`), or marks
+   * it unread (`thread.mark-unread`; `visits.ts`). Mend has no read state: the session is not
+   * touched.
+   */
+  readonly setVisited: (input: {
+    readonly threadId: string;
+    readonly change: { readonly kind: "visit"; readonly at: string } | { readonly kind: "unread" };
   }) => Effect.Effect<number, ThreadCommandFailure>;
 }
 
@@ -1032,6 +1051,30 @@ export const makePersonHub = (input: {
             ),
           ),
     );
+    /** Session id → when the person last saw its thread (`thread_visits`). */
+    const visited = new Map<string, string>(
+      keeper === null
+        ? []
+        : yield* state.listVisited(keeper.id).pipe(
+            Effect.catch((error) =>
+              Effect.logError("t3 gateway could not read when threads were last seen", {
+                cause: error.message,
+              }).pipe(Effect.as(new Map<string, string>())),
+            ),
+          ),
+    );
+    /** Session id → the reasoning effort the person chose for its agent's next start. */
+    const nextEfforts = new Map<string, string>(
+      keeper === null
+        ? []
+        : yield* state.listNextEfforts(keeper.id).pipe(
+            Effect.catch((error) =>
+              Effect.logError("t3 gateway could not read its next-start efforts", {
+                cause: error.message,
+              }).pipe(Effect.as(new Map<string, string>())),
+            ),
+          ),
+    );
     /**
      * Keeps each settle and snooze as it stands now: one a later turn or message ended is let go of
      * in the state file too, so it never comes back when that message leaves the queue's history.
@@ -1085,6 +1128,32 @@ export const makePersonHub = (input: {
             Effect.tap(() => Effect.sync(() => nextModes.delete(sessionId))),
             Effect.catch((error) =>
               Effect.logWarning("t3 gateway could not let go of a next-start mode", {
+                cause: error.message,
+              }),
+            ),
+          );
+        },
+        { discard: true },
+      ),
+    );
+
+    /** Lets go of each chosen effort once a live agent runs with it: the next start applied it. */
+    const settleNextEfforts = Effect.suspend(() =>
+      Effect.forEach(
+        Array.from(nextEfforts),
+        ([sessionId, effort]) => {
+          const source = sourceOf(sessionId);
+          const applied =
+            source !== null &&
+            source.agent.exitedAt === null &&
+            source.agent.status === "running" &&
+            source.agent.protocolOptions?.effort === effort;
+          if (!applied || keeper === null) return Effect.void;
+          // As a mode: let go of in the state file first, kept in memory until then.
+          return state.setNextEffort(keeper.id, sessionId, null).pipe(
+            Effect.tap(() => Effect.sync(() => nextEfforts.delete(sessionId))),
+            Effect.catch((error) =>
+              Effect.logWarning("t3 gateway could not let go of a next-start effort", {
                 cause: error.message,
               }),
             ),
@@ -1265,10 +1334,16 @@ export const makePersonHub = (input: {
               turns: conversation.turns,
               pending,
             }),
+            lastVisitedAt: visited.get(session.id) ?? null,
             nextMode: (() => {
               const next = nextModes.get(session.id);
               return next === undefined || next === modeOf(agent) ? null : next;
             })(),
+            nextEffort: (() => {
+              const next = nextEfforts.get(session.id);
+              return next === undefined || next === agent.protocolOptions?.effort ? null : next;
+            })(),
+            tier: thread?.options.speed === "fast" ? "fast" : null,
             ...turnCheckpointsOf(session.id, conversation.turns),
             pending,
             queueHeld: queue?.held ?? false,
@@ -1567,6 +1642,7 @@ export const makePersonHub = (input: {
     });
     const publishAll = Effect.suspend(() => settleQueues).pipe(
       Effect.andThen(settleNextModes),
+      Effect.andThen(settleNextEfforts),
       Effect.andThen(settleLifecycles),
       Effect.andThen(keepQueues),
       Effect.andThen(publishShell),
@@ -2343,10 +2419,19 @@ export const makePersonHub = (input: {
         // agent for it; from then on Mend reuses what that agent recorded (mend#493), as for every
         // session, so a mode or model changed in Mend is never undone from here. The mode chosen
         // for the next start goes over either.
+        // The effort chosen for the next start goes over it the same way. Mend records no tier, so
+        // a launched thread names the tier its launch asked for every time, as the thread shows.
         const next = nextModes.get(sessionId);
+        const nextEffort = nextEfforts.get(sessionId);
+        const speed = launched.get(sessionId)?.options.speed;
         const named =
           recordedAgentOf(sessionId) === null ? launched.get(sessionId)?.options : undefined;
-        const options = next === undefined ? named : { ...named, permissionMode: next };
+        const options = {
+          ...named,
+          ...(next === undefined ? {} : { permissionMode: next }),
+          ...(nextEffort === undefined ? {} : { effort: nextEffort }),
+          ...(speed === undefined ? {} : { speed }),
+        };
         const answer = yield* mend
           .launchProtocol(entry.token, sessionId, "", options)
           .pipe(Effect.result);
@@ -2544,6 +2629,7 @@ export const makePersonHub = (input: {
             ) {
               return sequence;
             }
+            yield* keepNextEffort(command.threadId, command.modelSelection);
             yield* changeKept(command.threadId, (queue) => {
               queue.entries.push(
                 Queueing.newEntry({
@@ -2562,6 +2648,42 @@ export const makePersonHub = (input: {
             return sequence;
           }),
         );
+      });
+
+    /**
+     * Weighs the effort and tier a message carries against the thread's (`model-options.ts`): a
+     * changed effort is kept for the agent's next start before the message is, so a choice the
+     * state file did not take refuses the message rather than being lost; a changed tier refuses.
+     */
+    const keepNextEffort = (sessionId: string, selection: ModelSelection | undefined) =>
+      Effect.gen(function* () {
+        const source = sourceOf(sessionId);
+        if (source === null) return;
+        const change = optionsChangeOf(threadModelOptionsOf(source), selection);
+        if (change._tag === "Refused") return yield* refused(change.reason);
+        if (change._tag === "Keep") return;
+        if (keeper === null) {
+          return yield* refused(
+            "An effort for the next start needs a paired person to keep it for.",
+          );
+        }
+        yield* state.setNextEffort(keeper.id, sessionId, change.effort).pipe(
+          Effect.tapError((error) =>
+            Effect.logError("t3 gateway could not keep a next-start effort", {
+              cause: error.message,
+            }),
+          ),
+          Effect.mapError(
+            () =>
+              new ThreadCommandRefused({
+                reason:
+                  "The gateway could not keep this effort for the agent's next start, so it did not send the message. Try again.",
+                authorization: false,
+              }),
+          ),
+        );
+        if (change.effort === null) nextEfforts.delete(sessionId);
+        else nextEfforts.set(sessionId, change.effort);
       });
 
     /** The Mend turn a run is: the turn the gateway sent it as, or the turn of that id. */
@@ -3221,6 +3343,48 @@ export const makePersonHub = (input: {
         );
       });
 
+    const setVisited: ThreadCommands["setVisited"] = (command) =>
+      Effect.gen(function* () {
+        yield* ensureLoaded;
+        if (keeper === null) {
+          return yield* refused("Read state needs a paired person to keep it for.");
+        }
+        const sessionId = sessionIdOf(command.threadId);
+        return yield* locked(
+          Effect.gen(function* () {
+            const source = sourceOf(sessionId);
+            if (source === null) {
+              return yield* refused(`Thread ${command.threadId} is not in this environment.`);
+            }
+            const completedAt = runsOf(source).at(-1)?.completedAt ?? null;
+            const result =
+              command.change.kind === "visit"
+                ? visitedAfter(source.lastVisitedAt, command.change.at)
+                : markedUnread(completedAt === null ? null : DateTime.formatIso(completedAt));
+            if (result._tag === "Refused") return yield* refused(result.reason);
+            if (result.lastVisitedAt !== source.lastVisitedAt) {
+              yield* state.setVisited(keeper.id, sessionId, result.lastVisitedAt).pipe(
+                Effect.tapError((error) =>
+                  Effect.logError("t3 gateway could not keep when a thread was seen", {
+                    cause: error.message,
+                  }),
+                ),
+                Effect.mapError(
+                  () =>
+                    new ThreadCommandRefused({
+                      reason: "The gateway could not keep this, so nothing changed. Try again.",
+                      authorization: false,
+                    }),
+                ),
+              );
+              visited.set(sessionId, result.lastVisitedAt);
+              yield* publishAll;
+            }
+            return sequence;
+          }),
+        );
+      });
+
     // A thread a t3code client launched is addressed by the client's id; everything inside the
     // hub is keyed by the Mend session.
     const commands: ThreadCommands = {
@@ -3248,6 +3412,7 @@ export const makePersonHub = (input: {
       setNextMode,
       setArchived,
       setLifecycle,
+      setVisited,
     };
 
     // ─── The hub ───────────────────────────────────────────────────────────

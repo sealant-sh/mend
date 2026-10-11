@@ -24,6 +24,7 @@ import {
   ProviderUploadFeedbackError,
   PullRequestOperationError,
   ScheduledTaskError,
+  type DeviceServiceState,
   ServerConfig,
   ServerProviderUpdateError,
   ServerSelfUpdateError,
@@ -77,8 +78,10 @@ import { makeVcsHandlers } from "./vcs.ts";
  * - A command or a read fails with a typed error from its own contract. Where the contract has an
  *   error whose fields can be filled truthfully, that error; otherwise
  *   `EnvironmentAuthorizationError`, which every method carries, naming the method in its message.
- * - A stream for a feed of things Mend never has (terminal events, previews, devices, scheduled
- *   tasks, provider setup) stays open and never emits: there is nothing to report.
+ * - A stream for a feed of things Mend never has (previews, provider setup, pull request
+ *   refreshes) stays open and never emits: there is nothing to report. Where a client waits on
+ *   the first answer before it renders (scheduled tasks, the device hub), the feed says what the
+ *   gateway has instead: none, or a hub that will never run.
  * - A stream for a named thing or an action (one thread, a git action, a self-update) fails
  *   typed, as its command would.
  *
@@ -128,6 +131,11 @@ export const SERVED_METHODS: ReadonlySet<WsRpcMethod> = new Set<WsRpcMethod>([
   WS_METHODS.subscribeTerminalMetadata,
   WS_METHODS.reviewGetDiffPreview,
   WS_METHODS.reviewGetDiffFileContents,
+  // Answered with what the gateway has: nothing to report about client activity, no scheduled
+  // tasks, and a device hub that will never run. Silent, each left a page loading for good.
+  WS_METHODS.serverReportClientActivity,
+  WS_METHODS.scheduledTasksSubscribe,
+  WS_METHODS.subscribeDeviceState,
 ]);
 
 /** Streams that stay open and never emit: feeds of things Mend never has. */
@@ -136,15 +144,12 @@ export const SILENT_STREAMS: ReadonlySet<WsRpcMethod> = new Set<WsRpcMethod>([
   WS_METHODS.codexAuthCallbackSubscribe,
   WS_METHODS.providerAuthSubscribe,
   WS_METHODS.providerInstallSubscribe,
-  WS_METHODS.scheduledTasksSubscribe,
   WS_METHODS.pullRequestsSubscribeRefreshes,
   WS_METHODS.subscribeProjectClones,
   WS_METHODS.subscribeWorktreeSetup,
   WS_METHODS.subscribePreviewEvents,
   WS_METHODS.subscribeDiscoveredLocalServers,
-  WS_METHODS.subscribeDeviceState,
   WS_METHODS.subscribeBackgroundPolicy,
-  WS_METHODS.subscribeResourceTelemetry,
 ]);
 
 // ─── Refusals ────────────────────────────────────────────────────────────────
@@ -202,6 +207,25 @@ const pullRequests = (method: WsRpcMethod) =>
 
 const scheduledTasks = (method: WsRpcMethod) =>
   Effect.fail(new ScheduledTaskError({ message: notOfferedText(method) }));
+
+/**
+ * The device hub as t3code's clients read it: set up, and failed for good, with why. A hub left
+ * unreported (or reported off) opens t3code's device setup wizard on every thread, whose switch
+ * Mend can never turn on; a completed one that failed shows the reason in the device panel.
+ */
+export const NO_DEVICE_HUB: DeviceServiceState = {
+  hosts: [],
+  hostStatus: "failed",
+  hostStatusDetail:
+    "Mend runs no simulators or emulators, so devices are not offered on this environment.",
+  hostStatuses: {},
+  devices: [],
+  sessions: [],
+  onboardingCompleted: true,
+  agentAccessEnabled: false,
+  hubBasePath: "/api/device-hub",
+  revision: 1,
+};
 
 const acpRegistry = (method: WsRpcMethod) =>
   Effect.fail(
@@ -680,11 +704,15 @@ export const makeGatewayRpcHandlers = ({
     [WS_METHODS.serverRunStorageCleanup]: () => refuse(WS_METHODS.serverRunStorageCleanup),
     [WS_METHODS.serverRefreshUsageRates]: () => refuse(WS_METHODS.serverRefreshUsageRates),
     [WS_METHODS.serverSignalProcess]: () => refuse(WS_METHODS.serverSignalProcess),
-    [WS_METHODS.serverReportClientActivity]: () => refuse(WS_METHODS.serverReportClientActivity),
+    // Nothing in the gateway waits on a client being active: taken, and nothing done.
+    [WS_METHODS.serverReportClientActivity]: () => authorize(session),
     [WS_METHODS.serverReportHostPowerState]: () => refuse(WS_METHODS.serverReportHostPowerState),
     [WS_METHODS.serverGetBackgroundPolicy]: () => refuse(WS_METHODS.serverGetBackgroundPolicy),
     [WS_METHODS.subscribeBackgroundPolicy]: () => Stream.never,
-    [WS_METHODS.subscribeResourceTelemetry]: () => Stream.never,
+    // Unreachable for a client paired now: `diagnostics:read` is not granted, so t3code never
+    // subscribes (`auth.ts`). One that does is refused, never left waiting.
+    [WS_METHODS.subscribeResourceTelemetry]: () =>
+      refuseStream(WS_METHODS.subscribeResourceTelemetry),
     // t3code's own answer to a paired client: pairing is administered in Mend, and the gateway
     // grants no access scopes.
     [WS_METHODS.subscribeAuthAccess]: () =>
@@ -724,7 +752,13 @@ export const makeGatewayRpcHandlers = ({
       scheduledTasks(WS_METHODS.scheduledTasksSetEnabled),
     [WS_METHODS.scheduledTasksDelete]: () => scheduledTasks(WS_METHODS.scheduledTasksDelete),
     [WS_METHODS.scheduledTasksRunNow]: () => scheduledTasks(WS_METHODS.scheduledTasksRunNow),
-    [WS_METHODS.scheduledTasksSubscribe]: () => Stream.never,
+    // No tasks, ever: the settings page lists none and a thread's details show no automations.
+    // A failure would show "Could not load automations" on every thread instead.
+    [WS_METHODS.scheduledTasksSubscribe]: () =>
+      authorize(session).pipe(
+        Effect.as(Stream.concat(Stream.make({ tasks: [] }), Stream.never)),
+        Stream.unwrap,
+      ),
     [WS_METHODS.scheduledTasksRotateWebhookToken]: () =>
       scheduledTasks(WS_METHODS.scheduledTasksRotateWebhookToken),
     [WS_METHODS.scheduledTasksListWebhookDeliveries]: () =>
@@ -986,7 +1020,11 @@ export const makeGatewayRpcHandlers = ({
     [WS_METHODS.deviceShutdown]: () => refuse(WS_METHODS.deviceShutdown),
     [WS_METHODS.deviceDetail]: () => refuse(WS_METHODS.deviceDetail),
     [WS_METHODS.deviceAction]: () => refuse(WS_METHODS.deviceAction),
-    [WS_METHODS.subscribeDeviceState]: () => Stream.never,
+    [WS_METHODS.subscribeDeviceState]: () =>
+      authorize(session).pipe(
+        Effect.as(Stream.concat(Stream.make(NO_DEVICE_HUB), Stream.never)),
+        Stream.unwrap,
+      ),
   });
 };
 

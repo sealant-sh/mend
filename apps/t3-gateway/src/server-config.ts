@@ -78,6 +78,10 @@ export const harnessOfInstance = (
   return null;
 };
 
+/** The option id t3code's driver for a Mend harness uses for the effort select, or null. */
+export const effortOptionIdOf = (harness: string): string | null =>
+  HARNESS_DRIVERS[harness]?.effortOptionId ?? null;
+
 /** The option id and choice t3code's Codex driver uses for priority processing. */
 export const SERVICE_TIER_OPTION_ID = "serviceTier";
 export const STANDARD_SERVICE_TIER = "default";
@@ -101,6 +105,9 @@ const EFFORT_LABELS: Readonly<Record<string, string>> = {
   ultra: "Ultra",
 };
 
+/** An effort as t3code's picker labels it. */
+export const effortLabelOf = (effort: string): string => EFFORT_LABELS[effort] ?? effort;
+
 const nonEmpty = (value: string): string | undefined => {
   const trimmed = value.trim();
   return trimmed.length === 0 ? undefined : trimmed;
@@ -113,7 +120,7 @@ const effortDescriptor = (
   const options: Array<ProviderOptionChoice> = [];
   for (const effort of efforts) {
     const id = nonEmpty(effort);
-    if (id !== undefined) options.push({ id, label: EFFORT_LABELS[id] ?? id });
+    if (id !== undefined) options.push({ id, label: effortLabelOf(id) });
   }
   return options.length === 0
     ? undefined
@@ -327,6 +334,10 @@ export const makeServerConfig = (input: {
     otlpLogsEnabled: false,
   },
   settings: DEFAULT_SERVER_SETTINGS,
+  // The shell and thread subscriptions send `synchronized` after their catch-up when asked
+  // (`rpc.ts`), as t3code's own server does, so a resuming client knows when it has caught up.
+  shellResumeCompletionMarker: true,
+  threadResumeCompletionMarker: true,
 });
 
 /** The `welcome` lifecycle event: nothing to bootstrap, so the bootstrap is complete. */

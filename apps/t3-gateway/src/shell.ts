@@ -33,6 +33,7 @@ import type {
   MendSession,
   MendTurn,
 } from "./mend-workbench.ts";
+import { modelOptionsOf, type ThreadModelOptions } from "./model-options.ts";
 import type { ThreadNotices } from "./notices.ts";
 import { harnessProvider } from "./server-config.ts";
 import type { StoredImage, ThreadLifecycle } from "./state.ts";
@@ -105,6 +106,15 @@ export interface ThreadSource {
   readonly archivedAt: string | null;
   /** The person's settle and snooze of the thread, as they stand now (`lifecycleOf`). */
   readonly lifecycle: ThreadLifecycle;
+  /** When the person last saw the thread (`visits.ts`); null when they never have. */
+  readonly lastVisitedAt: string | null;
+  /**
+   * The reasoning effort the person chose for the agent's next start, when it differs from the one
+   * it runs with (`model-options.ts`); null otherwise.
+   */
+  readonly nextEffort: string | null;
+  /** `fast` when a t3code client launched the thread on the Fast tier; Mend records no tier. */
+  readonly tier: "fast" | null;
   /**
    * The images a message the gateway sent carried when Mend took its turn, by the message's
    * t3code id (`images.ts`), each with the path its turn named.
@@ -287,12 +297,24 @@ export const isActiveRunStatus = (status: OrchestrationV2RunStatus): boolean =>
 
 export const modelSelectionOf = (source: ThreadSource): ModelSelection => {
   const provider = harnessProvider(source.session.harness);
+  // The effort the agent runs on, or the one chosen for its next start, and the tier: what the
+  // picker shows, so a message carries them back unchanged unless the person changes them.
+  const options = modelOptionsOf(threadModelOptionsOf(source));
   return {
     // Only sessions of a harness with a provider are threads (`isProjectable`).
     instanceId: provider?.instanceId ?? ProviderInstanceId.make(source.session.harness),
     model: source.session.model ?? source.agent.protocolOptions?.model ?? "default",
+    ...(options === undefined ? {} : { options }),
   };
 };
+
+/** The thread's effort and tier, as `model-options.ts` weighs a message's against them. */
+export const threadModelOptionsOf = (source: ThreadSource): ThreadModelOptions => ({
+  harness: source.session.harness,
+  runningEffort: source.agent.protocolOptions?.effort ?? null,
+  nextEffort: source.nextEffort,
+  tier: source.tier,
+});
 
 export const projectShellOf = (project: MendProject): OrchestrationProjectShell => ({
   id: ProjectId.make(project.id),
@@ -323,12 +345,17 @@ export const threadTitleOf = (source: ThreadSource): string => {
   return `${harnessProvider(source.session.harness)?.displayName ?? source.session.harness} session`;
 };
 
-/** When the thread last changed: the session row, or the newest turn or request in it. */
+/**
+ * When the thread last changed: the session row, or the newest turn, request or message in the
+ * gateway's queue in it. A queued message is activity, as on t3code's own server; and one that
+ * failed or was taken back completes its run when it was sent, so a visit at this time sees it.
+ */
 export const threadUpdatedAtOf = (source: ThreadSource): string =>
   latestOf([
     source.session.updatedAt,
     ...source.turns.flatMap((turn) => [turn.createdAt, turn.startedAt, turn.endedAt]),
     ...source.requests.flatMap((request) => [request.createdAt, request.decidedAt]),
+    ...source.pending.map((entry) => entry.requestedAt),
   ]) ?? source.session.updatedAt;
 
 const utcOrNull = (iso: string | null): DateTime.Utc | null => (iso === null ? null : utc(iso));
@@ -366,7 +393,7 @@ export const appThreadOf = (source: ThreadSource): OrchestrationV2AppThread => {
     unsettledAt: utcOrNull(lifecycle.unsettledAt),
     snoozedUntil: utcOrNull(lifecycle.snoozedUntil),
     snoozedAt: utcOrNull(lifecycle.snoozedAt),
-    lastVisitedAt: null,
+    lastVisitedAt: utcOrNull(source.lastVisitedAt),
     deletedAt: null,
   };
 };
@@ -620,7 +647,8 @@ export const threadShellOf = (
     unsettledAt: thread.unsettledAt ?? null,
     snoozedUntil: thread.snoozedUntil ?? null,
     snoozedAt: thread.snoozedAt ?? null,
-    lastVisitedAt: null,
+    // Present, so t3code takes the gateway's read state as the person's on every device.
+    lastVisitedAt: thread.lastVisitedAt,
     deletedAt: null,
   };
 };

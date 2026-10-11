@@ -1,0 +1,252 @@
+import { assert, describe, it } from "@effect/vitest";
+import {
+  CommandId,
+  MessageId,
+  ORCHESTRATION_V2_WS_METHODS,
+  ProjectId,
+  ProviderInstanceId,
+  ThreadId,
+  type ModelSelection,
+} from "@mend/t3-contracts";
+import * as Cause from "effect/Cause";
+import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import * as Option from "effect/Option";
+
+import { nextEffortLineOf } from "../src/model-options.ts";
+import { startFakeMend, type FakeMend } from "./support/fake-mend.ts";
+import { gatewayTestLayer } from "./support/gateway.ts";
+import { pairAndConnect } from "./support/rpc.ts";
+
+/**
+ * The traits picker on a started thread (ADR 0012, phase 3): Mend sets the reasoning effort and the
+ * service tier per launch of the agent. A changed effort applies from the agent's next start, as
+ * the runtime mode does, and the thread says so until then; Mend records no tier, so a changed tier
+ * is refused with t3code's own dispatch error and the picker never shows one the agent lacks.
+ */
+
+const withGateway = <A, E, R>(test: (mend: FakeMend) => Effect.Effect<A, E, R>) =>
+  Effect.gen(function* () {
+    const mend = yield* startFakeMend;
+    return yield* test(mend).pipe(Effect.scoped, Effect.provide(gatewayTestLayer(mend.url)));
+  });
+
+const THREAD = ThreadId.make("session-1");
+let commands = 0;
+const commandId = () => CommandId.make(`options-command-${++commands}`);
+
+type Rpc = Effect.Success<ReturnType<typeof pairAndConnect>>["rpc"];
+
+const selection = (
+  options: ReadonlyArray<{ readonly id: string; readonly value: string }>,
+): ModelSelection => ({
+  instanceId: ProviderInstanceId.make("codex"),
+  model: "gpt-6.1-sol",
+  options: [...options],
+});
+
+const send = (
+  rpc: Rpc,
+  text: string,
+  modelSelection: ModelSelection | undefined,
+  threadId: ThreadId = THREAD,
+) =>
+  rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({
+    type: "message.dispatch",
+    commandId: commandId(),
+    createdBy: "user",
+    creationSource: "web",
+    threadId,
+    messageId: MessageId.make(`message-${commands}`),
+    text,
+    attachments: [],
+    dispatchMode: { type: "queue_after_active" },
+    ...(modelSelection === undefined ? {} : { modelSelection }),
+  });
+
+const eventually = (condition: () => boolean, what: string) =>
+  Effect.gen(function* () {
+    for (let attempt = 0; attempt < 100; attempt++) {
+      if (condition()) return;
+      yield* Effect.sleep("50 millis");
+    }
+    return yield* Effect.die(new Error(`Timed out waiting for ${what}.`));
+  });
+
+const errorOf = (exit: Exit.Exit<unknown, unknown>): { _tag?: string; message?: string } => {
+  if (!Exit.isFailure(exit)) return {};
+  const error = Option.getOrUndefined(Cause.findErrorOption(exit.cause));
+  return typeof error === "object" && error !== null ? error : {};
+};
+
+const notices = (value: { readonly turnItems: ReadonlyArray<{ readonly type: string }> }) =>
+  value.turnItems.flatMap((item) =>
+    item.type === "system_notice" && "message" in item && typeof item.message === "string"
+      ? [item.message]
+      : [],
+  );
+
+/** A Codex session whose agent recorded `effort` when it started. */
+const sessionRunningOn = (mend: FakeMend, effort: string | null) => {
+  mend.workbench.addProject("project-1", "mend");
+  mend.workbench.addSession({ id: "session-1", projectId: "project-1" });
+  const agent = mend.workbench.agents.get("session-1");
+  if (agent?.protocolOptions != null) {
+    mend.workbench.agents.set("session-1", {
+      ...agent,
+      protocolOptions: { ...agent.protocolOptions, effort },
+    });
+  }
+};
+
+describe("reasoning effort on a started thread", () => {
+  it.live("shows the effort the agent runs on", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        sessionRunningOn(mend, "medium");
+        const { rpc } = yield* pairAndConnect(mend, "EFFORT-SHOWN");
+        const projection = yield* rpc[ORCHESTRATION_V2_WS_METHODS.getThreadProjection]({
+          threadId: THREAD,
+        });
+        assert.deepStrictEqual(projection.thread.modelSelection.options, [
+          { id: "reasoningEffort", value: "medium" },
+        ]);
+      }),
+    ),
+  );
+
+  it.live("applies a changed effort from the agent's next start, saying so until it does", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        sessionRunningOn(mend, "medium");
+        const { rpc } = yield* pairAndConnect(mend, "EFFORT-NEXT");
+        const projection = () =>
+          rpc[ORCHESTRATION_V2_WS_METHODS.getThreadProjection]({ threadId: THREAD });
+
+        // The picker moved to High: the message goes, and the effort waits for the next start.
+        yield* send(rpc, "Think harder", selection([{ id: "reasoningEffort", value: "high" }]));
+        yield* eventually(() => mend.workbench.turns.get("session-1")?.length === 1, "the turn");
+        const chosen = yield* projection();
+        assert.deepStrictEqual(chosen.thread.modelSelection.options, [
+          { id: "reasoningEffort", value: "high" },
+        ]);
+        assert.include(notices(chosen), nextEffortLineOf("high", "medium"));
+        // The running agent is not touched: Mend sets an effort per launch.
+        assert.strictEqual(mend.workbench.launches.length, 0);
+
+        // The idle stop; the next message launches the agent on High.
+        const first = mend.workbench.turns.get("session-1")?.[0];
+        if (first !== undefined) mend.workbench.setTurn(first, "completed");
+        mend.workbench.stopAgent("session-1");
+        yield* send(rpc, "Carry on", selection([{ id: "reasoningEffort", value: "high" }]));
+        yield* eventually(() => mend.workbench.launches.length === 1, "the launch");
+        assert.deepStrictEqual(mend.workbench.launches[0]?.body, {
+          mode: "protocol",
+          effort: "high",
+        });
+        yield* eventually(
+          () => mend.workbench.agents.get("session-1")?.protocolOptions?.effort === "high",
+          "the agent on High",
+        );
+        yield* eventually(() => mend.workbench.turns.get("session-1")?.length === 2, "its turn");
+        const applied = yield* projection();
+        assert.deepStrictEqual(applied.thread.modelSelection.options, [
+          { id: "reasoningEffort", value: "high" },
+        ]);
+        assert.notInclude(notices(applied), nextEffortLineOf("high", "medium"));
+      }),
+    ),
+  );
+
+  it.live("lets go of a chosen effort set back to the running one", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        sessionRunningOn(mend, "medium");
+        const { rpc } = yield* pairAndConnect(mend, "EFFORT-BACK");
+        yield* send(rpc, "Harder", selection([{ id: "reasoningEffort", value: "xhigh" }]));
+        yield* send(rpc, "Never mind", selection([{ id: "reasoningEffort", value: "medium" }]));
+        const projection = yield* rpc[ORCHESTRATION_V2_WS_METHODS.getThreadProjection]({
+          threadId: THREAD,
+        });
+        assert.deepStrictEqual(projection.thread.modelSelection.options, [
+          { id: "reasoningEffort", value: "medium" },
+        ]);
+        assert.isFalse(notices(projection).some((line) => line.includes("reasoning effort")));
+      }),
+    ),
+  );
+});
+
+describe("service tier on a started thread", () => {
+  it.live("refuses a changed tier with t3code's dispatch error, and sends nothing", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        sessionRunningOn(mend, null);
+        const { rpc } = yield* pairAndConnect(mend, "TIER");
+        const fast = yield* Effect.exit(
+          send(rpc, "Faster", selection([{ id: "serviceTier", value: "fast" }])),
+        );
+        const error = errorOf(fast);
+        assert.strictEqual(error._tag, "OrchestrationV2DispatchCommandError");
+        assert.include(error.message ?? "", "service tier");
+        const projection = yield* rpc[ORCHESTRATION_V2_WS_METHODS.getThreadProjection]({
+          threadId: THREAD,
+        });
+        assert.lengthOf(projection.runs, 0);
+        // The tier it shows (Standard) is no change.
+        yield* send(rpc, "As before", selection([{ id: "serviceTier", value: "default" }]));
+        yield* eventually(() => mend.workbench.turns.get("session-1")?.length === 1, "the turn");
+      }),
+    ),
+  );
+
+  it.live("keeps a launched thread on the tier it asked for, naming it on every relaunch", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        mend.workbench.addProject("project-1", "mend");
+        const { rpc } = yield* pairAndConnect(mend, "TIER-LAUNCH");
+        const threadId = ThreadId.make("draft-fast");
+        yield* rpc[ORCHESTRATION_V2_WS_METHODS.launchThread]({
+          commandId: commandId(),
+          threadId,
+          projectId: ProjectId.make("project-1"),
+          title: "Fast one",
+          modelSelection: selection([{ id: "serviceTier", value: "fast" }]),
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          workspaceStrategy: { type: "worktree", baseRef: "main" },
+          initialMessage: {
+            messageId: MessageId.make("message-fast"),
+            text: "Go",
+            attachments: [],
+          },
+        });
+        yield* eventually(() => mend.workbench.launches.length === 1, "the launch");
+        const sessionId = mend.workbench.launches[0]?.sessionId ?? "";
+        yield* eventually(() => mend.workbench.turns.get(sessionId)?.length === 1, "the turn");
+        const projection = yield* rpc[ORCHESTRATION_V2_WS_METHODS.getThreadProjection]({
+          threadId,
+        });
+        assert.deepInclude(projection.thread.modelSelection.options ?? [], {
+          id: "serviceTier",
+          value: "fast",
+        });
+        const standard = yield* Effect.exit(
+          send(rpc, "Slower", selection([{ id: "serviceTier", value: "default" }]), threadId),
+        );
+        assert.strictEqual(errorOf(standard)._tag, "OrchestrationV2DispatchCommandError");
+
+        // The idle stop: Mend recorded the agent, but no tier, so the relaunch names it again.
+        const first = mend.workbench.turns.get(sessionId)?.[0];
+        if (first !== undefined) mend.workbench.setTurn(first, "completed");
+        mend.workbench.stopAgent(sessionId);
+        yield* send(rpc, "Again", selection([{ id: "serviceTier", value: "fast" }]), threadId);
+        yield* eventually(() => mend.workbench.launches.length === 2, "the relaunch");
+        assert.deepStrictEqual(mend.workbench.launches[1]?.body, {
+          mode: "protocol",
+          speed: "fast",
+        });
+      }),
+    ),
+  );
+});
