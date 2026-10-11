@@ -1569,6 +1569,12 @@ const isEngineAgentProcess = (row: SessionProcess): boolean =>
   row.kind !== "agent-external" && isAgentProcessKind(row.kind) && row.harness !== "shell";
 
 /**
+ * The observer's answer when the home could not be read this pass (a head that is not there or
+ * still saving, a blob or manifest read that failed): no answer, so nothing is ended or started.
+ */
+const HOME_UNREAD = "unread" as const;
+
+/**
  * Where the external-agent observer reads one session's agents run by hand, and what else writes
  * there (`SessionEngine.observationSightOf`).
  */
@@ -1585,10 +1591,14 @@ interface ObservationSight {
   readonly locate: (
     harness: string,
     following: string | null,
-  ) => Effect.Effect<{
-    readonly providerSessionId: string | null;
-    readonly mtimeMs: number;
-  } | null>;
+  ) => Effect.Effect<
+    | {
+        readonly providerSessionId: string | null;
+        readonly mtimeMs: number;
+      }
+    | null
+    | typeof HOME_UNREAD
+  >;
   /** Processes whose agents write into the same home: their writes are not external. */
   readonly writers: ReadonlyArray<SessionProcess>;
   /** Writes before this, less the skew, predate the session in a home that outlives it. */
@@ -9064,8 +9074,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           ),
         );
         // Whose conversations to read (docs/adr/0016, decision 12): the shared home's, or the
-        // saved directory of the person the process ran as, and never past it.
-        const place = yield* conversationPlaceFor(session, agent.sealantWorkspaceId, harness);
+        // saved directory of the person the process ran as, and never past it. An observed agent's
+        // is where the observer found it: its person's own saved directory, never a shared
+        // conversation's `C`, which holds the session's engine conversation, not theirs.
+        const place =
+          agent.kind === "agent-external" && agent.runsAs !== null
+            ? personalPlaceOf(agent.runsAs)
+            : yield* conversationPlaceFor(session, agent.sealantWorkspaceId, harness);
         if (place === null) return null;
         const files = yield* listCaptureFiles(manifest, "workspace", place.root).pipe(
           Effect.provideService(BlobStore, blobs),
@@ -10489,15 +10504,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
 
       /**
        * `harness`'s transcripts under `place` in the worktree's head capture, newest first. None
-       * when the harness keeps no transcript file or the head cannot be read (said once per
-       * worktree: blindness, never an error).
+       * when the harness keeps no transcript file; `HOME_UNREAD` when the head cannot be read
+       * (said once per worktree: blindness, never an error).
        */
       const capturedTranscriptsAt = (
         worktreeId: WorktreeId,
         head: { readonly manifestKey: string },
         place: ConversationPlace,
         harness: string,
-      ): Effect.Effect<ReadonlyArray<CapturedTranscript>> =>
+      ): Effect.Effect<ReadonlyArray<CapturedTranscript> | typeof HOME_UNREAD> =>
         Effect.gen(function* () {
           const dir = HARNESS_STATE[harness]?.liveTranscriptDir ?? null;
           if (capture === null || dir === null) return [];
@@ -10536,7 +10551,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 "session engine: head capture unreadable — external agents in it are invisible",
               ).pipe(Effect.annotateLogs({ worktreeId, error: String(read.failure) }));
             }
-            return [];
+            return HOME_UNREAD;
           }
           seen.found.set(key, read.success);
           return read.success;
@@ -10602,16 +10617,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           home: null,
           locate: (harness, following) =>
             head === null
-              ? Effect.succeed(null)
+              ? Effect.succeed(HOME_UNREAD)
               : capturedTranscriptsAt(session.worktreeId, head, place, harness).pipe(
-                  Effect.map(
-                    (transcripts) =>
-                      transcripts.find((transcript) =>
-                        following === null
-                          ? transcript.providerSessionId === null ||
-                            !elsewhere.has(transcript.providerSessionId)
-                          : transcript.providerSessionId === following,
-                      ) ?? null,
+                  Effect.map((transcripts) =>
+                    transcripts === HOME_UNREAD
+                      ? HOME_UNREAD
+                      : (transcripts.find((transcript) =>
+                          following === null
+                            ? transcript.providerSessionId === null ||
+                              !elsewhere.has(transcript.providerSessionId)
+                            : transcript.providerSessionId === following,
+                        ) ?? null),
                   ),
                 ),
           // A person's saved directory is written by the processes that run as them; a shared
@@ -10662,6 +10678,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               harness,
               engineAgentLive ? (observed?.providerSessionId ?? null) : null,
             );
+            // No answer this pass (a read that failed, a head still saving): an observed row stays
+            // as it is, and nothing new is observed, until a pass can read the home again.
+            if (transcript === HOME_UNREAD) continue;
             const fresh = transcript !== null && now - transcript.mtimeMs < EXTERNAL_AGENT_QUIET_MS;
             if (observed !== undefined) {
               if (!fresh) {

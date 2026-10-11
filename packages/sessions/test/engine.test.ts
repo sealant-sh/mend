@@ -34199,7 +34199,11 @@ const externalRowsOf = (world: World, sessionId: SessionId) =>
   );
 
 describe("agents run by hand are observed in the head capture (docs/adr/0016)", () => {
-  const personLayers = (created: Array<CreateOptions>, memory: MemoryCaptureStore) => ({
+  const personLayers = (
+    created: Array<CreateOptions>,
+    memory: MemoryCaptureStore,
+    state?: HarnessLayoutsMemoryState,
+  ) => ({
     captured: memory,
     prepareWorld: (world: World) => world.members.set(MARIA, "member"),
     sealantLayer: sealantLaunchLayer(
@@ -34219,8 +34223,164 @@ describe("agents run by hand are observed in the head capture (docs/adr/0016)", 
     harnessLayout: {
       flag: "person" as const,
       platform: personPlatform([], { person: true }),
+      ...(state === undefined ? {} : { state }),
     },
   });
+
+  /** A person executor with one workbench session of `user-fixture`'s, a shell holding it. */
+  const workbenchIn = (
+    world: World,
+    tmp: string,
+    created: Array<CreateOptions>,
+    memory: MemoryCaptureStore,
+  ) =>
+    Effect.gen(function* () {
+      const project = yield* setup(tmp, world);
+      const engine = yield* SessionEngine;
+      const session = yield* engine.provision({
+        projectId: project.id,
+        harness: "claude",
+        label: null,
+        name: "workbench",
+        ownerUserId: "user-fixture",
+        base: null,
+      });
+      yield* engine.launch(session.id, ["bash"]);
+      const request = created[0];
+      if (request === undefined) return yield* Effect.die("the launch made no executor");
+      const executorRoot = path.join(tmp, "person-executor");
+      const home = configuredHarnessHomePath(request, executorRoot);
+      const ship = shipCapturedHarnessHome(
+        tmp,
+        memory,
+        session.worktreeId,
+        memory.leases.get(session.worktreeId)?.epoch ?? 0,
+        request,
+        executorRoot,
+      );
+      return { engine, session, home, ship };
+    });
+
+  it(
+    "an observed agent in a shared conversation's session is harvested from its own saved directory, not the shared conversation",
+    { timeout: 30_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const memory = makeMemoryCaptureStore();
+      const state = makeHarnessLayoutsMemoryState();
+      const byHand = crypto.randomUUID();
+      const shared = crypto.randomUUID();
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session, home, ship } = yield* workbenchIn(world, tmp, created, memory);
+            // Shared control moved the session's conversation into `C`: its engine conversation,
+            // with other people's turns, is there and newer than anything else.
+            state.sharedConversations.set(session.id, {
+              owner: "user-fixture",
+              movedAt: new Date(),
+            });
+            const handTranscript = `${peopleDir("user-fixture")}/${PROJECT_DIR}/${byHand}.jsonl`;
+            writeUnder(home, handTranscript, claudeLine(byHand, "by hand"));
+            yield* ship;
+            yield* engine.observeExternalAgents();
+            expect(externalRowsOf(world, session.id).map((row) => row.providerSessionId)).toEqual([
+              byHand,
+            ]);
+
+            const past = new Date(Date.now() - 10 * 60_000);
+            fs.utimesSync(path.join(home, handTranscript), past, past);
+            writeUnder(
+              home,
+              `${peopleDir("user-fixture")}/conversations/${session.id}/${PROJECT_DIR}/${shared}.jsonl`,
+              claudeLine(shared, "the shared conversation"),
+            );
+            yield* ship;
+            yield* engine.observeExternalAgents();
+            const [row] = externalRowsOf(world, session.id);
+            expect(row?.exitedAt).not.toBeNull();
+            // The harvest recorded her own conversation, never the shared one.
+            expect(row?.providerSessionId).toBe(byHand);
+            expect(world.sessions.get(session.id)?.providerSessionId).toBe(byHand);
+          }),
+        personLayers(created, memory, state),
+      );
+    },
+  );
+
+  it(
+    "a head that cannot be read keeps an observed agent as it is, and the next readable head ends it",
+    { timeout: 30_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const memory = makeMemoryCaptureStore();
+      const id = crypto.randomUUID();
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session, home, ship } = yield* workbenchIn(world, tmp, created, memory);
+            const transcript = `${peopleDir("user-fixture")}/${PROJECT_DIR}/${id}.jsonl`;
+            writeUnder(home, transcript, claudeLine(id, "by hand"));
+            yield* ship;
+            yield* engine.observeExternalAgents();
+            expect(externalRowsOf(world, session.id).map((row) => row.exitedAt)).toEqual([null]);
+
+            // The writes went quiet, but the head that says so cannot be read this pass.
+            const past = new Date(Date.now() - 10 * 60_000);
+            fs.utimesSync(path.join(home, transcript), past, past);
+            const unreadable = yield* ship;
+            const manifest = path.join(tmp, "blobs", unreadable.key);
+            const bytes = fs.readFileSync(manifest);
+            fs.rmSync(manifest);
+            yield* engine.observeExternalAgents();
+            expect(externalRowsOf(world, session.id).map((row) => row.exitedAt)).toEqual([null]);
+
+            fs.writeFileSync(manifest, bytes);
+            yield* engine.observeExternalAgents();
+            const rows = externalRowsOf(world, session.id);
+            expect(rows).toHaveLength(1);
+            expect(rows[0]?.exitedAt).not.toBeNull();
+          }),
+        personLayers(created, memory),
+      );
+    },
+  );
+
+  it(
+    "a fresh write from before the session began is history; one within the clock skew of its start is not",
+    { timeout: 30_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const memory = makeMemoryCaptureStore();
+      const before = crypto.randomUUID();
+      const atStart = crypto.randomUUID();
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session, home, ship } = yield* workbenchIn(world, tmp, created, memory);
+            const began = session.createdAt.getTime();
+            // A minute before the session: fresh, and still not this session's.
+            const claude = `${peopleDir("user-fixture")}/${PROJECT_DIR}/${before}.jsonl`;
+            writeUnder(home, claude, claudeLine(before, "another session's"));
+            fs.utimesSync(
+              path.join(home, claude),
+              new Date(began - 60_000),
+              new Date(began - 60_000),
+            );
+            // A second before it, within the skew between the executor's clock and Mend's.
+            const codex = `${peopleDir("user-fixture")}/.codex/sessions/2026/10/11/rollout-2026-10-11T10-00-00-${atStart}.jsonl`;
+            writeUnder(home, codex, "{}\n");
+            fs.utimesSync(path.join(home, codex), new Date(began - 1_000), new Date(began - 1_000));
+            yield* ship;
+            yield* engine.observeExternalAgents();
+            expect(
+              externalRowsOf(world, session.id).map((row) => [row.harness, row.providerSessionId]),
+            ).toEqual([["codex", atStart]]);
+          }),
+        personLayers(created, memory),
+      );
+    },
+  );
 
   it(
     "a claude a person runs by hand writes into their saved directory and is observed as theirs",

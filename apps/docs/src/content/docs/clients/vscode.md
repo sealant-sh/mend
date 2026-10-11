@@ -185,12 +185,15 @@ process (`claude (observed)`) beside the session's other processes:
   write reads as ended, the conversation is recorded, and the session can settle. If the agent
   writes again, Mend observes it again as a new process.
 - **Mend cannot steer or stop it.** It has no prompt box, and follow-ups and review comments do not
-  reach it. A Stop records it as stopped but does not end the process: exit it in its terminal. When
-  the workspace itself stops, everything running in it ends.
+  reach it. A Stop records it as stopped but does not end the process: exit it in its terminal. If
+  it wrote in the last five minutes and a shell or Service still keeps the session's workspace up,
+  Mend observes it again as a new process within about 20 seconds. When the workspace itself stops,
+  everything running in it ends.
 - **Claude Code, Codex and pi only.** opencode keeps its conversations in a database, not in files,
   so an `opencode` you run by hand is not observed.
-- **Only while no agent Mend started is running as you in the workspace.** While one is, Mend takes
-  the writes for its own.
+- **Only while no agent Mend started writes beside it.** In a per-person workspace, that is an agent
+  Mend runs as you. In a workspace with one shared home, it is an agent Mend runs in any session of
+  the worktree, whoever started it. While one runs, Mend takes the writes for its own.
 - **In a [per-person workspace](/operate/per-person-workspaces/)**, an agent you run writes into
   your own saved directory. Mend observes it as yours, in your own sessions only, and never in
   another person's session in the same workspace.
