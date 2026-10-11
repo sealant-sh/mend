@@ -49,12 +49,12 @@ const CLAUDE_SEED_PROGRAM = [
   `c.projects=c.projects&&typeof c.projects==="object"?c.projects:{};`,
   `c.projects["/workspace/repo"]=Object.assign({},c.projects["/workspace/repo"],{hasTrustDialogAccepted:true,hasCompletedProjectOnboarding:true})});`,
   // The bypass-acceptance dialog is actually gated on settings.json (verified: accepting it
-  // writes exactly this key), not .claude.json. The workspace image never sees the operator's
-  // own ~/.claude settings, so a fresh session silently falls back to the CLI's default model:
-  // default-if-absent only, so a restored session's own choice (or a mid-session /model) stays.
-  // The default is the `fable` alias, which Claude Code resolves to the latest Fable; a session
-  // still holding Mend's own earlier default (`claude-fable-5`) moves to it (2026-10-01).
-  `merge(h+"/.claude/settings.json",s=>{s.skipDangerousModePermissionPrompt=true;if(!s.model||s.model==="claude-fable-5")s.model="fable"});`,
+  // writes exactly this key), not .claude.json. No model is ever written: a launch that names
+  // none runs on Claude Code's own default, as a `claude` run by hand does, and in a person's
+  // executor the file is theirs (box, next.786, 2026-10-11: one Mend launch's `"model":"fable"`
+  // turned every `claude` they ran themselves to Fable). Mend's own earlier default
+  // (`claude-fable-5`, written until 2026-10-01) comes out, so Claude's default applies there too.
+  `merge(h+"/.claude/settings.json",s=>{s.skipDangerousModePermissionPrompt=true;if(s.model==="claude-fable-5")delete s.model});`,
 ].join("");
 
 /**
@@ -198,6 +198,51 @@ export const CODEX_TRUST_SEED =
   `grep -q 'workspace/repo' "$HOME/.codex/config.toml" 2>/dev/null || ` +
   `printf '\\n[projects."/workspace/repo"]\\ntrust_level = "trusted"\\n' >> "$HOME/.codex/config.toml"; ` +
   `exec "$@"`;
+
+/**
+ * Codex's own sandbox, off by default for every Codex in a workspace, the ones people run
+ * themselves included (a terminal, VS Code over Remote-SSH). Mend's own launches already run
+ * without it (`--dangerously-bypass-approvals-and-sandbox`, or `--sandbox danger-full-access` in
+ * `ask`): the workspace is the sandbox. Codex's sandbox is bubblewrap, which cannot start in a
+ * workspace at all. As root it may not make a namespace, and as a person it refuses to run
+ * because the person holds `CAP_FOWNER` (sealantd grants it so pnpm can relink bins): `bwrap:
+ * Unexpected capabilities but not setuid, old file caps config?`. So a hand-run `codex` there
+ * ran no command and asked to approve each one (box, next.786, 2026-10-11).
+ *
+ * Written as Codex's system config, the layer below a person's own `~/.codex/config.toml`, so a
+ * person who names a sandbox mode keeps theirs, and nobody's home is written. Only the sandbox
+ * is set: approvals stay Codex's own default, as in Mend's `ask` launch. A file already there
+ * (the image's, or the operator's) is left as it is. Run as root in the prepare's helper exec;
+ * it never fails that exec.
+ */
+export const CODEX_SYSTEM_CONFIG = "/etc/codex/config.toml";
+
+export const CODEX_SYSTEM_CONFIG_TEXT = [
+  "# Written by Mend. A workspace is the sandbox: Codex's own (bubblewrap) cannot start in one,",
+  "# so Codex runs here without it, as the Codex sessions Mend starts do. A sandbox_mode in your",
+  "# ~/.codex/config.toml wins over this file.",
+  'sandbox_mode = "danger-full-access"',
+  "",
+].join("\n");
+
+/**
+ * Published without ever replacing anything: the text goes into a temporary beside the target,
+ * which is then hard-linked to the target's exact name (`ln -T`, GNU and busybox alike). `ln`
+ * refuses a name that exists, so a file, link or directory someone put there after the check (the
+ * operator, the image's own setup) is kept, and nothing is linked into a directory or through a
+ * link. An `ln` without `-T` gets the same refusal from a check made right before it. A
+ * `/etc/codex` that is a link is never written through. The temporary goes either way.
+ */
+export const codexSystemConfigScript = (file: string = CODEX_SYSTEM_CONFIG): string => {
+  const target = shellQuote(file);
+  const text = shellQuote(CODEX_SYSTEM_CONFIG_TEXT);
+  return (
+    `( f=${target}; t=; d=$(dirname "$f"); if [ ! -e "$f" ] && [ ! -L "$f" ] && [ ! -L "$d" ]; then umask 022; ` +
+    `{ mkdir -p "$d" && [ ! -L "$d" ] && t=$(mktemp "$d/.config.toml.mend-XXXXXX") && printf '%s' ${text} > "$t" && ` +
+    `chmod 0644 "$t" && { ln -T "$t" "$f" || { [ ! -e "$f" ] && [ ! -L "$f" ] && ln "$t" "$f"; }; }; } 2>/dev/null; ` +
+    `[ -z "$t" ] || rm -f "$t"; fi; true )`
+  );
+};
 
 /**
  * The refresh token every copy of a Codex login carries (Core's `CODEX_COPY_REFRESH_TOKEN`, ADR

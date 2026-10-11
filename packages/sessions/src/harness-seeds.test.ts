@@ -11,7 +11,10 @@ import {
   CLAUDE_ONBOARDING_SEED,
   CLAUDE_PLUGINS_BUDGET_MS,
   claudeOnboardingSeed,
+  CODEX_SYSTEM_CONFIG,
+  CODEX_SYSTEM_CONFIG_TEXT,
   CODEX_TRUST_SEED,
+  codexSystemConfigScript,
   COPY_REFRESH_TOKEN,
   HARNESS_UPDATES_OFF_ENV,
   NO_PAGER_ENV,
@@ -55,6 +58,15 @@ const runSeed = (seed: string, home: string, token: string | null = "tok-123") =
   return result.stdout;
 };
 
+/** The test runner's environment without a model of its own (`ANTHROPIC_MODEL`). */
+const withoutModel = (env: NodeJS.ProcessEnv): Record<string, string> => {
+  const copy: Record<string, string> = {};
+  for (const [key, value] of Object.entries(env)) {
+    if (key !== "ANTHROPIC_MODEL" && value !== undefined) copy[key] = value;
+  }
+  return copy;
+};
+
 const write = (file: string, text: string) => {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, text);
@@ -77,7 +89,6 @@ describe("claude onboarding seed", () => {
     });
     expect(readJson(path.join(home, ".claude", "settings.json"))).toEqual({
       skipDangerousModePermissionPrompt: true,
-      model: "fable",
     });
   });
 
@@ -116,15 +127,37 @@ describe("claude onboarding seed", () => {
     });
   });
 
-  it("moves Mend's own earlier default to the latest Fable, and keeps a model the user chose", () => {
+  it("names no model: a launch that names none runs on Claude Code's own default, and the person's settings stay theirs", () => {
+    // Box, next.786, 2026-10-11: one Mend launch wrote `"model":"fable"` into a person's
+    // ~/.claude/settings.json, and every claude they ran themselves opened on Fable from then on.
+    // Yiannis, 2026-10-12: "by default have the default claude model".
+    const home = makeHome();
+    const model = (env: Readonly<Record<string, string>> = {}) => {
+      const result = spawnSync(
+        "sh",
+        ["-c", CLAUDE_ONBOARDING_SEED, "sh", "sh", "-c", 'echo "model=${ANTHROPIC_MODEL-unset}"'],
+        { encoding: "utf8", env: { ...withoutModel(process.env), HOME: home, ...env } },
+      );
+      expect(result.status).toBe(0);
+      return result.stdout;
+    };
+    expect(model()).toBe("model=unset\n");
+    expect(readJson(path.join(home, ".claude", "settings.json"))).toEqual({
+      skipDangerousModePermissionPrompt: true,
+    });
+    // A model the environment names is left as it is.
+    expect(model({ ANTHROPIC_MODEL: "sonnet" })).toBe("model=sonnet\n");
+  });
+
+  it("takes Mend's own earlier default out, so Claude's own applies, and keeps a model the user chose", () => {
     const earlier = makeHome();
     write(
       path.join(earlier, ".claude", "settings.json"),
       JSON.stringify({ model: "claude-fable-5" }),
     );
     expect(runSeed(CLAUDE_ONBOARDING_SEED, earlier)).toBe("ran 1\n");
-    expect(readJson(path.join(earlier, ".claude", "settings.json"))).toMatchObject({
-      model: "fable",
+    expect(readJson(path.join(earlier, ".claude", "settings.json"))).toEqual({
+      skipDangerousModePermissionPrompt: true,
     });
 
     const chosen = makeHome();
@@ -215,7 +248,6 @@ describe("claude onboarding seed", () => {
     expect(readJson(dotfiles)).toEqual({
       theme: "dark",
       skipDangerousModePermissionPrompt: true,
-      model: "fable",
     });
     expect(fs.statSync(dotfiles).mode & 0o777).toBe(0o640);
     expect(fs.lstatSync(path.join(home, ".claude.json")).isSymbolicLink()).toBe(true);
@@ -267,7 +299,6 @@ describe("claude onboarding seed, temporary names", () => {
     expect(readJson(path.join(home, ".claude", "settings.json"))).toEqual({
       theme: "dark",
       skipDangerousModePermissionPrompt: true,
-      model: "fable",
     });
     for (const prefix of taken) {
       const siblings = fs
@@ -650,6 +681,157 @@ describe("claude onboarding seed: the plugins its settings enable", () => {
       `'/workspace/repo' ${CLAUDE_PLUGINS_BUDGET_MS} 3>&2 2>/dev/null;`,
     );
     expect(CLAUDE_PLUGINS_BUDGET_MS).toBe(30_000);
+  });
+});
+
+/** A path as one single-quoted shell word. */
+const shellQuoted = (value: string): string => `'${value.replaceAll("'", `'\\''`)}'`;
+
+/** Run Codex's system default script into `file`; it always exits 0. */
+const runCodexSystemConfig = (file: string) => {
+  const result = spawnSync("sh", ["-c", `${codexSystemConfigScript(file)}; echo "status $?"`], {
+    encoding: "utf8",
+  });
+  expect(result.stdout).toBe("status 0\n");
+};
+
+describe("Codex's system default: no sandbox of its own in a workspace", () => {
+  it("writes the system config where none is, and leaves one that is there", () => {
+    const root = makeHome();
+    const file = path.join(root, "etc", "codex", "config.toml");
+    runCodexSystemConfig(file);
+    expect(fs.readFileSync(file, "utf8")).toBe(CODEX_SYSTEM_CONFIG_TEXT);
+    expect(fs.statSync(file).mode & 0o777).toBe(0o644);
+    // One key, top level: no table header before it, so a TOML reader sees it as Codex does.
+    const lines = CODEX_SYSTEM_CONFIG_TEXT.split("\n").filter(
+      (line) => line !== "" && !line.startsWith("#"),
+    );
+    expect(lines).toEqual(['sandbox_mode = "danger-full-access"']);
+    expect(CODEX_SYSTEM_CONFIG).toBe("/etc/codex/config.toml");
+
+    const operator = 'sandbox_mode = "workspace-write"\n';
+    fs.writeFileSync(file, operator);
+    runCodexSystemConfig(file);
+    expect(fs.readFileSync(file, "utf8")).toBe(operator);
+    expect(fs.readdirSync(path.dirname(file))).toEqual(["config.toml"]);
+  });
+
+  it("never replaces a file that appears between its check and its publish, and leaves no temporary", () => {
+    // Review of mend#737 (P3): the absence check and a `mv -f` let an operator's file written in
+    // between be overwritten. A stand-in `mkdir`, which runs after the check, writes it then.
+    const root = makeHome();
+    const file = path.join(root, "etc", "codex", "config.toml");
+    const bin = path.join(root, "bin");
+    fs.mkdirSync(bin);
+    const operator = 'sandbox_mode = "workspace-write"\n';
+    const realMkdir = spawnSync("sh", ["-c", "command -v mkdir"], {
+      encoding: "utf8",
+    }).stdout.trim();
+    fs.writeFileSync(
+      path.join(bin, "mkdir"),
+      `#!/bin/sh\n${realMkdir} "$@" && printf '%s' '${operator}' > ${shellQuoted(file)}\n`,
+      { mode: 0o755 },
+    );
+    const result = spawnSync("sh", ["-c", `${codexSystemConfigScript(file)}; echo "status $?"`], {
+      encoding: "utf8",
+      env: { ...process.env, PATH: `${bin}:${process.env["PATH"] ?? ""}` },
+    });
+    expect(result.stdout).toBe("status 0\n");
+    expect(fs.readFileSync(file, "utf8")).toBe(operator);
+    expect(fs.readdirSync(path.dirname(file))).toEqual(["config.toml"]);
+  });
+
+  it("never links into a directory, or through a link to one, that appears before its publish", () => {
+    // Review 2 of mend#737 (P3): `ln temp target` with a directory at the target made the link
+    // inside it. The stand-in `mkdir` puts a link to a directory there after the check.
+    for (const shape of ["directory", "link to a directory"] as const) {
+      const root = makeHome();
+      const file = path.join(root, "etc", "codex", "config.toml");
+      const elsewhere = path.join(root, "elsewhere");
+      fs.mkdirSync(elsewhere);
+      const bin = path.join(root, "bin");
+      fs.mkdirSync(bin);
+      const realMkdir = spawnSync("sh", ["-c", "command -v mkdir"], {
+        encoding: "utf8",
+      }).stdout.trim();
+      const appear =
+        shape === "directory"
+          ? `${realMkdir} ${shellQuoted(file)}`
+          : `ln -s ${shellQuoted(elsewhere)} ${shellQuoted(file)}`;
+      fs.writeFileSync(path.join(bin, "mkdir"), `#!/bin/sh\n${realMkdir} "$@" && ${appear}\n`, {
+        mode: 0o755,
+      });
+      for (const withoutT of [false, true]) {
+        // An `ln` that has no `-T`: the check right before it refuses the name as well.
+        if (withoutT) {
+          const realLn = spawnSync("sh", ["-c", "command -v ln"], {
+            encoding: "utf8",
+          }).stdout.trim();
+          fs.writeFileSync(
+            path.join(bin, "ln"),
+            `#!/bin/sh\ncase "$1" in -T) echo "ln: unknown option -T" >&2; exit 1;; esac\nexec ${realLn} "$@"\n`,
+            { mode: 0o755 },
+          );
+        }
+        const result = spawnSync(
+          "sh",
+          ["-c", `${codexSystemConfigScript(file)}; echo "status $?"`],
+          {
+            encoding: "utf8",
+            env: { ...process.env, PATH: `${bin}:${process.env["PATH"] ?? ""}` },
+          },
+        );
+        expect(result.stdout, `${shape}, without -T: ${withoutT}`).toBe("status 0\n");
+        expect(fs.readdirSync(elsewhere), shape).toEqual([]);
+        if (shape === "directory") expect(fs.readdirSync(file)).toEqual([]);
+        else expect(fs.readlinkSync(file)).toBe(elsewhere);
+        expect(fs.readdirSync(path.dirname(file))).toEqual(["config.toml"]);
+        fs.rmSync(file, { recursive: true, force: true });
+      }
+    }
+  });
+
+  it("publishes through an `ln` without `-T`, and never writes through a linked /etc/codex", () => {
+    const root = makeHome();
+    const bin = path.join(root, "bin");
+    fs.mkdirSync(bin);
+    const realLn = spawnSync("sh", ["-c", "command -v ln"], { encoding: "utf8" }).stdout.trim();
+    fs.writeFileSync(
+      path.join(bin, "ln"),
+      `#!/bin/sh\ncase "$1" in -T) echo "ln: unknown option -T" >&2; exit 1;; esac\nexec ${realLn} "$@"\n`,
+      { mode: 0o755 },
+    );
+    const file = path.join(root, "etc", "codex", "config.toml");
+    const result = spawnSync("sh", ["-c", `${codexSystemConfigScript(file)}; echo "status $?"`], {
+      encoding: "utf8",
+      env: { ...process.env, PATH: `${bin}:${process.env["PATH"] ?? ""}` },
+    });
+    expect(result.stdout).toBe("status 0\n");
+    expect(fs.readFileSync(file, "utf8")).toBe(CODEX_SYSTEM_CONFIG_TEXT);
+
+    const linked = path.join(root, "linked-etc");
+    const target = path.join(root, "target");
+    fs.mkdirSync(target);
+    fs.mkdirSync(linked);
+    fs.symlinkSync(target, path.join(linked, "codex"));
+    runCodexSystemConfig(path.join(linked, "codex", "config.toml"));
+    expect(fs.readdirSync(target)).toEqual([]);
+  });
+
+  it("leaves a link where the file would go, and never fails where it cannot write", () => {
+    const root = makeHome();
+    const file = path.join(root, "codex", "config.toml");
+    fs.mkdirSync(path.dirname(file));
+    fs.symlinkSync(path.join(root, "nowhere.toml"), file);
+    runCodexSystemConfig(file);
+    expect(fs.lstatSync(file).isSymbolicLink()).toBe(true);
+    expect(fs.existsSync(path.join(root, "nowhere.toml"))).toBe(false);
+
+    if (process.getuid?.() === 0) return;
+    const locked = path.join(root, "locked");
+    fs.mkdirSync(locked, { mode: 0o500 });
+    runCodexSystemConfig(path.join(locked, "codex", "config.toml"));
+    expect(fs.readdirSync(locked)).toEqual([]);
   });
 });
 

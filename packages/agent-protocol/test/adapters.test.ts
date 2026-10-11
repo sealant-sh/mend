@@ -122,7 +122,7 @@ describe("CodexAdapter", () => {
         expect(fake.sent[2]?.["params"]).toEqual({
           cwd: "/workspace/repo",
           approvalPolicy: "on-request",
-          sandbox: "workspace-write",
+          sandbox: "danger-full-access",
         });
         expect(fake.sent[3]?.["params"]).toEqual({
           threadId: "thread-1",
