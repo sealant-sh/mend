@@ -521,7 +521,7 @@ describe("whose git access a dotfiles clone uses", () => {
         identity: { kind: "owner-ssh", mode: "mend-key" },
         env: {
           ...DOTFILES_OWNER_ENV,
-          GIT_SSH_COMMAND: `ssh -i '${KEY_PATH}' -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o BatchMode=yes -F /dev/null -o IdentityFile=none`,
+          GIT_SSH_COMMAND: `ssh -F /dev/null -i '${KEY_PATH}' -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o BatchMode=yes -F /dev/null -o IdentityFile=none`,
           SSH_AUTH_SOCK: "",
         },
       }),
@@ -536,7 +536,7 @@ describe("whose git access a dotfiles clone uses", () => {
     expect(Result.isSuccess(result) ? result.success.env : null).toMatchObject({
       SSH_AUTH_SOCK: "/bridge/owner-1.sock",
       GIT_SSH_COMMAND:
-        "ssh -o IdentityFile=none -o StrictHostKeyChecking=accept-new -o BatchMode=yes -F /dev/null -o IdentityFile=none",
+        "ssh -F /dev/null -o IdentityFile=none -o StrictHostKeyChecking=accept-new -o BatchMode=yes -F /dev/null -o IdentityFile=none",
       GIT_CONFIG_GLOBAL: "/dev/null",
     });
   });
@@ -588,7 +588,7 @@ describe("whose git access a dotfiles clone uses", () => {
     if (!Result.isSuccess(result)) throw new Error("the Mend key resolved");
     const env = dotfilesCloneEnv((base) => tenant.pinnedEnv(clearance, base), result.success);
     expect(env["GIT_SSH_COMMAND"]).toBe(
-      `ssh -i '${KEY_PATH}' -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o BatchMode=yes -F /dev/null -o IdentityFile=none -o HostName=140.82.112.3 -o HostKeyAlias=github.com`,
+      `ssh -F /dev/null -i '${KEY_PATH}' -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o BatchMode=yes -F /dev/null -o IdentityFile=none -o HostName=140.82.112.3 -o HostKeyAlias=github.com`,
     );
   });
 });
@@ -774,7 +774,7 @@ describe("DotfilesCloner", () => {
     // Multi tenancy has no host identity to lend, so the role is never asked.
     expect(asked).toEqual(["git access of owner-1"]);
     const argv = fs.readFileSync(argvFile, "utf8").split("\n");
-    expect(argv.slice(0, 2)).toEqual(["-i", KEY_PATH]);
+    expect(argv.slice(0, 4)).toEqual(["-F", "/dev/null", "-i", KEY_PATH]);
     expect(argv).toContain("IdentitiesOnly=yes");
     expect(argv).toContain("BatchMode=yes");
     expect(argv[argv.indexOf("-F") + 1]).toBe("/dev/null");

@@ -239,17 +239,23 @@ const LEGACY_OWNER = "";
  * accept-new trusts a first-contact host (the owner never gets a chance to
  * answer a host-key prompt on this machine) but still refuses a CHANGED key.
  * (The touch a hardware key demands in bridge mode happens on the CLIENT
- * machine — no prompt is ever needed here.) `privateKeyPath` null runs ssh
- * with no identity of Mend's: a remote that needs no signer (https, git://).
+ * machine — no prompt is ever needed here.)
+ *
+ * Mend chose the signer, so nothing of the server user's ssh setup may stand beside it:
+ * `-F /dev/null` reads no ssh config at all, where an `IdentityFile` would be offered next to the
+ * Mend key and an `IdentityAgent` would replace the bridge's socket. Everything the command needs
+ * is on it as `-o` (the source policy appends its `HostName`/`HostKeyAlias` pin the same way);
+ * known_hosts is ssh's default file, which no config is needed to read. A git host reached
+ * through a `Host` alias or a `ProxyJump` in that config is reached by its real name instead.
  */
 export const sshCommandFor = (mode: GitAuthMode, privateKeyPath: string | null): string => {
   if (mode === "mend-key" && privateKeyPath !== null) {
     // IdentitiesOnly pins the key even when an agent is running.
-    return `ssh -i '${privateKeyPath}' -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o BatchMode=yes`;
+    return `ssh -F /dev/null -i '${privateKeyPath}' -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o BatchMode=yes`;
   }
-  // Bridge: the bridged agent's identities are the point. IdentityFile=none keeps ssh from
-  // offering the server process's own default key files (~/.ssh/id_*) beside them.
-  return "ssh -o IdentityFile=none -o StrictHostKeyChecking=accept-new -o BatchMode=yes";
+  // Bridge: the bridged agent's identities are the point (SSH_AUTH_SOCK, set by remoteGitEnv).
+  // IdentityFile=none keeps ssh from offering the server user's default key files beside them.
+  return "ssh -F /dev/null -o IdentityFile=none -o StrictHostKeyChecking=accept-new -o BatchMode=yes";
 };
 
 /**
@@ -287,7 +293,7 @@ export const remoteGitEnv = (
 /**
  * ssh argv (options only — caller appends `-- host command`) for a workspace
  * git transport op resolved on the host: the same auth semantics as
- * `sshCommandFor`, as a vector because the host spawns ssh directly.
+ * `sshCommandFor`, as a vector because the host spawns ssh directly — no ssh config read either.
  * `SendEnv=GIT_PROTOCOL` lets protocol v2 negotiate through the tunnel.
  */
 export const sshTransportArgs = (
@@ -295,6 +301,8 @@ export const sshTransportArgs = (
   privateKeyPath: string | null,
   port: number | null,
 ): ReadonlyArray<string> => [
+  "-F",
+  "/dev/null",
   ...(mode === "mend-key" && privateKeyPath !== null
     ? ["-i", privateKeyPath, "-o", "IdentitiesOnly=yes"]
     : ["-o", "IdentityFile=none"]),
