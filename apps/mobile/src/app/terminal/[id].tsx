@@ -3,8 +3,9 @@
 
 import { Stack, useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import { useCallback } from "react";
-import { Alert, Pressable } from "react-native";
+import { Pressable } from "react-native";
 
+import { ask } from "@/components/ask";
 import { TerminalPane } from "@/components/terminal-pane";
 import { MonoText } from "@/components/typography";
 import { useSessionActions } from "@/data/live";
@@ -21,7 +22,7 @@ export default function TerminalScreen() {
     if (process === undefined) {
       return;
     }
-    Alert.alert("Stop this shell?", "This ends the shell process. Going back only detaches.", [
+    ask("Stop this shell?", "This ends the shell process. Going back only detaches.", [
       { text: "Cancel", style: "cancel" },
       {
         text: "Stop shell",
