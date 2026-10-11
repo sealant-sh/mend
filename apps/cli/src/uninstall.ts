@@ -15,6 +15,9 @@ import {
 } from "@mend/workspace-ssh";
 
 import {
+  bundleComposeVolumes,
+  bundleNetworks,
+  GENERATION_DIRECTORY,
   MEND_DOCKER_NAMESPACE,
   MEND_DOCKER_NAMESPACE_WITH_GARAGE,
   SERVER_VOLUME_OWNER_LABEL,
@@ -187,6 +190,12 @@ export interface ServerPlan {
    * only what is still there.
    */
   readonly present?: ServerPresent;
+  /**
+   * With an identity and no active generation (a setup that stopped before it activated one):
+   * what Docker holds that no installation owns, or that this identity claimed. It goes before
+   * the identity does.
+   */
+  readonly leftovers?: LeftoversPlan;
 }
 
 /** The server's own Compose containers (by service), volumes and release image Docker holds. */
@@ -197,8 +206,10 @@ export interface ServerPresent {
 }
 
 /**
- * No installation is configured here, but Docker holds what one left: volumes with Mend's
- * installation label and no anchor beside them (a partial uninstall by an earlier release).
+ * No installation is configured here, but Docker holds what one left, with no anchor beside it:
+ * volumes with Mend's installation label or the bundle's Compose names, the bundle's networks,
+ * the containers a generation started (a partial uninstall, volumes removed by hand, a setup that
+ * stopped part way).
  */
 export interface LeftoversPlan {
   readonly kind: "leftovers";
@@ -252,28 +263,10 @@ const WORKSPACE_IMAGE_REFERENCE = "sealant-workspace-*";
 const WORKSPACE_IMAGE_LABEL = "sh.sealant.plan-hash";
 /** The Mend image's label naming the image the worker runs to guard each workspace's network. */
 const NETWORK_GUARD_IMAGE_LABEL = "dev.sealant.mend.network-guard-image";
-/**
- * The bundle's own Compose volumes, as Compose names them under the `mend` project. Another Compose
- * project called mend (a checkout of Mend's own repository, say) has other volumes.
- */
-const BUNDLE_COMPOSE_VOLUMES = new Set(
-  [
-    "mend-config",
-    "mend-ssh",
-    "mend-postgres",
-    "mend-edge-data",
-    "mend-edge-config",
-    "mend-npm-mirror",
-    "mend-docker-mirror",
-    T3_GATEWAY_VOLUME,
-  ].map((volume) => `${MEND_DOCKER_NAMESPACE.project}_${volume}`),
-);
+/** The bundle's own Compose volumes under the `mend` project; setup reads leftovers by the same. */
+const BUNDLE_COMPOSE_VOLUMES = bundleComposeVolumes(MEND_DOCKER_NAMESPACE.project);
 /** The bundle's Compose networks: the project's default, and the edge's when it runs one. */
-const BUNDLE_NETWORKS = new Set(
-  ["default", "edge"].map((network) => `${MEND_DOCKER_NAMESPACE.project}_${network}`),
-);
-/** A Compose container a Mend generation started: its working directory is the generation's. */
-const GENERATION_DIRECTORY = /\/generations\/gen-[0-9a-f-]{36}$/;
+const BUNDLE_NETWORKS = bundleNetworks(MEND_DOCKER_NAMESPACE.project);
 /** Every install pulls it and it has a shell: the helper that reads and removes the sysctl file. */
 const HOST_HELPER_IMAGE = "postgres:17-alpine";
 /** What each user-namespace setting is on a host Mend never touched. */
@@ -749,17 +742,28 @@ const buildCacheSize = async (run: Run, context: string): Promise<string | null>
   return null;
 };
 
-/** Leftovers of an install with no configuration here, on the current Docker context. */
-const findLeftovers = async (run: Run): Promise<LeftoversPlan | null> => {
+/**
+ * Leftovers of an install with no active configuration here, on the current Docker context.
+ * `owner`: the identity a setup that never activated a generation left here; the anchor it
+ * claimed is its own and goes too, last.
+ */
+const findLeftovers = async (run: Run, owner: string | null): Promise<LeftoversPlan | null> => {
   const shown = await run("docker", ["context", "show"], { timeoutMs: DOCKER_DEADLINE_MS });
   const context = shown.status === 0 ? shown.stdout.trim() : "";
   if (!DOCKER_NAME.test(context)) return null;
-  const labelled = await listNamesIn(run, context, "volume", [
-    `label=${SERVER_VOLUME_OWNER_LABEL}`,
-  ]);
-  if ("problem" in labelled || labelled.length === 0) return null;
-  // An anchor means an installation stands here, whoever's configuration it is: not leftovers.
-  if (labelled.includes(MEND_DOCKER_NAMESPACE.store)) return null;
+  const listed = await listNamesIn(run, context, "volume", [`label=${SERVER_VOLUME_OWNER_LABEL}`]);
+  if ("problem" in listed) return null;
+  // An anchor means an installation stands here, whoever's configuration it is: not leftovers,
+  // unless it is this identity's own.
+  const store = MEND_DOCKER_NAMESPACE.store;
+  if (listed.includes(store)) {
+    const anchor = await volumeOwner(run, context, store);
+    if (owner === null || anchor.state !== "present" || anchor.owner !== owner) return null;
+  }
+  const labelled = [
+    ...listed.filter((name) => name !== store),
+    ...listed.filter((name) => name === store),
+  ];
   const compose = `label=com.docker.compose.project=${MEND_DOCKER_NAMESPACE.project}`;
   const composeVolumes = await listNamesIn(run, context, "volume", [compose]);
   const networks = await listNamesIn(run, context, "network", [compose]);
@@ -772,30 +776,42 @@ const findLeftovers = async (run: Run): Promise<LeftoversPlan | null> => {
     "--format",
     '{{.Names}}\t{{.Label "com.docker.compose.project.working_dir"}}',
   ]);
-  const holdings = labelled.includes(MEND_DOCKER_NAMESPACE.control)
+  const found = labelled.includes(MEND_DOCKER_NAMESPACE.control)
     ? await findWorkspaces(run, context, MEND_DOCKER_NAMESPACE.control)
     : NO_HOLDINGS;
+  const holdings = "problem" in found ? NO_HOLDINGS : found;
+  // The bundle's Compose volumes before the labelled ones: the anchor, when it goes, goes last.
+  const volumes = [
+    ...("problem" in composeVolumes
+      ? []
+      : composeVolumes.filter((name) => BUNDLE_COMPOSE_VOLUMES.has(name))),
+    ...labelled,
+  ];
+  const bundleNetworksHere =
+    "problem" in networks ? [] : networks.filter((name) => BUNDLE_NETWORKS.has(name));
+  const containers =
+    composed.status === 0
+      ? rows(composed.stdout).flatMap(([name, directory]) =>
+          name !== undefined && DOCKER_NAME.test(name) && GENERATION_DIRECTORY.test(directory ?? "")
+            ? [name]
+            : [],
+        )
+      : [];
+  // A network or a stopped container alone is a leftover too: what setup refuses, this removes.
+  if (
+    volumes.length === 0 &&
+    bundleNetworksHere.length === 0 &&
+    containers.length === 0 &&
+    holdings.workspaces.length === 0
+  )
+    return null;
   return {
     kind: "leftovers",
     dockerContext: context,
-    volumes: [
-      ...labelled,
-      ...("problem" in composeVolumes
-        ? []
-        : composeVolumes.filter((name) => BUNDLE_COMPOSE_VOLUMES.has(name))),
-    ],
-    networks: "problem" in networks ? [] : networks.filter((name) => BUNDLE_NETWORKS.has(name)),
-    containers:
-      composed.status === 0
-        ? rows(composed.stdout).flatMap(([name, directory]) =>
-            name !== undefined &&
-            DOCKER_NAME.test(name) &&
-            GENERATION_DIRECTORY.test(directory ?? "")
-              ? [name]
-              : [],
-          )
-        : [],
-    holdings: "problem" in holdings ? NO_HOLDINGS : holdings,
+    volumes,
+    networks: bundleNetworksHere,
+    containers,
+    holdings,
   };
 };
 
@@ -855,8 +871,15 @@ export const describeUninstall = async (
       // An unconfigured directory is not an error for uninstall: there is nothing to remove,
       // unless Docker holds what an earlier install left.
       if (!read.error.message.startsWith("No Mend server is configured")) throw read.error;
-      server = (await findLeftovers(run)) ?? "none";
+      server = (await findLeftovers(run, null)) ?? "none";
     } else if (read.value.installation === null) {
+      const identity = read.value.identity;
+      // A setup that stopped before it activated a generation still left its identity, and in
+      // Docker what it claimed or found there: both go, or the next setup meets them again.
+      const leftovers = await findLeftovers(
+        run,
+        identity === null ? null : serverVolumeOwner(Buffer.from(identity)),
+      );
       server = exists(path.join(configDir, "identity.env"))
         ? {
             version: "(no active generation)",
@@ -865,8 +888,9 @@ export const describeUninstall = async (
             edgeHost: null,
             generations: countEntries(path.join(configDir, "generations")),
             backups: countEntries(path.join(configDir, "backups")),
+            ...(leftovers === null ? {} : { leftovers }),
           }
-        : ((await findLeftovers(run)) ?? "none");
+        : (leftovers ?? "none");
     } else {
       const { config, directory } = read.value.installation;
       const context = config.dockerContext;
@@ -1025,20 +1049,24 @@ const workspaceLines = (holdings: DockerHoldings, context: string): ReadonlyArra
   ];
 };
 
+/** What an earlier install left, one line per kind, its sessions' workspaces after. */
+const leftoverLines = (plan: LeftoversPlan): ReadonlyArray<string> => [
+  ...(plan.containers.length === 0 ? [] : [`         containers ${plan.containers.join(", ")}`]),
+  ...(plan.volumes.length === 0 ? [] : [`         volumes ${plan.volumes.join(", ")}`]),
+  ...(plan.networks.length === 0 ? [] : [`         networks ${plan.networks.join(", ")}`]),
+  ...workspaceLines(plan.holdings, plan.dockerContext),
+];
+
 /** The plan as the terminal shows it before asking: one line per thing that goes. */
 export const planLines = (plan: UninstallPlan, configDir: string): ReadonlyArray<string> => {
   const lines: Array<string> = [];
   if (plan.server === "none") {
     lines.push(`server   none installed under ${configDir}`);
   } else if (isLeftovers(plan.server)) {
-    const { dockerContext, volumes, networks, containers, holdings } = plan.server;
     lines.push(
-      `server   none configured under ${configDir}, but docker context ${dockerContext} holds what an earlier Mend install left:`,
+      `server   none configured under ${configDir}, but docker context ${plan.server.dockerContext} holds what an earlier Mend install left:`,
     );
-    if (containers.length > 0) lines.push(`         containers ${containers.join(", ")}`);
-    lines.push(`         volumes ${volumes.join(", ")}`);
-    if (networks.length > 0) lines.push(`         networks ${networks.join(", ")}`);
-    lines.push(...workspaceLines(holdings, dockerContext));
+    lines.push(...leftoverLines(plan.server));
   } else if (plan.server !== null) {
     const { version, appUrl, dockerContext, edgeHost, generations, backups } = plan.server;
     lines.push(
@@ -1061,6 +1089,13 @@ export const planLines = (plan: UninstallPlan, configDir: string): ReadonlyArray
     lines.push(
       `         ${configDir}: identity.env, active, ${plural(generations, "generation")}, ${plural(backups, "backup")}`,
     );
+    const leftovers = plan.server.leftovers;
+    if (leftovers !== undefined) {
+      lines.push(
+        `         and on docker context ${leftovers.dockerContext}, what that setup or an earlier install left:`,
+      );
+      lines.push(...leftoverLines(leftovers));
+    }
     lines.push(...workspaceLines(plan.server.holdings ?? NO_HOLDINGS, dockerContext));
     const left = plan.server.leftByEarlier ?? [];
     if (left.length > 0)
@@ -1457,6 +1492,15 @@ const removeServer = async (
           outcome = "partial";
           return;
         }
+      } else if (plan.leftovers !== undefined) {
+        // No generation was activated: what Docker holds goes first, and the identity stays while
+        // anything does, so the next run still knows the anchor it claimed for its own.
+        const kept = await removeLeftovers(runtime, plan.leftovers, report);
+        if (kept.length > 0) {
+          report.remaining.push(configDir);
+          outcome = "partial";
+          return;
+        }
       }
       // The lock directory is the store's own; its release removes it after this returns.
       for (const name of [...SERVER_FILES, LEFT_FILE]) {
@@ -1473,12 +1517,15 @@ const removeServer = async (
   return outcome;
 };
 
-/** No configuration here: remove what an earlier install left, as the plan named it. */
+/**
+ * No active configuration here: remove what an earlier install left, as the plan named it.
+ * Returns the names Docker kept.
+ */
 const removeLeftovers = async (
   runtime: UninstallRuntime,
   plan: LeftoversPlan,
   report: Report,
-): Promise<void> => {
+): Promise<ReadonlyArray<string>> => {
   const run = runtime.server.run;
   const context = plan.dockerContext;
   const left: Array<string> = [];
@@ -1504,8 +1551,25 @@ const removeLeftovers = async (
     const volume = await volumeOwner(run, context, name);
     if (volume.state === "present" && volume.owner !== null) volumes.push(name);
   }
-  left.push(...(await removeEach(run, context, "volume", volumes, report)));
+  // An anchor here is the unactivated setup's own (the plan holds it only then): it goes last,
+  // once nothing else is left.
+  const store = MEND_DOCKER_NAMESPACE.store;
+  left.push(
+    ...(await removeEach(
+      run,
+      context,
+      "volume",
+      volumes.filter((name) => name !== store),
+      report,
+    )),
+  );
+  if (volumes.includes(store)) {
+    if (left.length === 0)
+      left.push(...(await removeEach(run, context, "volume", [store], report)));
+    else left.push(store);
+  }
   if (left.length > 0) report.remaining.push(...left);
+  return left;
 };
 
 /** With `all`: the sysctl file setup wrote, then the images Mend pulled and built. */

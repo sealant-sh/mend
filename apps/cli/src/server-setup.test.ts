@@ -19,6 +19,12 @@ import {
   sshBannerAt,
   type ServerSetupRuntime,
 } from "./server-setup.ts";
+import {
+  describeUninstall,
+  executeUninstall,
+  planLines,
+  type UninstallRuntime,
+} from "./uninstall.ts";
 
 const composeAsset = fs.readFileSync(
   new URL("../test-fixtures/docker/compose.v2.yaml", import.meta.url),
@@ -411,6 +417,21 @@ const asking = (control: RuntimeControl, answer: string | null) => {
   };
   return { runtime, prompts };
 };
+/** `mend uninstall` on the same machine: its config directory, its Docker as the current context. */
+const uninstallOn = (control: RuntimeControl): UninstallRuntime => ({
+  server: {
+    ...control.runtime,
+    run: async (command, args, options) =>
+      args[0] === "context" && args[1] === "show"
+        ? { status: 0, stdout: "default\n", stderr: "" }
+        : control.runtime.run(command, args, options),
+  },
+  cliHome: temporaryDirectory("uninstall-cli-home"),
+  sshConfigFile: path.join(temporaryDirectory("uninstall-ssh"), "config"),
+  signedIn: null,
+  revokeDevice: async () => null,
+  removeWorkspaceSshKey: async () => ({ removed: [], stillActive: [], problem: null }),
+});
 
 describe("mend server setup", () => {
   it("persists the complete generation before claiming daemon data; retries retain identity and use fresh probes", async () => {
@@ -538,7 +559,16 @@ describe("mend server setup", () => {
       const control = makeRuntime({ daemon });
       expect(await serverCommand(["setup", "--yes"], control.runtime)).toMatchObject({
         _tag: "error",
-        message: expect.stringContaining("Docker volume ownership check failed"),
+        // A Docker that does not say keeps its words; a container that is not Mend's is named.
+        message: expect.stringContaining(
+          scenario === "inspection-failure"
+            ? "Docker volume ownership check failed (docker, container inspect)"
+            : `Docker context default has a container named ${name} that is not Mend's: it ${
+                scenario === "unlabelled"
+                  ? "carries no labels"
+                  : `belongs to Compose project ${project}`
+              }. Setup leaves it alone and cannot install beside it. To see what it is: docker --context default container inspect ${name}.`,
+        ),
       });
       expect([...daemon.containers]).toEqual(before);
       expect(daemon.volumes.size).toBe(0);
@@ -586,15 +616,91 @@ describe("mend server setup", () => {
     expect(await serverCommand(["setup", "--yes"], first.runtime)).toEqual({ _tag: "ok" });
   });
 
-  it("keeps the plain refusal for data in the way that carries no Mend label", async () => {
+  it("names a volume in the way that carries no Mend label, and leaves it", async () => {
     const daemon = new DockerProtocol();
     daemon.volumes.set("mend-control", null);
     const refused = await serverCommand(["setup", "--yes"], makeRuntime({ daemon }).runtime);
-    expect(refused).toMatchObject({
+    expect(refused).toEqual({
       _tag: "error",
-      message: expect.stringContaining("Restore the original Mend identity/configuration"),
+      message:
+        "Docker context default has a volume named mend-control that is not Mend's: it carries no labels. Setup leaves it alone and cannot install beside it. To see what it is: docker --context default volume inspect mend-control. Remove it yourself if nothing needs it, or install in another Docker context: mend server setup --context <name>.",
     });
     expect([...daemon.volumes.keys()]).toEqual(["mend-control"]);
+  });
+
+  it("names a same-named network that is not Mend's, without the ownership jargon", async () => {
+    const daemon = new DockerProtocol();
+    daemon.networks.set("mend_default", { "com.docker.compose.project": "other" });
+    const control = makeRuntime({ daemon });
+    expect(await serverCommand(["setup", "--yes"], control.runtime)).toEqual({
+      _tag: "error",
+      message:
+        "Docker context default has a network named mend_default that is not Mend's: it belongs to Compose project other. Setup leaves it alone and cannot install beside it. To see what it is: docker --context default network inspect mend_default. Remove it yourself if nothing needs it, or install in another Docker context: mend server setup --context <name>.",
+    });
+    expect([...daemon.networks.keys()]).toEqual(["mend_default"]);
+    expect(daemon.volumes.size).toBe(0);
+  });
+
+  it("names an earlier install's network as a leftover, points at mend uninstall, and that clears the way (RC 773)", async () => {
+    // What a fresh install on a Mac met: the bundle's network, with Mend's Compose project label
+    // and nothing attached, and no installation anywhere to own it.
+    const daemon = new DockerProtocol();
+    daemon.networks.set("mend_default", { "com.docker.compose.project": "mend" });
+    const control = makeRuntime({ daemon });
+    expect(await serverCommand(["setup", "--yes"], control.runtime)).toEqual({
+      _tag: "error",
+      message:
+        "Docker context default holds what an earlier Mend install left, and no installation owns it: network mend_default. Setup does not install beside it. To remove it: DOCKER_CONTEXT=default mend uninstall --server, then run mend server setup again.",
+    });
+    expect([...daemon.networks.keys()]).toEqual(["mend_default"]);
+    expect(daemon.volumes.size).toBe(0);
+    // The failed setup kept its identity and an unactivated generation: uninstall takes both, and
+    // the network with them.
+    const uninstall = uninstallOn(control);
+    const plan = await describeUninstall(uninstall, "server");
+    expect(planLines(plan, control.runtime.configDir)).toContain("         networks mend_default");
+    expect(await executeUninstall(uninstall, plan)).toEqual({
+      failures: [],
+      leftovers: [],
+      remaining: [],
+    });
+    expect([...daemon.networks.keys()]).toEqual([]);
+    expect(fs.existsSync(path.join(control.runtime.configDir, "identity.env"))).toBe(false);
+    expect(await serverCommand(["setup", "--yes"], control.runtime)).toEqual({ _tag: "ok" });
+  });
+
+  it("uninstall takes the volumes a setup claimed before it stopped, so the next setup is not refused", async () => {
+    const guard =
+      "busybox:1.37@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e";
+    const daemon = new DockerProtocol();
+    const configDir = temporaryDirectory("claimed-then-stopped");
+    // The claim succeeds, then a pull fails: the identity owns the volumes, no generation is active.
+    const stopped = makeRuntime({
+      daemon,
+      configDir,
+      guardLabel: guard,
+      missingImages: [guard],
+      pullFails: true,
+    });
+    expect(await serverCommand(["setup", "--yes"], stopped.runtime)).toMatchObject({
+      _tag: "error",
+    });
+    expect([...daemon.volumes.keys()]).toEqual(["mend-store", "mend-control", "mend-garage"]);
+    const uninstall = uninstallOn(stopped);
+    const plan = await describeUninstall(uninstall, "server");
+    expect(planLines(plan, configDir)).toContain(
+      "         volumes mend-control, mend-garage, mend-store",
+    );
+    expect(await executeUninstall(uninstall, plan)).toEqual({
+      failures: [],
+      leftovers: [],
+      remaining: [],
+    });
+    expect([...daemon.volumes.keys()]).toEqual([]);
+    expect(fs.existsSync(path.join(configDir, "identity.env"))).toBe(false);
+    expect(
+      await serverCommand(["setup", "--yes"], makeRuntime({ daemon, configDir }).runtime),
+    ).toEqual({ _tag: "ok" });
   });
 
   it.each(["mend-control", "mend-garage"])(
@@ -607,11 +713,9 @@ describe("mend server setup", () => {
       orphaned.volumes.set(volume, { [SERVER_VOLUME_OWNER_LABEL]: "another-installation" });
       const first = makeRuntime({ daemon: orphaned });
       const refused = await serverCommand(["setup", "--yes"], first.runtime);
-      expect(refused).toMatchObject({
+      expect(refused).toEqual({
         _tag: "error",
-        message: expect.stringContaining(
-          "Docker still holds what an earlier Mend install left behind: volumes with Mend's installation label and no installation to own them. Run mend uninstall --server to remove them, then run setup again.",
-        ),
+        message: `Docker context default holds what an earlier Mend install left, and no installation owns it: volume ${volume}. The volume may hold that install's data, and removing it deletes that data. Setup does not install beside it. To remove it: DOCKER_CONTEXT=default mend uninstall --server, then run mend server setup again.`,
       });
       expect([...orphaned.volumes.keys()]).toEqual([volume]);
       expect(first.commands.some(([, args]) => args.includes("up") || args[3] === "create")).toBe(
@@ -635,12 +739,19 @@ describe("mend server setup", () => {
         [SERVER_VOLUME_OWNER_LABEL]: "another-installation",
       });
       if (volume === "mend-garage") {
-        // Word for word the refusal a foreign control volume gets: one ownership rule, three volumes.
+        // Word for word the refusal a foreign control volume gets, but for its name: one ownership
+        // rule, three volumes.
         const other = new DockerProtocol();
         other.volumes.set("mend-control", { [SERVER_VOLUME_OWNER_LABEL]: "another-installation" });
+        const byControl = await serverCommand(
+          ["setup", "--yes"],
+          makeRuntime({ daemon: other }).runtime,
+        );
         expect(
-          await serverCommand(["setup", "--yes"], makeRuntime({ daemon: other }).runtime),
-        ).toEqual(refused);
+          byControl._tag === "error"
+            ? byControl.message.replace("mend-control", volume)
+            : byControl,
+        ).toEqual(refused._tag === "error" ? refused.message : refused);
       }
     },
   );
@@ -2658,6 +2769,80 @@ describe("mend server setup, guided and unasked", () => {
     expect(control.lines).toContain("Mend 0.23.0 is reachable at http://localhost:3105");
     expect(control.lines).not.toContain("This run changes:");
     expect(transcript.at(-1)).toBe("Apply? [Y/n] ");
+  });
+
+  it("offers to remove an earlier install's leftovers before the first question, and goes on after a yes", async () => {
+    const daemon = new DockerProtocol();
+    daemon.networks.set("mend_default", { "com.docker.compose.project": "mend" });
+    const control = makeRuntime({ daemon });
+    const transcript: Array<string> = [];
+    const result = await serverCommand(["setup"], {
+      ...control.runtime,
+      // remove: yes · reach: this machine · T3: no · mirrors: keep · one organization · apply
+      prompter: scriptedPrompter(["y", "1", "", "", "", ""], transcript),
+    });
+    expect(result).toEqual({ _tag: "ok" });
+    expect(transcript[0]).toBe("Remove it now? [y/N] y");
+    expect(control.lines).toEqual(
+      expect.arrayContaining([
+        "Docker context default holds what an earlier Mend install left, and no installation owns it:",
+        "  network mend_default",
+        "Setup does not install beside it.",
+        "removed network mend_default",
+        "Mend 0.23.0 is reachable at http://localhost:3105",
+      ]),
+    );
+    expect(
+      control.lines.indexOf("removed network mend_default") <
+        control.lines.indexOf("Mend 0.23.0 is reachable at http://localhost:3105"),
+    ).toBe(true);
+  });
+
+  it("leaves an earlier install's leftovers on Enter, names its volumes as data, and says what removes them", async () => {
+    const daemon = new DockerProtocol();
+    const compose = { "com.docker.compose.project": "mend" };
+    daemon.networks.set("mend_default", compose);
+    daemon.volumes.set("mend_mend-postgres", compose);
+    daemon.volumes.set("mend-control", { [SERVER_VOLUME_OWNER_LABEL]: "an-identity-long-gone" });
+    const control = makeRuntime({ daemon });
+    const transcript: Array<string> = [];
+    const result = await serverCommand(["setup"], {
+      ...control.runtime,
+      prompter: scriptedPrompter([""], transcript),
+    });
+    expect(result).toEqual({ _tag: "ok" });
+    expect(transcript).toEqual(["Remove them now? [y/N] "]);
+    expect(control.lines).toEqual(
+      expect.arrayContaining([
+        "Docker context default holds what an earlier Mend install left, and no installation owns them:",
+        "  network mend_default",
+        "  2 volumes (mend_mend-postgres, mend-control)",
+        "The volumes may hold that install's data (its database, repositories and captures). Removing them deletes that data for good.",
+        "Nothing changed. To remove them later: DOCKER_CONTEXT=default mend uninstall --server, then run mend server setup again.",
+      ]),
+    );
+    expect([...daemon.networks.keys()]).toEqual(["mend_default"]);
+    expect([...daemon.volumes.keys()]).toEqual(["mend_mend-postgres", "mend-control"]);
+    expect(fs.existsSync(path.join(control.runtime.configDir, "identity.env"))).toBe(false);
+  });
+
+  it("does not offer to remove a same-named network that is not Mend's: setup names it", async () => {
+    const daemon = new DockerProtocol();
+    daemon.networks.set("mend_default", null);
+    const control = makeRuntime({ daemon });
+    const transcript: Array<string> = [];
+    const result = await serverCommand(["setup"], {
+      ...control.runtime,
+      prompter: scriptedPrompter(["1", "", "", "", ""], transcript),
+    });
+    expect(result).toMatchObject({
+      _tag: "error",
+      message: expect.stringContaining(
+        "has a network named mend_default that is not Mend's: it carries no labels.",
+      ),
+    });
+    expect(transcript.some((line) => line.startsWith("Remove"))).toBe(false);
+    expect([...daemon.networks.keys()]).toEqual(["mend_default"]);
   });
 
   it("asks about the host's user namespaces before the guide's first question, pulling only the helper, and not again (RC 761)", async () => {

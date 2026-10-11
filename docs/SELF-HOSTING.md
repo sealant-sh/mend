@@ -264,9 +264,15 @@ when their ownership label matches this installation's identity; anything else s
 `mend-store` (the anchor) and `identity.env` go last, once every other volume, network and workspace
 the installation owns is gone. If Docker refuses one, uninstall names it, keeps the anchor and the
 identity, and writes the names to `uninstall-left.json`: `mend uninstall` again finishes the job,
-and `mend server setup` reinstalls over it. With no configuration on the machine, volumes that carry
-Mend's installation label and no anchor are an earlier install's leftovers; setup's refusal points
-at `mend uninstall --server`, which lists and removes them.
+and `mend server setup` reinstalls over it. With no installation on the machine, what carries Mend's
+labels and has no anchor beside it is an earlier install's leftovers: volumes with Mend's
+installation label or the bundle's Compose names, the bundle's networks with nothing attached, and
+stopped containers a generation started. Setup names them; on a terminal it offers to remove them
+(No is the default, and it says the volumes' data goes with them), and otherwise it points at
+`mend uninstall --server`, which lists and removes them, together with the identity a setup that
+stopped part way left. A network or container that only shares a name with Mend's, and carries
+another Compose project's label or none, is not Mend's: setup names it, says which label it carries,
+and leaves it alone.
 
 When the sign-in is to the server being removed, its device token and workspace SSH key go with that
 server's database. Otherwise the home scope asks the signed-in server to remove this machine's key

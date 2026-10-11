@@ -179,13 +179,29 @@ export class DockerProtocol {
         const format =
           kind === "volume"
             ? "{{json .}}"
-            : `{"Name":{{json .Name}},"Labels":{{json .${kind === "container" ? "Config.Labels" : "Labels"}}}}`;
+            : kind === "container"
+              ? '{"Name":{{json .Name}},"Labels":{{json .Config.Labels}},"Running":{{json .State.Running}}}'
+              : '{"Name":{{json .Name}},"Labels":{{json .Labels}},"Containers":{{json .Containers}}}';
         if (args.at(-1) !== format) return failed("Unexpected inspection format");
+        const running = (container: string) =>
+          (this.facts.get(container)?.state ?? "running") === "running";
+        // A network lists the running containers attached to it, by endpoint.
+        const attached = [...this.facts]
+          .filter(([container, facts]) => facts.networks?.includes(name) && running(container))
+          .map(([container]) => container);
         return collection.has(name)
           ? ok(
               JSON.stringify({
                 Name: kind === "container" ? `/${name}` : name,
                 Labels: collection.get(name),
+                ...(kind === "container" ? { Running: running(name) } : {}),
+                ...(kind === "network"
+                  ? {
+                      Containers: Object.fromEntries(
+                        attached.map((container) => [`id-${container}`, { Name: container }]),
+                      ),
+                    }
+                  : {}),
               }),
             )
           : failed(`No such ${kind}: ${name}`);
