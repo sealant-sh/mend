@@ -163,11 +163,9 @@ describe("describeGitRemoteFailure", () => {
   it.each(["ambient", "mend-key", "bridge"] as const)(
     "an https remote that wants a credential is never a refused key (%s)",
     (mode) => {
-      const described = describeGitRemoteFailure(
-        httpsRefusal,
-        mode,
-        "https://github.com/acme/api.git",
-      );
+      const described = describeGitRemoteFailure(httpsRefusal, mode, {
+        remote: "https://github.com/acme/api.git",
+      });
       expect(described).toContain("public repositories only");
       expect(described).toContain("git@github.com:acme/api.git");
       expect(described).toContain("(observed: fatal: could not read Username");
@@ -186,9 +184,36 @@ describe("describeGitRemoteFailure", () => {
     const described = describeGitRemoteFailure(
       "ERROR: Repository not found.\nfatal: Could not read from remote repository.",
       "mend-key",
-      "git@github.com:acme/api.git",
+      { remote: "git@github.com:acme/api.git" },
     );
     expect(described).toContain("Mend key is not authorized");
+  });
+
+  it("an https URL that git sent over ssh (insteadOf) keeps the ssh reading", () => {
+    const remote = "https://github.com/acme/api.git";
+    const notFound = describeGitRemoteFailure(
+      "ERROR: Repository not found.\nfatal: Could not read from remote repository.",
+      "mend-key",
+      { remote },
+    );
+    expect(notFound).toContain("Mend key is not authorized");
+    expect(notFound).not.toContain("HTTPS credential");
+    const refused = describeGitRemoteFailure(
+      "git@github.com: Permission denied (publickey).\nfatal: Could not read from remote repository.",
+      "mend-key",
+      { remote },
+    );
+    expect(refused).toContain("Add your Mend public key");
+  });
+
+  it("a push to a public https repository says the push wanted the credential", () => {
+    const described = describeGitRemoteFailure(httpsRefusal, "mend-key", {
+      remote: "https://github.com/acme/api.git",
+      push: true,
+    });
+    expect(described).toContain("a public repository clones over HTTPS without one");
+    expect(described).toContain("to land, adopt git@github.com:acme/api.git");
+    expect(described).not.toContain("this one is private");
   });
 
   it("names a changed host key — first contact is accept-new in every mode", () => {
@@ -214,6 +239,9 @@ describe("describeGitRemoteFailure", () => {
 describe("sshUrlOfHttpsRemote", () => {
   it("spells the ssh URL on hosts whose ssh path is the https path", () => {
     expect(sshUrlOfHttpsRemote("https://github.com/acme/api")).toBe("git@github.com:acme/api.git");
+    expect(sshUrlOfHttpsRemote("https://github.com:443/acme/api.git")).toBe(
+      "git@github.com:acme/api.git",
+    );
     expect(sshUrlOfHttpsRemote("https://GitHub.com/acme/api.git/")).toBe(
       "git@github.com:acme/api.git",
     );
@@ -226,5 +254,8 @@ describe("sshUrlOfHttpsRemote", () => {
     expect(sshUrlOfHttpsRemote("https://git.acme.dev/acme/api.git")).toBeNull();
     expect(sshUrlOfHttpsRemote("git@github.com:acme/api.git")).toBeNull();
     expect(sshUrlOfHttpsRemote("https://github.com/acme")).toBeNull();
+    // Another port means another server behind the name; its ssh side is unknown.
+    expect(sshUrlOfHttpsRemote("https://github.com:8443/acme/api.git")).toBeNull();
+    expect(sshUrlOfHttpsRemote("http://github.com/acme/api.git")).toBeNull();
   });
 });

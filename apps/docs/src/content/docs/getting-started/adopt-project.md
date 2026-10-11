@@ -21,9 +21,9 @@ not upload your local files or uncommitted changes. Without a network origin, su
 explicitly.
 
 Mend sends the `origin` URL as it is and never rewrites it. A checkout cloned over HTTPS has an
-`https://` origin, and Mend's own Git holds no HTTPS credential, so that adopts a public repository
-only. For a private one, adopt its SSH URL with your Mend key or the bridge (see
-[HTTPS remotes](/guides/git-access/#https-remotes)):
+`https://` origin. On a server from `mend server setup`, Mend's own Git holds no HTTPS credential,
+so that adopts a public repository only, and landing a change to it fails at the push. Adopt its SSH
+URL with your Mend key or the bridge (see [HTTPS remotes](/guides/git-access/#https-remotes)):
 
 ```sh
 mend adopt git@github.com:acme/api.git --name api

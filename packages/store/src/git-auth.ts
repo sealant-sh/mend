@@ -349,6 +349,13 @@ const FAILURE_PATTERNS: ReadonlyArray<FailurePattern> = [
 const HTTPS_CREDENTIAL_FAILURE =
   /could not read (?:Username|Password) for '|Authentication failed for '|The requested URL returned error: 40[13]|repository '[^']*' not found|Repository not found/i;
 
+/**
+ * Lines only ssh transport prints. A URL typed as https can still go out over ssh (a global
+ * `url.<base>.insteadOf`), and then its failure is an ssh one, whatever the URL says.
+ */
+const SSH_TRANSPORT =
+  /Permission denied \(publickey|Could not read from remote repository|Host key verification failed|^ssh: /im;
+
 /** Hosts whose ssh user is `git` and whose ssh path is the https path: the ssh URL can be named. */
 const SSH_SPELLED_HOSTS: ReadonlySet<string> = new Set([
   "github.com",
@@ -359,58 +366,74 @@ const SSH_SPELLED_HOSTS: ReadonlySet<string> = new Set([
 
 /**
  * The ssh URL of an https remote on a host that spells it `git@host:path.git`, or null when the
- * remote is not https on one of those hosts.
+ * remote is not https on one of those hosts, on its default port.
  */
 export const sshUrlOfHttpsRemote = (remote: string): string | null => {
   const location = gitRemoteLocation(remote);
-  if (location === null || location.scheme !== "https" || !SSH_SPELLED_HOSTS.has(location.host)) {
+  if (
+    location === null ||
+    location.scheme !== "https" ||
+    !SSH_SPELLED_HOSTS.has(location.host) ||
+    (location.port !== null && location.port !== 443)
+  ) {
     return null;
   }
   const repoPath = new URL(remote).pathname.replace(/^\/+|\/+$/g, "").replace(/\.git$/, "");
   return repoPath.split("/").length < 2 ? null : `git@${location.host}:${repoPath}.git`;
 };
 
-const describeHttpsCredentialFailure = (mode: GitAuthMode, remote: string | undefined): string => {
-  const sshUrl = remote === undefined ? null : sshUrlOfHttpsRemote(remote);
+/** What a remote git failure was doing, as far as the caller knows it. */
+export interface GitRemoteFailureContext {
+  /** The remote's URL: an HTTPS failure can then name the ssh URL that would work. */
+  readonly remote?: string | null;
+  /** The operation was a push: a public repository's clone needs no credential, its push does. */
+  readonly push?: boolean;
+}
+
+const describeHttpsCredentialFailure = (
+  mode: GitAuthMode,
+  context: GitRemoteFailureContext,
+): string => {
+  const sshUrl =
+    context.remote === undefined || context.remote === null
+      ? null
+      : sshUrlOfHttpsRemote(context.remote);
   const target = sshUrl === null ? "its ssh URL (git@host:owner/repo.git)" : sshUrl;
-  const holder =
-    mode === "ambient"
-      ? "The Mend server's own git setup holds no HTTPS credential for this remote"
-      : "Mend holds no HTTPS credential for this remote";
   const signer =
     mode === "mend-key"
-      ? "Your Mend key signs ssh remotes only: adopt"
+      ? "Your Mend key signs ssh remotes only"
       : mode === "bridge"
-        ? "Your shared agent (`mend keys share`) signs ssh remotes only: adopt"
-        : "Adopt";
-  const how =
-    mode === "ambient"
-      ? " with your Mend key (`mend keys`, `--auth mend-key`) or your own agent (`mend keys share`, `--auth bridge`)"
-      : "";
-  return `${holder}, so over HTTPS it reaches public repositories only; this one is private, or the URL is wrong. ${signer} ${target} instead${how}.`;
+        ? "Your shared agent (`mend keys share`) signs ssh remotes only"
+        : "Your Mend key (`mend keys`, `--auth mend-key`) or your own agent (`mend keys share`, `--auth bridge`) signs ssh remotes";
+  return context.push === true
+    ? `Mend found no HTTPS credential for this remote: a public repository clones over HTTPS without one, but a push needs one. ${signer}: to land, adopt ${target} instead.`
+    : `Mend found no HTTPS credential for this remote, so over HTTPS it reaches public repositories only; this one is private, or the URL is wrong. ${signer}: adopt ${target} instead.`;
 };
 
 /**
  * Turn a remote git failure's stderr into a readable sentence, or null when
  * nothing matched (callers then surface the stderr verbatim — an unknown
  * failure must never be flattened into a wrong explanation). The matched
- * stderr line rides along as the observed evidence. `remote`, when the caller
- * knows it, lets an HTTPS failure name the ssh URL that would work.
+ * stderr line rides along as the observed evidence.
  */
 export const describeGitRemoteFailure = (
   stderr: string,
   mode: GitAuthMode,
-  remote?: string,
+  context: GitRemoteFailureContext = {},
 ): string | null => {
-  const scheme = remote === undefined ? null : (gitRemoteLocation(remote)?.scheme ?? null);
+  const scheme =
+    context.remote === undefined || context.remote === null
+      ? null
+      : (gitRemoteLocation(context.remote)?.scheme ?? null);
   const overHttp =
-    scheme === "https" || scheme === "http" || (scheme === null && /'https?:\/\//i.test(stderr));
+    !SSH_TRANSPORT.test(stderr) &&
+    (scheme === "https" || scheme === "http" || (scheme === null && /'https?:\/\//i.test(stderr)));
   if (overHttp && HTTPS_CREDENTIAL_FAILURE.test(stderr)) {
     const line = stderr
       .split("\n")
       .map((candidate) => candidate.trim())
       .find((candidate) => HTTPS_CREDENTIAL_FAILURE.test(candidate));
-    const summary = describeHttpsCredentialFailure(mode, remote);
+    const summary = describeHttpsCredentialFailure(mode, context);
     return line === undefined ? summary : `${summary} (observed: ${line})`;
   }
   for (const pattern of FAILURE_PATTERNS) {

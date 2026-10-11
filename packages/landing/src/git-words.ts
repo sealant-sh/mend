@@ -11,7 +11,8 @@ export const shortSha = (sha: string | null) => (sha === null ? "none" : sha.sli
 
 /**
  * A git failure in the remote's words when a known shape matched, verbatim otherwise. `remote` is
- * the origin URL, so an HTTPS refusal can name the ssh URL that would work.
+ * the origin URL, so an HTTPS refusal can name the ssh URL that would work; a failed `git push`
+ * says a push needs the credential a public clone did not.
  */
 export const gitWords = (
   error: GitError,
@@ -19,7 +20,9 @@ export const gitWords = (
   remote: string | null = null,
 ): string => {
   const described =
-    mode === null ? null : describeGitRemoteFailure(error.stderr, mode, remote ?? undefined);
+    mode === null
+      ? null
+      : describeGitRemoteFailure(error.stderr, mode, { remote, push: error.args[0] === "push" });
   if (described !== null) return described;
   if (error.stderr.trim() !== "") return error.stderr.trim();
   return `git ${error.args[0] ?? ""} exited ${error.exitCode ?? "without a code"}`;

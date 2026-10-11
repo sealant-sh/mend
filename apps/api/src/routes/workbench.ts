@@ -396,7 +396,7 @@ const readableGitFailure = (
   remote: string | null = null,
 ): StoreFailure => {
   if (error.stderr === "") return new StoreFailure({ message: String(error) });
-  const described = describeGitRemoteFailure(error.stderr, mode, remote ?? undefined);
+  const described = describeGitRemoteFailure(error.stderr, mode, { remote });
   return new StoreFailure({ message: described ?? error.stderr });
 };
 

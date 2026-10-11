@@ -16,6 +16,10 @@ describe("gitWords", () => {
       "https://github.com/acme/api.git",
     );
     expect(words).toContain("git@github.com:acme/api.git");
+    expect(words).toContain("a push needs one");
+    expect(words).toContain("to land, adopt");
+    // The repository is public and the URL right: the push, not the read, wanted a credential.
+    expect(words).not.toContain("this one is private");
     expect(words).not.toContain("Add your Mend public key");
   });
 
