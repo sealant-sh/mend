@@ -185,8 +185,12 @@ published, so who may use it does not change with where it listens.
 
   Caddy gets its certificate once the name resolves to the server and ports 80 and 443 answer; setup
   says where it resolved. T3 Code's Remote link then takes `https://t3.mend.example.com`, which also
-  works from T3 Code's hosted web app. `--no-t3-gateway-origin` stops the edge serving it. Without
-  an origin, the gateway on a public install is reached from the server's own machine only.
+  works from T3 Code's hosted web app. `--no-t3-gateway-origin` stops the edge serving it.
+
+  On a public install that is also on a tailnet, Tailscale Serve reaches the gateway from the
+  tailnet, with or without an origin: `tailscale serve --bg --https=3120 http://127.0.0.1:3120`, and
+  the Remote link takes `https://<this machine>.<tailnet>.ts.net:3120`. Without an origin or Serve,
+  the gateway on a public install is reached from the server's own machine only.
 
 From a checkout, the gateway listens on `127.0.0.1` unless `MEND_T3_GATEWAY_HOST` says otherwise.
 

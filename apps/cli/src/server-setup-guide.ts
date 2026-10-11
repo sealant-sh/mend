@@ -756,10 +756,9 @@ const askNetwork = async (asked: Asked, settings: SetupSettings): Promise<SetupS
 };
 
 /** Said when "my private network" finds no address of one here. */
-const noPrivateNetwork = (port: number): ReadonlyArray<string> => [
+const NO_PRIVATE_NETWORK = [
   "This machine has no address on a private network: no tailnet, no LAN or VPN address. Mend can",
   "still be reached from other machines without publishing it to the internet:",
-  `  - keep it on this machine and reach it through a tunnel you run, such as ssh -L ${port}:127.0.0.1:${port} <this machine>;`,
   "  - join this machine to a tailnet (tailscale up), then run mend server setup again;",
   "  - or choose the public internet, with HTTPS: the edge serves it on your domain, behind the public exposure gate.",
 ];
@@ -1002,7 +1001,7 @@ const askReach = async (asked: Asked, settings: SetupSettings): Promise<SetupSet
     const network = await askNetwork(asked, settings);
     if (network === null) {
       asked.io.write("");
-      for (const line of noPrivateNetwork(settings.appPort)) asked.io.write(line);
+      for (const line of NO_PRIVATE_NETWORK) asked.io.write(line);
       asked.io.write(
         asked.fresh
           ? "Setup installs Mend on this machine now."
@@ -1098,8 +1097,8 @@ const askT3Origin = async (asked: Asked, settings: SetupSettings): Promise<Setup
         value: true,
       },
       {
-        label: "no, this machine only",
-        detail: `127.0.0.1:${port}, reached from this machine only`,
+        label: "no, not through the edge",
+        detail: `it stays on 127.0.0.1:${port}: this machine, or a tailnet through Tailscale Serve`,
         value: false,
       },
     ],
@@ -1150,23 +1149,28 @@ const askT3 = async (asked: Asked, settings: SetupSettings): Promise<SetupSettin
     io.write(
       `Behind the edge, its port stays on ${publishedAddress(placement.bind, placement.port)}, as Mend's own does; the edge can serve it on a host of its own${settings.t3GatewayOrigin === undefined ? "" : `, as it does now at https://${settings.t3GatewayOrigin}`}.`,
     );
-  else if (placement !== undefined) {
-    const published = publishedAddress(placement.bind, placement.port);
-    if (t3GatewayBeyondMachine(placement))
+  else if (placement !== undefined && t3GatewayBeyondMachine(placement))
+    io.write(
+      `It is published where Mend's web port is, on ${publishedAddress(placement.bind, placement.port)}: T3 Code reaches it at ${placement.url}, with no tunnel.`,
+    );
+  else if (placement !== undefined)
+    io.write(
+      `It is published where Mend's web port is, on ${publishedAddress(placement.bind, placement.port)}: T3 Code on this machine reaches it at ${placement.url}. Reached from your network, Mend's web port and the gateway are published there together.`,
+    );
+  // On loopback (this machine, or behind the edge), Tailscale Serve reaches it from the tailnet as
+  // it reaches Mend's own port: said when Serve is observed doing that for Mend, or for the gateway.
+  if (placement !== undefined && !t3GatewayBeyondMachine(placement)) {
+    const tailscale = await asked.tailscale();
+    const gatewayRoute = tailscale?.serve.find((route) => route.loopbackPort === port);
+    const webServed = tailscale?.serve.some((route) => route.loopbackPort === settings.appPort);
+    if (tailscale?.running === true && gatewayRoute !== undefined)
       io.write(
-        `It is published where Mend's web port is, on ${published}: T3 Code reaches it at ${placement.url}, with no tunnel.`,
+        `Observed: Tailscale Serve forwards ${gatewayRoute.origin} to port ${port} here${gatewayRoute.funnel ? ", with Funnel on: public" : ""}. T3 Code on your tailnet uses it as its Remote link.`,
       );
-    else {
+    else if (tailscale?.running === true && tailscale.dnsName !== null && webServed === true)
       io.write(
-        `It is published where Mend's web port is, on ${published}: T3 Code on this machine reaches it at ${placement.url}. Reached from your network, Mend's web port and the gateway are published there together.`,
+        `Observed: Tailscale Serve forwards to Mend's port here. The gateway is reached the same way once Serve forwards to it too: tailscale serve --bg --https=${port} http://127.0.0.1:${port}, and T3 Code's Remote link takes https://${tailscale.dnsName}:${port}.`,
       );
-      const tailscale = await asked.tailscale();
-      const serves = tailscale?.serve.some((route) => route.loopbackPort === settings.appPort);
-      if (tailscale?.running === true && tailscale.dnsName !== null && serves === true)
-        io.write(
-          `Observed: Tailscale Serve forwards to Mend's port here. The gateway is reached the same way once Serve forwards to it too: tailscale serve --bg --https=${port} http://127.0.0.1:${port}, and T3 Code's Remote link takes https://${tailscale.dnsName}:${port}.`,
-        );
-    }
   }
   const on = await yesNo(io, "Turn on the T3 Code gateway?", settings.t3GatewayPort !== undefined);
   if (!on)
