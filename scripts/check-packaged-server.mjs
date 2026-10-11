@@ -17,6 +17,9 @@
  * CI must build both canonical images from Dockerfile with genuine version stamps, not
  * retag one image or override health ENV. Same-source fixtures prove upgrade mechanics
  * and retention only, not historical schema migration or backup restore compatibility.
+ * With an upgrade, the reinstall at the end is set up by the previous release's CLI from npm
+ * (MEND_TEST_PREVIOUS_CLI: an exact version, `none`, or unset for the `next` dist-tag), and this
+ * CLI upgrades the generation that CLI wrote.
  * No macOS claim. SIGKILL cannot clean up; retained resources make the next run refuse.
  * Raw command output, HTTP bodies, credentials and Docker logs are never printed. A failure
  * after the session exists prints DIAGNOSIS lines instead: status words from the public API and
@@ -67,6 +70,7 @@ import {
   flushReportEvidence,
   reviewDiffEvidence,
   ownsWorkspaceContainer,
+  readPreviousCli,
   readPrivateIdentity,
   readUpgradeInputs,
   requestFailureEvidence,
@@ -924,9 +928,9 @@ async function main() {
   // A server command that fails says why in words the CI log may carry
   // (`setupFailureEvidence`): how it ended, setup's own headline by label, and each product
   // container's state and health. Its output stays in the private diagnostics.
-  const serverCli = async (args, { timeout = 600_000 } = {}) => {
+  const serverCli = async (args, { timeout = 600_000, cliBin = bin } = {}) => {
     const started = Date.now();
-    const result = await startCli(args, { timeout }).result;
+    const result = await start(process.execPath, [cliBin, ...args], { timeout }).result;
     if (!result.ok) {
       let containers = [];
       try {
@@ -1008,7 +1012,7 @@ async function main() {
     for (const flag of ["--version", "--assets-dir", "--offline"])
       check(help.includes(flag), `Integration required: server upgrade help must expose ${flag}`);
   }
-  const [port, sshPort] = await freePorts();
+  const [port, sshPort, gatewayPort] = await freePorts();
   const origin = `http://127.0.0.1:${port}`;
   const setupArgs = [
     "server",
@@ -1932,23 +1936,92 @@ async function main() {
   keptImage = undefined;
   // The installation is new: its volumes carry a new identity, so ownership is learned afresh.
   volumes = createVolumeLedger(afterUninstall.volumes, runId);
-  await serverCli([
+  const reinstallArgs = (pinned, assetsDir) => [
     "server",
     "setup",
     "--context",
     context,
     ...(offline ? ["--offline"] : []),
     "--version",
-    active.version,
+    pinned,
     "--assets-dir",
-    active.assets,
+    assetsDir,
     "--port",
     String(port),
     "--ssh-port",
     String(sshPort),
     "--url",
     origin,
-  ]);
+  ];
+  const previousCli = upgrade ? readPreviousCli(process.env) : undefined;
+  if (previousCli) {
+    stage = "previous release's CLI";
+    const previousVersion = JSON.parse(
+      await run("npm", ["view", `@sealant/mend@${previousCli.spec}`, "version", "--json"], {
+        environment: env,
+        timeout: 120_000,
+      }),
+    );
+    check(
+      typeof previousVersion === "string" &&
+        /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(previousVersion),
+      `npm must name one version for @sealant/mend@${previousCli.spec}`,
+    );
+    const previousRoot = join(scratch, "previous-cli");
+    await mkdir(previousRoot);
+    await writeFile(join(previousRoot, "package.json"), JSON.stringify({ private: true }));
+    await run(
+      "npm",
+      [
+        "install",
+        "--omit=dev",
+        "--no-audit",
+        "--no-fund",
+        "--ignore-scripts",
+        `@sealant/mend@${previousVersion}`,
+      ],
+      { cwd: previousRoot, environment: env, timeout: 300_000 },
+    );
+    const previousBin = join(previousRoot, "node_modules/.bin/mend");
+    check(
+      (await run(process.execPath, [previousBin, "--version"], { environment: env }))
+        .split("\n")[0]
+        .trim() === `mend ${previousVersion}`,
+      `The previous release's CLI must report ${previousVersion}`,
+    );
+    // The gateway, where that CLI has it: its server.env lines are the ones that moved last.
+    const withGateway = (
+      await run(process.execPath, [previousBin, "help", "server", "setup"], { environment: env })
+    ).includes("--t3-gateway-port");
+    stage = `reinstall by mend ${previousVersion}, then upgrade by this CLI`;
+    await serverCli(
+      [
+        ...reinstallArgs(version, assets),
+        ...(withGateway ? ["--t3-gateway", "--t3-gateway-port", String(gatewayPort)] : []),
+      ],
+      { cliBin: previousBin },
+    );
+    await health(origin, version);
+    const identity = hash(await readFile(join(configRoot, "identity.env"), "utf8"));
+    const written = await readlink(join(configRoot, "active"));
+    // Read as that CLI left it, then upgraded from it.
+    await serverCli(["server", "status"]);
+    await runPackagedUpgrade(upgrade, offline, serverCli, collectOwned);
+    await health(origin, active.version);
+    check(
+      (await readlink(join(configRoot, "active"))) !== written &&
+        (await lstat(join(configRoot, written))).isDirectory() &&
+        hash(await readFile(join(configRoot, "identity.env"), "utf8")) === identity,
+      "The upgrade must write a new generation beside the older CLI's, with the identity unchanged",
+    );
+    console.log(
+      `PASS upgrade from a generation mend ${previousVersion} wrote${withGateway ? " with the t3code gateway on" : ""}: this CLI read it and upgraded it to ${active.version}, the identity unchanged`,
+    );
+  } else {
+    if (upgrade)
+      console.log("NOT TESTED upgrade from an older CLI's generation; MEND_TEST_PREVIOUS_CLI=none");
+    await serverCli(reinstallArgs(active.version, active.assets));
+  }
   await health(origin, active.version);
   const instance = await json(origin, "/instance");
   check(

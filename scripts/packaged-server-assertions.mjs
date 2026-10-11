@@ -759,6 +759,20 @@ export function readUpgradeInputs(source, currentAssets, baseline) {
   return { image, version, assets: resolve(assets ?? currentAssets) };
 }
 
+/**
+ * The release whose CLI writes the generation this CLI then upgrades (MEND_TEST_PREVIOUS_CLI): an
+ * exact version, `none` to leave the case out, or unset for npm's `next` dist-tag. A same-source
+ * baseline proves the upgrade's mechanics; only an older CLI's own render proves this CLI reads
+ * what an older one wrote (0.36.0-next.773 to .780: a new server.env line called it corrupt).
+ */
+export function readPreviousCli(source) {
+  const value = source.MEND_TEST_PREVIOUS_CLI;
+  if (value === undefined || value === "") return { spec: "next" };
+  if (value === "none") return undefined;
+  versionParts(value);
+  return { spec: value };
+}
+
 /** The image itself must be stamped, not only its tag or the container's health environment. */
 export function assertImagePin(container, inspectedImage, image, version) {
   assert.ok(
