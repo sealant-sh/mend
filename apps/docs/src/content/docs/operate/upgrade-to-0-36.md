@@ -87,6 +87,12 @@ shell profile that way.
   image without it gets a session line saying so.
 - **A Docker host with `"no-new-privileges": true`** in `daemon.json` cannot run per-person
   workspaces (next section). New worktrees there run with one shared home and say why.
+- **Restarting or upgrading Docker.** A workspace started by 0.35.1 asks Docker for 3600 s when
+  Docker stops, longer than the 90 s systemd gives `docker.service`, and Docker's next start then
+  waits for it. Workspaces started by 0.36 ask for 60 s. Older ones keep their timeout until they
+  stop. Before you restart or upgrade Docker, run `mend doctor` on the server: its `docker` line
+  names any session to stop first. See
+  [Docker hangs on start after a restart or upgrade](/operate/troubleshooting/#docker-hangs-on-start-after-a-restart-or-upgrade).
 
 ## Per-person workspaces are on by default
 

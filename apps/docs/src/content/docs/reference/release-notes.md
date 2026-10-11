@@ -36,6 +36,9 @@ native phone app are not.
 - **Upgrade backups** are pruned to the newest two (`--keep-backups`).
 - **Ubuntu 23.10 and later**: setup and `mend doctor` say when the host refuses user namespaces,
   with the command that allows them.
+- **Docker restarts.** A workspace stops within 60 s when Docker stops, inside systemd's 90 s, so
+  restarting or upgrading Docker with a live session no longer leaves Docker down for up to an hour.
+  `mend doctor`'s `docker` line names any session that would outlast it.
 
 ### Sessions
 
