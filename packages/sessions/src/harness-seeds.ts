@@ -30,6 +30,9 @@ import { shellQuote } from "./workspace-files.ts";
  * 2026-09-28 (18)).
  */
 
+/** The model alias a Claude launch opens on where nothing names one (`CLAUDE_SEED_PROGRAM`). */
+export const CLAUDE_DEFAULT_MODEL = "fable";
+
 const CLAUDE_SEED_PROGRAM = [
   `const fs=require("fs"),os=require("os"),path=require("path"),crypto=require("crypto"),h=os.homedir(),t=process.env.CLAUDE_CODE_OAUTH_TOKEN;`,
   `fs.mkdirSync(h+"/.claude",{recursive:true});`,
@@ -49,12 +52,18 @@ const CLAUDE_SEED_PROGRAM = [
   `c.projects=c.projects&&typeof c.projects==="object"?c.projects:{};`,
   `c.projects["/workspace/repo"]=Object.assign({},c.projects["/workspace/repo"],{hasTrustDialogAccepted:true,hasCompletedProjectOnboarding:true})});`,
   // The bypass-acceptance dialog is actually gated on settings.json (verified: accepting it
-  // writes exactly this key), not .claude.json. The workspace image never sees the operator's
-  // own ~/.claude settings, so a fresh session silently falls back to the CLI's default model:
-  // default-if-absent only, so a restored session's own choice (or a mid-session /model) stays.
-  // The default is the `fable` alias, which Claude Code resolves to the latest Fable; a session
-  // still holding Mend's own earlier default (`claude-fable-5`) moves to it (2026-10-01).
-  `merge(h+"/.claude/settings.json",s=>{s.skipDangerousModePermissionPrompt=true;if(!s.model||s.model==="claude-fable-5")s.model="fable"});`,
+  // writes exactly this key), not .claude.json. A session still holding Mend's own earlier
+  // default model (`claude-fable-5`) moves to the `fable` alias (2026-10-01).
+  `merge(h+"/.claude/settings.json",s=>{s.skipDangerousModePermissionPrompt=true;if(s.model==="claude-fable-5")s.model="fable"});`,
+  // The model a launch opens on where nothing names one: the `fable` alias, which Claude Code
+  // resolves to the latest Fable. Printed for the shell to export as `ANTHROPIC_MODEL`, this
+  // launch's alone, never written into settings.json: in a person's executor that file is
+  // theirs, and every `claude` they run themselves (a terminal, the VS Code panel) opened on
+  // Fable after one Mend launch (box, next.786, 2026-10-11). Only where no settings file Claude
+  // reads names a model and the environment names none: the variable ranks above settings, so a
+  // restored session's own choice (or a mid-session /model) stays.
+  `if(!process.env.ANTHROPIC_MODEL&&![h+"/.claude/settings.json",process.argv[1]+"/.claude/settings.json",process.argv[1]+"/.claude/settings.local.json"]`,
+  `.some(p=>{const s=read(p);return s!==null&&typeof s.model==="string"&&s.model!==""}))process.stdout.write(${JSON.stringify(CLAUDE_DEFAULT_MODEL)});`,
 ].join("");
 
 /**
@@ -181,8 +190,9 @@ export const NO_PAGER_ENV: Readonly<Record<string, string>> = {
 export const claudeOnboardingSeed = (
   options: { readonly repo?: string; readonly pluginBudgetMs?: number } = {},
 ): string =>
-  `node -e '${CLAUDE_SEED_PROGRAM}${CLAUDE_PLUGINS_PROGRAM}' ${shellQuote(options.repo ?? WORKSPACE_REPO)} ` +
-  `${Math.max(0, Math.floor(options.pluginBudgetMs ?? CLAUDE_PLUGINS_BUDGET_MS))} 3>&2 2>/dev/null; ` +
+  `mend_model=$(node -e '${CLAUDE_SEED_PROGRAM}${CLAUDE_PLUGINS_PROGRAM}' ${shellQuote(options.repo ?? WORKSPACE_REPO)} ` +
+  `${Math.max(0, Math.floor(options.pluginBudgetMs ?? CLAUDE_PLUGINS_BUDGET_MS))} 3>&2 2>/dev/null); ` +
+  `[ -z "$mend_model" ] || export ANTHROPIC_MODEL="$mend_model"; unset mend_model; ` +
   `export IS_SANDBOX=1 DISABLE_AUTOUPDATER=1; exec "$@"`;
 
 export const CLAUDE_ONBOARDING_SEED = claudeOnboardingSeed();
@@ -198,6 +208,41 @@ export const CODEX_TRUST_SEED =
   `grep -q 'workspace/repo' "$HOME/.codex/config.toml" 2>/dev/null || ` +
   `printf '\\n[projects."/workspace/repo"]\\ntrust_level = "trusted"\\n' >> "$HOME/.codex/config.toml"; ` +
   `exec "$@"`;
+
+/**
+ * Codex's own sandbox, off by default for every Codex in a workspace, the ones people run
+ * themselves included (a terminal, VS Code over Remote-SSH). Mend's own launches already run
+ * without it (`--dangerously-bypass-approvals-and-sandbox`, or `--sandbox danger-full-access` in
+ * `ask`): the workspace is the sandbox. Codex's sandbox is bubblewrap, which cannot start in a
+ * workspace at all. As root it may not make a namespace, and as a person it refuses to run
+ * because the person holds `CAP_FOWNER` (sealantd grants it so pnpm can relink bins): `bwrap:
+ * Unexpected capabilities but not setuid, old file caps config?`. So a hand-run `codex` there
+ * ran no command and asked to approve each one (box, next.786, 2026-10-11).
+ *
+ * Written as Codex's system config, the layer below a person's own `~/.codex/config.toml`, so a
+ * person who names a sandbox mode keeps theirs, and nobody's home is written. Only the sandbox
+ * is set: approvals stay Codex's own default, as in Mend's `ask` launch. A file already there
+ * (the image's, or the operator's) is left as it is. Run as root in the prepare's helper exec;
+ * it never fails that exec.
+ */
+export const CODEX_SYSTEM_CONFIG = "/etc/codex/config.toml";
+
+export const CODEX_SYSTEM_CONFIG_TEXT = [
+  "# Written by Mend. A workspace is the sandbox: Codex's own (bubblewrap) cannot start in one,",
+  "# so Codex runs here without it, as the Codex sessions Mend starts do. A sandbox_mode in your",
+  "# ~/.codex/config.toml wins over this file.",
+  'sandbox_mode = "danger-full-access"',
+  "",
+].join("\n");
+
+export const codexSystemConfigScript = (file: string = CODEX_SYSTEM_CONFIG): string => {
+  const target = shellQuote(file);
+  const text = shellQuote(CODEX_SYSTEM_CONFIG_TEXT);
+  return (
+    `( f=${target}; if [ ! -e "$f" ] && [ ! -L "$f" ]; then umask 022; t="$f.mend-$$"; ` +
+    `{ mkdir -p "$(dirname "$f")" && printf '%s' ${text} > "$t" && mv -f "$t" "$f"; } 2>/dev/null || rm -f "$t"; fi; true )`
+  );
+};
 
 /**
  * The refresh token every copy of a Codex login carries (Core's `CODEX_COPY_REFRESH_TOKEN`, ADR

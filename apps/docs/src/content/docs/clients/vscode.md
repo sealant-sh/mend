@@ -181,9 +181,12 @@ process (`claude (observed)`) beside the session's other processes:
 
 - **It shows up within about half a minute.** The workspace saves its files a few seconds after a
   write, and Mend looks at the latest save every 20 seconds.
-- **It ends after five quiet minutes.** Mend does not see the process exit. Five minutes without a
-  write reads as ended, the conversation is recorded, and the session can settle. If the agent
-  writes again, Mend observes it again as a new process.
+- **It ends five minutes after its last write, which can be a few minutes after your last turn.**
+  Mend does not see the process exit. Five minutes without a write reads as ended, the conversation
+  is recorded, and the session can settle. The agents write after a turn too: Claude Code writes a
+  summary about three minutes after it, so a Claude Code you leave reads as ended about eight
+  minutes after your last turn. Commands such as `/status` and `/exit` are writes as well. When the
+  agent writes again, Mend observes it again as a new process.
 - **Mend cannot steer or stop it.** It has no prompt box, and follow-ups and review comments do not
   reach it. A Stop records it as stopped but does not end the process: exit it in its terminal. If
   it wrote in the last five minutes and a shell or Service still keeps the session's workspace up,
@@ -197,10 +200,14 @@ process (`claude (observed)`) beside the session's other processes:
 - **In a [per-person workspace](/operate/per-person-workspaces/)**, an agent you run writes into
   your own saved directory. Mend observes it as yours, in your own sessions only, and never in
   another person's session in the same workspace.
+- **Codex runs without its own sandbox**, as the Codex sessions Mend starts do: the workspace is the
+  sandbox, and Codex's (bubblewrap) cannot start in one. Mend sets this as Codex's system default
+  (`/etc/codex/config.toml`). A `sandbox_mode` in your own `~/.codex/config.toml` wins over it, and
+  a sandboxed mode there leaves Codex unable to run a command. Approvals stay Codex's own default.
 
 The Claude Code extension for VS Code runs the `claude` it bundles inside the workspace when the
-window is connected over Remote-SSH, so its conversations should land where a terminal `claude`'s do
-and be observed the same way. This has not been confirmed end to end yet.
+window is connected over Remote-SSH. Its conversations land where a terminal `claude`'s do, and Mend
+observes them the same way, as you: a turn in the panel showed up after 8 s on 0.36.
 
 To have Mend run the agent, so you can prompt it, follow it, steer it from any device and stop it,
 start it from Mend: **+** → an agent, or **Claude agent** / **Codex agent** under

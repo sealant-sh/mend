@@ -190,8 +190,8 @@ with several, a picker opens.
 | `mend stop --services [session]`                      | Stop the session's Services instead of its agent                          |
 
 A `claude`, `codex` or `pi` you start by hand in `mend shell` is observed, not run, by Mend: it
-appears as an observed process within about half a minute, ends after five quiet minutes, and cannot
-be steered or stopped from Mend. See
+appears as an observed process within about half a minute, ends five minutes after its last write,
+and cannot be steered or stopped from Mend. See
 [Agents you run yourself](/clients/vscode/#agents-you-run-yourself).
 
 `mend rejoin` with no id takes the newest live session, and failing that the newest settled one.

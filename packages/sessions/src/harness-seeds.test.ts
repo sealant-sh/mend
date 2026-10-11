@@ -11,7 +11,10 @@ import {
   CLAUDE_ONBOARDING_SEED,
   CLAUDE_PLUGINS_BUDGET_MS,
   claudeOnboardingSeed,
+  CODEX_SYSTEM_CONFIG,
+  CODEX_SYSTEM_CONFIG_TEXT,
   CODEX_TRUST_SEED,
+  codexSystemConfigScript,
   COPY_REFRESH_TOKEN,
   HARNESS_UPDATES_OFF_ENV,
   NO_PAGER_ENV,
@@ -55,6 +58,15 @@ const runSeed = (seed: string, home: string, token: string | null = "tok-123") =
   return result.stdout;
 };
 
+/** The test runner's environment without a model of its own (`ANTHROPIC_MODEL`). */
+const withoutModel = (env: NodeJS.ProcessEnv): Record<string, string> => {
+  const copy: Record<string, string> = {};
+  for (const [key, value] of Object.entries(env)) {
+    if (key !== "ANTHROPIC_MODEL" && value !== undefined) copy[key] = value;
+  }
+  return copy;
+};
+
 const write = (file: string, text: string) => {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, text);
@@ -77,7 +89,6 @@ describe("claude onboarding seed", () => {
     });
     expect(readJson(path.join(home, ".claude", "settings.json"))).toEqual({
       skipDangerousModePermissionPrompt: true,
-      model: "fable",
     });
   });
 
@@ -114,6 +125,51 @@ describe("claude onboarding seed", () => {
       OPENCODE_DISABLE_AUTOUPDATE: "1",
       PI_SKIP_VERSION_CHECK: "1",
     });
+  });
+
+  it("opens on Fable where nothing names a model, for this launch only: the person's settings stay theirs", () => {
+    // Box, next.786, 2026-10-11: one Mend launch wrote `"model":"fable"` into a person's
+    // ~/.claude/settings.json, and every claude they ran themselves opened on Fable from then on.
+    const home = makeHome();
+    const repo = makeHome();
+    const model = (env: Readonly<Record<string, string>> = {}) => {
+      const result = spawnSync(
+        "sh",
+        [
+          "-c",
+          claudeOnboardingSeed({ repo }),
+          "sh",
+          "sh",
+          "-c",
+          'echo "model=${ANTHROPIC_MODEL-unset}"',
+        ],
+        {
+          encoding: "utf8",
+          env: { ...withoutModel(process.env), HOME: home, ...env },
+        },
+      );
+      expect(result.status).toBe(0);
+      return result.stdout;
+    };
+    expect(model()).toBe("model=fable\n");
+    expect(readJson(path.join(home, ".claude", "settings.json"))).toEqual({
+      skipDangerousModePermissionPrompt: true,
+    });
+
+    // A model the environment names is left as it is.
+    expect(model({ ANTHROPIC_MODEL: "sonnet" })).toBe("model=sonnet\n");
+
+    // So is one any settings file Claude reads names: the repository's, its local one, the person's.
+    for (const file of [
+      path.join(repo, ".claude", "settings.json"),
+      path.join(repo, ".claude", "settings.local.json"),
+      path.join(home, ".claude", "settings.json"),
+    ]) {
+      write(file, JSON.stringify({ model: "opus" }));
+      expect(model(), file).toBe("model=unset\n");
+      fs.rmSync(file);
+    }
+    expect(model()).toBe("model=fable\n");
   });
 
   it("moves Mend's own earlier default to the latest Fable, and keeps a model the user chose", () => {
@@ -215,7 +271,6 @@ describe("claude onboarding seed", () => {
     expect(readJson(dotfiles)).toEqual({
       theme: "dark",
       skipDangerousModePermissionPrompt: true,
-      model: "fable",
     });
     expect(fs.statSync(dotfiles).mode & 0o777).toBe(0o640);
     expect(fs.lstatSync(path.join(home, ".claude.json")).isSymbolicLink()).toBe(true);
@@ -267,7 +322,6 @@ describe("claude onboarding seed, temporary names", () => {
     expect(readJson(path.join(home, ".claude", "settings.json"))).toEqual({
       theme: "dark",
       skipDangerousModePermissionPrompt: true,
-      model: "fable",
     });
     for (const prefix of taken) {
       const siblings = fs
@@ -647,9 +701,55 @@ describe("claude onboarding seed: the plugins its settings enable", () => {
       "-p",
     ]);
     expect(CLAUDE_ONBOARDING_SEED).toContain(
-      `'/workspace/repo' ${CLAUDE_PLUGINS_BUDGET_MS} 3>&2 2>/dev/null;`,
+      `'/workspace/repo' ${CLAUDE_PLUGINS_BUDGET_MS} 3>&2 2>/dev/null);`,
     );
     expect(CLAUDE_PLUGINS_BUDGET_MS).toBe(30_000);
+  });
+});
+
+/** Run Codex's system default script into `file`; it always exits 0. */
+const runCodexSystemConfig = (file: string) => {
+  const result = spawnSync("sh", ["-c", `${codexSystemConfigScript(file)}; echo "status $?"`], {
+    encoding: "utf8",
+  });
+  expect(result.stdout).toBe("status 0\n");
+};
+
+describe("Codex's system default: no sandbox of its own in a workspace", () => {
+  it("writes the system config where none is, and leaves one that is there", () => {
+    const root = makeHome();
+    const file = path.join(root, "etc", "codex", "config.toml");
+    runCodexSystemConfig(file);
+    expect(fs.readFileSync(file, "utf8")).toBe(CODEX_SYSTEM_CONFIG_TEXT);
+    expect(fs.statSync(file).mode & 0o777).toBe(0o644);
+    // One key, top level: no table header before it, so a TOML reader sees it as Codex does.
+    const lines = CODEX_SYSTEM_CONFIG_TEXT.split("\n").filter(
+      (line) => line !== "" && !line.startsWith("#"),
+    );
+    expect(lines).toEqual(['sandbox_mode = "danger-full-access"']);
+    expect(CODEX_SYSTEM_CONFIG).toBe("/etc/codex/config.toml");
+
+    const operator = 'sandbox_mode = "workspace-write"\n';
+    fs.writeFileSync(file, operator);
+    runCodexSystemConfig(file);
+    expect(fs.readFileSync(file, "utf8")).toBe(operator);
+    expect(fs.readdirSync(path.dirname(file))).toEqual(["config.toml"]);
+  });
+
+  it("leaves a link where the file would go, and never fails where it cannot write", () => {
+    const root = makeHome();
+    const file = path.join(root, "codex", "config.toml");
+    fs.mkdirSync(path.dirname(file));
+    fs.symlinkSync(path.join(root, "nowhere.toml"), file);
+    runCodexSystemConfig(file);
+    expect(fs.lstatSync(file).isSymbolicLink()).toBe(true);
+    expect(fs.existsSync(path.join(root, "nowhere.toml"))).toBe(false);
+
+    if (process.getuid?.() === 0) return;
+    const locked = path.join(root, "locked");
+    fs.mkdirSync(locked, { mode: 0o500 });
+    runCodexSystemConfig(path.join(locked, "codex", "config.toml"));
+    expect(fs.readdirSync(locked)).toEqual([]);
   });
 });
 

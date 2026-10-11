@@ -13,6 +13,7 @@ import { type LinuxIdentity, MEND_GROUP, linuxHomeOf } from "@mend/domain/workbe
 
 import { CLAUDE_NEUTRAL_ENV, claudeSettingsArgOf } from "./claude-settings.ts";
 import { assertScriptSafe, PEOPLE_DIR, savedDirOf } from "./harness-layout.ts";
+import { CLAUDE_DEFAULT_MODEL } from "./harness-seeds.ts";
 import { shellQuote } from "./workspace-files.ts";
 
 export {
@@ -77,9 +78,6 @@ export const isConversationHarness = (harness: string | null): harness is Conver
 export const claudeProjectDirOf = (cwd: string): string => cwd.replaceAll(/[^A-Za-z0-9]/g, "-");
 
 // ─── what a process gets ─────────────────────────────────────────────────────
-
-/** Claude's default model alias, as Mend's own seed sets it where nothing else does. */
-const CLAUDE_DEFAULT_MODEL = "fable";
 
 /**
  * Claude's seeded files in `H/.claude`: no `CLAUDE.md`, `rules/`, agents, commands, skills,
