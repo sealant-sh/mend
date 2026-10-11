@@ -33,6 +33,8 @@ import type { BearerSession } from "./state.ts";
  * - `thread.runtime-mode.set`: the permission mode for the agent's next start; Mend sets it per
  *   launch.
  * - `thread.archive`, `thread.unarchive`: the person's archive, kept by the gateway; Mend has none.
+ * - `thread.settle`, `thread.unsettle`, `thread.snooze`, `thread.unsnooze`: the person's settle and
+ *   snooze, kept by the gateway the same way (`lifecycle.ts`).
  */
 
 /** t3code's approval decisions as Mend's; Mend has no "always", so it is "for this session". */
@@ -234,6 +236,25 @@ export const dispatchCommand = (
       return answered(hub.commands.setArchived({ threadId: command.threadId, archived: true }));
     case "thread.unarchive":
       return answered(hub.commands.setArchived({ threadId: command.threadId, archived: false }));
+    case "thread.settle":
+      return answered(
+        hub.commands.setLifecycle({ threadId: command.threadId, change: { kind: "settle" } }),
+      );
+    case "thread.unsettle":
+      return answered(
+        hub.commands.setLifecycle({ threadId: command.threadId, change: { kind: "unsettle" } }),
+      );
+    case "thread.snooze":
+      return answered(
+        hub.commands.setLifecycle({
+          threadId: command.threadId,
+          change: { kind: "snooze", until: command.snoozedUntil },
+        }),
+      );
+    case "thread.unsnooze":
+      return answered(
+        hub.commands.setLifecycle({ threadId: command.threadId, change: { kind: "unsnooze" } }),
+      );
     case "thread.runtime-mode.set": {
       const mode =
         command.runtimeMode === "approval-required"

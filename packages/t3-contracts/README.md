@@ -12,6 +12,9 @@ License in `LICENSE` (t3code's own, copied with the files):
 - `shared/keybindings.ts` is `packages/shared/src/keybindings.ts`, which holds t3code's default
   keybindings (`DEFAULT_KEYBINDINGS`). It imports `@t3tools/contracts`, which this package links to
   itself.
+- `shared/threadSettled.ts` is `packages/client-runtime/src/state/threadSettled.ts`: how t3code's
+  clients read a thread's settle and snooze, including when a snooze wakes. The gateway's tests hold
+  its shell to it.
 
 `t3code.pin.json` records the tag, its commit, and the git blob id and SHA-256 of every copied file.
 

@@ -12,6 +12,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 
+import { NO_LIFECYCLE } from "../src/lifecycle.ts";
 import type { MendItem, MendProcess, MendProject, MendSession } from "../src/mend-workbench.ts";
 import { NO_NOTICES } from "../src/notices.ts";
 import { threadProjectionOf, TURN_ORDINAL_STRIDE } from "../src/thread-projection.ts";
@@ -360,6 +361,7 @@ describe("Mend's items as turn items", () => {
         sharedWorktree: false,
         nextMode: null,
         archivedAt: null,
+        lifecycle: NO_LIFECYCLE,
         project,
         session,
         agent,
@@ -458,6 +460,7 @@ describe("Mend's items as turn items", () => {
         sharedWorktree: false,
         nextMode: null,
         archivedAt: null,
+        lifecycle: NO_LIFECYCLE,
         project,
         session,
         agent,

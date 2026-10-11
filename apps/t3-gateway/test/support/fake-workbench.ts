@@ -104,6 +104,10 @@ export interface FakeCall {
 let clock = Date.parse("2026-10-04T09:00:00.000Z");
 /** Strictly increasing timestamps, so ordering by time is ordering by creation. */
 export const tick = (): string => new Date((clock += 1_000)).toISOString();
+/** Moves the clock on to `at` (never back), for a test that compares Mend's times with the gateway's. */
+export const advanceClock = (at: number): void => {
+  clock = Math.max(clock, at);
+};
 
 export class FakeWorkbench {
   readonly projects = new Map<string, { id: string; name: string; storePath: string }>();
