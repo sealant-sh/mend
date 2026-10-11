@@ -11,8 +11,8 @@ It needs a Mend 0.36 server.
   behind other windows. A notification shows the link and the code from the start, with **Copy
   link** and **Paste a device token instead**. Polling starts at once, so an approval made from the
   copied link counts while that dialog is still open.
-- The approve page names the editor: **Authorize VS Code?**, with the device's name (`VS Code on
-  <host>`).
+- The approve page names the editor: **Authorize VS Code?**, with the device's name
+  (`VS Code on <host>`).
 - Sign-in survives a clock that disagrees with the server's (a Mac's VM after sleep): the wait is
   timed from the server's answer, not from this machine's reading of its expiry time.
 - The plain-http warning before a token is chosen says nothing for a tailnet address, which encrypts
