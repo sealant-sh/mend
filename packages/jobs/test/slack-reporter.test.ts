@@ -109,7 +109,7 @@ const project = new Project({
   autoLand: "inherit",
   autoSuggest: "inherit",
   backgroundSessions: "inherit",
-  gitAuthMode: "ambient",
+  gitAuthMode: "mend-key",
   workspaceImage: null,
   applyDotfiles: true,
   defaultShellProfile: true,

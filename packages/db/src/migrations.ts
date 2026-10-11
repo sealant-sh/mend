@@ -3485,6 +3485,26 @@ const cliAuthClientMigration = Effect.gen(function* () {
   yield* sql`ALTER TABLE cli_auth_requests ADD COLUMN client text`;
 });
 
+/**
+ * `ambient` is gone (0.36): a packaged server's own git/ssh setup is an empty container. A project
+ * that used it moves to its creator's own git access mode, else `mend-key`; on such a server it
+ * could only have been a public HTTPS remote, which both modes clone without a credential. The
+ * column's default follows. Recorded git operations keep the mode they ran under.
+ */
+const ambientRemovedMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    UPDATE projects
+      SET git_auth_mode = coalesce(
+            (SELECT access.mode FROM user_git_access access
+              WHERE access.user_id = projects.created_by_user_id
+                AND access.mode IN ('mend-key', 'bridge')),
+            'mend-key'),
+          updated_at = now()
+      WHERE git_auth_mode = 'ambient'`;
+  yield* sql`ALTER TABLE projects ALTER COLUMN git_auth_mode SET DEFAULT 'mend-key'`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -3615,4 +3635,5 @@ export const migrations = {
   "0126_repository_url_credentials": repositoryUrlCredentialsMigration,
   "0127_default_bun": defaultBunMigration,
   "0128_cli_auth_client": cliAuthClientMigration,
+  "0129_ambient_removed": ambientRemovedMigration,
 };

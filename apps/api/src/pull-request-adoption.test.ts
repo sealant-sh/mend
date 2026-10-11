@@ -96,7 +96,7 @@ const world = (adoption: Adoption) => {
             autoName: "inherit",
             autoLand: "inherit",
             backgroundSessions: "inherit",
-            gitAuthMode: "ambient",
+            gitAuthMode: "mend-key",
             workspaceImage: null,
             applyDotfiles: true,
             defaultShellProfile: true,

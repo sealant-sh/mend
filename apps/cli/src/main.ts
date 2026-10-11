@@ -8,6 +8,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import {
+  AMBIENT_REMOVED_GUIDANCE,
   agentMemoryPathOf,
   agentStartingFacts,
   type AgentStartingProcess,
@@ -254,7 +255,8 @@ interface ProjectDto {
   readonly originUrl: string | null;
   readonly storePath: string;
   readonly defaultBranch: string;
-  readonly gitAuthMode: "ambient" | "mend-key" | "bridge";
+  /** `mend-key` or `bridge`; a server from before 0.36 may still say `ambient`. */
+  readonly gitAuthMode: string;
   /** Optional: an older server predates the background-sessions cascade. */
   readonly backgroundSessions?: "inherit" | "on" | "off";
   /** "Land when a turn completes"; optional: an older server predates landing. */
@@ -757,8 +759,9 @@ const adopt = async (config: CliConfig, args: ReadonlyArray<string>) => {
     authFlagIndex !== -1 && args[authFlagIndex + 1] !== undefined
       ? String(args[authFlagIndex + 1])
       : null;
-  if (auth !== null && auth !== "ambient" && auth !== "mend-key" && auth !== "bridge") {
-    return fail(`--auth takes "ambient", "mend-key", or "bridge", not "${auth}"`);
+  if (auth === "ambient") return fail(AMBIENT_REMOVED_GUIDANCE);
+  if (auth !== null && auth !== "mend-key" && auth !== "bridge") {
+    return fail(`--auth takes "mend-key" or "bridge", not "${auth}"`);
   }
 
   const project = await api<ProjectDto>(config, "POST", "/projects", {

@@ -1,5 +1,10 @@
 import { ChangeId, ChangeLandingId, SessionGitOpId, SessionId, Sha, Timestamp } from "@mend/domain";
-import { ChangeLanding, GitAuthMode, LandedPullRequest, LandingFact } from "@mend/domain/workbench";
+import {
+  ChangeLanding,
+  LandedPullRequest,
+  LandingFact,
+  RecordedGitAuthMode,
+} from "@mend/domain/workbench";
 import { Effect, Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "effect/unstable/httpapi";
 
@@ -127,7 +132,8 @@ export class SessionGitOpView extends Schema.Class<SessionGitOpView>("SessionGit
   port: Schema.NullOr(Schema.Int),
   kind: GitTransportKindSchema,
   command: Schema.String,
-  authMode: GitAuthMode,
+  /** What it ran under; a record from before 0.36 may say `ambient`. */
+  authMode: RecordedGitAuthMode,
   /** `<old-sha> <new-sha> <ref>` per ref a push updated, when the transport saw them. */
   refUpdates: Schema.NullOr(Schema.Array(Schema.String)),
   /** Null while the operation runs, or when its end was lost to a restart. */

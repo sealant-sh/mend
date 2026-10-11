@@ -67,7 +67,6 @@ const GIT_AUTH_CHOICES: ReadonlyArray<{
 }> = [
   { value: "mend-key", label: "mend key" },
   { value: "bridge", label: "bridge" },
-  { value: "ambient", label: "ambient" },
 ];
 
 /**
@@ -77,7 +76,7 @@ const GIT_AUTH_CHOICES: ReadonlyArray<{
  * (switching generates it, so the card can show it immediately); bridge
  * signs through the ssh-agent a mend command shares from the user's machine
  * — presence is shown as an observation, and ops fail readably while nobody
- * is connected; ambient rides the server's login user's ssh setup.
+ * is connected.
  */
 export function GitAccessSection({ project }: { readonly project: ProjectDto }) {
   const trpc = useTRPC();

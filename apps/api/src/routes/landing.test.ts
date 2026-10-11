@@ -302,7 +302,7 @@ describe("landing routes", () => {
         body: "Closes #12",
         webOrigin: "http://api.internal",
       });
-      // The project's auth mode resolved for the owner: ambient ssh, pinned by the policy.
+      // The project's auth mode resolved for the owner, pinned by the policy.
       expect(state.lands[0]?.env).toMatchObject({ GIT_TERMINAL_PROMPT: "0" });
       expect(state.audited).toEqual([
         {

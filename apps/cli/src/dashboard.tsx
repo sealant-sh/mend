@@ -1108,7 +1108,8 @@ export const App = ({
     if (data === undefined || adoptOfferDecided.current) return;
     if (homeProject !== undefined) return;
     adoptOfferDecided.current = true;
-    setAdoptOffer(deriveAdoptOffer(cwdFacts(ctx.cwd)));
+    // The offer starts on your own mode: the dashboard shares an agent only when it is bridge.
+    setAdoptOffer(deriveAdoptOffer(cwdFacts(ctx.cwd), ctx.agentShare === null ? 0 : 1));
     // homeProject/data identity is enough; ctx.cwd never changes in a run.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data, homeProject]);
@@ -1425,11 +1426,6 @@ export const App = ({
 
   const ADOPT_AUTH_MODES = [
     {
-      mode: "ambient",
-      label: "ambient",
-      hint: "the Mend server's own git/ssh · a packaged server has none",
-    },
-    {
       mode: "mend-key",
       label: "mend-key",
       hint: "your Mend key · add its public half on the git host",
@@ -1446,7 +1442,7 @@ export const App = ({
       submitDashboardAdoption(ctx.api, {
         name: offer.name,
         source: offer.source,
-        gitAuthMode: ADOPT_AUTH_MODES[offer.modeIndex]?.mode ?? "ambient",
+        gitAuthMode: ADOPT_AUTH_MODES[offer.modeIndex]?.mode ?? "mend-key",
       }),
     onMutate: (offer) => {
       setAdoptOffer(null);

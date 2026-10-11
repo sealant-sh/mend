@@ -68,7 +68,7 @@ export const remoteEnvFor = (project: Project, userId: string, step: LandingStep
       const clearance = yield* policy
         .check(origin, { isOperator })
         .pipe(Effect.mapError((refused) => failed(refused.message)));
-      const env = yield* resolveRemoteEnv(project.gitAuthMode, userId).pipe(
+      const env = yield* resolveRemoteEnv(project.gitAuthMode, userId, origin).pipe(
         Effect.provide(signers),
         Effect.mapError((error) =>
           failed(

@@ -17,8 +17,11 @@ export interface AdoptOffer {
   readonly failure?: string;
 }
 
-/** A missing or local origin does not offer adoption; cwd project matching is separate. */
-export const deriveAdoptOffer = (facts: CwdFacts): AdoptOffer | null => {
+/**
+ * A missing or local origin does not offer adoption; cwd project matching is separate. `modeIndex`
+ * is where the auth choice starts: 0 the Mend key, 1 the bridge.
+ */
+export const deriveAdoptOffer = (facts: CwdFacts, modeIndex = 0): AdoptOffer | null => {
   if (
     facts.repoRoot === null ||
     facts.originUrl === null ||
@@ -28,7 +31,7 @@ export const deriveAdoptOffer = (facts: CwdFacts): AdoptOffer | null => {
   return {
     source: RepositoryCloneUrl.make(facts.originUrl),
     name: normalizeProjectName(facts.repoRoot.split("/").at(-1) ?? "project"),
-    modeIndex: 0,
+    modeIndex,
   };
 };
 
@@ -72,13 +75,13 @@ export const submitDashboardAdoption = async (
 /**
  * What adopt says signed the clone: the transport, and the signer only when it did the work. The
  * Mend key and the bridge sign ssh; a clone over http(s) or git:// never asked either, whatever
- * the project's mode. Null for `ambient`: the server's own git setup, nothing of Mend's to name.
+ * the project's mode. Null for a mode this CLI does not know (an older server's).
  */
 export const adoptedGitAuth = (
   source: string,
-  mode: GitAuthMode,
+  mode: string,
 ): { readonly value: string; readonly note: string } | null => {
-  if (mode === "ambient") return null;
+  if (mode !== "mend-key" && mode !== "bridge") return null;
   const signer = mode === "mend-key" ? "your Mend key" : "the connected `mend keys share`";
   const location = gitRemoteLocation(source);
   if (location !== null && location.scheme !== "ssh") {

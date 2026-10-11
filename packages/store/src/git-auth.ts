@@ -11,11 +11,10 @@ import { mendHome } from "./paths.ts";
 
 /**
  * Host-side git authentication (docs/GIT-ACCESS.md): the one seam every
- * remote git operation resolves its credential through. Three modes —
- * `ambient` (the login user's ssh setup, unchanged), `mend-key` (the calling
- * user's Mend-generated key, one per user, held on this host), and `bridge`
- * (a connected agent). Nothing outside this file decides how a remote is
- * reached.
+ * remote git operation resolves its credential through. Two modes —
+ * `mend-key` (the calling user's Mend-generated key, one per user, held on
+ * this host) and `bridge` (a connected agent). Nothing outside this file
+ * decides how a remote is reached.
  */
 
 /** `ssh-keygen` could not run or exited nonzero. */
@@ -237,36 +236,26 @@ const LEGACY_OWNER = "";
  * `GIT_SSH_COMMAND` value (sh-parsed by git). Every mode forces BatchMode: a
  * daemon has no terminal, so "hang on a prompt" becomes "fail with the reason
  * on stderr" — which the API layer turns readable via `describeGitRemoteFailure`.
+ * accept-new trusts a first-contact host (the owner never gets a chance to
+ * answer a host-key prompt on this machine) but still refuses a CHANGED key.
  * (The touch a hardware key demands in bridge mode happens on the CLIENT
- * machine — no prompt is ever needed here.)
+ * machine — no prompt is ever needed here.) `privateKeyPath` null runs ssh
+ * with no identity of Mend's: a remote that needs no signer (https, git://).
  */
 export const sshCommandFor = (mode: GitAuthMode, privateKeyPath: string | null): string => {
   if (mode === "mend-key" && privateKeyPath !== null) {
-    // IdentitiesOnly pins the deploy key even when an agent is running;
-    // accept-new trusts a first-contact host, but still refuses a CHANGED key.
+    // IdentitiesOnly pins the key even when an agent is running.
     return `ssh -i '${privateKeyPath}' -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o BatchMode=yes`;
   }
-  if (mode === "bridge") {
-    // Plain ssh: no -i, no IdentitiesOnly — the bridged agent's identities
-    // are the point. accept-new mirrors mend-key: the signer's owner never
-    // gets a chance to answer a host-key prompt on this machine.
-    return "ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes";
-  }
-  // Ambient: the login user's ssh setup, composed with an existing
-  // GIT_SSH_COMMAND rather than clobbering it (options-before-host is valid).
-  // accept-new matches the other modes for the same reason BatchMode does:
-  // a daemon has no terminal, so the owner can never answer a first-contact
-  // host-key prompt through Mend — a server with an empty known_hosts (a
-  // fresh pod) could otherwise never reach any remote. A CHANGED key still
-  // refuses.
-  const base = process.env["GIT_SSH_COMMAND"] ?? "ssh";
-  return `${base} -o StrictHostKeyChecking=accept-new -o BatchMode=yes`;
+  // Plain ssh: no -i, no IdentitiesOnly — in bridge mode the bridged agent's identities are the
+  // point.
+  return "ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes";
 };
 
 /**
  * Env for every host-side remote git op: never prompt, ssh per `sshCommand`,
  * and for bridge mode the shared agent socket — the ONE place a signer is
- * chosen (`agentSocket` null means "whatever the ambient env already has").
+ * chosen (`agentSocket` null means "whatever the environment already has").
  */
 export const remoteGitEnv = (
   sshCommand: string,
@@ -289,9 +278,10 @@ export const sshTransportArgs = (
   port: number | null,
 ): ReadonlyArray<string> => [
   ...(mode === "mend-key" && privateKeyPath !== null
-    ? ["-i", privateKeyPath, "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=accept-new"]
+    ? ["-i", privateKeyPath, "-o", "IdentitiesOnly=yes"]
     : []),
-  ...(mode === "bridge" ? ["-o", "StrictHostKeyChecking=accept-new"] : []),
+  "-o",
+  "StrictHostKeyChecking=accept-new",
   "-o",
   "BatchMode=yes",
   "-o",
@@ -310,9 +300,7 @@ const FAILURE_PATTERNS: ReadonlyArray<FailurePattern> = [
     describe: (mode) =>
       mode === "mend-key"
         ? "The remote refused the Mend key (permission denied). Add your Mend public key to your git account's SSH keys (or as a deploy key on this repository), then retry."
-        : mode === "bridge"
-          ? "The remote refused the connected signer's keys (permission denied). Check that the shared key is authorized on the git host — and that the agent you shared actually holds it (`ssh-add -l` on the sharing machine)."
-          : "The remote refused the Mend server's own ssh setup (ambient). A server from `mend server setup` runs in a container that holds no ssh key, agent or git credential of its host, so ambient reaches only public HTTPS remotes there. Use your Mend key (`mend keys`, add it on the git host, then `--auth mend-key`) or your own agent (`mend keys share`, then `--auth bridge`).",
+        : "The remote refused the connected signer's keys (permission denied). Check that the shared key is authorized on the git host — and that the agent you shared actually holds it (`ssh-add -l` on the sharing machine).",
   },
   {
     test: /Host key verification failed|REMOTE HOST IDENTIFICATION HAS CHANGED/i,
@@ -402,9 +390,7 @@ const describeHttpsCredentialFailure = (
   const signer =
     mode === "mend-key"
       ? "Your Mend key signs ssh remotes only"
-      : mode === "bridge"
-        ? "Your shared agent (`mend keys share`) signs ssh remotes only"
-        : "Your Mend key (`mend keys`, `--auth mend-key`) or your own agent (`mend keys share`, `--auth bridge`) signs ssh remotes";
+      : "Your shared agent (`mend keys share`) signs ssh remotes only";
   return context.push === true
     ? `Mend found no HTTPS credential for this remote: a public repository clones over HTTPS without one, but a push needs one. ${signer}: to land, adopt ${target} instead.`
     : `Mend found no HTTPS credential for this remote, so over HTTPS it reaches public repositories only; this one is private, or the URL is wrong. ${signer}: adopt ${target} instead.`;

@@ -167,9 +167,9 @@ it installs runs as `private` and `single`.
 | `mend env show [--project <name>]`                                                            | List configuration, secret, and cluster-binding names; never secret values                                   |
 | `mend env cluster add secret\|configmap <name>`, `remove <kind>/<name>`, `sa <name>\|--clear` | Bind Kubernetes Secrets, ConfigMaps, and a service account to a project's workspaces; Mend stores names only |
 
-Git authentication modes for `mend adopt` are `mend-key`, `bridge`, and `ambient`. The default is
-your Git access mode from `mend keys mode`, which is `mend-key` until you change it. Local paths,
-`file://` URLs, option-like sources, and Git remote helpers are rejected.
+Git authentication modes for `mend adopt` are `mend-key` and `bridge`. The default is your Git
+access mode from `mend keys mode`, which is `mend-key` until you change it. Local paths, `file://`
+URLs, option-like sources, and Git remote helpers are rejected.
 
 A project is `--private` by default: only you see it. `--shared` makes it visible to everyone in
 your organization, who can then start sessions in it. See [Organizations](/organizations/overview/).

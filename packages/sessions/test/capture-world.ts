@@ -185,7 +185,7 @@ export const projectFor = (storePath: string, baseSha: string) =>
     autoLand: "inherit",
     autoSuggest: "inherit",
     backgroundSessions: "inherit",
-    gitAuthMode: "ambient",
+    gitAuthMode: "mend-key",
     workspaceImage: null,
     applyDotfiles: true,
     defaultShellProfile: true,

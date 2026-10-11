@@ -241,6 +241,17 @@ clone or fetch from inside a session. Switch its origin to SSH (`git@github.com:
 which goes through Mend's Git transport, and rotate the token. See
 [Projects adopted with a token in their URL](/reference/known-issues/#projects-adopted-with-a-token-in-their-url).
 
+## The ambient Git mode is gone
+
+Projects reach their remote with the adopting person's Mend key (the default) or their own key
+through `mend keys share` (bridge). The `ambient` mode, the server's own Git and SSH setup, is gone:
+in the packaged server that setup is an empty container, so it reached only public HTTPS remotes.
+Migration 0129 moves each project that used it to its creator's own mode, or to `mend-key` when they
+never chose one. A public HTTPS project keeps cloning and fetching as before, with no key needed and
+no agent shared. For a project on an SSH remote, add your Mend key on the git host (`mend keys`) or
+run `mend keys share`. A client from before 0.36 that asks for `ambient` is refused with the two
+modes to use instead. See [No ambient mode](/guides/git-access/#no-ambient-mode).
+
 ## Claude plugins from repository settings install without a prompt
 
 Before Claude starts, Mend installs the plugins enabled in the person's own

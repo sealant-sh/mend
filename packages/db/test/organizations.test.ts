@@ -382,7 +382,7 @@ describe.skipIf(!reachable)("organizations", () => {
           originUrl: null,
           defaultBranch: "main",
           adoptedSha: null,
-          gitAuthMode: "ambient" as const,
+          gitAuthMode: "mend-key" as const,
         };
         const first = yield* projects.create({
           ...base,
@@ -446,7 +446,7 @@ describe.skipIf(!reachable)("organizations", () => {
           storePath: "/store/p-acme-shell/repo.git",
           defaultBranch: "main",
           adoptedSha: null,
-          gitAuthMode: "ambient",
+          gitAuthMode: "mend-key",
         });
         const turnedOff = yield* projects.setDefaultShellProfile(created.id, false);
         const reread = yield* projects.byId(created.id);

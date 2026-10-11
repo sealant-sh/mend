@@ -25,6 +25,7 @@ import { OrganizationId, ProjectId, SessionId, Sha, WorktreeId } from "@mend/dom
 import {
   Organization,
   Project,
+  AMBIENT_REMOVED_GUIDANCE,
   REPOSITORY_CLONE_URL_GUIDANCE,
   REPOSITORY_URL_CREDENTIAL_GUIDANCE,
   Session,
@@ -80,7 +81,7 @@ const project = (id: ProjectId, name: string): Project =>
     autoName: "inherit",
     autoLand: "inherit",
     backgroundSessions: "inherit",
-    gitAuthMode: "ambient",
+    gitAuthMode: "mend-key",
     workspaceImage: null,
     applyDotfiles: true,
     defaultShellProfile: true,
@@ -665,6 +666,36 @@ describe("GET /projects/:id response", () => {
       _tag: "StoreFailure",
       message: REPOSITORY_CLONE_URL_GUIDANCE,
     });
+  });
+
+  it("refuses ambient from an older client with the modes that replace it, before any clone", async () => {
+    // The mocked store has no `adopt`: reaching it would answer 500.
+    const adopt = await requestProject(makeWorld([]), "/api/projects", AUTHORIZATION, {
+      method: "POST",
+      body: JSON.stringify({
+        name: "hello",
+        source: "git@github.com:octocat/Hello-World.git",
+        gitAuthMode: "ambient",
+      }),
+    });
+    expect(adopt.response.status).toBe(422);
+    expect(await adopt.response.json()).toEqual({
+      _tag: "StoreFailure",
+      message: AMBIENT_REMOVED_GUIDANCE,
+    });
+    const switched = await requestProject(
+      makeWorld([]),
+      `/api/projects/${PROJECT_ID}/git-auth`,
+      AUTHORIZATION,
+      { method: "PUT", body: JSON.stringify({ gitAuthMode: "ambient" }) },
+    );
+    expect(switched.response.status).toBe(422);
+    expect(await switched.response.json()).toEqual({
+      _tag: "StoreFailure",
+      message: AMBIENT_REMOVED_GUIDANCE,
+    });
+    expect(AMBIENT_REMOVED_GUIDANCE).toContain("--auth mend-key");
+    expect(AMBIENT_REMOVED_GUIDANCE).toContain("--auth bridge");
   });
 
   it("counts the Services that keep a session's workspace up", async () => {

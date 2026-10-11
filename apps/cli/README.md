@@ -145,7 +145,7 @@ start
 mend login [--url <server>]           sign this terminal in through the browser
 mend connect <claude|codex|github> [--use-my-login] [--from-stdin] [--remove]
                                       send this machine's provider credential to the server
-mend adopt [git-url] [--name <name>] [--auth ambient|mend-key|bridge] [--private|--shared]
+mend adopt [git-url] [--name <name>] [--auth mend-key|bridge] [--private|--shared]
                                       clone a network Git repository into the store
                                       (default: the current checkout's origin URL)
 mend codex|claude|opencode ["prompt"] new session worktree + launch the harness in it

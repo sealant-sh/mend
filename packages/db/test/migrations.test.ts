@@ -2910,3 +2910,93 @@ describe.skipIf(!reachable)("0127 default bun", () => {
     });
   });
 });
+
+describe.skipIf(!reachable)("0129 ambient removed", () => {
+  const DB = `${SCRATCH_DB}_ambient_removed`;
+  const layer = (() => {
+    const url = new URL(ADMIN_URL);
+    url.pathname = `/${DB}`;
+    return PgClient.layer({ url: Redacted.make(url.toString()) });
+  })();
+  const withDb = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
+    Effect.runPromise(effect.pipe(Effect.provide(layer), Effect.scoped));
+
+  beforeAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`CREATE DATABASE ${DB}`);
+      }),
+    );
+  });
+  afterAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`DROP DATABASE IF EXISTS ${DB} WITH (FORCE)`);
+      }),
+    );
+  });
+
+  it("moves ambient projects to their creator's mode, else mend-key, and new projects default to mend-key", async () => {
+    const rows = await withDb(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* upTo("0128_cli_auth_client");
+        const [organization] = yield* sql<{ readonly id: string }>`SELECT id FROM organizations`;
+        const org = organization?.id ?? "";
+        yield* sql`
+          INSERT INTO "user" ("id", "name", "email", "createdAt")
+          VALUES ('anna', 'Anna', 'anna@example.com', '2026-01-01T00:00:00Z'),
+                 ('ben', 'Ben', 'ben@example.com', '2026-01-02T00:00:00Z'),
+                 ('cara', 'Cara', 'cara@example.com', '2026-01-03T00:00:00Z')`;
+        yield* sql`
+          INSERT INTO user_git_access (user_id, mode) VALUES ('anna', 'bridge'), ('ben', 'mend-key')`;
+        yield* sql`
+          INSERT INTO projects
+            (id, name, store_path, default_branch, organization_id, created_by_user_id, origin_url)
+          VALUES
+            ('p-anna', 'anna', '/store/p-anna/repo.git', 'main', ${org}, 'anna',
+             'https://github.com/octocat/Hello-World.git'),
+            ('p-ben', 'ben', '/store/p-ben/repo.git', 'main', ${org}, 'ben',
+             'https://github.com/octocat/Hello-World.git'),
+            ('p-cara', 'cara', '/store/p-cara/repo.git', 'main', ${org}, 'cara',
+             'https://github.com/octocat/Hello-World.git'),
+            ('p-nobody', 'nobody', '/store/p-nobody/repo.git', 'main', ${org}, NULL, NULL)`;
+        yield* sql`
+          INSERT INTO projects
+            (id, name, store_path, default_branch, organization_id, created_by_user_id,
+             origin_url, git_auth_mode)
+          VALUES ('p-kept', 'kept', '/store/p-kept/repo.git', 'main', ${org}, 'anna',
+                  'git@github.com:acme/api.git', 'mend-key')`;
+        const before = yield* sql<{ readonly id: string; readonly mode: string }>`
+          SELECT id, git_auth_mode AS mode FROM projects ORDER BY id`;
+        yield* migrations["0129_ambient_removed"];
+        yield* sql`
+          INSERT INTO projects (id, name, store_path, default_branch, organization_id)
+          VALUES ('p-new', 'new', '/store/p-new/repo.git', 'main', ${org})`;
+        const after = yield* sql<{ readonly id: string; readonly mode: string }>`
+          SELECT id, git_auth_mode AS mode FROM projects ORDER BY id`;
+        return {
+          before: before.map((row) => [row.id, row.mode]),
+          after: after.map((row) => [row.id, row.mode]),
+        };
+      }),
+    );
+    expect(rows.before).toEqual([
+      ["p-anna", "ambient"],
+      ["p-ben", "ambient"],
+      ["p-cara", "ambient"],
+      ["p-kept", "mend-key"],
+      ["p-nobody", "ambient"],
+    ]);
+    expect(rows.after).toEqual([
+      ["p-anna", "bridge"],
+      ["p-ben", "mend-key"],
+      ["p-cara", "mend-key"],
+      ["p-kept", "mend-key"],
+      ["p-new", "mend-key"],
+      ["p-nobody", "mend-key"],
+    ]);
+  });
+});

@@ -136,7 +136,15 @@ const refusalFor = (scene: Scene) => {
       pinnedEnv: (_clearance, env) => ({ ...env }),
     }),
     Layer.mock(ProjectAccess, { isOperator: () => Effect.succeed(false) }),
-    Layer.mock(MendKeys, {}),
+    // The project signs with the Mend key: the probe resolves the owner's key before it dials.
+    Layer.mock(MendKeys, {
+      ensure: () =>
+        Effect.succeed({
+          publicKey: "ssh-ed25519 AAAA ada@example.com",
+          fingerprint: "256 SHA256:x ada@example.com (ED25519)",
+          privateKeyPath: "/keys/users/ada/id_ed25519",
+        }),
+    }),
     Layer.mock(AgentBridge, { socketPath: () => "/unused/agent.sock" }),
   );
   return Effect.runPromise(

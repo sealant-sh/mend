@@ -26,7 +26,7 @@ const project = {
   originUrl: "https://github.com/acme/fixture.git",
   storePath: "/tmp/mend/fixture/repo.git",
   defaultBranch: "main",
-  gitAuthMode: "ambient",
+  gitAuthMode: "mend-key",
 };
 
 const sessionId = "0c9f7e1a-6b2d-4c6e-9a51-3f2a7d1b8c40";

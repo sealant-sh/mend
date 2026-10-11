@@ -134,6 +134,7 @@ import {
   captureStatusLine,
   type SessionControlKind,
   canRemoveProject,
+  AMBIENT_REMOVED_GUIDANCE,
   type GitAuthMode,
   gitAuthorIssue,
   normalizeGitAuthor,
@@ -406,8 +407,8 @@ const readableGitFailure = (
  * with the same readable lines as before (a hung clone would be worse than
  * an honest no).
  */
-const remoteEnvFor = (mode: GitAuthMode, userId: string | null) =>
-  resolveRemoteEnv(mode, userId).pipe(
+const remoteEnvFor = (mode: GitAuthMode, userId: string | null, remote?: string | null) =>
+  resolveRemoteEnv(mode, userId, remote).pipe(
     Effect.catchTag("NoSignerError", (error) => new StoreFailure({ message: error.message })),
     Effect.catchTag(
       "KeygenError",
@@ -505,6 +506,11 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
             message: `"${payload.name}" is not a usable project name (lowercase letters, digits, ".", "_", "-").`,
           });
         }
+        // An older client may still ask for ambient: it hears why, and what to ask for instead.
+        if (payload.gitAuthMode === "ambient") {
+          return yield* new StoreFailure({ message: AMBIENT_REMOVED_GUIDANCE });
+        }
+        const requestedMode = payload.gitAuthMode;
         // The route refuses what the schema does not (AdoptProject): the reason, never the URL.
         const sourceIssue = repositoryCloneUrlIssue(payload.source);
         if (sourceIssue !== null) return yield* new StoreFailure({ message: sourceIssue });
@@ -527,8 +533,8 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
         const pinned = yield* reachableSource(source, (message) => new StoreFailure({ message }));
         // The user's git access default decides a new project's mode unless the request says.
         const gitAccess = yield* UserGitAccessRepo;
-        const mode = payload.gitAuthMode ?? (yield* gitAccess.mode(caller.user.id)) ?? "mend-key";
-        const remoteEnv = pinned(yield* remoteEnvFor(mode, caller.user.id));
+        const mode = requestedMode ?? (yield* gitAccess.mode(caller.user.id)) ?? "mend-key";
+        const remoteEnv = pinned(yield* remoteEnvFor(mode, caller.user.id, source));
         // New stores are laid out by project id: names are unique only within an organization.
         const id = ProjectId.make(crypto.randomUUID());
         const adopted = yield* withSignerContext(
@@ -784,17 +790,21 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
     .handle("gitAuth", ({ params, payload }) =>
       Effect.gen(function* () {
         yield* (yield* ProjectAccess).manageProject(params.id);
+        if (payload.gitAuthMode === "ambient") {
+          return yield* new StoreFailure({ message: AMBIENT_REMOVED_GUIDANCE });
+        }
+        const mode = payload.gitAuthMode;
         const projects = yield* ProjectsRepo;
         // Resolving the env generates the key on first mend-key use, so the
         // settings card can show a public key the moment the mode lands.
         // Bridge is NOT resolved here: switching to it must work before the
         // signer connects — the card reports presence as an observation.
-        if (payload.gitAuthMode === "mend-key") {
+        if (mode === "mend-key") {
           const caller = yield* CurrentUser;
           yield* remoteEnvFor("mend-key", caller.user.id);
         }
         return yield* projects
-          .setGitAuthMode(params.id, payload.gitAuthMode)
+          .setGitAuthMode(params.id, mode)
           .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
       }),
     )
@@ -966,7 +976,9 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
           project.originUrl === null
             ? (env: Readonly<Record<string, string>>) => ({ ...env })
             : yield* reachableSource(project.originUrl, (message) => new StoreFailure({ message }));
-        const remoteEnv = pinned(yield* remoteEnvFor(project.gitAuthMode, caller.user.id));
+        const remoteEnv = pinned(
+          yield* remoteEnvFor(project.gitAuthMode, caller.user.id, project.originUrl),
+        );
         yield* withSignerContext(
           project.gitAuthMode,
           caller.user.id,
@@ -2183,7 +2195,7 @@ export const ReferencesGroupLive = HttpApiBuilder.group(MendApi, "references", (
           });
         }
         const { userId, mode } = yield* callerGitMode;
-        const remoteEnv = pinned(yield* remoteEnvFor(mode, userId));
+        const remoteEnv = pinned(yield* remoteEnvFor(mode, userId, payload.source));
         const id = ReferenceId.make(crypto.randomUUID());
         const cloned = yield* withSignerContext(
           mode,
@@ -2248,7 +2260,7 @@ export const ReferencesGroupLive = HttpApiBuilder.group(MendApi, "references", (
           (message) => new StoreFailure({ message }),
         );
         const { userId, mode } = yield* callerGitMode;
-        const remoteEnv = pinned(yield* remoteEnvFor(mode, userId));
+        const remoteEnv = pinned(yield* remoteEnvFor(mode, userId, reference.originUrl));
         const refreshed = yield* withSignerContext(
           mode,
           userId,

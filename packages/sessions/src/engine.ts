@@ -8308,7 +8308,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         project: Project,
         ownerUserId: string | null,
       ) {
-        return yield* resolveRemoteEnv(project.gitAuthMode, ownerUserId).pipe(
+        return yield* resolveRemoteEnv(project.gitAuthMode, ownerUserId, project.originUrl).pipe(
           Effect.provideService(MendKeys, mendKeys),
           Effect.provideService(AgentBridge, agentBridge),
           Effect.catch((error) =>

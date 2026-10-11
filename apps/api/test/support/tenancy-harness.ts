@@ -276,7 +276,7 @@ export const makeProject = (facts: {
     autoName: "off",
     autoLand: "inherit",
     backgroundSessions: "off",
-    gitAuthMode: "ambient",
+    gitAuthMode: "mend-key",
     workspaceImage: null,
     applyDotfiles: false,
     defaultShellProfile: true,

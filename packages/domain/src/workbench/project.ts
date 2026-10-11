@@ -23,16 +23,37 @@ export const resolveAutomation = (choice: AutomationChoice, settingsDefault: boo
 
 /**
  * How host-side git reaches this project's remote (docs/GIT-ACCESS.md):
- * `ambient` uses the login user's git/ssh setup unchanged; `mend-key` uses the
- * machine's Mend-generated deploy key (`~/.config/mend/keys/`), whose private half
- * never leaves the host; `bridge` signs through an ssh-agent shared from
+ * `mend-key` uses the calling user's Mend-generated key, whose private half
+ * never leaves the server; `bridge` signs through an ssh-agent shared from
  * another machine via `mend keys share` — the key (often hardware) physically
- * stays there, and ops fail readably when no signer is connected. All modes
+ * stays there, and ops fail readably when no signer is connected. Both modes
  * run ssh with BatchMode=yes — a daemon cannot answer a prompt, so auth
  * failures surface as readable errors instead of hangs.
+ *
+ * `ambient` (the server's own git/ssh setup) was removed in 0.36: on every packaged server that
+ * setup is an empty container, so it reached only public HTTPS remotes, which both modes reach
+ * the same way. Its projects moved to their creator's mode (migration 0129).
  */
-export const GitAuthMode = Schema.Literals(["ambient", "mend-key", "bridge"]);
+export const GitAuthMode = Schema.Literals(["mend-key", "bridge"]);
 export type GitAuthMode = typeof GitAuthMode.Type;
+
+/**
+ * The mode a recorded git operation ran under. Records from before 0.36 may say `ambient`; they
+ * keep saying it, since that is what happened.
+ */
+export const RecordedGitAuthMode = Schema.Literals(["ambient", "mend-key", "bridge"]);
+export type RecordedGitAuthMode = typeof RecordedGitAuthMode.Type;
+
+/**
+ * A mode a client may still send. `ambient` decodes so an older client hears why it is refused
+ * (`AMBIENT_REMOVED_GUIDANCE`) instead of "the payload is not what this route takes".
+ */
+export const RequestedGitAuthMode = Schema.Literals(["mend-key", "bridge", "ambient"]);
+export type RequestedGitAuthMode = typeof RequestedGitAuthMode.Type;
+
+/** Why a request for `ambient` is refused, and the two modes that replace it. */
+export const AMBIENT_REMOVED_GUIDANCE =
+  "Mend no longer has an ambient git mode: a packaged server holds no git or ssh credential of its own. Use your Mend key (`--auth mend-key`; `mend keys` prints it to add on your git host) or your own key through `mend keys share` (`--auth bridge`).";
 
 /** The recovery guidance shown wherever project adoption accepts a repository source. */
 export const REPOSITORY_CLONE_URL_GUIDANCE =
