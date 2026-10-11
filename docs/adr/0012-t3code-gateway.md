@@ -1,9 +1,10 @@
 # t3code as a frontend: a gateway that speaks t3code's environment protocol
 
-Status: proposed 2026-10-03. The owner's constraint, not re-opened here: supporting t3code changes
-no core behaviour of Mend. Additive adapters are fine. Read against t3code `main` at `31a9da179`
-(2026-10-03, after orchestration V2 landed as `de3439142`, pingdotgg/t3code#2829) and Mend at
-`00504e19a`. `t3:` paths are in the t3code repository.
+Status: accepted 2026-10-03; built in 0.36 (phases 0 to 4, mend#494 to mend#727). The owner's
+constraint, not re-opened here: supporting t3code changes no core behaviour of Mend. Additive
+adapters are fine. Read against t3code `main` at `31a9da179` (2026-10-03, after orchestration V2
+landed as `de3439142`, pingdotgg/t3code#2829) and Mend at `00504e19a`. `t3:` paths are in the t3code
+repository.
 
 ## Context
 
@@ -243,7 +244,7 @@ its own pull request.
 - 2026-10-03: first client t3code desktop against loopback or private; hosted app later.
 - 2026-10-03: gateway state in its own `node:sqlite` file.
 - 2026-10-03: origin `"mend"`; others' sessions read-only; PTY sessions hidden; `root` refused;
-  pairing printed by `mend t3 pair`.
+  pairing printed by `mend t3 pair` (as built: `mend pair`).
 - 2026-10-03: Mend has no `GET /api/me`. `/api/auth/session` checks the device token with
   `GET /api/me/devices` and takes the person from the `POST /api/pair` answer; no new Mend route.
 - 2026-10-03: the Slack runner never carried the recorded permission mode. The resume fix makes any

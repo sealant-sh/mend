@@ -48,8 +48,17 @@ your Mend key instead. See
 [No credentials in repository URLs](/guides/git-access/#no-credentials-in-repository-urls).
 
 A repository that uses SHA-256 object names, or a shallow one (only part of its history, as a
-`git clone --depth` copy holds), is refused after the clone, which is removed. See
-[Known issues](/reference/known-issues/).
+`git clone --depth` copy, a CI checkout or a mirror made from one holds), is refused after the
+clone, which is removed:
+
+```text
+Mend doesn't support shallow repositories yet. Make the repository complete where it is hosted (`git fetch --unshallow`), then adopt it again.
+```
+
+A project adopted from a shallow repository before 0.36 is refused the same way when a session
+starts on it, as is one whose store repository has grafts (`info/grafts`), with its own reason. A
+shallow checkout on your own machine still adopts in full, since the server clones its `origin` URL.
+See [Known issues](/reference/known-issues/).
 
 ## Choose Git authentication
 

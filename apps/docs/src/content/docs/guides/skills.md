@@ -2,15 +2,15 @@
 title: Skills
 description:
   Keep skill bundles on the Mend server, for yourself or for a project, and have them delivered to
-  Claude Code and Codex in every session workspace.
+  Claude Code, Codex, pi and opencode in every session workspace.
 sidebar:
   order: 8
 ---
 
 A skill is a named bundle of instruction files: a `SKILL.md` at the top, plus any support files it
-refers to. Claude Code and Codex find skills in their own skills directories and load one when it
-applies. Mend keeps skills on the server and writes them into each session's workspace, so an agent
-there has the same skills as the one on your machine.
+refers to. Claude Code, Codex and pi find skills in their own skills directories and load one when
+it applies; opencode reads Claude Code's. Mend keeps skills on the server and writes them into each
+session's workspace, so an agent there has the same skills as the one on your machine.
 
 Mend keeps two libraries:
 
@@ -79,12 +79,15 @@ When Mend creates a session's workspace, it resolves the skills for that session
 
 Mend writes the result into the workspace's harness home, once for each harness that reads skills:
 
-| Harness     | Directory in the workspace |
-| ----------- | -------------------------- |
-| Claude Code | `~/.claude/skills/<name>/` |
-| Codex       | `~/.codex/skills/<name>/`  |
+| Harness     | Directory in the workspace   |
+| ----------- | ---------------------------- |
+| Claude Code | `~/.claude/skills/<name>/`   |
+| Codex       | `~/.codex/skills/<name>/`    |
+| pi          | `~/.pi/agent/skills/<name>/` |
 
-In the workspace, `~/.claude` and `~/.codex` link into the harness home at
+opencode has no directory of its own: it reads `~/.claude/skills`.
+
+In the workspace, `~/.claude`, `~/.codex` and `~/.pi` link into the harness home at
 `/workspace/harness-home`. Mend records which skill directories it wrote in
 `/workspace/harness-home/.mend-managed-skills.json`, and a digest of their files in
 `.mend-managed-skills-digests.json` beside it. On the next delivery it replaces the skills the
@@ -99,6 +102,12 @@ That covers a skill you or the agent edited during the session, and a directory 
 that a library skill now shares a name with. Nothing clears `.mend/skills-kept`; delete old entries
 there by hand when you no longer need them. To keep an edit in the library, push it with
 `mend skills push`.
+
+In a [per-person workspace](/operate/per-person-workspaces/) each person's skills are resolved and
+written for them: their own library (when the project uses global skills) and the project's, into
+their own home, as their user. A joiner gets theirs, not the session owner's. Mend's records of what
+it wrote, and the skill directories it moves aside, are in that person's saved directory,
+`/workspace/harness-home/people/<account id>/.mend-saved/` (`skills-kept/` there).
 
 This works the same in both storage modes. With the captured store, the default, Mend writes the
 skills into the running workspace after its harness home is in place. With a co-located store, it

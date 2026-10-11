@@ -33,7 +33,8 @@ on [Open VSX](https://open-vsx.org/extension/sealant-sh/mend), which VSCodium an
 builds install from. Each version's `.vsix` is also attached to its `vscode-v<version>` release on
 [GitHub](https://github.com/sealant-sh/Mend/releases); install one with
 `code --install-extension mend-<version>.vsix`. The extension's version follows the Mend release it
-needs: 0.36.x works with a Mend 0.36 server. To run an unreleased change, build it
+needs: 0.36.x works with a Mend 0.36 server, and the patch number is the extension's own (0.36.1
+carries the sign-in fixes below). To run an unreleased change, build it
 [from source](#install-from-source).
 
 ## Requirements
@@ -68,9 +69,11 @@ Click **+** in the view, or run **Mend: New Session…**, and pick one of:
   you run `claude` or `codex` yourself in the terminal. Mend observes and records it.
 - **Claude agent** or **Codex agent**: Mend starts the harness on a prompt you type, and the
   workspace opens in VS Code beside it. An empty prompt starts the harness without one.
-- **Agent with options…**: choose the harness, model, thinking level, permissions (skip permission
-  prompts, or ask before acting) and base branch. The model list is the server's, the same one every
-  other client offers, with the server's default listed first.
+- **Agent with options…**: choose the harness (Claude, Codex, opencode or pi), model, thinking
+  level, permissions (skip permission prompts, or ask before acting) and base branch. The model list
+  is the server's, the same one every other client offers, with the server's default listed first.
+  For opencode the list leads with `opencode's own choice`, which sends no model, so its config
+  decides.
 
 **Mend: New session in this worktree…** on a session starts a second session in the same worktree:
 the same files and branch, with a new conversation. Each session keeps its own harness state, so the
@@ -125,10 +128,12 @@ mend ssh keys remove SHA256:…   # the SHA256: prefix is optional
 ```
 
 The gateway checks a key on every new connection, so the next Remote-SSH connection with a removed
-key is refused. A window already connected stays connected until it disconnects or the workspace
-stops. You can remove only your own keys; removing a member from the organization removes theirs,
-and Mend keeps retrying any key the platform did not remove at once. `mend uninstall --home` removes
-the key of the machine it runs on. The mobile app does not list keys.
+key is refused. With the Sealant this release pins, the connections already open with that key end
+within a minute; against an older Sealant they stay open until the workspaces they reach stop, and
+the removal lists your running sessions to stop. You can remove only your own keys; removing a
+member from the organization removes theirs, and Mend keeps retrying any key the platform did not
+remove at once. `mend uninstall --home` removes the key of the machine it runs on. The mobile app
+does not list keys.
 
 ## Take over a running session
 
@@ -198,21 +203,28 @@ machine reaches it (`http://mend-mini.local:3105`, a tailnet name, or your edge'
 origin), then how to sign in:
 
 - **Sign in with the browser**: the same walk as `mend login`. The browser opens
-  `<server>/authorize`; approve there when it shows the same code as the notification in VS Code.
-  The editor receives its own device token, listed under **Settings → Devices** as
-  `VS Code on <machine>`.
+  `<server>/authorize`, which asks **Authorize VS Code?**; approve there when it shows the same code
+  as VS Code. A notification shows the link and the code from the start, with **Copy link** and
+  **Paste a device token instead**, so the sign-in does not depend on VS Code's "open the external
+  website?" dialog, which can sit behind other windows. The notification hides after a while; the
+  status bar keeps `Mend sign-in · <code>` until the sign-in ends, and clicking it brings the link
+  and both actions back. The wait is timed from the server's answer, so a server whose clock is off
+  from this machine's (a Mac's Docker VM after sleep) does not expire it early. The editor receives
+  its own device token, listed under **Settings → Devices** as `VS Code on <machine>`.
 - **Paste a device token**: a token minted in the web app under **Settings → Devices**.
 - **No token**: for a local server that does not require one.
 
 The URL is saved as the `mend.serverUrl` setting and the token in VS Code's secret storage
 (encrypted, with its key in the macOS Keychain on a Mac). For a plain `http://` URL on another
-machine, the extension says so before you sign in: the token crosses that network unencrypted, so
-use a private network you control or an https edge. The CLI's token is used only while
-`mend.serverUrl` points at the same URL as the CLI's configuration. **Mend: Sign out** revokes a
-token the browser sign-in created and forgets it; a pasted token stays valid until you revoke it
-under **Settings → Devices**. Signed out stays signed out: the editor does not fall back to the
-CLI's sign-in for that server until you connect again, and the CLI keeps its own (`mend logout` ends
-it).
+machine, the extension says so when it asks how to sign in:
+`Plain http: anyone on this local network can read the token.` for a LAN address or name, and
+`Plain http: the token crosses the network unencrypted.` otherwise. It says nothing for a tailnet
+address (`100.64.0.0/10`) or a `.ts.net` name, since the tailnet encrypts the connection. Use a
+private network you control or an https edge. The CLI's token is used only while `mend.serverUrl`
+points at the same URL as the CLI's configuration. **Mend: Sign out** revokes a token the browser
+sign-in created and forgets it; a pasted token stays valid until you revoke it under **Settings →
+Devices**. Signed out stays signed out: the editor does not fall back to the CLI's sign-in for that
+server until you connect again, and the CLI keeps its own (`mend logout` ends it).
 
 When the server refuses the token, the error offers **Connect to server**. A request that gets no
 answer within 30 seconds (a server asleep, a network change) fails with that, and the live view

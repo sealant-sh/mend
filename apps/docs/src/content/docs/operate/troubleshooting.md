@@ -20,7 +20,7 @@ mend doctor
 One line per fact, in the order a first run needs them:
 
 ```text
-✓ server      https://mend.example.com · mend 0.33.0
+✓ server      https://mend.example.com · mend 0.36.0
 ✓ signed in   token accepted
 ✓ sealant     connected · http://127.0.0.1:4000
 ✓ claude      connected
@@ -40,18 +40,20 @@ One line per fact, in the order a first run needs them:
 `✗` line makes the command exit with status 1. No request waits longer than three seconds; a line
 whose check could not run says `not checked`.
 
-| Line                                | What it reads                                                                                                                                                                                                                                                                                                    |
-| ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `server`                            | The server's `/health`: its URL and version, or `cannot reach <url>`. When the server installed on this machine answers at another URL (a setup moved it), doctor says so and gives `mend login --url <new>`.                                                                                                    |
-| `signed in`                         | Whether the saved token is accepted: `token accepted`, or `no token saved` and `token rejected`, which point to `mend login`. Another answer prints the status `GET /projects` returned.                                                                                                                         |
-| `sealant`                           | Whether the server reaches the platform: `connected`, or `unauthorized`, `unreachable` or `mismatched` with the platform's message.                                                                                                                                                                              |
-| `claude`, `codex`, `github`         | Your connected accounts on the platform: `connected` with the account's login or email, `not connected`, or the account's status.                                                                                                                                                                                |
-| `grant`                             | Mend's own Claude grant on this machine. Printed only when Mend keeps one (see below).                                                                                                                                                                                                                           |
-| `projects`                          | How many projects you have adopted, or `none adopted → mend adopt`.                                                                                                                                                                                                                                              |
-| `claude cli`, `codex cli`, `gh cli` | Whether each tool is on this machine's `PATH`, and whether it holds a credential here to forward.                                                                                                                                                                                                                |
-| `exposure`                          | How the instance is reached, as declared and as observed. See [Exposure and the public gate](/operate/exposure/).                                                                                                                                                                                                |
-| `workspaces`                        | Whether the server's host lets a workspace's rootless Docker start: `✗` with the command to run when its kernel refuses unprivileged user namespaces. Printed only when workspaces run on the server's own Docker.                                                                                               |
-| `docker`                            | What a stop of this machine's Docker daemon waits for: the longest stop timeout among its running containers, against the `TimeoutStopSec` of the systemd unit that runs it, or `live-restore on`. `○` with what to stop first when a Docker restart would outlast the unit. Printed when `docker` is on `PATH`. |
+| Line                                | What it reads                                                                                                                                                                                                                                                                                                                                                       |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `server`                            | The server's `/health`: its URL and version, or `cannot reach <url>`. When the server installed on this machine answers at another URL (a setup moved it), or the URL answers with a server other than the one installed here, doctor says so and gives `mend login --url <new>`.                                                                                   |
+| `clock`                             | Printed only when the server's clock is more than two minutes off this machine's (`this server's clock is 116 min behind this machine's`), with what resets it. A Docker VM on a Mac that slept wakes behind.                                                                                                                                                       |
+| `signed in`                         | Whether the saved token is accepted: `token accepted`, or `no token saved` and `token rejected`, which point to `mend login`. Another answer prints the status `GET /projects` returned.                                                                                                                                                                            |
+| `sealant`                           | Whether the server reaches the platform: `connected`, or `unauthorized`, `unreachable` or `mismatched` with the platform's message.                                                                                                                                                                                                                                 |
+| `claude`, `codex`, `github`         | Your connected accounts on the platform: `connected` with the account's login or email, `not connected`, or the account's status.                                                                                                                                                                                                                                   |
+| `grant`                             | Mend's own Claude grant on this machine. Printed only when Mend keeps one (see below).                                                                                                                                                                                                                                                                              |
+| `projects`                          | How many projects you have adopted, or `none adopted → mend adopt`.                                                                                                                                                                                                                                                                                                 |
+| `claude cli`, `codex cli`, `gh cli` | Whether each tool is on this machine's `PATH`, and whether it holds a credential here to forward.                                                                                                                                                                                                                                                                   |
+| `exposure`                          | How the instance is reached, as declared and as observed. See [Exposure and the public gate](/operate/exposure/).                                                                                                                                                                                                                                                   |
+| `workspaces`                        | Whether the server's host lets a workspace's rootless Docker start: `✗` with the command to run when its kernel refuses unprivileged user namespaces. Printed only when workspaces run on the server's own Docker.                                                                                                                                                  |
+| `docker`                            | What a stop of this machine's Docker daemon (the installed server's context when there is one) waits for: the longest stop timeout among its running containers, against the `TimeoutStopSec` of the systemd unit that runs it, or `live-restore on`. `○` with what to stop first when a Docker restart would outlast the unit. Printed when `docker` is on `PATH`. |
+| `sleep`, `lid`                      | On a Mac that serves Mend: `sleep` when it sleeps after some idle minutes (`pmset -g`), `lid` when closing its lid sleeps it without an external display and power. Docker Desktop and OrbStack pause their VM while the Mac sleeps. Printed only then.                                                                                                             |
 
 ### The Claude grant line
 
@@ -128,14 +130,16 @@ mend server logs --tail 200
 ```
 
 `mend server status` prints the pinned version and URL, the active generation, and
-`docker compose ps` for Mend, Postgres and Garage. When the Mend container is running, it asks
-`/api/health` and expects the exact pinned version:
+`docker compose ps` for the installation's containers. Each mirror follows with what was observed
+(see [npm mirror](/operate/npm-mirror/) and [Docker mirror](/operate/docker-mirror/)), then the edge
+and the posture: the exposure and tenancy declared beside what the running server reports. When the
+Mend container is running, it asks `/api/health` and expects the exact pinned version:
 
 | Output                                                                                                     | Meaning                                                                     |
 | ---------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
-| `Mend 0.33.0 is reachable at http://localhost:3105`                                                        | Health answered `ok` with the pinned version.                               |
+| `Mend 0.36.0 is reachable at http://localhost:3105`                                                        | Health answered `ok` with the pinned version.                               |
 | `Mend is stopped. No health claim was made.`                                                               | The Mend container is not running.                                          |
-| `Mend is running but exact-version health for 0.33.0 was not observed. Check mend server logs --tail 100.` | The container runs, and health did not answer, or answered another version. |
+| `Mend is running but exact-version health for 0.36.0 was not observed. Check mend server logs --tail 100.` | The container runs, and health did not answer, or answered another version. |
 | `No Mend server is configured. Run mend server setup explicitly to install one.`                           | This machine has no installation.                                           |
 
 `mend server logs` prints the last lines of every container in the installation, 1 to 1000 per
@@ -145,7 +149,9 @@ are there.
 
 A second server command while one runs reports
 `Server is busy: <dir> is locked (<owner>). Wait for the owning command. Never remove a live lock.`
-followed by the recovery steps for a stale lock.
+followed by the recovery steps for a stale lock. `mend uninstall` refuses with the same words. A
+server command whose reader goes away (`mend server status | head`) or whose terminal closes
+finishes what it started and releases the lock.
 
 On Kubernetes, read the API Pod's log with `kubectl logs`; `mend server` commands manage only the
 Docker install.

@@ -223,7 +223,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     summary: "the models each harness offers, as the server lists them",
     synopsis: ["[--json]"],
     description: [
-      "One block per harness: each model's id, the one a launch runs when --model is not given, and the efforts a model takes where they are fewer than the harness's. The list is the server's; the phone, the web app, the desktop and VS Code offer the same one, and a session records which model it was started with.",
+      "One block per harness: each model's id, the one a launch runs when --model is not given, and the efforts a model takes where they are fewer than the harness's. The list is the server's; the phone, the web app and VS Code offer the same one, and a session records which model it was started with.",
       "Pass an id to mend claude or mend codex with --model. An id the list does not know is passed through as given; the harness decides whether it exists.",
     ],
     options: [{ flag: "--json", text: "the catalog as the server answers it" }],
@@ -253,7 +253,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     summary: "check this machine's setup, or bundle it for a bug report",
     synopsis: ["", "--bundle [--out <path>] [--tail <n>]"],
     description: [
-      "Read-only. One line per fact: the server, the sign-in, the platform connection, the provider accounts, the git key, and where docker is on PATH what a stop of its daemon waits for against what systemd allows docker.service. Each unfinished line ends with the command that fixes it.",
+      "Read-only. One line per fact: the server, the sign-in, the platform connection, the provider accounts, the adopted projects, the claude, codex and gh CLIs on this machine, the exposure, the server's clock against this machine's, a Mac that sleeps on its own or when its lid closes, and where docker is on PATH what a stop of its daemon waits for against what systemd allows docker.service. Each unfinished line ends with the command that fixes it.",
       "--bundle collects what a maintainer asks for one output at a time into one tar.gz: this CLI and its environment, the doctor lines, the server's health, the local server's configuration (its compose file and the names of its .env keys, never their values), docker version, info, contexts, the Mend and workspace containers with their inspect facts, the local server's container logs, the running workspace containers' logs, every session with its processes, exit codes and argv, the recorded terminal output of each, the connected accounts, and the versions and paths of claude, codex, gh, git and docker on this machine.",
       "Each part is collected on its own: one that fails leaves a <name>.error.txt in the bundle instead of stopping it. One redactor runs over every file before it is written: bearer and header values, Slack, OpenAI, GitHub and AWS token shapes, JWTs, passwords in URLs, and any password, secret or token value. The archive is written with mode 0600. It still contains logs and configuration; read it before you share it.",
     ],

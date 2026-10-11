@@ -14,8 +14,9 @@ items need action beforehand (old backups, and tokens in adopted repository URLs
 ## The upgrade itself
 
 Updating `@sealant/mend` updates only the CLI, and the 0.36 CLI is the one that knows what 0.36's
-install looks like (its mirrors, its backup pruning). Update it first, then upgrade the server to an
-exact version:
+install looks like (its mirrors, its backup pruning). The 0.36 CLI needs Node.js 22.13 or newer
+(0.35.1 took any 22) and refuses an older Node in one line; the terminal dashboard still needs
+Node.js 26. Update it first, then upgrade the server to an exact version:
 
 ```sh
 npm install --global @sealant/mend@0.36.0
@@ -38,6 +39,9 @@ What it does on top of that, in order:
   them (below).
 - **Backup pruning.** Once 0.36 answers health, the upgrade keeps the two newest backups and removes
   the rest (below).
+
+After the upgrade, the bundled Sealant worker starts and stops up to four workspaces at once instead
+of one at a time.
 
 A server on an old-style preview (`0.36.0-preview.K`) is refused as a downgrade; add
 `--from-preview` once.
@@ -97,8 +101,12 @@ shell profile that way.
 ## Per-person workspaces are on by default
 
 Each person who runs anything in a workspace gets their own Linux user and home, and everything they
-run runs as them, on their own logins. `MEND_HARNESS_LAYOUT` is `person` unless set. To keep new
-worktrees on one shared home, set `MEND_HARNESS_LAYOUT=shared` on the server and restart it.
+run runs as them, on their own logins. `MEND_HARNESS_LAYOUT` is `person` unless set (an empty value
+counts as unset; any value other than `person` or `shared` stops the server). To keep new worktrees
+on one shared home, set `MEND_HARNESS_LAYOUT=shared` on the server and restart it. On Kubernetes it
+goes in the chart's `extraEnv`. `mend server setup` has no flag for it, so on the Docker install it
+takes running the Compose project yourself with the variable in an override file (see
+[Server environment](/reference/server-environment/#set-them-on-the-docker-install)).
 
 - **The setting decides new worktrees only.** A worktree's layout is recorded at its first
   per-person launch, and a worktree that has run per person always runs per person. There is no way
@@ -153,8 +161,17 @@ For scripts:
 - `--origin` replaces the saved list of extra origins, and `--origin none` clears it.
 - `--declare <item>` adds to the saved exposure statements, `--undeclare <item>` takes one back, and
   `--declare none` clears them.
-- New in 0.36: `--edge <host>` (the Caddy TLS edge), `--exposure`, `--tenancy`, `--ssh-bind`,
-  `--t3-gateway` and the mirror flags. `mend help server setup` lists them all.
+- Before anything is pulled, setup checks that the web and SSH ports are free and says what holds
+  one that is not (another Mend, with its version, or something else). With flags it refuses and
+  names `--port` or `--ssh-port`.
+- `--port` moves a saved plain-http `--url` that names the old port; an `https` URL stays.
+- `--context` (or `DOCKER_CONTEXT`) picks the Docker engine. Without either, a fresh install on a
+  terminal with more than one engine answering asks which one; an existing install stays on the
+  context its data is on.
+- New in 0.36: `--edge <host>` (the Caddy TLS edge), `--exposure`, `--tenancy`, `--declare` and
+  `--undeclare`, `--ssh-bind`, `--t3-gateway`, `--allow-userns` and the mirror flags on setup, and
+  `--keep-backups` and `--from-preview` on upgrade. `mend help server setup` and
+  `mend help server upgrade` list them all.
 
 See [Install Mend](/getting-started/install/) and [Deploy on a VPS](/operate/deploy-vps/).
 
@@ -250,5 +267,7 @@ place before Mend starts a session. Mend has no setting to open it for a project
   load it first: the image is named by the Mend image's `dev.sealant.mend.network-guard-image`
   label, and setup says which one it lacks.
 - **Workspaces already running at the upgrade** keep the address until they stop or are replaced.
-- **Not covered:** other credential endpoints (ECS's `169.254.170.2`, EKS Pod Identity's
-  `169.254.170.23`), and image builds, which run on the Docker host.
+- **Not covered:** the first moments of a workspace's boot (about 0.7 s) before the refusal is in
+  place; Kubernetes and AWS MicroVM workspaces; other credential endpoints (ECS's `169.254.170.2`,
+  EKS Pod Identity's `169.254.170.23`); and image builds, which run on the Docker host. See
+  [Known issues](/reference/known-issues/#cloud-metadata-what-the-block-leaves-open).

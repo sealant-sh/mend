@@ -77,10 +77,16 @@ each mode means.
 | `⇧R`                         | Refresh                                                                                     |
 | `q`                          | Quit                                                                                        |
 
-A digit, Tab or an arrow into a starting session's pane hands the keyboard to its snake when the
-terminal can show the board whole. While the game has the keyboard, there or under `mend snake`,
-every dashboard key is the game's, the digits, Tab, `?` and `/` included. Esc or `q` hands it back
-to the pane you came from.
+A starting session's pane shows a game of snake. Starting or resuming a session from the dashboard
+hands the game the keyboard once the pane shows it, and so does a digit, Tab, Enter, `l` or `→` into
+that pane, when the terminal can show the board whole; a terminal too small for it says
+`make the terminal taller to play snake` (or `wider`), and the game does not take the keyboard. With
+the keyboard the board's border takes the accent colour, and the game counts down 3, 2, 1, go before
+the snake moves. The arrows or `h` `j` `k` `l` steer, and Space or `p` pauses, with the countdown
+again before it resumes. While the game has the keyboard, there or under `mend snake`, every
+dashboard key is the game's, the digits, Tab, `?` and `/` included. Esc or `q` hands it back to the
+pane you came from. A dialog that opens over the game, such as the adopt offer at the start of
+`mend snake`, keeps the keyboard until it closes, and then the countdown starts.
 
 In the Projects section, the verbs that act on a session (`a`, `r`, `e`, `v`, `o`, `⇧K`, `⇧D`) do
 nothing and the dashboard asks you to select a session first. Ctrl chords belong to the terminal and
@@ -88,7 +94,7 @@ never trigger a verb.
 
 `⇧K` and `⇧D` arm on the first press and act on a second press within five seconds. The status line
 says what the second press will do, for example
-`press ⇧D again to remove session · … — its record goes, the worktree stays`. The dashboard refuses
+`press ⇧D again to remove session · … · its record goes, the worktree stays`. The dashboard refuses
 to remove a session whose agent is still working, or a worktree with live sessions; stop them first.
 
 A stopped agent can leave its Services running, and a running Service keeps the workspace up. On
@@ -96,10 +102,12 @@ such a row `⇧K` stops those Services instead, and the status line names what h
 
 ### Starting sessions
 
-`n` and `r` open a harness picker: `codex`, `claude`, `opencode`, or `shell` (a plain bash session
-in its own recorded worktree). When you resume, the first entry is the session's own harness, which
+`n` and `r` open a harness picker: `codex`, `claude`, `opencode`, `pi`, or `shell` (a plain bash
+session). For a new session, each row says whether it starts a new worktree or joins the selected
+one (`joins <worktree>`). When you resume, the first entry is the session's own harness, which
 resumes natively with the conversation intact. Picking another harness carries the conversation over
-as a distilled prompt. Enter picks, Esc or `q` closes the picker.
+as a distilled prompt. A `mend run` session has no agent to resume, so its own harness is not
+offered; a shell or another harness is. Enter picks, Esc or `q` closes the picker.
 
 `w`, and `n` where there is no worktree to join, open the worktree form. It asks for a name, then a
 base branch from a filtered list, then a harness. Tab moves forward through the steps, `⇧Tab` moves
@@ -123,26 +131,44 @@ and it never attaches that start again by itself.
 
 Set `MEND_AUTO_ATTACH=off` to leave every attach to `a`; `off` is the only value it reads.
 
+### What the panes say
+
+A session row leads with what the session is doing. A starting session names its launch phase:
+`launching`, `queued`, `building the image`, `preparing the workspace`, `booting`, or
+`waiting for the previous save` when the worktree's previous session is still saving. A live session
+reads `up 4m` from its agent's own start (`shell up 4m` for a shell session), `agent ended 5m ago`
+when only shells or Services keep it live, and a settled one `ended 5m ago`. A stopping session
+reads what its save has left, for example `saving · no uploads pending`, or
+`workspace end not confirmed` while Mend has not yet observed the workspace end. A session whose
+agent stopped while its Services run reads, for example,
+`agent stopped · 3 services keep the workspace up`. A worktree reads its most pressing session's
+word, so `starting` or `stopping` while one of its sessions does and none is waiting or running.
+
+The session pane lists the session's name and harness, its status with the words above, its branch
+against its base, then its running Services: each one's name, its workspace port, the host port and
+its state, or where its tunnel opens on this machine, and `no services running` when there are none.
+Then how many review comments are open, the session's summary, and the conversation record.
+
 ### Reviewing in the terminal
 
 `v` opens the change review in the terminal. Inside it:
 
-| Key                       | What it does                                                                            |
-| ------------------------- | --------------------------------------------------------------------------------------- |
-| `Tab`                     | Move focus between files, the diff and comments                                         |
-| `j` `k`, `n` `p`, `]` `[` | Move by line, by file, by hunk                                                          |
-| `c`, `⇧C`                 | Comment on the line or range, or on the whole change                                    |
-| `v`                       | Start or clear a line range                                                             |
-| `d` `w` `z`               | Toggle split diff (wide terminals), wrap, and whitespace                                |
-| `s`                       | Assemble the open comments into a follow-up for the same session                        |
-| `y`                       | Deliver the pending follow-up and relaunch the session                                  |
-| `m`                       | Mend reads the change                                                                   |
-| `g`                       | Draft concrete suggestions                                                              |
-| `a` `x` `u`               | In the comments list: accept a draft or mark an open comment addressed, dismiss, reopen |
-| `t`, `,` `.`              | Compose the tour, and step through it                                                   |
-| `r`                       | Refresh the live change                                                                 |
-| `o`                       | Continue the review in the web app                                                      |
-| `Esc` or `h`, `q`         | Back to the dashboard, quit                                                             |
+| Key                       | What it does                                                                                                                            |
+| ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `Tab`                     | Move focus between files, the diff and comments                                                                                         |
+| `j` `k`, `n` `p`, `]` `[` | Move by line, by file, by hunk                                                                                                          |
+| `c`, `⇧C`                 | Comment on the line or range, or on the whole change                                                                                    |
+| `v`                       | Start or clear a line range                                                                                                             |
+| `d` `w` `z`               | Toggle split diff (wide terminals), wrap, and whitespace                                                                                |
+| `s`                       | Assemble the open comments into a follow-up for the same session; a `mend run` or shell session has no agent to send it to, and says so |
+| `y`                       | Deliver the pending follow-up and relaunch the session                                                                                  |
+| `m`                       | Mend reads the change                                                                                                                   |
+| `g`                       | Draft concrete suggestions                                                                                                              |
+| `a` `x` `u`               | In the comments list: accept a draft or mark an open comment addressed, dismiss, reopen                                                 |
+| `t`, `,` `.`              | Compose the tour, and step through it                                                                                                   |
+| `r`                       | Refresh the live change                                                                                                                 |
+| `o`                       | Continue the review in the web app                                                                                                      |
+| `Esc` or `h`, `q`         | Back to the dashboard, quit                                                                                                             |
 
 [Review a change](/guides/review-a-change/) describes what these produce.
 
@@ -151,16 +177,16 @@ Set `MEND_AUTO_ATTACH=off` to leave every attach to `a`; `off` is the only value
 These commands take a session id prefix. With no id and one live session, that session is taken;
 with several, a picker opens.
 
-| Command                                 | What it does                                                              |
-| --------------------------------------- | ------------------------------------------------------------------------- |
-| `mend attach [session] [--no-tunnel]`   | Reattach this terminal to a running session                               |
-| `mend rejoin [session] [--harness <h>]` | Attach when the session is live, otherwise resume it                      |
-| `mend resume [session] [--with <h>]`    | Start a new agent process from the saved harness state                    |
-| `mend continue [session]`               | Resume the session with its pending review follow-up as the first message |
-| `mend shell [session]`                  | Open a second terminal into the same workspace, beside the agent          |
-| `mend stop [session]`                   | End the agent; the worktree, record and review remain                     |
-| `mend stop --all [--project <p>]`       | Stop every live session, optionally in one project                        |
-| `mend stop --services [session]`        | Stop the session's Services instead of its agent                          |
+| Command                                               | What it does                                                              |
+| ----------------------------------------------------- | ------------------------------------------------------------------------- |
+| `mend attach [session] [--no-tunnel]`                 | Reattach this terminal to a running session                               |
+| `mend rejoin [session] [--harness <h>] [--no-tunnel]` | Attach when the session is live, otherwise resume it                      |
+| `mend resume [session] [--with <h>]`                  | Start a new agent process from the saved harness state                    |
+| `mend continue [session]`                             | Resume the session with its pending review follow-up as the first message |
+| `mend shell [session]`                                | Open a second terminal into the same workspace, beside the agent          |
+| `mend stop [session]`                                 | End the agent; the worktree, record and review remain                     |
+| `mend stop --all [--project <p>]`                     | Stop every live session, optionally in one project                        |
+| `mend stop --services [session]`                      | Stop the session's Services instead of its agent                          |
 
 `mend rejoin` with no id takes the newest live session, and failing that the newest settled one.
 `mend continue` with no id takes the newest session with a pending follow-up. `mend resume --with`
@@ -184,8 +210,9 @@ detach key off; `none` is the only value it reads.
 Only a session's owner types in its terminal. When you attach to a session someone else owns and
 shares control of, the CLI prints
 `This session runs in a terminal. Only <owner> types here; they can continue it as a conversation.`,
-then streams the terminal without sending your keys. `Ctrl+]` or `Ctrl+C` detaches. See
-[Organizations](/organizations/overview/#terminals-stay-with-the-owner).
+then streams the terminal without sending your keys or your terminal's size. `Ctrl+]` or `Ctrl+C`
+detaches. `mend shell` in their session is refused: a shell is the owner's alone, and so is
+`mend service run`. See [Organizations](/organizations/overview/#terminals-stay-with-the-owner).
 
 ### Take a session back from the phone
 

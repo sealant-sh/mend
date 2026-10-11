@@ -21,7 +21,10 @@ rationale:
 ## On by default, and opting out
 
 `MEND_HARNESS_LAYOUT` is `person` unless set. To keep every new worktree on one shared home, set
-`MEND_HARNESS_LAYOUT=shared` on the server and restart it.
+`MEND_HARNESS_LAYOUT=shared` on the server and restart it. On Kubernetes it goes in the chart's
+`extraEnv`. `mend server setup` has no flag for it, so on the Docker install it takes running the
+Compose project yourself with the variable in an override file (see
+[Server environment](/reference/server-environment/#set-them-on-the-docker-install)).
 
 - The setting decides only worktrees that have no layout yet. A worktree's layout is recorded with
   its first per-person launch.
@@ -99,7 +102,9 @@ Core reports the runtime it places each image on; on Kubernetes (`k8s`, `k3s`) a
 sandboxes every new worktree runs with a shared home before any launch is tried.
 
 **nix images take one person.** Their passwd is in the read-only store, which cannot hold a setuid
-`sudo`. A custom image without `sudo`, `useradd` or ACL support also takes one person.
+`sudo`, so a nix workspace runs with one shared home: someone who joins it runs on the launcher's
+logins, and a turn steered there under shared control on the session owner's, as in any workspace
+that shares one home. A custom image without `sudo`, `useradd` or ACL support also takes one person.
 
 ## Who each process runs as
 
@@ -110,12 +115,19 @@ sandboxes every new worktree runs with a shared home before any launch is tried.
 | A Service                                                    | the person who started it, across restarts; a `mend.toml` Service, the launcher       |
 | Dependency install and setup commands                        | the launcher                                                                          |
 | Writing a pasted image into the workspace                    | the person who pasted it                                                              |
-| VS Code Remote-SSH, `ssh`                                    | the workspace's launcher, as their own user; nobody else can open Remote-SSH into it  |
+| VS Code Remote-SSH, `ssh`, SFTP and `scp`                    | the workspace's launcher, as their own user; nobody else can open Remote-SSH into it  |
 | `docker exec` and anything else Mend did not start           | root: no person's login, no Mend token, nothing under `/root` saved                   |
 
 The workspace's launcher is the person whose launch started this workspace; after it stops, whoever
 launches the next one. So a member who starts a worktree's next workspace after the last one stopped
 holds its Remote-SSH, and the person who launched the earlier one no longer does.
+
+Remote-SSH runs as root instead, and the session line says why, when Mend cannot bind the launcher's
+account to their person in Sealant (`Remote-SSH: root, Core can't bind your person`) or the Sealant
+it runs on starts SSH sessions only as root (`Remote-SSH: root, this Sealant runs it as root`). A
+workspace that falls back to one shared home has its SSH user set back to root; until Sealant has
+taken that, the line says
+`Remote-SSH unavailable · the workspace's SSH user is not yet back to root · retrying`.
 
 Each person has the same login name (`m` and 8 characters), uid (40000–49999) and home
 (`/home/<name>`) in every workspace and project. Their home is 0700 and is not saved; the

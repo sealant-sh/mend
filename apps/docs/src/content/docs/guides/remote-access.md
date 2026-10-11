@@ -1,20 +1,20 @@
 ---
 title: Work from another device
-description: Reach the same Mend sessions from a browser, desktop, phone, or another terminal.
+description: Reach the same Mend sessions from a browser, VS Code, a phone, or another terminal.
 sidebar:
   order: 6
 ---
 
 The work stays on the Mend machine. Other devices attach to it.
 
-A terminal attachment, browser tab, desktop window, or phone is a client of the same session.
+A terminal attachment, browser tab, VS Code window, or phone is a client of the same session.
 Closing one does not stop the agent, delete the worktree, or move the development service.
 
 ```mermaid
 flowchart LR
   laptop[Laptop CLI]
   browser[Browser]
-  desktop[Desktop app]
+  vscode[VS Code]
   phone[Phone]
   slack[Slack]
   path[Loopback, private network, or TLS edge]
@@ -23,7 +23,7 @@ flowchart LR
 
   laptop --> path
   browser --> path
-  desktop --> path
+  vscode --> path
   phone --> path
   mend -. Socket Mode, outbound .-> slack
   path --> mend --> session
@@ -60,11 +60,14 @@ render an Ingress to the web tier. Test a terminal through the edge before relyi
 
 `public` refuses to start while an item of the public exposure gate that Mend can observe is open.
 `mend operator exposure` lists them. Two items, `core-private` and `edge-tls`, no build can observe,
-and a third, `t3code-gateway`, while the [t3code gateway](/integrations/t3code/) is published beyond
-loopback or served by the edge; once you have verified one from outside, name it in
-`MEND_EXPOSURE_DECLARED` and the report shows it as declared. An independent security reassessment
-of the exact release is also yours to record. Nothing in Mend says an instance is fit to expose to
-the Internet. Read [Exposure](/operate/exposure/).
+nor `workspace-ssh` while workspace SSH is published on a non-loopback address apart from the web
+port (`--ssh-bind`), nor `t3code-gateway` while the [t3code gateway](/integrations/t3code/) is
+published beyond loopback or served by the edge. Of these, an open `workspace-ssh`, or an open
+`t3code-gateway` published beyond loopback, refuses a `public` start. Once you have verified one
+from outside, declare it (`mend server setup --declare <item>`, or `MEND_EXPOSURE_DECLARED`) and the
+report shows it as declared. An independent security reassessment of the exact release is also yours
+to record. Nothing in Mend says an instance is fit to expose to the Internet. Read
+[Exposure](/operate/exposure/).
 
 ## Pair another device
 
@@ -118,20 +121,34 @@ provider logins and Git access; in a [per-person workspace](/operate/per-person-
 turn runs on its sender's login. Read
 [Organizations](/organizations/overview/#who-steers-a-session).
 
-## Browser and desktop
+## Browser
 
-The web and desktop apps list the same projects and sessions. Use them to follow output, open a
-shell, inspect project setup, and review the current change. The desktop app can also resume a
-session, hand it between terminal and protocol modes, and land its change; it has no published
-release. Read [Desktop app](/clients/desktop/).
+The web app lists the same projects and sessions. Use it to follow output, open a shell, inspect
+project setup, review the current change and land it.
+
+The [desktop app](/clients/desktop/) is not part of the 0.36 release: it has no published build, and
+runs only from source.
+
+## VS Code
+
+The [VS Code extension](/clients/vscode/) lists projects and sessions, opens a session's terminal
+over the web port, opens its review in the browser, and opens its workspace over Remote-SSH, which
+needs the workspace SSH port too. It signs in with the browser, as `mend login` does.
+[Mac mini and VS Code](/operate/mac-mini-vscode/) walks through a server on one machine and VS Code
+on another.
 
 A browser disconnect does not define session status. Reopening the session resumes from its durable
 record.
 
 ## Phone
 
-The responsive web app is the no-install phone path. The native client under `apps/mobile` is not
-published yet.
+The responsive web app is the no-install phone path. The phone app under `apps/mobile` is not
+published, and the Mend server does not serve its web build; from a checkout,
+`pnpm --filter @mend/mobile web` runs it in a browser. In it, a session's conversation shows the
+change's pull request ([Land a change](/guides/land-a-change/#where-the-pull-request-shows)) and a
+Claude workflow's card while it runs. In the browser, **Stop session** and the other actions that
+ask first do nothing; stop a session from the web app or with `mend stop`. Read
+[Phone](/clients/phone/) for how to open it, pair it, and what it does.
 
 Mobile is for steering, terminal access, session status, development-service links, and review. It
 is not intended to replace a full editor.
@@ -154,8 +171,8 @@ process itself; in the Docker deployment that is the application container, not 
 Services the agent or the web started need no command of yours. While `mend attach`, `mend codex`,
 `mend claude`, `mend rejoin`, or the dashboard is attached to a session on a remote server, each
 live Service declared `--http` or `--https` is tunneled to your loopback, on its own port when that
-port is free. `--no-tunnel` turns this off. Looking at a remote server, the web and desktop apps
-show `mend service connect <name>` where an Open link to the server's loopback would not load.
+port is free. `--no-tunnel` turns this off. Looking at a remote server, the web app shows
+`mend service connect <name>` where an Open link to the server's loopback would not load.
 
 Raw forwarded ports do not pass through Mend request authentication; when you expose one directly,
 the private network is the access boundary. Declare HTTP or HTTPS before presenting a Service as a

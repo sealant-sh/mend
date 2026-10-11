@@ -95,8 +95,8 @@ An operator on a machine they alone use can set `MEND_GIT_TRANSPORT_BIND_ORIGIN=
 shim sign for any host, for mirrors and forks.
 
 In a captured workspace (the default store) the repository is built from captures and has no remote
-of its own. Mend names the project's `origin` for the workspace, and a password in an adopted HTTPS
-URL is removed before it gets there.
+of its own. Mend names the project's `origin` for the workspace, with any login or token in an HTTPS
+URL removed before it gets there; an SSH login name stays.
 
 Mend records the remote operation and its outcome. Changing the project's auth mode applies to the
 next Git operation without rebuilding the workspace.

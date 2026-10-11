@@ -60,9 +60,11 @@ login. Someone who joins your worktree there runs on your logins too: see
 In a [per-person workspace](/operate/per-person-workspaces/) no person runs on anyone else's login.
 Each person's logins are written into their own home in the workspace, owned by their own Linux
 user, and kept fresh there. A joiner's processes run on the joiner's logins, and under shared
-control each turn runs on its sender's login. A start whose provider is not connected is refused
-(`Connect Claude to start a session here.`). With `sudo`, anyone working in the workspace can still
-read those files: see [What sudo means here](/operate/per-person-workspaces/#what-sudo-means-here).
+control each turn runs on its sender's login. A Claude or Codex start whose provider is not
+connected is refused before anything starts, the first launch in a new worktree included:
+`Connect Claude to start a session here. Connect it in Settings → Connected accounts, or run mend connect claude.`
+With `sudo`, anyone working in the workspace can still read those files: see
+[What sudo means here](/operate/per-person-workspaces/#what-sudo-means-here).
 
 ## Where copies go, and why they cannot break your login
 
@@ -97,7 +99,10 @@ separate login to connect. When either starts, Mend writes that login into the t
 `auth.json` in its own format, as the same copy that cannot refresh. In a per-person workspace the
 platform writes them into your home and refreshes them as it does the others. A login you make
 inside the session with `/login` is yours and is never replaced, and neither tool's login file is
-kept with the session.
+kept with the session. Neither needs a connected login to start: without a Codex account, a pi or
+opencode session starts with no ChatGPT login, and in a per-person workspace its line says so
+(`pi's ChatGPT login not written · no Codex account is connected`). Nobody else's login is written
+instead.
 
 A Claude subscription cannot be used this way: Anthropic does not allow a Claude Pro or Max login in
 third-party agents. Use an Anthropic API key with pi or opencode instead.
@@ -164,9 +169,10 @@ logins only in a worktree nobody else uses.
 ### Never saved, and not logins
 
 These are not logins either, but they belong to the machine a session ran on rather than to its
-work, and are never saved for the same reasons. A `codex` you type in a session's terminal unpacks
-its own copy of Codex and starts a background server; Codex makes them again when it next needs
-them.
+work, and are never saved for the same reasons. Codex sessions Mend starts run with Codex's
+background server off (`-c features.daemon_auto_start=false`). A `codex` you type in a session's
+terminal yourself unpacks its own copy of Codex and starts that server; Codex makes them again when
+it next needs them.
 
 | Path                         | Agent | Holds                                                       |
 | ---------------------------- | ----- | ----------------------------------------------------------- |

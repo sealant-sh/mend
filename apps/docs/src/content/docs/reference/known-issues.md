@@ -42,8 +42,9 @@ no time limit.
 ## Sessions cannot start on Ubuntu 23.10 and later until user namespaces are allowed
 
 Each workspace runs its own rootless Docker, which Ubuntu's default AppArmor setting refuses. Mend
-does not change a host's kernel settings for you: `mend server setup` and `mend doctor` say what to
-run. See
+changes the host's setting only when you say so: guided `mend server setup` asks before its first
+question, `mend server setup --allow-userns` allows it from a script, and `mend uninstall --all`
+puts it back. `mend doctor` and a refused launch name the same command. See
 [Every session fails to launch on Ubuntu](/operate/troubleshooting/#every-session-fails-to-launch-on-ubuntu).
 
 ## Projects adopted with a token in their URL
@@ -123,7 +124,7 @@ every nested directory. The default format is read back in full.
 
 ## An edited copy of Mend's old workspace note stays in the memory file
 
-Before this release, Mend's note in `~/.claude/CLAUDE.md` and `~/.codex/AGENTS.md` started at a
+Before 0.34, Mend's note in `~/.claude/CLAUDE.md` and `~/.codex/AGENTS.md` started at a
 `<!-- mend:mounts -->` line and ran to the end of the file. The first launch after the upgrade turns
 that note into the new bounded block when every line of it is exactly what Mend wrote, and keeps
 whatever follows it. If someone edited inside the old note, Mend removes none of it: the old note
@@ -138,6 +139,28 @@ holds what they produced. Run them yourself if a lockfile changed. The session s
 worktree is not in the capture; put it in Extra packages or the image. See
 [When setup commands run](/guides/workspace-images/#when-setup-commands-run).
 
+## A stop the platform makes ahead of a time limit reads "stopped outside Mend"
+
+Applies to AWS MicroVM executors, the only ones with a time limit. When Sealant stops such an
+executor itself before its runtime's deadline, the session reads `stopped outside Mend · saved at …`
+(or `· last capture … · not confirmed`), as for a stop nobody in Mend asked for. What the line says
+about the save holds; only "outside Mend" is wrong. Docker and Kubernetes executors have no time
+limit and never see this.
+
+## Cloud metadata: what the block leaves open
+
+Workspaces on Docker cannot reach the cloud metadata address (`169.254.169.254`, `fd00:ec2::254`),
+and neither can the containers their Docker service runs. The block does not cover:
+
+- the first moments of a workspace's boot, about 0.7 s, before the refusal is in place, in which
+  what the workspace runs at boot can reach the address;
+- workspaces that were already running at the upgrade, until they stop or are replaced;
+- Kubernetes and AWS MicroVM workspaces;
+- other credential endpoints (ECS's `169.254.170.2`, EKS Pod Identity's `169.254.170.23`), and image
+  builds, which run on the Docker host.
+
+See [Upgrade to 0.36](/operate/upgrade-to-0-36/#cloud-metadata-is-blocked-from-workspaces).
+
 ## A machine failure loses the last few seconds
 
 A Stop, a replacement or a resume keeps everything. So does an executor killed outright whose disk
@@ -147,9 +170,9 @@ the files go quiet, and at least every 10 seconds while they keep changing.
 
 ## opencode runs in the terminal only
 
-opencode sessions run as terminals, as pi sessions do: attach from the CLI, the web app, the desktop
-app or VS Code. The phone and Slack cannot start or steer them. opencode keeps its conversations in
-a database rather than a file. A stopped opencode session resumes on the conversation it started
+opencode sessions run as terminals, as pi sessions do: attach from the CLI, the web app or VS Code.
+The phone and Slack cannot start or steer them. opencode keeps its conversations in a database
+rather than a file. A stopped opencode session resumes on the conversation it started
 (`opencode --session <id>`), which Mend reads out of that database when the session stops, but Mend
 shows no transcript for it and cannot resume it on another harness. Two opencode sessions running at
 the same time in one worktree can leave Mend unable to tell whose a conversation is; resuming either
@@ -183,11 +206,35 @@ keeps out of what the session saves, when Mend starts opencode:
   removes them unread before it starts, and removes a link left at that file's place that leads
   anywhere else.
 
+## A Claude session has no Codex login, and a Codex session no Claude login
+
+In a per-person workspace each process gets the logins its harness needs: a Claude session your
+Claude and GitHub logins, a Codex session your Codex and GitHub logins. A `codex` your Claude agent
+runs (a Codex review, pstack's Codex seat) finds no login of yours unless a shell, pi or opencode
+process of yours in that workspace has written it, and the same goes for `claude` in a Codex
+session. Nobody's login is used for anyone else.
+
+## Claude plugins install again in every new workspace
+
+Mend installs the Claude Code plugins your settings and the repository's settings enable before
+Claude starts, and does not save `~/.claude/plugins` between workspaces yet, so each new workspace
+installs them again (every install at one launch shares 30 seconds). A plugin a repository enables
+runs in every member's Claude sessions on it, as that member, without asking. A terminal session
+names the plugins as it installs them; a conversation session writes that line only to its process's
+stderr record, which the conversation view does not show. See
+[Claude Code plugins](/guides/skills/#claude-code-plugins).
+
+## A repository added to a session has no review of its own yet
+
+A repository added with `mend repo add` is saved with the main repository's captures, and pushing
+from the workspace works. Its own chain stays at its start, so Mend cannot show its diff, take a
+checkpoint of it or land it from the review. See
+[How it is saved](/guides/repositories-in-a-session/#how-it-is-saved).
+
 ## pi runs in the terminal only
 
-pi sessions run as terminals: attach from the CLI, the web app, the desktop app or VS Code. The
-phone and Slack cannot start or steer them yet; that needs the structured mode Claude Code and Codex
-have.
+pi sessions run as terminals: attach from the CLI, the web app or VS Code. The phone and Slack
+cannot start or steer them yet; that needs the structured mode Claude Code and Codex have.
 
 ## pi packages that build native code need build tools
 
@@ -430,9 +477,11 @@ is used by the other person's `git push`.
   and where Sealant cannot bind your account to your person (an older Sealant, or a binding it
   already holds for someone else; the session says `Remote-SSH: root, Core can't bind your person`,
   and an operator clears a wrong binding in Sealant's database, as Sealant's upgrade guide says).
-- **A removed workspace SSH key ends no connection already open.** The gateway refuses the key from
-  the next connection; a Remote-SSH window connected before the removal stays connected until it
-  disconnects or the workspace stops. The platform does not record when a key was last used.
+- **A removed workspace SSH key's open connections end within a minute, not at once.** The gateway
+  refuses the key from the next connection. With the Sealant this release bundles, a Remote-SSH
+  window connected before the removal is closed within a minute; against an older Sealant it stays
+  connected until you stop your running sessions, and the removal lists them. The platform does not
+  record when a key was last used.
 - Settings edited by hand in a workspace last until it ends.
 
 ### Images

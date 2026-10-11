@@ -127,11 +127,24 @@ The base-image contract follows from that: any Linux `amd64`/`arm64` image with 
 `/bin/sh`, Node.js and npm (the harness CLIs run on the base's Node.js), and git. The build checks
 the contract and fails with a readable message when the base misses a piece.
 
+## While the image builds
+
+A launch whose image is not built yet builds it first. The session line says where it stands, as
+Sealant reports it: `queued · waiting for a worker`, `building the workspace image · step 3/12`,
+then `booting`. A first launch after an update can take many minutes. When a build stops making
+progress or runs past its limit, the session says so, with the step it was on.
+
+A session whose image build fails ends `failed`, with the build's reason, and its worktree is free
+for the next launch: no workspace ran, so there is nothing to save. A session you stop while its
+image builds reads `stopped`, and the build failing afterwards does not change that.
+
 ## Docker inside a workspace
 
-The Docker switch requests a disposable daemon scoped to that workspace. Its isolation and privilege
-model depend on the workspace runtime. Mend does not mount the host Docker socket. Compose files can
-run inside the workspace against the provided daemon.
+The **Docker service** switch, in the instance, organization and project editors alike, requests a
+disposable daemon scoped to that workspace. With it off, the image summary on a project's **Setup**
+page says `docker disabled`. Its isolation and privilege model depend on the workspace runtime. Mend
+does not mount the host Docker socket. Compose files can run inside the workspace against the
+provided daemon.
 
 Changing the switch does not retrofit a workspace that is already running or retained. Joining or
 resuming a session that reuses that workspace keeps the Docker capability it was created with. A

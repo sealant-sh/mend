@@ -20,13 +20,14 @@ Use these terms in the interface, documentation, and support material.
 | **Checkpoint**       | Current      | A hidden Git snapshot in the worktree's chain, with record positions                          |
 | **Service**          | Current      | An explicitly declared development process or forwarded port in a session                     |
 | **Secret file**      | Current      | A file a person keeps in Mend, encrypted, written into every session they own, never captured |
+| **Agent memory**     | Current      | What a person's Claude Code or Codex learned on a project, carried into their next sessions   |
 | **Context item**     | Planned      | A file, document, note, URL, or previous handoff                                              |
 | **Context pack**     | Planned      | An editable selection of context items for recurring work                                     |
 | **Context snapshot** | Planned      | The immutable context supplied to one session                                                 |
 | **Handoff**          | Planned      | An editable session summary promoted into durable context                                     |
 | **Workspace**        | Sealant      | The environment where session processes run                                                   |
 | **Run**              | Sealant      | A process execution with a durable platform record                                            |
-| **Harness**          | Sealant      | Codex, Claude Code, or another agent command that Mend supervises                             |
+| **Harness**          | Sealant      | Claude Code, Codex, opencode, pi, or another agent command that Mend supervises               |
 
 Do not call a process a session. A session can contain several agent processes over time plus
 supporting shells and Services.
@@ -35,19 +36,33 @@ Do not call a session a worktree. A worktree holds many sessions over its life, 
 at once, and it survives every one of them. Deleting a session leaves the worktree, its change, and
 its checkpoints standing; removing a worktree is its own explicit act.
 
+## Workspaces and people
+
+| Term                               | Meaning                                                                                                                                                      |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Per-person workspace**           | A workspace where each person who runs anything gets their own Linux user and home, and runs on their own logins. The default                                |
+| **Per-person home**                | One person's home in a per-person workspace: their logins, memory, secret files and deliveries, written as them                                              |
+| **Workspace that shares one home** | A workspace where every process runs as root in the home of the person who started it (`MEND_HARNESS_LAYOUT=shared`, or an image that cannot run per person) |
+| **Launcher**                       | The person whose launch started a workspace. Remote-SSH into a per-person workspace runs as them                                                             |
+| **npm mirror**, **Docker mirror**  | The read-through package and image caches beside the Mend server that sessions are pointed at                                                                |
+
+Write "per-person workspace" and "a workspace that shares one home", as the product does. A
+per-person workspace is not isolation: everyone in it has passwordless `sudo`. Do not call it
+private, sandboxed or isolated. See [Per-person workspaces](/operate/per-person-workspaces/).
+
 ## Organizations
 
-| Term               | Meaning                                                                                                                           |
-| ------------------ | --------------------------------------------------------------------------------------------------------------------------------- |
-| **Organization**   | The tenant. It owns its members, projects, folders, reference repositories and audit log. An account belongs to exactly one       |
-| **Owner**          | An organization role that also invites and removes people, changes roles and project visibility, and runs recovery                |
-| **Member**         | An organization role that works in the projects it can see                                                                        |
-| **Operator**       | An instance role that administers the machine and has no default read access to organization content                              |
-| **Invitation**     | A single-use link that adds someone to an organization. Registration is closed after the first account                            |
-| **Folder**         | A directory Mend keeps for an organization, which projects select for their sessions. It replaces host mounts                     |
-| **Private**        | A project visible to its creator only. The default                                                                                |
-| **Shared**         | A project visible to its whole organization                                                                                       |
-| **Shared control** | A session setting that lets others who can see the session steer it, spending the owner's credentials. Only the owner turns it on |
+| Term               | Meaning                                                                                                                                                                                                                                                        |
+| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Organization**   | The tenant. It owns its members, projects, folders, reference repositories and audit log. An account belongs to exactly one                                                                                                                                    |
+| **Owner**          | An organization role that also invites and removes people, changes roles and project visibility, and runs recovery                                                                                                                                             |
+| **Member**         | An organization role that works in the projects it can see                                                                                                                                                                                                     |
+| **Operator**       | An instance role that administers the machine and has no default read access to organization content                                                                                                                                                           |
+| **Invitation**     | A single-use link that adds someone to an organization. Registration is closed after the first account                                                                                                                                                         |
+| **Folder**         | A directory Mend keeps for an organization, which projects select for their sessions. It replaces host mounts                                                                                                                                                  |
+| **Private**        | A project visible to its creator only. The default                                                                                                                                                                                                             |
+| **Shared**         | A project visible to its whole organization                                                                                                                                                                                                                    |
+| **Shared control** | A session setting that lets others who can see the session send turns. In a per-person workspace each turn spends its sender's own login; in a workspace that shares one home, the owner's. Only the owner turns it on, and only the owner types in a terminal |
 
 Only a session's owner steers it unless they turn on shared control. `MEND_TENANCY` is `single` (the
 default) or `multi`; `multi` refuses to start until the multi mode gate passes. See

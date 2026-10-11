@@ -26,6 +26,12 @@ organization, or its owner:
   every launch and resume. What you or the agent write before or after it stays;
 - project configuration variables and secrets;
 - personal provider accounts and dotfiles;
+- your [secret files](/guides/secret-files/), written into your own home before the agent starts and
+  never captured, and your [pi profile](/guides/pi/) for pi sessions;
+- your [agent memory](/guides/agent-memory/) for the project: what Claude Code and Codex learned in
+  your earlier sessions on it, saved back when the agent ends;
+- other projects of the store, added to a running session with `mend repo add` (see
+  [Several repositories in one session](/guides/repositories-in-a-session/));
 - the previous process record and provider state when a session resumes.
 
 Workspaces work on their own disk, so references and folders reach them as copies laid down beside
@@ -64,9 +70,10 @@ later. That will make the question "what did this agent know?" answerable from t
 
 ## What not to assume
 
-Mend does not currently provide automatic long-term memory, hidden context selection, or a context
-library in the public product. Do not rely on those features until the UI, storage, and session
-attachment path ship.
+Mend does not currently provide hidden context selection or a context library in the public product.
+Do not rely on those features until the UI, storage, and session attachment path ship. Agent memory
+is the harness's own memory, kept per person per project; Mend carries it between sessions and does
+not choose what goes in it.
 
 For current work, keep durable instructions in the repository, select references and folders
 explicitly, keep reusable instructions as skills, and use the session record when resuming related

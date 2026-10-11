@@ -132,6 +132,13 @@ MB each are attached, the request's own images first, then the thread's, newest 
 images and 24 MB per turn. Mend names every image it skipped and why, in the turn and in a reply
 only you see.
 
+An image is written into the session's running workspace as the person who asked, as their own user
+in a [per-person workspace](/operate/per-person-workspaces/). On the capture store (the default),
+the request that starts a session attaches no image, because its workspace does not exist yet when
+the opening turn is written; the turn and your note say
+`the session has no running workspace to place it in yet`. Images in a follow-up to a running
+session are attached.
+
 A reply in the thread that does not mention `@mend` is conversation between people and never reaches
 the agent.
 

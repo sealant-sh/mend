@@ -64,8 +64,14 @@ control) and `public` for the third. Mend reports what it observes beside what y
 not decide whether the mini is fit to expose. Read [Exposure](/operate/exposure/).
 
 Plain `http://` on a LAN sends the token and everything you type across that network unencrypted.
-Prefer a tailnet. The extension says so before you sign in to a plain-http server on another
-machine.
+Prefer a tailnet. The extension says so when you sign in to a plain-http server on another machine
+(`Plain http: anyone on this local network can read the token.`). It says nothing for a tailnet
+address (`100.x.y.z`) or a `.ts.net` name; a bare MagicDNS name such as `mac-mini` reads to it as a
+local name and gets the warning.
+
+Run on a terminal with no flags, `mend server setup` asks these choices one at a time (who reaches
+this Mend, whether VS Code Remote-SSH reaches it from other machines) and prints the same command
+with flags before it applies.
 
 Whatever you choose, the laptop must use **exactly** the URL given to `--url`, or one named with
 `--origin`. The browser's sign-in approval is a request from that origin; any other name for the
@@ -179,13 +185,22 @@ nc -vz mac-mini 2222                        # succeeded
 Install Microsoft's **Remote - SSH** extension, then **Mend by Sealant** (`sealant-sh.mend`) from
 the Extensions view (see [VS Code extension](/clients/vscode/#install)). Run **Mend: Connect to
 server** and enter the URL exactly as setup was given it. Choose **Sign in with the browser**. VS
-Code shows a code; the browser opens `http://mac-mini:3105/authorize`, signed in as you. Approve
-when it shows the same code. The extension keeps its token in VS Code's secret storage (encrypted in
-VS Code's own storage, with the key in the macOS Keychain), and lists itself under Settings →
-Devices as `VS Code on <laptop>`.
+Code shows the link and a code, with **Copy link** and **Paste a device token instead**, and keeps
+the code in the status bar (`Mend sign-in · <code>`) until you approve. The browser opens
+`http://mac-mini:3105/authorize`, signed in as you, and asks **Authorize VS Code?**. Approve when it
+shows the same code. If the browser did not open (VS Code's "open the external website?" dialog can
+sit behind other windows), use **Copy link**. The extension keeps its token in VS Code's secret
+storage (encrypted in VS Code's own storage, with the key in the macOS Keychain), and lists itself
+under Settings → Devices as `VS Code on <laptop>`.
 
 If you already ran `mend login --url http://mac-mini:3105` on the laptop, the extension uses that
-sign-in and there is nothing to do.
+sign-in and there is nothing to do. Run over SSH (or on Linux with no display), `mend login` prints
+the link and the code and opens no browser; open the link on any machine where you are signed in to
+Mend. `--open` and `--no-open` decide outright.
+
+Sign-in does not depend on the two machines' clocks agreeing: the wait is timed from the server's
+answer. A Docker VM that slept with the mini can run hours behind; `mend doctor` names the
+difference (see [Troubleshooting](#troubleshooting)).
 
 The Mend view now lists your projects and sessions. It follows the server's event stream: a session
 started from the phone or a terminal appears without a refresh.

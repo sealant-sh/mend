@@ -17,7 +17,11 @@ You need:
 - a working Mend login;
 - an adopted project;
 - the provider CLI installed in the selected workspace image;
-- a connected provider account, or a harness that can complete its own login flow.
+- for `mend claude` or `mend codex`, that provider connected
+  ([Connect provider accounts](/guides/provider-accounts/)): in a
+  [per-person workspace](/operate/per-person-workspaces/), the default, a launch without it is
+  refused before it starts. pi and opencode run on your connected Codex (ChatGPT) login, or on a
+  login made inside the session.
 
 Check the local setup:
 
@@ -39,8 +43,13 @@ Use another harness or command:
 ```sh
 mend claude
 mend opencode
-mend run -- bash -i
+mend pi
+mend run -- pnpm test
 ```
+
+`mend run` runs any command as a session, prints its output and exits with its exit code. A shell
+with no script and no `-c` is refused there, since an attached `mend run` sends no keys; open one
+with `mend shell` instead.
 
 If no adopted project matches but the current directory is a Git checkout with a network `origin`, a
 harness launch adopts that origin URL first; the server clones it and never receives your local
@@ -67,15 +76,15 @@ for the worktree's name first (enter accepts an automatic one); `--name` answers
 Common options:
 
 ```sh
-mend codex "Fix the failing test" --model gpt-5.5 --effort high --base main
+mend codex "Fix the failing test" --model gpt-6-astra --effort high --base main
 mend claude "Inspect the API boundary" --ask
 ```
 
 The server owns the model list. `mend models` prints it per harness, with the model a launch runs
 when `--model` is not given marked `default`, and the efforts each model takes. The phone, the web
-app, the desktop and VS Code offer the same list and preselect the same default, so a session
-started from any of them runs on the model you see. Every session records the model and effort it
-was started with; `mend sessions`, the session page and the phone's session header show them.
+app and VS Code offer the same list and preselect the same default, so a session started from any of
+them runs on the model you see. Every session records the model and effort it was started with;
+`mend sessions`, the session page and the phone's session header show them.
 
 ```sh
 mend models
@@ -86,8 +95,10 @@ level the model does not take becomes the highest it does. Without `--effort` th
 own default.
 
 Mend normally disables the harness's approval prompts because the workspace is the execution
-boundary. `--ask` restores provider prompts. `--fast` requests Codex priority processing. OpenCode
-takes `--model` and `--ask`, and ignores effort and speed.
+boundary. `--ask` restores provider prompts. A conversation session started with approvals on keeps
+them when it is resumed or followed up. `--fast` requests Codex priority processing. opencode takes
+`--model` and `--ask`, and ignores effort and speed. pi takes `--model`, and `--effort` as its
+thinking level; it has no approval prompts, so `--ask` changes nothing there.
 
 Press `Ctrl+V` with an image on your clipboard to send the image to the session and paste its path;
 Codex and Claude read it. This needs `wl-paste` on Wayland or `xclip` on X11, and nothing extra on
@@ -148,8 +159,8 @@ Press:
 Ctrl+]
 ```
 
-The CLI closes its attachment and leaves the agent running. A browser or desktop client can attach
-to the same session while the terminal is detached.
+The CLI closes its attachment and leaves the agent running. The web app or VS Code can attach to the
+same session while the terminal is detached.
 
 Sessions run in the background by default: closing the terminal window or losing the connection also
 leaves the session running. Launch with `--detach` to skip attaching entirely, and stop explicitly
@@ -238,11 +249,11 @@ A resumed agent is another process in the same Mend session. Its Sealant run has
 sequence, while Mend preserves the ordered process and run membership.
 
 A conversation session (started from Slack, or from the web or phone composer) waits between turns
-with its workspace up. After 15 idle minutes (no turn running, nothing waiting on you, no Service or
-open shell) Mend stops it the way Stop does, and it reads
-`idle · stopped after 15 min · reply to resume`. Send the next message, or resume it, to go on in
-the same conversation. The operator sets the minutes with `MEND_PROTOCOL_IDLE_STOP_MINUTES` (`0`
-turns the stop off).
+with its workspace up. After 15 idle minutes (no turn running, no workflow or background task the
+agent reported still running, nothing waiting on you, no Service or open shell) Mend stops it the
+way Stop does, and it reads `idle · stopped after 15 min · reply to resume`. Send the next message,
+or resume it, to go on in the same conversation. The operator sets the minutes with
+`MEND_PROTOCOL_IDLE_STOP_MINUTES` (`0` turns the stop off).
 
 ## What happens to your files
 
@@ -257,15 +268,18 @@ installed by hand, `/tmp`, and writes inside organization folders, which arrive 
 a session removes only the conversation record; the worktree, its change, and its checkpoints
 remain. Removing the worktree is its own explicit act, and it deletes uncommitted changes with it.
 It is refused while any session is live, and refused again while the change is not on origin, naming
-the files and line counts that are not landed.
+the files and line counts that are not landed, or while a session in it holds a
+[repository added with `mend repo add`](/guides/repositories-in-a-session/). Land the change, or
+remove it anyway: **Remove anyway** in the web app, `mend worktrees rm <name> --force` in the
+terminal.
 
 Read [How Mend works](/concepts/how-mend-works/#where-uncommitted-files-live) for the full boundary.
 
 ## Review and land
 
-The dashboard's `v`, the web app, and the desktop app show the worktree's change against its base
-with the record beside it. Comments you send go back to the same session. Read
-[Review a change](/guides/review-a-change/).
+The dashboard's `v`, the web app and the phone show the worktree's change against its base with the
+record beside it; VS Code's **Mend: Review change** opens it in the web app. Comments you send go
+back to the same session. Read [Review a change](/guides/review-a-change/).
 
 Landing pushes the change to origin and opens its pull request. Run `mend land <session>`, or launch
 with `--land` so Mend lands after each turn that asked for a change; `--no-land` keeps one session
@@ -275,7 +289,7 @@ the phone. Read [Land a change](/guides/land-a-change/).
 
 ## See sessions from any client
 
-The CLI, browser, desktop app, and phone connect to the same Mend server. They do not create
+The CLI, the web app, VS Code and the phone connect to the same Mend server. They do not create
 separate copies of the session.
 
 Read [Work from another device](/guides/remote-access/) for pairing and reattachment.

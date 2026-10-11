@@ -1,7 +1,6 @@
 ---
 title: Install Mend
-description:
-  Install the CLI, then set up a three-container Mend server by answering a few questions.
+description: Install the CLI, then set up a Mend server by answering a few questions.
 sidebar:
   order: 2
 ---
@@ -23,12 +22,18 @@ Install the CLI on each device. Set up the server on the machine that will keep 
 - Node.js 22.13 or newer for the CLI. The TUI, the dashboard `mend` opens in a terminal, requires
   Node.js 26 or newer.
 - For the server, a local Docker daemon with client/server API 1.45 or newer and Docker Compose v2.
-- Disk space for repositories, session captures, images, databases, and backups.
+- Disk space for repositories, session captures, images, databases, and backups. The two mirrors
+  setup runs beside Mend take up to 30 GiB more by default (npm 10g, Docker Hub 20g), and each
+  leaves 5 GiB free on its disk.
 - For access from another device, a network path you choose: a private network you control admission
   to, or a TLS edge in front of Mend. Read [Exposure](/operate/exposure/).
 
-Docker Desktop and OrbStack must pass the same capability checks as Docker Engine. Physical macOS
-and installed VS Code acceptance are recorded separately in the
+Docker Desktop and OrbStack must pass the same capability checks as Docker Engine. On a machine with
+more than one Docker engine (Docker Desktop and OrbStack on one Mac), `--context <name>` (or
+`DOCKER_CONTEXT`) picks the engine; without either, a fresh install on a terminal asks which one,
+and an existing install stays on the context its data is on. For a Mac mini serving laptops, read
+[Mac mini and VS Code](/operate/mac-mini-vscode/). Physical macOS and installed VS Code acceptance
+are recorded separately in the
 [validation checklist](https://github.com/sealant-sh/mend/blob/main/docs/MACOS-VALIDATION.md). Linux
 checks are not evidence that MacBook-to-Mac-Mini operation has been verified.
 
@@ -59,6 +64,11 @@ the answer in brackets.
   it uses and asks nothing. A context on another machine (SSH or TCP) is listed, not offered: Mend
   runs in a Docker engine on this machine. `--context <name>` or `DOCKER_CONTEXT` answers it for
   you.
+- **Allow user namespaces?** Asked next, only on a Docker host whose kernel refuses unprivileged
+  user namespaces (Ubuntu 23.10 and later, 24.04 LTS included), where no session can start:
+  `Allow them now? [Y/n]`. A yes writes `/etc/sysctl.d/60-mend-rootless-docker.conf`, marked so
+  `mend uninstall --all` removes it again; `--allow-userns` answers for a script. See
+  [Every session fails to launch on Ubuntu](/operate/troubleshooting/#every-session-fails-to-launch-on-ubuntu).
 - **How will people reach this Mend?** Just this machine, your private network or Tailscale, or the
   public internet with HTTPS.
 - For **Tailscale**, setup reads `tailscale status` and offers this machine's MagicDNS name and
@@ -70,7 +80,8 @@ the answer in brackets.
   has no private address, setup says so and installs on this machine; join it to a tailnet, or
   choose public HTTPS.
 - For **public HTTPS**, it asks for your domain, then says where the domain resolves from this
-  machine and whether something already listens on ports 80 and 443.
+  machine and whether something already listens on ports 80 and 443. When the domain does not
+  resolve from this machine, Enter at `Apply?` changes nothing, and setup says why.
 - For a private network or public HTTPS, it asks whether VS Code Remote-SSH should reach sessions
   from other machines, and where workspace SSH is published. On a public install it also asks
   whether you checked who can reach that port.
@@ -79,8 +90,10 @@ the answer in brackets.
 
 Setup never asks which address to bind: that follows from your answers. Each line that starts with
 `Observed:` is something setup looked at on this machine, not a judgment about who can reach it.
-Setup ends with what it will do and the same command with flags, and changes nothing until you say
-yes:
+Before anything is pulled, setup checks that Mend's web and SSH ports are free where they are to be
+published. When one is taken it says what holds it (`another Mend, 0.27.4, answers there`, or
+something else) and offers the next free port. Setup ends with what it will do and the same command
+with flags, and changes nothing until you say yes:
 
 ```text
 Setup will install:
@@ -155,7 +168,7 @@ On a private install the same question says where T3 Code reaches the gateway: o
 web port is published on, such as `http://mend-box.tail1234.ts.net:3120` over Tailscale, with no
 tunnel.
 
-At idle, three product containers run:
+At idle, five product containers run:
 
 - The complete Mend application, including its pinned Sealant API/worker/SSH runtime. Sealant's job
   queue runs in Postgres; workspace images are built and launched in the host Docker Engine through
@@ -163,6 +176,11 @@ At idle, three product containers run:
 - Official Postgres, with separate Mend and Sealant databases and users.
 - Garage, an S3-compatible object store that holds every session's captures: the worktree files and
   harness state that workspaces upload as they work.
+- The [npm mirror](/operate/npm-mirror/) and the [Docker mirror](/operate/docker-mirror/), caches
+  that sessions download packages and Docker Hub images through. Neither publishes a host port;
+  `--no-npm-mirror` and `--no-docker-mirror` turn them off.
+
+With `--edge`, a sixth runs: Caddy, the TLS edge.
 
 You manage the Mend version. There is no separate Sealant installation or version choice for this
 Docker setup. Session workspaces may create additional containers. Repositories, session captures,
@@ -175,7 +193,11 @@ and `mend help server setup` lists every flag. On an existing install, each flag
 it names and setup keeps the rest, so `mend server setup --t3-gateway` turns the gateway on and
 leaves everything else as it was. Setup prints `This run changes:` and one line per change before it
 applies. `--declare <item>` adds a statement to the saved ones, `--undeclare <item>` takes one back,
-and `--declare none` clears them all.
+and `--declare none` clears them all. A rerun with `--port` moves a saved plain-http `--url` that
+names the old port to the new one; an `https` URL, or one whose port is implicit, stays as it was. A
+web or SSH port that something else holds is refused with flags, naming `--port` or `--ssh-port`.
+After starting, setup waits for health from the server it started, by version and instance id, so
+another Mend answering on the same port is said as one.
 
 With no terminal and no flags, setup refuses a fresh install instead of guessing how the server is
 reached, and names the flags that say it. `mend server setup --yes` takes the defaults: this machine
@@ -271,8 +293,9 @@ mend server start
 mend server restart
 ```
 
-Stop stops Mend, Postgres, and Garage without deleting volumes. Restart restarts Mend and keeps
-Postgres and Garage running. These operations interrupt connections; workspace containers remain.
+Stop stops the installation's containers (Mend, Postgres, Garage, the mirrors, and the edge when
+there is one) without deleting volumes. Restart restarts Mend and keeps the others running. These
+operations interrupt connections; workspace containers remain.
 
 Setup reruns preserve the server pin, secrets, and data. Updating the CLI does not upgrade the
 server. To change the server, explicitly choose a published version:
@@ -316,24 +339,25 @@ installer is not an automatic migration path into this volume-backed deployment.
 mend uninstall
 ```
 
-Choose everything, the server only, or this machine's files only. The plan is printed before
-anything is removed; taking the server down deletes its volumes (repositories, the `mend-garage`
-session captures, the database) and asks for the word `delete`. Data volumes go only when they carry
-this installation's identity label. Live sessions are listed in the plan; uninstall stops their
-workspaces and removes them with their volumes and networks. If Docker is stopped, nothing is
-removed.
+Choose everything, the server only, or this machine's files only (`--all`, `--server`, `--home`).
+While another server command holds the server lock, uninstall refuses with the lock's words. The
+plan is printed before anything is removed; taking the server down deletes its volumes
+(repositories, the `mend-garage` session captures, the database) and asks for the word `delete`.
+Data volumes go only when they carry this installation's identity label. Live sessions are listed in
+the plan; uninstall stops their workspaces and removes them with their volumes and networks. If
+Docker is stopped, nothing is removed.
 
 In `~/.ssh/config`, uninstall removes only the blocks `mend ssh setup` wrote for the server it
 removes and the one this machine is signed in to. Other servers' blocks stay. So does the unscoped
 `Host mend-ws` block an older release wrote, because nothing in it says which server it is for:
 uninstall names it and how to delete it by hand.
 
-If Docker refuses to remove something, uninstall names it and keeps the `mend-store` volume and the
-identity, so running `mend uninstall` again finishes the job, and `mend server setup` can reinstall
-over it. Everything also offers Mend's images (the metadata guard's busybox among them), the
-user-namespace sysctl file setup wrote, and, in its own question, Docker's build cache. When an
-uninstall stops before those, it says each one was "not reached", and the next run removes them. The
-CLI stays until `npm uninstall -g @sealant/mend`.
+If Docker refuses to remove something, uninstall names it, writes it to `uninstall-left.json`, and
+keeps the `mend-store` volume and the identity, so running `mend uninstall` again finishes the job,
+and `mend server setup` can reinstall over it. Everything also offers Mend's images (the metadata
+guard's busybox among them), the user-namespace sysctl file setup wrote, and, in its own question,
+Docker's build cache. When an uninstall stops before those, it says each one was "not reached", and
+the next run removes them. The CLI stays until `npm uninstall -g @sealant/mend`.
 
 ## Next steps
 

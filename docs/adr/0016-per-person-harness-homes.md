@@ -756,9 +756,9 @@ read it. Known issues says so. sealantd scrubbing those tables from captures is 
   minutes, then again at the executor's next process start; while Core has not taken it the session
   line says `Remote-SSH unavailable · …`, and nothing else waits on it. The gateway runs a session
   as a user only on a sealantd that reports `exec.user`, and the API names the user only to a
-  gateway that says it runs sessions as one. SFTP is refused for such a workspace: sealantd's
-  `openSftp` takes a user from sealantd#155, and Core passes it once it pins that sealantd
-  (Follow-ups).
+  gateway that says it runs sessions as one. SFTP and `scp` run as the same user: sealantd's
+  `openSftp` takes a user (sealantd#155), and the Sealant 0.39 that Mend pins passes it
+  (sealant#352).
 - **Anything else** (`docker exec`, a custom image's own entrypoint work) runs as root, which is no
   person: `/root` holds no login and no Mend token, and nothing written under `/root` is saved.
 
@@ -1106,8 +1106,6 @@ exceed `shared`'s by at most 2 per 10 resumes, and it may not reinstall at every
 - **Provider session ids pinned at launch** (Claude and pi `--session-id`).
 - **Claiming uncredited memory** from before 0.36.
 - **sealantd scrubbing opencode's login tables.**
-- **An SFTP bridge as the workspace's user:** sealantd#155 adds `openSftp { user }`; Core passes the
-  workspace's SSH user once it pins that sealantd, and stops refusing SFTP there.
 
 ## Delivery
 
