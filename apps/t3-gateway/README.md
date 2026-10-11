@@ -426,7 +426,29 @@ itself stops the queue, held or not: an archived thread's queue never sends or l
 archive whose hold the state file refuses is refused. The session in Mend is not touched, and other
 clients of Mend and other people see it as before.
 
-## Phase 3: the terminal
+## Phase 3: settle and snooze
+
+t3code shows Settle and Snooze in a thread's menu only for an environment that says it understands
+them (`threadSettlement` and `threadSnooze` in the descriptor's capabilities). Mend has neither, so
+they are the person's own view, kept by the gateway the way the archive is (`thread_lifecycles` in
+the state file, `src/lifecycle.ts`), and the session in Mend is not touched.
+
+- `thread.settle` sets the thread's `settledOverride` to `settled`, `thread.unsettle` to `active`,
+  with `settledAt` and `unsettledAt`. A settle is refused while a turn runs, a message waits in the
+  queue or a request is open, as t3code's own server refuses it.
+- `thread.snooze` sets `snoozedUntil` and `snoozedAt`; `thread.unsnooze` clears them. A snooze ends
+  in the future, and is refused while a request is open or a message waits to be sent. A running
+  thread can be snoozed.
+- A turn opened, or a message queued, after a settle or a snooze ends both, as a new run does on
+  t3code's own server; the state file lets go of them too.
+- t3code's client decides when a snooze has woken, from the shell (`threadSettled.ts` in its client
+  runtime, vendored in `@mend/t3-contracts/thread-settled`): at `snoozedUntil`, or earlier on a
+  pending approval or question, a turn that failed after the snooze, or one that completed after it.
+  The gateway keeps the snooze as set and projects what that reads, so the thread shows as woken. A
+  mark is stamped no earlier than Mend's latest time on the thread, so a Mend clock ahead of the
+  gateway's does not wake it at once.
+- Each is per person: settling or snoozing a shared thread changes nothing for anyone else. An
+  archived thread is neither settled nor snoozed until it is unarchived.
 
 t3code's terminal drawer opens Mend's own terminal (`src/terminals.ts`): a shell Mend opens beside
 the agent in the session's live workspace (`POST /api/sessions/:id/shell`), reached over Mend's

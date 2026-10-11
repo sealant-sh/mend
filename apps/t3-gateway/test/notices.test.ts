@@ -8,6 +8,7 @@ import {
 } from "@mend/t3-contracts";
 import * as Effect from "effect/Effect";
 
+import { NO_LIFECYCLE } from "../src/lifecycle.ts";
 import type {
   MendActiveSession,
   MendConversationWait,
@@ -160,6 +161,7 @@ const sourceWith = (notices: ThreadNotices): ThreadSource => ({
   sharedWorktree: false,
   nextMode: null,
   archivedAt: null,
+  lifecycle: NO_LIFECYCLE,
   project,
   session,
   agent,

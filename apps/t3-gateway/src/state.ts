@@ -111,6 +111,21 @@ export interface ImagePlacement {
   readonly path: string;
 }
 
+/**
+ * A person's settle and snooze of a thread (`thread.settle`, `thread.snooze`), as t3code keeps
+ * them on its own threads: ISO times, null where unset. Mend has neither, so it is the person's
+ * view alone.
+ */
+export interface ThreadLifecycle {
+  /** `settled` after a settle, `active` after an unsettle; null for neither. */
+  readonly settledOverride: "settled" | "active" | null;
+  readonly settledAt: string | null;
+  readonly unsettledAt: string | null;
+  /** When the snooze ends; null while the thread is not snoozed. */
+  readonly snoozedUntil: string | null;
+  readonly snoozedAt: string | null;
+}
+
 /** An image as a sent message carried it: the selection and the path its turn named. */
 export interface SentImage {
   readonly imageId: string;
@@ -285,6 +300,16 @@ export class GatewayState extends Context.Service<
     readonly listArchived: (
       mendUserId: string,
     ) => Effect.Effect<ReadonlyMap<string, string>, GatewayStateError>;
+    /** Keeps a person's settle and snooze of a thread, or, for null, lets go of both. */
+    readonly setLifecycle: (
+      mendUserId: string,
+      sessionId: string,
+      lifecycle: ThreadLifecycle | null,
+    ) => Effect.Effect<void, GatewayStateError>;
+    /** Session id → the person's settle and snooze of its thread. */
+    readonly listLifecycles: (
+      mendUserId: string,
+    ) => Effect.Effect<ReadonlyMap<string, ThreadLifecycle>, GatewayStateError>;
     /** Every bearer neither revoked nor expired at `now`: what a start checks with Mend. */
     readonly liveSessions: (
       now: number,
@@ -313,6 +338,8 @@ export class GatewayState extends Context.Service<
  * (migration 7), and a kept message names its images by id. `next_modes` keeps the permission mode
  * a person chose for a session's next launch (migration 8). `archived_threads` keeps the threads
  * a person archived in t3code (migration 9): Mend has no archive, so it is the person's view alone.
+ * `thread_lifecycles` keeps the threads a person settled or snoozed in t3code (migration 10), the
+ * same way.
  */
 const MIGRATIONS: ReadonlyArray<string> = [
   `
@@ -462,6 +489,18 @@ const MIGRATIONS: ReadonlyArray<string> = [
     PRIMARY KEY (mend_user_id, mend_session_id)
   );
   `,
+  `
+  CREATE TABLE thread_lifecycles (
+    mend_user_id TEXT NOT NULL,
+    mend_session_id TEXT NOT NULL,
+    settled_override TEXT,
+    settled_at TEXT,
+    unsettled_at TEXT,
+    snoozed_until TEXT,
+    snoozed_at TEXT,
+    PRIMARY KEY (mend_user_id, mend_session_id)
+  );
+  `,
 ];
 
 /** The gateway's sequence high-water mark in `meta` (`reserveSequences`). */
@@ -545,6 +584,15 @@ const ModeRow = Schema.Struct({
 const decodeModeRows = Schema.decodeUnknownEffect(Schema.Array(ModeRow));
 const ArchivedRow = Schema.Struct({ mend_session_id: Schema.String, archived_at: Schema.String });
 const decodeArchivedRows = Schema.decodeUnknownEffect(Schema.Array(ArchivedRow));
+const LifecycleRow = Schema.Struct({
+  mend_session_id: Schema.String,
+  settled_override: Schema.NullOr(Schema.Literals(["settled", "active"])),
+  settled_at: Schema.NullOr(Schema.String),
+  unsettled_at: Schema.NullOr(Schema.String),
+  snoozed_until: Schema.NullOr(Schema.String),
+  snoozed_at: Schema.NullOr(Schema.String),
+});
+const decodeLifecycleRows = Schema.decodeUnknownEffect(Schema.Array(LifecycleRow));
 const ImageBytesRow = Schema.Struct({ ...ImageRow.fields, bytes: Schema.Uint8Array });
 const decodeImageBytesRow = Schema.decodeUnknownEffect(ImageBytesRow);
 const storedImageOf = (row: typeof ImageRow.Type): StoredImage => ({
@@ -1183,6 +1231,65 @@ export const openGatewayState = (
         ),
       );
 
+    const setLifecycle = (
+      mendUserId: string,
+      sessionId: string,
+      lifecycle: ThreadLifecycle | null,
+    ) =>
+      run("setLifecycle", () => {
+        if (lifecycle === null) {
+          database
+            .prepare("DELETE FROM thread_lifecycles WHERE mend_user_id = ? AND mend_session_id = ?")
+            .run(mendUserId, sessionId);
+          return;
+        }
+        database
+          .prepare(
+            `INSERT OR REPLACE INTO thread_lifecycles
+              (mend_user_id, mend_session_id, settled_override, settled_at, unsettled_at, snoozed_until, snoozed_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          )
+          .run(
+            mendUserId,
+            sessionId,
+            lifecycle.settledOverride,
+            lifecycle.settledAt,
+            lifecycle.unsettledAt,
+            lifecycle.snoozedUntil,
+            lifecycle.snoozedAt,
+          );
+      });
+
+    const listLifecycles = (mendUserId: string) =>
+      run("listLifecycles", () =>
+        database
+          .prepare(
+            `SELECT mend_session_id, settled_override, settled_at, unsettled_at, snoozed_until, snoozed_at
+              FROM thread_lifecycles WHERE mend_user_id = ?`,
+          )
+          .all(mendUserId),
+      ).pipe(
+        Effect.flatMap(decoded("listLifecycles", decodeLifecycleRows)),
+        Effect.map(
+          (rows): ReadonlyMap<string, ThreadLifecycle> =>
+            new Map(
+              rows.map(
+                (row) =>
+                  [
+                    row.mend_session_id,
+                    {
+                      settledOverride: row.settled_override,
+                      settledAt: row.settled_at,
+                      unsettledAt: row.unsettled_at,
+                      snoozedUntil: row.snoozed_until,
+                      snoozedAt: row.snoozed_at,
+                    },
+                  ] as const,
+              ),
+            ),
+        ),
+      );
+
     const liveSessions = (now: number) =>
       run("liveSessions", () =>
         database
@@ -1238,6 +1345,8 @@ export const openGatewayState = (
       listNextModes,
       setArchived,
       listArchived,
+      setLifecycle,
+      listLifecycles,
       liveSessions,
       peopleWithQueuedMessages,
     };

@@ -136,8 +136,8 @@ vendored group.
   Slack runner does (`apps/api/src/slack-runner.ts:1553`), and names no permission mode. Mend reuses
   the mode its last protocol agent recorded (the resume fix below), so an `ask` session stays `ask`.
   Neither the Slack runner nor the gateway carries the mode itself.
-- **State.** Thread and message id maps, the persisted queue and archive flags live in a
-  `node:sqlite` file the gateway owns. No Mend migration.
+- **State.** Thread and message id maps, the persisted queue, and each person's archive, settle and
+  snooze flags live in a `node:sqlite` file the gateway owns. No Mend migration.
 - **Projection.** One Mend SSE stream per paired person feeds an entity builder. The gateway diffs
   entities, stamps its own sequence, and sends a fresh snapshot after a restart or on removals.
 - **Steering rules are Mend's.** A session the person cannot steer appears read-only: commands are
@@ -202,8 +202,8 @@ t3code-shaped `https://<gateway>/pair#token=<code>` and a QR code for mobile. Th
 - Mend core is untouched through phase 2. Phase 3 adds two read endpoints.
 - Mid-turn steering, per-turn model changes, rollback and fork are off in t3code because Mend has no
   equivalent; the capability flags say so instead of failing.
-- The gateway owns a second, small state file. Losing it loses only queued messages, archive flags
-  and t3code-side ids; Mend's records are unaffected.
+- The gateway owns a second, small state file. Losing it loses only queued messages, archive, settle
+  and snooze flags and t3code-side ids; Mend's records are unaffected.
 - Following t3code costs a pin bump per nightly we choose to support, guarded by the drift job and
   the client-runtime tests.
 - Only `v0.0.46`-and-later clients connect until t3code ships protocol 2 as stable.

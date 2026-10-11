@@ -8,6 +8,12 @@ export const SOURCES: ReadonlyArray<{ readonly upstream: string; readonly local:
   { upstream: "packages/contracts/src", local: "src" },
   // The default keybindings live beside the shared helpers that compile them.
   { upstream: "packages/shared/src/keybindings.ts", local: "shared/keybindings.ts" },
+  // The client's own reading of a thread's settle and snooze, which the gateway's tests hold its
+  // shell to.
+  {
+    upstream: "packages/client-runtime/src/state/threadSettled.ts",
+    local: "shared/threadSettled.ts",
+  },
   { upstream: "LICENSE", local: "LICENSE" },
 ];
 

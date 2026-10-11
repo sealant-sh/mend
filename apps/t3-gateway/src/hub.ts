@@ -49,6 +49,13 @@ import {
   turnInputOf,
 } from "./images.ts";
 import {
+  changeLifecycle,
+  isLifecycleEmpty,
+  lifecycleOf,
+  sameLifecycle,
+  type LifecycleChange,
+} from "./lifecycle.ts";
+import {
   MendClient,
   MendCommandRefused,
   MendDeviceRefused,
@@ -100,6 +107,7 @@ import {
   type SentImage,
   type StoredImage,
   type ThreadLaunchOptions,
+  type ThreadLifecycle,
   type TurnIds,
 } from "./state.ts";
 import { makeTerminals, type Terminals } from "./terminals.ts";
@@ -402,6 +410,15 @@ export interface ThreadCommands {
   readonly setArchived: (input: {
     readonly threadId: string;
     readonly archived: boolean;
+  }) => Effect.Effect<number, ThreadCommandFailure>;
+  /**
+   * Settles or unsettles the thread in the person's view, or snoozes it until a time or wakes it
+   * (`thread.settle`, `thread.unsettle`, `thread.snooze`, `thread.unsnooze`; `lifecycle.ts`). Mend
+   * has neither: the session is not touched.
+   */
+  readonly setLifecycle: (input: {
+    readonly threadId: string;
+    readonly change: LifecycleChange;
   }) => Effect.Effect<number, ThreadCommandFailure>;
 }
 
@@ -1003,6 +1020,53 @@ export const makePersonHub = (input: {
             ),
           ),
     );
+    /** Session id → the person's settle and snooze of its thread (`thread_lifecycles`), as kept. */
+    const lifecycles = new Map<string, ThreadLifecycle>(
+      keeper === null
+        ? []
+        : yield* state.listLifecycles(keeper.id).pipe(
+            Effect.catch((error) =>
+              Effect.logError("t3 gateway could not read its settled and snoozed threads", {
+                cause: error.message,
+              }).pipe(Effect.as(new Map<string, ThreadLifecycle>())),
+            ),
+          ),
+    );
+    /**
+     * Keeps each settle and snooze as it stands now: one a later turn or message ended is let go of
+     * in the state file too, so it never comes back when that message leaves the queue's history.
+     * Kept in memory until written, and tried again on the next read.
+     */
+    const settleLifecycles = Effect.suspend(() => {
+      if (keeper === null || lifecycles.size === 0) return Effect.void;
+      return Effect.forEach(
+        Array.from(lifecycles),
+        ([sessionId, kept]) => {
+          const now = lifecycleOf(kept, {
+            turns: conversations.get(sessionId)?.turns ?? [],
+            pending: (queues.get(sessionId)?.entries ?? []).map((queued) => ({
+              state: Queueing.pendingStateOf(queued),
+              requestedAt: queued.requestedAt,
+            })),
+          });
+          if (sameLifecycle(kept, now)) return Effect.void;
+          return state.setLifecycle(keeper.id, sessionId, isLifecycleEmpty(now) ? null : now).pipe(
+            Effect.tap(() =>
+              Effect.sync(() => {
+                if (isLifecycleEmpty(now)) lifecycles.delete(sessionId);
+                else lifecycles.set(sessionId, now);
+              }),
+            ),
+            Effect.catch((error) =>
+              Effect.logWarning("t3 gateway could not let go of a settle or a snooze", {
+                cause: error.message,
+              }),
+            ),
+          );
+        },
+        { discard: true },
+      );
+    });
     /** Lets go of each chosen mode once a live agent runs with it: the next start applied it. */
     const settleNextModes = Effect.suspend(() =>
       Effect.forEach(
@@ -1176,6 +1240,15 @@ export const makePersonHub = (input: {
           const conversation = conversations.get(session.id) ?? EMPTY_CONVERSATION;
           const ids = turnIds.get(session.id);
           const queue = queues.get(session.id);
+          const pending = (queue?.entries ?? []).map((queued) => ({
+            runId: queued.runId,
+            messageId: queued.messageId,
+            text: queued.text,
+            images: imagesOfIds(queued.imageIds),
+            requestedAt: queued.requestedAt,
+            state: Queueing.pendingStateOf(queued),
+            error: queued.error,
+          }));
           sources.push({
             threadId: ThreadId.make(thread?.threadId ?? session.id),
             project: entry.project,
@@ -1188,20 +1261,16 @@ export const makePersonHub = (input: {
             messageIds: ids?.messageIds ?? NO_IDS,
             imagesOf: imagesOfMessage,
             archivedAt: archived.get(session.id) ?? null,
+            lifecycle: lifecycleOf(lifecycles.get(session.id), {
+              turns: conversation.turns,
+              pending,
+            }),
             nextMode: (() => {
               const next = nextModes.get(session.id);
               return next === undefined || next === modeOf(agent) ? null : next;
             })(),
             ...turnCheckpointsOf(session.id, conversation.turns),
-            pending: (queue?.entries ?? []).map((queued) => ({
-              runId: queued.runId,
-              messageId: queued.messageId,
-              text: queued.text,
-              images: imagesOfIds(queued.imageIds),
-              requestedAt: queued.requestedAt,
-              state: Queueing.pendingStateOf(queued),
-              error: queued.error,
-            })),
+            pending,
             queueHeld: queue?.held ?? false,
             notices: threadNoticesOf({
               livePeople: active.get(session.id)?.livePeople ?? [],
@@ -1498,6 +1567,7 @@ export const makePersonHub = (input: {
     });
     const publishAll = Effect.suspend(() => settleQueues).pipe(
       Effect.andThen(settleNextModes),
+      Effect.andThen(settleLifecycles),
       Effect.andThen(keepQueues),
       Effect.andThen(publishShell),
       Effect.andThen(publishThreads),
@@ -3106,6 +3176,51 @@ export const makePersonHub = (input: {
         );
       });
 
+    const setLifecycle: ThreadCommands["setLifecycle"] = (command) =>
+      Effect.gen(function* () {
+        yield* ensureLoaded;
+        if (keeper === null) {
+          return yield* refused("A settle or a snooze needs a paired person to keep it for.");
+        }
+        const sessionId = sessionIdOf(command.threadId);
+        return yield* locked(
+          Effect.gen(function* () {
+            const source = sourceOf(sessionId);
+            if (source === null) {
+              return yield* refused(`Thread ${command.threadId} is not in this environment.`);
+            }
+            if (source.archivedAt !== null) {
+              return yield* refused("The thread is archived. Unarchive it first.");
+            }
+            const result = changeLifecycle(source, command.change, new Date());
+            if (result._tag === "Refused") return yield* refused(result.reason);
+            const next = result.lifecycle;
+            if (!sameLifecycle(next, source.lifecycle)) {
+              yield* state
+                .setLifecycle(keeper.id, sessionId, isLifecycleEmpty(next) ? null : next)
+                .pipe(
+                  Effect.tapError((error) =>
+                    Effect.logError("t3 gateway could not keep a settle or a snooze", {
+                      cause: error.message,
+                    }),
+                  ),
+                  Effect.mapError(
+                    () =>
+                      new ThreadCommandRefused({
+                        reason: "The gateway could not keep this, so nothing changed. Try again.",
+                        authorization: false,
+                      }),
+                  ),
+                );
+              if (isLifecycleEmpty(next)) lifecycles.delete(sessionId);
+              else lifecycles.set(sessionId, next);
+              yield* publishAll;
+            }
+            return sequence;
+          }),
+        );
+      });
+
     // A thread a t3code client launched is addressed by the client's id; everything inside the
     // hub is keyed by the Mend session.
     const commands: ThreadCommands = {
@@ -3132,6 +3247,7 @@ export const makePersonHub = (input: {
       remove,
       setNextMode,
       setArchived,
+      setLifecycle,
     };
 
     // ─── The hub ───────────────────────────────────────────────────────────

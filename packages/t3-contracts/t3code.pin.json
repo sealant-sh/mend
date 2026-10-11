@@ -13,6 +13,11 @@
       "blob": "7620b2432a776edb05d5f4beb4011130fc6c15d2",
       "sha256": "5ab4d5aa31af09483086d16d4bb133a2e1de6361aa59b4e42ed5e57fced5d840"
     },
+    "shared/threadSettled.ts": {
+      "upstream": "packages/client-runtime/src/state/threadSettled.ts",
+      "blob": "104414a9201d7cd53f296b063b487b25b71763f2",
+      "sha256": "2692fc3f4dde0337fee47eef01d219054138adf2ef56b40784b8187ae98c9d95"
+    },
     "src/acpRegistry.test.ts": {
       "upstream": "packages/contracts/src/acpRegistry.test.ts",
       "blob": "8f87d41a9b06e72e3e51ff060276db50a8763826",

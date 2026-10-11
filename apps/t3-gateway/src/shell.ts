@@ -35,7 +35,7 @@ import type {
 } from "./mend-workbench.ts";
 import type { ThreadNotices } from "./notices.ts";
 import { harnessProvider } from "./server-config.ts";
-import type { StoredImage } from "./state.ts";
+import type { StoredImage, ThreadLifecycle } from "./state.ts";
 
 /**
  * Mend's projects and protocol sessions as t3code's shell (ADR 0012, "Concepts"): a project is a
@@ -103,6 +103,8 @@ export interface ThreadSource {
   readonly nextMode: "bypass" | "ask" | null;
   /** When the person archived the thread in t3code; null while it is not archived. */
   readonly archivedAt: string | null;
+  /** The person's settle and snooze of the thread, as they stand now (`lifecycleOf`). */
+  readonly lifecycle: ThreadLifecycle;
   /**
    * The images a message the gateway sent carried when Mend took its turn, by the message's
    * t3code id (`images.ts`), each with the path its turn named.
@@ -200,7 +202,7 @@ const EPOCH = DateTime.makeUnsafe(0);
 export const utc = (iso: string): DateTime.Utc =>
   Option.getOrElse(Option.map(DateTime.make(iso), DateTime.toUtc), () => EPOCH);
 
-const latestOf = (values: ReadonlyArray<string | null | undefined>): string | null => {
+export const latestOf = (values: ReadonlyArray<string | null | undefined>): string | null => {
   let latest: string | null = null;
   let latestMillis = Number.NEGATIVE_INFINITY;
   for (const value of values) {
@@ -329,8 +331,11 @@ export const threadUpdatedAtOf = (source: ThreadSource): string =>
     ...source.requests.flatMap((request) => [request.createdAt, request.decidedAt]),
   ]) ?? source.session.updatedAt;
 
+const utcOrNull = (iso: string | null): DateTime.Utc | null => (iso === null ? null : utc(iso));
+
 export const appThreadOf = (source: ThreadSource): OrchestrationV2AppThread => {
   const id = threadIdOf(source);
+  const lifecycle = source.lifecycle;
   return {
     createdBy: "user",
     creationSource: "server",
@@ -356,8 +361,11 @@ export const appThreadOf = (source: ThreadSource): OrchestrationV2AppThread => {
     createdAt: utc(source.session.createdAt),
     updatedAt: utc(threadUpdatedAtOf(source)),
     archivedAt: source.archivedAt === null ? null : utc(source.archivedAt),
-    settledOverride: null,
-    settledAt: null,
+    settledOverride: lifecycle.settledOverride,
+    settledAt: utcOrNull(lifecycle.settledAt),
+    unsettledAt: utcOrNull(lifecycle.unsettledAt),
+    snoozedUntil: utcOrNull(lifecycle.snoozedUntil),
+    snoozedAt: utcOrNull(lifecycle.snoozedAt),
     lastVisitedAt: null,
     deletedAt: null,
   };
@@ -607,8 +615,11 @@ export const threadShellOf = (
     createdAt: thread.createdAt,
     updatedAt: thread.updatedAt,
     archivedAt: thread.archivedAt,
-    settledOverride: null,
-    settledAt: null,
+    settledOverride: thread.settledOverride,
+    settledAt: thread.settledAt,
+    unsettledAt: thread.unsettledAt ?? null,
+    snoozedUntil: thread.snoozedUntil ?? null,
+    snoozedAt: thread.snoozedAt ?? null,
     lastVisitedAt: null,
     deletedAt: null,
   };

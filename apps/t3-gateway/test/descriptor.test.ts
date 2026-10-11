@@ -51,7 +51,7 @@ describe("GET /.well-known/t3/environment", () => {
       label: "Mend",
       platform: { os: "linux", arch: "x64" },
       serverVersion: SERVER_VERSION,
-      capabilities: { repositoryIdentity: false },
+      capabilities: { repositoryIdentity: false, threadSettlement: true, threadSnooze: true },
     } as const;
     const decode = Schema.decodeUnknownSync(ExecutionEnvironmentDescriptor);
     assert.strictEqual(

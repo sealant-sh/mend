@@ -70,9 +70,10 @@ export const makeGatewayEnvironment = (input: {
     platform: { os: platformOs(process.platform), arch: platformArch(process.arch) },
     serverVersion: SERVER_VERSION,
     orchestrationProtocolVersion: ORCHESTRATION_PROTOCOL_VERSION,
-    // Every optional capability is absent: a client treats absent as unsupported and never sends
-    // what it gates. Phases 1–3 switch on what Mend can back.
-    capabilities: { repositoryIdentity: false },
+    // An optional capability left absent is unsupported: a client never sends what it gates.
+    // Phases 1–3 switch on what Mend can back. Settle and snooze are the person's own, kept by
+    // the gateway (`lifecycle.ts`); without these t3code hides both from its thread menus.
+    capabilities: { repositoryIdentity: false, threadSettlement: true, threadSnooze: true },
   },
   auth: {
     policy: isLoopbackHost(input.host) ? "loopback-browser" : "remote-reachable",
