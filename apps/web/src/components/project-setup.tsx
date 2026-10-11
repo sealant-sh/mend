@@ -112,9 +112,10 @@ export function GitAccessSection({ project }: { readonly project: ProjectDto }) 
       <h2 className="font-sans text-sm font-semibold">Git access</h2>
       <p className="mt-2.5 text-xs leading-relaxed text-muted-foreground">
         How Mend reaches this project&apos;s remote; the default for new projects is set in
-        Settings. The Mend key is your own key on the server, added to your git account. Bridge
-        signs through your machine&apos;s ssh-agent while a <span className="font-mono">mend</span>{" "}
-        command runs there. Ambient uses the server&apos;s login user&apos;s git and ssh setup.
+        Settings. Both modes sign SSH remotes: for a private repository, use its SSH URL. The Mend
+        key is your own key on the server, added to your git account. Bridge signs through the
+        ssh-agent on your own machine, for a key that stays there, while{" "}
+        <span className="font-mono">mend keys share</span> runs on it.
       </p>
       <div className="mt-3 flex gap-1">
         {GIT_AUTH_CHOICES.map((choice) => (
@@ -159,10 +160,10 @@ export function GitAccessSection({ project }: { readonly project: ProjectDto }) 
           </p>
           {!bridge.data.connected && (
             <p className="mt-1.5 text-xs leading-relaxed text-muted-foreground">
-              Any attaching <span className="font-mono">mend</span> command on the machine that
-              holds your key shares its agent while it runs (or{" "}
-              <span className="font-mono">mend keys share</span> by hand); git ops for this project
-              wait for no one — they fail readably until a signer connects.
+              Run <span className="font-mono">mend keys share</span> on the machine that holds your
+              key; any attaching <span className="font-mono">mend</span> command shares it too when
+              your default in Settings is bridge. Until a signer connects, this project&apos;s SSH
+              git operations fail readably instead of waiting.
             </p>
           )}
         </div>
