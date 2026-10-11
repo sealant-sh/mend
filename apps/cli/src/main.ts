@@ -5811,6 +5811,7 @@ const dashboard = async (
     await runDashboard({
       config,
       ...(options.openSnake === true ? { openSnake: true } : {}),
+      autoAttach: process.env["MEND_AUTO_ATTACH"] !== "off",
       cwd: process.cwd(),
       cwdBranch: gitCurrentBranch(process.cwd()),
       api: <T>(method: "GET" | "POST" | "DELETE", route: string, body?: unknown) =>

@@ -283,7 +283,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     description: [
       "A full-screen view of every project and session, updating live. The session pane takes three quarters of the screen: a read-only detail for the selected session with the conversation record it has written so far. The remaining quarter is a sidebar of three stacked sections, projects then worktrees then sessions, where the section you are in stands open and the other two fold to the line that says what is selected. Bare mend with no command opens the same thing.",
       "Every pane carries its number in its title, as lazygit's do: [1] projects, [2] worktrees, [3] sessions, and [0] the session pane. A digit jumps to its pane, tab and Shift+Tab cycle through them and come back round, and esc goes back to where you came from. ? lists every key, / filters the focused list (enter keeps the filter, esc clears it), and + and _ cycle the screen mode: normal, half (the sidebar takes half the width) and full (the side you are on takes the screen).",
-      "Moving the selection only ever navigates: arrows or j/k move inside the open section, enter and the arrows move between the sidebar and the session pane, and nothing takes this terminal until you ask. Reading the record leaves the sidebar as it was. The verbs are a to attach a live session, r to resume a settled one, n for another session in the selected worktree, w for a new worktree, e to rename, v to review the change, o to open it in the browser, Shift+K to stop (on a row whose agent has stopped while its Services keep the workspace up, Shift+K stops those Services), Shift+D to remove, and Shift+R to refresh.",
+      "Moving the selection only ever navigates: arrows or j/k move inside the open section, enter and the arrows move between the sidebar and the session pane, and nothing takes this terminal until you ask. A session you start or resume here attaches once it runs, while you are still waiting on it: moving to another session, column or project, or a dialog open at that moment, leaves it to a. MEND_AUTO_ATTACH=off leaves every attach to a. Reading the record leaves the sidebar as it was. The verbs are a to attach a live session, r to resume a settled one, n for another session in the selected worktree, w for a new worktree, e to rename, v to review the change, o to open it in the browser, Shift+K to stop (on a row whose agent has stopped while its Services keep the workspace up, Shift+K stops those Services), Shift+D to remove, and Shift+R to refresh.",
       "Nothing is ever squeezed. A terminal too narrow for both gives the whole width to the side you are on, a terminal too short for three drawn panes shows the open section alone, and a one-line breadcrumb states whatever did not fit.",
       "On a server that is not this machine, the selected session's live Services declared --http or --https are tunneled to this machine's loopback while it stays selected, and the session pane shows where each one opens, for example web → http://localhost:5173.",
       "The dashboard needs Node 26 or newer for its terminal. Every other command works on Node 22.",
@@ -1718,6 +1718,10 @@ const ENVIRONMENT: ReadonlyArray<readonly [string, string]> = [
   [
     "MEND_DETACH_KEY",
     "the detach chord; default Ctrl+]. none when an outer multiplexer owns detaching",
+  ],
+  [
+    "MEND_AUTO_ATTACH",
+    "off keeps the dashboard from attaching a session you started there once it runs",
   ],
   ["MEND_DEBUG", "1 prints each refused call, its status and its tag on stderr"],
 ];

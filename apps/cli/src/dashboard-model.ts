@@ -692,6 +692,51 @@ export const planAttach = (session: SessionDto | null): AttachPlan => {
 };
 
 /**
+ * A start or resume from this dashboard, followed until its session can be attached or has
+ * ended. Only the one the person is still waiting on attaches by itself; the others say they are
+ * ready and wait for `a`.
+ */
+export interface StartWatch {
+  /** The watch's own key: a launch's pending row id, or a fresh one for a resume. */
+  readonly id: string;
+  readonly verb: "started" | "resumed";
+  /** The session the start call answered with; null while the call is in flight. */
+  readonly sessionId: string | null;
+}
+
+export type StartProgress =
+  | { readonly kind: "starting" }
+  | { readonly kind: "ready"; readonly session: SessionDto }
+  | { readonly kind: "ended"; readonly session: SessionDto };
+
+const findWorkbenchSession = (data: Workbench, id: string): SessionDto | null => {
+  for (const detail of data.details.values()) {
+    const found = detail.sessions.find((session) => session.id === id);
+    if (found !== undefined) return found;
+  }
+  return null;
+};
+
+/**
+ * Where a watched start stands, read the way `a` reads a row: ready once `a` would attach, ended
+ * once `a` would refuse it as settled or stopping. A session the workbench has not listed yet is
+ * still starting.
+ */
+export const startProgress = (data: Workbench, watch: StartWatch): StartProgress => {
+  if (watch.sessionId === null) return { kind: "starting" };
+  const plan = planAttach(findWorkbenchSession(data, watch.sessionId));
+  switch (plan.kind) {
+    case "attach":
+      return { kind: "ready", session: plan.session };
+    case "settled":
+    case "stopping":
+      return { kind: "ended", session: plan.session };
+    default:
+      return { kind: "starting" };
+  }
+};
+
+/**
  * What `r` — resume — may do with the selected conversation: only a settled
  * session can be resumed, and a live one is reported live rather than being
  * restarted underneath the agent still working in it.
