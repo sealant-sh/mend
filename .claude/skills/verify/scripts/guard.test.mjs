@@ -818,7 +818,7 @@ test("under the guard, a gh that tries the keyring finds no D-Bus and no keyring
         let out = "";
         child.stdout.on("data", (data) => (out += data));
         child.stderr.on("data", (data) => (out += data));
-        child.on("exit", (status) => done({ status, out }));
+        child.on("close", (status) => done({ status, out }));
       });
     const base = {
       PATH: `${guardDir}:${w.bin}:${process.env.PATH}`,
