@@ -599,7 +599,7 @@ describe("what stands in a fresh install's way", () => {
       _tag: "error",
       error: {
         message:
-          "Docker context explicit-test-context holds what an earlier Mend install left, and no installation owns them: container mend-mend-1, network mend_default, 2 volumes (mend_mend-postgres, mend-control). The volumes may hold that install's data, and removing them deletes that data. Setup does not install beside them. To remove them: DOCKER_CONTEXT=explicit-test-context mend uninstall --server, then run mend server setup again.",
+          "Docker context explicit-test-context holds what an earlier Mend install left, and no installation owns them: container mend-mend-1, network mend_default, 2 volumes (mend_mend-postgres, mend-control). The volumes may hold that install's data, and removing them deletes that data. To keep it, put that install's Mend config directory (identity.env and generations) back where it was and run mend server setup: setup takes up the volumes its identity owns. Setup does not install beside them. To remove them: DOCKER_CONTEXT=explicit-test-context mend uninstall --server, then run mend server setup again.",
       },
     });
     expect(daemon.mutations()).toEqual([]);

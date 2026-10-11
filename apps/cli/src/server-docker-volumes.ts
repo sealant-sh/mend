@@ -97,6 +97,10 @@ export const leftoverItems = (leftovers: ServerLeftovers): ReadonlyArray<string>
 export const leftoversRemoval = (dockerContext: string): string =>
   `DOCKER_CONTEXT=${dockerContext} mend uninstall --server`;
 
+/** How to keep an earlier install's volumes instead: its identity owns them again. */
+export const KEEP_THE_DATA =
+  "To keep it, put that install's Mend config directory (identity.env and generations) back where it was and run mend server setup: setup takes up the volumes its identity owns.";
+
 const oldDataWords = (found: ServerOldData): string => {
   const elsewhere = "or install in another Docker context: mend server setup --context <name>.";
   if (found._tag === "leftovers") {
@@ -109,7 +113,7 @@ const oldDataWords = (found: ServerOldData): string => {
       `Docker context ${leftovers.dockerContext} holds what an earlier Mend install left, and no installation owns ${them}: ${leftoverItems(leftovers).join(", ")}. ` +
       (volumes === 0
         ? ""
-        : `The ${volumes === 1 ? "volume" : "volumes"} may hold that install's data, and removing ${volumes === 1 ? "it" : "them"} deletes that data. `) +
+        : `The ${volumes === 1 ? "volume" : "volumes"} may hold that install's data, and removing ${volumes === 1 ? "it" : "them"} deletes that data. ${KEEP_THE_DATA} `) +
       `Setup does not install beside ${them}. To remove ${them}: ${leftoversRemoval(leftovers.dockerContext)}, then run mend server setup again.`
     );
   }

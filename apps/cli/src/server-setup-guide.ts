@@ -2,7 +2,7 @@ import * as net from "node:net";
 
 import { type AddressKind, addressKindOf } from "@mend/network/address-kind";
 
-import { leftoverItems, type ServerLeftovers } from "./server-docker-volumes.ts";
+import { KEEP_THE_DATA, leftoverItems, type ServerLeftovers } from "./server-docker-volumes.ts";
 import {
   DECLARABLE_ITEMS,
   DEFAULT_T3_GATEWAY_PORT,
@@ -616,7 +616,7 @@ export const offerLeftoverRemoval = async (
   const volumes = leftovers.volumes.length;
   if (volumes > 0)
     io.write(
-      `The ${volumes === 1 ? "volume" : "volumes"} may hold that install's data (its database, repositories and captures). Removing ${volumes === 1 ? "it" : "them"} deletes that data for good.`,
+      `The ${volumes === 1 ? "volume" : "volumes"} may hold that install's data (its database, repositories and captures). Removing ${volumes === 1 ? "it" : "them"} deletes that data for good. ${KEEP_THE_DATA}`,
     );
   io.write(`Setup does not install beside ${them}.`);
   try {

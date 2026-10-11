@@ -715,7 +715,7 @@ describe("mend server setup", () => {
       const refused = await serverCommand(["setup", "--yes"], first.runtime);
       expect(refused).toEqual({
         _tag: "error",
-        message: `Docker context default holds what an earlier Mend install left, and no installation owns it: volume ${volume}. The volume may hold that install's data, and removing it deletes that data. Setup does not install beside it. To remove it: DOCKER_CONTEXT=default mend uninstall --server, then run mend server setup again.`,
+        message: `Docker context default holds what an earlier Mend install left, and no installation owns it: volume ${volume}. The volume may hold that install's data, and removing it deletes that data. To keep it, put that install's Mend config directory (identity.env and generations) back where it was and run mend server setup: setup takes up the volumes its identity owns. Setup does not install beside it. To remove it: DOCKER_CONTEXT=default mend uninstall --server, then run mend server setup again.`,
       });
       expect([...orphaned.volumes.keys()]).toEqual([volume]);
       expect(first.commands.some(([, args]) => args.includes("up") || args[3] === "create")).toBe(
@@ -2817,7 +2817,7 @@ describe("mend server setup, guided and unasked", () => {
         "Docker context default holds what an earlier Mend install left, and no installation owns them:",
         "  network mend_default",
         "  2 volumes (mend_mend-postgres, mend-control)",
-        "The volumes may hold that install's data (its database, repositories and captures). Removing them deletes that data for good.",
+        "The volumes may hold that install's data (its database, repositories and captures). Removing them deletes that data for good. To keep it, put that install's Mend config directory (identity.env and generations) back where it was and run mend server setup: setup takes up the volumes its identity owns.",
         "Nothing changed. To remove them later: DOCKER_CONTEXT=default mend uninstall --server, then run mend server setup again.",
       ]),
     );

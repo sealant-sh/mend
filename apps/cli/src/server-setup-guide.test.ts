@@ -1018,7 +1018,7 @@ describe("an earlier install's leftovers", () => {
       "  container mend-mend-1",
       "  network mend_default",
       "  2 volumes (mend-control, mend_mend-postgres)",
-      "The volumes may hold that install's data (its database, repositories and captures). Removing them deletes that data for good.",
+      "The volumes may hold that install's data (its database, repositories and captures). Removing them deletes that data for good. To keep it, put that install's Mend config directory (identity.env and generations) back where it was and run mend server setup: setup takes up the volumes its identity owns.",
       "Setup does not install beside them.",
     ]);
     expect((await ask(["n"], leftovers)).remove).toBe(false);
