@@ -27,6 +27,10 @@ They do not close the whole audit.
 - The 18 dead or helper-only declarations were removed, along with the unused argv file writer and
   unused desktop link helpers. Tests for the active pickup writer and terminal link handling remain.
   Migration and supported compatibility tests remain.
+- `DB-012`: the session list/view latency benchmark now runs through an explicit performance
+  command. Its three PostgreSQL semantic tests remain in the normal correctness suite. The benchmark
+  retains 300 bulk sessions and the existing median/p90 budgets, measures three rounds with
+  interleaved queries, and reports PostgreSQL, runtime and sample context.
 
 ## Boundary fixes
 
@@ -67,6 +71,20 @@ Node packaging/verification checks and browser, native client, provider and pack
 acceptance are separate commands. `turbo test` does not imply they ran. The existing CI workflow
 lists the Node checks. Optional Docker, blob-store and provider prerequisites must be reported
 alongside any suite result.
+
+Run the session list/view performance check separately, on an otherwise idle disposable PostgreSQL
+server:
+
+```sh
+MEND_TEST_DATABASE_URL=postgres://mend:mend@localhost:5434/mend pnpm --filter @mend/db bench:session-live-people
+```
+
+This command requires an explicit database URL and rejects the local database opt-out. It warms all
+four queries, then records three rounds of 40 samples per query, rotating their order. Every round
+must keep both the median and p90 of each enriched read within +5% or +20 ms of its plain read,
+whichever is larger. The JSON report includes raw samples, database version, fixture counts and
+runtime context. Its 120-second test/setup budget is confined to this command. The default suite has
+no performance benchmark to skip, and its semantic checks retain their normal timeouts.
 
 ## What the layers establish
 

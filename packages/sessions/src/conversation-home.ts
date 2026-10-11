@@ -78,15 +78,13 @@ export const claudeProjectDirOf = (cwd: string): string => cwd.replaceAll(/[^A-Z
 
 // ─── what a process gets ─────────────────────────────────────────────────────
 
-/** Claude's default model alias, as Mend's own seed sets it where nothing else does. */
-const CLAUDE_DEFAULT_MODEL = "fable";
-
 /**
  * Claude's seeded files in `H/.claude`: no `CLAUDE.md`, `rules/`, agents, commands, skills,
  * output styles, plugins, workflows, routines, agent memory or hooks; no user MCP servers in
  * `.claude.json` and never `hasClaudeMdExternalIncludesApproved`, so a repository `CLAUDE.md`
- * cannot `@~/`-import a personal file; `settings.json` with automatic memory off. What loads is the
- * repository's own `CLAUDE.md`, `.claude/` and `.mcp.json`.
+ * cannot `@~/`-import a personal file; `settings.json` with automatic memory off and no model (a
+ * launch that names none runs on Claude Code's own default). What loads is the repository's own
+ * `CLAUDE.md`, `.claude/` and `.mcp.json`.
  */
 export const claudeNeutralSeed = (): Readonly<Record<string, string>> => ({
   ".claude/.claude.json": `${JSON.stringify(
@@ -104,7 +102,6 @@ export const claudeNeutralSeed = (): Readonly<Record<string, string>> => ({
     {
       autoMemoryEnabled: false,
       skipDangerousModePermissionPrompt: true,
-      model: CLAUDE_DEFAULT_MODEL,
     },
     null,
     2,

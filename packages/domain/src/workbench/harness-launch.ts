@@ -78,7 +78,8 @@ const CODEX_UP_TO_XHIGH: ReadonlyArray<EffortLevel> = ["low", "medium", "high", 
  * (`GET /harnesses/models`, `model-catalog.ts`), which an operator edits in place. The contract
  * keeps `model` free-form because harnesses accept ids no list knows yet.
  *
- * Claude is offered by family alias (`fable`, `opus`, `sonnet`, `haiku`): Claude Code resolves
+ * Claude is offered by family alias (`fable`, `opus`, `sonnet`, `haiku`), none of them the default
+ * (`HARNESSES_CHOOSING_THEIR_OWN_MODEL`, migration 0130): Claude Code resolves
  * each to the latest model of that family, so the list does not go stale when a model ships. As of
  * 2026-10-01 they are Fable 5.1, Opus 5.5, Sonnet 5.5 and Haiku 4.5.
  *
@@ -87,7 +88,7 @@ const CODEX_UP_TO_XHIGH: ReadonlyArray<EffortLevel> = ["low", "medium", "high", 
  */
 export const HARNESS_MODEL_SEED: Readonly<Record<string, ReadonlyArray<HarnessModelSeed>>> = {
   claude: [
-    { id: "fable", label: "Fable · latest", isDefault: true },
+    { id: "fable", label: "Fable · latest", isDefault: false },
     { id: "opus", label: "Opus · latest", isDefault: false },
     { id: "sonnet", label: "Sonnet · latest", isDefault: false },
     { id: "haiku", label: "Haiku · latest", isDefault: false },
@@ -133,10 +134,15 @@ export const OPENCODE_DEFAULT_MODEL = "openai/gpt-6.1-sol";
  * for a picker, but its first row is not a default, so an absent choice stays absent and the
  * harness decides. opencode decides by its own order: `--model`, the project's and the user's
  * opencode config, the model it last used (where `OPENCODE_DEFAULT_MODEL` is written when it has
- * none); a catalog default sent as `--model` would beat the person's own config. A row an operator
- * flags as the default is still the default.
+ * none); a catalog default sent as `--model` would beat the person's own config. Claude Code
+ * decides as it does for a `claude` run by hand: the person's and the repository's settings, else
+ * its own default (Yiannis, 2026-10-12: "by default have the default claude model"). A row an
+ * operator flags as the default is still the default.
  */
-export const HARNESSES_CHOOSING_THEIR_OWN_MODEL: ReadonlySet<string> = new Set(["opencode"]);
+export const HARNESSES_CHOOSING_THEIR_OWN_MODEL: ReadonlySet<string> = new Set([
+  "opencode",
+  "claude",
+]);
 
 /** Harnesses whose composed argv actually carries an opening prompt. */
 export const PROMPTABLE_HARNESSES: ReadonlySet<string> = new Set([

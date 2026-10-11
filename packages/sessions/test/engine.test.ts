@@ -5711,6 +5711,60 @@ describe("SessionEngine", () => {
     );
   });
 
+  it("stop of a shell session closes its other shells too: its own shell is no agent to watch", async () => {
+    // Box, next.786, 2026-10-11: a `mend shell` beside a shell session's own shell stayed
+    // `running` after the session's Stop, and held it `idle` until its own stop.
+    const created: CreateOptions[] = [];
+    const stopped: string[] = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "shell",
+            label: null,
+            name: null,
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+          yield* engine.launch(session.id, ["bash"]);
+          const shell = yield* engine.openShell(session.id);
+          // What the observer records for a `claude` typed into it: an agent Mend did not start.
+          const sessionShell = [...world.processes.values()].find(
+            (process) => process.kind === "agent-pty",
+          );
+          expect(sessionShell?.harness).toBe("shell");
+          const observed = new SessionProcess({
+            ...(sessionShell ?? shell),
+            id: SessionProcessId.make("observed-claude"),
+            kind: "agent-external",
+            harness: "claude",
+            label: "claude (observed)",
+            sealantSessionId: null,
+            sealantRunId: null,
+            createdAt: now(),
+            updatedAt: now(),
+          });
+          world.processes.set(observed.id, observed);
+
+          yield* engine.stop(session.id);
+          for (const id of [sessionShell?.id, shell.id, observed.id]) {
+            const row = id === undefined ? undefined : world.processes.get(id);
+            expect(row?.status, id).toBe("stopped");
+            expect(row?.exitedAt, id).not.toBeNull();
+          }
+          const after = world.sessions.get(session.id);
+          expect(after?.status).toBe("stopped");
+          expect(after?.settledAt).not.toBeNull();
+          yield* Effect.sleep(Duration.millis(100));
+          expect(stopped).toEqual(["workspace-1"]);
+        }),
+      { sealantLayer: sealantLaunchLayer(created, undefined, stopped) },
+    );
+  });
+
   it("stop kills a session held open only by an orphan shell (the refuses-to-die case)", async () => {
     const created: CreateOptions[] = [];
     const stopped: string[] = [];
@@ -29183,9 +29237,11 @@ describe("git and Mend identity per process (docs/adr/0016, decision 4)", () => 
       inspect: (engine, join) =>
         Effect.gen(function* () {
           const before = join.opened.length;
-          yield* engine.openShell(join.holder.id, MARIA);
+          const row = yield* engine.openShell(join.holder.id, MARIA);
           const shell = join.opened.at(before);
           expect(shell?.user?.name).toBe(JOINER);
+          // The row says whom it runs as, as an agent's does (box, next.786: it read null).
+          expect(row.runsAs).toBe(MARIA);
           expect(shell?.env).toMatchObject({
             MEND_SESSION_ID: join.holder.id,
             MEND_SESSION_TOKEN_FILE: `/home/${JOINER}/.mend/session-token`,
@@ -29205,8 +29261,9 @@ describe("git and Mend identity per process (docs/adr/0016, decision 4)", () => 
           yield* engine.restartService(service.service.id);
           expect(join.opened.at(restarted)?.user?.name).toBe(JOINER);
           // Without a starter named, the session's owner, as before.
-          yield* engine.openShell(join.holder.id);
+          const owners = yield* engine.openShell(join.holder.id);
           expect(join.opened.at(-1)?.user?.name).toBe(LAUNCHER);
+          expect(owners.runsAs).toBe(join.holder.ownerUserId);
         }),
     });
   });

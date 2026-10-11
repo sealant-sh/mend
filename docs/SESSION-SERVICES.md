@@ -93,9 +93,11 @@ nothing live                                 → settled: completed | failed | s
 
 `waiting` stays defined but only a protocol-mode agent can report it. `starting` is a launch without
 a process row yet. Stop ends the agent processes; shells and Services keep their own lifecycle, so a
-stopped agent beside a live shell reads `idle` until the shell ends. Clients that need the agent's
-outcome while a shell holds the workspace read the session's `currentAgent`
-(`SessionDetail.currentAgent`, the list annotation) rather than the fold.
+stopped agent beside a live shell reads `idle` until the shell ends. That holds only for an agent
+Mend started: a shell session's own shell and an observed agent are nothing to watch, so a Stop that
+ends only those closes the session's shells too (a second Stop does the same after an agent).
+Clients that need the agent's outcome while a shell holds the workspace read the session's
+`currentAgent` (`SessionDetail.currentAgent`, the list annotation) rather than the fold.
 
 A stop keeps Services running, and a running Service keeps the workspace up, so the stop has to show
 it. `liveServices` (on `SessionDetail` and the list annotation) counts the session's Services with a
