@@ -10,14 +10,11 @@ import {
   NotificationSettingsRepo,
   NotificationSettingsRepoLive,
 } from "../src/repos/notification-settings.ts";
+import { postgresTestConfig } from "./postgres.ts";
 
-/**
- * What each person hears about on their phones, against the dev Postgres (`compose.dev.yaml`,
- * :5434) in a throwaway database. Without one reachable these skip rather than pretend; set
- * MEND_TEST_DATABASE_URL elsewhere.
- */
-const ADMIN_URL =
-  process.env["MEND_TEST_DATABASE_URL"] ?? "postgres://mend:mend@localhost:5434/mend";
+/** Runs in a throwaway PostgreSQL database. See postgresTestConfig for local opt-out. */
+const postgres = postgresTestConfig();
+const ADMIN_URL = postgres.adminUrl;
 const SCRATCH_DB = `mend_notification_settings_test_${process.pid}_${Date.now()}`;
 const scratchUrl = (() => {
   const url = new URL(ADMIN_URL);
@@ -36,18 +33,7 @@ const withAdmin = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
 const run = <A, E>(effect: Effect.Effect<A, E, NotificationSettingsRepo | SqlClient.SqlClient>) =>
   Effect.runPromise(effect.pipe(Effect.provide(repoLayer), Effect.scoped));
 
-const reachable = await withAdmin(
-  Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
-    yield* sql`SELECT 1`;
-    return true;
-  }).pipe(Effect.timeout("2 seconds")),
-).then(
-  () => true,
-  () => false,
-);
-
-describe.skipIf(!reachable)("notification settings, in Postgres", () => {
+describe.skipIf(postgres.skip)("notification settings, in Postgres", () => {
   beforeAll(async () => {
     await withAdmin(
       Effect.gen(function* () {

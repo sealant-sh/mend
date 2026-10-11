@@ -43,9 +43,33 @@ describe("legacy sessions without an owner", () => {
   );
 
   it("an organization owner can still stop them", async () => {
-    const response = await api.request("alice", "POST", `/api/sessions/${NULL_OWNER_SESSION}/stop`);
-    expect(response.status).not.toBe(403);
-    expect(response.status).not.toBe(404);
+    const stopped: Array<string> = [];
+    const stopping = await createTenancyApi(
+      {},
+      {
+        implement: {
+          engine: {
+            launchUnderWay: () => false,
+            stop: (sessionId) =>
+              Effect.sync(() => {
+                stopped.push(sessionId);
+              }),
+          },
+        },
+      },
+    );
+    try {
+      const response = await stopping.request(
+        "alice",
+        "POST",
+        `/api/sessions/${NULL_OWNER_SESSION}/stop`,
+      );
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({ id: NULL_OWNER_SESSION });
+      expect(stopped).toEqual([NULL_OWNER_SESSION]);
+    } finally {
+      await stopping.dispose();
+    }
   });
 });
 

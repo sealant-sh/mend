@@ -11,14 +11,11 @@ import {
   AgentConversationRepoLive,
   AgentConversationRepo,
 } from "../src/repos/agent-conversation.ts";
+import { postgresTestConfig } from "./postgres.ts";
 
-/**
- * Migration tests run against the dev Postgres (`compose.dev.yaml`, :5434) in a throwaway
- * database; without one reachable they skip rather than pretend. Set MEND_TEST_DATABASE_URL to
- * point elsewhere.
- */
-const ADMIN_URL =
-  process.env["MEND_TEST_DATABASE_URL"] ?? "postgres://mend:mend@localhost:5434/mend";
+/** Runs in a throwaway PostgreSQL database. See postgresTestConfig for local opt-out. */
+const postgres = postgresTestConfig();
+const ADMIN_URL = postgres.adminUrl;
 const SCRATCH_DB = `mend_migration_test_${process.pid}_${Date.now()}`;
 
 const scratchUrl = (() => {
@@ -40,18 +37,6 @@ const scratchConversationLayer = AgentConversationRepoLive.pipe(
 const withConversation = <A, E>(effect: Effect.Effect<A, E, AgentConversationRepo>) =>
   Effect.runPromise(effect.pipe(Effect.provide(scratchConversationLayer), Effect.scoped));
 
-// The layer itself fails to build when nothing listens, so the guard sits outside the Effect.
-const reachable = await withAdmin(
-  Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
-    yield* sql`SELECT 1`;
-    return true;
-  }).pipe(Effect.timeout("2 seconds")),
-).then(
-  () => true,
-  () => false,
-);
-
 const ORDERED = Object.entries(migrations).toSorted(([a], [b]) => a.localeCompare(b));
 const upTo = (last: string) =>
   Effect.forEach(
@@ -60,7 +45,7 @@ const upTo = (last: string) =>
     { discard: true },
   );
 
-describe.skipIf(!reachable)("0035 process kinds and 0036 agent conversation", () => {
+describe.skipIf(postgres.skip)("0035 process kinds and 0036 agent conversation", () => {
   beforeAll(async () => {
     await withAdmin(
       Effect.gen(function* () {
@@ -538,7 +523,7 @@ describe.skipIf(!reachable)("0035 process kinds and 0036 agent conversation", ()
   });
 });
 
-describe.skipIf(!reachable)("0052 project skill inheritance", () => {
+describe.skipIf(postgres.skip)("0052 project skill inheritance", () => {
   const SETTINGS_DB = `${SCRATCH_DB}_skill_inheritance`;
   const settingsUrl = (() => {
     const url = new URL(ADMIN_URL);
@@ -591,7 +576,7 @@ describe.skipIf(!reachable)("0052 project skill inheritance", () => {
   });
 });
 
-describe.skipIf(!reachable)("0110 automatic install", () => {
+describe.skipIf(postgres.skip)("0110 automatic install", () => {
   const INSTALL_DB = `${SCRATCH_DB}_install_enabled`;
   const installUrl = (() => {
     const url = new URL(ADMIN_URL);
@@ -647,7 +632,7 @@ describe.skipIf(!reachable)("0110 automatic install", () => {
   });
 });
 
-describe.skipIf(!reachable)("0111 agent memory homes", () => {
+describe.skipIf(postgres.skip)("0111 agent memory homes", () => {
   const HOMES_DB = `${SCRATCH_DB}_memory_homes`;
   const homesLayer = (() => {
     const url = new URL(ADMIN_URL);
@@ -712,7 +697,7 @@ describe.skipIf(!reachable)("0111 agent memory homes", () => {
   });
 });
 
-describe.skipIf(!reachable)("0046 worktree containers", () => {
+describe.skipIf(postgres.skip)("0046 worktree containers", () => {
   const WORKTREE_DB = `${SCRATCH_DB}_wt`;
   const worktreeUrl = (() => {
     const url = new URL(ADMIN_URL);
@@ -871,7 +856,7 @@ const attempt = (statement: Effect.Effect<unknown, unknown>) =>
     Effect.catch(() => Effect.succeed("refused")),
   );
 
-describe.skipIf(!reachable)("0055 organizations", () => {
+describe.skipIf(postgres.skip)("0055 organizations", () => {
   const ORG_DB = `${SCRATCH_DB}_org`;
   const EMPTY_DB = `${SCRATCH_DB}_org_empty`;
   const layerFor = (database: string) => {
@@ -1093,7 +1078,7 @@ describe.skipIf(!reachable)("0055 organizations", () => {
   });
 });
 
-describe.skipIf(!reachable)("0056 per-account resources", () => {
+describe.skipIf(postgres.skip)("0056 per-account resources", () => {
   const RESOURCES_DB = `${SCRATCH_DB}_resources`;
   const resourcesLayer = (() => {
     const url = new URL(ADMIN_URL);
@@ -1177,7 +1162,7 @@ describe.skipIf(!reachable)("0056 per-account resources", () => {
   });
 });
 
-describe.skipIf(!reachable)("0058 hot pool owners", () => {
+describe.skipIf(postgres.skip)("0058 hot pool owners", () => {
   const HOT_DB = `${SCRATCH_DB}_hot`;
   const hotLayer = (() => {
     const url = new URL(ADMIN_URL);
@@ -1240,7 +1225,7 @@ describe.skipIf(!reachable)("0058 hot pool owners", () => {
   });
 });
 
-describe.skipIf(!reachable)("0062 slack", () => {
+describe.skipIf(postgres.skip)("0062 slack", () => {
   const SLACK_DB = `${SCRATCH_DB}_slack`;
   const slackLayer = (() => {
     const url = new URL(ADMIN_URL);
@@ -1415,7 +1400,7 @@ describe.skipIf(!reachable)("0062 slack", () => {
   });
 });
 
-describe.skipIf(!reachable)("0063 slack reports", () => {
+describe.skipIf(postgres.skip)("0063 slack reports", () => {
   const REPORTS_DB = `${SCRATCH_DB}_slack_reports`;
   const reportsLayer = (() => {
     const url = new URL(ADMIN_URL);
@@ -1493,7 +1478,7 @@ describe.skipIf(!reachable)("0063 slack reports", () => {
   });
 });
 
-describe.skipIf(!reachable)("0064 landing", () => {
+describe.skipIf(postgres.skip)("0064 landing", () => {
   const LANDING_DB = `${SCRATCH_DB}_landing`;
   const landingLayer = (() => {
     const url = new URL(ADMIN_URL);
@@ -1701,7 +1686,7 @@ describe.skipIf(!reachable)("0064 landing", () => {
   });
 });
 
-describe.skipIf(!reachable)("0065 turn landing", () => {
+describe.skipIf(postgres.skip)("0065 turn landing", () => {
   const TURN_DB = `${SCRATCH_DB}_turn_landing`;
   const turnLayer = (() => {
     const url = new URL(ADMIN_URL);
@@ -1799,7 +1784,7 @@ describe.skipIf(!reachable)("0065 turn landing", () => {
   });
 });
 
-describe.skipIf(!reachable)("0066 landing description", () => {
+describe.skipIf(postgres.skip)("0066 landing description", () => {
   const DESCRIPTION_DB = `${SCRATCH_DB}_landing_description`;
   const descriptionLayer = (() => {
     const url = new URL(ADMIN_URL);
@@ -1842,7 +1827,7 @@ describe.skipIf(!reachable)("0066 landing description", () => {
   });
 });
 
-describe.skipIf(!reachable)("0071 project default shell profile", () => {
+describe.skipIf(postgres.skip)("0071 project default shell profile", () => {
   const PROFILE_DB = `${SCRATCH_DB}_shell_profile`;
   const profileLayer = (() => {
     const url = new URL(ADMIN_URL);
@@ -1896,7 +1881,7 @@ describe.skipIf(!reachable)("0071 project default shell profile", () => {
   });
 });
 
-describe.skipIf(!reachable)("0073 landing reasons", () => {
+describe.skipIf(postgres.skip)("0073 landing reasons", () => {
   const REASONS_DB = `${SCRATCH_DB}_landing_reasons`;
   const reasonsLayer = (() => {
     const url = new URL(ADMIN_URL);
@@ -1999,7 +1984,7 @@ describe.skipIf(!reachable)("0073 landing reasons", () => {
   });
 });
 
-describe.skipIf(!reachable)("0075 capture drain", () => {
+describe.skipIf(postgres.skip)("0075 capture drain", () => {
   const DRAIN_DB = `${SCRATCH_DB}_capture_drain`;
   const drainLayer = (() => {
     const url = new URL(ADMIN_URL);
@@ -2108,7 +2093,7 @@ describe.skipIf(!reachable)("0075 capture drain", () => {
   });
 });
 
-describe.skipIf(!reachable)("0077 capture drain resume", () => {
+describe.skipIf(postgres.skip)("0077 capture drain resume", () => {
   const RESUME_DB = `${SCRATCH_DB}_capture_drain_resume`;
   const resumeLayer = (() => {
     const url = new URL(ADMIN_URL);
@@ -2164,7 +2149,7 @@ describe.skipIf(!reachable)("0077 capture drain resume", () => {
   });
 });
 
-describe.skipIf(!reachable)("0096 notification settings", () => {
+describe.skipIf(postgres.skip)("0096 notification settings", () => {
   const NOTIFY_DB = `${SCRATCH_DB}_notifications`;
   const notifyLayer = (() => {
     const url = new URL(ADMIN_URL);
@@ -2224,7 +2209,7 @@ describe.skipIf(!reachable)("0096 notification settings", () => {
   });
 });
 
-describe.skipIf(!reachable)("0106 terminal watch control", () => {
+describe.skipIf(postgres.skip)("0106 terminal watch control", () => {
   const WATCH_DB = `${SCRATCH_DB}_terminal_watch`;
   const watchLayer = (() => {
     const url = new URL(ADMIN_URL);
@@ -2281,7 +2266,7 @@ describe.skipIf(!reachable)("0106 terminal watch control", () => {
   });
 });
 
-describe.skipIf(!reachable)("0109 opencode models", () => {
+describe.skipIf(postgres.skip)("0109 opencode models", () => {
   const MODELS_DB = `${SCRATCH_DB}_opencode_models`;
   const modelsLayer = (() => {
     const url = new URL(ADMIN_URL);
@@ -2362,7 +2347,7 @@ describe.skipIf(!reachable)("0109 opencode models", () => {
   });
 });
 
-describe.skipIf(!reachable)("0116 shared control ever", () => {
+describe.skipIf(postgres.skip)("0116 shared control ever", () => {
   const EVER_DB = `${SCRATCH_DB}_shared_ever`;
   const everLayer = (() => {
     const url = new URL(ADMIN_URL);
@@ -2433,7 +2418,7 @@ describe.skipIf(!reachable)("0116 shared control ever", () => {
   });
 });
 
-describe.skipIf(!reachable)("0117 conversation homes", () => {
+describe.skipIf(postgres.skip)("0117 conversation homes", () => {
   const DB = `${SCRATCH_DB}_conversation_homes`;
   const layer = (() => {
     const url = new URL(ADMIN_URL);
@@ -2508,7 +2493,7 @@ describe.skipIf(!reachable)("0117 conversation homes", () => {
   });
 });
 
-describe.skipIf(!reachable)("0118 pre-release executors", () => {
+describe.skipIf(postgres.skip)("0118 pre-release executors", () => {
   const DB = `${SCRATCH_DB}_pre_release`;
   const layer = (() => {
     const url = new URL(ADMIN_URL);
@@ -2590,7 +2575,7 @@ describe.skipIf(!reachable)("0118 pre-release executors", () => {
   });
 });
 
-describe.skipIf(!reachable)("0119 image layout confirmed", () => {
+describe.skipIf(postgres.skip)("0119 image layout confirmed", () => {
   const DB = `${SCRATCH_DB}_layout_confirmed`;
   const layer = (() => {
     const url = new URL(ADMIN_URL);
@@ -2655,7 +2640,7 @@ describe.skipIf(!reachable)("0119 image layout confirmed", () => {
   });
 });
 
-describe.skipIf(!reachable)("0120 hot workspace layout", () => {
+describe.skipIf(postgres.skip)("0120 hot workspace layout", () => {
   const DB = `${SCRATCH_DB}_hot_layout`;
   const layer = (() => {
     const url = new URL(ADMIN_URL);
@@ -2719,7 +2704,7 @@ describe.skipIf(!reachable)("0120 hot workspace layout", () => {
   });
 });
 
-describe.skipIf(!reachable)("0126 repository URL credentials", () => {
+describe.skipIf(postgres.skip)("0126 repository URL credentials", () => {
   const DB = `${SCRATCH_DB}_url_credentials`;
   const layer = (() => {
     const url = new URL(ADMIN_URL);
@@ -2835,7 +2820,7 @@ const customImage = {
   services: { docker: true },
 };
 
-describe.skipIf(!reachable)("0127 default bun", () => {
+describe.skipIf(postgres.skip)("0127 default bun", () => {
   const DB = `${SCRATCH_DB}_default_bun`;
   const layer = (() => {
     const url = new URL(ADMIN_URL);
@@ -2911,7 +2896,7 @@ describe.skipIf(!reachable)("0127 default bun", () => {
   });
 });
 
-describe.skipIf(!reachable)("0129 ambient removed", () => {
+describe.skipIf(postgres.skip)("0129 ambient removed", () => {
   const DB = `${SCRATCH_DB}_ambient_removed`;
   const layer = (() => {
     const url = new URL(ADMIN_URL);

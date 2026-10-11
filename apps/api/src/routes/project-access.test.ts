@@ -864,14 +864,18 @@ describe("adoption needs an organization", () => {
 
 describe("skills follow their project", () => {
   it("reads a project skill where the project is visible, and a user skill only as its owner", async () => {
-    expect((await send("carol", skill(ids("shared-a").skill))).status).not.toBe(404);
+    const visible = await send("carol", skill(ids("shared-a").skill));
+    expect(visible.status).toBe(200);
+    expect(visible.body).toMatchObject({ skill: { id: ids("shared-a").skill } });
     const hidden = await send("carol", skill(ids("private-alice").skill));
     expect({ status: hidden.status, id: idOf(hidden.body) }).toEqual({
       status: 404,
       id: ids("private-alice").skill,
     });
     expect((await send("bob", skill(ids("shared-a").skill))).status).toBe(404);
-    expect((await send("carol", skill(CAROL_USER_SKILL))).status).not.toBe(404);
+    const own = await send("carol", skill(CAROL_USER_SKILL));
+    expect(own.status).toBe(200);
+    expect(own.body).toMatchObject({ skill: { id: CAROL_USER_SKILL } });
     expect((await send("alice", skill(CAROL_USER_SKILL))).status).toBe(404);
   });
 

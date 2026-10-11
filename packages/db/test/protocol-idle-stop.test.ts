@@ -15,15 +15,11 @@ import {
   SessionControlEventsRepo,
   SessionControlEventsRepoLive,
 } from "../src/repos/session-control-events.ts";
+import { postgresTestConfig } from "./postgres.ts";
 
-/**
- * The idle stop's claim (MEND_PROTOCOL_IDLE_STOP_MINUTES) against the dev Postgres
- * (`compose.dev.yaml`, :5434) in a throwaway database: one worker of many stops a session, never
- * while a turn is in flight or a request waits, and a reopen lets a later idle spell claim again.
- * Without a database reachable these skip; set MEND_TEST_DATABASE_URL elsewhere.
- */
-const ADMIN_URL =
-  process.env["MEND_TEST_DATABASE_URL"] ?? "postgres://mend:mend@localhost:5434/mend";
+/** Runs in a throwaway PostgreSQL database. See postgresTestConfig for local opt-out. */
+const postgres = postgresTestConfig();
+const ADMIN_URL = postgres.adminUrl;
 const SCRATCH_DB = `mend_idle_stop_test_${process.pid}_${Date.now()}`;
 const scratchUrl = (() => {
   const url = new URL(ADMIN_URL);
@@ -45,17 +41,6 @@ const withAdmin = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
 const run = <A, E>(effect: Effect.Effect<A, E, Repos>) =>
   Effect.runPromise(effect.pipe(Effect.provide(reposLayer), Effect.scoped));
 
-const reachable = await withAdmin(
-  Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
-    yield* sql`SELECT 1`;
-    return true;
-  }).pipe(Effect.timeout("2 seconds")),
-).then(
-  () => true,
-  () => false,
-);
-
 const PROJECT = ProjectId.make("p-web");
 const WORKTREE = WorktreeId.make("wt-1");
 const IDLE = SessionId.make("s-idle");
@@ -68,7 +53,7 @@ const RACES = Array.from({ length: 12 }, (_, i) => SessionId.make(`s-race-${i}`)
 /** Long before any claim a test makes: nothing is stale. */
 const LONG_AGO = new Date("2020-01-01T00:00:00Z");
 
-describe.skipIf(!reachable)("the idle stop's claim, in Postgres", () => {
+describe.skipIf(postgres.skip)("the idle stop's claim, in Postgres", () => {
   beforeAll(async () => {
     await withAdmin(
       Effect.gen(function* () {

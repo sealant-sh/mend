@@ -64,8 +64,9 @@ describe("harness models", () => {
   it("is the same list for another member", async () => {
     const response = await api.request("bob", "GET", "/api/harnesses/models");
     expect(response.status).toBe(200);
-    const catalogs: ReadonlyArray<{ harness: string }> = await response.json();
-    expect(catalogs.map((catalog) => catalog.harness)).toEqual(["claude", "codex"]);
+    const other = await api.request("carol", "GET", "/api/harnesses/models");
+    expect(other.status).toBe(200);
+    expect(await response.json()).toEqual(await other.json());
   });
 
   it("asks for a signed-in account", async () => {

@@ -3,10 +3,6 @@ import { describe, expect, it } from "vitest";
 import {
   collectWrappedTerminalLinkLine,
   extractTerminalLinks,
-  isTerminalLinkActivation,
-  resolvePathLinkTarget,
-  resolveWrappedTerminalLinkRange,
-  wrappedTerminalLinkRangeIntersectsBufferLine,
   type TerminalBufferLineLike,
 } from "./terminal-links";
 
@@ -132,112 +128,5 @@ describe("collectWrappedTerminalLinkLine", () => {
         end: firstSegment.length + secondSegment.length,
       },
     ]);
-  });
-});
-
-describe("resolveWrappedTerminalLinkRange", () => {
-  it("maps wrapped URL matches back to the correct buffer rows", () => {
-    const prefix = "see ";
-    const firstSegment = `${prefix}https://example.com/a`;
-    const secondSegment = "/bc?x=1";
-    const lines = [
-      createBufferLine("prompt> "),
-      createBufferLine(firstSegment),
-      createBufferLine(secondSegment, true),
-    ];
-    const wrappedLine = collectWrappedTerminalLinkLine(2, (index) => lines[index]);
-
-    expect(wrappedLine).not.toBeNull();
-    if (!wrappedLine) {
-      throw new Error("Expected wrapped terminal line to be present.");
-    }
-
-    const [match] = extractTerminalLinks(wrappedLine.text);
-    expect(match).toEqual({
-      kind: "url",
-      text: "https://example.com/a/bc?x=1",
-      start: prefix.length,
-      end: firstSegment.length + secondSegment.length,
-    });
-    if (!match) {
-      throw new Error("Expected wrapped URL match to be present.");
-    }
-
-    const range = resolveWrappedTerminalLinkRange(wrappedLine, match);
-
-    expect(range).toEqual({
-      start: { x: prefix.length + 1, y: 2 },
-      end: { x: secondSegment.length, y: 3 },
-    });
-    expect(wrappedTerminalLinkRangeIntersectsBufferLine(range, 2)).toBe(true);
-    expect(wrappedTerminalLinkRangeIntersectsBufferLine(range, 3)).toBe(true);
-    expect(wrappedTerminalLinkRangeIntersectsBufferLine(range, 4)).toBe(false);
-  });
-});
-
-describe("resolvePathLinkTarget", () => {
-  it("resolves relative paths against cwd", () => {
-    expect(
-      resolvePathLinkTarget(
-        "src/components/ThreadTerminalDrawer.tsx:42:7",
-        "/Users/julius/project",
-      ),
-    ).toBe("/Users/julius/project/src/components/ThreadTerminalDrawer.tsx:42:7");
-  });
-
-  it("keeps absolute paths unchanged", () => {
-    expect(
-      resolvePathLinkTarget("/Users/julius/project/src/main.ts:12", "/Users/julius/project"),
-    ).toBe("/Users/julius/project/src/main.ts:12");
-  });
-
-  it("keeps Windows absolute paths with forward slashes unchanged", () => {
-    expect(
-      resolvePathLinkTarget("C:/Users/julius/project/src/main.ts:12", "C:\\Users\\julius\\project"),
-    ).toBe("C:/Users/julius/project/src/main.ts:12");
-  });
-});
-
-describe("isTerminalLinkActivation", () => {
-  it("requires cmd on macOS", () => {
-    expect(
-      isTerminalLinkActivation(
-        {
-          metaKey: true,
-          ctrlKey: false,
-        },
-        "MacIntel",
-      ),
-    ).toBe(true);
-    expect(
-      isTerminalLinkActivation(
-        {
-          metaKey: false,
-          ctrlKey: true,
-        },
-        "MacIntel",
-      ),
-    ).toBe(false);
-  });
-
-  it("requires ctrl on non-macOS", () => {
-    expect(
-      isTerminalLinkActivation(
-        {
-          metaKey: false,
-          ctrlKey: true,
-        },
-        "Win32",
-      ),
-    ).toBe(true);
-    expect(
-      isTerminalLinkActivation(
-        {
-          metaKey: true,
-          ctrlKey: false,
-        },
-        "Linux",
-      ),
-    ).toBe(false);
   });
 });

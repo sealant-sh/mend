@@ -17,9 +17,10 @@ describe("rejectEnvironment", () => {
         ],
       }),
     );
-    expect(rejected.issues).toHaveLength(2);
-    expect(rejected.issues[0]?.field).toBe("name");
-    expect(rejected.issues[1]?.rule).toBe("value-size");
+    expect(rejected.issues).toEqual([
+      { field: "name", rule: "name-reserved", message: "This name is owned by the platform." },
+      { field: "value", rule: "value-size", message: "Too big." },
+    ]);
   });
 
   it("renders a duplicate as a name-field issue naming only the NAME", () => {

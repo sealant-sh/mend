@@ -12,6 +12,8 @@ import { ids } from "../../test/support/tenancy-harness.ts";
 const sharedA = ids("shared-a");
 
 interface Provisioned {
+  readonly worktreeId: string;
+  readonly harness: string;
   readonly ownerUserId: string | null;
   readonly autoLand: boolean | null | undefined;
 }
@@ -28,9 +30,14 @@ describe("POST /worktrees/:id/sessions", () => {
         implement: {
           engine: {
             launchUnderWay: () => false,
-            provisionSessionIn: (_worktreeId, input) =>
+            provisionSessionIn: (worktreeId, input) =>
               Effect.suspend(() => {
-                provisioned.push({ ownerUserId: input.ownerUserId, autoLand: input.autoLand });
+                provisioned.push({
+                  worktreeId,
+                  harness: input.harness,
+                  ownerUserId: input.ownerUserId,
+                  autoLand: input.autoLand,
+                });
                 const session = api.world.sessions.get(sharedA.session);
                 return session === undefined
                   ? Effect.die("no session in the world")
@@ -57,13 +64,15 @@ describe("POST /worktrees/:id/sessions", () => {
     expect((await start({ harness: "claude", autoLand: true })).status).toBe(200);
     expect((await start({ harness: "claude", autoLand: false })).status).toBe(200);
     expect(provisioned).toEqual([
-      { ownerUserId: "alice", autoLand: true },
-      { ownerUserId: "alice", autoLand: false },
+      { worktreeId: sharedA.worktree, harness: "claude", ownerUserId: "alice", autoLand: true },
+      { worktreeId: sharedA.worktree, harness: "claude", ownerUserId: "alice", autoLand: false },
     ]);
   });
 
   it("follows the project when an older client leaves the key out", async () => {
     expect((await start({ harness: "claude" })).status).toBe(200);
-    expect(provisioned).toEqual([{ ownerUserId: "alice", autoLand: null }]);
+    expect(provisioned).toEqual([
+      { worktreeId: sharedA.worktree, harness: "claude", ownerUserId: "alice", autoLand: null },
+    ]);
   });
 });

@@ -8,15 +8,11 @@ import { MendDBLive } from "../src/client.ts";
 import { migrations } from "../src/migrations.ts";
 import { SessionsRepo, SessionsRepoLive } from "../src/repos/agent-sessions.ts";
 import { SessionProcessesRepo, SessionProcessesRepoLive } from "../src/repos/session-processes.ts";
+import { postgresTestConfig } from "./postgres.ts";
 
-/**
- * `first_output_at` (0095) against Postgres in a throwaway database: when an agent's record first
- * carried output (alpha 2026-09-30, fda7180d: a claude on a new machine drew ~45 s after it
- * started). Only the first stamp takes. Without a database reachable these skip; set
- * MEND_TEST_DATABASE_URL.
- */
-const ADMIN_URL =
-  process.env["MEND_TEST_DATABASE_URL"] ?? "postgres://mend:mend@localhost:5434/mend";
+/** Runs in a throwaway PostgreSQL database. See postgresTestConfig for local opt-out. */
+const postgres = postgresTestConfig();
+const ADMIN_URL = postgres.adminUrl;
 const SCRATCH_DB = `mend_first_output_test_${process.pid}_${Date.now()}`;
 const scratchUrl = (() => {
   const url = new URL(ADMIN_URL);
@@ -35,22 +31,11 @@ const run = <A, E>(
   effect: Effect.Effect<A, E, SessionsRepo | SessionProcessesRepo | SqlClient.SqlClient>,
 ) => Effect.runPromise(effect.pipe(Effect.provide(reposLayer), Effect.scoped));
 
-const reachable = await withAdmin(
-  Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
-    yield* sql`SELECT 1`;
-    return true;
-  }).pipe(Effect.timeout("2 seconds")),
-).then(
-  () => true,
-  () => false,
-);
-
 const PROJECT = ProjectId.make("p-web");
 const WORKTREE = WorktreeId.make("wt-1");
 const SESSION = SessionId.make("s-launched");
 
-describe.skipIf(!reachable)("an agent process's first output, in Postgres", () => {
+describe.skipIf(postgres.skip)("an agent process's first output, in Postgres", () => {
   beforeAll(async () => {
     await withAdmin(
       Effect.gen(function* () {

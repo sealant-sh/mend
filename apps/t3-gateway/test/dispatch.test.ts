@@ -894,10 +894,17 @@ describe("review round 4", () => {
           });
           yield* thread.next(runEvent((run) => run.id === runId && run.status === "cancelled"));
           // The launch answers 500 after the take-back: the run is not rewritten.
-          const after = yield* thread
-            .next(runEvent((run) => run.id === runId))
-            .pipe(Effect.timeout("2 seconds"), Effect.option);
-          assert.isTrue(after._tag === "None", "the cancelled run changed again");
+          assert.isTrue(
+            yield* thread.quiet(
+              runEvent((run) => run.id === runId),
+              "2 seconds",
+            ),
+            "the cancelled run changed again",
+          );
+          const after = yield* rpc[ORCHESTRATION_V2_WS_METHODS.getThreadProjection]({
+            threadId: ThreadId.make("session-1"),
+          });
+          assert.strictEqual(after.runs.find((run) => run.id === runId)?.status, "cancelled");
           assert.strictEqual(posts(mend, "/launch").length, 1);
         }),
       ),

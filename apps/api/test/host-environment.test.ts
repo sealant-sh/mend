@@ -15,7 +15,7 @@ afterEach(async () => {
 });
 
 describe("scanHostEnvironment", () => {
-  it("suggests known tools and config paths without enumerating or reading the user's home", async () => {
+  it("suggests known tools and config paths while omitting private names and contents", async () => {
     const home = await fs.mkdtemp(path.join(os.tmpdir(), "mend-host-scan-"));
     cleanups.push(home);
     const bin = path.join(home, ".local", "bin");

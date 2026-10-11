@@ -27,6 +27,7 @@ import {
   SlackLinksRepoLive,
 } from "../src/repos/slack-links.ts";
 import { SlackThreadsRepo, SlackThreadsRepoLive } from "../src/repos/slack-threads.ts";
+import { postgresTestConfig } from "./postgres.ts";
 
 describe("slack link codes", () => {
   it("mints recognisable, url-safe codes and stores only a hash", () => {
@@ -38,12 +39,9 @@ describe("slack link codes", () => {
   });
 });
 
-/**
- * The real statements against the dev Postgres (`compose.dev.yaml`, :5434) in a throwaway database.
- * Without one reachable these skip rather than pretend; set MEND_TEST_DATABASE_URL elsewhere.
- */
-const ADMIN_URL =
-  process.env["MEND_TEST_DATABASE_URL"] ?? "postgres://mend:mend@localhost:5434/mend";
+/** Runs in a throwaway PostgreSQL database. See postgresTestConfig for local opt-out. */
+const postgres = postgresTestConfig();
+const ADMIN_URL = postgres.adminUrl;
 const SCRATCH_DB = `mend_slack_test_${process.pid}_${Date.now()}`;
 const scratchUrl = (() => {
   const url = new URL(ADMIN_URL);
@@ -76,17 +74,6 @@ const withAdmin = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
 const run = <A, E>(effect: Effect.Effect<A, E, Repos>) =>
   Effect.runPromise(effect.pipe(Effect.provide(reposLayer), Effect.scoped));
 
-const reachable = await withAdmin(
-  Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
-    yield* sql`SELECT 1`;
-    return true;
-  }).pipe(Effect.timeout("2 seconds")),
-).then(
-  () => true,
-  () => false,
-);
-
 const ORDERED = Object.entries(migrations).toSorted(([a], [b]) => a.localeCompare(b));
 
 const OTHER = OrganizationId.make("org-other");
@@ -100,7 +87,7 @@ const mention = (text: string): SlackPendingMention => ({
   text,
 });
 
-describe.skipIf(!reachable)("slack in Postgres", () => {
+describe.skipIf(postgres.skip)("slack in Postgres", () => {
   // The default organization the migrations create; Alice owns it and Bob is a member.
   let ACME = OrganizationId.make("");
   const installFor = (overrides: Partial<NewSlackInstall> = {}): NewSlackInstall => ({

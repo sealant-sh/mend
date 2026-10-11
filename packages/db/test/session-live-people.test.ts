@@ -8,15 +8,11 @@ import { MendDBLive } from "../src/client.ts";
 import { migrations } from "../src/migrations.ts";
 import { SessionsRepo, SessionsRepoLive } from "../src/repos/agent-sessions.ts";
 import { SessionProcessesRepo, SessionProcessesRepoLive } from "../src/repos/session-processes.ts";
+import { postgresTestConfig } from "./postgres.ts";
 
-/**
- * The people live in a session's executor (docs/adr/0016, decision 13), read in the same query as
- * the API's session list and view, against Postgres in a throwaway database; and that query's
- * latency against the plain list's (Performance: session list and view within +5% or +20 ms).
- * Without a database reachable these skip; set MEND_TEST_DATABASE_URL.
- */
-const ADMIN_URL =
-  process.env["MEND_TEST_DATABASE_URL"] ?? "postgres://mend:mend@localhost:5434/mend";
+/** Runs in a throwaway PostgreSQL database. See postgresTestConfig for local opt-out. */
+const postgres = postgresTestConfig();
+const ADMIN_URL = postgres.adminUrl;
 const SCRATCH_DB = `mend_live_people_test_${process.pid}_${Date.now()}`;
 const scratchUrl = (() => {
   const url = new URL(ADMIN_URL);
@@ -34,17 +30,6 @@ const withAdmin = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
 const run = <A, E>(
   effect: Effect.Effect<A, E, SessionsRepo | SessionProcessesRepo | SqlClient.SqlClient>,
 ) => Effect.runPromise(effect.pipe(Effect.provide(reposLayer), Effect.scoped));
-
-const reachable = await withAdmin(
-  Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
-    yield* sql`SELECT 1`;
-    return true;
-  }).pipe(Effect.timeout("2 seconds")),
-).then(
-  () => true,
-  () => false,
-);
 
 const PROJECT = ProjectId.make("p-web");
 const WORKTREE = WorktreeId.make("wt-1");
@@ -84,7 +69,7 @@ const time = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
 /** The budget for session list and view latency (Performance): +5% or +20 ms, whichever is larger. */
 const within = (before: number, after: number) => after <= Math.max(before * 1.05, before + 20);
 
-describe.skipIf(!reachable)("the people live in a session's executor, in Postgres", () => {
+describe.skipIf(postgres.skip)("the people live in a session's executor, in Postgres", () => {
   beforeAll(async () => {
     await withAdmin(
       Effect.gen(function* () {

@@ -118,6 +118,7 @@ describe("typed HTTP error contracts", () => {
       updatedAt: "2026-08-31T00:00:00.000Z",
     });
     expect(withMirror.sessionId).toBe("sess-1");
+    expect(Schema.encodeSync(wireCodec)(withMirror)).toMatchObject({ sessionId: "sess-1" });
     const orphaned = Schema.decodeUnknownSync(wireCodec)({
       id: "chg-2",
       projectId: "proj-1",
@@ -130,9 +131,10 @@ describe("typed HTTP error contracts", () => {
       updatedAt: "2026-08-31T00:00:00.000Z",
     });
     expect(orphaned.sessionId).toBeNull();
+    expect(Schema.encodeSync(wireCodec)(orphaned)).toMatchObject({ sessionId: null });
   });
 
-  it("exposes the authenticated project skill-inheritance update contract", () => {
+  it("exposes the project skill-inheritance endpoint and requires its switch", () => {
     const endpoints = new Set<string>();
     HttpApi.reflect(MendApi, {
       onGroup: () => {},

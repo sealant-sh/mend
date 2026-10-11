@@ -43,7 +43,27 @@ describe("session ceilings", () => {
 
   it("refuses for the organization at its ceiling, and only for that organization", async () => {
     // Organization A holds three sessions in the world, organization B one.
-    api = await createTenancyApi({ accountLiveSessions: 0, organizationLiveSessions: 3 });
+    const provisioned: Array<{ projectId: string; ownerUserId: string | null }> = [];
+    let world: TenancyApi;
+    world = await createTenancyApi(
+      { accountLiveSessions: 0, organizationLiveSessions: 3 },
+      {
+        implement: {
+          engine: {
+            launchUnderWay: () => false,
+            provision: (input) =>
+              Effect.suspend(() => {
+                provisioned.push({ projectId: input.projectId, ownerUserId: input.ownerUserId });
+                const session = world.world.sessions.get(ids("shared-b").session);
+                return session === undefined
+                  ? Effect.die("no session in the world")
+                  : Effect.succeed(session);
+              }),
+          },
+        },
+      },
+    );
+    api = world;
     api.world.calls.splice(0, api.world.calls.length);
     const inA = await createSession(api, "carol", "shared-a");
     expect(inA.status).toBe(429);
@@ -51,7 +71,12 @@ describe("session ceilings", () => {
     expect(api.world.calls).toEqual([]);
 
     const inB = await createSession(api, "bob", "shared-b");
-    expect(inB.status).not.toBe(429);
+    expect(inB.status).toBe(200);
+    expect(await inB.json()).toMatchObject({
+      id: ids("shared-b").session,
+      projectId: ids("shared-b").project,
+    });
+    expect(provisioned).toEqual([{ projectId: ids("shared-b").project, ownerUserId: "bob" }]);
   });
 
   it("authorization still comes first: a project the caller cannot see is missing, not over budget", async () => {

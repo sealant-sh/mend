@@ -10,14 +10,11 @@ import {
   HarnessLayoutsRepoLive,
   linuxLoginNameOf,
 } from "../src/repos/harness-layouts.ts";
+import { postgresTestConfig } from "./postgres.ts";
 
-/**
- * docs/adr/0016-per-person-harness-homes.md, decisions 1 and 14, against the dev Postgres
- * (`compose.dev.yaml`, :5434) in a throwaway database. Without one reachable these skip rather
- * than pretend; set MEND_TEST_DATABASE_URL elsewhere.
- */
-const ADMIN_URL =
-  process.env["MEND_TEST_DATABASE_URL"] ?? "postgres://mend:mend@localhost:5434/mend";
+/** Runs in a throwaway PostgreSQL database. See postgresTestConfig for local opt-out. */
+const postgres = postgresTestConfig();
+const ADMIN_URL = postgres.adminUrl;
 const SCRATCH_DB = `mend_harness_layouts_test_${process.pid}_${Date.now()}`;
 const scratchUrl = (() => {
   const url = new URL(ADMIN_URL);
@@ -33,17 +30,6 @@ const withAdmin = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
 const run = <A, E>(effect: Effect.Effect<A, E, HarnessLayoutsRepo | SqlClient.SqlClient>) =>
   Effect.runPromise(effect.pipe(Effect.provide(repoLayer), Effect.scoped));
 
-const reachable = await withAdmin(
-  Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
-    yield* sql`SELECT 1`;
-    return true;
-  }).pipe(Effect.timeout("2 seconds")),
-).then(
-  () => true,
-  () => false,
-);
-
 const worktree = WorktreeId.make("wt-1");
 
 describe("Linux login names", () => {
@@ -57,7 +43,7 @@ describe("Linux login names", () => {
   });
 });
 
-describe.skipIf(!reachable)("per-person harness homes, in Postgres", () => {
+describe.skipIf(postgres.skip)("per-person harness homes, in Postgres", () => {
   beforeAll(async () => {
     await withAdmin(
       Effect.gen(function* () {
@@ -319,7 +305,7 @@ describe.skipIf(!reachable)("per-person harness homes, in Postgres", () => {
   });
 });
 
-describe.skipIf(!reachable)(
+describe.skipIf(postgres.skip)(
   "one live agent process per conversation, in Postgres (Delivery 17)",
   () => {
     const db = `mend_conversations_test_${process.pid}_${Date.now()}`;
@@ -459,7 +445,7 @@ describe.skipIf(!reachable)(
   },
 );
 
-describe.skipIf(!reachable)(
+describe.skipIf(postgres.skip)(
   "pre-release executors and the old shared home's migration, in Postgres (Delivery 19)",
   () => {
     const db = `mend_pre_release_test_${process.pid}_${Date.now()}`;

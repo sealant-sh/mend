@@ -8,15 +8,11 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { MendDBLive } from "../src/client.ts";
 import { migrations } from "../src/migrations.ts";
 import { SessionsRepo, SessionsRepoLive } from "../src/repos/agent-sessions.ts";
+import { postgresTestConfig } from "./postgres.ts";
 
-/**
- * The durable drain intent (docs/adr/0002, "Stop drains, then terminates") against the dev
- * Postgres (`compose.dev.yaml`, :5434) in a throwaway database: what a restart takes up again, the
- * one `not saved` a stall records, and a removal that waits for its workspace. Without a database
- * reachable these skip; set MEND_TEST_DATABASE_URL elsewhere.
- */
-const ADMIN_URL =
-  process.env["MEND_TEST_DATABASE_URL"] ?? "postgres://mend:mend@localhost:5434/mend";
+/** Runs in a throwaway PostgreSQL database. See postgresTestConfig for local opt-out. */
+const postgres = postgresTestConfig();
+const ADMIN_URL = postgres.adminUrl;
 const SCRATCH_DB = `mend_capture_drain_test_${process.pid}_${Date.now()}`;
 const scratchUrl = (() => {
   const url = new URL(ADMIN_URL);
@@ -33,17 +29,6 @@ const withAdmin = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
   Effect.runPromise(effect.pipe(Effect.provide(adminLayer), Effect.scoped));
 const run = <A, E>(effect: Effect.Effect<A, E, SessionsRepo | SqlClient.SqlClient>) =>
   Effect.runPromise(effect.pipe(Effect.provide(reposLayer), Effect.scoped));
-
-const reachable = await withAdmin(
-  Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
-    yield* sql`SELECT 1`;
-    return true;
-  }).pipe(Effect.timeout("2 seconds")),
-).then(
-  () => true,
-  () => false,
-);
 
 const PROJECT = ProjectId.make("p-web");
 const WORKTREE = WorktreeId.make("wt-1");
@@ -62,7 +47,7 @@ const observed = (at: Date) => ({
   observedAt: at,
 });
 
-describe.skipIf(!reachable)("a session's capture drain, in Postgres", () => {
+describe.skipIf(postgres.skip)("a session's capture drain, in Postgres", () => {
   beforeAll(async () => {
     await withAdmin(
       Effect.gen(function* () {
@@ -733,7 +718,7 @@ const stampAt = (observation: number, headN: number) => ({
 // Review 2026-09-28 (7) #3, rows written before 0088: a session could hold an unsaved answer whose
 // executor-wide write failed. Migrating fences that executor until an answer asked after it is
 // published — the failure already stored on its session keeps any older save from reading saved.
-describe.skipIf(!reachable)("migration 0088 over rows written before it", () => {
+describe.skipIf(postgres.skip)("migration 0088 over rows written before it", () => {
   const LEGACY_DB = `mend_capture_fence_migration_${process.pid}_${Date.now()}`;
   const legacyUrl = (() => {
     const url = new URL(ADMIN_URL);
@@ -813,7 +798,7 @@ describe.skipIf(!reachable)("migration 0088 over rows written before it", () => 
 
 // Review 2026-09-28 (9) #4, rows written before 0090: an executor's evidence kept one unsaved
 // answer in `unsaved_*`. Migrating starts its kept answers from that one.
-describe.skipIf(!reachable)("migration 0090 over rows written before it", () => {
+describe.skipIf(postgres.skip)("migration 0090 over rows written before it", () => {
   const LEGACY_DB = `mend_capture_unsaved_answers_${process.pid}_${Date.now()}`;
   const legacyUrl = (() => {
     const url = new URL(ADMIN_URL);

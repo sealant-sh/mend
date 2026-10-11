@@ -17,7 +17,7 @@ import { shellQuote } from "./workspace-files.ts";
  * The SDK's `exec` takes argv only, and the platform keeps every exec's argv in plaintext for good,
  * so the bytes never ride it: the delivery's one exec carries a single-use pickup ticket and the
  * paths, and redeems the ticket over the session channel for the bytes (`pickup-tickets.ts`;
- * review of mend#552/#553, P1-1). Unlike `writeFilesExecs`, paths here are HOME-relative, the files land 0600
+ * review of mend#552/#553, P1-1). Paths here are HOME-relative, the files land 0600
  * in directories made 0700, and every write first proves the path is still a plain path in the
  * home: no symlink at any component, the directory's physical path equal to its literal one, the
  * home itself outside `/workspace`. A dotfiles tree that linked `~/.aws` into the worktree would

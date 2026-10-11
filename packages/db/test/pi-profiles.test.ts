@@ -6,14 +6,11 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { MendDBLive } from "../src/client.ts";
 import { migrations } from "../src/migrations.ts";
 import { PiProfilesRepo, PiProfilesRepoLive, piProfileDigest } from "../src/repos/pi-profiles.ts";
+import { postgresTestConfig } from "./postgres.ts";
 
-/**
- * Each person's pi setup, against the dev Postgres (`compose.dev.yaml`, :5434) in a throwaway
- * database. Without one reachable these skip rather than pretend; set MEND_TEST_DATABASE_URL
- * elsewhere.
- */
-const ADMIN_URL =
-  process.env["MEND_TEST_DATABASE_URL"] ?? "postgres://mend:mend@localhost:5434/mend";
+/** Runs in a throwaway PostgreSQL database. See postgresTestConfig for local opt-out. */
+const postgres = postgresTestConfig();
+const ADMIN_URL = postgres.adminUrl;
 const SCRATCH_DB = `mend_pi_profiles_test_${process.pid}_${Date.now()}`;
 const scratchUrl = (() => {
   const url = new URL(ADMIN_URL);
@@ -32,17 +29,6 @@ const withAdmin = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
 const run = <A, E>(effect: Effect.Effect<A, E, PiProfilesRepo | SqlClient.SqlClient>) =>
   Effect.runPromise(effect.pipe(Effect.provide(repoLayer), Effect.scoped));
 
-const reachable = await withAdmin(
-  Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
-    yield* sql`SELECT 1`;
-    return true;
-  }).pipe(Effect.timeout("2 seconds")),
-).then(
-  () => true,
-  () => false,
-);
-
 const settings = JSON.stringify({
   theme: "github-dark-default",
   packages: ["npm:pi-web-access@0.23.0", { source: "./mend/profile/packages/pi-usage" }],
@@ -58,7 +44,7 @@ const profile = [
   { path: "extensions/git-info/banner.png", encoding: "base64", contents: "iVBORw0KGgo=" },
 ] as const;
 
-describe.skipIf(!reachable)("pi profiles, in Postgres", () => {
+describe.skipIf(postgres.skip)("pi profiles, in Postgres", () => {
   beforeAll(async () => {
     await withAdmin(
       Effect.gen(function* () {

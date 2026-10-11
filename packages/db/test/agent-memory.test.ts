@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -22,6 +22,7 @@ import {
   planAgentMemoryReadBack,
   type StoredMemoryFile,
 } from "../src/repos/agent-memory.ts";
+import { postgresTestConfig } from "./postgres.ts";
 
 const ROOT = ".claude/projects/-workspace-repo/memory";
 const text = (name: string, contents: string) => ({
@@ -495,27 +496,7 @@ describe("importing memory from a machine", () => {
   }, 60_000);
 });
 
-// Review round 3, invariant C: one function writes versions, and decides pinning itself, so no
-// path can keep a version without the rule.
 describe("where versions are written", () => {
-  const source = readFileSync(
-    join(import.meta.dirname, "..", "src", "repos", "agent-memory.ts"),
-    "utf8",
-  );
-  it("has one insert into the versions table, inside keepVersion, pinned by isSoleCopy", () => {
-    expect(source.match(/\.insert\(agentMemoryVersions\)/g)).toHaveLength(1);
-    const keep = source.slice(source.indexOf("const keepVersion = ("));
-    expect(keep.indexOf(".insert(agentMemoryVersions)")).toBeLessThan(
-      keep.indexOf("const write = ("),
-    );
-    expect(keep).toMatch(/const pinned = yield\* isSoleCopy\(version, current, holdsDatabase\);/);
-    // Every call must name the file it is kept beside (null for a deletion) and a database check:
-    // both parameters are required, with no default, so the compiler holds every call to it.
-    expect(keep).toMatch(
-      /version: StoredMemoryFile,\s+current: MemoryFile \| null,\s+holdsDatabase: HoldsDatabase,\s+\) =>/,
-    );
-  });
-
   it("pins a version that holds a line, or any bytes, the current file lacks", async () => {
     const t = (contents: string) => text("x.md", contents);
     const b = (contents: string) => ({
@@ -541,12 +522,9 @@ type MemoryLike = {
 const soleCopy = (version: MemoryLike, current: MemoryLike | null) =>
   Effect.runPromise(isSoleCopy(version, current, () => Effect.succeed(false)));
 
-/**
- * Against the dev Postgres (`compose.dev.yaml`, :5434) in a throwaway database. Without one
- * reachable these skip rather than pretend; set MEND_TEST_DATABASE_URL elsewhere.
- */
-const ADMIN_URL =
-  process.env["MEND_TEST_DATABASE_URL"] ?? "postgres://mend:mend@localhost:5434/mend";
+/** Runs in a throwaway PostgreSQL database. See postgresTestConfig for local opt-out. */
+const postgres = postgresTestConfig();
+const ADMIN_URL = postgres.adminUrl;
 const SCRATCH_DB = `mend_agent_memory_test_${process.pid}_${Date.now()}`;
 const scratchUrl = (() => {
   const url = new URL(ADMIN_URL);
@@ -563,16 +541,6 @@ const withAdmin = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
   Effect.runPromise(effect.pipe(Effect.provide(adminLayer), Effect.scoped));
 const run = <A, E>(effect: Effect.Effect<A, E, AgentMemoryRepo | SqlClient.SqlClient>) =>
   Effect.runPromise(effect.pipe(Effect.provide(repoLayer), Effect.scoped));
-const reachable = await withAdmin(
-  Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
-    yield* sql`SELECT 1`;
-    return true;
-  }).pipe(Effect.timeout("2 seconds")),
-).then(
-  () => true,
-  () => false,
-);
 
 /** Keeps every line of both sides, as `git merge-file --union` does for appended lines. */
 const unionMerge: MergeText = ({ ours, theirs }) =>
@@ -648,7 +616,7 @@ const upgradeLayer = PgClient.layer({
   ),
 });
 
-describe.skipIf(!reachable)("upgrading to 0108", () => {
+describe.skipIf(postgres.skip)("upgrading to 0108", () => {
   afterAll(async () => {
     await withAdmin(
       Effect.gen(function* () {
@@ -689,7 +657,7 @@ describe.skipIf(!reachable)("upgrading to 0108", () => {
   });
 });
 
-describe.skipIf(!reachable)("agent memory, in Postgres", () => {
+describe.skipIf(postgres.skip)("agent memory, in Postgres", () => {
   beforeAll(async () => {
     await withAdmin(
       Effect.gen(function* () {

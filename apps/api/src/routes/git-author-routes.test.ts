@@ -41,21 +41,25 @@ type GitKeysRouteServices =
 const call = async (
   method: "GET" | "PUT" | "DELETE",
   body?: unknown,
+  initial: GitAuthor | null = null,
 ): Promise<{
   readonly status: number;
   readonly body: unknown;
   readonly saved: ReadonlyArray<GitAuthor | null>;
+  readonly asked: ReadonlyArray<string>;
 }> => {
   const saved: Array<GitAuthor | null> = [];
+  const asked: Array<string> = [];
+  let setting = initial;
   const dependencies = Layer.mergeAll(
     Layer.mock(AgentBridge, { socketPath: () => "/unused/agent.sock" }),
     Layer.mock(MendKeys, {}),
     Layer.mock(UserEvents, {}),
     Layer.mock(UserGitAccessRepo, {}),
     Layer.succeed(UserGitAuthorRepo, {
-      resolve: () =>
+      resolve: (userId) =>
         Effect.sync(() => {
-          const setting = saved.at(-1) ?? null;
+          asked.push(`resolve:${userId}`);
           return setting === null
             ? new ResolvedGitAuthor({
                 name: "Anna Example",
@@ -64,8 +68,18 @@ const call = async (
               })
             : new ResolvedGitAuthor({ ...setting, source: "setting" });
         }),
-      set: (_userId, author) => Effect.sync(() => void saved.push(author)),
-      clear: () => Effect.sync(() => void saved.push(null)),
+      set: (userId, author) =>
+        Effect.sync(() => {
+          asked.push(`set:${userId}`);
+          setting = author;
+          saved.push(author);
+        }),
+      clear: (userId) =>
+        Effect.sync(() => {
+          asked.push(`clear:${userId}`);
+          setting = null;
+          saved.push(null);
+        }),
     }),
   );
   const apiLayer = HttpApiBuilder.layer(GitKeysApi).pipe(
@@ -85,7 +99,7 @@ const call = async (
       }),
       context,
     );
-    return { status: response.status, body: await response.json(), saved };
+    return { status: response.status, body: await response.json(), saved, asked };
   } finally {
     await dispose();
     await runtime.dispose();
@@ -96,6 +110,7 @@ describe("/api/me/git-author", () => {
   it("answers the account's registration name and email until one is saved", async () => {
     const read = await call("GET");
     expect(read.status).toBe(200);
+    expect(read.asked).toEqual(["resolve:anna"]);
     expect(read.body).toEqual({
       name: "Anna Example",
       email: "anna@example.com",
@@ -106,6 +121,7 @@ describe("/api/me/git-author", () => {
   it("saves a trimmed author and answers it as the account's setting", async () => {
     const result = await call("PUT", { name: "  Anna E. ", email: " anna@work.example " });
     expect(result.status).toBe(200);
+    expect(result.asked).toEqual(["set:anna", "resolve:anna"]);
     expect(result.saved.map((author) => (author === null ? null : { ...author }))).toEqual([
       { name: "Anna E.", email: "anna@work.example" },
     ]);
@@ -127,9 +143,17 @@ describe("/api/me/git-author", () => {
   });
 
   it("clears back to the account's own", async () => {
-    const result = await call("DELETE");
+    const result = await call("DELETE", undefined, {
+      name: "Work Anna",
+      email: "anna@work.example",
+    });
     expect(result.status).toBe(200);
     expect(result.saved).toEqual([null]);
-    expect(result.body).toMatchObject({ source: "account" });
+    expect(result.asked).toEqual(["clear:anna", "resolve:anna"]);
+    expect(result.body).toEqual({
+      name: "Anna Example",
+      email: "anna@example.com",
+      source: "account",
+    });
   });
 });
