@@ -23,12 +23,14 @@
     "@mend/store": "workspace:*",
     "@sealant/sdk": "catalog:",
     "effect": "catalog:",
+    "pg": "catalog:",
     "pg-boss": "catalog:"
   },
   "devDependencies": {
     "@effect/vitest": "catalog:",
     "@mend/typescript": "workspace:*",
     "@types/node": "catalog:",
+    "@types/pg": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"
   }

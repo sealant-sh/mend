@@ -23,7 +23,7 @@
     "@mend/db": "workspace:*",
     "@mend/typescript": "workspace:*",
     "@types/node": "catalog:",
-    "@types/pg": "^8.11.10",
+    "@types/pg": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"
   }
