@@ -13276,6 +13276,8 @@ describe("SessionEngine capture mode", () => {
               kind: "fetch",
               argv: [
                 "ssh",
+                "-F",
+                "/dev/null",
                 "-i",
                 "/keys/user-fixture",
                 "-o",
