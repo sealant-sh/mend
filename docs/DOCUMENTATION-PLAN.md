@@ -164,8 +164,8 @@ because ordering and status-sensitive page names are part of the public route co
   Configure project workspaces**, separating current image, variable, secret, reference, folder,
   recipe, dotfile, hot-session, Git-access, and review settings from planned options.
 - `apps/docs/src/content/docs/guides/git-access.md` at `/guides/git-access/` is **[Shipped]
-  Configure Git access**, covering ambient credentials, a Mend key, the hardware-key bridge, the
-  workspace shim, recovery, and the shared bare-repository risk.
+  Configure Git access**, covering a Mend key, the hardware-key bridge, HTTPS remotes, the removal
+  of the ambient mode (0.36), the workspace shim, recovery, and the shared bare-repository risk.
 - `apps/docs/src/content/docs/guides/remote-access.md` at `/guides/remote-access/` is **[Mixed] Use
   Mend from another device**, covering current browser access, exposure (declared and observed),
   pairing and revocation while labeling the unpublished native app and any unshipped scope controls.

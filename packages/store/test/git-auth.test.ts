@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -14,6 +14,7 @@ import {
   sshUrlOfHttpsRemote,
   remoteGitEnv,
   sshCommandFor,
+  sshTransportArgs,
 } from "../src/git-auth.ts";
 
 const withKeys = <A, E>(work: (root: string) => Effect.Effect<A, E, MendKeys>): Promise<A> => {
@@ -142,6 +143,75 @@ describe("sshCommandFor", () => {
   it("remoteGitEnv never prompts", () => {
     expect(remoteGitEnv("ssh")["GIT_TERMINAL_PROMPT"]).toBe("0");
   });
+});
+
+/** `ssh -G`: the effective config for github.com, or null when there is no ssh client. */
+const sshG = (argv: ReadonlyArray<string>): ReadonlyArray<string> | null => {
+  const result = spawnSync("ssh", [...argv, "-G", "github.com"], {
+    encoding: "utf8",
+    env: { ...process.env, SSH_AUTH_SOCK: "/bridge/anna.sock" },
+  });
+  return result.status === 0 ? result.stdout.split("\n").filter((line) => line !== "") : null;
+};
+// sh-parse a GIT_SSH_COMMAND the way git does, without its leading `ssh`.
+const words = (command: string) =>
+  String(execFileSync("sh", ["-c", `printf '%s\\n' ${command.replace(/^ssh /, "")}`]))
+    .split("\n")
+    .filter((word) => word !== "");
+
+/**
+ * Where Mend chooses the signer, the server user's ssh config has no say: no `IdentityFile`
+ * beside the Mend key, no `IdentityAgent` in place of the bridge's socket. ssh reads
+ * `~/.ssh/config` from the passwd entry, not HOME, so a test cannot plant one there; ssh takes
+ * the last `-F`, so a config handed in before Mend's options stands in for it.
+ */
+describe("ssh where Mend chooses the signer reads no ssh config", () => {
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "mend-ssh-config-"));
+  const keyPath = path.join(scratch, "id_ed25519");
+  fs.writeFileSync(keyPath, "", { mode: 0o600 });
+  const userConfig = path.join(scratch, "config");
+  fs.writeFileSync(
+    userConfig,
+    "Host *\n  IdentityFile /operator/.ssh/id_operator\n  IdentityAgent /operator/agent.sock\n",
+  );
+  const cases = [
+    ["mend-key GIT_SSH_COMMAND", words(sshCommandFor("mend-key", keyPath))],
+    ["bridge GIT_SSH_COMMAND", words(sshCommandFor("bridge", null))],
+    ["mend-key workspace transport", [...sshTransportArgs("mend-key", keyPath, null)]],
+    ["bridge workspace transport", [...sshTransportArgs("bridge", null, null)]],
+  ] as const;
+
+  it.each(cases)("%s starts with -F /dev/null", (_name, argv) => {
+    expect(argv.slice(0, 2)).toEqual(["-F", "/dev/null"]);
+  });
+
+  it.each(cases)(
+    "%s: a user config's IdentityFile and IdentityAgent are not used",
+    (_name, argv) => {
+      const resolved = sshG(["-F", userConfig, ...argv]);
+      if (resolved === null) return; // no ssh client on this machine
+      expect(resolved.join("\n")).not.toContain("/operator/");
+      // Sanity: the same config, read on its own, does reach ssh.
+      expect((sshG(["-F", userConfig]) ?? []).join("\n")).toContain("/operator/.ssh/id_operator");
+    },
+  );
+
+  it.each(cases)(
+    "%s: the effective config differs from ssh's defaults only by Mend's options",
+    (name, argv) => {
+      // BatchMode is Mend's too, and ssh derives more from it on some versions (9.6 sets
+      // ServerAliveInterval 300): the baseline carries it, so those derivations cancel out.
+      const defaults = sshG(["-F", "/dev/null", "-o", "BatchMode=yes"]);
+      const resolved = sshG(argv);
+      if (defaults === null || resolved === null) return;
+      const added = resolved.filter((line) => !defaults.includes(line)).toSorted();
+      const mend = name.startsWith("mend-key")
+        ? ["identitiesonly yes", `identityfile ${keyPath}`]
+        : ["identityfile none"];
+      const transport = name.endsWith("workspace transport") ? ["sendenv GIT_PROTOCOL"] : [];
+      expect(added).toEqual([...mend, ...transport, "stricthostkeychecking accept-new"].toSorted());
+    },
+  );
 });
 
 describe("describeGitRemoteFailure", () => {

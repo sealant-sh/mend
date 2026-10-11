@@ -1,4 +1,8 @@
 import { execFile } from "node:child_process";
+import * as crypto from "node:crypto";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 
 import { gitRemoteLocation, type GitAuthMode } from "@mend/domain/workbench";
 import { Effect, Schema } from "effect";
@@ -17,86 +21,95 @@ export class NoSignerError extends Schema.TaggedErrorClass<NoSignerError>()("NoS
   message: Schema.String,
 }) {}
 
-/** One `url.<base>.insteadOf` (or `pushInsteadOf`) rule from git's config. */
-export interface GitUrlRewrite {
-  /** What a matching URL becomes: `<base>`. */
-  readonly base: string;
-  /** The prefix it replaces. */
-  readonly prefix: string;
-  /** `pushInsteadOf`: applies to pushes only. */
-  readonly push: boolean;
-}
-
 /**
- * The URL git dials for `url` under `rules`, by git's own rule: the longest matching prefix wins;
- * for a push a `pushInsteadOf` match comes first, then `insteadOf`.
+ * Variables that point git at another repository, another config file or a template. The probes
+ * below run in a repository of their own or none: inherited from the server process, these would
+ * write the probe's remote into someone else's repository or config, or seed the probe with
+ * rules the real operation never sees. The system and global config (`GIT_CONFIG_GLOBAL`,
+ * `GIT_CONFIG_SYSTEM`, `GIT_CONFIG_NOSYSTEM`) stay: their `url.*` rules are the point.
  */
-export const rewriteGitUrl = (
-  url: string,
-  rules: ReadonlyArray<GitUrlRewrite>,
-  push: boolean,
-): string => {
-  const longest = (candidates: ReadonlyArray<GitUrlRewrite>) =>
-    candidates
-      .filter((rule) => url.startsWith(rule.prefix))
-      .reduce<GitUrlRewrite | null>(
-        (best, rule) => (best === null || rule.prefix.length > best.prefix.length ? rule : best),
-        null,
-      );
-  const rule =
-    (push ? longest(rules.filter((candidate) => candidate.push)) : null) ??
-    longest(rules.filter((candidate) => !candidate.push));
-  return rule === null ? url : rule.base + url.slice(rule.prefix.length);
+const GIT_LOCATION_OVERRIDES: ReadonlyArray<string> = [
+  "GIT_DIR",
+  "GIT_COMMON_DIR",
+  "GIT_WORK_TREE",
+  "GIT_INDEX_FILE",
+  "GIT_CONFIG",
+  "GIT_OBJECT_DIRECTORY",
+  "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+  "GIT_NAMESPACE",
+  "GIT_TEMPLATE_DIR",
+  "GIT_PREFIX",
+  "GIT_CEILING_DIRECTORIES",
+  "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+  "GIT_GRAFT_FILE",
+  "GIT_REPLACE_REF_BASE",
+  "GIT_SHALLOW_FILE",
+];
+
+const probeEnv = (): NodeJS.ProcessEnv => {
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  for (const name of GIT_LOCATION_OVERRIDES) delete env[name];
+  return env;
 };
 
-/** `git config --null --get-regexp` output for url rewrites, as rules. */
-export const parseGitUrlRewrites = (output: string): ReadonlyArray<GitUrlRewrite> =>
-  output
-    .split("\0")
-    .filter((entry) => entry !== "")
-    .flatMap((entry) => {
-      const newline = entry.indexOf("\n");
-      if (newline === -1) return [];
-      const key = entry.slice(0, newline);
-      const prefix = entry.slice(newline + 1);
-      const kind = key.slice(key.lastIndexOf(".") + 1).toLowerCase();
-      if (!key.startsWith("url.") || (kind !== "insteadof" && kind !== "pushinsteadof")) return [];
-      return [{ base: key.slice(4, key.lastIndexOf(".")), prefix, push: kind === "pushinsteadof" }];
+/** Run git outside any repository; its trimmed stdout, or null when it failed. */
+const gitAnswer = (args: ReadonlyArray<string>): Effect.Effect<string | null> =>
+  Effect.callback((resume) => {
+    const child = execFile("git", [...args], { cwd: "/", env: probeEnv() }, (error, stdout) => {
+      resume(Effect.succeed(error === null ? stdout.trim() : null));
     });
+    return Effect.sync(() => child.kill());
+  });
 
 /**
- * The url rewrites in the git config every host-side remote op runs under (the server process's
- * system and global config), or null when git could not say. Read outside any repository, as
- * the ops' own config: Mend writes no rewrite into a store.
+ * The URL git dials for `remote` under the git config every host-side remote op runs under (the
+ * server process's system and global config), asked of git itself so its `insteadOf` and
+ * `pushInsteadOf` rules apply exactly as they will (the longest prefix, and among equal ones the
+ * base git saw first). A push asks `git remote get-url --push`, which tries `pushInsteadOf`
+ * before `insteadOf`. It needs a repository whose config names the remote (git does not see a
+ * remote given only with `-c`), so a throwaway bare one holds it: made without a template, its
+ * remote written to its own config file under a name nothing else can have set. Mend writes no
+ * rewrite into a store. Null when git could not answer.
  */
-const readGitUrlRewrites: Effect.Effect<ReadonlyArray<GitUrlRewrite> | null> = Effect.callback(
-  (resume) => {
-    const child = execFile(
-      "git",
-      ["config", "--null", "--get-regexp", "^url\\..*\\.(insteadof|pushinsteadof)$"],
-      { cwd: "/" },
-      (error, stdout) => {
-        // Exit 1 is "no such key": no rewrites at all.
-        if (error === null) resume(Effect.succeed(parseGitUrlRewrites(stdout)));
-        else resume(Effect.succeed(error.code === 1 ? [] : null));
-      },
-    );
-    return Effect.sync(() => child.kill());
-  },
-);
+export const effectiveGitUrl = (remote: string, push: boolean): Effect.Effect<string | null> => {
+  // An accepted remote never starts with "-"; anything that does is no URL git should be asked.
+  if (remote.startsWith("-")) return Effect.succeed(null);
+  if (!push) return gitAnswer(["ls-remote", "--get-url", remote]);
+  return Effect.acquireUseRelease(
+    Effect.sync(() => fs.mkdtempSync(path.join(os.tmpdir(), "mend-push-url-"))),
+    (dir) =>
+      Effect.gen(function* () {
+        const gitDir = path.join(dir, "probe.git");
+        const name = `mend-probe-${crypto.randomUUID()}`;
+        if ((yield* gitAnswer(["init", "-q", "--bare", "--template=", gitDir])) === null) {
+          return null;
+        }
+        const configured = yield* gitAnswer([
+          "config",
+          "--file",
+          path.join(gitDir, "config"),
+          `remote.${name}.url`,
+          remote,
+        ]);
+        if (configured === null) return null;
+        return yield* gitAnswer([`--git-dir=${gitDir}`, "remote", "get-url", "--push", name]);
+      }),
+    (dir) => Effect.sync(() => fs.rmSync(dir, { recursive: true, force: true })),
+  );
+};
 
 /**
  * Whether a remote op on `remote` can need a signer: when the URL git actually dials — after
  * its `insteadOf` and, for a push, `pushInsteadOf` rewrites — is ssh, or when that cannot be
- * told (no remote named, git's config unreadable). https, http and git:// never ask for a key.
+ * told (no remote named, git unable to answer). https, http and git:// never ask for a key.
  */
 const needsSigner = (remote: string | null | undefined, push: boolean) =>
   Effect.gen(function* () {
     if (remote === undefined) return true;
     if (remote === null) return false;
-    const rules = yield* readGitUrlRewrites;
-    if (rules === null) return true;
-    return gitRemoteLocation(rewriteGitUrl(remote, rules, push))?.scheme === "ssh";
+    const dialed = yield* effectiveGitUrl(remote, push);
+    if (dialed === null) return true;
+    return gitRemoteLocation(dialed)?.scheme === "ssh";
   });
 
 /**
