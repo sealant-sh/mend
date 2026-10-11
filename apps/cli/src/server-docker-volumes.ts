@@ -73,10 +73,17 @@ export interface ServerDataInTheWay {
   readonly why: string;
 }
 
-/** What stands where a fresh install's volumes go, before the anchor exists. */
+/**
+ * What stands where a fresh install's volumes go, before the anchor exists. In the way: every item
+ * setup cannot install beside, and the leftovers beside them, if any.
+ */
 export type ServerOldData =
   | { readonly _tag: "leftovers"; readonly leftovers: ServerLeftovers }
-  | { readonly _tag: "in-the-way"; readonly inTheWay: ServerDataInTheWay };
+  | {
+      readonly _tag: "in-the-way";
+      readonly inTheWay: readonly [ServerDataInTheWay, ...ReadonlyArray<ServerDataInTheWay>];
+      readonly leftovers: ServerLeftovers | null;
+    };
 
 const namedAs = (kind: ResourceKind, names: ReadonlyArray<string>): ReadonlyArray<string> => {
   const [only] = names;
@@ -101,8 +108,9 @@ export const leftoversRemoval = (dockerContext: string): string =>
 export const KEEP_THE_DATA =
   "To keep it, put that install's Mend config directory (identity.env and generations) back where it was and run mend server setup: setup takes up the volumes its identity owns.";
 
-const oldDataWords = (found: ServerOldData): string => {
-  const elsewhere = "or install in another Docker context: mend server setup --context <name>.";
+/** Why setup cannot install in this engine, in words: what is there, and what to do about it. */
+export const serverOldDataWords = (found: ServerOldData): string => {
+  const elsewhere = "install in another Docker context: mend server setup --context <name>.";
   if (found._tag === "leftovers") {
     const { leftovers } = found;
     const count =
@@ -117,11 +125,40 @@ const oldDataWords = (found: ServerOldData): string => {
       `Setup does not install beside ${them}. To remove ${them}: ${leftoversRemoval(leftovers.dockerContext)}, then run mend server setup again.`
     );
   }
-  const { dockerContext, kind, name, mend, why } = found.inTheWay;
-  const look = `To see what it is: docker --context ${dockerContext} ${kind} inspect ${name}.`;
-  return mend
-    ? `Docker context ${dockerContext} has ${kind} ${name} from an earlier Mend install, with no installation to own it, and ${why}. Setup leaves it alone. ${look} Stop what runs there, then remove what that install left with ${leftoversRemoval(dockerContext)}, ${elsewhere}`
-    : `Docker context ${dockerContext} has a ${kind} named ${name} that is not Mend's: it ${why}. Setup leaves it alone and cannot install beside it. ${look} Remove it yourself if nothing needs it, ${elsewhere}`;
+  const [first, ...more] = found.inTheWay;
+  const { dockerContext } = first;
+  const beside =
+    found.leftovers === null
+      ? ""
+      : ` Beside ${more.length === 0 ? "it" : "them"}, what an earlier Mend install left: ${leftoverItems(found.leftovers).join(", ")}, which ${leftoversRemoval(dockerContext)} removes.`;
+  if (more.length === 0) {
+    const { kind, name, mend, why } = first;
+    const look = `To see what it is: docker --context ${dockerContext} ${kind} inspect ${name}.`;
+    return mend
+      ? `Docker context ${dockerContext} has ${kind} ${name} from an earlier Mend install, with no installation to own it, and ${why}. Setup leaves it alone. ${look} Stop what runs there, then remove what that install left with ${leftoversRemoval(dockerContext)}, or ${elsewhere}${beside}`
+      : `Docker context ${dockerContext} has a ${kind} named ${name} that is not Mend's: it ${why}. Setup leaves it alone and cannot install beside it. ${look} Remove it yourself if nothing needs it, or ${elsewhere}${beside}`;
+  }
+  const items = found.inTheWay;
+  const mends = items.some((item) => item.mend);
+  const foreign = items.some((item) => !item.mend);
+  const each = items.map((item) =>
+    item.mend
+      ? `${item.kind} ${item.name}, from an earlier Mend install with no installation to own it: ${item.why}`
+      : `${item.kind} ${item.name}, not Mend's: it ${item.why}`,
+  );
+  const looks = items.map(
+    (item) => `docker --context ${dockerContext} ${item.kind} inspect ${item.name}`,
+  );
+  return (
+    `Docker context ${dockerContext} has ${items.length} things setup cannot install beside: ${each.join("; ")}. Setup leaves them alone. To see what each is: ${looks.join(", ")}. ` +
+    (mends
+      ? `Stop what runs on Mend's, then remove what that install left with ${leftoversRemoval(dockerContext)}. `
+      : "") +
+    (foreign
+      ? `Remove what is not Mend's yourself if nothing needs it, or ${elsewhere}`
+      : `Or ${elsewhere}`) +
+    beside
+  );
 };
 
 /**
@@ -154,7 +191,7 @@ export class ServerVolumeOwnershipError extends ServerRefusal {
   ) {
     super(
       found !== undefined
-        ? oldDataWords(found)
+        ? serverOldDataWords(found)
         : `Docker volume ownership check failed (${reason}, ${operation}). ` +
             (reason === "docker" || reason === "inspection"
               ? "Check Docker access and the selected context, then retry. No absence was assumed."
@@ -517,22 +554,19 @@ const findOldData = async (
     }
   }
 
-  const [first] = inTheWay;
-  if (first !== undefined) return { _tag: "ok", value: { _tag: "in-the-way", inTheWay: first } };
-  if (left.container.length + left.network.length + left.volume.length === 0)
-    return { _tag: "ok", value: null };
-  return {
-    _tag: "ok",
-    value: {
-      _tag: "leftovers",
-      leftovers: {
-        dockerContext: context,
-        containers: left.container,
-        networks: left.network,
-        volumes: left.volume,
-      },
-    },
-  };
+  const leftovers: ServerLeftovers | null =
+    left.container.length + left.network.length + left.volume.length === 0
+      ? null
+      : {
+          dockerContext: context,
+          containers: left.container,
+          networks: left.network,
+          volumes: left.volume,
+        };
+  const [first, ...more] = inTheWay;
+  if (first !== undefined)
+    return { _tag: "ok", value: { _tag: "in-the-way", inTheWay: [first, ...more], leftovers } };
+  return { _tag: "ok", value: leftovers === null ? null : { _tag: "leftovers", leftovers } };
 };
 
 const refuseOldData = async (
@@ -550,7 +584,7 @@ const refuseOldData = async (
       "unowned-data",
       found.value._tag === "leftovers"
         ? "leftovers without anchor"
-        : `existing ${found.value.inTheWay.kind} without anchor`,
+        : `existing ${found.value.inTheWay[0].kind} without anchor`,
       found.value,
     ),
   };

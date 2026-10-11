@@ -612,7 +612,7 @@ describe("what stands in a fresh install's way", () => {
     expect(await claimServerDockerVolumes(daemon, input)).toMatchObject({
       _tag: "error",
       error: {
-        found: { _tag: "in-the-way", inTheWay: { kind: "network", mend: true } },
+        found: { _tag: "in-the-way", inTheWay: [{ kind: "network", mend: true }], leftovers: null },
         message:
           "Docker context explicit-test-context has network mend_default from an earlier Mend install, with no installation to own it, and container sealant-w1 is attached to it. Setup leaves it alone. To see what it is: docker --context explicit-test-context network inspect mend_default. Stop what runs there, then remove what that install left with DOCKER_CONTEXT=explicit-test-context mend uninstall --server, or install in another Docker context: mend server setup --context <name>.",
       },
@@ -623,7 +623,7 @@ describe("what stands in a fresh install's way", () => {
     expect(await claimServerDockerVolumes(running, input)).toMatchObject({
       _tag: "error",
       error: {
-        found: { _tag: "in-the-way", inTheWay: { name: "mend-mend-1", why: "it is running" } },
+        found: { _tag: "in-the-way", inTheWay: [{ name: "mend-mend-1", why: "it is running" }] },
       },
     });
     // A container of the project a generation did not start is not Mend's.
@@ -634,10 +634,12 @@ describe("what stands in a fresh install's way", () => {
       error: {
         found: {
           _tag: "in-the-way",
-          inTheWay: {
-            mend: false,
-            why: "carries Compose project label mend, but no Mend install started it",
-          },
+          inTheWay: [
+            {
+              mend: false,
+              why: "carries Compose project label mend, but no Mend install started it",
+            },
+          ],
         },
       },
     });
@@ -664,6 +666,57 @@ describe("what stands in a fresh install's way", () => {
         value: { _tag: "in-the-way" },
       });
       expect([...daemon.networks]).toEqual([["mend_default", labels]]);
+    },
+  );
+
+  it("names every item in the way, and the leftovers beside them", async () => {
+    const daemon = new DockerDaemon();
+    daemon.networks.set("mend_default", null);
+    daemon.volumes.set("mend_cache", { "com.docker.compose.project": "other" });
+    daemon.containers.set("mend-mend-1", generation);
+    daemon.running.add("mend-mend-1");
+    daemon.volumes.set("mend-control", { [SERVER_VOLUME_OWNER_LABEL]: "an-identity-long-gone" });
+    expect(await claimServerDockerVolumes(daemon, input)).toMatchObject({
+      _tag: "error",
+      error: {
+        reason: "unowned-data",
+        found: {
+          _tag: "in-the-way",
+          inTheWay: [
+            { kind: "volume", name: "mend_cache", mend: false },
+            { kind: "container", name: "mend-mend-1", mend: true },
+            { kind: "network", name: "mend_default", mend: false },
+          ],
+          leftovers: { volumes: ["mend-control"] },
+        },
+        message:
+          "Docker context explicit-test-context has 3 things setup cannot install beside: volume mend_cache, not Mend's: it belongs to Compose project other; container mend-mend-1, from an earlier Mend install with no installation to own it: it is running; network mend_default, not Mend's: it carries no labels. Setup leaves them alone. To see what each is: docker --context explicit-test-context volume inspect mend_cache, docker --context explicit-test-context container inspect mend-mend-1, docker --context explicit-test-context network inspect mend_default. Stop what runs on Mend's, then remove what that install left with DOCKER_CONTEXT=explicit-test-context mend uninstall --server. Remove what is not Mend's yourself if nothing needs it, or install in another Docker context: mend server setup --context <name>. Beside them, what an earlier Mend install left: volume mend-control, which DOCKER_CONTEXT=explicit-test-context mend uninstall --server removes.",
+      },
+    });
+    expect(daemon.mutations()).toEqual([]);
+  });
+
+  it.each([
+    ["mend_cache", { "com.docker.compose.project": "other" }, "belongs to Compose project other"],
+    [
+      "mend_scratch",
+      { "com.docker.compose.project": "mend" },
+      "carries Compose project label mend, but no Mend install makes a volume by that name",
+    ],
+  ] as const)(
+    "refuses volume %s (labels %j) as not Mend's and offers nothing to remove",
+    async (name, labels, why) => {
+      const daemon = new DockerDaemon();
+      daemon.volumes.set(name, labels);
+      expect(await claimServerDockerVolumes(daemon, input)).toMatchObject({
+        _tag: "error",
+        error: {
+          found: { _tag: "in-the-way", inTheWay: [{ kind: "volume", name, mend: false, why }] },
+          message: `Docker context explicit-test-context has a volume named ${name} that is not Mend's: it ${why}. Setup leaves it alone and cannot install beside it. To see what it is: docker --context explicit-test-context volume inspect ${name}. Remove it yourself if nothing needs it, or install in another Docker context: mend server setup --context <name>.`,
+        },
+      });
+      expect(daemon.mutations()).toEqual([]);
+      expect([...daemon.volumes]).toEqual([[name, labels]]);
     },
   );
 
