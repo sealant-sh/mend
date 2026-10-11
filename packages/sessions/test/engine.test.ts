@@ -8836,8 +8836,10 @@ const shipCapturedHarnessHome = (
     const tree = path.join(tmp, `ship-harness-home-${epoch}`);
     fs.rmSync(tree, { recursive: true, force: true });
     fs.mkdirSync(tree, { recursive: true });
+    // Real mtimes, as sealantd records them: the external-agent observer reads them.
     fs.cpSync(configuredHarnessHomePath(options, executorRoot), path.join(tree, "harness"), {
       recursive: true,
+      preserveTimestamps: true,
     });
     fs.rmSync(path.join(tree, "harness", ".codex", "auth.json"), { force: true });
     fs.rmSync(path.join(tree, "harness", ".claude", ".credentials.json"), { force: true });
@@ -34186,6 +34188,381 @@ describe("the migration of an old shared home's memory (docs/adr/0016, Delivery 
         },
       );
       expect(launched).toBe(true);
+    },
+  );
+});
+
+/** A session's observed agents (`agent-external` rows). */
+const externalRowsOf = (world: World, sessionId: SessionId) =>
+  [...world.processes.values()].filter(
+    (process) => process.kind === "agent-external" && process.sessionId === sessionId,
+  );
+
+describe("agents run by hand are observed in the head capture (docs/adr/0016)", () => {
+  const personLayers = (created: Array<CreateOptions>, memory: MemoryCaptureStore) => ({
+    captured: memory,
+    prepareWorld: (world: World) => world.members.set(MARIA, "member"),
+    sealantLayer: sealantLaunchLayer(
+      created,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      [],
+      undefined,
+      { flush: headFlush(memory), exec: answerLayout(LAYOUT_READY) },
+    ),
+    harnessLayout: {
+      flag: "person" as const,
+      platform: personPlatform([], { person: true }),
+    },
+  });
+
+  it(
+    "a claude a person runs by hand writes into their saved directory and is observed as theirs",
+    { timeout: 30_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const memory = makeMemoryCaptureStore();
+      const id = crypto.randomUUID();
+      const old = crypto.randomUUID();
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const project = yield* setup(tmp, world);
+            const engine = yield* SessionEngine;
+            const session = yield* engine.provision({
+              projectId: project.id,
+              harness: "claude",
+              label: null,
+              name: "workbench",
+              ownerUserId: "user-fixture",
+              base: null,
+            });
+            // The open workbench: a shell holds the workspace; no engine agent runs.
+            yield* engine.launch(session.id, ["bash"]);
+            const request = created[0];
+            if (request === undefined) return yield* Effect.die("the launch made no executor");
+            const executorRoot = path.join(tmp, "person-executor");
+            const home = configuredHarnessHomePath(request, executorRoot);
+            const epoch = memory.leases.get(session.worktreeId)?.epoch ?? 0;
+            // A conversation of hers from before this session, in the same saved directory: history,
+            // never an agent of this session's.
+            const before = `${peopleDir("user-fixture")}/${PROJECT_DIR}/${old}.jsonl`;
+            writeUnder(home, before, claudeLine(old, "an earlier session"));
+            const earlier = new Date(session.createdAt.getTime() - 60 * 60_000);
+            fs.utimesSync(path.join(home, before), earlier, earlier);
+            yield* shipCapturedHarnessHome(
+              tmp,
+              memory,
+              session.worktreeId,
+              epoch,
+              request,
+              executorRoot,
+            );
+            yield* engine.observeExternalAgents();
+            expect(externalRowsOf(world, session.id)).toHaveLength(0);
+
+            // Her `claude` in the terminal writes through her home's link into her saved directory.
+            const transcript = `${peopleDir("user-fixture")}/${PROJECT_DIR}/${id}.jsonl`;
+            writeUnder(home, transcript, claudeLine(id, "by hand"));
+            yield* shipCapturedHarnessHome(
+              tmp,
+              memory,
+              session.worktreeId,
+              epoch,
+              request,
+              executorRoot,
+            );
+            yield* engine.observeExternalAgents();
+            const observed = externalRowsOf(world, session.id);
+            expect(observed).toHaveLength(1);
+            expect(observed[0]?.harness).toBe("claude");
+            expect(observed[0]?.providerSessionId).toBe(id);
+            expect(observed[0]?.runsAs).toBe("user-fixture");
+            expect(observed[0]?.exitedAt).toBeNull();
+            expect(world.sessions.get(session.id)?.status).toBe("running");
+
+            // A second pass over the same head observes nothing new.
+            yield* engine.observeExternalAgents();
+            expect(externalRowsOf(world, session.id)).toHaveLength(1);
+
+            // The writes go quiet: the next capture carries the old mtime, and the end is recorded.
+            const past = new Date(Date.now() - 10 * 60_000);
+            fs.utimesSync(path.join(home, transcript), past, past);
+            yield* shipCapturedHarnessHome(
+              tmp,
+              memory,
+              session.worktreeId,
+              epoch,
+              request,
+              executorRoot,
+            );
+            yield* engine.observeExternalAgents();
+            expect(externalRowsOf(world, session.id)[0]?.exitedAt).not.toBeNull();
+          }),
+        personLayers(created, memory),
+      );
+    },
+  );
+
+  it(
+    "two people's agents in one executor are each observed in their own session, never the other's",
+    { timeout: 30_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const memory = makeMemoryCaptureStore();
+      const alice = crypto.randomUUID();
+      const maria = crypto.randomUUID();
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const project = yield* setup(tmp, world);
+            const engine = yield* SessionEngine;
+            const holder = yield* engine.provision({
+              projectId: project.id,
+              harness: "claude",
+              label: null,
+              name: "shared",
+              ownerUserId: "user-fixture",
+              base: null,
+            });
+            yield* engine.launch(holder.id, ["bash"]);
+            const joined = yield* engine.provisionSessionIn(holder.worktreeId, {
+              harness: "claude",
+              label: null,
+              ownerUserId: MARIA,
+            });
+            yield* engine.launch(joined.id, ["bash"]);
+            const request = created[0];
+            if (request === undefined) return yield* Effect.die("the launch made no executor");
+            const executorRoot = path.join(tmp, "person-executor");
+            const home = configuredHarnessHomePath(request, executorRoot);
+            writeUnder(
+              home,
+              `${peopleDir("user-fixture")}/${PROJECT_DIR}/${alice}.jsonl`,
+              claudeLine(alice, "alice by hand"),
+            );
+            writeUnder(
+              home,
+              `${peopleDir(MARIA)}/${PROJECT_DIR}/${maria}.jsonl`,
+              claudeLine(maria, "maria by hand"),
+            );
+            yield* shipCapturedHarnessHome(
+              tmp,
+              memory,
+              holder.worktreeId,
+              memory.leases.get(holder.worktreeId)?.epoch ?? 0,
+              request,
+              executorRoot,
+            );
+            yield* engine.observeExternalAgents();
+
+            const alices = externalRowsOf(world, holder.id);
+            expect(alices.map((row) => [row.providerSessionId, row.runsAs])).toEqual([
+              [alice, "user-fixture"],
+            ]);
+            const marias = externalRowsOf(world, joined.id);
+            expect(marias.map((row) => [row.providerSessionId, row.runsAs])).toEqual([
+              [maria, MARIA],
+            ]);
+          }),
+        personLayers(created, memory),
+      );
+    },
+  );
+
+  it(
+    "a sibling session's engine agent writing into the same saved directory is not read as run by hand",
+    { timeout: 30_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const memory = makeMemoryCaptureStore();
+      const id = crypto.randomUUID();
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const project = yield* setup(tmp, world);
+            const engine = yield* SessionEngine;
+            const agent = yield* engine.provision({
+              projectId: project.id,
+              harness: "claude",
+              label: null,
+              name: "agent",
+              ownerUserId: "user-fixture",
+              base: null,
+            });
+            yield* engine.launch(agent.id, ["claude"]);
+            const workbench = yield* engine.provisionSessionIn(agent.worktreeId, {
+              harness: "claude",
+              label: null,
+              ownerUserId: "user-fixture",
+            });
+            yield* engine.launch(workbench.id, ["bash"]);
+            const request = created[0];
+            if (request === undefined) return yield* Effect.die("the launch made no executor");
+            const executorRoot = path.join(tmp, "person-executor");
+            const home = configuredHarnessHomePath(request, executorRoot);
+            // Mend's own claude writes into her saved directory, which the workbench reads too.
+            writeUnder(
+              home,
+              `${peopleDir("user-fixture")}/${PROJECT_DIR}/${id}.jsonl`,
+              claudeLine(id, "mend's agent"),
+            );
+            yield* shipCapturedHarnessHome(
+              tmp,
+              memory,
+              agent.worktreeId,
+              memory.leases.get(agent.worktreeId)?.epoch ?? 0,
+              request,
+              executorRoot,
+            );
+            yield* engine.observeExternalAgents();
+            expect(
+              [...world.processes.values()].filter((row) => row.kind === "agent-external"),
+            ).toHaveLength(0);
+          }),
+        personLayers(created, memory),
+      );
+    },
+  );
+
+  it(
+    "an observed agent keeps its own conversation while a sibling's engine agent writes beside it",
+    { timeout: 30_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const memory = makeMemoryCaptureStore();
+      const byHand = crypto.randomUUID();
+      const mends = crypto.randomUUID();
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const project = yield* setup(tmp, world);
+            const engine = yield* SessionEngine;
+            const workbench = yield* engine.provision({
+              projectId: project.id,
+              harness: "claude",
+              label: null,
+              name: "workbench",
+              ownerUserId: "user-fixture",
+              base: null,
+            });
+            yield* engine.launch(workbench.id, ["bash"]);
+            const request = created[0];
+            if (request === undefined) return yield* Effect.die("the launch made no executor");
+            const executorRoot = path.join(tmp, "person-executor");
+            const home = configuredHarnessHomePath(request, executorRoot);
+            const epoch = memory.leases.get(workbench.worktreeId)?.epoch ?? 0;
+            const ship = shipCapturedHarnessHome(
+              tmp,
+              memory,
+              workbench.worktreeId,
+              epoch,
+              request,
+              executorRoot,
+            );
+            const handTranscript = `${peopleDir("user-fixture")}/${PROJECT_DIR}/${byHand}.jsonl`;
+            writeUnder(home, handTranscript, claudeLine(byHand, "by hand"));
+            yield* ship;
+            yield* engine.observeExternalAgents();
+            expect(externalRowsOf(world, workbench.id).map((row) => row.providerSessionId)).toEqual(
+              [byHand],
+            );
+
+            // Then she starts an agent from Mend in a second session of the worktree; it writes
+            // into the same saved directory, newer than her own conversation, which goes quiet.
+            const agent = yield* engine.provisionSessionIn(workbench.worktreeId, {
+              harness: "claude",
+              label: null,
+              ownerUserId: "user-fixture",
+            });
+            yield* engine.launch(agent.id, ["claude"]);
+            const past = new Date(Date.now() - 10 * 60_000);
+            fs.utimesSync(path.join(home, handTranscript), past, past);
+            writeUnder(
+              home,
+              `${peopleDir("user-fixture")}/${PROJECT_DIR}/${mends}.jsonl`,
+              claudeLine(mends, "mend's agent"),
+            );
+            yield* ship;
+            yield* engine.observeExternalAgents();
+            const rows = externalRowsOf(world, workbench.id);
+            expect(rows.map((row) => row.providerSessionId)).toEqual([byHand]);
+            expect(rows[0]?.exitedAt).not.toBeNull();
+            expect(externalRowsOf(world, agent.id)).toHaveLength(0);
+          }),
+        personLayers(created, memory),
+      );
+    },
+  );
+
+  it(
+    "a shared executor's agent run by hand is observed from the head capture",
+    { timeout: 30_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const memory = makeMemoryCaptureStore();
+      const id = crypto.randomUUID();
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const project = yield* setup(tmp, world);
+            const engine = yield* SessionEngine;
+            const session = yield* engine.provision({
+              projectId: project.id,
+              harness: "codex",
+              label: null,
+              name: "workbench",
+              ownerUserId: "user-fixture",
+              base: null,
+            });
+            yield* engine.launch(session.id, ["bash"]);
+            const request = created[0];
+            if (request === undefined) return yield* Effect.die("the launch made no executor");
+            const executorRoot = path.join(tmp, "shared-executor");
+            const home = configuredHarnessHomePath(request, executorRoot);
+            writeUnder(
+              home,
+              `.codex/sessions/2026/10/11/rollout-2026-10-11T10-00-00-${id}.jsonl`,
+              "{}\n",
+            );
+            yield* shipCapturedHarnessHome(
+              tmp,
+              memory,
+              session.worktreeId,
+              memory.leases.get(session.worktreeId)?.epoch ?? 0,
+              request,
+              executorRoot,
+            );
+            yield* engine.observeExternalAgents();
+            const observed = externalRowsOf(world, session.id);
+            expect(observed.map((row) => [row.harness, row.providerSessionId, row.runsAs])).toEqual(
+              [["codex", id, null]],
+            );
+          }),
+        {
+          captured: memory,
+          sealantLayer: sealantLaunchLayer(
+            created,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            [],
+            undefined,
+            { flush: headFlush(memory) },
+          ),
+        },
+      );
     },
   );
 });

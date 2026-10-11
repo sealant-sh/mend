@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   conversationFilesOf,
   conversationPlaceOf,
+  capturedTranscriptsOf,
   personalPlaceOf,
   relativeTo,
   SHARED_PLACE,
@@ -111,6 +112,54 @@ describe("a conversation's files, by exact provider session id", () => {
         `.claude/projects/-workspace-repo/${ID}/../../../../.bashrc`,
         `.claude/projects/-workspace-repo/${ID}/./x`,
       ]),
+    ).toEqual([]);
+  });
+});
+
+/** A capture listing's entry written at `ms`. */
+const entry = (kind: "file" | "symlink", ms: number) => ({
+  name: "x",
+  kind,
+  mode: 0o644,
+  size: 1,
+  mtime: BigInt(ms) * 1_000_000n,
+});
+
+describe("the transcripts the external-agent observer reads in a capture", () => {
+  const alice = personalPlaceOf("alice");
+  const at = (relative: string) => `${alice.root}/${relative}`;
+
+  it("are the harness's files under the place, newest first, never a carried conversation or a link", () => {
+    const files = [
+      { path: at(`.claude/projects/-workspace-repo/${ID}.jsonl`), entry: entry("file", 1_000) },
+      { path: at(`.claude/projects/-workspace-repo/${OTHER}.jsonl`), entry: entry("file", 3_000) },
+      {
+        path: at(".claude/projects/-workspace-repo/0199a000-0000-7000-8000-00000000000c.jsonl"),
+        entry: entry("symlink", 9_000),
+      },
+      // Another person's saved directory, though it is newer: never read for Alice.
+      {
+        path: `${personalPlaceOf("maria").root}/.claude/projects/-workspace-repo/${ID}.jsonl`,
+        entry: entry("file", 8_000),
+      },
+    ];
+    expect(capturedTranscriptsOf(alice, "claude", files, new Set())).toEqual([
+      { providerSessionId: OTHER, mtimeMs: 3_000 },
+      { providerSessionId: ID, mtimeMs: 1_000 },
+    ]);
+    expect(capturedTranscriptsOf(alice, "claude", files, new Set([OTHER]))).toEqual([
+      { providerSessionId: ID, mtimeMs: 1_000 },
+    ]);
+  });
+
+  it("are none for a harness that keeps no transcript file", () => {
+    expect(
+      capturedTranscriptsOf(
+        alice,
+        "opencode",
+        [{ path: at(".local/share/opencode/opencode.db"), entry: entry("file", 1_000) }],
+        new Set(),
+      ),
     ).toEqual([]);
   });
 });

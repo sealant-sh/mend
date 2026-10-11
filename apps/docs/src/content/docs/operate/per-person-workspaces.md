@@ -137,6 +137,12 @@ opencode (see [Known issues](/reference/known-issues/#harnesses)). An image a pe
 written by their own process into `paste/` there (0700; the image 0600), so only their own processes
 read it.
 
+A `claude`, `codex` or `pi` someone runs by hand, in a shell or over Remote-SSH, writes its
+conversation into their own saved directory there. Mend observes it from that directory, as theirs,
+in their own sessions only: another person's session in the same workspace never shows it. How
+observation works and its limits:
+[Agents you run yourself](/clients/vscode/#agents-you-run-yourself).
+
 The worktree is shared: everyone in the `mend` group can write it. Toolchains and caches live in
 shared locations (`/opt`, `/var/cache`), so what one person installs everyone can use; credential
 files stay in each person's home.

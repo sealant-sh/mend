@@ -467,6 +467,8 @@ import {
 } from "./person-deliveries.ts";
 import {
   CAPTURED_HARNESS,
+  type CapturedTranscript,
+  capturedTranscriptsOf,
   type ConversationPlace,
   conversationFilesOf,
   conversationPlaceOf,
@@ -1566,6 +1568,33 @@ const isLegacyBench = (session: Session): boolean =>
 const isEngineAgentProcess = (row: SessionProcess): boolean =>
   row.kind !== "agent-external" && isAgentProcessKind(row.kind) && row.harness !== "shell";
 
+/**
+ * Where the external-agent observer reads one session's agents run by hand, and what else writes
+ * there (`SessionEngine.observationSightOf`).
+ */
+interface ObservationSight {
+  /** Whose saved directory is read (docs/adr/0016); null for a shared home. */
+  readonly person: string | null;
+  /** The co-located home on disk, for the unreadable warning; null when read from captures. */
+  readonly home: string | null;
+  /**
+   * The newest transcript of `harness` that could be this session's: conversation `following`'s
+   * when named, else the newest no other session holds. The co-located home is the session's own
+   * and takes its newest.
+   */
+  readonly locate: (
+    harness: string,
+    following: string | null,
+  ) => Effect.Effect<{
+    readonly providerSessionId: string | null;
+    readonly mtimeMs: number;
+  } | null>;
+  /** Processes whose agents write into the same home: their writes are not external. */
+  readonly writers: ReadonlyArray<SessionProcess>;
+  /** Writes before this, less the skew, predate the session in a home that outlives it. */
+  readonly sinceMs: number;
+}
+
 export interface ProvisionInput {
   readonly projectId: ProjectId;
   readonly harness: string;
@@ -2349,9 +2378,10 @@ export class SessionEngine extends Context.Service<
     >;
     /**
      * One observation pass for external agents: a coding agent the user runs by hand (mend
-     * shell, SSH, editor terminal) writes through the mounted harness home, and fresh
-     * transcript writes become observed `agent-external` process rows — ended again when the
-     * writes go quiet. Runs on its own heartbeat; exposed for deterministic ticks.
+     * shell, SSH, editor terminal) writes into the harness home, and fresh transcript writes —
+     * on disk, or in the worktree's head capture — become observed `agent-external` process
+     * rows, ended again when the writes go quiet. Runs on its own heartbeat; exposed for
+     * deterministic ticks.
      */
     readonly observeExternalAgents: () => Effect.Effect<void>;
     /**
@@ -8754,6 +8784,25 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * the manifest commits it exactly as the co-located harvest does.
        */
       /**
+       * The layout of the executor a session's process ran in: its launch's, else the worktree's
+       * own, which a `person` worktree never leaves.
+       */
+      const executorLayoutOf = Effect.fn("SessionEngine.executorLayoutOf")(function* (
+        session: Session,
+        workspaceId: SealantWorkspaceId | null,
+      ) {
+        const launchId =
+          workspaceId === null ? null : yield* executorLaunchIdOf(session, workspaceId);
+        const layout: HarnessLayout =
+          launchId !== null
+            ? yield* layoutSteps.layoutOfLaunch(launchId)
+            : (yield* harnessLayouts.worktreeLayout(session.worktreeId)).layout === "person"
+              ? "person"
+              : "shared";
+        return layout;
+      });
+
+      /**
        * Where a session's process read and wrote its conversation and memory in the worktree's
        * captures (docs/adr/0016, decision 12): by the layout of the executor it ran in, else the
        * worktree's own layout, which a `person` worktree never leaves. With the flag off and
@@ -8765,14 +8814,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         harness: string,
       ) {
         if (capture === null || !layoutSteps.personPossible()) return SHARED_PLACE;
-        const launchId =
-          workspaceId === null ? null : yield* executorLaunchIdOf(session, workspaceId);
-        const layout: HarnessLayout =
-          launchId !== null
-            ? yield* layoutSteps.layoutOfLaunch(launchId)
-            : (yield* harnessLayouts.worktreeLayout(session.worktreeId)).layout === "person"
-              ? "person"
-              : "shared";
+        const layout = yield* executorLayoutOf(session, workspaceId);
         // A conversation moved into `C` (shared control, Delivery 17) is read there, whoever's
         // process ran it; else the owner's own saved directory.
         const shared =
@@ -10372,9 +10414,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       // ─── observed external agents (the harness home as a sensor) ──────────
       //
       // A coding agent the user runs by hand — in a mend shell, an SSH session, an editor
-      // terminal — writes its state through the mounted harness home like any engine-launched
-      // one. That makes it observable server-side: transcript writes are the "an agent is
-      // working" signal. Observed agents become `agent-external` process rows, so the session
+      // terminal — writes its state into the harness home like any engine-launched one. That makes
+      // it observable server-side: transcript writes are the "an agent is working" signal, read
+      // from the mounted home on disk (co-located) or from the worktree's head capture, which the
+      // executor takes 2-10 s after a write (the capture store), per person in a per-person
+      // executor (`observationSightOf`). opencode keeps no transcript file and is never observed.
+      // Observed agents become `agent-external` process rows, so the session
       // fold reads `running`, the workspace lease holds, and the settle-time harvest captures
       // the conversation. Mend observes; it does not own the process — it cannot steer or
       // stop it, and the row records only what was seen.
@@ -10427,22 +10472,175 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           ).pipe(Effect.annotateLogs({ sessionId, harness, path: blocked }));
         });
 
+      /**
+       * Head captures already read for transcripts, per worktree: the newest transcript under each
+       * place and harness, kept while the head stands. An executor captures 2-10 s after a write,
+       * so a head that has not moved has nothing new to say, and the pass reads nothing.
+       */
+      const observedHeads = new Map<
+        WorktreeId,
+        {
+          readonly manifestKey: string;
+          readonly found: Map<string, ReadonlyArray<CapturedTranscript>>;
+          pass: number;
+        }
+      >();
+      let observationPass = 0;
+
+      /**
+       * `harness`'s transcripts under `place` in the worktree's head capture, newest first. None
+       * when the harness keeps no transcript file or the head cannot be read (said once per
+       * worktree: blindness, never an error).
+       */
+      const capturedTranscriptsAt = (
+        worktreeId: WorktreeId,
+        head: { readonly manifestKey: string },
+        place: ConversationPlace,
+        harness: string,
+      ): Effect.Effect<ReadonlyArray<CapturedTranscript>> =>
+        Effect.gen(function* () {
+          const dir = HARNESS_STATE[harness]?.liveTranscriptDir ?? null;
+          if (capture === null || dir === null) return [];
+          let seen = observedHeads.get(worktreeId);
+          if (seen === undefined || seen.manifestKey !== head.manifestKey) {
+            seen = { manifestKey: head.manifestKey, found: new Map(), pass: observationPass };
+            observedHeads.set(worktreeId, seen);
+          }
+          seen.pass = observationPass;
+          const key = underPlace(place, dir);
+          const known = seen.found.get(key);
+          if (known !== undefined) return known;
+          const blobs = capture.blobs;
+          const read = yield* inOneReadPass(
+            Effect.gen(function* () {
+              const manifest = yield* decodeManifest(
+                head.manifestKey,
+                yield* blobs.get(head.manifestKey),
+              );
+              const files = yield* listCaptureFiles(manifest, "workspace", key);
+              const carried =
+                place.carried === null
+                  ? null
+                  : yield* readCaptureFileBytes(manifest, "workspace", place.carried).pipe(
+                      Effect.map((bytes) => new TextDecoder().decode(bytes)),
+                      Effect.orElseSucceed(() => null),
+                    );
+              return capturedTranscriptsOf(place, harness, files, parseCarriedTranscripts(carried));
+            }).pipe(Effect.provideService(BlobStore, blobs)),
+          ).pipe(Effect.result);
+          if (Result.isFailure(read)) {
+            const warned = `${worktreeId}:capture`;
+            if (!observerBlindnessWarned.has(warned)) {
+              observerBlindnessWarned.add(warned);
+              yield* Effect.logWarning(
+                "session engine: head capture unreadable — external agents in it are invisible",
+              ).pipe(Effect.annotateLogs({ worktreeId, error: String(read.failure) }));
+            }
+            return [];
+          }
+          seen.found.set(key, read.success);
+          return read.success;
+        });
+
+      /**
+       * Where an agent run by hand in this session's executor writes, as the observer reads it
+       * (`ObservationSight`). Co-located: the session's own mounted harness home, on disk, which
+       * only this session's processes write. The capture store (the default): the executor
+       * mounts nothing of the store, so its home is read from the worktree's head capture, and
+       * that home is the worktree's, written by every session in it — the shared home in a
+       * `shared` executor, in a `person` one the session owner's saved directory
+       * (docs/adr/0016). Only the owner's: a shell is the owner's and a Remote-SSH login is the
+       * launcher's, so an agent run by hand runs as the owner of a session there, and one
+       * person's agents are never read into another's session. Null: no one's to read.
+       */
+      const observationSightOf = Effect.fn("SessionEngine.observationSightOf")(function* (
+        session: Session,
+        workspaceId: SealantWorkspaceId,
+        rows: ReadonlyArray<SessionProcess>,
+      ) {
+        if (capture === null) {
+          const project = yield* projects.byId(session.projectId);
+          const home = harnessHomePathOf(project.storePath, session.id);
+          return {
+            person: null,
+            home,
+            locate: (harness) => locateLiveTranscript(home, harness),
+            writers: rows,
+            sinceMs: 0,
+          } satisfies ObservationSight;
+        }
+        const layout = layoutSteps.personPossible()
+          ? yield* executorLayoutOf(session, workspaceId)
+          : "shared";
+        const person = layout === "person" ? session.ownerUserId : null;
+        if (layout === "person" && person === null) return null;
+        const place = person === null ? SHARED_PLACE : personalPlaceOf(person);
+        // The head as this pass finds it; one still saving its workspace says nothing yet.
+        const found = (yield* capture.repo.headOf(session.worktreeId))?.head ?? null;
+        const head =
+          found === null ||
+          (typeof found.sections === "object" &&
+            found.sections !== null &&
+            "workspace" in found.sections &&
+            found.sections.workspace === "pending")
+            ? null
+            : found;
+        const members = yield* sessions.listForWorktree(session.worktreeId);
+        const known = yield* processes.listForSessions(members.map((member) => member.id));
+        const ownerOf = new Map(members.map((member) => [member.id, member.ownerUserId]));
+        // The home is the worktree's, so siblings read the same transcripts: a conversation
+        // another session of the worktree carries is that session's.
+        const elsewhere = new Set(
+          known.flatMap((row) =>
+            row.sessionId !== session.id && row.providerSessionId !== null
+              ? [row.providerSessionId]
+              : [],
+          ),
+        );
+        return {
+          person,
+          home: null,
+          locate: (harness, following) =>
+            head === null
+              ? Effect.succeed(null)
+              : capturedTranscriptsAt(session.worktreeId, head, place, harness).pipe(
+                  Effect.map(
+                    (transcripts) =>
+                      transcripts.find((transcript) =>
+                        following === null
+                          ? transcript.providerSessionId === null ||
+                            !elsewhere.has(transcript.providerSessionId)
+                          : transcript.providerSessionId === following,
+                      ) ?? null,
+                  ),
+                ),
+          // A person's saved directory is written by the processes that run as them; a shared
+          // home by every process of the worktree.
+          writers:
+            person === null
+              ? known
+              : known.filter((row) => (row.runsAs ?? ownerOf.get(row.sessionId)) === person),
+          // The home outlives the session: what it held before the session began is history.
+          sinceMs: session.createdAt.getTime(),
+        } satisfies ObservationSight;
+      });
+
       const observeSessionExternalAgents = Effect.fn("SessionEngine.observeSessionExternalAgents")(
         function* (sessionId: SessionId) {
           const session = yield* sessions.byId(sessionId);
           if (session.sealantWorkspaceId === null) return;
           const workspaceId = session.sealantWorkspaceId;
-          const project = yield* projects.byId(session.projectId);
           const rows = yield* processes.listForSession(sessionId);
-          const home = harnessHomePathOf(project.storePath, session.id);
-          // While the engine runs its own agent, transcript writes are presumed to be its —
-          // observation only fills the gap where mend is otherwise blind.
-          const engineAgentLive = rows.some(
+          const sight = yield* observationSightOf(session, workspaceId, rows);
+          if (sight === null) return;
+          // While the engine runs its own agent in this home, transcript writes are presumed to
+          // be its — observation only fills the gap where mend is otherwise blind.
+          const engineAgentLive = sight.writers.some(
             (row) => isLiveAgentProcess(row) && isEngineAgentProcess(row),
           );
           // An engine agent's final writes stay fresh for a while after it exits; only
           // activity that postdates the newest engine-agent exit reads as external.
-          const lastEngineExitMs = rows.reduce(
+          const lastEngineExitMs = sight.writers.reduce(
             (latest, row) =>
               isEngineAgentProcess(row) && row.exitedAt !== null && row.exitedAt.getTime() > latest
                 ? row.exitedAt.getTime()
@@ -10458,7 +10656,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 row.exitedAt === null &&
                 row.sealantWorkspaceId === workspaceId,
             );
-            const transcript = yield* locateLiveTranscript(home, harness);
+            // While an agent of Mend's writes into the same home, an observed row follows its own
+            // conversation: the newest transcript there may be the engine's.
+            const transcript = yield* sight.locate(
+              harness,
+              engineAgentLive ? (observed?.providerSessionId ?? null) : null,
+            );
             const fresh = transcript !== null && now - transcript.mtimeMs < EXTERNAL_AGENT_QUIET_MS;
             if (observed !== undefined) {
               if (!fresh) {
@@ -10484,10 +10687,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             }
             if (engineAgentLive) continue;
             if (transcript === null) {
-              yield* warnIfHarnessHomeUnreadable(home, harness, sessionId);
+              if (sight.home !== null) {
+                yield* warnIfHarnessHomeUnreadable(sight.home, harness, sessionId);
+              }
               continue;
             }
             if (transcript.mtimeMs <= lastEngineExitMs + EXTERNAL_AGENT_EXIT_SKEW_MS) continue;
+            // Within the skew, a write as the session began is not taken for history: the mtime is
+            // the executor's coarse clock, the session's start Mend's.
+            if (transcript.mtimeMs < sight.sinceMs - EXTERNAL_AGENT_EXIT_SKEW_MS) continue;
             // A settled session revives only on writes that POSTDATE the settle: its last
             // agent's tail writes stay fresh for a while, and a workspace stopped at settle
             // can never write again — only a genuinely live agent produces newer ones.
@@ -10497,11 +10705,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ) {
               continue;
             }
+            const { providerSessionId } = transcript;
             // A conversation some past row already carries needs no new row while quiet —
             // late observation is for work mend never saw, not a re-run of history.
             const alreadyObserved =
-              transcript.providerSessionId !== null &&
-              rows.some((row) => row.providerSessionId === transcript.providerSessionId);
+              providerSessionId !== null &&
+              rows.some((row) => row.providerSessionId === providerSessionId);
             if (!fresh && alreadyObserved) continue;
             const created = yield* processes.create({
               sessionId,
@@ -10510,10 +10719,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               sealantRunId: null,
               kind: "agent-external",
               harness,
-              providerSessionId: transcript.providerSessionId,
+              providerSessionId,
               label: `${harness} (observed)`,
               argv: [],
               status: "running",
+              runsAs: sight.person,
             });
             yield* reconcileSession(sessionId, { sweep: false });
             if (!fresh) {
@@ -10541,6 +10751,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * one broken session never blinds the rest.
        */
       const observeExternalAgents = Effect.fn("SessionEngine.observeExternalAgents")(function* () {
+        observationPass += 1;
         const live = yield* processes.listLive();
         const sessionIds = new Set(live.map((row) => row.sessionId));
         for (const settled of yield* sessions.listRecentlySettled()) {
@@ -10554,6 +10765,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               ),
             ),
           );
+        }
+        // A worktree no pass read is no longer watched: its head is not kept.
+        for (const [worktreeId, seen] of observedHeads) {
+          if (seen.pass < observationPass) observedHeads.delete(worktreeId);
         }
       });
 
@@ -23107,8 +23322,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           scope,
         );
       }
-      // The external-agent sensor: cheap fs stats over mounted harness homes, so a tight
-      // cadence — an observed agent should appear well before its first turn completes.
+      // The external-agent sensor: cheap fs stats over mounted harness homes, or a head capture's
+      // listing read only when the head moved, so a tight cadence — an observed agent should
+      // appear well before its first turn completes.
       yield* Effect.forkIn(
         observeExternalAgents().pipe(
           Effect.catchDefect((defect) =>
