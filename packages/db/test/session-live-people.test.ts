@@ -243,42 +243,48 @@ describe.skipIf(postgres.skip)("the people live in a session's executor, in Post
     expect(launchers.batched).toEqual({ "ws-person": "alice", "ws-shared": "carol" });
   });
 
-  it("reads the list and the view within the budget of the plain reads (+5% or +20 ms)", async () => {
-    const timings = await run(
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        const sessions = yield* SessionsRepo;
-        // A busy instance: 300 live sessions, each executor with two people's processes.
-        yield* sql`
+  // Seeding 300 sessions, ANALYZE and 160 timed reads take about 3.4 s locally and more than
+  // vitest's 5 s default on CI (main 94f5f8247): the budget is the assertions', not the test's.
+  it(
+    "reads the list and the view within the budget of the plain reads (+5% or +20 ms)",
+    { timeout: 30_000 },
+    async () => {
+      const timings = await run(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          const sessions = yield* SessionsRepo;
+          // A busy instance: 300 live sessions, each executor with two people's processes.
+          yield* sql`
           INSERT INTO agent_sessions
             (id, project_id, worktree_id, harness, worktree, branch, base_sha, status,
              owner_user_id, sealant_workspace_id)
           SELECT 'bulk-' || g, ${PROJECT}, ${WORKTREE}, 'claude', 'wt-1', 'mend/wt-1', 'abc',
                  'running', 'alice', 'ws-bulk-' || (g / 2)
           FROM generate_series(1, 300) g`;
-        yield* sql`
+          yield* sql`
           INSERT INTO session_processes
             (id, session_id, sealant_workspace_id, sealant_session_id, kind, status, runs_as)
           SELECT 'bulk-p-' || g, 'bulk-' || g, 'ws-bulk-' || (g / 2), 'pty-b-' || g,
                  'agent-pty', 'running', CASE WHEN g % 2 = 0 THEN 'alice' ELSE 'maria' END
           FROM generate_series(1, 300) g`;
-        yield* sql`ANALYZE`;
-        const id = SessionId.make("bulk-17");
-        // Interleaved warm-up, then each measured.
-        yield* time(sessions.listActive());
-        yield* time(sessions.listActiveView());
-        return {
-          list: yield* time(sessions.listActive()),
-          listView: yield* time(sessions.listActiveView()),
-          byId: yield* time(sessions.byId(id)),
-          view: yield* time(sessions.viewById(id)),
-        };
-      }),
-    );
-    console.log(`session list and view latency (ms): ${JSON.stringify(timings)}`);
-    expect(within(timings.list.median, timings.listView.median)).toBe(true);
-    expect(within(timings.list.p90, timings.listView.p90)).toBe(true);
-    expect(within(timings.byId.median, timings.view.median)).toBe(true);
-    expect(within(timings.byId.p90, timings.view.p90)).toBe(true);
-  });
+          yield* sql`ANALYZE`;
+          const id = SessionId.make("bulk-17");
+          // Interleaved warm-up, then each measured.
+          yield* time(sessions.listActive());
+          yield* time(sessions.listActiveView());
+          return {
+            list: yield* time(sessions.listActive()),
+            listView: yield* time(sessions.listActiveView()),
+            byId: yield* time(sessions.byId(id)),
+            view: yield* time(sessions.viewById(id)),
+          };
+        }),
+      );
+      console.log(`session list and view latency (ms): ${JSON.stringify(timings)}`);
+      expect(within(timings.list.median, timings.listView.median)).toBe(true);
+      expect(within(timings.list.p90, timings.listView.p90)).toBe(true);
+      expect(within(timings.byId.median, timings.view.median)).toBe(true);
+      expect(within(timings.byId.p90, timings.view.p90)).toBe(true);
+    },
+  );
 });
