@@ -13,6 +13,7 @@ import {
   clockCheck,
   exposureCheck,
   macSleepCheck,
+  macLidSleepCheck,
   formatCheck,
   type LocalServerFacts,
   runChecks,
@@ -442,6 +443,66 @@ describe("the sleep line", () => {
     expect(reads).toEqual([]);
     const installed = await probe(installedHere("http://localhost:3105"));
     expect(installed.find((check) => check.label === "sleep")?.state).toBe("todo");
+  });
+});
+
+/** `ioreg -r -k AppleClamshellCausesSleep -d 1` on a MacBook, trimmed to the lines that matter. */
+const ioregOutput = (causesSleep: "Yes" | "No") =>
+  [
+    "+-o IOPMrootDomain  <class IOPMrootDomain, id 0x100000245, registered, matched, active>",
+    "    {",
+    `      "AppleClamshellCausesSleep" = ${causesSleep}`,
+    '      "AppleClamshellState" = Yes',
+    "    }",
+  ].join("\n");
+
+describe("the lid line (RC 0.36.0-next.768, a MacBook)", () => {
+  it("says closing the lid sleeps the Mac even when pmset reads sleep 0", async () => {
+    const checks = await runChecks(
+      { url: "http://127.0.0.1:9", token: null },
+      {
+        localCredential: () => null,
+        claudeGrant: () => null,
+        onPath: () => false,
+        localServer: async () => installedHere("http://localhost:3105"),
+        macPowerSettings: () => pmsetOutput("0", "1"),
+        macLid: () => ioregOutput("Yes"),
+      },
+    );
+    expect(checks.some((check) => check.label === "sleep")).toBe(false);
+    const lid = checks.find((check) => check.label === "lid");
+    expect(lid?.state).toBe("todo");
+    expect(lid?.detail).toContain(
+      "closing this Mac's lid sleeps it unless an external display and power are attached",
+    );
+    expect(lid?.fix).toBe(
+      "keep the lid open, or attach power and an external display before you close it",
+    );
+  });
+
+  it("prints nothing in closed-lid mode, on a Mac without a lid, or for a reading it cannot parse", () => {
+    expect(macLidSleepCheck(ioregOutput("No"))).toBeNull();
+    // A Mac mini's IOPMrootDomain has no clamshell keys, so ioreg lists nothing.
+    expect(macLidSleepCheck("")).toBeNull();
+    expect(macLidSleepCheck("ioreg: command not found")).toBeNull();
+  });
+
+  it("reads the lid only where a server is installed", async () => {
+    const reads: Array<string> = [];
+    await runChecks(
+      { url: "http://127.0.0.1:9", token: null },
+      {
+        localCredential: () => null,
+        claudeGrant: () => null,
+        onPath: () => false,
+        localServer: async () => null,
+        macLid: () => {
+          reads.push("ioreg");
+          return ioregOutput("Yes");
+        },
+      },
+    );
+    expect(reads).toEqual([]);
   });
 });
 

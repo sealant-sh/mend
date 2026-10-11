@@ -58,6 +58,35 @@ export const macSleepCheck = (pmset: string): Check | null => {
   };
 };
 
+/**
+ * A Mac with a lid that sleeps when it is closed, as one doctor line; null when it does not (no
+ * lid, as on a Mac mini, or closed-lid mode: power and an external display attached) or the
+ * reading says nothing. `pmset -g` can read `sleep 0` on such a Mac and closing the lid still
+ * sleeps it, pausing the Docker VM (RC 0.36.0-next.768, a MacBook: the VM's clock woke 72 min
+ * behind). `ioreg`'s `AppleClamshellCausesSleep` is what decides it: `Yes` while closing the lid
+ * sleeps the Mac.
+ */
+export const macLidSleepCheck = (ioreg: string): Check | null => {
+  const match = /"AppleClamshellCausesSleep"\s*=\s*(Yes|No)/.exec(ioreg);
+  if (match?.[1] !== "Yes") return null;
+  return {
+    label: "lid",
+    state: "todo",
+    detail:
+      "closing this Mac's lid sleeps it unless an external display and power are attached, and the Docker VM pauses while it sleeps: builds stall, sessions drop, its clock drifts",
+    fix: "keep the lid open, or attach power and an external display before you close it",
+  };
+};
+
+/** `ioreg`'s power-management root, where a Mac with a lid says what closing it does. */
+export const readMacLid = (): string | null => {
+  const read = spawnSync("ioreg", ["-r", "-k", "AppleClamshellCausesSleep", "-d", "1"], {
+    encoding: "utf8",
+    timeout: TIMEOUT_MS,
+  });
+  return read.status === 0 ? read.stdout : null;
+};
+
 /** `pmset -g`, bounded like every other read here; null when it fails. */
 export const readMacPowerSettings = (): string | null => {
   const read = spawnSync("pmset", ["-g"], { encoding: "utf8", timeout: TIMEOUT_MS });
@@ -103,6 +132,12 @@ export interface DoctorProbes {
    * on its own. Null when it could not be read. Absent (not a Mac): the line is left out.
    */
   readonly macPowerSettings?: () => string | null;
+  /**
+   * `ioreg`'s `AppleClamshellCausesSleep` on a Mac, read only when a server is installed on this
+   * machine: whether closing its lid sleeps it. Null when it could not be read. Absent (not a
+   * Mac): the line is left out.
+   */
+  readonly macLid?: () => string | null;
 }
 
 /** What doctor reads of the server `mend server setup` installed here. */
@@ -592,6 +627,10 @@ export const runChecks = async (
     local === null || probes.macPowerSettings === undefined ? null : probes.macPowerSettings();
   const sleep = pmset === null ? null : macSleepCheck(pmset);
   if (sleep !== null) checks.push(sleep);
+  // `sleep 0` does not cover the lid: a MacBook sleeps when it is closed, its VM with it.
+  const lid = local === null || probes.macLid === undefined ? null : probes.macLid();
+  const lidSleep = lid === null ? null : macLidSleepCheck(lid);
+  if (lidSleep !== null) checks.push(lidSleep);
 
   return checks;
 };
@@ -629,7 +668,9 @@ export const doctorCommand = async (
     onPath,
     dockerStop: observeHostDockerStop,
     ...(localServer === undefined ? {} : { localServer }),
-    ...(process.platform === "darwin" ? { macPowerSettings: readMacPowerSettings } : {}),
+    ...(process.platform === "darwin"
+      ? { macPowerSettings: readMacPowerSettings, macLid: readMacLid }
+      : {}),
   });
   for (const check of checks) {
     process.stdout.write(`${redactCredentials(formatCheck(check, paintMark))}\n`);

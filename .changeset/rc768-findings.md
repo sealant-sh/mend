@@ -16,3 +16,7 @@ Fixes from the RC 0.36.0-next.768 re-checks.
 - When "Discard unsaved and stop" was asked but the save under way finished first and kept
   everything, the session now says
   `stopped · the save finished before the discard, so nothing was discarded`, not plain `Stopped`.
+- `mend doctor` on a MacBook that serves Mend now says, on a `lid` line, that closing the lid sleeps
+  the Mac unless an external display and power are attached, which pauses the Docker VM. It reads
+  `ioreg`'s `AppleClamshellCausesSleep`, so the line is there even when `pmset -g` reads `sleep 0`.
+  A Mac mini has no lid and keeps only the `sleep` line.

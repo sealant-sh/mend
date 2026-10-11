@@ -40,6 +40,8 @@ default). The extension uses the first for everything except Remote-SSH, which u
   **Wake for network access** in the same pane too (`sudo pmset -a womp 1`), so a laptop on the
   tailnet can wake it. `mend doctor` on the mini says when it still sleeps on its own, and when the
   server's clock is off from the machine running doctor.
+- On a MacBook, `sleep 0` doesn't cover the lid: closing it sleeps the Mac unless an external
+  display and power are attached. Keep the lid open; `mend doctor` says so on its `lid` line.
 - Give the Docker VM room for workspaces: Settings → Resources, at least 8 GB of memory.
 - Keep `~/.config/mend` under your home directory. Setup bind-mounts a file from it into Postgres,
   and Docker Desktop shares only `/Users` (and a few system paths) with its VM by default. A
