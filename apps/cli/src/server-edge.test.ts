@@ -15,6 +15,10 @@ import {
   postureEnvironment,
   postureEnvLines,
   renderPostureOverlay,
+  renderT3GatewayOverlay,
+  T3_GATEWAY_CADDYFILE,
+  t3GatewayEnvLines,
+  t3GatewayPlacement,
 } from "./server-edge.ts";
 
 const repositoryFile = (name: string): string =>
@@ -283,5 +287,136 @@ describe("what status says", () => {
       expect(line).not.toMatch(VERDICTS);
       expect(line).not.toMatch(/[—–;()]/);
     }
+  });
+});
+
+describe("where the t3code gateway is published (ADR 0012, ADR 0004)", () => {
+  it("off, it is nowhere and adds nothing", () => {
+    expect(t3GatewayPlacement({ bind: "100.94.101.28" })).toBeUndefined();
+    expect(t3GatewayEnvLines({ bind: "100.94.101.28" })).toEqual([]);
+    expect(renderT3GatewayOverlay({ bind: "100.94.101.28" })).toBeUndefined();
+  });
+
+  it("loopback: it stays on loopback, reached from this machine", () => {
+    const posture = {
+      bind: "127.0.0.1",
+      appUrl: "http://localhost:3105",
+      exposure: "loopback" as const,
+      t3GatewayPort: 3120,
+    };
+    expect(t3GatewayPlacement(posture)).toEqual({
+      bind: "127.0.0.1",
+      port: 3120,
+      url: "http://127.0.0.1:3120",
+      probeUrl: "http://127.0.0.1:3120",
+    });
+    expect(t3GatewayEnvLines(posture)).toEqual([
+      "MEND_T3_GATEWAY_PORT=3120",
+      "MEND_T3_GATEWAY_BIND_HOST=127.0.0.1",
+      "MEND_T3_GATEWAY_PUBLISHED=127.0.0.1:3120",
+      "MEND_T3_GATEWAY_URL=http://127.0.0.1:3120",
+    ]);
+    expect(declaredPostureLines(posture)[0]).toBe(
+      "t3code gateway · on · published on 127.0.0.1:3120 only · reached from this machine",
+    );
+  });
+
+  it("private, on the tailnet: published on the web port's address, at the name Mend is reached by", () => {
+    const posture = {
+      bind: "100.94.101.28",
+      appUrl: "http://mend-box.tailc79e49.ts.net:3105",
+      exposure: "private" as const,
+      t3GatewayPort: 3120,
+    };
+    expect(t3GatewayPlacement(posture)).toMatchObject({
+      bind: "100.94.101.28",
+      url: "http://mend-box.tailc79e49.ts.net:3120",
+      probeUrl: "http://100.94.101.28:3120",
+    });
+    expect(t3GatewayEnvLines(posture)).toContain("MEND_T3_GATEWAY_PUBLISHED=100.94.101.28:3120");
+    expect(declaredPostureLines(posture)[0]).toBe(
+      "t3code gateway · on · published on 100.94.101.28:3120, where Mend's web port is · T3 Code's Remote link takes http://mend-box.tailc79e49.ts.net:3120",
+    );
+    // An IPv6 tailnet address, bracketed where Compose and a URL need it.
+    const v6 = {
+      bind: "fd7a:115c:a1e0::1",
+      appUrl: "http://[fd7a:115c:a1e0::1]:3105",
+      t3GatewayPort: 3120,
+    };
+    expect(t3GatewayEnvLines(v6)).toEqual([
+      "MEND_T3_GATEWAY_PORT=3120",
+      "MEND_T3_GATEWAY_BIND_HOST=[fd7a:115c:a1e0::1]",
+      "MEND_T3_GATEWAY_PUBLISHED=[fd7a:115c:a1e0::1]:3120",
+      "MEND_T3_GATEWAY_URL=http://[fd7a:115c:a1e0::1]:3120",
+    ]);
+    // Every address is looked for on this machine's loopback.
+    expect(
+      t3GatewayPlacement({ bind: "0.0.0.0", appUrl: "http://mend.lan:3105", t3GatewayPort: 3120 }),
+    ).toMatchObject({ url: "http://mend.lan:3120", probeUrl: "http://127.0.0.1:3120" });
+  });
+
+  it("public: never published beyond loopback; the edge serves it on its own origin only when named", () => {
+    const edge = {
+      bind: "127.0.0.1",
+      appUrl: "https://alpha.mend.run",
+      edgeHost: "alpha.mend.run",
+      exposure: "public" as const,
+      t3GatewayPort: 3120,
+    };
+    expect(t3GatewayPlacement(edge)).toMatchObject({
+      bind: "127.0.0.1",
+      url: "http://127.0.0.1:3120",
+    });
+    expect(renderT3GatewayOverlay(edge)).not.toContain("edge:");
+    expect(declaredPostureLines(edge)[1]).toBe(
+      "t3code gateway · on · published on 127.0.0.1:3120 only · reached from this machine; mend server setup --t3-gateway-origin <host> serves it through the edge",
+    );
+    // Even a config that names a wider bind with a public exposure keeps the raw port on loopback.
+    expect(t3GatewayPlacement({ ...edge, bind: "0.0.0.0" })?.bind).toBe("127.0.0.1");
+    expect(
+      t3GatewayPlacement({ bind: "0.0.0.0", exposure: "public", t3GatewayPort: 3120 })?.bind,
+    ).toBe("127.0.0.1");
+
+    const served = { ...edge, t3GatewayOrigin: "t3.alpha.mend.run" };
+    expect(t3GatewayPlacement(served)).toEqual({
+      bind: "127.0.0.1",
+      port: 3120,
+      url: "https://t3.alpha.mend.run",
+      probeUrl: "http://127.0.0.1:3120",
+      edgeHost: "t3.alpha.mend.run",
+    });
+    expect(t3GatewayEnvLines(served)).toEqual([
+      "MEND_T3_GATEWAY_PORT=3120",
+      "MEND_T3_GATEWAY_BIND_HOST=127.0.0.1",
+      "MEND_T3_GATEWAY_PUBLISHED=127.0.0.1:3120",
+      "MEND_T3_GATEWAY_URL=https://t3.alpha.mend.run",
+      "MEND_T3_GATEWAY_EDGE_HOST=t3.alpha.mend.run",
+    ]);
+    // The gateway's lines are read by its own overlay, never by the posture's.
+    expect(renderPostureOverlay(served)).not.toContain("MEND_T3_GATEWAY");
+    const overlay = renderT3GatewayOverlay(served) ?? "";
+    expect(overlay).toContain("\n  edge:\n");
+    expect(overlay).toContain("      - ./Caddyfile.t3:/etc/caddy/sites/t3code-gateway.caddy:ro");
+    expect(declaredPostureLines(served)[1]).toBe(
+      "t3code gateway · on · served by the edge at https://t3.alpha.mend.run · its port published on 127.0.0.1:3120 only",
+    );
+    // Without the edge an origin is nothing: the gateway follows the web port.
+    expect(
+      t3GatewayPlacement({
+        bind: "127.0.0.1",
+        t3GatewayPort: 3120,
+        t3GatewayOrigin: "t3.alpha.mend.run",
+      })?.edgeHost,
+    ).toBeUndefined();
+  });
+
+  it("the edge's site proxies to the gateway on its own origin, unbuffered, with its ticket out of the log", () => {
+    expect(EDGE_CADDYFILE).toContain("import /etc/caddy/sites/*.caddy");
+    expect(T3_GATEWAY_CADDYFILE).toContain("{$MEND_T3_GATEWAY_EDGE_HOST} {");
+    expect(T3_GATEWAY_CADDYFILE).toContain("\treverse_proxy mend:3120 {\n");
+    expect(T3_GATEWAY_CADDYFILE).toContain("\t\tflush_interval -1\n");
+    expect(T3_GATEWAY_CADDYFILE).toContain("replace wsTicket REDACTED");
+    for (const line of declaredPostureLines({ bind: "100.94.101.28", t3GatewayPort: 3120 }))
+      expect(line).not.toMatch(VERDICTS);
   });
 });

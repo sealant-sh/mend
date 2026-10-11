@@ -187,15 +187,19 @@ Not observable by this build. Reported, never inferred, and they do not block st
 
 14. **t3code-gateway**, listed while the t3code gateway is enabled (`MEND_T3_GATEWAY_ENABLED`,
     `mend server setup --t3-gateway`; docs/adr/0012): who reaches the gateway's own port. Setup
-    publishes it on 127.0.0.1 only, which this process cannot see. What would verify it: a
-    connection attempt to its port from another machine, answering nothing or only through what the
-    operator put in front of it. Added 2026-10-10 with the gateway's phase 4.
+    publishes it where Mend's web port is and says where (`MEND_T3_GATEWAY_PUBLISHED`). On loopback
+    it reads `observed`. On a private address it is `open` until declared, and like `workspace-ssh`
+    an open one refuses a `public` start; setup never publishes it beyond loopback on a public
+    install. Served by the edge on an origin of its own (`--t3-gateway-origin`), it is `open` until
+    the operator checked that origin's certificate from another network and declared it. Unsaid
+    where it is published, it is `open` until declared. Added 2026-10-10 with the gateway's phase 4;
+    reworked 2026-10-11 (decision 21).
 
-Items 11, 12 and 14 stay `open` until the operator, having verified them from outside, names them in
-`MEND_EXPOSURE_DECLARED` (the chart's `exposure.declared`, setup's `--declare`); they then read
-`declared`, with the words "this process cannot check it". Besides them only `workspace-ssh` can be
-declared, as above. Nothing else can be declared: an item this process can read is read, never taken
-on someone's word, and naming one there refuses to start.
+Items 11 and 12, and 14 where it is not observed, stay `open` until the operator, having verified
+them from outside, names them in `MEND_EXPOSURE_DECLARED` (the chart's `exposure.declared`, setup's
+`--declare`); they then read `declared`, with the words "this process cannot check it". Besides them
+only `workspace-ssh` can be declared, as above. Nothing else can be declared: an item this process
+can read is read, never taken on someone's word, and naming one there refuses to start.
 
 "Nothing open" means every item was observed, is carried by the build, or was declared by the
 operator. It is a report of what was observed and stated. It is not a statement that the instance is
@@ -481,6 +485,13 @@ Choices a reviewer may overturn without touching the rest. Each names what was t
     start. So the doctor's line keys its "serve it over https" and its gate count on the origin
     being reachable beyond the machine (a non-loopback host), not on the declaration alone, and a
     laptop install on `http://localhost` stays quiet.
+21. **The t3code gateway follows the web port's exposure.** Owner's call, 2026-10-11: a gateway on
+    loopback only made every T3 Code client keep an SSH tunnel open. It is published where Mend's
+    web port is: loopback stays loopback, a tailnet or LAN address publishes it there too, and
+    behind the edge its port stays on loopback while the edge may serve it on a host of its own. A
+    t3code client always uses a server's root path (ADR 0012), so a path under Mend's origin is not
+    an option. Every device still pairs through Mend, so who may use it is unchanged; who can reach
+    its port is the operator's statement, as for workspace SSH.
 
 ## Open questions
 

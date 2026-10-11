@@ -85,7 +85,7 @@ import {
   operatorCommand,
   sessionShareCommand,
 } from "./organization.ts";
-import { type ApiCall, pairCommand, qrCommand } from "./pair.ts";
+import { type ApiCall, pairCommand, qrCommand, type T3GatewayDto } from "./pair.ts";
 import { piAgentDir, piProfileLines, scanPiProfile } from "./pi-profile.ts";
 import {
   beforeDeadline,
@@ -5970,7 +5970,20 @@ const main = async () => {
     case "connect":
       return connectCommand(config, rest);
     case "pair":
-      return pairCommand(rest, boundApi(config));
+      return pairCommand(rest, boundApi(config), async () => {
+        // The gateway's address is an addition: a server that predates it, or a failed read,
+        // leaves the code as it was.
+        try {
+          const machine = await request<{ readonly t3Gateway?: T3GatewayDto }>(
+            config,
+            "GET",
+            "/machine",
+          );
+          return machine.t3Gateway ?? null;
+        } catch {
+          return null;
+        }
+      });
     case "invite":
       return inviteCommand(boundApi(config), config.url, rest);
     case "members":

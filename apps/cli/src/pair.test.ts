@@ -8,7 +8,15 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
-import { chooseUrl, groupCode, minutesUntil, pairingLink, renderQr } from "./pair.ts";
+import {
+  chooseUrl,
+  groupCode,
+  minutesUntil,
+  pairingLink,
+  renderQr,
+  t3GatewayLines,
+  t3PairingLink,
+} from "./pair.ts";
 
 type Handler = (request: IncomingMessage, response: ServerResponse) => void;
 
@@ -89,6 +97,28 @@ describe("pairing facts", () => {
     expect(chooseUrl([], "https://mend.example")).toBeNull();
   });
 
+  it("says where T3 Code pairs with the gateway, beside the code, and nothing while it is off", () => {
+    expect(t3GatewayLines(null, "ABCDEFGH")).toEqual([]);
+    expect(
+      t3GatewayLines(
+        { url: "http://mend-box.tailc79e49.ts.net:3120", published: "100.94.101.28:3120" },
+        "ABCDEFGH",
+      ),
+    ).toEqual([
+      "  t3 code http://mend-box.tailc79e49.ts.net:3120",
+      "          in T3 Code, add a Remote link with this address and the code, or paste http://mend-box.tailc79e49.ts.net:3120/pair#token=ABCDEFGH",
+    ]);
+    expect(
+      t3GatewayLines({ url: "http://127.0.0.1:3120", published: "127.0.0.1:3120" }, "ABCDEFGH")[0],
+    ).toBe("  t3 code http://127.0.0.1:3120 · on the server's machine only");
+    expect(t3GatewayLines({ url: null, published: "100.94.101.28:3120" }, "ABCDEFGH")).toEqual([
+      "  t3 code the gateway is on at 100.94.101.28:3120; the server does not say its address (MEND_T3_GATEWAY_URL)",
+    ]);
+    expect(t3PairingLink("https://t3.mend.example/", "ABCDEFGH")).toBe(
+      "https://t3.mend.example/pair#token=ABCDEFGH",
+    );
+  });
+
   it("reports whole minutes left, and nothing at all for an unreadable date", () => {
     const now = Date.parse("2026-08-22T10:00:00.000Z");
     expect(minutesUntil("2026-08-22T10:10:00.000Z", now)).toBe(10);
@@ -135,6 +165,7 @@ describe("mend pair", { timeout: 30_000 }, () => {
         const result = await runCli(fake.url, args, { token: "test-token" });
         expect(result.stderr).toBe("");
         expect(result.code).toBe(0);
+        // The pairing, then the machine's report, which an older server answers 404 to.
         expect(requests).toEqual([
           {
             method: "POST",
@@ -142,7 +173,14 @@ describe("mend pair", { timeout: 30_000 }, () => {
             origin: undefined,
             authorization: "Bearer test-token",
           },
+          {
+            method: "GET",
+            url: "/api/machine",
+            origin: undefined,
+            authorization: "Bearer test-token",
+          },
         ]);
+        expect(result.stdout).not.toContain("t3 code");
         // The QR renders as block characters, on a pipe as well as in a terminal.
         expect(result.stdout).toContain("▄");
         expect(result.stdout).toContain("ABCD-EFGH");
@@ -156,6 +194,43 @@ describe("mend pair", { timeout: 30_000 }, () => {
       }
     },
   );
+
+  it("prints the address T3 Code's Remote link takes when the server's gateway is on", async () => {
+    const fake = await startFakeMend((request, response) => {
+      response.writeHead(200, { "content-type": "application/json" });
+      if (request.url === "/api/machine") {
+        response.end(
+          JSON.stringify({
+            hostname: "mend-box",
+            platform: "linux",
+            tailnet: { status: "reachable", address: "100.94.101.28" },
+            t3Gateway: {
+              url: "http://mend-box.tailc79e49.ts.net:3120",
+              published: "100.94.101.28:3120",
+            },
+          }),
+        );
+        return;
+      }
+      response.end(
+        JSON.stringify({
+          code: "ABCDEFGH",
+          expiresAt: new Date(Date.now() + 10 * 60_000).toISOString(),
+          urls: ["http://mend-box.tailc79e49.ts.net:3105"],
+        }),
+      );
+    });
+    try {
+      const result = await runCli(fake.url, ["pair"], { token: "test-token" });
+      expect(result.code).toBe(0);
+      expect(result.stdout).toContain("  t3 code http://mend-box.tailc79e49.ts.net:3120\n");
+      expect(result.stdout).toContain(
+        "or paste http://mend-box.tailc79e49.ts.net:3120/pair#token=ABCDEFGH\n",
+      );
+    } finally {
+      await fake.close();
+    }
+  });
 
   it.each([
     "https://unlisted.example",

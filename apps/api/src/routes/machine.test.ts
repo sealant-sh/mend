@@ -5,6 +5,7 @@ import {
   detectTailnetAddress,
   observedAddressKinds,
   observedUserNamespaces,
+  readMachine,
 } from "./machine.ts";
 
 const iface = (address: string, internal = false) => [
@@ -112,5 +113,31 @@ describe("observedUserNamespaces", () => {
         false,
       ),
     ).toBeUndefined();
+  });
+});
+
+describe("the machine view's t3code gateway", () => {
+  const exposure = {
+    declared: "private" as const,
+    originScheme: "http" as const,
+    originOnMachine: false,
+    arrivedVia: "direct" as const,
+    addressKinds: [],
+    gateOpen: 1,
+  };
+
+  it("carries the address T3 Code's Remote link takes while the gateway is on", () => {
+    const view = readMachine(exposure, {
+      url: "http://mend-box.tailc79e49.ts.net:3120",
+      published: "100.94.101.28:3120",
+    });
+    expect(view.t3Gateway).toEqual({
+      url: "http://mend-box.tailc79e49.ts.net:3120",
+      published: "100.94.101.28:3120",
+    });
+  });
+
+  it("says nothing of it while it is off", () => {
+    expect(readMachine(exposure)).not.toHaveProperty("t3Gateway");
   });
 });

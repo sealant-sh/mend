@@ -1685,9 +1685,9 @@ describe("mend server setup", () => {
     const back = readEnv(activeFile(configDir, "server.env"));
     expect(back.has("MEND_SSH_PUBLISHED")).toBe(false);
     expect(back.get("MEND_T3_GATEWAY_PORT")).toBe("3120");
-    expect(fs.readFileSync(activeFile(configDir, "compose.t3.yaml"), "utf8")).toContain(
-      '"127.0.0.1:${MEND_T3_GATEWAY_PORT',
-    );
+    // Behind the edge the gateway's port stays on loopback, as Mend's own does.
+    expect(back.get("MEND_T3_GATEWAY_BIND_HOST")).toBe("127.0.0.1");
+    expect(back.get("MEND_T3_GATEWAY_PUBLISHED")).toBe("127.0.0.1:3120");
     // On loopback, SSH is not published apart: mend#620 keeps no override for it.
     const config = JSON.parse(fs.readFileSync(activeFile(configDir, "server.json"), "utf8"));
     expect(config).toMatchObject({ t3GatewayPort: 3120 });
@@ -2167,7 +2167,7 @@ describe("mend server setup", () => {
     expect(fs.readdirSync(path.join(configDir, "generations"))).toHaveLength(2);
   });
 
-  it("--t3-gateway writes its loopback overlay, runs it every time, keeps it, and --no-t3-gateway takes it away", async () => {
+  it("--t3-gateway writes its overlay on loopback for a loopback install, runs it every time, keeps it, and --no-t3-gateway takes it away", async () => {
     const control = makeRuntime({ gatewayLabel: "1" });
     expect(await serverCommand(["setup", "--t3-gateway"], control.runtime)).toEqual({ _tag: "ok" });
     const { configDir } = control.runtime;
@@ -2175,12 +2175,25 @@ describe("mend server setup", () => {
     expect(fs.readdirSync(generation)).toContain("compose.t3.yaml");
     expect(modeOf(path.join(generation, "compose.t3.yaml"))).toBe(0o600);
     const overlay = fs.readFileSync(path.join(generation, "compose.t3.yaml"), "utf8");
-    // Its own listener, on loopback only, and the switch the bundle starts it by.
+    // Its own listener, where Mend's web port is (loopback here), and the switch the bundle
+    // starts it by. What the server reports about it reaches the mend container.
     expect(overlay).toContain('MEND_T3_GATEWAY_ENABLED: "true"');
     expect(overlay).toContain(
-      '- "127.0.0.1:${MEND_T3_GATEWAY_PORT:?set MEND_T3_GATEWAY_PORT in server.env}:3120"',
+      '- "${MEND_T3_GATEWAY_BIND_HOST:?set MEND_T3_GATEWAY_BIND_HOST in server.env}:${MEND_T3_GATEWAY_PORT:?set MEND_T3_GATEWAY_PORT in server.env}:3120"',
     );
-    expect(overlay).not.toMatch(/0\.0\.0\.0/);
+    expect(overlay).toContain(
+      "      MEND_T3_GATEWAY_PUBLISHED: ${MEND_T3_GATEWAY_PUBLISHED:?set MEND_T3_GATEWAY_PUBLISHED in server.env}",
+    );
+    expect(overlay).toContain(
+      "      MEND_T3_GATEWAY_URL: ${MEND_T3_GATEWAY_URL:?set MEND_T3_GATEWAY_URL in server.env}",
+    );
+    expect(overlay).not.toMatch(/0\.0\.0\.0|\n {2}edge:/);
+    const written = readEnv(path.join(generation, "server.env"));
+    expect(written.get("MEND_T3_GATEWAY_BIND_HOST")).toBe("127.0.0.1");
+    expect(written.get("MEND_T3_GATEWAY_PUBLISHED")).toBe("127.0.0.1:3120");
+    expect(written.get("MEND_T3_GATEWAY_URL")).toBe("http://127.0.0.1:3120");
+    expect(written.has("MEND_T3_GATEWAY_EDGE_HOST")).toBe(false);
+    expect(fs.readdirSync(generation)).not.toContain("Caddyfile.t3");
     // Its state in a volume of its own, inside the root it is confined to.
     expect(overlay).toContain("      - mend-t3-gateway:/opt/mend-t3-gateway/state");
     expect(overlay).toMatch(/^volumes:\n {2}mend-t3-gateway:$/m);
@@ -2194,7 +2207,7 @@ describe("mend server setup", () => {
     expect(
       control.lines.some((line) =>
         line.startsWith(
-          "The t3code gateway answered at 127.0.0.1:3120, observed from this machine; it is published there only.",
+          "The t3code gateway answered at 127.0.0.1:3120, observed from this machine. It is published on 127.0.0.1:3120 only, as Mend's web port is. In T3 Code on this machine, add a Remote link to http://127.0.0.1:3120",
         ),
       ),
     ).toBe(true);
@@ -2254,6 +2267,204 @@ describe("mend server setup", () => {
     expect(taken).toEqual([3105, 2222, 3120]);
     expect(fs.existsSync(path.join(control.runtime.configDir, "active"))).toBe(false);
     expect(control.commands.some(([, args]) => args.includes("up"))).toBe(false);
+  });
+
+  it("publishes the gateway on a private install's own address, with no tunnel (tailnet)", async () => {
+    const control = makeRuntime({ gatewayLabel: "1" });
+    const taken: Array<readonly [number, string | undefined]> = [];
+    expect(
+      await serverCommand(
+        [
+          "setup",
+          "--bind",
+          "100.94.101.28",
+          "--url",
+          "http://mend-box.tailc79e49.ts.net:3105",
+          "--exposure",
+          "private",
+          "--t3-gateway",
+        ],
+        {
+          ...control.runtime,
+          portTaken: async (port, address) => {
+            taken.push([port, address]);
+            return false;
+          },
+        },
+      ),
+    ).toEqual({ _tag: "ok" });
+    const generation = activeDirectory(control.runtime.configDir);
+    const env = readEnv(path.join(generation, "server.env"));
+    expect(env.get("MEND_BIND_HOST")).toBe("100.94.101.28");
+    expect(env.get("MEND_T3_GATEWAY_BIND_HOST")).toBe("100.94.101.28");
+    expect(env.get("MEND_T3_GATEWAY_PUBLISHED")).toBe("100.94.101.28:3120");
+    // The name people already reach Mend by, on the gateway's own port.
+    expect(env.get("MEND_T3_GATEWAY_URL")).toBe("http://mend-box.tailc79e49.ts.net:3120");
+    // The port is checked, and the gateway looked for, where it is published.
+    expect(taken).toContainEqual([3120, "100.94.101.28"]);
+    expect(control.fetched).toContain("http://100.94.101.28:3120/.well-known/t3/environment");
+    expect(
+      control.lines.some((line) =>
+        line.startsWith(
+          "The t3code gateway answered at 100.94.101.28:3120, observed from this machine. It is published on 100.94.101.28:3120, where Mend's web port is: T3 Code on a machine that reaches Mend reaches it too, with no tunnel. In T3 Code, add a Remote link to http://mend-box.tailc79e49.ts.net:3120",
+        ),
+      ),
+    ).toBe(true);
+    for (const line of control.lines) expect(line).not.toMatch(/ssh -L|\bsafe\b|gate passed/i);
+
+    // Every address: the gateway goes there too, and keeps the URL's name.
+    expect(
+      await serverCommand(
+        ["setup", "--bind", "0.0.0.0", "--url", "http://mend.lan:3105"],
+        control.runtime,
+      ),
+    ).toEqual({ _tag: "ok" });
+    const lan = readEnv(activeFile(control.runtime.configDir, "server.env"));
+    expect(lan.get("MEND_T3_GATEWAY_PUBLISHED")).toBe("0.0.0.0:3120");
+    expect(lan.get("MEND_T3_GATEWAY_URL")).toBe("http://mend.lan:3120");
+    expect(control.fetched).toContain("http://127.0.0.1:3120/.well-known/t3/environment");
+
+    // Back to this machine: the gateway follows to loopback.
+    expect(
+      await serverCommand(
+        [
+          "setup",
+          "--bind",
+          "127.0.0.1",
+          "--url",
+          "http://localhost:3105",
+          "--exposure",
+          "loopback",
+        ],
+        control.runtime,
+      ),
+    ).toEqual({ _tag: "ok" });
+    const local = readEnv(activeFile(control.runtime.configDir, "server.env"));
+    expect(local.get("MEND_T3_GATEWAY_PUBLISHED")).toBe("127.0.0.1:3120");
+    expect(local.get("MEND_T3_GATEWAY_URL")).toBe("http://127.0.0.1:3120");
+  });
+
+  it("keeps the gateway's port on loopback behind the edge, and serves it on its own origin only when asked", async () => {
+    const configDir = temporaryDirectory("t3-edge-origin");
+    expect(await serverCommand(["setup", "--yes"], makeRuntime({ configDir }).runtime)).toEqual({
+      _tag: "ok",
+    });
+    const lookups: Array<string> = [];
+    const control = makeRuntime({ configDir, gatewayLabel: "1" });
+    const runtime = {
+      ...control.runtime,
+      lookupHost: async (host: string) => {
+        lookups.push(host);
+        return host === "t3.mend.example.test" || host === "mend.example.test"
+          ? ["203.0.113.10"]
+          : null;
+      },
+    };
+    // Public, no origin: the raw port never leaves loopback, and no site is added to the edge.
+    expect(
+      await serverCommand(
+        ["setup", "--edge", "mend.example.test", "--exposure", "public", "--t3-gateway"],
+        runtime,
+      ),
+    ).toEqual({ _tag: "ok" });
+    const plain = activeDirectory(configDir);
+    const plainEnv = readEnv(path.join(plain, "server.env"));
+    expect(plainEnv.get("MEND_T3_GATEWAY_BIND_HOST")).toBe("127.0.0.1");
+    expect(plainEnv.get("MEND_T3_GATEWAY_URL")).toBe("http://127.0.0.1:3120");
+    expect(plainEnv.has("MEND_T3_GATEWAY_EDGE_HOST")).toBe(false);
+    expect(fs.readdirSync(plain)).not.toContain("Caddyfile.t3");
+    expect(fs.readFileSync(path.join(plain, "compose.t3.yaml"), "utf8")).not.toContain("edge:");
+    // The edge's Caddyfile imports sites; none is there.
+    expect(fs.readFileSync(path.join(plain, "Caddyfile"), "utf8")).toContain(
+      "import /etc/caddy/sites/*.caddy",
+    );
+
+    // The edge serves it on a host of its own; its DNS is observed, never refused.
+    const before = control.lines.length;
+    expect(
+      await serverCommand(["setup", "--t3-gateway-origin", "t3.mend.example.test"], runtime),
+    ).toEqual({ _tag: "ok" });
+    const served = activeDirectory(configDir);
+    const env = readEnv(path.join(served, "server.env"));
+    expect(env.get("MEND_T3_GATEWAY_BIND_HOST")).toBe("127.0.0.1");
+    expect(env.get("MEND_T3_GATEWAY_PUBLISHED")).toBe("127.0.0.1:3120");
+    expect(env.get("MEND_T3_GATEWAY_URL")).toBe("https://t3.mend.example.test");
+    expect(env.get("MEND_T3_GATEWAY_EDGE_HOST")).toBe("t3.mend.example.test");
+    expect(fs.readdirSync(served)).toContain("Caddyfile.t3");
+    expect(modeOf(path.join(served, "Caddyfile.t3"))).toBe(0o644);
+    const site = fs.readFileSync(path.join(served, "Caddyfile.t3"), "utf8");
+    expect(site).toContain("{$MEND_T3_GATEWAY_EDGE_HOST} {");
+    expect(site).toContain("reverse_proxy mend:3120 {");
+    expect(site).toContain("replace wsTicket REDACTED");
+    const overlay = fs.readFileSync(path.join(served, "compose.t3.yaml"), "utf8");
+    expect(overlay).toContain("\n  edge:\n");
+    expect(overlay).toContain("      - ./Caddyfile.t3:/etc/caddy/sites/t3code-gateway.caddy:ro");
+    expect(overlay).toContain(
+      "      MEND_T3_GATEWAY_EDGE_HOST: ${MEND_T3_GATEWAY_EDGE_HOST:?set MEND_T3_GATEWAY_EDGE_HOST in server.env}",
+    );
+    expect(JSON.parse(fs.readFileSync(path.join(served, "server.json"), "utf8"))).toMatchObject({
+      t3GatewayPort: 3120,
+      t3GatewayOrigin: "t3.mend.example.test",
+    });
+    expect(lookups).toEqual(expect.arrayContaining(["t3.mend.example.test", "mend.example.test"]));
+    expect(control.lines.slice(before)).toContain(
+      "Observed: t3.mend.example.test resolves to 203.0.113.10, as mend.example.test does.",
+    );
+    // Kept across a rerun; the edge cannot go while it serves the gateway.
+    expect(await serverCommand(["setup", "--yes"], runtime)).toEqual({ _tag: "ok" });
+    expect(activeDirectory(configDir)).toBe(served);
+    expect(
+      await serverCommand(["setup", "--no-edge", "--exposure", "private"], runtime),
+    ).toMatchObject({
+      _tag: "error",
+      message: expect.stringContaining("Add --no-t3-gateway-origin to take it away with the edge."),
+    });
+    // --no-t3-gateway-origin: the gateway stays on, on loopback; the site goes.
+    expect(await serverCommand(["setup", "--no-t3-gateway-origin"], runtime)).toEqual({
+      _tag: "ok",
+    });
+    const unserved = activeDirectory(configDir);
+    expect(fs.readdirSync(unserved)).not.toContain("Caddyfile.t3");
+    expect(readEnv(path.join(unserved, "server.env")).get("MEND_T3_GATEWAY_URL")).toBe(
+      "http://127.0.0.1:3120",
+    );
+    // Off takes its origin with it.
+    expect(
+      await serverCommand(["setup", "--t3-gateway-origin", "t3.mend.example.test"], runtime),
+    ).toEqual({ _tag: "ok" });
+    expect(await serverCommand(["setup", "--no-t3-gateway"], runtime)).toEqual({ _tag: "ok" });
+    const off = JSON.parse(fs.readFileSync(activeFile(configDir, "server.json"), "utf8"));
+    expect(off).not.toHaveProperty("t3GatewayOrigin");
+    expect(fs.readdirSync(activeDirectory(configDir))).not.toContain("Caddyfile.t3");
+  });
+
+  it.each([
+    [["--t3-gateway-origin", "t3.mend.example.test"], "--t3-gateway-origin needs the edge"],
+    [["--t3-gateway-origin", "100.64.1.2"], "--t3-gateway-origin must be a DNS name"],
+    [["--t3-gateway-origin", "t3.example.test", "--no-t3-gateway"], "contradicts --no-t3-gateway"],
+  ])("refuses a gateway origin that cannot hold: %j", async (flags, reason) => {
+    const control = makeRuntime({ gatewayLabel: "1" });
+    expect(await serverCommand(["setup", ...flags], control.runtime)).toMatchObject({
+      _tag: "error",
+      message: expect.stringContaining(reason),
+    });
+    expect(fs.existsSync(path.join(control.runtime.configDir, "active"))).toBe(false);
+  });
+
+  it("refuses Mend's own origin as the gateway's: t3code always uses a server's root path", async () => {
+    const configDir = temporaryDirectory("t3-same-origin");
+    expect(await serverCommand(["setup", "--yes"], makeRuntime({ configDir }).runtime)).toEqual({
+      _tag: "ok",
+    });
+    expect(
+      await serverCommand(
+        ["setup", "--edge", "mend.example.test", "--t3-gateway-origin", "mend.example.test"],
+        makeRuntime({ configDir, gatewayLabel: "1" }).runtime,
+      ),
+    ).toMatchObject({
+      _tag: "error",
+      message: expect.stringContaining("such as t3.mend.example.test"),
+    });
   });
 
   it("says the gateway did not answer when it did not, and Mend runs on (644-1)", async () => {
@@ -2393,7 +2604,9 @@ describe("mend server setup, guided and unasked", () => {
       declared: ["workspace-ssh", "edge-tls"],
       t3GatewayPort: 3120,
     });
-    expect(gateway.lines).toContain("  T3 Code gateway: off → on, at 127.0.0.1:3120");
+    expect(gateway.lines).toContain(
+      "  T3 Code gateway: off → on, at http://127.0.0.1:3120, this machine only",
+    );
     for (const [flags, reason] of [
       [["--declare", "edge-tls", "--undeclare", "edge-tls"], "both name edge-tls"],
       [["--declare", "none", "--undeclare", "edge-tls"], "drop --undeclare"],
@@ -2494,12 +2707,13 @@ describe("mend server setup, guided and unasked", () => {
     const before = serverJson(configDir);
     const control = makeRuntime({ configDir, gatewayLabel: "1" });
     const transcript: Array<string> = [];
-    // change something · the T3 Code gateway (3rd) · yes · nothing else · apply
+    // change something · the T3 Code gateway (3rd) · yes · no host of its own · nothing else ·
+    // apply
     expect(
       await serverCommand(["setup"], {
         ...control.runtime,
         probeSsh: async () => [],
-        prompter: scriptedPrompter(["2", "3", "y", "", ""], transcript),
+        prompter: scriptedPrompter(["2", "3", "y", "", "", ""], transcript),
       }),
     ).toEqual({ _tag: "ok" });
     expect(control.lines).toContain(

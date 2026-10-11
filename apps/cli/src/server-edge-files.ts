@@ -119,4 +119,8 @@ export const EDGE_CADDYFILE: string =
     "\t\t}",
     "\t}",
     "}",
+    "",
+    "# Sites beside Mend's own origin, one file each. `mend server setup --t3-gateway-origin <host>`",
+    "# mounts the t3code gateway's here (docs/adr/0012); none is there unless one was asked for.",
+    "import /etc/caddy/sites/*.caddy",
   ].join("\n") + "\n";

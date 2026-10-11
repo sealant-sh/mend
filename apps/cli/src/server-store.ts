@@ -42,8 +42,10 @@ export interface ServerFiles {
   readonly npmMirrorConf?: string;
   /** docker-mirror-guard.sh: the Docker mirror's entrypoint, which bounds its cache. */
   readonly dockerMirrorGuard?: string;
-  /** compose.t3.yaml: the t3code gateway turned on, its port on loopback. */
+  /** compose.t3.yaml: the t3code gateway turned on, its port where Mend's web port is. */
   readonly t3Gateway?: string;
+  /** Caddyfile.t3: the edge's site for the gateway, when the edge serves it on its own origin. */
+  readonly t3Caddyfile?: string;
 }
 
 /** An immutable deployment snapshot. Use this directory, not the active symlink, for Compose. */
@@ -232,6 +234,7 @@ const optionalFileKeys = [
   "npmMirrorConf",
   "dockerMirrorGuard",
   "t3Gateway",
+  "t3Caddyfile",
 ] as const;
 const fileNames = {
   identity: "identity.env",
@@ -246,6 +249,7 @@ const fileNames = {
   npmMirrorConf: "npm-mirror.conf",
   dockerMirrorGuard: "docker-mirror-guard.sh",
   t3Gateway: "compose.t3.yaml",
+  t3Caddyfile: "Caddyfile.t3",
 } as const;
 /**
  * The bind-mounted files another UID reads: Postgres's init (UID 70), Caddy's configuration and
@@ -264,6 +268,7 @@ const fileModes: Readonly<Record<(typeof fileKeys | typeof optionalFileKeys)[num
   npmMirrorConf: 0o644,
   dockerMirrorGuard: 0o644,
   t3Gateway: 0o600,
+  t3Caddyfile: 0o644,
 };
 
 /** Every file a generation may hold, in a fixed order, with its content or undefined. */
@@ -445,6 +450,7 @@ const readActive = (paths: StorePaths): ServerGeneration | null => {
   const npmMirrorConf = optional("npmMirrorConf");
   const dockerMirrorGuard = optional("dockerMirrorGuard");
   const t3Gateway = optional("t3Gateway");
+  const t3Caddyfile = optional("t3Caddyfile");
   const files: ServerFiles = {
     identity: fs.readFileSync(path.join(directory, fileNames.identity), "utf8"),
     config: fs.readFileSync(path.join(directory, fileNames.config), "utf8"),
@@ -458,6 +464,7 @@ const readActive = (paths: StorePaths): ServerGeneration | null => {
     ...(npmMirrorConf === undefined ? {} : { npmMirrorConf }),
     ...(dockerMirrorGuard === undefined ? {} : { dockerMirrorGuard }),
     ...(t3Gateway === undefined ? {} : { t3Gateway }),
+    ...(t3Caddyfile === undefined ? {} : { t3Caddyfile }),
   };
   if (readIdentity(paths) !== files.identity) {
     throw new ServerStoreError(

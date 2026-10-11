@@ -107,16 +107,29 @@ What should change?
   3. the T3 Code gateway · off
   …
   1-7 [1]: 3
-…
+
+The T3 Code gateway lets T3 Code's desktop, mobile and web apps pair with this Mend: in T3 Code, add a Remote link with its address and a code from mend pair. T3 Code's SSH mode is not for Mend: it starts T3 Code's own server on this machine.
+Behind the edge, its port stays on 127.0.0.1:3120, as Mend's own does; the edge can serve it on a host of its own.
 Turn on the T3 Code gateway? [y/N] y
+
+T3 Code always uses a server's root path, so the edge cannot serve the gateway under alpha.mend.run. Serve it on a host of its own?
+  1. yes, on a host of its own · such as t3.alpha.mend.run, whose DNS points here as alpha.mend.run's does; Caddy gets its certificate
+  2. no, this machine only · 127.0.0.1:3120, reached from this machine only
+  1 or 2 [2]: 1
+The gateway's host [t3.alpha.mend.run]:
+Observed: t3.alpha.mend.run resolves to 203.0.113.7, as alpha.mend.run does.
 
 Change something else? [y/N]
 
 What changes:
-  T3 Code gateway: off → on, at 127.0.0.1:3120
-Same as: mend server setup --t3-gateway
+  T3 Code gateway: off → on, at https://t3.alpha.mend.run through the edge (its port on 127.0.0.1:3120)
+Same as: mend server setup --t3-gateway-origin t3.alpha.mend.run
 Apply? [Y/n]
 ```
+
+On a private install the same question says where T3 Code reaches the gateway: on the address Mend's
+web port is published on, such as `http://mend-box.tail1234.ts.net:3120` over Tailscale, with no
+tunnel.
 
 At idle, three product containers run:
 

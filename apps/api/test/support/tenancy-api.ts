@@ -161,6 +161,7 @@ export const createTenancyApi = async (
     readonly exposure?: {
       readonly exposure: ExposureConfig["Service"]["exposure"];
       readonly gate: ReadonlyArray<ExposureOutcome>;
+      readonly t3Gateway?: ExposureConfig["Service"]["t3Gateway"];
     };
     /** Credentials that no longer stand (`session:<account>`): add one to sign that account out. */
     readonly revokedCredentials?: ReadonlySet<string>;
@@ -423,6 +424,7 @@ export const createTenancyApi = async (
         exposure: options.exposure?.exposure ?? "loopback",
         gate: Effect.succeed(options.exposure?.gate ?? []),
         gateWith: () => options.exposure?.gate ?? [],
+        t3Gateway: options.exposure?.t3Gateway,
       }),
       // Every remote in the harness is public; the policy's own tests cover the refusals.
       Layer.succeed(

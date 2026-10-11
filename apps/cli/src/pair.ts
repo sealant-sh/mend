@@ -13,6 +13,9 @@ import { redactCredentials } from "./shared.ts";
  *
  * `mend qr` is the bare renderer the installer uses: no config, no server, no
  * login. Both print on a pipe as well as in a terminal.
+ *
+ * With the server's t3code gateway on, `mend pair` also prints the address T3 Code's Remote link
+ * takes: the same code pairs T3 Code with the gateway (ADR 0012, "Access").
  */
 
 /** POST /me/devices/pairings — the code, when it dies, and the URLs a phone could reach. */
@@ -20,6 +23,12 @@ export interface PairingDto {
   readonly code: string;
   readonly expiresAt: string;
   readonly urls: ReadonlyArray<string>;
+}
+
+/** `GET /machine`'s `t3Gateway`: present while the server's t3code gateway is on. */
+export interface T3GatewayDto {
+  readonly url: string | null;
+  readonly published: string | null;
 }
 
 /** main.ts's one-shot API call: any failure prints `mend: …` and exits 1. */
@@ -62,6 +71,39 @@ export const pairingLink = (url: string, code: string): string =>
 export const chooseUrl = (urls: ReadonlyArray<string>, override: string | null): string | null =>
   override === null ? (urls[0] ?? null) : urls.includes(override) ? override : null;
 
+/** The link T3 Code takes in one paste: the gateway's address, the code in the fragment. */
+export const t3PairingLink = (url: string, code: string): string =>
+  `${url.replace(/\/+$/, "")}/pair#token=${code}`;
+
+const isLoopbackUrl = (url: string): boolean => {
+  try {
+    const host = new URL(url).hostname;
+    return host === "localhost" || host === "[::1]" || host.startsWith("127.");
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * What `mend pair` says about the t3code gateway: the address to enter in T3 Code's Remote link,
+ * beside the code, and the one link that carries both. Nothing when the gateway is off, or the
+ * server predates the report.
+ */
+export const t3GatewayLines = (
+  gateway: T3GatewayDto | null,
+  code: string,
+): ReadonlyArray<string> => {
+  if (gateway === null) return [];
+  if (gateway.url === null)
+    return [
+      `  t3 code the gateway is on${gateway.published === null ? "" : ` at ${gateway.published}`}; the server does not say its address (MEND_T3_GATEWAY_URL)`,
+    ];
+  return [
+    `  t3 code ${gateway.url}${isLoopbackUrl(gateway.url) ? " · on the server's machine only" : ""}`,
+    `          in T3 Code, add a Remote link with this address and the code, or paste ${t3PairingLink(gateway.url, code)}`,
+  ];
+};
+
 /** Whole minutes left, floored at 0; null when the server sent a date this CLI cannot read. */
 export const minutesUntil = (expiresAt: string, now: number = Date.now()): number | null => {
   const at = Date.parse(expiresAt);
@@ -80,7 +122,11 @@ export const renderQr = async (text: string): Promise<string> => {
  * `mend pair [--url <base url>]`: mint a pairing code and show it. The device names
  * itself when it claims the code, so this side sends nothing but the request.
  */
-export const pairCommand = async (args: ReadonlyArray<string>, api: ApiCall): Promise<void> => {
+export const pairCommand = async (
+  args: ReadonlyArray<string>,
+  api: ApiCall,
+  t3Gateway: () => Promise<T3GatewayDto | null> = async () => null,
+): Promise<void> => {
   const pairing = await api<PairingDto>("POST", "/me/devices/pairings");
   const override = takeFlagValue(args, "--url");
   if (args.includes("--url") && override === null) {
@@ -101,6 +147,7 @@ export const pairCommand = async (args: ReadonlyArray<string>, api: ApiCall): Pr
   say(
     `  ${dim("expires")} ${minutes === null ? pairing.expiresAt : `in ${minutes} min`} ${dim("· one device, once")}`,
   );
+  for (const line of t3GatewayLines(await t3Gateway(), pairing.code)) say(line);
   say("");
   say(dim("  scan it in the Mend app, or enter the url and the code there by hand"));
   say(dim("  the app is apps/mobile — build it yourself; it is not published yet"));

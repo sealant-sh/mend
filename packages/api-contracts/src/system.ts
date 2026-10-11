@@ -91,6 +91,14 @@ export class MachineView extends Schema.Class<MachineView>("MachineView")({
   userNamespaces: Schema.optional(
     Schema.Struct({ allowed: Schema.Boolean, setting: Schema.NullOr(Schema.String) }),
   ),
+  /**
+   * The t3code gateway (ADR 0012), present while it is enabled: the address a T3 Code client
+   * enters in its Remote link, and where its port is published (`<address>:<port>`). Both are the
+   * deployment's configuration as `mend server setup` wrote it, not observed; null when unsaid.
+   */
+  t3Gateway: Schema.optional(
+    Schema.Struct({ url: Schema.NullOr(Schema.String), published: Schema.NullOr(Schema.String) }),
+  ),
 }) {}
 
 export const machineGroup = HttpApiGroup.make("machine")

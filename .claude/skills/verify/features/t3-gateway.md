@@ -66,19 +66,24 @@ server image, or someone starts it by hand from a checkout beside a Mend server.
 
 ## How to get to it (user POV)
 
-- Packaged server: `mend server setup --t3-gateway` (help in `apps/cli/src/help.ts:1206`,
-  `apps/cli/src/help.ts:1212`). The gateway is published on `127.0.0.1:3120` only;
-  `--t3-gateway-port <n>` picks another loopback port and implies `--t3-gateway`; `--no-t3-gateway`
-  turns it off and keeps its volume, `mend_mend-t3-gateway`. Setup prints
-  `The t3code gateway answered at 127.0.0.1:<port>, observed from this machine; …` or
-  `The t3code gateway did not answer at 127.0.0.1:<port> from this machine within about a minute. …`
-  (`apps/cli/src/server-setup.ts:1851`, `:1855`).
-- `mend server status` prints
-  `t3code gateway · on · 127.0.0.1:<port> · loopback only · reaching it from elsewhere is an exposure you declare`
-  (`apps/cli/src/server-edge.ts:268`), then
-  `t3code gateway · observed answering at 127.0.0.1:<port> from this machine` or
-  `t3code gateway · not observed at 127.0.0.1:<port> from this machine · mend server logs shows what it said`
-  (`apps/cli/src/server-setup.ts:3435`).
+- Packaged server: `mend server setup --t3-gateway` (help in `apps/cli/src/help.ts`). The gateway is
+  published where Mend's web port is (`t3GatewayPlacement` in `apps/cli/src/server-edge.ts`):
+  `127.0.0.1:3120` on a loopback install, the tailnet or LAN address on a private one, and
+  `127.0.0.1` behind the edge, where `--t3-gateway-origin <host>` has Caddy serve it on a host of
+  its own (`Caddyfile.t3`, imported from `/etc/caddy/sites/`). `--t3-gateway-port <n>` picks another
+  port and implies `--t3-gateway`; `--no-t3-gateway` turns it off and keeps its volume,
+  `mend_mend-t3-gateway`. `server.env` carries `MEND_T3_GATEWAY_BIND_HOST`,
+  `MEND_T3_GATEWAY_PUBLISHED`, `MEND_T3_GATEWAY_URL` (and `MEND_T3_GATEWAY_EDGE_HOST` when the edge
+  serves it). Setup prints
+  `The t3code gateway answered at <address>:<port>, observed from this machine. …` with the Remote
+  link address, or `The t3code gateway did not answer at
+  <address>:<port> from this machine within about a minute. …`.
+- `mend server status` prints the placement (`t3code gateway · on · published on …`), then
+  `t3code gateway · observed answering at <address>:<port> from this machine · T3 Code's Remote link takes <url>`
+  or `t3code gateway · not observed at <address>:<port> from this machine · …`.
+- `mend pair` prints `t3 code <url>` and the one-paste link `<url>/pair#token=<code>` beside the
+  code, read from `GET /api/machine`'s `t3Gateway`; `mend doctor` has a `t3code gateway` line from
+  the same field.
 - From a checkout: `MEND_T3_GATEWAY_MEND_URL=<api> pnpm --filter @mend/t3-gateway start` (the bin
   `mend-t3-gateway`, `node src/bin.ts`). Variables: `MEND_T3_GATEWAY_MEND_URL` (default
   `http://127.0.0.1:3101`, Mend's API), `MEND_T3_GATEWAY_HOST` (`127.0.0.1`), `MEND_T3_GATEWAY_PORT`

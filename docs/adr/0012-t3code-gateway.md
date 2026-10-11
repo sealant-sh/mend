@@ -158,11 +158,12 @@ when sessions share a worktree.
 
 ### Access
 
-Off by default. Enabled from `mend server setup`, bound to loopback, its own listener and origin. A
-private-network or public exposure goes through the public exposure gate (ADR 0004) as its own
-entry; publicly it sits behind the edge on its own subdomain. The first supported client is t3code
-desktop (a `v0.0.46` nightly) against a loopback or private gateway. The hosted `app.t3.codes`
-follows once the edge serves the gateway over HTTPS.
+Off by default. Enabled from `mend server setup`, its own listener and origin, published where
+Mend's web port is: loopback for one machine, the tailnet or LAN address for a private network.
+Publicly its port stays on loopback and the edge serves it on its own subdomain
+(`--t3-gateway-origin`). Each placement is an entry of the public exposure gate (ADR 0004, item 14).
+The first supported client is t3code desktop (a `v0.0.46` nightly) against a loopback or private
+gateway. The hosted `app.t3.codes` follows once the edge serves the gateway over HTTPS.
 
 Pairing needs no Mend UI change. A pairing code comes from Mend's existing
 `POST /api/me/devices/pairings`; `mend t3 pair` creates one with the person's CLI login and prints a
@@ -245,3 +246,8 @@ its own pull request.
   `effect/http-api`). t3code split its scopes into granular permissions and put an
   `RpcScopeAuthorization` middleware on every RPC; the gateway serves it from a copy of t3code's own
   scope map, and reads a grant from before the split as the standard grant it stood for.
+- 2026-10-11: the gateway follows the web port's exposure instead of loopback only, which needed a
+  tunnel per client (owner's call). Private installs publish it on the web port's address; behind
+  the edge it is served on a host of its own, since t3code forces a server's base path to `/`.
+  `mend pair` prints the address T3 Code's Remote link takes; t3code's SSH mode starts t3code's own
+  server and is not a way to reach Mend.
