@@ -136,6 +136,56 @@ describe("resolveRemoteEnv", () => {
 });
 
 describe("effectiveGitUrl", () => {
+  // Review round 3 of mend#736: the push probe makes a repository and writes a remote into it.
+  // Inherited location overrides, or a template, must neither redirect that write nor seed the
+  // probe with rules the real push never sees. The global rule below is what the push follows.
+  const pushRule = () =>
+    gitConfig("url.ssh://git@github.com/.pushInsteadOf", "https://example.invalid/");
+  const pushed = "ssh://git@github.com/repo";
+
+  it.effect("writes nothing into a repository GIT_COMMON_DIR or GIT_DIR names", () =>
+    Effect.gen(function* () {
+      pushRule();
+      const victim = path.join(scratch, "victim.git");
+      execFileSync("git", ["init", "-q", "--bare", victim]);
+      const before = fs.readFileSync(path.join(victim, "config"), "utf8");
+      setEnv("GIT_COMMON_DIR", victim);
+      setEnv("GIT_DIR", victim);
+      expect(yield* effectiveGitUrl("https://example.invalid/repo", true)).toBe(pushed);
+      expect(fs.readFileSync(path.join(victim, "config"), "utf8")).toBe(before);
+    }),
+  );
+
+  it.effect("writes nothing into a config file GIT_CONFIG names", () =>
+    Effect.gen(function* () {
+      pushRule();
+      const redirected = path.join(scratch, "redirected.gitconfig");
+      fs.writeFileSync(redirected, "");
+      setEnv("GIT_CONFIG", redirected);
+      expect(yield* effectiveGitUrl("https://example.invalid/repo", true)).toBe(pushed);
+      expect(fs.readFileSync(redirected, "utf8")).toBe("");
+    }),
+  );
+
+  it.effect("uses no template, from GIT_TEMPLATE_DIR or init.templateDir", () =>
+    Effect.gen(function* () {
+      pushRule();
+      // A template whose config would send this push over https: a longer-prefix rewrite, and
+      // a pushurl on the remote name a fixed-name probe would use.
+      const template = path.join(scratch, "template");
+      fs.mkdirSync(template);
+      fs.writeFileSync(
+        path.join(template, "config"),
+        '[url "https://evil.invalid/"]\n\tpushInsteadOf = https://example.invalid/repo\n[remote "probe"]\n\tpushurl = https://evil.invalid/probe\n',
+      );
+      setEnv("GIT_TEMPLATE_DIR", template);
+      expect(yield* effectiveGitUrl("https://example.invalid/repo", true)).toBe(pushed);
+      delete process.env["GIT_TEMPLATE_DIR"];
+      gitConfig("init.templateDir", template);
+      expect(yield* effectiveGitUrl("https://example.invalid/repo", true)).toBe(pushed);
+    }),
+  );
+
   // Review of mend#734: three insteadOf entries, two bases tied on prefix length. git groups
   // values by the first-seen base, so `git@first.invalid:` wins; picking the first matching
   // entry would say `https://second.invalid/` and fail a valid ssh op closed.

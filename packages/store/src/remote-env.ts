@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -20,10 +21,41 @@ export class NoSignerError extends Schema.TaggedErrorClass<NoSignerError>()("NoS
   message: Schema.String,
 }) {}
 
-/** Run git outside any repository (or in `gitDir`); its trimmed stdout, or null when it failed. */
+/**
+ * Variables that point git at another repository, another config file or a template. The probes
+ * below run in a repository of their own or none: inherited from the server process, these would
+ * write the probe's remote into someone else's repository or config, or seed the probe with
+ * rules the real operation never sees. The system and global config (`GIT_CONFIG_GLOBAL`,
+ * `GIT_CONFIG_SYSTEM`, `GIT_CONFIG_NOSYSTEM`) stay: their `url.*` rules are the point.
+ */
+const GIT_LOCATION_OVERRIDES: ReadonlyArray<string> = [
+  "GIT_DIR",
+  "GIT_COMMON_DIR",
+  "GIT_WORK_TREE",
+  "GIT_INDEX_FILE",
+  "GIT_CONFIG",
+  "GIT_OBJECT_DIRECTORY",
+  "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+  "GIT_NAMESPACE",
+  "GIT_TEMPLATE_DIR",
+  "GIT_PREFIX",
+  "GIT_CEILING_DIRECTORIES",
+  "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+  "GIT_GRAFT_FILE",
+  "GIT_REPLACE_REF_BASE",
+  "GIT_SHALLOW_FILE",
+];
+
+const probeEnv = (): NodeJS.ProcessEnv => {
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  for (const name of GIT_LOCATION_OVERRIDES) delete env[name];
+  return env;
+};
+
+/** Run git outside any repository; its trimmed stdout, or null when it failed. */
 const gitAnswer = (args: ReadonlyArray<string>): Effect.Effect<string | null> =>
   Effect.callback((resume) => {
-    const child = execFile("git", [...args], { cwd: "/" }, (error, stdout) => {
+    const child = execFile("git", [...args], { cwd: "/", env: probeEnv() }, (error, stdout) => {
       resume(Effect.succeed(error === null ? stdout.trim() : null));
     });
     return Effect.sync(() => child.kill());
@@ -34,8 +66,10 @@ const gitAnswer = (args: ReadonlyArray<string>): Effect.Effect<string | null> =>
  * server process's system and global config), asked of git itself so its `insteadOf` and
  * `pushInsteadOf` rules apply exactly as they will (the longest prefix, and among equal ones the
  * base git saw first). A push asks `git remote get-url --push`, which tries `pushInsteadOf`
- * before `insteadOf`; it needs a repository, so a throwaway bare one holds the remote — Mend
- * writes no rewrite into a store. Null when git could not answer.
+ * before `insteadOf`. It needs a repository whose config names the remote (git does not see a
+ * remote given only with `-c`), so a throwaway bare one holds it: made without a template, its
+ * remote written to its own config file under a name nothing else can have set. Mend writes no
+ * rewrite into a store. Null when git could not answer.
  */
 export const effectiveGitUrl = (remote: string, push: boolean): Effect.Effect<string | null> => {
   // An accepted remote never starts with "-"; anything that does is no URL git should be asked.
@@ -46,15 +80,19 @@ export const effectiveGitUrl = (remote: string, push: boolean): Effect.Effect<st
     (dir) =>
       Effect.gen(function* () {
         const gitDir = path.join(dir, "probe.git");
-        if ((yield* gitAnswer(["init", "-q", "--bare", gitDir])) === null) return null;
+        const name = `mend-probe-${crypto.randomUUID()}`;
+        if ((yield* gitAnswer(["init", "-q", "--bare", "--template=", gitDir])) === null) {
+          return null;
+        }
         const configured = yield* gitAnswer([
-          `--git-dir=${gitDir}`,
           "config",
-          "remote.probe.url",
+          "--file",
+          path.join(gitDir, "config"),
+          `remote.${name}.url`,
           remote,
         ]);
         if (configured === null) return null;
-        return yield* gitAnswer([`--git-dir=${gitDir}`, "remote", "get-url", "--push", "probe"]);
+        return yield* gitAnswer([`--git-dir=${gitDir}`, "remote", "get-url", "--push", name]);
       }),
     (dir) => Effect.sync(() => fs.rmSync(dir, { recursive: true, force: true })),
   );
