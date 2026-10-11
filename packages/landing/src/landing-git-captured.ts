@@ -230,7 +230,12 @@ export const LandingGitCapturedLive: Layer.Layer<
             .pipe(
               Effect.catchTags({
                 GitError: (error) =>
-                  Effect.fail(stepError("push", gitWords(error, scope.project.gitAuthMode))),
+                  Effect.fail(
+                    stepError(
+                      "push",
+                      gitWords(error, scope.project.gitAuthMode, scope.project.originUrl),
+                    ),
+                  ),
                 InvalidBranchError: (error) => Effect.fail(stepError("push", branchWords(error))),
               }),
             );
@@ -258,7 +263,7 @@ export const LandingGitCapturedLive: Layer.Layer<
                 stepError(
                   "probe",
                   error._tag === "GitError"
-                    ? gitWords(error, place.project.gitAuthMode)
+                    ? gitWords(error, place.project.gitAuthMode, place.project.originUrl)
                     : branchWords(error),
                 ),
               ),

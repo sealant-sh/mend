@@ -9,9 +9,20 @@ import { describeGitRemoteFailure, type GitError, type InvalidBranchError } from
 
 export const shortSha = (sha: string | null) => (sha === null ? "none" : sha.slice(0, 7));
 
-/** A git failure in the remote's words when a known shape matched, verbatim otherwise. */
-export const gitWords = (error: GitError, mode: GitAuthMode | null): string => {
-  const described = mode === null ? null : describeGitRemoteFailure(error.stderr, mode);
+/**
+ * A git failure in the remote's words when a known shape matched, verbatim otherwise. `remote` is
+ * the origin URL, so an HTTPS refusal can name the ssh URL that would work; a failed `git push`
+ * says a push needs the credential a public clone did not.
+ */
+export const gitWords = (
+  error: GitError,
+  mode: GitAuthMode | null,
+  remote: string | null = null,
+): string => {
+  const described =
+    mode === null
+      ? null
+      : describeGitRemoteFailure(error.stderr, mode, { remote, push: error.args[0] === "push" });
   if (described !== null) return described;
   if (error.stderr.trim() !== "") return error.stderr.trim();
   return `git ${error.args[0] ?? ""} exited ${error.exitCode ?? "without a code"}`;

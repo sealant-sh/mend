@@ -70,6 +70,32 @@ Verify access where the server runs before adoption:
 git ls-remote git@github.com:acme/api.git
 ```
 
+## HTTPS remotes
+
+Your Mend key and the bridge sign SSH; neither answers an HTTPS remote. On a server from
+`mend server setup` (or the Kubernetes chart), Mend's own Git (adoption, `mend refresh`, the base
+fetch and the push of a [landing](/guides/land-a-change/)) runs in a container with no HTTPS
+credential, so there an `https://` URL clones and fetches a public repository only, and no push to
+it succeeds. Adopt the SSH URL instead: `git@github.com:acme/api.git` rather than
+`https://github.com/acme/api.git`.
+
+A private repository adopted by its HTTPS URL on such a server fails with:
+
+```text
+Mend found no HTTPS credential for this remote, so over HTTPS it reaches public repositories only; this one is private, or the URL is wrong. Your Mend key signs ssh remotes only: adopt git@github.com:acme/api.git instead. (observed: fatal: could not read Username for 'https://github.com': terminal prompts disabled)
+```
+
+A public one adopts, and its first landing fails at the push with
+`Mend found no HTTPS credential for this remote: a public repository clones over HTTPS without one, but a push needs one.`
+followed by the SSH URL to adopt.
+
+Mend names the SSH URL for GitHub, GitLab, Bitbucket and Codeberg on their default HTTPS port, whose
+SSH path matches the HTTPS one; for other hosts, copy the SSH URL your host shows.
+
+A server you run from source as your own user runs Git with that user's Git config, so a credential
+helper configured there (`gh auth setup-git`, the macOS keychain) answers HTTPS remotes in either
+mode, for clone and push alike, and a `url.<base>.insteadOf` rewrite applies too.
+
 ## Git inside a workspace
 
 Mend points the workspace's system Git config at a transport shim (`core.sshCommand`). Plain
@@ -172,8 +198,14 @@ repository transport.
 
 ## Common failures
 
-**Permission denied** means the selected identity cannot access the remote. Test ambient access, add
-your Mend public key to your Git account, or verify that the shared agent holds an authorized key.
+**Permission denied** means the selected identity cannot access the remote. Add your Mend public key
+to your Git account, or verify that the shared agent holds an authorized key. In ambient mode on a
+server from `mend server setup`, the server's container holds no key at all: adopt with
+`--auth mend-key` or `--auth bridge`.
+
+**Mend found no HTTPS credential for this remote** means the URL is `https://` and the server's Git
+has no credential for it: the repository is private (or the URL is wrong), or the operation was a
+push. Adopt its SSH URL; see [HTTPS remotes](#https-remotes).
 
 **Host key verification failed** means the remote's host key changed since the Mend server first saw
 it: every mode accepts a first-contact key and refuses a changed one. Verify the new key out of

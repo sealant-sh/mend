@@ -123,7 +123,7 @@ export const LandingGitColocatedLive: Layer.Layer<
                 Effect.fail(
                   new LandingStepError({
                     step: "push",
-                    message: gitWords(error, scope.project.gitAuthMode),
+                    message: gitWords(error, scope.project.gitAuthMode, scope.project.originUrl),
                   }),
                 ),
               InvalidBranchError: (error) =>
@@ -153,7 +153,7 @@ export const LandingGitColocatedLive: Layer.Layer<
                   step: "probe",
                   message:
                     error._tag === "GitError"
-                      ? gitWords(error, place.project.gitAuthMode)
+                      ? gitWords(error, place.project.gitAuthMode, place.project.originUrl)
                       : branchWords(error),
                 }),
             ),

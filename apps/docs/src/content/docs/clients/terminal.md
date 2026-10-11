@@ -48,8 +48,9 @@ drawn brighter. `mend help ui` prints the full description.
 
 When you run `mend` inside a checkout whose origin matches no project, the dashboard offers to adopt
 it. Enter or `y` adopts it, the left and right arrows (or Tab) pick its Git access (`ambient`,
-`mend-key` or `bridge`), and Esc or `q` declines. See [Git access](/guides/git-access/) for what
-each mode means.
+`mend-key` or `bridge`), and Esc or `q` declines. If the server refuses the clone, the offer stays
+open with the server's reason in it, so you can pick another mode and press Enter again. See
+[Git access](/guides/git-access/) for what each mode means.
 
 ## Keys
 

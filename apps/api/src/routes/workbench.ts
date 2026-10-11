@@ -390,9 +390,13 @@ const rewarmAllHotSessions = Effect.gen(function* () {
  * stderr matched a known ssh/auth shape (docs/GIT-ACCESS.md — permission
  * denied, unknown host key, timeout), the stderr verbatim when it didn't.
  */
-const readableGitFailure = (error: GitError, mode: GitAuthMode): StoreFailure => {
+const readableGitFailure = (
+  error: GitError,
+  mode: GitAuthMode,
+  remote: string | null = null,
+): StoreFailure => {
   if (error.stderr === "") return new StoreFailure({ message: String(error) });
-  const described = describeGitRemoteFailure(error.stderr, mode);
+  const described = describeGitRemoteFailure(error.stderr, mode, { remote });
   return new StoreFailure({ message: described ?? error.stderr });
 };
 
@@ -533,7 +537,7 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
           `adopt ${payload.name} → ${source}`,
           store
             .adopt(id, source, remoteEnv)
-            .pipe(Effect.mapError((error) => readableGitFailure(error.cause, mode))),
+            .pipe(Effect.mapError((error) => readableGitFailure(error.cause, mode, source))),
         );
         return yield* projects
           .create({
@@ -969,7 +973,11 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
           `refresh ${project.name} → origin`,
           store
             .refreshFromOrigin(project.storePath, remoteEnv)
-            .pipe(Effect.mapError((error) => readableGitFailure(error, project.gitAuthMode))),
+            .pipe(
+              Effect.mapError((error) =>
+                readableGitFailure(error, project.gitAuthMode, project.originUrl),
+              ),
+            ),
         );
         const branches = yield* store
           .listBranches(project.storePath)
@@ -2188,7 +2196,9 @@ export const ReferencesGroupLive = HttpApiBuilder.group(MendApi, "references", (
               payload.ref,
               remoteEnv,
             )
-            .pipe(Effect.mapError((error) => readableGitFailure(error.cause, mode))),
+            .pipe(
+              Effect.mapError((error) => readableGitFailure(error.cause, mode, payload.source)),
+            ),
         );
         const created = yield* references.create({
           id,
@@ -2245,7 +2255,7 @@ export const ReferencesGroupLive = HttpApiBuilder.group(MendApi, "references", (
           `reference ${reference.name} → origin`,
           store
             .refreshReference(reference.path, reference.pinnedRef, remoteEnv)
-            .pipe(Effect.mapError((error) => readableGitFailure(error, mode))),
+            .pipe(Effect.mapError((error) => readableGitFailure(error, mode, reference.originUrl))),
         );
         yield* references.setHead(params.id, refreshed.headSha);
         return yield* references
