@@ -120,6 +120,7 @@ const openDashboard = async (
     },
     attachTty,
     agentShare: null,
+    gitAccessMode: null,
     tunnels: null,
     ...(options.autoAttach === undefined ? {} : { autoAttach: options.autoAttach }),
   };

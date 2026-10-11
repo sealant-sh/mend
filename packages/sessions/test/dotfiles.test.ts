@@ -536,7 +536,7 @@ describe("whose git access a dotfiles clone uses", () => {
     expect(Result.isSuccess(result) ? result.success.env : null).toMatchObject({
       SSH_AUTH_SOCK: "/bridge/owner-1.sock",
       GIT_SSH_COMMAND:
-        "ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -F /dev/null -o IdentityFile=none",
+        "ssh -o IdentityFile=none -o StrictHostKeyChecking=accept-new -o BatchMode=yes -F /dev/null -o IdentityFile=none",
       GIT_CONFIG_GLOBAL: "/dev/null",
     });
   });

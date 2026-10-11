@@ -94,7 +94,11 @@ SSH path matches the HTTPS one; for other hosts, copy the SSH URL your host show
 
 A server you run from source as your own user runs Git with that user's Git config, so a credential
 helper configured there (`gh auth setup-git`, the macOS keychain) answers HTTPS remotes in either
-mode, for clone and push alike, and a `url.<base>.insteadOf` rewrite applies too.
+mode, for clone and push alike, and a `url.<base>.insteadOf` rewrite applies too. Mend decides who
+signs by the URL Git actually dials: an HTTPS URL that a rewrite sends over SSH (`insteadOf`, or
+`pushInsteadOf` for a landing's push) signs with your Mend key or your bridge like any SSH remote.
+Mend's own SSH never answers with the server process's agent, default keys or SSH config: where Mend
+resolved no signer, SSH refuses.
 
 ## Git inside a workspace
 

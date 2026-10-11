@@ -15,4 +15,10 @@ line naming `--auth mend-key` and `--auth bridge`. The dashboard's adopt offer l
 `bridge` and starts on your own mode, and the web adopt panel and project setup offer the same two.
 Recorded git operations keep the mode they ran under, `ambient` included. A server run from source
 as your own user still uses that user's git config (credential helper, `insteadOf`) for HTTPS
-remotes in either mode.
+remotes in either mode. Mend picks the signer by the URL git actually dials, after `insteadOf` (and
+`pushInsteadOf` for a push), so an https origin rewritten to ssh signs with your key or bridge.
+Wherever Mend resolves no signer, including a session's fetch of an unknown base, ssh runs with no
+config, no default keys and no agent, so it refuses rather than answer as the server process. The
+bridge no longer offers the server process's default key files beside the shared agent's keys. The
+dashboard reads your saved mode on its own, so its adopt offer starts on bridge even in a terminal
+with no agent to share.

@@ -17,11 +17,17 @@ export interface AdoptOffer {
   readonly failure?: string;
 }
 
+/** The adopt offer's auth choices, in the order ←→ cycles them; `modeIndex` points in here. */
+export const ADOPT_MODE_ORDER: ReadonlyArray<GitAuthMode> = ["mend-key", "bridge"];
+
 /**
- * A missing or local origin does not offer adoption; cwd project matching is separate. `modeIndex`
- * is where the auth choice starts: 0 the Mend key, 1 the bridge.
+ * A missing or local origin does not offer adoption; cwd project matching is separate. The auth
+ * choice starts on the user's saved mode (`mend keys mode`), the Mend key when it is unknown.
  */
-export const deriveAdoptOffer = (facts: CwdFacts, modeIndex = 0): AdoptOffer | null => {
+export const deriveAdoptOffer = (
+  facts: CwdFacts,
+  savedMode: GitAuthMode | null = null,
+): AdoptOffer | null => {
   if (
     facts.repoRoot === null ||
     facts.originUrl === null ||
@@ -31,7 +37,7 @@ export const deriveAdoptOffer = (facts: CwdFacts, modeIndex = 0): AdoptOffer | n
   return {
     source: RepositoryCloneUrl.make(facts.originUrl),
     name: normalizeProjectName(facts.repoRoot.split("/").at(-1) ?? "project"),
-    modeIndex,
+    modeIndex: Math.max(0, ADOPT_MODE_ORDER.indexOf(savedMode ?? "mend-key")),
   };
 };
 

@@ -118,6 +118,7 @@ const openDashboard = async (
       throw new Error("no terminal to attach in a test");
     },
     agentShare: null,
+    gitAccessMode: null,
     tunnels: null,
     ...(options.openSnake === true ? { openSnake: true } : {}),
   };

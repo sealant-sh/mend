@@ -718,6 +718,46 @@ describe("Store", () => {
     );
   });
 
+  it("fetches an unknown base with no signer through ssh that refuses, never the process's agent", async () => {
+    const saved = { PATH: process.env["PATH"], SSH_AUTH_SOCK: process.env["SSH_AUTH_SOCK"] };
+    try {
+      await withStore((tmp, _origin, source) =>
+        Effect.gen(function* () {
+          const store = yield* Store;
+          const adopted = yield* store.adopt("fixture", source, { GIT_TERMINAL_PROMPT: "0" });
+          // The origin is ssh now, and this process has an agent: the operator's, not the person's.
+          execFileSync("git", ["remote", "set-url", "origin", "git@github.com:acme/api.git"], {
+            cwd: adopted.storePath,
+          });
+          const bin = path.join(tmp, "bin");
+          fs.mkdirSync(bin);
+          fs.writeFileSync(
+            path.join(bin, "ssh"),
+            `#!/bin/sh\nprintf '%s\\n' "$@" > "${tmp}/ssh-args"\nprintf '%s' "$SSH_AUTH_SOCK" > "${tmp}/ssh-sock"\nexit 255\n`,
+            { mode: 0o755 },
+          );
+          process.env["PATH"] = `${bin}:${saved.PATH ?? ""}`;
+          process.env["SSH_AUTH_SOCK"] = "/run/operator/agent.sock";
+          // No signer resolved (null): the base is unknown, so the store fetches once anyway.
+          const refused = yield* store
+            .resolveBase(adopted.storePath, "never-pushed", null)
+            .pipe(Effect.flip);
+          expect(refused.stderr).toContain('base "never-pushed" is not a branch');
+          expect(fs.readFileSync(path.join(tmp, "ssh-sock"), "utf8")).toBe("");
+          const args = fs.readFileSync(path.join(tmp, "ssh-args"), "utf8").split("\n");
+          expect(args.slice(0, 2)).toEqual(["-F", "/dev/null"]);
+          expect(args).toContain("IdentityAgent=none");
+          expect(args).toContain("IdentityFile=none");
+        }),
+      );
+    } finally {
+      for (const [name, value] of Object.entries(saved)) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    }
+  });
+
   it("freshens bases from origin, lists branches, and refreshes", async () => {
     await withStore((_tmp, origin, source) =>
       Effect.gen(function* () {

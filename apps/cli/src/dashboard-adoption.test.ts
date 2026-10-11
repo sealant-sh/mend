@@ -82,9 +82,11 @@ describe("dashboard adoption", () => {
       originUrl: source,
     });
     expect(offer).toEqual({ source, name: "repo", modeIndex: 0 });
-    expect(
-      deriveAdoptOffer({ cwd: "/checkout/Repo", repoRoot: "/checkout/Repo", originUrl: source }, 1),
-    ).toEqual({ source, name: "repo", modeIndex: 1 });
+    // The choice starts on the saved mode, whether or not this terminal can share an agent.
+    const facts = { cwd: "/checkout/Repo", repoRoot: "/checkout/Repo", originUrl: source };
+    expect(deriveAdoptOffer(facts, "bridge")).toEqual({ source, name: "repo", modeIndex: 1 });
+    expect(deriveAdoptOffer(facts, "mend-key")).toEqual({ source, name: "repo", modeIndex: 0 });
+    expect(deriveAdoptOffer(facts, null)).toEqual({ source, name: "repo", modeIndex: 0 });
     if (offer === null) throw new Error("Expected a network adoption offer");
     const requests: unknown[] = [];
     const result = await submitDashboardAdoption(

@@ -247,10 +247,28 @@ export const sshCommandFor = (mode: GitAuthMode, privateKeyPath: string | null):
     // IdentitiesOnly pins the key even when an agent is running.
     return `ssh -i '${privateKeyPath}' -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o BatchMode=yes`;
   }
-  // Plain ssh: no -i, no IdentitiesOnly — in bridge mode the bridged agent's identities are the
-  // point.
-  return "ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes";
+  // Bridge: the bridged agent's identities are the point. IdentityFile=none keeps ssh from
+  // offering the server process's own default key files (~/.ssh/id_*) beside them.
+  return "ssh -o IdentityFile=none -o StrictHostKeyChecking=accept-new -o BatchMode=yes";
 };
+
+/**
+ * The ssh command for a remote op Mend resolved no signer for: an https remote, or a fetch that
+ * runs without one. git still runs ssh if its config sends the URL over ssh (a
+ * `url.<base>.insteadOf` rewrite the classification could not see), and then ssh must refuse —
+ * never answer with the server process's own agent, default keys or ssh config, which are the
+ * operator's, not the person's. `-F /dev/null` drops every config file (an `IdentityFile` there
+ * would still be offered), `IdentityFile=none` the default keys, `IdentityAgent=none` the agent.
+ */
+export const NO_SIGNER_SSH_COMMAND =
+  "ssh -F /dev/null -o IdentityFile=none -o IdentityAgent=none -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o BatchMode=yes";
+
+/** The env of a remote git op with no signer: no prompt, and ssh that refuses (see above). */
+export const noSignerGitEnv = (): Record<string, string> => ({
+  GIT_TERMINAL_PROMPT: "0",
+  GIT_SSH_COMMAND: NO_SIGNER_SSH_COMMAND,
+  SSH_AUTH_SOCK: "",
+});
 
 /**
  * Env for every host-side remote git op: never prompt, ssh per `sshCommand`,
@@ -279,7 +297,7 @@ export const sshTransportArgs = (
 ): ReadonlyArray<string> => [
   ...(mode === "mend-key" && privateKeyPath !== null
     ? ["-i", privateKeyPath, "-o", "IdentitiesOnly=yes"]
-    : []),
+    : ["-o", "IdentityFile=none"]),
   "-o",
   "StrictHostKeyChecking=accept-new",
   "-o",
