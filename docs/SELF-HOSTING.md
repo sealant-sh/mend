@@ -461,19 +461,26 @@ repair step.
 
 ### Database connections
 
-Mend opens three connection pools to its database, and each has a cap:
+Each Mend server instance opens four connection pools to its database, and each has a cap:
 
 | Pool                           | Variable                      | Default |
 | ------------------------------ | ----------------------------- | ------- |
 | Mend's queries                 | `MEND_DATABASE_POOL_MAX`      | 6       |
 | The job queue (pg-boss)        | `MEND_JOBS_POOL_MAX`          | 3       |
+| Keyed enqueues                 | `MEND_JOBS_ENQUEUE_POOL_MAX`  | 1       |
 | Sign-in sessions (Better Auth) | `MEND_AUTH_DATABASE_POOL_MAX` | 3       |
 
 Mend also holds one connection for `LISTEN`, shared by everything that listens. At full load that is
-13 connections. Sealant's API and worker open their own pools to their database. When both databases
-live on one server, the caps of both must fit under its `max_connections`, less the connections
-reserved for superusers: a server that refuses a connection fails the requests and jobs that asked
-for it, and Mend logs `remaining connection slots are reserved` until a slot frees.
+14 connections per instance. Sealant's API and worker open their own pools to their database. When
+both databases live on one server, the caps of both must fit under its `max_connections`, less the
+connections reserved for superusers: a server that refuses a connection fails the requests and jobs
+that asked for it, and Mend logs `remaining connection slots are reserved` until a slot frees.
+
+`MEND_JOBS_ENQUEUE_POOL_MAX` must be a positive integer. Its pool is separate from the job queue's
+pool. Connection acquisition and each SQL query time out after five seconds; this is not a deadline
+for the whole enqueue operation. Upgrade every enqueue producer before relying on same-name,
+same-key live-job exclusion across instances. Existing queues and jobs remain in place, but older
+versions can still enqueue duplicates during a rolling deployment.
 
 ### Idle agents
 

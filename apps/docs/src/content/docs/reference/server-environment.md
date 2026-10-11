@@ -37,12 +37,20 @@ project, in [Environment variables](/guides/environment-variables/).
 | `DATABASE_URL`                | `postgres://mend:mend@localhost:5434/mend` | Mend's Postgres database. The default is the development one; every deployment sets it. |
 | `MEND_DATABASE_POOL_MAX`      | `6`                                        | Connections in the pool for Mend's queries.                                             |
 | `MEND_JOBS_POOL_MAX`          | `3`                                        | Connections in the job queue's (pg-boss) pool.                                          |
+| `MEND_JOBS_ENQUEUE_POOL_MAX`  | `1`                                        | Connections in the separate pool for keyed enqueues. Must be a positive integer.        |
 | `MEND_AUTH_DATABASE_POOL_MAX` | `3`                                        | Connections in the sign-in (Better Auth) pool.                                          |
 
-Mend also holds one connection for `LISTEN`, so the caps above total 13 at full load. They must fit
-under the Postgres server's `max_connections` together with Sealant's pools when both databases
-share a server. See
+Mend also holds one connection for `LISTEN`, so the caps above total 14 per server instance at full
+load. They must fit under the Postgres server's `max_connections` together with Sealant's pools when
+both databases share a server. See
 [Troubleshooting](/operate/troubleshooting/#the-database-runs-out-of-connections).
+
+Keyed enqueues use this separate pool to exclude concurrent live jobs with the same name and key.
+Connection acquisition and each SQL query have a five-second timeout. This is a per-query limit, not
+a deadline for the whole enqueue operation. Queued, active and retrying jobs hold the key;
+completed, failed and cancelled jobs release it. Existing queues and pending jobs remain in place.
+Upgrade every producer before relying on the guarantee across instances; older versions can still
+enqueue duplicates during a rolling deployment.
 
 ## Sealant
 

@@ -30,6 +30,14 @@ This first follow-up addresses misleading success signals. It does not close the
   command. Its three PostgreSQL semantic tests remain in the normal correctness suite. The benchmark
   retains 300 bulk sessions and the existing median/p90 budgets, measures three rounds with
   interleaved queries, and reports PostgreSQL, runtime and sample context.
+- `AJ-001`: keyed enqueues acquire a PostgreSQL transaction lock, then check and send on the same
+  connection at read-committed isolation. Real PostgreSQL regressions force 30 same-key requests
+  across independent production runners, including with repeatable-read connection defaults. They
+  check the accepted identity and persisted payload, active/retry key retention, terminal release,
+  existing standard-queue jobs, rollback, timeout overrides and caller interruption. The guarantee
+  requires every producer to use the upgraded implementation; older producers during a rolling
+  deployment and direct external queue writes do not share its lock. These tests do not establish
+  that the release VM journeys below ran.
 
 ## Running the checks
 
@@ -86,8 +94,6 @@ before implementing, and inspect overlapping PRs rather than duplicating their w
   rejection tests while preserving legitimate repository quoting.
 - `CLIENT-005`: login redirects accept paths which URL normalization sends to another origin.
   Enforce the same-origin invariant and test backslash/control-character inputs.
-- `AJ-001`: concurrent same-key pg-boss enqueue can create multiple live jobs. Enforce the guarantee
-  atomically and test independent runners, active/retry states and terminal release.
 - `APILIFE-01`: interruption after membership removal can prevent later local revocations. Test
   interruption at each boundary and make completion durable or safely retriable.
 - `LAND-02`: landing an older captured checkpoint can use later history as its parent. The tip tree
