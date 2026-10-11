@@ -175,9 +175,10 @@ The first supported client is t3code desktop (a `v0.0.46` nightly) against a loo
 gateway. The hosted `app.t3.codes` follows once the edge serves the gateway over HTTPS.
 
 Pairing needs no Mend UI change. A pairing code comes from Mend's existing
-`POST /api/me/devices/pairings`; `mend t3 pair` creates one with the person's CLI login and prints a
-t3code-shaped `https://<gateway>/pair#token=<code>` and a QR code for mobile. The gateway's
-`/oauth/token` claims it through `POST /api/pair` and keeps the device token it gets back.
+`POST /api/me/devices/pairings`; `mend pair` creates one with the person's CLI login and prints the
+gateway's address and a t3code-shaped `<gateway>/pair#token=<code>` link (built as `mend pair`, not
+the `mend t3 pair` first planned). The gateway's `/oauth/token` claims it through `POST /api/pair`
+and keeps the device token it gets back.
 
 ### Protocol churn
 
