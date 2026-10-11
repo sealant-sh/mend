@@ -50,6 +50,7 @@ import {
   observedPostureLines,
   parseEdgeHost,
   postureEnvLines,
+  postureEnvironment,
   publishedAddress,
   renderPostureOverlay,
   renderT3GatewayOverlay,
@@ -1309,7 +1310,8 @@ const envValue = (fields: ReadonlyMap<string, string>, key: string): string => {
   return value;
 };
 
-const parseSecrets = (raw: string): ServerSecrets => {
+/** The `KEY=value` lines of `server.env` or `identity.env`, by key; a key appears once. */
+const envFields = (raw: string): ReadonlyMap<string, string> => {
   const fields = new Map<string, string>();
   for (const line of raw.split("\n")) {
     if (line === "") continue;
@@ -1321,6 +1323,11 @@ const parseSecrets = (raw: string): ServerSecrets => {
       throw setupError(`Server secrets are corrupt: ${key} appears more than once.`);
     fields.set(key, line.slice(separator + 1));
   }
+  return fields;
+};
+
+const parseSecrets = (raw: string): ServerSecrets => {
+  const fields = envFields(raw);
   const secrets: ServerSecrets = {
     postgresAdminPassword: envValue(fields, "MEND_POSTGRES_ADMIN_PASSWORD"),
     mendDatabasePassword: envValue(fields, "MEND_DB_PASSWORD"),
@@ -1999,21 +2006,20 @@ const edgeImageOf = (overlay: string): string => {
 const validateOverlays = (
   config: ServerConfig,
   files: ServerGeneration["files"],
+  envKeys: ReadonlySet<string>,
 ): string | undefined => {
-  const posture = renderPostureOverlay(config);
-  if ((posture === undefined) !== (files.posture === undefined)) {
+  // The posture variables the generation's server.env carries: an older CLI wrote fewer
+  // (validateServerEnv), and its overlay hands Mend those.
+  const posture = postureEnvironment(config)
+    .map(([key]) => key)
+    .filter((key) => envKeys.has(key));
+  if ((posture.length === 0) !== (files.posture === undefined)) {
     throw setupError(
       "Server generation is corrupt: compose.posture.yaml does not match the persisted server config.",
     );
   }
-  for (const line of postureEnvLines(config)) {
-    const key = line.slice(0, line.indexOf("="));
-    // The edge's host and the gateway's lines are read by their own overlays.
-    if (
-      key !== "MEND_EDGE_HOST" &&
-      !key.startsWith("MEND_T3_GATEWAY_") &&
-      !(files.posture ?? "").includes(`      ${key}: \${${key}`)
-    ) {
+  for (const key of posture) {
+    if (!(files.posture ?? "").includes(`      ${key}: \${${key}`)) {
       throw setupError(
         `Server generation is corrupt: compose.posture.yaml does not hand ${key} to Mend.`,
       );
@@ -2129,6 +2135,62 @@ const validateMirrors = (
   return mirrorImagesOf(files.mirrors);
 };
 
+/**
+ * The lines every `server.env` has carried since the first one. A generation lacking one of these,
+ * or a secret line (`secretEnvKey`: Garage's, derived from the identity, and the Docker Hub login;
+ * `parseSecrets` requires the identity's), is damaged, whichever CLI wrote it.
+ */
+const FOUNDING_ENV_KEYS: ReadonlySet<string> = new Set([
+  "MEND_VERSION",
+  "MEND_IMAGE_REPOSITORY",
+  "APP_URL",
+  "MEND_ALLOWED_ORIGINS",
+  "MEND_BIND_HOST",
+  "MEND_PORT",
+  "MEND_SSH_PORT",
+  "MEND_REGISTRY_PORT",
+  "SEALANT_SSH_HOST",
+  "MEND_STORE_VOLUME_NAME",
+  "MEND_CONTROL_VOLUME_NAME",
+  "DOCKER_SOCKET_PATH",
+]);
+const secretEnvKey = (key: string): boolean =>
+  key.startsWith("MEND_GARAGE_") || key.startsWith("MEND_DOCKER_HUB_");
+
+/**
+ * `server.env` agrees with the config and identity beside it. This CLI renders the file from the
+ * two, and an older CLI rendered fewer lines from the same config: a line added since (the
+ * gateway's published address, say) is missing from a generation it wrote, and the generation
+ * reads as that CLI left it. An upgrade renders the next one from the config and identity, with
+ * the new lines at what the config says. Refused: a line no render of this config carries, a value
+ * other than the one this config and identity render (a secret that is not the identity's, a
+ * changed address), and a missing founding or secret line. Returns the keys the file carries.
+ */
+const validateServerEnv = (
+  env: string,
+  secrets: ServerSecrets,
+  config: ServerConfig,
+): ReadonlySet<string> => {
+  const rendered = envFields(renderSecrets(secrets, config));
+  const written = envFields(env);
+  for (const [key, value] of written) {
+    const expected = rendered.get(key);
+    if (expected === undefined)
+      throw setupError(
+        `Server secrets are corrupt: server.env has ${key}, which the persisted server config does not account for.`,
+      );
+    if (value !== expected)
+      throw setupError(
+        `Server secrets are corrupt: ${key} in server.env does not match the persisted server config and identity.`,
+      );
+  }
+  for (const key of rendered.keys()) {
+    if (!written.has(key) && (FOUNDING_ENV_KEYS.has(key) || secretEnvKey(key)))
+      throw setupError(`Server secrets are corrupt: ${key} is missing from server.env.`);
+  }
+  return new Set(written.keys());
+};
+
 /** Read and validate a complete active generation while holding the lifecycle lock. */
 export const readServerInstallation = (
   store: ServerStore,
@@ -2138,17 +2200,15 @@ export const readServerInstallation = (
     if (generation === null) return { _tag: "ok", value: null };
     const config = parseServerConfig(generation.files.config);
     const secrets = parseSecrets(generation.files.env);
-    if (
-      generation.files.env !== renderSecrets(secrets, config) ||
-      generation.files.identity !== renderIdentity(secrets)
-    ) {
+    if (generation.files.identity !== renderIdentity(secrets)) {
       throw setupError(
         "Server secrets are corrupt: server.env does not match the persisted server config and identity.",
       );
     }
+    const envKeys = validateServerEnv(generation.files.env, secrets, config);
     validateComposeAsset(generation.files.compose);
     validatePostgresAsset(generation.files.postgresInit);
-    const edgeImage = validateOverlays(config, generation.files);
+    const edgeImage = validateOverlays(config, generation.files, envKeys);
     const mirrorImages = validateMirrors(config, secrets, generation.files);
     return {
       _tag: "ok",

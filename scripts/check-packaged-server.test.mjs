@@ -45,6 +45,7 @@ import {
   ownsComposeContainer,
   ownsWorkspaceContainer,
   readPrivateIdentity,
+  readPreviousCli,
   readUpgradeInputs,
   requestFailureEvidence,
   setupFailureEvidence,
@@ -1478,6 +1479,17 @@ test("private FAILED diagnostics preserve raw bytes with restrictive modes and d
 const inputs = (version = "0.23.0") => ({
   MEND_TEST_UPGRADE_IMAGE: `ghcr.io/sealant-sh/mend:${version}`,
   MEND_TEST_UPGRADE_VERSION: version,
+});
+
+test("the previous release's CLI is npm's next unless an exact version or none is named", () => {
+  assert.deepEqual(readPreviousCli({}), { spec: "next" });
+  assert.deepEqual(readPreviousCli({ MEND_TEST_PREVIOUS_CLI: "" }), { spec: "next" });
+  assert.equal(readPreviousCli({ MEND_TEST_PREVIOUS_CLI: "none" }), undefined);
+  assert.deepEqual(readPreviousCli({ MEND_TEST_PREVIOUS_CLI: "0.36.0-next.773" }), {
+    spec: "0.36.0-next.773",
+  });
+  for (const invalid of ["latest", "next", "0.36", "^0.35.1", "0.35.1 && true"])
+    assert.throws(() => readPreviousCli({ MEND_TEST_PREVIOUS_CLI: invalid }));
 });
 
 test("upgrade inputs are optional, paired, canonical and strictly newer, with current assets by default", () => {

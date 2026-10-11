@@ -14,9 +14,11 @@ import {
   isPreviewToNext,
   NETWORK_GUARD_IMAGE,
   nodeServerRuntime,
+  readServerInstallation,
   serverCommand,
   type ServerSetupRuntime,
 } from "./server-setup.ts";
+import { withServerStore } from "./server-store.ts";
 import type { ThisMachineKeyRemoval } from "./ssh-setup.ts";
 import {
   describeUninstall,
@@ -1285,6 +1287,82 @@ const withoutMirrors = (directory: string): void => {
     fs.rmSync(path.join(directory, file));
 };
 
+/** The gateway answers at its port: setup and status look there once Mend does. */
+const gatewayAnswers = (f: Fixture): ServerSetupRuntime => ({
+  ...f.runtime,
+  fetchText: async (url: string, timeout: number, headers?: Readonly<Record<string, string>>) =>
+    url.startsWith("http://127.0.0.1:3120/")
+      ? { status: 200, body: '{"environmentId":"e"}' }
+      : f.runtime.fetchText(url, timeout, headers),
+});
+
+/**
+ * server.env as 0.36.0-next.773's CLI wrote it on the owner's box (RC 5), its keys in its order,
+ * frozen: the values this test's config gives. `{{KEY}}` takes this run's value: the identity's
+ * secrets, what derives from them, and what the fixture picks. A later CLI that renders any of
+ * the frozen lines differently calls this generation corrupt, which is what broke 773 to 780.
+ */
+const FROZEN_773_ENV = [
+  "MEND_VERSION=0.23.0",
+  "MEND_IMAGE_REPOSITORY=ghcr.io/sealant-sh/mend",
+  "MEND_POSTGRES_ADMIN_PASSWORD={{MEND_POSTGRES_ADMIN_PASSWORD}}",
+  "MEND_DB_PASSWORD={{MEND_DB_PASSWORD}}",
+  "SEALANT_DB_PASSWORD={{SEALANT_DB_PASSWORD}}",
+  "BETTER_AUTH_SECRET={{BETTER_AUTH_SECRET}}",
+  "SEALANT_CREDENTIALS_KEY={{SEALANT_CREDENTIALS_KEY}}",
+  "SEALANT_SERVICE_KEY={{SEALANT_SERVICE_KEY}}",
+  "WORKSPACE_SSH_GATEWAY_TOKEN={{WORKSPACE_SSH_GATEWAY_TOKEN}}",
+  "APP_URL=https://mend.example.test",
+  "MEND_ALLOWED_ORIGINS=[]",
+  "MEND_BIND_HOST=127.0.0.1",
+  "MEND_SSH_BIND_HOST=0.0.0.0",
+  "MEND_PORT={{MEND_PORT}}",
+  "MEND_SSH_PORT=2222",
+  "SEALANT_SSH_HOST=mend.example.test",
+  "MEND_EDGE_HOST=mend.example.test",
+  "MEND_T3_GATEWAY_PORT=3120",
+  "MEND_EXPOSURE=public",
+  "MEND_TENANCY=multi",
+  "MEND_SOURCE_POLICY=tenant",
+  "MEND_CAPTURE_REQUIRE_SIZES=true",
+  "MEND_URL_BEARERS=refuse",
+  "MEND_SSH_PUBLISHED=0.0.0.0:2222",
+  "MEND_EXPOSURE_DECLARED=edge-tls,workspace-ssh",
+  "MEND_STORE_VOLUME_NAME=mend-store",
+  "MEND_CONTROL_VOLUME_NAME=mend-control",
+  "MEND_GARAGE_RPC_SECRET={{MEND_GARAGE_RPC_SECRET}}",
+  "MEND_GARAGE_ADMIN_TOKEN={{MEND_GARAGE_ADMIN_TOKEN}}",
+  "MEND_GARAGE_KEY_ID={{MEND_GARAGE_KEY_ID}}",
+  "MEND_GARAGE_KEY_SECRET={{MEND_GARAGE_KEY_SECRET}}",
+  "MEND_GARAGE_VOLUME_NAME=mend-garage",
+  "MEND_NPM_MIRROR_MAX_SIZE=10g",
+  "MEND_DOCKER_MIRROR_MAX_SIZE=20g",
+  "DOCKER_SOCKET_PATH={{DOCKER_SOCKET_PATH}}",
+  "",
+].join("\n");
+
+/** compose.t3.yaml as 0.36.0-next.773 wrote it: the gateway on loopback, its port alone. */
+const FROZEN_773_T3_OVERLAY = [
+  "# Written by mend server setup --t3-gateway: the t3code gateway (docs/adr/0012), its own",
+  "# listener beside Mend's, published on loopback only. Reaching it from elsewhere is an",
+  "# exposure the operator declares (docs/adr/0004). mend server setup --no-t3-gateway removes it.",
+  "services:",
+  "  mend:",
+  "    environment:",
+  '      MEND_T3_GATEWAY_ENABLED: "true"',
+  "    ports:",
+  '      - "127.0.0.1:${MEND_T3_GATEWAY_PORT:?set MEND_T3_GATEWAY_PORT in server.env}:3120"',
+  "    volumes:",
+  "      - mend-t3-gateway:/opt/mend-t3-gateway/state",
+  "volumes:",
+  "  mend-t3-gateway:",
+  "",
+].join("\n");
+
+/** The lines every server.env has carried, and the secret ones: never missing (server-setup.ts). */
+const FOUNDING_OR_SECRET =
+  /^(MEND_VERSION|MEND_IMAGE_REPOSITORY|MEND_POSTGRES_ADMIN_PASSWORD|MEND_DB_PASSWORD|SEALANT_DB_PASSWORD|BETTER_AUTH_SECRET|SEALANT_CREDENTIALS_KEY|SEALANT_SERVICE_KEY|WORKSPACE_SSH_GATEWAY_TOKEN|APP_URL|MEND_ALLOWED_ORIGINS|MEND_BIND_HOST|MEND_PORT|MEND_SSH_PORT|MEND_REGISTRY_PORT|SEALANT_SSH_HOST|MEND_STORE_VOLUME_NAME|MEND_CONTROL_VOLUME_NAME|DOCKER_SOCKET_PATH|MEND_GARAGE_.*|MEND_DOCKER_HUB_.*)$/;
+
 describe("the mirrors", { timeout: 120_000 }, () => {
   it("runs both on a new install, and status reports each as observed", async () => {
     const f = await fixture();
@@ -1824,6 +1902,143 @@ describe("the edge and the posture", { timeout: 120_000 }, () => {
       tenancy: "multi",
       edgeHost: host,
     });
+  });
+
+  /**
+   * Setup as the owner's box ran 0.36.0-next.773 (RC 5): behind the edge, public, multi tenancy,
+   * SSH on every address, the gateway on, Garage and both mirrors; then the generation as 773's CLI
+   * wrote it, from FROZEN_773_ENV. Returns the server.env this CLI rendered before the rewrite.
+   */
+  const asBoxOn773 = async (f: Fixture): Promise<string> => {
+    f.update({ gatewayImages: ["0.23.0", "0.24.0"] });
+    expect(await f.setupEdge(host)).toEqual({ _tag: "ok" });
+    expect(
+      await serverCommand(
+        [
+          "setup",
+          "--exposure",
+          "public",
+          "--tenancy",
+          "multi",
+          "--ssh-bind",
+          "0.0.0.0",
+          "--declare",
+          "edge-tls",
+          "--declare",
+          "workspace-ssh",
+          "--t3-gateway",
+        ],
+        gatewayAnswers(f),
+      ),
+    ).toEqual({ _tag: "ok" });
+    const rendered = f.files()["server.env"] ?? "";
+    const values = new Map(
+      rendered
+        .split("\n")
+        .filter((line) => line.includes("="))
+        .map((line) => [line.slice(0, line.indexOf("=")), line.slice(line.indexOf("=") + 1)]),
+    );
+    fs.writeFileSync(
+      path.join(f.active(), "server.env"),
+      FROZEN_773_ENV.replace(/\{\{([A-Z_]+)\}\}/g, (_, key: string) => values.get(key) ?? ""),
+    );
+    fs.writeFileSync(path.join(f.active(), "compose.t3.yaml"), FROZEN_773_T3_OVERLAY);
+    return rendered;
+  };
+
+  it("an upgrade takes a generation 0.36.0-next.773's CLI wrote: the lines added since come in at what the config says, the secrets unchanged", async () => {
+    const f = await fixture();
+    const rendered = await asBoxOn773(f);
+    const old = f.active();
+    const written = fs.readFileSync(path.join(old, "server.env"), "utf8");
+    expect(written).not.toContain("MEND_T3_GATEWAY_BIND_HOST");
+    // Read as that CLI left it: status, a restart and an upgrade.
+    expect(await serverCommand(["status"], gatewayAnswers(f))).toEqual({ _tag: "ok" });
+    expect(await serverCommand(["restart"], gatewayAnswers(f))).toEqual({ _tag: "ok" });
+    expect(f.active()).toBe(old);
+    expect(await f.upgrade()).toEqual({ _tag: "ok" });
+    expect(f.active()).not.toBe(old);
+    // The next generation is this CLI's own render of the same config and identity.
+    expect(f.files()["server.env"]).toBe(
+      rendered.replace("MEND_VERSION=0.23.0\n", "MEND_VERSION=0.24.0\n"),
+    );
+    expect(f.files()["server.env"]).toContain(
+      "MEND_T3_GATEWAY_BIND_HOST=127.0.0.1\nMEND_T3_GATEWAY_PUBLISHED=127.0.0.1:3120\n",
+    );
+    expect(f.files()["compose.t3.yaml"]).toContain("${MEND_T3_GATEWAY_BIND_HOST:?");
+    // The older generation stays as it was written.
+    expect(fs.readFileSync(path.join(old, "server.env"), "utf8")).toBe(written);
+  });
+
+  it.each([
+    [
+      "a line no render of the config carries",
+      (env: string) => `${env}MEND_SURPRISE=1\n`,
+      "server.env has MEND_SURPRISE, which the persisted server config does not account for",
+    ],
+    [
+      "a Garage secret that is not the identity's",
+      (env: string) =>
+        env.replace(/^MEND_GARAGE_KEY_SECRET=.*$/m, `MEND_GARAGE_KEY_SECRET=${"0".repeat(64)}`),
+      "MEND_GARAGE_KEY_SECRET in server.env does not match",
+    ],
+    [
+      "an identity secret that is not the identity's",
+      (env: string) =>
+        env.replace(/^BETTER_AUTH_SECRET=.*$/m, `BETTER_AUTH_SECRET=${"0".repeat(64)}`),
+      "server.env does not match the persisted server config and identity",
+    ],
+    [
+      "a changed address",
+      (env: string) => env.replace("MEND_BIND_HOST=127.0.0.1", "MEND_BIND_HOST=0.0.0.0"),
+      "MEND_BIND_HOST in server.env does not match",
+    ],
+    [
+      "a line every server.env has carried, missing",
+      (env: string) => env.replace(/^APP_URL=.*\n/m, ""),
+      "APP_URL is missing from server.env",
+    ],
+    [
+      "a Garage line, missing",
+      (env: string) => env.replace(/^MEND_GARAGE_RPC_SECRET=.*\n/m, ""),
+      "MEND_GARAGE_RPC_SECRET is missing from server.env",
+    ],
+  ])("refuses an older generation with %s, and changes nothing", async (_, damage, message) => {
+    const f = await fixture();
+    await asBoxOn773(f);
+    const old = f.active();
+    const envFile = path.join(old, "server.env");
+    const damaged = damage(fs.readFileSync(envFile, "utf8"));
+    fs.writeFileSync(envFile, damaged);
+    const commands = f.calls().length;
+    expect(await f.upgrade()).toMatchObject({
+      _tag: "error",
+      message: expect.stringContaining(message),
+    });
+    expect(f.active()).toBe(old);
+    expect(fs.readFileSync(envFile, "utf8")).toBe(damaged);
+    expect(f.calls().length).toBe(commands);
+  });
+
+  it("reads a generation that lacks any line a later CLI added, so the next new line cannot break an upgrade", async () => {
+    const f = await fixture();
+    await asBoxOn773(f);
+    // Back to this CLI's own render, then without each line in turn, as a CLI from before it.
+    expect(await f.upgrade()).toEqual({ _tag: "ok" });
+    const envFile = path.join(f.active(), "server.env");
+    const full = fs.readFileSync(envFile, "utf8");
+    const later = full
+      .split("\n")
+      .map((line) => line.slice(0, line.indexOf("=")))
+      .filter((key) => key !== "" && !FOUNDING_OR_SECRET.test(key));
+    expect(later).toContain("MEND_T3_GATEWAY_URL");
+    for (const key of later) {
+      fs.writeFileSync(envFile, full.replace(new RegExp(`^${key}=.*\n`, "m"), ""));
+      const read = await withServerStore(f.configDir, async (store) =>
+        readServerInstallation(store),
+      );
+      expect([key, read]).toMatchObject([key, { _tag: "ok", value: { _tag: "ok" } }]);
+    }
   });
 
   it("--no-edge takes the edge away, removes its container by label and returns to the localhost origin", async () => {
