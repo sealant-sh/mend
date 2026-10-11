@@ -199,7 +199,9 @@ describe("ssh where Mend chooses the signer reads no ssh config", () => {
   it.each(cases)(
     "%s: the effective config differs from ssh's defaults only by Mend's options",
     (name, argv) => {
-      const defaults = sshG(["-F", "/dev/null"]);
+      // BatchMode is Mend's too, and ssh derives more from it on some versions (9.6 sets
+      // ServerAliveInterval 300): the baseline carries it, so those derivations cancel out.
+      const defaults = sshG(["-F", "/dev/null", "-o", "BatchMode=yes"]);
       const resolved = sshG(argv);
       if (defaults === null || resolved === null) return;
       const added = resolved.filter((line) => !defaults.includes(line)).toSorted();
@@ -207,9 +209,7 @@ describe("ssh where Mend chooses the signer reads no ssh config", () => {
         ? ["identitiesonly yes", `identityfile ${keyPath}`]
         : ["identityfile none"];
       const transport = name.endsWith("workspace transport") ? ["sendenv GIT_PROTOCOL"] : [];
-      expect(added).toEqual(
-        [...mend, ...transport, "batchmode yes", "stricthostkeychecking accept-new"].toSorted(),
-      );
+      expect(added).toEqual([...mend, ...transport, "stricthostkeychecking accept-new"].toSorted());
     },
   );
 });
