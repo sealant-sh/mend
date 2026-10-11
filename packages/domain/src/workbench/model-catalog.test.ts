@@ -34,7 +34,7 @@ describe("harnessModelCatalog", () => {
     expect(codex.efforts.at(-1)).toBe("ultra");
     expect(codex.fastCapable).toBe(true);
     const claude = seeded("claude");
-    expect(claude.defaultModel).toBe("fable");
+    expect(claude.defaultModel).toBeNull();
     expect(claude.efforts).toEqual(["low", "medium", "high", "xhigh", "max"]);
     expect(claude.fastCapable).toBe(false);
   });
@@ -64,7 +64,8 @@ describe("harnessModelCatalog", () => {
 
 describe("resolveLaunchOptions", () => {
   it("applies the harness default when the request names no model", () => {
-    expect(resolveLaunchOptions(seeded("claude"), {})).toEqual({ model: "fable", effort: null });
+    // Claude names none: Claude Code's own default, as for a `claude` run by hand.
+    expect(resolveLaunchOptions(seeded("claude"), {})).toEqual({ model: null, effort: null });
     expect(resolveLaunchOptions(seeded("codex"), { model: "  " })).toEqual({
       model: "gpt-6.1-sol",
       effort: null,
@@ -88,7 +89,7 @@ describe("resolveLaunchOptions", () => {
       effort: "xhigh",
     });
     expect(resolveLaunchOptions(seeded("claude"), { effort: "ultra" })).toEqual({
-      model: "fable",
+      model: null,
       effort: "max",
     });
   });
@@ -138,10 +139,20 @@ describe("resolveLaunchOptions", () => {
 
 describe("modelPicker", () => {
   it("preselects the server's default when nothing was chosen", () => {
+    const codex = modelPicker(seeded("codex"), { model: null, effort: null });
+    expect(codex.model).toBe("gpt-6.1-sol");
+    expect(codex.modelLabel).toBe("GPT-6.1 Sol");
+    expect(codex.models.filter((row) => row.selected).map((row) => row.id)).toEqual([
+      "gpt-6.1-sol",
+    ]);
+    expect(pickerLaunchFields(codex)).toEqual({ model: "gpt-6.1-sol" });
+  });
+
+  it("leaves Claude's model to Claude Code when nothing was chosen, and sends one picked", () => {
     const picker = modelPicker(seeded("claude"), { model: null, effort: null });
-    expect(picker.model).toBe("fable");
-    expect(picker.modelLabel).toBe("Fable · latest");
-    expect(picker.models.filter((row) => row.selected).map((row) => row.id)).toEqual(["fable"]);
+    expect(picker.model).toBeNull();
+    expect(picker.modelLabel).toBe("default");
+    expect(picker.models.some((row) => row.isDefault || row.selected)).toBe(false);
     expect(picker.efforts[0]).toEqual({ effort: null, label: "default", selected: true });
     expect(picker.efforts.map((row) => row.effort)).toEqual([
       null,
@@ -152,7 +163,10 @@ describe("modelPicker", () => {
       "max",
     ]);
     expect(picker.hasModels).toBe(true);
-    expect(pickerLaunchFields(picker)).toEqual({ model: "fable" });
+    expect(pickerLaunchFields(picker)).toEqual({});
+    const opus = modelPicker(seeded("claude"), { model: "opus", effort: null });
+    expect(opus.modelLabel).toBe("Opus · latest");
+    expect(pickerLaunchFields(opus)).toEqual({ model: "opus" });
   });
 
   it("keeps a sticky choice the catalog still lists, and clamps its effort", () => {
@@ -179,8 +193,8 @@ describe("modelPicker", () => {
   });
 
   it("reads a sticky id the catalog no longer lists as the default", () => {
-    const picker = modelPicker(seeded("claude"), { model: "claude-fable-5", effort: "high" });
-    expect(picker.model).toBe("fable");
+    const picker = modelPicker(seeded("codex"), { model: "gpt-5.4", effort: "high" });
+    expect(picker.model).toBe("gpt-6.1-sol");
     expect(picker.effort).toBe("high");
   });
 

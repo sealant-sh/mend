@@ -46,7 +46,8 @@ describe("harness models", () => {
     }> = await response.json();
     expect(catalogs.map((catalog) => catalog.harness)).toEqual(["claude", "codex"]);
     const claude = catalogs[0];
-    expect(claude?.defaultModel).toBe("fable");
+    // None: a Claude launch that names no model runs on Claude Code's own default.
+    expect(claude?.defaultModel).toBeNull();
     expect(claude?.efforts).toEqual(["low", "medium", "high", "xhigh", "max"]);
     expect(claude?.fastCapable).toBe(false);
     const codex = catalogs[1];

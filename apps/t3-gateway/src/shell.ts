@@ -35,7 +35,7 @@ import type {
 } from "./mend-workbench.ts";
 import { modelOptionsOf, type ThreadModelOptions } from "./model-options.ts";
 import type { ThreadNotices } from "./notices.ts";
-import { harnessProvider } from "./server-config.ts";
+import { harnessOwnModelOf, harnessProvider } from "./server-config.ts";
 import type { StoredImage, ThreadLifecycle } from "./state.ts";
 
 /**
@@ -303,7 +303,10 @@ export const modelSelectionOf = (source: ThreadSource): ModelSelection => {
   return {
     // Only sessions of a harness with a provider are threads (`isProjectable`).
     instanceId: provider?.instanceId ?? ProviderInstanceId.make(source.session.harness),
-    model: source.session.model ?? source.agent.protocolOptions?.model ?? "default",
+    model:
+      source.session.model ??
+      source.agent.protocolOptions?.model ??
+      harnessOwnModelOf(source.session.harness),
     ...(options === undefined ? {} : { options }),
   };
 };

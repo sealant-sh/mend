@@ -52,7 +52,7 @@ describe.skipIf(!hasCodex)("codex app-server conformance", () => {
     );
     child.stdin.write('{"method":"initialized"}\n');
     child.stdin.write(
-      '{"method":"thread/start","id":1,"params":{"cwd":"/tmp","approvalPolicy":"on-request","sandbox":"workspace-write","ephemeral":true}}\n',
+      '{"method":"thread/start","id":1,"params":{"cwd":"/tmp","approvalPolicy":"on-request","sandbox":"danger-full-access","ephemeral":true}}\n',
     );
     const response = await threadResponse;
     child.stdin.end();

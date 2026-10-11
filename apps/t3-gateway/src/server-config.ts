@@ -48,6 +48,23 @@ const HARNESS_DRIVERS: Readonly<Record<string, HarnessDriver>> = {
 };
 
 /**
+ * The model a t3code client picks to leave the choice to the harness: listed first, as the
+ * default, for a harness whose Mend catalog names none (Claude: its own default, as a `claude` run
+ * by hand chooses). A t3code client always sends a model; a launch that sends this one names none
+ * to Mend (`launch.ts`), and a session with no model reads it back (`modelSelectionOf`).
+ *
+ * Namespaced per harness (`mend:claude-default`), so no model id a harness takes can be it: a real
+ * model named `default`, in Mend's catalog or a client's own, is sent as it is (review 2 of
+ * mend#737). Only the slug of the launch's own harness means "no model".
+ */
+export const harnessOwnModelOf = (harness: string): string => `mend:${harness}-default`;
+
+/** How the harness's own choice reads in t3code's picker. */
+const OWN_MODEL_NAMES: Readonly<Record<string, string>> = {
+  claude: "Claude Code's default",
+};
+
+/**
  * The t3code provider a Mend harness is shown as, or null for a harness the gateway does not
  * show. The instance id is the driver's own name: one instance per driver.
  */
@@ -143,9 +160,23 @@ const modelsFor = (
   driver: HarnessDriver,
 ): ReadonlyArray<ServerProviderModel> => {
   const models: Array<ServerProviderModel> = [];
+  if (catalog.defaultModel === null && catalog.models.length > 0) {
+    const optionDescriptors: Array<ProviderOptionDescriptor> = [];
+    const efforts = effortDescriptor(driver.effortOptionId, catalog.efforts);
+    if (efforts !== undefined) optionDescriptors.push(efforts);
+    if (catalog.fastCapable) optionDescriptors.push(serviceTierDescriptor);
+    models.push({
+      slug: harnessOwnModelOf(catalog.harness),
+      name: OWN_MODEL_NAMES[catalog.harness] ?? `${driver.displayName}'s own default`,
+      isCustom: false,
+      isDefault: true,
+      capabilities: optionDescriptors.length === 0 ? null : { optionDescriptors },
+    });
+  }
   for (const model of catalog.models) {
     const slug = nonEmpty(model.id);
-    if (slug === undefined) continue;
+    // An entry named like the harness's own choice would be listed twice; the choice is Mend's.
+    if (slug === undefined || slug === harnessOwnModelOf(catalog.harness)) continue;
     const optionDescriptors: Array<ProviderOptionDescriptor> = [];
     const efforts = effortDescriptor(driver.effortOptionId, model.efforts ?? catalog.efforts);
     if (efforts !== undefined) optionDescriptors.push(efforts);

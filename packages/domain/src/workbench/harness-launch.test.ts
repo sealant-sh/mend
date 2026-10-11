@@ -186,7 +186,8 @@ describe("the seed and the composer's own clamp", () => {
       "sonnet",
       "haiku",
     ]);
-    expect(HARNESS_MODEL_SEED.claude?.find((model) => model.isDefault)?.id).toBe("fable");
+    // None is the default: a launch that names none runs on Claude Code's own default.
+    expect(HARNESS_MODEL_SEED.claude?.some((model) => model.isDefault)).toBe(false);
     expect(HARNESS_MODEL_SEED.codex?.find((model) => model.isDefault)?.id).toBe("gpt-6.1-sol");
   });
 
