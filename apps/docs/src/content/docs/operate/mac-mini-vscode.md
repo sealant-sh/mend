@@ -134,7 +134,14 @@ On the mini, for the tailnet path:
 mend server setup --bind 0.0.0.0 --url http://mac-mini:3105
 ```
 
-Setup picks the Docker context (OrbStack's `orbstack` or Docker Desktop's `desktop-linux`), mounts
+With both Docker Desktop and OrbStack running, `mend server setup` on a terminal asks first which
+Docker Mend runs in, the current context in brackets; flags or no terminal take the current context
+and name the other, and `--context orbstack` or `--context desktop-linux` picks one. Pick the engine
+the mini keeps running unattended: Mend's own Mac runs used OrbStack, and Docker Desktop works with
+**Start Docker Desktop when you sign in** turned on (step 1). Mend stays in that engine; moving it
+later is `mend uninstall --server` and a new setup there. The other engine can stay installed.
+
+Setup uses that Docker context (OrbStack's `orbstack` or Docker Desktop's `desktop-linux`), mounts
 the daemon-side socket `/var/run/docker.sock` into Mend (not the client's
 `~/.docker/run/docker.sock`), and waits until Mend answers at the URL. From the acceptance run
 (Linux, the server in its own Docker daemon, the URL a tailnet address; on the mini the context is

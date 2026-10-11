@@ -52,6 +52,13 @@ mend server setup
 Setup asks a few questions, one at a time, and says in a line what each choice means. Enter takes
 the answer in brackets.
 
+- **Which Docker should Mend run in?** Asked first, and only when more than one Docker engine on
+  this machine answers: Docker Desktop beside OrbStack, colima, Rancher Desktop, a rootless Docker.
+  Each choice says what it is, its socket, and whether a Mend server or Mend's volumes are already
+  there; the current Docker context is the answer in brackets. With one engine, setup says which one
+  it uses and asks nothing. A context on another machine (SSH or TCP) is listed, not offered: Mend
+  runs in a Docker engine on this machine. `--context <name>` or `DOCKER_CONTEXT` answers it for
+  you.
 - **How will people reach this Mend?** Just this machine, your private network or Tailscale, or the
   public internet with HTTPS.
 - For **Tailscale**, setup reads `tailscale status` and offers this machine's MagicDNS name and
@@ -88,9 +95,26 @@ Same as: mend server setup --bind 100.94.101.28 --url http://mend-box.tailc79e49
 Apply? [Y/n]
 ```
 
+On a Mac with both Docker Desktop and OrbStack, the engine question looks like this:
+
+```text
+Mend's server, its data and every session's workspace live in the Docker engine you choose, and stay there: another engine later means a new install.
+
+Which Docker should Mend run in?
+  1. desktop-linux (the current context) · Docker Desktop · socket /Users/you/.docker/run/docker.sock · nothing of Mend's here yet
+  2. orbstack · OrbStack · socket /Users/you/.orbstack/run/docker.sock · nothing of Mend's here yet
+  1 or 2 [1]: 2
+```
+
+Pick the engine you keep running on that Mac: Mend's own Mac runs used OrbStack, and Docker Desktop
+works when it starts at sign-in ([Mac mini guide](/operate/mac-mini-vscode/)). Your choice goes into
+the command setup prints (`--context orbstack`), and `mend doctor` and `mend uninstall` use the same
+context from then on.
+
 Run it again to change something. Setup shows what is saved, then lets you keep it, change one
-thing, or go through every question. Turning on the T3 Code gateway on a public install looks like
-this:
+thing, or go through every question. It keeps the Docker engine it was installed in and says so:
+moving to another engine is a new install, `mend uninstall --server` and then `mend server setup`
+there. Turning on the T3 Code gateway on a public install looks like this:
 
 ```text
 Currently: public HTTPS at alpha.mend.run, VS Code SSH from other machines on, T3 gateway off.

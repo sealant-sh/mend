@@ -99,8 +99,12 @@ example:
 mend server setup --port 3205 --ssh-port 2322 --url http://localhost:3205
 ```
 
-Setup reruns retain saved settings unless you explicitly change them. Changing the Docker context
-requires care: volumes belong to a daemon and do not move with a context setting.
+Setup reruns retain saved settings unless you explicitly change them. On a terminal, a fresh install
+with more than one local Docker engine answering asks which one Mend runs in (the current context in
+brackets) and prints the answer as `--context`; `--context`, `DOCKER_CONTEXT`, `--yes` or no
+terminal skip the question. A rerun keeps the saved context and says so. Changing the Docker context
+requires care: volumes belong to a daemon and do not move with a context setting, so another engine
+is a new install (`mend uninstall --server`, then `mend server setup` there).
 
 ## Access without a private network
 

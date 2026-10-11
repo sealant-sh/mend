@@ -27,6 +27,7 @@ import {
   claimServerDockerVolumes,
   MEND_DOCKER_NAMESPACE,
   MEND_DOCKER_NAMESPACE_WITH_GARAGE,
+  SERVER_VOLUME_OWNER_LABEL,
   type ServerDockerNamespace,
   verifyServerDockerVolumes,
 } from "./server-docker-volumes.ts";
@@ -97,6 +98,11 @@ import {
 } from "./server-runtime.ts";
 import {
   changeLines,
+  chooseDockerEngine,
+  type DockerEngine,
+  engineNote,
+  GUIDE_INTRO,
+  type GuideIo,
   type GuideObservations,
   isPublicAddress,
   runGuide,
@@ -1406,10 +1412,28 @@ const outputDetail = (output: CommandOutput): string =>
 const commandFailure = (label: string, output: CommandOutput): ServerSetupError =>
   setupError(`${label}: ${outputDetail(output)}`);
 
+/**
+ * The local context setup takes when nobody names one: the current context, else OrbStack's,
+ * Docker Desktop's, the default, or the only one there is.
+ */
+const preferredContext = <Row extends DockerContextRow>(
+  local: ReadonlyArray<Row>,
+): Row | undefined =>
+  local.find((row) => row.current) ??
+  local.find((row) => row.name === "orbstack") ??
+  local.find((row) => row.name === "desktop-linux") ??
+  local.find((row) => row.name === "default") ??
+  (local.length === 1 ? local[0] : undefined);
+
 const selectDockerContext = async (
   runtime: ServerSetupRuntime,
   requested: string | undefined,
-): Promise<{ readonly name: string; readonly endpoint: string }> => {
+): Promise<{
+  readonly name: string;
+  readonly endpoint: string;
+  /** The other local contexts, when setup chose among them; empty when one was named. */
+  readonly others: ReadonlyArray<string>;
+}> => {
   if (requested !== undefined) {
     const inspect = await runtime.run("docker", [
       "context",
@@ -1426,18 +1450,13 @@ const selectDockerContext = async (
         `Docker context "${requested}" uses ${endpoint || "an unknown endpoint"}. Mend server setup supports local Unix-socket contexts only; remote SSH/TCP daemons would make the advertised health check report the wrong machine.`,
       );
     }
-    return { name: requested, endpoint };
+    return { name: requested, endpoint, others: [] };
   }
 
   const listed = await runtime.run("docker", ["context", "ls", "--format", "{{json .}}"]);
   if (listed.status !== 0) throw commandFailure("Docker contexts are unavailable", listed);
   const local = parseContextRows(listed.stdout).filter((row) => localUnixEndpoint(row.endpoint));
-  const selected =
-    local.find((row) => row.current) ??
-    local.find((row) => row.name === "orbstack") ??
-    local.find((row) => row.name === "desktop-linux") ??
-    local.find((row) => row.name === "default") ??
-    (local.length === 1 ? local[0] : undefined);
+  const selected = preferredContext(local);
   if (selected === undefined) {
     throw setupError(
       local.length === 0
@@ -1445,7 +1464,11 @@ const selectDockerContext = async (
         : `Several local Docker contexts are available (${local.map((row) => row.name).join(", ")}). Choose one with --context.`,
     );
   }
-  return { name: selected.name, endpoint: selected.endpoint };
+  return {
+    name: selected.name,
+    endpoint: selected.endpoint,
+    others: local.filter((row) => row !== selected).map((row) => row.name),
+  };
 };
 
 const compareApiVersions = (left: string, right: string): number => {
@@ -3148,6 +3171,178 @@ const guideObservations = (runtime: ServerSetupRuntime): GuideObservations => ({
   portHolder: (address, port, what) => portHolder(runtime, address, port, what),
 });
 
+/** How long one Docker engine has to answer before the guide leaves it out. */
+const ENGINE_PING_MS = 5_000;
+
+/** A context's Unix socket, from its endpoint (`unix:///Users/a/.orbstack/run/docker.sock`). */
+const socketOf = (endpoint: string): string => {
+  try {
+    return decodeURIComponent(new URL(endpoint).pathname);
+  } catch {
+    return endpoint;
+  }
+};
+
+/** What an engine is, from its context's name and what `docker info` said. */
+const engineKind = (name: string, operatingSystem: string, rootless: boolean): string => {
+  if (operatingSystem === "OrbStack" || operatingSystem === "Docker Desktop")
+    return operatingSystem;
+  if (name === "colima" || name.startsWith("colima-")) return "colima";
+  if (name.startsWith("rancher-desktop")) return "Rancher Desktop";
+  return `${rootless ? "rootless " : ""}Docker Engine${operatingSystem === "" ? "" : ` on ${operatingSystem}`}`;
+};
+
+/** Names a bounded `docker … ls` printed, or null when it did not answer. */
+const namesFrom = (output: CommandOutput): ReadonlyArray<string> | null =>
+  output.status === 0
+    ? output.stdout
+        .split("\n")
+        .map((line) => line.trim())
+        .filter((line) => line !== "")
+    : null;
+
+/** What of Mend's runs or rests in an engine: its server's containers, else its volumes. */
+const mendIn = async (
+  runtime: ServerSetupRuntime,
+  context: string,
+): Promise<DockerEngine["mend"]> => {
+  const [running, volumes] = await Promise.all([
+    runtime.run(
+      "docker",
+      [
+        "--context",
+        context,
+        "container",
+        "ls",
+        "--filter",
+        `label=com.docker.compose.project=${MEND_DOCKER_NAMESPACE.project}`,
+        "--format",
+        "{{.Names}}",
+      ],
+      { timeoutMs: ENGINE_PING_MS },
+    ),
+    runtime.run(
+      "docker",
+      [
+        "--context",
+        context,
+        "volume",
+        "ls",
+        "--filter",
+        `label=${SERVER_VOLUME_OWNER_LABEL}`,
+        "--format",
+        "{{.Name}}",
+      ],
+      { timeoutMs: ENGINE_PING_MS },
+    ),
+  ]);
+  const containers = namesFrom(running);
+  const owned = namesFrom(volumes);
+  if (containers === null || owned === null) return null;
+  return containers.length > 0 ? "running" : owned.length > 0 ? "volumes" : "none";
+};
+
+/** The Docker contexts here: the local engines that answered, and the rest as observed. */
+interface ObservedEngines {
+  readonly engines: ReadonlyArray<DockerEngine>;
+  /** Local contexts whose engine did not answer in time. */
+  readonly silent: ReadonlyArray<DockerContextRow>;
+  /** Contexts on another machine (SSH, TCP): setup runs Mend in a local engine only. */
+  readonly remote: ReadonlyArray<DockerContextRow>;
+  /** What setup takes unasked: `preferredContext` of every local context. */
+  readonly unasked: string | undefined;
+}
+
+/**
+ * Every Docker context here, each local one asked once, together: `docker info` within
+ * `ENGINE_PING_MS`, then what of Mend's is there. Null when Docker lists no contexts at all;
+ * setup then says why.
+ */
+const observeDockerEngines = async (
+  runtime: ServerSetupRuntime,
+): Promise<ObservedEngines | null> => {
+  const listed = await runtime.run("docker", ["context", "ls", "--format", "{{json .}}"], {
+    timeoutMs: ENGINE_PING_MS,
+  });
+  if (listed.status !== 0) return null;
+  let rows: ReadonlyArray<DockerContextRow>;
+  try {
+    rows = parseContextRows(listed.stdout);
+  } catch {
+    return null;
+  }
+  const local = rows.filter((row) => localUnixEndpoint(row.endpoint));
+  const answers = await Promise.all(
+    local.map(async (row): Promise<DockerEngine | null> => {
+      const info = await runtime.run(
+        "docker",
+        [
+          "--context",
+          row.name,
+          "info",
+          "--format",
+          "{{.OperatingSystem}}\t{{json .SecurityOptions}}",
+        ],
+        { timeoutMs: ENGINE_PING_MS },
+      );
+      if (info.status !== 0 || info.stdout.trim() === "") return null;
+      const [operatingSystem = "", security = ""] = info.stdout.trim().split("\t");
+      return {
+        context: row.name,
+        what: engineKind(row.name, operatingSystem.trim(), security.includes("name=rootless")),
+        socket: socketOf(row.endpoint),
+        current: row.current,
+        mend: await mendIn(runtime, row.name),
+      };
+    }),
+  );
+  return {
+    engines: answers.filter((engine): engine is DockerEngine => engine !== null),
+    silent: local.filter((_, index) => answers[index] === null),
+    remote: rows.filter((row) => !localUnixEndpoint(row.endpoint)),
+    unasked: preferredContext(local)?.name,
+  };
+};
+
+/**
+ * A fresh guided install's Docker engine, before any other question: the host's kernel is read in
+ * the engine chosen. Asked only when more than one engine here answers; the current context is
+ * the answer in brackets. The flags that say the choice (`--context <name>`), none when setup takes
+ * the same engine unasked; null when the person stopped.
+ */
+const settleDockerEngine = async (
+  runtime: ServerSetupRuntime,
+  io: GuideIo,
+): Promise<ReadonlyArray<string> | null> => {
+  const observed = await observeDockerEngines(runtime);
+  if (observed === null) return [];
+  for (const row of observed.remote)
+    io.write(
+      `Observed: Docker context ${row.name} is on another machine (${row.endpoint}); Mend runs in a Docker engine on this machine only.`,
+    );
+  for (const row of observed.silent)
+    io.write(
+      `Observed: Docker context ${row.name} (socket ${socketOf(row.endpoint)}) did not answer; start it and run mend server setup again to choose it.`,
+    );
+  const [only, ...others] = observed.engines;
+  if (only === undefined) return [];
+  if (others.length === 0) {
+    io.write(
+      `Docker: Mend runs in ${only.context} (${engineNote(only)}), the one Docker engine here that answers.`,
+    );
+    return only.context === observed.unasked ? [] : ["--context", only.context];
+  }
+  const preferred = preferredContext(
+    observed.engines.map((engine) => ({
+      name: engine.context,
+      endpoint: "",
+      current: engine.current,
+    })),
+  )?.name;
+  const picked = await chooseDockerEngine(io, observed.engines, preferred);
+  return picked === null ? null : ["--context", picked];
+};
+
 /**
  * `mend server setup` on a terminal with no flags: read what is saved, let go of the lock while
  * the person answers, then run the flags the answers became, exactly as a script would.
@@ -3168,30 +3363,48 @@ const guidedSetup = async (
   if (read._tag === "error") return { _tag: "error", message: read.error.message };
   const existing = read.value;
   refuseLegacyContract(existing);
+  const io: GuideIo = { write: runtime.writeLine, ask: prompter };
+  // The Docker engine first: the host's kernel and everything after it are read there. A fresh
+  // install with no --context and no DOCKER_CONTEXT asks, when more than one engine answers.
+  const hostOptions = parseSetupOptions(hostFlags);
+  let given = hostFlags;
+  if (existing === null) {
+    io.write(GUIDE_INTRO);
+    if (requestedDockerContext(runtime, hostOptions, null).requested === undefined) {
+      const engine = await settleDockerEngine(runtime, io);
+      if (engine === null) {
+        runtime.writeLine("Nothing changed.");
+        return { _tag: "ok" };
+      }
+      given = [...engine, ...hostFlags];
+    }
+  }
+  const context = await selectDockerContext(
+    runtime,
+    requestedDockerContext(runtime, parseSetupOptions(given), existing).requested,
+  );
+  await checkDocker(runtime, context.name);
+  // An install stays in the engine its data is in; the guide does not move it.
+  if (existing !== null && hostOptions.context === undefined)
+    io.write(
+      `Docker: this install runs in context ${context.name} (socket ${socketOf(context.endpoint)}), where its data is, and stays there. Running Mend in another Docker engine is a new install: mend uninstall --server removes this one, its data included, then mend server setup there.`,
+    );
   // The host's kernel before the first question (#695): a host that refuses user namespaces starts
   // no session, so that is the first thing the person decides. Its probe pulls only the few
   // megabytes of busybox every install preloads anyway (HOST_HELPER_IMAGE).
-  const hostOptions = parseSetupOptions(hostFlags);
-  const context = await selectDockerContext(
-    runtime,
-    requestedDockerContext(runtime, hostOptions, existing).requested,
-  );
-  await checkDocker(runtime, context.name);
   const reminder = await settleHostUserNamespaces(
     { ...runtime, prompter },
     hostOptions,
     context.name,
   );
-  const outcome = await runGuide(
-    { write: runtime.writeLine, ask: prompter },
-    {
-      saved: existing === null ? null : resolveSetupSettings(existing.config, []),
-      defaults: resolveSetupSettings(null, []),
-      observe: guideObservations(runtime),
-      resolve: (flags) => resolveSetupSettings(existing?.config ?? null, flags),
-      given: hostFlags,
-    },
-  );
+  const outcome = await runGuide(io, {
+    saved: existing === null ? null : resolveSetupSettings(existing.config, []),
+    defaults: resolveSetupSettings(null, []),
+    observe: guideObservations(runtime),
+    resolve: (flags) => resolveSetupSettings(existing?.config ?? null, flags),
+    given,
+    introduced: existing === null,
+  });
   if (outcome._tag === "refused") return { _tag: "error", message: outcome.message };
   if (outcome._tag === "stopped") {
     runtime.writeLine("Nothing changed.");
@@ -3200,7 +3413,7 @@ const guidedSetup = async (
   return underLock(
     runtime.configDir,
     (store) =>
-      setupServer([...outcome.flags, ...hostFlags], runtime, store, {
+      setupServer([...outcome.flags, ...given], runtime, store, {
         askedAgainst: existing?.directory ?? null,
         userNamespaces: { reminder },
       }),
@@ -3275,6 +3488,11 @@ const setupServer = async (
   runtime.writeLine(
     `Using Docker context "${selectedContext.name}" (${selectedContext.endpoint})${fromVariable ? ", from DOCKER_CONTEXT" : ""}`,
   );
+  // A fresh install nobody asked about takes the current context; the others are said beside it.
+  if (existing === null && run.askedAgainst === undefined && selectedContext.others.length > 0)
+    runtime.writeLine(
+      `Other Docker contexts here: ${selectedContext.others.join(", ")}. To install in one of them instead: mend server setup --context <name>.`,
+    );
   if (
     existing !== null &&
     options.context === undefined &&
@@ -3282,7 +3500,7 @@ const setupServer = async (
     variable !== existing.config.dockerContext
   ) {
     runtime.writeLine(
-      `DOCKER_CONTEXT is "${variable}"; this install runs on Docker context "${existing.config.dockerContext}", where its data is, and stays there. --context moves it.`,
+      `DOCKER_CONTEXT is "${variable}"; this install runs on Docker context "${existing.config.dockerContext}", where its data is, and stays there. Running Mend in another Docker engine is a new install: mend uninstall --server removes this one, its data included, then mend server setup there.`,
     );
   }
   // Before anything is pulled or written: a port another server holds would leave this one

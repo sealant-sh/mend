@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  chooseDockerEngine,
+  type DockerEngine,
   flagsFor,
   type GuideObservations,
   type GuideOutcome,
@@ -857,5 +859,71 @@ describe("tailscale's own words", () => {
   it("is nothing when the output is not Tailscale's", () => {
     expect(tailscaleFactsOf("", "")).toBeNull();
     expect(tailscaleFactsOf("not json", "")).toBeNull();
+  });
+});
+
+describe("which Docker Mend runs in", () => {
+  const ENGINES: ReadonlyArray<DockerEngine> = [
+    {
+      context: "desktop-linux",
+      what: "Docker Desktop",
+      socket: "/Users/a/.docker/run/docker.sock",
+      current: true,
+      mend: "none",
+    },
+    {
+      context: "orbstack",
+      what: "OrbStack",
+      socket: "/Users/a/.orbstack/run/docker.sock",
+      current: false,
+      mend: "running",
+    },
+    {
+      context: "colima",
+      what: "colima",
+      socket: "/Users/a/.colima/default/docker.sock",
+      current: false,
+      mend: "volumes",
+    },
+  ];
+
+  const ask = async (answers: ReadonlyArray<string>, preferred: string | undefined) => {
+    const queue = [...answers];
+    const lines: Array<string> = [];
+    const picked = await chooseDockerEngine(
+      {
+        write: (line) => lines.push(line),
+        ask: async (prompt) => {
+          const given = queue.shift();
+          lines.push(`${prompt}${given ?? "^D"}`);
+          return given ?? null;
+        },
+      },
+      ENGINES,
+      preferred,
+    );
+    return { picked, lines };
+  };
+
+  it("notes what each is, its socket and what of Mend's is there; Enter takes the current one", async () => {
+    const { picked, lines } = await ask([""], "desktop-linux");
+    expect(picked).toBe("desktop-linux");
+    expect(lines).toContain("Which Docker should Mend run in?");
+    expect(lines).toContain(
+      "  1. desktop-linux (the current context) · Docker Desktop · socket /Users/a/.docker/run/docker.sock · nothing of Mend's here yet",
+    );
+    expect(lines).toContain(
+      "  2. orbstack · OrbStack · socket /Users/a/.orbstack/run/docker.sock · a Mend server runs here",
+    );
+    expect(lines).toContain(
+      "  3. colima · colima · socket /Users/a/.colima/default/docker.sock · Mend volumes from an earlier install are here",
+    );
+    expect(lines.at(-1)).toBe("  1-3 [1]: ");
+  });
+
+  it("takes another by number, and stops on Ctrl+D", async () => {
+    expect((await ask(["2"], "desktop-linux")).picked).toBe("orbstack");
+    expect((await ask([""], "colima")).lines.at(-1)).toBe("  1-3 [3]: ");
+    expect((await ask([], "desktop-linux")).picked).toBeNull();
   });
 });
