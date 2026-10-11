@@ -22,6 +22,7 @@ import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 
 import { labelOf, MEND_LABEL_LIMIT, planLaunch, worktreeNameOf } from "../src/launch.ts";
+import { providersFromMend } from "../src/server-config.ts";
 import { openGatewayState } from "../src/state.ts";
 import { startFakeMend, type FakeMend } from "./support/fake-mend.ts";
 import { feed } from "./support/feed.ts";
@@ -713,20 +714,73 @@ describe("planLaunch", () => {
     assert.isNull(worktreeNameOf(undefined));
   });
 
-  it("names no model when the client picked the harness's own default", () => {
-    const plan = planLaunch(
-      launchInput({
-        modelSelection: {
-          instanceId: ProviderInstanceId.make("claudeAgent"),
-          model: "default",
-          options: [{ id: "effort", value: "high" }],
+  it("names no model when the client picked the harness's own default, and passes real ids named like it", () => {
+    const plan = (instance: string, model: string) => {
+      const planned = planLaunch(
+        launchInput({
+          modelSelection: { instanceId: ProviderInstanceId.make(instance), model },
+          runtimeMode: "full-access",
+        }),
+      );
+      return planned.kind === "launch" ? planned.launch.options : null;
+    };
+    assert.deepStrictEqual(plan("claudeAgent", "mend:claude-default"), {
+      permissionMode: "bypass",
+    });
+    // Review 2 of mend#737: a real model named `default` is sent as it is, for either harness, and
+    // only a harness's own choice means "no model" (Claude's slug on a Codex launch is a model id).
+    assert.deepStrictEqual(plan("claudeAgent", "default"), {
+      model: "default",
+      permissionMode: "bypass",
+    });
+    assert.deepStrictEqual(plan("codex", "default"), {
+      model: "default",
+      permissionMode: "bypass",
+    });
+    assert.deepStrictEqual(plan("codex", "mend:claude-default"), {
+      model: "mend:claude-default",
+      permissionMode: "bypass",
+    });
+  });
+
+  it("lists the harness's own choice once, first, beside a real model named `default`", () => {
+    const providers = providersFromMend(
+      [
+        {
+          harness: "claude",
+          models: [
+            { id: "default", label: "Default", isDefault: false, efforts: null },
+            { id: "mend:claude-default", label: "Shadow", isDefault: false, efforts: null },
+            { id: "opus", label: "Opus", isDefault: false, efforts: null },
+          ],
+          defaultModel: null,
+          efforts: ["low", "high"],
+          fastCapable: false,
         },
-        runtimeMode: "full-access",
-      }),
+        {
+          harness: "codex",
+          models: [{ id: "default", label: "Default", isDefault: true, efforts: null }],
+          defaultModel: "default",
+          efforts: ["low", "high"],
+          fastCapable: true,
+        },
+      ],
+      "2026-10-12T00:00:00.000Z",
+      null,
     );
-    assert.strictEqual(plan.kind, "launch");
-    if (plan.kind !== "launch") return;
-    assert.deepStrictEqual(plan.launch.options, { effort: "high", permissionMode: "bypass" });
+    assert.deepStrictEqual(
+      providers.map((provider) =>
+        provider.models.map((model) => [model.slug, model.isDefault === true]),
+      ),
+      [
+        [
+          ["mend:claude-default", true],
+          ["default", false],
+          ["opus", false],
+        ],
+        [["default", true]],
+      ],
+    );
   });
 
   it("names fast service and leaves an effort Mend does not take to Mend", () => {

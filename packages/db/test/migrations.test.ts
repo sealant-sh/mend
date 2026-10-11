@@ -2986,7 +2986,7 @@ describe.skipIf(postgres.skip)("0129 ambient removed", () => {
   });
 });
 
-describe.skipIf(!reachable)("0130 claude's own default", () => {
+describe.skipIf(postgres.skip)("0130 claude's own default", () => {
   const DB = `${SCRATCH_DB}_claude_own_default`;
   const layer = (() => {
     const url = new URL(ADMIN_URL);

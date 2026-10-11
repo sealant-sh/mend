@@ -741,6 +741,83 @@ describe("Codex's system default: no sandbox of its own in a workspace", () => {
     expect(fs.readdirSync(path.dirname(file))).toEqual(["config.toml"]);
   });
 
+  it("never links into a directory, or through a link to one, that appears before its publish", () => {
+    // Review 2 of mend#737 (P3): `ln temp target` with a directory at the target made the link
+    // inside it. The stand-in `mkdir` puts a link to a directory there after the check.
+    for (const shape of ["directory", "link to a directory"] as const) {
+      const root = makeHome();
+      const file = path.join(root, "etc", "codex", "config.toml");
+      const elsewhere = path.join(root, "elsewhere");
+      fs.mkdirSync(elsewhere);
+      const bin = path.join(root, "bin");
+      fs.mkdirSync(bin);
+      const realMkdir = spawnSync("sh", ["-c", "command -v mkdir"], {
+        encoding: "utf8",
+      }).stdout.trim();
+      const appear =
+        shape === "directory"
+          ? `${realMkdir} ${shellQuoted(file)}`
+          : `ln -s ${shellQuoted(elsewhere)} ${shellQuoted(file)}`;
+      fs.writeFileSync(path.join(bin, "mkdir"), `#!/bin/sh\n${realMkdir} "$@" && ${appear}\n`, {
+        mode: 0o755,
+      });
+      for (const withoutT of [false, true]) {
+        // An `ln` that has no `-T`: the check right before it refuses the name as well.
+        if (withoutT) {
+          const realLn = spawnSync("sh", ["-c", "command -v ln"], {
+            encoding: "utf8",
+          }).stdout.trim();
+          fs.writeFileSync(
+            path.join(bin, "ln"),
+            `#!/bin/sh\ncase "$1" in -T) echo "ln: unknown option -T" >&2; exit 1;; esac\nexec ${realLn} "$@"\n`,
+            { mode: 0o755 },
+          );
+        }
+        const result = spawnSync(
+          "sh",
+          ["-c", `${codexSystemConfigScript(file)}; echo "status $?"`],
+          {
+            encoding: "utf8",
+            env: { ...process.env, PATH: `${bin}:${process.env["PATH"] ?? ""}` },
+          },
+        );
+        expect(result.stdout, `${shape}, without -T: ${withoutT}`).toBe("status 0\n");
+        expect(fs.readdirSync(elsewhere), shape).toEqual([]);
+        if (shape === "directory") expect(fs.readdirSync(file)).toEqual([]);
+        else expect(fs.readlinkSync(file)).toBe(elsewhere);
+        expect(fs.readdirSync(path.dirname(file))).toEqual(["config.toml"]);
+        fs.rmSync(file, { recursive: true, force: true });
+      }
+    }
+  });
+
+  it("publishes through an `ln` without `-T`, and never writes through a linked /etc/codex", () => {
+    const root = makeHome();
+    const bin = path.join(root, "bin");
+    fs.mkdirSync(bin);
+    const realLn = spawnSync("sh", ["-c", "command -v ln"], { encoding: "utf8" }).stdout.trim();
+    fs.writeFileSync(
+      path.join(bin, "ln"),
+      `#!/bin/sh\ncase "$1" in -T) echo "ln: unknown option -T" >&2; exit 1;; esac\nexec ${realLn} "$@"\n`,
+      { mode: 0o755 },
+    );
+    const file = path.join(root, "etc", "codex", "config.toml");
+    const result = spawnSync("sh", ["-c", `${codexSystemConfigScript(file)}; echo "status $?"`], {
+      encoding: "utf8",
+      env: { ...process.env, PATH: `${bin}:${process.env["PATH"] ?? ""}` },
+    });
+    expect(result.stdout).toBe("status 0\n");
+    expect(fs.readFileSync(file, "utf8")).toBe(CODEX_SYSTEM_CONFIG_TEXT);
+
+    const linked = path.join(root, "linked-etc");
+    const target = path.join(root, "target");
+    fs.mkdirSync(target);
+    fs.mkdirSync(linked);
+    fs.symlinkSync(target, path.join(linked, "codex"));
+    runCodexSystemConfig(path.join(linked, "codex", "config.toml"));
+    expect(fs.readdirSync(target)).toEqual([]);
+  });
+
   it("leaves a link where the file would go, and never fails where it cannot write", () => {
     const root = makeHome();
     const file = path.join(root, "codex", "config.toml");

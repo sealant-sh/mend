@@ -227,17 +227,20 @@ export const CODEX_SYSTEM_CONFIG_TEXT = [
 
 /**
  * Published without ever replacing anything: the text goes into a temporary beside the target,
- * which is then hard-linked to the target's name. `ln` refuses a name that exists, so a file or
- * link someone put there after the check (the operator, the image's own setup) is kept. The
- * temporary goes either way.
+ * which is then hard-linked to the target's exact name (`ln -T`, GNU and busybox alike). `ln`
+ * refuses a name that exists, so a file, link or directory someone put there after the check (the
+ * operator, the image's own setup) is kept, and nothing is linked into a directory or through a
+ * link. An `ln` without `-T` gets the same refusal from a check made right before it. A
+ * `/etc/codex` that is a link is never written through. The temporary goes either way.
  */
 export const codexSystemConfigScript = (file: string = CODEX_SYSTEM_CONFIG): string => {
   const target = shellQuote(file);
   const text = shellQuote(CODEX_SYSTEM_CONFIG_TEXT);
   return (
-    `( f=${target}; t=; if [ ! -e "$f" ] && [ ! -L "$f" ]; then umask 022; d=$(dirname "$f"); ` +
-    `{ mkdir -p "$d" && t=$(mktemp "$d/.config.toml.mend-XXXXXX") && printf '%s' ${text} > "$t" && ` +
-    `chmod 0644 "$t" && ln "$t" "$f"; } 2>/dev/null; [ -z "$t" ] || rm -f "$t"; fi; true )`
+    `( f=${target}; t=; d=$(dirname "$f"); if [ ! -e "$f" ] && [ ! -L "$f" ] && [ ! -L "$d" ]; then umask 022; ` +
+    `{ mkdir -p "$d" && [ ! -L "$d" ] && t=$(mktemp "$d/.config.toml.mend-XXXXXX") && printf '%s' ${text} > "$t" && ` +
+    `chmod 0644 "$t" && { ln -T "$t" "$f" || { [ ! -e "$f" ] && [ ! -L "$f" ] && ln "$t" "$f"; }; }; } 2>/dev/null; ` +
+    `[ -z "$t" ] || rm -f "$t"; fi; true )`
   );
 };
 

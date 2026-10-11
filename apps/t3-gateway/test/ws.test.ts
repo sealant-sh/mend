@@ -133,7 +133,7 @@ describe("GET /ws", () => {
         assert.deepStrictEqual(
           claude?.models.map((model) => [model.slug, model.name, model.isDefault === true]),
           [
-            ["default", "Claude Code's default", true],
+            ["mend:claude-default", "Claude Code's default", true],
             ["fable", "Fable", false],
             ["opus", "Opus", false],
           ],
