@@ -1,3 +1,4 @@
+import { FastCheck } from "effect/testing";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -36,11 +37,96 @@ describe("passwordProblem", () => {
 });
 
 describe("safeNextPath", () => {
-  it("keeps same-origin paths and refuses everything else", () => {
-    expect(safeNextPath("/settings#devices")).toBe("/settings#devices");
-    expect(safeNextPath("//evil.example/")).toBe("/");
-    expect(safeNextPath("https://evil.example/")).toBe("/");
-    expect(safeNextPath(undefined)).toBe("/");
+  it.each([
+    "/",
+    "/settings#devices",
+    "/projects/project-1/sessions?view=change&slice=2#comment-3",
+    "/search?next=https://evil.example/path#result",
+    "/nested//path",
+    "/projects/.././/settings?view=change#devices",
+    "/\tsettings?label=a\tb#c\nd",
+    "/encoded/%2F%5C?query=%09%0A%0D",
+    "/files?path=C:\\repo\\file#back\\slash",
+    "/café?filter=日本語#résumé",
+  ])("preserves a same-origin path, query and fragment (%j)", (path) => {
+    expect(safeNextPath(path)).toBe(path);
+  });
+
+  it.each([
+    "",
+    "settings",
+    "?next=/settings",
+    "#devices",
+    "\t/settings",
+    "\n/settings",
+    "\r/settings",
+    " /settings",
+    "\t//evil.example/",
+    "https://evil.example/",
+    "https://mend.example/settings",
+    "javascript:alert(1)",
+    "//evil.example/",
+    "/\\evil.example/",
+    "/\\\\evil.example/",
+    "/\t/evil.example/",
+    "/\n/evil.example/",
+    "/\r/evil.example/",
+    "/\t\\evil.example/",
+    "/\r\n\t/evil.example/",
+    "/\\mend.invalid/",
+    "/\t/mend.invalid/",
+    "/\\",
+    "/\t/",
+  ])("falls back for an unsafe or nonrelative next value (%j)", (value) => {
+    expect(safeNextPath(value)).toBe("/");
+  });
+
+  it.each([undefined, null, 42, {}, ["/settings"]])(
+    "falls back for a nonstring next value (%j)",
+    (value) => {
+      expect(safeNextPath(value)).toBe("/");
+    },
+  );
+
+  it("every generated result resolves to the current origin under WHATWG URL parsing", () => {
+    const arbitraryNext = FastCheck.oneof(
+      FastCheck.string({ unit: "binary", maxLength: 128 }),
+      FastCheck.string({ unit: "binary", maxLength: 128 }).map((suffix) => `/${suffix}`),
+      FastCheck.array(
+        FastCheck.constantFrom(
+          "/",
+          "\\",
+          "\t",
+          "\r",
+          "\n",
+          " ",
+          "\0",
+          "evil.example",
+          "mend.invalid",
+          "[::1]",
+          "%2f",
+          "%5c",
+          "?",
+          "#",
+          "@",
+        ),
+        { maxLength: 12 },
+      ).map((parts) => parts.join("")),
+    );
+    FastCheck.assert(
+      FastCheck.property(arbitraryNext, (input) => {
+        const next = safeNextPath(input);
+        for (const base of [
+          "https://mend.example/login",
+          "http://127.0.0.1:3100/welcome",
+          "https://mend.invalid/login",
+          "https://other.example:8443/login",
+        ]) {
+          expect(new URL(next, base).origin, JSON.stringify(input)).toBe(new URL(base).origin);
+        }
+      }),
+      { numRuns: 2_000, seed: 20261012 },
+    );
   });
 });
 
