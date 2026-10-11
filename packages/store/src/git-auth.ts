@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import type { GitAuthMode } from "@mend/domain/workbench";
+import { gitRemoteLocation, type GitAuthMode } from "@mend/domain/workbench";
 import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
@@ -312,7 +312,7 @@ const FAILURE_PATTERNS: ReadonlyArray<FailurePattern> = [
         ? "The remote refused the Mend key (permission denied). Add your Mend public key to your git account's SSH keys (or as a deploy key on this repository), then retry."
         : mode === "bridge"
           ? "The remote refused the connected signer's keys (permission denied). Check that the shared key is authorized on the git host — and that the agent you shared actually holds it (`ssh-add -l` on the sharing machine)."
-          : "The remote refused this machine's credentials (permission denied). Mend uses your login user's git/ssh setup for this project — check that a plain `git ls-remote` works in a shell here.",
+          : "The remote refused the Mend server's own ssh setup (ambient). A server from `mend server setup` runs in a container that holds no ssh key, agent or git credential of its host, so ambient reaches only public HTTPS remotes there. Use your Mend key (`mend keys`, add it on the git host, then `--auth mend-key`) or your own agent (`mend keys share`, then `--auth bridge`).",
   },
   {
     test: /Host key verification failed|REMOTE HOST IDENTIFICATION HAS CHANGED/i,
@@ -333,7 +333,7 @@ const FAILURE_PATTERNS: ReadonlyArray<FailurePattern> = [
     describe: () => "The connection to the git host timed out.",
   },
   {
-    test: /(repository|project) ['"]?[^'"\n]*['"]? not found|does not appear to be a git repository|no such repository/i,
+    test: /(repository|project) (?:['"]?[^'"\n]*['"]? )?not found|does not appear to be a git repository|no such repository/i,
     describe: (mode) =>
       mode === "mend-key"
         ? "The remote reports no such repository — the path may be wrong, or the Mend key is not authorized for it."
@@ -342,12 +342,77 @@ const FAILURE_PATTERNS: ReadonlyArray<FailurePattern> = [
 ];
 
 /**
+ * An HTTPS remote that wanted a credential: git asked for a username it may not prompt for, the
+ * server answered 401/403, or (GitHub's answer to a private repository it will not name) "not
+ * found". Over HTTPS no mode signs anything, so these never mean "your key was refused".
+ */
+const HTTPS_CREDENTIAL_FAILURE =
+  /could not read (?:Username|Password) for '|Authentication failed for '|The requested URL returned error: 40[13]|repository '[^']*' not found|Repository not found/i;
+
+/** Hosts whose ssh user is `git` and whose ssh path is the https path: the ssh URL can be named. */
+const SSH_SPELLED_HOSTS: ReadonlySet<string> = new Set([
+  "github.com",
+  "gitlab.com",
+  "bitbucket.org",
+  "codeberg.org",
+]);
+
+/**
+ * The ssh URL of an https remote on a host that spells it `git@host:path.git`, or null when the
+ * remote is not https on one of those hosts.
+ */
+export const sshUrlOfHttpsRemote = (remote: string): string | null => {
+  const location = gitRemoteLocation(remote);
+  if (location === null || location.scheme !== "https" || !SSH_SPELLED_HOSTS.has(location.host)) {
+    return null;
+  }
+  const repoPath = new URL(remote).pathname.replace(/^\/+|\/+$/g, "").replace(/\.git$/, "");
+  return repoPath.split("/").length < 2 ? null : `git@${location.host}:${repoPath}.git`;
+};
+
+const describeHttpsCredentialFailure = (mode: GitAuthMode, remote: string | undefined): string => {
+  const sshUrl = remote === undefined ? null : sshUrlOfHttpsRemote(remote);
+  const target = sshUrl === null ? "its ssh URL (git@host:owner/repo.git)" : sshUrl;
+  const holder =
+    mode === "ambient"
+      ? "The Mend server's own git setup holds no HTTPS credential for this remote"
+      : "Mend holds no HTTPS credential for this remote";
+  const signer =
+    mode === "mend-key"
+      ? "Your Mend key signs ssh remotes only: adopt"
+      : mode === "bridge"
+        ? "Your shared agent (`mend keys share`) signs ssh remotes only: adopt"
+        : "Adopt";
+  const how =
+    mode === "ambient"
+      ? " with your Mend key (`mend keys`, `--auth mend-key`) or your own agent (`mend keys share`, `--auth bridge`)"
+      : "";
+  return `${holder}, so over HTTPS it reaches public repositories only; this one is private, or the URL is wrong. ${signer} ${target} instead${how}.`;
+};
+
+/**
  * Turn a remote git failure's stderr into a readable sentence, or null when
  * nothing matched (callers then surface the stderr verbatim — an unknown
  * failure must never be flattened into a wrong explanation). The matched
- * stderr line rides along as the observed evidence.
+ * stderr line rides along as the observed evidence. `remote`, when the caller
+ * knows it, lets an HTTPS failure name the ssh URL that would work.
  */
-export const describeGitRemoteFailure = (stderr: string, mode: GitAuthMode): string | null => {
+export const describeGitRemoteFailure = (
+  stderr: string,
+  mode: GitAuthMode,
+  remote?: string,
+): string | null => {
+  const scheme = remote === undefined ? null : (gitRemoteLocation(remote)?.scheme ?? null);
+  const overHttp =
+    scheme === "https" || scheme === "http" || (scheme === null && /'https?:\/\//i.test(stderr));
+  if (overHttp && HTTPS_CREDENTIAL_FAILURE.test(stderr)) {
+    const line = stderr
+      .split("\n")
+      .map((candidate) => candidate.trim())
+      .find((candidate) => HTTPS_CREDENTIAL_FAILURE.test(candidate));
+    const summary = describeHttpsCredentialFailure(mode, remote);
+    return line === undefined ? summary : `${summary} (observed: ${line})`;
+  }
   for (const pattern of FAILURE_PATTERNS) {
     const match = stderr.match(pattern.test);
     if (match === null) continue;

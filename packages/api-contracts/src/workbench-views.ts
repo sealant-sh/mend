@@ -69,7 +69,7 @@ export class SettingsFailure extends Schema.TaggedErrorClass<SettingsFailure>()(
 
 /**
  * Adoption: clone one network Git URL into the store under `name`.
- * Omitted `gitAuthMode` means `ambient` (the login user's git setup).
+ * Omitted `gitAuthMode` means the caller's own default (`mend keys mode`), else `mend-key`.
  *
  * `source` is any string here, so a URL Mend refuses (a local path, a login or token in it) is
  * refused by the route with its reason, `repositoryCloneUrlIssue`'s words, as a `StoreFailure`,

@@ -5,7 +5,12 @@ import * as path from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { adoptedGitAuth, deriveAdoptOffer, submitDashboardAdoption } from "./dashboard-adoption.ts";
+import {
+  adoptedGitAuth,
+  deriveAdoptOffer,
+  refusedAdoptOffer,
+  submitDashboardAdoption,
+} from "./dashboard-adoption.ts";
 import { cwdFacts, matchProjectByCwd } from "./shared.ts";
 
 const project = {
@@ -159,5 +164,23 @@ describe("what adopt says signed the clone", () => {
       note: "cloned over git, which the connected `mend keys share` does not sign; it signs ssh remotes",
     });
     expect(adoptedGitAuth("https://host/repo.git", "ambient")).toBeNull();
+  });
+});
+
+describe("refusedAdoptOffer", () => {
+  it("keeps the offer, its URL and the chosen mode, with the server's reason inside", () => {
+    const offer = deriveAdoptOffer({
+      cwd: "/checkout",
+      repoRoot: "/checkout",
+      originUrl: "git@github.com:acme/api.git",
+    });
+    if (offer === null) throw new Error("Expected a network adoption offer");
+    const reason = "The remote refused the Mend server's own ssh setup (ambient).";
+    expect(refusedAdoptOffer({ ...offer, modeIndex: 1 }, reason)).toEqual({
+      source: "git@github.com:acme/api.git",
+      name: "checkout",
+      modeIndex: 1,
+      failure: reason,
+    });
   });
 });

@@ -169,7 +169,7 @@ const describeCloneFailure = (
   stderr: string,
 ): string => {
   if (identity.kind === "owner-ssh") {
-    return describeGitRemoteFailure(stderr, identity.mode) ?? stderr;
+    return describeGitRemoteFailure(stderr, identity.mode, url) ?? stderr;
   }
   const scheme = gitRemoteLocation(url)?.scheme;
   if (identity.kind === "none" && (scheme === "https" || scheme === "http")) {

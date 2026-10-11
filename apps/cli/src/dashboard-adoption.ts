@@ -13,6 +13,8 @@ export interface AdoptOffer {
   readonly source: RepositoryCloneUrl;
   readonly name: string;
   readonly modeIndex: number;
+  /** Why the last attempt failed, in the server's words: the offer stays open to pick another mode. */
+  readonly failure?: string;
 }
 
 /** A missing or local origin does not offer adoption; cwd project matching is separate. */
@@ -29,6 +31,15 @@ export const deriveAdoptOffer = (facts: CwdFacts): AdoptOffer | null => {
     modeIndex: 0,
   };
 };
+
+/**
+ * The offer again after the server refused it, with the server's reason inside: the person picks
+ * another auth mode and tries again instead of retyping the URL.
+ */
+export const refusedAdoptOffer = (offer: AdoptOffer, reason: string): AdoptOffer => ({
+  ...offer,
+  failure: reason,
+});
 
 /** The dashboard either reports invalid input locally or receives an adopted project. */
 export type DashboardAdoptionResult =

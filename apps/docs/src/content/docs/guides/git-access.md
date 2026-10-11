@@ -70,6 +70,23 @@ Verify access where the server runs before adoption:
 git ls-remote git@github.com:acme/api.git
 ```
 
+## HTTPS remotes
+
+Your Mend key and the bridge sign SSH. Mend's own Git (adoption, `mend refresh`, the base fetch and
+the push of a [landing](/guides/land-a-change/)) holds no HTTPS credential in any mode, so an
+`https://` URL reaches a public repository only, and a landing to it fails because nothing can sign
+the push. Adopt the SSH URL instead: `git@github.com:acme/api.git` rather than
+`https://github.com/acme/api.git`.
+
+A private repository adopted by its HTTPS URL fails in every mode with:
+
+```text
+Mend holds no HTTPS credential for this remote, so over HTTPS it reaches public repositories only; this one is private, or the URL is wrong. Your Mend key signs ssh remotes only: adopt git@github.com:acme/api.git instead. (observed: fatal: could not read Username for 'https://github.com': terminal prompts disabled)
+```
+
+Mend names the SSH URL for GitHub, GitLab, Bitbucket and Codeberg, whose SSH path matches the HTTPS
+one; for other hosts, copy the SSH URL your host shows.
+
 ## Git inside a workspace
 
 Mend points the workspace's system Git config at a transport shim (`core.sshCommand`). Plain
@@ -172,8 +189,13 @@ repository transport.
 
 ## Common failures
 
-**Permission denied** means the selected identity cannot access the remote. Test ambient access, add
-your Mend public key to your Git account, or verify that the shared agent holds an authorized key.
+**Permission denied** means the selected identity cannot access the remote. Add your Mend public key
+to your Git account, or verify that the shared agent holds an authorized key. In ambient mode on a
+server from `mend server setup`, the server's container holds no key at all: adopt with
+`--auth mend-key` or `--auth bridge`.
+
+**Mend holds no HTTPS credential for this remote** means the URL is `https://` and the repository is
+private (or the URL is wrong). Adopt its SSH URL; see [HTTPS remotes](#https-remotes).
 
 **Host key verification failed** means the remote's host key changed since the Mend server first saw
 it: every mode accepts a first-contact key and refuses a changed one. Verify the new key out of

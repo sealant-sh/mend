@@ -13,6 +13,7 @@ import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactN
 import type { AgentShareHandle, ShareEvent } from "./agent-share.ts";
 import {
   deriveAdoptOffer,
+  refusedAdoptOffer,
   submitDashboardAdoption,
   type AdoptOffer,
 } from "./dashboard-adoption.ts";
@@ -100,7 +101,7 @@ import { reviewTargetForSession } from "./review-workflow.ts";
 import { ReviewScreen } from "./review.tsx";
 import { mayStillBeWorking } from "./server-request.ts";
 import type { OpenTunnel, ServiceTunnels } from "./service-tunnels.ts";
-import { workspaceReadsOf } from "./shared-workspace.ts";
+import { workspaceReadsOf, wrapWords } from "./shared-workspace.ts";
 import {
   captureLineOf,
   cwdFacts,
@@ -934,6 +935,14 @@ export const App = ({
   const snakeFits =
     gameLayout.detailRows >= SNAKE_MIN_PANE_ROWS && gameLayout.detailWidth >= SNAKE_MIN_PANE_COLS;
   const overlayFits = terminalRows >= 12 && terminalCols >= 22;
+  // A refused adoption's reason, wrapped inside the offer box and capped so the box still fits.
+  const adoptFailureLines =
+    adoptOffer?.failure === undefined
+      ? []
+      : wrapWords(adoptOffer.failure, Math.min(70, terminalCols - 4) - 6).slice(
+          0,
+          Math.max(1, terminalRows - 9),
+        );
   /** `mend snake` has the keyboard: the game when it fits, else only esc or q to close it. */
   const overlayOpen = snakeOverlay && !dialogOpen;
   const overlayFocused = overlayOpen && overlayFits;
@@ -1418,17 +1427,17 @@ export const App = ({
     {
       mode: "ambient",
       label: "ambient",
-      hint: "the server machine's own git/ssh setup",
+      hint: "the Mend server's own git/ssh · a packaged server has none",
     },
     {
       mode: "mend-key",
       label: "mend-key",
-      hint: "the machine's Mend deploy key · add its public half on the git host",
+      hint: "your Mend key · add its public half on the git host",
     },
     {
       mode: "bridge",
       label: "bridge",
-      hint: "your OWN ssh-agent, relayed while `mend keys share` runs here",
+      hint: "your own ssh-agent, relayed while `mend keys share` runs",
     },
   ] as const;
 
@@ -1444,9 +1453,10 @@ export const App = ({
       setBusy(`adopting ${offer.name} · cloning into the store ·`);
       setBusyStarted(Date.now());
     },
-    onError: (error) => {
+    onError: (error, offer) => {
       setBusy(null);
-      say(errorText(error));
+      // The offer comes back with the reason inside it: a refused mode is picked again, not retyped.
+      setAdoptOffer(refusedAdoptOffer(offer, errorText(error)));
     },
     onSuccess: (result) => {
       setBusy(null);
@@ -2898,9 +2908,9 @@ export const App = ({
           position="absolute"
           zIndex={11}
           left={Math.max(1, Math.floor((terminalCols - Math.min(70, terminalCols - 4)) / 2))}
-          top={Math.max(1, Math.floor((terminalRows - 7) / 2))}
+          top={Math.max(1, Math.floor((terminalRows - 7 - adoptFailureLines.length) / 2))}
           width={Math.min(70, terminalCols - 4)}
-          height={7}
+          height={7 + adoptFailureLines.length}
           border
           borderStyle="rounded"
           borderColor={ACCENT}
@@ -2931,8 +2941,15 @@ export const App = ({
           <text height={1} bg={SURFACE} fg={FAINT}>
             {`        ${ADOPT_AUTH_MODES[adoptOffer.modeIndex]?.hint ?? ""}`}
           </text>
+          {adoptFailureLines.map((line, index) => (
+            <text key={`failure-${index}`} height={1} bg={SURFACE} fg={ERROR}>
+              {`  ${line}`}
+            </text>
+          ))}
           <text height={1} bg={SURFACE} fg={FAINT}>
-            {"  enter adopt · ←→ auth mode · esc not now"}
+            {adoptOffer.failure === undefined
+              ? "  enter adopt · ←→ auth mode · esc not now"
+              : "  enter try again · ←→ auth mode · esc not now"}
           </text>
         </box>
       )}

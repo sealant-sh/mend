@@ -11,6 +11,7 @@ import {
   MendKeysConfig,
   MendKeysLive,
   describeGitRemoteFailure,
+  sshUrlOfHttpsRemote,
   remoteGitEnv,
   sshCommandFor,
 } from "../src/git-auth.ts";
@@ -145,9 +146,49 @@ describe("describeGitRemoteFailure", () => {
   it("names permission denied per mode", () => {
     const stderr =
       "git@gitlab.com: Permission denied (publickey).\nfatal: Could not read from remote repository.";
-    expect(describeGitRemoteFailure(stderr, "ambient")).toContain("login user's git/ssh setup");
+    const ambient = describeGitRemoteFailure(stderr, "ambient");
+    // The packaged server's container holds none of its host's keys: the line names the way out.
+    expect(ambient).toContain("Mend server's own ssh setup");
+    expect(ambient).toContain("--auth mend-key");
+    expect(ambient).toContain("mend keys share");
+    expect(ambient).not.toContain("shell here");
     expect(describeGitRemoteFailure(stderr, "mend-key")).toContain("git account's SSH keys");
     expect(describeGitRemoteFailure(stderr, "mend-key")).toContain("Permission denied (publickey)");
+  });
+
+  // Observed on 0.36.0-next.783 adopting a private repository by its https URL, every mode.
+  const httpsRefusal =
+    "Cloning into bare repository '/var/lib/mend/store/x/repo.git'...\nfatal: could not read Username for 'https://github.com': terminal prompts disabled";
+
+  it.each(["ambient", "mend-key", "bridge"] as const)(
+    "an https remote that wants a credential is never a refused key (%s)",
+    (mode) => {
+      const described = describeGitRemoteFailure(
+        httpsRefusal,
+        mode,
+        "https://github.com/acme/api.git",
+      );
+      expect(described).toContain("public repositories only");
+      expect(described).toContain("git@github.com:acme/api.git");
+      expect(described).toContain("(observed: fatal: could not read Username");
+      expect(described).not.toContain("Add your Mend public key");
+      expect(described).not.toContain("connected signer's keys");
+    },
+  );
+
+  it("an https refusal without a known remote still reads as https, from git's own line", () => {
+    const described = describeGitRemoteFailure(httpsRefusal, "mend-key");
+    expect(described).toContain("public repositories only");
+    expect(described).toContain("git@host:owner/repo.git");
+  });
+
+  it("an ssh remote's not-found keeps its ssh reading", () => {
+    const described = describeGitRemoteFailure(
+      "ERROR: Repository not found.\nfatal: Could not read from remote repository.",
+      "mend-key",
+      "git@github.com:acme/api.git",
+    );
+    expect(described).toContain("Mend key is not authorized");
   });
 
   it("names a changed host key — first contact is accept-new in every mode", () => {
@@ -167,5 +208,23 @@ describe("describeGitRemoteFailure", () => {
     expect(
       describeGitRemoteFailure("fatal: the remote end hung up unexpectedly", "ambient"),
     ).toBeNull();
+  });
+});
+
+describe("sshUrlOfHttpsRemote", () => {
+  it("spells the ssh URL on hosts whose ssh path is the https path", () => {
+    expect(sshUrlOfHttpsRemote("https://github.com/acme/api")).toBe("git@github.com:acme/api.git");
+    expect(sshUrlOfHttpsRemote("https://GitHub.com/acme/api.git/")).toBe(
+      "git@github.com:acme/api.git",
+    );
+    expect(sshUrlOfHttpsRemote("https://gitlab.com/group/sub/api.git")).toBe(
+      "git@gitlab.com:group/sub/api.git",
+    );
+  });
+
+  it("names nothing it cannot know", () => {
+    expect(sshUrlOfHttpsRemote("https://git.acme.dev/acme/api.git")).toBeNull();
+    expect(sshUrlOfHttpsRemote("git@github.com:acme/api.git")).toBeNull();
+    expect(sshUrlOfHttpsRemote("https://github.com/acme")).toBeNull();
   });
 });

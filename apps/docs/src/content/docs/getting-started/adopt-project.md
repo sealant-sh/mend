@@ -20,6 +20,15 @@ Mend reads the checkout's `origin` URL and asks the server to clone that network
 not upload your local files or uncommitted changes. Without a network origin, supply a Git URL
 explicitly.
 
+Mend sends the `origin` URL as it is and never rewrites it. A checkout cloned over HTTPS has an
+`https://` origin, and Mend's own Git holds no HTTPS credential, so that adopts a public repository
+only. For a private one, adopt its SSH URL with your Mend key or the bridge (see
+[HTTPS remotes](/guides/git-access/#https-remotes)):
+
+```sh
+mend adopt git@github.com:acme/api.git --name api
+```
+
 Choose a name explicitly:
 
 ```sh
