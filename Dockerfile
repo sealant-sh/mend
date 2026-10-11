@@ -1,14 +1,14 @@
 # Mend bundle: one Mend container plus one official Postgres container at runtime.
-# Sealant stays a published platform dependency. These stages copy the released 0.39.0-next.721 artifacts;
-# this build never imports Core source or its database schema. Sealant 0.39.0-next.721 runs its job queue
+# Sealant stays a published platform dependency. These stages copy the released 0.39.0-next.722 artifacts;
+# this build never imports Core source or its database schema. Sealant 0.39.0-next.722 runs its job queue
 # in Postgres and keeps workspace images in the host Docker Engine, so the bundle carries no
 # RabbitMQ and no registry.
 #
 # The defaults are the release pins. Only a preview build (.github/workflows/preview.yml) passes
 # other Core images, built from a Sealant branch; a release build passes none of these.
-ARG SEALANT_API_IMAGE=ghcr.io/sealant-sh/sealant-api-next@sha256:a69bc01f60d2075fcd4d371a08d63abb510b24fdb40fae4836d8c610655da876
-ARG SEALANT_WORKER_IMAGE=ghcr.io/sealant-sh/sealant-worker-next@sha256:f75c0f0389e6ad98e29aa2cf21ff3191c4d637025032891784b65c59bb58b89b
-ARG SEALANT_SSH_GATEWAY_IMAGE=ghcr.io/sealant-sh/sealant-ssh-gateway-next@sha256:018a106a8e8213c8b9586f6bdd71cd3c3f9325dde93a766a356bb0633744f7d4
+ARG SEALANT_API_IMAGE=ghcr.io/sealant-sh/sealant-api-next@sha256:d2e4c54f768d8f077dad7db23e7761d43857c7531c329318f72285cd90add08b
+ARG SEALANT_WORKER_IMAGE=ghcr.io/sealant-sh/sealant-worker-next@sha256:3e5e4fb05c085ebd19574bb89e487b3408a0d0e52cbd755e8ea60fc57916eb42
+ARG SEALANT_SSH_GATEWAY_IMAGE=ghcr.io/sealant-sh/sealant-ssh-gateway-next@sha256:c05069eccb280606dabe9a2c40e8811ecfef1c9cc34c3dd156f9e7c8072cad48
 FROM ${SEALANT_API_IMAGE} AS sealant-api
 FROM ${SEALANT_WORKER_IMAGE} AS sealant-worker
 FROM ${SEALANT_SSH_GATEWAY_IMAGE} AS sealant-ssh-gateway
@@ -46,7 +46,7 @@ LABEL org.opencontainers.image.title="Mend bundle" \
   org.opencontainers.image.version="${MEND_VERSION}" \
   dev.sealant.mend.t3-gateway="1" \
   dev.sealant.mend.network-guard-image="${MEND_NETWORK_GUARD_IMAGE}" \
-  dev.sealant.mend.sealant-version="0.39.0-next.721"
+  dev.sealant.mend.sealant-version="0.39.0-next.722"
 
 # Required by Sealant's root-owned control sockets and the host Docker socket contract.
 USER root
