@@ -120,6 +120,11 @@ const makeRuntime = (
     readonly unreachable?: ReadonlyArray<string>;
     /** Health bodies by origin, where another server answers; elsewhere `healthBody`. */
     readonly healthAt?: Readonly<Record<string, string>>;
+    /**
+     * What each Docker context's engine says when the guide pings it, by context name: its
+     * OperatingSystem, or null when it does not answer. Absent names answer as `operatingSystem`.
+     */
+    readonly engines?: Readonly<Record<string, string | null>>;
   } = {},
 ): RuntimeControl => {
   const commands: Array<readonly [string, ReadonlyArray<string>]> = [];
@@ -240,6 +245,16 @@ const makeRuntime = (
           stdout: options.imageVersion ?? image?.split(":").at(-1) ?? "",
           stderr: "",
         };
+      }
+      if (args[2] === "info" && args.includes("{{.OperatingSystem}}\t{{json .SecurityOptions}}")) {
+        const said = options.engines?.[args[1] ?? ""];
+        return said === null
+          ? { status: 1, stdout: "", stderr: "Cannot connect to the Docker daemon" }
+          : {
+              status: 0,
+              stdout: `${said ?? options.operatingSystem ?? "Ubuntu 24.04.1 LTS"}\t[]\n`,
+              stderr: "",
+            };
       }
       if (args.includes("info") && args.includes("{{json .SecurityOptions}}")) {
         return { status: 0, stdout: options.securityOptions ?? "[]", stderr: "" };
@@ -2524,6 +2539,12 @@ const scriptedPrompter = (answers: ReadonlyArray<string>, transcript: Array<stri
 const serverJson = (configDir: string) =>
   JSON.parse(fs.readFileSync(activeFile(configDir, "server.json"), "utf8"));
 
+/** The context `docker version` ran in: the engine setup checked and installed in. */
+const checkedIn = (control: RuntimeControl): ReadonlyArray<string> =>
+  control.commands
+    .filter(([, args]) => args[0] === "--context" && args[2] === "version")
+    .map(([, args]) => args[1] ?? "");
+
 describe("mend server setup, guided and unasked", () => {
   it("refuses a fresh install with no terminal and no flags, naming the flags, before anything", async () => {
     const control = makeRuntime();
@@ -3029,7 +3050,216 @@ describe("mend server setup beside another server (the RC on a Mac with two Dock
     ).toEqual({ _tag: "ok" });
     expect(serverJson(configDir)).toMatchObject({ dockerContext: "orbstack" });
     expect(rerun.lines).toContain(
-      'DOCKER_CONTEXT is "desktop-linux"; this install runs on Docker context "orbstack", where its data is, and stays there. --context moves it.',
+      'DOCKER_CONTEXT is "desktop-linux"; this install runs on Docker context "orbstack", where its data is, and stays there. Running Mend in another Docker engine is a new install: mend uninstall --server removes this one, its data included, then mend server setup there.',
+    );
+  });
+
+  /** Docker Desktop, current, beside OrbStack: the owner's Mac. */
+  const TWO_ENGINES = `${[
+    {
+      Name: "desktop-linux",
+      DockerEndpoint: "unix:///Users/a/.docker/run/docker.sock",
+      Current: true,
+    },
+    {
+      Name: "orbstack",
+      DockerEndpoint: "unix:///Users/a/.orbstack/run/docker.sock",
+      Current: false,
+    },
+    { Name: "box", DockerEndpoint: "ssh://yiannis@box.example", Current: false },
+  ]
+    .map((row) => JSON.stringify(row))
+    .join("\n")}\n`;
+  const TWO_ANSWER = { "desktop-linux": "Docker Desktop", orbstack: "OrbStack" } as const;
+  it("one Docker engine answers: no question, and the guide says which one", async () => {
+    const control = makeRuntime();
+    const transcript: Array<string> = [];
+    expect(
+      await serverCommand(["setup"], {
+        ...control.runtime,
+        // reach: this machine · T3: no · mirrors: keep · one organization · apply
+        prompter: scriptedPrompter(["1", "", "", "", ""], transcript),
+      }),
+    ).toEqual({ _tag: "ok" });
+    expect(control.lines).not.toContain("Which Docker should Mend run in?");
+    expect(transcript[0]).toContain("1-3 [1]: 1");
+    expect(control.lines).toContain(
+      "Docker: Mend runs in default (Docker Engine on Ubuntu 24.04.1 LTS · socket /var/run/docker.sock · nothing of Mend's here yet), the one Docker engine here that answers.",
+    );
+    expect(
+      control.lines.indexOf(
+        "Mend server setup. A few questions; enter takes the answer in brackets.",
+      ),
+    ).toBe(0);
+    expect(control.lines).toContain("Same as: mend server setup --exposure loopback");
+  });
+
+  it("two Docker engines answer: asked first, the current one in brackets, and the choice carried into the flags", async () => {
+    const control = makeRuntime({
+      platform: "darwin",
+      contextList: TWO_ENGINES,
+      engines: TWO_ANSWER,
+      inspectedEndpoint: "unix:///Users/a/.orbstack/run/docker.sock",
+    });
+    const transcript: Array<string> = [];
+    expect(
+      await serverCommand(["setup"], {
+        ...control.runtime,
+        // engine: OrbStack · reach: this machine · T3: no · mirrors: keep · one organization · apply
+        prompter: scriptedPrompter(["2", "1", "", "", "", ""], transcript),
+      }),
+    ).toEqual({ _tag: "ok" });
+    expect(transcript[0]).toBe("  1 or 2 [1]: 2");
+    expect(control.lines).toContain("Which Docker should Mend run in?");
+    expect(control.lines).toContain(
+      "  1. desktop-linux (the current context) · Docker Desktop · socket /Users/a/.docker/run/docker.sock · nothing of Mend's here yet",
+    );
+    expect(control.lines).toContain(
+      "  2. orbstack · OrbStack · socket /Users/a/.orbstack/run/docker.sock · nothing of Mend's here yet",
+    );
+    // A remote context is said, not offered: the server's health would report another machine.
+    expect(control.lines).toContain(
+      "Observed: Docker context box is on another machine (ssh://yiannis@box.example); Mend runs in a Docker engine on this machine only.",
+    );
+    expect(serverJson(control.runtime.configDir)).toMatchObject({ dockerContext: "orbstack" });
+    expect(new Set(checkedIn(control))).toEqual(new Set(["orbstack"]));
+    expect(control.lines).toContain(
+      "Same as: mend server setup --exposure loopback --context orbstack",
+    );
+    // A remote context is never pinged.
+    expect(control.commands.some(([, args]) => args[1] === "box" && args[0] === "--context")).toBe(
+      false,
+    );
+  });
+
+  it("Enter keeps the current Docker engine, and the command still names it", async () => {
+    const control = makeRuntime({
+      platform: "darwin",
+      contextList: TWO_ENGINES,
+      engines: TWO_ANSWER,
+      inspectedEndpoint: "unix:///Users/a/.docker/run/docker.sock",
+    });
+    const transcript: Array<string> = [];
+    expect(
+      await serverCommand(["setup"], {
+        ...control.runtime,
+        prompter: scriptedPrompter(["", "1", "", "", "", ""], transcript),
+      }),
+    ).toEqual({ _tag: "ok" });
+    expect(serverJson(control.runtime.configDir)).toMatchObject({
+      dockerContext: "desktop-linux",
+    });
+    expect(control.lines).toContain(
+      "Same as: mend server setup --exposure loopback --context desktop-linux",
+    );
+  });
+
+  it("a current engine that does not answer is said, and the one that does is used unasked", async () => {
+    const control = makeRuntime({
+      platform: "darwin",
+      contextList: TWO_ENGINES,
+      engines: { "desktop-linux": null, orbstack: "OrbStack" },
+      inspectedEndpoint: "unix:///Users/a/.orbstack/run/docker.sock",
+    });
+    expect(
+      await serverCommand(["setup"], {
+        ...control.runtime,
+        prompter: scriptedPrompter(["1", "", "", "", ""], []),
+      }),
+    ).toEqual({ _tag: "ok" });
+    expect(control.lines).not.toContain("Which Docker should Mend run in?");
+    expect(control.lines).toContain(
+      "Observed: Docker context desktop-linux (socket /Users/a/.docker/run/docker.sock) did not answer; start it and run mend server setup again to choose it.",
+    );
+    expect(serverJson(control.runtime.configDir)).toMatchObject({ dockerContext: "orbstack" });
+    // Setup unasked would take the current context, so the command names the one used.
+    expect(control.lines).toContain(
+      "Same as: mend server setup --exposure loopback --context orbstack",
+    );
+  });
+
+  it("a rerun keeps its saved engine and says so, with no engine question", async () => {
+    const configDir = temporaryDirectory("guided-engine-rerun");
+    const first = makeRuntime({
+      configDir,
+      platform: "darwin",
+      contextList: TWO_ENGINES,
+      engines: TWO_ANSWER,
+      inspectedEndpoint: "unix:///Users/a/.orbstack/run/docker.sock",
+    });
+    expect(await serverCommand(["setup", "--yes", "--context", "orbstack"], first.runtime)).toEqual(
+      { _tag: "ok" },
+    );
+    const rerun = makeRuntime({
+      configDir,
+      daemon: first.daemon,
+      platform: "darwin",
+      contextList: TWO_ENGINES,
+      engines: TWO_ANSWER,
+      inspectedEndpoint: "unix:///Users/a/.orbstack/run/docker.sock",
+    });
+    const transcript: Array<string> = [];
+    expect(
+      await serverCommand(["setup"], {
+        ...rerun.runtime,
+        // keep it as it is · apply
+        prompter: scriptedPrompter(["", ""], transcript),
+      }),
+    ).toEqual({ _tag: "ok" });
+    expect(rerun.lines).not.toContain("Which Docker should Mend run in?");
+    expect(transcript[0]).toBe("  1-3 [1]: ");
+    expect(rerun.lines).toContain(
+      "Docker: this install runs in context orbstack (socket /Users/a/.orbstack/run/docker.sock), where its data is, and stays there. Running Mend in another Docker engine is a new install: mend uninstall --server removes this one, its data included, then mend server setup there.",
+    );
+    expect(serverJson(configDir)).toMatchObject({ dockerContext: "orbstack" });
+    expect(new Set(checkedIn(rerun))).toEqual(new Set(["orbstack"]));
+  });
+
+  it("--context and DOCKER_CONTEXT skip the engine question; unasked, setup says the others", async () => {
+    const engines = {
+      platform: "darwin",
+      contextList: TWO_ENGINES,
+      engines: TWO_ANSWER,
+      inspectedEndpoint: "unix:///Users/a/.orbstack/run/docker.sock",
+    } as const;
+    const named = makeRuntime(engines);
+    const transcript: Array<string> = [];
+    expect(
+      await serverCommand(["setup", "--context", "orbstack"], {
+        ...named.runtime,
+        prompter: scriptedPrompter(["1", "", "", "", ""], transcript),
+      }),
+    ).toEqual({ _tag: "ok" });
+    expect(named.lines).not.toContain("Which Docker should Mend run in?");
+    expect(transcript[0]).toContain("1-3 [1]: 1");
+    expect(serverJson(named.runtime.configDir)).toMatchObject({ dockerContext: "orbstack" });
+
+    const variable = makeRuntime(engines);
+    expect(
+      await serverCommand(["setup"], {
+        ...variable.runtime,
+        dockerContextVariable: "orbstack",
+        prompter: scriptedPrompter(["1", "", "", "", ""], []),
+      }),
+    ).toEqual({ _tag: "ok" });
+    expect(variable.lines).not.toContain("Which Docker should Mend run in?");
+    expect(serverJson(variable.runtime.configDir)).toMatchObject({ dockerContext: "orbstack" });
+
+    // No terminal: --yes keeps the current context, and says the others.
+    const unasked = makeRuntime({
+      platform: "darwin",
+      contextList: TWO_ENGINES,
+      engines: TWO_ANSWER,
+    });
+    expect(await serverCommand(["setup", "--yes"], unasked.runtime)).toEqual({ _tag: "ok" });
+    expect(serverJson(unasked.runtime.configDir)).toMatchObject({
+      dockerContext: "desktop-linux",
+    });
+    expect(unasked.lines).toContain(
+      'Using Docker context "desktop-linux" (unix:///Users/a/.docker/run/docker.sock)',
+    );
+    expect(unasked.lines).toContain(
+      "Other Docker contexts here: orbstack. To install in one of them instead: mend server setup --context <name>.",
     );
   });
 

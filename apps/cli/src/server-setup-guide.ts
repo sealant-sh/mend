@@ -445,6 +445,8 @@ export interface GuideContext {
    * host flags. The run applies them, so the equivalent command says them too.
    */
   readonly given?: ReadonlyArray<string>;
+  /** Setup already opened with `GUIDE_INTRO`, before the Docker engine and the host's kernel. */
+  readonly introduced?: boolean;
 }
 
 export type GuideOutcome =
@@ -525,6 +527,72 @@ const typed = async <T>(
     const parsed = parse(input);
     if ("value" in parsed) return parsed.value;
     io.write(`  ${parsed.refused}`);
+  }
+};
+
+// ─── the Docker engine ──────────────────────────────────────────────────────
+
+/** How the guide opens on a fresh install. */
+export const GUIDE_INTRO =
+  "Mend server setup. A few questions; enter takes the answer in brackets.";
+
+/** A Docker engine on this machine that answered, as the guide offers it. */
+export interface DockerEngine {
+  /** Its Docker context's name: what `--context` takes. */
+  readonly context: string;
+  /** What it is, in a few words: OrbStack, Docker Desktop, colima, rootless Docker Engine. */
+  readonly what: string;
+  /** The Unix socket its context points at. */
+  readonly socket: string;
+  /** Whether it is the current Docker context, the one `docker` uses with no flag. */
+  readonly current: boolean;
+  /** What of Mend's was observed there: a server running, its volumes, nothing; null: not read. */
+  readonly mend: "running" | "volumes" | "none" | null;
+}
+
+const MEND_THERE: Readonly<Record<NonNullable<DockerEngine["mend"]>, string>> = {
+  running: "a Mend server runs here",
+  volumes: "Mend volumes from an earlier install are here",
+  none: "nothing of Mend's here yet",
+};
+
+/** One engine in one line: what it is, its socket, and what of Mend's is already there. */
+export const engineNote = (engine: DockerEngine): string =>
+  [
+    engine.what,
+    `socket ${engine.socket}`,
+    ...(engine.mend === null ? [] : [MEND_THERE[engine.mend]]),
+  ].join(" · ");
+
+/**
+ * Which Docker engine a fresh install runs in, asked when more than one answers here (Docker
+ * Desktop beside OrbStack on one Mac). Enter takes `preferred`, the current context. Null when the
+ * person stopped.
+ */
+export const chooseDockerEngine = async (
+  io: GuideIo,
+  engines: ReadonlyArray<DockerEngine>,
+  preferred: string | undefined,
+): Promise<string | null> => {
+  const index = engines.findIndex((engine) => engine.context === preferred);
+  io.write("");
+  io.write(
+    "Mend's server, its data and every session's workspace live in the Docker engine you choose, and stay there: another engine later means a new install.",
+  );
+  try {
+    return await choose(
+      io,
+      "Which Docker should Mend run in?",
+      engines.map((engine) => ({
+        label: `${engine.context}${engine.current ? " (the current context)" : ""}`,
+        detail: engineNote(engine),
+        value: engine.context,
+      })),
+      index < 0 ? 0 : index,
+    );
+  } catch (cause) {
+    if (cause instanceof GuideStopped) return null;
+    throw cause;
   }
 };
 
@@ -1444,7 +1512,7 @@ export const runGuide = async (io: GuideIo, context: GuideContext): Promise<Guid
   try {
     let target: SetupSettings;
     if (context.saved === null) {
-      io.write("Mend server setup. A few questions; enter takes the answer in brackets.");
+      if (context.introduced !== true) io.write(GUIDE_INTRO);
       target = await walk(asked, base);
     } else {
       io.write(`Currently: ${headlineOf(base)}.`);
