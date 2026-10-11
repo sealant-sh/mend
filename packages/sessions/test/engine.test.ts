@@ -14303,6 +14303,11 @@ describe("SessionEngine capture drain (no loss of work product)", () => {
             expect(settled?.captureDiscardedAt ?? null).toBeNull();
             expect(settled === undefined ? null : captureStatusLine(settled)).toBeNull();
             expect(settled?.status).toBe("stopped");
+            // RC 0.36.0-next.768: the discard the owner asked for says what became of it.
+            expect(settled?.summary).toBe(
+              "the save finished before the discard, so nothing was discarded",
+            );
+            expect(result.session.summary).toBe(settled?.summary);
           }),
         {
           captured: memory,
@@ -17164,6 +17169,87 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
               flush: () => Effect.succeed(flushReport(2, 1)),
             },
           }),
+        },
+      );
+    },
+  );
+
+  it(
+    "an agent whose executor the host's Docker killed, and Core restarted on its own disk to save it, says the host stopped it, never `completed` (RC 0.36.0-next.768)",
+    { timeout: 20_000 },
+    async () => {
+      // `systemctl restart docker` with a live session: Docker killed the workspace at its stop
+      // timeout (137), Core restarted the executor on its own disk to save it, and that boot
+      // answered Mend's look. The session read `completed`, with nothing saying the host ended it.
+      const created: Array<CreateOptions> = [];
+      const ptyStates = new Map<string, InteractiveSessionStatus>();
+      const memory = makeMemoryCaptureStore();
+      let killed = false;
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            yield* engine.launch(session.id, ["codex"]);
+            yield* shipHarnessCapture(
+              tmp,
+              memory,
+              session.worktreeId,
+              memory.leases.get(session.worktreeId)?.epoch ?? 0,
+              crypto.randomUUID(),
+            );
+            const agent = [...world.processes.values()].find(
+              (process) => process.sessionId === session.id && process.kind === "agent-pty",
+            );
+            if (agent === undefined || agent.sealantSessionId === null) {
+              throw new Error("the launch recorded no agent PTY");
+            }
+            // The PTY ended with no exit code: SIGKILL, as the platform reports it.
+            killed = true;
+            ptyStates.set(agent.sealantSessionId, {
+              status: "exited",
+              exitSignal: 9,
+              outputHighWater: 0n,
+            });
+            yield* until(
+              () => world.sessions.get(session.id)?.settledAt != null,
+              "the session's settle",
+            );
+            const settled = world.sessions.get(session.id);
+            expect(settled?.status).not.toBe("completed");
+            expect(settled?.summary).toMatch(
+              /^ended · the host's Docker stopped it · (last capture (\d+ )?at \d\d:\d\d:\d\d UTC · not confirmed|saved at )/,
+            );
+          }),
+        {
+          captured: memory,
+          sealantLayer: sealantLaunchLayer(
+            created,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            ptyStates,
+            undefined,
+            undefined,
+            // The restarted boot answers Mend's look.
+            [],
+            undefined,
+            {
+              captureDrain: () =>
+                killed
+                  ? {
+                      state: "draining",
+                      retained: {
+                        since: "2026-10-11T00:50:35Z",
+                        reason: "ended without a complete final flush",
+                        recoverable: true,
+                        recoveryAttempts: 1,
+                      },
+                    }
+                  : null,
+            },
+          ),
         },
       );
     },

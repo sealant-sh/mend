@@ -230,7 +230,7 @@ describe("the workspaces line", () => {
       label: "workspaces",
       state: "failed",
       detail: "the server's host refuses user namespaces · no workspace can start",
-      fix: "on the server's host: echo 'kernel.apparmor_restrict_unprivileged_userns = 0' | sudo tee /etc/sysctl.d/60-mend-rootless-docker.conf && sudo sysctl --system",
+      fix: "re-run mend server setup with --allow-userns (mend uninstall --all then undoes it), or on the server's host: echo 'kernel.apparmor_restrict_unprivileged_userns = 0' | sudo tee /etc/sysctl.d/60-mend-rootless-docker.conf && sudo sysctl --system",
     });
   });
 });

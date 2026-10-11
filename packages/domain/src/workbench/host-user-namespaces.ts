@@ -98,9 +98,17 @@ export const HOST_USER_NAMESPACES_REFUSED =
 /** What leads the fix wherever it is written out: the command runs on the host, not here. */
 export const HOST_USER_NAMESPACES_FIX_LEAD = "on the server's host: ";
 
-/** Where to apply the fix, then the command: doctor's fix column. */
+/**
+ * The way that stays undoable, named before the command: setup writes the file with its marker,
+ * so `mend uninstall --all` removes it and puts the kernel back; a file written by hand carries no
+ * marker, and uninstall leaves it (RC 0.36.0-next.768).
+ */
+export const HOST_USER_NAMESPACES_SETUP_ROUTE =
+  "re-run mend server setup with --allow-userns (mend uninstall --all then undoes it), or ";
+
+/** The setup route, then where to apply the command by hand, then the command: doctor's fix column. */
 export const hostUserNamespacesFixLine = (setting: string): string =>
-  `${HOST_USER_NAMESPACES_FIX_LEAD}${hostUserNamespacesFix(setting)}`;
+  `${HOST_USER_NAMESPACES_SETUP_ROUTE}${HOST_USER_NAMESPACES_FIX_LEAD}${hostUserNamespacesFix(setting)}`;
 
 /**
  * The whole refusal as one line: what a launch on a refusing host fails with, before it builds an

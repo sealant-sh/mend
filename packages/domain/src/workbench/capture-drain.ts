@@ -1064,8 +1064,33 @@ export const executorEndWords = (end: ExecutorEnd): string => {
 export const executorSavedWords = (saved: { readonly at: Date; readonly n: number | null }) =>
   `saved at ${utcTime(saved.at)}${saved.n === null ? "" : ` · capture ${saved.n}`}`;
 
+/**
+ * What leads the line of a session whose harness the host's Docker ended: Docker stopped or
+ * killed its executor (a `systemctl restart docker`, a stop past its timeout), and Core restarted
+ * that executor on its own disk to save what it held. The harness did not finish; the host
+ * stopped it (RC 0.36.0-next.768: such a session read `completed`, with nothing saying so).
+ */
+export const HOST_DOCKER_STOPPED = "ended · the host's Docker stopped it";
+
+/**
+ * `ended · the host's Docker stopped it · last capture 21 at 16:29:51 UTC · not confirmed`, or
+ * `· nothing saved · completion unknown`: the chain head as registered, never called saved, while
+ * Core's save of the executor is still under way. A later observation of that save restates it
+ * (`restatedSummary`): `ended · the host's Docker stopped it · saved at … · capture 21`.
+ */
+export const executorHostStoppedWords = (
+  lastCapture: { readonly n: number | null; readonly at: Date } | null,
+): string =>
+  [
+    HOST_DOCKER_STOPPED,
+    ...(lastCapture === null
+      ? ["nothing saved", "completion unknown"]
+      : lastCaptureWords(lastCapture.n, lastCapture.at)),
+  ].join(" · ");
+
 /** Where a verdict on the executor starts in a session's summary (`restatedSummary`). */
 const EXECUTOR_VERDICTS = [
+  HOST_DOCKER_STOPPED,
   "executor not answering",
   "executor lost",
   "stopped outside Mend",
@@ -1080,6 +1105,13 @@ const EXECUTOR_VERDICTS = [
  */
 export const restatedSummary = (prior: string | null, latest: string): string | null => {
   if (prior === null) return null;
+  // Who ended it stays; what became of the work is the latest observation's.
+  if (prior.startsWith(HOST_DOCKER_STOPPED) && !latest.startsWith(HOST_DOCKER_STOPPED)) {
+    const rest = latest.startsWith("stopped outside Mend · ")
+      ? latest.slice("stopped outside Mend · ".length)
+      : latest;
+    return `${HOST_DOCKER_STOPPED} · ${rest}`;
+  }
   if (EXECUTOR_VERDICTS.some((verdict) => prior.startsWith(verdict))) return latest;
   if (!prior.startsWith("launch failed")) return null;
   const cut = EXECUTOR_VERDICTS.map((verdict) => prior.indexOf(` · ${verdict}`))

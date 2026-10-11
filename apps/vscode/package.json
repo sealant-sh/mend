@@ -1,7 +1,7 @@
 {
   "name": "mend",
   "displayName": "Mend by Sealant",
-  "version": "0.36.0",
+  "version": "0.36.1",
   "private": true,
   "description": "Open and steer Mend coding-agent sessions from VS Code.",
   "categories": [

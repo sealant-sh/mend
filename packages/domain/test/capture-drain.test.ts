@@ -29,6 +29,7 @@ import {
   restatedSummary,
   executorSavedWords,
   executorUnansweredWords,
+  executorHostStoppedWords,
   CAPTURE_UNSAVED_ANSWERS_KEPT,
   withUnsavedAnswer,
 } from "../src/workbench/capture-drain.ts";
@@ -1188,6 +1189,13 @@ describe("restatedSummary (e2e run 6 #7)", () => {
       "launch failed: setup command failed (exit 1) · executor lost · last saved 16:32:06 UTC",
     );
   });
+  it("keeps who ended it when the host's Docker stopped the executor (RC 0.36.0-next.768)", () => {
+    const prior = executorHostStoppedWords({ n: 21, at: new Date("2026-10-11T00:50:12Z") });
+    expect(restatedSummary(prior, saved)).toBe(`ended · the host's Docker stopped it · ${saved}`);
+    expect(restatedSummary(prior, `stopped outside Mend · ${saved}`)).toBe(
+      `ended · the host's Docker stopped it · ${saved}`,
+    );
+  });
   it("leaves a harness's own end alone", () => {
     expect(restatedSummary("exited with code 1", saved)).toBeNull();
     expect(restatedSummary(null, saved)).toBeNull();
@@ -1338,6 +1346,18 @@ describe("withUnsavedAnswer (cross-repo decision 25)", () => {
 
 // e2e8 (i), HK and WU: `executor not answering · last saved capture 10 …` named the chain head,
 // a capture that registered and was never sealed. A registered capture is never called saved.
+describe("executorHostStoppedWords (RC 0.36.0-next.768)", () => {
+  it("says the host's Docker stopped it, and names the last capture as not confirmed", () => {
+    const at = new Date("2026-10-11T00:50:12Z");
+    expect(executorHostStoppedWords({ n: 21, at })).toBe(
+      "ended · the host's Docker stopped it · last capture 21 at 00:50:12 UTC · not confirmed",
+    );
+    expect(executorHostStoppedWords(null)).toBe(
+      "ended · the host's Docker stopped it · nothing saved · completion unknown",
+    );
+  });
+});
+
 describe("executorUnansweredWords (e2e8 (i))", () => {
   it("names the last registered capture as not confirmed, never as saved", () => {
     const at = new Date("2026-09-28T07:33:53Z");
