@@ -162,6 +162,8 @@ import {
   executorSavedWords,
   restatedSummary,
   executorUnansweredWords,
+  executorHostStoppedWords,
+  HOST_DOCKER_STOPPED,
   observeCaptureThroughput,
   OPENCODE_PERMISSION_ALLOW,
   planExecutorCap,
@@ -1230,8 +1232,17 @@ const secretFilesWithheldWords = (
       : "Mend cannot say whose workspace this is"
   } · ${paths.map((filePath) => `~/${filePath}`).join(" · ")}`;
 
+/**
+ * A discard the owner asked that the save under way overtook: it finished, kept everything and
+ * ended the workspace, so nothing was discarded (RC 0.36.0-next.768: the session read plain
+ * `Stopped`, and nothing said what became of the discard).
+ */
+const DISCARD_OVERTAKEN_SUMMARY = "the save finished before the discard, so nothing was discarded";
+
 const STALE_ON_START_PREFIXES = [
   LAUNCH_SUMMARY_PREFIX,
+  DISCARD_OVERTAKEN_SUMMARY,
+  HOST_DOCKER_STOPPED,
   "stopped outside Mend",
   "saved at ",
   "executor not answering",
@@ -6306,6 +6317,19 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               "session engine: discard asked · the drain saved everything and ended the workspace first · nothing discarded",
             ).pipe(Effect.annotateLogs(annotations));
             yield* endDrain(sessionId);
+            // The line says what became of the discard: `stopped · the save finished before the
+            // discard, so nothing was discarded`. Words of the session's own stand.
+            const settledFirst = yield* sessions
+              .byId(sessionId)
+              .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
+            if (
+              settledFirst !== null &&
+              settledFirst.settledAt !== null &&
+              settledFirst.status === "stopped" &&
+              settledFirst.summary === null
+            ) {
+              yield* sessions.setSummary(sessionId, DISCARD_OVERTAKEN_SUMMARY);
+            }
             yield* removeIfRequested(sessionId);
             return;
           }
@@ -10007,7 +10031,23 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               Effect.catchDefect(() => Effect.succeed(false)),
               asSealantUser(session.ownerUserId),
             );
-            if (answers) return null;
+            if (answers) {
+              // An executor that answers may be one Core restarted on its own disk to save it,
+              // after the host's Docker stopped or killed it under the harness: then the harness
+              // did not finish, the host ended it (RC 0.36.0-next.768).
+              if (!(yield* executorRetained(session, lookup.workspace))) return null;
+              const head =
+                capture === null
+                  ? null
+                  : ((yield* capture.repo.headOf(session.worktreeId))?.head ?? null);
+              return {
+                kind: "ended" as const,
+                outcome: "failed" as const,
+                summary: executorHostStoppedWords(
+                  head === null ? null : { n: head.n, at: head.createdAt },
+                ),
+              };
+            }
           }
           if (!unanswered) {
             unanswered = true;
@@ -10042,6 +10082,26 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             head === null ? null : { n: head.n, at: head.createdAt },
           ),
         };
+      });
+
+      /**
+       * Whether Core retains this executor: it ended on its runtime without a complete final flush
+       * (a `docker stop` past its timeout, a Docker restart), and Core keeps it, or has restarted
+       * it on its own disk, to save what it holds. One that answers an exec while retained is that
+       * restart: not the boot the harness ran in. False when Core cannot be asked or does not say.
+       */
+      const executorRetained = Effect.fn("SessionEngine.executorRetained")(function* (
+        session: Session,
+        workspace: Workspace,
+      ) {
+        const drain = yield* captureDrainOf(workspace).pipe(
+          Effect.timeoutOption(Duration.seconds(5)),
+          Effect.map(Option.getOrNull),
+          Effect.orElseSucceed(() => null),
+          Effect.catchDefect(() => Effect.succeed(null)),
+          asSealantUser(session.ownerUserId),
+        );
+        return drain?.kind === "drain" && drain.retained;
       });
 
       /** Sessions whose agent's end is being looked into (`executorLostOnEnd`). */

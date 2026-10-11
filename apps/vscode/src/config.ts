@@ -153,19 +153,32 @@ export class ConnectionStore {
    * The browser walk. Null when cancelled; "token" when the person chose to paste a device token
    * instead. The link and code are shown with their own actions from the start: VS Code's "open
    * the external website?" dialog can hide behind other windows, and the walk must not depend on it.
+   * The notification hides itself after a while, and cannot be clicked while that dialog is up, so
+   * a status bar item keeps the code for the whole walk and reopens the link and both actions
+   * (RC 0.36.0-next.768, a MacBook).
    */
   private async browserSignIn(url: string): Promise<SignedIn | "token" | null> {
     let switchedToToken = false;
     let settled = false;
+    const reminder = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 31);
+    let reopen: vscode.Disposable | undefined;
     const offer = async (code: string, page: string): Promise<void> => {
       const choice = await vscode.window.showInformationMessage(
-        `Mend sign-in: open ${page} and approve if it shows ${code}.`,
+        `Mend sign-in: open ${page} and approve if it shows ${code}. The status bar keeps this link and code after this message hides.`,
         "Copy link",
         "Paste a device token instead",
       );
       if (settled) return;
       if (choice === "Copy link") await vscode.env.clipboard.writeText(page);
       if (choice === "Paste a device token instead") switchedToToken = true;
+    };
+    const remind = (code: string, page: string): void => {
+      reopen?.dispose();
+      reopen = vscode.commands.registerCommand("mend.signInReminder", () => offer(code, page));
+      reminder.text = `$(key) Mend sign-in · ${code}`;
+      reminder.tooltip = `Open ${page} and approve if it shows ${code}. Click for Copy link or Paste a device token instead.`;
+      reminder.command = "mend.signInReminder";
+      reminder.show();
     };
     try {
       const signedIn = await vscode.window.withProgress(
@@ -181,6 +194,7 @@ export class ConnectionStore {
               Promise.resolve(vscode.env.openExternal(vscode.Uri.parse(page))),
             onCode: (code, page) => {
               progress.report({ message: `approve in the browser if it shows ${code}` });
+              remind(code, page);
               void offer(code, page);
             },
             sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
@@ -196,6 +210,8 @@ export class ConnectionStore {
       return null;
     } finally {
       settled = true;
+      reminder.dispose();
+      reopen?.dispose();
     }
   }
 

@@ -54,8 +54,10 @@ export function WorkspacesRefusedNotice() {
       {command === null ? null : (
         <>
           <p className="mt-1 text-[13px] leading-relaxed text-ink-2">
-            Every workspace runs a rootless Docker service, which needs them. Run this on the
-            server&apos;s host; the next launch reads the host again, no restart.
+            Every workspace runs a rootless Docker service, which needs them. Re-run{" "}
+            <code className="font-mono text-[12px]">mend server setup --allow-userns</code> to allow
+            them (mend uninstall --all then undoes it), or run this on the server&apos;s host. The
+            next launch reads the host again, no restart.
           </p>
           <div className="mt-2 flex flex-wrap items-center gap-3">
             <code className="rounded-md bg-[var(--sw-sunken)] px-1.5 py-0.5 font-mono text-[12px] break-all text-ink-2 select-all">

@@ -179,7 +179,7 @@ this session's Git access is bound to github.com; pushes and fetches to gitlab.c
 On Ubuntu 23.10 and later, every launch fails at once with:
 
 ```text
-launch failed: the server's host refuses user namespaces · no workspace can start · on the server's host: echo 'kernel.apparmor_restrict_unprivileged_userns = 0' | sudo tee /etc/sysctl.d/60-mend-rootless-docker.conf && sudo sysctl --system
+launch failed: the server's host refuses user namespaces · no workspace can start · re-run mend server setup with --allow-userns (mend uninstall --all then undoes it), or on the server's host: echo 'kernel.apparmor_restrict_unprivileged_userns = 0' | sudo tee /etc/sysctl.d/60-mend-rootless-docker.conf && sudo sysctl --system
 ```
 
 Each workspace runs its own rootless Docker, and Ubuntu refuses the unprivileged user namespaces it
@@ -187,7 +187,15 @@ needs (`kernel.apparmor_restrict_unprivileged_userns=1`). `mend server setup` as
 before its other questions; `mend doctor` reports it on the `workspaces` line, and the web on the
 Now page. A server older than 0.36 fails later instead, while the workspace starts, with
 `Workspace Docker service 'sealant-…-docker' did not become ready … container … is not running`.
-Allow them on the server's host; no restart is needed:
+Allow them with setup, which writes the file with a marker so `mend uninstall --all` removes it and
+puts the kernel back; no restart is needed:
+
+```sh
+mend server setup --allow-userns
+```
+
+Or write the file by hand on the server's host. `mend uninstall --all` leaves a file without setup's
+marker, so remove it yourself if you uninstall:
 
 ```sh
 echo 'kernel.apparmor_restrict_unprivileged_userns = 0' | sudo tee /etc/sysctl.d/60-mend-rootless-docker.conf
@@ -218,6 +226,10 @@ sudo ctr -n moby tasks kill -s KILL <its task id>
 Docker finishes starting within seconds. The workspace's disk is kept, and what it had not saved is
 recovered from it once the server is back. Before the next Docker restart, `mend doctor` says on its
 `docker` line which session to stop first.
+
+A session whose workspace Docker stopped or killed this way doesn't read `completed`. Its line says
+`ended · the host's Docker stopped it`, then `last capture N at … · not confirmed` while the
+recovered workspace saves, and `saved at … · capture N` once Mend observes the save.
 
 ### The database runs out of connections
 

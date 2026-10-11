@@ -78,16 +78,16 @@ describe("HOST_USER_NAMESPACE_FIXES", () => {
 describe("hostUserNamespacesRefusal", () => {
   const setting = "kernel.apparmor_restrict_unprivileged_userns = 0";
 
-  it("says what is refused, then where and how to allow it", () => {
+  it("says what is refused, then the setup route, then where and how to allow it by hand", () => {
     expect(hostUserNamespacesRefusal(setting)).toBe(
-      "the server's host refuses user namespaces · no workspace can start · on the server's host: echo 'kernel.apparmor_restrict_unprivileged_userns = 0' | sudo tee /etc/sysctl.d/60-mend-rootless-docker.conf && sudo sysctl --system",
+      "the server's host refuses user namespaces · no workspace can start · re-run mend server setup with --allow-userns (mend uninstall --all then undoes it), or on the server's host: echo 'kernel.apparmor_restrict_unprivileged_userns = 0' | sudo tee /etc/sysctl.d/60-mend-rootless-docker.conf && sudo sysctl --system",
     );
   });
 
   it("splits a line that carries it around the command", () => {
     const line = `launch failed: ${hostUserNamespacesRefusal(setting)} · saved at 07:34:21 UTC`;
     expect(hostUserNamespacesRefusalParts(line)).toEqual({
-      lead: "launch failed: the server's host refuses user namespaces · no workspace can start · on the server's host: ",
+      lead: "launch failed: the server's host refuses user namespaces · no workspace can start · re-run mend server setup with --allow-userns (mend uninstall --all then undoes it), or on the server's host: ",
       command: hostUserNamespacesFix(setting),
       rest: " · saved at 07:34:21 UTC",
     });

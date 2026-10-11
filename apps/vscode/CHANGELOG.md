@@ -3,6 +3,27 @@
 The extension's version follows the Mend release it needs: 0.36.x works with a Mend 0.36 server. The
 patch number is the extension's own.
 
+## 0.36.1
+
+It needs a Mend 0.36 server.
+
+- Browser sign-in no longer waits on VS Code's "open the external website?" dialog, which can sit
+  behind other windows. A notification shows the link and the code from the start, with **Copy
+  link** and **Paste a device token instead**. Polling starts at once, so an approval made from the
+  copied link counts while that dialog is still open. The notification hides itself after a while,
+  so a status bar item keeps the code for the whole sign-in; clicking it brings back the link and
+  both actions.
+- The approve page names the editor: **Authorize VS Code?**, with the device's name
+  (`VS Code on <host>`).
+- Sign-in survives a clock that disagrees with the server's (a Mac's VM after sleep): the wait is
+  timed from the server's answer, not from this machine's reading of its expiry time.
+- The plain-http warning before a token is chosen says nothing for a tailnet address, which encrypts
+  the connection itself, and fits the quick pick: "anyone on this local network can read the token"
+  for a local address, "the token crosses the network unencrypted" otherwise.
+- **Mend: Open in VS Code** is in a session's right-click menu, not only on its row.
+- The listing is named **Mend by Sealant**: the Marketplace already had a `Mend`. Inside VS Code the
+  views and commands still say Mend.
+
 ## 0.36.0
 
 The first version on the Visual Studio Marketplace and Open VSX. It needs a Mend 0.36 server.
