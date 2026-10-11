@@ -248,6 +248,12 @@ export const makeReviewHandlers = (input: {
       if (file === undefined) {
         return yield* unsupported(operation, "The file is not in the change any more.");
       }
+      if (/^Binary files |^GIT binary patch$/m.test(file.patch)) {
+        return yield* unsupported(
+          operation,
+          `${request.changeType === "new" ? request.newPath : request.oldPath} is binary.`,
+        );
+      }
       const result: ReviewDiffFileContentsResult =
         request.changeType === "new"
           ? { oldContents: "", newContents: wholeSide(file.patch, "+") }
