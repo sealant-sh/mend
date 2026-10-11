@@ -669,6 +669,61 @@ describe("mend server setup", () => {
     expect(await serverCommand(["setup", "--yes"], control.runtime)).toEqual({ _tag: "ok" });
   });
 
+  it("uninstall twice after a setup that stopped: a removal Docker refused keeps the identity, and the second run finishes", async () => {
+    const guard =
+      "busybox:1.37@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e";
+    const daemon = new DockerProtocol();
+    const configDir = temporaryDirectory("claimed-then-stopped-twice");
+    const stopped = makeRuntime({
+      daemon,
+      configDir,
+      guardLabel: guard,
+      missingImages: [guard],
+      pullFails: true,
+    });
+    expect(await serverCommand(["setup", "--yes"], stopped.runtime)).toMatchObject({
+      _tag: "error",
+    });
+    const identity = fs.readFileSync(path.join(configDir, "identity.env"));
+    // The first run: Docker refuses the Garage volume once.
+    let refusals = 1;
+    daemon.response = (args) => {
+      if (
+        refusals > 0 &&
+        args.includes("volume") &&
+        args.includes("rm") &&
+        args.includes("mend-garage")
+      ) {
+        refusals -= 1;
+        return { status: 1, stdout: "", stderr: "Error response from daemon: volume is in use" };
+      }
+      return undefined;
+    };
+    const uninstall = uninstallOn(stopped);
+    const first = await executeUninstall(uninstall, await describeUninstall(uninstall, "server"));
+    expect(first.remaining).toEqual(
+      expect.arrayContaining([expect.stringContaining("mend-garage")]),
+    );
+    // What is left is still owned: the anchor and the identity stay.
+    expect([...daemon.volumes.keys()]).toEqual(
+      expect.arrayContaining(["mend-garage", "mend-store"]),
+    );
+    expect(fs.readFileSync(path.join(configDir, "identity.env"))).toEqual(identity);
+    // The second run finishes the job.
+    const second = await executeUninstall(uninstall, await describeUninstall(uninstall, "server"));
+    expect(second).toEqual({ failures: [], leftovers: [], remaining: [] });
+    expect([...daemon.volumes.keys()]).toEqual([]);
+    expect(fs.existsSync(path.join(configDir, "identity.env"))).toBe(false);
+    // A third finds nothing, changes nothing, and setup installs.
+    const calls = daemon.calls.length;
+    const third = await executeUninstall(uninstall, await describeUninstall(uninstall, "server"));
+    expect(third).toEqual({ failures: [], leftovers: [], remaining: [] });
+    expect(daemon.calls.slice(calls).filter((call) => call.args.includes("rm"))).toEqual([]);
+    expect(
+      await serverCommand(["setup", "--yes"], makeRuntime({ daemon, configDir }).runtime),
+    ).toEqual({ _tag: "ok" });
+  });
+
   it("uninstall takes the volumes a setup claimed before it stopped, so the next setup is not refused", async () => {
     const guard =
       "busybox:1.37@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e";
@@ -2826,7 +2881,7 @@ describe("mend server setup, guided and unasked", () => {
     expect(fs.existsSync(path.join(control.runtime.configDir, "identity.env"))).toBe(false);
   });
 
-  it("does not offer to remove a same-named network that is not Mend's: setup names it", async () => {
+  it("does not offer to remove a same-named network that is not Mend's: setup names it before the first question", async () => {
     const daemon = new DockerProtocol();
     daemon.networks.set("mend_default", null);
     const control = makeRuntime({ daemon });
@@ -2841,8 +2896,54 @@ describe("mend server setup, guided and unasked", () => {
         "has a network named mend_default that is not Mend's: it carries no labels.",
       ),
     });
-    expect(transcript.some((line) => line.startsWith("Remove"))).toBe(false);
+    // Refused up front: no question asked, so no answer is thrown away.
+    expect(transcript).toEqual([]);
     expect([...daemon.networks.keys()]).toEqual(["mend_default"]);
+  });
+
+  it("says a Docker that cannot list its volumes before the first question, assuming no absence", async () => {
+    const daemon = new DockerProtocol();
+    daemon.response = (args) =>
+      args.includes("volume") && args.includes("ls")
+        ? { status: 1, stdout: "", stderr: "Cannot connect to the Docker daemon" }
+        : undefined;
+    const control = makeRuntime({ daemon });
+    const transcript: Array<string> = [];
+    const result = await serverCommand(["setup"], {
+      ...control.runtime,
+      prompter: scriptedPrompter(["1", "", "", "", ""], transcript),
+    });
+    expect(result).toMatchObject({
+      _tag: "error",
+      message: expect.stringContaining("Check Docker access and the selected context"),
+    });
+    expect(transcript).toEqual([]);
+  });
+
+  it("after a removal Docker refused, says to stop what uses it and run setup again", async () => {
+    const daemon = new DockerProtocol();
+    daemon.networks.set("mend_default", { "com.docker.compose.project": "mend" });
+    // Something joined the network between the look and the removal.
+    daemon.response = (args) =>
+      args.includes("network") && args.includes("rm")
+        ? {
+            status: 1,
+            stdout: "",
+            stderr: "error while removing network: network has active endpoints",
+          }
+        : undefined;
+    const control = makeRuntime({ daemon });
+    const transcript: Array<string> = [];
+    const result = await serverCommand(["setup"], {
+      ...control.runtime,
+      prompter: scriptedPrompter(["y"], transcript),
+    });
+    expect(result).toEqual({
+      _tag: "error",
+      message:
+        "Setup stopped: could not remove network mend_default: error while removing network: network has active endpoints. Stop what uses it, then run mend server setup again: it offers to remove what is left.",
+    });
+    expect(transcript).toEqual(["Remove it now? [y/N] y"]);
   });
 
   it("asks about the host's user namespaces before the guide's first question, pulling only the helper, and not again (RC 761)", async () => {

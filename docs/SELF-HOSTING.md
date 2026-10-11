@@ -270,9 +270,9 @@ installation label or the bundle's Compose names, the bundle's networks with not
 stopped containers a generation started. Setup names them; on a terminal it offers to remove them
 (No is the default, and it says the volumes' data goes with them), and otherwise it points at
 `mend uninstall --server`, which lists and removes them, together with the identity a setup that
-stopped part way left. A network or container that only shares a name with Mend's, and carries
-another Compose project's label or none, is not Mend's: setup names it, says which label it carries,
-and leaves it alone.
+stopped part way left. A network, container or volume that only shares a name with Mend's, and
+carries another Compose project's label or none, is not Mend's: setup names each one, says which
+label it carries, and leaves it alone. A guided setup says so before its first question.
 
 When the sign-in is to the server being removed, its device token and workspace SSH key go with that
 server's database. Otherwise the home scope asks the signed-in server to remove this machine's key

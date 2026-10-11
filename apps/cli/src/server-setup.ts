@@ -30,6 +30,7 @@ import {
   MEND_DOCKER_NAMESPACE,
   MEND_DOCKER_NAMESPACE_WITH_GARAGE,
   removeServerLeftovers,
+  serverOldDataWords,
   SERVER_VOLUME_OWNER_LABEL,
   type ServerDockerNamespace,
   verifyServerDockerVolumes,
@@ -3411,7 +3412,8 @@ const settleDockerEngine = async (
  * A fresh guided install in an engine that holds an earlier install's leftovers, with no
  * installation to own them: name them and offer to remove them, No in brackets. Setup cannot
  * install beside them, so No ends the run, with the command that removes them later. Anything
- * else in the way, or a Docker that does not say, is left to setup's own refusal. Null: go on.
+ * else in the way, or a Docker that does not say, is setup's refusal all the same: said now, before
+ * the questions, not after the last answer. Null: go on.
  */
 const settleLeftovers = async (
   runtime: ServerSetupRuntime,
@@ -3419,7 +3421,10 @@ const settleLeftovers = async (
   dockerContext: string,
 ): Promise<ServerCommandResult | null> => {
   const found = await findServerOldData(runtime, dockerContext);
-  if (found._tag === "error" || found.value?._tag !== "leftovers") return null;
+  if (found._tag === "error") return { _tag: "error", message: found.error.message };
+  if (found.value === null) return null;
+  if (found.value._tag === "in-the-way")
+    return { _tag: "error", message: serverOldDataWords(found.value) };
   const leftovers = found.value.leftovers;
   const remove = await offerLeftoverRemoval(io, leftovers);
   if (remove !== true) {
@@ -3434,7 +3439,7 @@ const settleLeftovers = async (
   if (failures.length === 0) return null;
   return {
     _tag: "error",
-    message: `Setup stopped: ${failures.join("; ")}. ${leftoversRemoval(dockerContext)} also removes what holds them, then run mend server setup again.`,
+    message: `Setup stopped: ${failures.join("; ")}. Stop what uses ${failures.length === 1 ? "it" : "them"}, then run mend server setup again: it offers to remove what is left.`,
   };
 };
 
