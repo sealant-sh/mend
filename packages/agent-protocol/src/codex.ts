@@ -613,10 +613,14 @@ export const CodexAdapter: AgentAdapter = {
         });
         yield* send({ method: "initialized" });
 
+        // The workspace is the sandbox: Codex's own (bubblewrap) cannot start in one, as root or as
+        // a person holding `CAP_FOWNER` (box, next.786, 2026-10-11), so `ask` restores approval
+        // prompts only, as the terminal's `--sandbox danger-full-access --ask-for-approval
+        // on-request` does. `workspace-write` failed every command an ask session ran.
         const threadParams = {
           cwd: options.cwd,
           approvalPolicy: options.permissionMode === "ask" ? "on-request" : "never",
-          sandbox: options.permissionMode === "ask" ? "workspace-write" : "danger-full-access",
+          sandbox: "danger-full-access",
         };
         // A resume never forks (docs/adr/0016, decision 6): a thread Codex cannot find fails the
         // start, and nothing starts a new thread in its place. Starting a new conversation is

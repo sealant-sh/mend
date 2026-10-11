@@ -379,6 +379,7 @@ import {
   launchesCodex,
   withCodexMemoryOff,
   withHarnessSetup,
+  codexSystemConfigScript,
 } from "./harness-seeds.ts";
 import {
   HARNESS_HOME_MOUNT_PATH,
@@ -11029,8 +11030,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           Effect.logWarning(
             "session engine: the mend helper and git transport were not installed in the workspace",
           ).pipe(Effect.annotateLogs({ sessionId, ...detail }));
+        // Codex's system default comes first, on its own: it never fails the helper's status.
         const helper =
-          `${
+          `${codexSystemConfigScript()}; ${
             !input.captured
               ? ""
               : `${workspaceScriptStaging(SESSION_SOCKET_MOUNT_PATH, {
@@ -20009,12 +20011,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if (capture !== null && session.sealantWorkspaceId !== null) {
           const workspaceId = session.sealantWorkspaceId;
           const liveAgents = rows.filter(isLiveAgentProcess);
-          // A stop that ends a live agent keeps the session's shells; one with no agent to end
-          // closes them too (below).
+          // A stop that ends a live agent Mend started keeps the session's shells; one with none
+          // to end closes them too (below).
           const ending = new Set(
-            (liveAgents.length > 0
+            (liveAgents.some(isEngineAgentProcess)
               ? liveAgents
-              : rows.filter((row) => row.kind === "shell" && isLiveProcess(row))
+              : [...liveAgents, ...rows.filter((row) => row.kind === "shell" && isLiveProcess(row))]
             ).map((row) => row.id),
           );
           const held =
@@ -20108,14 +20110,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             }
           }
         }
-        if (ended.length === 0) {
+        if (!ended.some(isEngineAgentProcess)) {
           // No agent to close — a run attached without a process, a launch still in flight,
           // or agents that already exited. A stop aimed here means THE SESSION dies (amended
           // 2026-08-31): close the supporting shells too, or an orphan bash from a dropped
           // attach holds the workspace and the session reads idle forever — the
           // refuses-to-die failure mode. A stop that DID end a live agent keeps its shells:
           // you may be sitting in one watching the agent, and a second stop takes them too.
-          // Services stay either way — declared infrastructure with its own verb.
+          // A shell session's own shell and an observed agent are no such agent: there is
+          // nothing to watch, so a `mend shell` beside them closes with them (box, next.786,
+          // 2026-10-11: it held the session `idle` after its Stop). Services stay either way —
+          // declared infrastructure with its own verb.
           const liveShells = rows.filter((row) => row.kind === "shell" && isLiveProcess(row));
           for (const shell of liveShells) {
             if (
@@ -20563,6 +20568,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           kind: "shell",
           label: `shell ${shellNumber}`,
           argv: shellArgv,
+          // Recorded as an agent's is (docs/adr/0016, decision 1): the person it runs as.
+          runsAs: startAs === null ? null : (openedBy ?? session.ownerUserId),
         });
         yield* renewWorkspaceLease(sessionId, shellProcess.sealantWorkspaceId);
         // A shell rejoining a settled session's retained workspace makes it idle again.

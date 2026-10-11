@@ -57,10 +57,10 @@ export const MEND_MODEL_CATALOG = [
   {
     harness: "claude",
     models: [
-      { id: "fable", label: "Fable", isDefault: true, efforts: null },
+      { id: "fable", label: "Fable", isDefault: false, efforts: null },
       { id: "opus", label: "Opus", isDefault: false, efforts: ["low", "medium", "high"] },
     ],
-    defaultModel: "fable",
+    defaultModel: null,
     efforts: ["low", "medium", "high", "xhigh", "max"],
     fastCapable: false,
   },

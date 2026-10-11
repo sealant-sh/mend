@@ -129,6 +129,15 @@ describe("GET /ws", () => {
           ["low", "medium", "high", "xhigh"],
         );
         const claude = providers.find((provider) => provider.driver === "claudeAgent");
+        // Mend names no Claude default: t3code's default is Claude Code's own, which sends none.
+        assert.deepStrictEqual(
+          claude?.models.map((model) => [model.slug, model.name, model.isDefault === true]),
+          [
+            ["mend:claude-default", "Claude Code's default", true],
+            ["fable", "Fable", false],
+            ["opus", "Opus", false],
+          ],
+        );
         assert.isUndefined(
           claude?.models[0]?.capabilities?.optionDescriptors?.find(
             (option) => option.id === "serviceTier",
