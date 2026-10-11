@@ -46,13 +46,14 @@ ssh-agent), then run:
 mend login --url http://localhost:3105
 mend connect codex
 mend connect github
-mend adopt https://github.com/your-org/your-repo.git --name demo
+mend adopt git@github.com:your-org/your-repo.git --name demo
 mend codex --project demo
 ```
 
-Adoption accepts a network Git URL, not a folder, `file://` URL, or path on either machine. Running
-inside an existing checkout can still identify an already-adopted project. Each session gets its own
-worktree in the server's store.
+Adoption accepts a network Git URL, not a folder, `file://` URL, or path on either machine. Use the
+SSH URL for a private repository: the server holds no HTTPS credential, and your Mend key or
+ssh-agent signs SSH only. Running inside an existing checkout can still identify an already-adopted
+project. Each session gets its own worktree in the server's store.
 
 ## Private-network access
 

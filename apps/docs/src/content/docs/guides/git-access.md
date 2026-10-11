@@ -100,6 +100,12 @@ signs by the URL Git actually dials: an HTTPS URL that a rewrite sends over SSH 
 Mend's own SSH never answers with the server process's agent, default keys or SSH config: where Mend
 resolved no signer, SSH refuses.
 
+When Mend signs (your Mend key, your bridge, or a session's Git through the workspace transport), it
+ignores the server user's `~/.ssh/config`, so an `IdentityFile` or `IdentityAgent` there cannot
+stand beside or replace Mend's choice. A server run from source that reached a Git host through a
+`Host` alias or a `ProxyJump` in that file must use the host's real name in the project's URL, and a
+host reachable only through a jump host is not reachable from Mend's Git.
+
 ## Git inside a workspace
 
 Mend points the workspace's system Git config at a transport shim (`core.sshCommand`). Plain
