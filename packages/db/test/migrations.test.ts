@@ -2985,3 +2985,54 @@ describe.skipIf(postgres.skip)("0129 ambient removed", () => {
     ]);
   });
 });
+
+describe.skipIf(postgres.skip)("0130 claude's own default", () => {
+  const DB = `${SCRATCH_DB}_claude_own_default`;
+  const layer = (() => {
+    const url = new URL(ADMIN_URL);
+    url.pathname = `/${DB}`;
+    return PgClient.layer({ url: Redacted.make(url.toString()) });
+  })();
+  const withDb = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
+    Effect.runPromise(effect.pipe(Effect.provide(layer), Effect.scoped));
+
+  beforeAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`CREATE DATABASE ${DB}`);
+      }),
+    );
+  });
+  afterAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`DROP DATABASE IF EXISTS ${DB} WITH (FORCE)`);
+      }),
+    );
+  });
+
+  it("takes the default off the seeded `fable`, and leaves codex's as it is", async () => {
+    const defaults = await withDb(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* upTo("0129_ambient_removed");
+        const read = sql<{ readonly harness: string; readonly id: string }>`
+          SELECT harness, id FROM harness_models WHERE is_default ORDER BY harness, id`;
+        const before = yield* read;
+        yield* migrations["0130_claude_own_default"];
+        const after = yield* read;
+        return {
+          before: before.map((row) => [row.harness, row.id]),
+          after: after.map((row) => [row.harness, row.id]),
+        };
+      }),
+    );
+    expect(defaults.before).toEqual([
+      ["claude", "fable"],
+      ["codex", "gpt-6.1-sol"],
+    ]);
+    expect(defaults.after).toEqual([["codex", "gpt-6.1-sol"]]);
+  });
+});

@@ -265,12 +265,12 @@ describe("SessionStart.startAs", () => {
       "sessions.listUnsettledForOwner:alice",
       `sessions.countUnsettledForOrganization:${ACME}`,
       `engine.provision:${PROJECT}:alice:slack`,
-      // The model the session runs on is the harness's default; the engine records it once the
-      // protocol launch is admitted.
+      // The catalog is read for the model; Claude's names no default, so none is sent and Claude
+      // Code's own decides. The engine records the launch once it is admitted.
       "harnessModels.forHarness:claude",
       // A composed start knows its first prompt: the namer is queued before the launch.
       "jobs.enqueue:name-session:0",
-      `engine.launchProtocol:${SESSION}:alice:fable:-: fix the flaky test `,
+      `engine.launchProtocol:${SESSION}:alice:-:-: fix the flaky test `,
     ]);
     expect(world.effects.some((entry) => entry.startsWith("sessions.setLaunchOptions"))).toBe(
       false,
@@ -310,15 +310,14 @@ describe("SessionStart.startAs", () => {
     ]);
   });
 
-  it("composes the default model into a PTY launch's argv, and records it once admitted", async () => {
+  it("names no Claude model nobody chose in a PTY launch's argv, and records the launch once admitted", async () => {
+    // Claude Code's own default decides, as for a `claude` run by hand (2026-10-12).
     const world = startWorld();
     const result = await startAs(world, "alice", request({ effort: "high" }));
 
     expect(result._tag).toBe("Success");
-    const recorded = world.effects.indexOf(`sessions.setLaunchOptions:${SESSION}:fable:high`);
-    const launchedAt = world.effects.indexOf(
-      `engine.launch:${SESSION}:claude --model fable --effort high`,
-    );
+    const recorded = world.effects.indexOf(`sessions.setLaunchOptions:${SESSION}:null:high`);
+    const launchedAt = world.effects.indexOf(`engine.launch:${SESSION}:claude --effort high`);
     expect(recorded).toBeGreaterThan(-1);
     expect(launchedAt).toBe(recorded + 1);
   });
@@ -435,7 +434,7 @@ describe("SessionStart.startAs", () => {
       budget: "accountLaunchesInFlight",
     });
     expect(world.effects.filter((entry) => entry.startsWith("engine.launchProtocol"))).toEqual([
-      `engine.launchProtocol:${SESSION}:alice:fable:-:first`,
+      `engine.launchProtocol:${SESSION}:alice:-:-:first`,
     ]);
   });
 
@@ -481,8 +480,8 @@ describe("SessionStart.startAs", () => {
     });
     expect(answers.third._tag).toBe("Success");
     expect(launched(world)).toEqual([
-      `engine.launchProtocol:${SESSION}:alice:fable:-:first`,
-      `engine.launchProtocol:${SESSION}:alice:fable:-:third`,
+      `engine.launchProtocol:${SESSION}:alice:-:-:first`,
+      `engine.launchProtocol:${SESSION}:alice:-:-:third`,
     ]);
   });
 
@@ -492,7 +491,7 @@ describe("SessionStart.startAs", () => {
 
     expect(result._tag).toBe("Success");
     expect(world.effects.slice(-2)).toEqual([
-      `engine.launch:${SESSION}:claude --model fable`,
+      `engine.launch:${SESSION}:claude`,
       "jobs.enqueue:name-session:45",
     ]);
   });
@@ -512,8 +511,8 @@ const launched = (world: ReturnType<typeof startWorld>) =>
   world.effects.filter((entry) => entry.startsWith("engine.launchProtocol"));
 
 describe("the prompt guard (docs/adr/0007, Questions do not open pull requests)", () => {
-  const guarded = `engine.launchProtocol:${SESSION}:alice:fable:-:fix the flaky test\n\n${LANDING_GUARD}`;
-  const plain = `engine.launchProtocol:${SESSION}:alice:fable:-:fix the flaky test`;
+  const guarded = `engine.launchProtocol:${SESSION}:alice:-:-:fix the flaky test\n\n${LANDING_GUARD}`;
+  const plain = `engine.launchProtocol:${SESSION}:alice:-:-:fix the flaky test`;
 
   it("tells a Slack request's agent that Mend publishes, after the request", async () => {
     const world = startWorld({ origin: "slack" });

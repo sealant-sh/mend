@@ -81,10 +81,12 @@ mend claude "Inspect the API boundary" --ask
 ```
 
 The server owns the model list. `mend models` prints it per harness, with the model a launch runs
-when `--model` is not given marked `default`, and the efforts each model takes. The phone, the web
-app and VS Code offer the same list and preselect the same default, so a session started from any of
-them runs on the model you see. Every session records the model and effort it was started with;
-`mend sessions`, the session page and the phone's session header show them.
+when `--model` is not given marked `default`, and the efforts each model takes. Claude and opencode
+have no `default`: a launch that names no model leaves the choice to them, so Claude Code opens on
+the model your Claude settings name, else its own default. The phone, the web app and VS Code offer
+the same list and preselect the same default, so a session started from any of them runs on the
+model you see. Every session records the model and effort it was started with; `mend sessions`, the
+session page and the phone's session header show them.
 
 ```sh
 mend models

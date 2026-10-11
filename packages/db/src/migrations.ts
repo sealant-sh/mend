@@ -3505,6 +3505,18 @@ const ambientRemovedMigration = Effect.gen(function* () {
   yield* sql`ALTER TABLE projects ALTER COLUMN git_auth_mode SET DEFAULT 'mend-key'`;
 });
 
+/**
+ * Claude has no default model in the catalog (`HARNESSES_CHOOSING_THEIR_OWN_MODEL`): a launch that
+ * names none runs on Claude Code's own default, as a `claude` run by hand does. 0102 seeded `fable`
+ * as the default; the flag comes off it. A model someone picks is still sent for that launch.
+ */
+const claudeOwnDefaultMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    UPDATE harness_models SET is_default = false
+    WHERE harness = 'claude' AND id = 'fable' AND is_default`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -3636,4 +3648,5 @@ export const migrations = {
   "0127_default_bun": defaultBunMigration,
   "0128_cli_auth_client": cliAuthClientMigration,
   "0129_ambient_removed": ambientRemovedMigration,
+  "0130_claude_own_default": claudeOwnDefaultMigration,
 };
