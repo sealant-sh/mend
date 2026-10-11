@@ -1,4 +1,4 @@
-import { defaultSettings, MendSettings } from "@mend/domain";
+import { defaultSettings, defaultWorkspaceImage, MendSettings } from "@mend/domain";
 import type { WorkspaceImage } from "@mend/domain";
 import type { WorkspacePackageResolution } from "@mend/sealant";
 import { Effect } from "effect";
@@ -89,6 +89,53 @@ describe("resolveWorkspaceEnvironment", () => {
       status: "unsupported",
       supported: false,
     });
+  });
+
+  it("saves the code defaults on Arch once each id answers from Core's catalog (sealant#364)", async () => {
+    // Core's own test pins this list (package-standardization.test.ts, `MEND_DEFAULTS`) and
+    // resolves each id on Arch from its catalog. Change one, change the other.
+    expect(defaultWorkspaceImage.packages).toEqual([
+      "pnpm",
+      "bun",
+      "python",
+      "uv",
+      "mise",
+      "github-cli",
+      "lazygit",
+      "bat",
+      "curl",
+      "unzip",
+      "jq",
+      "ripgrep",
+      "fd",
+      "fzf",
+      "starship",
+      "zsh-autosuggestions",
+      "zsh-syntax-highlighting",
+      "zsh-history-substring-search",
+      "direnv",
+    ]);
+
+    // From 0.39.0-next.726 every default answers with its catalog id and is supported.
+    const fromCatalog = await Effect.runPromise(
+      resolveWorkspaceEnvironment(defaultWorkspaceImage, (packageName) =>
+        Effect.succeed(resolution(packageName)),
+      ),
+    );
+    expect(fromCatalog.workspaceImage).toEqual(defaultWorkspaceImage);
+
+    // Before it, `bun` (and `unzip`, `starship`, the zsh plugins, `direnv`) fell through to
+    // Repology with no catalog id, so the Setup page could not save its own defaults (RC 3, A3).
+    const beforeCatalog = await Effect.runPromise(
+      resolveWorkspaceEnvironment(defaultWorkspaceImage, (packageName) =>
+        Effect.succeed(
+          packageName === "bun"
+            ? resolution(packageName, { canonicalId: null })
+            : resolution(packageName),
+        ),
+      ),
+    );
+    expect(beforeCatalog.workspaceImage).toBeNull();
   });
 
   it("merges a resolved environment into settings read after validation", async () => {
