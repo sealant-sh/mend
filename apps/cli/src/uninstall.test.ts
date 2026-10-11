@@ -386,6 +386,35 @@ describe("leftovers of an install with no configuration here", () => {
     const f = laptop({ daemon: leftoversDaemon({ anchor: true }) });
     expect((await describeUninstall(f.runtime, "server")).server).toBe("none");
   });
+
+  it("removes the bundle's network alone, with no labelled volume beside it (RC 773), and nothing that is not Mend's", async () => {
+    const daemon = new DockerProtocol();
+    daemon.networks.set("mend_default", { "com.docker.compose.project": "mend" });
+    // Somebody else's: another project's network, and one named like Mend's project with no label.
+    daemon.networks.set("mend-dev_default", { "com.docker.compose.project": "mend-dev" });
+    daemon.networks.set("mend_edge", null);
+    const f = laptop({ daemon, signedIn: false });
+    const plan = await describeUninstall(f.runtime, "server");
+    expect(plan.server).toEqual({
+      kind: "leftovers",
+      dockerContext: "default",
+      volumes: [],
+      networks: ["mend_default"],
+      containers: [],
+      holdings: { workspaces: [], sidecars: [], networks: [], images: [] },
+    });
+    expect(planLines(plan, f.runtime.server.configDir)).toEqual([
+      `server   none configured under ${f.runtime.server.configDir}, but docker context default holds what an earlier Mend install left:`,
+      "         networks mend_default",
+    ]);
+    expect(await executeUninstall(f.runtime, plan)).toEqual({
+      failures: [],
+      leftovers: [],
+      remaining: [],
+    });
+    expect([...daemon.networks.keys()]).toEqual(["mend-dev_default", "mend_edge"]);
+    expect((await describeUninstall(f.runtime, "server")).server).toBe("none");
+  });
 });
 
 const facts = (alias: string, hostname: string | null, port: number | null) => ({

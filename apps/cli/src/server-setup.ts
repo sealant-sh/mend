@@ -25,8 +25,11 @@ import {
 import { renderExposure, renderGate } from "./organization.ts";
 import {
   claimServerDockerVolumes,
+  findServerOldData,
+  leftoversRemoval,
   MEND_DOCKER_NAMESPACE,
   MEND_DOCKER_NAMESPACE_WITH_GARAGE,
+  removeServerLeftovers,
   SERVER_VOLUME_OWNER_LABEL,
   type ServerDockerNamespace,
   verifyServerDockerVolumes,
@@ -106,6 +109,7 @@ import {
   type GuideIo,
   type GuideObservations,
   isPublicAddress,
+  offerLeftoverRemoval,
   runGuide,
   type SetupSettings,
   tailscaleFactsOf,
@@ -3404,6 +3408,37 @@ const settleDockerEngine = async (
 };
 
 /**
+ * A fresh guided install in an engine that holds an earlier install's leftovers, with no
+ * installation to own them: name them and offer to remove them, No in brackets. Setup cannot
+ * install beside them, so No ends the run, with the command that removes them later. Anything
+ * else in the way, or a Docker that does not say, is left to setup's own refusal. Null: go on.
+ */
+const settleLeftovers = async (
+  runtime: ServerSetupRuntime,
+  io: GuideIo,
+  dockerContext: string,
+): Promise<ServerCommandResult | null> => {
+  const found = await findServerOldData(runtime, dockerContext);
+  if (found._tag === "error" || found.value?._tag !== "leftovers") return null;
+  const leftovers = found.value.leftovers;
+  const remove = await offerLeftoverRemoval(io, leftovers);
+  if (remove !== true) {
+    runtime.writeLine(
+      remove === null
+        ? "Nothing changed."
+        : `Nothing changed. To remove them later: ${leftoversRemoval(dockerContext)}, then run mend server setup again.`,
+    );
+    return { _tag: "ok" };
+  }
+  const failures = await removeServerLeftovers(runtime, leftovers, runtime.writeLine);
+  if (failures.length === 0) return null;
+  return {
+    _tag: "error",
+    message: `Setup stopped: ${failures.join("; ")}. ${leftoversRemoval(dockerContext)} also removes what holds them, then run mend server setup again.`,
+  };
+};
+
+/**
  * `mend server setup` on a terminal with no flags: read what is saved, let go of the lock while
  * the person answers, then run the flags the answers became, exactly as a script would.
  */
@@ -3449,6 +3484,12 @@ const guidedSetup = async (
     io.write(
       `Docker: this install runs in context ${context.name} (socket ${socketOf(context.endpoint)}), where its data is, and stays there. Running Mend in another Docker engine is a new install: mend uninstall --server removes this one, its data included, then mend server setup there.`,
     );
+  // What an earlier install left in this engine would stop the install after every answer: asked
+  // about first, and removed only on a yes.
+  if (existing === null) {
+    const settled = await settleLeftovers(runtime, io, context.name);
+    if (settled !== null) return settled;
+  }
   // The host's kernel before the first question (#695): a host that refuses user namespaces starts
   // no session, so that is the first thing the person decides. Its probe pulls only the few
   // megabytes of busybox every install preloads anyway (HOST_HELPER_IMAGE).

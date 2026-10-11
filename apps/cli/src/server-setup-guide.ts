@@ -2,6 +2,7 @@ import * as net from "node:net";
 
 import { type AddressKind, addressKindOf } from "@mend/network/address-kind";
 
+import { KEEP_THE_DATA, leftoverItems, type ServerLeftovers } from "./server-docker-volumes.ts";
 import {
   DECLARABLE_ITEMS,
   DEFAULT_T3_GATEWAY_PORT,
@@ -590,6 +591,36 @@ export const chooseDockerEngine = async (
       })),
       index < 0 ? 0 : index,
     );
+  } catch (cause) {
+    if (cause instanceof GuideStopped) return null;
+    throw cause;
+  }
+};
+
+/**
+ * A fresh install's engine holds what an earlier install left, and no installation owns it: say
+ * what each thing is, the volumes as the data they may hold, and ask whether to remove them. No is
+ * the answer in brackets. Null when the person stopped.
+ */
+export const offerLeftoverRemoval = async (
+  io: GuideIo,
+  leftovers: ServerLeftovers,
+): Promise<boolean | null> => {
+  const count = leftovers.containers.length + leftovers.networks.length + leftovers.volumes.length;
+  const them = count === 1 ? "it" : "them";
+  io.write("");
+  io.write(
+    `Docker context ${leftovers.dockerContext} holds what an earlier Mend install left, and no installation owns ${them}:`,
+  );
+  for (const item of leftoverItems(leftovers)) io.write(`  ${item}`);
+  const volumes = leftovers.volumes.length;
+  if (volumes > 0)
+    io.write(
+      `The ${volumes === 1 ? "volume" : "volumes"} may hold that install's data (its database, repositories and captures). Removing ${volumes === 1 ? "it" : "them"} deletes that data for good. ${KEEP_THE_DATA}`,
+    );
+  io.write(`Setup does not install beside ${them}.`);
+  try {
+    return await yesNo(io, `Remove ${them} now?`, false);
   } catch (cause) {
     if (cause instanceof GuideStopped) return null;
     throw cause;

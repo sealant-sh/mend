@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 
+import { T3_GATEWAY_VOLUME } from "./server-edge.ts";
 import type { ServerSetupRuntime } from "./server-setup.ts";
 import { ServerRefusal } from "./server-store.ts";
 
@@ -36,6 +37,9 @@ export const secondaryVolumesOf = (namespace: ServerDockerNamespace): ReadonlyAr
 /** The label is immutable after Docker's atomic named-volume creation. */
 export const SERVER_VOLUME_OWNER_LABEL = "dev.sealant.mend.installation";
 
+const COMPOSE_PROJECT_LABEL = "com.docker.compose.project";
+const COMPOSE_WORKING_DIR_LABEL = "com.docker.compose.project.working_dir";
+
 /** Inputs are the exact persisted identity.env bytes, never regenerated or normalized. */
 export interface ServerVolumeOwnershipInput {
   readonly dockerContext: string;
@@ -43,7 +47,88 @@ export interface ServerVolumeOwnershipInput {
   readonly namespace?: ServerDockerNamespace;
 }
 
-/** Ownership conflicts require recovery of the original config, not deletion or relabelling. */
+type ResourceKind = "container" | "network" | "volume";
+
+/**
+ * What an earlier Mend install left in a Docker engine, with no installation to own it: stopped
+ * containers a generation started, the bundle's Compose networks with nothing attached, and
+ * volumes that carry Mend's installation label or a bundle volume's Compose name. The volumes may
+ * hold that install's data: its database, repositories and captures.
+ */
+export interface ServerLeftovers {
+  readonly dockerContext: string;
+  readonly containers: ReadonlyArray<string>;
+  readonly networks: ReadonlyArray<string>;
+  readonly volumes: ReadonlyArray<string>;
+}
+
+/** Something in a fresh install's way that is not an earlier install's leftover, and why. */
+export interface ServerDataInTheWay {
+  readonly dockerContext: string;
+  readonly kind: ResourceKind;
+  readonly name: string;
+  /** Mend's by its labels, but something runs on it; false: not Mend's at all. */
+  readonly mend: boolean;
+  /** Why, as a clause: "carries no labels", "container x is attached to it". */
+  readonly why: string;
+}
+
+/** What stands where a fresh install's volumes go, before the anchor exists. */
+export type ServerOldData =
+  | { readonly _tag: "leftovers"; readonly leftovers: ServerLeftovers }
+  | { readonly _tag: "in-the-way"; readonly inTheWay: ServerDataInTheWay };
+
+const namedAs = (kind: ResourceKind, names: ReadonlyArray<string>): ReadonlyArray<string> => {
+  const [only] = names;
+  if (only === undefined) return [];
+  return [
+    names.length === 1 ? `${kind} ${only}` : `${names.length} ${kind}s (${names.join(", ")})`,
+  ];
+};
+
+/** Each kind of leftover in a few words: "network mend_default", "2 volumes (a, b)". */
+export const leftoverItems = (leftovers: ServerLeftovers): ReadonlyArray<string> => [
+  ...namedAs("container", leftovers.containers),
+  ...namedAs("network", leftovers.networks),
+  ...namedAs("volume", leftovers.volumes),
+];
+
+/** The command that removes an earlier install's leftovers from the engine they are in. */
+export const leftoversRemoval = (dockerContext: string): string =>
+  `DOCKER_CONTEXT=${dockerContext} mend uninstall --server`;
+
+/** How to keep an earlier install's volumes instead: its identity owns them again. */
+export const KEEP_THE_DATA =
+  "To keep it, put that install's Mend config directory (identity.env and generations) back where it was and run mend server setup: setup takes up the volumes its identity owns.";
+
+const oldDataWords = (found: ServerOldData): string => {
+  const elsewhere = "or install in another Docker context: mend server setup --context <name>.";
+  if (found._tag === "leftovers") {
+    const { leftovers } = found;
+    const count =
+      leftovers.containers.length + leftovers.networks.length + leftovers.volumes.length;
+    const them = count === 1 ? "it" : "them";
+    const volumes = leftovers.volumes.length;
+    return (
+      `Docker context ${leftovers.dockerContext} holds what an earlier Mend install left, and no installation owns ${them}: ${leftoverItems(leftovers).join(", ")}. ` +
+      (volumes === 0
+        ? ""
+        : `The ${volumes === 1 ? "volume" : "volumes"} may hold that install's data, and removing ${volumes === 1 ? "it" : "them"} deletes that data. ${KEEP_THE_DATA} `) +
+      `Setup does not install beside ${them}. To remove ${them}: ${leftoversRemoval(leftovers.dockerContext)}, then run mend server setup again.`
+    );
+  }
+  const { dockerContext, kind, name, mend, why } = found.inTheWay;
+  const look = `To see what it is: docker --context ${dockerContext} ${kind} inspect ${name}.`;
+  return mend
+    ? `Docker context ${dockerContext} has ${kind} ${name} from an earlier Mend install, with no installation to own it, and ${why}. Setup leaves it alone. ${look} Stop what runs there, then remove what that install left with ${leftoversRemoval(dockerContext)}, ${elsewhere}`
+    : `Docker context ${dockerContext} has a ${kind} named ${name} that is not Mend's: it ${why}. Setup leaves it alone and cannot install beside it. ${look} Remove it yourself if nothing needs it, ${elsewhere}`;
+};
+
+/**
+ * Ownership conflicts require recovery of the original config, not deletion or relabelling. Data
+ * in a fresh install's way (`unowned-data`) is named instead: an earlier install's leftovers, with
+ * the command that removes them, or what is not Mend's, with how to look at it.
+ */
 export class ServerVolumeOwnershipError extends ServerRefusal {
   /** Stable error discriminator. */
   readonly _tag = "ServerVolumeOwnershipError" as const;
@@ -58,23 +143,26 @@ export class ServerVolumeOwnershipError extends ServerRefusal {
     | "inspection";
   /** Safe operation name, never credentials or raw Docker output. */
   readonly operation: string;
+  /** With `unowned-data`: what stands in the way. */
+  readonly found: ServerOldData | undefined;
 
-  /**
-   * Construct an actionable ownership failure without including identity bytes. `leftover`: the
-   * data in the way carries Mend's installation label but no anchor, so it is what an earlier
-   * install left behind (a partial `mend uninstall`), and `mend uninstall` is the way out.
-   */
-  constructor(reason: ServerVolumeOwnershipError["reason"], operation: string, leftover = false) {
+  /** Construct an actionable ownership failure without including identity bytes. */
+  constructor(
+    reason: ServerVolumeOwnershipError["reason"],
+    operation: string,
+    found?: ServerOldData,
+  ) {
     super(
-      `Docker volume ownership check failed (${reason}, ${operation}). ` +
-        (reason === "docker" || reason === "inspection"
-          ? "Check Docker access and the selected context, then retry. No absence was assumed."
-          : leftover
-            ? "Docker still holds what an earlier Mend install left behind: volumes with Mend's installation label and no installation to own them. Run mend uninstall --server to remove them, then run setup again."
-            : "Retain all Docker data. Restore the original Mend identity/configuration or choose a clean Docker daemon; do not delete or relabel existing data."),
+      found !== undefined
+        ? oldDataWords(found)
+        : `Docker volume ownership check failed (${reason}, ${operation}). ` +
+            (reason === "docker" || reason === "inspection"
+              ? "Check Docker access and the selected context, then retry. No absence was assumed."
+              : "Retain all Docker data. Restore the original Mend identity/configuration or choose a clean Docker daemon; do not delete or relabel existing data."),
     );
     this.reason = reason;
     this.operation = operation;
+    this.found = found;
   }
 }
 
@@ -115,15 +203,13 @@ const listNames = async (
   context: string,
   kind: "volume" | "container" | "network",
   project?: string,
-  label?: string,
 ): Promise<Result<ReadonlyArray<string>>> => {
   const field = kind === "container" ? "Names" : "Name";
   const output = await docker(runtime, context, [
     kind,
     "ls",
     ...(kind === "container" ? ["--all"] : []),
-    ...(project === undefined ? [] : ["--filter", `label=com.docker.compose.project=${project}`]),
-    ...(label === undefined ? [] : ["--filter", `label=${label}`]),
+    ...(project === undefined ? [] : ["--filter", `label=${COMPOSE_PROJECT_LABEL}=${project}`]),
     "--format",
     `{{json .${field}}}`,
   ]);
@@ -230,20 +316,59 @@ const reservedResourceName = (
   );
 };
 
-const inspectForeignProject = async (
+/** A Compose container a Mend generation started: its working directory is the generation's. */
+export const GENERATION_DIRECTORY = /\/generations\/gen-[0-9a-f-]{36}$/;
+
+/**
+ * The bundle's own Compose volumes, as Compose names them under its project. Another Compose
+ * project called mend (a checkout of Mend's own repository, say) has other volumes.
+ */
+export const bundleComposeVolumes = (project: string): ReadonlySet<string> =>
+  new Set(
+    [
+      "mend-config",
+      "mend-ssh",
+      "mend-postgres",
+      "mend-edge-data",
+      "mend-edge-config",
+      "mend-npm-mirror",
+      "mend-docker-mirror",
+      T3_GATEWAY_VOLUME,
+    ].map((volume) => `${project}_${volume}`),
+  );
+
+/** The bundle's Compose networks: the project's default, and the edge's when it runs one. */
+export const bundleNetworks = (project: string): ReadonlySet<string> =>
+  new Set(["default", "edge"].map((network) => `${project}_${network}`));
+
+interface Inspected {
+  readonly labels: Readonly<Record<string, string>> | null;
+  /** A container: whether it runs. */
+  readonly running: boolean;
+  /** A network: the containers attached to it, by name. */
+  readonly attached: ReadonlyArray<string>;
+}
+
+// Project only the ownership evidence. Full container inspection also includes environment secrets.
+const INSPECT_FORMAT: Readonly<Record<ResourceKind, string>> = {
+  volume: "{{json .}}",
+  container:
+    '{"Name":{{json .Name}},"Labels":{{json .Config.Labels}},"Running":{{json .State.Running}}}',
+  network: '{"Name":{{json .Name}},"Labels":{{json .Labels}},"Containers":{{json .Containers}}}',
+};
+
+const inspectResource = async (
   runtime: Runtime,
   context: string,
-  kind: "container" | "network",
+  kind: ResourceKind,
   name: string,
-  project: string,
-): Promise<Result<void>> => {
-  // Project only the ownership evidence. Full container inspection also includes environment secrets.
+): Promise<Result<Inspected>> => {
   const output = await docker(runtime, context, [
     kind,
     "inspect",
     name,
     "--format",
-    `{"Name":{{json .Name}},"Labels":{{json .${kind === "container" ? "Config.Labels" : "Labels"}}}}`,
+    INSPECT_FORMAT[kind],
   ]);
   if (output._tag === "error") return output;
   try {
@@ -256,25 +381,158 @@ const inspectForeignProject = async (
       !("Labels" in resource)
     )
       return fail("inspection", `${kind} inspect`);
-    const labels = resource.Labels;
-    if (labels === null) return fail("unowned-data", `existing ${kind} without anchor`);
-    if (
-      typeof labels !== "object" ||
-      Array.isArray(labels) ||
-      !Object.values(labels).every((value) => typeof value === "string")
-    )
-      return fail("inspection", `${kind} labels`);
-    if (!("com.docker.compose.project" in labels))
-      return fail("unowned-data", `existing ${kind} without anchor`);
-    const foreignProject = labels["com.docker.compose.project"];
-    if (typeof foreignProject !== "string" || !/^[a-z0-9][a-z0-9_-]*$/.test(foreignProject))
-      return fail("inspection", `${kind} project label`);
-    if (foreignProject === project || !inProjectNamespace(name, foreignProject))
-      return fail("unowned-data", `existing ${kind} without anchor`);
-    return { _tag: "ok", value: undefined };
+    const found = resource.Labels;
+    let labels: Record<string, string> | null = null;
+    if (found !== null) {
+      if (typeof found !== "object" || Array.isArray(found))
+        return fail("inspection", `${kind} labels`);
+      labels = {};
+      for (const [key, value] of Object.entries(found)) {
+        if (typeof value !== "string") return fail("inspection", `${kind} labels`);
+        labels[key] = value;
+      }
+    }
+    let running = false;
+    if (kind === "container") {
+      if (!("Running" in resource) || typeof resource.Running !== "boolean")
+        return fail("inspection", "container state");
+      running = resource.Running;
+    }
+    const attached: Array<string> = [];
+    if (kind === "network") {
+      const containers = "Containers" in resource ? resource.Containers : undefined;
+      if (containers === undefined || typeof containers !== "object" || Array.isArray(containers))
+        return fail("inspection", "network containers");
+      for (const [id, endpoint] of Object.entries(containers ?? {})) {
+        const endpointName: unknown =
+          typeof endpoint === "object" && endpoint !== null && "Name" in endpoint
+            ? endpoint.Name
+            : undefined;
+        attached.push(typeof endpointName === "string" ? endpointName : id.slice(0, 12));
+      }
+    }
+    return { _tag: "ok", value: { labels, running, attached } };
   } catch {
     return fail("inspection", `${kind} inspect`);
   }
+};
+
+/** Why a resource with a reserved or bundle name is not Mend's, as a clause after "it". */
+const notMendsWhy = (
+  labels: Readonly<Record<string, string>> | null,
+  kind: ResourceKind,
+  project: string,
+): string => {
+  if (labels === null || Object.keys(labels).length === 0) return "carries no labels";
+  const owner = labels[COMPOSE_PROJECT_LABEL];
+  if (owner === undefined)
+    return kind === "volume" ? "carries no Mend label" : "carries no Compose project label";
+  if (owner !== project) return `belongs to Compose project ${owner}`;
+  return kind === "container"
+    ? `carries Compose project label ${project}, but no Mend install started it`
+    : `carries Compose project label ${project}, but no Mend install makes a ${kind} by that name`;
+};
+
+/**
+ * Sort what stands where a fresh install's volumes go: an earlier install's leftovers (Mend's by
+ * its labels, nothing running on them), or the first thing in the way that is not, with why.
+ * Reads only; an inspection that cannot say is an error, never absence.
+ */
+const findOldData = async (
+  runtime: Runtime,
+  context: string,
+  namespace: ServerDockerNamespace,
+  volumes: ReadonlyArray<string>,
+): Promise<Result<ServerOldData | null>> => {
+  const project = namespace.project;
+  const left: Record<ResourceKind, Array<string>> = { container: [], network: [], volume: [] };
+  const inTheWay: Array<ServerDataInTheWay> = [];
+  const refuse = (kind: ResourceKind, name: string, mend: boolean, why: string): void => {
+    inTheWay.push({ dockerContext: context, kind, name, mend, why });
+  };
+
+  // Volumes: the bundle's names, and whatever carries the project's label.
+  const projectVolumes = await listNames(runtime, context, "volume", project);
+  if (projectVolumes._tag === "error") return projectVolumes;
+  const bundleVolumes = bundleComposeVolumes(project);
+  const candidates = new Set([
+    ...volumes.filter(
+      (name) => secondaryVolumesOf(namespace).includes(name) || name.startsWith(`${project}_`),
+    ),
+    ...projectVolumes.value,
+  ]);
+  for (const name of candidates) {
+    const inspected = await inspectResource(runtime, context, "volume", name);
+    if (inspected._tag === "error") return inspected;
+    const { labels } = inspected.value;
+    if (
+      labels?.[SERVER_VOLUME_OWNER_LABEL] !== undefined ||
+      (labels?.[COMPOSE_PROJECT_LABEL] === project && bundleVolumes.has(name))
+    )
+      left.volume.push(name);
+    else refuse("volume", name, false, notMendsWhy(labels, "volume", project));
+  }
+
+  // Containers and networks with the project's label: a generation's stopped containers and the
+  // bundle's networks with nothing attached are leftovers; anything else of the project's is not.
+  const networks = bundleNetworks(project);
+  for (const kind of ["container", "network"] as const) {
+    const labelled = await listNames(runtime, context, kind, project);
+    if (labelled._tag === "error") return labelled;
+    for (const name of labelled.value) {
+      const inspected = await inspectResource(runtime, context, kind, name);
+      if (inspected._tag === "error") return inspected;
+      const { labels, running, attached } = inspected.value;
+      if (kind === "container") {
+        if (!GENERATION_DIRECTORY.test(labels?.[COMPOSE_WORKING_DIR_LABEL] ?? ""))
+          refuse(kind, name, false, notMendsWhy(labels, kind, project));
+        else if (running) refuse(kind, name, true, "it is running");
+        else left.container.push(name);
+      } else if (!networks.has(name)) refuse(kind, name, false, notMendsWhy(labels, kind, project));
+      else if (attached.length > 0)
+        refuse(
+          kind,
+          name,
+          true,
+          `${namedAs("container", attached).join("")} ${attached.length === 1 ? "is" : "are"} attached to it`,
+        );
+      else left.network.push(name);
+    }
+    // Then by name: the bundle's reserved names, and the project's prefix unless another project
+    // proves the name its own.
+    const named = await listNames(runtime, context, kind);
+    if (named._tag === "error") return named;
+    for (const name of named.value) {
+      if (labelled.value.includes(name)) continue;
+      const reserved = reservedResourceName(name, kind, namespace);
+      if (!reserved && !name.startsWith(`${project}_`) && !name.startsWith(`${project}-`)) continue;
+      const inspected = await inspectResource(runtime, context, kind, name);
+      if (inspected._tag === "error") return inspected;
+      const { labels } = inspected.value;
+      const owner = labels?.[COMPOSE_PROJECT_LABEL];
+      if (owner !== undefined && !/^[a-z0-9][a-z0-9_-]*$/.test(owner))
+        return fail("inspection", `${kind} project label`);
+      if (reserved || owner === undefined || owner === project || !inProjectNamespace(name, owner))
+        refuse(kind, name, false, notMendsWhy(labels, kind, project));
+    }
+  }
+
+  const [first] = inTheWay;
+  if (first !== undefined) return { _tag: "ok", value: { _tag: "in-the-way", inTheWay: first } };
+  if (left.container.length + left.network.length + left.volume.length === 0)
+    return { _tag: "ok", value: null };
+  return {
+    _tag: "ok",
+    value: {
+      _tag: "leftovers",
+      leftovers: {
+        dockerContext: context,
+        containers: left.container,
+        networks: left.network,
+        volumes: left.volume,
+      },
+    },
+  };
 };
 
 const refuseOldData = async (
@@ -283,62 +541,82 @@ const refuseOldData = async (
   namespace: ServerDockerNamespace,
   volumes: ReadonlyArray<string>,
 ): Promise<Result<void>> => {
-  const refused = await findOldData(runtime, context, namespace, volumes);
-  if (refused._tag === "ok" || refused.error.reason !== "unowned-data") return refused;
-  // Data in the way that carries Mend's own installation label, with no anchor beside it, is what
-  // an earlier install left (an uninstall that could not finish): say how to finish it. Anything
-  // unlabelled keeps the plain refusal.
-  const labelled = await listNames(
-    runtime,
-    context,
-    "volume",
-    undefined,
-    SERVER_VOLUME_OWNER_LABEL,
-  );
-  if (labelled._tag === "error" || labelled.value.length === 0) return refused;
+  const found = await findOldData(runtime, context, namespace, volumes);
+  if (found._tag === "error") return found;
+  if (found.value === null) return { _tag: "ok", value: undefined };
   return {
     _tag: "error",
-    error: new ServerVolumeOwnershipError(refused.error.reason, refused.error.operation, true),
+    error: new ServerVolumeOwnershipError(
+      "unowned-data",
+      found.value._tag === "leftovers"
+        ? "leftovers without anchor"
+        : `existing ${found.value.inTheWay.kind} without anchor`,
+      found.value,
+    ),
   };
 };
 
-const findOldData = async (
+/** What `findServerOldData` read: what stands in the way, nothing (null), or why it could not say. */
+export type ServerOldDataResult =
+  | { readonly _tag: "ok"; readonly value: ServerOldData | null }
+  | { readonly _tag: "error"; readonly error: ServerVolumeOwnershipError };
+
+/**
+ * What stands in a fresh install's way in a Docker engine: an earlier install's leftovers, something
+ * else, or nothing (null). Null as well when the anchor exists: that is an installation, and the
+ * claim decides whose. Reads only. The namespace with Garage by default: a bundle without it never
+ * makes that volume, so one there is an install's all the same.
+ */
+export const findServerOldData = async (
   runtime: Runtime,
-  context: string,
-  namespace: ServerDockerNamespace,
-  volumes: ReadonlyArray<string>,
-): Promise<Result<void>> => {
-  if (
-    volumes.some(
-      (name) =>
-        secondaryVolumesOf(namespace).includes(name) || name.startsWith(`${namespace.project}_`),
-    )
-  )
-    return fail("unowned-data", "existing volumes without anchor");
-  for (const kind of ["volume", "container", "network"] as const) {
-    const labelled = await listNames(runtime, context, kind, namespace.project);
-    if (labelled._tag === "error") return labelled;
-    if (labelled.value.length > 0) return fail("unowned-data", `existing ${kind} without anchor`);
-    if (kind !== "volume") {
-      const named = await listNames(runtime, context, kind);
-      if (named._tag === "error") return named;
-      for (const name of named.value) {
-        if (reservedResourceName(name, kind, namespace))
-          return fail("unowned-data", `existing ${kind} without anchor`);
-        if (name.startsWith(`${namespace.project}_`) || name.startsWith(`${namespace.project}-`)) {
-          const foreign = await inspectForeignProject(
-            runtime,
-            context,
-            kind,
-            name,
-            namespace.project,
+  dockerContext: string,
+  namespace: ServerDockerNamespace = MEND_DOCKER_NAMESPACE_WITH_GARAGE,
+): Promise<ServerOldDataResult> => {
+  const volumes = await listNames(runtime, dockerContext, "volume");
+  if (volumes._tag === "error") return volumes;
+  if (volumes.value.includes(namespace.store)) return { _tag: "ok", value: null };
+  return findOldData(runtime, dockerContext, namespace, volumes.value);
+};
+
+/**
+ * Remove an earlier install's leftovers as `findServerOldData` named them, on the person's word:
+ * its stopped containers with their anonymous volumes, then its networks, then its volumes and
+ * what they hold. Each kind is said as it goes; what Docker refused comes back in words. A
+ * container that started since is refused by Docker (no `--force`), never stopped here.
+ */
+export const removeServerLeftovers = async (
+  runtime: Runtime,
+  leftovers: ServerLeftovers,
+  write: (line: string) => void,
+): Promise<ReadonlyArray<string>> => {
+  const failures: Array<string> = [];
+  const context = leftovers.dockerContext;
+  const kinds = [
+    ["container", leftovers.containers],
+    ["network", leftovers.networks],
+    ["volume", leftovers.volumes],
+  ] as const;
+  for (const [kind, names] of kinds) {
+    const removed: Array<string> = [];
+    for (const name of names) {
+      const args = kind === "container" ? ["container", "rm", "-v", name] : [kind, "rm", name];
+      try {
+        const output = await runtime.run("docker", ["--context", context, ...args]);
+        if (output.status === 0 && output.error === undefined) removed.push(name);
+        else
+          failures.push(
+            `could not remove ${kind} ${name}: ${(output.error ?? output.stderr.trim()) || "no output"}`,
           );
-          if (foreign._tag === "error") return foreign;
-        }
+      } catch (cause) {
+        failures.push(
+          `could not remove ${kind} ${name}: ${cause instanceof Error ? cause.message : String(cause)}`,
+        );
       }
     }
+    if (removed.length > 0)
+      write(`removed ${kind}${removed.length === 1 ? "" : "s"} ${removed.join(", ")}`);
   }
-  return { _tag: "ok", value: undefined };
+  return failures;
 };
 
 /** The installation label's value for an identity: the hash of its exact persisted bytes. */

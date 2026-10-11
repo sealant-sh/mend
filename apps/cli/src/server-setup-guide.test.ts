@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 
+import type { ServerLeftovers } from "./server-docker-volumes.ts";
 import {
   chooseDockerEngine,
   type DockerEngine,
   flagsFor,
   type GuideObservations,
   type GuideOutcome,
+  offerLeftoverRemoval,
   runGuide,
   sameSettings,
   setupCommandOf,
@@ -960,5 +962,66 @@ describe("which Docker Mend runs in", () => {
     expect((await ask(["2"], "desktop-linux")).picked).toBe("orbstack");
     expect((await ask([""], "colima")).lines.at(-1)).toBe("  1-3 [3]: ");
     expect((await ask([], "desktop-linux")).picked).toBeNull();
+  });
+});
+
+/** The leftovers question with scripted answers; every prompt and line is kept, answers echoed. */
+const askLeftovers = async (answers: ReadonlyArray<string>, leftovers: ServerLeftovers) => {
+  const queue = [...answers];
+  const lines: Array<string> = [];
+  const remove = await offerLeftoverRemoval(
+    {
+      write: (line) => lines.push(line),
+      ask: async (prompt) => {
+        const given = queue.shift();
+        lines.push(`${prompt}${given ?? "^D"}`);
+        return given ?? null;
+      },
+    },
+    leftovers,
+  );
+  return { remove, lines };
+};
+
+describe("an earlier install's leftovers", () => {
+  const ask = askLeftovers;
+  const NETWORK: ServerLeftovers = {
+    dockerContext: "orbstack",
+    containers: [],
+    networks: ["mend_default"],
+    volumes: [],
+  };
+
+  it("names what it found, and Enter keeps it", async () => {
+    const { remove, lines } = await ask([""], NETWORK);
+    expect(remove).toBe(false);
+    expect(lines).toEqual([
+      "",
+      "Docker context orbstack holds what an earlier Mend install left, and no installation owns it:",
+      "  network mend_default",
+      "Setup does not install beside it.",
+      "Remove it now? [y/N] ",
+    ]);
+  });
+
+  it("says plainly that removing volumes deletes their data; only a yes removes, and Ctrl+D stops", async () => {
+    const leftovers: ServerLeftovers = {
+      dockerContext: "orbstack",
+      containers: ["mend-mend-1"],
+      networks: ["mend_default"],
+      volumes: ["mend-control", "mend_mend-postgres"],
+    };
+    const { remove, lines } = await ask(["y"], leftovers);
+    expect(remove).toBe(true);
+    expect(lines.slice(1, -1)).toEqual([
+      "Docker context orbstack holds what an earlier Mend install left, and no installation owns them:",
+      "  container mend-mend-1",
+      "  network mend_default",
+      "  2 volumes (mend-control, mend_mend-postgres)",
+      "The volumes may hold that install's data (its database, repositories and captures). Removing them deletes that data for good. To keep it, put that install's Mend config directory (identity.env and generations) back where it was and run mend server setup: setup takes up the volumes its identity owns.",
+      "Setup does not install beside them.",
+    ]);
+    expect((await ask(["n"], leftovers)).remove).toBe(false);
+    expect((await ask([], leftovers)).remove).toBeNull();
   });
 });

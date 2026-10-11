@@ -4,8 +4,10 @@ import { describe, expect, it } from "vitest";
 
 import {
   claimServerDockerVolumes,
+  findServerOldData,
   MEND_DOCKER_NAMESPACE,
   MEND_DOCKER_NAMESPACE_WITH_GARAGE,
+  removeServerLeftovers,
   SERVER_VOLUME_OWNER_LABEL,
   verifyServerDockerVolumes,
 } from "./server-docker-volumes.ts";
@@ -25,6 +27,10 @@ class DockerDaemon implements Pick<ServerSetupRuntime, "run"> {
   readonly volumes = new Map<string, Labels>();
   readonly containers = new Map<string, Labels>();
   readonly networks = new Map<string, Labels>();
+  /** Containers that run; the rest are stopped. */
+  readonly running = new Set<string>();
+  /** The running containers attached to each network. */
+  readonly attached = new Map<string, ReadonlyArray<string>>();
   readonly commands: ReadonlyArray<string>[] = [];
   beforeCommand: (args: ReadonlyArray<string>) => Promise<void> = async () => {};
   response: (args: ReadonlyArray<string>) => ReturnType<typeof ok> | undefined = () => undefined;
@@ -73,16 +79,37 @@ class DockerDaemon implements Pick<ServerSetupRuntime, "run"> {
     if (operation === "inspect") {
       const name = args[4] ?? "";
       if (!collection.has(name)) return { status: 1, stdout: "", stderr: "No such resource" };
-      if (kind !== "volume")
+      // Only the ownership evidence: never a container's whole config, which holds its secrets.
+      if (kind === "container")
         expect(args.at(-1)).toBe(
-          `{"Name":{{json .Name}},"Labels":{{json .${kind === "container" ? "Config.Labels" : "Labels"}}}}`,
+          '{"Name":{{json .Name}},"Labels":{{json .Config.Labels}},"Running":{{json .State.Running}}}',
+        );
+      if (kind === "network")
+        expect(args.at(-1)).toBe(
+          '{"Name":{{json .Name}},"Labels":{{json .Labels}},"Containers":{{json .Containers}}}',
         );
       return ok(
         JSON.stringify({
           Name: kind === "container" ? `/${name}` : name,
           Labels: collection.get(name),
+          ...(kind === "container" ? { Running: this.running.has(name) } : {}),
+          ...(kind === "network"
+            ? {
+                Containers: Object.fromEntries(
+                  (this.attached.get(name) ?? []).map((container, index) => [
+                    `id${index}`,
+                    { Name: container },
+                  ]),
+                ),
+              }
+            : {}),
         }),
       );
+    }
+    if (operation === "rm") {
+      const name = args.at(-1) ?? "";
+      if (!collection.delete(name)) return { status: 1, stdout: "", stderr: "No such resource" };
+      return ok(name);
     }
     throw new Error(`Unexpected Docker command: ${args.join(" ")}`);
   }
@@ -518,5 +545,135 @@ describe("daemon data ownership", () => {
       namespace.store,
       namespace.control,
     ]);
+  });
+});
+
+describe("what stands in a fresh install's way", () => {
+  const project = { "com.docker.compose.project": "mend" };
+  const generation = {
+    ...project,
+    "com.docker.compose.project.working_dir":
+      "/Users/a/.config/mend/generations/gen-00000000-0000-4000-8000-000000000000",
+  };
+
+  it("names an earlier install's network with nothing attached as a leftover, and removing it clears the way", async () => {
+    const daemon = new DockerDaemon();
+    daemon.networks.set("mend_default", project);
+    const refused = await claimServerDockerVolumes(daemon, input);
+    expect(refused).toMatchObject({
+      _tag: "error",
+      error: {
+        reason: "unowned-data",
+        found: {
+          _tag: "leftovers",
+          leftovers: {
+            dockerContext: input.dockerContext,
+            containers: [],
+            networks: ["mend_default"],
+            volumes: [],
+          },
+        },
+        message:
+          "Docker context explicit-test-context holds what an earlier Mend install left, and no installation owns it: network mend_default. Setup does not install beside it. To remove it: DOCKER_CONTEXT=explicit-test-context mend uninstall --server, then run mend server setup again.",
+      },
+    });
+    expect(daemon.mutations()).toEqual([]);
+    const found = await findServerOldData(daemon, input.dockerContext);
+    if (found._tag !== "ok" || found.value?._tag !== "leftovers")
+      throw new Error("expected leftovers");
+    const lines: Array<string> = [];
+    expect(
+      await removeServerLeftovers(daemon, found.value.leftovers, (line) => lines.push(line)),
+    ).toEqual([]);
+    expect(lines).toEqual(["removed network mend_default"]);
+    expect(await claimServerDockerVolumes(daemon, input)).toMatchObject({ _tag: "ok" });
+  });
+
+  it("counts a generation's stopped containers and the bundle's labelled volumes as leftovers, the volumes as data", async () => {
+    const daemon = new DockerDaemon();
+    daemon.containers.set("mend-mend-1", generation);
+    daemon.networks.set("mend_default", project);
+    daemon.volumes.set("mend_mend-postgres", project);
+    daemon.volumes.set("mend-control", { [SERVER_VOLUME_OWNER_LABEL]: "an-identity-long-gone" });
+    expect(await claimServerDockerVolumes(daemon, input)).toMatchObject({
+      _tag: "error",
+      error: {
+        message:
+          "Docker context explicit-test-context holds what an earlier Mend install left, and no installation owns them: container mend-mend-1, network mend_default, 2 volumes (mend_mend-postgres, mend-control). The volumes may hold that install's data, and removing them deletes that data. To keep it, put that install's Mend config directory (identity.env and generations) back where it was and run mend server setup: setup takes up the volumes its identity owns. Setup does not install beside them. To remove them: DOCKER_CONTEXT=explicit-test-context mend uninstall --server, then run mend server setup again.",
+      },
+    });
+    expect(daemon.mutations()).toEqual([]);
+  });
+
+  it("refuses Mend's own network or container while something runs on it, naming what", async () => {
+    const daemon = new DockerDaemon();
+    daemon.networks.set("mend_default", project);
+    daemon.attached.set("mend_default", ["sealant-w1"]);
+    expect(await claimServerDockerVolumes(daemon, input)).toMatchObject({
+      _tag: "error",
+      error: {
+        found: { _tag: "in-the-way", inTheWay: { kind: "network", mend: true } },
+        message:
+          "Docker context explicit-test-context has network mend_default from an earlier Mend install, with no installation to own it, and container sealant-w1 is attached to it. Setup leaves it alone. To see what it is: docker --context explicit-test-context network inspect mend_default. Stop what runs there, then remove what that install left with DOCKER_CONTEXT=explicit-test-context mend uninstall --server, or install in another Docker context: mend server setup --context <name>.",
+      },
+    });
+    const running = new DockerDaemon();
+    running.containers.set("mend-mend-1", generation);
+    running.running.add("mend-mend-1");
+    expect(await claimServerDockerVolumes(running, input)).toMatchObject({
+      _tag: "error",
+      error: {
+        found: { _tag: "in-the-way", inTheWay: { name: "mend-mend-1", why: "it is running" } },
+      },
+    });
+    // A container of the project a generation did not start is not Mend's.
+    const other = new DockerDaemon();
+    other.containers.set("mend-api-1", project);
+    expect(await claimServerDockerVolumes(other, input)).toMatchObject({
+      _tag: "error",
+      error: {
+        found: {
+          _tag: "in-the-way",
+          inTheWay: {
+            mend: false,
+            why: "carries Compose project label mend, but no Mend install started it",
+          },
+        },
+      },
+    });
+  });
+
+  it.each([
+    [null, "carries no labels"],
+    [{ "com.docker.compose.project": "other" }, "belongs to Compose project other"],
+    [{ "com.example.owner": "someone" }, "carries no Compose project label"],
+  ] as const)(
+    "names a same-named network that is not Mend's (labels %j) and offers nothing to remove",
+    async (labels, why) => {
+      const daemon = new DockerDaemon();
+      daemon.networks.set("mend_default", labels);
+      expect(await claimServerDockerVolumes(daemon, input)).toMatchObject({
+        _tag: "error",
+        error: {
+          reason: "unowned-data",
+          message: `Docker context explicit-test-context has a network named mend_default that is not Mend's: it ${why}. Setup leaves it alone and cannot install beside it. To see what it is: docker --context explicit-test-context network inspect mend_default. Remove it yourself if nothing needs it, or install in another Docker context: mend server setup --context <name>.`,
+        },
+      });
+      expect(await findServerOldData(daemon, input.dockerContext)).toMatchObject({
+        _tag: "ok",
+        value: { _tag: "in-the-way" },
+      });
+      expect([...daemon.networks]).toEqual([["mend_default", labels]]);
+    },
+  );
+
+  it("reads nothing in the way once an anchor exists: the claim decides whose it is", async () => {
+    const daemon = new DockerDaemon();
+    daemon.volumes.set("mend-store", { [SERVER_VOLUME_OWNER_LABEL]: owner });
+    daemon.networks.set("mend_default", project);
+    expect(await findServerOldData(daemon, input.dockerContext)).toEqual({
+      _tag: "ok",
+      value: null,
+    });
   });
 });
