@@ -28,7 +28,11 @@ import {
   serverProcessDeadlines,
   type ServerProcessOutput,
 } from "./server-runtime.ts";
-import { readServerInstallation, type ServerSetupRuntime } from "./server-setup.ts";
+import {
+  NETWORK_GUARD_IMAGE,
+  readServerInstallation,
+  type ServerSetupRuntime,
+} from "./server-setup.ts";
 import { ServerRefusal, withServerStore } from "./server-store.ts";
 import type { ThisMachineKeyRemoval } from "./ssh-setup.ts";
 
@@ -177,6 +181,19 @@ export interface ServerPlan {
   readonly leftByEarlier?: ReadonlyArray<string>;
   /** With `all`: images, build cache and the sysctl file. */
   readonly extras?: HostExtras;
+  /**
+   * What Docker holds of the server itself, as observed: absent when Docker could not be asked,
+   * and the plan then names everything an install has. A re-run after a partial uninstall names
+   * only what is still there.
+   */
+  readonly present?: ServerPresent;
+}
+
+/** The server's own Compose containers (by service), volumes and release image Docker holds. */
+export interface ServerPresent {
+  readonly containers: ReadonlyArray<string>;
+  readonly volumes: ReadonlyArray<string>;
+  readonly image: boolean;
 }
 
 /**
@@ -508,6 +525,93 @@ export const findWorkspaces = async (
   };
 };
 
+/** The Compose services an install runs, in the order uninstall names them. */
+const serverServices = (plan: {
+  readonly edgeHost?: string | null | undefined;
+  /** The mirrors' services (`mirrorServices`). */
+  readonly mirrors?: ReadonlyArray<string> | undefined;
+}): ReadonlyArray<string> => [
+  "mend",
+  "postgres",
+  "garage",
+  ...(plan.edgeHost == null ? [] : ["edge"]),
+  ...(plan.mirrors ?? []),
+];
+
+/**
+ * The services Compose has a container for, running or not, in `serverServices` order and then any
+ * other; null when Compose did not answer.
+ */
+const composeServices = async (
+  run: Run,
+  target: Parameters<typeof serverComposeArgs>[0],
+): Promise<ReadonlyArray<string> | null> => {
+  const listed = await run("docker", serverComposeArgs(target, ["ps", "--all", "--services"]), {
+    timeoutMs: DOCKER_DEADLINE_MS,
+  });
+  if (listed.status !== 0) return null;
+  const order = ["mend", "postgres", "garage", "edge", "npm-mirror", "docker-mirror"];
+  const rank = (service: string) => {
+    const at = order.indexOf(service);
+    return at === -1 ? order.length : at;
+  };
+  return [
+    ...new Set(
+      rows(listed.stdout)
+        .map(([service]) => service ?? "")
+        .filter((service) => DOCKER_NAME.test(service)),
+    ),
+  ].toSorted((a, b) => rank(a) - rank(b));
+};
+
+/**
+ * The server's volumes as the plan names them: the external ones by their own names, the
+ * Compose-owned ones without Compose's `mend_` prefix.
+ */
+const serverVolumes = (plan: {
+  readonly edgeHost: string | null;
+  readonly mirrors?: ReadonlyArray<string>;
+  readonly t3GatewayVolume?: boolean;
+}): ReadonlyArray<string> => [
+  MEND_DOCKER_NAMESPACE_WITH_GARAGE.store,
+  ...secondaryVolumesOf(MEND_DOCKER_NAMESPACE_WITH_GARAGE),
+  "mend-config",
+  "mend-ssh",
+  "mend-postgres",
+  ...(plan.edgeHost === null ? [] : ["mend-edge-data", "mend-edge-config"]),
+  ...(plan.mirrors ?? []).map((service) => `mend-${service}`),
+  // The t3code gateway's state, with paired people's device tokens, when it is there.
+  ...(plan.t3GatewayVolume === true ? [T3_GATEWAY_VOLUME] : []),
+];
+
+/** What of the server Docker holds; undefined when Docker could not list it. */
+const serverPresent = async (
+  run: Run,
+  target: Parameters<typeof serverComposeArgs>[0],
+  volumes: ReadonlyArray<string>,
+  image: string,
+): Promise<ServerPresent | undefined> => {
+  const containers = await composeServices(run, target);
+  const listed = await listNamesIn(run, target.dockerContext, "volume", []);
+  if (containers === null || "problem" in listed) return undefined;
+  const inspected = await dockerIn(run, target.dockerContext, [
+    "image",
+    "inspect",
+    image,
+    "--format",
+    "{{.Id}}",
+  ]);
+  return {
+    containers,
+    volumes: volumes.filter(
+      (name) =>
+        listed.includes(name) || listed.includes(`${MEND_DOCKER_NAMESPACE.project}_${name}`),
+    ),
+    // Unknown is not gone: only Docker saying there is no such image leaves it out.
+    image: inspected.status === 0 || !notFound(inspected),
+  };
+};
+
 /** Whatever an earlier run wrote to `uninstall-left.json`; empty when there is none. */
 const readLeft = (configDir: string): ReadonlyArray<string> => {
   try {
@@ -770,9 +874,20 @@ export const describeUninstall = async (
       let holdings: DockerHoldings = NO_HOLDINGS;
       let t3GatewayVolume = config.t3GatewayPort !== undefined;
       let extras: HostExtras | undefined;
+      let present: ServerPresent | undefined;
       if (dockerProblem === null) {
         t3GatewayVolume ||=
           (await volumeOwner(run, context, `mend_${T3_GATEWAY_VOLUME}`)).state === "present";
+        present = await serverPresent(
+          run,
+          { directory, dockerContext: context, overlays: composeOverlays(config) },
+          serverVolumes({
+            edgeHost: config.edgeHost ?? null,
+            mirrors: mirrorServices(config.mirrors),
+            t3GatewayVolume,
+          }),
+          `ghcr.io/sealant-sh/mend:${config.serverVersion}`,
+        );
         const control = await volumeOwner(run, context, MEND_DOCKER_NAMESPACE.control);
         const owner =
           read.value.identity === null ? null : serverVolumeOwner(Buffer.from(read.value.identity));
@@ -800,6 +915,9 @@ export const describeUninstall = async (
           const candidates = [
             ...(composed.status === 0 ? composed.stdout.split(/\s+/) : []),
             ...(guard.status === 0 ? [guard.stdout.trim()] : []),
+            // By its pin too: a re-run after a partial uninstall no longer has the Mend image,
+            // and so no label to read it from.
+            NETWORK_GUARD_IMAGE,
             DOCKER_SERVICE_IMAGE,
             // The edge's image stays after `--no-edge`, when the overlay no longer names it.
             EDGE_IMAGE,
@@ -828,6 +946,7 @@ export const describeUninstall = async (
         holdings,
         leftByEarlier: readLeft(configDir),
         ...(extras === undefined ? {} : { extras }),
+        ...(present === undefined ? {} : { present }),
       };
     }
   }
@@ -926,17 +1045,18 @@ export const planLines = (plan: UninstallPlan, configDir: string): ReadonlyArray
       `server   Mend ${version}${appUrl === "" ? "" : ` at ${appUrl}`}${dockerContext === "" ? "" : ` · docker context ${dockerContext}`}`,
     );
     if (dockerContext !== "") {
-      const mirrors = plan.server.mirrors ?? [];
-      const edge = [...(edgeHost === null ? [] : ["edge"]), ...mirrors];
-      const edgeVolumes = [
-        ...(edgeHost === null ? [] : ["mend-edge-data", "mend-edge-config"]),
-        ...mirrors.map((service) => `mend-${service}`),
-        // The t3code gateway's state, with paired people's device tokens, when it is there.
-        ...(plan.server.t3GatewayVolume === true ? [T3_GATEWAY_VOLUME] : []),
+      // Only what Docker still holds, when it was asked: a re-run names nothing already gone.
+      const present = plan.server.present;
+      const containers = present?.containers ?? serverServices(plan.server);
+      const volumes = present?.volumes ?? serverVolumes(plan.server);
+      const image = present === undefined || present.image;
+      const parts = [
+        ...(containers.length === 0 ? [] : [`containers ${containers.join(", ")}`]),
+        ...(volumes.length === 0 ? [] : [`volumes ${volumes.join(", ")}`]),
+        ...(image ? [`image ghcr.io/sealant-sh/mend:${version}`] : []),
+        ...(edgeHost === null ? [] : [`the edge for ${edgeHost}`]),
       ];
-      lines.push(
-        `         containers ${["mend", "postgres", "garage", ...edge].join(", ")} · volumes ${[MEND_DOCKER_NAMESPACE_WITH_GARAGE.store, ...secondaryVolumesOf(MEND_DOCKER_NAMESPACE_WITH_GARAGE), "mend-config", "mend-ssh", "mend-postgres", ...edgeVolumes].join(", ")} · image ghcr.io/sealant-sh/mend:${version}${edgeHost === null ? "" : ` · the edge for ${edgeHost}`}`,
-      );
+      if (parts.length > 0) lines.push(`         ${parts.join(" · ")}`);
     }
     lines.push(
       `         ${configDir}: identity.env, active, ${plural(generations, "generation")}, ${plural(backups, "backup")}`,
@@ -1022,6 +1142,11 @@ export interface UninstallOutcome {
   readonly leftovers: ReadonlyArray<string>;
   /** Short names of what stays on this machine, for the last line; empty when nothing does. */
   readonly remaining: ReadonlyArray<string>;
+  /**
+   * What the plan named that the uninstall did not get to, because it stopped first: not kept by
+   * anyone's choice, so never said as "kept". Absent when it got to everything.
+   */
+  readonly notReached?: ReadonlyArray<string>;
 }
 
 interface Report {
@@ -1032,10 +1157,10 @@ interface Report {
 }
 
 /**
- * Remove workspace containers (with their anonymous volumes: the Docker service keeps its image
- * store in one) and then their networks. Returns the names it could not remove.
+ * Remove workspace containers, with their anonymous volumes: the Docker service keeps its image
+ * store in one. Returns the names it could not remove.
  */
-const removeWorkspaces = async (
+const removeWorkspaceContainers = async (
   run: Run,
   context: string,
   holdings: DockerHoldings,
@@ -1065,8 +1190,23 @@ const removeWorkspaces = async (
       `removed ${plural(removed.length, "workspace container")}${live > 0 ? `, ${live} of them live` : ""}, with their volumes (${listOf(removed)})`,
     );
   }
+  return left;
+};
+
+/**
+ * Remove workspace networks. Only once nothing of the server's is on them either: the Docker
+ * mirror joins every workspace's network, and Docker refuses to remove a network a container is
+ * still attached to (RC 0.36.0-next.761). Returns the names it could not remove.
+ */
+const removeWorkspaceNetworks = async (
+  run: Run,
+  context: string,
+  names: ReadonlyArray<string>,
+  report: Report,
+): Promise<ReadonlyArray<string>> => {
+  const left: Array<string> = [];
   const networks: Array<string> = [];
-  for (const name of holdings.networks) {
+  for (const name of names) {
     const gone = await dockerIn(run, context, ["network", "rm", name]);
     if (gone.status === 0 || notFound(gone)) networks.push(name);
     else {
@@ -1166,6 +1306,9 @@ const removeServer = async (
           const control = await volumeOwner(run, context, namespace.control);
           return control.state === "present" && owner !== null && control.owner === owner;
         };
+        // Workspace networks wait until the server's own containers are gone: the Docker mirror
+        // is attached to each of them.
+        const workspaceNetworks = new Set<string>();
         const sweepWorkspaces = async (): Promise<void> => {
           if (!(await controlIsOurs())) return;
           const found = await findWorkspaces(run, context, namespace.control);
@@ -1173,13 +1316,16 @@ const removeServer = async (
             report.failures.push(`could not list the installation's workspaces: ${found.problem}`);
             return;
           }
-          left.push(...(await removeWorkspaces(run, context, found, report)));
+          left.push(...(await removeWorkspaceContainers(run, context, found, report)));
+          for (const name of found.networks) workspaceNetworks.add(name);
         };
         const target = {
           directory: installation.directory,
           dockerContext: context,
           overlays: composeOverlays(installation.config),
         };
+        // What Compose has here before anything stops, so the output names only what was there.
+        const services = await composeServices(run, target);
 
         // The server first stops launching (its app container stops), then its sessions' workspaces
         // go, live ones included, so nothing holds the control volume or the project network.
@@ -1188,7 +1334,8 @@ const removeServer = async (
         });
         await sweepWorkspaces();
         const pending = await pendingHoldings(run, context, plan.leftByEarlier ?? []);
-        left.push(...(await removeWorkspaces(run, context, pending.holdings, report)));
+        left.push(...(await removeWorkspaceContainers(run, context, pending.holdings, report)));
+        for (const name of pending.holdings.networks) workspaceNetworks.add(name);
 
         // Containers, the project network and the Compose-owned volumes go together; a
         // failure here keeps the files, so the next attempt can still find the installation.
@@ -1202,11 +1349,21 @@ const removeServer = async (
             `Docker did not take the server down (docker compose down: ${detail(down)}). Its volumes and files are kept; run mend uninstall again once Docker answers.`,
           );
         }
-        server.writeLine(
-          `removed containers ${["mend", "postgres", "garage", ...mirrorServices(installation.config.mirrors)].join(", ")} and the Compose-owned volumes`,
-        );
+        const containers =
+          services ??
+          serverServices({
+            edgeHost: installation.config.edgeHost,
+            mirrors: mirrorServices(installation.config.mirrors),
+          });
+        if (containers.length > 0) {
+          server.writeLine(
+            `removed containers ${containers.join(", ")} and the Compose-owned volumes`,
+          );
+        }
         // A workspace the server started while it stopped.
         await sweepWorkspaces();
+        // The server's containers, the mirrors among them, are off the workspaces' networks now.
+        left.push(...(await removeWorkspaceNetworks(run, context, [...workspaceNetworks], report)));
 
         // What Compose left: its project network while a workspace still held it, and the bundle's
         // volumes it could not remove. The t3code gateway's volume, with paired people's device
@@ -1333,7 +1490,9 @@ const removeLeftovers = async (
       report.failures.push(`could not remove container ${name}: ${detail(gone)}`);
     }
   }
-  left.push(...(await removeWorkspaces(run, context, plan.holdings, report)));
+  // The earlier install's containers went first, so nothing of its holds the workspaces' networks.
+  left.push(...(await removeWorkspaceContainers(run, context, plan.holdings, report)));
+  left.push(...(await removeWorkspaceNetworks(run, context, plan.holdings.networks, report)));
   left.push(...(await removeEach(run, context, "network", plan.networks, report)));
   // Each labelled volume once more by its label at removal: nothing else's data goes.
   const volumes: Array<string> = [];
@@ -1424,6 +1583,40 @@ const removeHostExtras = async (
     );
   }
   if (refused.length > 0) report.remaining.push(plural(refused.length, "image"));
+};
+
+/** What `all` removes once the server is gone, as said when the uninstall stopped before it. */
+const notReachedExtras = (extras: HostExtras): ReadonlyArray<string> => [
+  ...(extras.images.length === 0
+    ? []
+    : [`${plural(extras.images.length, "image")} (${listOf(extras.images, 4)})`]),
+  ...(extras.sysctl.state === "mend" ? [HOST_USER_NAMESPACE_SYSCTL_FILE] : []),
+];
+
+/**
+ * Docker's build cache after the uninstall ran, by the answer to its separate question. A yes is
+ * carried out once the server is gone; a yes the uninstall stopped before is "not reached", never
+ * "kept" (RC 0.36.0-next.761 on a Mac said "kept" after a y). Returns the line to say.
+ */
+export const settleBuildCache = async (
+  runtime: UninstallRuntime,
+  context: string,
+  size: string,
+  clear: boolean,
+  outcome: UninstallOutcome,
+): Promise<{ readonly kind: "removed" | "kept" | "not reached"; readonly line: string }> => {
+  const prune = `docker --context ${context} builder prune --all removes it`;
+  if (!clear) return { kind: "kept", line: `Docker's build cache, ${size}: ${prune}` };
+  if (outcome.failures.length > 0) {
+    return {
+      kind: "not reached",
+      line: `Docker's build cache, ${size}: the uninstall stopped before it; run mend uninstall again, or ${prune}`,
+    };
+  }
+  const problem = await clearBuildCache(runtime, context);
+  return problem === null
+    ? { kind: "removed", line: `removed Docker's build cache (${size})` }
+    : { kind: "kept", line: `Docker's build cache, ${size} (${problem}): ${prune}` };
 };
 
 /** Clear Docker's build cache, after the plan's separate question. */
@@ -1566,10 +1759,12 @@ export const executeUninstall = async (
     leftovers: [],
     remaining: [],
   };
+  const notReached: Array<string> = [];
   const done = (): UninstallOutcome => ({
     failures: report.failures,
     leftovers: report.leftovers,
     remaining: report.remaining,
+    ...(notReached.length === 0 ? {} : { notReached }),
   });
   const refusal = planRefusal(plan);
   if (refusal !== null) {
@@ -1583,6 +1778,8 @@ export const executeUninstall = async (
     serverGone = true;
     if (server === "removed" && plan.server.extras !== undefined) {
       await removeHostExtras(runtime, plan.server.dockerContext, plan.server.extras, report);
+    } else if (plan.server.extras !== undefined) {
+      notReached.push(...notReachedExtras(plan.server.extras));
     }
   } else if (isLeftovers(plan.server)) {
     await removeLeftovers(runtime, plan.server, report);

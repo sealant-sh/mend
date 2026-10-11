@@ -293,8 +293,10 @@ uninstall names it and how to delete it by hand.
 
 If Docker refuses to remove something, uninstall names it and keeps the `mend-store` volume and the
 identity, so running `mend uninstall` again finishes the job, and `mend server setup` can reinstall
-over it. Everything also offers Mend's images, the user-namespace sysctl file setup wrote, and, in
-its own question, Docker's build cache. The CLI stays until `npm uninstall -g @sealant/mend`.
+over it. Everything also offers Mend's images (the metadata guard's busybox among them), the
+user-namespace sysctl file setup wrote, and, in its own question, Docker's build cache. When an
+uninstall stops before those, it says each one was "not reached", and the next run removes them. The
+CLI stays until `npm uninstall -g @sealant/mend`.
 
 ## Next steps
 

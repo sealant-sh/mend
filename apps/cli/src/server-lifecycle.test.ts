@@ -12,6 +12,7 @@ import { SERVER_VOLUME_OWNER_LABEL } from "./server-docker-volumes.ts";
 import { serverProcessDeadlines, type ServerProcessOptions } from "./server-runtime.ts";
 import {
   isPreviewToNext,
+  NETWORK_GUARD_IMAGE,
   nodeServerRuntime,
   serverCommand,
   type ServerSetupRuntime,
@@ -22,6 +23,7 @@ import {
   executeUninstall,
   planLines,
   planRefusal,
+  settleBuildCache,
   type UninstallRuntime,
 } from "./uninstall.ts";
 
@@ -71,6 +73,8 @@ interface DaemonState {
   readonly imagesRefusedOnce?: ReadonlyArray<string>;
   /** Images a container outside the installation still runs. */
   readonly imagesInUse?: ReadonlyArray<string>;
+  /** The metadata guard's busybox is on this daemon, as setup preloads it. */
+  readonly guardImagePresent?: boolean;
 }
 interface Call {
   readonly args: ReadonlyArray<string>;
@@ -1944,7 +1948,15 @@ describe("the edge and the posture", { timeout: 120_000 }, () => {
     };
     const plan = await describeUninstall(runtime, "server");
     expect(plan.server).toMatchObject({ edgeHost: host });
+    // What this daemon holds: the fixture's Compose keeps no volumes of its own.
     expect(planLines(plan, f.configDir).join("\n")).toContain(
+      `containers mend, postgres, garage, edge, npm-mirror, docker-mirror · volumes mend-store, mend-control, mend-garage · image ghcr.io/sealant-sh/mend:0.23.0 · the edge for ${host}`,
+    );
+    // Docker not asked: everything an install with an edge and mirrors has.
+    if (plan.server === null || plan.server === "none" || "kind" in plan.server)
+      throw new Error("expected an installation");
+    const { present: _present, ...unobserved } = plan.server;
+    expect(planLines({ ...plan, server: unobserved }, f.configDir).join("\n")).toContain(
       `containers mend, postgres, garage, edge, npm-mirror, docker-mirror · volumes mend-store, mend-control, mend-garage, mend-config, mend-ssh, mend-postgres, mend-edge-data, mend-edge-config, mend-npm-mirror, mend-docker-mirror · image ghcr.io/sealant-sh/mend:0.23.0 · the edge for ${host}`,
     );
     const outcome = await executeUninstall(runtime, plan);
@@ -2031,6 +2043,11 @@ describe("server uninstall", { timeout: 60_000 }, () => {
       dockerProblem: null,
       holdings: { workspaces: [], sidecars: [], networks: [], images: [] },
       leftByEarlier: [],
+      present: {
+        containers: ["mend", "postgres", "garage", "npm-mirror", "docker-mirror"],
+        volumes: ["mend-store", "mend-control", "mend-garage"],
+        image: true,
+      },
     });
     const before = f.calls().length;
 
@@ -2222,6 +2239,78 @@ describe("server uninstall with live sessions", { timeout: 60_000 }, () => {
         "removed volume mend-store",
       ]),
     );
+  });
+
+  it("finishes in one run while the Docker mirror is attached to a live workspace's network (RC 761)", async () => {
+    const f = await fixture();
+    expect(await f.setup()).toEqual({ _tag: "ok" });
+    expect(await serverCommand(["start", "--offline"], f.runtime)).toEqual({ _tag: "ok" });
+    liveWorkspace(f);
+    // Sealant joins the mirror to every workspace's network; Compose owns its container.
+    seedDaemon(f, {
+      containers: [["mend-docker-mirror", { "com.docker.compose.project": "mend" }]],
+      facts: [["mend-docker-mirror", { networks: ["mend_default", "sealant-w1-network"] }]],
+    });
+    const runtime = uninstallRuntime(f);
+    const before = f.calls().length;
+    const outcome = await executeUninstall(runtime, await describeUninstall(runtime, "server"));
+    expect(outcome).toEqual({ failures: [], leftovers: [], remaining: [] });
+    const commands = f
+      .calls()
+      .slice(before)
+      .map((call) => (call.command.length > 0 ? call.command : call.args.slice(2)).join(" "));
+    // Workspace containers, then the server's own (the mirror among them), then the networks.
+    const rm = commands.indexOf("container rm -f -v sealant-w1");
+    const down = commands.indexOf("down --volumes --remove-orphans --timeout 30");
+    const network = commands.indexOf("network rm sealant-w1-network");
+    expect(rm).toBeGreaterThanOrEqual(0);
+    expect(down).toBeGreaterThan(rm);
+    expect(network).toBeGreaterThan(down);
+    expect(daemonNames(f, "containers")).toEqual([]);
+    expect(daemonNames(f, "networks")).toEqual([]);
+    for (const name of ["identity.env", "active", "generations", "uninstall-left.json"]) {
+      expect(fs.existsSync(path.join(f.configDir, name)), name).toBe(false);
+    }
+    expect(f.lines).toContain("removed workspace networks sealant-w1-network");
+  });
+
+  it("a re-run's plan and output name only what is still there (RC 761)", async () => {
+    const f = await fixture();
+    expect(await f.setup()).toEqual({ _tag: "ok" });
+    expect(await serverCommand(["start", "--offline"], f.runtime)).toEqual({ _tag: "ok" });
+    liveWorkspace(f);
+    // Something that is not the installation's holds the workspace's network: the first run stops.
+    seedDaemon(f, {
+      containers: [["someone-else", {}]],
+      facts: [["someone-else", { networks: ["sealant-w1-network"] }]],
+    });
+    const runtime = uninstallRuntime(f);
+    const first = await describeUninstall(runtime, "server");
+    expect(planLines(first, f.configDir)).toContain(
+      "         containers mend, postgres, garage, npm-mirror, docker-mirror · volumes mend-store, mend-control, mend-garage · image ghcr.io/sealant-sh/mend:0.23.0",
+    );
+    expect((await executeUninstall(runtime, first)).failures).toHaveLength(2);
+    expect(f.lines).toContain(
+      "removed containers mend, postgres, garage, npm-mirror, docker-mirror and the Compose-owned volumes",
+    );
+
+    const file = path.join(f.root, "docker-protocol.json");
+    const saved = JSON.parse(fs.readFileSync(file, "utf8"));
+    saved.facts = saved.facts.filter(([name]: [string]) => name !== "someone-else");
+    fs.writeFileSync(file, JSON.stringify(saved));
+    const again = await describeUninstall(runtime, "server");
+    const lines = planLines(again, f.configDir);
+    expect(lines).toContain("         volumes mend-store");
+    expect(lines.join("\n")).not.toContain("containers");
+    expect(lines.join("\n")).not.toContain("image ghcr.io");
+    const said = f.lines.length;
+    expect(await executeUninstall(runtime, again)).toEqual({
+      failures: [],
+      leftovers: [],
+      remaining: [],
+    });
+    expect(f.lines.slice(said).some((line) => line.startsWith("removed containers"))).toBe(false);
+    expect(f.lines.slice(said)).toContain("removed workspace networks sealant-w1-network");
   });
 
   it("keeps the anchor and identity while anything is left; a reinstall works over it and a second run finishes", async () => {
@@ -2441,6 +2530,91 @@ describe("server uninstall with live sessions", { timeout: 60_000 }, () => {
       "image registry:3.1: Error response from daemon: conflict: unable to remove registry:3.1. To remove it: docker --context saved-local image rm registry:3.1",
     ]);
     expect(outcome.remaining).toEqual(["1 image"]);
+  });
+
+  it("everything finishes in one run with a live session and the Docker mirror on its network, the guard image included (RC 761, Mac)", async () => {
+    const f = await fixture();
+    expect(await f.setup()).toEqual({ _tag: "ok" });
+    expect(await serverCommand(["start", "--offline"], f.runtime)).toEqual({ _tag: "ok" });
+    f.update({ sysctl: "mend", edgeImage: false, guardImagePresent: true });
+    liveWorkspace(f);
+    seedDaemon(f, {
+      containers: [["mend-docker-mirror", { "com.docker.compose.project": "mend" }]],
+      facts: [["mend-docker-mirror", { networks: ["mend_default", "sealant-w1-network"] }]],
+    });
+    const runtime = uninstallRuntime(f);
+    const plan = await describeUninstall(runtime, "all");
+    expect(plan.server).toMatchObject({
+      extras: { images: expect.arrayContaining([NETWORK_GUARD_IMAGE]) },
+    });
+    const outcome = await executeUninstall(runtime, plan);
+    expect(outcome.failures).toEqual([]);
+    expect(outcome.notReached).toBeUndefined();
+    expect(daemonNames(f, "networks")).toEqual([]);
+    expect(daemonNames(f, "volumes")).toEqual([]);
+    expect(f.state().sysctl).toBe("absent");
+    expect(f.state().removedImages).toContain(NETWORK_GUARD_IMAGE);
+  });
+
+  it("a stopped everything says what it did not reach, and a re-run still offers the guard image the Mend image named", async () => {
+    const f = await fixture();
+    expect(await f.setup()).toEqual({ _tag: "ok" });
+    expect(await serverCommand(["start", "--offline"], f.runtime)).toEqual({ _tag: "ok" });
+    f.update({ sysctl: "mend", edgeImage: false, guardImagePresent: true });
+    liveWorkspace(f);
+    seedDaemon(f, {
+      containers: [["someone-else", {}]],
+      facts: [["someone-else", { networks: ["sealant-w1-network"] }]],
+    });
+    const runtime = uninstallRuntime(f);
+    const first = await executeUninstall(runtime, await describeUninstall(runtime, "all"));
+    expect(first.failures).toHaveLength(2);
+    expect(first.notReached).toEqual([
+      expect.stringMatching(/^5 images \(postgres:17-alpine, /),
+      "/etc/sysctl.d/60-mend-rootless-docker.conf",
+    ]);
+    expect(f.state().removedImages ?? []).not.toContain(NETWORK_GUARD_IMAGE);
+
+    const file = path.join(f.root, "docker-protocol.json");
+    const saved = JSON.parse(fs.readFileSync(file, "utf8"));
+    saved.facts = saved.facts.filter(([name]: [string]) => name !== "someone-else");
+    fs.writeFileSync(file, JSON.stringify(saved));
+    // The Mend image went with the first run: no label left to name the guard by.
+    const again = await describeUninstall(runtime, "all");
+    expect(again.server).toMatchObject({
+      extras: { images: expect.arrayContaining([NETWORK_GUARD_IMAGE]) },
+    });
+    const outcome = await executeUninstall(runtime, again);
+    expect(outcome.failures).toEqual([]);
+    expect(f.state().removedImages).toContain(NETWORK_GUARD_IMAGE);
+    expect(f.state().sysctl).toBe("absent");
+  });
+
+  it("carries out a yes to the build cache once the server is gone, and says 'not reached' when it stopped first", async () => {
+    const f = await fixture();
+    expect(await f.setup()).toEqual({ _tag: "ok" });
+    f.update({ buildCache: "5.075GB" });
+    const runtime = uninstallRuntime(f);
+    const clean = { failures: [], leftovers: [], remaining: [] };
+    expect(await settleBuildCache(runtime, "saved-local", "5.075GB", false, clean)).toEqual({
+      kind: "kept",
+      line: "Docker's build cache, 5.075GB: docker --context saved-local builder prune --all removes it",
+    });
+    expect(
+      await settleBuildCache(runtime, "saved-local", "5.075GB", true, {
+        ...clean,
+        failures: ["the uninstall is not finished: …"],
+      }),
+    ).toEqual({
+      kind: "not reached",
+      line: "Docker's build cache, 5.075GB: the uninstall stopped before it; run mend uninstall again, or docker --context saved-local builder prune --all removes it",
+    });
+    expect(f.state().prunedBuildCache).toBeUndefined();
+    expect(await settleBuildCache(runtime, "saved-local", "5.075GB", true, clean)).toEqual({
+      kind: "removed",
+      line: "removed Docker's build cache (5.075GB)",
+    });
+    expect(f.state().prunedBuildCache).toBe(true);
   });
 
   it("leaves a sysctl file written by hand, naming the command that removes it", async () => {

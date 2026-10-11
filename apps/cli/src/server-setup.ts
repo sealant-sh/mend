@@ -1436,8 +1436,23 @@ const checkDocker = async (runtime: ServerSetupRuntime, context: string): Promis
   return info.stdout.trim();
 };
 
-/** The image setup reads and changes the Docker host's kernel through: every install pulls it. */
-const HOST_HELPER_IMAGE = "postgres:17-alpine";
+/**
+ * The image the worker runs to refuse the cloud metadata address in every workspace: what the Mend
+ * image's `dev.sealant.mend.network-guard-image` label names (the Dockerfile's
+ * MEND_NETWORK_GUARD_IMAGE), which every install preloads. A test holds it equal to the
+ * Dockerfile's pin. `mend uninstall --all` offers it even once the Mend image, and its label, are
+ * gone (RC 0.36.0-next.761 on a Mac: a re-run left it, unmentioned).
+ */
+export const NETWORK_GUARD_IMAGE =
+  "busybox:1.37@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e";
+
+/**
+ * The image setup reads and changes the Docker host's kernel through: the guard's busybox, a few
+ * megabytes every install pulls anyway, so the user-namespace question comes before the guide's
+ * questions and before the release's images are pulled (RC 0.36.0-next.761: the probe pulled
+ * postgres first).
+ */
+export const HOST_HELPER_IMAGE = NETWORK_GUARD_IMAGE;
 
 /**
  * Whether the Docker host's kernel lets an unprivileged process create a user namespace, which
@@ -1477,9 +1492,16 @@ const observeHostUserNamespaces = async (
   });
 };
 
+/**
+ * How to allow them when no one was asked: setup writes the file with its marker, so
+ * `mend uninstall` can undo it; the command written by hand has none, and uninstall leaves it.
+ */
+const ALLOW_USERNS_RERUN =
+  "Re-run mend server setup with --allow-userns to let setup write it (and let mend uninstall undo it). Or, on the host, run:";
+
 /** The last line setup prints while the host still refuses them: the server runs, sessions do not. */
-const userNamespacesReminder = (setting: string): string =>
-  `No session can start on this Docker host yet: its kernel refuses unprivileged user namespaces, which each workspace's rootless Docker service needs. On the host, run: ${hostUserNamespacesFix(setting)}`;
+const userNamespacesReminder = (setting: string, how = "On the host, run:"): string =>
+  `No session can start on this Docker host yet: its kernel refuses unprivileged user namespaces, which each workspace's rootless Docker service needs. ${how} ${hostUserNamespacesFix(setting)}`;
 
 /** `kernel.apparmor_restrict_unprivileged_userns = 0` as the file under /proc/sys and its value. */
 const sysctlOf = (setting: string): { readonly file: string; readonly value: string } | null => {
@@ -1572,10 +1594,10 @@ const settleHostUserNamespaces = async (
   runtime.writeLine(
     `Sessions cannot start on this host yet: ${who} blocks the unprivileged user namespaces each workspace's Docker service needs.`,
   );
-  const printFix = (why: string): string => {
-    runtime.writeLine(`${why} On the host, run: ${fix}`);
+  const printFix = (why: string, how = "On the host, run:"): string => {
+    runtime.writeLine(`${why} ${how} ${fix}`);
     runtime.writeLine("");
-    return userNamespacesReminder(observed.setting);
+    return userNamespacesReminder(observed.setting, how);
   };
   if (await rootlessDaemon(runtime, context)) {
     return printFix(
@@ -1588,15 +1610,13 @@ const settleHostUserNamespaces = async (
       `Allowing them writes ${observed.setting} to ${HOST_USER_NAMESPACE_SYSCTL_FILE} on the Docker host and applies it now. It lifts that restriction for the whole host, not only for Mend.`,
     );
     const answer = await runtime.prompter("Allow them now? [Y/n] ");
-    if (answer === null) throw setupError("Stopped before anything was pulled; nothing changed.");
+    if (answer === null) throw setupError("Stopped before setup changed anything.");
     allow = !/^n/i.test(answer.trim());
   }
+  if (allow === false) return printFix("Left as it is (--no-allow-userns or your answer).");
   if (allow !== true) {
-    return printFix(
-      allow === false
-        ? "Left as it is (--no-allow-userns or your answer)."
-        : "Setup changes the host's kernel only when asked: answer the question on a terminal, or pass --allow-userns.",
-    );
+    // No one was asked (--yes, or no terminal): the way that stays undoable leads.
+    return printFix("Setup changes the host's kernel only when asked.", ALLOW_USERNS_RERUN);
   }
   const stopped = await allowHostUserNamespaces(runtime, context, observed.setting);
   if (stopped !== null) return printFix(`Setup could not apply it through Docker (${stopped}).`);
@@ -2955,7 +2975,30 @@ interface SetupRun {
    * or upgrade that ran meanwhile changed what the answers were about, so setup refuses.
    */
   readonly askedAgainst?: string | null;
+  /**
+   * The guide settled the host's user namespaces before its first question; `reminder` is the line
+   * to repeat last while they stay refused (null: allowed, or nothing observed). Setup then neither
+   * looks nor asks again.
+   */
+  readonly userNamespaces?: { readonly reminder: string | null };
 }
+
+/**
+ * The Docker context a run uses: --context, else DOCKER_CONTEXT on a fresh install (as docker
+ * itself picks it), else the one the install's volumes are on.
+ */
+const requestedDockerContext = (
+  runtime: ServerSetupRuntime,
+  options: SetupOptions,
+  existing: ServerInstallation | null,
+): { readonly requested: string | undefined; readonly fromVariable: boolean } => {
+  const variable = runtime.dockerContextVariable;
+  const fromVariable = options.context === undefined && existing === null && variable !== undefined;
+  return {
+    requested: options.context ?? (fromVariable ? variable : existing?.config.dockerContext),
+    fromVariable,
+  };
+};
 
 const refuseLegacyContract = (existing: ServerInstallation | null): void => {
   if (existing !== null && existing.config.assetContract !== ASSET_CONTRACT) {
@@ -3001,6 +3044,20 @@ const guidedSetup = async (
   if (read._tag === "error") return { _tag: "error", message: read.error.message };
   const existing = read.value;
   refuseLegacyContract(existing);
+  // The host's kernel before the first question (#695): a host that refuses user namespaces starts
+  // no session, so that is the first thing the person decides. Its probe pulls only the few
+  // megabytes of busybox every install preloads anyway (HOST_HELPER_IMAGE).
+  const hostOptions = parseSetupOptions(hostFlags);
+  const context = await selectDockerContext(
+    runtime,
+    requestedDockerContext(runtime, hostOptions, existing).requested,
+  );
+  await checkDocker(runtime, context.name);
+  const reminder = await settleHostUserNamespaces(
+    { ...runtime, prompter },
+    hostOptions,
+    context.name,
+  );
   const outcome = await runGuide(
     { write: runtime.writeLine, ask: prompter },
     {
@@ -3021,6 +3078,7 @@ const guidedSetup = async (
     (store) =>
       setupServer([...outcome.flags, ...hostFlags], runtime, store, {
         askedAgainst: existing?.directory ?? null,
+        userNamespaces: { reminder },
       }),
     { create: true },
   );
@@ -3087,11 +3145,8 @@ const setupServer = async (
   // DOCKER_CONTEXT picks a fresh install's engine as it picks docker's own. An install stays on the
   // engine its volumes are on: only --context moves it.
   const variable = runtime.dockerContextVariable;
-  const fromVariable = options.context === undefined && existing === null && variable !== undefined;
-  const selectedContext = await selectDockerContext(
-    runtime,
-    options.context ?? (fromVariable ? variable : existing?.config.dockerContext),
-  );
+  const { requested, fromVariable } = requestedDockerContext(runtime, options, existing);
+  const selectedContext = await selectDockerContext(runtime, requested);
   const operatingSystem = await checkDocker(runtime, selectedContext.name);
   runtime.writeLine(
     `Using Docker context "${selectedContext.name}" (${selectedContext.endpoint})${fromVariable ? ", from DOCKER_CONTEXT" : ""}`,
@@ -3115,7 +3170,11 @@ const setupServer = async (
   );
   // Before the Mend image is pulled or anything is written: a host that refuses user namespaces
   // starts no session, and the person decides about it while it is still the first thing said.
-  const userNamespaces = await settleHostUserNamespaces(runtime, options, selectedContext.name);
+  // The guide asked before its own questions; setup keeps that answer.
+  const userNamespaces =
+    run.userNamespaces === undefined
+      ? await settleHostUserNamespaces(runtime, options, selectedContext.name)
+      : run.userNamespaces.reminder;
 
   const serverVersion = await resolveServerVersion(runtime, options, existing?.config ?? null);
   const mirrors = resolveMirrors(existing?.config.mirrors, options);
@@ -3378,7 +3437,8 @@ const reachedBefore = (url: string, before: ServerConfig): boolean => {
 /**
  * Mend's URL changed: every CLI signed in at the old one is left pointing there. This machine's
  * own, when the old URL no longer answers, is moved with a yes (`--yes` answers it): a device's
- * token is not bound to a URL, so its sign-in carries over. Everyone else is told the command.
+ * token is not bound to a URL, so its sign-in carries over. Everyone else is told the command, which
+ * is a new sign-in: `mend login --url` asks for a browser authorization.
  * Returns this machine's sign-in as it stands afterwards.
  */
 const followUrlChange = async (
@@ -3389,7 +3449,7 @@ const followUrlChange = async (
   instance: string,
 ): Promise<SavedCliLogin | null> => {
   runtime.writeLine(
-    `Mend's URL changed from ${before.appUrl} to ${after.appUrl}. Browsers open ${after.appUrl}. A CLI signed in at the old URL (another account on this machine, another machine) moves with: mend login --url ${after.appUrl}`,
+    `Mend's URL changed from ${before.appUrl} to ${after.appUrl}. Browsers open ${after.appUrl}. A CLI signed in at the old URL (another account on this machine, another machine) signs in again with mend login --url ${after.appUrl}, which asks for a new browser authorization.`,
   );
   const saved = runtime.savedCliLogin?.(runtime.configDir) ?? null;
   if (

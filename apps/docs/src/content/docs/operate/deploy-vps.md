@@ -100,7 +100,8 @@ server reports. Workspace SSH on port 2222 stays on loopback with the edge.
 
 Each workspace runs its own rootless Docker, which needs unprivileged user namespaces. Ubuntu 23.10
 and later (24.04 LTS included) refuse them by default, and then no session can start.
-`mend server setup` reads the kernel before it pulls anything and asks:
+`mend server setup` reads the kernel before its other questions and before it pulls the release (its
+probe pulls only the few megabytes of busybox every install needs anyway), and asks:
 
 ```text
 Sessions cannot start on this host yet: Ubuntu blocks the unprivileged user namespaces each workspace's Docker service needs.
@@ -111,9 +112,11 @@ Allow them now? [Y/n]
 On a yes it applies the setting through the Docker socket it already uses and reads the kernel
 again. The file it writes starts with `# written by mend server setup; mend uninstall removes it`,
 followed by the setting it replaced (`# previous: …`), so `mend uninstall` can remove it and put the
-kernel back. `--allow-userns` and `--no-allow-userns` answer for a script. On a no, or without a
-terminal, setup prints the command, and `mend doctor` shows it as `workspaces`. To allow them
-yourself, on the server:
+kernel back. `--allow-userns` and `--no-allow-userns` answer for a script. With `--yes` and neither,
+setup changes nothing and says to re-run it with `--allow-userns`, so that it writes the file and
+`mend uninstall` can undo it. On a no, setup prints the command, and `mend doctor` shows it as
+`workspaces`. To allow them yourself, on the server (a file written by hand has no marker, so
+`mend uninstall` leaves it):
 
 ```sh
 echo 'kernel.apparmor_restrict_unprivileged_userns = 0' | sudo tee /etc/sysctl.d/60-mend-rootless-docker.conf
@@ -122,7 +125,8 @@ sudo sysctl --system
 
 When a later `mend server setup` changes Mend's URL (from `localhost` to a private address, say), it
 offers to point this machine's CLI at the new URL; the sign-in carries over. Every other CLI signed
-in at the old URL runs `mend login --url <new>`.
+in at the old URL (another account on this machine, another machine) signs in again with
+`mend login --url <new>`, which asks for a new browser authorization.
 
 On your laptop, install only the CLI:
 
