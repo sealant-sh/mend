@@ -127,60 +127,37 @@ describe("claude onboarding seed", () => {
     });
   });
 
-  it("opens on Fable where nothing names a model, for this launch only: the person's settings stay theirs", () => {
+  it("names no model: a launch that names none runs on Claude Code's own default, and the person's settings stay theirs", () => {
     // Box, next.786, 2026-10-11: one Mend launch wrote `"model":"fable"` into a person's
     // ~/.claude/settings.json, and every claude they ran themselves opened on Fable from then on.
+    // Yiannis, 2026-10-12: "by default have the default claude model".
     const home = makeHome();
-    const repo = makeHome();
     const model = (env: Readonly<Record<string, string>> = {}) => {
       const result = spawnSync(
         "sh",
-        [
-          "-c",
-          claudeOnboardingSeed({ repo }),
-          "sh",
-          "sh",
-          "-c",
-          'echo "model=${ANTHROPIC_MODEL-unset}"',
-        ],
-        {
-          encoding: "utf8",
-          env: { ...withoutModel(process.env), HOME: home, ...env },
-        },
+        ["-c", CLAUDE_ONBOARDING_SEED, "sh", "sh", "-c", 'echo "model=${ANTHROPIC_MODEL-unset}"'],
+        { encoding: "utf8", env: { ...withoutModel(process.env), HOME: home, ...env } },
       );
       expect(result.status).toBe(0);
       return result.stdout;
     };
-    expect(model()).toBe("model=fable\n");
+    expect(model()).toBe("model=unset\n");
     expect(readJson(path.join(home, ".claude", "settings.json"))).toEqual({
       skipDangerousModePermissionPrompt: true,
     });
-
     // A model the environment names is left as it is.
     expect(model({ ANTHROPIC_MODEL: "sonnet" })).toBe("model=sonnet\n");
-
-    // So is one any settings file Claude reads names: the repository's, its local one, the person's.
-    for (const file of [
-      path.join(repo, ".claude", "settings.json"),
-      path.join(repo, ".claude", "settings.local.json"),
-      path.join(home, ".claude", "settings.json"),
-    ]) {
-      write(file, JSON.stringify({ model: "opus" }));
-      expect(model(), file).toBe("model=unset\n");
-      fs.rmSync(file);
-    }
-    expect(model()).toBe("model=fable\n");
   });
 
-  it("moves Mend's own earlier default to the latest Fable, and keeps a model the user chose", () => {
+  it("takes Mend's own earlier default out, so Claude's own applies, and keeps a model the user chose", () => {
     const earlier = makeHome();
     write(
       path.join(earlier, ".claude", "settings.json"),
       JSON.stringify({ model: "claude-fable-5" }),
     );
     expect(runSeed(CLAUDE_ONBOARDING_SEED, earlier)).toBe("ran 1\n");
-    expect(readJson(path.join(earlier, ".claude", "settings.json"))).toMatchObject({
-      model: "fable",
+    expect(readJson(path.join(earlier, ".claude", "settings.json"))).toEqual({
+      skipDangerousModePermissionPrompt: true,
     });
 
     const chosen = makeHome();
@@ -701,11 +678,14 @@ describe("claude onboarding seed: the plugins its settings enable", () => {
       "-p",
     ]);
     expect(CLAUDE_ONBOARDING_SEED).toContain(
-      `'/workspace/repo' ${CLAUDE_PLUGINS_BUDGET_MS} 3>&2 2>/dev/null);`,
+      `'/workspace/repo' ${CLAUDE_PLUGINS_BUDGET_MS} 3>&2 2>/dev/null;`,
     );
     expect(CLAUDE_PLUGINS_BUDGET_MS).toBe(30_000);
   });
 });
+
+/** A path as one single-quoted shell word. */
+const shellQuoted = (value: string): string => `'${value.replaceAll("'", `'\\''`)}'`;
 
 /** Run Codex's system default script into `file`; it always exits 0. */
 const runCodexSystemConfig = (file: string) => {
@@ -732,6 +712,31 @@ describe("Codex's system default: no sandbox of its own in a workspace", () => {
     const operator = 'sandbox_mode = "workspace-write"\n';
     fs.writeFileSync(file, operator);
     runCodexSystemConfig(file);
+    expect(fs.readFileSync(file, "utf8")).toBe(operator);
+    expect(fs.readdirSync(path.dirname(file))).toEqual(["config.toml"]);
+  });
+
+  it("never replaces a file that appears between its check and its publish, and leaves no temporary", () => {
+    // Review of mend#737 (P3): the absence check and a `mv -f` let an operator's file written in
+    // between be overwritten. A stand-in `mkdir`, which runs after the check, writes it then.
+    const root = makeHome();
+    const file = path.join(root, "etc", "codex", "config.toml");
+    const bin = path.join(root, "bin");
+    fs.mkdirSync(bin);
+    const operator = 'sandbox_mode = "workspace-write"\n';
+    const realMkdir = spawnSync("sh", ["-c", "command -v mkdir"], {
+      encoding: "utf8",
+    }).stdout.trim();
+    fs.writeFileSync(
+      path.join(bin, "mkdir"),
+      `#!/bin/sh\n${realMkdir} "$@" && printf '%s' '${operator}' > ${shellQuoted(file)}\n`,
+      { mode: 0o755 },
+    );
+    const result = spawnSync("sh", ["-c", `${codexSystemConfigScript(file)}; echo "status $?"`], {
+      encoding: "utf8",
+      env: { ...process.env, PATH: `${bin}:${process.env["PATH"] ?? ""}` },
+    });
+    expect(result.stdout).toBe("status 0\n");
     expect(fs.readFileSync(file, "utf8")).toBe(operator);
     expect(fs.readdirSync(path.dirname(file))).toEqual(["config.toml"]);
   });

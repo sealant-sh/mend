@@ -191,7 +191,8 @@ with several, a picker opens.
 
 A `claude`, `codex` or `pi` you start by hand in `mend shell` is observed, not run, by Mend: it
 appears as an observed process within about half a minute, ends five minutes after its last write,
-and cannot be steered or stopped from Mend. See
+and cannot be steered from Mend. A Stop of a session with no agent Mend started closes its shells,
+and the agent in them with them. See
 [Agents you run yourself](/clients/vscode/#agents-you-run-yourself).
 
 `mend rejoin` with no id takes the newest live session, and failing that the newest settled one.

@@ -713,6 +713,22 @@ describe("planLaunch", () => {
     assert.isNull(worktreeNameOf(undefined));
   });
 
+  it("names no model when the client picked the harness's own default", () => {
+    const plan = planLaunch(
+      launchInput({
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("claudeAgent"),
+          model: "default",
+          options: [{ id: "effort", value: "high" }],
+        },
+        runtimeMode: "full-access",
+      }),
+    );
+    assert.strictEqual(plan.kind, "launch");
+    if (plan.kind !== "launch") return;
+    assert.deepStrictEqual(plan.launch.options, { effort: "high", permissionMode: "bypass" });
+  });
+
   it("names fast service and leaves an effort Mend does not take to Mend", () => {
     const plan = planLaunch(
       launchInput({

@@ -13,7 +13,6 @@ import { type LinuxIdentity, MEND_GROUP, linuxHomeOf } from "@mend/domain/workbe
 
 import { CLAUDE_NEUTRAL_ENV, claudeSettingsArgOf } from "./claude-settings.ts";
 import { assertScriptSafe, PEOPLE_DIR, savedDirOf } from "./harness-layout.ts";
-import { CLAUDE_DEFAULT_MODEL } from "./harness-seeds.ts";
 import { shellQuote } from "./workspace-files.ts";
 
 export {
@@ -83,8 +82,9 @@ export const claudeProjectDirOf = (cwd: string): string => cwd.replaceAll(/[^A-Z
  * Claude's seeded files in `H/.claude`: no `CLAUDE.md`, `rules/`, agents, commands, skills,
  * output styles, plugins, workflows, routines, agent memory or hooks; no user MCP servers in
  * `.claude.json` and never `hasClaudeMdExternalIncludesApproved`, so a repository `CLAUDE.md`
- * cannot `@~/`-import a personal file; `settings.json` with automatic memory off. What loads is the
- * repository's own `CLAUDE.md`, `.claude/` and `.mcp.json`.
+ * cannot `@~/`-import a personal file; `settings.json` with automatic memory off and no model (a
+ * launch that names none runs on Claude Code's own default). What loads is the repository's own
+ * `CLAUDE.md`, `.claude/` and `.mcp.json`.
  */
 export const claudeNeutralSeed = (): Readonly<Record<string, string>> => ({
   ".claude/.claude.json": `${JSON.stringify(
@@ -102,7 +102,6 @@ export const claudeNeutralSeed = (): Readonly<Record<string, string>> => ({
     {
       autoMemoryEnabled: false,
       skipDangerousModePermissionPrompt: true,
-      model: CLAUDE_DEFAULT_MODEL,
     },
     null,
     2,

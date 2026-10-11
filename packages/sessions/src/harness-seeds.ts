@@ -30,9 +30,6 @@ import { shellQuote } from "./workspace-files.ts";
  * 2026-09-28 (18)).
  */
 
-/** The model alias a Claude launch opens on where nothing names one (`CLAUDE_SEED_PROGRAM`). */
-export const CLAUDE_DEFAULT_MODEL = "fable";
-
 const CLAUDE_SEED_PROGRAM = [
   `const fs=require("fs"),os=require("os"),path=require("path"),crypto=require("crypto"),h=os.homedir(),t=process.env.CLAUDE_CODE_OAUTH_TOKEN;`,
   `fs.mkdirSync(h+"/.claude",{recursive:true});`,
@@ -52,18 +49,12 @@ const CLAUDE_SEED_PROGRAM = [
   `c.projects=c.projects&&typeof c.projects==="object"?c.projects:{};`,
   `c.projects["/workspace/repo"]=Object.assign({},c.projects["/workspace/repo"],{hasTrustDialogAccepted:true,hasCompletedProjectOnboarding:true})});`,
   // The bypass-acceptance dialog is actually gated on settings.json (verified: accepting it
-  // writes exactly this key), not .claude.json. A session still holding Mend's own earlier
-  // default model (`claude-fable-5`) moves to the `fable` alias (2026-10-01).
-  `merge(h+"/.claude/settings.json",s=>{s.skipDangerousModePermissionPrompt=true;if(s.model==="claude-fable-5")s.model="fable"});`,
-  // The model a launch opens on where nothing names one: the `fable` alias, which Claude Code
-  // resolves to the latest Fable. Printed for the shell to export as `ANTHROPIC_MODEL`, this
-  // launch's alone, never written into settings.json: in a person's executor that file is
-  // theirs, and every `claude` they run themselves (a terminal, the VS Code panel) opened on
-  // Fable after one Mend launch (box, next.786, 2026-10-11). Only where no settings file Claude
-  // reads names a model and the environment names none: the variable ranks above settings, so a
-  // restored session's own choice (or a mid-session /model) stays.
-  `if(!process.env.ANTHROPIC_MODEL&&![h+"/.claude/settings.json",process.argv[1]+"/.claude/settings.json",process.argv[1]+"/.claude/settings.local.json"]`,
-  `.some(p=>{const s=read(p);return s!==null&&typeof s.model==="string"&&s.model!==""}))process.stdout.write(${JSON.stringify(CLAUDE_DEFAULT_MODEL)});`,
+  // writes exactly this key), not .claude.json. No model is ever written: a launch that names
+  // none runs on Claude Code's own default, as a `claude` run by hand does, and in a person's
+  // executor the file is theirs (box, next.786, 2026-10-11: one Mend launch's `"model":"fable"`
+  // turned every `claude` they ran themselves to Fable). Mend's own earlier default
+  // (`claude-fable-5`, written until 2026-10-01) comes out, so Claude's default applies there too.
+  `merge(h+"/.claude/settings.json",s=>{s.skipDangerousModePermissionPrompt=true;if(s.model==="claude-fable-5")delete s.model});`,
 ].join("");
 
 /**
@@ -190,9 +181,8 @@ export const NO_PAGER_ENV: Readonly<Record<string, string>> = {
 export const claudeOnboardingSeed = (
   options: { readonly repo?: string; readonly pluginBudgetMs?: number } = {},
 ): string =>
-  `mend_model=$(node -e '${CLAUDE_SEED_PROGRAM}${CLAUDE_PLUGINS_PROGRAM}' ${shellQuote(options.repo ?? WORKSPACE_REPO)} ` +
-  `${Math.max(0, Math.floor(options.pluginBudgetMs ?? CLAUDE_PLUGINS_BUDGET_MS))} 3>&2 2>/dev/null); ` +
-  `[ -z "$mend_model" ] || export ANTHROPIC_MODEL="$mend_model"; unset mend_model; ` +
+  `node -e '${CLAUDE_SEED_PROGRAM}${CLAUDE_PLUGINS_PROGRAM}' ${shellQuote(options.repo ?? WORKSPACE_REPO)} ` +
+  `${Math.max(0, Math.floor(options.pluginBudgetMs ?? CLAUDE_PLUGINS_BUDGET_MS))} 3>&2 2>/dev/null; ` +
   `export IS_SANDBOX=1 DISABLE_AUTOUPDATER=1; exec "$@"`;
 
 export const CLAUDE_ONBOARDING_SEED = claudeOnboardingSeed();
@@ -235,12 +225,19 @@ export const CODEX_SYSTEM_CONFIG_TEXT = [
   "",
 ].join("\n");
 
+/**
+ * Published without ever replacing anything: the text goes into a temporary beside the target,
+ * which is then hard-linked to the target's name. `ln` refuses a name that exists, so a file or
+ * link someone put there after the check (the operator, the image's own setup) is kept. The
+ * temporary goes either way.
+ */
 export const codexSystemConfigScript = (file: string = CODEX_SYSTEM_CONFIG): string => {
   const target = shellQuote(file);
   const text = shellQuote(CODEX_SYSTEM_CONFIG_TEXT);
   return (
-    `( f=${target}; if [ ! -e "$f" ] && [ ! -L "$f" ]; then umask 022; t="$f.mend-$$"; ` +
-    `{ mkdir -p "$(dirname "$f")" && printf '%s' ${text} > "$t" && mv -f "$t" "$f"; } 2>/dev/null || rm -f "$t"; fi; true )`
+    `( f=${target}; t=; if [ ! -e "$f" ] && [ ! -L "$f" ]; then umask 022; d=$(dirname "$f"); ` +
+    `{ mkdir -p "$d" && t=$(mktemp "$d/.config.toml.mend-XXXXXX") && printf '%s' ${text} > "$t" && ` +
+    `chmod 0644 "$t" && ln "$t" "$f"; } 2>/dev/null; [ -z "$t" ] || rm -f "$t"; fi; true )`
   );
 };
 

@@ -75,8 +75,9 @@ Click **+** in the view, or run **Mend: New Session…**, and pick one of:
 - **Agent with options…**: choose the harness (Claude, Codex, opencode or pi), model, thinking
   level, permissions (skip permission prompts, or ask before acting) and base branch. The model list
   is the server's, the same one every other client offers, with the server's default listed first.
-  For opencode the list leads with `opencode's own choice`, which sends no model, so its config
-  decides.
+  For Claude and opencode the list leads with the harness's own choice (`claude's own choice`,
+  `opencode's own choice`), which sends no model: Claude Code runs the model your Claude settings
+  name, else its own default, as a `claude` you run yourself does, and opencode's config decides.
 
 **Mend: New session in this worktree…** on a session starts a second session in the same worktree:
 the same files and branch, with a new conversation. Each session keeps its own harness state, so the
@@ -187,11 +188,18 @@ process (`claude (observed)`) beside the session's other processes:
   summary about three minutes after it, so a Claude Code you leave reads as ended about eight
   minutes after your last turn. Commands such as `/status` and `/exit` are writes as well. When the
   agent writes again, Mend observes it again as a new process.
-- **Mend cannot steer or stop it.** It has no prompt box, and follow-ups and review comments do not
-  reach it. A Stop records it as stopped but does not end the process: exit it in its terminal. If
-  it wrote in the last five minutes and a shell or Service still keeps the session's workspace up,
-  Mend observes it again as a new process within about 20 seconds. When the workspace itself stops,
-  everything running in it ends.
+- **Mend cannot steer it.** It has no prompt box, and follow-ups and review comments do not reach
+  it. A Stop records it as stopped. Whether the agent itself ends depends on where it runs:
+  - In a terminal Mend opened for the session (`mend shell`, a shell opened on the web, or a shell
+    session's own shell), a Stop that ends no agent Mend started closes those terminals, and the
+    agent in them ends with them, even while a Service keeps the workspace up. A Stop that does end
+    an agent Mend started keeps your terminals; a second Stop closes them.
+  - In a terminal of your own, such as VS Code's over Remote-SSH, a Stop does not touch it: exit it
+    there. If it wrote in the last five minutes and a shell or Service still keeps the session's
+    workspace up, Mend observes it again as a new process within about 20 seconds.
+
+  When the workspace itself stops, everything running in it ends.
+
 - **Claude Code, Codex and pi only.** opencode keeps its conversations in a database, not in files,
   so an `opencode` you run by hand is not observed.
 - **Only while no agent Mend started writes beside it.** In a per-person workspace, that is an agent
@@ -200,10 +208,17 @@ process (`claude (observed)`) beside the session's other processes:
 - **In a [per-person workspace](/operate/per-person-workspaces/)**, an agent you run writes into
   your own saved directory. Mend observes it as yours, in your own sessions only, and never in
   another person's session in the same workspace.
-- **Codex runs without its own sandbox**, as the Codex sessions Mend starts do: the workspace is the
-  sandbox, and Codex's (bubblewrap) cannot start in one. Mend sets this as Codex's system default
-  (`/etc/codex/config.toml`). A `sandbox_mode` in your own `~/.codex/config.toml` wins over it, and
-  a sandboxed mode there leaves Codex unable to run a command. Approvals stay Codex's own default.
+- **Codex runs without its own sandbox**, as every Codex session Mend starts does, in a terminal or
+  a conversation, asking before acting or not: the workspace is the sandbox, and Codex's
+  (bubblewrap) cannot start in one. Mend sets this as Codex's system default
+  (`/etc/codex/config.toml`) when the workspace starts, where no such file is. A `sandbox_mode` in
+  your own `~/.codex/config.toml` wins over it, and a sandboxed mode there leaves Codex unable to
+  run a command. Approvals stay Codex's own default.
+- **Claude Code opens on your own model.** A Claude launch of Mend's writes one key into
+  `~/.claude/settings.json`, `skipDangerousModePermissionPrompt`, and never a model. It takes out
+  `claude-fable-5`, the model Mend itself wrote there until 2026-10-01. So a `claude` you run
+  yourself, and the extension's panel, open on the model your settings name, else Claude Code's own
+  default, and Mend's launches do the same unless you pick a model for one.
 
 The Claude Code extension for VS Code runs the `claude` it bundles inside the workspace when the
 window is connected over Remote-SSH. Its conversations land where a terminal `claude`'s do, and Mend

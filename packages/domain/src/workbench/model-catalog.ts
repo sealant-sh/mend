@@ -169,7 +169,10 @@ export interface ModelPicker {
   readonly model: string | null;
   /** The effective effort: the sticky choice when the model takes it, else the highest it does. */
   readonly effort: EffortLevel | null;
-  /** The pill's word: the model's label, the id when unlisted, `model` when there is nothing to pick. */
+  /**
+   * The pill's word: the model's label, the id when unlisted, `default` when the harness chooses
+   * its own (`HARNESSES_CHOOSING_THEIR_OWN_MODEL`), `model` when there is nothing to pick.
+   */
   readonly modelLabel: string;
   readonly models: ReadonlyArray<ModelPickerItem>;
   /** The harness's default first, then the efforts the effective model takes. */
@@ -189,7 +192,12 @@ export const modelPicker = (
   return {
     model,
     effort,
-    modelLabel: model === null ? "model" : catalogModelLabel(catalog, model),
+    modelLabel:
+      model !== null
+        ? catalogModelLabel(catalog, model)
+        : catalog.models.length > 0
+          ? "default"
+          : "model",
     models: catalog.models.map((entry) => ({
       id: entry.id,
       label: entry.label,

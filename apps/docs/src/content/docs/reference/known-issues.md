@@ -177,9 +177,11 @@ your last turn: Claude Code writes a summary about three minutes after a turn. I
 prompt or end it. An `opencode` started by hand is not observed at all: its conversations live in a
 database. Nor is anything started while an agent Mend started writes into the same home: one running
 as you in a per-person workspace, or one in any session of the worktree in a workspace with one
-shared home. A Stop records an observed agent as stopped without ending it, and while a shell or
-Service keeps the workspace up, an agent that wrote in the last five minutes is observed again
-within about 20 seconds. Start agents from Mend to steer them. Details:
+shared home. A Stop records an observed agent as stopped. It ends the agent only where it runs in a
+shell Mend opened for a session with no agent of Mend's own, which that Stop closes; in a terminal
+of your own, such as VS Code's over Remote-SSH, it keeps running, and while a shell or Service keeps
+the workspace up, an agent that wrote in the last five minutes is observed again within about 20
+seconds. Start agents from Mend to steer them. Details:
 [Agents you run yourself](/clients/vscode/#agents-you-run-yourself).
 
 ## opencode runs in the terminal only
