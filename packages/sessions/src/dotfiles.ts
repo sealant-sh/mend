@@ -111,7 +111,10 @@ export interface DotfilesCloneAccess {
 
 /**
  * The host kind's git environment. A daemon cannot answer a prompt, so neither git nor ssh may
- * ask: auth failures surface as readable errors instead of hangs.
+ * ask: auth failures surface as readable errors instead of hangs. This is the one path that uses
+ * the server user's own ssh setup on purpose, config included (no `-F /dev/null`): it runs only
+ * for the operator of a single-tenant install, whose host identity it is. Every path where Mend
+ * chooses the signer reads no ssh config (`sshCommandFor`, `sshTransportArgs`).
  */
 export const DOTFILES_HOST_ENV: Readonly<Record<string, string>> = {
   GIT_TERMINAL_PROMPT: "0",
