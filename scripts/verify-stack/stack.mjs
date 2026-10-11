@@ -1723,12 +1723,13 @@ async function removeResources(ownerId) {
     say("  to remove them by hand, if they are the stack's:");
     for (const line of manualRemoval(plan.leftAlone)) say(`    ${line}`);
   }
+  // Keep the retry volume after an earlier failure, and check its own removal before erasing records.
+  if (failures.length === 0 && plan.volumes.some((item) => item.Name === STATE_VOLUME))
+    await remove(["volume", "rm", "--force", STATE_VOLUME], `volume ${STATE_VOLUME}`);
   if (failures.length > 0)
     throw new CommandError(
       `could not remove ${failures.join("; ")}; the ledger is kept, so the next down tries again`,
     );
-  if (plan.volumes.some((item) => item.Name === STATE_VOLUME))
-    await remove(["volume", "rm", "--force", STATE_VOLUME], `volume ${STATE_VOLUME}`);
   await rm(await ledgerDirectory(), { recursive: true, force: true });
   // The state file names one daemon's stack: another daemon's teardown leaves it.
   const state = await readState();
