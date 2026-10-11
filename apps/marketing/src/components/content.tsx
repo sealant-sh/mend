@@ -371,8 +371,11 @@ export const FAQ: ReadonlyArray<{ q: string; a: ReactNode }> = [
           one of its agents with <code>mend opencode</code>.
         </p>
         <p>
-          We're also planning to support Mend as a backend for T3 Code very soon. You'd keep T3 Code
-          as your interface, and the sessions would run remotely on your Mend server.
+          From 0.36, T3 Code works as a Mend client for its core workflow: threads, messages and
+          images, the queue, approvals, diffs, files, the terminal, and settle and snooze. You keep
+          T3 Code as your interface, and the sessions run on your Mend server. Turn it on with{" "}
+          <code>mend server setup --t3-gateway</code>. More of T3 Code is coming in 0.36 patch
+          releases, before 0.37.
         </p>
       </>
     ),
