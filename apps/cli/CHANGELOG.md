@@ -1,5 +1,1226 @@
 # @sealant/mend
 
+## 0.36.0
+
+### Minor Changes
+
+- 4d85059: What Claude Code learns about a repository now outlives the session. Mend keeps each
+  person's agent memory per project: every session you start on it receives your memory, and what
+  the agent learned is saved back when it ends, keeping both sides' lines when two of your sessions
+  changed the same file. A second session of yours in a running workspace does not deliver memory
+  that is already in place. `mend memory import`, run in a checkout, brings the memory Claude Code
+  keeps for it on your machine. A file both sides have is merged keeping both sides' lines, and a
+  note's frontmatter is merged key by key, with your machine's differing value kept as a comment.
+  Mend remembers what it imported from each checkout on each machine, so the next import from there
+  merges only what changed since and does not bring back a file removed in Mend. `--dry-run` shows
+  the plan for each file, and every version an import replaces is kept. The import reads no
+  transcripts, logins or settings. `mend memory`, `mend memory show` and `mend memory rm` list,
+  print and remove your memory.
+
+  Your memory never reaches anyone else's sessions, and is credited only to you. In a workspace that
+  shares one home, the server records whose memory the home holds and only that person's sessions
+  read it back. A launch in a worktree another person used first saves their memory for them and
+  moves it aside, never deleted. A Codex session there that joins someone else's executor starts
+  with memory off. Migration 0111.
+
+- 7102a9d: A project's install command is now an "Automatic install" switch in the Dependencies card
+  on its Setup page, on for every project. On, in capture mode, Mend picks the command from the
+  lockfile at the root of the repository and runs it before the agent starts. The card shows what it
+  detects on origin's default branch as last fetched, for example "detected · pnpm install
+  --frozen-lockfile · from pnpm-lock.yaml on origin/main", and says "not read" when it could not
+  read the tree. A custom command still replaces the detected one. Off, Mend runs no install for the
+  project, in a session or in the install that fills the shared dependency cache; an agent can
+  install by hand. A dependency tree already in saved state or the shared cache is restored either
+  way. In co-located mode Mend runs no install, and the card says so.
+  `PUT /api/projects/:id/install-enabled` sets the switch, and queues the install only when it goes
+  from off to on; `GET /api/projects/:id/install-detection` reads the detected command. Migration
+  0110 adds the column.
+- 815ddef: A Claude workflow started in a protocol session now shows on the phone while it runs. Its
+  card sits on the turn that started it and keeps updating after that turn ends: each phase, each
+  agent's state, model, tokens and current tool, and the totals. Background agents and commands get
+  the same card. When the workflow ends, Claude starts a turn of its own to report it. Mend used to
+  drop that turn, so the result never appeared; it is now recorded, reads "the agent continued", and
+  its reply reaches Slack like any other. A message sent while that turn runs waits for it.
+  Automatic landing decides that turn by the request that started the workflow. A session whose
+  workflow is still running is active: the idle stop never ends it, however long the workflow runs
+  or goes quiet, and the phone shows it working. Once the workflow ends, the idle minutes count from
+  then. A task whose agent process ended reads stopped.
+- 974f020: Codex memory is carried per person per project, like Claude's. Mend turns Codex's memory
+  on in every Codex session it starts, keeps Codex's memory folder and summary database with your
+  other memory, and carries your earlier Codex conversations on the project into each new session,
+  so Codex has something to learn from. `mend memory import` also brings the summaries Codex made on
+  your machine of conversations held in the repository. `mend memory show codex:MEMORY.md` shows
+  Codex's files. Codex's summary databases are merged by conversation.
+- 5bbbe92: Workspaces carry `bun` and `unzip` by default. New installs list both in the default
+  workspace packages, and migration 0127 adds them to every saved managed family environment that
+  lacks them: the instance's, each organization's and each project's own. A custom base environment
+  is left as it is. Each project's image rebuilds once, on its next launch, and grows by about 80
+  MB. Standby workspaces from before are replaced, since their image no longer matches. pstack needs
+  bun for `orch`, `watch-pr` and `ship-pr`. The machine scan under Suggestions from this machine
+  also offers `bun` and `unzip`.
+- 719ccde: `mend server upgrade --from-preview` moves a server on a preview numbered before the next
+  channel (`0.36.0-preview.K`) to a next build or a new-style preview of the same version, once.
+  Such a preview sorts above both, so a plain upgrade refuses it as a downgrade; the refusal now
+  names this option. Before anything stops, the upgrade reads the migrations both databases applied
+  and refuses, naming them, when the target image lacks one, changed one (Sealant's, by hash), or
+  would skip one (a Mend migration below the highest id applied). A failure before the target starts
+  recovers the preview's own image, as any upgrade does.
+- fa75714: A Stop on Garage, the bucket `mend server setup` installs, no longer waits for its upload
+  links to expire before its final save seals. Before, every such Stop waited about 10 minutes,
+  longer after a large upload. Workspaces now send each upload's SHA-256 (sealantd 0.20), and Mend
+  binds every upload link to the bytes it was minted for: Garage refuses any others through it, so a
+  link can replace nothing, and the seal stands once the save is read back. An object up to 5 GB
+  goes up as one bound upload instead of in parts. A restart of Mend holds no Stop. Mend reads a
+  save back once, and checks packs on worker threads, up to eight at a time, as they arrive rather
+  than when the session stops. A Stop still waits for an object over 5 GB, for an executor whose
+  sealantd does not send SHA-256 (one started before the upgrade), and in the 20 minutes after the
+  first start that follows this upgrade.
+- 6156c33: `mend server setup` on a terminal with no flags asks its questions one at a time, in
+  plain words: how people reach this Mend (just this machine, your private network or Tailscale, or
+  the public internet with HTTPS), whether VS Code Remote-SSH reaches it from other machines, the T3
+  Code gateway, the mirrors, and one organization or several. It reads Tailscale's name and address
+  and what Tailscale Serve forwards, where your domain resolves, and whether 80 and 443 are taken,
+  and says what it observed. On an existing install it shows what is saved and lets you change one
+  thing. It ends with what changes and the same command with flags, and applies on a yes.
+
+  Flags keep their meaning, and each changes only what it names. `--declare <item>` adds to the
+  saved statements and `--declare none` clears them, `--undeclare <item>` takes one back, and
+  `--origin none` clears the extra origins. A run with flags on an existing install says what it
+  changes. With no terminal and no flags, a fresh install is refused and the message names the
+  flags; `--yes` takes the defaults.
+
+- 62ae74f: `mend run` works for scripts. It prints the command's output (it printed record summaries
+  such as `pty-out 9B @0`) and exits with the command's exit code. Its own lines go to stderr, so
+  `out=$(mend run -- git log -1)` holds the command's output alone. `--detach` returns once the
+  command runs, and `--json` prints the session and process ids (and, without `--detach`, how the
+  command ended).
+
+  A command the platform would refuse is refused before anything is created: more than 64 words or 1
+  MiB, a word over 131,071 bytes, a program with leading or trailing whitespace, or a NUL byte. An
+  argument may be empty, start with a newline or span lines, so a `bash -lc` script that starts with
+  a newline runs (it used to create a session and then fail its launch).
+
+  New: `mend logs <session> [--follow]` prints any session's recorded terminal output, and
+  `mend wait <session> [--timeout <duration>]` (`90`, `90s`, `5m`, `1h`) returns once its command
+  ended, with its exit code (124 on timeout).
+
+  `mend run` and `mend logs` give stdout no more than a slow reader takes and exit only once it has
+  all of it, waiting at most 5 seconds at exit for a reader that takes nothing. A signal stops
+  watching with exit 128 + its number (130 for Ctrl+C) and puts the terminal's modes back, for
+  `mend logs` too. Output that could not be delivered in full fails the run (exit 1).
+  `mend wait --timeout` bounds every read and retry, never counts a previous process's end while a
+  resume starts, and takes `--process <id>`.
+
+- e720140: One model picker, the same on every client, and the server owns the list. The models each
+  harness offers live in a table on the server, editable in place, and `GET /api/harnesses/models`
+  hands every client the same list with the default and the efforts each model takes. Claude is
+  offered by family alias (`fable`, `opus`, `sonnet`, `haiku`), which Claude Code resolves to the
+  latest model of each family; a Claude session with no model chosen runs the latest Fable instead
+  of Fable 5. Codex lists what `codex debug models` offers, GPT-6.1 Sol first and the default, and
+  gains its `ultra` effort. The web composer, the phone's session composer and the VS Code picks
+  choose from it with the default preselected; `mend models` prints it, and `--effort` takes `ultra`
+  where the model does. Every picker offers only the efforts the chosen model takes, a launch turns
+  an effort the model cannot take into the highest it can, and a saved model that is no longer
+  listed reads as the default. Every session records the model and effort it was started with: the
+  session page, the phone's session header and `mend sessions` show them.
+- 7e23de3: Hot sessions keep standby workspaces with per-person workspaces on. A standby starts in
+  the layout its owner's new worktrees would run in. Where they run per person, it starts as its
+  owner: their own Linux user, their logins written into their own home, no dotfiles at start, and
+  its restore giving the worktree to them and the `mend` group. Their next session in a new worktree
+  of theirs claims it, and the workspace's per-person preparation runs then, as a cold per-person
+  launch's does; their dotfiles are fetched while the standby moves onto the worktree. Where new
+  worktrees run with one shared home, standbys start with one shared home, as before.
+
+  A standby serves only a launch decided in the layout it started in, for its owner, in a worktree
+  they started: another person's session, the operator's `harnessLayout` asking for the other
+  layout, or a worktree that has already run per person starts cold, and is never handed a standby
+  that would then be stopped. Once claimed, a standby's layout stands: if Mend learns between the
+  claim and the launch that the image cannot run per person, the launch runs with one shared home in
+  that standby and says why. While the Sealant control plane cannot be asked, the pool keeps the
+  standbys it has. A database migration records each standby's layout; standbys from before it start
+  with one shared home, as they did.
+
+  A claimed standby whose worktree changed since the claim is stopped before anything runs in it,
+  and the session starts cold. A change to a person's dotfiles does not replace their standbys,
+  which fetch dotfiles when claimed. While the Sealant control plane cannot be asked, an image known
+  to run with one shared home still has its standbys claimed.
+
+- 0dc3fde: Per-person workspaces (ADR 0016) are on by default. Each person who runs anything in a
+  new worktree's workspace gets their own Linux user and home, and everything they run runs as them:
+  their agent, shells, Services, `git push` and the `mend` helper, with their own Mend key or signer
+  and Git author. `MEND_HARNESS_LAYOUT` is `person` unless set (an empty value counts as unset);
+  this includes a loopback server on the capture store, the default `mend server setup`.
+  `MEND_HARNESS_LAYOUT=shared` keeps new worktrees on one shared home. A worktree that has run per
+  person stays per person whatever the setting.
+
+  Each person's agent runs on their own Claude, Codex, GitHub and ChatGPT logins, written into their
+  own home and removed when their last process there ends, never on another person's. A session
+  whose owner has not connected the provider its harness needs is refused before it starts, whether
+  it is the first in the worktree or a join:
+  `Connect Claude to start a session here. Connect it in Settings → Connected accounts, or run mend connect claude.`
+  Logins, the session token and the Git author reach the home through a single-use pickup only that
+  person can redeem, never through a command's arguments. The workspace's own token is refused for
+  Git and the helper.
+
+  Everything Mend delivers goes into each person's home, as them: skills, agent memory, secret
+  files, the pi profile, carried Codex conversations, the default shell profile and dotfiles. Each
+  person's conversations and memory are read back from their own saved directory, so two people in
+  one worktree each resume their own conversation. Your agent waits for your dotfiles' `install.sh`
+  when you started the workspace, or when "Start my agents after install.sh" is on
+  (`PUT /api/dotfiles/start-after-install`). Otherwise it starts beside it and the session line says
+  `install.sh running`, then `install.sh finished after the agent started`. Dotfiles that take over
+  two minutes leave the agent starting anyway (`dotfiles still applying`), and Mend puts its links
+  back once they land. When Sealant restores a worktree saved per person, each person's saved files
+  come back as theirs and the worktree is given to everyone working in it, so each person's
+  processes can edit it and use `sudo`.
+
+  Where a workspace cannot run per person, a new worktree runs with one shared home and the session
+  says why: a nix image, an image without `sudo`, an image Core reports it cannot run that way, a
+  Kubernetes or Cloudflare workspace runtime (ruled out before any launch), a Docker host that sets
+  no-new-privileges (checked before anyone is made), or a Sealant that does not run processes as a
+  person. A worktree already saved per person is refused there, with the reason. A remembered "no"
+  is checked again by the next shared launch when a shared workspace can see every reason (no
+  `sudo`, no ACLs and the like), and after a day when a person could not be made; a "no" from
+  no-new-privileges, an owner map refused or Core is kept until the image changes. A per-person
+  workspace's first setup sends one short line per member of the organization, so an organization of
+  any size stays far below Linux's limit on a command's length.
+
+  Starting a session where someone else's runs says that everything you run runs as you, on your own
+  logins, but either of you can read the other's files, logins included. A live session reads
+  `Shared workspace with Anna · each of you runs as yourself · either of you can read the other's files.`
+  A turn that waits for another person's agent says what it waits for. The API's session list and
+  view list the people live in each workspace (`livePeople`). Everyone in a per-person workspace has
+  passwordless `sudo` and can read the others' files: see Known issues.
+
+- 4f26ac6: pi and opencode run as Mend sessions beside Claude Code and Codex: `mend pi`,
+  `mend opencode`, and the web and VS Code launchers. Both run in the unified image (Sealant 0.39
+  bakes them in) without permission prompts: opencode through its own permission setting at launch,
+  never by writing your opencode config; pi asks none, and Mend answers its project-trust question
+  with `--approve`. pi takes a model, a thinking level and an opening prompt, keeps its home
+  (`~/.pi`: settings, sessions, extensions and packages) with the session, resumes with `--session`,
+  and gets Mend's workspace note and skills in its own folder. opencode opens its TUI on the prompt,
+  keeps its data and state directories with the session (its conversations, the model it last used,
+  its prompt history), and reads Mend's note and skills from Claude Code's. A stopped opencode
+  session resumes its own conversation (`opencode --session <id>`), never another session's in the
+  same worktree; when Mend cannot tell which conversation is the session's, the resume is refused
+  and says so, and a shell resume opens the shell. Neither tool's logins are kept with the session:
+  not their `auth.json`, and not opencode's MCP logins (`mcp-auth.json`).
+- 36e7fd3: `mend connect pi` sends your pi setup to Mend, and every pi session you start receives
+  it: your extensions, themes, prompt templates, settings, `mcp.json` and keybindings. A setup Home
+  Manager links in is read through its links, and a package named by local path is copied in. Before
+  pi starts, the session installs what your extensions import and the packages your settings
+  declare. A package that fails to install, such as one that needs a compiler the image lacks, is
+  left out of that session and the terminal says why, instead of stopping pi. Settings changed
+  inside a session keep their values. `--dry-run` shows what would be sent and what stays on your
+  machine: your login, sessions and installed packages never leave it.
+- d5464b9: A pull request the agent opens with `gh pr create` is recorded when the turn that opened
+  it ends, not when the agent stops. The look reads the pull request the turn named, in a command's
+  output or the agent's own message, and keeps it only when GitHub says it was opened during that
+  turn; it runs before automatic landing decides the turn, so a landing updates that pull request
+  instead of opening a second. Mend now keeps each pull request's title, and the project and
+  worktree lists carry each change's newest pull request (`#412 · open`, the state GitHub last
+  reported, its title and URL) from one indexed read, never from GitHub. The web app's Now page and
+  project worktree tree show it on each row, opening GitHub in a new tab. Migration 0104 adds the
+  title column and that index.
+- 00504e1: Any project of the store can be added to a running session from inside its workspace:
+  `mend repo add <project>` puts a worktree of that project at `/workspace/repos/<name>`, on a
+  branch of its own for the session, and `mend repo list` and `mend repo projects` show what is
+  there and what can be added. Each repository is a worktree of its project, so it keeps its own
+  change. On a capture-mode server the files are saved with the main repository's captures and come
+  back on a resume; the session page lists each repository with its state and how it is saved. The
+  review of a repository's own change follows once the capture daemon carries repository roots
+  (docs/adr/0011-repositories-in-a-session.md). Removing a worktree that holds repositories refuses,
+  naming each, and offers **Remove anyway** (`force=true`, `mend worktrees rm --force`). A private
+  project can be added only from a session in another private project of yours; the refusal says
+  why.
+- d58ace9: Secret files: a file you keep in Mend, encrypted at rest, written into every session you
+  own before its agent starts, such as `~/.aws/credentials`, a kubeconfig or an `.npmrc` token file.
+  `mend secrets add <path> --from <file>` keeps one (or reads stdin), `mend secrets` lists them by
+  path and size, `mend secrets rm <path>` removes one; the web app's settings page has the same list
+  with add and remove, and the phone shows it. They are yours alone, the content never comes back
+  out of the server, and a secret file is never captured: it goes into your own home directory in
+  the workspace, outside what sessions capture, a path under a captured directory such as `.claude`
+  is refused, and the workspace refuses to write through a symlink. In a workspace someone else
+  launched that shares one home, none of your secret files is written, and the session line names
+  them: `secret files · 1 not written · this workspace is another person's · ~/.aws/credentials`.
+- 2dda87f: The packaged server knows its edge and its posture. `mend server setup --edge <host>`
+  runs the Caddy TLS edge in front of Mend: the repository's `compose.edge.yaml` and `Caddyfile` are
+  written into the install's generation beside `compose.yaml`, `MEND_EDGE_HOST` goes into
+  `server.env`, the browser origin becomes `https://<host>` and Mend's own port stays on loopback.
+  `--exposure` and `--tenancy` declare the posture the same way, and with `multi` or `public` the
+  multi mode gate's settings follow (`MEND_SOURCE_POLICY=tenant`, `MEND_CAPTURE_REQUIRE_SIZES=true`,
+  and for `public` `MEND_URL_BEARERS=refuse`) through a `compose.posture.yaml` that reads every
+  value from `server.env`. Every `start`, `restart` and `upgrade` runs the generation's overlays
+  with its `compose.yaml`, so an upgrade never drops the edge or the posture; `--no-edge` takes the
+  edge away. `mend server status` reports the edge host, whether its container runs and whether
+  Caddy's data holds a certificate, the exposure and tenancy declared beside what the running server
+  observes, and, when this machine is signed in as the operator, every item of both gates.
+- 9538d48: `mend server setup` runs two mirrors beside Mend, on by default: an npm mirror (nginx
+  caching registry.npmjs.org, capped at 10g, least recently used out) and a Docker mirror
+  (registry:3.1 caching Docker Hub, each layer kept seven days after it was fetched). A guard runs
+  the Docker mirror: it clears the cache when it passes its cap (20g) and pauses the mirror while
+  less than 5 GiB is free on its disk; session Docker daemons pull from Docker Hub meanwhile.
+  Neither mirror publishes a host port. Each has a healthcheck that passes without reaching Docker
+  Hub or registry.npmjs.org. `mend server upgrade` adds both to an install from before them.
+  `--no-npm-mirror`, `--no-docker-mirror`, `--npm-mirror-max-size` and `--docker-mirror-max-size`
+  change them. `--docker-hub-username` with `--docker-hub-token-stdin` and
+  `--docker-hub-public-only` gives the Docker mirror a Docker Hub login, kept in `server.env` only:
+  the last flag is the operator's statement that the token is scoped Public Repo Read-only, because
+  every session can pull what it can read. `mend server status` reports each mirror's container,
+  cache size, free disk and traffic as observed, and a paused Docker mirror with what its guard
+  found left of the cache.
+- f32ce88: A session's dependency install goes through the server's npm mirror
+  (`MEND_NPM_MIRROR_URL`, which `mend server setup` sets): a plain `pnpm install`, `npm ci` or
+  `npm install` gets `--registry=<mirror>` when the package manager, asked in the project as the
+  person who runs the install (`npm config list` and `<pm> config get registry`, each bounded at 15
+  s), reports the public registry and no login for it; when no config file or variable the install
+  script reads, nor a `pnpm-workspace.yaml` in the project or above it, sets a registry; when every
+  flag the command passes is one that cannot choose its own configuration; and when the mirror
+  answers its ping. Scoped registries and their logins are untouched. A run through the mirror that
+  fails, for any reason, runs once more as written, against the registry itself, and the engine logs
+  `dependency install · retried without the npm mirror`. The public exposure gate's `core-private`
+  item names the mirrors when sessions are pointed at them.
+- 0dc3fde: In a per-person workspace, the default, shared control runs each turn on its sender's own
+  login. A shared Claude or Codex conversation lives in a directory of its own in its owner's saved
+  files, and each agent process of it runs in that one conversation home as the person whose turn it
+  runs. Neither person's memory, instructions, settings or MCP servers reach the conversation, and
+  scheduled prompts are off in it; its transcripts, tool outputs, sub-agents and task list stay with
+  the session whoever sends the next turn. A resume continues the conversation's own file and never
+  starts a new one in its place: if the file is missing, the turn fails and says so. A terminal
+  session with shared control on runs as before: only its owner types there.
+
+  When Bob sends a turn to Alice's conversation, Mend waits until Alice's agent has finished its own
+  work (a running turn, background tasks, sub-agents, a goal, a background terminal, a monitor, a
+  wakeup), stops nothing, and then continues the same conversation in a process of Bob's, on Bob's
+  login, with the turn and any turn sent meanwhile; Bob is recorded as the turn's payer. While the
+  turn waits, both people can read why; the person whose agent runs the work, or the session's
+  owner, can end a task, a monitor, a terminal or a goal; a scheduled prompt is waited for at most
+  10 minutes and then ends with Alice's agent, which the session line says. Alice's agent is never
+  stopped on a guess: if Codex will not say what it runs, Bob's turn fails after a minute and
+  Alice's agent goes on. Right before the stop Mend looks once more: if Alice's agent started
+  something of its own, or Bob withdrew the turn, nothing is stopped. If Bob's process cannot be
+  started after Alice's stopped, Alice's is started again on Alice's login, Bob's turn fails with
+  the reason, and the next try waits a minute. If Bob's logins cannot be written, Mend tries once
+  more, then refuses the turn with the reason; it never runs on another person's agent or login.
+  Only the person an agent runs as answers its questions; anyone else is asked to send a turn
+  instead. A steerer who has not connected the harness's provider is told to connect it before
+  anything is sent, follow-ups and launches that open with their words included. Taking a shared
+  conversation over into a terminal continues it in the same place. In a worktree that runs per
+  person, only the person who made the worktree keeps Claude's scheduled prompts. The Shared control
+  switch asks before it turns on, in words true to the session's workspace: in one that shares one
+  home, each turn runs on the owner's logins and Git access, whoever sends it.
+
+  Four rules hold in either layout: shared control cannot be turned on for an opencode session,
+  which is one person's, and another person's turn to one is refused; turning shared control off
+  cancels the turns other people queued instead of sending them; removing a person from the
+  organization cancels the turns they queued; and a queued turn is withdrawn only by the person who
+  sent it or the session's owner.
+
+- 3b17bf6: The t3code gateway (docs/adr/0012): `mend server setup --t3-gateway` turns it on.
+  t3code's desktop, mobile and web clients add it as an environment, pair with a code from
+  `mend pair`, and see this Mend's projects and sessions as their projects and threads: start a
+  thread in a new or an existing worktree, from a base branch, send messages and images, @-mention
+  project files, queue, edit and reorder what waits, answer approvals, choose the permission mode
+  for the agent's next start, rename, stop, archive and delete, read each turn's diff, the thread's
+  files and its change, and open a terminal, each as the person who paired and under Mend's own
+  rules. t3code shows a provider as connected only when Mend holds that person's login for it.
+
+  It runs in the Mend container on a listener of its own, published on 127.0.0.1 only (port 3120, or
+  `--t3-gateway-port`), and setup and `mend server status` say whether it answered there. Reaching
+  it from another machine is an exposure the operator puts in front of it: while the gateway is on,
+  the public exposure gate lists `t3code-gateway` as open until `--declare t3code-gateway`.
+  `--no-t3-gateway` turns it off. Off, nothing of it runs and the gate lists nothing about it.
+
+  It speaks t3code `v0.0.46-nightly.20261010.2922` (a client of the previous nightly still pairs)
+  and checks every call against the paired client's scopes, as t3code's own server does. Its state
+  file holds every paired person's Mend device token and is readable only by the gateway's user
+  (`0600` in a `0700` directory). Failed pairing codes count per client, and a client Mend
+  rate-limits gets `429` with Mend's `retry-after`. Revoking a `t3code · …` device in Mend signs
+  that client out: t3code shows "Connection failed: The environment credential is invalid." and
+  stops reconnecting. While Mend cannot be reached, the gateway answers new connections and snapshot
+  reads with a retryable `503`. Deleting a thread's worktree from t3code says that Mend keeps it and
+  where to remove it.
+
+- 2ea4fba: Only a session's owner types in its terminal, even while control is shared. Attaching to
+  a session someone else owns prints "This session runs in a terminal. Only <owner> types here; they
+  can continue it as a conversation.", then streams the terminal without sending your keys or your
+  terminal's size; Ctrl+] or Ctrl+C detaches. `mend shell` in someone else's session is refused: a
+  shell is the owner's alone, and so is `mend service run`. `mend session share` says so in its
+  help.
+- d403ac5: The dashboard's panes are numbered the way lazygit numbers its panels: `[1] projects`,
+  `[2] worktrees`, `[3] sessions` and `[0]` for the session pane. A digit jumps to its pane, Tab and
+  Shift+Tab cycle through them and come back round, and Esc goes back to the pane you came from. `?`
+  lists every key the dashboard answers to, read from the same table it runs on. `/` filters the
+  focused list, and `+` and `_` cycle the screen mode: normal, half and full. The footer always ends
+  with `? keys`. Tab used to step one pane right and stop at the end; Enter, `l` and `→` still do
+  that. A digit or Tab into a starting session's pane hands the keyboard to its snake too.
+- 17534ac: A workspace SSH key can now be removed. `mend ssh keys` lists every key your account
+  registered, from every machine, and marks the one this machine offers;
+  `mend ssh keys remove <fingerprint>` removes one, and Settings → Workspace SSH lists the same keys
+  with a Remove action. The gateway looks a key up on every new connection, so the next connection
+  with a removed key is refused; a connection already open stays open until it ends. You see and
+  remove only your own keys. Removing a member removes all of theirs: a key the platform refuses
+  stays owed, the removal says how many, and Mend retries until none is active.
+  `mend uninstall --home` removes this machine's key, found by its public half, before it revokes
+  the terminal's device token, and exits 1 naming the fingerprint when it cannot. The organization's
+  audit log records each key registered and removed.
+- 2dfea84: `GET /api/worktrees/:id/contents` reads a worktree's files: one file with `path=` (as the
+  worktree stands, or at one of its checkpoints with `at=`), at most 1 MiB of it, its size, and
+  whether it is binary; or, with `query=`, the lines that match a search across the worktree as it
+  stands, untracked files included and ignored ones not, with `caseSensitive`, `wholeWord`, `regex`
+  and a `limit` up to 500. A path must stay inside the worktree: `..`, an absolute path and `.git`
+  are refused, and a symlink that leads out of the worktree reads as nothing there. The file is
+  opened directory by directory without following a link, and what was opened is checked to be
+  inside the worktree before it is read, so a directory swapped for a link while it is read never
+  yields bytes from outside. A search is bounded as a whole (its limit, 4 MiB of output, 10 seconds)
+  and answers what it found with `truncated`, each line cut at 2,000 characters: a large file never
+  fails it. Anyone who can see the worktree may read it; to anyone else it is not there. The t3code
+  gateway shows files and searches them with it (ADR 0012).
+- e6eb644: `GET /api/worktrees/:id/diff?from=&to=` renders a slice of a worktree's checkpoint chain:
+  from one checkpoint (or, with no `from`, the worktree's base) to a later one, with each file's
+  status and line counts, and `whitespace=ignore` as the review diff takes it. Both ends are
+  immutable commits, so a slice never moves. It reads through the same worktree reads as the change
+  and review diffs, and anyone who can see the worktree may read it; to anyone else it is not there.
+  A checkpoint not in the worktree's chain answers 404 naming it, and a slice that runs backward is
+  refused. The t3code gateway reads one turn's work with it (ADR 0012).
+
+  The answer is bounded: `files` lists the slice's files (the first ones, with `truncated`, when
+  listing them passes 8 MiB or 10 seconds), and `diff` carries the patches of at most 200 of them
+  within 8 MiB, each whole, within a 20-second deadline. `truncated` says when some have no patch
+  and `omitted` names them; `path=` asks for one file's patch alone. A large slice answers with what
+  fits, never an error.
+
+### Patch Changes
+
+- 4d5156d: On arm64 hosts (Apple silicon, ARM servers), Arch workspaces now build natively for
+  `aarch64` instead of running `x86_64` under emulation (Sealant 0.39.0-next.721, sealant#360).
+  Dependencies with native modules installed in an existing worktree (`node_modules`, `.venv`,
+  `target/`) are `x86_64` builds: reinstall them (`pnpm install`, `uv sync`, …). The first Arch
+  build on such a host downloads the Arch Linux ARM rootfs (829 MB) from `os.archlinuxarm.org`,
+  outside the mirrors, and keeps it for every later Arch build there; a mirror slower than 1 MB/s is
+  left for another (sealant#362). Every image plan now names its platform, so each workspace image
+  is built once more at its next launch (on amd64 from the layer cache). The Mac guide and the
+  workspace images guide say Apple silicon runs every workspace family natively again.
+- 22fa719: The packaged server's Sealant worker starts up to four workspaces at once, and stops up
+  to four, instead of one at a time. A launch held the only slot until its executor was ready, the
+  restore of a large save included, so on a box shared by several people and agents a session could
+  wait half a minute behind another before its own start began. `WORKSPACE_BUILD_QUEUE_PREFETCH` in
+  the server's environment still sets the number.
+- 42e1426: Reading an agent's memory and transcript back from a save fetches each pack once. A Codex
+  memory read-back of 33 small files fetched the same 64 MB pack 33 times, 28 s of a Stop on the
+  box.
+- eef4f1d: A run's changes that Core never read are no longer shown to Mend's inference as an empty
+  change. Core now says when it did not read a run's changes (the reading failed, none was recorded,
+  or the run has not ended) and why; Mend's client kept only the files and the diff, so
+  `read_change` showed an empty diff for something never observed. It now answers
+  `changes not read · <reason>`. A control plane from before sealant#313 sends no such field, and
+  its readings are read as made, as the SDK reads them.
+- 539d69f: Claude Code no longer updates itself inside a workspace. 10–30 s after the first Claude
+  started, it updated itself (2.1.287 to 2.1.289) and left its native binary as a 500-byte stub, so
+  every later `claude` in that workspace (a join, a second session) failed with "claude native
+  binary not installed". Every workspace now starts with `DISABLE_AUTOUPDATER=1` (and opencode's and
+  pi's own update switches), which reaches a `claude` typed in a shell too, and Claude's launch seed
+  sets it again for workspaces started before this release. A project variable of the same name
+  still wins.
+
+  A launch that exits non-zero now settles `failed` whichever of Mend's two observers sees its end
+  first. Core settles an interactive session's run `completed` whatever its process exited with, so
+  a join that could not start read `completed` when the run's supervision saw it before the terminal
+  watcher did.
+
+- a9a107a: Claude sessions now start with the plugins their settings enable already installed,
+  pstack among them. Claude Code 2.1.292 did not install them itself in a workspace: a conversation
+  session added the marketplace and then missed the plugin, and a terminal session loaded it only in
+  an executor's first Claude, without its SessionStart hooks. Before Claude starts, its launch seed
+  now reads `enabledPlugins` from your own `~/.claude/settings.json` and the repository's
+  `.claude/settings.json` and `.claude/settings.local.json`, adds a marketplace it does not know
+  from their `extraKnownMarketplaces`, and runs `claude plugin install --scope user` for each plugin
+  not yet installed, as the person whose Claude it is. It asks no one: whoever can commit to an
+  adopted repository can enable plugins (hooks, MCP servers, agents) that then run in every member's
+  Claude sessions on it, as that member. Every install at one launch shares 30 seconds; one that
+  fails or runs out of time is named and Claude starts without it. The terminal names the plugins as
+  their install starts (`mend: installing Claude plugins · pstack@pstack-claude …`) and what was
+  installed before Claude starts (`mend: Claude plugins · installed: pstack@pstack-claude`); when
+  every plugin is installed already, only the last line shows. A plugin that wants to run its
+  marketplace's command at install is not installed. A new workspace installs them again:
+  `~/.claude/plugins` is not saved between workspaces yet.
+- 1b52238: Three CLI fixes from the live pass. Pull, keep working, pull again now fast-forwards.
+  Before, every bundle committed the checkpoint anew on the agent's head, so any second `mend pull`
+  was refused as non-fast-forward, even with nothing new. The clone now records the commit each pull
+  left (`refs/mend/pulled/<branch>`). The next pull sends it (`GET /changes/:id/bundle?onto=<sha>`),
+  and a server that sent you that commit for this change, and still holds it, builds the new
+  checkpoint on it and leaves it out of the bundle. With nothing new, the branch stays and the CLI
+  says `unchanged since the last pull · nothing moved`. A branch that cannot fast-forward (you
+  committed on it, or the server no longer holds the last pull) is left as it is. The CLI says why,
+  and `mend pull <session> --branch <name>` fetches into a new branch instead. Mend never
+  force-updates a branch. An older server ignores `onto` and bundles as before. `mend server`
+  refusals (an unknown flag, no server configured, a held lock) print just the refusal, without
+  `Server storage operation failed:`, a doubled period and filesystem advice that does not apply.
+  The advice now follows only the operating system's own failures, and anything else under the lock
+  reads as `Server command failed unexpectedly`.
+- bf33c63: Sessions can no longer reach the cloud metadata address (169.254.169.254, fd00:ec2::254),
+  so a session on a cloud VM cannot read the instance's credentials: a connection from a workspace
+  or from its Docker service's containers is refused at once, and the workspace gets no raw sockets
+  to send packets past that. The bundled Sealant adds the refusal with a pinned busybox image that
+  the Mend image names (`dev.sealant.mend.network-guard-image`) and hands its worker
+  (`SEALANT_DOCKER_NETWORK_GUARD_IMAGE`); `mend server setup` and `mend server upgrade` pull it with
+  the server's images, and an `--offline` setup refuses until it is loaded. Workspaces already
+  running at the upgrade keep the address until they stop.
+- 6cf4d21: Codex sessions Mend starts run with Codex's background server off
+  (`-c features.daemon_auto_start=false`). Codex 0.160 starts a shared server by default, and that
+  server first copies Codex's own release, about 427 MB, into the saved harness home, where every
+  later session in the worktree would receive it. Mend's launches already stayed off the server as a
+  side effect of another setting; the flag makes it explicit on every launch: conversation,
+  terminal, prompt, resume, handoff, join and claimed standby.
+- fef5a30: A resumed Codex conversation whose thread Codex cannot find
+  (`no rollout found for thread id …`) fails the turn with "Codex could not find this conversation's
+  thread. Nothing was sent." Before, Mend quietly started a new, empty thread under the same
+  session, so the next turn went to a conversation with no history. A resume that fails for another
+  reason, such as an unknown model, shows Codex's own message.
+- fdf9e20: The dashboard says what each session is doing:
+  - A starting session names its launch phase, such as `booting`, `preparing the workspace` or
+    `waiting for the previous save`, instead of a bare age.
+  - A live session reads `up 4m` from its agent's own start, and a settled one `ended 5m ago`.
+  - A worktree reads `starting` or `stopping` where it read `running` or `settled`.
+  - A save with nothing queued reads `saving · no uploads pending`, not `saving · 0 B left`.
+  - A stopping session with no save to report reads `workspace end not confirmed`. It is never
+    hidden, and ⇧K no longer offers to stop Services it does not have.
+  - Footer messages use `·` between facts, not em dashes.
+
+- 67fdfbf: `mend doctor` and `mend server setup` no longer tell you to raise Docker's
+  `shutdown-timeout` to 3600. dockerd's own shutdown already waits for each container's stop
+  timeout, so the setting changed nothing. The `docker` line now reports what a Docker stop waits
+  for: the longest stop timeout among the running containers, against the `TimeoutStopSec` of the
+  systemd unit that runs the daemon, or `live-restore on`. A workspace that would outlast the unit
+  is named, with the session to stop before you restart or upgrade Docker. Setup warns before it
+  starts the containers. Until sealant#361 bounded it at 60 s, a capture workspace asked for 3600 s.
+  `systemctl stop docker` then timed out, and the next `systemctl start docker` hung in "Restoring
+  containers" for up to an hour. The self-hosting, VPS and troubleshooting pages say what to do
+  before a Docker upgrade, and how to unstick a Docker that is already waiting.
+- b83fe27: A session whose workspace image build fails now ends `failed`, with the build's reason,
+  and frees its worktree. Before, Mend read the failed workspace as an executor kept for recovery
+  and asked Sealant to stop it, which Sealant refused as "still launching" every time, so the
+  session read `stopping · saving` until the machine was wiped. A launch that never ran an executor
+  (no runtime, no drain) has nothing on any disk to save. A workspace whose executor ran is still
+  kept.
+
+  A session stopped while its image builds reads `stopped` from then on, not `starting` while the
+  build runs on, and the build failing afterwards no longer rewrites it as `failed`.
+
+- 190ebe9: A new session's executor is no longer replaced about two minutes after launch. Mend plans
+  the replacement ahead of the platform's 8 h cap and moves it earlier when what is pending would
+  take longer to upload, at the rate it observed between two flushes. A fresh executor ships a few
+  KB of small captures a second while its ~800 MB `node_modules` bulk is still being built. That
+  read as ~13 KB/s, an upload of 16 h, and the replacement fell due at once. It ended open shells,
+  made a join wait 25–60 s for the replacement, and left a Stop nothing of its own to save. The plan
+  now counts the upload at no less than 1 MB/s (one registration a second for captures), since the
+  observed rate shows what was shipped, not what the store can take. What is pending moves the
+  replacement no earlier than halfway through the executor's life. A replacement still starts in
+  time when a large upload would not finish before the cap.
+- 12b0eab: Fixes from the fresh-install test on stock Ubuntu 24.04:
+  - `mend run -- bash` (or `sh`, `zsh`, `fish` and the other shells, given no script and no `-c`) is
+    refused before anything is created. An attached `mend run` shows output and sends no keys, so
+    the shell would sit waiting for input. The refusal points to **Open a shell** on the web,
+    `mend shell`, or `mend run --detach` followed by `mend attach`. The line a Ctrl+C prints now
+    also names `mend stop <id>` as the way to end the command.
+  - On Node 22 the CLI installs and runs without warnings. The terminal dashboard's renderer is
+    pinned to the version Mend is tested with, which declares no Node engine, so npm no longer
+    prints `EBADENGINE`. The `node:sqlite` ExperimentalWarning is no longer printed. The CLI,
+    `install.sh` and the docs all require Node.js 22.13 or newer, the first 22 release with
+    `node:sqlite` unflagged. An older Node is refused in one line. The dashboard still needs
+    Node 26.
+  - A settled session with no run no longer reads "recording: off — launched before the platform's
+    supervised path". A failed launch says it failed before a run started, and any other such
+    session says no run started.
+
+- 92be3f3: A fresh install on stock Ubuntu 24.04 now deals with the user namespace block before it's
+  too late. `mend server setup` reads the Docker host's kernel before it pulls the Mend image. When
+  the kernel refuses unprivileged user namespaces (`kernel.apparmor_restrict_unprivileged_userns=1`,
+  the default since Ubuntu 23.10), setup says that no session can start and asks "Allow them now?
+  [Y/n]". On a yes it writes `/etc/sysctl.d/60-mend-rootless-docker.conf` on the Docker host and
+  applies it through a short privileged container on the Docker socket it already uses, then reads
+  the kernel again. On a no, without a terminal, or on a rootless daemon, it prints the command to
+  run on the host, and repeats it as its last line. `--allow-userns` and `--no-allow-userns` answer
+  for a script.
+
+  On such a host, a launch now fails at once with doctor's words and the command, before any image
+  is built or any workspace is created. Before, it built for minutes and then failed with a raw
+  `docker exec … is not running`. The web shows the finding on the Now page and in the sidebar's
+  machine block, and a failed session's line sets the command apart.
+
+  When setup changes Mend's URL, it says so with the command every other CLI runs
+  (`mend login --url <new>`). When this machine's CLI points at the old URL and that URL no longer
+  answers, setup offers to point it at the new one; the sign-in carries over, since a device's token
+  is not bound to a URL. `mend doctor` recognises a CLI left on the old URL while the server on this
+  machine answers at its new one, and says so instead of "start the Mend server". A setup re-run
+  says to create the first account only while the instance has none. In the guided public HTTPS
+  setup, a domain that does not resolve from this machine makes Enter at "Apply?" change nothing,
+  and setup says why.
+
+- 1fd102a: A change of sender under shared control no longer settles the session. The hand-over
+  stops one person's agent before the next person's starts, and in that gap the session read as
+  settled: Mend queued the owner's automatic tour and suggestions on the owner's login, a Slack
+  thread could get its end-of-session summary mid-conversation, and phones were notified of a settle
+  that did not happen. The session now stays running through the hand-over and settles once, when
+  the conversation ends.
+- e32509e: Picking a session up on the phone, or taking it back in a terminal, starts the other mode
+  in the workspace the session already runs in. It used to save and stop that workspace, then boot a
+  new one and restore the save: 2 minutes 14 seconds for a pickup on a self-hosted box.
+- f308f78: No session saves a login or token another person's session could pick up. An audit of
+  Claude Code, Codex, opencode and pi, after a clean exit and killed in the middle of a turn, found
+  credentials the saved harness state still held: Codex's MCP server logins
+  (`~/.codex/.credentials.json`) and its shell snapshots (`~/.codex/shell_snapshots/`, every
+  exported variable with its value), pi's own MCP logins (`~/.pi/agent/mcp-auth.json`) and its
+  `mcp.json`, Claude Code's copies of `~/.claude.json` (`~/.claude/backups/`) and of every file it
+  edits (`~/.claude/file-history/`), and clones and logs that keep a URL's token. Mend's list of
+  them is one table, which the platform's must match and the docs page "How Mend handles your
+  provider logins" lists in full. The Sealant runtime this release bundles leaves them out of what a
+  remote workspace saves as well.
+
+  Codex's machine state is never saved either, listed apart since none of it is a login:
+  `~/.codex/packages/` (the runtime a `codex` typed by hand unpacks, about 427 MB) and the
+  `app-server-daemon/` and `app-server-control/` directories its background server leaves.
+
+  Codex sessions Mend starts run with its shell snapshot off (`-c features.shell_snapshot=false`),
+  so the snapshot is never written. A pi session Mend starts runs on its owner's freshly delivered
+  pi profile, on none, or does not start, whether it launches fresh or joins, resumes or follows up
+  in a workspace where no pi is running: Mend moves aside the profile and settings an earlier
+  session delivered into the worktree, never deleting them, then delivers the owner's. In a
+  workspace that shares one home (`MEND_HARNESS_LAYOUT=shared`), a pi session beside a running pi,
+  anyone's, runs on the profile already there (known issues); in a per-person workspace, the
+  default, each pi runs on its own person's profile. A pi typed by hand in a session that is not a
+  pi session is not set up (known issues).
+
+- e4380af: The Helm chart runs the package and image mirrors as optional components:
+  `mirrors.npm.enabled` (nginx-unprivileged caching registry.npmjs.org, capped at
+  `mirrors.npm.maxSize`) and `mirrors.docker.enabled` (registry:3.1 caching Docker Hub under the
+  packaged install's guard, capped at `mirrors.docker.maxSize`, `mirrors.docker.ttl`). Both leave
+  `mirrors.minFree` free on their claims. An optional Docker Hub login comes from
+  `mirrors.docker.upstreamCredentials.existingSecret`, and only with `publicReadOnly: true`, the
+  operator's statement that the token is scoped Public Repo Read-only: every workspace can pull what
+  it can read. Each mirror is one non-root replica on its own claim behind a ClusterIP Service,
+  admitted only from Sealant workspace Pods. The API tier gets `MEND_NPM_MIRROR_URL`; NOTES.txt
+  names the Sealant chart's `workspaces.docker.registryMirrors` value that points workspace Docker
+  daemons at the mirror.
+- 867466a: On a Docker host that refuses unprivileged user namespaces (Ubuntu 23.10 and later, by
+  default), no session can start. `mend server setup` now says so as its last line and `mend doctor`
+  reports it on a `workspaces` line, each with the command that allows them.
+- ba09aa9: A dependency install that Mend runs with pnpm no longer waits about 70 s on one stalled
+  registry download. It gives up on a silent connection after 15 s instead of 60 s, and waits 2 s
+  before the first retry instead of 10 s, so a stall now costs about 17 s. A tarball that keeps
+  arriving, however slowly, still downloads in full. pnpm's update check is off for that install. If
+  the shortened install fails after reporting retries, for example behind a proxy that always takes
+  longer than 15 s to answer, Mend runs the command once more with pnpm's defaults and logs
+  `dependency install · retried with defaults`. Settings already in place take precedence: in the
+  command itself, the project's `.npmrc` or `pnpm-workspace.yaml`, your user config (`~/.npmrc` or
+  `NPM_CONFIG_USERCONFIG`) or pnpm config, the image's global `npmrc`, or the environment. Other
+  package managers, and custom commands that are more than a plain `pnpm install`, keep their own
+  timeouts. The engine's install line now ends with the number of download retries pnpm reported:
+  `dependency install · completed · exit 0 · fetch retries 2`.
+- 6d30e0c: A second person can now join a live session's worktree. On a server with more than one
+  person, the join used to wait about 30 minutes on a session line that read "the previous session
+  in this worktree is not answering", then failed with "worktree leased". Mend asked Sealant about
+  the first person's workspace as the second person, and Sealant only answers the person who created
+  a workspace. Now Mend asks about a workspace as the person who created it:
+  - Looking a workspace up, reading its records, saving it and ending its processes always work this
+    way, whoever asks. So a check whether an executor still runs never mistakes "you may not see it"
+    for "it is gone".
+  - Running anything in it (a terminal, a shell, a Service, a command, a repository clone) works
+    this way for a joiner while they can see the project and both people remain organization
+    members. Otherwise Mend refuses it and says why.
+  - Starting a workspace and using inference still run on your own account. A harness run through
+    Sealant is only started by the workspace's creator.
+
+  Removing a member now ends every agent, shell and Service of theirs, including in executors other
+  people started. Any executor they started is retired: the sessions of others working in it are
+  stopped with words telling them to start again in a workspace of their own, and it saves through
+  the normal Stop. If the platform does not close a process, Mend keeps it recorded as running,
+  tries again, and the session line says "could not be stopped · stop again". If the platform
+  answers that it cannot find a running session's workspace, the waiting line now says so instead of
+  "not answering", and the log records Sealant's answer.
+
+  Known limit: in a workspace that shares one home (`MEND_HARNESS_LAYOUT=shared`, or an image that
+  cannot run per-person homes, ADR 0016), every process in an executor runs as root in the home of
+  the person who started it. A person who joins someone else's executor therefore:
+  - runs their agent on that person's Claude or Codex login, and a conversation records its turns as
+    billed to them;
+  - gets root shells and Services in that person's home, which can read their Claude and Codex
+    credential files and the executor's `GITHUB_TOKEN` and `GH_TOKEN`;
+  - signs `git push` and `git fetch` from the workspace as that person: their Mend key, or their
+    machine in bridge mode. The push is recorded on their session. A repository the joiner adds is
+    cloned the same way.
+
+  Landing a change is not affected. See Known issues in the docs.
+
+  Mend also checks access again at startup and every minute. A removed member's sessions are
+  stopped, and so is a session in someone else's workspace whose owner can no longer see the
+  project. Each one's line says why, and the organization's audit log records it. A session in your
+  own workspace keeps running when a project becomes private, as the setting says. Typing into an
+  existing terminal and restoring a running agent after a restart follow the same rules. A member
+  who lost project visibility can still watch their own terminal, but cannot type in it, and can
+  always Stop their own session, which saves their work. A Stop of one person's session in a shared
+  executor no longer ends anyone else's agent or the executor itself while someone else still works
+  there.
+
+  A Stop wins over a replacement or relaunch that is saving the executor from the moment it is
+  asked, even while the platform is slow to close the agent: nothing starts on a new machine after
+  it. A refused Stop leaves a replacement or relaunch that is still saving as it was; if it finishes
+  meanwhile and ends the agent, the Stop counts as done and nothing starts after it. Its warning
+  names the process, survives a Mend restart, and clears once that process is observed ended. One
+  failed Stop does not interrupt the other sessions being stopped, and counts and audit entries
+  report only sessions whose processes ended.
+
+- 328ff0c: A session resumed on a server while another session in its worktree holds the executor
+  continues its own conversation. The resume joined that executor and started Claude, Codex,
+  opencode or pi with no resume arguments, so the harness opened a new conversation while the
+  session's process named the old one. The join now passes the same resume arguments as a resume in
+  a fresh executor.
+- cadd89c: A session starts without waiting on one exec per file. The skills, agent memory, pi
+  profile and pasted images Mend writes into a capture-mode workspace now go in one exec per
+  delivery, and a skill that sits in each harness's directory travels once. On the Docker box a new
+  session wrote a 1.9 MB skills library in 103 execs and its memory in 11, about 60 s of a 90 s
+  start; both now take one exec each.
+- 17a9126: A foreground `mend claude` or `mend codex` now stops its session when its terminal closes
+  (a closed window, `tmux kill-session`). The CLI's write to the dead terminal failed with EIO and
+  the CLI exited before its stop went out, so the session kept running; the stop now goes out first,
+  as on SIGHUP, and the CLI exits quietly.
+
+  On the web, clicking a line number in a review puts the cursor in the comment box it opens, and a
+  right-click menu takes focus once it shows, so Escape closes it and the arrow keys move through
+  it. The worktree menu's `Copy worktree path` is now `Copy directory name`, which is what it
+  copies: a captured worktree has no directory on the server.
+
+  `Send review to session` is no longer offered for a `mend run` session, on the web and on the
+  phone: a command has no agent for the review to start. The review says so instead, and the server
+  refuses such a delivery in those words before recording anything.
+
+- c9864ad: The phone names a pi session's harness "pi". Every harness other than Claude Code and
+  Codex used to read "OpenCode" in the session lists, so pi and shell sessions were shown as
+  OpenCode ones.
+- 8ae89d7: The phone shows the change's pull request. The session's conversation has a card where
+  Mend first recorded it: the number and title, its state as a dot and a word, its branch, whether
+  it was opened outside Mend, when it was observed, and `changed since landing · 3 files` when the
+  worktree moved on, with `Open on GitHub` and, for the change's owner, `Refresh`. A terminal
+  session shows the newest one at the end of its transcript, the review shows it as a line above the
+  change, and every session row on Now, Projects and a project's screen ends with `#412 · open`,
+  which opens it on GitHub.
+- b70e131: The phone's "Stop session" asks before it stops anything, and lives in the session
+  header's "more" menu instead of beside the Shell button: one bump on it ended a session while its
+  owner was using the shell.
+- eea1a74: The phone's Stop button (the one beside the composer while the agent works) no longer
+  reports a "JSON Parse error". The server stopped the turn and answered with no body, and the phone
+  tried to read one.
+- 2c41a76: A repository URL with a login or token in it
+  (`https://oauth2:TOKEN@gitlab.com/org/repo.git`) is refused at adoption and for reference
+  repositories, as it already was for dotfiles, on every client and the API, with a message that
+  points to `mend keys` and the agent bridge. Before, the adopted URL was stored as typed and every
+  project read returned it to everyone who could see the project: on a shared project, the whole
+  organization. Migration 0126 removes the credential from stored URLs. A project whose Git store
+  still holds one (or includes another config file) is refused for fetch, push, landing, new
+  worktrees and session launches until an operator removes it, and the server log names the command
+  for each such project, at every refusal and at start; the store is never rewritten. Repository
+  URLs in responses, Git errors, log lines and `--json` output no longer carry a credential. A
+  co-located launch whose selected references or linked projects cannot be read is refused too,
+  rather than mounted unchecked. A private repository that fetched only because its URL held a token
+  now fails to clone or fetch from inside a session: switch its origin to SSH
+  (`git@github.com:owner/repo.git`), which goes through Mend's git transport.
+- 5a27a65: opencode has models to pick. The server's catalog lists the Codex models for opencode as
+  it names them (`openai/gpt-6.1-sol` and the rest, through your ChatGPT login), so the web
+  composer, VS Code and `mend models` offer them, and a session records the one it was started on.
+  None is the default: a launch that names no model sends none, so the model in your project's or
+  your own opencode config still decides, then the one opencode last used. An operator's own
+  opencode rows are kept, and a row an operator flags as the default is the default. In VS Code,
+  opencode's model pick leads with "opencode's own choice", so a plain Enter sends no model.
+- 41d2e38: A pasted image is now written by the process of the person who pasted it in a per-person
+  workspace, as them, into their own saved directory
+  (`/workspace/harness-home/people/<account id>/paste/`; a new directory is 0700 and the image
+  0600). Before, Mend wrote it as root into the shared harness home. Root writes nothing of the
+  person's: a first paste makes only that person's user and home, writes none of their logins and
+  delivers nothing to them (no dotfiles or install.sh, skills, secret files or shell profile). Each
+  paste fetches its image with a Mend token of its own, which redeems that paste's pickups and
+  nothing else, is never revoked along with the person's other tokens, is revoked when the paste
+  ends however it ends, and lapses 15 minutes after it is issued in any case.
+
+  In every layout the paste writer follows no link, creates the image only where nothing is, and
+  never changes the mode of a directory: a new directory is made with its mode in one step. Before,
+  a `paste` link planted in the harness home led the root write outside it, and the writer widened
+  the directory it found there to 0755. The co-located store's writer on the server follows the same
+  rules, and refuses a paste on a server where no `/proc/self/fd` reaches a directory (a server run
+  outside Linux, not the packaged one).
+
+  Slack images take the same path, as the person who asked: in a captured session's running
+  workspace, as that person where it runs per person. On the capture store, a Slack request that
+  starts a session attaches no image, because its workspace does not exist yet when the opening turn
+  is written. The turn and the requester's note say
+  `not attached · the session has no running workspace to place it in yet`. Before, Mend wrote such
+  an image on the server, where the workspace never saw it.
+
+- 712f7d6: While a workspace gets ready, the session line now says where it stands, as Sealant
+  reports it: "queued · waiting for a worker", "building the workspace image · step 3/12", then
+  "booting". A first launch after an update can take many minutes to build its image without the
+  launch giving up, and when a build stops making progress or runs past its limit the session says
+  so, with the step it was on.
+- 6f403f5: pi and opencode run on your ChatGPT subscription through the Codex login you connected.
+  At each launch Mend writes that login into the tool's own `auth.json` (pi's `openai-codex`,
+  opencode's `openai`), as a copy that cannot refresh; a login made inside the session is never
+  replaced, and pi defaults to it only when you chose no provider. With that login and no recent
+  model of its own, opencode starts on `openai/gpt-6.1-sol`; `--model`, your opencode config and a
+  model picked inside opencode still come first.
+- d8dff71: With `MEND_HARNESS_LAYOUT=person`, the default, a worktree whose workspace started before
+  0.36 is moved over without losing anything. Mend credits the memory saved in the old shared home
+  on the server: to the person the home's record names, else to the only person who had sessions
+  there, else to nobody, and the worktree lists what it credited to nobody. When the worktree turns
+  per person, it reads the old home's last capture once more and credits only what is new. A live
+  workspace that shares one home is replaced on its own once nothing would stop that anyone would
+  miss (no terminal session, shell, Service started by hand, agent turn, process Mend did not start
+  or running container, and nothing it could not check) and only after its final save; until then it
+  takes joins, turns and follow-ups from its launcher only and says why. The change's owner can
+  replace it sooner with "Replace this workspace now", which lists everything that would stop and
+  ends nothing that was not listed. An opencode conversation from that shared home cannot be resumed
+  per person, and the session says so. With `MEND_HARNESS_LAYOUT=shared`, nothing changes. A session
+  from before the worktree ran per person resumes from its conversation as last saved; it is copied
+  into its owner's directory only if they lack it, and nothing is moved or deleted.
+- 430b2fd: `mend projects --json` prints JSON (it printed the table). A session id given first on a
+  `mend service run` line is no longer ignored when `--name` is absent.
+- 652abc2: Fixes from the 0.36.0-next.754 feature-map drive:
+  - The web's "Discard unsaved and stop…" works. It always answered an internal error before, and it
+    is the only way out of a stalled save.
+  - A `mend run` session has no agent to resume. Resume on its own harness is gone from the web, the
+    phone and the dashboard's picker; a shell or another harness is still offered. The server
+    refuses in words:
+    `This run session has no agent to resume. Resume it as a shell, or start another session in its worktree.`
+  - The dashboard's review screen no longer opens the send editor on a `mend run` session. It says
+    there is no agent to send the review to, as the web and the phone do.
+  - `mend server status | head` no longer leaves a stale `server.lock`. A server command whose
+    reader went away, or whose terminal closed, finishes what it started, releases the lock and
+    exits 0. Every exit through `process.exit` releases a lock still held.
+  - `mend uninstall` refuses with the lock's words while a server lock is held: which process holds
+    it, and how to clear a stale one. It no longer crashes with a stack trace.
+  - `mend uninstall --all` removes the edge's Caddy image too, after `--no-edge` took the edge away.
+  - A managed OS family's packages save only when they are in Sealant's catalog. A name the platform
+    matched to another project (`tree` → `python-urwidtrees`) is refused at save, not at every
+    launch.
+  - `mend memory rm codex:memories_1.sqlite` removes Codex's database, as the listing names it.
+  - A removed member's open page lands on sign-in with the reason, even when the server closes its
+    event stream before the reason goes out.
+  - A failed hand-over's summary no longer ends a sentence with `..`.
+
+- 7c7e755: Fixes from the 0.36.0-next.761 client pass:
+  - `mend run -- bash -c '…'` runs bash. Any `bash` with arguments used to be swapped for the
+    workspace's login shell (zsh by default), so bash builtins such as `mapfile` and `shopt` were
+    "not found", sometimes with exit 0. The program you name now runs as itself, with exactly your
+    argv. Only a bare shell session still opens the login shell.
+  - Back-to-back `mend run` in one worktree no longer fails with "the executor is ending: a final
+    capture flush closed admission" when the previous run's save is slow (a large untracked tree). A
+    launch that joins the worktree's executor now counts as in use, so the previous run's save waits
+    for it. If that save has already begun, the launch waits
+    (`waiting · the previous session in this worktree is saving`) and then starts on a fresh
+    executor.
+  - "Discard unsaved and stop…" is offered once a save has stalled
+    (`not saved · … · workspace kept`, or a step past its bound), not while it is still saving. If a
+    discard waits on a save that then saves everything and ends the workspace, the session reads
+    what that save recorded, not `unsaved work discarded`, and no discard is audited.
+  - The session page no longer shows its owner the non-owner view ("runs as another account", "its
+    owner shares control · Turn off", `PROJECTS/PROJECT`) for a few seconds. Ownership lines wait
+    for the data they depend on. `sessions.recipes`, which reads the workspace and can take seconds,
+    is no longer batched with the rest of the page's reads.
+
+- 44dcc04: Fixes from the 0.36.0-next.761 fresh install on Ubuntu 24.04:
+  - `mend uninstall --server` and `--all` finish in one run with live sessions. Both used to stop on
+    `network sealant-…-network has active endpoints (mend-docker-mirror)`, because they removed the
+    workspaces' networks while the Docker mirror was still attached to them. Workspace containers go
+    first, then the server's own containers (the mirrors among them), then the networks.
+  - An `--all` that stops before its images, sysctl file or build cache now says each one was "not
+    reached". It used to say "kept · Docker's build cache" after a y, and say nothing about the
+    rest. A yes to the build cache is carried out once the server is gone.
+  - `mend uninstall --all` offers the metadata guard's busybox image even on a re-run, after the
+    Mend image (whose label names it) is gone. It used to leave the image there without a word.
+  - A launch refused because the host blocks user namespaces now prints a command that works when
+    pasted: `… | sudo tee /etc/sysctl.d/60-mend-rootless-docker.conf && sudo sysctl --system`. The
+    server's error scrubber had turned the path into `<path>`. The command crosses whole only when
+    it is exactly the one Mend writes.
+  - `mend server setup --yes` without `--allow-userns` says to re-run with `--allow-userns`, so that
+    setup writes the sysctl file and `mend uninstall` can undo it. The command to run by hand comes
+    second: a file written by hand has no marker, so uninstall leaves it.
+  - The guided `mend server setup` asks about the host's user namespaces before its first question.
+    The kernel probe uses the busybox image every install already needs (a few megabytes), not
+    `postgres:17-alpine`, so nothing of the release is pulled before the question.
+  - After a URL change, setup says that other accounts and other machines sign in again with
+    `mend login --url <new>`, which asks for a new browser authorization. It used to say their
+    sign-ins "move with" it.
+  - A re-run of `mend uninstall` names only the containers, volumes and image Docker still holds, in
+    its plan and in what it says it removed.
+
+- 2687915: Fixes from the RC 0.36.0-next.768 re-checks.
+  - A session whose workspace the host's Docker stopped or killed (a `systemctl restart docker`, a
+    stop past its timeout) no longer reads `completed`. Core restarts such an executor on its own
+    disk to save what it held. When that boot is what answers Mend, the session's line says
+    `ended · the host's Docker stopped it`, with the last capture `not confirmed`, and then
+    `saved at … · capture N` once the save is observed.
+  - `mend doctor`, a launch refused on a host that blocks user namespaces, and the web's notice now
+    name `mend server setup --allow-userns` first. Setup writes the sysctl file with its marker, so
+    `mend uninstall --all` removes it and puts the kernel back. The manual command is still given as
+    the alternative, and a file written by hand stays on uninstall.
+  - When "Discard unsaved and stop" was asked but the save under way finished first and kept
+    everything, the session now says
+    `stopped · the save finished before the discard, so nothing was discarded`, not plain `Stopped`.
+  - `mend doctor` on a MacBook that serves Mend now says, on a `lid` line, that closing the lid
+    sleeps the Mac unless an external display and power are attached, which pauses the Docker VM. It
+    reads `ioreg`'s `AppleClamshellCausesSleep`, so the line is there even when `pmset -g` reads
+    `sleep 0`. A Mac mini has no lid and keeps only the `sleep` line.
+
+- 9949ff7: A relaunch, resume or executor replacement waits for the session's own earlier executor
+  to give up the worktree before it creates the next one. Mend read a lease that an earlier executor
+  of the same session held as free: the next executor booted and waited for that lease until the
+  platform gave up on it. Ending one executor also no longer releases a lease that a later executor
+  of the same session holds.
+- c268fd2: VS Code Remote-SSH, SFTP and `scp` into a per-person workspace run as its launcher's own
+  Linux user, in their 0700 home with their logins, not as root. The launcher is the person whose
+  launch started the workspace; after it stops, whoever launches the next one. Only the launcher can
+  open Remote-SSH there. The API's session list and view name them (`workspaceLauncherUserId`), so
+  an editor can say so before it opens instead of ending in a bare permission denial. Mend binds
+  each account's person in Sealant once (`users.bindPerson`). If it cannot (an older Sealant, a
+  refusal), Remote-SSH stays root and the session says
+  `Remote-SSH: root, Core can't bind your person`; a Sealant that runs SSH only as root gives
+  `Remote-SSH: root, this Sealant runs it as root`. When a workspace falls back to one shared home,
+  Mend sets its SSH user back to root off the launch path, and until that lands the session says
+  `Remote-SSH unavailable · the workspace's SSH user is not yet back to root · retrying`. A person
+  launch whose Remote-SSH runs as root for any reason, a claimed standby included, says so on its
+  session line.
+- 651ceb8: A worktree whose change was never landed can now be removed from the web app and the CLI,
+  in two steps. The web app's worktree menu shows the store's refusal in its own words, with the
+  files and line counts not on origin, and offers "Remove anyway", which is the same removal with
+  `force=true`. Clear settled says how many worktrees it kept for that reason.
+  `mend worktrees rm <name>` removes a worktree from a terminal, prints a refusal as the server said
+  it, and `--force` removes it anyway. A worktree whose workspace is still saving is refused either
+  way.
+- 618285c: A conversation session started with approvals on (`ask`) keeps them when it comes back.
+  Resuming it, a follow-up to it after a stop or an idle stop, and a Slack reply that relaunches it
+  now run with `ask` again, where they ran with approvals off. A relaunch that names a permission
+  mode still runs on the one it names.
+- 7fb0587: `mend resume <id>` resumes the session it is given. Without `--with` on the line it
+  skipped the id and resumed the project's newest settled session instead, which may be another
+  worktree's.
+- 204613d: - The t3code gateway asks Mend whether a device is still paired when a socket opens with
+  a bearer in its `Authorization` header, as it already did for a ticket. A device revoked in Mend
+  is refused at once instead of reading for up to 15 seconds.
+  - `mend pull` works for a branch whose name has characters above U+00FF (CJK, for example), which
+    made the bundle download fail with a 500. The download names the file in UTF-8 (`filename*`)
+    with an ASCII fallback, and sends the branch percent-encoded in `x-mend-bundle-branch-encoded`,
+    which the CLI reads first.
+  - The docs no longer call a workspace that shares one home the default: per-person workspaces are.
+- b3f89db: Opening a review or marking a checkpoint while a session is stopping no longer hangs. The
+  checkpoint uses the Stop's final save, which holds everything the session saved, and Mend does not
+  ask the stopping executor again. The web, phone and terminal reviews say where that checkpoint
+  came from, with the time of that save, for example
+  `from the Stop's final save · capture 12 · 10:16`. They never show it as a fresh observation. A
+  landing during a Stop waits for the Stop to finish, then lands what it saved. If the Stop takes
+  longer than 45 seconds, the landing is refused with "the session is stopping", and nothing is
+  landed. Opening a review answers within 90 seconds, or says it did not finish.
+- efcba11: A Stop whose session committed a large file no longer verifies the git pack twice. The
+  register copies it down and verifies it once; the seal compares the stored index with the one
+  verified and reads the pack again only if that changed. A 627 MB pack cost 7.9 s less on the box.
+- 0dc3fde: The bundle runs Sealant 0.39 (0.35.1 ran 0.38.1): its API, worker and SSH gateway images,
+  pinned by digest. Its workspaces run sealantd 0.20.
+  - Every workspace image carries pi beside Claude Code, Codex and opencode, at fixed versions
+    (Claude Code 2.1.292, Codex 0.160.1, opencode 1.18.34 and pi 1.0.4), so rebuilding an image no
+    longer changes which version a session runs.
+  - Sessions start faster: Mend sees each command it runs in a workspace end within about 25 ms,
+    where it could wait a few hundred, and a launch runs about twenty of them. A workspace's
+    readiness is read back sooner too.
+  - Sealant no longer stores the arguments a process or terminal was started with, since they can
+    carry secrets: a run's record shows the program and how many arguments it had. Upgrading runs a
+    one-time purge of the arguments already stored, before Sealant starts. On a database the size of
+    a small team's server it takes 15 to 45 seconds.
+  - A command's arguments may be any string: empty, starting with whitespace or spanning lines. Only
+    the program must be trimmed. A request Sealant refuses says why without quoting what was sent. A
+    registry URL's user and password are sent as Basic auth and never printed, and what Sealant's
+    API observes is redacted unless it is known to be safe.
+  - Workspaces send each upload's SHA-256, pack indexes included, so a Stop on Garage can seal
+    without waiting for its upload links to expire. No harness login is captured with the harness
+    home, so the next session in the worktree never inherits one. A final save and a restore use
+    every core, and the `socat` relay comes over HTTPS, checked against a pinned checksum.
+  - A Stop is recorded once the executor has ended, before its remains are removed, and a run's
+    changes are read from a refreshed copy of the index. A run no longer fails when the same
+    telemetry event reaches its record twice.
+  - A workspace's SSH sessions, VS Code Remote-SSH included, can run as its owner's own Linux user,
+    the person their Sealant user is bound to. SFTP runs as that user too. The Fedora and Ubuntu
+    images carry an `sftp-server`, with every sshd unit masked.
+
+- 1c9b7a3: The bundle runs Sealant 0.39.0-next.722 (sealant#361). A workspace container's own stop
+  timeout is now 60 s, so restarting or upgrading Docker with a live session finishes inside
+  systemd's 90 s instead of leaving Docker waiting in "Restoring containers" for up to an hour. A
+  planned Stop still gives the workspace its full grace, read from the container's
+  `sealant.stop-grace` label. A workspace that Docker's own stop kills keeps what it had not saved
+  on its disk, and it is recovered. Workspaces started before the upgrade keep their 3600 s until
+  they stop: `mend doctor` names them. The upgrade page and release notes say so.
+- 7014ef6: Files Mend places in a captured workspace (secret files, the pi profile, agent memory,
+  skills, carried Codex conversations, pasted images) no longer pass through the platform's exec
+  arguments, which Sealant Core before 0.39 stored in plaintext.
+  - **The pickup ticket.** A launch puts a single-use pickup ticket in the exec instead of the
+    bytes. The ticket is bound to the session, its owner and the executor's launch. It dies when its
+    exec ends, with a ten-minute backstop. The same exec redeems it over the session channel and
+    writes the bytes straight into place. Secret files and the pi profile's `mcp.json` are written
+    0600, and never through a link.
+  - **Node.** Secret files need `node` on the image's `PATH`. Without it the session line says so.
+
+  A credential in an adopted origin no longer reaches a workspace: not its `origin` remote, the
+  `mend repo add` clone, or what `mend repo projects` lists.
+
+  **If you ran a 0.36 prerelease.** Secret files, pi profiles, agent memory and `mend repo add` are
+  new in 0.36, and prereleases before this fix sent them as exec arguments, which Sealant stored.
+  The Sealant this release bundles purges stored arguments when it upgrades; a database backup taken
+  before then still holds them. If you used such a prerelease, rotate every credential kept as a
+  secret file, every key in a pi profile's `mcp.json`, any secret written into agent memory, and
+  every token in an origin added to a session with `mend repo add`. Upgrading from 0.35.1 needs none
+  of this.
+
+- 983d74f: New: `mend service run --wait` returns once the Service's port answers, waiting while its
+  process runs, up to `--timeout <duration>` (default `10m`). It opens no tunnel and refuses a
+  recipe that declares only a port, and the exit status says what was observed: `0` the port
+  answered, `1` Mend refused the start, `2` the Service's process ended first (with its status and
+  exit code), `3` the server no longer has the session, `124` still starting at the timeout. The
+  wait judges only the process its own start began: the start sends an id the server stamps on that
+  attempt, so another client's start, restart or stop never decides it. A server older than the CLI
+  stamps none; there a start an edge cut is not followed, and a command that exits inside the
+  server's minute reads as the refusal the server answers with (exit `1`).
+
+  `mend service list` prints each Service's current attempt's process id, and `--json` prints the
+  Services as JSON. `mend logs --service <name-or-id>` reads a Service's current attempt, and
+  `mend logs --process` takes a Service's id or name too: a full id names its Service before any
+  name, and a name two Services carry is refused with both ids listed. A Service with no attempt yet
+  is refused with a line that says why nothing is recorded.
+
+  A reader that closes the pipe early (`mend service list | grep -q web`, `| head -1`) no longer
+  kills the CLI with an unhandled EPIPE and a stack trace: every command exits 0, quietly.
+  `mend run` and `mend logs` still fail when their command's output could not be delivered.
+
+- 36f4575: A session and its run settle together. A session settled by any path, a failed launch, a
+  lost executor, the sweep after a restart, now settles the run it left open with the same outcome
+  and summary. Startup and the lease reaper settle a run left `running` under a session that had
+  already settled, once, with the session's words. A resume of such a session no longer fails on the
+  one-active-run index with an unhandled error: the stale run is settled first and the resume goes
+  on, and a run that is still live is refused in words, `a run of this session is still open`, and
+  never settled.
+- 3df5968: `mend server setup` on a machine with two Docker engines, such as Docker Desktop and
+  OrbStack on one Mac, no longer installs a server it cannot reach. Before anything is pulled, setup
+  checks that Mend's web and SSH ports are free where they are to be published, and says what holds
+  one that is not: "127.0.0.1:3105, Mend's web port, is taken: another Mend, 0.27.4, answers there".
+  On a terminal it offers the next free port; with flags it refuses and names `--port` or
+  `--ssh-port`. After starting, it waits for health from the server it started, by version and by
+  the instance id the server now reports in `/api/health`, so another Mend answering on the same
+  port is said as one rather than read as this server's health.
+
+  `--context` and `--docker-socket` choose the Docker engine and answer no question:
+  `mend server setup --context orbstack` on a terminal now asks the questions and the Apply prompt,
+  and without a terminal a fresh install with only those flags is refused like one with none
+  (`--yes` takes the defaults). A fresh install without `--context` takes `DOCKER_CONTEXT`, as
+  docker does; an existing install stays on the context its data is on and says so.
+
+  When this machine's CLI points at another server, or where nothing answers, setup offers to point
+  it at the server it installed. A sign-in made at another server stays behind, and the offer leads
+  with no while that server still answers.
+
+  `mend doctor` reads the Docker daemon of the installed server's own context for its docker line,
+  so an OrbStack server is no longer told to restart Docker Desktop. When the CLI's loopback URL
+  answers with a server other than the one installed here, the server line says so and gives
+  `mend login --url`. The exposure line names the command to run
+  (`mend server setup --edge <domain>`, or `--url https://<origin>` behind HTTPS you run) instead of
+  an internal setting.
+
+  The private-network question no longer offers Docker, OrbStack or vmnet bridge addresses, or
+  network addresses ending in .0. On the public HTTPS walk, workspace SSH defaults to this machine
+  until you state that you checked it from outside, so the defaults no longer undo each other, and
+  the question about stating what you checked says what it is for.
+
+- 4343382: `mend server setup` no longer offers a public address as a private network. Under "my
+  private network or Tailscale" it offers only the tailnet, LAN or VPN addresses (RFC 1918, ULA) and
+  carrier-grade NAT space, and pre-selects one of them. A public address is said as observed and
+  left out, and so is "every address" when the machine holds a public one. On a VPS whose only
+  address is public, setup says so and installs on this machine, with the ways to reach it from
+  elsewhere: a tunnel, Tailscale, or public HTTPS. Before, Enter there published a fresh install on
+  the public address as `private`, with registration open to whoever reached it first. A fresh
+  install now refuses `--bind` on a public address without the edge, with flags too. On an existing
+  install, a run that publishes Mend's port or workspace SSH on a public address while the exposure
+  is not public says so beside the declared exposure. A Tailscale Serve name with Funnel on is said
+  to be public and offered as a browser origin with No as the answer, and not at all on a fresh
+  install. Moving the web to another address on a rerun keeps workspace SSH where it was published
+  by default, instead of moving it along.
+- 5ff702a: `mend server setup --ssh-bind <ip>` publishes workspace SSH on its own address. With
+  `--edge`, the web port stays on loopback and the edge carries HTTPS only, so until now the SSH
+  gateway stayed on loopback too and Remote-SSH from another machine (VS Code on a laptop,
+  `mend ssh`) could not connect. `--ssh-bind 0.0.0.0`, or a private address, publishes it; the
+  setting is kept across reruns and upgrades, and naming the `--bind` address takes it away. A
+  release whose compose asset cannot honour it is refused rather than left on loopback.
+
+  SSH published that way is its own item of the public exposure gate, `workspace-ssh`. The server
+  reads where it is published (`MEND_SSH_PUBLISHED`), reports loopback as observed, and anything
+  else as open until the operator states who reaches it (`MEND_EXPOSURE_DECLARED`, which
+  `mend server setup --declare <item>` now writes). A `public` start waits for that statement, and
+  setup refuses `--exposure public` with SSH beyond loopback until `--declare workspace-ssh`. Setup
+  also says what it observed from its own machine: each address it tried, and whether an SSH banner
+  answered.
+
+  A rerun with `--port` now moves a saved plain-http `--url` that names the old port explicitly (the
+  LAN or tailnet case) to the new one, as it already did for `http://localhost`; before, `APP_URL`
+  kept pointing at a port nothing published. An `https` URL, or one whose port is implicit, is an
+  endpoint in front of Mend and stays as it was.
+
+- 22b7247: A shallow repository (a `git clone --depth` copy, a CI checkout, a mirror made from one)
+  is now refused at adoption, and a project adopted from one before is refused when a session starts
+  on it: "Mend doesn't support shallow repositories yet. Make the repository complete where it is
+  hosted (`git fetch --unshallow`), then adopt it again." A session on one could never save: every
+  save's git section failed verification at the shallow boundary, and its Stop read `saving` for up
+  to 10 minutes, then `final seal not confirmed`. A project whose repository has grafts
+  (`info/grafts`), which cut its history the same way, is refused at a session's start too. A Stop
+  whose final seal Mend refused because that capture's git section failed verification now reads
+  `not saved · final seal refused · git section failed verification · workspace kept` on the first
+  final flush, and keeps the workspace; a seal withheld because a check could not finish keeps the
+  ordinary wait. A shallow checkout on your own machine still adopts through its `origin` URL, in
+  full.
+- 5129189: Sign-in for a Mend on a Mac mini, reached from other machines. A server clock that
+  disagrees with yours no longer breaks it. After a Mac sleeps, OrbStack's VM clock can run hours
+  behind, and `mend login`, the VS Code extension and the authorize page compared the server's
+  `expiresAt` with their own clock, so the request read as expired the moment it opened. The server
+  now also sends `expiresIn` (seconds left, by its own clock) and clients count down from when the
+  answer arrived. Against an older server they read `expiresAt` against its Date header. The server
+  still judges expiry by its own clock alone. `mend doctor` says when the server's clock is more
+  than two minutes off this machine's (`this server's clock is 116 min behind this machine's`), with
+  what resets it. On a Mac with a server installed, it also says when the Mac still sleeps on its
+  own (`pmset -g`): OrbStack and Docker Desktop pause their VM while it sleeps. The Mac mini guide
+  says to turn automatic sleep off and Wake for network access on.
+
+  `mend login` over SSH, or on Linux with no display, prints the link and code and opens no browser.
+  Before, it opened the page on the far machine's screen. `--open` and `--no-open` decide outright.
+
+  In VS Code, polling no longer waits for the "open the external website?" dialog, which can sit
+  behind other windows on Linux. The sign-in shows the link and code with "Copy link" and "Paste a
+  device token instead". The plain-http warning is shorter, says nothing over Tailscale (by address
+  or `.ts.net` name), and says "anyone on this local network can read the token" on a LAN. "Open in
+  VS Code" is in the session row's right-click menu too.
+
+  The authorize page names the client asking: "Authorize VS Code?" for the extension, "Authorize
+  this terminal?" for `mend login` (migration 0128 keeps which client opened a request). A guided
+  `mend server setup --context orbstack` now puts `--context orbstack` in its "Same as:" command.
+
+- 176b506: Removing a workspace SSH key (`mend ssh keys remove`, Settings → Workspace SSH) says what
+  happens to the connections already open with it. With the Sealant this release pins (0.39), they
+  end within a minute. Against an older Sealant they stay open until you stop your running sessions,
+  and the removal lists those sessions: the CLI prints `mend stop` for each, and Settings offers to
+  stop them all after a confirmation. The published SSH port now has limits before login
+  (sealant#359), and the docs describe them.
+- b81e4ed: Startup never waits on an executor. The session engine's boot pass folds each unsettled
+  row whose processes had all ended and that no drain holds, then stands; the workspace such a
+  session left behind is drained after the boot, forked and as the session's owner, with the late
+  harvest the restart cut short. Before, a session whose stop or resume was under way when Mend was
+  replaced (its agent ended, its old executor still up) had its drain run inside startup, with no
+  principal, so every lookup read `unknown` and the drain idled for up to its ten-minute stall
+  window while nothing listened on the API port; the bundle restarted Mend at four minutes. Protocol
+  pipes are rehydrated and Service forwards re-bound forked too, and the watchers of processes that
+  were live across the restart run as their session's owner, so a process that ends after a restart
+  is recorded as ended (a watcher with no principal was refused its first lookup and retried
+  forever).
+- 63e5d8b: A Stop asks its executor for one final save instead of three small ones first. The stop's
+  checkpoint and the agent's harvest read that save. On the box this was 8.6 s of a 25 s Stop, and
+  `mend stop` answered only after the first of those saves.
+- e63d8eb: A Stop made while a status read was on its way makes one final flush and reads `stopped`.
+  The person's view asks for the executor's status as they press Stop; the executor answered it
+  during Mend's own final flush, and the answer arrived after the final one. The drain could not
+  decide on evidence with an answer still unpublished, so it asked for a second final flush (5.1 s
+  on the box), and the late `in-progress` answer read as a final flush made outside Mend, so the
+  session said `stopped outside Mend · saved at …`. The drain now waits for that answer, and an
+  `in-progress` answer during Mend's own final flush is Mend's.
+- d24f789: `mend stop <id>`, `mend rejoin <id>` and `mend service logs <name>` take the id or name
+  they are given. Without `--project`, `--harness` or `--from` on the line they skipped it, so
+  `mend stop <id>` answered "several live sessions".
+- d403ac5: The dashboard's session pane names a session's running Services again. It read
+  `GET /services` as a flat list of Services, while the server answers one view per Service with the
+  Service nested inside it, so every session said `no services running`. `mend service list` and the
+  dashboard now read the same view the same way. The harness picker for a new session in an existing
+  worktree says the session joins that worktree, where it said `new worktree`, and the new-worktree
+  form's base hint stays inside the form's border.
+- 765bf12: The dashboard's snake no longer starts behind your back. It waits on the board until it
+  has the keyboard, then counts down 3, 2, 1, go in big half-block digits sized to the board (small
+  ones on a short terminal), with the snake visible underneath, and moves only after go. Starting or
+  resuming a session from the dashboard gives the game the keyboard once the session's pane shows
+  it, and so do Enter, `l` or `→` into a starting session's pane. While the game has the keyboard
+  its board border is the accent colour, and the arrows and `h j k l` steer it. Space or `p` pauses,
+  and the countdown runs again before the game resumes. Esc or `q` hands the keyboard back to the
+  list you were in. No other key acts on the dashboard behind the game. The keys are listed under
+  the board and in the footer. A dialog that opens over the game, such as the adopt offer at the
+  start of `mend snake`, keeps the keyboard until it closes, and then the countdown starts. Another
+  session's start failing leaves the game you are playing alone. In a short terminal the session's
+  facts give way to the board. A terminal too small for the whole board says to make it taller, and
+  the game does not take the keyboard.
+- 08847fc: `mend uninstall` leaves a machine that can reinstall. The plan lists live sessions and
+  their workspaces. After the same `type delete`, uninstall stops them and removes each with its
+  Docker service, their volumes and its network, then the server. The report names each volume and
+  network that went and each that did not. The `mend-store` anchor and the identity go last, only
+  once everything else has. If Docker refuses something, uninstall keeps them and writes what is
+  left to `uninstall-left.json`, so a second run finishes the job and `mend server setup` reinstalls
+  over it. With no configuration here, volumes carrying Mend's installation label and no anchor are
+  an earlier install's leftovers: setup's refusal now points at `mend uninstall --server`, which
+  lists and removes them.
+
+  With Docker stopped, `--server` and `--all` refuse before touching anything. They no longer remove
+  the sign-in and ssh key first and leave them registered on a server that still exists. `--all`
+  removes the server first, then asks the signed-in server, when it is another one, to forget this
+  machine's key and device, and only then removes local files. A sign-in to the server being removed
+  is not revoked: its token went with the server, and `--server` clears it from `cli.json`.
+
+  `--all` also offers the images Mend pulled and built, with their size, and removes
+  `/etc/sysctl.d/60-mend-rootless-docker.conf` when setup wrote it, putting back the setting it
+  replaced. Docker's build cache gets its own question. The last line names what is still here, the
+  CLI itself included (`npm uninstall -g @sealant/mend`), instead of "Mend is gone". Any answer to
+  the confirmation other than the word removes nothing, says what was read and exits 1.
+
+- d4a9099: `mend uninstall` removes only the `~/.ssh/config` blocks of the servers it removes: the
+  one this machine is signed in to, and with `--all` the local installation's. It finds the local
+  one by its alias or by its gateway, so a block set up before setup moved the URL is found too.
+  Other servers' blocks stay, and the plan names each block that goes and each that stays, with its
+  host and port. An older release's unscoped `Host mend-ws` block names no server, so uninstall no
+  longer deletes it. It says the block stays and how to delete it by hand. The key directory stays
+  while a block that stays signs with a key in it. `mend ssh setup` migrates that legacy block only
+  when it points at the same gateway; one for another server stays.
+
+  `mend ssh <session>` prints the exact `ssh ws-<workspace>@mend-ws-…` command for one session's
+  running workspace. No other output showed the workspace id, and the Docker container's name is a
+  different id that the gateway closes after its banner. `mend ssh setup` now points at it.
+
+  The uninstall plan no longer counts the server's own `mend` container as a session workspace, so
+  "N live sessions" is the number of sessions. An image Docker refuses is asked for again after the
+  rest, since removing another tag often removes it, so the last line no longer reports an image
+  that is gone. One that stays is named with Docker's reason.
+
+  `mend adopt` over https no longer says "your Mend key signed this clone". The Mend key signs ssh
+  remotes only, and adopt now says the clone went over https.
+
+- 70cddcd: `mend server upgrade` no longer keeps every database backup it writes. Each one is a full
+  dump under `backups/upgrade-UUID/` and can run to gigabytes. After the new version answers health,
+  the upgrade records its backup as completed, keeps the newest two completed backups in the order
+  Mend wrote them (its own included), removes the older ones and prints each with the space it
+  freed. `--keep-backups N` changes the count and `--keep-backups 0` keeps them all. A failed
+  upgrade removes nothing. A backup recorded as pending, or whose dump is incomplete, is always
+  kept. Nothing is ever removed but an `upgrade-UUID` directory holding exactly `recovery.json` and
+  `database.sql`, or what a removal cut short by a crash left behind: an `upgrade-UUID.removing`
+  directory, an empty `upgrade-UUID` directory, or a completed record whose dump is gone.
+
+  Backups written by releases before 0.36 carry no outcome. The first upgrade on 0.36 or later
+  treats each one whose dump is whole as completed and keeps only the newest N, including the backup
+  of an old upgrade that failed after its target started. Copy any you want to keep out of
+  `~/.config/mend/backups/` before upgrading. Their removals end in
+  `· from before 0.36, no recorded outcome`.
+
+- 1d17c7f: The `/etc/sysctl.d/60-mend-rootless-docker.conf` that `mend server setup` writes on a
+  host that refused user namespaces now starts with
+  `# written by mend server setup; mend uninstall removes it`, followed by the setting it replaced
+  (`# previous: kernel.apparmor_restrict_unprivileged_userns = 1`). `mend uninstall` can then remove
+  only a file setup wrote, and put the kernel's setting back.
+- 837ae17: Workspaces set `PAGER=cat`: the images carry no `less`, so `git log` in a terminal failed
+  with `unable to execute pager 'less'`. Each person's processes inherit it too. A project variable
+  named `PAGER`, a shell profile's, or `core.pager` in a person's git config wins; `GIT_PAGER` stays
+  unset so that last one keeps working.
+
 ## 0.35.1
 
 ### Patch Changes
