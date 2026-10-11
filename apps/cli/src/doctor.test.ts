@@ -17,6 +17,7 @@ import {
   formatCheck,
   type LocalServerFacts,
   runChecks,
+  t3GatewayCheck,
   userNamespacesCheck,
 } from "./doctor.ts";
 
@@ -208,6 +209,42 @@ describe("mend doctor", { timeout: 30_000 }, () => {
     } finally {
       await fake.close();
     }
+  });
+});
+
+describe("the t3code gateway line", () => {
+  it("says the address T3 Code's Remote link takes, as the server configured it", () => {
+    expect(
+      t3GatewayCheck({
+        url: "http://mend-box.tailc79e49.ts.net:3120",
+        published: "100.94.101.28:3120",
+      }),
+    ).toEqual({
+      label: "t3code gateway",
+      state: "ok",
+      detail:
+        "http://mend-box.tailc79e49.ts.net:3120 · published on 100.94.101.28:3120 · T3 Code's Remote link takes it, with a code from mend pair",
+      fix: null,
+    });
+    expect(
+      t3GatewayCheck({ url: "https://t3.alpha.mend.run", published: "127.0.0.1:3120" }).detail,
+    ).toBe(
+      "https://t3.alpha.mend.run · published on 127.0.0.1:3120 · T3 Code's Remote link takes it, with a code from mend pair",
+    );
+  });
+
+  it("says a loopback gateway is reached on the server's machine only, and an unsaid one as such", () => {
+    expect(
+      t3GatewayCheck({ url: "http://127.0.0.1:3120", published: "127.0.0.1:3120" }).detail,
+    ).toBe(
+      "http://127.0.0.1:3120 · published on 127.0.0.1:3120 · reached on the server's machine only",
+    );
+    expect(t3GatewayCheck({ url: null, published: null })).toEqual({
+      label: "t3code gateway",
+      state: "todo",
+      detail: "on · the server does not say its address",
+      fix: "on the server's machine, mend server setup --t3-gateway",
+    });
   });
 });
 

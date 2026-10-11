@@ -29,6 +29,9 @@ const open = (posture: ExposurePosture) =>
     .filter((outcome) => outcome.established === "open")
     .map((outcome) => outcome.id);
 
+const t3GatewayOf = (posture: ExposurePosture) =>
+  evaluateExposureGate(posture).find((outcome) => outcome.id === "t3code-gateway");
+
 const workspaceSshOf = (posture: ExposurePosture) =>
   evaluateExposureGate(posture).find((outcome) => outcome.id === "workspace-ssh");
 
@@ -199,23 +202,22 @@ describe("the public exposure gate", () => {
     expect(exposureRefusal("public", evaluateExposureGate(stated))).toBeNull();
   });
 
-  it("lists the t3code gateway only while it is enabled, open until the operator states who reaches it", () => {
+  it("lists the t3code gateway only while it is enabled; unsaid where, open until the operator states who reaches it", () => {
     expect(evaluateExposureGate(closed).some((outcome) => outcome.id === "t3code-gateway")).toBe(
       false,
     );
     const on = evaluateExposureGate({ ...closed, t3Gateway: true });
     const item = on.find((outcome) => outcome.id === "t3code-gateway");
     expect(item?.established).toBe("open");
-    // Unobservable and never blocking a start, unlike workspace-ssh (mend#620), which blocks one.
+    // Unobservable and never blocking a start while nothing says where it is published.
     expect(item?.blocksStart).toBe(false);
     expect(item?.observable).toBe(false);
-    expect(item?.detail).toContain("cannot observe who reaches that port");
+    expect(item?.detail).toContain("cannot observe who reaches it");
     // A configuration fact, read once: it says enabled, never that the gateway runs (645-2).
     expect(item?.detail).toContain("the t3code gateway is enabled (MEND_T3_GATEWAY_ENABLED)");
-    expect(item?.detail).toContain("nor whether the gateway is listening there");
+    expect(item?.detail).toContain("nor whether it is listening");
     expect(item?.detail).not.toMatch(/\bruns\b/);
     expect(item?.fix).toContain("then add t3code-gateway to MEND_EXPOSURE_DECLARED");
-    // It never refuses a start: no build can observe it.
     expect(exposureRefusal("public", on)).toBe(
       exposureRefusal("public", evaluateExposureGate(closed)),
     );
@@ -225,6 +227,64 @@ describe("the public exposure gate", () => {
       declared: ["t3code-gateway"],
     });
     expect(stated.find((outcome) => outcome.id === "t3code-gateway")?.established).toBe("declared");
+  });
+
+  it("reads the gateway published on loopback as observed: nothing to state", () => {
+    const item = t3GatewayOf({
+      ...closed,
+      t3Gateway: true,
+      t3GatewayPublished: "127.0.0.1:3120",
+      t3GatewayUrl: "http://127.0.0.1:3120",
+    });
+    expect(item).toMatchObject({
+      established: "observed",
+      detail:
+        "the t3code gateway's port is published on 127.0.0.1:3120 only (MEND_T3_GATEWAY_PUBLISHED)",
+      fix: null,
+      observable: true,
+    });
+  });
+
+  it("holds the gateway published on a private address open until declared, and a public start with it", () => {
+    const tailnet: ExposurePosture = {
+      ...closed,
+      t3Gateway: true,
+      t3GatewayPublished: "100.94.101.28:3120",
+      t3GatewayUrl: "http://mend-box.tailc79e49.ts.net:3120",
+    };
+    const item = t3GatewayOf(tailnet);
+    expect(item).toMatchObject({ established: "open", blocksStart: true, observable: false });
+    expect(item?.detail).toBe(
+      "the t3code gateway's port is published on 100.94.101.28:3120 (MEND_T3_GATEWAY_PUBLISHED); every device pairs through Mend, and this process cannot observe who can reach the port",
+    );
+    expect(item?.fix).toContain("a connection attempt to 100.94.101.28:3120 from each network");
+    // Private never refuses; public does, as for workspace SSH published beyond loopback.
+    expect(exposureRefusal("private", evaluateExposureGate(tailnet))).toBeNull();
+    expect(exposureRefusal("public", evaluateExposureGate(tailnet))).toContain("t3code-gateway");
+    const stated = t3GatewayOf({ ...tailnet, declared: ["t3code-gateway"] });
+    expect(stated).toMatchObject({ established: "declared", blocksStart: true });
+    expect(stated?.detail).toContain("this process cannot check it");
+    expect(
+      exposureRefusal("public", evaluateExposureGate({ ...tailnet, declared: ["t3code-gateway"] })),
+    ).toBeNull();
+  });
+
+  it("served by the edge on its own origin: open until the operator checked that origin from outside", () => {
+    const served: ExposurePosture = {
+      ...closed,
+      t3Gateway: true,
+      t3GatewayPublished: "127.0.0.1:3120",
+      t3GatewayUrl: "https://t3.alpha.mend.run",
+    };
+    const item = t3GatewayOf(served);
+    expect(item).toMatchObject({ established: "open", blocksStart: false, observable: false });
+    expect(item?.detail).toBe(
+      "the t3code gateway's port is published on 127.0.0.1:3120 only (MEND_T3_GATEWAY_PUBLISHED), and the edge serves it at https://t3.alpha.mend.run (MEND_T3_GATEWAY_URL); this process cannot observe that origin's certificate",
+    );
+    expect(item?.fix).toContain(
+      "https://t3.alpha.mend.run/.well-known/t3/environment from another network",
+    );
+    expect(t3GatewayOf({ ...served, declared: ["t3code-gateway"] })?.established).toBe("declared");
   });
 
   it("an unversioned build has nothing a reassessment could name", () => {

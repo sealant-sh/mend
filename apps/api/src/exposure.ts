@@ -73,8 +73,21 @@ export class ExposureConfig extends Context.Service<
     readonly gate: Effect.Effect<ReadonlyArray<ExposureOutcome>>;
     /** The same gate over a multi mode gate already read, so one request reads it once. */
     readonly gateWith: (tenancyGate: ReadonlyArray<GateOutcome>) => ReadonlyArray<ExposureOutcome>;
+    /** The t3code gateway as configured, when it is enabled: what `/api/machine` reports. */
+    readonly t3Gateway: T3GatewayFacts | undefined;
   }
 >()("@mend/api/ExposureConfig") {}
+
+/**
+ * The t3code gateway as the deployment configured it (ADR 0012): what a T3 Code client enters in
+ * its Remote link (`MEND_T3_GATEWAY_URL`), and where its port is published
+ * (`MEND_T3_GATEWAY_PUBLISHED`, `<address>:<port>`). Both are statements of configuration that
+ * `mend server setup` writes; neither is observed here. Null when it was not said.
+ */
+export interface T3GatewayFacts {
+  readonly url: string | null;
+  readonly published: string | null;
+}
 
 export class ExposureRefused extends Schema.TaggedErrorClass<ExposureRefused>()("ExposureRefused", {
   message: Schema.String,
@@ -111,6 +124,10 @@ export interface ExposurePosture {
    * or false, the gate lists nothing about it.
    */
   readonly t3Gateway?: boolean;
+  /** `MEND_T3_GATEWAY_PUBLISHED`: where the gateway's port is published, `<address>:<port>`. */
+  readonly t3GatewayPublished?: string;
+  /** `MEND_T3_GATEWAY_URL`: what a T3 Code client enters; `https:` when an edge serves it. */
+  readonly t3GatewayUrl?: string;
   readonly version: string;
   /**
    * The package and image mirrors sessions are pointed at (`MEND_NPM_MIRROR_URL`,
@@ -212,6 +229,64 @@ const workspaceSsh = (posture: ExposurePosture): ExposureOutcome => {
         established: "open",
         detail: `workspace SSH is published on ${published} apart from the web port; this process cannot observe who can reach it`,
         fix: `what would verify it: a connection attempt to ${published} from each network that should not reach it; then add workspace-ssh to MEND_EXPOSURE_DECLARED, or publish it on loopback`,
+        blocksStart: true,
+        observable: false,
+      };
+};
+
+/**
+ * The t3code gateway, while it is enabled (ADR 0012): a listener of its own beside the web port.
+ * Every device pairs through Mend, so who may use it is Mend's rule; who can reach it is a fact of
+ * the network. Published on loopback, there is nothing to state. Published beyond it (where a
+ * private install's web port is), it is open until the operator states who reaches it, as
+ * `workspace-ssh` is, and a `public` start waits for that. Served by the edge on an origin of its
+ * own, its certificate is the operator's to verify, as `edge-tls` is. Not said where it is
+ * published (a deployment `mend server setup` did not write), only a look from outside tells.
+ */
+const t3codeGateway = (posture: ExposurePosture): ExposureOutcome => {
+  const published = posture.t3GatewayPublished;
+  const url = posture.t3GatewayUrl;
+  if (published === undefined) {
+    return unobservable(
+      posture,
+      "t3code-gateway",
+      "the t3code gateway is enabled (MEND_T3_GATEWAY_ENABLED), on a port of its own; where it is published was not said (MEND_T3_GATEWAY_PUBLISHED unset), and this process cannot observe who reaches it, nor whether it is listening",
+      "the operator states who reaches the t3code gateway's port",
+      "a connection attempt to its port from each network that should not reach it",
+    );
+  }
+  const onLoopback = isLoopbackAddress(publishedAddress(published));
+  if (onLoopback && url !== undefined && isHttps(url)) {
+    return unobservable(
+      posture,
+      "t3code-gateway",
+      `the t3code gateway's port is published on ${published} only (MEND_T3_GATEWAY_PUBLISHED), and the edge serves it at ${url} (MEND_T3_GATEWAY_URL); this process cannot observe that origin's certificate`,
+      `the operator states ${url} serves the t3code gateway with a certificate that chains to a public root`,
+      `${url}/.well-known/t3/environment from another network, over a certificate that chains to a public root, and ${published} answering nothing from another machine`,
+    );
+  }
+  if (onLoopback) {
+    return observed(
+      "t3code-gateway",
+      true,
+      `the t3code gateway's port is published on ${published} only (MEND_T3_GATEWAY_PUBLISHED)`,
+      "",
+    );
+  }
+  return posture.declared.includes("t3code-gateway")
+    ? {
+        id: "t3code-gateway",
+        established: "declared",
+        detail: `the t3code gateway's port is published on ${published} (MEND_T3_GATEWAY_PUBLISHED), and the operator states who can reach it (MEND_EXPOSURE_DECLARED); this process cannot check it`,
+        fix: null,
+        blocksStart: true,
+        observable: false,
+      }
+    : {
+        id: "t3code-gateway",
+        established: "open",
+        detail: `the t3code gateway's port is published on ${published} (MEND_T3_GATEWAY_PUBLISHED); every device pairs through Mend, and this process cannot observe who can reach the port`,
+        fix: `what would verify it: a connection attempt to ${published} from each network that should not reach it; then add t3code-gateway to MEND_EXPOSURE_DECLARED, or publish it on loopback`,
         blocksStart: true,
         observable: false,
       };
@@ -357,17 +432,7 @@ export const evaluateExposureGate = (posture: ExposurePosture): ReadonlyArray<Ex
       "mend doctor run against the origin from another network",
     ),
     // Only while the gateway is enabled: an install that never turns it on reads as before it.
-    ...(posture.t3Gateway === true
-      ? [
-          unobservable(
-            posture,
-            "t3code-gateway",
-            "the t3code gateway is enabled (MEND_T3_GATEWAY_ENABLED), on a port of its own; this process cannot observe who reaches that port, nor whether the gateway is listening there. mend server setup publishes it on 127.0.0.1 only, and mend server status says whether it answered",
-            "the operator states who reaches the t3code gateway's port is what they put in front of it",
-            "a connection attempt to its port from another machine, answering nothing or only through what you put in front of it",
-          ),
-        ]
-      : []),
+    ...(posture.t3Gateway === true ? [t3codeGateway(posture)] : []),
     {
       id: "reassessment",
       established: reassessed ? "declared" : "open",
@@ -412,6 +477,14 @@ export const exposureRefusal = (
   ].join(" ");
 };
 
+/** A variable's trimmed value; undefined when unset or empty. */
+const optionalString = (name: string) =>
+  Config.string(name).pipe(
+    Config.map((value) => value.trim()),
+    Config.option,
+    Effect.map((value) => Option.getOrUndefined(Option.filter(value, (text) => text !== ""))),
+  );
+
 export const ExposureConfigLive: Layer.Layer<
   ExposureConfig,
   ExposureRefused | Config.ConfigError,
@@ -443,6 +516,10 @@ export const ExposureConfigLive: Layer.Layer<
         .trim()
         .toLowerCase(),
     );
+    const t3GatewayPublished = t3Gateway
+      ? yield* optionalString("MEND_T3_GATEWAY_PUBLISHED")
+      : undefined;
+    const t3GatewayUrl = t3Gateway ? yield* optionalString("MEND_T3_GATEWAY_URL") : undefined;
     const network = yield* NetworkConfig;
     const deployment = yield* DeploymentConfig;
     const mirrorHosts = [
@@ -477,6 +554,8 @@ export const ExposureConfigLive: Layer.Layer<
       version,
       mirrors: mirrorHosts,
       t3Gateway,
+      ...(t3GatewayPublished === undefined ? {} : { t3GatewayPublished }),
+      ...(t3GatewayUrl === undefined ? {} : { t3GatewayUrl }),
     };
     const gateWith = (tenancyGate: ReadonlyArray<GateOutcome>) =>
       evaluateExposureGate({ ...posture, tenancyGate });
@@ -494,6 +573,13 @@ export const ExposureConfigLive: Layer.Layer<
           .join(","),
       }),
     );
-    return { exposure, gate: currentGate, gateWith };
+    return {
+      exposure,
+      gate: currentGate,
+      gateWith,
+      t3Gateway: t3Gateway
+        ? { url: t3GatewayUrl ?? null, published: t3GatewayPublished ?? null }
+        : undefined,
+    };
   }),
 );

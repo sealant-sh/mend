@@ -15,11 +15,9 @@ turn's diff, the thread's files and its change, and open a terminal, each as the
 and under Mend's own rules. t3code shows a provider as connected only when Mend holds that person's
 login for it.
 
-It runs in the Mend container on a listener of its own, published on 127.0.0.1 only (port 3120, or
-`--t3-gateway-port`), and setup and `mend server status` say whether it answered there. Reaching it
-from another machine is an exposure the operator puts in front of it: while the gateway is on, the
-public exposure gate lists `t3code-gateway` as open until `--declare t3code-gateway`.
-`--no-t3-gateway` turns it off. Off, nothing of it runs and the gate lists nothing about it.
+It runs in the Mend container on a listener of its own (port 3120, or `--t3-gateway-port`), and
+setup and `mend server status` say whether it answered. `--no-t3-gateway` turns it off. Off, nothing
+of it runs and the gate lists nothing about it.
 
 It speaks t3code `v0.0.46-nightly.20261010.2922` (a client of the previous nightly still pairs) and
 checks every call against the paired client's scopes, as t3code's own server does. Its state file

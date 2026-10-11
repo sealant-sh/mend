@@ -37,6 +37,12 @@ export const T3_GATEWAY_COMPOSE_FILE = "compose.t3.yaml";
 export const T3_GATEWAY_CONTAINER_PORT = 3120;
 /** The host port `--t3-gateway` publishes it on unless `--t3-gateway-port` names another. */
 export const DEFAULT_T3_GATEWAY_PORT = 3120;
+/**
+ * The edge's site for the gateway, when `--t3-gateway-origin` names a host for it: a file of the
+ * generation, mounted where the Caddyfile imports sites from.
+ */
+export const T3_GATEWAY_CADDYFILE_NAME = "Caddyfile.t3";
+export const T3_GATEWAY_CADDY_SITE = "/etc/caddy/sites/t3code-gateway.caddy";
 
 export { EDGE_CADDYFILE, EDGE_COMPOSE_OVERLAY };
 
@@ -68,15 +74,95 @@ export interface ServerPosture {
   /** The gate items the operator states they verified from outside (`--declare`). */
   readonly declared?: ReadonlyArray<DeclarableItem>;
   /**
-   * The t3code gateway's host port (docs/adr/0012), published on loopback only; absent, the
-   * gateway does not run.
+   * Where Mend's own web port is published, and the origin people open. The t3code gateway follows
+   * them; absent, it reads as loopback.
+   */
+  readonly bind?: string;
+  readonly appUrl?: string;
+  /**
+   * The t3code gateway's host port (docs/adr/0012), published where Mend's web port is; absent,
+   * the gateway does not run.
    */
   readonly t3GatewayPort?: number;
+  /** The host the edge serves the gateway on, its own origin (`--t3-gateway-origin`). */
+  readonly t3GatewayOrigin?: string;
 }
 
 /** `<address>:<port>` as Compose and the gate read it: IPv6 in brackets. */
 export const publishedAddress = (address: string, port: number): string =>
   `${net.isIP(address) === 6 ? `[${address}]` : address}:${port}`;
+
+const isLoopbackBindAddress = (address: string): boolean =>
+  address === "::1" || address.startsWith("127.");
+
+/** An address as a URL's host: IPv6 in brackets, every address as this machine's own loopback. */
+const urlHostOf = (address: string): string =>
+  address === "0.0.0.0"
+    ? "127.0.0.1"
+    : address === "::"
+      ? "[::1]"
+      : net.isIP(address) === 6
+        ? `[${address}]`
+        : address;
+
+/**
+ * Where a packaged install puts the t3code gateway (docs/adr/0012, "Access"; ADR 0004), and what a
+ * T3 Code client enters in its Remote link. The gateway follows the exposure Mend's web port has:
+ *
+ * - on loopback, it stays on loopback;
+ * - on a private address (a tailnet, a LAN), it is published on that same address, so a client on
+ *   that network reaches it as it reaches Mend, with no tunnel;
+ * - behind the edge, Mend's own port is on loopback and the gateway's stays beside it. The edge
+ *   serves it only on an origin of its own (`--t3-gateway-origin`): a t3code client always uses a
+ *   server's root path, so it cannot sit under a path of Mend's origin. Its raw port is never
+ *   published beyond loopback on a public install.
+ *
+ * Every device pairs through Mend whatever the address, so who may use it does not change.
+ */
+export interface T3GatewayPlacement {
+  /** The host address its port is published on. */
+  readonly bind: string;
+  readonly port: number;
+  /** What T3 Code's Remote link takes, with a code from `mend pair`. */
+  readonly url: string;
+  /** Where this machine reads it: its published address, every address read as loopback. */
+  readonly probeUrl: string;
+  /** The host the edge serves it on, when it does. */
+  readonly edgeHost?: string;
+}
+
+export const t3GatewayPlacement = (posture: ServerPosture): T3GatewayPlacement | undefined => {
+  const port = posture.t3GatewayPort;
+  if (port === undefined) return undefined;
+  const web = posture.bind ?? "127.0.0.1";
+  const behindEdge = posture.edgeHost !== undefined || posture.exposure === "public";
+  const bind = behindEdge && !isLoopbackBindAddress(web) ? "127.0.0.1" : web;
+  const probeUrl = `http://${urlHostOf(bind)}:${port}`;
+  if (posture.edgeHost !== undefined && posture.t3GatewayOrigin !== undefined) {
+    return {
+      bind,
+      port,
+      url: `https://${posture.t3GatewayOrigin}`,
+      probeUrl,
+      edgeHost: posture.t3GatewayOrigin,
+    };
+  }
+  if (isLoopbackBindAddress(bind)) return { bind, port, url: probeUrl, probeUrl };
+  // The name people already reach Mend by, on the gateway's port; the address when there is none.
+  const named = (() => {
+    try {
+      return posture.appUrl === undefined ? null : new URL(posture.appUrl).hostname;
+    } catch {
+      return null;
+    }
+  })();
+  const host = named === null || named === "" ? urlHostOf(bind) : named;
+  return { bind, port, url: `http://${host}:${port}`, probeUrl };
+};
+
+/** Whether the gateway answers from another machine without anything put in front of it. */
+export const t3GatewayBeyondMachine = (placement: T3GatewayPlacement): boolean =>
+  !isLoopbackBindAddress(placement.bind);
 
 /**
  * A DNS name a public certificate can be issued for: two labels or more, letters, digits and
@@ -129,10 +215,30 @@ export const postureEnvironment = (
   ];
 };
 
+/**
+ * The t3code gateway's lines in `server.env`, read by `compose.t3.yaml` only: where its port is
+ * published, and what the server reports about it (the exposure gate's `t3code-gateway` item,
+ * `/api/machine`, which `mend pair` and `mend doctor` read). With an edge origin, the host Caddy
+ * serves it on.
+ */
+export const t3GatewayEnvLines = (posture: ServerPosture): ReadonlyArray<string> => {
+  const placement = t3GatewayPlacement(posture);
+  if (placement === undefined) return [];
+  return [
+    `MEND_T3_GATEWAY_PORT=${placement.port}`,
+    `MEND_T3_GATEWAY_BIND_HOST=${net.isIP(placement.bind) === 6 ? `[${placement.bind}]` : placement.bind}`,
+    `MEND_T3_GATEWAY_PUBLISHED=${publishedAddress(placement.bind, placement.port)}`,
+    `MEND_T3_GATEWAY_URL=${placement.url}`,
+    ...(placement.edgeHost === undefined
+      ? []
+      : [`MEND_T3_GATEWAY_EDGE_HOST=${placement.edgeHost}`]),
+  ];
+};
+
 /** The `KEY=value` lines the posture and the edge add to `server.env`. */
 export const postureEnvLines = (posture: ServerPosture): ReadonlyArray<string> => [
   ...(posture.edgeHost === undefined ? [] : [`MEND_EDGE_HOST=${posture.edgeHost}`]),
-  ...(posture.t3GatewayPort === undefined ? [] : [`MEND_T3_GATEWAY_PORT=${posture.t3GatewayPort}`]),
+  ...t3GatewayEnvLines(posture),
   ...postureEnvironment(posture).map(([key, value]) => `${key}=${value}`),
 ];
 
@@ -169,32 +275,83 @@ export const T3_GATEWAY_VOLUME = "mend-t3-gateway";
 export const T3_GATEWAY_IMAGE_LABEL = "dev.sealant.mend.t3-gateway";
 export const T3_GATEWAY_STATE_DIR = "/opt/mend-t3-gateway/state";
 
+/** A Compose reference to a `server.env` value that refuses to start without it. */
+const required = (key: string): string => `\${${key}:?set ${key} in server.env}`;
+
 /**
  * `compose.t3.yaml`: the t3code gateway (docs/adr/0012, phase 4), when the operator turned it on.
- * It turns the gateway on in the `mend` container, publishes its port on 127.0.0.1 only, its own
- * listener and origin beside Mend's (from anywhere else it is not there until the operator puts
- * something in front of it, which is an exposure of its own, ADR 0004), and mounts its state
- * volume. Absent when it is off.
+ * It turns the gateway on in the `mend` container, publishes its port where Mend's web port is
+ * published (`t3GatewayPlacement`), hands Mend what it reports about it, and mounts its state
+ * volume. With an edge origin for it, the edge mounts the gateway's site and serves it there.
+ * Absent when it is off.
  */
 export const renderT3GatewayOverlay = (posture: ServerPosture): string | undefined => {
-  if (posture.t3GatewayPort === undefined) return undefined;
+  const placement = t3GatewayPlacement(posture);
+  if (placement === undefined) return undefined;
   return [
     "# Written by mend server setup --t3-gateway: the t3code gateway (docs/adr/0012), its own",
-    "# listener beside Mend's, published on loopback only. Reaching it from elsewhere is an",
-    "# exposure the operator declares (docs/adr/0004). mend server setup --no-t3-gateway removes it.",
+    "# listener beside Mend's, published on the address Mend's web port is published on. Every device",
+    "# pairs through Mend. mend server setup --no-t3-gateway removes it.",
     "services:",
     "  mend:",
     "    environment:",
     '      MEND_T3_GATEWAY_ENABLED: "true"',
+    "      # What the exposure report, mend pair and mend doctor say about it.",
+    `      MEND_T3_GATEWAY_PUBLISHED: ${required("MEND_T3_GATEWAY_PUBLISHED")}`,
+    `      MEND_T3_GATEWAY_URL: ${required("MEND_T3_GATEWAY_URL")}`,
     "    ports:",
-    `      - "127.0.0.1:\${MEND_T3_GATEWAY_PORT:?set MEND_T3_GATEWAY_PORT in server.env}:${T3_GATEWAY_CONTAINER_PORT}"`,
+    `      - "${required("MEND_T3_GATEWAY_BIND_HOST")}:${required("MEND_T3_GATEWAY_PORT")}:${T3_GATEWAY_CONTAINER_PORT}"`,
     "    volumes:",
     `      - ${T3_GATEWAY_VOLUME}:${T3_GATEWAY_STATE_DIR}`,
+    ...(placement.edgeHost === undefined
+      ? []
+      : [
+          "  # The edge serves the gateway on its own origin (--t3-gateway-origin): Caddy gets a",
+          "  # certificate for it once its DNS points here, and reaches the gateway on the edge network.",
+          "  edge:",
+          "    environment:",
+          `      MEND_T3_GATEWAY_EDGE_HOST: ${required("MEND_T3_GATEWAY_EDGE_HOST")}`,
+          "    volumes:",
+          `      - ./${T3_GATEWAY_CADDYFILE_NAME}:${T3_GATEWAY_CADDY_SITE}:ro`,
+        ]),
     "volumes:",
     `  ${T3_GATEWAY_VOLUME}:`,
     "",
   ].join("\n");
 };
+
+/**
+ * `Caddyfile.t3`: the edge's site for the gateway, which the Caddyfile imports. TLS ends here, as
+ * for Mend's own origin; the gateway's sockets and streams are long-lived. Its socket carries a
+ * single-use ticket in the query (`wsTicket`), which no log holds.
+ */
+export const T3_GATEWAY_CADDYFILE = [
+  "# Written by mend server setup --t3-gateway-origin: the t3code gateway (docs/adr/0012) on an",
+  "# origin of its own. A t3code client always uses a server's root path, so it cannot share Mend's.",
+  "{$MEND_T3_GATEWAY_EDGE_HOST} {",
+  "\tencode zstd gzip",
+  "",
+  `\treverse_proxy mend:${T3_GATEWAY_CONTAINER_PORT} {`,
+  "\t\t# The gateway's socket and its streams are long-lived: never buffer them.",
+  "\t\tflush_interval -1",
+  "\t}",
+  "",
+  "\tlog {",
+  "\t\toutput stdout",
+  "\t\tformat filter {",
+  "\t\t\twrap json",
+  "\t\t\tfields {",
+  "\t\t\t\trequest>uri query {",
+  "\t\t\t\t\treplace wsTicket REDACTED",
+  "\t\t\t\t\treplace token REDACTED",
+  "\t\t\t\t}",
+  "\t\t\t\trequest>headers>Referer delete",
+  "\t\t\t}",
+  "\t\t}",
+  "\t}",
+  "}",
+  "",
+].join("\n");
 
 /** The overlay files a generation holds beside `compose.yaml`, in the order Compose merges them. */
 export const composeOverlays = (
@@ -257,16 +414,26 @@ export const healthPosture = (body: unknown): HealthPosture => {
   };
 };
 
+/** The gateway as the install publishes it, in one line; none when it is off. */
+const t3GatewayDeclaredLines = (posture: ServerPosture): ReadonlyArray<string> => {
+  const placement = t3GatewayPlacement(posture);
+  if (placement === undefined) return [];
+  const published = publishedAddress(placement.bind, placement.port);
+  return [
+    placement.edgeHost !== undefined
+      ? `t3code gateway · on · served by the edge at ${placement.url} · its port published on ${published} only`
+      : t3GatewayBeyondMachine(placement)
+        ? `t3code gateway · on · published on ${published}, where Mend's web port is · T3 Code's Remote link takes ${placement.url}`
+        : `t3code gateway · on · published on ${published} only · reached from this machine${posture.edgeHost === undefined ? "" : "; mend server setup --t3-gateway-origin <host> serves it through the edge"}`,
+  ];
+};
+
 /** The posture as the install declares it, one line each; a default is said to be one. */
 export const declaredPostureLines = (posture: ServerPosture): ReadonlyArray<string> => [
   ...(posture.edgeHost === undefined
     ? []
     : [`edge · ${posture.edgeHost} · ${EDGE_IMAGE} on 80 and 443 · Mend's own port on loopback`]),
-  ...(posture.t3GatewayPort === undefined
-    ? []
-    : [
-        `t3code gateway · on · 127.0.0.1:${posture.t3GatewayPort} · loopback only · reaching it from elsewhere is an exposure you declare`,
-      ]),
+  ...t3GatewayDeclaredLines(posture),
   `exposure · declared ${posture.exposure ?? "private"}${posture.exposure === undefined ? " · the default, not set on this install" : ""}`,
   `tenancy · declared ${posture.tenancy ?? "single"}${posture.tenancy === undefined ? " · the default, not set on this install" : ""}`,
   ...(posture.sshBind === undefined || posture.sshPort === undefined

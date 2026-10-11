@@ -133,7 +133,10 @@ export const WorkspaceHostUserNamespacesLive: Layer.Layer<WorkspaceHostUserNames
     observe: () => Effect.sync(() => observedHostUserNamespaces()),
   });
 
-export const readMachine = (exposure: NonNullable<MachineView["exposure"]>): MachineView => {
+export const readMachine = (
+  exposure: NonNullable<MachineView["exposure"]>,
+  t3Gateway?: MachineView["t3Gateway"],
+): MachineView => {
   const address = detectTailnetAddress();
   const userNamespaces = observedUserNamespaces();
   return new MachineView({
@@ -145,6 +148,7 @@ export const readMachine = (exposure: NonNullable<MachineView["exposure"]>): Mac
         : { status: "reachable", address },
     exposure,
     ...(userNamespaces === undefined ? {} : { userNamespaces }),
+    ...(t3Gateway === undefined ? {} : { t3Gateway }),
   });
 };
 
@@ -160,14 +164,18 @@ export const MachineGroupLive = HttpApiBuilder.group(MendApi, "machine", (handle
         request.headers["x-forwarded-for"],
         trusted,
       );
-      return readMachine({
-        declared: exposure.exposure,
-        originScheme: network.appUrl.startsWith("https://") ? "https" : "http",
-        originOnMachine: originOnMachine(network.appUrl),
-        arrivedVia: viaProxy ? "trusted-proxy" : "direct",
-        addressKinds: observedAddressKinds(),
-        gateOpen: (yield* exposure.gate).filter((outcome) => outcome.established === "open").length,
-      });
+      return readMachine(
+        {
+          declared: exposure.exposure,
+          originScheme: network.appUrl.startsWith("https://") ? "https" : "http",
+          originOnMachine: originOnMachine(network.appUrl),
+          arrivedVia: viaProxy ? "trusted-proxy" : "direct",
+          addressKinds: observedAddressKinds(),
+          gateOpen: (yield* exposure.gate).filter((outcome) => outcome.established === "open")
+            .length,
+        },
+        exposure.t3Gateway,
+      );
     }),
   ),
 );

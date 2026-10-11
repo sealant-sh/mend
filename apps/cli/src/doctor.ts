@@ -266,6 +266,8 @@ interface MachineDto {
   };
   /** Absent from an older server, and from one whose workspaces run elsewhere than its host. */
   readonly userNamespaces?: { readonly allowed: boolean; readonly setting: string | null };
+  /** Present while the server's t3code gateway is on (ADR 0012); absent from an older server. */
+  readonly t3Gateway?: { readonly url: string | null; readonly published: string | null };
 }
 
 /**
@@ -298,6 +300,40 @@ export const exposureCheck = (exposure: NonNullable<MachineDto["exposure"]>): Ch
       : gateOpen === 0
         ? null
         : "mend operator exposure",
+  };
+};
+
+/**
+ * Where the server's t3code gateway is reached, as one doctor line: the address T3 Code's Remote
+ * link takes, as the server's configuration says it. Configuration, not a connection made: the
+ * line never says it answered.
+ */
+export const t3GatewayCheck = (gateway: NonNullable<MachineDto["t3Gateway"]>): Check => {
+  if (gateway.url === null)
+    return {
+      label: "t3code gateway",
+      state: "todo",
+      detail: `on${gateway.published === null ? "" : ` · published on ${gateway.published}`} · the server does not say its address`,
+      fix: "on the server's machine, mend server setup --t3-gateway",
+    };
+  let host = "";
+  try {
+    host = new URL(gateway.url).hostname;
+  } catch {
+    // An address the server said that is no URL is still said as it is.
+  }
+  const onMachine = host === "localhost" || host === "[::1]" || host.startsWith("127.");
+  return {
+    label: "t3code gateway",
+    state: "ok",
+    detail: [
+      gateway.url,
+      ...(gateway.published === null ? [] : [`published on ${gateway.published}`]),
+      onMachine
+        ? "reached on the server's machine only"
+        : "T3 Code's Remote link takes it, with a code from mend pair",
+    ].join(" · "),
+    fix: null,
   };
 };
 
@@ -613,6 +649,9 @@ export const runChecks = async (
   const userNamespaces =
     machine === null || machine.value === null ? undefined : machine.value.userNamespaces;
   if (userNamespaces !== undefined) checks.push(userNamespacesCheck(userNamespaces));
+  const t3Gateway =
+    machine === null || machine.value === null ? undefined : machine.value.t3Gateway;
+  if (t3Gateway !== undefined) checks.push(t3GatewayCheck(t3Gateway));
 
   // A daemon stop (`systemctl stop docker`, a docker-ce upgrade) waits for each container's own
   // stop timeout; one that outlasts systemd's stop of the unit leaves Docker down on its next

@@ -139,8 +139,10 @@ Preconditions:
   refused, and only for an open item that blocks a start: any item this build can observe, and one
   it cannot, `workspace-ssh`, while workspace SSH is published off loopback (`MEND_SSH_PUBLISHED`)
   and not declared (`apps/api/src/exposure.ts:187-213`). Add `workspace-ssh` to
-  `MEND_EXPOSURE_DECLARED`, or publish it on loopback. `core-private`, `edge-tls`, `t3code-gateway`
-  and `reassessment` never block a start.
+  `MEND_EXPOSURE_DECLARED`, or publish it on loopback. `t3code-gateway` blocks the same way while
+  the gateway's port is published off loopback (`MEND_T3_GATEWAY_PUBLISHED`) and not declared; on
+  loopback it reads observed, and served by the edge (`MEND_T3_GATEWAY_URL` https) it is open
+  without blocking. `core-private`, `edge-tls` and `reassessment` never block a start.
 - `/api/health` gives counts for exposure but names the failing multi mode gate items in
   `tenancyGate.failing` (an open question in ADR 0004, left as released).
 - The sidebar's exposure line is an unnamed paragraph (`apps/web/src/components/shell.tsx:186`). The

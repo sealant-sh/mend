@@ -143,6 +143,14 @@ describe("the guided server setup", () => {
       exposure: "private",
       t3GatewayPort: 3120,
     });
+    // The gateway, on the tailnet beside the web port, at the name Mend is reached by.
+    expect(transcript).toContain(
+      "It is published where Mend's web port is, on 100.94.101.28:3120: T3 Code reaches it at http://mend-box.tailc79e49.ts.net:3120, with no tunnel.",
+    );
+    expect(transcript).toContain(
+      "  T3 Code gateway  on, at http://mend-box.tailc79e49.ts.net:3120 (published on 100.94.101.28:3120)",
+    );
+    expect(transcript).not.toMatch(/ssh -L|tunnel you run/);
   });
 
   it("says when tailscale did not answer, and still offers this machine's addresses", async () => {
@@ -336,12 +344,18 @@ describe("the guided server setup", () => {
   });
 
   it("re-running shows the current setup and changes one thing, keeping every declaration", async () => {
-    // change something · the T3 Code gateway (3rd: reach, ssh, t3) · yes · nothing else · apply
-    const { outcome, transcript } = await converse(["2", "3", "y", "", ""], BOX);
+    // change something · the T3 Code gateway (3rd: reach, ssh, t3) · yes · no host of its own ·
+    // nothing else · apply
+    const { outcome, transcript } = await converse(["2", "3", "y", "", "", ""], BOX);
     expect(transcript).toContain(
       "Currently: public HTTPS at alpha.mend.run, VS Code SSH from other machines on, T3 gateway off.",
     );
-    expect(transcript).toContain("  T3 Code gateway: off → on, at 127.0.0.1:3120");
+    expect(transcript).toContain(
+      "Behind the edge, its port stays on 127.0.0.1:3120, as Mend's own does; the edge can serve it on a host of its own.",
+    );
+    expect(transcript).toContain(
+      "  T3 Code gateway: off → on, at http://127.0.0.1:3120, this machine only",
+    );
     const flags = flagsOf(outcome);
     expect(flags).toEqual(["--t3-gateway"]);
     expect(setupCommandOf(flags)).toBe("mend server setup --t3-gateway");
@@ -363,6 +377,66 @@ describe("the guided server setup", () => {
       t3GatewayPort: 3120,
     });
     expect(after.declared.toSorted()).toEqual(["core-private", "workspace-ssh"]);
+  });
+
+  it("serves the gateway through the edge on a host of its own, and says where that host resolves", async () => {
+    // change · T3 (3rd) · yes · a host of its own (1) · enter (t3.alpha.mend.run) · nothing else ·
+    // apply
+    const { outcome, transcript } = await converse(["2", "3", "y", "1", "", "", ""], BOX);
+    expect(transcript).toContain(
+      "T3 Code always uses a server's root path, so the edge cannot serve the gateway under alpha.mend.run. Serve it on a host of its own?",
+    );
+    expect(transcript).toContain("The gateway's host [t3.alpha.mend.run]: ");
+    expect(transcript).toContain(
+      "Observed: t3.alpha.mend.run resolves to 203.0.113.7, as alpha.mend.run does.",
+    );
+    expect(transcript).toContain(
+      "  T3 Code gateway: off → on, at https://t3.alpha.mend.run through the edge (its port on 127.0.0.1:3120)",
+    );
+    const flags = flagsOf(outcome);
+    // The origin turns the gateway on by itself: one flag.
+    expect(flags).toEqual(["--t3-gateway-origin", "t3.alpha.mend.run"]);
+    expect(transcript).toContain(
+      "Same as: mend server setup --t3-gateway-origin t3.alpha.mend.run",
+    );
+    expect(resolveSetupSettings(BOX, flags)).toMatchObject({
+      t3GatewayPort: 3120,
+      t3GatewayOrigin: "t3.alpha.mend.run",
+      edgeHost: "alpha.mend.run",
+    });
+    expect(transcript).not.toMatch(/ssh -L|tunnel you run/);
+  });
+
+  it("says a host of its own that does not resolve, and refuses Mend's own", async () => {
+    const { outcome, transcript } = await converse(
+      ["2", "3", "y", "1", "alpha.mend.run", "t3.example.test", "", ""],
+      BOX,
+      observe({ lookupHost: async (host) => (host === "alpha.mend.run" ? ["203.0.113.7"] : null) }),
+    );
+    expect(transcript).toContain(
+      "alpha.mend.run is Mend's own origin; the gateway needs another host.",
+    );
+    expect(transcript).toContain(
+      "Observed: t3.example.test does not resolve from this machine. Caddy cannot get its certificate until its DNS points where alpha.mend.run's does.",
+    );
+    expect(flagsOf(outcome)).toEqual(["--t3-gateway-origin", "t3.example.test"]);
+  });
+
+  it("from public back to this machine: the gateway's origin goes with the edge", async () => {
+    const served: ServerConfig = {
+      ...BOX,
+      t3GatewayPort: 3120,
+      t3GatewayOrigin: "t3.alpha.mend.run",
+    };
+    // change · reach (1) · just this machine (1) · nothing else · apply
+    const { outcome } = await converse(["2", "1", "1", "", ""], served);
+    const flags = flagsOf(outcome);
+    expect(flags).toEqual(expect.arrayContaining(["--no-edge", "--no-t3-gateway-origin"]));
+    expect(resolveSetupSettings(served, flags)).toMatchObject({
+      edgeHost: undefined,
+      t3GatewayPort: 3120,
+      t3GatewayOrigin: undefined,
+    });
   });
 
   it("keeping it as it is changes nothing and says the command a script runs", async () => {
@@ -687,6 +761,21 @@ const settings = (config: ServerConfig): SetupSettings => resolveSetupSettings(c
 describe("the guide's flags round-trip", () => {
   const variants: ReadonlyArray<readonly [string, ServerConfig, SetupSettings]> = [
     ["the gateway on a port of its own", BOX, { ...settings(BOX), t3GatewayPort: 4120 }],
+    [
+      "the gateway served by the edge on a host of its own",
+      BOX,
+      { ...settings(BOX), t3GatewayPort: 3120, t3GatewayOrigin: "t3.alpha.mend.run" },
+    ],
+    [
+      "the gateway's origin taken away, the gateway kept",
+      { ...BOX, t3GatewayPort: 3120, t3GatewayOrigin: "t3.alpha.mend.run" },
+      { ...settings(BOX), t3GatewayPort: 3120 },
+    ],
+    [
+      "the gateway off, its origin with it",
+      { ...BOX, t3GatewayPort: 3120, t3GatewayOrigin: "t3.alpha.mend.run" },
+      settings(BOX),
+    ],
     [
       "one declaration taken back, one added",
       BOX,

@@ -30,20 +30,25 @@ gateway"). The flag does the same, and keeps everything else as saved:
 mend server setup --t3-gateway
 ```
 
-It runs in the Mend container on a listener of its own and is published on `127.0.0.1:3120` only.
-`--t3-gateway-port <n>` picks another port. The choice is kept across reruns and upgrades. Setup
-refuses it on a Mend version whose image has no gateway, and says whether the gateway answered once
-Mend was up (it looks for about a minute). It also refuses a gateway port something on the machine
-already holds. `mend server setup --no-t3-gateway` turns it off; its state stays in its own volume,
+It runs in the Mend container on a listener of its own, port `3120`, published on the same address
+as Mend's web port ([Where it is reached](#where-it-is-reached)). `--t3-gateway-port <n>` picks
+another port. The choice is kept across reruns and upgrades. Setup refuses it on a Mend version
+whose image has no gateway, and says whether the gateway answered once Mend was up (it looks for
+about a minute). It also refuses a gateway port something on the machine already holds.
+`mend server setup --no-t3-gateway` turns it off; its state stays in its own volume,
 `mend_mend-t3-gateway`, and comes back if you turn it on again. `mend uninstall` removes that volume
 too.
 
-`mend server status` says it is on, and whether this machine reached it:
+`mend server status` says where it is published, and whether this machine reached it there. On a
+server reached over Tailscale:
 
 ```text
-t3code gateway · on · 127.0.0.1:3120 · loopback only · reaching it from elsewhere is an exposure you declare
-t3code gateway · observed answering at 127.0.0.1:3120 from this machine
+t3code gateway · on · published on 100.70.80.90:3120, where Mend's web port is · T3 Code's Remote link takes http://mend-box.tail1234.ts.net:3120
+t3code gateway · observed answering at 100.70.80.90:3120 from this machine · T3 Code's Remote link takes http://mend-box.tail1234.ts.net:3120
 ```
+
+`mend doctor`, from any machine signed in to the server, shows the same address on its
+`t3code gateway` line.
 
 From a checkout, run it beside a Mend server instead:
 
@@ -60,9 +65,22 @@ The gateway speaks t3code's orchestration protocol 2, built against the t3code n
 changed what it sends: the gateway follows newer clients only when its pinned contracts are moved to
 them, deliberately.
 
-1. Run `mend pair`. It prints a pairing code, good for one device for ten minutes.
-2. In t3code, add a remote environment at the gateway's address, `http://127.0.0.1:3120` on the
-   server's own machine, and enter the code.
+1. Run `mend pair`. It prints a pairing code, good for one device for ten minutes, and the gateway's
+   address:
+
+   ```text
+   ✓ pairing code ABCD-EFGH
+     url     http://mend-box.tail1234.ts.net:3105
+     expires in 10 min · one device, once
+     t3 code http://mend-box.tail1234.ts.net:3120
+             in T3 Code, add a Remote link with this address and the code, or paste http://mend-box.tail1234.ts.net:3120/pair#token=ABCDEFGH
+   ```
+
+2. In T3 Code, add an environment with **Remote link**: enter that address (with its `http://`; T3
+   Code reads a bare host as `https://`) and the code, or paste the link that carries both.
+
+Use Remote link, not T3 Code's **SSH** mode. SSH mode installs and starts T3 Code's own server on
+the remote machine and talks to that, not to Mend; nothing of Mend is in it.
 
 Pairing claims the code through Mend, so Mend lists the client among your devices as
 `t3code · <client>`. Revoking that device in Mend signs the client out of the gateway: within five
@@ -134,15 +152,49 @@ other than Codex and Claude, and provider or settings changes. Landing a change 
   the CLI and other people's t3code clients do not show them. A message sent to a settled or snoozed
   thread brings it back, as on t3code's own server.
 
-## Reaching it from another machine
+## Where it is reached
 
-On a server installed with `mend server setup`, the gateway listens on every address inside the Mend
-container, and the host publishes its port on `127.0.0.1` only. From a checkout it listens on
-`127.0.0.1` unless `MEND_T3_GATEWAY_HOST` says otherwise. A client on another machine needs
-something in front of it that you choose and run: a tunnel, a reverse proxy, or a port on a network
-you control. That is an exposure of its own ([Exposure and the public gate](/operate/exposure/)):
-while the gateway is enabled, `mend operator exposure` lists `t3code-gateway`, open until you have
-checked from another machine who reaches its port and named it in `MEND_EXPOSURE_DECLARED`.
+The gateway follows the exposure Mend's web port has
+([Exposure and the public gate](/operate/exposure/)). Every device pairs through Mend wherever it is
+published, so who may use it does not change with where it listens.
+
+- **Just this machine** (`--exposure loopback`, or Mend on `127.0.0.1`): the gateway is published on
+  `127.0.0.1:3120`. T3 Code on the same machine uses `http://127.0.0.1:3120`.
+- **Your private network or Tailscale** (`--exposure private`, Mend's web port on the tailnet or a
+  LAN address): the gateway is published on that same address. T3 Code on any machine that reaches
+  Mend reaches the gateway at the same name, on its own port: `http://<tailnet name>:3120`. No
+  tunnel, and no port opened anywhere else.
+
+  When Mend's web port stays on `127.0.0.1` and Tailscale Serve forwards an HTTPS name to it, the
+  gateway is on `127.0.0.1` too. Forward it the same way, on its own port, and use that name:
+
+  ```sh
+  tailscale serve --bg --https=3120 http://127.0.0.1:3120
+  ```
+
+  T3 Code's Remote link then takes `https://<this machine>.<tailnet>.ts.net:3120`.
+
+- **The public internet, with the edge** (`--exposure public`): the gateway's own port stays on
+  `127.0.0.1`; setup never publishes it on a public address. The edge serves it over HTTPS on a host
+  of its own, never under a path of Mend's: a T3 Code client always uses a server's root path. Name
+  that host and point its DNS where the edge's own name points:
+
+  ```sh
+  mend server setup --t3-gateway-origin t3.mend.example.com
+  ```
+
+  Caddy gets its certificate once the name resolves to the server and ports 80 and 443 answer; setup
+  says where it resolved. T3 Code's Remote link then takes `https://t3.mend.example.com`, which also
+  works from T3 Code's hosted web app. `--no-t3-gateway-origin` stops the edge serving it. Without
+  an origin, the gateway on a public install is reached from the server's own machine only.
+
+From a checkout, the gateway listens on `127.0.0.1` unless `MEND_T3_GATEWAY_HOST` says otherwise.
+
+While the gateway is enabled, `mend operator exposure` lists `t3code-gateway`. Published on
+`127.0.0.1` it is observed and closed. Published on a private address, it stays open until you have
+checked from each network that should not reach the port and named it in `MEND_EXPOSURE_DECLARED`
+(setup's `--declare t3code-gateway`). Served by the edge, it stays open until you have checked its
+origin's certificate from another network, and named it the same way.
 
 ## Its state
 

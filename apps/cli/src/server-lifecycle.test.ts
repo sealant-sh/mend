@@ -1643,10 +1643,10 @@ describe("the edge and the posture", { timeout: 120_000 }, () => {
     f.lines.length = 0;
     expect(await serverCommand(["status"], runtime)).toEqual({ _tag: "ok" });
     expect(f.lines).toContain(
-      "t3code gateway · on · 127.0.0.1:3120 · loopback only · reaching it from elsewhere is an exposure you declare",
+      "t3code gateway · on · published on 127.0.0.1:3120 only · reached from this machine",
     );
     expect(f.lines).toContain(
-      "t3code gateway · observed answering at 127.0.0.1:3120 from this machine",
+      "t3code gateway · observed answering at 127.0.0.1:3120 from this machine · T3 Code's Remote link takes http://127.0.0.1:3120",
     );
     expect(gatewayProbes).toEqual(["http://127.0.0.1:3120/.well-known/t3/environment"]);
     answering = false;

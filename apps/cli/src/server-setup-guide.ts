@@ -9,6 +9,9 @@ import {
   type Exposure,
   parseEdgeHost,
   publishedAddress,
+  t3GatewayBeyondMachine,
+  type T3GatewayPlacement,
+  t3GatewayPlacement,
   type Tenancy,
 } from "./server-edge.ts";
 import {
@@ -48,6 +51,8 @@ export interface SetupSettings {
   readonly tenancy: Tenancy | undefined;
   readonly declared: ReadonlyArray<DeclarableItem>;
   readonly t3GatewayPort: number | undefined;
+  /** The host the edge serves the gateway on; only with an edge. */
+  readonly t3GatewayOrigin: string | undefined;
   readonly mirrors: ServerMirrors;
 }
 
@@ -99,6 +104,7 @@ export const sameSettings = (left: SetupSettings, right: SetupSettings): boolean
   left.tenancy === right.tenancy &&
   sameSet(left.declared, right.declared) &&
   left.t3GatewayPort === right.t3GatewayPort &&
+  left.t3GatewayOrigin === right.t3GatewayOrigin &&
   sameMirrors(left.mirrors, right.mirrors);
 
 // ─── from settings to flags ─────────────────────────────────────────────────
@@ -139,10 +145,21 @@ export const flagsFor = (before: SetupSettings, after: SetupSettings): ReadonlyA
   }
   if (after.t3GatewayPort !== before.t3GatewayPort) {
     if (after.t3GatewayPort === undefined) flags.push("--no-t3-gateway");
-    else if (before.t3GatewayPort === undefined && after.t3GatewayPort === DEFAULT_T3_GATEWAY_PORT)
-      flags.push("--t3-gateway");
-    else flags.push("--t3-gateway-port", String(after.t3GatewayPort));
+    else if (
+      before.t3GatewayPort === undefined &&
+      after.t3GatewayPort === DEFAULT_T3_GATEWAY_PORT
+    ) {
+      // Its edge origin turns it on by itself.
+      if (after.t3GatewayOrigin === undefined) flags.push("--t3-gateway");
+    } else flags.push("--t3-gateway-port", String(after.t3GatewayPort));
   }
+  // Turning the gateway off takes its origin with it.
+  if (after.t3GatewayPort !== undefined && after.t3GatewayOrigin !== before.t3GatewayOrigin)
+    flags.push(
+      ...(after.t3GatewayOrigin === undefined
+        ? ["--no-t3-gateway-origin"]
+        : ["--t3-gateway-origin", after.t3GatewayOrigin]),
+    );
   const npmBefore = before.mirrors.npm;
   const npmAfter = after.mirrors.npm;
   if (npmAfter === null && npmBefore !== null) flags.push("--no-npm-mirror");
@@ -214,8 +231,32 @@ const sshOf = (settings: SetupSettings): string => {
     : `this machine only (${at})`;
 };
 
-const t3Of = (settings: SetupSettings): string =>
-  settings.t3GatewayPort === undefined ? "off" : `on, at 127.0.0.1:${settings.t3GatewayPort}`;
+/** Where the gateway would be, from the settings, as setup publishes it. */
+export const t3PlacementOf = (
+  settings: SetupSettings,
+  port: number | undefined = settings.t3GatewayPort,
+): T3GatewayPlacement | undefined =>
+  t3GatewayPlacement({
+    bind: settings.bind,
+    appUrl: settings.appUrl,
+    ...(settings.edgeHost === undefined ? {} : { edgeHost: settings.edgeHost }),
+    ...(settings.exposure === undefined ? {} : { exposure: settings.exposure }),
+    ...(port === undefined ? {} : { t3GatewayPort: port }),
+    ...(settings.t3GatewayOrigin === undefined
+      ? {}
+      : { t3GatewayOrigin: settings.t3GatewayOrigin }),
+  });
+
+const t3Of = (settings: SetupSettings): string => {
+  const placement = t3PlacementOf(settings);
+  if (placement === undefined) return "off";
+  const published = publishedAddress(placement.bind, placement.port);
+  return placement.edgeHost !== undefined
+    ? `on, at ${placement.url} through the edge (its port on ${published})`
+    : t3GatewayBeyondMachine(placement)
+      ? `on, at ${placement.url} (published on ${published})`
+      : `on, at ${placement.url}, this machine only`;
+};
 
 const tenancyOf = (settings: SetupSettings): string =>
   settings.tenancy === "multi" ? "several organizations (multi)" : "one organization (single)";
@@ -566,6 +607,7 @@ const toThisMachine = (settings: SetupSettings): SetupSettings => ({
   bind: isLoopbackAddress(settings.bind) ? settings.bind : LOOPBACK,
   sshBind: undefined,
   edgeHost: undefined,
+  t3GatewayOrigin: undefined,
   appUrl:
     settings.edgeHost === undefined && isLoopbackName(new URL(settings.appUrl).hostname)
       ? settings.appUrl
@@ -707,6 +749,7 @@ const askNetwork = async (asked: Asked, settings: SetupSettings): Promise<SetupS
         ? undefined
         : (settings.sshBind ?? settings.bind),
     edgeHost: undefined,
+    t3GatewayOrigin: undefined,
     appUrl,
     exposure: "private",
   });
@@ -993,10 +1036,28 @@ const DECLARATIONS: ReadonlyArray<{
   },
   {
     item: "t3code-gateway",
-    text: (settings) =>
-      `port ${settings.t3GatewayPort ?? DEFAULT_T3_GATEWAY_PORT} answers nothing from another machine, or only through what you put in front of it`,
+    text: (settings) => {
+      const placement = t3PlacementOf(settings);
+      if (placement === undefined) return "";
+      const published = publishedAddress(placement.bind, placement.port);
+      return placement.edgeHost !== undefined
+        ? `${placement.url} serves the T3 Code gateway with a certificate that chains to a public root, and ${published} answers nothing from another machine`
+        : `the T3 Code gateway on ${published} answers only the networks that should reach it`;
+    },
   },
 ];
+
+/**
+ * Whether the gate's t3code-gateway item waits for a statement: Mend reads a port published on
+ * loopback itself, and nothing else of the gateway.
+ */
+const t3NeedsStatement = (settings: SetupSettings): boolean => {
+  const placement = t3PlacementOf(settings);
+  return (
+    placement !== undefined &&
+    (placement.edgeHost !== undefined || t3GatewayBeyondMachine(placement))
+  );
+};
 
 /** The gate items Mend cannot observe; open until the person says they checked from outside. */
 const askDeclarations = async (asked: Asked, settings: SetupSettings): Promise<SetupSettings> => {
@@ -1007,7 +1068,7 @@ const askDeclarations = async (asked: Asked, settings: SetupSettings): Promise<S
   );
   let declared = settings.declared;
   for (const { item, text } of DECLARATIONS) {
-    if (item === "t3code-gateway" && settings.t3GatewayPort === undefined) continue;
+    if (item === "t3code-gateway" && !t3NeedsStatement(settings)) continue;
     const checked = await yesNo(
       io,
       `  ${item}: ${text(settings)}. Checked?`,
@@ -1018,24 +1079,104 @@ const askDeclarations = async (asked: Asked, settings: SetupSettings): Promise<S
   return { ...settings, declared: DECLARABLE_ITEMS.filter((item) => declared.includes(item)) };
 };
 
+/**
+ * The edge's own origin for the gateway: a host of its own, since a t3code client always uses a
+ * server's root path. Where it resolves is said as observed; its DNS is the person's to point.
+ */
+const askT3Origin = async (asked: Asked, settings: SetupSettings): Promise<SetupSettings> => {
+  const edgeHost = settings.edgeHost;
+  if (edgeHost === undefined) return { ...settings, t3GatewayOrigin: undefined };
+  const { io } = asked;
+  const port = settings.t3GatewayPort ?? DEFAULT_T3_GATEWAY_PORT;
+  const served = await choose(
+    io,
+    `T3 Code always uses a server's root path, so the edge cannot serve the gateway under ${edgeHost}. Serve it on a host of its own?`,
+    [
+      {
+        label: "yes, on a host of its own",
+        detail: `such as t3.${edgeHost}, whose DNS points here as ${edgeHost}'s does; Caddy gets its certificate`,
+        value: true,
+      },
+      {
+        label: "no, this machine only",
+        detail: `127.0.0.1:${port}, reached from this machine only`,
+        value: false,
+      },
+    ],
+    settings.t3GatewayOrigin === undefined ? 1 : 0,
+  );
+  if (!served) return { ...settings, t3GatewayOrigin: undefined };
+  const host = await typed(
+    io,
+    "The gateway's host",
+    settings.t3GatewayOrigin ?? `t3.${edgeHost}`,
+    (input) => {
+      const parsed = parseEdgeHost(input);
+      if (parsed === null)
+        return {
+          refused: `"${input}" is not a DNS name a certificate can be issued for, such as t3.${edgeHost}.`,
+        };
+      if (parsed === edgeHost)
+        return { refused: `${edgeHost} is Mend's own origin; the gateway needs another host.` };
+      return { value: parsed };
+    },
+  );
+  const [resolved, edge] = await Promise.all([
+    asked.context.observe.lookupHost(host),
+    asked.context.observe.lookupHost(edgeHost),
+  ]);
+  if (resolved === null || resolved.length === 0)
+    io.write(
+      `Observed: ${host} does not resolve from this machine. Caddy cannot get its certificate until its DNS points where ${edgeHost}'s does.`,
+    );
+  else if (edge !== null && resolved.every((address) => edge.includes(address)))
+    io.write(`Observed: ${host} resolves to ${resolved.join(", ")}, as ${edgeHost} does.`);
+  else
+    io.write(
+      `Observed: ${host} resolves to ${resolved.join(", ")}, and ${edgeHost} to ${edge === null || edge.length === 0 ? "nothing" : edge.join(", ")}.`,
+    );
+  return { ...settings, t3GatewayOrigin: host };
+};
+
 const askT3 = async (asked: Asked, settings: SetupSettings): Promise<SetupSettings> => {
   const port = settings.t3GatewayPort ?? DEFAULT_T3_GATEWAY_PORT;
-  asked.io.write("");
-  asked.io.write(
-    `The T3 Code gateway lets t3code's desktop, mobile and web apps pair with this Mend (mend pair). It listens on 127.0.0.1:${port} only; from another machine, use a tunnel you run, such as ssh -L ${port}:127.0.0.1:${port} <this machine>, or tailscale serve.`,
+  const { io } = asked;
+  io.write("");
+  io.write(
+    "The T3 Code gateway lets T3 Code's desktop, mobile and web apps pair with this Mend: in T3 Code, add a Remote link with its address and a code from mend pair. T3 Code's SSH mode is not for Mend: it starts T3 Code's own server on this machine.",
   );
-  const on = await yesNo(
-    asked.io,
-    "Turn on the T3 Code gateway?",
-    settings.t3GatewayPort !== undefined,
-  );
-  return on
-    ? { ...settings, t3GatewayPort: port }
-    : {
-        ...settings,
-        t3GatewayPort: undefined,
-        declared: without(settings.declared, "t3code-gateway"),
-      };
+  const placement = t3PlacementOf(settings, port);
+  if (placement !== undefined && settings.edgeHost !== undefined)
+    io.write(
+      `Behind the edge, its port stays on ${publishedAddress(placement.bind, placement.port)}, as Mend's own does; the edge can serve it on a host of its own${settings.t3GatewayOrigin === undefined ? "" : `, as it does now at https://${settings.t3GatewayOrigin}`}.`,
+    );
+  else if (placement !== undefined) {
+    const published = publishedAddress(placement.bind, placement.port);
+    if (t3GatewayBeyondMachine(placement))
+      io.write(
+        `It is published where Mend's web port is, on ${published}: T3 Code reaches it at ${placement.url}, with no tunnel.`,
+      );
+    else {
+      io.write(
+        `It is published where Mend's web port is, on ${published}: T3 Code on this machine reaches it at ${placement.url}. Reached from your network, Mend's web port and the gateway are published there together.`,
+      );
+      const tailscale = await asked.tailscale();
+      const serves = tailscale?.serve.some((route) => route.loopbackPort === settings.appPort);
+      if (tailscale?.running === true && tailscale.dnsName !== null && serves === true)
+        io.write(
+          `Observed: Tailscale Serve forwards to Mend's port here. The gateway is reached the same way once Serve forwards to it too: tailscale serve --bg --https=${port} http://127.0.0.1:${port}, and T3 Code's Remote link takes https://${tailscale.dnsName}:${port}.`,
+        );
+    }
+  }
+  const on = await yesNo(io, "Turn on the T3 Code gateway?", settings.t3GatewayPort !== undefined);
+  if (!on)
+    return {
+      ...settings,
+      t3GatewayPort: undefined,
+      t3GatewayOrigin: undefined,
+      declared: without(settings.declared, "t3code-gateway"),
+    };
+  return askT3Origin(asked, { ...settings, t3GatewayPort: port });
 };
 
 const askSize = (asked: Asked, question: string, preferred: string): Promise<string> =>

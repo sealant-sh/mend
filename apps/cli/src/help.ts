@@ -240,6 +240,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     synopsis: ["[--url <base url>]"],
     description: [
       "Prints a QR code, the code itself, and the URL this server is reached at. The pairing is for one device, once, and expires after 10 minutes.",
+      "With the server's T3 Code gateway on, it also prints the gateway's address: in T3 Code, add a Remote link with that address and the code, or paste the link it prints, which carries both. The same code pairs T3 Code or the Mend app, once. T3 Code's SSH mode is not for Mend: it starts T3 Code's own server on the other machine.",
     ],
     options: [
       { flag: "--url <base url>", text: "the address the other device should use for this server" },
@@ -1210,7 +1211,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     summary: "install or change the local Mend server, guided",
     synopsis: [
       "",
-      "[--yes] [--context <name>] [--version <version|latest>] [--bind <ip>] [--ssh-bind <ip>] [--url <origin>] [--origin <origin>...] [--port <n>] [--ssh-port <n>] [--edge <host> | --no-edge] [--exposure <loopback|private|public>] [--tenancy <single|multi>] [--declare <item>...] [--undeclare <item>...] [--t3-gateway [--t3-gateway-port <n>] | --no-t3-gateway] [--npm-mirror | --no-npm-mirror] [--npm-mirror-max-size <size>] [--docker-mirror | --no-docker-mirror] [--docker-mirror-max-size <size>] [--docker-hub-username <name> --docker-hub-token-stdin --docker-hub-public-only | --no-docker-hub-login] [--docker-socket <path>] [--assets-dir <dir>] [--offline] [--allow-userns | --no-allow-userns]",
+      "[--yes] [--context <name>] [--version <version|latest>] [--bind <ip>] [--ssh-bind <ip>] [--url <origin>] [--origin <origin>...] [--port <n>] [--ssh-port <n>] [--edge <host> | --no-edge] [--exposure <loopback|private|public>] [--tenancy <single|multi>] [--declare <item>...] [--undeclare <item>...] [--t3-gateway [--t3-gateway-port <n>] [--t3-gateway-origin <host> | --no-t3-gateway-origin] | --no-t3-gateway] [--npm-mirror | --no-npm-mirror] [--npm-mirror-max-size <size>] [--docker-mirror | --no-docker-mirror] [--docker-mirror-max-size <size>] [--docker-hub-username <name> --docker-hub-token-stdin --docker-hub-public-only | --no-docker-hub-login] [--docker-socket <path>] [--assets-dir <dir>] [--offline] [--allow-userns | --no-allow-userns]",
     ],
     description: [
       "On a terminal with no flags, setup asks its questions in plain words, one at a time: how people reach this Mend (just this machine, your private network or Tailscale, or the public internet with HTTPS), whether VS Code Remote-SSH reaches it from other machines, the T3 Code gateway, the mirrors, and one organization or several. It looks before it asks and says what it observed: Tailscale's name and address and what Tailscale Serve forwards, where your domain resolves, and whether ports 80 and 443 are taken. It never asks for an address to bind: that follows from the answers. On an existing install it shows what is saved and lets you keep it, change one thing, or go through every question. It ends with what changes, in words, and the same command with flags; nothing applies until you say yes.",
@@ -1219,7 +1220,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       "Checks a local Unix-socket Docker context and the Compose plugin, downloads the compose and Postgres initialization assets for one Mend release, preserves existing data and secrets, and starts the server. Re-running repairs the same pinned version. A changed --version is refused; use mend server upgrade. Updating this CLI never updates an existing server pin.",
       "The default listens only on localhost at http://localhost:3105. Non-local access requires both --bind and --url. Every extra browser origin must be named with --origin; setup never guesses from the request Host header or network interfaces. A fresh install refuses a public --bind address: until the first account exists, registration is open to whoever reaches it first. On an existing install, setup says when Mend's port or workspace SSH is published on a public address while the exposure is not public. The questions offer only private addresses (a tailnet, a LAN or VPN, carrier-grade NAT space) for a private network.",
       "--edge <host> runs a TLS edge in front of Mend: Caddy on ports 80 and 443 of every interface, which obtains and renews a certificate for the host and proxies to Mend's web tier. Mend's own port stays on loopback and the browser origin is https://<host>. The edge's compose overlay and Caddyfile are written into the generation beside compose.yaml, so start, restart and upgrade run them every time. --no-edge takes it away again, and the edge's container with it. A fresh install cannot start with the edge: until the first account exists, registration is open to whoever reaches the origin first, so set up on localhost, create the account, then add the edge.",
-      "--t3-gateway turns on the t3code gateway (docs/adr/0012): t3code's desktop, mobile and web clients add it as an environment, pair with a code from mend pair, and see this Mend's projects and sessions. It runs in the Mend container, confined to a root and a uid of its own, on a listener of its own published on 127.0.0.1 only (port 3120, or --t3-gateway-port): reaching it from another machine is an exposure you put in front of it and declare. Setup refuses it on a Mend image that has no gateway, and says whether it answered. It is kept across reruns and upgrades; --no-t3-gateway turns it off, and its state stays in its own volume, mend-t3-gateway. Off, nothing of it runs.",
+      "--t3-gateway turns on the t3code gateway (docs/adr/0012): t3code's desktop, mobile and web clients add it as an environment, pair with a code from mend pair, and see this Mend's projects and sessions. It runs in the Mend container, confined to a root and a uid of its own, on a listener of its own (port 3120, or --t3-gateway-port) published where Mend's web port is: on 127.0.0.1 for just this machine, on the tailnet or LAN address for a private network, so T3 Code reaches it as it reaches Mend, with no tunnel. Every device pairs through Mend wherever it is published. Behind the edge its port stays on 127.0.0.1, and --t3-gateway-origin <host> has the edge serve it on a host of its own, over HTTPS: a t3code client always uses a server's root path, so it cannot sit under Mend's origin. That host's DNS points where the edge's does; setup says where it resolves. Setup refuses it on a Mend image that has no gateway, and says whether it answered. It is kept across reruns and upgrades; --no-t3-gateway turns it off, and its state stays in its own volume, mend-t3-gateway. Off, nothing of it runs.",
       "--exposure declares how the instance is reached, and --tenancy whether one organization or many use it. Both are written into the generation and kept across reruns and upgrades. public needs the edge and an existing first account. With multi, or with public, the multi mode gate's settings follow: MEND_SOURCE_POLICY=tenant and MEND_CAPTURE_REQUIRE_SIZES=true, and public sets MEND_URL_BEARERS=refuse. The server still decides whether it starts, and mend server status shows what it reports.",
       "Two mirrors run beside Mend unless turned off: an npm mirror (nginx caching npmjs.org, capped at 10g by default, least recently used out) and a Docker mirror (a pull-through cache of Docker Hub, capped at 20g by default: over the cap its cache is cleared). Both leave 5g free on their disk: below that, nginx evicts and the Docker mirror pauses, and sessions pull from Docker Hub directly. Neither publishes a host port. Sessions install npm packages and pull Docker Hub images through them; a project's own npm settings win, and a mirror that is down sends sessions upstream instead. Both are kept across reruns and upgrades, and an upgrade adds them to an install from before them. The Docker mirror pulls anonymously unless given a Docker Hub login: --docker-hub-username with the access token piped on standard input, kept in server.env only. The mirror has no login of its own, so every session that reaches it can pull whatever that token can read: setup takes a login only with --docker-hub-public-only, your statement that the token's access permission is Public Repo Read-only. Mend cannot check a token's scope.",
       "Before its other questions and before it pulls the release, setup reads the Docker host's kernel, through the few megabytes of busybox every install needs anyway. Each workspace runs its own rootless Docker, which needs unprivileged user namespaces; Ubuntu 23.10 and later (24.04 LTS included) refuse them by default, and then no session can start. On a terminal setup asks to allow them: on a yes it writes the setting to /etc/sysctl.d/60-mend-rootless-docker.conf on the Docker host and applies it, through a short privileged container on the Docker socket it already uses, then reads the kernel again. That lifts the restriction for the whole host; the file says on its first lines that setup wrote it and what it replaced, so mend uninstall --all removes it and puts that back. On a no, or on a rootless daemon, it prints the command to run on the host, and repeats it as its last line. Without a terminal or with --yes, it says to re-run with --allow-userns, so that setup writes the file and mend uninstall can undo it; the command is the other way, and a file written by hand stays on uninstall. --allow-userns and --no-allow-userns answer for a script.",
@@ -1262,13 +1263,21 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       { flag: "--no-edge", text: "take a saved edge away; the origin returns to http://localhost" },
       {
         flag: "--t3-gateway",
-        text: "run the t3code gateway, published on 127.0.0.1:3120 only; kept across reruns and upgrades",
+        text: "run the t3code gateway on port 3120, published where Mend's web port is; kept across reruns and upgrades",
       },
       {
         flag: "--t3-gateway-port <n>",
-        text: "the gateway's port on 127.0.0.1; implies --t3-gateway",
+        text: "the gateway's port; implies --t3-gateway",
       },
       { flag: "--no-t3-gateway", text: "turn the t3code gateway off; its state stays" },
+      {
+        flag: "--t3-gateway-origin <host>",
+        text: "with the edge: serve the gateway over HTTPS on this host of its own; its DNS points where the edge's does. Implies --t3-gateway",
+      },
+      {
+        flag: "--no-t3-gateway-origin",
+        text: "the edge stops serving the gateway; it stays on, on 127.0.0.1",
+      },
       {
         flag: "--exposure <v>",
         text: "declare loopback, private or public; kept across reruns and upgrades. public needs --edge and an existing first account",
@@ -1339,7 +1348,11 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       },
       {
         command: "mend server setup --t3-gateway",
-        text: "on an existing install: turn the T3 Code gateway on, and keep everything else",
+        text: "on an existing install: turn the T3 Code gateway on where Mend's web port is published, and keep everything else",
+      },
+      {
+        command: "mend server setup --t3-gateway-origin t3.mend.example.com",
+        text: "behind the edge: serve the T3 Code gateway at https://t3.mend.example.com",
       },
       {
         command: "mend server setup --yes",

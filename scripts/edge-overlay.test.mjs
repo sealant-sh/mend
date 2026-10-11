@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -28,7 +29,7 @@ const REQUIRED = [
   "MEND_GARAGE_KEY_SECRET",
 ];
 
-const render = (extra = {}) => {
+const render = (extra = {}, overlays = []) => {
   const result = spawnSync(
     "docker",
     [
@@ -39,6 +40,7 @@ const render = (extra = {}) => {
       path.join(directory, "compose.v2.yaml"),
       "-f",
       path.join(directory, "compose.edge.yaml"),
+      ...overlays.flatMap((overlay) => ["-f", overlay]),
       "config",
       "--format",
       "json",
@@ -136,3 +138,62 @@ test("the Caddyfile routes everything to web and keeps credentials out of its lo
   }
   assert.match(caddyfile, /flush_interval -1/);
 });
+
+test(
+  "the t3code gateway behind the edge: its port stays on loopback, and the edge mounts its site only when it serves it",
+  { skip },
+  async () => {
+    const { renderT3GatewayOverlay, t3GatewayEnvLines } =
+      await import("../apps/cli/src/server-edge.ts");
+    const overlayOf = (posture) => {
+      const file = path.join(
+        mkdtempSync(path.join(tmpdir(), "mend-t3-overlay-")),
+        "compose.t3.yaml",
+      );
+      writeFileSync(file, renderT3GatewayOverlay(posture));
+      const env = Object.fromEntries(
+        t3GatewayEnvLines(posture).map((line) => [
+          line.slice(0, line.indexOf("=")),
+          line.slice(line.indexOf("=") + 1),
+        ]),
+      );
+      return { file, env };
+    };
+    const edge = {
+      bind: "127.0.0.1",
+      appUrl: "https://mend.example.com",
+      edgeHost: "mend.example.com",
+      exposure: "public",
+      t3GatewayPort: 3120,
+    };
+    for (const posture of [edge, { ...edge, t3GatewayOrigin: "t3.mend.example.com" }]) {
+      const { file, env } = overlayOf(posture);
+      const result = render({ MEND_PORT: "3105", ...env }, [file]);
+      assert.equal(result.status, 0, result.stderr);
+      const compose = JSON.parse(result.stdout);
+      const gateway = compose.services.mend.ports.filter((port) => port.target === 3120);
+      assert.deepEqual(
+        gateway.map((port) => `${port.host_ip}:${port.published}`),
+        ["127.0.0.1:3120"],
+      );
+      assert.equal(compose.services.mend.environment.MEND_T3_GATEWAY_PUBLISHED, "127.0.0.1:3120");
+      // The edge's own Caddyfile stays mounted; the gateway's site joins it only when served.
+      const targets = compose.services.edge.volumes.map((volume) => volume.target);
+      assert.ok(targets.includes("/etc/caddy/Caddyfile"));
+      assert.equal(
+        targets.includes("/etc/caddy/sites/t3code-gateway.caddy"),
+        posture.t3GatewayOrigin !== undefined,
+      );
+      assert.equal(
+        compose.services.edge.environment.MEND_T3_GATEWAY_EDGE_HOST,
+        posture.t3GatewayOrigin,
+      );
+      assert.equal(
+        compose.services.mend.environment.MEND_T3_GATEWAY_URL,
+        posture.t3GatewayOrigin === undefined
+          ? "http://127.0.0.1:3120"
+          : "https://t3.mend.example.com",
+      );
+    }
+  },
+);

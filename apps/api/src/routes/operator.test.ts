@@ -111,6 +111,7 @@ const dependencies = Layer.mergeAll(
     exposure: "private",
     gate: Effect.succeed(OPEN_ITEMS),
     gateWith: () => OPEN_ITEMS,
+    t3Gateway: undefined,
   }),
 );
 
