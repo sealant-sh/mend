@@ -197,8 +197,10 @@ coming in 0.36 patch releases, before 0.37.
 Nothing of it runs until you turn it on with `mend server setup --t3-gateway` (or the guided setup's
 question). It is published where Mend's web port is: on `127.0.0.1:3120` for just this machine, on
 the tailnet or LAN address for a private network, so T3 Code's Remote link reaches it without a
-tunnel. Behind the edge, `--t3-gateway-origin <host>` serves it over HTTPS on a host of its own.
-`mend pair` prints its address beside the code.
+tunnel. On a public install its port stays on `127.0.0.1`: `--t3-gateway-origin <host>` has the edge
+serve it over HTTPS on a host of its own, and Tailscale Serve
+(`tailscale serve --bg --https=3120 http://127.0.0.1:3120`) reaches it from your tailnet, the way it
+can reach Mend's own port. `mend pair` prints its address beside the code.
 
 ## Shallow repositories are refused
 

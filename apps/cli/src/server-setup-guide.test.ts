@@ -191,7 +191,8 @@ describe("the guided server setup", () => {
       "Observed: 203.0.113.5 is a public address. Published there, Mend answers the internet, not a network you control who joins, so setup does not offer it here.",
     );
     expect(transcript).toContain("This machine has no address on a private network");
-    expect(transcript).toContain("ssh -L 3105:127.0.0.1:3105 <this machine>");
+    expect(transcript).toContain("join this machine to a tailnet (tailscale up)");
+    expect(transcript).not.toMatch(/ssh -L|tunnel/);
     expect(transcript).toContain("or choose the public internet, with HTTPS");
     expect(transcript).toContain("Setup installs Mend on this machine now.");
     expect(transcript).not.toContain("Which network do people reach it on?");
@@ -356,6 +357,15 @@ describe("the guided server setup", () => {
     expect(transcript).toContain(
       "  T3 Code gateway: off → on, at http://127.0.0.1:3120, this machine only",
     );
+    // The box: public, and Tailscale Serve forwards Mend's port, so the gateway is reached the same
+    // way from the tailnet; and the edge's "no" is not "this machine only".
+    expect(transcript).toContain(
+      "Observed: Tailscale Serve forwards to Mend's port here. The gateway is reached the same way once Serve forwards to it too: tailscale serve --bg --https=3120 http://127.0.0.1:3120, and T3 Code's Remote link takes https://mend-box.tailc79e49.ts.net:3120.",
+    );
+    expect(transcript).toContain(
+      "  2. no, not through the edge · it stays on 127.0.0.1:3120: this machine, or a tailnet through Tailscale Serve",
+    );
+    expect(transcript).not.toMatch(/ssh -L|tunnel you run/);
     const flags = flagsOf(outcome);
     expect(flags).toEqual(["--t3-gateway"]);
     expect(setupCommandOf(flags)).toBe("mend server setup --t3-gateway");
@@ -405,6 +415,31 @@ describe("the guided server setup", () => {
       edgeHost: "alpha.mend.run",
     });
     expect(transcript).not.toMatch(/ssh -L|tunnel you run/);
+  });
+
+  it("says when Tailscale Serve already forwards the gateway's port on a public install", async () => {
+    const served = JSON.stringify({
+      Web: {
+        "mend-box.tailc79e49.ts.net:8443": {
+          Handlers: { "/": { Proxy: "http://127.0.0.1:3105" } },
+        },
+        "mend-box.tailc79e49.ts.net:3120": {
+          Handlers: { "/": { Proxy: "http://127.0.0.1:3120" } },
+        },
+      },
+      AllowFunnel: {},
+    });
+    // change · T3 (3rd) · yes · not through the edge · nothing else · apply
+    const { outcome, transcript } = await converse(
+      ["2", "3", "y", "", "", ""],
+      BOX,
+      observe({ tailscale: async () => tailscaleFactsOf(TAILSCALE_STATUS, served) }),
+    );
+    expect(transcript).toContain(
+      "Observed: Tailscale Serve forwards https://mend-box.tailc79e49.ts.net:3120 to port 3120 here. T3 Code on your tailnet uses it as its Remote link.",
+    );
+    expect(transcript).not.toContain("tailscale serve --bg");
+    expect(flagsOf(outcome)).toEqual(["--t3-gateway"]);
   });
 
   it("says a host of its own that does not resolve, and refuses Mend's own", async () => {

@@ -60,8 +60,8 @@ the answer in brackets.
   No as the answer, and not at all on a fresh install. Setup never changes Tailscale's own settings.
 - For a **private network**, setup offers only this machine's private addresses: the tailnet, a LAN
   or VPN address, carrier-grade NAT space. A public address is never one of them. When the machine
-  has no private address, setup says so and installs on this machine; reach it through a tunnel or
-  Tailscale, or choose public HTTPS.
+  has no private address, setup says so and installs on this machine; join it to a tailnet, or
+  choose public HTTPS.
 - For **public HTTPS**, it asks for your domain, then says where the domain resolves from this
   machine and whether something already listens on ports 80 and 443.
 - For a private network or public HTTPS, it asks whether VS Code Remote-SSH should reach sessions
@@ -114,7 +114,7 @@ Turn on the T3 Code gateway? [y/N] y
 
 T3 Code always uses a server's root path, so the edge cannot serve the gateway under alpha.mend.run. Serve it on a host of its own?
   1. yes, on a host of its own · such as t3.alpha.mend.run, whose DNS points here as alpha.mend.run's does; Caddy gets its certificate
-  2. no, this machine only · 127.0.0.1:3120, reached from this machine only
+  2. no, not through the edge · it stays on 127.0.0.1:3120: this machine, or a tailnet through Tailscale Serve
   1 or 2 [2]: 1
 The gateway's host [t3.alpha.mend.run]:
 Observed: t3.alpha.mend.run resolves to 203.0.113.7, as alpha.mend.run does.
