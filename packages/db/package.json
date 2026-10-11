@@ -9,6 +9,7 @@
     "./testing": "./test/postgres.ts"
   },
   "scripts": {
+    "bench:session-live-people": "vitest run --config vitest.performance.config.ts",
     "lint": "oxlint . --no-error-on-unmatched-pattern",
     "test": "vitest run --passWithNoTests",
     "typecheck": "tsgo -p tsconfig.json --noEmit"
