@@ -204,13 +204,13 @@ Preconditions:
   `Diff`, `Shell`), and the session and review screens hide that header.
 - `Start` repeats for every harness of every project; nothing scopes it but order (claude, then
   codex, panel by panel). With more than one project, locate the panel by its project name first.
-- `Stop session`, `Replace this workspace now`, the shell's `Stop` and the image chooser behind
-  `Attach an image` use `Alert.alert`, which does nothing on React Native Web. These controls open
-  nothing and do nothing on the web build. `Clear settled` and row deletion confirm in place with a
-  second tap (`Remove <n>?` and `Really?`), so they do not share that limitation. Stop sessions with
-  `mend stop <id8>` in a web run, and report the Alert-based controls as unreachable there. Sources:
-  `components/session-pane.tsx:305`, `:332`, `app/terminal/[id].tsx:24`,
-  `components/session-workspace.tsx:199`, `components/composer.tsx:181`; second-tap confirmations:
+- `Stop session`, `Replace this workspace now`, the shell's `Stop`, the image chooser behind
+  `Attach an image` and the app's notices (`No image on the clipboard`, `Image not pasted`) go
+  through `ask` (`components/ask.tsx`, `data/ask.ts`). A phone shows its own alert. The web build,
+  where `Alert.alert` does nothing, shows the app's dialog with the same words: an `alertdialog`
+  named by the title, its buttons by their text. Cancel, Escape and a tap outside it send nothing.
+  `check-web.mjs` drives `Stop session` through it against a stubbed API. `Clear settled` and row
+  deletion confirm in place with a second tap (`Remove <n>?` and `Really?`):
   `components/clear-settled.tsx:20`, `components/session-row.tsx:193`.
 - The terminal is a native libghostty surface with a WebView fallback; neither runs on the web
   build, which shows `React Native WebView does not support this platform.`

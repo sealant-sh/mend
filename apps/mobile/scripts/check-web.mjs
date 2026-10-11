@@ -6,6 +6,10 @@
 // the export (see babel.config.js for the case that broke every Schema.Class
 // there and nowhere else), and a bundle that builds can still throw on load.
 //
+// On the dev server it then drives one confirm-first action against a stubbed
+// API: react-native-web's Alert.alert does nothing, so Stop session has to ask
+// in the app's own dialog, Cancel has to send nothing, and Stop has to stop.
+//
 //   node scripts/check-web.mjs        (from apps/mobile)
 
 import { spawn } from "node:child_process";
@@ -135,6 +139,114 @@ const checkRoutes = async (browser, label, origin) => {
   return failures;
 };
 
+// One running session the check may stop, served from the page's own origin.
+const SESSION_ID = "check-stop";
+const NOW = new Date().toISOString();
+const SESSION = {
+  id: SESSION_ID,
+  projectId: "check-project",
+  harness: "claude",
+  model: null,
+  effort: null,
+  label: "Stop check",
+  branch: "mend/session/stop-check",
+  baseSha: "0".repeat(40),
+  baseRef: "main",
+  status: "running",
+  summary: null,
+  sealantRunId: null,
+  sealantSessionId: null,
+  settledAt: null,
+  startedAt: NOW,
+  createdAt: NOW,
+  ownerUserId: "check-user",
+};
+const AGENT = { id: "check-agent", kind: "agent-protocol", status: "running", exitedAt: null };
+
+const stubApi = async (page, origin, stops) => {
+  await page.route(`${origin}/api/**`, (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    const json = (status, body) =>
+      route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
+    if (request.method() === "POST" && path === `/api/sessions/${SESSION_ID}/stop`) {
+      stops.push(path);
+      return json(200, { ...SESSION, status: "stopping" });
+    }
+    if (request.method() === "GET" && path === `/api/sessions/${SESSION_ID}`) {
+      return json(200, {
+        session: stops.length === 0 ? SESSION : { ...SESSION, status: "stopping" },
+        checkpoints: [],
+        change: null,
+        landings: [],
+        processes: [AGENT],
+        currentAgent: AGENT,
+        control: {
+          own: true,
+          steer: true,
+          stop: true,
+          toggleSharedControl: true,
+          terminalInput: true,
+        },
+      });
+    }
+    if (request.method() === "GET" && path === "/api/organization") {
+      return json(200, { userId: "check-user" });
+    }
+    return json(404, { _tag: "NotFound", message: "Not stubbed by check-web." });
+  });
+};
+
+const checkStopAsks = async (browser, label, origin) => {
+  const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+  const stops = [];
+  try {
+    await stubApi(page, origin, stops);
+    // The web build keeps its config in IndexedDB: save it the way a person types it in.
+    await page.goto(`${origin}/settings`, { timeout: 300_000 });
+    await page.getByText("Advanced", { exact: true }).click();
+    await page.getByPlaceholder("https://mend.example.com").fill(origin);
+    await page.getByPlaceholder("token").fill("check-token");
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    await page.getByRole("button", { name: "Saved", exact: true }).waitFor();
+
+    await page.goto(`${origin}/session/${SESSION_ID}`, { timeout: 300_000 });
+    const dialog = page.getByRole("alertdialog", { name: "Stop this session?" });
+    const askToStop = async () => {
+      await page.getByRole("button", { name: "More actions" }).click();
+      await page.getByRole("menuitem", { name: "Stop session" }).click();
+      await dialog.waitFor({ timeout: 10_000 });
+    };
+
+    await askToStop();
+    await dialog
+      .getByText("The agent ends, and Mend saves the session's work before its machine stops.")
+      .waitFor();
+    await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+    await dialog.waitFor({ state: "detached", timeout: 10_000 });
+    // Long enough for a stop that Cancel wrongly sent to reach the stub.
+    await page.waitForTimeout(1_000);
+    if (stops.length !== 0) throw new Error("Cancel sent a stop");
+
+    await askToStop();
+    const stopped = page.waitForRequest(
+      (request) =>
+        request.method() === "POST" && request.url().endsWith(`/api/sessions/${SESSION_ID}/stop`),
+      { timeout: 10_000 },
+    );
+    await dialog.getByRole("button", { name: "Stop session", exact: true }).click();
+    await stopped;
+    await dialog.waitFor({ state: "detached", timeout: 10_000 });
+    if (stops.length !== 1) throw new Error(`Stop sent ${stops.length} stops, not 1`);
+    console.log(`✓ ${label} stop session asks, Cancel sends nothing, Stop stops`);
+    return [];
+  } catch (error) {
+    return [`${label} stop session\n  ${error instanceof Error ? error.message : String(error)}`];
+  } finally {
+    await page.close();
+  }
+};
+
 rmSync(EXPORT_DIR, { recursive: true, force: true });
 await run(["export", "--platform", "web", "--output-dir", EXPORT_DIR]);
 
@@ -150,6 +262,7 @@ try {
   const dev = await startDevServer();
   try {
     failures.push(...(await checkRoutes(browser, "dev server", dev.origin)));
+    failures.push(...(await checkStopAsks(browser, "dev server", dev.origin)));
   } finally {
     dev.stop();
   }
@@ -158,6 +271,6 @@ try {
 }
 
 if (failures.length > 0) {
-  console.error(`✗ the web build throws in the browser:\n${failures.join("\n")}`);
+  console.error(`✗ the web build fails in the browser:\n${failures.join("\n")}`);
   process.exit(1);
 }

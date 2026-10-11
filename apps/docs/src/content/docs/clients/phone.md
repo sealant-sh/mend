@@ -84,7 +84,5 @@ hand instead, such as one from **Mint a token by hand** in the web app.
   `pi`, and does not attach to a terminal agent; a terminal session shows its transcript.
 - In the browser, several native parts are missing. The shell reads
   `React Native WebView does not support this platform.`, and push notifications answer
-  `unavailable`. `Stop session`, `Replace this workspace now`, the shell's `Stop` and
-  `Attach an image` ask through a native dialog, which does nothing in a browser, so they do nothing
-  there. Stop a session from the web app or with `mend stop`.
+  `unavailable`.
 - LaTeX in assistant replies shows as its source in the browser.

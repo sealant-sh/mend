@@ -19,6 +19,7 @@ import { AppState } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { KeyboardProvider } from "react-native-keyboard-controller";
 
+import { AskDialog } from "@/components/ask";
 import {
   configureForegroundPresentation,
   wireNotificationNavigation,
@@ -108,6 +109,7 @@ export default function RootLayout() {
               <Stack.Screen name="review/[id]" options={{ title: "Review" }} />
               <Stack.Screen name="diff/[id]" options={{ title: "Diff" }} />
             </Stack>
+            <AskDialog />
           </ThemeProvider>
         </QueryClientProvider>
       </KeyboardProvider>

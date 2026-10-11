@@ -7,9 +7,10 @@
 import { terminalReadOnlyLine } from "@mend/domain/workbench";
 import * as Clipboard from "expo-clipboard";
 import { useEffect, useRef, useState } from "react";
-import { Alert, Pressable, View } from "react-native";
+import { Pressable, View } from "react-native";
 import { KeyboardStickyView, useKeyboardState } from "react-native-keyboard-controller";
 
+import { ask } from "@/components/ask";
 import { GhosttyTerminal } from "@/components/ghostty-terminal";
 import { usePaneEdges } from "@/components/pane";
 import { MonoText, UiText } from "@/components/typography";
@@ -98,7 +99,7 @@ export function TerminalPane({
     try {
       const image = await Clipboard.getImageAsync({ format: "png" });
       if (image === null) {
-        Alert.alert("No image on the clipboard", "Copy a screenshot or photo first, then tap img.");
+        ask("No image on the clipboard", "Copy a screenshot or photo first, then tap img.");
         return;
       }
       const stored = await pasteSessionImage(
@@ -107,10 +108,7 @@ export function TerminalPane({
       );
       sendRef.current?.(bracketedPaste(stored.path));
     } catch (error) {
-      Alert.alert(
-        "Image not pasted",
-        error instanceof Error ? error.message : "The image was not stored.",
-      );
+      ask("Image not pasted", error instanceof Error ? error.message : "The image was not stored.");
     } finally {
       setPastingImage(false);
     }

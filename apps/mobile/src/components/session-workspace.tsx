@@ -7,10 +7,11 @@
 import { useRouter } from "expo-router";
 import { Columns2, Inbox, Rows2, X } from "lucide-react-native";
 import { useState, type ReactNode } from "react";
-import { Alert, Pressable, ScrollView, StyleSheet, View } from "react-native";
+import { Pressable, ScrollView, StyleSheet, View } from "react-native";
 import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
+import { ask } from "@/components/ask";
 import { EvButton } from "@/components/button";
 import { DiffPane } from "@/components/diff-pane";
 import { Pane } from "@/components/pane";
@@ -196,24 +197,20 @@ function ShellCompanion({
 
   const confirmStop = () => {
     if (processId === null) return;
-    Alert.alert(
-      "Stop this shell?",
-      "This ends the shell process. Closing the pane only detaches.",
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Stop shell",
-          style: "destructive",
-          onPress: () =>
-            stopShell.mutate(processId, {
-              onSuccess: () => {
-                setOpened(null);
-                onClose();
-              },
-            }),
-        },
-      ],
-    );
+    ask("Stop this shell?", "This ends the shell process. Closing the pane only detaches.", [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Stop shell",
+        style: "destructive",
+        onPress: () =>
+          stopShell.mutate(processId, {
+            onSuccess: () => {
+              setOpened(null);
+              onClose();
+            },
+          }),
+      },
+    ]);
   };
 
   let body: ReactNode;

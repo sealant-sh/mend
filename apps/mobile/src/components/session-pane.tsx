@@ -21,9 +21,10 @@ import {
   SquareTerminal,
 } from "lucide-react-native";
 import { useState } from "react";
-import { Alert, View } from "react-native";
+import { View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
+import { ask } from "@/components/ask";
 import { EvButton } from "@/components/button";
 import { ProtocolConversation } from "@/components/protocol-conversation";
 import { PtyConversation } from "@/components/pty-conversation";
@@ -306,7 +307,7 @@ export function SessionPane({
       // Never a button, and never without asking: it ends the agent (alpha 2026-10-01).
       menuOnly: true,
       onPress: () =>
-        Alert.alert(
+        ask(
           "Stop this session?",
           "The agent ends, and Mend saves the session's work before its machine stops.",
           [
@@ -332,13 +333,13 @@ export function SessionPane({
       menuOnly: true,
       // The list asked about and the fingerprint sent come from the same read.
       onPress: () => {
-        const ask = replaceConfirmationOf(retirement);
-        Alert.alert(ask.title, ask.message, [
+        const question = replaceConfirmationOf(retirement);
+        ask(question.title, question.message, [
           { text: "Cancel", style: "cancel" },
           {
             text: REPLACE_WORKSPACE_ACTION,
             style: "destructive",
-            onPress: () => replaceWorkspace.mutate({ sessionId: session.id, body: ask.body }),
+            onPress: () => replaceWorkspace.mutate({ sessionId: session.id, body: question.body }),
           },
         ]);
       },

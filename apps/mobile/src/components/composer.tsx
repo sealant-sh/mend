@@ -7,7 +7,6 @@ import { ImagePlus, X } from "lucide-react-native";
 import { useState, type ReactNode } from "react";
 import {
   ActionSheetIOS,
-  Alert,
   Linking,
   Platform,
   Pressable,
@@ -17,6 +16,7 @@ import {
   View,
 } from "react-native";
 
+import { ask } from "@/components/ask";
 import { MonoText } from "@/components/typography";
 import {
   COMPOSER_LINE_HEIGHT,
@@ -101,7 +101,7 @@ export function ComposerField({ children }: { readonly children: ReactNode }) {
 const openSettings = () => void Linking.openSettings();
 
 const cameraRefused = (canAskAgain: boolean) =>
-  Alert.alert(
+  ask(
     "Camera access is off",
     "Mend takes a photo only when you ask. Turn on camera access for Mend in Settings.",
     canAskAgain
@@ -113,7 +113,7 @@ const cameraRefused = (canAskAgain: boolean) =>
   );
 
 const failedToChoose = (error: unknown) =>
-  Alert.alert(
+  ask(
     "No image attached",
     error instanceof Error && error.message !== "" ? error.message : "The image could not be read.",
   );
@@ -149,17 +149,14 @@ export function AttachButton({
     void pasteFromClipboard(ordinal).then(
       (image) =>
         image === null
-          ? Alert.alert("No image on the clipboard", "Copy a screenshot or photo first.")
+          ? ask("No image on the clipboard", "Copy a screenshot or photo first.")
           : onChosen([image]),
       failedToChoose,
     );
 
   const open = async () => {
     if (room === 0) {
-      Alert.alert(
-        "Ten images at most",
-        "A message carries up to ten images. Remove one to add another.",
-      );
+      ask("Ten images at most", "A message carries up to ten images. Remove one to add another.");
       return;
     }
     const canPaste = await clipboardHasImage();
@@ -178,7 +175,7 @@ export function AttachButton({
       );
       return;
     }
-    Alert.alert(
+    ask(
       "Attach an image",
       undefined,
       choices.map((choice) => ({ text: choice.label, onPress: choice.run })),
