@@ -67,6 +67,19 @@ When the capture daemon learns to carry a repository root of its own, the reposi
 `/workspace/repos/<name>` for real and its change, checkpoints and landing appear in the review;
 nothing is cloned again.
 
+### Removing the main worktree
+
+Because the repository is saved only with the main worktree, removing that worktree deletes it. Mend
+cannot see from the server whether it holds commits or edits that are not on origin, so the removal
+is refused while any session in the worktree holds an added repository, naming up to five:
+
+```text
+This worktree holds 1 repository added with mend repo add, saved only with it · /workspace/repos/core on mend/fix-login · Mend cannot see whether it holds commits or edits that are not on origin, and removal deletes it. Push what you need from a session in this worktree before removal, or pass force=true to remove it anyway.
+```
+
+Push what you need first. **Remove anyway** in the web app, or `mend worktrees rm <name> --force`,
+removes it regardless.
+
 ## States
 
 | State     | Means                                                                                                                                                     |

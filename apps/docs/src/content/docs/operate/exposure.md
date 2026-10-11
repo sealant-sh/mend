@@ -62,7 +62,7 @@ A browser origin still on plain `http` while the instance is reached from other 
 line amber:
 
 ```text
-○ exposure    declared private · http origin · 5 gate items open → serve it over https and set APP_URL to that origin
+○ exposure    declared private · http origin · 5 gate items open → serve it over https: on the server's machine, mend server setup --edge <domain>, or mend server setup --url https://<origin> behind HTTPS you run
 ```
 
 A laptop install on `http://localhost` prints `declared private · http origin` and nothing more.
@@ -84,9 +84,10 @@ exposure · declared private · reached over a network you control admission to
 ◐ browser-headers             carried   this build's web tier sets the browser header policy; the API cannot see the web tier that is actually in front of it · what would observe it: mend doctor against the public origin, which reads the headers a browser receives
 ● error-redaction             observed  error responses are scrubbed of upstream detail
 ○ executor-channel-transport  declared  the session channel is plain http, and the operator declared the executor network private (MEND_EXECUTOR_NETWORK=private)
-· core-private                open      this process cannot observe whether Sealant, its registry and the database are reachable from the Internet · what would verify it: a connection attempt to each from outside the deployment's network; then add core-private to MEND_EXPOSURE_DECLARED
+● workspace-ssh               observed  workspace SSH is not published apart from the web port (MEND_SSH_PUBLISHED unset)
+· core-private                open      this process cannot observe whether Sealant, its registry, the database and the package mirrors (npm-mirror:4873, docker-mirror:5000) are reachable from the Internet · what would verify it: a connection attempt to each from outside the deployment's network; then add core-private to MEND_EXPOSURE_DECLARED
 · edge-tls                    open      this process cannot observe the edge's certificate, its renewal, or its port 80 redirect · what would verify it: mend doctor run against the origin from another network; then add edge-tls to MEND_EXPOSURE_DECLARED
-· reassessment                open      no independent reassessment of 0.33.0 is recorded · after an independent security reassessment of this exact release, set MEND_EXPOSURE_REASSESSED=0.33.0
+· reassessment                open      no independent reassessment of 0.36.0 is recorded · after an independent security reassessment of this exact release, set MEND_EXPOSURE_REASSESSED=0.36.0
 5 of 14 items open · 2 refuse a public start; MEND_EXPOSURE=public refuses to start · 3 do not
 ```
 
@@ -117,7 +118,7 @@ open until you state otherwise, and never block a start.
 | `error-redaction`            | observed              | `MEND_ERROR_DETAIL` is unset.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | `executor-channel-transport` | observed, or declared | The session channel is advertised over `https`, or `MEND_EXECUTOR_NETWORK=private` states that executors reach it over a network you control (reported as declared). A channel over a mounted socket reads observed.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | `workspace-ssh`              | observed, or declared | Workspace SSH is not published apart from the web port, or only on loopback (observed). Published elsewhere with `mend server setup --ssh-bind` (`MEND_SSH_PUBLISHED`), it is open until you checked from each network that should not reach it, and named it in `MEND_EXPOSURE_DECLARED` (`--declare workspace-ssh`). The gateway admits registered keys only, and a workspace only for its launcher; who reaches the port is not something the server can see. Before login it holds each source (an IPv4 address or an IPv6 /64) to sshd-like limits, which need it to see each client's own address.                                                                                                                                                |
-| `core-private`               | open until declared   | You checked from outside that Sealant, its registry and the database answer nothing from the Internet, and named it in `MEND_EXPOSURE_DECLARED`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `core-private`               | open until declared   | You checked from outside that Sealant, its registry, the database and any package mirrors answer nothing from the Internet, and named it in `MEND_EXPOSURE_DECLARED`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | `edge-tls`                   | open until declared   | You checked from another network that the certificate chains to a public root, renews, and that port 80 redirects, and named it in `MEND_EXPOSURE_DECLARED`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | `t3code-gateway`             | observed, or declared | Listed while the [t3code gateway](/integrations/t3code/) is enabled, whether or not it is answering (`mend server status` says that). Its port published on loopback only (`MEND_T3_GATEWAY_PUBLISHED`) reads observed. Published on a private address, where Mend's web port is, it is open until you checked from each network that should not reach it and named it in `MEND_EXPOSURE_DECLARED`; an open one refuses a `public` start, as `workspace-ssh` does, and setup never publishes it beyond loopback on a public install. Served by the edge on its own origin (`--t3-gateway-origin`), it is open until you checked that origin's certificate from another network and named it. Every device pairs through Mend, wherever it is published. |
 | `reassessment`               | open until declared   | `MEND_EXPOSURE_REASSESSED` equals the running version. An upgrade reopens it. A build with no version of its own (`dev`) stays open.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
@@ -162,7 +163,7 @@ arrives first.
 - Create the first account over a private path, then declare `public`.
 - Set `MEND_SOURCE_POLICY=tenant` and `MEND_CAPTURE_REQUIRE_SIZES=true` with an S3-compatible
   `MEND_BLOB_STORE`, and keep `MEND_SERVICE_HOSTS` on loopback, so the multi mode gate is closed.
-- Set `MEND_URL_BEARERS=refuse` once the CLI, desktop and phone builds you use send upgrade tickets.
+- Set `MEND_URL_BEARERS=refuse` once the CLI, VS Code and phone builds you use send upgrade tickets.
 - Keep every budget on.
 - Keep Sealant, Postgres and the bucket off any public address. Sealant is a control plane behind
   Mend and is never offered to the Internet.
@@ -254,7 +255,7 @@ What the overlay does, and what it states on your behalf:
 
 What was checked: the merged files render, and the Caddyfile validates with Caddy. What was not: a
 certificate issued and a browser session through it, end to end. Workspace SSH on port 2222 stays on
-the loopback bind with the edge, since Caddy proxies HTTP alone.
+the loopback bind with the edge, since Caddy proxies HTTP alone, until `--ssh-bind` publishes it.
 
 ### Kubernetes Ingress
 
@@ -319,8 +320,8 @@ long-lived bearer.
   ticket and a renewal ticket. The renewal ticket stays in the page's memory, travels only in a
   request body, and ends twelve hours after the app minted the URL, or with its credential.
 - First-party clients mint a ticket per connection: the CLI (terminal, service tunnel, key bridge),
-  the desktop app, and the phone. An `Authorization` header on the upgrade still works for a client
-  that can set one.
+  the VS Code extension, and the phone. An `Authorization` header on the upgrade still works for a
+  client that can set one.
 
 When the mint answers 404 but `/health` says the server mints tickets, the CLI refuses to connect
 rather than put its saved token in a URL:

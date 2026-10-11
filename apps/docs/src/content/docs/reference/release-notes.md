@@ -17,8 +17,8 @@ Upgrading a server from 0.35.1: read [Upgrade to 0.36](/operate/upgrade-to-0-36/
 need doing before the upgrade: copy out any old upgrade backup you want kept, since the upgrade now
 prunes them, and rotate any token that was in an adopted repository URL. The bundled Sealant is
 0.39. The VS Code extension is published with this release, as **Mend by Sealant**
-(`sealant-sh.mend`) 0.36.0 on the Visual Studio Marketplace and Open VSX. The desktop app and the
-native phone app are not.
+(`sealant-sh.mend`) 0.36.1 on the Visual Studio Marketplace and Open VSX; any 0.36.x extension works
+with a 0.36 server. The desktop app and the native phone app are not published.
 
 ### Server setup and operation
 
@@ -35,10 +35,31 @@ native phone app are not.
 - **T3 Code gateway**, opt-in with `--t3-gateway`. T3 Code works as a Mend client for its core
   workflow: threads, messages and images, the queue, approvals, diffs, files, the terminal, and
   settle and snooze. More of T3 Code is coming in 0.36 patch releases, before 0.37. See
-  [t3code](/integrations/t3code/).
+  [t3code](/integrations/t3code/). Two worktree reads it uses are in the API for every client:
+  `GET /api/worktrees/:id/contents` (a file, or a search) and
+  `GET /api/worktrees/:id/diff?from=&to=` (a slice between checkpoints).
 - **Upgrade backups** are pruned to the newest two (`--keep-backups`).
-- **Ubuntu 23.10 and later**: setup and `mend doctor` say when the host refuses user namespaces,
-  with the command that allows them.
+- **Ubuntu 23.10 and later.** When the host refuses user namespaces, guided setup asks to allow them
+  before its first question, and `--allow-userns` allows them from a script. Setup writes
+  `/etc/sysctl.d/60-mend-rootless-docker.conf` with a marker, so `mend uninstall --all` removes it
+  and puts the kernel's setting back. `mend doctor` reports it on a `workspaces` line, and a launch
+  on such a host fails at once with the command, before any image is built. See
+  [Every session fails to launch on Ubuntu](/operate/troubleshooting/#every-session-fails-to-launch-on-ubuntu).
+- **Two Docker engines on one machine.** Setup checks that Mend's web and SSH ports are free before
+  it pulls anything and names what holds one. `--context` and `--docker-socket` choose the engine,
+  and setup waits for health from the server it started, by its instance id.
+- **Private means private.** Under "my private network or Tailscale" setup offers only private, ULA
+  and carrier-grade NAT addresses. A fresh install refuses `--bind` on a public address, and
+  `--edge`, until the first account exists.
+- **Previews from before the next channel.** `mend server upgrade --from-preview` moves a server on
+  a `0.36.0-preview.K` build to a next build of the same version, once, after checking the
+  migrations both databases applied.
+- **Uninstall.** `mend uninstall` stops live sessions and removes their workspaces, volumes and
+  networks before the server, writes what Docker refused to `uninstall-left.json` so a second run
+  finishes, and removes only the `~/.ssh/config` blocks of the servers it removes. `--all` also
+  offers the images Mend pulled and Docker's build cache.
+- **Helm.** The chart runs the npm and Docker mirrors as optional components (`mirrors.npm.enabled`,
+  `mirrors.docker.enabled`).
 - **Docker restarts.** A workspace stops within 60 s when Docker stops, inside systemd's 90 s, so
   restarting or upgrading Docker with a live session no longer leaves Docker down for up to an hour.
   `mend doctor`'s `docker` line names any session that would outlast it.
@@ -49,7 +70,19 @@ native phone app are not.
   your ChatGPT subscription through the Codex login. `mend connect pi` sends your pi setup. See
   [Your pi setup](/guides/pi/).
 - **One model picker.** The server owns each harness's model list (`GET /api/harnesses/models`,
-  `mend models`), and every session records the model and effort it started with.
+  `mend models`), and every session records the model and effort it started with. opencode lists the
+  Codex models as it names them, with none preselected.
+- **Two people in one worktree.** A second person joins a live session's worktree as the owner does.
+  Before, the join waited about 30 minutes and failed with `worktree leased`.
+- **Only the owner types in a terminal.** Attaching to a session someone else owns streams its
+  terminal without sending your keys, shared control or not. `mend shell` and `mend service run` in
+  someone else's session are refused.
+- **Pull requests in the conversation.** A pull request the agent opens is recorded when its turn
+  ends, and automatic landing updates it rather than opening a second. Rows on the web's Now page,
+  the project's worktree tree and the phone end with `#412 · open`.
+- **Claude workflows on the phone.** A workflow started in a conversation session shows its phases
+  and agents on the phone while it runs, and the turn Claude starts to report it is recorded. A
+  session whose workflow still runs is not idle-stopped.
 - **Agent memory** for Claude Code and Codex is kept per person per project and carried into each
   session you start. `mend memory import` brings what your machine has. See
   [Agent memory](/guides/agent-memory/).
@@ -61,9 +94,23 @@ native phone app are not.
 - **Claude Code plugins** your settings and the repository's enable are installed before Claude
   starts, with no prompt. See [Claude Code plugins](/guides/skills/#claude-code-plugins).
 - **Faster.** On the team's box a new session takes about 27 s (was about 90 s) and a Stop 15 to 19
-  s. A Stop on Garage no longer waits 10 minutes for its upload links to expire.
+  s. A Stop on Garage no longer waits 10 minutes for its upload links to expire. Picking a session
+  up on the phone, or taking it back in a terminal, stays in the workspace it runs in. A pnpm
+  install Mend runs gives up on a stalled download after 15 s, and goes through the server's npm
+  mirror when the project sets no registry of its own.
+- **Launch and stop words.** While a workspace gets ready the session line says where it stands
+  (`queued · waiting for a worker`, `building the workspace image · step 3/12`, `booting`). A failed
+  image build ends the session `failed` with its reason. A workspace the host's Docker stopped reads
+  `ended · the host's Docker stopped it`, never `completed`. **Discard unsaved and stop…** works,
+  and is offered once a save has stalled.
+- **Review during a Stop.** Opening a review or marking a checkpoint while a session stops uses the
+  Stop's final save and says so (`from the Stop's final save · capture 12 · 10:16`). A landing then
+  waits for the Stop, up to 45 s.
+- **Approvals kept.** A conversation started with approvals on (`ask`) keeps them on resume, on a
+  follow-up after a stop, and on a Slack reply that relaunches it.
 - **Images.** Workspaces carry `bun` and `unzip` (each project's image rebuilds once, about +80 MB)
-  and pin their harness versions. Claude Code no longer updates itself in a workspace.
+  and pin their harness versions. Claude Code no longer updates itself in a workspace. `PAGER` is
+  `cat`, since the images carry no `less`.
 - **Native Arch on arm64.** On Apple silicon and ARM servers, Arch workspaces build for `aarch64`
   instead of running `x86_64` under emulation. Reinstall native dependencies in existing worktrees
   (`node_modules`, `.venv`, `target/`); the first Arch build on a host downloads the Arch Linux ARM
@@ -73,10 +120,22 @@ native phone app are not.
 ### CLI, dashboard and phone
 
 - `mend run` works in scripts: it prints the command's output and exits with its code. `mend logs`
-  and `mend wait` are new. `mend service run --wait` waits through a slow start.
+  and `mend wait` are new. `mend service run --wait` waits through a slow start. `mend run -- bash`
+  with no script is refused before anything is created; `mend run -- bash -c '…'` runs bash itself.
 - `mend pull` fast-forwards a second pull. `mend worktrees rm` removes a worktree, `--force` one
   whose change was never landed.
-- The dashboard's panes are numbered (`[1]`, `[2]`, `[3]`, `[0]`), and `?` lists every key.
+- `mend resume <id>`, `mend stop <id>` and `mend rejoin <id>` act on the session they are given.
+  `mend projects --json` and `mend service list --json` print JSON. `mend ssh <session>` prints the
+  `ssh` command for that session's workspace.
+- A foreground `mend claude` or `mend codex` stops its session when its terminal closes.
+- `mend login` over SSH, or with no display, prints the link and code and opens no browser
+  (`--open`, `--no-open`). Sign-in no longer fails when the server's clock disagrees with yours;
+  `mend doctor` says when it is more than two minutes off, and on a Mac when it sleeps on its own.
+- The CLI needs Node.js 22.13 or newer. The dashboard still needs Node 26.
+- The dashboard's panes are numbered (`[1]`, `[2]`, `[3]`, `[0]`), and `?` lists every key. A
+  session you start from it attaches once it runs if you are still waiting on it
+  (`MEND_AUTO_ATTACH=off` leaves it to `a`). The snake counts down before it moves and takes the
+  keyboard; Esc hands it back.
 - The phone shows the change's pull request, asks before it stops a session, and picks models from
   the server's list.
 
@@ -88,12 +147,18 @@ native phone app are not.
   [what to rotate](/operate/upgrade-to-0-36/#if-the-server-ran-a-036-prerelease).
 - No saved harness state keeps a login or token another person's session could pick up. The list is
   in [How Mend handles your logins](/concepts/provider-logins/).
+- **Cloud metadata.** Workspaces on Docker cannot reach `169.254.169.254` or `fd00:ec2::254`, so a
+  session on a cloud VM cannot read the instance's credentials. Workspaces already running at the
+  upgrade keep the address until they stop. See
+  [Upgrade to 0.36](/operate/upgrade-to-0-36/#cloud-metadata-is-blocked-from-workspaces) and
+  [Known issues](/reference/known-issues/#cloud-metadata-what-the-block-leaves-open).
 
 ### Per-person workspaces, on by default
 
 Each person who runs anything in a workspace gets their own Linux user and home, and everything they
 run runs as them. `MEND_HARNESS_LAYOUT` is `person` unless set; an operator sets
-`MEND_HARNESS_LAYOUT=shared` to keep new worktrees on one shared home. A worktree that has run per
+`MEND_HARNESS_LAYOUT=shared` to keep new worktrees on one shared home (on the Docker install,
+through a Compose override; `mend server setup` has no flag for it). A worktree that has run per
 person always runs per person, whatever the setting. A loopback server on the capture store (the
 default `mend server setup`) runs per person too. Where a workspace cannot run per person (a nix
 image, no `sudo`, a Kubernetes workspace runtime, a Docker host with no-new-privileges), a new

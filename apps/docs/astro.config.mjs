@@ -54,6 +54,7 @@ export default defineConfig({
             { label: "Terminal dashboard", slug: "clients/terminal" },
             { label: "Desktop app", slug: "clients/desktop" },
             { label: "VS Code extension", slug: "clients/vscode" },
+            { label: "Phone", slug: "clients/phone" },
           ],
         },
         {

@@ -47,6 +47,10 @@ Mend never moves the session's branch. `mend/<name>` in the store, and the workt
 and HEAD, stay where the agent left them. Mend's commit is kept under `refs/mend/landed/<worktree>`,
 never under `refs/heads`.
 
+A landing asked while the session is stopping waits for the Stop to finish, up to 45 seconds, then
+lands what the Stop saved. A Stop that takes longer lands nothing, and the landing says
+`the session is stopping · nothing landed · land after it settles`.
+
 When nothing is new since the last landing, Mend pushes nothing, records nothing, and says
 `landing not started · nothing new since the last landing`. A landing whose pull request step
 failed, or one given a new title or description, still goes ahead.
@@ -192,8 +196,8 @@ under way is one they sent. In a terminal session it lands only while shared con
 
 ## What Mend reports
 
-Landing facts are observations, with where Mend saw them. The web, the CLI, the desktop app, and
-Slack use the same lines:
+Landing facts are observations, with where Mend saw them. The web, the CLI, and Slack use the same
+lines:
 
 ```text
 pushed · mend/fix-login · 3f2a1c0 · observed
@@ -223,9 +227,9 @@ change. The first landing opens the pull request and later ones update it.
 
 ### When it is on
 
-- A session started from the web, the CLI, or the desktop app follows its project's
-  `Land when a turn completes` setting, which is `inherit`, `on`, or `off`. `inherit` follows the
-  default in Settings, which is off unless an operator or organization owner turned it on.
+- A session started from the web or the CLI follows its project's `Land when a turn completes`
+  setting, which is `inherit`, `on`, or `off`. `inherit` follows the default in Settings, which is
+  off unless an operator or organization owner turned it on.
 - A session can override the project when it starts. The web composer's menu has
   `Land when a turn completes` with `As the project`, `Land`, and `Do not land`. The CLI has
   `--land` and `--no-land`:
@@ -396,6 +400,7 @@ landing, without origin, and for projects nobody can push to.
 
 ## Where landing is not available
 
-The mobile app and the VS Code extension show no landing facts and cannot land. A project whose
-origin is not on GitHub gets the push and no pull request. GitLab and other hosts are not supported
-for the pull request step.
+The mobile app shows the change's pull request (see
+[Where the pull request shows](#where-the-pull-request-shows)) and cannot land. The VS Code
+extension shows no landing facts and cannot land. A project whose origin is not on GitHub gets the
+push and no pull request. GitLab and other hosts are not supported for the pull request step.

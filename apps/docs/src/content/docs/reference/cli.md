@@ -11,17 +11,18 @@ version. One-shot commands require Node 22.13 or newer. The terminal dashboard r
 
 ## Setup commands
 
-| Command                                                                           | Purpose                                                                                                                                                                                                                                                                                                                                                                           |
-| --------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `mend login [--url <server>] [--open \| --no-open]`                               | Sign in through the browser. The CLI opens `<server>/authorize`, waits for you to press Authorize, and saves a revocable device token with mode `0600`. Over SSH, or on Linux with no display, it prints the link and code instead of opening a browser                                                                                                                           |
-| `mend logout`                                                                     | Revoke this terminal's device token on the server and remove it from this machine                                                                                                                                                                                                                                                                                                 |
-| `mend uninstall [--all \| --server \| --home] [--yes]`                            | Remove the local server (live sessions' workspaces, containers, volumes, networks, image, private configuration), this machine's Mend files (sign-in, workspace SSH key, and the `~/.ssh/config` blocks of the servers it removes or signs out of), or both, with Mend's images; asks for the scope and prints the plan first, and needs the word `delete` before the server goes |
-| `mend connect <claude\|codex\|github> [--use-my-login] [--from-stdin] [--remove]` | Connect or remove a provider for the signed-in user; the credential is stored under your own user and shared with no one                                                                                                                                                                                                                                                          |
-| `mend accounts`                                                                   | List the signed-in user's connected provider accounts                                                                                                                                                                                                                                                                                                                             |
-| `mend doctor`                                                                     | Run a read-only setup checklist and print a repair command for unfinished items                                                                                                                                                                                                                                                                                                   |
-| `mend doctor --bundle [--out <path>] [--tail <n>]`                                | Write one redacted diagnostic archive for a bug report; default path `~/.config/mend/bundles/mend-bundle-<time>.tgz`, `--tail` 1 to 2000 lines per log, default 500                                                                                                                                                                                                               |
-| `mend pair [--url <base-url>]`                                                    | Create a single-use, ten-minute pairing code for another device; `--url` selects one of the server's configured origins                                                                                                                                                                                                                                                           |
-| `mend version`                                                                    | Print this CLI's version and the server's, when it answers within two seconds                                                                                                                                                                                                                                                                                                     |
+| Command                                                                           | Purpose                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| --------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `mend login [--url <server>] [--open \| --no-open]`                               | Sign in through the browser. The CLI opens `<server>/authorize`, waits for you to press Authorize, and saves a revocable device token with mode `0600`. Over SSH, or on Linux with no display, it prints the link and code instead of opening a browser; `--open` and `--no-open` decide outright. The CLI counts down from the time the server says is left, so a server clock that disagrees with this machine's does not expire the request                                                                                                                                            |
+| `mend logout`                                                                     | Revoke this terminal's device token on the server and remove it from this machine                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `mend uninstall [--all \| --server \| --home] [--yes]`                            | Remove the local server (live sessions' workspaces, containers, volumes, networks, image, private configuration), this machine's Mend files (sign-in, workspace SSH key, and the `~/.ssh/config` blocks of the servers it removes or signs out of), or both, with Mend's images; asks for the scope and prints the plan first, and needs the word `delete` before the server goes                                                                                                                                                                                                         |
+| `mend connect <claude\|codex\|github> [--use-my-login] [--from-stdin] [--remove]` | Connect or remove a provider for the signed-in user; the credential is stored under your own user and shared with no one                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `mend connect pi [--dir <path>] [--dry-run] [--remove]`                           | Save pi's agent directory on this machine (`~/.pi/agent`, or `$PI_CODING_AGENT_DIR`) as your pi profile, which every pi session you start receives; `--dry-run` says what would be sent and sends nothing, `--remove` deletes the profile                                                                                                                                                                                                                                                                                                                                                 |
+| `mend accounts`                                                                   | List the signed-in user's connected provider accounts                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `mend doctor`                                                                     | Run a read-only setup checklist and print a repair command for unfinished items: the server, the sign-in, the platform connection, the provider accounts (Claude, Codex, GitHub) and Mend's own Claude login, the adopted projects, the `claude`, `codex` and `gh` CLIs on this machine, the exposure, whether the server's host allows rootless Docker, a server clock more than two minutes off this machine's, and, where it applies, a Mac that sleeps on its own or when its lid closes, and what a stop of the Docker daemon waits for against what systemd allows `docker.service` |
+| `mend doctor --bundle [--out <path>] [--tail <n>]`                                | Write one redacted diagnostic archive for a bug report; default path `~/.config/mend/bundles/mend-bundle-<time>.tgz`, `--tail` 1 to 2000 lines per log, default 500                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `mend pair [--url <base-url>]`                                                    | Create a single-use, ten-minute pairing code for another device; `--url` selects one of the server's configured origins                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `mend version`                                                                    | Print this CLI's version and the server's, when it answers within two seconds; `mend --version` and `mend -v` do the same                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 
 `mend connect claude` and `mend connect codex` log in afresh through the provider's own flow (a
 browser login for Claude, a device code for Codex) into a throwaway directory, send that login and
@@ -31,6 +32,30 @@ this machine already uses instead, and both sides then share it. `mend connect g
 its token. Run `mend connect claude` or `mend connect codex` again when Mend says a login needs
 reconnecting. Read [Connect provider accounts](/guides/provider-accounts/) for credential sources
 and removal.
+
+In a per-person workspace each person's processes use their own GitHub login, in their own home: git
+over HTTPS to GitHub reads it through Mend's credential helper, and no `GITHUB_TOKEN` is set in the
+environment. A command that needs the token takes it for itself:
+`GITHUB_TOKEN=$(/run/mend/bin/mend-git-credential token) <command>`.
+
+`mend connect pi` sends extensions, themes, prompt templates, settings, `mcp.json` and keybindings,
+following links, so a setup Home Manager links in is read as the files it points at. Your pi login
+stays on this machine: pi runs on the ChatGPT login `mend connect codex` makes. Run it again after
+you change your setup; running sessions keep the profile they started with. Read
+[Your pi setup](/guides/pi/).
+
+`mend uninstall` asks for a scope when none is given, prints exactly what will go, and needs the
+word `delete` before the server is touched (`--yes` skips the question; with no terminal it is
+required); any other answer removes nothing and exits 1. With Docker stopped, `--server` and `--all`
+refuse and change nothing. The server scope stops and removes its sessions' workspaces first, live
+ones included, then the server's containers, volumes, networks, image and private configuration; the
+`mend-store` volume and `identity.env` go last. What Docker would not remove keeps them and is
+written to `uninstall-left.json`, so running `mend uninstall` again finishes the job and
+`mend server setup` can reinstall over it. Only the `~/.ssh/config` blocks of the servers it removes
+go; other servers' blocks stay, and the plan names each. `--all` also offers the images Mend pulled
+and built, with their size, and removes the user-namespace sysctl file setup wrote, putting back the
+setting it replaced (a file written by hand stays). Docker's build cache gets its own question and
+stays under `--yes`. The CLI itself stays: `npm uninstall -g @sealant/mend` removes it.
 
 `mend doctor --bundle` collects the CLI and its environment, the doctor lines, the server's health,
 the local server's compose file and the names of its `.env` keys (never their values), Docker facts,
@@ -50,7 +75,7 @@ context.
 | ----------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `mend server setup`                                                                                                     | On a terminal: ask how the server is reached, Remote-SSH, the T3 Code gateway, the mirrors and the tenancy, show what is saved on a rerun, then what changes and the same command with flags, and apply on a yes                                                                                                                                                                                                                                                                                          |
 | `mend server setup [options]`                                                                                           | Install or change the local server with flags, for scripts: check the Docker context and Compose plugin, download one release's assets, claim the persistent volumes, pull and verify the pinned images, start the Mend, Postgres and Garage containers, then verify health                                                                                                                                                                                                                               |
-| `mend server status`                                                                                                    | Show the saved pin, active generation, container state, the edge and the posture declared beside what the server observes, without changing anything; a running Mend must answer health with the exact pinned version                                                                                                                                                                                                                                                                                     |
+| `mend server status`                                                                                                    | Show the saved pin, active generation, container state, each mirror's container, cache and traffic as observed, the edge and the posture declared beside what the server observes, without changing anything; a running Mend must answer health with the exact pinned version                                                                                                                                                                                                                             |
 | `mend server start [--offline]`                                                                                         | Start the selected generation from preloaded images; never downloads assets or pulls release images                                                                                                                                                                                                                                                                                                                                                                                                       |
 | `mend server stop`                                                                                                      | Stop Mend, Postgres and Garage without deleting volumes; workspace containers remain                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | `mend server restart [--offline]`                                                                                       | Restart Mend on the same generation and pin; Postgres and Garage keep running                                                                                                                                                                                                                                                                                                                                                                                                                             |
@@ -75,37 +100,52 @@ On a terminal it offers the next free port; with flags it refuses and names `--p
 `--ssh-port`. After starting, it waits for health from this install (its version and the instance id
 the server reports), so another Mend answering on the same port is never taken for it. When this
 machine's CLI points at another server, or at nothing, setup offers to point it at the one it
-installed.
+installed. When setup changes Mend's URL, a CLI signed in at the old one stays pointed there; setup
+prints the command each one runs, `mend login --url <new>`, which is a new browser authorization.
+
+Two mirrors run beside Mend unless turned off: an npm mirror and a pull-through cache of Docker Hub.
+Neither publishes a host port. Sessions install npm packages and pull Docker Hub images through
+them, a project's own npm settings win, and a mirror that is down sends sessions upstream. An
+upgrade adds them to an install from before them. Read [npm mirror](/operate/npm-mirror/) and
+[Docker mirror](/operate/docker-mirror/).
 
 Setup options:
 
-| Option                       | Meaning                                                                                                                                                                                                                                |
-| ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--yes`                      | No questions: a fresh install takes the defaults (this machine only, `http://localhost:3105`), an existing one keeps what is saved                                                                                                     |
-| `--context <name>`           | Local Unix-socket Docker context to persist; the global context is unchanged. Answers the engine question. Default: `DOCKER_CONTEXT` on a fresh install, else the saved one                                                            |
-| `--version <v>`              | Exact Mend server version, or `latest`; a fresh setup pins the CLI's own version, and a rerun keeps the existing pin                                                                                                                   |
-| `--bind <ip>`                | Published listen address for web and SSH; default `127.0.0.1`                                                                                                                                                                          |
-| `--ssh-bind <ip>`            | Published address for workspace SSH alone, when not `--bind`; with `--edge`, Remote-SSH from another machine needs it. Kept across reruns; the `--bind` address takes it away                                                          |
-| `--url <origin>`             | Advertised browser URL; required with a non-loopback bind                                                                                                                                                                              |
-| `--origin <origin>`          | Additional exact browser origin; repeat for more than one. The list given replaces the saved one; `none` clears it                                                                                                                     |
-| `--port <n>`                 | External web port; default `3105`; must differ from the SSH port. A saved `--url` on the old port moves to the new one                                                                                                                 |
-| `--ssh-port <n>`             | External workspace SSH port; default `2222`                                                                                                                                                                                            |
-| `--edge <host>`              | Run the Caddy TLS edge for this DNS name on ports 80 and 443; the origin becomes `https://<host>` and `--bind` stays on loopback                                                                                                       |
-| `--no-edge`                  | Take a saved edge away; the origin returns to `http://localhost`                                                                                                                                                                       |
-| `--exposure <v>`             | Declare `loopback`, `private` or `public`; kept across reruns and upgrades. `public` needs `--edge` and an existing first account                                                                                                      |
-| `--tenancy <v>`              | Declare `single` or `multi`; kept across reruns and upgrades. `multi`, like `public`, also sets the multi mode gate's variables                                                                                                        |
-| `--declare <item>`           | State a gate item you verified from outside: `core-private`, `edge-tls`, `workspace-ssh` or `t3code-gateway`; adds to the saved ones; repeat for more, `none` clears. `public` with `--ssh-bind` beyond loopback needs `workspace-ssh` |
-| `--undeclare <item>`         | Take one statement back; the others stay. Repeat for more                                                                                                                                                                              |
-| `--t3-gateway`               | Turn on the t3code gateway: its own listener, published where Mend's web port is (loopback, or the tailnet or LAN address); kept across reruns and upgrades. Refused on a Mend image without it, or a port already in use              |
-| `--t3-gateway-port <n>`      | Its port; default `3120`; implies `--t3-gateway`                                                                                                                                                                                       |
-| `--no-t3-gateway`            | Turn it off; its state stays in the `mend_mend-t3-gateway` volume                                                                                                                                                                      |
-| `--t3-gateway-origin <host>` | With `--edge`: the edge serves the gateway over HTTPS on this host of its own, whose DNS points where the edge's does; implies `--t3-gateway`                                                                                          |
-| `--no-t3-gateway-origin`     | The edge stops serving the gateway; it stays on, on `127.0.0.1`                                                                                                                                                                        |
-| `--assets-dir <dir>`         | Copy `compose.v2.yaml` and `postgres-init.sh` from a local release directory; a fresh setup then requires `--version`                                                                                                                  |
-| `--offline`                  | Use retained or supplied assets and preloaded images only; no GitHub requests or release-image pulls                                                                                                                                   |
-| `--docker-socket <path>`     | Daemon-side socket mount override for diagnostics; retained on reruns                                                                                                                                                                  |
-| `--allow-userns`             | On a Docker host whose kernel refuses unprivileged user namespaces, allow them without asking: writes `/etc/sysctl.d/60-mend-rootless-docker.conf` on the host and applies it                                                          |
-| `--no-allow-userns`          | Leave the host's kernel as it is without asking; setup prints the command instead                                                                                                                                                      |
+| Option                                  | Meaning                                                                                                                                                                                                                                |
+| --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--yes`                                 | No questions: a fresh install takes the defaults (this machine only, `http://localhost:3105`), an existing one keeps what is saved                                                                                                     |
+| `--context <name>`                      | Local Unix-socket Docker context to persist; the global context is unchanged. Answers the engine question. Default: `DOCKER_CONTEXT` on a fresh install, else the saved one                                                            |
+| `--version <v>`                         | Exact Mend server version, or `latest`; a fresh setup pins the CLI's own version, and a rerun keeps the existing pin                                                                                                                   |
+| `--bind <ip>`                           | Published listen address for web and SSH; default `127.0.0.1`                                                                                                                                                                          |
+| `--ssh-bind <ip>`                       | Published address for workspace SSH alone, when not `--bind`; with `--edge`, Remote-SSH from another machine needs it. Kept across reruns; the `--bind` address takes it away                                                          |
+| `--url <origin>`                        | Advertised browser URL; required with a non-loopback bind                                                                                                                                                                              |
+| `--origin <origin>`                     | Additional exact browser origin; repeat for more than one. The list given replaces the saved one; `none` clears it                                                                                                                     |
+| `--port <n>`                            | External web port; default `3105`; must differ from the SSH port. A saved `--url` on the old port moves to the new one                                                                                                                 |
+| `--ssh-port <n>`                        | External workspace SSH port; default `2222`                                                                                                                                                                                            |
+| `--edge <host>`                         | Run the Caddy TLS edge for this DNS name on ports 80 and 443; the origin becomes `https://<host>`, `--bind` stays on loopback, and the first account must already exist                                                                |
+| `--no-edge`                             | Take a saved edge away; the origin returns to `http://localhost`                                                                                                                                                                       |
+| `--exposure <v>`                        | Declare `loopback`, `private` or `public`; kept across reruns and upgrades. `public` needs `--edge` and an existing first account                                                                                                      |
+| `--tenancy <v>`                         | Declare `single` or `multi`; kept across reruns and upgrades. `multi`, like `public`, also sets the multi mode gate's variables                                                                                                        |
+| `--declare <item>`                      | State a gate item you verified from outside: `core-private`, `edge-tls`, `workspace-ssh` or `t3code-gateway`; adds to the saved ones; repeat for more, `none` clears. `public` with `--ssh-bind` beyond loopback needs `workspace-ssh` |
+| `--undeclare <item>`                    | Take one statement back; the others stay. Repeat for more                                                                                                                                                                              |
+| `--t3-gateway`                          | Turn on the t3code gateway: its own listener, published where Mend's web port is (loopback, or the tailnet or LAN address); kept across reruns and upgrades. Refused on a Mend image without it, or a port already in use              |
+| `--t3-gateway-port <n>`                 | Its port; default `3120`; implies `--t3-gateway`                                                                                                                                                                                       |
+| `--no-t3-gateway`                       | Turn it off; its state stays in the `mend_mend-t3-gateway` volume                                                                                                                                                                      |
+| `--t3-gateway-origin <host>`            | With `--edge`: the edge serves the gateway over HTTPS on this host of its own, whose DNS points where the edge's does; implies `--t3-gateway`                                                                                          |
+| `--no-t3-gateway-origin`                | The edge stops serving the gateway; it stays on, on `127.0.0.1`                                                                                                                                                                        |
+| `--npm-mirror`, `--no-npm-mirror`       | Run or stop the npm mirror; kept across reruns and upgrades. Default: on                                                                                                                                                               |
+| `--npm-mirror-max-size <size>`          | The npm mirror's disk cap, such as `20g` or `1536m`, at least `1g`. Default: `10g`                                                                                                                                                     |
+| `--docker-mirror`, `--no-docker-mirror` | Run or stop the Docker Hub mirror; kept across reruns and upgrades. Default: on                                                                                                                                                        |
+| `--docker-mirror-max-size <size>`       | The Docker mirror's cap, such as `40g`; over it the cache is cleared and fills again. Default: `20g`                                                                                                                                   |
+| `--docker-hub-username <name>`          | The Docker mirror pulls as this Docker Hub account; needs `--docker-hub-token-stdin`                                                                                                                                                   |
+| `--docker-hub-token-stdin`              | Read that account's access token from standard input; kept in `server.env`, never in argv or a session                                                                                                                                 |
+| `--docker-hub-public-only`              | Required with a login: you state the token is scoped Public Repo Read-only, since every session can pull what it can read                                                                                                              |
+| `--no-docker-hub-login`                 | The Docker mirror pulls anonymously again                                                                                                                                                                                              |
+| `--assets-dir <dir>`                    | Copy `compose.v2.yaml` and `postgres-init.sh` from a local release directory; a fresh setup then requires `--version`                                                                                                                  |
+| `--offline`                             | Use retained or supplied assets and preloaded images only; no GitHub requests or release-image pulls                                                                                                                                   |
+| `--docker-socket <path>`                | Daemon-side socket mount override for diagnostics; retained on reruns                                                                                                                                                                  |
+| `--allow-userns`                        | On a Docker host whose kernel refuses unprivileged user namespaces, allow them without asking: writes `/etc/sysctl.d/60-mend-rootless-docker.conf` on the host and applies it                                                          |
+| `--no-allow-userns`                     | Leave the host's kernel as it is without asking; setup prints the command instead                                                                                                                                                      |
 
 Setup holds an exclusive lock through startup and health checks, keeps private configuration in
 immutable generations, and never deletes Docker volumes. A changed `--version` on a rerun is
@@ -162,6 +202,7 @@ who can read the project can read it, so a password a command printed reaches th
 mend codex ["prompt"] [options]
 mend claude ["prompt"] [options]
 mend opencode ["prompt"] [options]
+mend pi ["prompt"] [options]
 mend run [--detach] [--json] [options] -- <command...>
 ```
 
@@ -199,8 +240,9 @@ the session running, and stops are explicit. The `Sessions` switch in Settings (
 project, `inherit · on · off`) turns this off for interactive launches, giving them foreground
 semantics: the session stops when the launching `mend` exits. `--detach` and `--foreground` override
 both for one launch. Foreground stops are best-effort on signals: a `SIGKILL` or power loss cannot
-stop anything; `mend sessions` shows what still runs and `mend stop` ends it. The switch applies to
-interactive CLI launches (`mend codex|claude|opencode`); `mend run` prints the command's recorded
+stop anything; `mend sessions` shows what still runs and `mend stop` ends it. A terminal that closes
+(its window, `tmux kill-session`) stops a foreground session as `SIGHUP` does. The switch applies to
+interactive CLI launches (`mend codex|claude|opencode|pi`); `mend run` prints the command's recorded
 output without attaching, and browser or phone clients never stop a session by disconnecting.
 
 Inside a session workspace, the staged helper accepts `mend stop` too, so a workspace shell (or the
@@ -213,8 +255,10 @@ after turns it runs itself, so an agent attached to a terminal lands on its own 
 session is picked up on the phone. From the terminal, land it with `mend land`.
 
 Codex uses model, effort, permission, and speed options. Claude uses model, effort, and permission
-options. OpenCode uses model and permission options; its models are named `provider/model`, and
-without one it opens on `openai/gpt-6.1-sol` through your ChatGPT login.
+options. opencode uses model and permission options; its models are named `provider/model`, and
+without one it opens on `openai/gpt-6.1-sol` through your ChatGPT login. pi uses model and effort
+options (effort up to `max`, as its `--thinking`) and runs on the ChatGPT login `mend connect codex`
+makes; `mend connect pi` sends it your setup. See [Your pi setup](/guides/pi/).
 
 ### Run a command
 
@@ -263,8 +307,8 @@ mend wait "$id" --timeout 900   # exits with the test run's exit code, or 124
 
 | Command                                                                | Purpose                                                                                          |
 | ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
-| `mend logs [session] [--follow] [--from <seq>] [--process <id>]`       | Print a session's recorded terminal output on stdout; settled sessions count                     |
-| `mend logs [session] --service <name-or-id> [--follow]`                | Print a Service's current attempt's recorded output                                              |
+| `mend logs [session] [--follow\|-f] [--from <seq>] [--process <id>]`   | Print a session's recorded terminal output on stdout; settled sessions count                     |
+| `mend logs [session] --service <name-or-id> [--follow] [--from <seq>]` | Print a Service's current attempt's recorded output                                              |
 | `mend wait [session] [--timeout <duration>] [--process <id>] [--json]` | Return once the session's command ended, with its exit code; `124` when the timeout passes first |
 
 `mend logs` reads the session's command (or agent) by default, and another of its processes, a shell
@@ -329,7 +373,12 @@ list does not know is passed through as given; the harness decides whether it ex
 
 With no session ID, `attach`, `stop` and `shell` take the one live session; with several, a picker
 opens. A prefix of the ID is enough. Other commands narrow candidates by the current project and
-then use a picker when needed.
+then use a picker when needed. An ID you give is the session acted on, by `stop`, `resume`, `rejoin`
+and `mend service logs` alike.
+
+A `mend run` session has no agent to resume: `mend resume` on its own harness is refused with
+`This run session has no agent to resume. Resume it as a shell, or start another session in its worktree.`
+In a session someone else owns, `mend shell` is refused: a shell is the owner's alone.
 
 Services keep running after `mend stop`, and a running Service keeps the workspace up. The stop then
 says so, for example `agent stopped · 3 services keep the workspace up`. `mend stop --services`
@@ -407,8 +456,10 @@ the server. One of the clone's remotes must be the project's origin (ssh and htt
 `--force` skips the check), and the clone needs the session's base commit. The working tree, the
 index and the current branch are not touched, and an existing local branch only fast-forwards. The
 clone records each pull under `refs/mend/pulled/<branch>`, and the next pull asks the server to
-build on it, so pulling again after more work fast-forwards. `--branch <name>` fetches into another
-local branch, for when the existing one has moved. A bundle over the server's
+build on it, so pulling again after more work fast-forwards. With nothing new, the branch stays and
+the CLI says `unchanged since the last pull · nothing moved`. A branch that cannot fast-forward (you
+committed on it, or the server no longer holds the last pull) is left as it is, and the CLI says
+why; `--branch <name>` fetches into a new local branch instead. A bundle over the server's
 `MEND_BUDGET_BUNDLE_BYTES` limit is refused with its size.
 
 ## Dashboard keys
@@ -416,30 +467,41 @@ local branch, for when the existing one has moved. A bundle over the server's
 The session pane takes three quarters of the screen: a read-only detail of the selected session with
 the conversation record it has written so far. The remaining quarter is a sidebar of three stacked
 sections, projects, then worktrees, then sessions. The section you are in stands open, and the other
-two fold to the line that says what is selected. Moving the selection only navigates; nothing takes
-the terminal until you press a verb. The footer names the keys that apply where you are.
+two fold to the line that says what is selected. Every pane carries its number in its title, as
+lazygit numbers its panels: `[1] projects`, `[2] worktrees`, `[3] sessions` and `[0]` for the
+session pane. Moving the selection only navigates; nothing takes the terminal until you press a
+verb. The footer names the keys that apply where you are and always ends with `? keys`.
 
-| Key                                     | Action                                                                                                                                                                              |
-| --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `↑` `↓`, `j` `k`, `PgUp` `PgDn`         | Move inside the open section, or scroll the session pane                                                                                                                            |
-| `Enter`, `→`, `l`, `Tab`                | Move right: projects, worktrees, sessions, then the session pane                                                                                                                    |
-| `←`, `h`, `-`, `Backspace`, `Shift+Tab` | Move left                                                                                                                                                                           |
-| `a`                                     | Attach a live session                                                                                                                                                               |
-| `r`                                     | Resume a settled session                                                                                                                                                            |
-| `n`                                     | Start another session in the selected worktree; on the projects section, start a new worktree                                                                                       |
-| `w`                                     | Start a new worktree                                                                                                                                                                |
-| `e`                                     | Rename the session                                                                                                                                                                  |
-| `v`                                     | Review the change                                                                                                                                                                   |
-| `o`                                     | Open the session in the browser                                                                                                                                                     |
-| `Shift+K` or `x`                        | Stop the session (press twice). On the worktrees section, stop every live session in it. On a session whose agent stopped while Services keep the workspace up, stop those Services |
-| `Shift+D`                               | Remove (press twice). On the worktrees section, remove the worktree, refused while a session is live; elsewhere, remove the session's record and keep the worktree                  |
-| `Shift+R`                               | Refresh                                                                                                                                                                             |
-| `q`                                     | Quit                                                                                                                                                                                |
+| Key                             | Action                                                                                                                                                                              |
+| ------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `↑` `↓`, `k` `j`, `PgUp` `PgDn` | Move inside the open section, or scroll the session pane                                                                                                                            |
+| `1` `2` `3` `0`                 | Jump to projects, worktrees, sessions, or the session pane                                                                                                                          |
+| `Tab`, `Shift+Tab`              | Next or previous pane, coming back round at either end                                                                                                                              |
+| `Enter`, `→`, `l`               | Move right: projects, worktrees, sessions, then the session pane                                                                                                                    |
+| `←`, `h`, `-`, `Backspace`      | Move left                                                                                                                                                                           |
+| `Esc`                           | Clear this list's filter, else go back to the pane you came from                                                                                                                    |
+| `/`                             | Filter the focused list; Enter keeps the filter, Esc clears it                                                                                                                      |
+| `?`                             | List every key the dashboard answers to                                                                                                                                             |
+| `+` `_`                         | Cycle the screen mode: normal, half, full                                                                                                                                           |
+| `a`                             | Attach a live session                                                                                                                                                               |
+| `r`                             | Resume a settled session, on a harness you pick                                                                                                                                     |
+| `n`                             | Start another session in the selected worktree; on the projects section, start a new worktree                                                                                       |
+| `w`                             | Start a new worktree                                                                                                                                                                |
+| `e`                             | Rename the session                                                                                                                                                                  |
+| `v`                             | Review the change                                                                                                                                                                   |
+| `o`                             | Open the session in the browser                                                                                                                                                     |
+| `Shift+K` or `x`                | Stop the session (press twice). On the worktrees section, stop every live session in it. On a session whose agent stopped while Services keep the workspace up, stop those Services |
+| `Shift+D`                       | Remove (press twice). On the worktrees section, remove the worktree, refused while a session is live; elsewhere, remove the session's record and keep the worktree                  |
+| `Shift+R`                       | Refresh                                                                                                                                                                             |
+| `q`                             | Quit                                                                                                                                                                                |
 
-A terminal too narrow for both sides gives the whole width to the side you are on, and one too short
-for three sections shows the open section alone. On a server that is not this machine, the selected
-session's live Services declared `--http` or `--https` are tunneled to this machine's loopback while
-it stays selected, unless you started the dashboard with `--no-tunnel`. See
+A session you start or resume from the dashboard attaches by itself once it runs, while you are
+still waiting on it; moving to another session, column or project, or a dialog open at that moment,
+leaves it to `a`. `MEND_AUTO_ATTACH=off` leaves every attach to `a`. A terminal too narrow for both
+sides gives the whole width to the side you are on, and one too short for three sections shows the
+open section alone. On a server that is not this machine, the selected session's live Services
+declared `--http` or `--https` are tunneled to this machine's loopback while it stays selected,
+unless you started the dashboard with `--no-tunnel`. See
 [Terminal dashboard and attach](/clients/terminal/).
 
 ## Terminal attachment
@@ -493,6 +555,21 @@ See [Secret files](/guides/secret-files/).
 Your library applies to every session you start; a project's library applies to sessions in that
 project. See [Skills](/guides/skills/).
 
+## Memory commands
+
+| Command                                          | Purpose                                                                                                                                            |
+| ------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `mend memory [list] [--project <p>]`             | List your agent memory for the project                                                                                                             |
+| `mend memory show <file> [--project <p>]`        | Print one file as Mend stores it; a name alone is Claude's, another harness's takes its prefix, as in `codex:MEMORY.md`                            |
+| `mend memory rm <file> [--project <p>]`          | Remove one file; the last version stays on the server, and running sessions keep their copy                                                        |
+| `mend memory import [--project <p>] [--dry-run]` | Run inside the repository's checkout: bring the memory Claude Code keeps on this machine for it, and Codex's summaries of conversations held in it |
+
+Mend keeps Claude Code's and Codex's memory per person per project: every session you start on the
+project receives yours, and what the agent learned is saved back when it ends. Other people's
+sessions never see it. An import merges a file both sides have, keeping both sides' lines, reads no
+transcripts, logins or settings, and keeps every version it replaces; `--dry-run` shows the plan and
+writes nothing. See [Agent memory](/guides/agent-memory/).
+
 ## Git commands
 
 | Command                             | Purpose                                                                      |
@@ -519,13 +596,13 @@ email you registered with. Sessions launched after a change commit as the new au
 
 ## Workspace SSH commands
 
-| Command                                             | Purpose                                                                                                                                                                              |
-| --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `mend ssh [status]`                                 | Report the gateway, this client's registered key, and the managed `~/.ssh/config` block; it does not test a connection or verify the host key                                        |
-| `mend ssh <session> [--host <hostname>]`            | Print the exact `ssh ws-<workspace>@mend-ws-…` command for one session's running workspace; the workspace id is not the container's name                                             |
-| `mend ssh setup [--key <path>] [--host <hostname>]` | Register this client's public key and write a server-specific Host block before wildcard defaults; the hostname defaults to the configured Mend URL and the server supplies the port |
-| `mend ssh keys [--json]`                            | List the keys your account registered from every machine: fingerprint, name, algorithm, the day it was registered, and which one this machine offers                                 |
-| `mend ssh keys remove <fingerprint>`                | Remove one of your keys; the gateway refuses it from the next connection, and the removal says whether connections already open with it end                                          |
+| Command                                             | Purpose                                                                                                                                                                                                                                          |
+| --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `mend ssh [status]`                                 | Report the gateway, this client's registered key, and the managed `~/.ssh/config` block; it does not test a connection or verify the host key                                                                                                    |
+| `mend ssh <session> [--host <hostname>]`            | Print the exact `ssh ws-<workspace>@mend-ws-…` command for one session's running workspace; the workspace id is not the container's name                                                                                                         |
+| `mend ssh setup [--key <path>] [--host <hostname>]` | Register this client's public key and write a server-specific Host block before wildcard defaults; the hostname defaults to the configured Mend URL and the server supplies the port                                                             |
+| `mend ssh keys [--json]`                            | List the keys your account registered from every machine: fingerprint, name, algorithm, the day it was registered, and which one this machine offers                                                                                             |
+| `mend ssh keys remove <fingerprint>`                | Remove one of your keys; the gateway refuses it from the next connection, and the removal says whether connections already open with it end. Where the platform cannot end them, it lists each running session with the `mend stop` that ends it |
 
 You see and remove only your own keys. `mend uninstall --home` removes the key this machine
 registered before it revokes the terminal's device token. The VS Code extension uses the same
@@ -591,7 +668,7 @@ status=$?
 [ "$status" -ne 0 ] && { mend logs --service web; exit "$status"; }
 ```
 
-On a server that is not this machine, `mend attach`, `mend codex|claude|opencode`, `mend rejoin`,
+On a server that is not this machine, `mend attach`, `mend codex|claude|opencode|pi`, `mend rejoin`,
 and the dashboard tunnel the session's live Services declared `--http` or `--https` to this
 machine's loopback while attached, on the Service's own port when it is free. One line each says
 where it opens (`web → http://localhost:5173`); a Service that stops closes its tunnel, and
@@ -696,12 +773,14 @@ shell configuration. Fish completion is not currently generated.
 
 The CLI reads:
 
-| Input                            | Default                                     |
-| -------------------------------- | ------------------------------------------- |
-| `MEND_URL`                       | `http://localhost:3105`                     |
-| `MEND_TOKEN`                     | Saved token from the configuration file     |
-| `MEND_DETACH_KEY`                | `Ctrl+]`                                    |
-| `$XDG_CONFIG_HOME/mend/cli.json` | `~/.config/mend/cli.json` when XDG is unset |
+| Input                            | Default                                                                               |
+| -------------------------------- | ------------------------------------------------------------------------------------- |
+| `MEND_URL`                       | `http://localhost:3105`                                                               |
+| `MEND_TOKEN`                     | Saved token from the configuration file                                               |
+| `MEND_DETACH_KEY`                | `Ctrl+]`; `none` turns the detach key off                                             |
+| `MEND_AUTO_ATTACH`               | On; `off` keeps the dashboard from attaching a session you started there once it runs |
+| `MEND_DEBUG`                     | Off; `1` prints each refused call, its status and its tag on stderr                   |
+| `$XDG_CONFIG_HOME/mend/cli.json` | `~/.config/mend/cli.json` when XDG is unset                                           |
 
 The configuration file contains:
 

@@ -53,6 +53,11 @@ mend server upgrade --version "$(npm view @sealant/mend@next version)"
 The upgrade backs up the databases, stops Mend's writers and starts the new version, as it does for
 a release.
 
+A server on a preview numbered before the next channel (`0.36.0-preview.K`) sorts above every next
+build of its version, so a plain upgrade refuses it as a downgrade. Add `--from-preview` once: it
+moves the server to a next build of the same version, after checking that the target carries every
+migration the server applied.
+
 ## Move to the release
 
 When the release ships:

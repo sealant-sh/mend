@@ -13,7 +13,7 @@ from the server's one address. Docker Hub limits anonymous pulls per address, an
 each pull a few images can reach that limit (`toomanyrequests: unauthenticated pull rate limit`).
 The Docker mirror keeps each layer it fetched and serves it again from the server's disk.
 
-The mirror is the reference registry (`registry:3`) in proxy mode. The daemon checks every layer
+The mirror is the reference registry (`registry:3.1`) in proxy mode. The daemon checks every layer
 against its digest, as it does from Docker Hub. Docker uses a mirror only for Docker Hub images;
 `ghcr.io`, `quay.io` and other registries are reached directly.
 

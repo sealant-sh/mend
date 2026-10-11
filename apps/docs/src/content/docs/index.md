@@ -10,18 +10,19 @@ description:
 Mend is a self-hosted workbench for developers who run coding agents heavily, across projects and
 devices. It co-locates the agents, their git worktrees, and the project context they run with on one
 machine you control, and keeps working there feeling like local development from whichever device
-you pick up: the terminal on your laptop, a browser, the desktop app, your phone.
+you pick up: the terminal on your laptop, a browser, VS Code, your phone.
 
 Mend adopts repositories into one central store, gives work a durable named worktree (several agent
 conversations can share one), and runs your existing agent inside a managed workspace over that
-worktree. Every workspace boots `sealantd`, the Sealant supervisor that runs as PID 1 in the
+worktree. By default each person who works in a workspace runs as their own Linux user, on their own
+logins. Every workspace boots `sealantd`, the Sealant supervisor that runs as PID 1 in the
 container: it starts the agent and any shells or Services, records what they do, and serves the
 control channel Mend drives through the Sealant SDK.
 
 Sessions live on the Mend machine, not in your terminal, so a terminal is just one client. Start
-Codex or Claude Code from the CLI and close the laptop. The agent keeps running next to its
-worktree, dependencies, and development services, and you can attach again from any client, with
-scrollback replayed and then the live process.
+Codex, Claude Code, opencode or pi from the CLI and close the laptop. The agent keeps running next
+to its worktree, dependencies, and development services, and you can attach again from any client,
+with scrollback replayed and then the live process.
 
 Development servers get the same treatment. Wrap the command you already run, `pnpm dev` or anything
 else, in `mend service run`, and open the app at `127.0.0.1` on your machine, wherever the server
@@ -30,17 +31,17 @@ agent on the Mend machine. Nothing is open to the public internet: no port is pu
 bytes travel the authenticated WebSocket the CLI already holds to your Mend server.
 
 Each launch also carries the agent's working inputs: repository instructions, references,
-organization folders, project configuration, skills, provider accounts, dotfiles, and previous
-session state. Named context packs and immutable snapshots are planned; the inputs listed here work
-today.
+organization folders, project configuration, skills, provider accounts, dotfiles, secret files, your
+agent memory for the project, and previous session state. Named context packs and immutable
+snapshots are planned; the inputs listed here work today.
 
-When the work is done, review the change in the web app, the terminal, or the desktop app, send
-comments back to the same session, and land it: Mend pushes the change to origin and opens its pull
-request. Landing is optional, and Mend never merges.
+When the work is done, review the change in the web app (VS Code opens it there), the terminal or
+the phone, send comments back to the same session, and land it: Mend pushes the change to origin and
+opens its pull request. Landing is optional, and Mend never merges.
 
 ```mermaid
 flowchart TB
-  clients[CLI · Browser · Desktop app · Phone · Slack]
+  clients[CLI · Browser · VS Code · Phone · Slack]
   network[Loopback, private network, or TLS edge]
   mend[Mend server on your machine]
   store[Project store · bare repos and capture chains]
@@ -61,15 +62,16 @@ flowchart TB
 
 - Repositories adopted into a Mend-owned store, with durable named Git worktrees. Each worktree has
   one change and one review, shared by every session inside it.
-- Codex, Claude Code, OpenCode, and arbitrary interactive commands launched through one session
-  model.
+- Claude Code, Codex, opencode, pi, and arbitrary interactive commands launched through one session
+  model, with one model list, the server's, that every client offers.
 - Workspace images, packages, setup commands, environment variables, secrets, organization folders,
   references, skills, and development Services configured per project.
-- Personal Claude, Codex, and GitHub accounts, a Git author, and dotfiles that follow the user who
-  starts a session.
+- Personal Claude, Codex, and GitHub accounts, a Git author, dotfiles, secret files, a pi profile
+  and agent memory that follow the person who starts a session.
 - Agent, shell, and Service processes that keep running when a terminal or browser disconnects.
-- CLI, web, desktop, and phone access to the same projects and sessions, on loopback, a private
-  network, or behind a TLS edge. Slack threads can start and follow sessions too.
+- CLI, web, VS Code, and phone access to the same projects and sessions, on loopback, a private
+  network, or behind a TLS edge. Slack threads can start and follow sessions too, and t3code's
+  clients can drive them through an opt-in gateway.
 - An organization of owners and members, with private and shared projects.
 - The worktree's accumulated Git change, its review, its landings, and the record of what happened
   while the agent worked.
@@ -104,7 +106,7 @@ sequenceDiagram
   Agent-->>You: live PTY
   You--xAgent: detach
   Note over Agent: agent keeps running
-  You->>Mend: attach from CLI, web, desktop, or phone
+  You->>Mend: attach from CLI, web, VS Code, or phone
   Mend-->>You: replay, then live output
 ```
 
@@ -140,12 +142,13 @@ npm install --global @sealant/mend
 mend server setup
 ```
 
-The npm package installs only the CLI. `mend server setup` creates three Docker containers: the
-complete Mend application, with Sealant (the workspace platform underneath Mend that runs and
-records the isolated environments where agents execute) pinned inside it; Postgres; and Garage, the
-object store that holds session captures. Read [Install Mend](/getting-started/install/) for
-prerequisites, the network boundary, and upgrades, and [Exposure](/operate/exposure/) for how an
-instance is reached.
+The npm package installs only the CLI. `mend server setup` asks how people reach this Mend and
+creates the Docker containers: the complete Mend application, with Sealant (the workspace platform
+underneath Mend that runs and records the environments where agents execute) pinned inside it;
+Postgres; Garage, the object store that holds session captures; and, unless you turn them off, an
+npm mirror and a Docker Hub mirror that sessions pull through. Read
+[Install Mend](/getting-started/install/) for prerequisites, the network boundary, and upgrades, and
+[Exposure](/operate/exposure/) for how an instance is reached.
 
 ### Connect an agent account
 
@@ -191,17 +194,18 @@ workspace, then attaches your terminal to the agent. Read
   access. [Exposure](/operate/exposure/) covers how an instance is reached and what Mend observes
   about it.
 - [Organizations](/organizations/overview/) covers members, invitations, roles, project visibility,
-  and shared control.
+  and shared control. [Per-person workspaces](/operate/per-person-workspaces/) covers who each
+  process in a workspace runs as.
 - [Slack](/integrations/slack/) covers starting and following sessions from Slack threads.
 - [Context](/concepts/context/) separates the inputs available now from planned context packs and
   handoffs.
 
 ## Project status
 
-Mend is under active development. The server, CLI, web app, desktop app, central project store,
-session workspaces, project setup, Services, review, landing, organizations, Slack, and remote
-attachment paths exist in the repository. The desktop app has no published release, and the native
-mobile client is not published.
+Mend is under active development. The server, CLI, web app, VS Code extension, central project
+store, session workspaces, project setup, Services, review, landing, organizations, Slack, and
+remote attachment paths exist in the repository. The desktop app is source only and not part of the
+0.36 release, and the native mobile client is not published.
 
 The [feature status](/reference/feature-status/) page separates current code from planned work. The
 [canonical product plan](https://github.com/sealant-sh/mend/blob/main/MEND-AGENT-WORKBENCH-PLAN.md)

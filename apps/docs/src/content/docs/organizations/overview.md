@@ -22,10 +22,11 @@ belongs to exactly one organization, and every project belongs to one organizati
 Both modes run the same authorization checks. `single` only fixes the number of organizations at
 one.
 
-Starting with `MEND_TENANCY=multi` is refused until the multi mode gate passes. The server computes
-the gate at start: items this build already carries answer from the code, and configuration items
-answer from the environment. When an item is open, startup stops and names each open item with what
-would satisfy it. The operator reads the same list at any time:
+Starting with `MEND_TENANCY=multi` is refused until the multi mode gate passes. Items this build
+already carries answer from the code, configuration items answer from the environment, and
+`operator-present` counts the operator accounts. At start, an open item stops startup, which names
+each open item with what would satisfy it. The operator reads the same list at any time, as it is
+when asked, so `operator-present` passes as soon as the first account exists:
 
 ```sh
 mend operator gate
@@ -44,8 +45,8 @@ mend operator gate
 | `raw-service-ports`                | `MEND_SERVICE_HOSTS` lists loopback addresses only (the default is `127.0.0.1`)         |
 | `operator-present`                 | At least one account holds the operator role                                            |
 
-`GET /health` reports the tenancy mode and the gate as `tenancyGate`: whether it passed, and the ids
-of the open items. Every variable is listed in the
+`GET /api/health` reports the tenancy mode and the gate as `tenancyGate`: whether it passed, and the
+ids of the open items. Every variable is listed in the
 [server environment reference](/reference/server-environment/).
 
 An instance can move from `single` to `multi` once the gate passes; its organization becomes the
@@ -142,6 +143,11 @@ After adoption, only an owner changes visibility, from the **Visibility** sectio
 project's **Setup** page. Making a shared project private drains other members' warm workspaces;
 their running sessions keep running until they end.
 
+A private project is never saved inside a worktree others can open. Inside a session,
+`mend repo add` adds a private project only from a session in another private project of the same
+creator; from a shared project it is refused, and it is not listed. See
+[Several repositories in one session](/guides/repositories-in-a-session/).
+
 A project, session or change you cannot see answers exactly as a missing one does. Project names are
 unique within an organization, not across the instance.
 
@@ -199,6 +205,7 @@ Whose login a steered turn spends depends on the workspace:
   - the operator set `MEND_HARNESS_LAYOUT=shared`;
   - it runs a custom base without `sudo`;
   - it runs a nix image;
+  - its Docker host sets no-new-privileges;
   - its runtime is Kubernetes.
 
   See [What a workspace needs](/operate/per-person-workspaces/#what-a-workspace-needs).
@@ -253,9 +260,10 @@ Starting the agent in a terminal with someone's words is typing too. Mend refuse
 or a review follow-up from anyone but the owner when it would start a terminal. In a conversation,
 the same requests are turns, and any steerer sends them.
 
-To let others steer a Claude or Codex terminal session, the owner continues it as a conversation
-(**continue as conversation** in the desktop app, or by handing it off from the phone). The
-conversation runs in the same workspace, and others send it turns while control is shared.
+To let others steer a Claude or Codex terminal session, the owner continues it as a conversation, by
+picking it up in the mobile app (or **continue as conversation** in the desktop app). Neither app is
+published with 0.36; both run from source. The conversation runs in the same workspace, and others
+send it turns while control is shared.
 
 ## Remove a member or change a role
 
@@ -268,9 +276,15 @@ Removing someone takes effect as follows, as the confirmation states:
 - Their private projects stay in the organization, hidden. An owner can take one over.
 - The account is deactivated and its devices signed out. Links already handed out keep their
   remaining lifetime.
+- Their workspace SSH keys are removed. A key the platform does not remove now, Mend keeps trying
+  until it does.
 
-Their open connections close, and their Slack link is deleted. A browser they still have open goes
-to the sign-in page with a notice.
+Every agent, shell and Service of theirs ends, including in workspaces other people started. A
+workspace they started is retired: the sessions of others working in it stop with
+`stopped · the workspace creator is no longer an organization member · start again in a workspace of your own`,
+and it saves through the normal Stop. Their open connections close, and their Slack link is deleted.
+A browser they still have open goes to the sign-in page, which says
+`This account no longer belongs to an organization on this Mend. Its sessions are being stopped; their work so far is kept.`
 
 Projects whose creator was removed appear under **Settings → Projects without a creator**. **Take
 over…** makes you the creator. A private project stays hidden from everyone until an owner takes it

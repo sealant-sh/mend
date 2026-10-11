@@ -73,9 +73,10 @@ when an agent settles and later resumes.
 
 A session has an owner, the account that started it; the agent runs with the owner's provider logins
 and Git access. Only the owner steers it unless they turn on shared control, which lets everyone who
-can see the session send turns and answer approvals, still on the owner's credentials. Only the
-owner types in a session's terminal or opens a shell; others read the terminal. A session records
-where it was started from: Mend itself (the CLI, web, desktop or phone) or Slack.
+can see the session send turns and answer approvals. In a per-person workspace each turn runs on its
+sender's own login; in a workspace that shares one home, on the owner's. Only the owner types in a
+session's terminal or opens a shell; others read the terminal. A session records where it was
+started from: Mend itself (the CLI, web, VS Code or phone) or Slack.
 
 A session can contain several agent processes over its life. Supporting shells and Services belong
 to the same session because they can read or change its worktree.
@@ -87,7 +88,8 @@ A process is one running or settled interaction with a session workspace. Curren
 - `agent-pty` for an interactive agent terminal;
 - `agent-external` for a coding agent Mend observed but did not launch, such as one run by hand in a
   shell, an SSH session, or an editor terminal;
-- `agent-protocol` for a structured provider adapter, a kind reserved that nothing launches yet;
+- `agent-protocol` for a conversation session's agent, Claude Code or Codex driven through its
+  structured protocol;
 - `shell` for a supporting terminal;
 - `service` for a declared development process.
 
@@ -98,9 +100,15 @@ shell or Service.
 
 A workspace is the Sealant environment where session processes run. Mend creates it for the
 session's worktree and resolves the image, environment, secrets, references, folders, accounts, and
-dotfiles at creation. Each session has its own workspace. It works on its own disk and captures its
-work to the machine's capture store, where the worktree's history lives; nothing is bind-mounted
-from the host.
+dotfiles at creation. On a server the live sessions of one worktree share its workspace: a session
+started there while another runs joins it. It works on its own disk and captures its work to the
+machine's capture store, where the worktree's history lives; nothing is bind-mounted from the host.
+
+By default a workspace runs per person: each person who runs anything there gets their own Linux
+user and home and runs on their own logins. Where the image or runtime cannot do that, or the
+operator sets `MEND_HARNESS_LAYOUT=shared`, the workspace shares one home, and every process runs as
+root in the home of the person who started it. See
+[Per-person workspaces](/operate/per-person-workspaces/).
 
 The workspace is an execution environment. The session is the longer-lived product object.
 

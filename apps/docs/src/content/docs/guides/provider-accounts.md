@@ -149,12 +149,15 @@ own logins, written into their own home in the workspace:
 - **Your sessions, and your joins.** A session you start in a worktree where someone else's session
   runs gets your logins, in your home, never theirs.
 - **Your steered turns.** Under shared control each turn runs on its sender's login: when you send a
-  turn to someone else's session, Mend runs it in an agent process of your user, on your login.
-- **Refused, not borrowed.** When the harness's provider is not connected, the start is refused
-  before anything runs, with `Connect Claude to start a session here.` (or Codex). A login that
-  needs reconnecting says
-  `Your Claude login needs reconnecting. Reconnect Claude to start a session here.` A steered turn
-  says `Connect Claude to steer this session.` Nobody else's login is used instead.
+  turn to someone else's conversation session, Mend runs it in an agent process of your user, on
+  your login. A terminal session stays its owner's: only they type in it.
+- **Refused, not borrowed.** When a Claude or Codex session's provider is not connected, the start
+  is refused before anything runs, a worktree's first launch as much as a join:
+  `Connect Claude to start a session here. Connect it in Settings → Connected accounts, or run mend connect claude.`
+  (or Codex). The session line reads `launch refused · …`. A login that needs reconnecting says
+  `Your Claude login needs reconnecting. Reconnect Claude to start a session here.`, and a steered
+  turn `Connect Claude to steer this session.`, each with the same way to connect. Nobody else's
+  login is used instead. pi and opencode need no connected login to start.
 
 Every act is recorded with who did it. Read [Organizations](/organizations/overview/).
 
@@ -168,9 +171,12 @@ next scheduled refresh, so restart it if it is failing on the old one.
 
 ## When an account is missing
 
-A missing connected account does not block every launch. Mend first requests the harness account and
-GitHub together, then retries with useful subsets when the platform reports that an account is
-missing. The harness may open its own login flow when no connected provider credential is available.
+A missing GitHub account does not block a launch: Mend requests the harness account and GitHub
+together, then without the account the platform reports missing. A missing Claude or Codex account
+does, in a [per-person workspace](/operate/per-person-workspaces/) (the default): `mend claude` or
+`mend codex` is refused before anything starts, as above. In a workspace that shares one home, Mend
+steps down to what is connected, and the harness may open its own login flow when no connected
+provider credential is available. A shell, pi or opencode session starts with whatever is connected.
 
 `mend doctor` reports missing provider accounts as setup tasks rather than machine failures. Connect
 the account explicitly when sessions must start non-interactively.

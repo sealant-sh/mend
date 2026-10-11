@@ -45,6 +45,12 @@ ref, a link back to the session, and where Mend read the bytes. On the default c
 last part names the capture it read and how old it is. `partial` means the capture was not atomic
 across files; the next one corrects it.
 
+A review opened, or a checkpoint marked, while the session is stopping does not ask the stopping
+workspace again. Its checkpoint uses the Stop's final save, which holds everything the session
+saved, and the line says so with the time of that save, for example
+`from the Stop's final save · capture 12 · 40 s ago`, never as a fresh observation. Opening a review
+answers within 90 seconds, or says it did not finish.
+
 The review stays pinned to its slice. If the agent keeps working, the page says
 `Worktree changed since this review snapshot. This patch remains pinned.` Comments and follow-ups
 refer to the slice you actually read.
@@ -153,6 +159,10 @@ mend continue 3f2a
 A delivery that failed shows `delivery failed · retryable` and offers `Retry delivery`, which reuses
 the same follow-up unless you edit it.
 
+A session with no agent to start, such as a `mend run` command or a shell, offers no
+`Send review to session`. The review says
+`This <harness> session has no agent to send the review to. Start an agent in this worktree, then send it.`
+
 Only the session's owner can send a review to it, unless they turned on shared control. Anyone else
 who can see the project can still read the review and leave comments.
 
@@ -187,9 +197,11 @@ comments, and the tour, with the same passes and the same follow-up.
 
 ## Other clients
 
-The desktop app has a review view and the Land panel. It has no published release yet; see
-[desktop](/clients/desktop/). The mobile app has a review screen with the tour, comments, and
-sending, and it is not distributed.
+In VS Code, **Mend: Review change** opens this review in your browser; see
+[VS Code](/clients/vscode/#review-a-change). The mobile app has a review screen with the tour,
+comments, sending, and the change's pull request as a line above the change, and it is not
+distributed. The desktop app has a review view and the Land panel; it is not part of the 0.36
+release (see [desktop](/clients/desktop/)).
 
 ## Next
 

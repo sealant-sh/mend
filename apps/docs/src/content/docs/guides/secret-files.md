@@ -28,8 +28,8 @@ mend secrets add .npmrc < ~/.npmrc
 
 The path names where the file goes in the workspace, relative to its home directory. A path on your
 machine under your home names the same place. The content comes from `--from <file>`, or from stdin.
-A file already kept at that path is replaced. Binary files are fine. A file is at most 256 KB, and
-you may keep up to 64.
+A file already kept at that path is replaced. Binary files are fine. A file is at most 256 KB, you
+may keep up to 64, and together they may hold at most 1 MB.
 
 The web app's settings page has the same list, with add and remove. The phone shows the list.
 
@@ -84,9 +84,11 @@ home either, so a link an agent left there pointing at a secret file carries not
   one project secrets use, and stores it sealed. The key is `secrets.key` under the server's keys
   directory, made on first use with mode 0600.
 - No API returns a file's content, in any shape. The list shows path, size and dates.
-- At launch, the server unseals the set once and writes each file into the workspace over the
-  platform's exec channel, 0600, in a directory made 0700 when missing. The agent then reads the
-  file as it would on your laptop.
+- At launch, the server unseals the set once. The workspace receives one command that carries a
+  single-use pickup ticket and the paths, never the content: the workspace redeems the ticket once
+  over the session's own channel, and writes each file 0600, in a directory made 0700 when missing.
+  Mend keeps only a hash of the ticket, and it expires when that command ends, or after ten minutes
+  if the command never does. The agent then reads the file as it would on your laptop.
 - A session's logs name the path written, never the content.
 
 A lost key means the stored files cannot be unsealed: add them again.

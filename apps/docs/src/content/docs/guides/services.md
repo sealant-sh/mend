@@ -26,6 +26,13 @@ laptop, not the Mend host), loopback only: `http://127.0.0.1:43127`. Open it. Th
 reload and all, because Mend pipes raw bytes and rewrites nothing. Pass `--no-connect` to start the
 Service without opening that port here.
 
+Mend waits up to a minute for the port to answer. A script that starts a slow Service (a build, an
+install, a cold boot) passes `--wait`: Mend keeps waiting while the Service's process runs and its
+port has not answered, up to `--timeout` (10 minutes by default), and exits 0 once it answers, 2
+when the process ended first, and 124 when it is still starting at the timeout. A waited start opens
+no port here; `mend service connect` does that afterwards. The exit codes are in the
+[CLI reference](/reference/cli/#service-commands).
+
 One exception: when the CLI's server URL is `localhost`, `mend service run` treats the server's own
 forward as your machine and prints it instead of tunnelling. On the Docker deployment that forward
 lives inside the application container, so run `mend service connect <name>` there to bring the port
@@ -53,9 +60,8 @@ A Service the agent or the web started needs no command of yours. While `mend at
 `mend codex`, `mend rejoin`, the dashboard) is attached to a session on a remote server, every live
 Service of that session declared `--http` or `--https` is tunneled the same way, on its own port
 when that port is free here: `web → http://localhost:5173`. The tunnel closes when the Service stops
-or when you detach. `--no-tunnel` turns this off. The web and desktop apps, looking at a remote
-server, show `mend service connect <name>` where an Open link to the server's loopback would not
-load.
+or when you detach. `--no-tunnel` turns this off. The web app, looking at a remote server, shows
+`mend service connect <name>` where an Open link to the server's loopback would not load.
 
 ## Declaring
 
@@ -119,10 +125,12 @@ the result before writing it.
 
 ## Records and status
 
-Every start is an attempt with a recorded log you can replay and then follow live. Restarting adds
-another attempt under the same Service identity and endpoint, so history accumulates instead of
-being replaced. Status words are observations: "reachable" means the declared target answered when
-Mend checked, not a guarantee about the next request.
+Every start is an attempt with a recorded log you can replay and then follow live.
+`mend service list` prints each Service's id and its current attempt's process id, which
+`mend logs --process` and `mend wait --process` take; `mend logs --service <name>` reads the current
+attempt's log. Restarting adds another attempt under the same Service identity and endpoint, so
+history accumulates instead of being replaced. Status words are observations: "reachable" means the
+declared target answered when Mend checked, not a guarantee about the next request.
 
 A live Service also keeps the session workspace retained after the agent settles, the same way a
 detached shell does. Stopping the agent does not stop its Services. The session then reads, for

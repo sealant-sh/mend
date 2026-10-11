@@ -20,6 +20,9 @@ mend connect pi             # send it
 The profile is yours alone: it goes into your own pi sessions, never anyone else's. Run the command
 again after you change your setup. A session already running keeps the profile it started with.
 
+Start a pi session with `mend pi`, as you would `mend codex`
+([Start a session](/getting-started/first-session/)). pi runs in the session's terminal.
+
 ## What it carries
 
 `mend connect pi` reads pi's agent directory, `~/.pi/agent` or `$PI_CODING_AGENT_DIR`

@@ -1,13 +1,13 @@
 # macOS packaging validation
 
-The test target is the three-container Mend deployment (Mend, Postgres and Garage) that
-`mend server setup` installs, first planned in [PACKAGING-PLAN.md](archive/PACKAGING-PLAN.md), not
-the retired host-process installer.
+The test target is the Mend deployment (Mend, Postgres and Garage, plus the npm and Docker Hub
+mirrors since 0.36) that `mend server setup` installs, first planned in
+[PACKAGING-PLAN.md](archive/PACKAGING-PLAN.md), not the retired host-process installer.
 
-Sealant 0.28.0 first supplied the volume-backed runtime capability; the bundle pins Sealant 0.37.2
-today (`deploy/docker/setup-contract.v2.json`). Its containerized-launcher E2E passed on Linux. No
-macOS-specific failure has been demonstrated in the proposed architecture. Actual Mac and installed
-VS Code acceptance remain unverified.
+Sealant 0.28.0 first supplied the volume-backed runtime capability; the bundle pins Sealant
+0.39.0-next.726 today (`deploy/docker/setup-contract.v2.json`). Its containerized-launcher E2E
+passed on Linux. No macOS-specific failure has been demonstrated in the proposed architecture.
+Actual Mac and installed VS Code acceptance remain unverified.
 
 ## Optional prerequisite probe
 
@@ -162,17 +162,23 @@ On the **MacBook** (VS Code started from the Dock, not a terminal):
 
 ## Evidence ledger
 
-| Check                                                  | Observation                                                                                                                    |
-| ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------ |
-| Generic volume/socket/port probe on Linux amd64        | Passed, Docker Engine 29.7.2                                                                                                   |
-| Sealant 0.28.0 containerized-launcher E2E on Linux     | Passed, including controller replacement and strict subpaths                                                                   |
-| Same prerequisite probe on macOS                       | Not yet run                                                                                                                    |
-| Packaged Mend session on macOS                         | Not yet run                                                                                                                    |
-| Installed VS Code and MacBook-to-Mini flow             | Not yet run                                                                                                                    |
-| VS Code against a non-loopback server, Linux stand-in  | Passed 2026-10-10, `scripts/vscode-remote-acceptance.mjs`, 0.36.0-next.656, VS Code 1.139.1, Docker-in-Docker, tailnet address |
-| Packaged CLI, session, record, and native SSH on Linux | Passed; private client config and container-pinned gateway trust                                                               |
-| Packaged rerun/restart/stop-start/upgrade on Linux     | Passed; same-source two-image upgrade and retained data                                                                        |
-| Packaged Mend rerun/restart/upgrade on macOS           | Not yet run                                                                                                                    |
+| Check                                                  | Observation                                                                                                                                                                                                                                                 |
+| ------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Generic volume/socket/port probe on Linux amd64        | Passed, Docker Engine 29.7.2                                                                                                                                                                                                                                |
+| Sealant 0.28.0 containerized-launcher E2E on Linux     | Passed, including controller replacement and strict subpaths                                                                                                                                                                                                |
+| Same prerequisite probe on macOS                       | Not yet run                                                                                                                                                                                                                                                 |
+| Packaged Mend session on macOS                         | Not yet run                                                                                                                                                                                                                                                 |
+| Installed VS Code and MacBook-to-Mini flow             | Not yet run                                                                                                                                                                                                                                                 |
+| VS Code against a non-loopback server, Linux stand-in  | Passed 2026-10-10, `scripts/vscode-remote-acceptance.mjs`, 0.36.0-next.656, VS Code 1.139.1, Docker-in-Docker, tailnet address                                                                                                                              |
+| Packaged CLI, session, record, and native SSH on Linux | Passed; private client config and container-pinned gateway trust                                                                                                                                                                                            |
+| Packaged rerun/restart/stop-start/upgrade on Linux     | Passed; same-source two-image upgrade and retained data                                                                                                                                                                                                     |
+| Packaged Mend rerun/restart/upgrade on macOS           | Not yet run                                                                                                                                                                                                                                                 |
+| MacBook (Apple silicon, OrbStack), one machine as both | 0.36.0-next.754, 2026-10-10: setup on loopback and on a tailnet, a shell session, `mend run`, `ssh` into a shared and a per-person workspace, a Remote-SSH window, `mend uninstall --all`. Arch workspaces still ran `x86_64` under Rosetta on that release |
+
+The rows that read "Not yet run" have no recorded run with the exact versions this checklist asks
+for; the MacBook row is the only macOS observation written down here. The Mac mini guide
+(`apps/docs/src/content/docs/operate/mac-mini-vscode.md`, "Checked, and not yet checked") says what
+else was run.
 
 The Linux installed-product run on 2026-09-06 used a packed CLI from this stack (the unreleased
 source manifest still read `0.22.0`), not a historical npm release:

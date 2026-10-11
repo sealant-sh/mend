@@ -41,16 +41,18 @@ MagicDNS name and tailnet address, so Mend is published on the tailnet only. Set
 public address as a private network: on a VPS whose only address is public, it says so and installs
 on this machine, so join the VPS to a tailnet, use a tunnel, or choose public HTTPS. A fresh install
 refuses `--bind` on a public address for the same reason as `--edge` below. Setup ends with the same
-command with flags. A script passes the flags itself:
+command with flags. A script passes the flags itself, with the server's private address (here a
+tailnet address):
 
 ```sh
-mend server setup --bind 0.0.0.0 --url http://your-vps:3105 \
+mend server setup --bind 100.70.80.90 --url http://your-vps:3105 \
   --origin http://localhost:3105
 ```
 
 Replace `your-vps` with a hostname reachable from your clients. Without explicit exposure, web and
-SSH stay on localhost. Binding `0.0.0.0` opens every IPv4 interface; setup does not configure your
-firewall. Plain HTTP on an untrusted network does not protect credentials.
+SSH stay on localhost. `--bind 0.0.0.0` is accepted, and opens every IPv4 interface, a public one
+included; setup does not configure your firewall. Plain HTTP on an untrusted network does not
+protect credentials.
 
 Registration closes after the first account. That account becomes the owner of the instance's
 organization and its operator; everyone after it joins through a single-use invitation link from
@@ -96,7 +98,10 @@ mend server setup --exposure public --tenancy multi   # for more than one organi
 Setup refuses `--edge` and `--exposure public` on a fresh install for the reason above, and the
 server refuses `public` without an operator account. `mend server status` shows the edge, the
 certificate as Caddy's data shows it, and the declared exposure and tenancy beside what the running
-server reports. Workspace SSH on port 2222 stays on loopback with the edge.
+server reports. Workspace SSH on port 2222 stays on loopback with the edge unless you publish it on
+its own: the question about VS Code Remote-SSH, or `--ssh-bind <ip>`. Published beyond loopback on a
+`public` server, it waits for `--declare workspace-ssh`, your statement that you checked who reaches
+it (see [Exposure](/operate/exposure/)).
 
 Each workspace runs its own rootless Docker, which needs unprivileged user namespaces. Ubuntu 23.10
 and later (24.04 LTS included) refuse them by default, and then no session can start.
@@ -110,10 +115,11 @@ Allow them now? [Y/n]
 ```
 
 On a yes it applies the setting through the Docker socket it already uses and reads the kernel
-again. The file it writes starts with `# written by mend server setup; mend uninstall removes it`,
-followed by the setting it replaced (`# previous: …`), so `mend uninstall` can remove it and put the
-kernel back. `--allow-userns` and `--no-allow-userns` answer for a script. With `--yes` and neither,
-setup changes nothing and says to re-run it with `--allow-userns`, so that it writes the file and
+again. On a rootless Docker daemon it cannot, and prints the command instead. The file it writes
+starts with `# written by mend server setup; mend uninstall removes it`, followed by the setting it
+replaced (`# previous: …`), so `mend uninstall` can remove it and put the kernel back.
+`--allow-userns` and `--no-allow-userns` answer for a script. With `--yes` and neither, setup
+changes nothing and says to re-run it with `--allow-userns`, so that it writes the file and
 `mend uninstall` can undo it. On a no, setup prints the command, and `mend doctor` shows it as
 `workspaces`. To allow them yourself, on the server (a file written by hand has no marker, so
 `mend uninstall` leaves it):
@@ -238,7 +244,9 @@ mend server upgrade --version VERSION
 Choose an exact published version. Updating the laptop's CLI or rerunning the POSIX installer does
 not upgrade the server. Upgrade stops application writers and saves a private database backup before
 activating the target. A post-startup failure keeps the target pin; it never automatically restores
-the database or starts older code.
+the database or starts older code. After the new version answers health, the upgrade keeps the
+newest two backups and removes older ones (`--keep-backups N`; `0` keeps all); see
+[Install Mend](/getting-started/install/#operate-and-upgrade).
 
 Before you restart or upgrade Docker itself (`systemctl restart docker`, an `apt upgrade` of
 docker-ce), run `mend doctor` on the server. A Docker stop waits for each container's own stop

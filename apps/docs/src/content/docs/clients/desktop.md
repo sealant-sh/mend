@@ -12,8 +12,11 @@ project tree and an inbox beside them. It holds no terminals of its own. Every t
 a session process on the server, reached over the same `/api/tty` socket the CLI and the phone use,
 so the app and a `mend attach` elsewhere can show the same session at once.
 
-There is no published release of the desktop app yet. Build it from source as described
-[below](#build-it-from-source). The macOS builds are unsigned and have not been opened on a Mac.
+The desktop app is not part of the 0.36 release. There is no published build, and the release's
+checks do not cover it. The clients 0.36 publishes are the CLI and its dashboard, the web app and
+the [VS Code extension](/clients/vscode/). This page describes the source on `main`. Build it from
+source as described [below](#build-it-from-source). The macOS builds are unsigned and have not been
+opened on a Mac.
 
 ## What it does
 
@@ -39,11 +42,11 @@ tab, switching tabs, quitting the app or losing the network detaches without sto
 ### Starting a session
 
 The launcher is the same composer the web app uses. Type the first message, pick the harness
-(`claude`, `codex` or `opencode`), the model, and settings such as thinking, permissions and the
-base branch, then start. The model list is the server's (`mend models` prints it), the same one the
-phone, the web app and VS Code offer, with the server's default preselected. Choices are remembered
-per project and harness. The default harness a project starts on is set in **Settings → Workbench**.
-A session's tab bar shows the model it was started with beside its branch.
+(`claude`, `codex`, `opencode` or `pi`), the model, and settings such as thinking, permissions and
+the base branch, then start. The model list is the server's (`mend models` prints it), the same one
+the phone, the web app and VS Code offer, with the server's default preselected. Choices are
+remembered per project and harness. The default harness a project starts on is set in **Settings →
+Workbench**. A session's tab bar shows the model it was started with beside its branch.
 
 For `claude` and `codex`, the composer's settings menu has **Runs as**: **Terminal** (the default)
 or **Conversation**. A conversation session runs the agent in protocol mode (codex app-server,

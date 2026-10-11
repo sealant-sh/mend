@@ -218,7 +218,9 @@ and home, and dotfiles apply for every person, as that person:
   started that way does not see what the script installs or changes later.
 - **Start my agents after install.sh** is a per-person setting, off by default. Turn it on to make
   your joins wait for your `install.sh` before the agent starts. A start waits at most 15 minutes,
-  then starts and says the script is still running.
+  then starts and says the script is still running. Neither the web app nor the CLI has a control
+  for it yet: set it through the API, with `PUT /api/dotfiles/start-after-install` and
+  `{"startAgentsAfterInstall": true}`.
 
 A script can `sudo`, and with `sudo` anyone in the workspace can read your home: see
 [What sudo means here](/operate/per-person-workspaces/#what-sudo-means-here).

@@ -6,9 +6,9 @@ sidebar:
 ---
 
 Mend puts the work on a machine you control and makes that machine reachable through familiar local
-interfaces. The CLI still behaves like a terminal command. The web and desktop apps still behave
-like local tools. The agent process, worktree, and development services keep running on the Mend
-machine when a client disconnects.
+interfaces. The CLI still behaves like a terminal command. The web app and the VS Code extension
+still behave like local tools. The agent process, worktree, and development services keep running on
+the Mend machine when a client disconnects.
 
 ## Deployment
 
@@ -27,7 +27,7 @@ record, or runs a check, that request ends at `sealantd` in the workspace.
 
 ```mermaid
 flowchart TB
-  clients[CLI · Web · Desktop · Phone · Slack]
+  clients[CLI · Web · VS Code · Phone · Slack]
   network[Loopback, private network, or TLS edge]
 
   subgraph host[Your infrastructure]
@@ -50,8 +50,9 @@ flowchart TB
 
 On a single host, `mend server setup` runs Mend and its pinned Sealant control plane in one
 application container, Postgres in a second, and Garage, the object store that holds session
-captures, in a third. Web and workspace SSH bind to localhost by default and Postgres publishes no
-port. Binding another address is an explicit setup choice; read
+captures, in a third. An npm mirror and a Docker Hub mirror run in two more unless you turn them
+off, and sessions pull packages and images through them. Web and workspace SSH bind to localhost by
+default and Postgres publishes no port. Binding another address is an explicit setup choice; read
 [Install Mend](/getting-started/install/#network-boundary). How the instance is reached (loopback, a
 private network, or public behind an edge) is its exposure; read [Exposure](/operate/exposure/). On
 Kubernetes, Sealant is installed separately; read
@@ -86,7 +87,7 @@ A launch joins repository state, project configuration, and your account setting
 
 ```mermaid
 sequenceDiagram
-  participant You as CLI, web, or desktop
+  participant You as CLI, web, or VS Code
   participant Mend as Mend server
   participant Store as Project store
   participant Sealant as Sealant SDK
@@ -121,7 +122,7 @@ flowchart TD
   processes[Agent, shell, and Service processes]
   record[Durable process records]
   change[Worktree compared with base]
-  clients[CLI, web, desktop, and phone attachments]
+  clients[CLI, web, VS Code, and phone attachments]
 
   worktree --> session
   worktree --> change
@@ -170,14 +171,23 @@ Mend resolves several inputs before creating a workspace:
 - the project, organization, or instance workspace image;
 - configuration variables and secrets;
 - selected reference repositories and [organization folders](/organizations/folders/);
-- the launching user's connected Claude, Codex, and GitHub accounts;
+- the launching user's connected Claude, Codex, and GitHub accounts (pi and opencode receive the
+  Codex login's ChatGPT access);
 - the launching user's Git author (`mend git-author`), which defaults to the name and email they
   registered with;
 - the launching user's synced dotfiles when the project enables them, and a default zsh profile
   where the dotfiles left no `~/.zshrc` in a zsh image;
-- the user's and the project's [skills](/guides/skills/);
+- the user's and the project's [skills](/guides/skills/), and the Claude Code plugins their settings
+  enable;
+- the user's [secret files](/guides/secret-files/), [pi profile](/guides/pi/) and
+  [agent memory](/guides/agent-memory/) for the project;
 - Service recipes from `mend.toml`;
 - the session worktree and base reference.
+
+In a [per-person workspace](/operate/per-person-workspaces/), the default, each person who runs
+anything there gets their own Linux user and home, and their logins, memory and deliveries go into
+that home, as them. A person who joins a worktree brings their own; nobody runs on another person's
+login. Everyone there has passwordless `sudo`, so it is not isolation between people.
 
 Read [Configure session environments](/guides/project-environment/) for the full setup path.
 
