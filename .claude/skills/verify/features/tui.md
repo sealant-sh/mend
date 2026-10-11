@@ -10,8 +10,9 @@ focused list, and `+` and `_` cycle the screen mode. Moving the selection only n
 single-letter verbs attach, resume, start, rename, review, open in the browser, stop, remove and
 refresh. `v` opens a review of the change in the terminal. While a session starts, and with
 `mend snake`, a game of snake fills the wait: it counts down `3`, `2`, `1`, `GO` once it has the
-keyboard (mend#665). Run inside a checkout that no project matches, the dashboard offers to adopt
-it. It needs Node 26 or newer.
+keyboard (mend#665). A session started or resumed from the dashboard attaches by itself once it
+runs, while the person is still waiting on it; moving away leaves it to `a`. Run inside a checkout
+that no project matches, the dashboard offers to adopt it. It needs Node 26 or newer.
 
 ## Sub-features
 
@@ -29,6 +30,9 @@ it. It needs Node 26 or newer.
   name, base, harness.
 - `tui-new-session` starts another session in the selected worktree from `n` and a harness picker.
 - `tui-attach` takes this terminal into a live session with `a`; `Ctrl+]` gives it back.
+- `tui-auto-attach` attaches a session started or resumed from the dashboard once it runs, while the
+  person is still on it (no move to another session, column or project, no dialog open); otherwise
+  the status line reads `started · <name> · a attaches`. `MEND_AUTO_ATTACH=off` turns it off.
 - `tui-resume` resumes a settled session with `r` on a harness the picker offers.
 - `tui-rename` labels a session with `e`.
 - `tui-open-web` opens the session page in the browser with `o`.
@@ -126,9 +130,9 @@ Preconditions:
   rows read `codex`, `claude`, `opencode`, `pi` and `shell`. Send `Down Down Down Down`, so `shell`
   carries the gutter (it needs no provider), then `Enter`. The modal closes, the sessions section
   opens, and the status line reads `provisioning shell workspace · <n>s elapsed`, then
-  `started · shell <id8> · a attaches` or
-  `still starting · shell <id8> · a attaches once the row reads running`. The worktrees frame names
-  `verify-tui`.
+  `still starting · shell <id8> · attaches once it runs` while it starts. The worktrees frame names
+  `verify-tui`. Send no dashboard key until the next steps say so: a move would cancel the
+  auto-attach.
 - **Snake while it starts.** While the session pane reads `starting · …`, it shows
   `play snake while you wait · score 0` above a still board (the snake and the food), with
   `enter plays` under it while the game does not have the keyboard. A start from the dashboard (the
@@ -139,17 +143,24 @@ Preconditions:
   snake move. The footer reads `←↑↓→/hjkl steer · space/p pause · esc/q leave`. While it plays, the
   digits, `Tab`, `?`, `/`, `+`, `_` and the verbs do nothing. Send `Space`: the heading adds
   `· paused` and the footer reads `enter/space resume · esc/q leave`. Send `Escape`: the keyboard
-  goes back to `[3] sessions`, and the paused board stays in the pane with `enter plays`. A fast
-  start can skip this; report it unreachable then, not failed.
-- **Session pane.** Once the row's status reads `running`, the pane shows the session's name and
+  goes back to `[3] sessions`, and the paused board stays in the pane with `enter plays` (leaving
+  the game is not a move away: the start still attaches). A fast start can skip this; report it
+  unreachable then, not failed.
+- **Auto-attach.** Once the row reads running, the status line reads
+  `ready · shell <id8> · attaching` (with `· snake score <n>` when the game ran) for about half a
+  second, then the dashboard gives way to `attaching · shell · <id8> · detach: Ctrl+]` and a bash
+  prompt in the workspace, without a key. Send
+  `tmux send-keys -t verify-tui -l "printf 'tui\n' > TUI.md"` and `Enter`, then
+  `tmux send-keys -t verify-tui C-]`. The dashboard returns with the session selected and the status
+  line reads `detached · <id8> keeps running`. It does not attach again by itself.
+- **Session pane.** With the row's status `running`, the pane shows the session's name and
   `· shell`, the status with its branch and `vs <base>`, a `created … · <id8>` line,
   `no services running`, `no open review comments`, and, since a shell has no conversation record,
   `shell · no conversation record; a attaches if live`.
 - **Attach and detach.** Send `a`. The dashboard gives way to
-  `attaching · shell · <id8> · detach: Ctrl+]` and a bash prompt in the workspace. Send
-  `tmux send-keys -t verify-tui -l "printf 'tui\n' > TUI.md"` and `Enter`. Send
-  `tmux send-keys -t verify-tui C-]`. The dashboard returns and the status line reads
-  `detached · <id8> keeps running`.
+  `attaching · shell · <id8> · detach: Ctrl+]` and the bash prompt in the workspace; `cat TUI.md`
+  prints `tui`. Send `tmux send-keys -t verify-tui C-]`. The dashboard returns and the status line
+  reads `detached · <id8> keeps running`.
 - **Rename.** Send `e`. A modal titled `label · shell <id8>` opens. Send
   `tmux send-keys -t verify-tui -l 'verify tui'` and `Enter`. The status line reads
   `labeled · verify tui`, and the session row now reads `verify tui`.
@@ -247,6 +258,10 @@ Preconditions:
   opens none, and `--no-tunnel` turns them off. On Launch's loopback stack the `tui-tunnels`
   sub-feature is unreachable; report it so. On a remote server a tunneled Service shows in the
   session pane as `<name> → http://localhost:<port>`.
+- A start or resume from the dashboard takes the terminal by itself once its row reads running,
+  unless a key moved the selection or the column after the start, or a dialog was open then. A
+  capture taken after a start may show the workspace's terminal, not the dashboard; `C-]` gives it
+  back. A harness that must not be attached sends a move first, or runs with `MEND_AUTO_ATTACH=off`.
 - `a` suspends the dashboard and hands the terminal to the session; the capture then shows the
   workspace shell, not the dashboard. `Ctrl+]` is the detach path that gives the terminal back and
   leaves the session running (`detached · <id8> keeps running`). The dashboard also returns when the

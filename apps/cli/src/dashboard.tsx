@@ -60,6 +60,7 @@ import {
   sessionHold,
   sessionRowFacts,
   sessionTimeWords,
+  startProgress,
   startingExplanationOf,
   startingWordsOf,
   stepColumn,
@@ -83,6 +84,7 @@ import {
   type SessionDto,
   type SessionItem,
   type SessionProcessDto,
+  type StartWatch,
   type Workbench,
   type WorktreeGroup,
 } from "./dashboard-model.ts";
@@ -148,8 +150,9 @@ import { createSseParser, eventFamilies, type InvalidateFamily } from "./workben
  * Selection only ever navigates: moving through a section re-populates the ones
  * below it and the session pane previews what the agent has been writing, and
  * NOTHING takes the terminal until an explicit verb asks for it (`a` attach,
- * `r` resume, `n` new session). The accent border says which pane the keyboard
- * is in; ⇥ and ←→ move between them.
+ * `r` resume, `n` new session). A session started or resumed from here takes it
+ * once it runs, but only while the person is still waiting on it. The accent
+ * border says which pane the keyboard is in; ⇥ and ←→ move between them.
  *
  * Nothing is ever squeezed: a terminal too narrow for both gives the whole
  * width to the side the keyboard is on, a terminal too short for three drawn
@@ -237,6 +240,11 @@ export interface DashboardContext {
   readonly tunnels: ServiceTunnels | null;
   /** `mend snake`: open with the game over the dashboard. */
   readonly openSnake?: boolean;
+  /**
+   * A session started or resumed from here attaches once it runs, while the person still waits
+   * on it. False (`MEND_AUTO_ATTACH=off`) leaves every attach to `a`.
+   */
+  readonly autoAttach?: boolean;
 }
 
 // ─── panes and rows ─────────────────────────────────────────────────────────
@@ -685,11 +693,21 @@ const startedOrStarting = async (
   }
 };
 
-/** What the status line says once a start call returned: started, or still starting. */
-const startedLine = (session: SessionDto): string =>
-  session.status === "starting"
-    ? `still starting · ${sessionDisplayName(session)} · a attaches once the row reads running`
-    : `started · ${sessionDisplayName(session)} · a attaches`;
+/**
+ * What the status line says once a start call returned and the session is still starting. One
+ * that already runs says nothing here: the watch on it attaches, or says it is ready.
+ */
+const stillStartingLine = (
+  session: SessionDto,
+  verb: "starting" | "resuming",
+  awaited: boolean,
+): string | null =>
+  session.status !== "starting"
+    ? null
+    : `still ${verb} · ${sessionDisplayName(session)} · ${awaited ? "attaches once it runs" : "a attaches once the row reads running"}`;
+
+/** The beat between a started session reading ready and the attach taking the terminal. */
+export const HANDOVER_MS = 600;
 
 /**
  * Keep a selection inside its scrollbox. The viewport is passed in rather than
@@ -814,6 +832,14 @@ export const App = ({
   } | null>(null);
   /** Set synchronously around attach so keystrokes can't double-fire. */
   const lockRef = useRef(false);
+  /** Every start and resume from here whose session has not yet run or ended. */
+  const startsRef = useRef<ReadonlyArray<StartWatch>>([]);
+  /**
+   * The watch the person is still waiting on: the latest start, until they move to another
+   * session, column or project, or attach anywhere. Only it attaches by itself.
+   */
+  const awaitedRef = useRef<string | null>(null);
+  const autoAttach = ctx.autoAttach !== false;
   /**
    * The snake in the session pane wants the keyboard: asked for by a start or resume from here
    * (`start` is its gate key, so only that request's failure withdraws it), or by moving into
@@ -1110,6 +1136,9 @@ export const App = ({
   const attachFlow = async (session: SessionDto): Promise<void> => {
     const short = session.id.slice(0, 8);
     lockRef.current = true;
+    // An attach is the person's answer to whatever they were waiting on: nothing else takes the
+    // terminal after it, and a detach never brings it back by itself.
+    awaitedRef.current = null;
     renderer.suspend();
     const tunneled = openTunnels
       .filter((tunnel) => tunnel.service.sessionId === session.id)
@@ -1175,6 +1204,72 @@ export const App = ({
     refetch();
   };
 
+  /** Follow a start from here; the latest one is the one the person waits on. */
+  const watchStart = (id: string, verb: StartWatch["verb"]): void => {
+    startsRef.current = [...startsRef.current, { id, verb, sessionId: null }];
+    awaitedRef.current = id;
+  };
+  /** The start call answered: its session is the one to follow. */
+  const answerStart = (id: string, sessionId: string): void => {
+    startsRef.current = startsRef.current.map((watch) =>
+      watch.id === id ? { ...watch, sessionId } : watch,
+    );
+  };
+  const dropStart = (id: string): void => {
+    startsRef.current = startsRef.current.filter((watch) => watch.id !== id);
+    if (awaitedRef.current === id) awaitedRef.current = null;
+  };
+  /** A move of the person's own: they are no longer waiting on the start, so it never attaches. */
+  const stopAwaiting = (): void => {
+    awaitedRef.current = null;
+  };
+
+  /**
+   * The awaited session runs and the person is still on it: a short beat that says so (with the
+   * score, when a game was played meanwhile), then the same attach as `a`. The game stops with
+   * the keyboard locked, so no key lands between the beat and the terminal.
+   */
+  const handOver = (session: SessionDto): void => {
+    lockRef.current = true;
+    const played = snake.play.clock.kind !== "ready" || snake.play.game.score > 0;
+    setSnakeFocus(null);
+    say(
+      `ready · ${sessionDisplayName(session)} · attaching${played ? ` · snake score ${snake.play.game.score}` : ""}`,
+    );
+    setTimeout(() => void attachFlow(session), HANDOVER_MS);
+  };
+
+  // A watched start moves on only through the workbench: the start call's answer patches it, and
+  // the event stream refetches it. Readiness is a fact arriving from the server, so this reacts
+  // to it; the awaited session attaches, every other one says it is ready.
+  useEffect(() => {
+    if (data === undefined || startsRef.current.length === 0) return;
+    let attach: SessionDto | null = null;
+    for (const watch of startsRef.current) {
+      const progress = startProgress(data, watch);
+      if (progress.kind === "starting") continue;
+      const awaited = awaitedRef.current === watch.id;
+      dropStart(watch.id);
+      const name = sessionDisplayName(progress.session);
+      if (progress.kind === "ended") {
+        say(`${progress.session.status} · ${name} · it did not reach running`);
+      } else if (
+        awaited &&
+        autoAttach &&
+        !dialogOpen &&
+        !lockRef.current &&
+        selectedSession?.id === progress.session.id
+      ) {
+        attach = progress.session;
+      } else {
+        say(`${watch.verb} · ${name} · a attaches`);
+      }
+    }
+    if (attach !== null) handOver(attach);
+    // Only a new workbench can move a start on; everything else is read as it stands then.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data]);
+
   /** Converge on the server's truth once, after the LAST in-flight mutation. */
   const settleRefetch = (): void => {
     if (queryClient.isMutating() === 1) refetch();
@@ -1187,8 +1282,9 @@ export const App = ({
   };
 
   // A new session appears as a `starting` row the moment the harness is
-  // chosen; the keyboard stays free while the workspace provisions. Nothing
-  // attaches by itself — the row reads running and `a` takes the terminal.
+  // chosen; the keyboard stays free while the workspace provisions. Once the
+  // row reads running it attaches by itself if the person is still waiting on
+  // it (the start watch above); otherwise `a` takes the terminal.
   const launchMutation = useMutation({
     mutationFn: async (vars: {
       readonly projectId: string;
@@ -1236,12 +1332,19 @@ export const App = ({
       setBusyStarted(Date.now());
     },
     onError: (error, vars) => {
+      dropStart(vars.pendingKey);
       patchWorkbench((current) => removeSession(current, vars.projectId, vars.pendingKey));
       setSnakeFocus((current) => (current?.start === vars.gateKey ? null : current));
       setBusy(null);
       say(errorText(error));
     },
     onSuccess: (session, vars) => {
+      const line = stillStartingLine(
+        session,
+        "starting",
+        autoAttach && awaitedRef.current === vars.pendingKey,
+      );
+      answerStart(vars.pendingKey, session.id);
       patchWorkbench((current) =>
         replaceSession(current, vars.projectId, vars.pendingKey, session),
       );
@@ -1250,7 +1353,7 @@ export const App = ({
       );
       setSessionKey((current) => (current === vars.pendingKey ? session.id : current));
       setBusy(null);
-      say(startedLine(session));
+      if (line !== null) say(line);
     },
     onSettled: (_data, _error, vars) => {
       gate.release(vars.gateKey);
@@ -1264,6 +1367,7 @@ export const App = ({
       readonly session: SessionDto;
       readonly harness: string | null;
       readonly gateKey: string;
+      readonly watch: string;
     }) =>
       startedOrStarting(
         ctx.api<SessionDto>("POST", `/sessions/${vars.session.id}/resume`, {
@@ -1285,21 +1389,24 @@ export const App = ({
       setBusyStarted(Date.now());
     },
     onError: (error, vars) => {
+      dropStart(vars.watch);
       setSnakeFocus((current) => (current?.start === vars.gateKey ? null : current));
       setBusy(null);
       say(errorText(error));
       refetch();
     },
     onSuccess: (resumed, vars) => {
+      const line = stillStartingLine(
+        resumed,
+        "resuming",
+        autoAttach && awaitedRef.current === vars.watch,
+      );
+      answerStart(vars.watch, resumed.id);
       patchWorkbench((current) =>
         replaceSession(current, vars.projectId, vars.session.id, resumed),
       );
       setBusy(null);
-      say(
-        resumed.status === "starting"
-          ? `still resuming · ${sessionDisplayName(resumed)} · a attaches once the row reads running`
-          : `resumed · ${sessionDisplayName(resumed)} · a attaches`,
-      );
+      if (line !== null) say(line);
     },
     onSettled: (_data, _error, vars) => {
       gate.release(vars.gateKey);
@@ -1463,18 +1570,25 @@ export const App = ({
       setBusyStarted(Date.now());
     },
     onError: (error, vars) => {
+      dropStart(vars.pendingKey);
       patchWorkbench((current) => removeSession(current, vars.projectId, vars.pendingKey));
       setSnakeFocus((current) => (current?.start === vars.gateKey ? null : current));
       setBusy(null);
       say(errorText(error));
     },
     onSuccess: (session, vars) => {
+      const line = stillStartingLine(
+        session,
+        "starting",
+        autoAttach && awaitedRef.current === vars.pendingKey,
+      );
+      answerStart(vars.pendingKey, session.id);
       patchWorkbench((current) =>
         replaceSession(current, vars.projectId, vars.pendingKey, session),
       );
       setSessionKey((current) => (current === vars.pendingKey ? session.id : current));
       setBusy(null);
-      say(startedLine(session));
+      if (line !== null) say(line);
     },
     onSettled: (_data, _error, vars) => {
       gate.release(vars.gateKey);
@@ -1744,12 +1858,14 @@ export const App = ({
     setCreating(null);
     setSnakeFocus({ returnTo: focus, start: gateKey });
     setFocus("sessions");
+    const pendingKey = pendingId();
+    watchStart(pendingKey, "started");
     launchMutation.mutate({
       projectId: current.projectId,
       harness: choice.harness,
       name: current.name === "" ? null : current.name,
       base: current.base,
-      pendingKey: pendingId(),
+      pendingKey,
       gateKey,
     });
   };
@@ -1827,7 +1943,9 @@ export const App = ({
     }
     setSnakeFocus({ returnTo: focus, start: gateKey });
     setFocus("sessions");
-    resumeMutation.mutate({ projectId, session, harness, gateKey });
+    const watch = pendingId();
+    watchStart(watch, "resumed");
+    resumeMutation.mutate({ projectId, session, harness, gateKey, watch });
   };
 
   /** `n` — another conversation in the selected worktree; a new worktree when there is none. */
@@ -1867,11 +1985,13 @@ export const App = ({
     }
     setSnakeFocus({ returnTo: focus, start: gateKey });
     setFocus("sessions");
+    const pendingKey = pendingId();
+    watchStart(pendingKey, "started");
     launchInWorktreeMutation.mutate({
       projectId,
       worktreeId: group.id,
       harness,
-      pendingKey: pendingId(),
+      pendingKey,
       gateKey,
     });
   };
@@ -1887,6 +2007,7 @@ export const App = ({
       case "projects": {
         const item = projectItems[clampIndex(projectItems.length, projectIndex + delta)];
         if (item === undefined) return;
+        if (item !== selectedProject) stopAwaiting();
         setProjectKey(item.project.id);
         setWorktreeKey(null);
         setSessionKey(null);
@@ -1896,6 +2017,7 @@ export const App = ({
       case "worktrees": {
         const group = worktreeGroups[clampIndex(worktreeGroups.length, worktreeIndex + delta)];
         if (group === undefined) return;
+        if (group !== selectedGroup) stopAwaiting();
         setWorktreeKey(group.key);
         setSessionKey(null);
         setPreviewOffset(0);
@@ -1904,6 +2026,7 @@ export const App = ({
       case "sessions": {
         const item = sessionItems[clampIndex(sessionItems.length, sessionIndex + delta)];
         if (item === undefined) return;
+        if (item !== selectedItem) stopAwaiting();
         selectSession(item.session.id);
         return;
       }
@@ -1925,6 +2048,8 @@ export const App = ({
    * terminal cannot show whole stays out of it, and the pane says so.
    */
   const goTo = (next: Column): void => {
+    // The session and its pane are where a start is waited on; the lists above are elsewhere.
+    if (next === "projects" || next === "worktrees") stopAwaiting();
     if (next === "detail" && waiting && snakeFits) {
       setSnakeFocus({ returnTo: focus, start: null });
       return;

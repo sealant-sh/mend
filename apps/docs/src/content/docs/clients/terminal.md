@@ -9,7 +9,8 @@ sidebar:
 
 Run `mend` with no command, or `mend ui`, in a terminal to open the dashboard: every project,
 worktree and session on the server, updating live. The dashboard only reads until you press a key
-that acts. Moving the selection never attaches, resumes or starts anything.
+that acts. Moving the selection never attaches, resumes or starts anything. A session you start or
+resume there attaches once it runs, if you are still waiting on it.
 
 ```sh
 mend
@@ -105,7 +106,22 @@ base branch from a filtered list, then a harness. Tab moves forward through the 
 back, and Esc steps back or cancels from the name. When you started `mend` inside a checkout of the
 same project, the base starts on that checkout's branch.
 
-After starting or resuming, press `a` once the row reads running to attach.
+A session you start or resume from the dashboard attaches by itself once its row reads running, if
+you are still waiting on it. The status line reads `ready · <name> · attaching` for a moment, with
+the snake's score when you played meanwhile, and then the terminal is the session's. You are still
+waiting while you stay on that session: playing snake in its pane or leaving the game with Esc
+counts. Moving to another session, column or project, or starting something newer, means you are
+not, and so does a dialog such as `?`, `/` or the rename that is open at the moment it runs. Then
+the status line says `started · <name> · a attaches` (or `resumed · …`) when it runs, and `a`
+attaches it. Only the newest start attaches by itself, so with several in flight, the older ones
+wait for `a`.
+
+A start that fails shows its error and attaches nothing. A session that ends before it runs says so,
+for example `failed · <name> · it did not reach running`. A shell session attaches the same way as
+an agent session. After you detach with `Ctrl+]` the dashboard comes back with the session selected,
+and it never attaches that start again by itself.
+
+Set `MEND_AUTO_ATTACH=off` to leave every attach to `a`; `off` is the only value it reads.
 
 ### Reviewing in the terminal
 
