@@ -8,7 +8,7 @@ import { Effect, Layer } from "effect";
 
 import { AgentBridge } from "../src/agent-bridge.ts";
 import { MendKeys, NO_SIGNER_SSH_COMMAND, noSignerGitEnv } from "../src/git-auth.ts";
-import { parseGitUrlRewrites, resolveRemoteEnv, rewriteGitUrl } from "../src/remote-env.ts";
+import { effectiveGitUrl, resolveRemoteEnv } from "../src/remote-env.ts";
 
 /**
  * Every test reads a git config of its own: the host's global config (an `insteadOf` of the
@@ -135,48 +135,99 @@ describe("resolveRemoteEnv", () => {
   );
 });
 
-describe("git url rewrites", () => {
-  it("reads insteadOf and pushInsteadOf rules from git's config output", () => {
-    gitConfig("url.git@github.com:.insteadOf", "https://github.com/");
-    gitConfig("url.ssh://git@push.example/.pushInsteadOf", "https://push.example/");
-    const output = execFileSync(
-      "git",
-      ["config", "--null", "--get-regexp", "^url\\..*\\.(insteadof|pushinsteadof)$"],
-      { encoding: "utf8" },
-    );
-    expect(parseGitUrlRewrites(output)).toEqual([
-      { base: "git@github.com:", prefix: "https://github.com/", push: false },
-      { base: "ssh://git@push.example/", prefix: "https://push.example/", push: true },
-    ]);
-  });
+describe("effectiveGitUrl", () => {
+  // Review of mend#734: three insteadOf entries, two bases tied on prefix length. git groups
+  // values by the first-seen base, so `git@first.invalid:` wins; picking the first matching
+  // entry would say `https://second.invalid/` and fail a valid ssh op closed.
+  const addTiedRules = (
+    kind: "insteadOf" | "pushInsteadOf",
+    first: string,
+    second = "https://second.invalid/",
+  ) => {
+    gitConfig("--add", `url.${first}.${kind}`, "https://other.invalid/");
+    gitConfig("--add", `url.${second}.${kind}`, "https://example.invalid/");
+    gitConfig("--add", `url.${first}.${kind}`, "https://example.invalid/");
+  };
 
-  it("applies git's rule: the longest prefix wins, and a push prefers pushInsteadOf", () => {
-    const rules = [
-      { base: "git@github.com:", prefix: "https://github.com/", push: false },
-      { base: "git@github.com:acme-mirror/", prefix: "https://github.com/acme/", push: false },
-      { base: "ssh://git@github.com/", prefix: "https://github.com/", push: true },
-    ];
-    expect(rewriteGitUrl("https://github.com/acme/api.git", rules, false)).toBe(
-      "git@github.com:acme-mirror/api.git",
-    );
-    expect(rewriteGitUrl("https://github.com/acme/api.git", rules, true)).toBe(
-      "ssh://git@github.com/acme/api.git",
-    );
-    expect(rewriteGitUrl("https://gitlab.com/acme/api.git", rules, true)).toBe(
-      "https://gitlab.com/acme/api.git",
-    );
-    // git's own reading of the same config agrees for a fetch.
-    gitConfig("url.git@github.com:.insteadOf", "https://github.com/");
-    gitConfig("url.git@github.com:acme-mirror/.insteadOf", "https://github.com/acme/");
-    const dialed = execFileSync(
-      "git",
-      ["ls-remote", "--get-url", "https://github.com/acme/api.git"],
-      {
-        encoding: "utf8",
-      },
-    ).trim();
-    expect(dialed).toBe(rewriteGitUrl("https://github.com/acme/api.git", rules, false));
-  });
+  it.effect("answers what git dials for a fetch, ties on prefix length included", () =>
+    Effect.gen(function* () {
+      addTiedRules("insteadOf", "git@first.invalid:");
+      expect(yield* effectiveGitUrl("https://example.invalid/repo", false)).toBe(
+        "git@first.invalid:repo",
+      );
+      expect(yield* effectiveGitUrl("https://plain.invalid/repo", false)).toBe(
+        "https://plain.invalid/repo",
+      );
+    }),
+  );
+
+  it.effect("answers what git dials for a push: pushInsteadOf first, then insteadOf", () =>
+    Effect.gen(function* () {
+      addTiedRules("pushInsteadOf", "ssh://git@first.invalid/");
+      gitConfig("--add", "url.git@fetch.invalid:.insteadOf", "https://fetch.invalid/");
+      expect(yield* effectiveGitUrl("https://example.invalid/repo", true)).toBe(
+        "ssh://git@first.invalid/repo",
+      );
+      // A fetch of the same URL is not a push: pushInsteadOf leaves it alone.
+      expect(yield* effectiveGitUrl("https://example.invalid/repo", false)).toBe(
+        "https://example.invalid/repo",
+      );
+      expect(yield* effectiveGitUrl("https://fetch.invalid/repo", true)).toBe(
+        "git@fetch.invalid:repo",
+      );
+    }),
+  );
+
+  it.effect("the tied config signs a fetch and a push with the key, as git will dial ssh", () =>
+    Effect.gen(function* () {
+      addTiedRules("insteadOf", "git@first.invalid:");
+      addTiedRules("pushInsteadOf", "ssh://git@first.invalid/", "https://psecond.invalid/");
+      const ensured: Array<string | null> = [];
+      yield* resolve("mend-key", "https://example.invalid/repo", { ensured });
+      expect(ensured).toEqual(["anna"]);
+      const refused = yield* resolveRemoteEnv(
+        "bridge",
+        "anna",
+        "https://example.invalid/repo",
+        true,
+      ).pipe(Effect.provide(Layer.mergeAll(keysLayer([]), bridgeLayer(false))), Effect.flip);
+      expect(refused._tag).toBe("NoSignerError");
+    }),
+  );
+
+  it.effect(
+    "follows git where its rule is not obvious: sections count in the order first seen",
+    () =>
+      Effect.gen(function* () {
+        // `[url "https://second.invalid/"]` is first seen holding an insteadOf, so when it later
+        // gains a pushInsteadOf it outranks the ssh base for pushes: git pushes over https here,
+        // and no signer is asked for.
+        addTiedRules("insteadOf", "git@first.invalid:");
+        addTiedRules("pushInsteadOf", "ssh://git@first.invalid/");
+        expect(yield* effectiveGitUrl("https://example.invalid/repo", true)).toBe(
+          "https://second.invalid/repo",
+        );
+        const env = yield* resolveRemoteEnv(
+          "bridge",
+          "anna",
+          "https://example.invalid/repo",
+          true,
+        ).pipe(Effect.provide(Layer.mergeAll(keysLayer([]), bridgeLayer(false))));
+        expect(env["GIT_SSH_COMMAND"]).toBe(NO_SIGNER_SSH_COMMAND);
+      }),
+  );
+
+  it.effect("when git cannot answer, the op needs a signer: never the no-signer path", () =>
+    Effect.gen(function* () {
+      expect(yield* effectiveGitUrl("-c", false)).toBeNull();
+      // An unreadable global config: git refuses, so the https remote is treated as signed.
+      fs.writeFileSync(path.join(scratch, "gitconfig"), '[url "broken\n');
+      const refused = yield* resolve("bridge", "https://github.com/octocat/Hello-World.git").pipe(
+        Effect.flip,
+      );
+      expect(refused._tag).toBe("NoSignerError");
+    }),
+  );
 });
 
 describe("the no-signer env", () => {
