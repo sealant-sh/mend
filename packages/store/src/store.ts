@@ -7,6 +7,7 @@ import { RepositoryCloneUrl, redactRepositoryUrl } from "@mend/domain/workbench"
 import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
+import { noSignerGitEnv } from "./git-auth.ts";
 import { git, gitCapped, GitError, gitHead } from "./git.ts";
 import {
   type BundleEmptyError,
@@ -1103,7 +1104,8 @@ export class Store extends Context.Service<
           Effect.catch(() =>
             refuseRemoteCredentials(storePath).pipe(
               Effect.andThen(
-                git(["fetch", "origin"], storePath, remoteEnv ?? { GIT_TERMINAL_PROMPT: "0" }),
+                // Without a signer, ssh refuses rather than answer as the server process.
+                git(["fetch", "origin"], storePath, remoteEnv ?? noSignerGitEnv()),
               ),
               Effect.ignore,
               Effect.andThen(

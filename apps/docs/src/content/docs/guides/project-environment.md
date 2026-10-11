@@ -239,10 +239,10 @@ promoted into the shared cache: what one agent installed belongs to that session
 ## Git access
 
 Git operations on the remote repository run on the Mend server. A project uses your Mend key (one
-key per user, held on the server), the SSH-agent bridge for a key that stays on your machine, or the
-server's ambient credentials. The workspace receives a Git transport shim, not the credential, and
-by default the shim signs only for the project's own remote host. Each session commits as its
-owner's Git author. Read [Git access](/guides/git-access/).
+key per user, held on the server) or the SSH-agent bridge for a key that stays on your machine. The
+workspace receives a Git transport shim, not the credential, and by default the shim signs only for
+the project's own remote host. Each session commits as its owner's Git author. Read
+[Git access](/guides/git-access/).
 
 ## Automation
 

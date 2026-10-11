@@ -9,7 +9,7 @@ import { Timestamp } from "@mend/domain";
 import {
   AutomationChoice,
   ChangePullRequest,
-  GitAuthMode,
+  RequestedGitAuthMode,
   GitAuthorSource,
   ProjectVisibility,
   Project,
@@ -80,7 +80,8 @@ export class SettingsFailure extends Schema.TaggedErrorClass<SettingsFailure>()(
 export class AdoptProject extends Schema.Class<AdoptProject>("AdoptProject")({
   name: Schema.String,
   source: Schema.String,
-  gitAuthMode: Schema.optional(GitAuthMode),
+  /** `ambient` is refused with `AMBIENT_REMOVED_GUIDANCE`; it decodes so an older client hears why. */
+  gitAuthMode: Schema.optional(RequestedGitAuthMode),
   /** `private` (only the adopter sees it) unless the request says `shared`. */
   visibility: Schema.optional(ProjectVisibility),
 }) {}
@@ -223,7 +224,8 @@ export class ProjectAutomationRequest extends Schema.Class<ProjectAutomationRequ
 export class ProjectGitAuthRequest extends Schema.Class<ProjectGitAuthRequest>(
   "ProjectGitAuthRequest",
 )({
-  gitAuthMode: GitAuthMode,
+  /** `ambient` is refused with `AMBIENT_REMOVED_GUIDANCE`; it decodes so an older client hears why. */
+  gitAuthMode: RequestedGitAuthMode,
 }) {}
 
 /** The project's workspace-image override; null returns it to the Settings default. */
@@ -407,7 +409,7 @@ export class GitBridgeStatusView extends Schema.Class<GitBridgeStatusView>("GitB
   since: Schema.NullOr(Timestamp),
 }) {}
 
-/** The user-level git access choice; `ambient` stays a per-project mode. */
+/** The user-level git access choice: the mode new projects adopt with. */
 export const GitAccessMode = Schema.Literals(["mend-key", "bridge"]);
 export type GitAccessMode = typeof GitAccessMode.Type;
 

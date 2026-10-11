@@ -446,9 +446,8 @@ nginx.ingress.kubernetes.io/proxy-body-size: 8m
 
 ## Adopting projects (git auth)
 
-The server clones and fetches; a Pod has no ambient git identity, so `--auth ambient` (the default,
-right for a laptop) fails on Kubernetes with "could not read Username" / "permission denied". Use
-the machine key instead:
+The server clones and fetches with the adopting user's Mend key or bridge (`mend-key`, the default,
+or `bridge`); a Pod holds no git identity of its own. With the Mend key:
 
 ```sh
 mend keys init                                   # prints the server's public key

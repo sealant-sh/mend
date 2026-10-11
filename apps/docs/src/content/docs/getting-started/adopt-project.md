@@ -73,16 +73,14 @@ See [Known issues](/reference/known-issues/).
 
 `--auth` selects how the Mend host authenticates remote Git operations:
 
-| Mode       | Behavior                                                      |
-| ---------- | ------------------------------------------------------------- |
-| `ambient`  | Use whatever credentials exist inside the Mend server process |
-| `mend-key` | Use your Mend key, held on the server                         |
-| `bridge`   | Relay signing to an SSH agent shared from another machine     |
+| Mode       | Behavior                                                  |
+| ---------- | --------------------------------------------------------- |
+| `mend-key` | Use your Mend key, held on the server                     |
+| `bridge`   | Relay signing to an SSH agent shared from another machine |
 
 The default is your Git access mode from `mend keys mode`, which is `mend-key` until you change it.
-Ambient mode uses whatever credentials exist inside the Mend application container; the Docker
-deployment ships none and never inherits your laptop's home directory or SSH agent, so ambient mode
-reaches only public remotes there.
+Both sign SSH remotes. The `ambient` mode of earlier releases is gone; see
+[No ambient mode](/guides/git-access/#no-ambient-mode).
 
 For a Mend key:
 

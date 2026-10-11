@@ -91,6 +91,7 @@ import type {
   ContextItem,
   FollowUpStatus,
   GitAuthMode,
+  RecordedGitAuthMode,
   GitTransportKind,
   CommentAuthor,
   CommentKind,
@@ -460,7 +461,7 @@ export const projects = pgTable(
     // Land when a turn completes (0064, docs/adr/0007-landing.md).
     autoLand: text().$type<AutomationChoice>().notNull().default("inherit"),
     backgroundSessions: text().$type<AutomationChoice>().notNull().default("inherit"),
-    gitAuthMode: text().$type<GitAuthMode>().notNull().default("ambient"),
+    gitAuthMode: text().$type<GitAuthMode>().notNull().default("mend-key"),
     // NULL inherits the global settings.workspaceImage default.
     workspaceImage: jsonbOf(WorkspaceImage),
     // Whether sessions here receive the launching user's dotfiles.
@@ -1818,7 +1819,7 @@ export const sessionGitOps = pgTable(
     port: integer(),
     kind: text().$type<GitTransportKind>().notNull(),
     command: text().notNull(),
-    authMode: text().$type<GitAuthMode>().notNull(),
+    authMode: text().$type<RecordedGitAuthMode>().notNull(),
     refUpdates: jsonb().$type<ReadonlyArray<string>>(),
     exitCode: integer(),
     startedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),

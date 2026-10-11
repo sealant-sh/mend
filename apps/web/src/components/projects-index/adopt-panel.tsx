@@ -114,7 +114,7 @@ export function AdoptPanel({ onAdopted }: { readonly onAdopted: () => void }) {
       </div>
       <div className="mt-3 flex items-center gap-2">
         <span className="text-xs text-label">git access:</span>
-        {(["mend-key", "bridge", "ambient"] as const).map((mode) => (
+        {(["mend-key", "bridge"] as const).map((mode) => (
           <button
             key={mode}
             type="button"

@@ -97,7 +97,7 @@ const EXPLANATIONS: Record<FactKey, string> = {
   dotfiles:
     "Whether sessions in this project receive your dotfiles (repo plus synced home files, set up in Settings) at launch, and whether a zsh workspace gets Mend's default shell profile where your dotfiles left no ~/.zshrc or starship config.",
   hot: "How many workspaces this project keeps ready for new sessions. A new session claims one and attaches immediately; each ready workspace is a live container on this machine.",
-  git: "How Mend reaches this project's remote: ambient uses your login user's git and ssh setup; mend key is this machine's own deploy key; bridge signs through an ssh-agent shared from another machine.",
+  git: "How Mend reaches this project's remote over ssh: mend key signs with your own Mend key, held on the server; bridge signs through the ssh-agent you share from your machine (mend keys share), for a key that stays there.",
   landing:
     "Whether a session here pushes its change and opens or updates its pull request after each completed turn that asked for a change. Inherit follows Settings.",
   review:

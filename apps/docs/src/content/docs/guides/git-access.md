@@ -13,7 +13,7 @@ credentials.
 Your Git access is per user. **Settings → Git access** sets the mode for projects you adopt: **A
 Mend key on your git account** (`mend-key`, the default) or **Your machine's key** (`bridge`).
 `mend keys mode` does the same from the terminal. A project's **Setup** page can override the mode
-with `mend key`, `bridge`, or `ambient`, and `mend adopt --auth` overrides it for one adoption.
+with `mend key` or `bridge`, and `mend adopt --auth` overrides it for one adoption.
 
 ## Your Mend key
 
@@ -56,27 +56,27 @@ agent. Hardware-key touch happens on the machine holding the key. While no signe
 for bridge projects does not wait: the base is not fetched, and pushes fail with a message that says
 so. The project's Setup page shows `signer connected · <machine>` or `no signer connected`.
 
-## Ambient credentials
+## No ambient mode
 
-Ambient mode uses whatever Git and SSH setup exists where the Mend server process runs. In the
-Docker deployment that is the application container, which ships no credentials and does not inherit
-your laptop's home directory or SSH agent, so ambient mode reaches only public remotes there. It
-fits a source checkout you run as your own user, where the host already has the right SSH agent, key
-files, credential helper, or GitHub CLI setup.
+Until 0.36 a third mode, `ambient`, used whatever Git and SSH setup existed where the server ran. On
+a server from `mend server setup` or the Kubernetes chart that is a container with no key, agent or
+credential, so it reached only public HTTPS remotes, which both modes above reach the same way. It
+is gone: upgrading moves each project that used it to its creator's own mode (`mend keys mode`), or
+to `mend-key` when they never chose one. A client from before 0.36 that asks for `ambient` is
+refused with:
 
-Verify access where the server runs before adoption:
-
-```sh
-git ls-remote git@github.com:acme/api.git
+```text
+Mend no longer has an ambient git mode: a packaged server holds no git or ssh credential of its own. Use your Mend key (`--auth mend-key`; `mend keys` prints it to add on your git host) or your own key through `mend keys share` (`--auth bridge`).
 ```
 
 ## HTTPS remotes
 
-Your Mend key and the bridge sign SSH; neither answers an HTTPS remote. On a server from
-`mend server setup` (or the Kubernetes chart), Mend's own Git (adoption, `mend refresh`, the base
-fetch and the push of a [landing](/guides/land-a-change/)) runs in a container with no HTTPS
-credential, so there an `https://` URL clones and fetches a public repository only, and no push to
-it succeeds. Adopt the SSH URL instead: `git@github.com:acme/api.git` rather than
+Your Mend key and the bridge sign SSH; neither answers an HTTPS remote, so neither is needed for
+one: a bridge project with nobody sharing still adopts and fetches a public HTTPS repository. On a
+server from `mend server setup` (or the Kubernetes chart), Mend's own Git (adoption, `mend refresh`,
+the base fetch and the push of a [landing](/guides/land-a-change/)) runs in a container with no
+HTTPS credential, so there an `https://` URL clones and fetches a public repository only, and no
+push to it succeeds. Adopt the SSH URL instead: `git@github.com:acme/api.git` rather than
 `https://github.com/acme/api.git`.
 
 A private repository adopted by its HTTPS URL on such a server fails with:
@@ -94,7 +94,11 @@ SSH path matches the HTTPS one; for other hosts, copy the SSH URL your host show
 
 A server you run from source as your own user runs Git with that user's Git config, so a credential
 helper configured there (`gh auth setup-git`, the macOS keychain) answers HTTPS remotes in either
-mode, for clone and push alike, and a `url.<base>.insteadOf` rewrite applies too.
+mode, for clone and push alike, and a `url.<base>.insteadOf` rewrite applies too. Mend decides who
+signs by the URL Git actually dials: an HTTPS URL that a rewrite sends over SSH (`insteadOf`, or
+`pushInsteadOf` for a landing's push) signs with your Mend key or your bridge like any SSH remote.
+Mend's own SSH never answers with the server process's agent, default keys or SSH config: where Mend
+resolved no signer, SSH refuses.
 
 ## Git inside a workspace
 
@@ -178,8 +182,8 @@ key (`mend keys` shows it), or your own key through the agent bridge (`--auth br
 
 An SSH login name is not a credential and stays: `git@github.com:acme/api.git` and
 `ssh://git@example.com/acme/api.git` are accepted as typed. Use the SSH URL with your Mend key or
-the bridge; on a machine you run as your own user, ambient mode can use the host's own credential
-helper for an HTTPS URL without a token in it.
+the bridge; on a server you run from source as your own user, that user's Git credential helper
+answers an HTTPS URL without a token in it (see [HTTPS remotes](#https-remotes)).
 
 Mend also removes a credential from any repository URL it returns or logs, and from the Git errors
 it reports. For projects adopted before 0.36, see
@@ -199,9 +203,7 @@ repository transport.
 ## Common failures
 
 **Permission denied** means the selected identity cannot access the remote. Add your Mend public key
-to your Git account, or verify that the shared agent holds an authorized key. In ambient mode on a
-server from `mend server setup`, the server's container holds no key at all: adopt with
-`--auth mend-key` or `--auth bridge`.
+to your Git account, or verify that the shared agent holds an authorized key.
 
 **Mend found no HTTPS credential for this remote** means the URL is `https://` and the server's Git
 has no credential for it: the repository is private (or the URL is wrong), or the operation was a

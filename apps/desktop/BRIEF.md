@@ -225,9 +225,8 @@ The GUI for what `mend adopt` and the web project page do today, same endpoints:
 
 - Adopt a repository (path or URL) into the central store; show store path, default branch, adopted
   SHA.
-- Per-project settings: git auth mode (ambient / mend-key / bridge), workspace image, dotfiles
-  toggle, environment + secrets, references and mounts, service recipes, automation
-  (autoTour/autoSuggest).
+- Per-project settings: git auth mode (mend-key / bridge), workspace image, dotfiles toggle,
+  environment + secrets, references and mounts, service recipes, automation (autoTour/autoSuggest).
 - Remove a project (the removal report says what would not delete).
 
 Phased after the main screen; nothing here blocks daily use since the CLI covers it.

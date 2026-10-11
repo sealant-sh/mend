@@ -386,7 +386,7 @@ const CASES: ReadonlyArray<AccessCase> = [
     autoName: "inherit",
     backgroundSessions: "inherit",
   })("projects.automation"),
-  project("project-manage", "PUT", "/git-auth", { gitAuthMode: "ambient" })("projects.gitAuth"),
+  project("project-manage", "PUT", "/git-auth", { gitAuthMode: "bridge" })("projects.gitAuth"),
   project("project-manage", "PUT", "/workspace-image", { workspaceImage: null })(
     "projects.workspaceImage",
   ),

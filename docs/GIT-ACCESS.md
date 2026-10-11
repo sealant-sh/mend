@@ -32,9 +32,12 @@ delivery prompt lives with the session that builds it.
      `GIT_SSH_COMMAND="ssh -i <key> -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"` and
      the credential is the session owner's (the shim resolves session → owner; an unowned op on a
      single-user install uses the only key, and refuses to guess between two).
-   - _Ambient_: the login user's git/ssh setup on the server host, unchanged. Fix the failure story
-     only: run ssh with `BatchMode=yes`, surface "permission denied / host key unknown" as readable
-     errors instead of dead clones.
+   - _Ambient_ (removed in 0.36): the login user's git/ssh setup on the server host. On every
+     packaged server that is an empty container, so it reached only public HTTPS remotes, which both
+     remaining modes reach without a signer. Migration 0129 moved its projects to their creator's
+     mode, else the Mend key; a request for it is refused with the two modes that remain. A server
+     run from source still uses its user's git config (credential helper, `insteadOf`) for HTTPS in
+     either mode.
    - _Bridge_: below.
    - The user-level choice (`user_git_access`, `GET/PUT /me/git-access`, Settings → Git access,
      `mend keys mode`) is between Mend key and bridge. It is asked once, as the second step of

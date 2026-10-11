@@ -251,6 +251,7 @@ export const fixtureContext = (over: Partial<DashboardContext> = {}): DashboardC
   api: fixtureApi,
   attachTty: () => Promise.resolve("detached"),
   agentShare: null,
+  gitAccessMode: null,
   tunnels: null,
   ...over,
 });

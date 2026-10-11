@@ -43,7 +43,7 @@ describe("dashboard adoption", () => {
         requests.push(args);
         return project;
       },
-      { name: "repo", source, gitAuthMode: "ambient" },
+      { name: "repo", source, gitAuthMode: "mend-key" },
     );
     expect(result).toEqual({
       kind: "invalid-source",
@@ -82,6 +82,11 @@ describe("dashboard adoption", () => {
       originUrl: source,
     });
     expect(offer).toEqual({ source, name: "repo", modeIndex: 0 });
+    // The choice starts on the saved mode, whether or not this terminal can share an agent.
+    const facts = { cwd: "/checkout/Repo", repoRoot: "/checkout/Repo", originUrl: source };
+    expect(deriveAdoptOffer(facts, "bridge")).toEqual({ source, name: "repo", modeIndex: 1 });
+    expect(deriveAdoptOffer(facts, "mend-key")).toEqual({ source, name: "repo", modeIndex: 0 });
+    expect(deriveAdoptOffer(facts, null)).toEqual({ source, name: "repo", modeIndex: 0 });
     if (offer === null) throw new Error("Expected a network adoption offer");
     const requests: unknown[] = [];
     const result = await submitDashboardAdoption(
@@ -107,7 +112,7 @@ describe("dashboard adoption", () => {
         {
           name: "repo",
           source: "git@host:repo",
-          gitAuthMode: "ambient",
+          gitAuthMode: "mend-key",
         },
       ),
     ).rejects.toBe(error);
@@ -163,6 +168,7 @@ describe("what adopt says signed the clone", () => {
       value: "git",
       note: "cloned over git, which the connected `mend keys share` does not sign; it signs ssh remotes",
     });
+    // An older server may still answer with a mode this CLI no longer knows: nothing to name.
     expect(adoptedGitAuth("https://host/repo.git", "ambient")).toBeNull();
   });
 });
@@ -175,7 +181,7 @@ describe("refusedAdoptOffer", () => {
       originUrl: "git@github.com:acme/api.git",
     });
     if (offer === null) throw new Error("Expected a network adoption offer");
-    const reason = "The remote refused the Mend server's own ssh setup (ambient).";
+    const reason = "The remote refused the Mend key (permission denied).";
     expect(refusedAdoptOffer({ ...offer, modeIndex: 1 }, reason)).toEqual({
       source: "git@github.com:acme/api.git",
       name: "checkout",

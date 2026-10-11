@@ -124,9 +124,11 @@ describe("MendKeys", () => {
 });
 
 describe("sshCommandFor", () => {
-  it("ambient adds accept-new and BatchMode to the user's ssh", () => {
-    expect(sshCommandFor("ambient", null)).toContain("-o StrictHostKeyChecking=accept-new");
-    expect(sshCommandFor("ambient", null)).toContain("-o BatchMode=yes");
+  it("bridge offers the agent's identities, accepts first-contact hosts, never prompts", () => {
+    const command = sshCommandFor("bridge", null);
+    expect(command).toContain("-o StrictHostKeyChecking=accept-new");
+    expect(command).toContain("-o BatchMode=yes");
+    expect(command).not.toContain("IdentitiesOnly");
   });
 
   it("mend-key pins the identity and accepts first-contact hosts", () => {
@@ -146,12 +148,7 @@ describe("describeGitRemoteFailure", () => {
   it("names permission denied per mode", () => {
     const stderr =
       "git@gitlab.com: Permission denied (publickey).\nfatal: Could not read from remote repository.";
-    const ambient = describeGitRemoteFailure(stderr, "ambient");
-    // The packaged server's container holds none of its host's keys: the line names the way out.
-    expect(ambient).toContain("Mend server's own ssh setup");
-    expect(ambient).toContain("--auth mend-key");
-    expect(ambient).toContain("mend keys share");
-    expect(ambient).not.toContain("shell here");
+    expect(describeGitRemoteFailure(stderr, "bridge")).toContain("connected signer's keys");
     expect(describeGitRemoteFailure(stderr, "mend-key")).toContain("git account's SSH keys");
     expect(describeGitRemoteFailure(stderr, "mend-key")).toContain("Permission denied (publickey)");
   });
@@ -160,7 +157,7 @@ describe("describeGitRemoteFailure", () => {
   const httpsRefusal =
     "Cloning into bare repository '/var/lib/mend/store/x/repo.git'...\nfatal: could not read Username for 'https://github.com': terminal prompts disabled";
 
-  it.each(["ambient", "mend-key", "bridge"] as const)(
+  it.each(["mend-key", "bridge"] as const)(
     "an https remote that wants a credential is never a refused key (%s)",
     (mode) => {
       const described = describeGitRemoteFailure(httpsRefusal, mode, {
@@ -217,21 +214,21 @@ describe("describeGitRemoteFailure", () => {
   });
 
   it("names a changed host key — first contact is accept-new in every mode", () => {
-    const described = describeGitRemoteFailure("Host key verification failed.", "ambient");
+    const described = describeGitRemoteFailure("Host key verification failed.", "bridge");
     expect(described).toContain("host key changed");
   });
 
   it("names unresolvable hosts", () => {
     const described = describeGitRemoteFailure(
       "ssh: Could not resolve hostname gitlab.example.internal: Name or service not known",
-      "ambient",
+      "mend-key",
     );
     expect(described).toContain('"gitlab.example.internal"');
   });
 
   it("stays silent on unknown failures — verbatim stderr must win", () => {
     expect(
-      describeGitRemoteFailure("fatal: the remote end hung up unexpectedly", "ambient"),
+      describeGitRemoteFailure("fatal: the remote end hung up unexpectedly", "mend-key"),
     ).toBeNull();
   });
 });

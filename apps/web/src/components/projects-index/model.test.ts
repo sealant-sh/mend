@@ -20,7 +20,7 @@ const project: ProjectDto = {
   autoName: "inherit",
   autoLand: "inherit",
   backgroundSessions: "inherit",
-  gitAuthMode: "ambient",
+  gitAuthMode: "mend-key",
   workspaceImage: null,
   applyDotfiles: false,
   defaultShellProfile: true,

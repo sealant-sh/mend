@@ -294,8 +294,8 @@ extraEnv:
 
 ## Git access
 
-The server clones and fetches as the user who adopts. A Pod has no ambient Git identity, so
-`--auth ambient` fails there. Use your Mend key or the bridge:
+The server clones and fetches as the user who adopts, with their Mend key or their bridge; a Pod
+holds no Git identity of its own:
 
 ```sh
 mend keys init                 # your Mend key, held on the server

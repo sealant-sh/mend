@@ -283,7 +283,12 @@ describe("the commands against a server", { timeout: 30_000 }, () => {
   it("adopt sends the visibility it was asked for, private by default", async () => {
     const fake = await startFakeMend(() => ({
       status: 200,
-      body: { name: "api", storePath: "/store/api", defaultBranch: "main", gitAuthMode: "ambient" },
+      body: {
+        name: "api",
+        storePath: "/store/api",
+        defaultBranch: "main",
+        gitAuthMode: "mend-key",
+      },
     }));
     try {
       await runCli(fake.url, ["adopt", "https://example.invalid/acme/api.git"]);

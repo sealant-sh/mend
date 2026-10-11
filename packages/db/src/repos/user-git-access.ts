@@ -5,7 +5,7 @@ import * as Context from "effect/Context";
 import { MendDB } from "../client.ts";
 import { userGitAccess } from "../schema/workbench.ts";
 
-/** The user-level git access choice; ambient stays a per-project mode. */
+/** The user-level git access choice: the mode new projects adopt with. */
 export type GitAccessMode = "mend-key" | "bridge";
 
 /**

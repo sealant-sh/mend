@@ -1,4 +1,4 @@
-import { withoutLaunchPhase } from "@mend/domain/workbench";
+import { type GitAuthMode, withoutLaunchPhase } from "@mend/domain/workbench";
 import { CliRenderEvents, createCliRenderer, type ScrollBoxRenderable } from "@opentui/core";
 import { createRoot, useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/react";
 import {
@@ -12,6 +12,7 @@ import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactN
 
 import type { AgentShareHandle, ShareEvent } from "./agent-share.ts";
 import {
+  ADOPT_MODE_ORDER,
   deriveAdoptOffer,
   refusedAdoptOffer,
   submitDashboardAdoption,
@@ -234,6 +235,8 @@ export interface DashboardContext {
   ) => Promise<AttachOutcome>;
   /** The ssh-agent share running alongside; null when off or no agent. */
   readonly agentShare: AgentShareHandle | null;
+  /** The user's saved git access mode (`mend keys mode`); null when the server could not say. */
+  readonly gitAccessMode: GitAuthMode | null;
   /**
    * The selected session's browser Services on this machine's loopback (a remote server);
    * null on a local server or with --no-tunnel.
@@ -1108,7 +1111,7 @@ export const App = ({
     if (data === undefined || adoptOfferDecided.current) return;
     if (homeProject !== undefined) return;
     adoptOfferDecided.current = true;
-    setAdoptOffer(deriveAdoptOffer(cwdFacts(ctx.cwd)));
+    setAdoptOffer(deriveAdoptOffer(cwdFacts(ctx.cwd), ctx.gitAccessMode));
     // homeProject/data identity is enough; ctx.cwd never changes in a run.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data, homeProject]);
@@ -1423,30 +1426,22 @@ export const App = ({
     },
   });
 
-  const ADOPT_AUTH_MODES = [
-    {
-      mode: "ambient",
-      label: "ambient",
-      hint: "the Mend server's own git/ssh · a packaged server has none",
-    },
-    {
-      mode: "mend-key",
-      label: "mend-key",
-      hint: "your Mend key · add its public half on the git host",
-    },
-    {
-      mode: "bridge",
-      label: "bridge",
-      hint: "your own ssh-agent, relayed while `mend keys share` runs",
-    },
-  ] as const;
+  const ADOPT_AUTH_HINTS: Record<GitAuthMode, string> = {
+    "mend-key": "your Mend key · add its public half on the git host",
+    bridge: "your own ssh-agent, relayed while `mend keys share` runs",
+  };
+  const ADOPT_AUTH_MODES = ADOPT_MODE_ORDER.map((mode) => ({
+    mode,
+    label: mode,
+    hint: ADOPT_AUTH_HINTS[mode],
+  }));
 
   const adoptMutation = useMutation({
     mutationFn: (offer: AdoptOffer) =>
       submitDashboardAdoption(ctx.api, {
         name: offer.name,
         source: offer.source,
-        gitAuthMode: ADOPT_AUTH_MODES[offer.modeIndex]?.mode ?? "ambient",
+        gitAuthMode: ADOPT_AUTH_MODES[offer.modeIndex]?.mode ?? "mend-key",
       }),
     onMutate: (offer) => {
       setAdoptOffer(null);

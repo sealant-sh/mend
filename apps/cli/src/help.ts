@@ -144,14 +144,14 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     name: "adopt",
     section: "start",
     summary: "adopt a repository into the store",
-    synopsis: ["[git-url] [--name <name>] [--auth ambient|mend-key|bridge] [--private|--shared]"],
+    synopsis: ["[git-url] [--name <name>] [--auth mend-key|bridge] [--private|--shared]"],
     description: [
       "Clones a network Git repository into Mend's store. Every session then gets its own worktree of it. With no argument, Mend uses the current checkout's origin URL. HTTP(S), SSH, git://, and SCP-style URLs work; local paths and file:// URLs do not.",
-      "--auth says how the store fetches from the remote. Default: your mode from mend keys mode. mend-key signs with your Mend key on the server (see mend keys). bridge relays this machine's ssh-agent while a mend command runs here, so hardware keys stay on your desk. ambient uses the server's own credentials.",
+      "--auth says how the store fetches from the remote. Default: your mode from mend keys mode. mend-key signs with your Mend key on the server (see mend keys). bridge relays this machine's ssh-agent while a mend command runs here, so hardware keys stay on your desk. Both sign ssh remotes: for a private repository, adopt its SSH URL (git@host:owner/repo.git), not its https one.",
     ],
     options: [
       { flag: "--name <name>", text: "the project's name in Mend. Default: the repository's" },
-      { flag: "--auth <mode>", text: "mend-key, bridge, or ambient. Default: mend keys mode" },
+      { flag: "--auth <mode>", text: "mend-key or bridge. Default: mend keys mode" },
       { flag: "--private", text: "only you see the project. Default" },
       {
         flag: "--shared",
