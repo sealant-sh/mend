@@ -15,6 +15,8 @@ turn's diff, and open a terminal, from t3code. Only sessions whose agent Mend ru
 show as threads; PTY sessions (`mend codex`, `mend claude` in a terminal), shell sessions and other
 harnesses do not.
 
+The gateway supports t3code's core workflow; more of t3code is coming in 0.36 patch releases.
+
 Mend stays the only source of truth. To t3code the gateway is a t3code server; to Mend it is an
 ordinary client, calling Mend's API with the device token of the person who paired. Everything a
 thread does goes through Mend's own routes and its rules: a session started from t3code is yours,
