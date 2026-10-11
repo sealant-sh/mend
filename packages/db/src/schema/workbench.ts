@@ -619,6 +619,16 @@ export const userNotificationSettings = pgTable("user_notification_settings", {
 });
 
 /**
+ * Which of each person's own logins their Claude and Codex sessions receive
+ * (packages/domain/src/workbench/agent-logins.ts). No row = every login they have connected.
+ */
+export const userAgentLogins = pgTable("user_agent_logins", {
+  userId: text().primaryKey(),
+  selectedOnly: boolean().notNull().default(false),
+  updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+});
+
+/**
  * Each person's pi setup (`mend connect pi`; pi-profile.ts in @mend/domain), one row per account.
  * The files ride the row as jsonb, like skills; `digest` is their tree digest, which a launch
  * compares with what the session's agent directory already holds.

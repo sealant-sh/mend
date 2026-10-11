@@ -31,6 +31,7 @@ import {
   mintDevice,
   deleteDotfilesSnapshot,
   disconnectAccount,
+  setAgentLogins,
   postDotfilesSnapshot,
   putDotfilesRepository,
   putSettings,
@@ -63,6 +64,7 @@ export const Route = createFileRoute("/settings")({
       queryClient.ensureQueryData(trpc.settings.secretFiles.queryOptions()),
       queryClient.ensureQueryData(trpc.git.author.queryOptions()),
       queryClient.ensureQueryData(trpc.platform.sealantIdentity.queryOptions()),
+      queryClient.ensureQueryData(trpc.platform.agentLogins.queryOptions()),
       queryClient.ensureQueryData(trpc.devices.list.queryOptions(undefined, { staleTime: 30_000 })),
       // Who is looking decides which defaults render; an account in no organization reads none.
       queryClient.prefetchQuery(
@@ -995,6 +997,7 @@ function ConnectedAccountsPanel() {
             </div>
           );
         })}
+        <AgentLoginsSwitch />
         {error === null ? null : (
           <p className="font-mono text-[12.5px] text-warning" role="alert">
             {error}
@@ -1002,6 +1005,72 @@ function ConnectedAccountsPanel() {
         )}
       </div>
     </section>
+  );
+}
+
+/**
+ * Which of the person's own logins their Claude and Codex sessions receive (docs/adr/0016,
+ * decision 5): every connected one by default, so a Claude session can run `codex` on the same
+ * person's login; on, only the session's own agent's.
+ */
+function AgentLoginsSwitch() {
+  const trpc = useTRPC();
+  const queryClient = useQueryClient();
+  const setting = useSuspenseQuery(trpc.platform.agentLogins.queryOptions()).data;
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const toggle = (selectedOnly: boolean) => {
+    if (setting.selectedOnly === selectedOnly) return;
+    setPending(true);
+    setError(null);
+    void setAgentLogins(selectedOnly)
+      .then((next) =>
+        queryClient.setQueryData(trpc.platform.agentLogins.queryOptions().queryKey, next),
+      )
+      .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)))
+      .finally(() => setPending(false));
+  };
+
+  return (
+    <div className="space-y-2 border-t border-[var(--sw-faint-rule)] pt-5">
+      <div className="flex items-start justify-between gap-4">
+        <div className="min-w-0">
+          <p className="font-sans text-sm font-medium text-foreground">
+            Give my sessions only the selected agent&apos;s login
+          </p>
+          <p className="mt-1 text-[13px] leading-relaxed text-muted-foreground">
+            Off: a Claude session also gets your Codex login and a Codex session your Claude login,
+            when connected, so the agent can run <span className="font-mono text-xs">codex</span> or{" "}
+            <span className="font-mono text-xs">claude</span> on your own login. Only ever yours: no
+            session gets anyone else&apos;s. Shells, pi and opencode get every login you connected
+            either way. Applies to sessions started from now on.
+          </p>
+        </div>
+        <div className="flex shrink-0 gap-2">
+          {[true, false].map((value) => (
+            <button
+              key={String(value)}
+              type="button"
+              disabled={pending}
+              onClick={() => toggle(value)}
+              className={`rounded-xl border px-3.5 py-1.5 font-sans text-xs font-medium shadow-xs transition-colors disabled:opacity-60 ${
+                setting.selectedOnly === value
+                  ? "border-[color-mix(in_oklab,var(--sw-accent)_45%,transparent)] bg-wash text-foreground"
+                  : "border-border bg-card text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              {value ? "On" : "Off"}
+            </button>
+          ))}
+        </div>
+      </div>
+      {error === null ? null : (
+        <p className="font-mono text-[12.5px] text-warning" role="alert">
+          {error}
+        </p>
+      )}
+    </div>
   );
 }
 

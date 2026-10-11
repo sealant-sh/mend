@@ -18,6 +18,7 @@ import {
   validatePiProfile,
 } from "@mend/domain/workbench";
 
+import { agentLoginsLine, parseAgentLoginsArgs, type AgentLoginsDto } from "./agent-logins.ts";
 import {
   claudeMemoryDirFor,
   importReportCounts,
@@ -3816,6 +3817,26 @@ const gitAuthorCommand = async (config: CliConfig, args: ReadonlyArray<string>) 
   }
 };
 
+/** `mend agent-logins`: show or set which of your own logins your Claude and Codex sessions get. */
+const agentLoginsCommand = async (config: CliConfig, args: ReadonlyArray<string>) => {
+  const asked = parseAgentLoginsArgs(args);
+  switch (asked.kind) {
+    case "usage":
+      return fail(usageOf("agent-logins"));
+    case "show":
+      say(agentLoginsLine(await api<AgentLoginsDto>(config, "GET", "/me/agent-logins")));
+      return;
+    case "set": {
+      const setting = await api<AgentLoginsDto>(config, "PUT", "/me/agent-logins", {
+        selectedOnly: asked.selectedOnly,
+      });
+      say(`${green("✓")} agent logins · ${agentLoginsLine(setting)}`);
+      say(dim("  sessions started from now on; a running session keeps what it has"));
+      return;
+    }
+  }
+};
+
 interface GitAccessDto {
   readonly mode: "mend-key" | "bridge";
   readonly key: GitKeyDto;
@@ -5954,6 +5975,8 @@ const main = async () => {
       return keysCommand(config, rest);
     case "git-author":
       return gitAuthorCommand(config, rest);
+    case "agent-logins":
+      return agentLoginsCommand(config, rest);
     case "dotfiles":
       return dotfilesCommand(config, rest);
     case "skills":

@@ -211,6 +211,8 @@ export const connectAccount = (input: {
 }) => orLogin(trpcClient.platform.connectAccount.mutate(input));
 export const disconnectAccount = (id: string) =>
   orLogin(trpcClient.platform.disconnectAccount.mutate({ id }));
+export const setAgentLogins = (selectedOnly: boolean) =>
+  orLogin(trpcClient.platform.setAgentLogins.mutate({ selectedOnly }));
 export const removeWorkspaceSshKey = (sshKeyId: string) =>
   orLogin(trpcClient.platform.removeWorkspaceSshKey.mutate({ sshKeyId }));
 

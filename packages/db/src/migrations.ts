@@ -3485,6 +3485,21 @@ const cliAuthClientMigration = Effect.gen(function* () {
   yield* sql`ALTER TABLE cli_auth_requests ADD COLUMN client text`;
 });
 
+/**
+ * Which of each person's own logins their Claude and Codex sessions receive (docs/adr/0016,
+ * decision 5, amended 2026-10-10). No row means the default: every login the person has
+ * connected, their session's own agent's required.
+ */
+const userAgentLoginsMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    CREATE TABLE user_agent_logins (
+      user_id text PRIMARY KEY REFERENCES "user" (id) ON DELETE CASCADE,
+      selected_only boolean NOT NULL DEFAULT false,
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -3615,4 +3630,5 @@ export const migrations = {
   "0126_repository_url_credentials": repositoryUrlCredentialsMigration,
   "0127_default_bun": defaultBunMigration,
   "0128_cli_auth_client": cliAuthClientMigration,
+  "0129_user_agent_logins": userAgentLoginsMigration,
 };

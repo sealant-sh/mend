@@ -42,7 +42,10 @@ The server stores the login encrypted (AES-256-GCM) in its database.
 
 Your login belongs to your Mend account and is used for your work:
 
-- **Your sessions.** A session runs on the logins of the person who started it.
+- **Your sessions.** A session runs on the logins of the person who started it. A Claude session
+  also gets your Codex login, and a Codex session your Claude login, when you have connected it, so
+  the agent can run `codex` or `claude` on your own login (a Codex review from a Claude session, for
+  example). A session starts without the other one when it is not connected.
 - **Your requests to Mend.** A tour, "Read this change" or "Suggest fixes" runs on the login of the
   person who asked for it, whoever owns the change. The passes Mend queues when your session
   settles, and the tour a landing of yours asks for, run on yours.
@@ -63,6 +66,21 @@ user, and kept fresh there. A joiner's processes run on the joiner's logins, and
 control each turn runs on its sender's login. A start whose provider is not connected is refused
 (`Connect Claude to start a session here.`). With `sudo`, anyone working in the workspace can still
 read those files: see [What sudo means here](/operate/per-person-workspaces/#what-sudo-means-here).
+
+### Only the selected agent's login
+
+To give each Claude or Codex session its own agent's login only, turn on **Give my sessions only the
+selected agent's login** in Settings → Connected accounts, or run:
+
+```sh
+mend agent-logins selected
+```
+
+`mend agent-logins all` goes back to the default, and `mend agent-logins` prints the setting. It is
+yours alone and applies to sessions started from then on. GitHub is given either way, and a shell,
+pi or opencode session gets every login you connected either way. While it is on, a Claude or Codex
+session of yours does not start in a ready standby workspace, since those are made with every login:
+it starts in a new one.
 
 ## Where copies go, and why they cannot break your login
 
