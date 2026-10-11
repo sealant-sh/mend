@@ -166,6 +166,7 @@ import {
   type SealantPrincipalValue,
   type WorkspaceByKey,
   type WorkspaceCreateFence,
+  type LaunchedRuntime,
   type WorkspaceStopOptions,
 } from "@mend/sealant";
 import {
@@ -355,6 +356,7 @@ const sealantDeadLayer = Layer.succeed(SealantClient, {
   captureStatus: () => Effect.succeed(null),
   runtimeDeadline: () => Effect.succeed(null),
   runtimeResourceId: () => Effect.succeed(null),
+  launchedRuntime: () => Effect.succeed("unknown" as const),
   findWorkspaceByKey: () => Effect.succeed({ kind: "unsupported" as const }),
   fenceWorkspaceCreate: () => Effect.succeed({ kind: "unsupported" as const }),
   captureReplan: () => Effect.die("not in test"),
@@ -510,6 +512,8 @@ const sealantLaunchLayer = (
     readonly loseCreateAnswer?: () => boolean;
     /** `launch.runtime.resourceId` / `runtime()` (Core's next SDK); absent answers null, as on 0.37.2. */
     readonly resourceId?: () => string | null;
+    /** Whether an executor ever ran (`launchedRuntime`); absent answers `unknown`, as on 0.37.2. */
+    readonly launchedRuntime?: () => LaunchedRuntime;
     /** Core keeps the executor for recovery (`drain.retained` on the stop's answer). */
     readonly retained?: () => {
       readonly reason: string | null;
@@ -818,6 +822,7 @@ const sealantLaunchLayer = (
         : captureOps.captureStatus(target),
     runtimeDeadline: () => Effect.sync(() => captureOps?.runtimeDeadline?.() ?? null),
     runtimeResourceId: () => Effect.sync(() => captureOps?.resourceId?.() ?? null),
+    launchedRuntime: () => Effect.sync(() => captureOps?.launchedRuntime?.() ?? "unknown"),
     findWorkspaceByKey: (key) =>
       Effect.sync(() => captureOps?.findByKey?.(key) ?? { kind: "unsupported" as const }),
     fenceWorkspaceCreate: (key) =>
@@ -4834,6 +4839,69 @@ describe("SessionEngine", () => {
               ),
           },
         }),
+      },
+    );
+  });
+
+  it("a stop while the image builds reads stopped from then on, and the build failing after it keeps the stop's words", async () => {
+    // RC 3 (2026-10-11): `mend stop` said ✓ stopped, and the session read `starting` for minutes
+    // while its image build ran on; the build failing later would have rewritten it `failed`.
+    const created: CreateOptions[] = [];
+    const createAsked = await Effect.runPromise(Deferred.make<void>());
+    const buildEnds = await Effect.runPromise(Deferred.make<void>());
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            name: null,
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+          const launching = yield* engine.launch(session.id, ["codex"]).pipe(Effect.forkChild);
+          yield* Deferred.await(createAsked);
+          expect(engine.launchUnderWay(session.id)).toBe(true);
+
+          yield* engine.stop(session.id);
+          // The launch is still under way, standing down: it is not read as starting.
+          expect(engine.launchUnderWay(session.id)).toBe(false);
+          expect(world.sessions.get(session.id)?.status).toBe("stopped");
+          const stoppedWords = world.sessions.get(session.id)?.summary ?? null;
+
+          yield* Deferred.succeed(buildEnds, undefined);
+          yield* Fiber.await(launching);
+          expect(world.sessions.get(session.id)?.status).toBe("stopped");
+          expect(world.sessions.get(session.id)?.summary ?? null).toBe(stoppedWords);
+        }),
+      {
+        sealantLayer: sealantLaunchLayer(
+          created,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          () =>
+            Deferred.succeed(createAsked, undefined).pipe(
+              Effect.andThen(Deferred.await(buildEnds)),
+              Effect.andThen(
+                Effect.fail(
+                  new SealantPlatformError({
+                    code: "workspace_image_build_stalled",
+                    status: null,
+                    message: "The image build for workspace workspace-1 reported no progress.",
+                    cause: null,
+                  }),
+                ),
+              ),
+            ),
+        ),
       },
     );
   });
@@ -19451,6 +19519,23 @@ const lostAnswer = () =>
     }),
   );
 
+/**
+ * RC 3 (2026-10-11): an image build that failed launches no executor. Core reports the
+ * workspace `failed`, with no runtime and no drain, and refused every stop of it as "still
+ * launching". Read as kept, the drain asked that stop forever, and the session read
+ * `stopping · saving` until the machine was wiped.
+ */
+const buildFailed = () =>
+  Effect.fail(
+    new SealantPlatformError({
+      code: "workspace_image_build_stalled",
+      status: null,
+      message:
+        "The image build for workspace workspace-1 reported no progress for 12 min; it was at step 4/4.",
+      cause: null,
+    }),
+  );
+
 describe("SessionEngine against the Docker e2e run 5 (2026-09-28)", () => {
   it(
     "an executor that ended on its runtime and that the platform keeps is not dead: its lease and its token stay, and it reads `not saved · executor kept for recovery`",
@@ -19740,6 +19825,81 @@ describe("SessionEngine idempotent executor creates (Core's next SDK, 2026-09-28
               findByKey: () => ({ kind: "found", workspaceId: "workspace-1" }),
             },
             lostAnswer,
+          ),
+        },
+      );
+    },
+  );
+
+  it(
+    "a launch whose image build failed ends `failed` with its reason, asks no stop and frees the worktree: no executor ever ran",
+    { timeout: 20_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const memory = makeMemoryCaptureStore();
+      const stops: Array<"drain" | "discard"> = [];
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            yield* engine.launch(session.id, ["codex"]).pipe(Effect.flip);
+            yield* until(
+              () => memory.leases.get(session.worktreeId)?.executorId === null,
+              "the worktree freed",
+            );
+            const read = world.sessions.get(session.id);
+            expect(read?.status).toBe("failed");
+            expect(read?.settledAt).not.toBeNull();
+            expect(read?.summary ?? "").toContain("reported no progress");
+            expect(read?.captureDrain ?? null).toBeNull();
+            expect(stops).toEqual([]);
+          }),
+        {
+          captured: memory,
+          drainPolicy: { terminationWait: Duration.millis(300) },
+          sealantLayer: layerWith(
+            created,
+            {
+              stops,
+              status: () => "failed",
+              launchedRuntime: () => "never",
+              findByKey: () => ({ kind: "found", workspaceId: "workspace-1" }),
+            },
+            buildFailed,
+          ),
+        },
+      );
+    },
+  );
+
+  it(
+    "a failed workspace whose executor ran is still kept for what its disk may hold",
+    { timeout: 20_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const memory = makeMemoryCaptureStore();
+      const stops: Array<"drain" | "discard"> = [];
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            yield* engine.launch(session.id, ["codex"]).pipe(Effect.flip);
+            yield* until(() => stops.length > 0, "the drain's stop");
+            expect(memory.leases.get(session.worktreeId)?.executorId).toBe(session.id);
+          }),
+        {
+          captured: memory,
+          drainPolicy: { terminationWait: Duration.millis(300) },
+          sealantLayer: layerWith(
+            created,
+            {
+              stops,
+              stopAnswer: () => "kept",
+              status: () => "failed",
+              launchedRuntime: () => "launched",
+              findByKey: () => ({ kind: "found", workspaceId: "workspace-1" }),
+            },
+            buildFailed,
           ),
         },
       );
@@ -29074,6 +29234,10 @@ const workspacesPerOwner = (
         stopWorkspace: (workspace, options) =>
           guarded("stopWorkspace", ofWorkspace(workspace.id), () =>
             client.stopWorkspace(workspace, options),
+          ),
+        launchedRuntime: (workspace) =>
+          guarded("launchedRuntime", ofWorkspace(workspace.id), () =>
+            client.launchedRuntime(workspace),
           ),
         runtimeResourceId: (workspace, launchId) =>
           guarded("runtimeResourceId", ofWorkspace(workspace.id), () =>

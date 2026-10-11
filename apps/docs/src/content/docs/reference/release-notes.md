@@ -63,8 +63,8 @@ native phone app are not.
   and pin their harness versions. Claude Code no longer updates itself in a workspace.
 - **Native Arch on arm64.** On Apple silicon and ARM servers, Arch workspaces build for `aarch64`
   instead of running `x86_64` under emulation. Reinstall native dependencies in existing worktrees
-  (`node_modules`, `.venv`, `target/`); each Arch image's first build downloads the Arch Linux ARM
-  rootfs (about 300 MB) from `os.archlinuxarm.org`, outside the mirrors.
+  (`node_modules`, `.venv`, `target/`); the first Arch build on a host downloads the Arch Linux ARM
+  rootfs (829 MB) from `os.archlinuxarm.org`, outside the mirrors, once per host.
 - **Shallow repositories are refused** at adoption and at a session's start.
 
 ### CLI, dashboard and phone

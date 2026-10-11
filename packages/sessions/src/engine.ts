@@ -3914,8 +3914,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * 5). What Core last observed of its drain says otherwise (e2e9 F-A: a `docker stop` outside
        * Mend that saved read `stopping` for good, Core reporting it `failed` with its container
        * removed): a `failed` or `cancelled` executor whose drain ended (`stopped` — removed after
-       * it — `saved`, `gone`, `discarded`) and that Core does not retain is `gone`. Retained, still
-       * draining or kept, or a drain Core cannot be asked about (SDK 0.37.2), stays `kept`.
+       * it — `saved`, `gone`, `discarded`) and that Core does not retain is `gone`. So is a launch
+       * that never ran an executor (no drain recorded, no runtime: its image build failed): no
+       * disk holds anything of it, and Core refused to stop it as "still launching" for good, so
+       * its session read `stopping · saving` until the machine was wiped (RC 3, 2026-10-11).
+       * Retained, still draining or kept, or a drain Core cannot be asked about (SDK 0.37.2),
+       * stays `kept`.
        */
       const lookupWorkspace = (workspaceId: SealantWorkspaceId): Effect.Effect<WorkspaceLookup> =>
         sealant.getWorkspace(workspaceId).pipe(
@@ -3934,13 +3938,24 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 const kept: WorkspaceLookup = { kind: "kept", workspace, status };
                 if (status !== "failed" && status !== "cancelled") return Effect.succeed(kept);
                 return captureDrainOf(workspace).pipe(
-                  Effect.map(
-                    (drain): WorkspaceLookup =>
-                      drain.kind === "drain" &&
-                      !drain.retained &&
-                      ENDED_DRAIN_STATES.has(drain.state)
-                        ? { kind: "gone", status }
-                        : kept,
+                  Effect.flatMap(
+                    (drain): Effect.Effect<WorkspaceLookup, SealantPlatformError> =>
+                      drain.kind === "drain"
+                        ? Effect.succeed(
+                            !drain.retained && ENDED_DRAIN_STATES.has(drain.state)
+                              ? { kind: "gone", status }
+                              : kept,
+                          )
+                        : drain.kind === "none"
+                          ? sealant
+                              .launchedRuntime(workspace)
+                              .pipe(
+                                Effect.map(
+                                  (launched): WorkspaceLookup =>
+                                    launched === "never" ? { kind: "gone", status } : kept,
+                                ),
+                              )
+                          : Effect.succeed(kept),
                   ),
                   Effect.orElseSucceed(() => kept),
                 );
@@ -16541,12 +16556,16 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             socketDir,
             shape,
             ownerUserId,
+            // A launch the owner stopped keeps the stop's words: its build failing afterwards
+            // (stood down, or given up on) is not how the session ended.
             onFailure: (message, failure) =>
-              settleSession(
-                sessionId,
-                "failed",
-                launchEndWords(failure === undefined ? message : failure),
-              ).pipe(Effect.ignore),
+              stoppedDuringLaunch.has(sessionId)
+                ? Effect.void
+                : settleSession(
+                    sessionId,
+                    "failed",
+                    launchEndWords(failure === undefined ? message : failure),
+                  ).pipe(Effect.ignore),
             onCreated: (workspace) => acceptExecutor(workspace, key),
             abandon: abandonExecutor,
             launchId: key,
@@ -23177,7 +23196,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         attachRun: (sessionId, sealantRunId, workspaceId) =>
           owned(sessionId)(attachRun(sessionId, sealantRunId, workspaceId)),
         detach,
-        launchUnderWay: launchGate.underWay,
+        // A launch the owner stopped is not read as starting: the stop settled the session, and
+        // the launch only stands down (RC 3: `starting` for minutes after `✓ stopped`, while
+        // its image build ran on).
+        launchUnderWay: (sessionId) =>
+          launchGate.underWay(sessionId) && !stoppedDuringLaunch.has(sessionId),
         launch: (sessionId, argv) =>
           detached(owned(sessionId)(oneLaunch(sessionId)(launch(sessionId, argv)))),
         launchProtocol: (sessionId, ...rest) =>

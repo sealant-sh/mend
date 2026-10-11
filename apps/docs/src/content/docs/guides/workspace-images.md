@@ -24,8 +24,10 @@ Managed images support four OS families:
 
 Each family builds for the host's architecture, `amd64` or `arm64`. On ARM64, Arch Linux is built
 from Arch Linux ARM's signed root filesystem, because the Docker Hub `archlinux` image is x86_64
-only. The first Arch build on an ARM64 host downloads that root filesystem (about 300 MB) from
-`os.archlinuxarm.org`, outside any registry mirror.
+only. The first Arch build on an ARM64 host downloads that root filesystem (829 MB) from
+`os.archlinuxarm.org`, outside any registry mirror, and keeps it for every later Arch build on the
+host. A mirror that delivers less than 1 MB/s is left for another, and the build prints how far the
+download has got.
 
 For a managed family, choose:
 

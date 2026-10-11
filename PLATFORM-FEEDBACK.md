@@ -42,10 +42,11 @@ Postgres, Garage and the workspaces' Docker service ran `arm64`. Arch is Mend's 
 - **Shipped (0.39.0-next.721, sealant#360) and used:** on an arm64 Docker host or Kubernetes node,
   an Arch image starts from Arch Linux ARM's verified rootfs and runs natively; every image plan
   names its platform and its hash covers it (`SEALANT_WORKSPACE_IMAGE_PLATFORM` pins it). The first
-  Arch build on arm64 downloads the rootfs (about 300 MB) from `os.archlinuxarm.org`, outside the
-  mirrors. Mend's docs say Apple silicon runs every workspace family natively again, and the 0.36
-  upgrade notes say to reinstall native modules in existing Arch worktrees. The platform is not on
-  the SDK's surface; Mend has no need to show it today.
+  Arch build on arm64 downloads the rootfs (829 MB) from `os.archlinuxarm.org`, outside the mirrors,
+  once per host (sealant#362: a mirror slower than 1 MB/s is left for another, progress is printed,
+  the tarball is kept in a BuildKit cache mount). Mend's docs say Apple silicon runs every workspace
+  family natively again, and the 0.36 upgrade notes say to reinstall native modules in existing Arch
+  worktrees. The platform is not on the SDK's surface; Mend has no need to show it today.
 
 ## 2026-10-10 · 0.39.0-next.720 · The SSH gateway closes silently on an unknown workspace
 
