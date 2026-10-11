@@ -171,11 +171,21 @@ const shellWord = (word: string): string =>
   /^[A-Za-z0-9_./:@=,+-]+$/.test(word) ? word : `'${word.replaceAll("'", `'\\''`)}'`;
 
 /**
- * The command a script runs for the same result. With no flags it carries `--yes`: without a
- * terminal and without flags, a fresh install is refused rather than guessed.
+ * The command a script runs for the same result. With no answer flags it carries `--yes`: without
+ * a terminal and without them, a fresh install is refused rather than guessed. `given` are the
+ * flags the person typed that answer no question (`--context orbstack`), carried as typed.
  */
-export const setupCommandOf = (flags: ReadonlyArray<string>): string =>
-  ["mend", "server", "setup", ...(flags.length === 0 ? ["--yes"] : flags.map(shellWord))].join(" ");
+export const setupCommandOf = (
+  flags: ReadonlyArray<string>,
+  given: ReadonlyArray<string> = [],
+): string =>
+  [
+    "mend",
+    "server",
+    "setup",
+    ...(flags.length === 0 ? ["--yes"] : flags.map(shellWord)),
+    ...given.map(shellWord),
+  ].join(" ");
 
 // ─── settings in words ──────────────────────────────────────────────────────
 
@@ -389,6 +399,11 @@ export interface GuideContext {
   readonly observe: GuideObservations;
   /** The settings flags give against the saved config; throws setup's own refusal. */
   readonly resolve: (flags: ReadonlyArray<string>) => SetupSettings;
+  /**
+   * Flags the person typed that answer no question: the Docker engine (`--context orbstack`) and
+   * host flags. The run applies them, so the equivalent command says them too.
+   */
+  readonly given?: ReadonlyArray<string>;
 }
 
 export type GuideOutcome =
@@ -1336,7 +1351,7 @@ export const runGuide = async (io: GuideIo, context: GuideContext): Promise<Guid
         for (const line of changes) io.write(line);
       }
     }
-    io.write(`Same as: ${setupCommandOf(flags)}`);
+    io.write(`Same as: ${setupCommandOf(flags, context.given)}`);
     // An edge whose domain did not resolve here would start without a certificate: Enter keeps
     // the install as it is, and the reason is said beside the question.
     const unresolvedEdge =

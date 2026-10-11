@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 
 import {
+  CLI_AUTH_CLIENTS,
   CliAuthApproved,
   CliAuthDenied,
   CliAuthNotFound,
@@ -9,6 +10,7 @@ import {
   CliAuthSpent,
   CliAuthStartView,
   CurrentUser,
+  type CliAuthClient,
   DeviceView,
   MendApi,
   NotFound,
@@ -174,12 +176,25 @@ const toDeviceView = (device: PairedDevice): DeviceView =>
     lastUsedAt: device.lastUsedAt === null ? null : device.lastUsedAt.toISOString(),
   });
 
+/**
+ * Whole seconds from `now` until `expiresAt`, on the server's clock: what a client counts down
+ * from, so its own clock's skew never expires a request early. Never negative.
+ */
+export const secondsUntil = (expiresAt: Date, now: number = Date.now()): number =>
+  Math.max(0, Math.floor((expiresAt.getTime() - now) / 1000));
+
+/** A stored client name the contract knows; anything else (or none) reads as null. */
+const knownClient = (client: string | null): CliAuthClient | null =>
+  CLI_AUTH_CLIENTS.find((known) => known === client) ?? null;
+
 const toCliAuthView = (request: CliAuthRequest): CliAuthRequestView =>
   new CliAuthRequestView({
     code: request.userCode,
     name: request.name,
+    client: knownClient(request.client),
     createdAt: request.createdAt.toISOString(),
     expiresAt: request.expiresAt.toISOString(),
+    expiresIn: secondsUntil(request.expiresAt),
   });
 
 /** Repo misses as the contract speaks them: unknown is 404, anything spent is 410. */
@@ -369,10 +384,12 @@ const devicePairingGroups = Effect.gen(function* () {
 
           const deviceCode = mintCliDeviceCode();
           const name = payload.name.trim();
+          const client = (payload.client ?? "").trim().slice(0, 32);
           const opened = yield* devices.createCliAuth({
             deviceCodeHash: hashDeviceToken(deviceCode),
             userCode: generatePairingCode(),
             name: name === "" ? "cli" : name,
+            client: client === "" ? null : client,
             expiresAt: new Date(Date.now() + PAIRING_TTL_MS),
           });
           return new CliAuthStartView({
@@ -380,6 +397,7 @@ const devicePairingGroups = Effect.gen(function* () {
             code: opened.userCode,
             verifyPath: cliAuthVerifyPath(opened.userCode),
             expiresAt: opened.expiresAt.toISOString(),
+            expiresIn: secondsUntil(opened.expiresAt),
             intervalSeconds: CLI_AUTH_POLL_SECONDS,
           });
         }),

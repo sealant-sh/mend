@@ -77,15 +77,18 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     name: "login",
     section: "start",
     summary: "sign this terminal in through the browser",
-    synopsis: ["[--url <server>]"],
+    synopsis: ["[--url <server>] [--open | --no-open]"],
     description: [
       "Opens <server>/authorize in your browser. You press Authorize there. The CLI saves a device token to ~/.config/mend/cli.json with mode 0600. No password is typed in the terminal, and the token can be revoked from the server at any time.",
+      "Over SSH, or on Linux with no display, no browser opens: the CLI prints the link and the code, and you open the link on your own machine.",
     ],
     options: [
       {
         flag: "--url <server>",
         text: "the Mend server. Default: MEND_URL, then http://localhost:3105",
       },
+      { flag: "--open", text: "open the browser here, even over SSH" },
+      { flag: "--no-open", text: "only print the link and the code" },
     ],
     examples: [
       { command: "mend login --url http://10.0.0.216:3105", text: "sign in to a LAN server" },

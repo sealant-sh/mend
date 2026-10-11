@@ -1,3 +1,4 @@
+import type { CliAuthClient } from "@mend/api-contracts";
 import { Button } from "@mend/ui/components/ui/button";
 import { useQuery } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
@@ -29,8 +30,40 @@ const groupCode = (code: string): string => {
   return bare.length <= 4 ? bare : `${bare.slice(0, 4)}-${bare.slice(4)}`;
 };
 
-const minutesLeft = (expiresAt: string): number =>
-  Math.max(0, Math.round((Date.parse(expiresAt) - Date.now()) / 60_000));
+/**
+ * Minutes left, counted from when the server answered: its `expiresIn` is on its own clock, so a
+ * browser whose clock disagrees with the server's still reads it right. An older server sends only
+ * `expiresAt`, read against this clock.
+ */
+const minutesLeft = (
+  request: { readonly expiresAt: string; readonly expiresIn?: number | undefined },
+  answeredAt: number,
+): number => {
+  const leftMs =
+    request.expiresIn === undefined
+      ? Date.parse(request.expiresAt) - Date.now()
+      : request.expiresIn * 1000 - (Date.now() - answeredAt);
+  return Math.max(0, Math.round(leftMs / 60_000));
+};
+
+/**
+ * The client that opened the request, in the page's words: what to authorize, whether it was
+ * `mend login`, and what shows the code to compare. An older client does not say which it is.
+ */
+const askerWords = (
+  client: CliAuthClient | null | undefined,
+): { readonly title: string; readonly mendLogin: boolean; readonly shows: string } => {
+  switch (client) {
+    case "cli":
+      return { title: "Authorize this terminal?", mendLogin: true, shows: "that terminal" };
+    case "vscode":
+      return { title: "Authorize VS Code?", mendLogin: false, shows: "VS Code" };
+    case "desktop":
+      return { title: "Authorize the Mend app?", mendLogin: false, shows: "the app" };
+    default:
+      return { title: "Authorize this sign-in?", mendLogin: false, shows: "it" };
+  }
+};
 
 // The lookup's two honest "no such request" answers: 404 (unknown code) and
 // the 410 the tRPC bridge surfaces as BAD_REQUEST (spent code). Anything else
@@ -53,6 +86,8 @@ function AuthorizePage() {
       { enabled: code !== "" && decided === null, retry: false, staleTime: Infinity },
     ),
   );
+
+  const asker = askerWords(request.data?.client);
 
   const decide = (decision: "approved" | "denied") => {
     setPending(true);
@@ -83,18 +118,22 @@ function AuthorizePage() {
           ) : (
             <>
               <h1 className="font-display text-lg font-semibold tracking-[-0.01em]">
-                Authorize this terminal?
+                {asker.title}
               </h1>
               <p className="mt-1 text-[13px] leading-relaxed text-muted-foreground">
-                <span className="font-mono text-[12.5px]">mend login</span> on{" "}
+                {asker.mendLogin ? (
+                  <>
+                    <span className="font-mono text-[12.5px]">mend login</span> on{" "}
+                  </>
+                ) : null}
                 <span className="font-medium text-foreground">{request.data.name}</span> asked for
-                access as you. Approve only if this code matches the one in that terminal.
+                access as you. Approve only if this code matches the one {asker.shows} shows.
               </p>
               <p className="mt-6 text-center font-mono text-[28px] font-medium tracking-[0.08em] text-foreground">
                 {groupCode(request.data.code)}
               </p>
               <p className="mt-2 text-center font-mono text-[12px] text-label">
-                expires in {minutesLeft(request.data.expiresAt)} min · one terminal, once
+                expires in {minutesLeft(request.data, request.dataUpdatedAt)} min · one device, once
               </p>
               {error === null ? null : (
                 <p
@@ -139,8 +178,8 @@ function Decided({ decision }: { readonly decision: "approved" | "denied" }) {
       </h1>
       <p className="mt-2 text-[13px] leading-relaxed text-muted-foreground">
         {decision === "approved"
-          ? "The terminal signs in on its next poll. Its token appears under Settings → Devices, where revoking it ends its access."
-          : "The terminal is told no on its next poll. Nothing was granted."}
+          ? "It signs in on its next poll. Its token appears under Settings → Devices, where revoking it ends its access."
+          : "It is told no on its next poll. Nothing was granted."}
       </p>
     </>
   );

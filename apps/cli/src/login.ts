@@ -20,6 +20,8 @@ export interface CliAuthStartDto {
   readonly code: string;
   readonly verifyPath: string;
   readonly expiresAt: string;
+  /** Seconds left when the server answered; absent from an older server. */
+  readonly expiresIn?: number;
   readonly intervalSeconds: number;
 }
 
@@ -64,7 +66,15 @@ const parseCliAuthStart = (json: unknown): CliAuthStartDto | null => {
   ) {
     return null;
   }
-  return { deviceCode, code, verifyPath, expiresAt, intervalSeconds };
+  const expiresIn = "expiresIn" in json ? json.expiresIn : undefined;
+  return {
+    deviceCode,
+    code,
+    verifyPath,
+    expiresAt,
+    intervalSeconds,
+    ...(typeof expiresIn === "number" && Number.isFinite(expiresIn) ? { expiresIn } : {}),
+  };
 };
 
 /** A poll answer's JSON, checked the same way; anything off-shape answers null. */
@@ -159,16 +169,61 @@ export const browserCommand = (
 export const pollDelayMs = (intervalSeconds: number): number =>
   Math.min(Math.max(Math.round(intervalSeconds), 1), 10) * 1000;
 
-/** When to stop polling: the request's own expiry, or ten minutes for an unreadable date. */
-export const pollDeadline = (expiresAt: string, now: number = Date.now()): number => {
-  const at = Date.parse(expiresAt);
-  return Number.isNaN(at) ? now + 10 * 60_000 : at;
+/**
+ * When to stop polling, on this machine's clock, counted from when the server's answer arrived.
+ * The two clocks can disagree by hours (a Mac's VM after sleep), so the server's `expiresAt` is
+ * never read against this clock alone: its `expiresIn` when it sends one; else `expiresAt` less
+ * the time on its own Date header (an older server); else ten minutes. The server judges expiry
+ * by its own clock either way; this only stops a poll that could no longer succeed.
+ */
+export const pollDeadline = (
+  expiry: { readonly expiresAt: string; readonly expiresIn?: number },
+  receivedAt: number,
+  serverDate: string | null = null,
+): number => {
+  if (expiry.expiresIn !== undefined) return receivedAt + Math.max(0, expiry.expiresIn) * 1000;
+  const at = Date.parse(expiry.expiresAt);
+  const serverNow = serverDate === null ? Number.NaN : Date.parse(serverDate);
+  if (Number.isNaN(at) || Number.isNaN(serverNow)) return receivedAt + 10 * 60_000;
+  return receivedAt + Math.max(0, at - serverNow);
+};
+
+const isSet = (value: string | undefined): boolean => value !== undefined && value !== "";
+
+/**
+ * Whether `mend login` opens the authorize page here, and why not when it does not. `--open` and
+ * `--no-open` decide outright. Otherwise only a terminal with a screen of its own opens one: over
+ * SSH the browser would open on the far machine's screen, and Linux with no display has none.
+ */
+export const browserDecision = (input: {
+  readonly args: ReadonlyArray<string>;
+  readonly env: Readonly<Record<string, string | undefined>>;
+  readonly platform: NodeJS.Platform;
+  readonly isTTY: boolean;
+}): { readonly open: boolean; readonly why: string | null } => {
+  if (input.args.includes("--no-open")) return { open: false, why: null };
+  if (input.args.includes("--open")) return { open: true, why: null };
+  if (!input.isTTY) return { open: false, why: null };
+  if (isSet(input.env["SSH_CONNECTION"]) || isSet(input.env["SSH_TTY"])) {
+    return {
+      open: false,
+      why: "this terminal is over SSH, so no browser opens here: open the link on your own machine",
+    };
+  }
+  if (
+    input.platform === "linux" &&
+    !isSet(input.env["DISPLAY"]) &&
+    !isSet(input.env["WAYLAND_DISPLAY"])
+  ) {
+    return { open: false, why: "no display here, so no browser opens: open the link elsewhere" };
+  }
+  return { open: browserCommand(input.platform) !== null, why: null };
 };
 
 /** Fire-and-forget: a browser that fails to open must never take the login down. */
 const openBrowser = (url: string) => {
   const opener = browserCommand(process.platform);
-  if (opener === null || process.stdout.isTTY !== true) return;
+  if (opener === null) return;
   try {
     const child = spawn(opener.command, [...opener.args, url], {
       stdio: "ignore",
@@ -185,7 +240,14 @@ const openBrowser = (url: string) => {
 const post = async (
   url: string,
   body: unknown,
-): Promise<{ readonly status: number; readonly json: unknown }> => {
+): Promise<{
+  readonly status: number;
+  readonly json: unknown;
+  /** The server's own Date header, when it sent one. */
+  readonly date: string | null;
+  /** This machine's clock when the answer arrived. */
+  readonly receivedAt: number;
+}> => {
   let response: Response;
   try {
     response = await fetch(url, {
@@ -196,6 +258,7 @@ const post = async (
   } catch {
     return fail(`cannot reach the Mend server at ${new URL(url).origin} — is it running?`);
   }
+  const receivedAt = Date.now();
   const text = await response.text();
   let json: unknown = null;
   try {
@@ -203,7 +266,7 @@ const post = async (
   } catch {
     // A non-JSON body only matters for the happy path, which always is JSON.
   }
-  return { status: response.status, json };
+  return { status: response.status, json, date: response.headers.get("date"), receivedAt };
 };
 
 const retryAfterSecondsOf = (json: unknown): number => {
@@ -242,14 +305,14 @@ const resolveServerUrl = async (args: ReadonlyArray<string>, deps: LoginDeps): P
 };
 
 /**
- * `mend login [--url <server>]` — open, show, wait, save. The token lands in
+ * `mend login [--url <server>] [--open | --no-open]` — open, show, wait, save. The token lands in
  * the CLI config (0600) together with the device id, so `mend logout` can
  * revoke the token server-side instead of merely forgetting it.
  */
 export const loginCommand = async (args: ReadonlyArray<string>, deps: LoginDeps): Promise<void> => {
   const base = await resolveServerUrl(args, deps);
 
-  const started = await post(`${base}/api/cli/auth`, { name: os.hostname() });
+  const started = await post(`${base}/api/cli/auth`, { name: os.hostname(), client: "cli" });
   if (started.status === 429) {
     return fail(
       `the server asked for a pause — try again in ${retryAfterSecondsOf(started.json)}s`,
@@ -272,11 +335,18 @@ export const loginCommand = async (args: ReadonlyArray<string>, deps: LoginDeps)
     `  ${dim("code")}    ${groupCode(opened.code)} ${dim("· approve only if the browser shows the same code")}`,
   );
   say(`  ${dim("browser")} ${cobalt(url)}`);
+  const browser = browserDecision({
+    args,
+    env: process.env,
+    platform: process.platform,
+    isTTY: process.stdout.isTTY === true,
+  });
+  if (browser.why !== null) say(`  ${dim(browser.why)}`);
   say("");
   say(dim("  waiting for approval… Ctrl-C stops; nothing is granted until someone approves"));
-  openBrowser(url);
+  if (browser.open) openBrowser(url);
 
-  const deadline = pollDeadline(opened.expiresAt);
+  const deadline = pollDeadline(opened, started.receivedAt, started.date);
   const delay = pollDelayMs(opened.intervalSeconds);
   while (Date.now() < deadline) {
     await sleep(delay);

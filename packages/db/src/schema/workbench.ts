@@ -1133,6 +1133,8 @@ export const cliAuthRequests = pgTable("cli_auth_requests", {
   deviceCodeHash: text().notNull().unique(),
   userCode: text().notNull().unique(),
   name: text().notNull(),
+  /** Which client asked (`cli`, `vscode`, `desktop`); null when an older client opened it. */
+  client: text(),
   createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
   expiresAt: timestamp({ mode: "date", withTimezone: true }).notNull(),
   approvedBy: text(),

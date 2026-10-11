@@ -69,6 +69,8 @@ export class DeviceNotFoundError extends Schema.TaggedErrorClass<DeviceNotFoundE
 export class CliAuthRequest extends Schema.Class<CliAuthRequest>("CliAuthRequest")({
   userCode: Schema.String,
   name: Schema.String,
+  /** Which client asked, as it said; null when an older client opened the request. */
+  client: Schema.NullOr(Schema.String),
   createdAt: Timestamp,
   expiresAt: Timestamp,
 }) {}
@@ -133,6 +135,7 @@ export class DevicesRepo extends Context.Service<
       readonly deviceCodeHash: string;
       readonly userCode: string;
       readonly name: string;
+      readonly client: string | null;
       readonly expiresAt: Date;
     }) => Effect.Effect<CliAuthRequest>;
     readonly getCliAuth: (
@@ -315,6 +318,7 @@ export const DevicesRepoLive: Layer.Layer<DevicesRepo, never, MendDB | PgClient.
       const selectedCliAuth = {
         userCode: cliAuthRequests.userCode,
         name: cliAuthRequests.name,
+        client: cliAuthRequests.client,
         createdAt: cliAuthRequests.createdAt,
         expiresAt: cliAuthRequests.expiresAt,
       };
@@ -336,6 +340,7 @@ export const DevicesRepoLive: Layer.Layer<DevicesRepo, never, MendDB | PgClient.
         readonly deviceCodeHash: string;
         readonly userCode: string;
         readonly name: string;
+        readonly client: string | null;
         readonly expiresAt: Date;
       }) {
         yield* db
@@ -349,6 +354,7 @@ export const DevicesRepoLive: Layer.Layer<DevicesRepo, never, MendDB | PgClient.
             deviceCodeHash: input.deviceCodeHash,
             userCode: input.userCode,
             name: input.name,
+            client: input.client,
             expiresAt: input.expiresAt,
           })
           .returning(selectedCliAuth)

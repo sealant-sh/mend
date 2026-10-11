@@ -3008,6 +3008,7 @@ const guidedSetup = async (
       defaults: resolveSetupSettings(null, []),
       observe: guideObservations(runtime),
       resolve: (flags) => resolveSetupSettings(existing?.config ?? null, flags),
+      given: hostFlags,
     },
   );
   if (outcome._tag === "refused") return { _tag: "error", message: outcome.message };

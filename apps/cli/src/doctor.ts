@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
@@ -33,6 +34,36 @@ export interface DoctorConfig {
   readonly token: string | null;
 }
 
+/** One `pmset -g` setting as a number: `sleep`, `womp`; null when the output does not list it. */
+const pmsetValue = (output: string, name: string): number | null => {
+  const match = new RegExp(`^\\s*${name}\\s+(\\d+)`, "m").exec(output);
+  return match?.[1] === undefined ? null : Number(match[1]);
+};
+
+/**
+ * A Mac that serves Mend and sleeps on its own, as one doctor line; null when it does not (or the
+ * settings say nothing). OrbStack and Docker Desktop pause their VM while the Mac sleeps, the
+ * lid-closed Maintenance Sleep included: builds stall, sessions drop, and the VM's clock wakes
+ * behind. "Wake for network access" (`womp`) lets the tailnet wake it.
+ */
+export const macSleepCheck = (pmset: string): Check | null => {
+  const sleepMinutes = pmsetValue(pmset, "sleep");
+  if (sleepMinutes === null || sleepMinutes === 0) return null;
+  const wakeForNetwork = pmsetValue(pmset, "womp");
+  return {
+    label: "sleep",
+    state: "todo",
+    detail: `this Mac sleeps after ${sleepMinutes} min idle, and the Docker VM pauses while it sleeps: builds stall, sessions drop, its clock drifts`,
+    fix: `sudo pmset -a sleep 0 disksleep 0${wakeForNetwork === 0 ? " womp 1" : ""} (System Settings → Energy → Prevent automatic sleeping when the display is off${wakeForNetwork === 0 ? ", and Wake for network access" : ""})`,
+  };
+};
+
+/** `pmset -g`, bounded like every other read here; null when it fails. */
+export const readMacPowerSettings = (): string | null => {
+  const read = spawnSync("pmset", ["-g"], { encoding: "utf8", timeout: TIMEOUT_MS });
+  return read.status === 0 ? read.stdout : null;
+};
+
 /** ok: observed working · todo: not set up yet · failed: the workbench cannot run like this. */
 export type CheckState = "ok" | "todo" | "failed";
 
@@ -67,6 +98,11 @@ export interface DoctorProbes {
    * read.
    */
   readonly localServer?: () => Promise<LocalServerFacts | null>;
+  /**
+   * `pmset -g` on a Mac, read only when a server is installed on this machine: whether it sleeps
+   * on its own. Null when it could not be read. Absent (not a Mac): the line is left out.
+   */
+  readonly macPowerSettings?: () => string | null;
 }
 
 /** What doctor reads of the server `mend server setup` installed here. */
@@ -105,20 +141,51 @@ interface Fetched<T> {
   readonly value: T | null;
   /** The HTTP status; null when the request got no answer at all. */
   readonly status: number | null;
+  /**
+   * How far the server's clock reads from this machine's, in ms (positive: the server's is
+   * ahead), from its Date header against the middle of the request. Null without one.
+   */
+  readonly clockSkewMs: number | null;
 }
 
 /** A read that never throws and never blocks: the outcome is a value the checklist can print. */
 const getJson = async <T>(config: DoctorConfig, route: string): Promise<Fetched<T>> => {
   try {
+    const sent = Date.now();
     const response = await fetch(`${config.url}/api${route}`, {
       headers: config.token === null ? {} : { authorization: `Bearer ${config.token}` },
       signal: AbortSignal.timeout(TIMEOUT_MS),
     });
-    if (!response.ok) return { value: null, status: response.status };
-    return { value: (await response.json()) as T, status: response.status };
+    const date = Date.parse(response.headers.get("date") ?? "");
+    const clockSkewMs = Number.isNaN(date) ? null : date - (sent + Date.now()) / 2;
+    if (!response.ok) return { value: null, status: response.status, clockSkewMs };
+    return { value: (await response.json()) as T, status: response.status, clockSkewMs };
   } catch {
-    return { value: null, status: null };
+    return { value: null, status: null, clockSkewMs: null };
   }
+};
+
+/**
+ * Past this, the server's clock and this machine's disagree enough to say so. A Date header is
+ * whole seconds and a slow answer adds its own, so a smaller gap is not a finding.
+ */
+const CLOCK_SKEW_FINDING_MS = 2 * 60_000;
+
+/**
+ * The server's clock against this machine's, as one doctor line, or null when they agree. Sign-in
+ * counts down from what the server says is left, so skew no longer breaks it, but anything that
+ * compares the server's times with this machine's still reads wrong. OrbStack and Docker Desktop
+ * pause their VM while a Mac sleeps, and its clock can wake hours behind until the VM restarts.
+ */
+export const clockCheck = (clockSkewMs: number): Check | null => {
+  if (Math.abs(clockSkewMs) < CLOCK_SKEW_FINDING_MS) return null;
+  const minutes = Math.round(Math.abs(clockSkewMs) / 60_000);
+  return {
+    label: "clock",
+    state: "todo",
+    detail: `this server's clock is ${minutes} min ${clockSkewMs < 0 ? "behind" : "ahead of"} this machine's`,
+    fix: "if the server runs in OrbStack or Docker Desktop, restart it; otherwise check NTP on both machines (timedatectl, or sntp on a Mac)",
+  };
 };
 
 interface HealthDto {
@@ -332,6 +399,9 @@ export const runChecks = async (
       ? await unreachedServer(config, local)
       : await answeredServer(config, health.value, local),
   );
+  const clock =
+    health.value === null || health.clockSkewMs === null ? null : clockCheck(health.clockSkewMs);
+  if (clock !== null) checks.push(clock);
 
   // Projects double as the cheapest authenticated read there is: it proves the token
   // without asking the platform anything.
@@ -517,6 +587,12 @@ export const runChecks = async (
     checks.push(dockerStopCheck(probes.dockerStop(local?.dockerContext ?? null)));
   }
 
+  // A Mac serving Mend that sleeps on its own pauses the Docker VM with it.
+  const pmset =
+    local === null || probes.macPowerSettings === undefined ? null : probes.macPowerSettings();
+  const sleep = pmset === null ? null : macSleepCheck(pmset);
+  if (sleep !== null) checks.push(sleep);
+
   return checks;
 };
 
@@ -553,6 +629,7 @@ export const doctorCommand = async (
     onPath,
     dockerStop: observeHostDockerStop,
     ...(localServer === undefined ? {} : { localServer }),
+    ...(process.platform === "darwin" ? { macPowerSettings: readMacPowerSettings } : {}),
   });
   for (const check of checks) {
     process.stdout.write(`${redactCredentials(formatCheck(check, paintMark))}\n`);
