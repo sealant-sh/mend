@@ -168,6 +168,19 @@ survives: the platform keeps it and boots it again to save what it holds. An exe
 fails without warning can lose what was written after its last capture. Captures run 2 seconds after
 the files go quiet, and at least every 10 seconds while they keep changing.
 
+## An agent you run by hand is observed, not run
+
+A `claude`, `codex` or `pi` you start yourself in a session's shell or editor terminal is recorded
+as an observed process. Mend sees it from its conversation files about half a minute after it
+writes, and reads it as ended after five minutes without a write. It cannot send it a prompt or end
+it. An `opencode` started by hand is not observed at all: its conversations live in a database. Nor
+is anything started while an agent Mend started writes into the same home: one running as you in a
+per-person workspace, or one in any session of the worktree in a workspace with one shared home. A
+Stop records an observed agent as stopped without ending it, and while a shell or Service keeps the
+workspace up, an agent that wrote in the last five minutes is observed again within about 20
+seconds. Start agents from Mend to steer them. Details:
+[Agents you run yourself](/clients/vscode/#agents-you-run-yourself).
+
 ## opencode runs in the terminal only
 
 opencode sessions run as terminals, as pi sessions do: attach from the CLI, the web app or VS Code.

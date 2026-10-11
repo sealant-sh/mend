@@ -9,9 +9,11 @@ sidebar:
 
 The Mend extension for VS Code (`apps/vscode`) lists your projects and sessions and opens a session
 inside its workspace over SSH. The editor's files are the session's worktree, and its integrated
-terminal runs in the workspace, with the workspace image, environment and harness home. A `claude`
-or `codex` you run in that terminal is observed by Mend: the session shows running, the workspace
-stays up, and the conversation is recorded and can be resumed from any device.
+terminal runs in the workspace, with the workspace image, environment and harness home. A `claude`,
+`codex` or `pi` you run in that terminal is observed by Mend: the session shows running, the
+workspace stays up, and the conversation is recorded and can be resumed from any device. What
+observation covers and what it does not is under
+[Agents you run yourself](#agents-you-run-yourself).
 
 In a [per-person workspace](/operate/per-person-workspaces/), the 0.36 default, the Remote-SSH login
 is the workspace's launcher, as their own Linux user, on their home and logins. Where the server's
@@ -66,7 +68,8 @@ project name.
 Click **+** in the view, or run **Mend: New Session…**, and pick one of:
 
 - **Workbench**: a fresh worktree whose workspace is held open by a shell. VS Code opens in it, and
-  you run `claude` or `codex` yourself in the terminal. Mend observes and records it.
+  you run `claude` or `codex` yourself in the terminal. Mend observes and records it, within the
+  limits under [Agents you run yourself](#agents-you-run-yourself).
 - **Claude agent** or **Codex agent**: Mend starts the harness on a prompt you type, and the
   workspace opens in VS Code beside it. An empty prompt starts the harness without one.
 - **Agent with options…**: choose the harness (Claude, Codex, opencode or pi), model, thinking
@@ -169,6 +172,39 @@ reaches the server: a LAN, a private network or an https edge. It opens for whoe
 session: its owner, and others only while the owner has shared control on, and then they watch; only
 the owner types. Closing the tab detaches, and the process keeps running. A dropped connection
 reattaches on its own while the process runs, up to five times; a refusal from the server ends it.
+
+## Agents you run yourself
+
+An agent you start by hand in the workspace, in this terminal or in `mend shell`, is not one Mend
+started. Mend notices it from the conversation files it writes, and records it as an observed
+process (`claude (observed)`) beside the session's other processes:
+
+- **It shows up within about half a minute.** The workspace saves its files a few seconds after a
+  write, and Mend looks at the latest save every 20 seconds.
+- **It ends after five quiet minutes.** Mend does not see the process exit. Five minutes without a
+  write reads as ended, the conversation is recorded, and the session can settle. If the agent
+  writes again, Mend observes it again as a new process.
+- **Mend cannot steer or stop it.** It has no prompt box, and follow-ups and review comments do not
+  reach it. A Stop records it as stopped but does not end the process: exit it in its terminal. If
+  it wrote in the last five minutes and a shell or Service still keeps the session's workspace up,
+  Mend observes it again as a new process within about 20 seconds. When the workspace itself stops,
+  everything running in it ends.
+- **Claude Code, Codex and pi only.** opencode keeps its conversations in a database, not in files,
+  so an `opencode` you run by hand is not observed.
+- **Only while no agent Mend started writes beside it.** In a per-person workspace, that is an agent
+  Mend runs as you. In a workspace with one shared home, it is an agent Mend runs in any session of
+  the worktree, whoever started it. While one runs, Mend takes the writes for its own.
+- **In a [per-person workspace](/operate/per-person-workspaces/)**, an agent you run writes into
+  your own saved directory. Mend observes it as yours, in your own sessions only, and never in
+  another person's session in the same workspace.
+
+The Claude Code extension for VS Code runs the `claude` it bundles inside the workspace when the
+window is connected over Remote-SSH, so its conversations should land where a terminal `claude`'s do
+and be observed the same way. This has not been confirmed end to end yet.
+
+To have Mend run the agent, so you can prompt it, follow it, steer it from any device and stop it,
+start it from Mend: **+** → an agent, or **Claude agent** / **Codex agent** under
+[Start a session](#start-a-session). That is the fully supported path.
 
 ## Review a change
 

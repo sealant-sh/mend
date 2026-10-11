@@ -8,9 +8,10 @@
  * that prefix, never past it, so one person's conversation or memory is never another's.
  */
 import type { HarnessLayout } from "@mend/domain/workbench";
+import { type DirEntry, mtimeNanos } from "@mend/store";
 
 import { PEOPLE_DIR } from "./harness-layout.ts";
-import { CARRIED_TRANSCRIPTS } from "./harness-state.ts";
+import { CARRIED_TRANSCRIPTS, HARNESS_STATE } from "./harness-state.ts";
 import { homePathOfPersonSaved, personSavedPathOf } from "./person-deliveries.ts";
 
 /** The capture's harness home, as every reader names it. */
@@ -100,6 +101,40 @@ export const relativeTo = (place: ConversationPlace, capturePath: string): strin
 /** A path under `place`, from the capture's root. */
 export const underPlace = (place: ConversationPlace, relative: string): string =>
   `${place.root}/${relative}`;
+
+/** One of a harness's transcripts in a capture, as the external-agent observer reads it. */
+export interface CapturedTranscript {
+  readonly providerSessionId: string | null;
+  /** The file's mtime as the capture recorded it: the last write before that capture. */
+  readonly mtimeMs: number;
+}
+
+/**
+ * `harness`'s transcripts under `place` in a capture's listing, newest first, never one Mend
+ * carried in (`carried`) and never a link: what the observer reads as "an agent writes here".
+ * Empty when the harness keeps no transcript file (opencode) or none is there.
+ */
+export const capturedTranscriptsOf = (
+  place: ConversationPlace,
+  harness: string,
+  files: ReadonlyArray<{ readonly path: string; readonly entry: DirEntry }>,
+  carried: ReadonlySet<string>,
+): ReadonlyArray<CapturedTranscript> => {
+  const shape = HARNESS_STATE[harness];
+  const pattern = shape?.liveTranscript ?? null;
+  if (shape === undefined || pattern === null) return [];
+  const found: Array<{ readonly id: string | null; readonly mtime: bigint }> = [];
+  for (const file of files) {
+    const relative = relativeTo(place, file.path);
+    if (relative === null || file.entry.kind !== "file" || !pattern.test(relative)) continue;
+    const id = shape.providerSessionId(relative);
+    if (id !== null && carried.has(id)) continue;
+    found.push({ id, mtime: mtimeNanos(file.entry.mtime) });
+  }
+  return found
+    .toSorted((a, b) => (a.mtime === b.mtime ? 0 : b.mtime > a.mtime ? 1 : -1))
+    .map(({ id, mtime }) => ({ providerSessionId: id, mtimeMs: Number(mtime / 1_000_000n) }));
+};
 
 /**
  * The conversations of one provider session in a capture's `harness/`, relative to it: Claude's

@@ -193,6 +193,11 @@ interface HarnessStateShape {
   readonly latestTranscript: string;
   /** `harness-home`-relative glob for the primary transcript, matched server-side. */
   readonly liveTranscript: RegExp | null;
+  /**
+   * The directory every `liveTranscript` match lies under: all the external-agent observer lists
+   * of a capture, never the whole home.
+   */
+  readonly liveTranscriptDir: string | null;
   /** Derive the provider session id from the primary transcript's path/name. */
   readonly providerSessionId: (transcriptPath: string) => string | null;
   /**
@@ -454,6 +459,7 @@ export const HARNESS_STATE: Record<string, HarnessStateShape> = {
     homeDirs: [".claude"],
     latestTranscript: 'ls -t "$HOME"/.claude/projects/*/*.jsonl 2>/dev/null | head -1',
     liveTranscript: /^\.claude\/projects\/[^/]+\/[^/]+\.jsonl$/,
+    liveTranscriptDir: ".claude/projects",
     providerSessionId: (file) => CLAUDE_JSONL.exec(file)?.[1] ?? null,
   },
   codex: {
@@ -465,6 +471,7 @@ export const HARNESS_STATE: Record<string, HarnessStateShape> = {
       `{ if [ -s "${HARNESS_HOME_MOUNT_PATH}/${CARRIED_TRANSCRIPTS}" ]; ` +
       `then grep -vF -f "${HARNESS_HOME_MOUNT_PATH}/${CARRIED_TRANSCRIPTS}"; else cat; fi; } | head -1`,
     liveTranscript: /^\.codex\/sessions\/[^/]+\/[^/]+\/[^/]+\/rollout-[^/]+\.jsonl$/,
+    liveTranscriptDir: ".codex/sessions",
     providerSessionId: (file) => CODEX_ROLLOUT.exec(file)?.[1] ?? null,
   },
   // opencode keeps its sessions in a SQLite database (`opencode.db`), not files: the directory is
@@ -477,6 +484,7 @@ export const HARNESS_STATE: Record<string, HarnessStateShape> = {
     homeDirs: [".local/share/opencode", ".local/state/opencode"],
     latestTranscript: "true",
     liveTranscript: null,
+    liveTranscriptDir: null,
     providerSessionId: () => null,
     stateFile: OPENCODE_DATABASE,
   },
@@ -485,6 +493,7 @@ export const HARNESS_STATE: Record<string, HarnessStateShape> = {
     homeDirs: [".pi"],
     latestTranscript: 'ls -t "$HOME"/.pi/agent/sessions/*/*.jsonl 2>/dev/null | head -1',
     liveTranscript: /^\.pi\/agent\/sessions\/[^/]+\/[^/]+\.jsonl$/,
+    liveTranscriptDir: ".pi/agent/sessions",
     providerSessionId: (file) => PI_SESSION.exec(file)?.[1] ?? null,
   },
 };
