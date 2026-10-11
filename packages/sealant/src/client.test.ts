@@ -6,6 +6,7 @@ import {
   captureDrainOf,
   captureStatusOf,
   imageBuildFailure,
+  launchedRuntimeOf,
   platformErrorCode,
   runtimeDeadlineOf,
   toPlatformError,
@@ -307,6 +308,28 @@ describe("stopWith", () => {
     await stopWith(workspace, options);
     await stopWith(workspace, undefined);
     expect(asked).toEqual([[options], []]);
+  });
+});
+
+const readLaunched = (workspace: object) => Effect.runPromise(launchedRuntimeOf(workspace));
+
+describe("launchedRuntimeOf (RC 3, 2026-10-11)", () => {
+  it("says never only when Core reports no runtime, and unknown on an SDK that cannot read it", async () => {
+    // An image build that failed launched no executor.
+    expect(await readLaunched({ launch: undefined, runtime: async () => null })).toBe("never");
+    expect(
+      await readLaunched({ runtime: async () => ({ adapter: "docker", resourceId: "c-1" }) }),
+    ).toBe("launched");
+    // The handle saw one become ready: no read needed.
+    expect(
+      await readLaunched({
+        launch: { runtime: { resourceId: "c-1" } },
+        runtime: async () => {
+          throw new Error("not read");
+        },
+      }),
+    ).toBe("launched");
+    expect(await readLaunched({})).toBe("unknown");
   });
 });
 

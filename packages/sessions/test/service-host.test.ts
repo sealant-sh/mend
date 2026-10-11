@@ -122,6 +122,7 @@ const sealantFakeLayer = Layer.succeed(SealantClient, {
   captureStatus: () => Effect.succeed(null),
   runtimeDeadline: () => Effect.succeed(null),
   runtimeResourceId: () => Effect.succeed(null),
+  launchedRuntime: () => Effect.succeed("unknown" as const),
   findWorkspaceByKey: () => Effect.succeed({ kind: "unsupported" as const }),
   fenceWorkspaceCreate: () => Effect.succeed({ kind: "unsupported" as const }),
   captureReplan: () => Effect.die("not in test"),

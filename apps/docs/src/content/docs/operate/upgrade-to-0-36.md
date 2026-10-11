@@ -130,8 +130,9 @@ their image no longer matches.
 On an arm64 host (a Mac with Apple silicon, an ARM server), Arch workspaces now build natively
 (`aarch64`) instead of under emulation as `x86_64`. Dependencies with native modules installed in an
 existing worktree (`node_modules`, `.venv`, `target/`) are `x86_64` builds: reinstall them
-(`pnpm install`, `uv sync`, …). Each Arch image's first build there downloads the Arch Linux ARM
-root filesystem (about 300 MB) from `os.archlinuxarm.org`, outside the mirrors.
+(`pnpm install`, `uv sync`, …). The first Arch build there downloads the Arch Linux ARM root
+filesystem (829 MB) from `os.archlinuxarm.org`, outside the mirrors, once: later Arch builds on the
+host reuse it.
 
 The built-in images also pin their harness versions (Claude Code 2.1.292, Codex 0.160.1, opencode
 1.18.34, pi 1.0.4), so a rebuild no longer changes which version a session runs.

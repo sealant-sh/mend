@@ -320,6 +320,7 @@ export const byWorkspaceCreator = (
     runtimeDeadline: (workspace) => look(workspace.id)(client.runtimeDeadline(workspace)),
     runtimeResourceId: (workspace, launchId) =>
       look(workspace.id)(client.runtimeResourceId(workspace, launchId)),
+    launchedRuntime: (workspace) => look(workspace.id)(client.launchedRuntime(workspace)),
     getRun: (runId) => run(runId)(client.getRun(runId)),
     waitRun: (sdkRun) => run(sdkRun.id)(client.waitRun(sdkRun)),
     recordStream: (sdkRun, options) => runStream(sdkRun.id)(client.recordStream(sdkRun, options)),

@@ -430,6 +430,31 @@ export const runtimeResourceIdOf = (
   );
 };
 
+/**
+ * Whether an executor ever ran for the workspace's current launch: `launched` when its handle saw
+ * one become ready or Core reports a runtime, `never` when Core reports none (Core keeps a
+ * runtime's record after it ends, so none means none was launched: an image build that failed
+ * launches none), `unknown` on an SDK that cannot read the runtime (0.37.2).
+ */
+export type LaunchedRuntime = "launched" | "never" | "unknown";
+
+export const launchedRuntimeOf = (
+  workspace: object,
+): Effect.Effect<LaunchedRuntime, SealantPlatformError> => {
+  const launch: unknown = Reflect.get(workspace, "launch");
+  if (
+    typeof launch === "object" &&
+    launch !== null &&
+    resourceIdIn(Reflect.get(launch, "runtime")) !== null
+  ) {
+    return Effect.succeed("launched");
+  }
+  if (!readsRuntime(workspace)) return Effect.succeed("unknown");
+  return wrap(() => workspace.runtime()).pipe(
+    Effect.map((runtime): LaunchedRuntime => (runtime === null ? "never" : "launched")),
+  );
+};
+
 /** Core's next SDK: `workspaces.findByIdempotencyKey(key)`. */
 interface IdempotentLookup {
   readonly findByIdempotencyKey: (key: string) => Promise<unknown>;
@@ -689,6 +714,10 @@ export interface SealantClientShape {
     /** Only the runtime of this launch: another launch's reads null. */
     launchId?: string,
   ) => Effect.Effect<string | null, SealantPlatformError>;
+  /** Whether an executor ever ran for the workspace's current launch (`launchedRuntimeOf`). */
+  readonly launchedRuntime: (
+    workspace: Workspace,
+  ) => Effect.Effect<LaunchedRuntime, SealantPlatformError>;
   /**
    * Capture-sourced workspaces (0.31.0, sealantd ADR-0015): ship and register what the executor
    * holds. `suspend` (a checkpoint, a handoff) forces a small-class capture and ships the queue;
@@ -994,6 +1023,10 @@ const makeUserClient = (env: SealantEnvShape, ownerUserIdInput: string) =>
       (workspace: Workspace, launchId?: string) => runtimeResourceIdOf(workspace, launchId),
     );
 
+    const launchedRuntime = Effect.fn("SealantClient.launchedRuntime")((workspace: Workspace) =>
+      launchedRuntimeOf(workspace),
+    );
+
     const captureReplan = Effect.fn("SealantClient.captureReplan")(
       (
         workspace: Workspace,
@@ -1241,6 +1274,7 @@ const makeUserClient = (env: SealantEnvShape, ownerUserIdInput: string) =>
       captureStatus,
       runtimeDeadline,
       runtimeResourceId,
+      launchedRuntime,
       captureReplan,
       expireWorkspace,
       getSession,
@@ -1663,6 +1697,7 @@ export const SealantClientLive: Layer.Layer<SealantClient, never, SealantClients
       runtimeDeadline: (workspace) => via((c) => c.runtimeDeadline(workspace)),
       runtimeResourceId: (workspace, launchId) =>
         via((c) => c.runtimeResourceId(workspace, launchId)),
+      launchedRuntime: (workspace) => via((c) => c.launchedRuntime(workspace)),
       captureReplan: (workspace, options) => via((c) => c.captureReplan(workspace, options)),
       expireWorkspace: (workspaceId, ttlSeconds) =>
         via((c) => c.expireWorkspace(workspaceId, ttlSeconds)),
