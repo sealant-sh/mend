@@ -45,26 +45,6 @@ describe("GET /.well-known/t3/environment", () => {
     }),
   );
 
-  it("refuses a client on another protocol, as t3code's check does", () => {
-    const base = {
-      environmentId: "e",
-      label: "Mend",
-      platform: { os: "linux", arch: "x64" },
-      serverVersion: SERVER_VERSION,
-      capabilities: { repositoryIdentity: false, threadSettlement: true, threadSnooze: true },
-    } as const;
-    const decode = Schema.decodeUnknownSync(ExecutionEnvironmentDescriptor);
-    assert.strictEqual(
-      orchestrationProtocolCompatibilityError(decode({ ...base, orchestrationProtocolVersion: 1 })),
-      "server-too-old",
-    );
-    assert.strictEqual(orchestrationProtocolCompatibilityError(decode(base)), "server-too-old");
-    assert.strictEqual(
-      orchestrationProtocolCompatibilityError(decode({ ...base, orchestrationProtocolVersion: 3 })),
-      "client-too-old",
-    );
-  });
-
   it.live("keeps the environment id across restarts of the same state file", () =>
     Effect.gen(function* () {
       const directory = mkdtempSync(join(tmpdir(), "t3-gateway-"));

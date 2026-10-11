@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 
+import { postgresTestConfig } from "@mend/db/testing";
 import { makePublicNetwork, NetworkConfig, PublicOrigin } from "@mend/network";
 import { ConfigProvider, Effect, Layer, Option, Schema } from "effect";
 import { Pool } from "pg";
@@ -10,10 +11,10 @@ import { Auth, AuthLive, RegistrationPolicy } from "./auth.ts";
 /**
  * Deactivated accounts lose every way in (docs/adr/0003-organizations-and-tenancy.md): browser
  * sessions, paired-device tokens and the static dev token. Runs against the dev Postgres
- * (`compose.dev.yaml`, :5434) in a throwaway database, and skips without one.
+ * (`compose.dev.yaml`, :5434) in a throwaway database. See postgresTestConfig for local opt-out.
  */
-const ADMIN_URL =
-  process.env["MEND_TEST_DATABASE_URL"] ?? "postgres://mend:mend@localhost:5434/mend";
+const postgres = postgresTestConfig();
+const ADMIN_URL = postgres.adminUrl;
 const SCRATCH_DB = `mend_auth_deactivation_test_${process.pid}_${Date.now()}`;
 const scratchUrl = (() => {
   const url = new URL(ADMIN_URL);
@@ -22,10 +23,6 @@ const scratchUrl = (() => {
 })();
 
 const admin = new Pool({ connectionString: ADMIN_URL, connectionTimeoutMillis: 2000 });
-const reachable = await admin.query("SELECT 1").then(
-  () => true,
-  () => false,
-);
 
 const origin = "http://localhost:3105";
 const network = makePublicNetwork(Schema.decodeUnknownSync(PublicOrigin)(origin), []);
@@ -65,7 +62,7 @@ const signedIn = async (headers: Headers) => (await signedInAs(headers)) !== nul
 
 const bearer = (token: string) => new Headers({ authorization: `Bearer ${token}` });
 
-describe.skipIf(!reachable)("deactivated accounts", () => {
+describe.skipIf(postgres.skip)("deactivated accounts", () => {
   let sessionToken = "";
   let scratch: Pool | undefined;
 
@@ -150,7 +147,6 @@ describe.skipIf(!reachable)("deactivated accounts", () => {
   afterAll(async () => {
     await scratch?.end();
     await admin.query(`DROP DATABASE IF EXISTS ${SCRATCH_DB} WITH (FORCE)`);
-    await admin.end();
   });
 
   it("an active account is signed in by its session, its device and the static token", async () => {
@@ -216,5 +212,5 @@ describe.skipIf(!reachable)("deactivated accounts", () => {
 });
 
 afterAll(async () => {
-  if (!reachable) await admin.end();
+  await admin.end();
 });

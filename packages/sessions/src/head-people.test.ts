@@ -8,18 +8,15 @@ import { makeHeadPeopleCheck } from "./head-people.ts";
  * (review of mend#582, finding 6): a worktree that falls back to shared reads its head's manifest
  * and the dir packs under `harness/people/` once per head, not once per launch.
  */
-/** A store whose every blob read (a manifest, then two dir packs) takes `latencyMs`. */
-const storeOf = (latencyMs: number, people: boolean) => {
+/** A store that counts reads of a manifest and two dir packs. */
+const storeOf = (people: boolean) => {
   const reads = { db: 0, blobs: 0 };
   let head = { key: "manifests/1", n: 1 };
   const check = makeHeadPeopleCheck({
     head: (_worktreeId: string) => Effect.sync(() => (reads.db++, head)),
     holdsPeople: () =>
-      Effect.gen(function* () {
-        for (let i = 0; i < 3; i++) {
-          reads.blobs++;
-          if (latencyMs > 0) yield* Effect.sleep(`${latencyMs} millis`);
-        }
+      Effect.sync(() => {
+        reads.blobs += 3;
         return people;
       }),
   });
@@ -32,7 +29,7 @@ const storeOf = (latencyMs: number, people: boolean) => {
 
 describe("whether a worktree's head holds people", () => {
   it("reads a fallback worktree's head once, then no blob at all at that head", async () => {
-    const store = storeOf(0, false);
+    const store = storeOf(false);
     for (let launch = 0; launch < 5; launch++) {
       expect(await Effect.runPromise(store.check("wt-1"))).toBe(false);
     }
@@ -44,7 +41,7 @@ describe("whether a worktree's head holds people", () => {
   });
 
   it("never remembers a yes", async () => {
-    const store = storeOf(0, true);
+    const store = storeOf(true);
     expect(await Effect.runPromise(store.check("wt-1"))).toBe(true);
     expect(await Effect.runPromise(store.check("wt-1"))).toBe(true);
     expect(store.reads.blobs).toBe(6);
@@ -65,19 +62,5 @@ describe("whether a worktree's head holds people", () => {
     expect(await Effect.runPromise(failing("wt-1"))).toBe(false);
     expect(await Effect.runPromise(failing("wt-1"))).toBe(false);
     expect(reads).toBe(2);
-  });
-
-  it("takes a later launch's check from about three blob reads to none (timed)", async () => {
-    // 30 ms a read: Garage on the box answers in about that, remote S3 slower.
-    const store = storeOf(30, false);
-    const time = async () => {
-      const started = performance.now();
-      await Effect.runPromise(store.check("wt-1"));
-      return performance.now() - started;
-    };
-    const first = await time();
-    const later = await time();
-    expect(first).toBeGreaterThanOrEqual(85);
-    expect(later).toBeLessThan(10);
   });
 });

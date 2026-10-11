@@ -32,6 +32,8 @@ const sessionEvent = {
 const arrives = (stream: { readonly next: (timeoutMs?: number) => Promise<string | null> }) =>
   stream.next(5_000);
 
+const frame = (event: unknown) => `data: ${JSON.stringify(event)}`;
+
 /** How long a test that expects silence listens for. */
 const SILENCE_MS = 150;
 
@@ -55,24 +57,33 @@ describe("the event stream lifecycle", () => {
     const second = await api.events("carol");
     expect(api.listen).toEqual({ starts: 1, ends: 0 });
 
-    await api.notify(sessionEvent);
-    expect(await arrives(carol)).toContain(sharedA.session);
+    const firstEvent = {
+      ...sessionEvent,
+      type: "session-progress" as const,
+      sequence: "1",
+      line: "before close",
+    };
+    const queuedEvent = { ...firstEvent, sequence: "2", line: "queued before close" };
+    const afterEvent = { ...firstEvent, sequence: "3", line: "after close" };
+    await api.notify(firstEvent);
+    expect(await arrives(carol)).toBe(frame(firstEvent));
     // Torn down with an event published and not read by it. Whether the server was part-way
     // through writing that frame cannot be told from outside the process.
-    await api.notify(sessionEvent);
+    await api.notify(queuedEvent);
     await carol.close();
     await eventually(
       "carol's first stream released",
       async () => (await openStreams(world, "carol")) === 1,
     );
 
-    expect(await arrives(alice)).toContain(sharedA.session);
-    expect(await arrives(alice)).toContain(sharedA.session);
-    expect(await arrives(second)).toContain(sharedA.session);
-    // Events published after the teardown still arrive.
-    await api.notify(sessionEvent);
-    expect(await arrives(alice)).toContain(sharedA.session);
-    expect(await arrives(second)).toContain(sharedA.session);
+    for (const stream of [alice, second]) {
+      expect(await arrives(stream)).toBe(frame(firstEvent));
+      expect(await arrives(stream)).toBe(frame(queuedEvent));
+    }
+    // Events published after the teardown still arrive, with their own sequence.
+    await api.notify(afterEvent);
+    expect(await arrives(alice)).toBe(frame(afterEvent));
+    expect(await arrives(second)).toBe(frame(afterEvent));
 
     expect(api.listen).toEqual({ starts: 1, ends: 0 });
     expect(await api.openConnections("carol", "event-stream")).toBe(1);

@@ -6,14 +6,11 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { migrations } from "../src/migrations.ts";
 import { UserGitAuthorRepo, UserGitAuthorRepoLive } from "../src/repos/user-git-author.ts";
+import { postgresTestConfig } from "./postgres.ts";
 
-/**
- * docs/GIT-ACCESS.md, "Git author", against the dev Postgres (`compose.dev.yaml`, :5434) in a
- * throwaway database. Without one reachable these skip rather than pretend; set
- * MEND_TEST_DATABASE_URL elsewhere.
- */
-const ADMIN_URL =
-  process.env["MEND_TEST_DATABASE_URL"] ?? "postgres://mend:mend@localhost:5434/mend";
+/** Runs in a throwaway PostgreSQL database. See postgresTestConfig for local opt-out. */
+const postgres = postgresTestConfig();
+const ADMIN_URL = postgres.adminUrl;
 const SCRATCH_DB = `mend_git_author_test_${process.pid}_${Date.now()}`;
 const scratchUrl = (() => {
   const url = new URL(ADMIN_URL);
@@ -29,18 +26,7 @@ const withAdmin = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
 const run = <A, E>(effect: Effect.Effect<A, E, UserGitAuthorRepo | SqlClient.SqlClient>) =>
   Effect.runPromise(effect.pipe(Effect.provide(repoLayer), Effect.scoped));
 
-const reachable = await withAdmin(
-  Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
-    yield* sql`SELECT 1`;
-    return true;
-  }).pipe(Effect.timeout("2 seconds")),
-).then(
-  () => true,
-  () => false,
-);
-
-describe.skipIf(!reachable)("the git author setting, in Postgres", () => {
+describe.skipIf(postgres.skip)("the git author setting, in Postgres", () => {
   beforeAll(async () => {
     await withAdmin(
       Effect.gen(function* () {

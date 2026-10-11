@@ -1,17 +1,14 @@
 import { PgClient } from "@effect/sql-pg";
+import { postgresTestConfig } from "@mend/db/testing";
 import { Effect, Layer, ManagedRuntime, Redacted } from "effect";
 import { SqlClient } from "effect/unstable/sql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { JobRunner } from "../src/job-runner.ts";
 
-/**
- * The live pg-boss layer against the dev Postgres (`compose.dev.yaml`, :5434) in a throwaway
- * database. Without one reachable these skip rather than pretend; set MEND_TEST_DATABASE_URL
- * elsewhere.
- */
-const ADMIN_URL =
-  process.env["MEND_TEST_DATABASE_URL"] ?? "postgres://mend:mend@localhost:5434/mend";
+/** Runs in a throwaway PostgreSQL database. See postgresTestConfig for local opt-out. */
+const postgres = postgresTestConfig();
+const ADMIN_URL = postgres.adminUrl;
 const SCRATCH_DB = `mend_jobs_test_${process.pid}_${Date.now()}`;
 const scratchUrl = (() => {
   const url = new URL(ADMIN_URL);
@@ -22,17 +19,6 @@ const adminLayer = PgClient.layer({ url: Redacted.make(ADMIN_URL) });
 const withAdmin = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
   Effect.runPromise(effect.pipe(Effect.provide(adminLayer), Effect.scoped));
 
-const reachable = await withAdmin(
-  Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
-    yield* sql`SELECT 1`;
-    return true;
-  }).pipe(Effect.timeout("2 seconds")),
-).then(
-  () => true,
-  () => false,
-);
-
 const until = async (check: () => Promise<boolean>, what: string) => {
   for (let attempt = 0; attempt < 150; attempt++) {
     if (await check()) return;
@@ -41,7 +27,7 @@ const until = async (check: () => Promise<boolean>, what: string) => {
   throw new Error(`timed out waiting for ${what}`);
 };
 
-describe.skipIf(!reachable)("JobRunner on pg-boss", () => {
+describe.skipIf(postgres.skip)("JobRunner on pg-boss", () => {
   let runtime: ManagedRuntime.ManagedRuntime<JobRunner, never> | null = null;
   const jobs = () => {
     if (runtime === null) throw new Error("runtime not started");

@@ -13,13 +13,11 @@ import {
   CaptureStoreRepoLive,
 } from "../src/repos/capture-store.ts";
 import { StoreRefsRepo, StoreRefsRepoLive } from "../src/repos/store-refs.ts";
+import { postgresTestConfig } from "./postgres.ts";
 
-/**
- * Runs against the dev Postgres (`compose.dev.yaml`, :5434) in a throwaway database; skips when
- * nothing listens. MEND_TEST_DATABASE_URL points elsewhere.
- */
-const ADMIN_URL =
-  process.env["MEND_TEST_DATABASE_URL"] ?? "postgres://mend:mend@localhost:5434/mend";
+/** Runs in a throwaway PostgreSQL database. See postgresTestConfig for local opt-out. */
+const postgres = postgresTestConfig();
+const ADMIN_URL = postgres.adminUrl;
 const SCRATCH_DB = `mend_capture_store_test_${process.pid}_${Date.now()}`;
 const scratchUrl = (() => {
   const url = new URL(ADMIN_URL);
@@ -45,17 +43,6 @@ const withAdmin = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
 const run = <A, E>(
   effect: Effect.Effect<A, E, CaptureStoreRepo | StoreRefsRepo | SqlClient.SqlClient>,
 ) => Effect.runPromise(effect.pipe(Effect.provide(reposLayer), Effect.scoped));
-
-const reachable = await withAdmin(
-  Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
-    yield* sql`SELECT 1`;
-    return true;
-  }).pipe(Effect.timeout("2 seconds")),
-).then(
-  () => true,
-  () => false,
-);
 
 const PROJECT = ProjectId.make("proj-cap");
 let worktreeSeq = 0;
@@ -111,7 +98,7 @@ const reasonOf = <A>(
     Effect.catch((error) => Effect.succeed(error.reason)),
   );
 
-describe.skipIf(!reachable)("capture store (0053)", () => {
+describe.skipIf(postgres.skip)("capture store (0053)", () => {
   beforeAll(async () => {
     await withAdmin(
       Effect.gen(function* () {
@@ -1591,73 +1578,76 @@ const upTo0099 = (seed: Effect.Effect<void, unknown, SqlClient.SqlClient>) =>
 
 // Astra review 2026-10-02: the server before 0099 kept its pack index bindings in memory. A URL
 // it bound in its last minutes outlives it, and nothing in the new table says so.
-describe.skipIf(!reachable)("migration 0099 over a server that bound index URLs in memory", () => {
-  const stamp = `${process.pid}_${Date.now()}`;
-  const databases = {
-    used: `mend_bound_cutover_used_${stamp}`,
-    fresh: `mend_bound_cutover_fresh_${stamp}`,
-  };
-  const on = (database: string) => {
-    const url = new URL(ADMIN_URL);
-    url.pathname = `/${database}`;
-    const layer = MendDBLive.pipe(
-      Layer.provideMerge(
-        PgClient.layer({
-          url: Redacted.make(url.toString()),
-          transformResultNames: Str.snakeToCamel,
-          transformQueryNames: Str.camelToSnake,
-        }),
-      ),
-    );
-    return <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
-      Effect.runPromise(effect.pipe(Effect.provide(layer), Effect.scoped));
-  };
+describe.skipIf(postgres.skip)(
+  "migration 0099 over a server that bound index URLs in memory",
+  () => {
+    const stamp = `${process.pid}_${Date.now()}`;
+    const databases = {
+      used: `mend_bound_cutover_used_${stamp}`,
+      fresh: `mend_bound_cutover_fresh_${stamp}`,
+    };
+    const on = (database: string) => {
+      const url = new URL(ADMIN_URL);
+      url.pathname = `/${database}`;
+      const layer = MendDBLive.pipe(
+        Layer.provideMerge(
+          PgClient.layer({
+            url: Redacted.make(url.toString()),
+            transformResultNames: Str.snakeToCamel,
+            transformQueryNames: Str.camelToSnake,
+          }),
+        ),
+      );
+      return <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
+        Effect.runPromise(effect.pipe(Effect.provide(layer), Effect.scoped));
+    };
 
-  beforeAll(async () => {
-    await withAdmin(
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        for (const database of Object.values(databases)) {
-          yield* sql.unsafe(`CREATE DATABASE ${database}`);
-        }
-      }),
-    );
-  });
-
-  afterAll(async () => {
-    await withAdmin(
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        for (const database of Object.values(databases)) {
-          yield* sql.unsafe(`DROP DATABASE IF EXISTS ${database} WITH (FORCE)`);
-        }
-      }),
-    );
-  });
-
-  it("a database with worktrees waits out the old server's longest URL once; one without waits for nothing", async () => {
-    const used = await on(databases.used)(
-      upTo0099(
+    beforeAll(async () => {
+      await withAdmin(
         Effect.gen(function* () {
           const sql = yield* SqlClient.SqlClient;
-          yield* sql`
+          for (const database of Object.values(databases)) {
+            yield* sql.unsafe(`CREATE DATABASE ${database}`);
+          }
+        }),
+      );
+    });
+
+    afterAll(async () => {
+      await withAdmin(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          for (const database of Object.values(databases)) {
+            yield* sql.unsafe(`DROP DATABASE IF EXISTS ${database} WITH (FORCE)`);
+          }
+        }),
+      );
+    });
+
+    it("a database with worktrees waits out the old server's longest URL once; one without waits for nothing", async () => {
+      const used = await on(databases.used)(
+        upTo0099(
+          Effect.gen(function* () {
+            const sql = yield* SqlClient.SqlClient;
+            yield* sql`
             INSERT INTO projects (id, name, store_path, default_branch, organization_id)
             VALUES ('p-used', 'web', '/store/p/repo.git', 'main',
                     (SELECT id FROM organizations LIMIT 1))`;
-          yield* sql`
+            yield* sql`
             INSERT INTO worktrees (id, project_id, name, directory, branch, base_sha)
             VALUES ('wt-used', 'p-used', 'wt-used', 'wt-used', 'mend/wt/wt-used', 'abc')`;
-        }),
-      ),
-    );
-    expect(used).toBe(20);
-    expect(await on(databases.fresh)(upTo0099(Effect.void))).toBeNull();
-  });
-});
+          }),
+        ),
+      );
+      expect(used).toBe(20);
+      expect(await on(databases.fresh)(upTo0099(Effect.void))).toBeNull();
+    });
+  },
+);
 
 // Review 2026-09-28 (10) #5, seals recorded before 0092: each gets every epoch prefix its
 // capture's sections and manifest name, and its mark — made against its own epoch — is dropped.
-describe.skipIf(!reachable)("migration 0092 over seals recorded before it", () => {
+describe.skipIf(postgres.skip)("migration 0092 over seals recorded before it", () => {
   const LEGACY_DB = `mend_capture_seal_scopes_${process.pid}_${Date.now()}`;
   const legacyUrl = (() => {
     const url = new URL(ADMIN_URL);
@@ -1752,7 +1742,7 @@ describe.skipIf(!reachable)("migration 0092 over seals recorded before it", () =
 // Review 2026-09-28 (13) #1: a git step the Mend host could not finish recorded a sound capture
 // `failed`, and why was never stored. 0094 puts every `failed` row back to `unverified`, once, so
 // the next plan, register or seal re-ask verifies it again; the other outcomes stay as they were.
-describe.skipIf(!reachable)("migration 0094 over git sections recorded failed before it", () => {
+describe.skipIf(postgres.skip)("migration 0094 over git sections recorded failed before it", () => {
   const LEGACY_DB = `mend_capture_git_fsck_${process.pid}_${Date.now()}`;
   const legacyUrl = (() => {
     const url = new URL(ADMIN_URL);

@@ -14,15 +14,11 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { MendDBLive } from "../src/client.ts";
 import { migrations } from "../src/migrations.ts";
 import { SessionsRepo, SessionsRepoLive } from "../src/repos/agent-sessions.ts";
+import { postgresTestConfig } from "./postgres.ts";
 
-/**
- * Who created a workspace (0114, `SessionsRepo.executorSessionOf`): the session whose row names it
- * under a launch of its own, never one that joined it (alpha 2026-10-06, 9e486cfc). Against the dev
- * Postgres (`compose.dev.yaml`, :5434) in a throwaway database; skips without one. Set
- * MEND_TEST_DATABASE_URL elsewhere.
- */
-const ADMIN_URL =
-  process.env["MEND_TEST_DATABASE_URL"] ?? "postgres://mend:mend@localhost:5434/mend";
+/** Runs in a throwaway PostgreSQL database. See postgresTestConfig for local opt-out. */
+const postgres = postgresTestConfig();
+const ADMIN_URL = postgres.adminUrl;
 const SCRATCH_DB = `mend_executor_session_test_${process.pid}_${Date.now()}`;
 const scratchUrl = (() => {
   const url = new URL(ADMIN_URL);
@@ -40,24 +36,13 @@ const withAdmin = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
 const run = <A, E>(effect: Effect.Effect<A, E, SessionsRepo | SqlClient.SqlClient>) =>
   Effect.runPromise(effect.pipe(Effect.provide(reposLayer), Effect.scoped));
 
-const reachable = await withAdmin(
-  Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
-    yield* sql`SELECT 1`;
-    return true;
-  }).pipe(Effect.timeout("2 seconds")),
-).then(
-  () => true,
-  () => false,
-);
-
 const PROJECT = ProjectId.make("p-web");
 const WORKTREE = WorktreeId.make("wt-1");
 const HOLDER = SessionId.make("s-holder");
 const JOINER = SessionId.make("s-joiner");
 const WORKSPACE = SealantWorkspaceId.make("ws-holder");
 
-describe.skipIf(!reachable)("who created a workspace (0114), in Postgres", () => {
+describe.skipIf(postgres.skip)("who created a workspace (0114), in Postgres", () => {
   beforeAll(async () => {
     await withAdmin(
       Effect.gen(function* () {

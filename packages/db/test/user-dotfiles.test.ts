@@ -6,14 +6,11 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { MendDBLive } from "../src/client.ts";
 import { migrations } from "../src/migrations.ts";
 import { UserDotfilesRepo, UserDotfilesRepoLive } from "../src/repos/user-dotfiles.ts";
+import { postgresTestConfig } from "./postgres.ts";
 
-/**
- * "Start my agents after install.sh" (docs/adr/0016, decision 11), against the dev Postgres
- * (`compose.dev.yaml`, :5434) in a throwaway database. Without one reachable these skip rather
- * than pretend; set MEND_TEST_DATABASE_URL elsewhere.
- */
-const ADMIN_URL =
-  process.env["MEND_TEST_DATABASE_URL"] ?? "postgres://mend:mend@localhost:5434/mend";
+/** Runs in a throwaway PostgreSQL database. See postgresTestConfig for local opt-out. */
+const postgres = postgresTestConfig();
+const ADMIN_URL = postgres.adminUrl;
 const SCRATCH_DB = `mend_user_dotfiles_test_${process.pid}_${Date.now()}`;
 const scratchUrl = (() => {
   const url = new URL(ADMIN_URL);
@@ -32,18 +29,7 @@ const withAdmin = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
 const run = <A, E>(effect: Effect.Effect<A, E, UserDotfilesRepo | SqlClient.SqlClient>) =>
   Effect.runPromise(effect.pipe(Effect.provide(repoLayer), Effect.scoped));
 
-const reachable = await withAdmin(
-  Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
-    yield* sql`SELECT 1`;
-    return true;
-  }).pipe(Effect.timeout("2 seconds")),
-).then(
-  () => true,
-  () => false,
-);
-
-describe.skipIf(!reachable)("a person's dotfiles settings, in Postgres", () => {
+describe.skipIf(postgres.skip)("a person's dotfiles settings, in Postgres", () => {
   beforeAll(async () => {
     await withAdmin(
       Effect.gen(function* () {

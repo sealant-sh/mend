@@ -14,13 +14,11 @@ import {
   CheckpointsRepoLive,
   type NewCheckpoint,
 } from "../src/repos/checkpoints.ts";
+import { postgresTestConfig } from "./postgres.ts";
 
-/**
- * Runs against the dev Postgres (`compose.dev.yaml`, :5434) in a throwaway database; skips when
- * nothing listens. MEND_TEST_DATABASE_URL points elsewhere.
- */
-const ADMIN_URL =
-  process.env["MEND_TEST_DATABASE_URL"] ?? "postgres://mend:mend@localhost:5434/mend";
+/** Runs in a throwaway PostgreSQL database. See postgresTestConfig for local opt-out. */
+const postgres = postgresTestConfig();
+const ADMIN_URL = postgres.adminUrl;
 const SCRATCH_DB = `mend_checkpoints_test_${process.pid}_${Date.now()}`;
 const scratchUrl = (() => {
   const url = new URL(ADMIN_URL);
@@ -41,17 +39,6 @@ const withAdmin = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
   Effect.runPromise(effect.pipe(Effect.provide(adminLayer), Effect.scoped));
 const run = <A, E>(effect: Effect.Effect<A, E, CheckpointsRepo | SqlClient.SqlClient>) =>
   Effect.runPromise(effect.pipe(Effect.provide(reposLayer), Effect.scoped));
-
-const reachable = await withAdmin(
-  Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
-    yield* sql`SELECT 1`;
-    return true;
-  }).pipe(Effect.timeout("2 seconds")),
-).then(
-  () => true,
-  () => false,
-);
 
 const PROJECT = ProjectId.make("proj-checkpoints");
 let worktreeSeq = 0;
@@ -77,7 +64,7 @@ const rowAt = (worktreeId: WorktreeId, ordinal: number, c: string): NewCheckpoin
   trigger: "user-mark",
 });
 
-describe.skipIf(!reachable)("checkpoints repo", () => {
+describe.skipIf(postgres.skip)("checkpoints repo", () => {
   beforeAll(async () => {
     await withAdmin(
       Effect.gen(function* () {

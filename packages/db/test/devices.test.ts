@@ -8,14 +8,11 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { MendDBLive } from "../src/client.ts";
 import { migrations } from "../src/migrations.ts";
 import { DevicesRepo, DevicesRepoLive } from "../src/repos/devices.ts";
+import { postgresTestConfig } from "./postgres.ts";
 
-/**
- * Device pairing against the dev Postgres (`compose.dev.yaml`, :5434) in a
- * throwaway database. Without one reachable these skip rather than pretend;
- * set MEND_TEST_DATABASE_URL to point elsewhere.
- */
-const ADMIN_URL =
-  process.env["MEND_TEST_DATABASE_URL"] ?? "postgres://mend:mend@localhost:5434/mend";
+/** Runs in a throwaway PostgreSQL database. See postgresTestConfig for local opt-out. */
+const postgres = postgresTestConfig();
+const ADMIN_URL = postgres.adminUrl;
 const SCRATCH_DB = `mend_devices_test_${process.pid}_${Date.now()}`;
 
 const scratchUrl = (() => {
@@ -36,18 +33,6 @@ const withDevices = <A, E>(
   effect: Effect.Effect<A, E, DevicesRepo | SqlClient.SqlClient | PgClient.PgClient>,
 ) => Effect.runPromise(effect.pipe(Effect.provide(scratchDevicesLayer), Effect.scoped));
 
-// The layer itself fails to build when nothing listens, so the guard sits outside the Effect.
-const reachable = await withAdmin(
-  Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
-    yield* sql`SELECT 1`;
-    return true;
-  }).pipe(Effect.timeout("2 seconds")),
-).then(
-  () => true,
-  () => false,
-);
-
 const ORDERED = Object.entries(migrations).toSorted(([a], [b]) => a.localeCompare(b));
 
 const hash = (token: string) => createHash("sha256").update(token).digest("hex");
@@ -64,7 +49,7 @@ const resolveBearer = (token: string) =>
        LIMIT 1`;
   });
 
-describe.skipIf(!reachable)("device pairing", () => {
+describe.skipIf(postgres.skip)("device pairing", () => {
   beforeAll(async () => {
     await withAdmin(
       Effect.gen(function* () {

@@ -67,13 +67,17 @@ describe("immutable Review diff", () => {
       },
     ]);
 
-    expect(digestReviewPatch(patch)).toMatch(/^[0-9a-f]{64}$/);
+    expect(digestReviewPatch(patch)).toBe(
+      "42c1bcdc6433978ea942f00a569317153bf88c453c1a6eb1ef6aff8a19c6e8bf",
+    );
+    expect(digestReviewPatch(patch + "\n")).not.toBe(digestReviewPatch(patch));
     expect(files).toHaveLength(2);
     expect(files[0]?.hunks[0]).toMatchObject({
       oldStart: 1,
       oldLines: 3,
       newStart: 1,
       newLines: 3,
+      contextHash: "aaceb34d55fb8dfd7ad87d2182af43d1dfb2eab022c628b7cdbe714779809d56",
     });
     expect(files[1]?.status).toBe("deleted");
   });
@@ -135,7 +139,23 @@ describe("immutable Review diff", () => {
     };
 
     expect(lineAnchorExists(files, target)).toBe(true);
-    expect(lineAnchorExists(files, { ...target, side: "new", startLine: 8 })).toBe(false);
+    expect(lineAnchorExists(files, { ...target, side: "new" })).toBe(true);
+    expect(lineAnchorExists(files, { ...target, startLine: 8, endLine: 8 })).toBe(false);
+    expect(lineAnchorExists(files, { ...target, startLine: 0, endLine: 0 })).toBe(false);
+    expect(lineAnchorExists(files, { ...target, startLine: 3, endLine: 2 })).toBe(false);
+    expect(lineAnchorExists(files, { ...target, startLine: 1, endLine: 3 })).toBe(true);
+    expect(lineAnchorExists(files, { ...target, endLine: 4 })).toBe(false);
+    expect(lineAnchorExists(files, { ...target, newPath: "wrong.ts" })).toBe(false);
+    const deleted = {
+      ...target,
+      oldPath: "gone.ts",
+      newPath: null,
+      startLine: 1,
+      endLine: 2,
+      hunkContextHash: files[1]?.hunks[0]?.contextHash ?? "",
+    };
+    expect(lineAnchorExists(files, deleted)).toBe(true);
+    expect(lineAnchorExists(files, { ...deleted, side: "new" })).toBe(false);
     expect(lineAnchorExists(files, { ...target, hunkContextHash: "stale" })).toBe(false);
   });
 });

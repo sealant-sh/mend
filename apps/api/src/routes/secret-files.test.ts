@@ -16,6 +16,12 @@ const credentials = new SecretFile({
   updatedAt: new Date(0),
 });
 
+const storedCredentials = {
+  ...credentials,
+  contents: "synthetic-aws-secret",
+  sealedContents: "sealed-synthetic-aws-secret",
+};
+
 /**
  * A secret file is only ever the signed-in account's own, and its content is write-only: the
  * handler seals it and the sealed form is all the repo ever receives.
@@ -38,7 +44,7 @@ describe("secret files", () => {
           list: (userId) =>
             Effect.sync(() => {
               asked.push(`list:${userId}`);
-              return userId === "carol" ? [credentials] : [];
+              return userId === "carol" ? [storedCredentials] : [];
             }),
           save: (userId, input) =>
             Effect.suspend(() => {
@@ -105,7 +111,14 @@ describe("secret files", () => {
 
   it("never returns a file's content in any shape", async () => {
     const mine = await api.request("carol", "GET", "/api/me/secret-files");
-    const body = JSON.stringify(await mine.json());
+    expect(mine.status).toBe(200);
+    const response: unknown = await mine.json();
+    expect(response).toMatchObject({
+      files: [{ id: "sf-1", path: ".aws/credentials", revision: 2 }],
+    });
+    const body = JSON.stringify(response);
+    expect(body).not.toContain(storedCredentials.contents);
+    expect(body).not.toContain(storedCredentials.sealedContents);
     expect(body).not.toContain("contents");
     expect(body).not.toContain("sealed");
   });

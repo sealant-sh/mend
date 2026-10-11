@@ -4,6 +4,7 @@ import * as path from "node:path";
 
 import { PgClient } from "@effect/sql-pg";
 import { CaptureStoreRepo, CaptureStoreRepoLive, MendDBLive, migrations } from "@mend/db";
+import { postgresTestConfig } from "@mend/db/testing";
 import { ProjectId, WorktreeId } from "@mend/domain";
 import {
   CaptureChannel,
@@ -600,8 +601,8 @@ it("memory: a pass whose deletion claim lapsed deletes nothing more and leaves i
 
 // ─── Postgres ──────────────────────────────────────────────────────────────
 
-const ADMIN_URL =
-  process.env["MEND_TEST_DATABASE_URL"] ?? "postgres://mend:mend@localhost:5434/mend";
+const postgres = postgresTestConfig();
+const ADMIN_URL = postgres.adminUrl;
 const SCRATCH_DB = `mend_retention_race_test_${process.pid}_${Date.now()}`;
 const scratchUrl = (() => {
   const url = new URL(ADMIN_URL);
@@ -611,15 +612,6 @@ const scratchUrl = (() => {
 const adminLayer = PgClient.layer({ url: Redacted.make(ADMIN_URL) });
 const withAdmin = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
   Effect.runPromise(effect.pipe(Effect.provide(adminLayer), Effect.scoped));
-const reachable = await withAdmin(
-  Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
-    yield* sql`SELECT 1`;
-  }).pipe(Effect.timeout("2 seconds")),
-).then(
-  () => true,
-  () => false,
-);
 // The production client's name transforms (`@mend/db` `client.ts`).
 const pgLayer = Layer.provideMerge(
   CaptureStoreRepoLive,
@@ -633,7 +625,7 @@ const pgLayer = Layer.provideMerge(
     ),
   ),
 );
-describe.skipIf(!reachable)("retention racing a register (Postgres)", () => {
+describe.skipIf(postgres.skip)("retention racing a register (Postgres)", () => {
   const PROJECT = ProjectId.make("proj-race");
   beforeAll(async () => {
     await withAdmin(

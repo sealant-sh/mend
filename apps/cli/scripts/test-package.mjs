@@ -17,6 +17,7 @@ import { tmpdir } from "node:os";
 import { join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { isolatedClientEnvironment } from "../../../scripts/packaged-server-assertions.mjs";
 import manifest from "../package.json" with { type: "json" };
 
 const packageRoot = fileURLToPath(new URL("../", import.meta.url));
@@ -43,13 +44,29 @@ const run = (command, args, options = {}) => {
 };
 
 try {
-  console.log(run("pnpm", ["pack", "--pack-destination", scratch], { cwd: packageRoot }));
+  const home = join(scratch, "home");
+  mkdirSync(home);
+  const userConfig = join(scratch, "empty.npmrc");
+  const globalConfig = join(scratch, "empty-global.npmrc");
+  writeFileSync(userConfig, "", { mode: 0o600 });
+  writeFileSync(globalConfig, "", { mode: 0o600 });
+  const env = {
+    ...isolatedClientEnvironment(process.env, home),
+    npm_config_userconfig: userConfig,
+    npm_config_globalconfig: globalConfig,
+    npm_config_cache: join(scratch, "npm-cache"),
+    npm_config_ignore_scripts: "false",
+    MEND_URL: "http://127.0.0.1:9",
+    MEND_TOKEN: "",
+  };
+  // Prepack needs the checkout as cwd; package consumers get the same isolated home/config.
+  console.log(run("pnpm", ["pack", "--pack-destination", scratch], { cwd: packageRoot, env }));
   const tarballs = readdirSync(scratch).filter((name) => name.endsWith(".tgz"));
   assert.equal(tarballs.length, 1);
   const tarball = join(scratch, tarballs[0]);
   writeFileSync(join(scratch, "package.json"), JSON.stringify({ private: true }));
   // Do not use --ignore-scripts: this exercises an ordinary consumer installation.
-  console.log(run("npm", ["install", "--omit=dev", "--no-audit", "--no-fund", tarball]));
+  console.log(run("npm", ["install", "--omit=dev", "--no-audit", "--no-fund", tarball], { env }));
 
   const installed = join(scratch, "node_modules", "@sealant", "mend");
   const installedManifest = JSON.parse(readFileSync(join(installed, "package.json"), "utf8"));
@@ -90,18 +107,6 @@ try {
   assert.ok(man.includes(manifest.version), "Man page has the wrong version");
   assert.ok(existsSync(join(installed, "man", "mend-ssh.1")));
 
-  const home = join(scratch, "home");
-  mkdirSync(home);
-  const env = {
-    ...process.env,
-    HOME: home,
-    XDG_CONFIG_HOME: join(home, ".config"),
-    MEND_URL: "http://127.0.0.1:9",
-    MEND_TOKEN: "",
-    NODE_PATH: "",
-    NODE_OPTIONS: "",
-    SSH_AUTH_SOCK: "",
-  };
   const cli = (args, overrides = {}) =>
     run(process.execPath, [bin, ...args], { env, timeout: 15_000, ...overrides });
 

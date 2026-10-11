@@ -8,14 +8,11 @@ import { MendDBLive } from "../src/client.ts";
 import { migrations } from "../src/migrations.ts";
 import { SessionsRepo, SessionsRepoLive } from "../src/repos/agent-sessions.ts";
 import { ServicesRepo, ServicesRepoLive } from "../src/repos/services.ts";
+import { postgresTestConfig } from "./postgres.ts";
 
-/**
- * docs/SESSION-SERVICES.md, "Stop": which Services keep a session's workspace up, against the dev
- * Postgres (`compose.dev.yaml`, :5434) in a throwaway database. Without one reachable these skip
- * rather than pretend; set MEND_TEST_DATABASE_URL elsewhere.
- */
-const ADMIN_URL =
-  process.env["MEND_TEST_DATABASE_URL"] ?? "postgres://mend:mend@localhost:5434/mend";
+/** Runs in a throwaway PostgreSQL database. See postgresTestConfig for local opt-out. */
+const postgres = postgresTestConfig();
+const ADMIN_URL = postgres.adminUrl;
 const SCRATCH_DB = `mend_services_test_${process.pid}_${Date.now()}`;
 const scratchUrl = (() => {
   const url = new URL(ADMIN_URL);
@@ -35,23 +32,12 @@ const withAdmin = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
 const run = <A, E>(effect: Effect.Effect<A, E, Repos>) =>
   Effect.runPromise(effect.pipe(Effect.provide(reposLayer), Effect.scoped));
 
-const reachable = await withAdmin(
-  Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
-    yield* sql`SELECT 1`;
-    return true;
-  }).pipe(Effect.timeout("2 seconds")),
-).then(
-  () => true,
-  () => false,
-);
-
 const PROJECT = ProjectId.make("p-web");
 const WORKTREE = WorktreeId.make("wt-1");
 const HELD = SessionId.make("s-held");
 const QUIET = SessionId.make("s-quiet");
 
-describe.skipIf(!reachable)("Services that keep a workspace up, in Postgres", () => {
+describe.skipIf(postgres.skip)("Services that keep a workspace up, in Postgres", () => {
   beforeAll(async () => {
     await withAdmin(
       Effect.gen(function* () {

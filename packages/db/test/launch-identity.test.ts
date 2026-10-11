@@ -11,15 +11,11 @@ import {
   SessionChannelTokensRepo,
   SessionChannelTokensRepoLive,
 } from "../src/repos/session-channel-tokens.ts";
+import { postgresTestConfig } from "./postgres.ts";
 
-/**
- * Migration 0083 and the per-launch channel tokens against Postgres (review 2026-09-28 (3) #1 and
- * #5, cross-repo decision 5), in a throwaway database: a token from before names its session as
- * its launch — what that executor's plan answered and its seal names — and a new launch adds a
- * token without rotating another's. Skips without a database; set MEND_TEST_DATABASE_URL.
- */
-const ADMIN_URL =
-  process.env["MEND_TEST_DATABASE_URL"] ?? "postgres://mend:mend@localhost:5434/mend";
+/** Runs in a throwaway PostgreSQL database. See postgresTestConfig for local opt-out. */
+const postgres = postgresTestConfig();
+const ADMIN_URL = postgres.adminUrl;
 const SCRATCH_DB = `mend_launch_identity_test_${process.pid}_${Date.now()}`;
 const scratchUrl = (() => {
   const url = new URL(ADMIN_URL);
@@ -40,20 +36,10 @@ const withAdmin = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
 const run = <A, E>(effect: Effect.Effect<A, E, SessionChannelTokensRepo | SqlClient.SqlClient>) =>
   Effect.runPromise(effect.pipe(Effect.provide(reposLayer), Effect.scoped));
 
-const reachable = await withAdmin(
-  Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
-    yield* sql`SELECT 1`;
-  }).pipe(Effect.timeout("2 seconds")),
-).then(
-  () => true,
-  () => false,
-);
-
 const ordered = Object.entries(migrations).toSorted(([a], [b]) => a.localeCompare(b));
 const LEGACY_TOKEN = "legacy-token-legacy-token-legacy-token-xyz1";
 
-describe.skipIf(!reachable)("launch identity (0083), in Postgres", () => {
+describe.skipIf(postgres.skip)("launch identity (0083), in Postgres", () => {
   beforeAll(async () => {
     await withAdmin(
       Effect.gen(function* () {

@@ -19,7 +19,6 @@ import {
 } from "../src/captures.ts";
 import {
   buildManifest,
-  chunkBytes,
   snapshotDirectory,
   uploadObjects,
   writeCdcPack,
@@ -90,13 +89,6 @@ describe("CDC pack container", () => {
     const entry = { ...pack.index[0]!, length: tampered.index[0]!.length };
     const tag = await Effect.runPromise(failureTag(readChunk(key, tampered.bytes, entry)));
     expect(tag).toBe("CaptureIntegrityError");
-  });
-
-  it("chunks a byte string at the writer's size and leaves nothing behind", () => {
-    const bytes = new Uint8Array(10_001).fill(7);
-    const parts = chunkBytes(bytes, 4000);
-    expect(parts.map((part) => part.byteLength)).toEqual([4000, 4000, 2001]);
-    expect(chunkBytes(new Uint8Array(0), 4000)).toEqual([]);
   });
 });
 

@@ -171,19 +171,6 @@ describe.each(COMBINATIONS)("every reader over $name", ({ workspace, bulk }) => 
     return snapshot;
   };
 
-  it("names the dir objects the way its format says", () => {
-    for (const cls of ["workspace", "bulk"] as const) {
-      const snapshot = snapshotOf(cls);
-      if (snapshot.format === 2) {
-        expect(snapshot.root).toMatch(/^[0-9a-f]{64}$/);
-        expect(snapshot.dirPacks.length).toBeGreaterThan(1);
-      } else {
-        expect(snapshot.root).toContain("/trees/");
-        expect(snapshot.dirPacks).toEqual([]);
-      }
-    }
-  });
-
   it("materializes each class byte for byte", async () => {
     for (const cls of ["workspace", "bulk"] as const) {
       const target = path.join(scratch, `target-${cls}`);

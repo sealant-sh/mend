@@ -36,6 +36,7 @@ const serverUrl = env("MEND_E2E_URL");
 const ownerToken = env("MEND_E2E_OWNER_TOKEN");
 const projectName = env("MEND_E2E_PROJECT");
 const resultFile = env("MEND_E2E_RESULT");
+const runId = env("MEND_E2E_RUN_ID");
 
 const evidence: Record<string, unknown> = { serverUrl, home: os.homedir() };
 const record = (step: string, value: unknown): void => {
@@ -499,6 +500,15 @@ export async function run(): Promise<void> {
   modals.set("Stop ", "Stop session");
   for (const sessionId of [workbenchId, liveId]) {
     await vscode.commands.executeCommand("mend.stopSession", sessionId);
+    await until(`session ${sessionId} to stop`, async () => {
+      const status = field(await api(`/sessions/${sessionId}`), "session", "status");
+      return status === "stopped" || status === "completed";
+    });
   }
   record("stopped", { sessions: [workbenchId, liveId] });
+  const errors = evidence["errorsShown"];
+  if (Array.isArray(errors) && errors.length > 0) {
+    throw new Error("the editor displayed unexpected errors; inspect its recorded steps");
+  }
+  record("completed", { runId, remoteSsh: process.env["MEND_E2E_REMOTE_SSH"] !== "0" });
 }

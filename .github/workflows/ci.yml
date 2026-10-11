@@ -12,6 +12,20 @@ permissions:
 jobs:
   checks:
     runs-on: blacksmith-8vcpu-ubuntu-2404
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: mend
+          POSTGRES_PASSWORD: mend
+          POSTGRES_DB: mend
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U mend -d mend" --health-interval 5s --health-timeout 5s
+          --health-retries 10
+    env:
+      MEND_TEST_DATABASE_URL: postgres://mend:mend@localhost:5432/mend
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
@@ -36,7 +50,9 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm lint
       - run: pnpm format:check
-      - run: pnpm test
+      # PostgreSQL suites create their own databases. Never reuse a cached local skipped run.
+      - name: Tests including required PostgreSQL repositories, migrations and jobs
+        run: pnpm exec turbo test --force
       - name:
           Check packaging contracts, supervision, acceptance helpers, the mirrors, and the Helm
           chart
@@ -51,8 +67,8 @@ jobs:
           scripts/republish.test.mjs scripts/preview-deploy.test.mjs scripts/bench/lib.test.mjs
           scripts/mirrors-runtime.test.mjs scripts/verify-stack/lib.test.mjs
           scripts/verify-stack/lifecycle.test.mjs scripts/verify-stack/lifecycle.e2e.test.mjs
-          .claude/skills/verify/scripts/leaks.test.mjs .claude/skills/verify/scripts/slots.test.mjs
-          .claude/skills/verify/scripts/guard.test.mjs
+          scripts/vscode-acceptance-evidence.test.mjs .claude/skills/verify/scripts/leaks.test.mjs
+          .claude/skills/verify/scripts/slots.test.mjs .claude/skills/verify/scripts/guard.test.mjs
           .claude/skills/verify/scripts/secrets.test.mjs
           .claude/skills/verify/scripts/local-outer.test.mjs
       - run: helm lint deploy/helm/mend -f deploy/helm/mend/ci/obc-values.yaml

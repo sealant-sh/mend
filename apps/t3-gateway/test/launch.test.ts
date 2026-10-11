@@ -130,6 +130,11 @@ describe("orchestration.launchThread", () => {
           );
           const ids = seen.snapshot.threads.map((thread) => String(thread.id));
           assert.notInclude(ids, "draft-mine");
+          assert.include(ids, sessionId);
+          const visible = yield* other.rpc[ORCHESTRATION_V2_WS_METHODS.getThreadProjection]({
+            threadId: ThreadId.make(sessionId),
+          });
+          assert.strictEqual(visible.thread.id, sessionId);
           // The teammate cannot reach the session through the launcher's id.
           const exit = yield* Effect.exit(
             other.rpc[ORCHESTRATION_V2_WS_METHODS.getThreadProjection]({
@@ -137,7 +142,6 @@ describe("orchestration.launchThread", () => {
             }),
           );
           assert.isTrue(Exit.isFailure(exit));
-          void sessionId;
         }),
       ),
   );

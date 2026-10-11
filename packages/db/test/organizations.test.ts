@@ -22,13 +22,11 @@ import {
   SshKeyRevocationsRepo,
   SshKeyRevocationsRepoLive,
 } from "../src/repos/ssh-key-revocations.ts";
+import { postgresTestConfig } from "./postgres.ts";
 
-/**
- * Organizations against the dev Postgres (`compose.dev.yaml`, :5434) in a throwaway database.
- * Without one reachable these skip rather than pretend; set MEND_TEST_DATABASE_URL elsewhere.
- */
-const ADMIN_URL =
-  process.env["MEND_TEST_DATABASE_URL"] ?? "postgres://mend:mend@localhost:5434/mend";
+/** Runs in a throwaway PostgreSQL database. See postgresTestConfig for local opt-out. */
+const postgres = postgresTestConfig();
+const ADMIN_URL = postgres.adminUrl;
 const SCRATCH_DB = `mend_organizations_test_${process.pid}_${Date.now()}`;
 
 const scratchUrl = (() => {
@@ -71,21 +69,10 @@ type Services =
 const run = <A, E>(effect: Effect.Effect<A, E, Services>) =>
   Effect.runPromise(effect.pipe(Effect.provide(reposLayer), Effect.scoped));
 
-const reachable = await withAdmin(
-  Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
-    yield* sql`SELECT 1`;
-    return true;
-  }).pipe(Effect.timeout("2 seconds")),
-).then(
-  () => true,
-  () => false,
-);
-
 const ORDERED = Object.entries(migrations).toSorted(([a], [b]) => a.localeCompare(b));
 const inAWeek = () => new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
 
-describe.skipIf(!reachable)("organizations", () => {
+describe.skipIf(postgres.skip)("organizations", () => {
   let acme = OrganizationId.make("");
 
   beforeAll(async () => {

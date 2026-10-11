@@ -14,6 +14,7 @@ import {
   UpgradeTicketsRepoMemory,
   upgradeTicketScope,
 } from "../src/repos/upgrade-tickets.ts";
+import { postgresTestConfig } from "./postgres.ts";
 
 describe("upgrade tickets", () => {
   it("mints recognisable, url-safe tickets and stores only a hash", () => {
@@ -54,12 +55,9 @@ describe("upgrade tickets", () => {
   });
 });
 
-/**
- * The real statement against the dev Postgres (`compose.dev.yaml`, :5434) in a throwaway database.
- * Without one reachable these skip rather than pretend; set MEND_TEST_DATABASE_URL elsewhere.
- */
-const ADMIN_URL =
-  process.env["MEND_TEST_DATABASE_URL"] ?? "postgres://mend:mend@localhost:5434/mend";
+/** Runs in a throwaway PostgreSQL database. See postgresTestConfig for local opt-out. */
+const postgres = postgresTestConfig();
+const ADMIN_URL = postgres.adminUrl;
 const SCRATCH_DB = `mend_upgrade_tickets_test_${process.pid}_${Date.now()}`;
 const scratchUrl = (() => {
   const url = new URL(ADMIN_URL);
@@ -78,20 +76,9 @@ const run = <A, E>(
   effect: Effect.Effect<A, E, UpgradeTicketsRepo | SqlClient.SqlClient | PgClient.PgClient>,
 ) => Effect.runPromise(effect.pipe(Effect.provide(reposLayer), Effect.scoped));
 
-const reachable = await withAdmin(
-  Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
-    yield* sql`SELECT 1`;
-    return true;
-  }).pipe(Effect.timeout("2 seconds")),
-).then(
-  () => true,
-  () => false,
-);
-
 const ORDERED = Object.entries(migrations).toSorted(([a], [b]) => a.localeCompare(b));
 
-describe.skipIf(!reachable)("upgrade tickets in Postgres", () => {
+describe.skipIf(postgres.skip)("upgrade tickets in Postgres", () => {
   beforeAll(async () => {
     await withAdmin(
       Effect.gen(function* () {

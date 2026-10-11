@@ -43,6 +43,8 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { assertEditorEvidence } from "./vscode-acceptance-evidence.mjs";
+
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const version = process.env.MEND_TEST_VERSION;
 if (!version) throw new Error("set MEND_TEST_VERSION to a preloaded ghcr.io/sealant-sh/mend tag");
@@ -413,6 +415,7 @@ const main = async () => {
     MEND_E2E_OWNER_TOKEN: token,
     MEND_E2E_PROJECT: projectName,
     MEND_E2E_RESULT: resultFile,
+    MEND_E2E_RUN_ID: runId,
     MEND_E2E_REMOTE_SSH: remoteSsh ? "1" : "0",
   };
   log(`VS Code ${lines(sh(code, ["--version"], { env: vscodeEnv }).stdout)[0]} on ${display}`);
@@ -459,12 +462,7 @@ const main = async () => {
     }
   }
   if (exit !== 0) throw new Error(`the editor suite exited ${exit}`);
-  if (Object.keys(result).length === 0) {
-    // The `code` launcher detaches the app and exits 0 at once: VSCODE_BIN must be the app itself.
-    throw new Error(
-      "the editor suite recorded nothing; is VSCODE_BIN the Electron app, not `code`?",
-    );
-  }
+  assertEditorEvidence(result, { runId, remoteSsh });
   log("PASS the editor suite against the non-loopback server");
 
   // A second session in a fresh worktree. The suite's first launch came before the custom image

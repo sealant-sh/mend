@@ -24,14 +24,26 @@ const nothing = {
 /** `mend memory import` and its plan (docs/adr/0009, decision 4). */
 describe("agent memory import", () => {
   let api: TenancyApi;
-  const imports: Array<{ readonly files: number; readonly dryRun: boolean }> = [];
+  const imports: Array<{
+    readonly projectId: string;
+    readonly userId: string;
+    readonly files: ReadonlyArray<{ path: string; encoding: string; contents: string }>;
+    readonly source: { id: string; label: string } | null;
+    readonly dryRun: boolean;
+  }> = [];
   beforeAll(async () => {
     api = await createTenancyApi(undefined, {
       implement: {
         agentMemory: {
           importFiles: (input) =>
             Effect.sync(() => {
-              imports.push({ files: input.files.length, dryRun: input.dryRun });
+              imports.push({
+                projectId: input.projectId,
+                userId: input.userId,
+                files: input.files,
+                source: input.source,
+                dryRun: input.dryRun,
+              });
               return nothing;
             }),
         },
@@ -70,6 +82,14 @@ describe("agent memory import", () => {
     );
     expect(planned.status).toBe(200);
     expect(await planned.json()).toEqual(nothing);
-    expect(imports).toEqual([{ files: 1, dryRun: true }]);
+    expect(imports).toEqual([
+      {
+        projectId: ids("shared-a").project,
+        userId: "alice",
+        files: [file("a")],
+        source: { id: "machine:/code/app", label: "laptop" },
+        dryRun: true,
+      },
+    ]);
   });
 });

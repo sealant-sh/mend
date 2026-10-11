@@ -17,14 +17,11 @@ import {
   OrganizationSettingsRepoLive,
 } from "../src/repos/organization-settings.ts";
 import { SettingsRepo, SettingsRepoLive } from "../src/repos/settings.ts";
+import { postgresTestConfig } from "./postgres.ts";
 
-/**
- * An organization's own defaults (docs/adr/0003-organizations-and-tenancy.md) against the dev
- * Postgres (`compose.dev.yaml`, :5434) in a throwaway database. Without one reachable these skip
- * rather than pretend; set MEND_TEST_DATABASE_URL elsewhere.
- */
-const ADMIN_URL =
-  process.env["MEND_TEST_DATABASE_URL"] ?? "postgres://mend:mend@localhost:5434/mend";
+/** Runs in a throwaway PostgreSQL database. See postgresTestConfig for local opt-out. */
+const postgres = postgresTestConfig();
+const ADMIN_URL = postgres.adminUrl;
 const SCRATCH_DB = `mend_org_settings_test_${process.pid}_${Date.now()}`;
 const scratchUrl = (() => {
   const url = new URL(ADMIN_URL);
@@ -44,17 +41,6 @@ const run = <A, E>(
   effect: Effect.Effect<A, E, OrganizationSettingsRepo | SettingsRepo | SqlClient.SqlClient>,
 ) => Effect.runPromise(effect.pipe(Effect.provide(reposLayer), Effect.scoped));
 
-const reachable = await withAdmin(
-  Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
-    yield* sql`SELECT 1`;
-    return true;
-  }).pipe(Effect.timeout("2 seconds")),
-).then(
-  () => true,
-  () => false,
-);
-
 const ACME = OrganizationId.make("org-acme");
 const GLOBEX = OrganizationId.make("org-globex");
 
@@ -66,7 +52,7 @@ const fedora = {
   services: { docker: false },
 };
 
-describe.skipIf(!reachable)("organization settings, in Postgres", () => {
+describe.skipIf(postgres.skip)("organization settings, in Postgres", () => {
   beforeAll(async () => {
     await withAdmin(
       Effect.gen(function* () {

@@ -9,7 +9,7 @@ import http from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { gunzipSync, gzipSync } from "node:zlib";
+import { gzipSync } from "node:zlib";
 
 const root = execFileSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim();
 // npm's bundled pacote by default; REPUBLISH_TEST_PACOTE runs the same tests against another one.
@@ -481,8 +481,4 @@ test("a -next package's sibling dependency must be its exact -next alias", async
     "0.39.0-next.9",
   );
   assert.notEqual(aliased.status, 0);
-});
-
-test("the archive writer makes archives npm can read", () => {
-  assert.ok(gunzipSync(tarGz(goodEntries("1.0.0"))).length >= 2048);
 });

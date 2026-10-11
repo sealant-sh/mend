@@ -5,7 +5,8 @@
   "description": "Postgres access for Mend: Effect Drizzle client, migrations, repositories",
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./testing": "./test/postgres.ts"
   },
   "scripts": {
     "lint": "oxlint . --no-error-on-unmatched-pattern",

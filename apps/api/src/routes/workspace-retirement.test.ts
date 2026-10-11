@@ -10,7 +10,7 @@ describe("a pre-release workspace's replacement", () => {
   let api: TenancyApi;
   const shared = ids("shared-a");
   const replace = `/api/sessions/${shared.session}/workspace-retirement/replace`;
-  const asked: Array<string> = [];
+  const asked: Array<{ sessionId: string; actor: string; seen: string }> = [];
 
   beforeAll(async () => {
     api = await createTenancyApi(
@@ -21,7 +21,7 @@ describe("a pre-release workspace's replacement", () => {
             launchUnderWay: () => false,
             replaceWorkspaceNow: (sessionId, actor, seen) =>
               Effect.suspend(() => {
-                asked.push(`${actor}:${seen}`);
+                asked.push({ sessionId, actor, seen });
                 return actor === "carol"
                   ? Effect.fail(
                       new WorkspaceReplaceRefusedError({
@@ -50,6 +50,9 @@ describe("a pre-release workspace's replacement", () => {
       message: "Only the change's owner replaces this worktree's workspace.",
     });
     // The fingerprint of what the owner was shown reaches the engine as it was sent.
-    expect(asked).toEqual(["alice:f1", "carol:f1"]);
+    expect(asked).toEqual([
+      { sessionId: shared.session, actor: "alice", seen: "f1" },
+      { sessionId: shared.session, actor: "carol", seen: "f1" },
+    ]);
   });
 });

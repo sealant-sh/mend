@@ -17,6 +17,7 @@
     },
     "test": {
       "dependsOn": ["^test"],
+      "env": ["CI", "MEND_TEST_DATABASE_URL", "MEND_SKIP_POSTGRES_TESTS"],
       "outputs": []
     },
     "typecheck": {

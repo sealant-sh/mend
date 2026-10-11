@@ -12,6 +12,7 @@ import {
   WS_METHODS,
   WsRpcGroup,
   type TerminalAttachStreamEvent,
+  type TerminalMetadataStreamEvent,
 } from "@mend/t3-contracts";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
@@ -166,14 +167,23 @@ describe("per-RPC scopes", () => {
             headers: bearer(access.access_token),
           });
           const rpc = yield* connectWsRpc(yield* socketUrl(ticket.ticket));
-          // Terminal events need `terminal:read`, which the old grant never named.
-          const events = yield* Effect.exit(
-            feed(rpc[WS_METHODS.subscribeTerminalEvents]({})).pipe(
-              Effect.timeout("500 millis"),
-              Effect.asVoid,
-            ),
+          // Terminal metadata needs `terminal:read`, which the old grant never named.
+          // Its snapshot also proves the subscription is established before opening a terminal.
+          const events = yield* feed(rpc[WS_METHODS.subscribeTerminalMetadata]({}));
+          yield* events.next(
+            (event): event is Extract<TerminalMetadataStreamEvent, { type: "snapshot" }> =>
+              event.type === "snapshot",
           );
-          assert.notStrictEqual(failureOf(events)?._tag, "EnvironmentAuthorizationError");
+          yield* rpc[WS_METHODS.terminalOpen]({
+            threadId: "session-1",
+            terminalId: "term-legacy",
+            cwd: CWD,
+          });
+          const started = yield* events.next(
+            (event): event is Extract<TerminalMetadataStreamEvent, { type: "upsert" }> =>
+              event.type === "upsert" && event.terminal.terminalId === "term-legacy",
+          );
+          assert.strictEqual(started.terminal.status, "running");
         }),
       statePath,
     );
