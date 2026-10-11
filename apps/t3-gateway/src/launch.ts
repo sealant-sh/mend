@@ -11,6 +11,7 @@ import {
 import * as Effect from "effect/Effect";
 
 import type { PersonHub, ThreadCommandFailure, ThreadLaunch } from "./hub.ts";
+import { MEND_EFFORTS } from "./model-options.ts";
 import { FAST_SERVICE_TIER, harnessOfInstance, SERVICE_TIER_OPTION_ID } from "./server-config.ts";
 import type { BearerSession, ThreadLaunchOptions } from "./state.ts";
 
@@ -28,16 +29,6 @@ import type { BearerSession, ThreadLaunchOptions } from "./state.ts";
  *   session launches, and the message is sent as an exact turn once the agent runs.
  * - A retry of the same command is the same thread (`resumed`).
  */
-
-/** The reasoning efforts Mend's launch takes (`LaunchRequest.effort` in @mend/api-contracts). */
-const MEND_EFFORTS: ReadonlySet<string> = new Set([
-  "low",
-  "medium",
-  "high",
-  "xhigh",
-  "max",
-  "ultra",
-]);
 
 /** A name Mend accepts for a worktree (`WorktreeName` in @mend/api-contracts). */
 const WORKTREE_NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/;

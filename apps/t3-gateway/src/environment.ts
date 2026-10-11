@@ -71,9 +71,17 @@ export const makeGatewayEnvironment = (input: {
     serverVersion: SERVER_VERSION,
     orchestrationProtocolVersion: ORCHESTRATION_PROTOCOL_VERSION,
     // An optional capability left absent is unsupported: a client never sends what it gates.
-    // Phases 1–3 switch on what Mend can back. Settle and snooze are the person's own, kept by
-    // the gateway (`lifecycle.ts`); without these t3code hides both from its thread menus.
-    capabilities: { repositoryIdentity: false, threadSettlement: true, threadSnooze: true },
+    // Phases 1–3 switch on what Mend can back. Settle, snooze and read state are the person's
+    // own, kept by the gateway (`lifecycle.ts`, `visits.ts`); without these t3code hides settle and
+    // snooze from its thread menus and keeps unread in each browser alone. A reconnect checks the
+    // connection with `server.probe`, not a whole config read against Mend.
+    capabilities: {
+      repositoryIdentity: false,
+      connectionProbe: true,
+      threadSettlement: true,
+      threadSnooze: true,
+      threadVisitedTracking: true,
+    },
   },
   auth: {
     policy: isLoopbackHost(input.host) ? "loopback-browser" : "remote-reachable",

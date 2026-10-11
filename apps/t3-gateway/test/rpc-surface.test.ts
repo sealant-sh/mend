@@ -11,7 +11,9 @@ import * as RpcSchema from "effect/rpc/RpcSchema";
 import * as Schema from "effect/Schema";
 import * as Socket from "effect/socket/Socket";
 
+import { GRANTED_SCOPES } from "../src/auth.ts";
 import { makeGatewayEnvironment } from "../src/environment.ts";
+import { RPC_REQUIRED_SCOPES } from "../src/rpc-scopes.ts";
 import { makeGatewayRpcHandlers, SERVED_METHODS, SILENT_STREAMS } from "../src/rpc.ts";
 import { startFakeMend, type FakeMend } from "./support/fake-mend.ts";
 import { bearer, gatewayTestLayer, PERSON, t3Client, tokenRequest } from "./support/gateway.ts";
@@ -204,7 +206,11 @@ describe("every method not served", () => {
               `${rpc._tag} answered ${JSON.stringify(frame)}`,
             );
           }
-          assert.deepStrictEqual(silent.toSorted(), Array.from(SILENT_STREAMS).toSorted());
+          // A feed whose scope the grant leaves out is refused before it is opened.
+          const reachable = Array.from(SILENT_STREAMS).filter((method) =>
+            GRANTED_SCOPES.includes(RPC_REQUIRED_SCOPES[method]),
+          );
+          assert.deepStrictEqual(silent.toSorted(), reachable.toSorted());
         }),
       ),
     30_000,

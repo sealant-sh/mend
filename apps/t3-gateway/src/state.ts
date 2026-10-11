@@ -310,6 +310,26 @@ export class GatewayState extends Context.Service<
     readonly listLifecycles: (
       mendUserId: string,
     ) => Effect.Effect<ReadonlyMap<string, ThreadLifecycle>, GatewayStateError>;
+    /** Keeps when a person last saw a thread (ISO), or, for null, lets go of it. */
+    readonly setVisited: (
+      mendUserId: string,
+      sessionId: string,
+      at: string | null,
+    ) => Effect.Effect<void, GatewayStateError>;
+    /** Session id → when the person last saw its thread. */
+    readonly listVisited: (
+      mendUserId: string,
+    ) => Effect.Effect<ReadonlyMap<string, string>, GatewayStateError>;
+    /** The reasoning effort a person chose for a session's next launch; null clears it. */
+    readonly setNextEffort: (
+      mendUserId: string,
+      sessionId: string,
+      effort: string | null,
+    ) => Effect.Effect<void, GatewayStateError>;
+    /** Every next-launch effort a person chose, by session. */
+    readonly listNextEfforts: (
+      mendUserId: string,
+    ) => Effect.Effect<ReadonlyMap<string, string>, GatewayStateError>;
     /** Every bearer neither revoked nor expired at `now`: what a start checks with Mend. */
     readonly liveSessions: (
       now: number,
@@ -339,7 +359,9 @@ export class GatewayState extends Context.Service<
  * a person chose for a session's next launch (migration 8). `archived_threads` keeps the threads
  * a person archived in t3code (migration 9): Mend has no archive, so it is the person's view alone.
  * `thread_lifecycles` keeps the threads a person settled or snoozed in t3code (migration 10), the
- * same way.
+ * same way. `thread_visits` keeps when a person last saw each thread (migration 11), what t3code's
+ * unread marker reads, and `next_efforts` the reasoning effort a person chose for a session's next
+ * launch (migration 12), as `next_modes` keeps the mode.
  */
 const MIGRATIONS: ReadonlyArray<string> = [
   `
@@ -501,6 +523,22 @@ const MIGRATIONS: ReadonlyArray<string> = [
     PRIMARY KEY (mend_user_id, mend_session_id)
   );
   `,
+  `
+  CREATE TABLE thread_visits (
+    mend_user_id TEXT NOT NULL,
+    mend_session_id TEXT NOT NULL,
+    last_visited_at TEXT NOT NULL,
+    PRIMARY KEY (mend_user_id, mend_session_id)
+  );
+  `,
+  `
+  CREATE TABLE next_efforts (
+    mend_user_id TEXT NOT NULL,
+    mend_session_id TEXT NOT NULL,
+    effort TEXT NOT NULL,
+    PRIMARY KEY (mend_user_id, mend_session_id)
+  );
+  `,
 ];
 
 /** The gateway's sequence high-water mark in `meta` (`reserveSequences`). */
@@ -584,6 +622,13 @@ const ModeRow = Schema.Struct({
 const decodeModeRows = Schema.decodeUnknownEffect(Schema.Array(ModeRow));
 const ArchivedRow = Schema.Struct({ mend_session_id: Schema.String, archived_at: Schema.String });
 const decodeArchivedRows = Schema.decodeUnknownEffect(Schema.Array(ArchivedRow));
+const VisitedRow = Schema.Struct({
+  mend_session_id: Schema.String,
+  last_visited_at: Schema.String,
+});
+const decodeVisitedRows = Schema.decodeUnknownEffect(Schema.Array(VisitedRow));
+const EffortRow = Schema.Struct({ mend_session_id: Schema.String, effort: Schema.String });
+const decodeEffortRows = Schema.decodeUnknownEffect(Schema.Array(EffortRow));
 const LifecycleRow = Schema.Struct({
   mend_session_id: Schema.String,
   settled_override: Schema.NullOr(Schema.Literals(["settled", "active"])),
@@ -1290,6 +1335,64 @@ export const openGatewayState = (
         ),
       );
 
+    const setVisited = (mendUserId: string, sessionId: string, at: string | null) =>
+      run("setVisited", () => {
+        if (at === null) {
+          database
+            .prepare("DELETE FROM thread_visits WHERE mend_user_id = ? AND mend_session_id = ?")
+            .run(mendUserId, sessionId);
+          return;
+        }
+        database
+          .prepare(
+            "INSERT OR REPLACE INTO thread_visits (mend_user_id, mend_session_id, last_visited_at) VALUES (?, ?, ?)",
+          )
+          .run(mendUserId, sessionId, at);
+      });
+
+    const listVisited = (mendUserId: string) =>
+      run("listVisited", () =>
+        database
+          .prepare(
+            "SELECT mend_session_id, last_visited_at FROM thread_visits WHERE mend_user_id = ?",
+          )
+          .all(mendUserId),
+      ).pipe(
+        Effect.flatMap(decoded("listVisited", decodeVisitedRows)),
+        Effect.map(
+          (rows): ReadonlyMap<string, string> =>
+            new Map(rows.map((row) => [row.mend_session_id, row.last_visited_at] as const)),
+        ),
+      );
+
+    const setNextEffort = (mendUserId: string, sessionId: string, effort: string | null) =>
+      run("setNextEffort", () => {
+        if (effort === null) {
+          database
+            .prepare("DELETE FROM next_efforts WHERE mend_user_id = ? AND mend_session_id = ?")
+            .run(mendUserId, sessionId);
+          return;
+        }
+        database
+          .prepare(
+            "INSERT OR REPLACE INTO next_efforts (mend_user_id, mend_session_id, effort) VALUES (?, ?, ?)",
+          )
+          .run(mendUserId, sessionId, effort);
+      });
+
+    const listNextEfforts = (mendUserId: string) =>
+      run("listNextEfforts", () =>
+        database
+          .prepare("SELECT mend_session_id, effort FROM next_efforts WHERE mend_user_id = ?")
+          .all(mendUserId),
+      ).pipe(
+        Effect.flatMap(decoded("listNextEfforts", decodeEffortRows)),
+        Effect.map(
+          (rows): ReadonlyMap<string, string> =>
+            new Map(rows.map((row) => [row.mend_session_id, row.effort] as const)),
+        ),
+      );
+
     const liveSessions = (now: number) =>
       run("liveSessions", () =>
         database
@@ -1347,6 +1450,10 @@ export const openGatewayState = (
       listArchived,
       setLifecycle,
       listLifecycles,
+      setVisited,
+      listVisited,
+      setNextEffort,
+      listNextEfforts,
       liveSessions,
       peopleWithQueuedMessages,
     };

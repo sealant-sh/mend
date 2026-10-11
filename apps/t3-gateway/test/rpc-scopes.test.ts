@@ -18,7 +18,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 
-import { grantedScopesOf } from "../src/auth.ts";
+import { grantedScopesOf, GRANTED_SCOPES, WITHHELD_SCOPES } from "../src/auth.ts";
 import { requiredScopesFor, RPC_REQUIRED_SCOPES } from "../src/rpc-scopes.ts";
 import { startFakeMend, type FakeMend } from "./support/fake-mend.ts";
 import { feed } from "./support/feed.ts";
@@ -133,7 +133,7 @@ describe("per-RPC scopes", () => {
     ),
   );
 
-  it.live("reads a grant from before granular permissions as the standard grant it was", () => {
+  it.live("reads a grant from before granular permissions as today's grant", () => {
     const statePath = join(mkdtempSync(join(tmpdir(), "t3-gateway-scopes-")), "state.sqlite");
     return withGateway(
       (mend) =>
@@ -158,8 +158,9 @@ describe("per-RPC scopes", () => {
           database.close();
 
           const session = yield* client.auth.session({ headers: bearer(access.access_token) });
-          for (const scope of AuthStandardClientScopes) {
-            assert.include(session.permissions ?? [], scope);
+          for (const scope of GRANTED_SCOPES) assert.include(session.permissions ?? [], scope);
+          for (const scope of WITHHELD_SCOPES) {
+            assert.notInclude(session.permissions ?? [], scope);
           }
           const ticket = yield* client.auth.webSocketTicket({
             headers: bearer(access.access_token),
@@ -178,9 +179,51 @@ describe("per-RPC scopes", () => {
     );
   });
 
-  it("reads any other grant as stored", () => {
+  it("reads any other grant as stored, less what the gateway no longer grants", () => {
     assert.deepStrictEqual(grantedScopesOf(["orchestration:read"]), ["orchestration:read"]);
-    assert.deepStrictEqual(grantedScopesOf(AuthStandardClientScopes), AuthStandardClientScopes);
+    // A pairing made while the gateway granted t3code's whole standard set.
+    assert.deepStrictEqual(grantedScopesOf(AuthStandardClientScopes), GRANTED_SCOPES);
+  });
+
+  it.live("narrows a grant stored with the whole standard set on its next read", () => {
+    const statePath = join(mkdtempSync(join(tmpdir(), "t3-gateway-scopes-")), "state.sqlite");
+    return withGateway(
+      (mend) =>
+        Effect.gen(function* () {
+          setup(mend);
+          mend.addPairingCode("WIDEGRANT", PERSON);
+          const client = yield* t3Client;
+          const access = yield* client.auth.token(tokenRequest("WIDEGRANT"));
+          // What the gateway stored for a pairing before it withheld scopes.
+          const database = new DatabaseSync(statePath);
+          database
+            .prepare("UPDATE bearer_sessions SET scopes = ?")
+            .run(JSON.stringify(AuthStandardClientScopes));
+          database.close();
+
+          // t3code reads the permissions from the session, and renders the rest inert.
+          const session = yield* client.auth.session({ headers: bearer(access.access_token) });
+          assert.deepStrictEqual(session.permissions, GRANTED_SCOPES);
+
+          // And the socket refuses what it no longer grants, naming the scope: a Files-tab edit
+          // is refused, never taken and dropped.
+          const ticket = yield* client.auth.webSocketTicket({
+            headers: bearer(access.access_token),
+          });
+          const rpc = yield* connectWsRpc(yield* socketUrl(ticket.ticket));
+          const write = yield* Effect.exit(
+            rpc[WS_METHODS.projectsWriteFile]({
+              cwd: CWD,
+              relativePath: "README.md",
+              contents: "x",
+            }),
+          );
+          const error = failureOf(write);
+          assert.strictEqual(error?._tag, "EnvironmentAuthorizationError");
+          assert.include(error?.message ?? "", "filesystem:write");
+        }),
+      statePath,
+    );
   });
 });
 

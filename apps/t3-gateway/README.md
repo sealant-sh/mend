@@ -12,14 +12,14 @@ decodes only the Mend fields it reads.
 
 ## Phase 0: HTTP
 
-| t3code route                      | What the gateway does                                                                                                                          |
-| --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GET /.well-known/t3/environment` | The descriptor: a persisted `environmentId`, `orchestrationProtocolVersion` 2, `serverVersion` `<t3code tag>+mend.<n>`, no optional capability |
-| `POST /oauth/token`               | Claims the pairing code through Mend's `POST /api/pair`, keeps the device token, answers a bearer of its own (30 days, standard scopes)        |
-| `POST /api/auth/websocket-ticket` | A gateway-local ticket for `/ws?wsTicket=`: single use, thirty seconds, in memory, once Mend still accepts the bearer's device token           |
-| `GET /api/auth/session`           | Authenticated while the bearer is live and Mend still accepts its device token (`GET /api/me/devices`; Mend has no `GET /api/me`)              |
-| `POST /api/auth/browser-session`  | Refused: the gateway offers bearer tokens only                                                                                                 |
-| pairing links and client sessions | Refused with `insufficient_scope`: devices are administered in Mend                                                                            |
+| t3code route                      | What the gateway does                                                                                                                                                                                      |
+| --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /.well-known/t3/environment` | The descriptor: a persisted `environmentId`, `orchestrationProtocolVersion` 2, `serverVersion` `<t3code tag>+mend.<n>`, and the capabilities Mend can back (`connectionProbe`, settle, snooze, read state) |
+| `POST /oauth/token`               | Claims the pairing code through Mend's `POST /api/pair`, keeps the device token, answers a bearer of its own (30 days, the scopes below)                                                                   |
+| `POST /api/auth/websocket-ticket` | A gateway-local ticket for `/ws?wsTicket=`: single use, thirty seconds, in memory, once Mend still accepts the bearer's device token                                                                       |
+| `GET /api/auth/session`           | Authenticated while the bearer is live and Mend still accepts its device token (`GET /api/me/devices`; Mend has no `GET /api/me`)                                                                          |
+| `POST /api/auth/browser-session`  | Refused: the gateway offers bearer tokens only                                                                                                                                                             |
+| pairing links and client sessions | Refused with `insufficient_scope`: devices are administered in Mend                                                                                                                                        |
 
 Refusals carry t3code's own error bodies (`EnvironmentAuthInvalidError`,
 `EnvironmentRequestInvalidError`, `EnvironmentScopeRequiredError`, `EnvironmentInternalError`).
@@ -33,29 +33,42 @@ allows. Each socket gets its own RPC server, holding the handlers of the person 
 
 Every call is checked against the bearer's scopes before its handler runs, as t3code's
 `RpcScopeAuthorization` does, from a copy of t3code's own scope map at the pin (`rpc-scopes.ts`). A
-pairing grants the overlap of what the client asks and t3code's standard client scopes. A grant from
-before t3code's granular permissions (it holds `review:write`) has each old scope it holds read as
-the scopes t3code split it into, so clients of the previous pin keep files, the terminal and review;
-`review:write` alone grants nothing and is refused. A grant without that mark is read as stored: an
-old one of `orchestration:read` alone no longer reads files, which now need `filesystem:read`. Two
-methods need scopes by their input, as in t3code: `assets.createUrl` for a workspace or media file
-needs `filesystem:read`, and `server.updateSettings` the scopes its patch touches. Refusals name the
-scope as t3code does: the granular permission, and its legacy parent for older clients.
+pairing grants the overlap of what the client asks and the scopes of t3code's standard grant the
+gateway backs: `orchestration:read` and `:operate`, `terminal:read` and `:operate`, and
+`filesystem:read` (`GRANTED_SCOPES` in `auth.ts`). t3code renders a control whose scope a grant
+leaves out as inert, with its own wording, so the gateway withholds `settings:write`,
+`providers:manage`, `environment:maintain`, `diagnostics:read`, `preview:operate`,
+`source-control:write`, `filesystem:write` and `relay:read`: everything behind them is refused, and
+a control that looked live failed (a Files-tab edit was dropped with a console warning). A stored
+grant is narrowed to these when it is read, so a pairing made before loses the rest on its next
+request. A grant from before t3code's granular permissions (it holds `review:write`) has each old
+scope it holds read as the scopes t3code split it into, so clients of the previous pin keep files
+and the terminal; `review:write` alone grants nothing and is refused. A grant without that mark is
+read as stored: an old one of `orchestration:read` alone no longer reads files, which now need
+`filesystem:read`. Two methods need scopes by their input, as in t3code: `assets.createUrl` for a
+workspace or media file needs `filesystem:read`, and `server.updateSettings` the scopes its patch
+touches. Refusals name the scope as t3code does: the granular permission, and its legacy parent for
+older clients.
 
-| Method                                                  | What the gateway does                                                                                                                                                                                                        |
-| ------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `subscribeServerConfig`, `server.getConfig`             | The config: the descriptor, and one provider per Mend harness from `GET /api/harnesses/models` read as the person; its login from `GET /api/me/sealant` (below). The subscription sends the providers again when they change |
-| `server.refreshProviders`                               | The providers, read again from Mend; nothing is set up                                                                                                                                                                       |
-| `subscribeServerLifecycle`                              | `welcome` with `bootstrapStatus: "complete"`, then open                                                                                                                                                                      |
-| `server.probe`                                          | `{}`                                                                                                                                                                                                                         |
-| `agentSessions.scan`                                    | No candidates: the gateway has no agent history to scan, and Mend's projects are in the shell already                                                                                                                        |
-| every other command or read                             | A typed failure from the method's own contract, never a defect                                                                                                                                                               |
-| feeds of things Mend never has (terminals, previews, …) | Open, and never emit                                                                                                                                                                                                         |
+| Method                                                       | What the gateway does                                                                                                                                                                                                        |
+| ------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `subscribeServerConfig`, `server.getConfig`                  | The config: the descriptor, and one provider per Mend harness from `GET /api/harnesses/models` read as the person; its login from `GET /api/me/sealant` (below). The subscription sends the providers again when they change |
+| `server.refreshProviders`                                    | The providers, read again from Mend; nothing is set up                                                                                                                                                                       |
+| `subscribeServerLifecycle`                                   | `welcome` with `bootstrapStatus: "complete"`, then open                                                                                                                                                                      |
+| `server.probe`                                               | `{}`. The descriptor says `connectionProbe`, so a reconnect probes with it rather than a whole config read against Mend                                                                                                      |
+| `server.reportClientActivity`                                | Taken, and nothing done: nothing in the gateway waits on a client being active                                                                                                                                               |
+| `scheduledTasks.subscribe`                                   | No tasks, then open: the settings page lists none, and a thread's details show no automations (a failure would say "Could not load automations" on every thread)                                                             |
+| `subscribeDeviceState`                                       | A hub set up and failed, with why, then open: t3code opens its device setup wizard for a hub not set up or off, whose switch Mend can never turn on; for this one its device panel says Mend runs no simulators              |
+| `agentSessions.scan`                                         | No candidates: the gateway has no agent history to scan, and Mend's projects are in the shell already                                                                                                                        |
+| every other command or read                                  | A typed failure from the method's own contract, never a defect                                                                                                                                                               |
+| feeds of things Mend never has (previews, provider setup, …) | Open, and never emit; one whose scope is withheld is refused before it opens                                                                                                                                                 |
 
 `codex` is driver `codex` and `claude` is driver `claudeAgent`; other harnesses are left out. The
 capability flags say what Mend does: a session keeps its model (`requiresNewThreadForModelChange`),
 no rollback, no plan mode, runtime modes `full-access` (`bypass`) and `approval-required` (`ask`),
-and no provider setup through t3code. Mend unreachable answers `ServerSettingsError`, which t3code
+and no provider setup through t3code. The shell and thread subscriptions send `synchronized` after
+their catch-up when asked, and the config says so (`shellResumeCompletionMarker`,
+`threadResumeCompletionMarker`). Mend unreachable answers `ServerSettingsError`, which t3code
 retries; a device revoked in Mend answers `EnvironmentAuthorizationError`, which blocks the
 connection.
 
@@ -411,6 +424,16 @@ chooses, as Mend decides.
   is written before it is acknowledged: a choice the file does not take is refused with a reason and
   changes nothing, so a restart never brings back a mode the person moved away from.
 
+A reasoning effort changed on the traits picker of a started thread (`message.dispatch` carries the
+thread's model selection) is kept the same way (`next_efforts`, `src/model-options.ts`): the message
+goes, and the next launch names the effort. Until then the thread shows it and says "From the
+agent's next start: High reasoning effort · it runs on Medium until then". Mend records the effort
+with the agent, so it holds across later relaunches. The thread's model selection carries the effort
+the agent runs on, so the picker shows it. Mend records no service tier: a thread a t3code client
+launched on the Fast tier shows it and names it on every relaunch the gateway makes, and a changed
+tier on a started thread is refused with t3code's dispatch error, sending nothing, so the picker
+never shows a tier the agent lacks.
+
 ## Phase 3: archive
 
 Mend has no archive, so archiving in t3code is the person's own view, kept by the gateway
@@ -449,6 +472,26 @@ the state file, `src/lifecycle.ts`), and the session in Mend is not touched.
   gateway's does not wake it at once.
 - Each is per person: settling or snoozing a shared thread changes nothing for anyone else. An
   archived thread is neither settled nor snoozed until it is unarchived.
+
+## Phase 3: read state
+
+t3code takes an environment's read state as the person's on every device when it says it keeps one
+(`threadVisitedTracking`) and its shell carries `lastVisitedAt`. Mend has none, so it is the
+person's own, kept by the gateway (`thread_visits` in the state file, `src/visits.ts`), with
+t3code's own server's rules:
+
+- `thread.visit` keeps the later of the kept watermark and the one sent (the shell's `updatedAt` the
+  client saw), so a replay never moves it back. t3code sends one on opening a thread and as it
+  changes while open.
+- `thread.mark-unread` sets it to just before the latest run completed, and is refused for a thread
+  whose latest run has not.
+- Neither is thread activity: `updatedAt` does not move. A message in the gateway's queue is, so a
+  visit sees a message that failed or was taken back.
+- t3code's client shows a thread as done and unseen when its latest run completed after the visit,
+  and nothing for one never visited (`null`). Before this the shell sent `null` and refused every
+  visit, so nothing ever showed as unread.
+
+## Phase 3: the terminal
 
 t3code's terminal drawer opens Mend's own terminal (`src/terminals.ts`): a shell Mend opens beside
 the agent in the session's live workspace (`POST /api/sessions/:id/shell`), reached over Mend's
@@ -551,8 +594,10 @@ its session, the launch command and what the launch named; no secrets). `project
 `queued_messages` and `queue_holds` keep each person's queues: text, ids, state, image ids and the
 sender's bearer session, never a device token. `images` keeps the images people attach, with where
 Mend last placed each (session, agent process, path), and `sent_images` the images each sent message
-carried. Mend's database is never touched. Losing the file loses pairings and t3code-side ids, never
-Mend records.
+carried. `next_modes` and `next_efforts` keep the mode and effort a person chose for an agent's next
+start, and `archived_threads`, `thread_lifecycles` and `thread_visits` each person's archive, settle
+and snooze, and read state. Mend's database is never touched. Losing the file loses pairings and
+t3code-side ids, never Mend records.
 
 **The file holds every paired person's Mend device token in clear**, and the token acts as that
 person in Mend until the device is revoked. The gateway needs it usable: it calls Mend for a person

@@ -59,17 +59,39 @@ type DeviceVerdict = "accepted" | "refused" | "unanswered";
 /** As long as t3code's own bearer sessions (`DEFAULT_SESSION_TTL`, 30 days). */
 export const BEARER_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
-/** What a paired client may do. t3code's standard client scopes; never the access-admin ones. */
-export const GRANTED_SCOPES: ReadonlyArray<AuthEnvironmentScope> = AuthStandardClientScopes;
+/**
+ * What a paired client may do: the scopes of t3code's standard client grant the gateway backs, and
+ * never the access-admin ones. t3code renders what a grant leaves out as inert, with its own
+ * "lacks permission" wording, so the gateway withholds every scope whose features it refuses
+ * rather than let a control look live and then fail: settings and keybinding edits
+ * (`settings:write`), provider setup (`providers:manage`), self-update and process signals
+ * (`environment:maintain`), diagnostics and usage (`diagnostics:read`), the in-app browser
+ * (`preview:operate`), branch, worktree and pull request writes (`source-control:write`), file
+ * edits (`filesystem:write`, whose loss made a Files-tab edit vanish), and T3 Connect
+ * (`relay:read`).
+ */
+export const GRANTED_SCOPES: ReadonlyArray<AuthEnvironmentScope> = [
+  AuthOrchestrationReadScope,
+  AuthOrchestrationOperateScope,
+  AuthTerminalReadScope,
+  AuthTerminalOperateScope,
+  AuthFilesystemReadScope,
+];
+
+/** The scopes of t3code's standard grant the gateway withholds (`GRANTED_SCOPES`). */
+export const WITHHELD_SCOPES: ReadonlyArray<AuthEnvironmentScope> = AuthStandardClientScopes.filter(
+  (scope) => !GRANTED_SCOPES.includes(scope),
+);
 
 const isEnvironmentScope = Schema.is(AuthEnvironmentScope);
 
 /**
- * What a grant made before t3code's granular permissions (v0.0.46-nightly.20261010.2922) stands
- * for now. Those grants were t3code's standard client scopes of the time, marked by `review:write`,
- * which grants no RPC of its own; each old scope is read as the scopes t3code split it into (its
- * `legacyParents`), so a client paired before the split keeps what it could do. Any other grant is
- * read as stored.
+ * What a stored grant stands for now. One made before t3code's granular permissions
+ * (v0.0.46-nightly.20261010.2922) was t3code's standard client scopes of the time, marked by
+ * `review:write`, which grants no RPC of its own; each old scope is read as the scopes t3code split
+ * it into (its `legacyParents`), so a client paired before the split keeps what it could do. Every
+ * grant is then narrowed to what the gateway grants today (and the mark), so a pairing made while
+ * the gateway still granted the whole standard set loses what it withholds now, on its next read.
  */
 const LEGACY_CHILDREN: ReadonlyMap<
   AuthEnvironmentScope,
@@ -94,9 +116,10 @@ const LEGACY_GRANT_MARK: AuthEnvironmentScope = "review:write";
 export const grantedScopesOf = (
   stored: ReadonlyArray<AuthEnvironmentScope>,
 ): ReadonlyArray<AuthEnvironmentScope> =>
-  stored.some((scope) => scope === LEGACY_GRANT_MARK)
+  (stored.some((scope) => scope === LEGACY_GRANT_MARK)
     ? [...new Set(stored.flatMap((scope) => [scope, ...(LEGACY_CHILDREN.get(scope) ?? [])]))]
-    : stored;
+    : stored
+  ).filter((scope) => GRANTED_SCOPES.includes(scope) || scope === LEGACY_GRANT_MARK);
 
 /**
  * RFC 6749 scope tokens (%x21 / %x23-5B / %x5D-7E), as t3code reads them

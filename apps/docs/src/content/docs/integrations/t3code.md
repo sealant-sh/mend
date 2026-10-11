@@ -115,20 +115,36 @@ or snapshot, since it cannot confirm the device; t3code retries until Mend answe
 | Interrupt                          | The turn is interrupted and what waits is held until you resume                                                                                                                                                                                  |
 | Approvals and questions            | The agent's requests, answered in Mend                                                                                                                                                                                                           |
 | Runtime mode                       | Applies from the agent's next start: Mend sets the mode per launch. The thread says so until then                                                                                                                                                |
-| Rename, stop, delete               | Mend's own routes. A delete keeps the worktree and its change, as Mend always does; asked to delete the worktree too, t3code shows that Mend keeps it                                                                                            |
+| Reasoning effort                   | Shown as the agent runs on it. A change on a started thread applies from the agent's next start, as the runtime mode does, and the thread says so until then                                                                                     |
+| Read state                         | Your own, kept by the gateway: opening a thread marks it seen, so one that finished while you were away shows as done, and Mark unread brings that back. Every device you pair sees the same                                                     |
+| Rename, stop, delete               | Mend's own routes. A delete keeps the worktree and its change, as Mend always does, and t3code does not offer to delete the worktree                                                                                                             |
 | Archive                            | Your own view, kept by the gateway: Mend has no archive. What was queued is held, not lost                                                                                                                                                       |
 | Settle                             | Your own, kept by the gateway as the archive is: Mend has none, and others sharing the session do not see it. A settle waits until no turn runs, nothing is queued and no question is open                                                       |
 | Snooze                             | Your own as well. The thread wakes at the time you chose, or earlier when the agent asks for an approval or an answer, or a turn fails or completes                                                                                              |
 | Diffs                              | Each turn's slice of the worktree's checkpoints, matched to the turn by session and time, and the whole thread's                                                                                                                                 |
-| Files and `@`-mentions             | The session's worktree as it stands: the file tree, reading a file, searching contents                                                                                                                                                           |
+| Files and `@`-mentions             | The session's worktree as it stands: the file tree, reading a file, searching contents. The Files tab is read-only                                                                                                                               |
 | Branch status                      | The session's branch and its change against its base. The branch picker lists the project's branches, any of them a new worktree's base, and the thread's own                                                                                    |
 | Terminal                           | Mend's own shell beside the agent, opened with a single-use ticket                                                                                                                                                                               |
 
-Some of t3code has no counterpart in Mend and is refused with t3code's own error: pull request
-views, git operations (commit, push, branches), switching a thread's model or provider, plan mode,
-rollback and forks, a thread in the project's root (every Mend session has a worktree), providers
-other than Codex and Claude, and provider or settings changes. Landing a change stays in Mend
-([Land a change](/guides/land-a-change/)).
+Some of t3code has no counterpart in Mend. The gateway does not grant the permissions behind it, so
+t3code shows those controls inert with its own wording, or it refuses them with t3code's own error:
+
+- **In a thread:** steering a running turn (Ctrl/⌘+Enter, or the steer follow-up setting; send the
+  message to run after it instead), switching the model or provider, changing the service tier once
+  the thread has started (start a new thread on the other tier), plan mode, rollback and forks, and
+  attachments other than images. Provider slash commands and skills are absent: `/` lists t3code's
+  own commands only. `/feedback` is refused.
+- **Projects and git:** adding, creating, cloning, importing, renaming and removing projects (adopt
+  and edit them in Mend), a thread in the project's root (every Mend session has a worktree), open
+  in editor, editing files, project actions, pull request views, publishing a repository, and git
+  operations (commit, push, branches, removing a worktree). Landing a change stays in Mend
+  ([Land a change](/guides/land-a-change/)).
+- **The environment:** providers other than Codex and Claude, provider sign-in and setup, settings
+  and keybinding changes, usage and limits, scheduled tasks (the page lists none), the in-app
+  browser, devices (the device panel says Mend runs none), diagnostics and resource telemetry,
+  storage cleanup, MCP apps and connecting an agent over MCP, T3 Connect, and updating the server:
+  the gateway updates with Mend. Pairing and revoking are done in Mend, with `mend pair` and your
+  devices.
 
 ## Limits worth knowing
 
@@ -148,9 +164,13 @@ other than Codex and Claude, and provider or settings changes. Landing a change 
   it ran."
 - **Archive and the queue.** t3code's own server cancels a thread's queued messages on archive; the
   gateway holds them instead, so none is lost. Unarchive the thread and resume, or cancel them.
-- **Settle and snooze are per person.** They are kept by the gateway, not Mend, so Mend's web app,
-  the CLI and other people's t3code clients do not show them. A message sent to a settled or snoozed
-  thread brings it back, as on t3code's own server.
+- **Settle, snooze and read state are per person.** They are kept by the gateway, not Mend, so
+  Mend's web app, the CLI and other people's t3code clients do not show them. A message sent to a
+  settled or snoozed thread brings it back, as on t3code's own server. A thread you never opened in
+  t3code shows no unread mark until you do.
+- **Service tier.** Mend takes a tier when an agent launches and records none. A thread started from
+  t3code keeps the tier it asked for on every relaunch; one started elsewhere shows Standard, since
+  Mend does not say which tier it started on.
 
 ## Where it is reached
 
@@ -204,9 +224,10 @@ origin's certificate from another network, and named it the same way.
 
 The gateway keeps one SQLite file of its own, in its own volume on a packaged server
 (`mend-t3-gateway`, `/opt/mend-t3-gateway/state/state.sqlite` in the container): its environment id,
-each paired client, the thread ids t3code gave, the queue, images attached to messages, and each
-person's archived, settled and snoozed threads. Mend's database is never touched; losing the file
-loses pairings and t3code-side ids, never Mend's records.
+each paired client, the thread ids t3code gave, the queue, images attached to messages, each
+person's archived, settled and snoozed threads and when they last saw each, and the mode and effort
+chosen for an agent's next start. Mend's database is never touched; losing the file loses pairings
+and t3code-side ids, never Mend's records.
 
 The file holds each paired person's Mend device token, which acts as that person until the device is
 revoked: the gateway needs it to read Mend and send queued messages when no client is connected. It

@@ -404,6 +404,51 @@ describe("snooze", () => {
   );
 });
 
+describe("bulk settle", () => {
+  it.live("settles each of several threads at once, refusing only the ones still at work", () =>
+    Effect.gen(function* () {
+      const mend = yield* startFakeMend;
+      withSession(mend);
+      mend.workbench.addTurn("session-1", "Done already", "completed");
+      mend.workbench.addSession({ id: "session-2", projectId: "project-1" });
+      mend.workbench.addTurn("session-2", "Done too", "completed");
+      mend.workbench.addSession({ id: "session-3", projectId: "project-1" });
+      mend.workbench.addTurn("session-3", "Still going");
+      yield* Effect.gen(function* () {
+        const { rpc } = yield* pairAndConnect(mend, "SETTLE-BULK");
+        const shell = yield* watchShell(rpc);
+        yield* shell.until((thread) => thread.latestRunId !== null, "the threads");
+        const ids = ["session-1", "session-2", "session-3"].map((id) => ThreadId.make(id));
+        // t3code's "Settle (N)" sends one settle per selected thread, all at once
+        // (`settleThreads` in t3:apps/web/src/components/Sidebar.tsx:3397 at the pin).
+        const exits = yield* Effect.forEach(
+          ids,
+          (threadId) =>
+            Effect.exit(
+              rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({
+                type: "thread.settle",
+                commandId: commandId(),
+                threadId,
+              }),
+            ),
+          { concurrency: "unbounded" },
+        );
+        assert.deepStrictEqual(exits.map(tagOf), [
+          undefined,
+          undefined,
+          "OrchestrationV2DispatchCommandError",
+        ]);
+        const overrides = yield* Effect.forEach(ids, (threadId) =>
+          rpc[ORCHESTRATION_V2_WS_METHODS.getThreadProjection]({ threadId }).pipe(
+            Effect.map((projection) => projection.thread.settledOverride),
+          ),
+        );
+        assert.deepStrictEqual(overrides, ["settled", "settled", null]);
+      }).pipe(Effect.scoped, Effect.provide(gatewayTestLayer(mend.url)));
+    }),
+  );
+});
+
 describe("per person", () => {
   it.live("one person's settle and snooze of a shared thread are theirs alone", () =>
     Effect.gen(function* () {

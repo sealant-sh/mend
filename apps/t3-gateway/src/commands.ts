@@ -19,7 +19,9 @@ import type { BearerSession } from "./state.ts";
  * error, naming the command.
  *
  * - `message.dispatch`: queued by the gateway and sent as a turn once nothing is open, or as the
- *   opening turn of a relaunch when the session's agent has stopped.
+ *   opening turn of a relaunch when the session's agent has stopped. A reasoning effort changed on
+ *   the picker applies from the agent's next start; a changed service tier is refused
+ *   (`model-options.ts`).
  * - `run.interrupt`, `queued-run.cancel`, `queue.resume`: Mend's interrupt and the gateway's queue.
  * - `queued-run.edit`, `queued-run.reorder`: a message still waiting in the gateway's queue; one on
  *   its way to Mend is never rewritten.
@@ -35,6 +37,8 @@ import type { BearerSession } from "./state.ts";
  * - `thread.archive`, `thread.unarchive`: the person's archive, kept by the gateway; Mend has none.
  * - `thread.settle`, `thread.unsettle`, `thread.snooze`, `thread.unsnooze`: the person's settle and
  *   snooze, kept by the gateway the same way (`lifecycle.ts`).
+ * - `thread.visit`, `thread.mark-unread`: when the person last saw the thread, kept by the gateway
+ *   the same way (`visits.ts`).
  */
 
 /** t3code's approval decisions as Mend's; Mend has no "always", so it is "for this session". */
@@ -158,6 +162,7 @@ export const dispatchCommand = (
           messageId: command.messageId,
           text: command.text,
           imageIds: command.attachments.map((attachment) => attachment.id),
+          modelSelection: command.modelSelection,
         }),
       );
     }
@@ -254,6 +259,17 @@ export const dispatchCommand = (
     case "thread.unsnooze":
       return answered(
         hub.commands.setLifecycle({ threadId: command.threadId, change: { kind: "unsnooze" } }),
+      );
+    case "thread.visit":
+      return answered(
+        hub.commands.setVisited({
+          threadId: command.threadId,
+          change: { kind: "visit", at: command.visitedAt },
+        }),
+      );
+    case "thread.mark-unread":
+      return answered(
+        hub.commands.setVisited({ threadId: command.threadId, change: { kind: "unread" } }),
       );
     case "thread.runtime-mode.set": {
       const mode =

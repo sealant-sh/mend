@@ -1,10 +1,9 @@
 import { assert, describe, it } from "@effect/vitest";
-import { AuthStandardClientScopes } from "@mend/t3-contracts";
 import * as Effect from "effect/Effect";
 import * as HttpClient from "effect/http/HttpClient";
 import * as HttpClientRequest from "effect/http/HttpClientRequest";
 
-import { BEARER_TTL_MS } from "../src/auth.ts";
+import { BEARER_TTL_MS, GRANTED_SCOPES, WITHHELD_SCOPES } from "../src/auth.ts";
 import { forwardedChain } from "../src/http.ts";
 import { startFakeMend, type FakeMend } from "./support/fake-mend.ts";
 import { bearer, gatewayTestLayer, PERSON, t3Client, tokenRequest } from "./support/gateway.ts";
@@ -34,7 +33,8 @@ describe("POST /oauth/token", () => {
           access.issued_token_type,
           "urn:ietf:params:oauth:token-type:access_token",
         );
-        assert.strictEqual(access.scope, AuthStandardClientScopes.join(" "));
+        // t3code's standard scopes, less those whose features the gateway refuses.
+        assert.strictEqual(access.scope, GRANTED_SCOPES.join(" "));
         assert.strictEqual(access.expires_in, BEARER_TTL_MS / 1000);
 
         // Mend saw one claim, named for t3code and the client, as a desktop.
@@ -49,14 +49,13 @@ describe("POST /oauth/token", () => {
         // The session is backed by Mend, called with the device token Mend returned.
         const session = yield* client.auth.session({ headers: bearer(access.access_token) });
         assert.isTrue(session.authenticated);
-        // t3code's standard scopes as permissions; clients from before permissions read the
-        // legacy names among them.
-        assert.deepStrictEqual(session.permissions, AuthStandardClientScopes);
+        // The grant as permissions; clients from before permissions read the legacy names among
+        // them.
+        assert.deepStrictEqual(session.permissions, GRANTED_SCOPES);
         assert.deepStrictEqual(session.scopes, [
           "orchestration:read",
           "orchestration:operate",
           "terminal:operate",
-          "relay:read",
         ]);
         assert.strictEqual(session.sessionMethod, "bearer-access-token");
         assert.isDefined(session.expiresAt);
@@ -148,7 +147,7 @@ describe("POST /oauth/token", () => {
     ),
   );
 
-  it.live("pairs a client from before granular permissions with today's standard grant", () =>
+  it.live("pairs a client from before granular permissions with today's grant", () =>
     withGateway((mend) =>
       Effect.gen(function* () {
         mend.addPairingCode("OLDCLIENT", PERSON);
@@ -160,13 +159,14 @@ describe("POST /oauth/token", () => {
               "orchestration:read orchestration:operate terminal:operate review:write relay:read",
           }),
         );
+        // The overlap with what the gateway grants: T3 Connect's `relay:read` is not.
         assert.strictEqual(
           access.scope,
-          "orchestration:read orchestration:operate terminal:operate review:write relay:read",
+          "orchestration:read orchestration:operate terminal:operate review:write",
         );
         const session = yield* client.auth.session({ headers: bearer(access.access_token) });
-        for (const scope of AuthStandardClientScopes)
-          assert.include(session.permissions ?? [], scope);
+        for (const scope of GRANTED_SCOPES) assert.include(session.permissions ?? [], scope);
+        for (const scope of WITHHELD_SCOPES) assert.notInclude(session.permissions ?? [], scope);
       }),
     ),
   );
