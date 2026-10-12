@@ -75,7 +75,9 @@ const holdsAs = (
   (lease.executorId === holder.executorId &&
     ((lease.launchId ?? null) === null || lease.launchId === holder.launchId));
 
-export const makeMemoryCaptureStore = (): MemoryCaptureStore => {
+export const makeMemoryCaptureStore = (
+  baseOf: (worktreeId: WorktreeId) => string | null = () => null,
+): MemoryCaptureStore => {
   const clock = { now: () => Date.now() };
   const leases = new Map<string, MemoryLease>();
   const chains = new Map<string, MemoryChain>();
@@ -276,11 +278,26 @@ export const makeMemoryCaptureStore = (): MemoryCaptureStore => {
         });
         return Effect.void;
       }),
-    setSummaryState: (captureId, state) =>
+    publishObservedSummary: ({ worktreeId, captureId, baseSha, key }) =>
       Effect.sync(() => {
         const row = summaries.get(captureId);
-        if (row === undefined) return false;
-        summaries.set(captureId, { ...row, state, updatedAt: new Date(clock.now()) });
+        const capture = captures.get(captureId);
+        if (
+          row?.state !== "claimed" ||
+          row.worktreeId !== worktreeId ||
+          chains.get(worktreeId)?.headCapture !== captureId ||
+          capture?.worktreeId !== worktreeId ||
+          chains.get(worktreeId)?.headN !== capture.n ||
+          capture.gitFsck === "failed" ||
+          baseOf(worktreeId) !== baseSha
+        )
+          return false;
+        summaries.set(captureId, {
+          ...row,
+          key,
+          state: "observed",
+          updatedAt: new Date(clock.now()),
+        });
         return true;
       }),
     setGitFsck: (captureId, outcome) =>

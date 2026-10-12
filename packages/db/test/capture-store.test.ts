@@ -1,6 +1,6 @@
 import { PgClient } from "@effect/sql-pg";
 import { ProjectId, Sha, WorktreeId } from "@mend/domain";
-import { Deferred, Effect, Fiber, Layer, Redacted } from "effect";
+import { Cause, Deferred, Effect, Exit, Fiber, Layer, Redacted } from "effect";
 import * as Str from "effect/String";
 import { SqlClient } from "effect/unstable/sql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -37,6 +37,24 @@ const scratchLayer = PgClient.layer({
 const reposLayer = Layer.mergeAll(CaptureStoreRepoLive, StoreRefsRepoLive).pipe(
   Layer.provideMerge(MendDBLive.pipe(Layer.provideMerge(scratchLayer))),
 );
+
+const repeatableReadUrl = new URL(scratchUrl);
+repeatableReadUrl.searchParams.set("options", "-c default_transaction_isolation=repeatable\\ read");
+const repeatableReadPg = PgClient.layer({
+  url: Redacted.make(repeatableReadUrl.toString()),
+  maxConnections: 2,
+  applicationName: "summary-publication-test",
+  transformResultNames: Str.snakeToCamel,
+  transformQueryNames: Str.camelToSnake,
+});
+const publisherLayer = CaptureStoreRepoLive.pipe(
+  Layer.provide(MendDBLive.pipe(Layer.provideMerge(repeatableReadPg))),
+);
+const publish = (input: Parameters<CaptureStoreRepo["Service"]["publishObservedSummary"]>[0]) =>
+  // A fresh memoization boundary also prevents reuse of the holder's repository/client.
+  Effect.flatMap(CaptureStoreRepo, (repo) => repo.publishObservedSummary(input)).pipe(
+    Effect.provide(Layer.fresh(publisherLayer)),
+  );
 
 const withAdmin = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
   Effect.runPromise(effect.pipe(Effect.provide(adminLayer), Effect.scoped));
@@ -305,8 +323,15 @@ describe.skipIf(postgres.skip)("capture store (0053)", () => {
         const forUnknown = yield* tagOf(
           repo.acceptSummary(worktreeId, "never-landed", "changes/x/9"),
         );
-        const observed = yield* repo.setSummaryState(one.id, "observed");
-        const missing = yield* repo.setSummaryState("never-landed", "observed");
+        const publishCapture = (captureId: string) =>
+          repo.publishObservedSummary({
+            worktreeId,
+            captureId,
+            baseSha: Sha.make("a".repeat(40)),
+            key: "changes/x/observed.json",
+          });
+        const observed = yield* publishCapture(one.id);
+        const missing = yield* publishCapture("never-landed");
         const sql = yield* SqlClient.SqlClient;
         const rows = yield* sql<{
           readonly captureId: string;
@@ -324,8 +349,133 @@ describe.skipIf(postgres.skip)("capture store (0053)", () => {
     expect(result.observed).toBe(true);
     expect(result.missing).toBe(false);
     expect(result.rows).toEqual([
-      { captureId: result.oneId, key: "changes/x/1b", state: "observed" },
+      { captureId: result.oneId, key: "changes/x/observed.json", state: "observed" },
     ]);
+  });
+
+  it("uses independent publishers whose connection default is repeatable read", async () => {
+    const isolation = await Effect.runPromise(
+      Effect.flatMap(
+        PgClient.PgClient,
+        (sql) => sql<{ defaultTransactionIsolation: string }>`SHOW default_transaction_isolation`,
+      ).pipe(Effect.provide(Layer.fresh(repeatableReadPg))),
+    );
+    expect(isolation).toEqual([{ defaultTransactionIsolation: "repeatable read" }]);
+  });
+
+  for (const changed of ["base", "head", "fsck", "summary"]) {
+    it(`publication rechecks ${changed} after actually waiting on its row`, async () => {
+      const result = await run(
+        Effect.gen(function* () {
+          const repo = yield* CaptureStoreRepo;
+          const sql = yield* SqlClient.SqlClient;
+          const worktreeId = yield* freshWorktree;
+          const { epoch } = yield* repo.claim(worktreeId, "publisher-holder");
+          const zero = captureInput(worktreeId, 0, null, epoch);
+          yield* repo.register(zero);
+          yield* repo.acceptSummary(worktreeId, zero.id, "claimed-original");
+          const locked = yield* Deferred.make<void>();
+          const release = yield* Deferred.make<void>();
+          const holder = yield* Effect.forkChild(
+            sql.withTransaction(
+              Effect.gen(function* () {
+                if (changed === "base")
+                  yield* sql`UPDATE worktrees SET base_sha = ${"b".repeat(40)} WHERE id = ${worktreeId}`;
+                if (changed === "head")
+                  yield* repo.register(captureInput(worktreeId, 1, zero.id, epoch));
+                if (changed === "fsck") yield* repo.setGitFsck(zero.id, "failed");
+                if (changed === "summary")
+                  yield* sql`UPDATE capture_summaries SET state = 'observed', key = 'other-winner' WHERE capture_id = ${zero.id}`;
+                yield* Deferred.succeed(locked, undefined);
+                yield* Deferred.await(release);
+              }),
+            ),
+          );
+          yield* Deferred.await(locked);
+          const publication = yield* Effect.forkChild(
+            publish({ worktreeId, captureId: zero.id, baseSha: sha("a"), key: "stale-observed" }),
+          );
+          // Observe the database wait itself; starting a fiber alone proves no lock ordering.
+          const waited = yield* Effect.gen(function* () {
+            for (;;) {
+              const waiting = yield* sql<{ count: number }>`SELECT count(*)::int AS count
+              FROM pg_stat_activity WHERE datname = ${SCRATCH_DB}
+                AND application_name = 'summary-publication-test' AND wait_event_type = 'Lock'`;
+              if ((waiting[0]?.count ?? 0) > 0) return true;
+              yield* Effect.sleep("10 millis");
+            }
+          }).pipe(
+            Effect.timeout("4 seconds"),
+            Effect.ensuring(Deferred.succeed(release, undefined)),
+          );
+          yield* Fiber.join(holder);
+          const accepted = yield* Fiber.join(publication);
+          return {
+            waited,
+            accepted,
+            summary: yield* repo.summaryOf(zero.id),
+            head: yield* repo.headOf(worktreeId),
+          };
+        }),
+      );
+      expect(result.waited).toBe(true);
+      expect(result.accepted).toBe(false);
+      expect(result.summary).toMatchObject({
+        key: changed === "summary" ? "other-winner" : "claimed-original",
+        state: changed === "summary" ? "observed" : "claimed",
+      });
+      if (changed === "head") expect(result.head?.headN).toBe(1);
+      if (changed === "fsck") expect(result.head?.head?.gitFsck).toBe("failed");
+    });
+  }
+
+  it("one independent publisher wins and its key/state commit together", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        const repo = yield* CaptureStoreRepo;
+        const worktreeId = yield* freshWorktree;
+        const { epoch } = yield* repo.claim(worktreeId, "executor");
+        const zero = captureInput(worktreeId, 0, null, epoch);
+        yield* repo.register(zero);
+        yield* repo.acceptSummary(worktreeId, zero.id, "claimed");
+        const accepted = yield* Effect.forEach(
+          ["observed-one", "observed-two"],
+          (key) =>
+            publish({ worktreeId, captureId: zero.id, baseSha: sha("a"), key }).pipe(
+              Effect.map((wasAccepted) => ({ key, accepted: wasAccepted })),
+            ),
+          { concurrency: "unbounded" },
+        );
+        return { accepted, row: yield* repo.summaryOf(zero.id) };
+      }),
+    );
+    const winners = result.accepted.filter((attempt) => attempt.accepted);
+    expect(winners).toHaveLength(1);
+    expect(result.accepted.filter((attempt) => !attempt.accepted)).toHaveLength(1);
+    expect(result.row).toMatchObject({ state: "observed", key: winners[0]?.key });
+  });
+
+  it("refuses missing summary/worktree and ambient transactions without publishing", async () => {
+    await run(
+      Effect.gen(function* () {
+        const repo = yield* CaptureStoreRepo;
+        const sql = yield* SqlClient.SqlClient;
+        const worktreeId = yield* freshWorktree;
+        const { epoch } = yield* repo.claim(worktreeId, "executor");
+        const zero = captureInput(worktreeId, 0, null, epoch);
+        yield* repo.register(zero);
+        const input = { worktreeId, captureId: zero.id, baseSha: sha("a"), key: "observed" };
+        expect(yield* repo.publishObservedSummary(input)).toBe(false);
+        yield* repo.acceptSummary(worktreeId, zero.id, "claimed");
+        const nested = yield* Effect.exit(sql.withTransaction(repo.publishObservedSummary(input)));
+        if (!Exit.isFailure(nested)) throw new Error("publication must own its transaction");
+        expect(Cause.squash(nested.cause)).toBe("summary publication requires its own transaction");
+        expect(yield* repo.summaryOf(zero.id)).toMatchObject({ key: "claimed", state: "claimed" });
+        yield* sql`DELETE FROM worktrees WHERE id = ${worktreeId}`;
+        expect(yield* repo.publishObservedSummary(input)).toBe(false);
+        expect(yield* repo.summaryOf(zero.id)).toBeNull();
+      }),
+    );
   });
 
   it("records packs idempotently by digest", async () => {

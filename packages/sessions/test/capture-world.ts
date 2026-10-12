@@ -303,7 +303,7 @@ export const makeCaptureWorld = (
   const repo = makeProjectRepo(scratch, options.objectFormat);
   const project = projectFor(repo.storePath, repo.baseSha);
   const worktrees = new Map<string, Worktree>();
-  const memory = makeMemoryCaptureStore();
+  const memory = makeMemoryCaptureStore((worktreeId) => worktrees.get(worktreeId)?.baseSha ?? null);
   const blobRoot = path.join(scratch, "blobs");
   const storeConfig = StoreConfig.layerFor(path.join(scratch, "store"));
   const store = Store.layer.pipe(Layer.provide(storeConfig));

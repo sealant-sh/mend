@@ -30,19 +30,21 @@ unexercised paths in the same feature.
 
 ## Merged follow-ups
 
-| Pull request                                        | What it establishes                                                                                                                                         | What it does not establish                                                         |
-| --------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
-| [#738](https://github.com/sealant-sh/mend/pull/738) | Required PostgreSQL tests run; stream errors fail; selected API and acceptance assertions require actual outcomes; 18 dead/helper-only declarations removed | Every audit rewrite is complete, or every client/provider journey ran              |
-| [#740](https://github.com/sealant-sh/mend/pull/740) | Complete Git-command validation before signer lookup; same-origin login destinations                                                                        | A real authenticated SSH transport or browser sign-in journey                      |
-| [#741](https://github.com/sealant-sh/mend/pull/741) | Database correctness stays required; latency has a separate, explicit measurement command with unchanged budgets                                            | Production latency or a passing performance result under every workload            |
-| [#742](https://github.com/sealant-sh/mend/pull/742) | CLI rows/anchors preserve real Git hunk contents; gateway refuses binary contents instead of inventing empty text                                           | Interactive terminal/editor rendering or binary preview support                    |
-| [#743](https://github.com/sealant-sh/mend/pull/743) | Failed stack resource removal retains ownership and retry records; a subsequent successful retry cleans up                                                  | A live Docker deployment teardown                                                  |
-| [#744](https://github.com/sealant-sh/mend/pull/744) | Concurrent production runners share one live job per name/key, including failure and interruption paths                                                     | Protection from old producers or direct external queue writes that bypass the lock |
+| Pull request                                        | What it establishes                                                                                                                                         | What it does not establish                                                          |
+| --------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| [#738](https://github.com/sealant-sh/mend/pull/738) | Required PostgreSQL tests run; stream errors fail; selected API and acceptance assertions require actual outcomes; 18 dead/helper-only declarations removed | Every audit rewrite is complete, or every client/provider journey ran               |
+| [#740](https://github.com/sealant-sh/mend/pull/740) | Complete Git-command validation before signer lookup; same-origin login destinations                                                                        | A real authenticated SSH transport or browser sign-in journey                       |
+| [#741](https://github.com/sealant-sh/mend/pull/741) | Database correctness stays required; latency has a separate, explicit measurement command with unchanged budgets                                            | Production latency or a passing performance result under every workload             |
+| [#742](https://github.com/sealant-sh/mend/pull/742) | CLI rows/anchors preserve real Git hunk contents; gateway refuses binary contents instead of inventing empty text                                           | Interactive terminal/editor rendering or binary preview support                     |
+| [#743](https://github.com/sealant-sh/mend/pull/743) | Failed stack resource removal retains ownership and retry records; a subsequent successful retry cleans up                                                  | A live Docker deployment teardown                                                   |
+| [#744](https://github.com/sealant-sh/mend/pull/744) | Concurrent production runners share one live job per name/key, including failure and interruption paths                                                     | Protection from old producers or direct external queue writes that bypass the lock  |
+| [#746](https://github.com/sealant-sh/mend/pull/746) | Final permitted inference tool-round answers are retained; shipped adapter continuations, tools, JSON and audit order are exercised                         | A live provider call, database audit persistence or invalid round-budget validation |
+| [#747](https://github.com/sealant-sh/mend/pull/747) | Failed Docker observations retain uninstall records; retries recheck owner and Docker context under the store lock                                          | A live Docker uninstall or successful optional Docker checks                        |
 
 Each reproduced production defect above has regressions that failed before its fix. Each PR passed
 forced repository typechecking and lint before publication and ran relevant local suites. #738 was
 merged with a failing database benchmark in CI; that failure led to the explicit performance lane in
-#741. The other five follow-ups passed their applicable CI checks before merge. A skipped
+#741. The other seven follow-ups passed their applicable CI checks before merge. A skipped
 release-acceptance workflow is not evidence that packaged or VM acceptance ran. Local checks used
 Node 26.1.0; CI used the pinned 26.4.0.
 
@@ -89,6 +91,37 @@ benchmark separation. Explicit optional Docker/provider skips are not executed c
 - `VFY-02`: stack teardown checks state-volume removal before deleting its retry records. Fault
   injection covers that volume, an ordinary recorded volume and a recorded container. Each case
   requires the same owner and unchanged records to remain, then a successful complete retry.
+
+- `INF-03`: the actual inference adapter runs against a scripted public Sealant SDK client and a
+  recording audit repository. Its 24 adapter tests include 30 generated property cases; the full
+  package suite passed 59 tests. They check credentials/configuration, continuation handles, tool
+  success/refusal/failure, JSON decoding, exchange/audit order and bounded tool rounds. They do not
+  call a live provider or establish database audit persistence. The final permitted tool-round
+  answer regression failed before the fix; unknown-tool refusal uses the existing exchange evidence.
+- `CLIS-005`: Docker discovery or ownership-inspection failures preserve uninstall records. Retry
+  revalidates the owner and Docker context under the store lock. Validation reported 1,422 distinct
+  passing CLI tests and four optional skips. Docker responses were scripted; this does not establish
+  that a live Docker uninstall ran.
+
+## Summary observation in this follow-up
+
+`AJ-002` and `AJ-003` require both diff and file reads to carry the requested capture's exact
+stamps, including its sequence, kind and partial status. Equality includes the base SHA. The
+observer writes separate immutable recomputed bytes before publishing their pointer and observed
+state together. A short PostgreSQL transaction locks the worktree, chain and capture, then rechecks
+the current base, head, Git verification result and claimed summary row before publishing. Real
+PostgreSQL tests wait on competing base, head, verification and summary updates; independent
+publishers have one winner.
+
+This guarantee applies at the publication transition. Later base/head/verification changes do not
+automatically invalidate an observed summary, and cleanup of unreferenced immutable objects remains
+outside this follow-up. Partial captures remain partial; observation does not claim full Git fsck.
+Local full suites passed 137 jobs tests, 273 database tests, 1,436 sessions tests and 243 store
+tests. Sessions reported four existing optional corpus/S3 skips; store reported 11 optional S3 skips
+and one opt-in verification measurement skip. The observer suite passed all 28 cases, and the
+capture-store suite passed all 37 cases, including real PostgreSQL waits and repeatable-read
+connection defaults. Forced repository build, typechecking and lint passed. CI for this follow-up
+has not run yet.
 
 ## Boundary fixes
 
@@ -175,8 +208,6 @@ before implementing, and inspect overlapping PRs rather than duplicating their w
   is the requested tree, but a fresh clone of the exported bundle can contain later file contents in
   its history. Preserve exact historical provenance and Git objects, including after capture
   retention. Refuse missing evidence rather than substituting the current head.
-- `CLIS-005`: uninstall can discard identity after failed Docker discovery or ownership inspection.
-  Preserve unknown observations, revalidate under the store lock and retain the identity for retry.
 - `PKG-001` and `PKG-002`: packaged acceptance must check executor mount scope/read-only secrets and
   associate the expected proof marker with the correct file and added diff line.
 - `FOUND-12`: provider conformance needs an explicit pinned-provider lane through production
