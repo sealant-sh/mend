@@ -239,21 +239,30 @@ recovered workspace saves, and `saved at … · capture N` once Mend observes th
 
 ### The database runs out of connections
 
-Mend opens three connection pools to its database, plus one connection for `LISTEN`:
+Each Mend server instance opens four connection pools to its database, plus one connection for
+`LISTEN`:
 
 | Pool                           | Variable                      | Default |
 | ------------------------------ | ----------------------------- | ------- |
 | Mend's queries                 | `MEND_DATABASE_POOL_MAX`      | 6       |
 | The job queue (pg-boss)        | `MEND_JOBS_POOL_MAX`          | 3       |
+| Keyed enqueues                 | `MEND_JOBS_ENQUEUE_POOL_MAX`  | 1       |
 | Sign-in sessions (Better Auth) | `MEND_AUTH_DATABASE_POOL_MAX` | 3       |
 
-At full load that is 13 connections. Sealant's API and worker open their own pools to their
-database. When both databases live on one Postgres server, both sets of caps must fit under its
-`max_connections`, less the connections reserved for superusers. When they do not, Postgres refuses
-connections with `remaining connection slots are reserved`, the requests and jobs that asked for
-them fail, and Mend logs `jobs: pg-boss error` or `auth: database pool error` with that message. The
-API keeps running and retries; it does not exit. Lower the caps, or raise the server's
+At full load that is 14 connections per instance. Sealant's API and worker open their own pools to
+their database. When both databases live on one Postgres server, both sets of caps must fit under
+its `max_connections`, less the connections reserved for superusers. When they do not, Postgres
+refuses connections with `remaining connection slots are reserved`, the requests and jobs that asked
+for them fail, and Mend logs `jobs: pg-boss error` or `auth: database pool error` with that message.
+The API keeps running and retries; it does not exit. Lower the caps, or raise the server's
 `max_connections`.
+
+The keyed enqueue pool is separate from pg-boss's worker pool. Its cap must be a positive integer.
+Connection acquisition and each SQL query time out after five seconds, rather than giving the whole
+enqueue operation one five-second deadline. If a key stays locked until the timeout, that enqueue
+fails; the transaction rolls back before the connection is released. See
+[Server environment](/reference/server-environment/#database) for the cross-instance guarantee and
+its rolling deployment restriction.
 
 ### The server refuses to start
 
