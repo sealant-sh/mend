@@ -70,6 +70,7 @@ import {
   flushReportEvidence,
   reviewDiffEvidence,
   ownsWorkspaceContainer,
+  runningCaptureExecutors,
   readPreviousCli,
   readPrivateIdentity,
   readUpgradeInputs,
@@ -1401,18 +1402,12 @@ async function main() {
       const observation = captureRegisteredEvidence(stats.observation);
       if (!observation) return false;
       const { now } = await collectOwned();
-      const executor = now.containers.find(
-        (item) =>
-          item.State.Running &&
-          !initialIds.has(item.Id) &&
-          ownsWorkspaceContainer(item, initialIds),
-      );
+      const executor = runningCaptureExecutors(now.containers, initialIds)[0];
       return executor ? { observation, executor } : false;
     },
     480_000,
   );
-  // A store mount at this point would fail ownsWorkspaceContainer above; assert store-absence
-  // explicitly so the message names the regression if the executor's shape ever changes.
+  // The inventory refuses every invalid new executor before choosing a running candidate.
   assertCaptureExecutor(evidence.executor);
   check(containers.has(evidence.executor.Id), "The store-less executor must be owned for cleanup");
   // A captured workspace mounts nothing, so the helper and the git transport must have been
@@ -1443,8 +1438,7 @@ async function main() {
     let recorded = false;
     while (!recorded && Date.now() < deadline) {
       const { now } = await collectOwned();
-      for (const item of now.containers) {
-        if (!item.State.Running || !ownsWorkspaceContainer(item, initialIds)) continue;
+      for (const item of runningCaptureExecutors(now.containers, initialIds)) {
         const probe = ["--context", context, "exec", item.Id];
         const done = await start("docker", [
           ...probe,
@@ -1657,9 +1651,7 @@ async function main() {
     "executor reclamation",
     async () => {
       const { now } = await collectOwned();
-      return !now.containers.some(
-        (item) => item.State.Running && ownsWorkspaceContainer(item, initialIds),
-      );
+      return runningCaptureExecutors(now.containers, initialIds).length === 0;
     },
     15 * 60_000,
   );
@@ -1881,11 +1873,7 @@ async function main() {
     "the live session's running workspace",
     async () => {
       const { now } = await collectOwned();
-      return now.containers.find(
-        (item) =>
-          item.State.Running &&
-          ownsWorkspaceContainer(item, new Set(initial.containers.map((old) => old.Id))),
-      );
+      return runningCaptureExecutors(now.containers, initialIds)[0];
     },
     10 * 60_000,
   );

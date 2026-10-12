@@ -29,6 +29,7 @@ import {
   captureRegisteredEvidence,
   checkpointChainEvidence,
   isSealantExecutor,
+  runningCaptureExecutors,
   reviewDiffEvidence,
   flushAttemptEvidence,
   flushReportEvidence,
@@ -430,6 +431,157 @@ test("a store-less Sealant executor passes acceptance and is owned for cleanup b
 });
 
 const rejectedExecutors = [
+  ...["requested", "observed"].flatMap((evidence) =>
+    [undefined, null, 123, ""].map((destination) => [
+      `unknown ${evidence} extra mount destination ${String(destination)}`,
+      (candidate) => {
+        if (evidence === "requested") {
+          candidate.HostConfig.Mounts.push({
+            Type: "volume",
+            Source: "executor-data",
+            Target: destination,
+          });
+        } else {
+          candidate.Mounts.push({
+            Type: "volume",
+            Name: "executor-data",
+            Destination: destination,
+            RW: true,
+          });
+        }
+      },
+    ]),
+  ),
+  ...[undefined, null, 123, ""].map((name) => [
+    `unknown observed extra volume name ${String(name)}`,
+    (candidate) => {
+      candidate.HostConfig.Mounts.push({ Type: "volume", Target: "/anonymous" });
+      candidate.Mounts.push({ Type: "volume", Name: name, Destination: "/anonymous", RW: true });
+    },
+  ]),
+  ...["requested", "observed"].flatMap((evidence) =>
+    [undefined, null, 123, "unknown"].map((type) => [
+      `unknown ${evidence} extra mount type ${String(type)}`,
+      (candidate) => {
+        const extra = { Type: type, Source: "/sensitive/host/path" };
+        if (evidence === "requested") {
+          candidate.HostConfig.Mounts.push({ ...extra, Target: "/host-data" });
+        } else {
+          candidate.Mounts.push({ ...extra, Destination: "/host-data" });
+        }
+      },
+    ]),
+  ),
+  [
+    "missing control subpath",
+    (c) => {
+      delete c.HostConfig.Mounts[0].VolumeOptions;
+    },
+  ],
+  [
+    "empty control subpath",
+    (c) => {
+      c.HostConfig.Mounts[0].VolumeOptions.Subpath = "";
+    },
+  ],
+  [
+    "traversing control subpath",
+    (c) => {
+      c.HostConfig.Mounts[0].VolumeOptions.Subpath += "/..";
+    },
+  ],
+  [
+    "mismatched named control scope",
+    (c) => {
+      c.HostConfig.Mounts[0].VolumeOptions.Subpath = "sealant-aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+    },
+  ],
+  [
+    "mismatched secret scope",
+    (c) => {
+      c.HostConfig.Mounts[1].VolumeOptions.Subpath =
+        "_dotfiles/sealant-secret-env-aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+    },
+  ],
+  [
+    "missing secret subpath",
+    (c) => {
+      delete c.HostConfig.Mounts[1].VolumeOptions;
+    },
+  ],
+  [
+    "writable secrets",
+    (c) => {
+      c.HostConfig.Mounts[1].ReadOnly = false;
+      c.Mounts[1].RW = true;
+    },
+  ],
+  [
+    "writable observed secrets despite read-only request",
+    (c) => {
+      c.Mounts[1].RW = true;
+    },
+  ],
+  [
+    "unknown observed secret write access",
+    (c) => {
+      delete c.Mounts[1].RW;
+    },
+  ],
+  [
+    "absent secret mount",
+    (c) => {
+      c.HostConfig.Mounts.pop();
+      c.Mounts.pop();
+    },
+  ],
+  [
+    "absent mount evidence",
+    (c) => {
+      delete c.HostConfig.Mounts;
+      delete c.Mounts;
+    },
+  ],
+  [
+    "extra whole control volume",
+    (c) => {
+      c.HostConfig.Mounts.push({
+        Type: "volume",
+        Source: "mend-control",
+        Target: "/other-control",
+      });
+      c.Mounts.push({
+        Type: "volume",
+        Name: "mend-control",
+        Destination: "/other-control",
+        RW: true,
+      });
+    },
+  ],
+  [
+    "duplicate control spec",
+    (c) => {
+      c.HostConfig.Mounts.push({ ...c.HostConfig.Mounts[0] });
+    },
+  ],
+  [
+    "duplicate actual secret mount",
+    (c) => {
+      c.Mounts.push({ ...c.Mounts[1] });
+    },
+  ],
+  [
+    "missing actual control mount",
+    (c) => {
+      c.Mounts.shift();
+    },
+  ],
+  [
+    "wrong actual secret destination",
+    (c) => {
+      c.Mounts[1].Destination = "/elsewhere";
+    },
+  ],
   [
     "store volume mount",
     (candidate) => {
@@ -490,6 +642,88 @@ for (const [name, invalidate] of rejectedExecutors) {
     assert.equal(isSealantExecutor(candidate), true);
     assert.throws(() => assertCaptureExecutor(candidate));
     assert.equal(ownsWorkspaceContainer(candidate, new Set()), false);
+  });
+}
+
+test("known extra volume and tmpfs mounts preserve store-less executor acceptance", () => {
+  const candidate = executor();
+  candidate.HostConfig.Mounts.push(
+    { Type: "volume", Source: "executor-data", Target: "/workspace" },
+    { Type: "volume", Target: "/anonymous" },
+    { Type: "tmpfs", Target: "/scratch" },
+  );
+  candidate.Mounts.push(
+    { Type: "volume", Name: "executor-data", Destination: "/workspace", RW: true },
+    { Type: "volume", Name: "generated-anonymous-volume", Destination: "/anonymous", RW: true },
+    { Type: "tmpfs", Destination: "/scratch", RW: true },
+  );
+  assert.doesNotThrow(() => assertCaptureExecutor(candidate));
+  assert.equal(ownsWorkspaceContainer(candidate, new Set()), true);
+  assert.deepEqual(runningCaptureExecutors([candidate], new Set()), [candidate]);
+});
+
+test("acceptance inventory checks every new executor before selecting a valid standby", () => {
+  const good = executor({ Id: "valid-standby" });
+  const invalid = executor({ Id: "unsafe-executor" });
+  invalid.Mounts[1].RW = true;
+  for (const inventory of [
+    [good, invalid],
+    [invalid, good],
+  ]) {
+    assert.throws(() => runningCaptureExecutors(inventory, new Set()), /read-only secrets/);
+  }
+  assert.equal(ownsWorkspaceContainer(invalid, new Set()), false);
+  // Immutable IDs exclude prior resources, without broadening cleanup ownership.
+  assert.deepEqual(runningCaptureExecutors([good, invalid], new Set([invalid.Id])), [good]);
+});
+
+test("acceptance inventory refuses invalid renamed and stopped executors before reclamation", () => {
+  const invalid = executor({ Name: "/renamed", State: { Running: false } });
+  delete invalid.HostConfig.Mounts[0].VolumeOptions;
+  assert.equal(isSealantExecutor(invalid), true);
+  assert.throws(() => runningCaptureExecutors([invalid], new Set()), /matching executor scope/);
+  assert.equal(ownsWorkspaceContainer(invalid, new Set()), false);
+  // Actual root evidence still recognizes a candidate when request evidence is absent.
+  delete invalid.HostConfig.Mounts;
+  assert.equal(isSealantExecutor(invalid), true);
+  assert.throws(() => runningCaptureExecutors([invalid], new Set()));
+});
+
+test("acceptance inventory supports distinct physical pool scopes and excludes Compose sockets", () => {
+  const first = executor();
+  const second = executor({ Id: "second", Name: "/renamed" });
+  const scope = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+  second.HostConfig.Mounts[0].VolumeOptions.Subpath = `sealant-${scope}`;
+  second.HostConfig.Mounts[1].VolumeOptions.Subpath = `_dotfiles/sealant-secret-env-${scope}`;
+  const server = {
+    Id: "server",
+    Name: "/mend-server",
+    HostConfig: {
+      Mounts: [{ Type: "volume", Source: "mend-control", Target: "/run/sealant/sockets" }],
+    },
+    Mounts: [{ Type: "volume", Name: "mend-control", Destination: "/run/sealant/sockets" }],
+  };
+  assert.equal(isSealantExecutor(server), false);
+  assert.deepEqual(runningCaptureExecutors([server, first, second], new Set()), [first, second]);
+  assert.deepEqual(runningCaptureExecutors([first, second], new Set([first.Id, second.Id])), []);
+  assert.deepEqual(
+    runningCaptureExecutors([executor({ State: { Running: false } })], new Set()),
+    [],
+  );
+});
+
+for (const state of [
+  undefined,
+  null,
+  {},
+  { Running: null },
+  { Running: "false" },
+  { Running: 0 },
+]) {
+  test(`acceptance inventory refuses unknown running state ${JSON.stringify(state)}`, () => {
+    const candidate = executor({ State: state });
+    assert.throws(() => runningCaptureExecutors([candidate], new Set()), /running state/);
+    assert.deepEqual(runningCaptureExecutors([candidate], new Set([candidate.Id])), []);
   });
 }
 
@@ -625,7 +859,7 @@ test("review diff evidence needs a base-anchored slice whose pack-served patch c
     },
     checkpointA: chainRow(0),
     checkpointB: chainRow(3, { trigger: "review-open" }),
-    patch: `diff --git a/packaged-proof.txt b/packaged-proof.txt\n+${marker}\n`,
+    patch: `diff --git a/packaged-proof.txt b/packaged-proof.txt\nnew file mode 100644\nindex 0000000..1234567\n--- /dev/null\n+++ b/packaged-proof.txt\n@@ -0,0 +1 @@\n+${marker}\n`,
     files: [{ oldPath: null, newPath: "packaged-proof.txt", status: "added" }],
     anchorFiles: [],
     worktreeChangedSinceSnapshot: false,
@@ -658,6 +892,162 @@ test("review diff evidence needs a base-anchored slice whose pack-served patch c
   rejects({ observation: { ...observation, source: "worktree", captureN: null } }, /live worktree/);
   assert.throws(() => reviewDiffEvidence(undefined, options), /name its slice/);
 });
+
+// Real Git artifacts isolate config, hooks and inherited Git environment. No remote is used.
+async function withReviewPatch(baseFiles, changedFiles, inspect) {
+  const scratch = await mkdtemp(join(tmpdir(), "mend-packaged-review-"));
+  const env = { ...process.env, LC_ALL: "C" };
+  for (const key of Object.keys(env)) if (key.startsWith("GIT_")) delete env[key];
+  Object.assign(env, {
+    GIT_CONFIG_GLOBAL: "/dev/null",
+    GIT_CONFIG_SYSTEM: "/dev/null",
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_ATTR_NOSYSTEM: "1",
+  });
+  const git = async (...args) =>
+    (
+      await exec(
+        "git",
+        [
+          "-c",
+          "core.hooksPath=/dev/null",
+          "-c",
+          "user.name=Packaged acceptance",
+          "-c",
+          "user.email=packaged@example.invalid",
+          ...args,
+        ],
+        { cwd: scratch, env, timeout: 10_000 },
+      )
+    ).stdout;
+  try {
+    await git("init", "--quiet", "--initial-branch=main");
+    await writeFile(join(scratch, "base.txt"), "base\n");
+    for (const [path, bytes] of Object.entries(baseFiles))
+      await writeFile(join(scratch, path), bytes);
+    await git("add", "--all");
+    await git("commit", "--quiet", "-m", "base");
+    const base = (await git("rev-parse", "HEAD")).trim();
+    for (const [path, bytes] of Object.entries(changedFiles)) {
+      if (bytes === null) await rm(join(scratch, path));
+      else if (bytes?.symlink !== undefined) await symlink(bytes.symlink, join(scratch, path));
+      else await writeFile(join(scratch, path), bytes);
+    }
+    await git("add", "--all");
+    await git("commit", "--quiet", "-m", "change");
+    const head = (await git("rev-parse", "HEAD")).trim();
+    const patch = await git(
+      "diff",
+      "--no-ext-diff",
+      "--no-textconv",
+      "--no-renames",
+      "--binary",
+      base,
+      head,
+    );
+    const status = await git("diff", "--name-status", "--no-renames", base, head);
+    const files = status
+      .trim()
+      .split("\n")
+      .map((line) => {
+        const [kind, path] = line.split("\t");
+        return {
+          oldPath: kind === "A" ? null : path,
+          newPath: kind === "D" ? null : path,
+          status: { A: "added", D: "deleted", M: "modified" }[kind],
+        };
+      });
+    const view = {
+      slice: { id: "slice-1", checkpointAId: "a", checkpointBId: "b" },
+      checkpointA: { id: "a", ordinal: 0, sha: base },
+      checkpointB: { id: "b", ordinal: 1, sha: head },
+      patch,
+      files,
+      observation: {
+        state: "observed",
+        source: "capture",
+        captureN: 1,
+        captureId: "capture-1",
+        label: "observed",
+      },
+    };
+    await inspect(view, {
+      baseSha: base,
+      sliceId: "slice-1",
+      marker: "packaged-proof-marker",
+      file: "packaged-proof.txt",
+    });
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
+}
+
+const proofFile = "packaged-proof.txt";
+const proofMarker = "packaged-proof-marker";
+for (const [name, changed] of [
+  ["new file", { [proofFile]: `${proofMarker}\n` }],
+  ["multiple files", { "other.txt": "other\n", [proofFile]: `${proofMarker}\n` }],
+  ["no final newline", { [proofFile]: proofMarker }],
+  ["header-looking content", { [proofFile]: `++literal\n--literal\n${proofMarker}\n` }],
+]) {
+  test(`review accepts a real Git added proof with ${name}`, { timeout: 20_000 }, async () => {
+    await withReviewPatch({}, changed, (view, options) => {
+      assert.equal(reviewDiffEvidence(view, options), view);
+    });
+  });
+}
+
+for (const [name, base, changed] of [
+  ["marker in another file only", {}, { "other.txt": `${proofMarker}\n` }],
+  [
+    "added proof with marker elsewhere",
+    {},
+    { [proofFile]: "ordinary\n", "other.txt": `${proofMarker}\n` },
+  ],
+  [
+    "context marker",
+    { [proofFile]: `${proofMarker}\noriginal\n` },
+    { [proofFile]: `${proofMarker}\nchanged\n` },
+  ],
+  ["removed marker", { [proofFile]: `${proofMarker}\n` }, { [proofFile]: "replacement\n" }],
+  ["substring marker", {}, { [proofFile]: `prefix-${proofMarker}-suffix\n` }],
+  ["deleted proof", { [proofFile]: `${proofMarker}\n` }, { [proofFile]: null }],
+  ["modified proof", { [proofFile]: "before\n" }, { [proofFile]: `before\n${proofMarker}\n` }],
+  ["symlink proof", {}, { [proofFile]: { symlink: proofMarker } }],
+  ["binary proof", {}, { [proofFile]: Buffer.from(`${proofMarker}\0\n`) }],
+]) {
+  test(
+    `review rejects real Git ${name} despite added-file metadata`,
+    { timeout: 20_000 },
+    async () => {
+      await withReviewPatch(base, changed, (view, options) => {
+        // Deliberately inconsistent API metadata must not make the patch prove a different claim.
+        view.files = [{ oldPath: null, newPath: proofFile, status: "added" }];
+        assert.throws(() => reviewDiffEvidence(view, options), /committed workspace file/);
+      });
+    },
+  );
+}
+
+test(
+  "review rejects truncated, non-unified and count-mismatched added proof hunks",
+  { timeout: 20_000 },
+  async () => {
+    await withReviewPatch({}, { [proofFile]: `${proofMarker}\n` }, (view, options) => {
+      for (const patch of [
+        `diff --git a/${proofFile} b/${proofFile}\n+${proofMarker}\n`,
+        view.patch.replace("@@ -0,0 +1 @@", "@@ -0,0 +1,2 @@"),
+        view.patch.replace("@@ -0,0 +1 @@", "@@ -0,1 +1 @@"),
+        view.patch + "+unexpected\n",
+        view.patch.replace("+++ b/packaged-proof.txt", "+++ b/other.txt"),
+      ])
+        assert.throws(
+          () => reviewDiffEvidence({ ...view, patch }, options),
+          /committed workspace file/,
+        );
+    });
+  },
+);
 
 test("flush evidence matches only this session's completed report", () => {
   const sessionId = "e8f4474e-b96c-4d41-b286-e1a864d966ff";
