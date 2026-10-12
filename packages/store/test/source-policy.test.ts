@@ -367,7 +367,7 @@ describe("pinning a checked remote (DNS rebinding)", () => {
     expect(tenant.pinnedEnv(clearance("https", "git.acme.dev", null, "140.82.112.3"), {})).toEqual({
       GIT_CONFIG_COUNT: "3",
       GIT_CONFIG_PARAMETERS:
-        "'http.followRedirects'='false' 'http.https://git.acme.dev/repo.git.followRedirects'='false'",
+        "'http.curloptResolve'='git.acme.dev:443:140.82.112.3' 'http.https://git.acme.dev/repo.git.curloptResolve'='git.acme.dev:443:140.82.112.3' 'http.followRedirects'='false' 'http.https://git.acme.dev/repo.git.followRedirects'='false'",
       GIT_CONFIG_KEY_0: "http.curloptResolve",
       GIT_CONFIG_VALUE_0: "git.acme.dev:443:140.82.112.3",
       GIT_CONFIG_KEY_1: "http.followRedirects",
