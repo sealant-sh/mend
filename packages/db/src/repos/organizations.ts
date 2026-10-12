@@ -253,6 +253,47 @@ const otherOwnerRemains = (tx: Tx, organizationId: OrganizationId, userId: strin
     return (row?.owners ?? 0) > 0;
   });
 
+/** Remove the guarded membership and record its SSH cleanup debt without publishing an event. */
+export const deleteMemberWithSshDebt = Effect.fn("OrganizationsRepo.deleteMemberWithSshDebt")(
+  function* (
+    tx: Tx,
+    organizationId: OrganizationId,
+    userId: string,
+    revocation: { readonly id: string; readonly actorUserId: string; readonly leaseMs: number },
+  ) {
+    yield* lockOrganization(tx, organizationId);
+    const current = yield* roleIn(tx, organizationId, userId);
+    if (current === null) return yield* new MemberNotFoundError({ organizationId, userId });
+    if (current === "owner" && !(yield* otherOwnerRemains(tx, organizationId, userId))) {
+      return yield* new LastOwnerError({ organizationId });
+    }
+    yield* tx
+      .delete(organizationMembers)
+      .where(
+        and(
+          eq(organizationMembers.organizationId, organizationId),
+          eq(organizationMembers.userId, userId),
+        ),
+      )
+      .pipe(Effect.orDie);
+    const owed = {
+      id: revocation.id,
+      organizationId,
+      actorUserId: revocation.actorUserId,
+      requestedAt: new Date(),
+      attempts: 0,
+      nextAttemptAt: new Date(Date.now() + revocation.leaseMs),
+      outstanding: null,
+      lastError: null,
+    };
+    yield* tx
+      .insert(sshKeyRevocations)
+      .values({ userId, ...owed })
+      .onConflictDoUpdate({ target: sshKeyRevocations.userId, set: owed })
+      .pipe(Effect.orDie);
+  },
+);
+
 const roleIn = (tx: Tx, organizationId: OrganizationId, userId: string) =>
   Effect.gen(function* () {
     const [row] = yield* tx
@@ -526,40 +567,11 @@ export const OrganizationsRepoLive: Layer.Layer<
       yield* db
         .transaction((tx) =>
           Effect.gen(function* () {
-            yield* lockOrganization(tx, organizationId);
-            const current = yield* roleIn(tx, organizationId, userId);
-            if (current === null) {
-              return yield* new MemberNotFoundError({ organizationId, userId });
-            }
-            if (current === "owner" && !(yield* otherOwnerRemains(tx, organizationId, userId))) {
-              return yield* new LastOwnerError({ organizationId });
-            }
-            yield* tx
-              .delete(organizationMembers)
-              .where(
-                and(
-                  eq(organizationMembers.organizationId, organizationId),
-                  eq(organizationMembers.userId, userId),
-                ),
-              )
-              .pipe(Effect.orDie);
-            // The membership never goes without its keys owed: a crash after this commit still
-            // leaves the row for the sweep.
-            const owed = {
+            yield* deleteMemberWithSshDebt(tx, organizationId, userId, {
               id: revocationId,
-              organizationId,
               actorUserId: revocation.actorUserId,
-              requestedAt: new Date(),
-              attempts: 0,
-              nextAttemptAt: new Date(Date.now() + revocation.revocationLeaseMs),
-              outstanding: null,
-              lastError: null,
-            };
-            yield* tx
-              .insert(sshKeyRevocations)
-              .values({ userId, ...owed })
-              .onConflictDoUpdate({ target: sshKeyRevocations.userId, set: owed })
-              .pipe(Effect.orDie);
+              leaseMs: revocation.revocationLeaseMs,
+            });
           }),
         )
         .pipe(Effect.catchTag("SqlError", (error) => Effect.die(error)));

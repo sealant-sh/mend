@@ -79,6 +79,7 @@ import {
   UserGitAuthorRepoLive,
   HarnessLayoutsRepoLive,
   UserEventsLive,
+  MemberRevocationsRepoLive,
   UsersRepoLive,
   UpgradeTicketsRepoLive,
 } from "@mend/db";
@@ -433,7 +434,12 @@ const ServerLive = Layer.unwrap(
     ).pipe(
       Layer.provide(NodeHttpServer.layer(createServer, { port })),
       // Removing a member revokes, closes their connections on every process, stops their sessions.
-      Layer.provide(MemberRemovalLive.pipe(Layer.provide(SshKeyRevokerLive))),
+      Layer.provide(
+        MemberRemovalLive.pipe(
+          Layer.provide(SshKeyRevokerLive),
+          Layer.provide(MemberRevocationsRepoLive),
+        ),
+      ),
       Layer.provide(ConnectionRegistryLive),
       // One LISTEN per process, fanned out to every SSE stream; the worker needs none.
       Layer.provide(EventBusLive),

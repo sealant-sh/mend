@@ -1,21 +1,17 @@
 import {
   AuditEventsRepo,
   type NewAuditEvent,
-  DevicesRepo,
   LastOwnerError,
   OrganizationsRepo,
+  MemberRevocationsRepo,
   ProjectsRepo,
-  PushDevicesRepo,
   SessionControlEventsRepo,
-  SessionsRepo,
-  SlackLinksRepo,
   type SshKeyRevocation,
   SshKeyRevocationsRepo,
   UserEvents,
-  UsersRepo,
 } from "@mend/db";
-import { OrganizationId, ProjectId, SessionId, WorktreeId } from "@mend/domain";
-import { Organization, Session } from "@mend/domain/workbench";
+import { OrganizationId, ProjectId, SessionId } from "@mend/domain";
+import { Organization } from "@mend/domain/workbench";
 import { SealantClients, SealantPlatformError } from "@mend/sealant";
 import { SessionEngine } from "@mend/sessions";
 import { Deferred, Duration, Effect, Exit, Fiber, Layer, Queue, Scope, Stream } from "effect";
@@ -23,7 +19,7 @@ import * as Context from "effect/Context";
 import { Socket } from "effect/unstable/socket";
 import { describe, expect, it } from "vitest";
 
-import { makeProject, makeSession } from "../test/support/tenancy-harness.ts";
+import { makeProject } from "../test/support/tenancy-harness.ts";
 import {
   ConnectionRegistry,
   ConnectionRegistryLive,
@@ -32,7 +28,12 @@ import {
 } from "./connections.ts";
 import { EventBus, makeEventBus } from "./events-bus.ts";
 import { MemberRemoval, MemberRemovalLive } from "./member-removal.ts";
-import { SshKeyFirstAttemptLimit, SshKeyRevoker, SshKeyRevokerLive } from "./ssh-key-revocation.ts";
+import {
+  SSH_KEY_REVOCATION_LEASE,
+  SshKeyFirstAttemptLimit,
+  SshKeyRevoker,
+  SshKeyRevokerLive,
+} from "./ssh-key-revocation.ts";
 
 const ACME = OrganizationId.make("org-acme");
 const PROJECT = ProjectId.make("project-acme");
@@ -57,15 +58,31 @@ const keyView = (userId: string, sshKeyId: string) => ({
 /**
  * A removal whose every effect is appended, in order, as `service.method:subject`. The platform
  * holds `keys` workspace SSH keys for each account; `failOnce` makes a key's next archive fail,
- * `listDown` makes listing fail. The revocation table is in memory: `removeMember` writes its row
+ * `listDown` makes listing fail. The revocation table is in memory: `beginRemoval` records its aggregate outcome
  * as the real transaction does, held off until `makeDue` stands in for its lease running out.
  */
-const removalWorld = (options: { readonly lastOwner?: boolean; readonly keys?: number } = {}) => {
+const removalWorld = (
+  options: {
+    readonly lastOwner?: boolean;
+    readonly keys?: number;
+    readonly failDelivery?: ReadonlyArray<string>;
+  } = {},
+) => {
   const effects: Array<string> = [];
   const audited: Array<NewAuditEvent> = [];
   const archiveCalls: Array<string> = [];
+  const removalInputs: Array<Parameters<MemberRevocationsRepo["Service"]["beginRemoval"]>[0]> = [];
   const woundDown = Effect.runSync(Deferred.make<void>());
-  const note = (entry: string) => Effect.sync(() => void effects.push(entry));
+  const note = (entry: string) =>
+    Effect.sync(() => void effects.push(entry)).pipe(
+      Effect.andThen(
+        Effect.suspend(() =>
+          options.failDelivery?.includes(entry) === true
+            ? Effect.die(`delivery unavailable: ${entry}`)
+            : Effect.void,
+        ),
+      ),
+    );
   const platform: {
     readonly active: Set<string>;
     readonly failOnce: Set<string>;
@@ -83,28 +100,37 @@ const removalWorld = (options: { readonly lastOwner?: boolean; readonly keys?: n
   let revocations = 0;
   const owed = new Map<string, SshKeyRevocation & { readonly due: boolean }>();
   const deps = Layer.mergeAll(
-    Layer.mock(OrganizationsRepo, {
-      removeMember: (organizationId, userId, revocation) =>
+    Layer.mock(MemberRevocationsRepo, {
+      beginRemoval: (input) =>
         options.lastOwner === true
           ? Effect.fail(new LastOwnerError({ organizationId: ACME }))
-          : note(`organizations.removeMember:${userId}`).pipe(
-              Effect.map(() => {
-                revocations += 1;
-                const revocationId = `revocation-${revocations}`;
-                owed.set(userId, {
-                  id: revocationId,
-                  userId,
-                  organizationId,
-                  actorUserId: revocation.actorUserId,
-                  requestedAt: new Date(),
-                  attempts: 0,
-                  outstanding: null,
-                  lastError: null,
-                  due: false,
-                });
-                return { revocationId };
-              }),
-            ),
+          : Effect.gen(function* () {
+              yield* note(`revocations.beginRemoval:${input.userId}`);
+              removalInputs.push(input);
+              revocations += 1;
+              const revocationId = `revocation-${revocations}`;
+              const requestedAt = new Date();
+              owed.set(input.userId, {
+                id: revocationId,
+                userId: input.userId,
+                organizationId: input.organizationId,
+                actorUserId: input.actorUserId,
+                requestedAt,
+                attempts: 0,
+                outstanding: null,
+                lastError: null,
+                due: false,
+              });
+              return {
+                ...input,
+                revocationId,
+                requestedAt,
+                unshared: [{ id: SessionId.make("session-shared"), projectId: PROJECT }],
+                queuedSessions: [{ id: SessionId.make("session-shared"), projectId: PROJECT }],
+                linkedSlackFacts: [{ teamId: "T-acme", slackUserId: `U-${input.userId}` }],
+              };
+            }),
+      announce: (removed) => note(`revocations.announce:${removed.userId}`),
     }),
     Layer.mock(SshKeyRevocationsRepo, {
       list: () => Effect.sync(() => [...owed.values()]),
@@ -143,18 +169,8 @@ const removalWorld = (options: { readonly lastOwner?: boolean; readonly keys?: n
           ),
         ),
     }),
-    Layer.mock(UsersRepo, {
-      deactivate: (userId) => note(`users.deactivate:${userId}`),
-      revokeAuthSessions: (userId) => note(`users.revokeAuthSessions:${userId}`),
-    }),
-    Layer.mock(DevicesRepo, {
-      revokeAllForUser: (userId) => note(`devices.revokeAllForUser:${userId}`).pipe(Effect.as(1)),
-    }),
     Layer.mock(SessionControlEventsRepo, {
       record: (event) => note(`controlEvents.record:${event.kind}:${event.sessionId}`),
-    }),
-    Layer.mock(PushDevicesRepo, {
-      removeAllForUser: (userId) => note(`pushDevices.removeAllForUser:${userId}`),
     }),
     Layer.mock(AuditEventsRepo, {
       record: (event) =>
@@ -168,35 +184,6 @@ const removalWorld = (options: { readonly lastOwner?: boolean; readonly keys?: n
     Layer.mock(ConnectionRegistry, {
       closeForUser: (userId) => note(`connections.closeForUser:${userId}`).pipe(Effect.as(0)),
     }),
-    Layer.mock(SessionsRepo, {
-      disableSharedControlForOwner: (userId) =>
-        note(`sessions.disableSharedControlForOwner:${userId}`).pipe(
-          Effect.as([SessionId.make("session-shared")]),
-        ),
-      listUnsettledForOwner: (userId) =>
-        Effect.succeed([
-          makeSession(
-            SessionId.make(`session-${userId}`),
-            PROJECT,
-            WorktreeId.make("worktree-acme"),
-            userId,
-          ),
-        ]),
-      // Every session of the organization's projects: Alice's shared one, which Carol steered.
-      listForProject: (projectId) =>
-        Effect.succeed([
-          new Session({
-            ...makeSession(
-              SessionId.make("session-shared"),
-              projectId,
-              WorktreeId.make("worktree-acme"),
-              "alice",
-            ),
-            status: "running",
-            settledAt: null,
-          }),
-        ]),
-    }),
     Layer.mock(ProjectsRepo, {
       listForOrganization: (organizationId) =>
         Effect.succeed([
@@ -208,20 +195,6 @@ const removalWorld = (options: { readonly lastOwner?: boolean; readonly keys?: n
             storePath: "/store/project-acme/repo.git",
           }),
         ]),
-    }),
-    Layer.mock(SlackLinksRepo, {
-      listForUser: (userId) =>
-        Effect.succeed([
-          {
-            organizationId: ACME,
-            teamId: "T-acme",
-            slackUserId: `U-${userId}`,
-            userId,
-            createdAt: new Date(),
-          },
-        ]),
-      unlink: (teamId, slackUserId) =>
-        note(`slackLinks.unlink:${teamId}:${slackUserId}`).pipe(Effect.as(null)),
     }),
     Layer.mock(SealantClients, {
       connectedAccounts: () => ({
@@ -277,7 +250,17 @@ const removalWorld = (options: { readonly lastOwner?: boolean; readonly keys?: n
     const row = owed.get(userId);
     if (row !== undefined) owed.set(userId, { ...row, due: true });
   };
-  return { effects, audited, archiveCalls, platform, owed, makeDue, woundDown, layer };
+  return {
+    effects,
+    removalInputs,
+    audited,
+    archiveCalls,
+    platform,
+    owed,
+    makeDue,
+    woundDown,
+    layer,
+  };
 };
 
 const CAROL = { organizationId: ACME, userId: "carol", actorUserId: "alice" };
@@ -313,36 +296,50 @@ describe("member removal (docs/adr/0003)", () => {
     const exit = await remove(world);
     expect(exit).toEqual(Exit.succeed({ sshKeys: { removed: 1, outstanding: 0 } }));
     expect(world.owed.size).toBe(0);
-    const mendSide = [
-      "organizations.removeMember:carol",
-      // The account's pages hear why before any request of theirs is refused.
-      "userEvents.changed:carol:access",
-      "sessions.disableSharedControlForOwner:carol",
-      "controlEvents.record:shared-control-off:session-shared",
-      // Carol's turns queued in anyone's session go (docs/adr/0016, decision 6).
-      "engine.cancelQueuedTurnsBy:carol:1",
-      "users.deactivate:carol",
-      "users.revokeAuthSessions:carol",
-      "devices.revokeAllForUser:carol",
-      "pushDevices.removeAllForUser:carol",
-      "audit.record:member.removed:carol",
-      "slackLinks.unlink:T-acme:U-carol",
-      "audit.record:slack.link_removed:carol",
+    expect(world.removalInputs).toEqual([
+      {
+        ...CAROL,
+        revocationLeaseMs: Duration.toMillis(SSH_KEY_REVOCATION_LEASE),
+      },
+    ]);
+    expect(world.effects[0]).toBe("revocations.beginRemoval:carol");
+    // Durable revocation precedes every notice; background cleanup is dispatched independently.
+    const afterward = [
       "connections.closeForUser:carol",
+      "engine.windDownPerson:carol",
+      `engine.reconcileHotSessions:${PROJECT}`,
+      "userEvents.changed:carol:access",
+      "revocations.announce:carol",
+      "controlEvents.record:shared-control-off:session-shared",
+      "audit.record:member.removed:carol",
+      "audit.record:slack.link_removed:carol",
+      "sshKeys.remove:carol:key-0",
+      "audit.record:ssh_key.removed:carol",
+      "revocations.settle:revocation-1",
     ];
-    // Everything Mend revokes itself comes first; the platform is asked only after it.
-    expect(world.effects.slice(0, mendSide.length)).toEqual(mendSide);
-    // The session wind-down runs beside the key archive, so only their order within each holds.
-    expect(world.effects.slice(mendSide.length).toSorted()).toEqual(
-      [
-        "engine.windDownPerson:carol",
-        `engine.reconcileHotSessions:${PROJECT}`,
-        // The gateway refuses Carol's keys from the next connection on, and nothing stays owed.
-        "sshKeys.remove:carol:key-0",
-        "audit.record:ssh_key.removed:carol",
-        "revocations.settle:revocation-1",
-      ].toSorted(),
+    expect(world.effects.slice(1).toSorted()).toEqual(afterward.toSorted());
+    expect(world.effects.indexOf("audit.record:member.removed:carol")).toBeLessThan(
+      world.effects.indexOf("sshKeys.remove:carol:key-0"),
     );
+  });
+
+  it("answers successfully and attempts each postcommit delivery when the others fail", async () => {
+    const failed = [
+      "userEvents.changed:carol:access",
+      "revocations.announce:carol",
+      "controlEvents.record:shared-control-off:session-shared",
+      "audit.record:member.removed:carol",
+      "audit.record:slack.link_removed:carol",
+      "audit.record:ssh_key.revocation_pending:carol",
+    ];
+    const world = removalWorld({ failDelivery: failed });
+    world.platform.listDown = true;
+    const exit = await remove(world);
+    expect(exit).toEqual(Exit.succeed({ sshKeys: { removed: 0, outstanding: null } }));
+    for (const entry of failed) expect(world.effects).toContain(entry);
+    expect(world.effects).toContain("connections.closeForUser:carol");
+    expect(world.effects).toContain("engine.windDownPerson:carol");
+    expect(world.owed.has("carol")).toBe(true);
   });
 
   it("a platform holding its answer never delays Mend's own revocation; past the limit the removal answers and the sweep finishes", async () => {
@@ -409,7 +406,7 @@ describe("member removal (docs/adr/0003)", () => {
     });
     expect(world.owed.get("carol")).toMatchObject({ attempts: 1, outstanding: 1 });
     // Carol is signed out and gone from the organization whatever the platform said.
-    expect(world.effects).toContain("users.revokeAuthSessions:carol");
+    expect(world.effects[0]).toBe("revocations.beginRemoval:carol");
     expect(world.effects).toContain("connections.closeForUser:carol");
 
     // Not due yet: the sweep leaves it alone.
@@ -433,7 +430,7 @@ describe("member removal (docs/adr/0003)", () => {
     world.platform.listDown = true;
     const exit = await remove(world);
     expect(exit).toEqual(Exit.succeed({ sshKeys: { removed: 0, outstanding: null } }));
-    expect(world.effects).toContain("users.revokeAuthSessions:carol");
+    expect(world.effects[0]).toBe("revocations.beginRemoval:carol");
     expect(
       world.audited.find((event) => event.action === "ssh_key.revocation_pending")?.data,
     ).toEqual({ removed: 0, outstanding: null });
