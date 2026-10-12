@@ -179,6 +179,8 @@ export class LandingGit extends Context.Service<
         readonly branch: string;
         readonly limitBytes: number;
         readonly have?: Sha;
+        /** The selected historical snapshot; captured adapters restore only its retained objects. */
+        readonly checkpoint?: Checkpoint;
       },
     ) => Effect.Effect<ChangeBundle, LandingStepError | BundleTooLargeError | BundleEmptyError>;
     /**
@@ -187,7 +189,7 @@ export class LandingGit extends Context.Service<
      */
     readonly holds: (
       scope: LandingScope,
-      input: { readonly sha: Sha; readonly base: Sha },
+      input: { readonly sha: Sha; readonly base: Sha; readonly checkpoint?: Checkpoint },
     ) => Effect.Effect<boolean>;
   }
 >()("@mend/landing/LandingGit") {}
@@ -784,7 +786,7 @@ export const LandingLive: Layer.Layer<
       // it (or never did) bundles as for a first pull, and the clone says why it cannot move.
       const onto =
         input.onto !== undefined &&
-        (yield* git.holds(scope, { sha: input.onto, base: worktree.baseSha }))
+        (yield* git.holds(scope, { sha: input.onto, base: worktree.baseSha, checkpoint }))
           ? input.onto
           : null;
       const lastPush = (yield* landings.listForChange(change.id)).find(
@@ -801,6 +803,7 @@ export const LandingLive: Layer.Layer<
         sessionUrl: linksOf(input.webOrigin, session.id, change.id, checkpoint.ordinal).session,
       });
       const bundled = yield* git.bundle(scope, {
+        checkpoint,
         base: worktree.baseSha,
         tip: head,
         branch: worktree.branch,

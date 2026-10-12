@@ -2849,6 +2849,14 @@ const checkpointsLayer = (world: World) =>
       ),
     byId: (id) =>
       Effect.succeed(world.checkpoints.find((checkpoint) => checkpoint.id === id) ?? null),
+    captureIdOf: (id, worktreeId) =>
+      Effect.succeed(
+        world.checkpoints.some(
+          (checkpoint) => checkpoint.id === id && checkpoint.worktreeId === worktreeId,
+        )
+          ? (world.checkpointCaptureIds.get(id) ?? null)
+          : null,
+      ),
     byOrdinal: (worktreeId, ordinal) =>
       Effect.succeed(
         world.checkpoints.find((c) => c.worktreeId === worktreeId && c.ordinal === ordinal) ?? null,

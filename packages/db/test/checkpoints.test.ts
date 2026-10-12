@@ -144,6 +144,28 @@ describe.skipIf(postgres.skip)("checkpoints repo", () => {
     expect(outcome.second.existing.sha).toBe(sha("b"));
   });
 
+  it("reads only the exact checkpoint/worktree capture association and loses it when retention deletes the capture", async () => {
+    await run(
+      Effect.gen(function* () {
+        const repo = yield* CheckpointsRepo;
+        const sql = yield* SqlClient.SqlClient;
+        const worktreeId = yield* freshWorktree;
+        const otherWorktree = yield* freshWorktree;
+        const captureId = "e".repeat(64);
+        yield* sql`INSERT INTO captures (id, worktree_id, n, epoch, seq, kind, manifest_key)
+        VALUES (${captureId}, ${worktreeId}, 0, 0, 0, 'auto', 'synthetic-manifest')`;
+        const captured = yield* repo.create({ ...rowAt(worktreeId, 0, "c"), captureId });
+        const legacy = yield* repo.create(rowAt(worktreeId, 1, "d"));
+        expect(yield* repo.captureIdOf(captured.id, worktreeId)).toBe(captureId);
+        expect(yield* repo.captureIdOf(captured.id, otherWorktree)).toBeNull();
+        expect(yield* repo.captureIdOf(legacy.id, worktreeId)).toBeNull();
+        yield* sql`DELETE FROM captures WHERE id = ${captureId}`;
+        expect(yield* repo.captureIdOf(captured.id, worktreeId)).toBeNull();
+        expect((yield* repo.byId(captured.id))?.sha).toBe(captured.sha);
+      }),
+    );
+  });
+
   // mend#649 round 2: a checkpoint taken from a Stop's own flush keeps where it came from.
   it("create: a checkpoint's Stop source is kept and read back; one observed for itself has none", async () => {
     const observedAt = new Date("2026-10-10T08:00:00.000Z");

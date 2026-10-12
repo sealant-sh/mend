@@ -1,13 +1,16 @@
 import { CaptureStoreRepo, CheckpointsRepo, StoreRefsRepo } from "@mend/db";
+import { Sha } from "@mend/domain";
+import type { Checkpoint } from "@mend/domain/workbench";
 import { derivedPackPrefix, ensureCaptureCache, SessionEngine } from "@mend/sessions";
 import {
   BlobStore,
   type BlobStoreError,
   GitOpsRunner,
+  GIT_OBJECT_ID,
   holdsCommitOn,
   landedRefOf,
   packIdxKeyOf,
-  type RunnerCache,
+  type CaptureManifest,
 } from "@mend/store";
 import { Effect, Layer } from "effect";
 
@@ -38,6 +41,17 @@ export { landedRefOf };
 
 const stepError = (step: LandingStepError["step"], message: string) =>
   new LandingStepError({ step, message });
+
+/** Only the immutable capture's HEAD/ref names the agent head; merged store refs may be newer. */
+const agentHeadOf = (manifest: CaptureManifest): Effect.Effect<Sha, LandingStepError> => {
+  const git = manifest.sections.git;
+  const head = git.head.startsWith("refs/") ? git.refs[git.head] : git.head;
+  return head === undefined || !GIT_OBJECT_ID.test(head)
+    ? Effect.fail(
+        stepError("checkpoint", "the capture does not name an agent head · nothing published"),
+      )
+    : Effect.succeed(Sha.make(head));
+};
 
 /** How many checkpoints a landing takes while captures keep registering under it. */
 const HEAD_MOVED_ATTEMPTS = 3;
@@ -70,12 +84,44 @@ export const LandingGitCapturedLive: Layer.Layer<
     const cacheOf = (place: LandingPlace, step: LandingStepError["step"]) =>
       ensureOf(place, step).pipe(Effect.map((ready) => ready.cache));
 
-    /** H: the agent's branch head as the chain head's capture holds it. */
-    const agentHeadOf = (cache: RunnerCache, place: LandingPlace) =>
-      runner.resolve(cache, `refs/heads/${place.worktree.branch}`).pipe(
-        Effect.catch(() => runner.headSha(cache)),
-        Effect.mapError((error) => stepError("checkpoint", gitWords(error, null))),
-      );
+    /** Restore only the checkpoint's exact capture and its worktree's derived objects. */
+    const historicalOf = (place: LandingPlace, checkpoint: Checkpoint) =>
+      Effect.gen(function* () {
+        const missing = (reason: string) =>
+          stepError(
+            "checkpoint",
+            `the checkpoint's historical Git evidence is unavailable · ${reason} · bundle not made`,
+          );
+        if (checkpoint.worktreeId !== place.worktree.id) {
+          return yield* missing("the checkpoint belongs to another worktree");
+        }
+        const captureId = yield* checkpoints.captureIdOf(checkpoint.id, place.worktree.id);
+        if (captureId === null) return yield* missing("its recorded capture is no longer retained");
+        const ready = yield* ensureCaptureCache(place.project.id, place.worktree.id, {
+          captureId,
+        }).pipe(
+          Effect.provideService(CaptureStoreRepo, repo),
+          Effect.provideService(BlobStore, blobs),
+          Effect.provideService(GitOpsRunner, runner),
+          Effect.provideService(StoreRefsRepo, refs),
+          Effect.mapError((error) => stepError("checkpoint", `${error.message} · bundle not made`)),
+        );
+        const agentHead = yield* agentHeadOf(ready.manifest).pipe(
+          Effect.mapError(() => missing("its capture does not name an agent head")),
+        );
+        const checkpointTree = yield* runner
+          .treeOf(ready.cache, checkpoint.sha)
+          .pipe(Effect.mapError(() => missing("its checkpoint Git objects are not retained")));
+        const capturedTree = yield* runner
+          .treeOf(ready.cache, ready.worktreeTree)
+          .pipe(Effect.mapError(() => missing("its captured tree is not retained")));
+        if (checkpointTree !== capturedTree)
+          return yield* missing("its checkpoint tree differs from its recorded capture");
+        yield* runner
+          .treeOf(ready.cache, agentHead)
+          .pipe(Effect.mapError(() => missing("its agent Git objects are not retained")));
+        return { cache: ready.cache, agentHead };
+      });
 
     const originOf = (place: LandingPlace, step: LandingStepError["step"]) =>
       place.project.originUrl === null
@@ -117,7 +163,7 @@ export const LandingGitCapturedLive: Layer.Layer<
             if (taken.captureId === null || ready.head.id === taken.captureId) {
               return {
                 checkpoint: taken.checkpoint,
-                agentHead: yield* agentHeadOf(ready.cache, scope),
+                agentHead: yield* agentHeadOf(ready.manifest),
               };
             }
             if (attempt >= HEAD_MOVED_ATTEMPTS) {
@@ -131,12 +177,20 @@ export const LandingGitCapturedLive: Layer.Layer<
       latest: (scope) =>
         Effect.gen(function* () {
           const checkpoint = yield* checkpoints.latestForWorktree(scope.worktree.id);
-          const cache = yield* cacheOf(scope, "checkpoint");
-          return { checkpoint, agentHead: yield* agentHeadOf(cache, scope) };
+          if (checkpoint === null) return { checkpoint, agentHead: scope.worktree.baseSha };
+          const historical = yield* historicalOf(scope, checkpoint);
+          return { checkpoint, agentHead: historical.agentHead };
         }),
       commit: (scope, input) =>
         Effect.gen(function* () {
-          const cache = yield* cacheOf(scope, "commit");
+          const historical = input.keep ? null : yield* historicalOf(scope, input.checkpoint);
+          if (historical !== null && historical.agentHead !== input.agentHead) {
+            return yield* stepError(
+              "commit",
+              "the supplied agent head differs from the checkpoint's recorded head · bundle not made",
+            );
+          }
+          const cache = historical?.cache ?? (yield* cacheOf(scope, "commit"));
           const landed = yield* runner
             .landingCommit(cache, {
               agentHead: input.agentHead,
@@ -271,12 +325,18 @@ export const LandingGitCapturedLive: Layer.Layer<
         }),
       holds: (scope, input) =>
         Effect.gen(function* () {
-          const cache = yield* cacheOf(scope, "bundle");
+          const cache =
+            input.checkpoint === undefined
+              ? yield* cacheOf(scope, "bundle")
+              : (yield* historicalOf(scope, input.checkpoint)).cache;
           return yield* holdsCommitOn(cache.path, input.sha, input.base);
         }).pipe(Effect.catch(() => Effect.succeed(false))),
       bundle: (scope, input) =>
         Effect.gen(function* () {
-          const cache = yield* cacheOf(scope, "bundle");
+          const cache =
+            input.checkpoint === undefined
+              ? yield* cacheOf(scope, "bundle")
+              : (yield* historicalOf(scope, input.checkpoint)).cache;
           return yield* runner.bundle(cache, input).pipe(
             Effect.catchTags({
               GitError: (error) => Effect.fail(stepError("bundle", gitWords(error, null))),

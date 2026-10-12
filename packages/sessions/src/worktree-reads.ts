@@ -26,6 +26,7 @@ import {
   type PathsBeyondGit,
   pathsBeyondGit,
   type RunnerCache,
+  sha256Hex,
   Store,
   worktreePathOf,
   worktreeTreeOf,
@@ -274,17 +275,30 @@ export const derivedPackPrefix = (projectId: ProjectId) => `projects/${projectId
  * Prepare the runner cache for a worktree's chain head: fetch and decode the head manifest,
  * write the refs (store refs, the manifest's own, Mend's derived checkpoint packs) and hand
  * back the handle every read takes. Shared by the read adapter and the captured repository.
+ * An explicit captureId reads only that retained historical capture, refusing lost/invalid
+ * evidence instead of falling back to another capture. Derived packs are scoped to this worktree.
  */
 export const ensureCaptureCache = Effect.fn("ensureCaptureCache")(function* (
   projectId: ProjectId,
   worktreeId: WorktreeId,
+  historical?: { readonly captureId: string },
 ) {
   const repo = yield* CaptureStoreRepo;
   const blobs = yield* BlobStore;
   const runner = yield* GitOpsRunner;
   const refs = yield* StoreRefsRepo;
-  const chain = yield* repo.headOf(worktreeId);
-  const chainHead = chain?.head ?? null;
+  const unavailable = (reason: string) =>
+    new WorktreeNotCapturedError({
+      worktreeId,
+      message: `the checkpoint's historical Git evidence is unavailable · ${reason}`,
+    });
+  const chainHead =
+    historical === undefined
+      ? ((yield* repo.headOf(worktreeId))?.head ?? null)
+      : yield* repo.captureById(historical.captureId);
+  if (historical !== undefined && (chainHead === null || chainHead.worktreeId !== worktreeId)) {
+    return yield* unavailable("its recorded capture is not retained for this worktree");
+  }
   if (chainHead === null) {
     return yield* new WorktreeNotCapturedError({
       worktreeId,
@@ -294,8 +308,11 @@ export const ensureCaptureCache = Effect.fn("ensureCaptureCache")(function* (
   // A head whose git section failed verification (a pack that omits a tree it names) is not
   // read: the newest capture below it that verified is, and the stamp says so. An unverified
   // head is read as is — the failure, if any, surfaces with git's own words.
+  if (historical !== undefined && chainHead.gitFsck === "failed") {
+    return yield* unavailable("its capture failed Git verification");
+  }
   const head =
-    chainHead.gitFsck === "failed"
+    historical === undefined && chainHead.gitFsck === "failed"
       ? ((yield* repo.listChain(worktreeId))
           .filter((row) => row.n < chainHead.n && row.gitFsck === "verified")
           .at(-1) ?? chainHead)
@@ -315,10 +332,29 @@ export const ensureCaptureCache = Effect.fn("ensureCaptureCache")(function* (
   }
   const bytes = yield* blobs
     .get(head.manifestKey)
-    .pipe(Effect.catch((error) => Effect.die(`capture reads: head manifest: ${error._tag}`)));
+    .pipe(
+      Effect.catch((error) =>
+        historical === undefined
+          ? Effect.die(`capture reads: head manifest: ${error._tag}`)
+          : Effect.fail(unavailable("its capture manifest could not be read")),
+      ),
+    );
+  if (historical !== undefined && sha256Hex(bytes) !== historical.captureId) {
+    return yield* unavailable("its capture manifest does not match the recorded digest");
+  }
   const manifest = yield* decodeManifest(head.manifestKey, bytes).pipe(
-    Effect.catch((error) => Effect.die(`capture reads: head manifest: ${error.reason}`)),
+    Effect.catch((error) =>
+      historical === undefined
+        ? Effect.die(`capture reads: head manifest: ${error.reason}`)
+        : Effect.fail(unavailable("its capture manifest is invalid")),
+    ),
   );
+  if (
+    historical !== undefined &&
+    (manifest.worktree_id !== worktreeId || manifest.n !== head.n || manifest.epoch !== head.epoch)
+  ) {
+    return yield* unavailable("its capture manifest does not match the recorded worktree");
+  }
   const derived = (yield* repo.listPacks())
     .filter(
       (pack) =>
@@ -336,10 +372,13 @@ export const ensureCaptureCache = Effect.fn("ensureCaptureCache")(function* (
       extraPacks: derived,
     })
     .pipe(
-      Effect.catch((error) =>
-        error._tag === "GitError"
-          ? Effect.fail(error)
-          : Effect.die(`capture reads: runner ensure: ${error._tag}`),
+      Effect.catch(
+        (error): Effect.Effect<never, GitError | WorktreeNotCapturedError> =>
+          historical !== undefined
+            ? Effect.fail(unavailable("its retained Git objects could not be restored"))
+            : error._tag === "GitError"
+              ? Effect.fail(error)
+              : Effect.die(`capture reads: runner ensure: ${error._tag}`),
       ),
     );
   // `worktree_tree` (the `git_trees` feature), else the pseudo-ref of a capture from before it.
