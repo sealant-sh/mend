@@ -18,6 +18,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { createServer } from "node:http";
+import { createRequire } from "node:module";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
@@ -63,8 +64,8 @@ const chunk = (type, data) => {
 
 /** A valid one-pixel PNG, including a metadata chunk with its actual CRC. */
 const metadataPng = (type, data) => {
-  const checkedChunk = (type, data) => {
-    const bytes = chunk(type, data);
+  const checkedChunk = (chunkType, chunkData) => {
+    const bytes = chunk(chunkType, chunkData);
     bytes.writeUInt32BE(crc32(bytes.subarray(4, -4)), bytes.length - 4);
     return bytes;
   };
@@ -123,6 +124,371 @@ const drive = (privateDir, out, recipe, extra = []) => {
     ...extra,
   ]);
 };
+
+const closedContent = (kind, shown, nested = false) => `
+  let host = document.getElementById("host");
+  if (${nested}) {
+    const open = host.attachShadow({ mode: "open" });
+    host = document.createElement("div"); open.appendChild(host);
+  }
+  const root = host.attachShadow({ mode: "closed" });
+  const content = document.createElement(${JSON.stringify(kind === "canvas" ? "canvas" : "p")});
+  if (${kind === "canvas"}) {
+    content.width = 800; content.height = 100;
+    const context = content.getContext("2d"); context.font = "24px monospace";
+    context.fillText(${JSON.stringify(shown)}, 10, 40);
+  } else content.textContent = ${JSON.stringify(shown)};
+  root.appendChild(content);
+`;
+
+for (const kind of ["text", "canvas"]) {
+  for (const nested of [false, true]) {
+    test(
+      `main-document closed ${kind}, nested in open root ${nested}, withholds secret and ordinary pixels`,
+      { skip: noBrowser },
+      () => {
+        for (const shown of [TOKEN, "ordinary shadow content"]) {
+          const privateDir = privateWithAccount();
+          const out = fresh("closed-main-evidence");
+          const run = drive(
+            privateDir,
+            out,
+            `export default async ({ page, capture }) => {
+            await page.setContent('<p>parent evidence</p><div id="host" aria-hidden="true"></div>');
+            await capture("closed-main");
+            await page.evaluate(() => { ${closedContent(kind, shown, nested)} });
+            await capture("closed-main");
+          };`,
+          );
+          assert.equal(run.status, 0, run.stderr);
+          assert.equal(
+            existsSync(join(out, "closed-main.png")),
+            false,
+            "closed pixels or stale image were kept",
+          );
+          assert.equal(
+            existsSync(join(out, "closed-main.png.checked")),
+            false,
+            "stale checked sidecar was kept",
+          );
+          assert.match(
+            readFileSync(join(out, "closed-main.png.withheld"), "utf8"),
+            /closed shadow root/,
+          );
+          assert.ok(!everything(out).includes(TOKEN));
+          const scan = node([
+            join(here, "scan-evidence.mjs"),
+            "--dir",
+            out,
+            "--secrets",
+            privateDir,
+          ]);
+          assert.equal(scan.status, 0, scan.stdout);
+        }
+      },
+    );
+  }
+}
+
+test(
+  "plain, open-shadow and native-input controls retain changed parent evidence",
+  { skip: noBrowser },
+  () => {
+    for (const mode of ["plain", "open", "input"]) {
+      const privateDir = privateWithAccount();
+      const out = fresh("shadow-controls");
+      const run = drive(
+        privateDir,
+        out,
+        `export default async ({ page, capture }) => {
+      await page.setContent('<p id="parent">parent evidence</p><div id="host"></div>');
+      await page.evaluate(mode => {
+        const host = document.getElementById("host");
+        if (mode === "input") host.innerHTML = '<label>Search <input value="ordinary query"></label>';
+        else (mode === "open" ? host.attachShadow({ mode: "open" }) : host).textContent = "ordinary content";
+      }, ${JSON.stringify(mode)});
+      await capture("before");
+      await page.locator("#parent").evaluate(node => node.textContent = "changed parent evidence");
+      await capture("after");
+    };`,
+      );
+      assert.equal(run.status, 0, run.stderr);
+      assert.ok(existsSync(join(out, "before.png.checked")));
+      assert.ok(existsSync(join(out, "after.png.checked")));
+      assert.ok(
+        !readFileSync(join(out, "before.png")).equals(readFileSync(join(out, "after.png"))),
+        "parent pixels were withheld or hidden",
+      );
+      const scan = node([join(here, "scan-evidence.mjs"), "--dir", out, "--secrets", privateDir]);
+      assert.equal(scan.status, 0, scan.stdout);
+    }
+  },
+);
+
+test(
+  "a later readable capture reuses a withheld name without a stale marker or guard latch",
+  { skip: noBrowser },
+  () => {
+    const privateDir = privateWithAccount();
+    const out = fresh("reused-readable-evidence");
+    const run = drive(
+      privateDir,
+      out,
+      `export default async ({ page, capture }) => {
+    await page.setContent('<p>parent evidence</p><div id="host" aria-hidden="true"></div>');
+    await page.evaluate(() => { ${closedContent("text", TOKEN)} });
+    await capture("reused");
+    await page.locator("#host").evaluate(host => host.remove());
+    await capture("reused");
+  };`,
+    );
+    assert.equal(run.status, 0, run.stderr);
+    assert.ok(existsSync(join(out, "reused.png")));
+    assert.ok(existsSync(join(out, "reused.png.checked")));
+    assert.equal(existsSync(join(out, "reused.png.withheld")), false);
+    assert.ok(!everything(out).includes(TOKEN));
+    const scan = node([join(here, "scan-evidence.mjs"), "--dir", out, "--secrets", privateDir]);
+    assert.equal(scan.status, 0, scan.stdout);
+  },
+);
+
+for (const tag of ["video", "embed", "object"]) {
+  test(
+    `ordinary ${tag} content in an open root withholds image evidence`,
+    { skip: noBrowser },
+    () => {
+      const privateDir = privateWithAccount();
+      const out = fresh("opaque-element-evidence");
+      const run = drive(
+        privateDir,
+        out,
+        `export default async ({ page, capture }) => {
+      await page.setContent('<p>parent evidence</p><div id="host"></div>');
+      await page.evaluate(tag => {
+        const root = document.getElementById("host").attachShadow({ mode: "open" });
+        root.appendChild(document.createElement(tag));
+      }, ${JSON.stringify(tag)});
+      await capture("opaque");
+    };`,
+      );
+      assert.equal(run.status, 0, run.stderr);
+      assert.equal(existsSync(join(out, "opaque.png")), false);
+      assert.equal(existsSync(join(out, "opaque.png.checked")), false);
+      assert.match(
+        readFileSync(join(out, "opaque.png.withheld"), "utf8"),
+        /opaque content requiring screenshot masking/,
+      );
+      assert.match(readFileSync(join(out, "opaque.aria.yml"), "utf8"), /parent evidence/);
+      const scan = node([join(here, "scan-evidence.mjs"), "--dir", out, "--secrets", privateDir]);
+      assert.equal(scan.status, 0, scan.stdout);
+    },
+  );
+}
+
+test(
+  "opaque canvas pixels appearing only during rasterization are withheld",
+  { skip: noBrowser },
+  () => {
+    const privateDir = privateWithAccount();
+    const out = fresh("transient-canvas-evidence");
+    const run = drive(
+      privateDir,
+      out,
+      `export default async ({ page, capture }) => {
+    await page.setContent('<p>parent evidence</p>');
+    const screenshot = page.screenshot.bind(page);
+    page.screenshot = async options => {
+      await page.evaluate(shown => {
+        const canvas = document.createElement("canvas"); canvas.width = 800; canvas.height = 100;
+        canvas.id = "transient-canvas"; canvas.setAttribute("aria-hidden", "true");
+        const context = canvas.getContext("2d"); context.font = "24px monospace"; context.fillText(shown, 10, 40);
+        document.body.appendChild(canvas);
+      }, ${JSON.stringify(TOKEN)});
+      const png = await screenshot(options);
+      await page.locator("#transient-canvas").evaluate(canvas => canvas.remove());
+      return png;
+    };
+    await capture("transient-canvas");
+  };`,
+    );
+    assert.equal(run.status, 0, run.stderr);
+    assert.equal(existsSync(join(out, "transient-canvas.png")), false);
+    assert.equal(existsSync(join(out, "transient-canvas.png.checked")), false);
+    assert.match(
+      readFileSync(join(out, "transient-canvas.png.withheld"), "utf8"),
+      /opaque content requiring screenshot masking/,
+    );
+    assert.ok(!everything(out).includes(TOKEN));
+    const scan = node([join(here, "scan-evidence.mjs"), "--dir", out, "--secrets", privateDir]);
+    assert.equal(scan.status, 0, scan.stdout);
+  },
+);
+
+test(
+  "a closed root present before CDP attachment withholds its image",
+  { skip: noBrowser },
+  async () => {
+    const { chromium } = createRequire(join(playwright, "package.json"))("playwright-core");
+    const userData = fresh("cdp-browser");
+    const context = await chromium.launchPersistentContext(userData, {
+      args: ["--remote-debugging-port=0"],
+    });
+    try {
+      const page = context.pages()[0];
+      await page.setContent('<p>parent evidence</p><div id="host" aria-hidden="true"></div>');
+      await page.evaluate(() => {
+        const root = document.getElementById("host").attachShadow({ mode: "closed" });
+        root.textContent = "tok-8b1d2e3f4a5c6b7d8e9f";
+      });
+      const port = readFileSync(join(userData, "DevToolsActivePort"), "utf8").split("\n")[0];
+      const privateDir = privateWithAccount();
+      const out = fresh("cdp-shadow-evidence");
+      const run = drive(
+        privateDir,
+        out,
+        'export default async ({ capture }) => { await capture("preexisting"); };',
+        ["--cdp", `http://127.0.0.1:${port}`],
+      );
+      assert.equal(run.status, 0, run.stderr);
+      assert.equal(existsSync(join(out, "preexisting.png")), false);
+      assert.equal(existsSync(join(out, "preexisting.png.checked")), false);
+      assert.match(
+        readFileSync(join(out, "preexisting.png.withheld"), "utf8"),
+        /closed shadow root/,
+      );
+      assert.ok(!everything(out).includes(TOKEN));
+      const scan = node([join(here, "scan-evidence.mjs"), "--dir", out, "--secrets", privateDir]);
+      assert.equal(scan.status, 0, scan.stdout);
+    } finally {
+      await context.close();
+    }
+  },
+);
+
+for (const placement of ["existing host", "prebuilt host", "prebuilt subtree"]) {
+  test(
+    `a real ${placement} closed root added and removed during rasterization cannot receive a checked image`,
+    { skip: noBrowser },
+    () => {
+      const privateDir = privateWithAccount();
+      const out = fresh("transient-shadow-evidence");
+      const run = drive(
+        privateDir,
+        out,
+        `export default async ({ page, capture }) => {
+    await page.setContent('<p>parent evidence</p><div id="host" aria-hidden="true"></div>');
+    const screenshot = page.screenshot.bind(page);
+    page.screenshot = async options => {
+      await page.evaluate(() => {
+        if (${placement !== "existing host"}) {
+          document.getElementById("host").remove();
+          const subtree = document.createElement("section");
+          const host = document.createElement("div"); host.id = "host"; host.setAttribute("aria-hidden", "true");
+          host.attachShadow({ mode: "closed" }).textContent = ${JSON.stringify(TOKEN)};
+          subtree.appendChild(host); document.body.appendChild(${placement === "prebuilt host" ? "host" : "subtree"});
+        } else { ${closedContent("text", TOKEN)} }
+      });
+      const png = await screenshot(options);
+      await page.locator("#host").evaluate(host => host.remove());
+      return png;
+    };
+    await capture("transient");
+    if (await page.locator("#host").count() !== 0) throw new Error("transient fixture remained attached");
+  };`,
+      );
+      assert.equal(run.status, 0, run.stderr);
+      assert.equal(
+        existsSync(join(out, "transient.png")),
+        false,
+        "transient closed pixels were kept",
+      );
+      assert.equal(existsSync(join(out, "transient.png.checked")), false);
+      assert.match(
+        readFileSync(join(out, "transient.png.withheld"), "utf8"),
+        /closed shadow root|inspection unavailable/,
+      );
+      assert.ok(!everything(out).includes(TOKEN));
+      const scan = node([join(here, "scan-evidence.mjs"), "--dir", out, "--secrets", privateDir]);
+      assert.equal(scan.status, 0, scan.stdout);
+    },
+  );
+}
+
+test(
+  "a document reset during rasterization invalidates the closed-root inspection",
+  { skip: noBrowser },
+  () => {
+    const privateDir = privateWithAccount();
+    const out = fresh("reset-shadow-evidence");
+    const run = drive(
+      privateDir,
+      out,
+      `export default async ({ page, capture }) => {
+    await page.setContent('<p>ordinary parent evidence</p>');
+    const screenshot = page.screenshot.bind(page);
+    page.screenshot = async options => {
+      await page.setContent('<p>replacement document</p><div id="host" aria-hidden="true"></div>');
+      await page.evaluate(() => { ${closedContent("canvas", TOKEN)} });
+      const png = await screenshot(options);
+      await page.setContent('<p>ordinary final document</p>');
+      return png;
+    };
+    await capture("reset");
+  };`,
+    );
+    assert.equal(run.status, 0, run.stderr);
+    assert.equal(existsSync(join(out, "reset.png")), false);
+    assert.equal(existsSync(join(out, "reset.png.checked")), false);
+    assert.match(readFileSync(join(out, "reset.png.withheld"), "utf8"), /inspection unavailable/);
+    assert.ok(!everything(out).includes(TOKEN));
+    const scan = node([join(here, "scan-evidence.mjs"), "--dir", out, "--secrets", privateDir]);
+    assert.equal(scan.status, 0, scan.stdout);
+  },
+);
+
+for (const phase of ["before", "after"]) {
+  test(
+    `unavailable closed-root inspection ${phase} rasterization withholds without leaking protocol errors`,
+    { skip: noBrowser },
+    () => {
+      const privateDir = privateWithAccount();
+      const out = fresh("unavailable-shadow-inspection");
+      const run = drive(
+        privateDir,
+        out,
+        `export default async ({ page, capture }) => {
+      await page.setContent('<p>ordinary parent evidence</p>');
+      await capture("unavailable");
+      const context = page.context();
+      const createSession = context.newCDPSession.bind(context);
+      context.newCDPSession = async page => {
+        const session = await createSession(page);
+        const send = session.send.bind(session);
+        let documents = 0;
+        session.send = async (method, params) => {
+          if (method === "DOM.getDocument" && ++documents === ${phase === "before" ? 1 : 2})
+            throw new Error(${JSON.stringify(TOKEN)});
+          return send(method, params);
+        };
+        return session;
+      };
+      await capture("unavailable");
+    };`,
+      );
+      assert.equal(run.status, 0, run.stderr);
+      assert.equal(existsSync(join(out, "unavailable.png")), false);
+      assert.equal(existsSync(join(out, "unavailable.png.checked")), false);
+      assert.match(
+        readFileSync(join(out, "unavailable.png.withheld"), "utf8"),
+        /inspection unavailable/,
+      );
+      assert.ok(!everything(out).includes(TOKEN));
+      assert.ok(!run.stderr.includes(TOKEN));
+      const scan = node([join(here, "scan-evidence.mjs"), "--dir", out, "--secrets", privateDir]);
+      assert.equal(scan.status, 0, scan.stdout);
+    },
+  );
+}
 
 test("a failing fill never prints the secret it was given", { skip: noBrowser }, () => {
   const privateDir = privateWithAccount();
@@ -644,11 +1010,11 @@ const terminalPage = (shown) =>
    <script>const c = document.querySelector("canvas").getContext("2d"); c.font = "24px monospace"; c.fillText(${JSON.stringify(shown)}, 10, 40);</script>`;
 
 test(
-  "a terminal canvas's pixels are never kept: every canvas is masked, and the scan vouches only for the driver's image",
+  "a terminal canvas with secret or ordinary pixels keeps only its redacted snapshot",
   { skip: noBrowser },
   () => {
     const privateDir = privateWithAccount();
-    const shots = [];
+    const snapshots = [];
     for (const shown of [TOKEN, "nothing to see here"]) {
       const out = fresh("evidence");
       const run = drive(
@@ -660,17 +1026,18 @@ test(
         };`,
       );
       assert.equal(run.status, 0, run.stderr);
-      assert.ok(existsSync(join(out, "terminal.png.checked")), "no .checked beside the screenshot");
+      assert.equal(existsSync(join(out, "terminal.png")), false);
+      assert.equal(existsSync(join(out, "terminal.png.checked")), false);
       assert.match(
         readFileSync(join(out, "steps.log"), "utf8"),
-        /1 canvas\/video\/object and 0 frame\(s\) masked/,
+        /opaque content requiring screenshot masking/,
       );
       const scan = node([join(here, "scan-evidence.mjs"), "--dir", out, "--secrets", privateDir]);
       assert.equal(scan.status, 0, scan.stdout);
-      shots.push(readFileSync(join(out, "terminal.png")));
+      snapshots.push(readFileSync(join(out, "terminal.aria.yml"), "utf8"));
+      assert.ok(!everything(out).includes(TOKEN));
     }
-    // The canvas drew a registered token in one and plain words in the other: masked, they match.
-    assert.ok(shots[0].equals(shots[1]), "the canvas's pixels reached the screenshot");
+    assert.equal(snapshots[0], snapshots[1], "opaque canvas content entered the snapshot");
   },
 );
 
@@ -680,12 +1047,11 @@ for (const { nested, shadow } of [
   { nested: false, shadow: true },
 ]) {
   test(
-    `readable ${shadow ? "open shadow" : nested ? "nested" : "direct"} frame pixels cannot enter vouched evidence`,
+    `readable ${shadow ? "open shadow" : nested ? "nested" : "direct"} frames withhold images while retaining parent snapshots`,
     { skip: noBrowser },
     () => {
       const privateDir = privateWithAccount();
-      const shots = [];
-      const masks = [];
+      const snapshots = [];
       for (const [shown, parent] of [
         [TOKEN, "parent evidence"],
         ["ordinary frame text", "parent evidence"],
@@ -717,14 +1083,19 @@ for (const { nested, shadow } of [
         assert.equal(run.status, 0, run.stderr);
         const scan = node([join(here, "scan-evidence.mjs"), "--dir", out, "--secrets", privateDir]);
         assert.equal(scan.status, 0, scan.stdout);
-        shots.push(readFileSync(join(out, "frame.png")));
-        masks.push(JSON.parse(readFileSync(join(out, "frame.png.checked"), "utf8")).masked.frames);
+        assert.equal(existsSync(join(out, "frame.png")), false);
+        assert.equal(existsSync(join(out, "frame.png.checked")), false);
+        assert.match(
+          readFileSync(join(out, "frame.png.withheld"), "utf8"),
+          /opaque content requiring screenshot masking/,
+        );
+        const snapshot = readFileSync(join(out, "frame.aria.yml"), "utf8");
+        assert.ok(snapshot.includes(parent), "parent snapshot evidence was lost");
+        snapshots.push(snapshot);
         assert.ok(!everything(out).includes(TOKEN), "credential reached text or metadata evidence");
       }
-      // Readable frame text differs, while the parent is identical: masked pixels must be identical.
-      assert.ok(shots[0].equals(shots[1]), "readable frame pixels reached the screenshot");
-      assert.ok(!shots[1].equals(shots[2]), "parent evidence was masked too");
-      assert.deepEqual(masks, [1, 1, 1]);
+      assert.equal(snapshots[0], snapshots[1], "frame content entered the snapshot");
+      assert.notEqual(snapshots[1], snapshots[2], "changed parent snapshot evidence was lost");
     },
   );
 }

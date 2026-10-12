@@ -23,17 +23,19 @@
 // typing its password the same way. --state keeps the signed-in browser between runs. Both hold
 // credentials: keep them in the private directory, never under --out.
 //
-// Evidence holds no credential. Every snapshot, log line and error goes through the registry (every
+// Every snapshot, log line and error goes through the registry (every
 // value, by value) and redact.mjs (every shape). A page that shows one (a field a secret was typed
 // into, a registered value, a QR code, any shape redact.mjs knows, a filled credential field) keeps
 // its redacted snapshot, with every credential field's subtree redacted, and its screenshot is
 // withheld: <name>.png.withheld says which kinds were on the page. The page's whole text is checked
 // as well as its ARIA snapshot (text a screen reader is told to skip, `aria-hidden`, is still drawn).
-// CSS-discoverable canvases, videos and embedded objects are masked in every screenshot. Child
-// frames are masked too; a frame inside a closed shadow root withholds the image. The main
-// document's closed shadow roots remain outside the text and opaque-element inspection.
+// Canvases, videos, embedded objects and child frames withhold the whole screenshot: Playwright's
+// masks themselves use closed roots that cannot be distinguished from author content safely.
+// Chromium's DOM
+// metadata detects author closed roots before and after rasterization, and events latch roots
+// added during capture. Those roots, or an unavailable inspection, withhold the whole image.
 // A kept screenshot gets <name>.png.checked
-// (its sha256 and what was masked): scan-evidence.mjs refuses an image without one. A code a page shows (a pairing code, an
+// (its sha256 and zero mask counts): scan-evidence.mjs refuses an image without one. A code a page shows (a pairing code, an
 // authorization code and its link) joins the registry by value before anything is written. A failing recipe is captured as
 // <out>/failure-<n>.* (the same rules; numbered, so earlier failures stay) before the driver exits 1, and its error is printed redacted.
 // No trace, HAR or video is recorded.
@@ -46,7 +48,14 @@
 // from this repository's dependencies.
 
 import { createHash } from "node:crypto";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
@@ -152,9 +161,10 @@ const redactFieldSubtrees = (snapshot) => {
     .join("\n");
 };
 
-// Pixels a text check cannot read: masked in every screenshot.
+// Pixels a text check cannot read: screenshots of these views are withheld.
 const OPAQUE = "canvas, video, embed, object";
 const FRAMES = "iframe, frame";
+const OPAQUE_TAGS = new Set(["CANVAS", "VIDEO", "EMBED", "OBJECT", "IFRAME", "FRAME"]);
 
 /** Every text node's text, open shadow roots included, scripts and styles not. */
 const deepText = () => {
@@ -197,6 +207,78 @@ const hasUnmaskableFrame = async (page) => {
     }
   }
   return false;
+};
+
+/** Closed content cannot be read or bounded safely by Playwright's text/masking locators. */
+const screenshotGuard = async (page) => {
+  let session;
+  let closed = false;
+  let unavailable = false;
+  let opaque = false;
+  const observeNode = (root, includeDocuments = false) => {
+    // Native controls have user-agent roots; they are not author-hidden page content. Events
+    // conservatively include roots added in child documents on this target.
+    const pending = [root];
+    while (pending.length > 0) {
+      const node = pending.pop();
+      if (node.shadowRootType === "user-agent") continue;
+      if (node.shadowRootType === "closed") closed = true;
+      if (OPAQUE_TAGS.has(node.nodeName)) opaque = true;
+      // Insertions may report only a subtree's child count, not its descendants. A closed host
+      // can be appended and removed there before another DOM request can discover it.
+      if (includeDocuments && (node.childNodeCount ?? 0) > (node.children?.length ?? 0))
+        unavailable = true;
+      pending.push(...(node.children ?? []), ...(node.shadowRoots ?? []));
+      if (includeDocuments && node.contentDocument) pending.push(node.contentDocument);
+    }
+  };
+  const observeRoot = ({ root }) => observeNode(root, true);
+  const observeInsertion = ({ node }) => observeNode(node, true);
+  const observeChildren = ({ nodes }) => {
+    for (const node of nodes) observeNode(node, true);
+  };
+  // A reset drops the previously requested DOM tree and its event coverage. Do not vouch for
+  // pixels from that interval even if the replacement document is readable at the final check.
+  const observeReset = () => {
+    unavailable = true;
+  };
+  const listeners = [
+    ["DOM.shadowRootPushed", observeRoot],
+    ["DOM.childNodeInserted", observeInsertion],
+    ["DOM.setChildNodes", observeChildren],
+    ["DOM.documentUpdated", observeReset],
+  ];
+  const check = async () => {
+    if (!session || unavailable) return "screenshot inspection unavailable";
+    try {
+      const { root } = await session.send("DOM.getDocument", { depth: -1, pierce: true });
+      // A child document's frame already withholds the image. Shadow roots on hosts in this
+      // document still count, including closed roots nested in open ones.
+      observeNode(root);
+    } catch {
+      unavailable = true;
+    }
+    return unavailable
+      ? "screenshot inspection unavailable"
+      : closed
+        ? "a closed shadow root"
+        : opaque
+          ? "opaque content requiring screenshot masking"
+          : undefined;
+  };
+  try {
+    session = await page.context().newCDPSession(page);
+    for (const [event, listener] of listeners) session.on(event, listener);
+  } catch {
+    unavailable = true;
+  }
+  return {
+    check,
+    close: async () => {
+      for (const [event, listener] of listeners) session?.off(event, listener);
+      await session?.detach().catch(() => {});
+    },
+  };
 };
 
 /** The redacted snapshot, and the kinds of credential the page showed. */
@@ -262,31 +344,42 @@ const page = cdp
 page.setDefaultTimeout(timeout);
 
 const capture = async (name) => {
-  const { snapshot, kinds } = await inspect(page);
-  if (await hasUnmaskableFrame(page)) kinds.push("a frame that cannot be masked");
-  writeFileSync(join(out, `${name}.aria.yml`), snapshot);
-  if (kinds.length > 0) {
+  // A reused name must not leave an older image or digest after this capture is withheld/fails.
+  for (const suffix of [".png", ".png.checked", ".png.withheld"])
+    rmSync(join(out, `${name}${suffix}`), { force: true });
+  const withhold = (kinds) => {
     writeFileSync(
       join(out, `${name}.png.withheld`),
       `screenshot withheld: the page showed ${kinds.join(", ")}\n`,
     );
     note(`capture ${name} · ${page.url()} · screenshot withheld (${kinds.join(", ")})`);
-    return;
+  };
+  const guard = await screenshotGuard(page);
+  try {
+    const before = await guard.check();
+    const { snapshot, kinds } = await inspect(page);
+    if (before) kinds.push(before);
+    if (await hasUnmaskableFrame(page)) kinds.push("a frame that cannot be masked");
+    writeFileSync(join(out, `${name}.aria.yml`), snapshot);
+    if (kinds.length > 0) return withhold(kinds);
+    // Playwright masks create their own closed roots. Withhold instead of exempting those roots
+    // by a spoofable tag name or replacing masks with author-overridable CSS hiding.
+    const frames = await page.locator(FRAMES).count();
+    const masked = await page.locator(OPAQUE).count();
+    if (masked + frames > 0) return withhold(["opaque content requiring screenshot masking"]);
+    // Keep pixels in memory until the post-capture check and event latch have both passed.
+    const png = await page.screenshot({ fullPage: true });
+    const after = await guard.check();
+    if (after) return withhold([after]);
+    writeFileSync(join(out, `${name}.png`), png);
+    writeFileSync(
+      join(out, `${name}.png.checked`),
+      `${JSON.stringify({ sha256: createHash("sha256").update(png).digest("hex"), masked: { opaqueElements: masked, frames } })}\n`,
+    );
+    note(`capture ${name} · ${page.url()}`);
+  } finally {
+    await guard.close();
   }
-  // CSS locators reach open shadow roots. Mask every child document, including readable ones:
-  // inspect() checks only this document. Masking the outer frame covers its nested frames too.
-  const frames = await page.locator(FRAMES).count();
-  const mask = [page.locator(OPAQUE), page.locator(FRAMES)];
-  const masked = await page.locator(OPAQUE).count();
-  // Playwright writes PNGs with no text chunks: pixels only.
-  const png = await page.screenshot({ path: join(out, `${name}.png`), fullPage: true, mask });
-  writeFileSync(
-    join(out, `${name}.png.checked`),
-    `${JSON.stringify({ sha256: createHash("sha256").update(png).digest("hex"), masked: { opaqueElements: masked, frames } })}\n`,
-  );
-  note(
-    `capture ${name} · ${page.url()}${masked + frames > 0 ? ` · ${masked} canvas/video/object and ${frames} frame(s) masked` : ""}`,
-  );
 };
 
 const typeSecret = async (locator, name, value) => {

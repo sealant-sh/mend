@@ -591,17 +591,28 @@ the map's proof rules:
   credential fields). A page that shows a credential (a field a secret was typed into, a QR code, a
   pairing code, a minted token), in its ARIA snapshot or anywhere in its text (`aria-hidden`
   included), keeps only its redacted snapshot, every credential field's subtree included:
-  `<name>.png.withheld` says why. CSS-discoverable canvases, videos, embedded objects and child
-  frames are masked. A child frame inside a closed shadow root, or one the driver cannot inspect for
-  masking, withholds the image. Main-document text and canvas contents inside closed shadow roots
-  remain outside this inspection; omit screenshot evidence for those views. A kept screenshot gets
-  `<name>.png.checked` with its digest. No trace, HAR or video is recorded. Cleanup's scan searches
-  every file of `$E` for every registered value and every shape, and counts as a hit an archive and
-  any image without a matching `.checked` (one a recipe saved itself, or changed since): a hit fails
-  the run. What the registry takes from the browser state is the cookies and the credentials a page
-  stores (a token under a secret key, an item named for one, a value shaped like one), not its
-  preferences or the project ids it remembers; from a JSON login (`auth.json`), its tokens and the
-  whole text, not its account id. The skill's fake logins (`fakes.mjs`) are never a hit.
+  `<name>.png.withheld` says why. Canvases, videos, embedded objects and child frames withhold the
+  whole image, including ordinary content: Playwright's masks themselves create closed roots, and
+  the driver cannot safely exempt them by a page-spoofable name. Terminal and canvas-heavy views
+  retain redacted ARIA evidence but lose image evidence until retained-image support can enforce
+  masking without exempting unchecked content. Chromium DOM metadata checks the main document's
+  author-created closed shadow roots before and after capture, including roots present before
+  `--cdp` attachment. A closed root or unavailable inspection withholds the whole image; native
+  user-agent roots do not. A CDP event latch also withholds if an author closed root appears during
+  capture, even if removed before the final check. A document reset or inserted subtree whose event
+  omits its descendants makes inspection unavailable and also withholds, including ordinary dynamic
+  content. That latch conservatively includes roots added in child documents on the same target; a
+  child frame already withholds its image. Screenshot bytes stay in memory until these checks
+  finish, and reusing a capture name clears its prior image and sidecar. A kept screenshot gets
+  `<name>.png.checked` with its digest. These DOM checks do not OCR arbitrary pixels; the digest
+  records the driver's capture checks, not a general proof that an image contains no secret. No
+  trace, HAR or video is recorded. Cleanup's scan searches every file of `$E` for every registered
+  value and every shape, and counts as a hit an archive and any image without a matching `.checked`
+  (one a recipe saved itself, or changed since): a hit fails the run. What the registry takes from
+  the browser state is the cookies and the credentials a page stores (a token under a secret key, an
+  item named for one, a value shaped like one), not its preferences or the project ids it remembers;
+  from a JSON login (`auth.json`), its tokens and the whole text, not its account id. The skill's
+  fake logins (`fakes.mjs`) are never a hit.
 
 ## Cleanup
 
