@@ -36,15 +36,40 @@ export interface GitTransportPlan {
 }
 
 /**
- * The only remote commands git's ssh transport issues. Anything else is not
- * git talking and is refused host-side — the socket is a git tunnel, not a
- * general ssh capability.
+ * Accept one Git transport verb and one literal repository argument before the host signs.
+ * Git single-quotes paths and escapes apostrophes/exclamation marks between quoted segments.
+ * Plain path characters are also accepted; expansions, options, extra words and shell operators
+ * are refused. Control characters and double-quoted/otherwise escaped paths are not supported.
  */
 export const parseGitRemoteCommand = (
   command: string,
 ): { readonly kind: GitTransportKind } | null => {
-  const match = /^(?:git[- ])(upload-pack|receive-pack|upload-archive)\s+\S/.exec(command);
+  for (const character of command) {
+    if (character.charCodeAt(0) < 32 || character === "\u007f") return null;
+  }
+  const match = /^(?:git[- ])(upload-pack|receive-pack|upload-archive) +/.exec(command);
   if (match === null) return null;
+  const argument = command.slice(match[0].length).replace(/ +$/, "");
+  let repository = "";
+  for (let index = 0; index < argument.length; ) {
+    const character = argument[index];
+    if (character === "'") {
+      const end = argument.indexOf("'", index + 1);
+      if (end === -1) return null;
+      repository += argument.slice(index + 1, end);
+      index = end + 1;
+    } else if (character === "\\") {
+      const escaped = argument[index + 1];
+      if (escaped !== "'" && escaped !== "!") return null;
+      repository += escaped;
+      index += 2;
+    } else {
+      if (character === undefined || !/[A-Za-z0-9_./:@%+,-]/.test(character)) return null;
+      repository += character;
+      index++;
+    }
+  }
+  if (repository === "" || repository.startsWith("-")) return null;
   const verb = match[1];
   if (verb === "receive-pack") return { kind: "push" };
   if (verb === "upload-archive") return { kind: "archive" };

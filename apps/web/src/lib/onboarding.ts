@@ -11,12 +11,21 @@ export type LoginMode = "sign-in" | "sign-up";
 export const MIN_PASSWORD_LENGTH = 8;
 
 /**
- * Where to walk after signing in. Only a same-origin path is honoured —
- * anything else (a full URL, a protocol-relative `//host`) falls back to the
- * workbench, so a crafted login link cannot walk a user off this instance.
+ * Where to walk after signing in. Keep a same-origin root-relative path unchanged;
+ * full URLs, authority prefixes and invalid URLs fall back to the workbench.
  */
-export const safeNextPath = (value: unknown): string =>
-  typeof value === "string" && value.startsWith("/") && !value.startsWith("//") ? value : "/";
+export const safeNextPath = (value: unknown): string => {
+  if (typeof value !== "string" || !value.startsWith("/")) return "/";
+  // URL parsing removes tabs and newlines and treats backslashes as slashes in HTTP URLs.
+  // Refuse authority prefixes even when their host matches the validation origin below.
+  if (/^\/[\t\r\n]*[\\/]/.test(value)) return "/";
+  try {
+    const origin = "https://mend.invalid";
+    return new URL(value, origin).origin === origin ? value : "/";
+  } catch {
+    return "/";
+  }
+};
 
 /** A fresh instance opens on registration; one with accounts opens on sign-in. */
 export const defaultLoginMode = (

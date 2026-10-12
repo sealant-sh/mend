@@ -6,7 +6,8 @@ scenarios, the decisions were 5,734 keep, 267 rewrite, 18 remove, 11 move and 7 
 decision, with 234 findings. A keep decision means an assertion is useful, not that its feature has
 complete coverage.
 
-This first follow-up addresses misleading success signals. It does not close the whole audit.
+The follow-ups below address misleading success signals and two reproduced input-validation defects.
+They do not close the whole audit.
 
 ## What changed
 
@@ -30,6 +31,24 @@ This first follow-up addresses misleading success signals. It does not close the
   command. Its three PostgreSQL semantic tests remain in the normal correctness suite. The benchmark
   retains 300 bulk sessions and the existing median/p90 budgets, measures three rounds with
   interleaved queries, and reports PostgreSQL, runtime and sample context.
+
+## Boundary fixes
+
+- `SC-003`: Git transport now parses the entire command as one supported verb and one literal
+  repository argument. Regression cases reject shell suffixes, substitutions, redirections, options
+  and extra arguments. Session-planner tests require refusal before signer lookup and operation
+  recording, and check the exact valid SSH plan with the owner's identity. A real Git process sends
+  quoted paths to an inert SSH recorder, preserving spaces, apostrophes and exclamation marks
+  without connecting to a remote. Control characters and double-quoted or otherwise escaped paths
+  are explicitly unsupported; Git's single-quoted form works.
+- `CLIENT-005`: login and welcome destinations reject ambiguous authority prefixes and use URL
+  parsing to check the origin. The accepted original string is preserved so normalizing a path
+  cannot turn it into a new authority prefix. Regression examples and generated inputs compare
+  navigation against several HTTP/HTTPS origins, including the validation origin.
+
+Both defects were reproduced by failing regressions before their fixes. The planner tests do not
+open real SSH connections, and redirect tests do not drive a browser sign-in journey. Those
+deployment checks remain separate from the boundary guarantees above.
 
 ## Running the checks
 
@@ -82,10 +101,6 @@ no performance benchmark to skip, and its semantic checks retain their normal ti
 The following audit findings remain open in this change. Reproduce them against the latest base
 before implementing, and inspect overlapping PRs rather than duplicating their work.
 
-- `SC-003`: Git tunnel command parsing accepts shell suffixes. Add full-command parsing and planner
-  rejection tests while preserving legitimate repository quoting.
-- `CLIENT-005`: login redirects accept paths which URL normalization sends to another origin.
-  Enforce the same-origin invariant and test backslash/control-character inputs.
 - `AJ-001`: concurrent same-key pg-boss enqueue can create multiple live jobs. Enforce the guarantee
   atomically and test independent runners, active/retry states and terminal release.
 - `APILIFE-01`: interruption after membership removal can prevent later local revocations. Test
