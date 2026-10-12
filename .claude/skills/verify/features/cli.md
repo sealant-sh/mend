@@ -104,9 +104,9 @@ Preconditions:
 
 - `--help` or `-h` anywhere before `--` makes any command print its page and do nothing else:
   `mend land fix --help` lands nothing. After `--` it belongs to the user's command
-  (`mend run -- cmd --help`). `help` itself is the exception (`apps/cli/src/main.ts:4920-4926`):
-  `mend help --help` asks for a page named `--help` and prints
-  `mend: no command "--help" · mend help lists them`, exit `1`.
+  (`mend run -- cmd --help`). `help` itself is the exception: `mend help --help` reaches the flag
+  gate (`apps/cli/src/flag-gate.ts`), which refuses it with
+  `mend: unknown flag --help · usage: mend help [command...]`, exit `1`.
 - `mend <unknown> --help` prints `no command "<unknown>" · mend help lists them`, not the
   `unknown command` line: help runs first.
 - Help pages wrap at the terminal width, capped at 100 columns. Compare pages produced at the same
