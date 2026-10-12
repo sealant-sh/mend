@@ -67,14 +67,33 @@ const until = (what, check, tries = 60) => {
   assert.fail(`timed out waiting for ${what}`);
 };
 
-test("the npm mirror keys metadata by the whole request and caches tarballs", { skip }, () => {
+test("the npm mirror strips credentials and separates cached metadata", { skip }, () => {
   assert.equal(docker("network", "create", network).status, 0);
-  // A stand-in registry that answers with the request it saw, so a cross-served answer shows.
+  // A local registry records actual requests and serves distinct full and install documents.
   const upstream = path.join(scratch, "upstream.mjs");
   fs.writeFileSync(
     upstream,
-    'import { createServer } from "node:http";\n' +
-      "createServer((req, res) => { res.setHeader('content-type', 'application/json'); res.end(JSON.stringify({ url: req.url })); }).listen(8080);\n",
+    `import { createServer } from "node:http";
+const requests = [];
+createServer((req, res) => {
+  res.setHeader("content-type", "application/json");
+  if (req.url === "/__requests") {
+    res.end(JSON.stringify(requests));
+    return;
+  }
+  requests.push({
+    url: req.url,
+    method: req.method,
+    authorization: req.headers.authorization ?? null,
+    cookie: req.headers.cookie ?? null,
+    accept: req.headers.accept ?? null,
+  });
+  const document = req.headers.accept?.includes("application/vnd.npm.install-v1+json")
+    ? { name: "pkg", "dist-tags": { latest: "1.0.0" } }
+    : { name: "pkg", readme: "full metadata only" };
+  res.end(JSON.stringify({ url: req.url, document }));
+}).listen(8080);
+`,
   );
   run(
     `mend-mirrors-upstream-${id}`,
@@ -121,6 +140,63 @@ test("the npm mirror keys metadata by the whole request and caches tarballs", { 
   const tarball = "http://npm-mirror:4873/@scope/pkg/-/pkg-1.0.0.tgz";
   assert.equal(curl(tarball).cache, "MISS");
   assert.equal(curl(tarball).cache, "HIT");
+
+  const authorization = "Bearer synthetic-mirror-test-token";
+  const cookie = "session=synthetic-mirror-test-cookie";
+  const withCredentials = ["-H", `Authorization: ${authorization}`, "-H", `Cookie: ${cookie}`];
+  // The direct control proves these headers reached the recorder before testing their removal.
+  assert.equal(curl(...withCredentials, "http://upstream:8080/fixture-control").code, "200");
+  const credentialRoutes = [
+    { method: "GET", url: "/credential-metadata" },
+    { method: "GET", url: "/@scope/credential-pkg/-/credential-pkg-1.0.0.tgz" },
+    { method: "POST", url: "/-/npm/v1/security/audits/quick" },
+  ];
+  for (const { method, url } of credentialRoutes) {
+    const response = curl("-X", method, ...withCredentials, `http://npm-mirror:4873${url}`);
+    assert.equal(response.code, "200");
+  }
+  const recorded = curl("http://upstream:8080/__requests");
+  assert.equal(recorded.code, "200");
+  const requests = JSON.parse(recorded.body);
+  assert.deepEqual(
+    requests.find((request) => request.url === "/fixture-control"),
+    {
+      method: "GET",
+      url: "/fixture-control",
+      authorization,
+      cookie,
+      accept: "*/*",
+    },
+  );
+  assert.deepEqual(
+    requests.filter((request) => credentialRoutes.some((route) => route.url === request.url)),
+    credentialRoutes.map((route) => ({
+      ...route,
+      authorization: null,
+      cookie: null,
+      accept: "*/*",
+    })),
+  );
+
+  const variants = [
+    { accept: "application/json", document: { name: "pkg", readme: "full metadata only" } },
+    {
+      accept: "application/vnd.npm.install-v1+json",
+      document: { name: "pkg", "dist-tags": { latest: "1.0.0" } },
+    },
+  ];
+  // Each order has its own cold URI: neither kind may fill or answer the other's cache entry.
+  for (const [index, order] of [variants, variants.toReversed()].entries()) {
+    const url = `/metadata-order-${index}`;
+    for (const cache of ["MISS", "HIT"]) {
+      for (const { accept, document } of order) {
+        const response = curl("-H", `Accept: ${accept}`, `http://npm-mirror:4873${url}`);
+        assert.equal(response.code, "200");
+        assert.equal(response.cache, cache);
+        assert.deepEqual(JSON.parse(response.body), { url, document });
+      }
+    }
+  }
   // Nothing is published through it.
   assert.equal(curl("-X", "PUT", "http://npm-mirror:4873/pkg").code, "403");
 });

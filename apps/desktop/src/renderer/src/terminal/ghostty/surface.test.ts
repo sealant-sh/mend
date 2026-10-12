@@ -462,7 +462,7 @@ describe("advanceTerminalSelectionClickSequence", () => {
     expect([first.count, second.count, third.count]).toEqual([1, 2, 3]);
   });
 
-  it("starts over after movement, delay, or a completed triple click", () => {
+  it("starts over after a completed triple click", () => {
     const previous = { count: 3, time: 1_000, x: 20, y: 30 };
     expect(
       advanceTerminalSelectionClickSequence(previous, {
@@ -471,20 +471,43 @@ describe("advanceTerminalSelectionClickSequence", () => {
         timeStamp: 1_100,
       }).count,
     ).toBe(1);
-    expect(
-      advanceTerminalSelectionClickSequence(previous, {
-        clientX: 30,
-        clientY: 30,
-        timeStamp: 1_100,
-      }).count,
-    ).toBe(1);
-    expect(
-      advanceTerminalSelectionClickSequence(previous, {
-        clientX: 20,
-        clientY: 30,
-        timeStamp: 1_501,
-      }).count,
-    ).toBe(1);
+  });
+
+  it.each([1, 2])("resets count %i only beyond the movement boundary", (count) => {
+    const previous = { count, time: 1_000, x: 0, y: 0 };
+    for (const { dx, dy, repeats } of [
+      { dx: 4, dy: 0, repeats: true },
+      { dx: 0, dy: -4, repeats: true },
+      { dx: 2.4, dy: 3.2, repeats: true },
+      { dx: 4.01, dy: 0, repeats: false },
+      { dx: 0, dy: -4.01, repeats: false },
+      { dx: 3, dy: 3, repeats: false },
+    ]) {
+      const event = { clientX: dx, clientY: dy, timeStamp: 1_100 };
+      expect(advanceTerminalSelectionClickSequence(previous, event)).toEqual({
+        count: repeats ? count + 1 : 1,
+        time: event.timeStamp,
+        x: event.clientX,
+        y: event.clientY,
+      });
+    }
+  });
+
+  it.each([1, 2])("resets count %i only beyond the timeout boundary", (count) => {
+    const previous = { count, time: 1_000, x: 20, y: 30 };
+    for (const { elapsed, repeats } of [
+      { elapsed: 499, repeats: true },
+      { elapsed: 500, repeats: true },
+      { elapsed: 501, repeats: false },
+    ]) {
+      const event = { clientX: 20, clientY: 30, timeStamp: 1_000 + elapsed };
+      expect(advanceTerminalSelectionClickSequence(previous, event)).toEqual({
+        count: repeats ? count + 1 : 1,
+        time: event.timeStamp,
+        x: event.clientX,
+        y: event.clientY,
+      });
+    }
   });
 });
 
