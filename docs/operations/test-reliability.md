@@ -6,8 +6,49 @@ scenarios, the decisions were 5,734 keep, 267 rewrite, 18 remove, 11 move and 7 
 decision, with 234 findings. A keep decision means an assertion is useful, not that its feature has
 complete coverage.
 
-The follow-ups below address misleading success signals and two reproduced input-validation defects.
-They do not close the whole audit.
+The follow-ups below improve the evidence behind a passing suite and fix reproduced defects. The
+audit is complete; implementing its recommendations is not. The original decision counts are an
+inventory, not the number of changes still required today or a measure of feature coverage.
+
+## Audit scope
+
+| Section                                     | Files | Static declarations | Shell scenarios |
+| ------------------------------------------- | ----: | ------------------: | --------------: |
+| Verification, releases and deployment       |    29 |                 432 |              17 |
+| Database, storage, auth and jobs            |    69 |                 583 |               0 |
+| Domain, contracts, networking and protocols |    46 |                 446 |               0 |
+| Session engine and platform adapter         |    57 |               1,352 |               0 |
+| API, landing, Slack and inference           |    96 |                 820 |               0 |
+| CLI                                         |    67 |               1,074 |               0 |
+| Web, desktop, mobile, VS Code and marketing |    98 |                 644 |               0 |
+| T3 gateway and contracts                    |    73 |                 669 |               0 |
+
+Eight supplemental executable checks were also inspected outside the 535-file inventory. A
+parameterized declaration can execute many cases, so runtime totals must not be compared directly
+with these counts. Keeping an assertion means it catches a useful failure; it says nothing about
+unexercised paths in the same feature.
+
+## Merged follow-ups
+
+| Pull request                                        | What it establishes                                                                                                                                         | What it does not establish                                                         |
+| --------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| [#738](https://github.com/sealant-sh/mend/pull/738) | Required PostgreSQL tests run; stream errors fail; selected API and acceptance assertions require actual outcomes; 18 dead/helper-only declarations removed | Every audit rewrite is complete, or every client/provider journey ran              |
+| [#740](https://github.com/sealant-sh/mend/pull/740) | Complete Git-command validation before signer lookup; same-origin login destinations                                                                        | A real authenticated SSH transport or browser sign-in journey                      |
+| [#741](https://github.com/sealant-sh/mend/pull/741) | Database correctness stays required; latency has a separate, explicit measurement command with unchanged budgets                                            | Production latency or a passing performance result under every workload            |
+| [#742](https://github.com/sealant-sh/mend/pull/742) | CLI rows/anchors preserve real Git hunk contents; gateway refuses binary contents instead of inventing empty text                                           | Interactive terminal/editor rendering or binary preview support                    |
+| [#743](https://github.com/sealant-sh/mend/pull/743) | Failed stack resource removal retains ownership and retry records; a subsequent successful retry cleans up                                                  | A live Docker deployment teardown                                                  |
+| [#744](https://github.com/sealant-sh/mend/pull/744) | Concurrent production runners share one live job per name/key, including failure and interruption paths                                                     | Protection from old producers or direct external queue writes that bypass the lock |
+
+Each reproduced production defect above has regressions that failed before its fix. Each PR passed
+forced repository typechecking and lint before publication and ran relevant local suites. #738 was
+merged with a failing database benchmark in CI; that failure led to the explicit performance lane in
+#741. The other five follow-ups passed their applicable CI checks before merge. A skipped
+release-acceptance workflow is not evidence that packaged or VM acceptance ran. Local checks used
+Node 26.1.0; CI used the pinned 26.4.0.
+
+Local results retain their exceptions: #740's full sessions run had one existing five-second timeout
+in the conversation-home tests, whose complete file passed separately. Its final CI passed after the
+benchmark separation. Explicit optional Docker/provider skips are not executed coverage.
 
 ## What changed
 
@@ -39,6 +80,15 @@ They do not close the whole audit.
   requires every producer to use the upgraded implementation; older producers during a rolling
   deployment and direct external queue writes do not share its lock. These tests do not establish
   that the release VM journeys below ran.
+- `CLIC004`: CLI review counts valid added/deleted source lines beginning `++` or `--`. Real Git
+  fixtures assert complete row numbers, split/unified positions and comment anchors across hunks.
+  Whitespace rendering preserves file headers and renders the source lines.
+- `T3G-002`: added/deleted binary notices and Git binary patches return the existing typed
+  unsupported-content error. Empty text files remain a positive case, including with a `.bin`
+  filename. The tests exercise gateway RPC behavior with actual Git-generated patches.
+- `VFY-02`: stack teardown checks state-volume removal before deleting its retry records. Fault
+  injection covers that volume, an ordinary recorded volume and a recorded container. Each case
+  requires the same owner and unchanged records to remain, then a successful complete retry.
 
 ## Boundary fixes
 
@@ -94,6 +144,14 @@ whichever is larger. The JSON report includes raw samples, database version, fix
 runtime context. Its 120-second test/setup budget is confined to this command. The default suite has
 no performance benchmark to skip, and its semantic checks retain their normal timeouts.
 
+Keep adverse measurements too. In
+[#740's run before benchmark separation](https://github.com/sealant-sh/mend/actions/runs/38185126396),
+the enriched list read measured 72.6 ms median against 37.1 ms for the plain read, exceeding its
+57.1 ms allowance while the combined CI workload ran. The extracted benchmark passed locally on
+PostgreSQL 17.11 with its unchanged budgets. These are different environments, not proof that the CI
+budget miss was noise or that production meets the budget. Run the explicit benchmark on the
+candidate and record the workload and machine alongside the result.
+
 ## What the layers establish
 
 | Layer                                              | Useful evidence                                                                     | Remaining limit                                                                                |
@@ -109,14 +167,16 @@ no performance benchmark to skip, and its semantic checks retain their normal ti
 The following audit findings remain open in this change. Reproduce them against the latest base
 before implementing, and inspect overlapping PRs rather than duplicating their work.
 
-- `APILIFE-01`: interruption after membership removal can prevent later local revocations. Test
-  interruption at each boundary and make completion durable or safely retriable.
-- `LAND-02`: landing an older captured checkpoint can use later history as its parent. The tip tree
-  is the requested tree; the history/parent contract still needs correction and coverage.
-- `CLIC004` and `T3G-002`: CLI diff parsing drops valid hunk lines beginning `++`/`--`; gateway
-  review represents added/deleted binary content as empty text. Add real Git fixtures.
-- `CLIS-005` and `VFY-02`: failed cleanup can discard identity or retry state. Inject removal and
-  discovery failures, preserve ownership evidence, then prove a retry succeeds.
+- `APILIFE-01`: interruption after membership removal or a notification defect can prevent later
+  local revocations. A complete fix needs atomic local credential/control revocation and durable
+  cleanup obligations. Delayed work must target old process/run identities so it cannot stop newly
+  admitted work. An uninterruptible wrapper alone does not cover process crashes or failed steps.
+- `LAND-02`: pulling an older captured checkpoint can use later history as its parent. The tip tree
+  is the requested tree, but a fresh clone of the exported bundle can contain later file contents in
+  its history. Preserve exact historical provenance and Git objects, including after capture
+  retention. Refuse missing evidence rather than substituting the current head.
+- `CLIS-005`: uninstall can discard identity after failed Docker discovery or ownership inspection.
+  Preserve unknown observations, revalidate under the store lock and retain the identity for retry.
 - `PKG-001` and `PKG-002`: packaged acceptance must check executor mount scope/read-only secrets and
   associate the expected proof marker with the correct file and added diff line.
 - `FOUND-12`: provider conformance needs an explicit pinned-provider lane through production
