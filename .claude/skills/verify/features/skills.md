@@ -130,9 +130,9 @@ Preconditions:
   for a person who can manage the project.
 - `--prune` removes every skill in that library the directory lacks, including ones made on the web.
   Run it only against a disposable library.
-- `mend skills push --project` followed directly by another flag takes that flag as the project
-  name: `mend skills push --project --prune` fails with `no adopted project named "--prune"`. Put
-  `--project` last, or give it a name.
+- A bare `--project` means the project the working directory belongs to, even with another flag
+  after it: `mend skills push --project --prune` prunes that project's library. Run from `/`, it
+  fails with `no adopted project matches /`.
 - Skill names are directory names lowercased. Binary files, files over 512 KB and bundles over 64
   files are skipped with a note line, not an error.
 - Shared-home workspaces receive skills when created. Per-person homes receive them at the person's

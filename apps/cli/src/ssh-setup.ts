@@ -13,7 +13,7 @@ import {
 } from "@mend/workspace-ssh";
 
 import type { ApiCall } from "./pair.ts";
-import { redactCredentials } from "./shared.ts";
+import { redactCredentials, takeFlagValue } from "./shared.ts";
 
 interface WorkspaceSshViewDto {
   readonly gateway: {
@@ -38,11 +38,6 @@ const warn = ansi("33");
 const say = (line: string) => console.log(redactCredentials(line));
 const sshConfigPath = (): string => path.join(os.homedir(), ".ssh", "config");
 
-const flagValue = (args: ReadonlyArray<string>, flag: string): string | null => {
-  const index = args.indexOf(flag);
-  return index === -1 || args[index + 1] === undefined ? null : String(args[index + 1]);
-};
-
 const showFailure = (message: string): void => {
   say(`mend: ${message}`);
   process.exitCode = 1;
@@ -62,7 +57,7 @@ const showStatus = async (
   const parsedTarget = parseWorkspaceSshTarget({
     serverUrl,
     publishedPort: view.gateway.port,
-    hostnameOverride: flagValue(args, "--host"),
+    hostnameOverride: takeFlagValue(args, "--host"),
   });
   if (parsedTarget.ok === false) return showFailure(parsedTarget.error.message);
   const config = readWorkspaceSshConfig(sshConfigPath());
@@ -113,14 +108,14 @@ const setup = async (
   const parsedTarget = parseWorkspaceSshTarget({
     serverUrl,
     publishedPort: view.gateway.port,
-    hostnameOverride: flagValue(args, "--host"),
+    hostnameOverride: takeFlagValue(args, "--host"),
   });
   if (parsedTarget.ok === false) return showFailure(parsedTarget.error.message);
   const config = readWorkspaceSshConfig(sshConfigPath());
   if (config.ok === false) return showFailure(config.error.message);
   const picked = pickWorkspaceSshKey({
     configHome: cliHome,
-    explicitKeyPath: flagValue(args, "--key"),
+    explicitKeyPath: takeFlagValue(args, "--key"),
     configuredIdentityFile: configuredWorkspaceSshIdentityFile(config.value, parsedTarget.value),
     create: true,
   });
@@ -200,7 +195,7 @@ const sessionSsh = async (
   const parsedTarget = parseWorkspaceSshTarget({
     serverUrl,
     publishedPort: view.gateway.port,
-    hostnameOverride: flagValue(args, "--host"),
+    hostnameOverride: takeFlagValue(args, "--host"),
   });
   if (parsedTarget.ok === false) return showFailure(parsedTarget.error.message);
   console.log(
