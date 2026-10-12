@@ -1,7 +1,10 @@
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { once } from "node:events";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { Duplex } from "node:stream";
 import { fileURLToPath } from "node:url";
 
@@ -46,9 +49,9 @@ const acceptWebSocket = (request: IncomingMessage, socket: Duplex): void => {
   );
 };
 
-/** The client's masked text frames, decoded (short frames only — control JSON). */
-const clientTextFrames = (bytes: Buffer): ReadonlyArray<string> => {
-  const texts: Array<string> = [];
+/** The client's masked data frames, decoded; these fixtures use only short frames. */
+const clientFrames = (bytes: Buffer) => {
+  const frames: Array<{ readonly opcode: number; readonly payload: Buffer }> = [];
   let offset = 0;
   while (offset + 6 <= bytes.length) {
     const opcode = (bytes[offset] ?? 0) & 0x0f;
@@ -59,10 +62,10 @@ const clientTextFrames = (bytes: Buffer): ReadonlyArray<string> => {
     for (let index = 0; index < payload.length; index += 1) {
       payload[index] = (payload[index] ?? 0) ^ (mask[index % 4] ?? 0);
     }
-    if (opcode === 1) texts.push(payload.toString());
+    if (opcode === 1 || opcode === 2) frames.push({ opcode, payload });
     offset += 6 + length;
   }
-  return texts;
+  return frames;
 };
 
 /** A server's binary frame (unmasked): PTY bytes as the tty socket carries them. */
@@ -99,6 +102,7 @@ const project = {
 const startFake = async (mode: "stall-ticket" | "open") => {
   let clientBytes = Buffer.alloc(0);
   const requests: Array<string> = [];
+  const images: Array<unknown> = [];
   const server = createServer((request, response) => {
     requests.push(`${request.method} ${request.url}`);
     if (request.url === "/api/sessions") json(response, [session]);
@@ -114,6 +118,15 @@ const startFake = async (mode: "stall-ticket" | "open") => {
       json(response, session);
     } else if (request.method === "POST" && request.url === `/api/sessions/${session.id}/stop`) {
       json(response, { ...session, status: "stopped" });
+    } else if (request.method === "POST" && request.url === `/api/sessions/${session.id}/images`) {
+      let body = "";
+      request.on("data", (chunk: Buffer) => {
+        body += chunk.toString();
+      });
+      request.on("end", () => {
+        images.push(JSON.parse(body));
+        json(response, { path: "/workspace/paste/image.png" });
+      });
     } else if (request.url === `/api/sessions/${session.id}`) json(response, detailOf(23_000));
     else if (request.url === "/api/upgrade-tickets" && mode === "open") {
       json(response, { ticket: "ticket-1" });
@@ -135,7 +148,17 @@ const startFake = async (mode: "stall-ticket" | "open") => {
   if (address === null || typeof address === "string") throw new Error("missing test port");
   return {
     url: `http://127.0.0.1:${address.port}`,
-    frames: () => clientTextFrames(clientBytes),
+    frames: () =>
+      clientFrames(clientBytes)
+        .filter((frame) => frame.opcode === 1)
+        .map((frame) => frame.payload.toString()),
+    bytes: () =>
+      Buffer.concat(
+        clientFrames(clientBytes)
+          .filter((frame) => frame.opcode === 2)
+          .map((frame) => frame.payload),
+      ),
+    images: () => images,
     requests: () => requests,
     /** Send PTY bytes to every attached terminal. */
     output: (text: string) => {
@@ -151,11 +174,11 @@ const startFake = async (mode: "stall-ticket" | "open") => {
 };
 
 /** `mend <args>` inside a 100×30 pty (`mend attach session-` by default); `write` types into it. */
-const attachInTerminal = (url: string, args = "attach session-") => {
+const attachInTerminal = (url: string, args = "attach session-", env: NodeJS.ProcessEnv = {}) => {
   const entrypoint = fileURLToPath(new URL("./main.ts", import.meta.url));
   const command = `stty rows 30 cols 100; exec ${process.execPath} --experimental-strip-types ${entrypoint} ${args}`;
   const child = spawn("script", ["-qfec", command, "/dev/null"], {
-    env: { ...process.env, MEND_URL: url, MEND_TOKEN: "token", TERM: "xterm-256color" },
+    env: { ...process.env, ...env, MEND_URL: url, MEND_TOKEN: "token", TERM: "xterm-256color" },
     stdio: ["pipe", "pipe", "pipe"],
   });
   let output = "";
@@ -185,6 +208,50 @@ const waitFor = async (predicate: () => boolean, timeoutMs = 15_000): Promise<vo
 };
 
 describe.skipIf(!hasScript)("mend attach in a terminal", () => {
+  it.each([
+    ["coalesced text", "\x1b[118;5uhello", false],
+    ["coalesced arrow", "\x1b[118;5u\x1b[A", false],
+    ["standalone Ctrl+V", "\x1b[118;5u", true],
+  ])(
+    "preserves %s while an image clipboard is available",
+    async (_, input, paste) => {
+      const root = await mkdtemp(join(tmpdir(), "mend-coalesced-paste-"));
+      const image =
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=";
+      try {
+        // A real executable replaces only the platform clipboard tool, never a production module.
+        await writeFile(
+          join(root, "wl-paste"),
+          `#!/usr/bin/env node\nif (process.argv.includes('--list-types')) process.stdout.write('image/png\\n');\nelse process.stdout.write(Buffer.from('${image}', 'base64'));\n`,
+          { mode: 0o755 },
+        );
+        const fake = await startFake("open");
+        const cli = attachInTerminal(fake.url, "attach session-", {
+          PATH: `${root}:${process.env["PATH"] ?? ""}`,
+          HOME: root,
+          XDG_CONFIG_HOME: root,
+          WAYLAND_DISPLAY: "synthetic-clipboard",
+          DISPLAY: "",
+        });
+        try {
+          await waitFor(() => fake.frames().length >= 2);
+          cli.write(input);
+          await waitFor(() => fake.bytes().length > 0);
+          expect(fake.bytes()).toEqual(Buffer.from(paste ? "/workspace/paste/image.png" : input));
+          expect(fake.images()).toEqual(paste ? [{ contentsBase64: image }] : []);
+          cli.write("\x1d");
+          expect(await cli.exited).toBe(0);
+        } finally {
+          cli.child.kill("SIGKILL");
+          await fake.close();
+        }
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+    30_000,
+  );
+
   it("goes raw before waiting on the server: keys never echo, it says it is connecting, Ctrl+] gives the terminal back", async () => {
     const fake = await startFake("stall-ticket");
     const cli = attachInTerminal(fake.url);

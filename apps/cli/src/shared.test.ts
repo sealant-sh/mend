@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   firstPositional,
+  csiUKeysOf,
   captureLineOf,
   isDetachChunk,
   isPasteChunk,
@@ -34,6 +35,33 @@ describe("isDetachChunk", () => {
 });
 
 describe("isPasteChunk", () => {
+  it.each([
+    ["suffix text", "\x1b[118;5uhello"],
+    ["suffix arrow", "\x1b[118;5u\x1b[A"],
+    ["suffix newline", "\x1b[118;5u\n"],
+    ["suffix carriage return", "\x1b[118;5u\r"],
+    ["suffix NUL", "\x1b[118;5u\0"],
+    ["suffix other key", "\x1b[118;5u\x1b[97;1u"],
+    ["prefix text", "hello\x1b[118;5u"],
+    ["prefix arrow", "\x1b[A\x1b[118;5u"],
+  ])("leaves a Ctrl+V report coalesced with %s for normal forwarding", (_, chunk) => {
+    expect(isPasteChunk(Buffer.from(chunk, "latin1"))).toBe(false);
+  });
+
+  it("rejects every additional byte at either boundary without changing subsequent recognition", () => {
+    const chord = Buffer.from("\x1b[118;5u", "latin1");
+    for (let byte = 0; byte <= 255; byte++) {
+      expect(isPasteChunk(Buffer.concat([chord, Buffer.from([byte])]))).toBe(false);
+      expect(isPasteChunk(Buffer.concat([Buffer.from([byte]), chord]))).toBe(false);
+      expect(isPasteChunk(chord)).toBe(true);
+    }
+    // The general parser still finds reports inside mixed input; paste recognition is stricter.
+    expect(csiUKeysOf(Buffer.from("prefix\x1b[118;5u\x1b[A"))).toEqual([
+      { code: 118, mods: 4, event: 1 },
+    ]);
+    expect(isPasteChunk(chord)).toBe(true);
+  });
+
   it("matches exactly Ctrl+V in both wire encodings", () => {
     expect(isPasteChunk(Buffer.from([0x16]))).toBe(true);
     expect(isPasteChunk(Buffer.from("\x1b[118;5u"))).toBe(true);
