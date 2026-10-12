@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   browserSignIn,
+  finishBrowserSignIn,
   groupCode,
   normalizeServerUrl,
   plainHttpWarning,
@@ -31,6 +32,7 @@ const approved = {
 const deps = (fetchMock: typeof fetch, overrides: Partial<SignInDeps> = {}) => {
   const opens: Array<string> = [];
   const codes: Array<string> = [];
+  const warnings: Array<string> = [];
   const value: SignInDeps = {
     fetch: fetchMock,
     openExternal: async (url) => {
@@ -38,12 +40,13 @@ const deps = (fetchMock: typeof fetch, overrides: Partial<SignInDeps> = {}) => {
       return true;
     },
     onCode: (code) => codes.push(code),
+    onWarning: (message) => warnings.push(message),
     sleep: async () => undefined,
     deviceName: "VS Code on macbook",
     cancelled: () => false,
     ...overrides,
   };
-  return { value, opens, codes };
+  return { value, opens, codes, warnings };
 };
 
 describe("browserSignIn", () => {
@@ -53,7 +56,7 @@ describe("browserSignIn", () => {
       .mockResolvedValueOnce(json(200, opened))
       .mockResolvedValueOnce(json(200, { status: "pending" }))
       .mockResolvedValueOnce(json(200, approved));
-    const { value, opens, codes } = deps(fetchMock);
+    const { value, opens, codes, warnings } = deps(fetchMock);
 
     await expect(browserSignIn("http://mend-mini.local:3105", value)).resolves.toEqual({
       url: "http://mend-mini.local:3105",
@@ -63,6 +66,7 @@ describe("browserSignIn", () => {
     });
     expect(opens).toEqual(["http://mend-mini.local:3105/authorize?code=abcd2345"]);
     expect(codes).toEqual(["ABCD-2345"]);
+    expect(warnings).toEqual([]);
     expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
       "http://mend-mini.local:3105/api/cli/auth",
       "http://mend-mini.local:3105/api/cli/auth/token",
@@ -152,6 +156,122 @@ describe("browserSignIn", () => {
     const cancelled = deps(fetchMock, { cancelled: () => true });
     await expect(browserSignIn("http://mend-mini.local:3105", cancelled.value)).resolves.toBe(null);
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("revokes an approval that arrives during a cancelled poll and returns no credential", async () => {
+    const pollStarted = Promise.withResolvers<void>();
+    const pollResponse = Promise.withResolvers<Response>();
+    const requests: Array<{ readonly url: string; readonly init: RequestInit | undefined }> = [];
+    let cancelled = false;
+    const send: typeof fetch = async (input, init) => {
+      requests.push({ url: String(input), init });
+      if (requests.length === 1) return json(200, opened);
+      if (requests.length === 2) {
+        pollStarted.resolve();
+        return pollResponse.promise;
+      }
+      return new Response(null, { status: 204 });
+    };
+    const { value, warnings } = deps(send, { cancelled: () => cancelled });
+    const signingIn = browserSignIn("https://mend.example", value);
+    await pollStarted.promise;
+    cancelled = true;
+    pollResponse.resolve(json(200, approved));
+
+    expect(await signingIn).toBeNull();
+    expect(requests.map(({ url }) => url)).toEqual([
+      "https://mend.example/api/cli/auth",
+      "https://mend.example/api/cli/auth/token",
+      "https://mend.example/api/me/devices/device-1",
+    ]);
+    const revoke = requests[2];
+    expect(revoke?.init?.method).toBe("DELETE");
+    expect(new Headers(revoke?.init?.headers).get("authorization")).toBe("Bearer mdt_token");
+    expect(revoke?.init?.body).toBeUndefined();
+    expect(revoke?.init?.signal).toBeInstanceOf(AbortSignal);
+    expect(warnings).toEqual([]);
+  });
+
+  it.each(["refused", "unreachable"])(
+    "reports %s cleanup without exposing the late credential or resuming sign-in",
+    async (failure) => {
+      const pollStarted = Promise.withResolvers<void>();
+      const pollResponse = Promise.withResolvers<Response>();
+      const requests: Array<{ readonly url: string; readonly init: RequestInit | undefined }> = [];
+      let cancelled = false;
+      const send: typeof fetch = async (input, init) => {
+        requests.push({ url: String(input), init });
+        if (requests.length === 1) return json(200, opened);
+        if (requests.length === 2) {
+          pollStarted.resolve();
+          return pollResponse.promise;
+        }
+        if (failure === "unreachable") throw new Error(`transport echoed ${approved.token}`);
+        return json(502, { message: `server echoed ${approved.token}` });
+      };
+      const { value, warnings } = deps(send, { cancelled: () => cancelled });
+      const signingIn = browserSignIn("https://mend.example", value);
+      await pollStarted.promise;
+      cancelled = true;
+      pollResponse.resolve(json(200, approved));
+
+      expect(await signingIn).toBeNull();
+      expect(requests).toHaveLength(3);
+      expect(requests[2]?.init?.method).toBe("DELETE");
+      expect(new Headers(requests[2]?.init?.headers).get("authorization")).toBe(
+        `Bearer ${approved.token}`,
+      );
+      expect(warnings).toEqual([
+        "Sign-in was cancelled, but Mend did not confirm revocation of the device approved meanwhile. Revoke VS Code on macbook under Settings → Devices.",
+      ]);
+      expect(warnings.join(" ")).not.toContain(approved.token);
+      expect(warnings.join(" ")).not.toContain("echoed");
+    },
+  );
+
+  it("discards a completed approval when cancellation arrives at the host handoff", async () => {
+    const requests: Array<string> = [];
+    let cancelled = false;
+    const send: typeof fetch = async (input) => {
+      requests.push(String(input));
+      if (requests.length === 1) return json(200, opened);
+      if (requests.length === 2) return json(200, approved);
+      return new Response(null, { status: 204 });
+    };
+    const { value, warnings } = deps(send, { cancelled: () => cancelled });
+    const result = await browserSignIn("https://mend.example", value);
+    expect(result?.token).toBe(approved.token);
+    expect(await finishBrowserSignIn(result, value)).toBe(result);
+    expect(requests).toHaveLength(2);
+    cancelled = true;
+    expect(await finishBrowserSignIn(result, value)).toBeNull();
+    expect(requests).toEqual([
+      "https://mend.example/api/cli/auth",
+      "https://mend.example/api/cli/auth/token",
+      "https://mend.example/api/me/devices/device-1",
+    ]);
+    expect(warnings).toEqual([]);
+  });
+
+  it("stops a cancelled pending poll without revoking or warning", async () => {
+    const pollStarted = Promise.withResolvers<void>();
+    const pollResponse = Promise.withResolvers<Response>();
+    const requests: Array<string> = [];
+    let cancelled = false;
+    const send: typeof fetch = async (input) => {
+      requests.push(String(input));
+      if (requests.length === 1) return json(200, opened);
+      pollStarted.resolve();
+      return pollResponse.promise;
+    };
+    const { value, warnings } = deps(send, { cancelled: () => cancelled });
+    const signingIn = browserSignIn("https://mend.example", value);
+    await pollStarted.promise;
+    cancelled = true;
+    pollResponse.resolve(json(200, { status: "pending" }));
+    expect(await signingIn).toBeNull();
+    expect(requests).toHaveLength(2);
+    expect(warnings).toEqual([]);
   });
 });
 

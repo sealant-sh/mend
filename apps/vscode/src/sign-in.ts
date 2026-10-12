@@ -196,6 +196,8 @@ export interface SignInDeps {
   readonly openExternal: (url: string) => Promise<boolean>;
   /** Shown while waiting: the code to compare with the browser's, and the page. */
   readonly onCode: (code: string, url: string) => void;
+  /** Explain an unrevoked late approval with safe local words after the browser flow is cancelled. */
+  readonly onWarning: (message: string) => void;
   readonly sleep: (ms: number) => Promise<void>;
   /** This machine's name as Settings → Devices lists it. */
   readonly deviceName: string;
@@ -242,7 +244,45 @@ const retryAfterMs = (json: unknown): number => {
   return (Number.isFinite(seconds) && seconds > 0 ? seconds : 5) * 1000;
 };
 
-/** Open, show, wait. Null when cancelled; a SignInError for every way it can fail. */
+/** Revoke a late approval with its own token; refusal and transport failure leave revocation unconfirmed. */
+const revokeLateApproval = async (
+  base: string,
+  approval: Omit<SignedIn, "url">,
+  deps: Pick<SignInDeps, "fetch">,
+): Promise<boolean> => {
+  try {
+    const response = await deps.fetch(
+      `${base}/api/me/devices/${encodeURIComponent(approval.deviceId)}`,
+      {
+        method: "DELETE",
+        headers: { authorization: `Bearer ${approval.token}` },
+        signal: AbortSignal.timeout(30_000),
+      },
+    );
+    return response.ok;
+  } catch {
+    return false;
+  }
+};
+
+/** Check cancellation again when a host hands the browser result back to its persistence caller. */
+export const finishBrowserSignIn = async (
+  signedIn: SignedIn | null,
+  deps: Pick<SignInDeps, "fetch" | "cancelled" | "deviceName" | "onWarning">,
+): Promise<SignedIn | null> => {
+  if (signedIn === null || !deps.cancelled()) return signedIn;
+  if (!(await revokeLateApproval(signedIn.url, signedIn, deps))) {
+    deps.onWarning(
+      `Sign-in was cancelled, but Mend did not confirm revocation of the device approved meanwhile. Revoke ${deps.deviceName} under Settings → Devices.`,
+    );
+  }
+  return null;
+};
+
+/**
+ * Open, show, wait. Cancellation returns null after revoking any observed late approval, with a
+ * warning if revocation failed. Other sign-in failures reject with SignInError.
+ */
 export const browserSignIn = async (base: string, deps: SignInDeps): Promise<SignedIn | null> => {
   const now = deps.now ?? Date.now;
   const started = await post(deps, `${base}/api/cli/auth`, {
@@ -275,6 +315,13 @@ export const browserSignIn = async (base: string, deps: SignInDeps): Promise<Sig
     await deps.sleep(pollDelayMs(request.intervalSeconds));
     if (deps.cancelled()) return null;
     const poll = await post(deps, `${base}/api/cli/auth/token`, { deviceCode: request.deviceCode });
+    const result = poll.status >= 200 && poll.status < 300 ? parsePoll(poll.json) : null;
+    if (deps.cancelled()) {
+      return finishBrowserSignIn(
+        result === null || result === "pending" ? null : { url: base, ...result },
+        deps,
+      );
+    }
     if (poll.status === 429) {
       await deps.sleep(retryAfterMs(poll.json));
       continue;
@@ -290,7 +337,6 @@ export const browserSignIn = async (base: string, deps: SignInDeps): Promise<Sig
           "Mend refused while waiting. Sign in again; the server log has the detail.",
       );
     }
-    const result = parsePoll(poll.json);
     if (result === null)
       throw new SignInError("Mend's answer stopped making sense. Sign in again.");
     if (result === "pending") continue;

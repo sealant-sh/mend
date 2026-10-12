@@ -15,7 +15,13 @@ import {
   type StoredCredential,
 } from "./credentials.js";
 import { requestMend } from "./mend-http.js";
-import { browserSignIn, normalizeServerUrl, plainHttpWarning, type SignedIn } from "./sign-in.js";
+import {
+  browserSignIn,
+  finishBrowserSignIn,
+  normalizeServerUrl,
+  plainHttpWarning,
+  type SignedIn,
+} from "./sign-in.js";
 
 export interface MendConnection {
   readonly url: string;
@@ -180,16 +186,26 @@ export class ConnectionStore {
       reminder.command = "mend.signInReminder";
       reminder.show();
     };
+    let cancelled = () => switchedToToken;
+    const completion = {
+      fetch,
+      deviceName: `VS Code on ${os.hostname()}`,
+      cancelled: () => cancelled(),
+      onWarning: (message: string) => {
+        void vscode.window.showWarningMessage(message);
+      },
+    };
     try {
-      const signedIn = await vscode.window.withProgress(
+      const result = await vscode.window.withProgress(
         {
           location: vscode.ProgressLocation.Notification,
           title: "Mend sign-in",
           cancellable: true,
         },
-        (progress, cancellation) =>
-          browserSignIn(url, {
-            fetch,
+        (progress, cancellation) => {
+          cancelled = () => switchedToToken || cancellation.isCancellationRequested;
+          return browserSignIn(url, {
+            ...completion,
             openExternal: (page) =>
               Promise.resolve(vscode.env.openExternal(vscode.Uri.parse(page))),
             onCode: (code, page) => {
@@ -198,10 +214,12 @@ export class ConnectionStore {
               void offer(code, page);
             },
             sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-            deviceName: `VS Code on ${os.hostname()}`,
-            cancelled: () => switchedToToken || cancellation.isCancellationRequested,
-          }),
+          });
+        },
       );
+      // The host has settled; stop offering a switch while checking its final cancellation state.
+      settled = true;
+      const signedIn = await finishBrowserSignIn(result, completion);
       return signedIn ?? (switchedToToken ? "token" : null);
     } catch (cause) {
       void vscode.window.showErrorMessage(

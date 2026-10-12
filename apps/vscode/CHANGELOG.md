@@ -3,6 +3,12 @@
 The extension's version follows the Mend release it needs: 0.36.x works with a Mend 0.36 server. The
 patch number is the extension's own.
 
+## Unreleased
+
+- Cancelling browser sign-in, including choosing **Paste a device token instead**, discards an
+  approval that arrives while a poll is pending and revokes its device. If Mend cannot confirm
+  revocation, the editor names the device to revoke under Settings → Devices.
+
 ## 0.36.1
 
 It needs a Mend 0.36 server.
