@@ -23,3 +23,7 @@ npm-debug.log*
 core.*
 .output
 apps/cli/man/
+
+# Claude Code: per-machine settings and agent worktrees; .claude/settings.json and .claude/skills/ are shared
+.claude/settings.local.json
+.claude/worktrees/
