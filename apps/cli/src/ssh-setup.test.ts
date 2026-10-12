@@ -20,6 +20,8 @@ const runMend = async (home: string, url: string, args: ReadonlyArray<string>) =
         HOME: home,
         USERPROFILE: home,
         XDG_CONFIG_HOME: path.join(home, "config"),
+        // Reuse compilation across this fixture's CLI processes; HOME cleanup removes the cache.
+        NODE_COMPILE_CACHE: path.join(home, ".compile-cache"),
         MEND_URL: url,
         MEND_TOKEN: "test-token",
         SSH_AUTH_SOCK: "",
