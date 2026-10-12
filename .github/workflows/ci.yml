@@ -26,6 +26,7 @@ jobs:
           --health-retries 10
     env:
       MEND_TEST_DATABASE_URL: postgres://mend:mend@localhost:5432/mend
+      MEND_VERIFY_PLAYWRIGHT: ${{ github.workspace }}/apps/mobile
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
@@ -34,6 +35,11 @@ jobs:
           node-version-file: .node-version
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # Leak-evidence tests must exercise Chromium instead of skipping for a missing browser.
+      # Reuse the workspace's locked Playwright version, as the mobile-web job does.
+      - name: Install Chromium for verification evidence tests
+        run:
+          pnpm --filter @mend/mobile exec playwright-core install --with-deps --only-shell chromium
       # Every install reads the committed lockfile, so a package published after the commit (a
       # Sealant prerelease included) never drifts in. The brackets keep this step from matching
       # itself.

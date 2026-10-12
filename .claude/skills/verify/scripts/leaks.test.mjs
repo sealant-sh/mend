@@ -14,12 +14,13 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  rmSync,
   writeFileSync,
 } from "node:fs";
 import { createServer } from "node:http";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { test } from "node:test";
+import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { deflateSync } from "node:zlib";
 
@@ -60,7 +61,15 @@ const chunk = (type, data) => {
   return Buffer.concat([length, Buffer.from(type, "latin1"), data, Buffer.alloc(4)]);
 };
 
-const fresh = (name) => mkdtempSync(join(tmpdir(), `verify-leaks-${name}-`));
+const scratchRoots = [];
+const fresh = (name) => {
+  const root = mkdtempSync(join(tmpdir(), `verify-leaks-${name}-`));
+  scratchRoots.push(root);
+  return root;
+};
+after(() => {
+  for (const root of scratchRoots) rmSync(root, { recursive: true, force: true });
+});
 /** Every file under a directory, as one string of its raw bytes. */
 const everything = (dir) =>
   readdirSync(dir, { recursive: true, withFileTypes: true })
@@ -576,6 +585,103 @@ test(
     assert.ok(shots[0].equals(shots[1]), "the canvas's pixels reached the screenshot");
   },
 );
+
+for (const { nested, shadow } of [
+  { nested: false, shadow: false },
+  { nested: true, shadow: false },
+  { nested: false, shadow: true },
+]) {
+  test(
+    `readable ${shadow ? "open shadow" : nested ? "nested" : "direct"} frame pixels cannot enter vouched evidence`,
+    { skip: noBrowser },
+    () => {
+      const privateDir = privateWithAccount();
+      const shots = [];
+      const masks = [];
+      for (const [shown, parent] of [
+        [TOKEN, "parent evidence"],
+        ["ordinary frame text", "parent evidence"],
+        ["ordinary frame text", "changed parent evidence"],
+      ]) {
+        const out = fresh("frame-evidence");
+        const run = drive(
+          privateDir,
+          out,
+          `export default async ({ page, capture }) => {
+        await page.setContent('<p>${parent}</p><div id="host"></div>');
+        await page.evaluate(shadow => {
+          const host = document.getElementById("host");
+          const root = shadow ? host.attachShadow({ mode: "open" }) : host;
+          const frame = document.createElement("iframe");
+          frame.name = "outer"; frame.setAttribute("aria-hidden", "true"); frame.style = "width:800px;height:200px";
+          root.appendChild(frame);
+        }, ${shadow});
+        const outer = page.frame({ name: "outer" });
+        if (!outer) throw new Error("outer frame did not attach");
+        if (${nested}) await outer.setContent('<iframe name="inner" style="width:700px;height:150px"></iframe>');
+        const target = ${nested} ? page.frame({ name: "inner" }) : outer;
+        if (!target) throw new Error("content frame did not attach");
+        await target.setContent('<p style="font:24px monospace">' + ${JSON.stringify(shown)} + '</p>');
+        if (await target.locator("p").textContent() !== ${JSON.stringify(shown)}) throw new Error("frame fixture text was not readable");
+        await capture("frame");
+      };`,
+        );
+        assert.equal(run.status, 0, run.stderr);
+        const scan = node([join(here, "scan-evidence.mjs"), "--dir", out, "--secrets", privateDir]);
+        assert.equal(scan.status, 0, scan.stdout);
+        shots.push(readFileSync(join(out, "frame.png")));
+        masks.push(JSON.parse(readFileSync(join(out, "frame.png.checked"), "utf8")).masked.frames);
+        assert.ok(!everything(out).includes(TOKEN), "credential reached text or metadata evidence");
+      }
+      // Readable frame text differs, while the parent is identical: masked pixels must be identical.
+      assert.ok(shots[0].equals(shots[1]), "readable frame pixels reached the screenshot");
+      assert.ok(!shots[1].equals(shots[2]), "parent evidence was masked too");
+      assert.deepEqual(masks, [1, 1, 1]);
+    },
+  );
+}
+
+for (const openInsideClosed of [false, true]) {
+  test(
+    `a frame inside a closed shadow root with open descendant ${openInsideClosed} withholds its image`,
+    { skip: noBrowser },
+    () => {
+      const privateDir = privateWithAccount();
+      const out = fresh("closed-frame-evidence");
+      const run = drive(
+        privateDir,
+        out,
+        `export default async ({ page, capture }) => {
+      await page.setContent('<p>parent evidence</p><div id="host" aria-hidden="true"></div>');
+      await page.evaluate(openInsideClosed => {
+        let root = document.getElementById("host").attachShadow({ mode: "closed" });
+        if (openInsideClosed) {
+          const inner = document.createElement("div"); root.appendChild(inner);
+          root = inner.attachShadow({ mode: "open" });
+        }
+        const frame = document.createElement("iframe"); frame.name = "closed";
+        frame.style = "width:800px;height:200px"; root.appendChild(frame);
+      }, ${openInsideClosed});
+      const target = page.frame({ name: "closed" });
+      if (!target) throw new Error("closed-shadow frame did not attach");
+      await target.setContent('<p>${TOKEN}</p>');
+      if (await target.locator("p").textContent() !== ${JSON.stringify(TOKEN)}) throw new Error("closed frame fixture was not readable");
+      await capture("closed");
+    };`,
+      );
+      assert.equal(run.status, 0, run.stderr);
+      assert.equal(existsSync(join(out, "closed.png")), false, "unmaskable frame image was kept");
+      assert.equal(existsSync(join(out, "closed.png.checked")), false);
+      assert.match(
+        readFileSync(join(out, "closed.png.withheld"), "utf8"),
+        /frame that cannot be masked/,
+      );
+      assert.ok(!everything(out).includes(TOKEN));
+      const scan = node([join(here, "scan-evidence.mjs"), "--dir", out, "--secrets", privateDir]);
+      assert.equal(scan.status, 0, scan.stdout);
+    },
+  );
+}
 
 test("text a page hides from screen readers is checked too", { skip: noBrowser }, () => {
   const privateDir = privateWithAccount();
