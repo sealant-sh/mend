@@ -2,6 +2,7 @@ import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 
 import {
   AbortMultipartUploadCommand,
@@ -19,7 +20,7 @@ import {
   UploadPartCommand,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
-import { Effect, Layer, Schema, Semaphore } from "effect";
+import { Cause, Effect, Exit, Layer, Schema, Semaphore } from "effect";
 import * as Context from "effect/Context";
 
 import { mendHome } from "./paths.ts";
@@ -430,48 +431,56 @@ export const makeFsBlobStore = (root: string): typeof BlobStore.Service => {
   ) {
     yield* checkKey("put", key);
     const target = objectPath(key);
-    const tmp = path.join(tmpDir, `${crypto.randomUUID()}.part`);
-    yield* attempt("put", key, () => {
-      fs.mkdirSync(tmpDir, { recursive: true });
-      fs.mkdirSync(path.dirname(target), { recursive: true });
-    });
-    if (body instanceof Uint8Array) {
-      yield* attempt("put", key, () => fs.writeFileSync(tmp, body));
-    } else {
-      yield* Effect.tryPromise({
-        try: async () => {
-          const out = fs.createWriteStream(tmp);
-          await new Promise<void>((resolve, reject) => {
-            body.stream.on("error", reject);
-            out.on("error", reject);
-            out.on("finish", () => resolve());
-            body.stream.pipe(out);
+    return yield* Effect.acquireUseRelease(
+      Effect.sync(() => path.join(tmpDir, `${crypto.randomUUID()}.part`)),
+      (tmp) =>
+        Effect.gen(function* () {
+          yield* attempt("put", key, () => {
+            fs.mkdirSync(tmpDir, { recursive: true });
+            fs.mkdirSync(path.dirname(target), { recursive: true });
           });
-        },
-        catch: (cause) => new BlobStoreError({ operation: "put", key, cause }),
-      });
-    }
-    // Publish atomically: rename replaces; link refuses an existing target (EEXIST) — that is the
-    // `ifAbsent` race decided by the filesystem, not by a check we made a moment ago. Published
-    // read-only, so a `file://` URL's holder cannot rewrite the bytes in place (decision 19).
-    return yield* attempt("put", key, () => {
-      try {
-        fs.chmodSync(tmp, READ_ONLY);
-        if (options?.ifAbsent === true) {
-          try {
-            fs.linkSync(tmp, target);
-          } catch (error) {
-            if (isErrno(error, "EEXIST")) return { written: false };
-            throw error;
+          if (body instanceof Uint8Array) {
+            yield* attempt("put", key, () => fs.writeFileSync(tmp, body));
+          } else {
+            yield* Effect.callback<void, BlobStoreError>((resume, signal) => {
+              const settled = pipeline(body.stream, fs.createWriteStream(tmp), { signal }).then(
+                () => resume(Effect.void),
+                (cause) =>
+                  resume(Effect.fail(new BlobStoreError({ operation: "put", key, cause }))),
+              );
+              // Interruption aborts the pipeline, then waits for its streams to close. Removing
+              // the path sooner can race with the file stream's still-pending open.
+              return Effect.promise(() => settled);
+            });
           }
-          return { written: true };
-        }
-        fs.renameSync(tmp, target);
-        return { written: true };
-      } finally {
-        fs.rmSync(tmp, { force: true });
-      }
-    });
+          // Publish atomically: rename replaces; link refuses an existing target (EEXIST).
+          // Published read-only, so a file URL's holder cannot rewrite it (decision 19).
+          return yield* attempt("put", key, () => {
+            fs.chmodSync(tmp, READ_ONLY);
+            if (options?.ifAbsent === true) {
+              try {
+                fs.linkSync(tmp, target);
+              } catch (error) {
+                if (isErrno(error, "EEXIST")) return { written: false };
+                throw error;
+              }
+              return { written: true };
+            }
+            fs.renameSync(tmp, target);
+            return { written: true };
+          });
+        }),
+      (tmp, exit) =>
+        attempt("put", key, () => fs.rmSync(tmp, { force: true })).pipe(
+          Effect.catch((error) =>
+            Effect.failCause(
+              Exit.isFailure(exit)
+                ? Cause.combine(exit.cause, Cause.fail(error))
+                : Cause.fail(error),
+            ),
+          ),
+        ),
+    );
   });
 
   const get = Effect.fn("BlobStore.get")(function* (key: string) {
