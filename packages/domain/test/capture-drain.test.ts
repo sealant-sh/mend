@@ -290,7 +290,7 @@ describe("captureDrainStep while a final flush runs", () => {
       stallSeconds: 600,
       evidenceSaved: true,
     });
-    expect(step.kind).not.toBe("not-saved");
+    expect(step).toEqual({ kind: "saving", progressAtMs: 0 });
     expect(captureIncompleteWords("in-progress")).toBeNull();
   });
 });
