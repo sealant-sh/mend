@@ -583,6 +583,8 @@ describe("Store", () => {
     );
   });
 
+  // This journey exercises adoption, four checkpoints and review queries over real Git.
+  // Its integration budget covers the complete sequence of process launches.
   it("adopts, worktrees, checkpoints, and slices", async () => {
     await withStore((tmp, _origin, source) =>
       Effect.gen(function* () {
@@ -685,7 +687,7 @@ describe("Store", () => {
         expect(survivingDiff).toContain("extra.ts");
       }),
     );
-  });
+  }, 30_000);
 
   it("keeps the store group-writable so a root-side git cannot lock uid 1000 out", async () => {
     await withStore((_tmp, _origin, source) =>
