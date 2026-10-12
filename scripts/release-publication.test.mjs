@@ -73,7 +73,10 @@ test("nothing builds or publishes before the pins are checked", () => {
   const pins = job("pins");
   assert.match(pins, /fetch-depth: 0/);
   assert.match(pins, /node scripts\/check-release-pins\.mjs "\$GITHUB_REF_NAME"/);
-  assert.ok(dependencies("images").includes("pins"));
+  // Both actual build jobs need the gate: images calls image.yml; npm-pack builds and packs the CLI.
+  for (const name of ["images", "npm-pack"]) {
+    assert.ok(dependencies(name).includes("pins"), `${name} must wait for checked pins`);
+  }
   // npm, the GitHub release and the latest promotion all wait on images, so on the pins too.
   assert.ok(dependencies("github-release").includes("images"));
 });
