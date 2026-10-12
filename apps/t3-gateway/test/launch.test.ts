@@ -114,23 +114,57 @@ describe("orchestration.launchThread", () => {
       withGateway((mend) =>
         Effect.gen(function* () {
           mend.workbench.addProject("project-1", "mend");
+          mend.workbench.projectVisibility.set("project-1", "shared");
+          mend.workbench.addProject("private-project", "owner only");
+          mend.workbench.projectVisibility.set("private-project", "private");
+          mend.workbench.addSession({ id: "private-session", projectId: "private-project" });
           const { rpc } = yield* pairAndConnect(mend, "LAUNCHER");
           const launched = yield* rpc[ORCHESTRATION_V2_WS_METHODS.launchThread](
             launchInput({ threadId: ThreadId.make("draft-mine") }),
           );
           assert.strictEqual(launched.threadId, "draft-mine");
-          const sessionId = Array.from(mend.workbench.sessions.keys())[0] ?? "";
+          const created = Array.from(mend.workbench.sessions.values()).filter(
+            (session) => session.projectId === "project-1",
+          );
+          assert.lengthOf(created, 1);
+          const sessionId = created[0]?.id;
+          if (sessionId === undefined)
+            return yield* Effect.die(new Error("the launch must create a shared session"));
+          const mine = yield* rpc[ORCHESTRATION_V2_WS_METHODS.getThreadProjection]({
+            threadId: ThreadId.make("draft-mine"),
+          });
+          assert.strictEqual(mine.thread.id, "draft-mine");
+          const privateMine = yield* rpc[ORCHESTRATION_V2_WS_METHODS.getThreadProjection]({
+            threadId: ThreadId.make("private-session"),
+          });
+          assert.strictEqual(privateMine.thread.id, "private-session");
           const other = yield* pairAndConnect(mend, "TEAMMATE", {
             id: "user-2",
             name: "Bea",
             email: "bea@example.com",
           });
+          const ownerToken = mend.claims[0]?.token;
+          const otherToken = mend.claims[1]?.token;
+          if (ownerToken === undefined || otherToken === undefined)
+            return yield* Effect.die(new Error("both people must claim Mend device tokens"));
+          const detailStatus = (token: string, id: string) =>
+            Effect.promise(async () => {
+              const response = await fetch(new URL(`/api/sessions/${id}`, mend.url), {
+                headers: { authorization: `Bearer ${token}` },
+              });
+              await response.arrayBuffer();
+              return response.status;
+            });
+          assert.strictEqual(yield* detailStatus(ownerToken, "private-session"), 200);
+          assert.strictEqual(yield* detailStatus(otherToken, "private-session"), 404);
+          assert.strictEqual(yield* detailStatus(otherToken, sessionId), 200);
           const shell = yield* feed(other.rpc[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({}));
           const seen = yield* shell.next(
             (item): item is Extract<ShellItem, { kind: "snapshot" }> => item.kind === "snapshot",
           );
           const ids = seen.snapshot.threads.map((thread) => String(thread.id));
           assert.notInclude(ids, "draft-mine");
+          assert.notInclude(ids, "private-session");
           assert.include(ids, sessionId);
           const visible = yield* other.rpc[ORCHESTRATION_V2_WS_METHODS.getThreadProjection]({
             threadId: ThreadId.make(sessionId),
@@ -143,6 +177,12 @@ describe("orchestration.launchThread", () => {
             }),
           );
           assert.isTrue(Exit.isFailure(exit));
+          const privateOther = yield* Effect.exit(
+            other.rpc[ORCHESTRATION_V2_WS_METHODS.getThreadProjection]({
+              threadId: ThreadId.make("private-session"),
+            }),
+          );
+          assert.isTrue(Exit.isFailure(privateOther));
         }),
       ),
   );

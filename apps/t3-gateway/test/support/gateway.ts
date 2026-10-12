@@ -2,14 +2,66 @@ import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { EnvironmentHttpApi } from "@mend/t3-contracts";
 import type * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import type * as Fiber from "effect/Fiber";
 import * as HttpApiClient from "effect/http-api/HttpApiClient";
 import * as HttpRouter from "effect/http/HttpRouter";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
 
+import { AssetTracingDisabledLive, AssetUrlsLive } from "../../src/assets.ts";
+import { GatewayAuthLive } from "../../src/auth.ts";
 import { GatewayConfig } from "../../src/config.ts";
+import { GatewayEnvironmentLive } from "../../src/environment.ts";
+import { GatewayRoutesLive } from "../../src/http.ts";
+import { ProjectionsLive } from "../../src/hub.ts";
+import { MendClient, type MendCommand } from "../../src/mend-client.ts";
 import type { QueueTimings } from "../../src/queue.ts";
-import { GatewayAppLive } from "../../src/server.ts";
+import { GatewayAppLive, MendClientFetchLive } from "../../src/server.ts";
+import { GatewayStateLive } from "../../src/state.ts";
+import { WebSocketTicketsLive } from "../../src/tickets.ts";
+
+/** Observes the real launch caller fiber and the refusal its live HTTP client decoded. */
+export interface LaunchObserver {
+  /** Captures the calling fiber before the real HTTP launch begins. */
+  readonly started: (
+    sessionId: string,
+    fiber: Fiber.Fiber<unknown, unknown>,
+  ) => Effect.Effect<void>;
+  /** Reports the typed HTTP refusal while allowing the caller to process it normally. */
+  readonly failed: (
+    sessionId: string,
+    error: Effect.Error<MendCommand<unknown>>,
+  ) => Effect.Effect<void>;
+}
+
+// Only the observed launch case uses this composition. Every dependency remains its live
+// implementation; the wrapper captures the whole caller fiber, not a child HTTP fiber.
+const gatewayWithLaunchObserver = (observer: LaunchObserver) => {
+  const client = Layer.effect(
+    MendClient,
+    Effect.map(MendClient, (live) => ({
+      ...live,
+      launchProtocol: (...args: Parameters<typeof live.launchProtocol>) =>
+        Effect.gen(function* () {
+          const fiber = yield* Effect.fiber;
+          yield* observer.started(args[1], fiber);
+          return yield* live
+            .launchProtocol(...args)
+            .pipe(Effect.tapError((error) => observer.failed(args[1], error)));
+        }),
+    })),
+  ).pipe(Layer.provide(MendClientFetchLive));
+  return GatewayRoutesLive.pipe(
+    Layer.provide(GatewayAuthLive),
+    Layer.provide(ProjectionsLive),
+    Layer.provideMerge(WebSocketTicketsLive),
+    Layer.provideMerge(AssetUrlsLive),
+    Layer.provideMerge(AssetTracingDisabledLive),
+    Layer.provideMerge(GatewayEnvironmentLive),
+    Layer.provideMerge(client),
+    Layer.provideMerge(GatewayStateLive),
+  );
+};
 
 /**
  * The gateway on an ephemeral loopback port, in front of `mendUrl`, with its state in memory
@@ -22,6 +74,8 @@ export const gatewayTestLayer = (
   options: {
     readonly hubIdleTimeToLive?: Duration.Input;
     readonly queueTimings?: Partial<QueueTimings>;
+    /** Uses the same live dependencies with a client observer for one launch completion test. */
+    readonly launchObserver?: LaunchObserver;
     /**
      * Serves with the request logger on, as production does, and collects every log line (JSON)
      * here. Without it, nothing is logged.
@@ -29,10 +83,15 @@ export const gatewayTestLayer = (
     readonly logs?: Array<string>;
   } = {},
 ) =>
-  HttpRouter.serve(GatewayAppLive, {
-    disableLogger: options.logs === undefined,
-    disableListenLog: true,
-  }).pipe(
+  HttpRouter.serve(
+    options.launchObserver === undefined
+      ? GatewayAppLive
+      : gatewayWithLaunchObserver(options.launchObserver),
+    {
+      disableLogger: options.logs === undefined,
+      disableListenLog: true,
+    },
+  ).pipe(
     Layer.provideMerge(NodeHttpServer.layerTest),
     Layer.provide(
       options.logs === undefined ? Layer.empty : Logger.layer([collectingLogger(options.logs)]),
