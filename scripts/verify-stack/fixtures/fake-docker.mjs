@@ -16,6 +16,8 @@
 //   `rm` or `volume rm` of that name writes `<file>.paused` and waits, before it removes anything;
 // - FAKE_DOCKER_FAIL_RM (a file holding a container or volume name): removal of that resource
 //   fails without changing it while the file exists;
+// - FAKE_DOCKER_FAIL_LEDGER_READ (a file holding `{ stdout, stderr }`): reading the state-volume
+//   ledger fails with those partial outputs while the file exists;
 // - FAKE_DOCKER_PAUSE_PULL (a file): while it exists, a `pull` writes `<file>.paused` and waits;
 // - FAKE_DOCKER_RUN (a file holding `{ containers, volumes, networks }` of names, a container's
 //   name optionally with its labels and mounted volumes as `[name, labels, volumes]`): a `run`
@@ -140,9 +142,16 @@ else if (verb === "run" && args.some((arg) => arg.includes("umask 077"))) {
     state.files = { ...state.files, [args.at(-1)]: Buffer.concat(chunks).toString() };
   });
 } else if (verb === "run" && args.some((arg) => arg.includes("/state/ledger.json"))) {
+  const fault = process.env.FAKE_DOCKER_FAIL_LEDGER_READ;
+  if (fault && exists(fault)) {
+    const output = JSON.parse(readFileSync(fault, "utf8"));
+    process.stdout.write(output.stdout);
+    fail(output.stderr, 42);
+  }
   const files = await locked((state) => state.files ?? {});
   const copy = Object.entries(files).find(([path]) => path.endsWith("/ledger.json"));
   if (copy) process.stdout.write(copy[1]);
+  else process.stdout.write('{"containers":[],"volumes":[],"networks":[]}\n');
 } else if (verb === "run") {
   const script = process.env.FAKE_DOCKER_RUN;
   if (script && exists(script)) {

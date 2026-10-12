@@ -4,7 +4,7 @@
 // hang, when a case needs a start that holds its claim), so a start that gets past its claim goes
 // no further.
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import {
   chmodSync,
   existsSync,
@@ -117,6 +117,7 @@ function daemon({
       `export FAKE_DOCKER_PAUSE_LIST='${file("pause-list")}'`,
       `export FAKE_DOCKER_PAUSE_RM='${file("pause-rm")}'`,
       `export FAKE_DOCKER_FAIL_RM='${file("fail-rm")}'`,
+      `export FAKE_DOCKER_FAIL_LEDGER_READ='${file("fail-ledger-read")}'`,
       `export FAKE_DOCKER_PAUSE_PULL='${file("pause-pull")}'`,
       `export FAKE_DOCKER_RUN='${file("run")}'`,
       `export FAKE_DOCKER_PAUSE_RUN='${file("pause-run")}'`,
@@ -550,6 +551,266 @@ for (const resource of [STATE_VOLUME, "sealant-5e55", "mend-store"]) {
     assert.equal(existsSync(ledgerDirOf(fakeDaemon)), false, "retry removed the local ledger");
     assert.equal(existsSync(stateFile), false, "retry removed the local state");
   });
+}
+
+for (const { args, owned } of [
+  { args: ["down"], owned: true },
+  { args: ["down", "--force"], owned: true },
+  { args: ["down", "--force"], owned: false },
+]) {
+  test(
+    `${args.join(" ")} refuses a failed ledger read before removal, then retries (${owned ? "owned" : "orphaned"})`,
+    { timeout: 20_000 },
+    async () => {
+      const copyPath = `/fake/volumes/${STATE_VOLUME}/_data/ledger.json`;
+      const volumeLedger = JSON.stringify({
+        containers: [],
+        volumes: [{ name: "mend-store", createdAt: "2026-10-10T01:00:00Z" }],
+        networks: ["recorded-network"],
+      });
+      const fakeDaemon = daemon({
+        containers: [
+          ...(owned
+            ? generation("ledger-read-retry")
+            : [["verify-stack-relay", { [STACK_LABEL]: "1" }]]),
+          ["sealant-5e55", {}, mounts("mend-control")],
+          ["person-database", {}],
+        ],
+        volumes: [STATE_VOLUME, volume("mend-store", {}, "2026-10-10T01:00:00Z"), "person-data"],
+        networks: [{ Id: "recorded-network", Name: "sealant-5e55-network", Labels: {} }],
+        files: { [copyPath]: volumeLedger },
+      });
+      const before = fakeDaemon.read();
+      const recorded = before.containers.find((item) => item.Name === "/sealant-5e55");
+      assert.ok(recorded, "fixture has the locally recorded executor");
+      ledger(fakeDaemon, { containers: [recorded.Id] });
+      const ledgerFile = join(ledgerDirOf(fakeDaemon), "window.json");
+      const localLedger = readFileSync(ledgerFile, "utf8");
+      const stateFile = join(fakeDaemon.env.MEND_VERIFY_STACK_CACHE, "stack.json");
+      const savedState = JSON.stringify({ daemon: ledgerDirOf(fakeDaemon).split("/").at(-1) });
+      writeFileSync(stateFile, savedState, { mode: 0o600 });
+      writeFileSync(
+        fakeDaemon.file("fail-ledger-read"),
+        JSON.stringify({
+          stdout: "partial-private-ledger-output",
+          stderr: "private-ledger-read-error-token",
+        }),
+      );
+
+      const failed = fakeDaemon.run(args);
+      const code = await failed.done;
+      const calls = readFileSync(fakeDaemon.file("state.json.calls"), "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      assert.equal(
+        calls.filter(
+          (call) => call[0] === "run" && call.some((arg) => arg.includes("/state/ledger.json")),
+        ).length,
+        1,
+        "the state-volume read was attempted",
+      );
+      assert.equal(code, 1, failed.output());
+      assert.match(
+        failed.output(),
+        /the state volume's ledger could not be read; nothing was removed/,
+      );
+      assert.match(failed.output(), /The ledger and state are kept, so the next down tries again/);
+      assert.doesNotMatch(
+        failed.output(),
+        /partial-private-ledger-output|private-ledger-read-error-token/,
+      );
+      assert.deepEqual(
+        calls.filter(
+          (call) =>
+            call[0] === "rm" || (["volume", "network"].includes(call[0]) && call[1] === "rm"),
+        ),
+        [],
+        "no stack resource removal was attempted",
+      );
+      assert.deepEqual(
+        fakeDaemon.read(),
+        before,
+        "every resource, owner and volume ledger remains unchanged",
+      );
+      assert.equal(readFileSync(ledgerFile, "utf8"), localLedger);
+      assert.equal(readFileSync(stateFile, "utf8"), savedState);
+
+      rmSync(fakeDaemon.file("fail-ledger-read"));
+      const retried = fakeDaemon.run(args);
+      assert.equal(await retried.done, 0, retried.output());
+      const remaining = fakeDaemon.read();
+      assert.deepEqual(names(remaining), ["person-database"]);
+      assert.deepEqual(volumeNames(remaining), ["person-data"]);
+      assert.deepEqual(remaining.networks, []);
+      assert.equal(ownerOf(remaining), undefined);
+      assert.equal(existsSync(ledgerDirOf(fakeDaemon)), false);
+      assert.equal(existsSync(stateFile), false);
+    },
+  );
+}
+
+for (const args of [["down"], ["down", "--force"]]) {
+  test(
+    `${args.join(" ")} accepts a successful read with no state-volume ledger file`,
+    { timeout: 20_000 },
+    async () => {
+      const fakeDaemon = daemon({
+        containers: [...generation("absent-copy"), ["sealant-5e55", {}, mounts("mend-control")]],
+        volumes: [STATE_VOLUME],
+      });
+      const recorded = fakeDaemon.read().containers.find((item) => item.Name === "/sealant-5e55");
+      assert.ok(recorded);
+      ledger(fakeDaemon, { containers: [recorded.Id] });
+      const down = fakeDaemon.run(args);
+      assert.equal(await down.done, 0, down.output());
+      assert.deepEqual(names(fakeDaemon.read()), []);
+      assert.deepEqual(volumeNames(fakeDaemon.read()), []);
+      assert.equal(existsSync(ledgerDirOf(fakeDaemon)), false);
+    },
+  );
+}
+
+test(
+  "the ledger reader's production shell distinguishes real file absence from inaccessible or nonregular paths",
+  { timeout: 20_000 },
+  async () => {
+    const fakeDaemon = daemon({ containers: generation("shell-reader"), volumes: [STATE_VOLUME] });
+    const down = fakeDaemon.run(["down"]);
+    assert.equal(await down.done, 0, down.output());
+    const readers = callsOf(fakeDaemon).filter(
+      (args) =>
+        args[0] === "run" &&
+        args.includes("--entrypoint") &&
+        args.some((arg) => arg.includes("/state/ledger.json")),
+    );
+    assert.equal(readers.length, 1);
+    const script = readers[0].at(-1);
+    const root = mkdtempSync(join(tmpdir(), "verify-stack-ledger-shell-"));
+    roots.push(root);
+    chmodSync(root, 0o755);
+    const cases = [
+      "absent",
+      "regular",
+      "unreadable-file",
+      "unsearchable-directory",
+      "unreadable-directory",
+      "directory",
+      "broken-symlink",
+      "symlink",
+      "empty",
+      "whitespace",
+    ];
+    const results = [];
+    for (const kind of cases) {
+      const directory = join(root, kind);
+      const file = join(directory, "ledger.json");
+      mkdirSync(directory, { mode: 0o755 });
+      if (
+        ["regular", "unreadable-file", "unsearchable-directory", "unreadable-directory"].includes(
+          kind,
+        )
+      )
+        writeFileSync(file, "{}\n", { mode: 0o644 });
+      if (kind === "unreadable-file") chmodSync(file, 0o000);
+      if (kind === "unsearchable-directory") chmodSync(directory, 0o644);
+      if (kind === "unreadable-directory") chmodSync(directory, 0o111);
+      if (kind === "directory") mkdirSync(file);
+      if (kind === "broken-symlink") symlinkSync(join(directory, "missing"), file);
+      if (kind === "symlink") {
+        writeFileSync(join(directory, "target"), "{}\n", { mode: 0o644 });
+        symlinkSync(join(directory, "target"), file);
+      }
+      if (kind === "empty") writeFileSync(file, "", { mode: 0o644 });
+      if (kind === "whitespace") writeFileSync(file, " \n", { mode: 0o644 });
+      try {
+        // Only substitute the mount's path. The reader script itself is the real CLI's argv.
+        const result = spawnSync(
+          "sh",
+          ["-c", script.replaceAll("/state", '"$1"'), "ledger-reader", directory],
+          {
+            encoding: "utf8",
+            timeout: 5000,
+            env: { PATH: process.env.PATH, LC_ALL: "C" },
+            ...(process.getuid?.() === 0 ? { uid: 65534, gid: 65534 } : {}),
+          },
+        );
+        assert.equal(result.error, undefined);
+        results.push({ kind, status: result.status, stdout: result.stdout });
+      } finally {
+        chmodSync(directory, 0o755);
+      }
+    }
+    assert.deepEqual(
+      results,
+      cases.map((kind) => ({
+        kind,
+        status: ["absent", "regular", "empty", "whitespace"].includes(kind) ? 0 : 1,
+        stdout:
+          kind === "absent"
+            ? '{"containers":[],"volumes":[],"networks":[]}\n'
+            : kind === "regular"
+              ? "{}\n"
+              : kind === "whitespace"
+                ? " \n"
+                : "",
+      })),
+    );
+  },
+);
+
+for (const [kind, copy] of [
+  ["empty", ""],
+  ["whitespace", " \n"],
+  ["malformed-private", "private-data"],
+]) {
+  test(
+    `a present ${kind} ledger copy refuses teardown and retains its records`,
+    { timeout: 20_000 },
+    async () => {
+      const copyPath = `/fake/volumes/${STATE_VOLUME}/_data/ledger.json`;
+      const fakeDaemon = daemon({
+        containers: generation("invalid-copy"),
+        volumes: [STATE_VOLUME],
+        files: { [copyPath]: copy },
+      });
+      ledger(fakeDaemon, {});
+      const ledgerFile = join(ledgerDirOf(fakeDaemon), "window.json");
+      const beforeLedger = readFileSync(ledgerFile, "utf8");
+      const stateFile = join(fakeDaemon.env.MEND_VERIFY_STACK_CACHE, "stack.json");
+      const savedState = JSON.stringify({ daemon: ledgerDirOf(fakeDaemon).split("/").at(-1) });
+      writeFileSync(stateFile, savedState, { mode: 0o600 });
+      const before = fakeDaemon.read();
+      const down = fakeDaemon.run(["down", "--force"]);
+      assert.equal(await down.done, 1, down.output());
+      assert.doesNotMatch(down.output(), /private-data/);
+      assert.match(
+        down.output(),
+        /the state volume's ledger.json cannot be read \(invalid ledger JSON\); nothing was removed/,
+      );
+      assert.deepEqual(fakeDaemon.read(), before);
+      assert.equal(readFileSync(ledgerFile, "utf8"), beforeLedger);
+      assert.equal(readFileSync(stateFile, "utf8"), savedState);
+      assert.deepEqual(
+        callsOf(fakeDaemon).filter(
+          (args) =>
+            args[0] === "rm" || (["volume", "network"].includes(args[0]) && args[1] === "rm"),
+        ),
+        [],
+      );
+      // The printed recovery command moves the invalid copy aside instead of deleting its evidence.
+      const repaired = fakeDaemon.read();
+      repaired.files[`${copyPath}.bad`] = repaired.files[copyPath];
+      delete repaired.files[copyPath];
+      writeFileSync(fakeDaemon.file("state.json"), JSON.stringify(repaired));
+      const retry = fakeDaemon.run(["down", "--force"]);
+      assert.equal(await retry.done, 0, retry.output());
+      assert.deepEqual(names(fakeDaemon.read()), []);
+      assert.deepEqual(volumeNames(fakeDaemon.read()), []);
+      assert.equal(existsSync(ledgerDirOf(fakeDaemon)), false);
+      assert.equal(existsSync(stateFile), false);
+    },
+  );
 }
 
 test("down --force on a daemon with no stack of its own removes nothing of a product server (N13)", async () => {
