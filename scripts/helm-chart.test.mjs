@@ -5,6 +5,8 @@ import * as path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { parseAllDocuments } from "yaml";
+
 // The Mend chart (deploy/helm/mend) renders the capture store both ways it is pointed at a bucket
 // — a Rook ObjectBucketClaim's outputs, or a plain s3:// URL — and nothing of the retired RWX
 // co-located store (docs/KUBERNETES.md "The store"). Needs `helm` on PATH; skipped without it.
@@ -28,6 +30,27 @@ const documentOf = (manifest, kind, name) => {
     .find((d) => d.includes(`kind: ${kind}\n`) && d.includes(`name: ${name}\n`));
   assert.ok(doc, `${kind} ${name} rendered`);
   return doc;
+};
+
+const podsOf = (document) => {
+  if (document.kind === "List") return document.items.flatMap(podsOf);
+  const spec =
+    document.kind === "Pod"
+      ? document.spec
+      : (document.spec?.template?.spec ?? document.spec?.jobTemplate?.spec?.template?.spec);
+  return spec ? [{ name: `${document.kind}/${document.metadata.name}`, spec }] : [];
+};
+
+const renderedPods = (manifest) => {
+  return parseAllDocuments(manifest).flatMap((document) => {
+    assert.equal(
+      document.errors.length,
+      0,
+      document.errors.map((error) => error.message).join("\n"),
+    );
+    const resource = document.toJS();
+    return resource === null ? [] : podsOf(resource);
+  });
 };
 
 const renderFixture = (fixture, ...settings) =>
@@ -198,6 +221,24 @@ test("nothing RWX is rendered and the store claim is the API Pod's alone", { ski
     assert.equal(result.status, 0, result.stderr);
     assert.ok(!result.stdout.includes("ReadWriteMany"), `${values}: no ReadWriteMany`);
     assert.ok(!/volumeMappings\[|SEALANT_K8S_VOLUME_MAPPINGS/.test(result.stdout), values);
+    const claim = "mend-store";
+    const owners = renderedPods(result.stdout).filter(({ spec }) =>
+      (spec.volumes ?? []).some((volume) => volume.persistentVolumeClaim?.claimName === claim),
+    );
+    assert.deepEqual(
+      owners.map(({ name }) => name),
+      ["Deployment/mend-api"],
+      `${values}: only the API Pod references the store claim`,
+    );
+    const storeVolumes = owners[0].spec.volumes
+      .filter((volume) => volume.persistentVolumeClaim?.claimName === claim)
+      .map((volume) => volume.name);
+    const apiContainer = owners[0].spec.containers.find((container) => container.name === "mend");
+    assert.ok(apiContainer, `${values}: the API container mend is rendered`);
+    assert.ok(
+      (apiContainer.volumeMounts ?? []).some((mount) => storeVolumes.includes(mount.name)),
+      `${values}: the API container actually mounts its store claim`,
+    );
     const web = envOf(result.stdout, "mend-web");
     assert.equal(web.get("MEND_BLOB_STORE"), undefined, "the web tier holds no bucket config");
     assert.equal(web.get("AWS_ACCESS_KEY_ID"), undefined);
