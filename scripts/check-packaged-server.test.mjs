@@ -1100,7 +1100,7 @@ test("flush attempt evidence names this session's refusals, timeouts and partial
   const echild = "The workspace runtime refused the flush: No child process (os error 10)";
   const log = `noise\n${refused("other", "checkpoint · turn-boundary", echild)}${refused(sessionId, "checkpoint · turn-boundary", echild)}${timedOut(sessionId)}${partial(sessionId)}`;
   assert.deepEqual(flushAttemptEvidence(log, sessionId), [
-    `refused · checkpoint · turn-boundary · ${echild}`,
+    "refused · checkpoint · turn-boundary · runtime refused (no child process, os error 10)",
     "timed out · planned stop · after 20000ms",
     "partial · observed · planned stop · pending 2, fenced true",
   ]);
@@ -1115,14 +1115,165 @@ test("flush attempt evidence names this session's refusals, timeouts and partial
   assert.deepEqual(flushAttemptEvidence(log, "other-id"), []);
   assert.deepEqual(flushAttemptEvidence(log, ""), []);
   assert.deepEqual(flushAttemptEvidence(undefined, sessionId), []);
-  // Bounded: at most `limit` lines, each truncated, so a timeout cannot dump the container log.
+  // Bounded: at most `limit` lines of classified detail, newest last.
+  const contexts = [
+    "planned stop",
+    "capture reading",
+    "settle harvest",
+    "process-end harvest",
+    "planned stop",
+    "checkpoint · user-mark",
+    "drain · stop",
+    "drain · replacement",
+    "handoff harvest",
+  ];
   const many = Array.from({ length: 9 }, (_, i) =>
-    refused(sessionId, `why-${i}`, "x".repeat(400)),
+    refused(sessionId, contexts[i], "x".repeat(400)),
   ).join("");
   const bounded = flushAttemptEvidence(many, sessionId, 4);
   assert.equal(bounded.length, 4);
   assert.ok(bounded.every((line) => line.length <= 200));
-  assert.ok(bounded[3].startsWith("refused · why-8 · "));
+  assert.deepEqual(bounded, [
+    "refused · checkpoint · user-mark · error detail withheld",
+    "refused · drain · stop · error detail withheld",
+    "refused · drain · replacement · error detail withheld",
+    "refused · handoff harvest · error detail withheld",
+  ]);
+});
+
+test("flush attempt public diagnostics never copy arbitrary error or why annotations", () => {
+  const sessionId = "synthetic-session";
+  const payloads = [
+    "fetch https://synthetic-user:synthetic-password@example.invalid/x?credential=synthetic-token failed",
+    "OpaqueSyntheticCredential9xW72pQ18tC6rN4z",
+    "/home/synthetic-owner/private/config.json",
+    "private detail\nsecond private line",
+    "unterminated ' private annotation",
+    'private "double quoted" detail',
+    "x".repeat(400),
+  ];
+  for (const payload of payloads) {
+    const refused = (why, error) =>
+      `session engine: capture flush · refused {\n  sessionId: '${sessionId}',\n  why: '${why}',\n  error: '${error}'\n}`;
+    assert.deepEqual(
+      flushAttemptEvidence(refused("checkpoint · turn-boundary", payload), sessionId),
+      ["refused · checkpoint · turn-boundary · error detail withheld"],
+    );
+    assert.deepEqual(flushAttemptEvidence(refused(payload, payload), sessionId), [
+      "refused · unknown · error detail withheld",
+    ]);
+    // This is the actual timeout description assembly used by the packaged acceptance caller.
+    const publicDescription = `a completed capture flush report for the session; the engine logged only: ${flushAttemptEvidence(refused(payload, payload), sessionId).join(" | ")}`;
+    assert.equal(
+      publicDescription,
+      "a completed capture flush report for the session; the engine logged only: refused · unknown · error detail withheld",
+    );
+  }
+  const malformed = `session engine: capture flush · refused {\n sessionId: '${sessionId}',\n why: "private-context",\n error: "private-error"\n}`;
+  assert.deepEqual(flushAttemptEvidence(malformed, sessionId), [
+    "refused · unknown · error detail withheld",
+  ]);
+});
+
+test("flush diagnostics validate timeout, pending and fenced fields without accepting partial values", () => {
+  const sessionId = "synthetic-session";
+  const attempt = (kind, fields) =>
+    `session engine: capture flush · ${kind} {\n  sessionId: '${sessionId}',\n  why: 'planned stop',\n${fields}\n}`;
+  for (const invalid of [
+    "true",
+    "false",
+    "-1",
+    "20000.5",
+    "20000private",
+    "999999999999999999999999",
+    "'synthetic-token'",
+    "86400001",
+  ]) {
+    assert.deepEqual(
+      flushAttemptEvidence(attempt("timed out", `  timeoutMs: ${invalid}`), sessionId),
+      ["timed out · planned stop · timeout unavailable"],
+    );
+  }
+  for (const invalid of [
+    "true",
+    "-1",
+    "2.5",
+    "2private",
+    "999999999999999999999999",
+    "'synthetic-token'",
+  ]) {
+    assert.deepEqual(
+      flushAttemptEvidence(
+        attempt("partial · observed", `  pending: ${invalid},\n  fenced: true`),
+        sessionId,
+      ),
+      ["partial · observed · planned stop · pending ?, fenced true"],
+    );
+  }
+  for (const invalid of ["0", "1", "trueprivate", "'synthetic-token'"]) {
+    assert.deepEqual(
+      flushAttemptEvidence(
+        attempt("partial · observed", `  pending: 2,\n  fenced: ${invalid}`),
+        sessionId,
+      ),
+      ["partial · observed · planned stop · pending 2, fenced ?"],
+    );
+  }
+  assert.deepEqual(flushAttemptEvidence(attempt("timed out", "  timeoutMs: 0"), sessionId), [
+    "timed out · planned stop · after 0ms",
+  ]);
+  assert.deepEqual(flushAttemptEvidence(attempt("timed out", "  timeoutMs: 86400000"), sessionId), [
+    "timed out · planned stop · after 86400000ms",
+  ]);
+  assert.deepEqual(
+    flushAttemptEvidence(
+      attempt("partial · observed", "  pending: 999999999,\n  fenced: false"),
+      sessionId,
+    ),
+    ["partial · observed · planned stop · pending 999999999, fenced false"],
+  );
+  // A numeric-looking line inside a private quoted annotation is not a structured state field.
+  for (const key of ["why", "error"]) {
+    for (const quote of ["'", '"', "`"]) {
+      for (const closed of [true, false]) {
+        const privateFields = `${key}: ${quote}private first line\n  timeoutMs: 31415926,\n  pending: 31415926,\n  fenced: true\nprivate last line${closed ? quote : ""}`;
+        assert.deepEqual(
+          flushAttemptEvidence(attempt("timed out", `  ${privateFields}`), sessionId),
+          ["timed out · planned stop · timeout unavailable"],
+        );
+        assert.deepEqual(
+          flushAttemptEvidence(attempt("partial · observed", `  ${privateFields}`), sessionId),
+          ["partial · observed · planned stop · pending ?, fenced ?"],
+        );
+      }
+    }
+  }
+});
+
+test("completed flush evidence keeps known operation context and withholds arbitrary plain-word context", () => {
+  const sessionId = "synthetic-session";
+  const complete = (why) =>
+    `session engine: capture flush · completed · observed {\n  sessionId: '${sessionId}',\n  why: '${why}',\n  pending: 0,\n  registered: 1,\n  fenced: false\n}`;
+  assert.equal(
+    flushReportEvidence(complete("checkpoint · turn-boundary"), sessionId).why,
+    "checkpoint · turn-boundary",
+  );
+  assert.equal(
+    flushReportEvidence(complete("OpaqueSyntheticCredential9xW72pQ18tC6rN4z"), sessionId).why,
+    "unknown",
+  );
+  assert.equal(
+    flushReportEvidence(complete("automatic landing · turn 12"), sessionId).why,
+    "automatic landing",
+  );
+  assert.equal(
+    flushReportEvidence(complete("automatic landing · turn 12PrivateToken"), sessionId).why,
+    "unknown",
+  );
+  assert.deepEqual(
+    flushAttemptEvidence(complete("OpaqueSyntheticCredential9xW72pQ18tC6rN4z"), sessionId),
+    [],
+  );
 });
 
 test("a request that throws names its route, its wait and its class, never its message", () => {

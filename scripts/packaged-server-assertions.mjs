@@ -254,6 +254,36 @@ export function captureRegisteredEvidence(observation) {
     : false;
 }
 
+// Public diagnostic context is a closed vocabulary, not arbitrary words from an annotation.
+const flushContexts = new Set([
+  "checkpoint · session-start",
+  "checkpoint · command-settle",
+  "checkpoint · turn-boundary",
+  "checkpoint · review-open",
+  "checkpoint · user-mark",
+  "drain · stop",
+  "drain · relaunch",
+  "drain · replacement",
+  "planned stop",
+  "capture reading",
+  "opencode launch snapshot",
+  "settle harvest",
+  "process-end harvest",
+  "handoff harvest",
+  "agent memory hand-over",
+  "automatic landing",
+  "landing",
+]);
+const publicFlushContext = (value) =>
+  flushContexts.has(value)
+    ? value
+    : /^automatic landing · turn [1-9]\d{0,8}$/.test(value ?? "")
+      ? "automatic landing"
+      : "unknown";
+
+const quotedFlushAnnotation = (body, key) =>
+  body.match(new RegExp(`(?:^|\\n)\\s*${key}: '([^'\\n]*)'\\s*,?\\s*(?=\\n|$)`))?.[1];
+
 /**
  * The engine's flush report at a turn boundary or stop, as logged by the Mend container:
  * "session engine: capture flush · completed · observed { sessionId: '…', …, registered: n, … }".
@@ -274,9 +304,7 @@ export function flushReportEvidence(logText, sessionId) {
       const found = body.match(new RegExp(`\\b${key}: (true|false)\\b`));
       return found === null ? undefined : found[1] === "true";
     };
-    // Which flush answered (`checkpoint · turn-boundary`, `planned stop`, …): engine words, kept
-    // only when they are plain words, so the CI log says what the next stage queued behind.
-    const why = body.match(/\bwhy: '([\w ·-]{1,60})'/)?.[1] ?? "unknown";
+    const why = publicFlushContext(quotedFlushAnnotation(body, "why"));
     const report = {
       headN: number("headN"),
       pending: number("pending"),
@@ -298,10 +326,10 @@ export function flushReportEvidence(logText, sessionId) {
 
 /**
  * Every flush the engine logged for THIS session that did not complete: refusals, timeouts and
- * partial reports, newest last, each as "<kind> · <why> · <error or detail>". The flush stage
- * waits for one completed report, so when it times out these lines are the whole cause and the
- * only thing the CI log would otherwise be missing. Engine-authored annotations only — no HTTP
- * body, output or credential reaches this text — and both the count and each line are bounded.
+ * partial reports, newest last, each as "<kind> · <known context> · <classified detail>".
+ * An error annotation can carry a credential or private path: it is never copied to this public
+ * timeout diagnostic. Only exact known refusal classifications and validated state fields leave
+ * the runner; unknown detail is explicitly withheld. Both the count and each line are bounded.
  */
 export function flushAttemptEvidence(logText, sessionId, limit = 6) {
   if (typeof logText !== "string" || typeof sessionId !== "string" || !sessionId) return [];
@@ -311,14 +339,39 @@ export function flushAttemptEvidence(logText, sessionId, limit = 6) {
   for (const match of logText.matchAll(pattern)) {
     const body = match[2];
     if (!body.includes(`sessionId: '${sessionId}'`)) continue;
-    const quoted = (key) => body.match(new RegExp(`\\b${key}: '([^']*)'`))?.[1];
-    const numeric = (key) => body.match(new RegExp(`\\b${key}: (-?\\d+|true|false)\\b`))?.[1];
-    const detail =
-      quoted("error") ??
-      (numeric("timeoutMs") === undefined
-        ? `pending ${numeric("pending") ?? "?"}, fenced ${numeric("fenced") ?? "?"}`
-        : `after ${numeric("timeoutMs")}ms`);
-    seen.push(`${match[1]} · ${quoted("why") ?? "unknown"} · ${detail}`.slice(0, 200));
+    // A private string may contain lines resembling state annotations. Parse numbers only from
+    // outside quoted values, and decline state fields if a malformed quote remains.
+    const unquoted = body.replace(
+      /'(?:\\[\s\S]|[^'\\])*'|"(?:\\[\s\S]|[^"\\])*"|`(?:\\[\s\S]|[^`\\])*`/g,
+      "null",
+    );
+    const stateFields = /['"`]/.test(unquoted) ? "" : unquoted;
+    const numeric = (key, maximum) => {
+      const raw = stateFields.match(
+        new RegExp(`(?:^|\\n)\\s*${key}: (\\d{1,9})\\s*,?\\s*(?=\\n|$)`),
+      )?.[1];
+      if (raw === undefined) return undefined;
+      const value = Number(raw);
+      return value <= maximum ? value : undefined;
+    };
+    const timeoutMs = numeric("timeoutMs", 86_400_000);
+    const pending = numeric("pending", 999_999_999);
+    const fenced = stateFields.match(/(?:^|\n)\s*fenced: (true|false)\s*,?\s*(?=\n|$)/)?.[1];
+    let detail;
+    if (match[1] === "refused") {
+      detail =
+        quotedFlushAnnotation(body, "error") ===
+        "The workspace runtime refused the flush: No child process (os error 10)"
+          ? "runtime refused (no child process, os error 10)"
+          : "error detail withheld";
+    } else if (match[1] === "timed out") {
+      detail = timeoutMs === undefined ? "timeout unavailable" : `after ${timeoutMs}ms`;
+    } else {
+      detail = `pending ${pending ?? "?"}, fenced ${fenced ?? "?"}`;
+    }
+    seen.push(
+      `${match[1]} · ${publicFlushContext(quotedFlushAnnotation(body, "why"))} · ${detail}`,
+    );
   }
   return seen.slice(-limit);
 }
