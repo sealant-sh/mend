@@ -35,6 +35,7 @@ import {
   WorktreeChangesRepo,
   WorktreesRepo,
   SessionGitOpsRepo,
+  type SessionGitOpRow,
   SessionNotFoundError,
   SessionProcessesRepo,
   SessionRunActiveError,
@@ -3260,6 +3261,7 @@ const withEngine = <A, E>(
     readonly socketHostLayer?: Layer.Layer<SessionSocketHost>;
     /** Every account's Mend key; one shared stub path unless a test says. */
     readonly mendKeysLayer?: Layer.Layer<MendKeys>;
+    readonly gitOpsLayer?: Layer.Layer<SessionGitOpsRepo>;
     /** Every account's signer; never connected unless a test says. */
     readonly agentBridgeLayer?: Layer.Layer<AgentBridge>;
     /** Mend's git verification of captures (capture mode); off — every capture unverified — unless a test says. */
@@ -3393,7 +3395,7 @@ const withEngine = <A, E>(
       Layer.mergeAll(
         options.mendKeysLayer ?? mendKeysStubLayer,
         options.agentBridgeLayer ?? agentBridgeStubLayer,
-        gitOpsStubLayer,
+        options.gitOpsLayer ?? gitOpsStubLayer,
         changesLayer(world),
         worktreesLayer(world),
         checkpointsLayer(world),
@@ -13273,6 +13275,98 @@ describe("SessionEngine capture mode", () => {
       { sealantLayer: sealantLaunchLayer(created) },
     );
   });
+
+  it.each([
+    { command: "git-upload-pack 'fixture.git'; printf injected", kind: null },
+    { command: "git-upload-pack 'fixture.git'\nprintf injected", kind: null },
+    { command: 'git-upload-pack "$(printf fixture.git)"', kind: null },
+    { command: "git-upload-pack 'fixture.git' extra-argument", kind: null },
+    { command: "git-upload-pack 'fixture.git'", kind: "fetch" },
+  ])(
+    "a workspace git transport validates the full command: $command",
+    async ({ command, kind }) => {
+      const created: Array<CreateOptions> = [];
+      const keysAsked: Array<string> = [];
+      const operations: Array<SessionGitOpRow> = [];
+      const gitOpsLayer: Layer.Layer<SessionGitOpsRepo> = Layer.effect(
+        SessionGitOpsRepo,
+        Effect.map(SessionGitOpsRepo, (inner) => ({
+          ...inner,
+          record: (op) =>
+            inner
+              .record(op)
+              .pipe(Effect.tap((row) => Effect.sync(() => void operations.push(row)))),
+        })),
+      ).pipe(Layer.provide(gitOpsStubLayer));
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const project = yield* setup(tmp, world);
+            const engine = yield* SessionEngine;
+            const session = yield* engine.provision({
+              projectId: project.id,
+              harness: "codex",
+              label: null,
+              name: null,
+              ownerUserId: "user-fixture",
+              base: null,
+            });
+            yield* engine.launch(session.id, ["codex"]);
+            const api = servedSocketApis.get(session.id);
+            if (api === undefined) throw new Error("the session serves no socket api");
+            const host = `git@${new URL(project.originUrl ?? "").hostname}`;
+            keysAsked.length = 0;
+            operations.length = 0;
+            const result = yield* api.gitTransport({ host, port: null, command }).pipe(Effect.exit);
+            if (kind === null) {
+              expect(failureText(result)).toContain("this socket carries git transport only");
+              expect(keysAsked).toEqual([]);
+              expect(operations).toEqual([]);
+              return;
+            }
+            if (!Exit.isSuccess(result)) throw new Error(failureText(result));
+            expect(result.value).toEqual({
+              opId: operations[0]?.id,
+              kind: "fetch",
+              argv: [
+                "ssh",
+                "-F",
+                "/dev/null",
+                "-i",
+                "/keys/user-fixture",
+                "-o",
+                "IdentitiesOnly=yes",
+                "-o",
+                "StrictHostKeyChecking=accept-new",
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                "SendEnv=GIT_PROTOCOL",
+                "--",
+                host,
+                command,
+              ],
+            });
+            expect(keysAsked).toEqual(["user-fixture"]);
+            expect(operations).toHaveLength(1);
+            expect(operations[0]).toMatchObject({
+              sessionId: session.id,
+              projectId: project.id,
+              host,
+              port: null,
+              kind: "fetch",
+              command,
+              authMode: "mend-key",
+            });
+          }),
+        {
+          sealantLayer: sealantLaunchLayer(created),
+          mendKeysLayer: perAccountKeys(keysAsked),
+          gitOpsLayer,
+        },
+      );
+    },
+  );
 
   it("a session with no owner launches as nobody: it settles failed before any platform call", async () => {
     const created: Array<CreateOptions> = [];
