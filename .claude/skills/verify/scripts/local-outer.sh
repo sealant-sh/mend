@@ -193,7 +193,7 @@ serve)
   if mend projects --json | grep -q '"name": "mend"'; then
     mend refresh --project mend > /dev/null
   else
-    mend adopt http://outer-fixture:9080/repo.git --name mend --auth ambient --shared > /dev/null
+    mend adopt http://outer-fixture:9080/repo.git --name mend --shared > /dev/null
   fi
   echo "local-outer · project mend serves $commit (tree of $(git -C "$checkout" rev-parse --short "$ref"), complete history)"
   ;;
