@@ -237,20 +237,26 @@ export const makeSourcePolicy = (options: SourcePolicyOptions): SourcePolicy["Se
       };
       const existing = Number(pinned["GIT_CONFIG_COUNT"] ?? "0");
       let index = Number.isInteger(existing) && existing > 0 ? existing : 0;
+      const parameters = [env["GIT_CONFIG_PARAMETERS"] ?? inherited["GIT_CONFIG_PARAMETERS"] ?? ""];
       if (isIP(clearance.host) === 0) {
+        const resolve = `${clearance.host}:${port}:${isIP(address) === 6 ? `[${address}]` : address}`;
         pinned[`GIT_CONFIG_KEY_${index}`] = "http.curloptResolve";
-        pinned[`GIT_CONFIG_VALUE_${index}`] =
-          `${clearance.host}:${port}:${isIP(address) === 6 ? `[${address}]` : address}`;
+        pinned[`GIT_CONFIG_VALUE_${index}`] = resolve;
         index += 1;
+        // PARAMETERS wins over counted config; URL-specific settings win over generic ones.
+        // Append the checked host last so libcurl replaces earlier entries for that host/port.
+        parameters.push(
+          `${quoteGitConfigParameter("http.curloptResolve")}=${quoteGitConfigParameter(resolve)}`,
+          `${quoteGitConfigParameter(`http.${clearance.source}.curloptResolve`)}=${quoteGitConfigParameter(resolve)}`,
+        );
       }
       // Git prefers URL-specific settings over generic ones, even from a lower config scope.
       // The exact checked URL must refuse redirects too, before any unchecked host is reached.
       // PARAMETERS is read after counted config. Append refusals using Git's shell-quote grammar.
-      const parameters = env["GIT_CONFIG_PARAMETERS"] ?? inherited["GIT_CONFIG_PARAMETERS"] ?? "";
       return {
         ...pinned,
         GIT_CONFIG_PARAMETERS: [
-          parameters,
+          ...parameters,
           `${quoteGitConfigParameter("http.followRedirects")}='false'`,
           `${quoteGitConfigParameter(`http.${clearance.source}.followRedirects`)}='false'`,
         ]
