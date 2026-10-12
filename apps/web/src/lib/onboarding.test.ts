@@ -37,6 +37,33 @@ describe("passwordProblem", () => {
 });
 
 describe("safeNextPath", () => {
+  // fast-check builds its Unicode reverse lookup on first construction. Build the
+  // arbitrary during collection so the deadline measures the seeded property run.
+  const arbitraryNext = FastCheck.oneof(
+    FastCheck.string({ unit: "binary", maxLength: 128 }),
+    FastCheck.string({ unit: "binary", maxLength: 128 }).map((suffix) => `/${suffix}`),
+    FastCheck.array(
+      FastCheck.constantFrom(
+        "/",
+        "\\",
+        "\t",
+        "\r",
+        "\n",
+        " ",
+        "\0",
+        "evil.example",
+        "mend.invalid",
+        "[::1]",
+        "%2f",
+        "%5c",
+        "?",
+        "#",
+        "@",
+      ),
+      { maxLength: 12 },
+    ).map((parts) => parts.join("")),
+  );
+
   it.each([
     "/",
     "/settings#devices",
@@ -89,30 +116,6 @@ describe("safeNextPath", () => {
   );
 
   it("every generated result resolves to the current origin under WHATWG URL parsing", () => {
-    const arbitraryNext = FastCheck.oneof(
-      FastCheck.string({ unit: "binary", maxLength: 128 }),
-      FastCheck.string({ unit: "binary", maxLength: 128 }).map((suffix) => `/${suffix}`),
-      FastCheck.array(
-        FastCheck.constantFrom(
-          "/",
-          "\\",
-          "\t",
-          "\r",
-          "\n",
-          " ",
-          "\0",
-          "evil.example",
-          "mend.invalid",
-          "[::1]",
-          "%2f",
-          "%5c",
-          "?",
-          "#",
-          "@",
-        ),
-        { maxLength: 12 },
-      ).map((parts) => parts.join("")),
-    );
     FastCheck.assert(
       FastCheck.property(arbitraryNext, (input) => {
         const next = safeNextPath(input);
