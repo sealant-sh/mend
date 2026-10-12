@@ -334,6 +334,87 @@ test("--newer exits 0 only for a newer next version, and fails closed on garbage
   assert.equal(newer("0.36.0-next.1", "garbage"), 1);
 });
 
+test("both complete versions must be canonical before comparing different or equal cores", () => {
+  const invalid = [
+    "0.37.0-next.garbage",
+    "0.36.0-next.garbage",
+    "0.36.0-next.",
+    "0.36.0-next.01",
+    "0.36.0-next.-1",
+    "0.36.0-next.1extra",
+    "0.36.0-next.1.preview.4",
+    "0.36.0+build",
+    "0.36.0-alpha.1",
+    "v0.36.0",
+    "00.36.0",
+    "0.036.0",
+    "0.36.00",
+    "0.36",
+    "0.36.0.1",
+    "0.36.0-next.1 ",
+    "0.36.0\n",
+    "0.36.0-next.Infinity",
+    "0.36.0-next.NaN",
+    "0.36.0-next.1e3",
+    "0.36.0-next.1.2",
+    "garbage",
+  ];
+  const valid = ["0.35.0-next.1", "0.36.0-next.1", "0.37.0-next.1", "0.36.0"];
+  for (const bad of invalid) {
+    for (const control of valid) {
+      for (const [a, b] of [
+        [bad, control],
+        [control, bad],
+      ]) {
+        const run = spawnSync(process.execPath, [
+          new URL("./next-version.mjs", import.meta.url).pathname,
+          "--newer",
+          a,
+          b,
+        ]);
+        assert.equal(run.status, 1, "the public --newer CLI accepted malformed input");
+        assert.equal(run.stdout.length, 0);
+        assert.equal(run.stderr.length, 0);
+        assert.ok(Number.isNaN(compareNext(a, b)), "invalid input produced an order");
+      }
+    }
+  }
+  for (const bad of [undefined, null, 123, {}, []]) {
+    assert.ok(Number.isNaN(compareNext(bad, "0.36.0-next.1")));
+    assert.ok(Number.isNaN(compareNext("0.36.0-next.1", bad)));
+  }
+});
+
+test("the public newer comparison preserves stable and next ordering after full validation", () => {
+  const pairs = [
+    ["0.37.0-next.0", "0.36.0-next.999", 1],
+    ["0.36.1-next.0", "0.36.0-next.999", 1],
+    ["1.0.0-next.0", "0.99.99", 1],
+    ["0.36.0", "0.36.0-next.999", 1],
+    ["0.36.0-next.10", "0.36.0-next.9", 1],
+    ["0.36.0-next.1", "0.36.0-next.0", 1],
+    ["0.36.0", "0.36.0", 0],
+    ["0.36.0-next.0", "0.36.0-next.0", 0],
+  ];
+  for (const [a, b, order] of pairs) {
+    for (const [left, right, expected] of [
+      [a, b, order],
+      [b, a, -order],
+    ]) {
+      assert.equal(Math.sign(compareNext(left, right)), expected === 0 ? 0 : expected);
+      const run = spawnSync(process.execPath, [
+        new URL("./next-version.mjs", import.meta.url).pathname,
+        "--newer",
+        left,
+        right,
+      ]);
+      assert.equal(run.status, expected > 0 ? 0 : 1);
+      assert.equal(run.stdout.length, 0);
+      assert.equal(run.stderr.length, 0);
+    }
+  }
+});
+
 test("publishing only some commits, with merge commits in main, still only goes up", (t) => {
   const levels = ["patch", "minor", "major"];
   const bump = (version, level) => {

@@ -36,6 +36,10 @@ import { pathToFileURL } from "node:url";
 const STABLE_TAG = /^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const NEXT_VERSION = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)-next\.(0|[1-9]\d*)$/;
 const LEVELS = ["patch", "minor", "major"];
+const isComparableVersion = (version) =>
+  typeof version === "string" &&
+  version === version.trim() &&
+  (NEXT_VERSION.test(version) || STABLE_TAG.test(`v${version}`));
 
 const parts = (version) => version.split(/[.-]/).slice(0, 3).map(Number);
 const coreOf = (version) => parts(version).join(".");
@@ -46,8 +50,9 @@ export const compareCore = (a, b) => {
   return x[0] - y[0] || x[1] - y[1] || x[2] - y[2];
 };
 
-/** Order of two `next` versions (X.Y.Z-next.N); a stable X.Y.Z sorts after its prereleases. */
+/** Order of canonical next/stable versions; invalid complete inputs have no order (NaN). */
 export const compareNext = (a, b) => {
+  if (!isComparableVersion(a) || !isComparableVersion(b)) return NaN;
   const core = compareCore(a, b);
   if (core !== 0) return core;
   const n = (version) =>
@@ -242,7 +247,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
     const [version, than] = args.slice(1);
     if (version === undefined || than === undefined) throw new Error("--newer <version> <than>");
     const order = compareNext(version, than);
-    // Garbage on either side is not newer: NaN fails closed.
+    // compareNext validates both complete inputs before ordering their cores.
     process.exit(order > 0 ? 0 : 1);
   }
   if (args[0] === "--published" || args[0] === "--dist-tag") {
