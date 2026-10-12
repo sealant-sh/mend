@@ -929,7 +929,8 @@ const rowOf = ({ name, measure, before: beforeValue, limit, current, stat, notRu
 /**
  * Two result files against the budgets. Every budgeted measure of the baseline is checked on each
  * named statistic (the median and the p90 by default, as review r4 of the ADR asks; the worst
- * only when asked). A measure the baseline has and the other run lacks is a miss: a number that
+ * only when asked). The statistics selection must not be empty.
+ * A measure the baseline has and the other run lacks is a miss: a number that
  * was not taken cannot be inside its limit. A `person` record must also carry what only a person
  * worktree has, for every scenario it was asked to run (`requiredOf`): those absent are misses
  * too, so a run that skipped or crashed them cannot pass. Its errors fail the comparison, and its
@@ -955,6 +956,7 @@ export const compareResults = (
     gateMeasures = null,
   } = {},
 ) => {
+  if (stats.length === 0) throw new Error("comparison needs at least one statistic");
   const rows = [];
   const incomparable = [];
   const sampledBefore = resourcesSampledAt(before);
@@ -3120,6 +3122,7 @@ export const parseOptions = (argv, now = Date.now()) => {
   if (opts.layout !== null && opts.layout !== "person" && opts.layout !== "shared") {
     throw new Error(`--layout takes person or shared, not ${opts.layout}`);
   }
+  if (opts.stats.length === 0) throw new Error("--stats needs at least one statistic");
   for (const stat of opts.stats) {
     if (!["median", "p90", "worst"].includes(stat)) throw new Error(`unknown statistic ${stat}`);
   }
