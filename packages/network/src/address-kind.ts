@@ -17,7 +17,8 @@ export const addressKindOf = (address: string, family: "IPv4" | "IPv6"): Address
   if (family === "IPv6") {
     const lower = address.toLowerCase();
     if (lower === "::1") return "loopback";
-    if (lower.startsWith("fe80:")) return "link-local";
+    // fe80::/10 covers first hextets fe80 through febf, not just fe80.
+    if (/^fe[89ab][0-9a-f]:/.test(lower)) return "link-local";
     if (lower.startsWith("fc") || lower.startsWith("fd")) return "private";
     return "public";
   }
