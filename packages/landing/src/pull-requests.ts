@@ -8,6 +8,7 @@ import {
   anyForBranchArgv,
   anyWithCommitArgv,
   createArgv,
+  createDirectoryArgv,
   createdUrl,
   editArgv,
   firstOnOrigin,
@@ -16,7 +17,7 @@ import {
   parsePullRequest,
   parsePullRequests,
   type PullRequestView,
-  removeFileArgv,
+  removeDirectoryArgv,
   viewArgv,
   writeFileArgv,
 } from "./gh.ts";
@@ -254,58 +255,68 @@ export const PullRequestsLive: Layer.Layer<PullRequests, never, PullRequestWorks
         workspaces.within(input.target, (workspace) =>
           Effect.gen(function* () {
             const target = yield* openTarget(workspace, input);
-            const bodyFile = `/tmp/mend-pull-request-${crypto.randomUUID()}.md`;
+            const bodyDirectory = `/tmp/mend-pull-request-${crypto.randomUUID()}`;
             const body =
               input.body === null
                 ? mergeDescription(target?.body ?? null, input.section)
                 : ownerDescription(input.body, input.section);
-            const written = yield* workspace.exec(writeFileArgv(bodyFile, body));
-            if (written.exitCode !== 0) {
-              return yield* failure(`writing the description · ${ghWords(written)}`);
-            }
-            const sent = Effect.gen(function* () {
-              if (target !== null) {
-                yield* ghOk(
-                  workspace,
-                  editArgv({
-                    repository: input.repository,
-                    number: target.number,
-                    title: input.titleGiven ? input.title : null,
-                    bodyFile,
-                  }),
-                  "gh pr edit",
-                );
-                return {
-                  action: "updated" as const,
-                  pullRequest: landed(target, yield* observedAt),
-                  workspace: workspace.kind,
-                };
-              }
-              const created = yield* ghOk(
-                workspace,
-                createArgv({
-                  repository: input.repository,
-                  head: input.head,
-                  base: input.base,
-                  title: input.title,
-                  bodyFile,
+            const acquire = ghOk(
+              workspace,
+              createDirectoryArgv(bodyDirectory),
+              "creating the description directory",
+            ).pipe(Effect.as(bodyDirectory));
+            return yield* Effect.acquireUseRelease(
+              acquire,
+              (directory) =>
+                Effect.gen(function* () {
+                  const bodyFile = `${directory}/body.md`;
+                  const written = yield* workspace.exec(writeFileArgv(bodyFile, body));
+                  if (written.exitCode !== 0) {
+                    return yield* failure(`writing the description · ${ghWords(written)}`);
+                  }
+                  if (target !== null) {
+                    yield* ghOk(
+                      workspace,
+                      editArgv({
+                        repository: input.repository,
+                        number: target.number,
+                        title: input.titleGiven ? input.title : null,
+                        bodyFile,
+                      }),
+                      "gh pr edit",
+                    );
+                    const updated = yield* view(workspace, input.repository, target.number);
+                    return {
+                      action: "updated" as const,
+                      pullRequest: landed(updated, yield* observedAt),
+                      workspace: workspace.kind,
+                    };
+                  }
+                  const created = yield* ghOk(
+                    workspace,
+                    createArgv({
+                      repository: input.repository,
+                      head: input.head,
+                      base: input.base,
+                      title: input.title,
+                      bodyFile,
+                    }),
+                    "gh pr create",
+                  );
+                  const url = createdUrl(created.stdout);
+                  if (url === null) {
+                    return yield* failure("gh pr create · it printed no pull request URL");
+                  }
+                  const opened = yield* view(workspace, input.repository, url);
+                  return {
+                    action: "opened" as const,
+                    pullRequest: landed(opened, yield* observedAt),
+                    workspace: workspace.kind,
+                  };
                 }),
-                "gh pr create",
-              );
-              const url = createdUrl(created.stdout);
-              if (url === null) {
-                return yield* failure("gh pr create · it printed no pull request URL");
-              }
-              const opened = yield* view(workspace, input.repository, url);
-              return {
-                action: "opened" as const,
-                pullRequest: landed(opened, yield* observedAt),
-                workspace: workspace.kind,
-              };
-            });
-            // The file is removed from a live session's workspace; a short-lived one goes whole.
-            return yield* sent.pipe(
-              Effect.ensuring(workspace.exec(removeFileArgv(bodyFile)).pipe(Effect.ignore)),
+              (directory) =>
+                // The writer never mkdirs: after removal a late open fails, or writes an unlinked fd.
+                workspace.exec(removeDirectoryArgv(directory)).pipe(Effect.ignore),
             );
           }),
         ),
