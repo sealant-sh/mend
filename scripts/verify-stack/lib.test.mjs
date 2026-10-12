@@ -148,6 +148,84 @@ test("a verify version is a semver prerelease even when the digest is all digits
   assert.throws(() => verifyVersion("1.2.3", "not-hex"));
 });
 
+const linkedKey = (c) => c.repeat(64);
+const linkedSources = {
+  mend: { kind: "worktree", tree: tree("a"), buildKey: linkedKey("1") },
+  sealant: { kind: "pr", tree: tree("b"), buildKey: linkedKey("3") },
+  sealantd: { kind: "ref", tree: tree("c"), buildKey: linkedKey("5") },
+};
+const linkedImages = {
+  sealantd: "mend-verify/sealantd:555555555555",
+  sealantApi: "mend-verify/sealant-api:333333333333",
+  sealantWorker: "mend-verify/sealant-worker:333333333333",
+  sealantSshGateway: "mend-verify/sealant-ssh-gateway:333333333333",
+  cli: "mend-verify/mend-cli:111111111111",
+  version: "0.35.1-verify.t648cefe666fb",
+  mend: "ghcr.io/sealant-sh/mend:0.35.1-verify.t648cefe666fb",
+};
+// Fixed expected SHA-256 prefixes for the length-prefixed build key and upstream image IDs.
+// Do not derive expected cache names through buildKey, digestOf or imageNames.
+for (const [source, changedKey, expectedChanges] of [
+  [
+    "mend",
+    linkedKey("2"),
+    {
+      cli: "mend-verify/mend-cli:222222222222",
+      version: "0.35.1-verify.teba9c093b4a7",
+      mend: "ghcr.io/sealant-sh/mend:0.35.1-verify.teba9c093b4a7",
+    },
+  ],
+  [
+    "sealant",
+    linkedKey("4"),
+    {
+      sealantApi: "mend-verify/sealant-api:444444444444",
+      sealantWorker: "mend-verify/sealant-worker:444444444444",
+      sealantSshGateway: "mend-verify/sealant-ssh-gateway:444444444444",
+    },
+  ],
+  ["sealantd", linkedKey("6"), { sealantd: "mend-verify/sealantd:666666666666" }],
+]) {
+  test(`${source} linked-package build key invalidates its images with the source tree unchanged`, () => {
+    const options = {
+      cliVersion: "0.35.1",
+      upstreamIds: ["api-id", "worker-id", "ssh-id", "daemon-id"],
+    };
+    const changed = {
+      ...linkedSources,
+      [source]: { ...linkedSources[source], buildKey: changedKey },
+    };
+    assert.equal(changed[source].tree, linkedSources[source].tree);
+    assert.deepEqual(imageNames(linkedSources, options), linkedImages);
+    assert.deepEqual(imageNames(changed, options), { ...linkedImages, ...expectedChanges });
+  });
+}
+
+test("pinned upstreams stay unbuilt even when linked-package build keys are present", () => {
+  const sources = {
+    ...linkedSources,
+    sealant: { ...linkedSources.sealant, kind: "pinned" },
+    sealantd: { ...linkedSources.sealantd, kind: "pinned" },
+  };
+  for (const changes of [{}, { sealant: linkedKey("4"), sealantd: linkedKey("6") }]) {
+    const changed = { ...sources };
+    for (const [source, key] of Object.entries(changes))
+      changed[source] = { ...sources[source], buildKey: key };
+    const images = imageNames(changed, {
+      cliVersion: "0.35.1",
+      upstreamIds: ["api-id", "worker-id", "ssh-id", "daemon-id"],
+    });
+    assert.deepEqual(images, {
+      ...linkedImages,
+      sealantApi: null,
+      sealantWorker: null,
+      sealantSshGateway: null,
+      sealantd: null,
+    });
+    assert.deepEqual(mendBuildArgs(images), { MEND_VERSION: linkedImages.version });
+  }
+});
+
 test("the root Dockerfile takes every build argument the bundle is given", async () => {
   const dockerfile = await readFile(new URL("../../Dockerfile", import.meta.url), "utf8");
   for (const name of [
@@ -176,9 +254,14 @@ test("the images an offline setup needs are read from the Compose file", async (
   const mirrors = await readFile(
     new URL("../../deploy/docker/compose.mirrors.yaml", import.meta.url),
     "utf8",
-  ).catch(() => "");
-  for (const image of composeImages(mirrors))
-    assert.ok(composeImages(`${compose}\n${mirrors}`).includes(image), image);
+  );
+  assert.deepEqual(composeImages(mirrors), ["nginx:1.29-alpine", "registry:3.1"]);
+  assert.deepEqual(composeImages(`${compose}\n${mirrors}`), [
+    "dxflrs/garage:v2.4.1",
+    "nginx:1.29-alpine",
+    "postgres:17-alpine",
+    "registry:3.1",
+  ]);
 });
 
 test("a Docker client gets the daemon and nothing of the session", () => {

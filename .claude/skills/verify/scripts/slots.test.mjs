@@ -6,7 +6,7 @@
 
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -16,25 +16,29 @@ const here = fileURLToPath(new URL(".", import.meta.url));
 
 const slots = (lines, phases, options) => {
   const dir = mkdtempSync(join(tmpdir(), "verify-slots-"));
-  mkdirSync(join(dir, "logs"));
-  writeFileSync(join(dir, "list.txt"), `${lines.join("\n")}\n`);
-  for (const [service, phase] of Object.entries(phases))
-    writeFileSync(
-      join(dir, "logs", `${service}.log`),
-      `verify stack · ${phase === "built" ? "ready in 25 s" : "building"}\n`,
+  try {
+    mkdirSync(join(dir, "logs"));
+    writeFileSync(join(dir, "list.txt"), `${lines.join("\n")}\n`);
+    for (const [service, phase] of Object.entries(phases))
+      writeFileSync(
+        join(dir, "logs", `${service}.log`),
+        `verify stack · ${phase === "built" ? "ready in 25 s" : "building"}\n`,
+      );
+    return spawnSync(
+      process.execPath,
+      [
+        join(here, "slots.mjs"),
+        "--list",
+        join(dir, "list.txt"),
+        "--logs",
+        join(dir, "logs"),
+        ...options,
+      ],
+      { encoding: "utf8", timeout: 10_000 },
     );
-  return spawnSync(
-    process.execPath,
-    [
-      join(here, "slots.mjs"),
-      "--list",
-      join(dir, "list.txt"),
-      "--logs",
-      join(dir, "logs"),
-      ...options,
-    ],
-    { encoding: "utf8", timeout: 10_000 },
-  );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 };
 
 const serviceId = (i) => i.toString(16).padStart(8, "0");
@@ -101,4 +105,28 @@ test("new: one built stack leaves a slot free", () => {
     [],
   );
   assert.equal(run.status, 0, run.stdout);
+  assert.equal(run.error, undefined);
+  assert.match(
+    run.stdout,
+    /^slots · 1 verify stack\(s\) live, 0 building · limit 4 live, 2 building$/m,
+  );
+  assert.match(run.stdout, /^  stack · built · .* · service 1234abcd$/m);
+  assert.doesNotMatch(run.stdout, /service abcd1234/);
+  assert.match(run.stdout, /^slots · a slot is free$/m);
+});
+
+test("new: the stack label counts its Service's building phase toward admission", () => {
+  const lines = ["stack ready :3305 service 1234abcd · process abcd1234"];
+  for (const [options, status, result] of [
+    [[], 0, /^slots · a slot is free$/m],
+    [["--max-building", "1"], 1, /^slots · no slot: 1 of 1 building;/m],
+  ]) {
+    const run = slots(lines, { "1234abcd": "building" }, options);
+    assert.equal(run.error, undefined);
+    assert.equal(run.status, status, run.stdout);
+    assert.match(run.stdout, /^slots · 1 verify stack\(s\) live, 1 building/m);
+    assert.match(run.stdout, /^  stack · building · .* · service 1234abcd$/m);
+    assert.doesNotMatch(run.stdout, /service abcd1234/);
+    assert.match(run.stdout, result);
+  }
 });
