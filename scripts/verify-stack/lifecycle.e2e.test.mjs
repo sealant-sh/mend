@@ -158,7 +158,8 @@ function daemon({
       current.volumes.push(asVolume(volumeName));
     writeFileSync(state, JSON.stringify(current));
   };
-  return { root, env, file, read, run, watchdogLog, seed };
+  const docker = (args) => spawnSync(join(bin, "docker"), args, { env, encoding: "utf8" });
+  return { root, env, file, read, run, watchdogLog, seed, docker };
 }
 
 const ownerOf = (state) => state.containers.find((item) => item.Name === `/${OWNER_CONTAINER}`);
@@ -937,8 +938,18 @@ test("a teardown removes the ledger's entries whose identity still matches, and 
   const left = fakeDaemon.read();
   assert.deepEqual(names(left), ["attached-later"]);
   assert.deepEqual(volumeNames(left), ["mend-garage", "unrecorded-data"]);
+  assert.deepEqual(
+    left.networks.map(({ Id, Name }) => ({ Id, Name })),
+    [{ Id: "net-inner", Name: "mend_default" }],
+  );
+  assert.match(
+    down.output(),
+    /left network mend_default: something the stack did not make uses it/,
+  );
+  assert.doesNotMatch(down.output(), /removed network mend_default/);
   assert.match(down.output(), /made again after the stack recorded it\): volume mend-garage/);
   assert.match(down.output(), /removed container mend-mend-1/);
+  assert.match(down.output(), /removed container sealant-5e55/);
   assert.deepEqual(ledgerWindows(fakeDaemon), [], "the ledger goes with the stack");
 });
 
@@ -1010,6 +1021,96 @@ test("a recording cut short by a kill keeps what it saw, and says so", async () 
 
 /** An anonymous volume's name, as Docker makes one: 64 hex digits. */
 const anonymous = (n) => `${String(n).repeat(8)}${"0".repeat(56)}`;
+
+test("fake Docker refuses live network endpoints and mounted volumes, then removes released resources", () => {
+  const fakeDaemon = daemon({
+    containers: [["survivor", {}, { ...mounts("shared-data"), ...on(["shared", "net-shared"]) }]],
+    volumes: ["shared-data", "unused-data"],
+    networks: [
+      { Id: "net-shared", Name: "shared" },
+      { Id: "net-unused", Name: "unused" },
+    ],
+  });
+  const inspected = fakeDaemon.docker(["network", "inspect", "net-shared"]);
+  assert.equal(inspected.status, 0, inspected.stderr);
+  assert.deepEqual(Object.values(JSON.parse(inspected.stdout)[0].Containers), [
+    { Name: "survivor" },
+  ]);
+  const network = fakeDaemon.docker(["network", "rm", "net-shared", "net-unused"]);
+  assert.equal(network.status, 1);
+  assert.match(network.stderr, /active endpoints/);
+  assert.deepEqual(
+    fakeDaemon.read().networks.map(({ Id }) => Id),
+    ["net-shared"],
+  );
+  for (const flags of [[], ["--force"]]) {
+    const removal = fakeDaemon.docker(["volume", "rm", ...flags, "shared-data", "unused-data"]);
+    assert.equal(removal.status, 1);
+    assert.match(removal.stderr, /shared-data.*in use/);
+    assert.deepEqual(volumeNames(fakeDaemon.read()), ["shared-data"]);
+  }
+  assert.equal(fakeDaemon.docker(["rm", "--force", "survivor"]).status, 0);
+  assert.equal(fakeDaemon.docker(["network", "rm", "net-shared"]).status, 0);
+  assert.equal(fakeDaemon.docker(["volume", "rm", "shared-data"]).status, 0);
+  assert.deepEqual(fakeDaemon.read().networks, []);
+  assert.deepEqual(volumeNames(fakeDaemon.read()), []);
+});
+
+test("fake Docker rm --volumes removes only unused anonymous mounts, preserving named and shared volumes", () => {
+  const orphan = anonymous(3);
+  const shared = anonymous(4);
+  const namedHex = anonymous(5);
+  const retained = anonymous(6);
+  const fakeDaemon = daemon({
+    containers: [
+      ["removed", {}, mounts(orphan, shared, namedHex, "named-data")],
+      ["survivor", {}, mounts(shared)],
+      ["removed-without-volumes", {}, mounts(retained)],
+    ],
+    volumes: [
+      { ...volume(orphan), Anonymous: true },
+      { ...volume(shared), Anonymous: true },
+      { ...volume(retained), Anonymous: true },
+      namedHex,
+      "named-data",
+    ],
+  });
+  assert.equal(fakeDaemon.docker(["rm", "--force", "--volumes", "removed"]).status, 0);
+  assert.deepEqual(names(fakeDaemon.read()), ["removed-without-volumes", "survivor"]);
+  assert.deepEqual(
+    volumeNames(fakeDaemon.read()),
+    [shared, retained, namedHex, "named-data"].toSorted(),
+  );
+  assert.equal(fakeDaemon.docker(["rm", "--force", "removed-without-volumes"]).status, 0);
+  assert.ok(volumeNames(fakeDaemon.read()).includes(retained));
+});
+
+test("a recorded volume still mounted by an unrecorded survivor keeps the ledger for retry", async () => {
+  const fakeDaemon = daemon({
+    containers: [
+      ...generation("a"),
+      ["sealant-5e55", {}, mounts("mend-control")],
+      ["attached-later", {}, mounts("mend-control")],
+    ],
+    volumes: [STATE_VOLUME, volume("mend-control", {}, "2026-10-10T01:00:01Z")],
+  });
+  const recorded = fakeDaemon.read().containers.find(({ Name }) => Name === "/sealant-5e55");
+  ledger(fakeDaemon, {
+    containers: [recorded.Id],
+    volumes: [{ name: "mend-control", createdAt: "2026-10-10T01:00:01Z" }],
+  });
+  const down = fakeDaemon.run(["down"]);
+  assert.equal(await down.done, 1, down.output());
+  assert.match(
+    down.output(),
+    /could not remove volume mend-control \(docker volume failed \(exit 1\)\)/,
+  );
+  assert.match(down.output(), /the ledger is kept, so the next down tries again/);
+  assert.match(down.output(), /removed container sealant-5e55/);
+  assert.deepEqual(names(fakeDaemon.read()), ["attached-later", OWNER_CONTAINER].toSorted());
+  assert.deepEqual(volumeNames(fakeDaemon.read()), [STATE_VOLUME, "mend-control"].toSorted());
+  assert.equal(ledgerWindows(fakeDaemon).length, 1);
+});
 
 test("a Core dev stack of Compose project `sealant`, made during a `mend` window, survives (R8-1)", async () => {
   const fakeDaemon = daemon({ containers: generation("a"), volumes: [STATE_VOLUME] });
