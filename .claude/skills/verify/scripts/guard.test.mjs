@@ -961,8 +961,24 @@ test("a tunnel counts only when its own child holds the port", async () => {
       await new Promise((done) => setTimeout(done, 100));
     assert.throws(target(port), Refused);
   } finally {
-    squatter.kill();
-    rmSync(w.home, { recursive: true, force: true });
+    try {
+      // A failed assertion after start must still stop the detached child before losing its record.
+      if (existsSync(join(w.P, "tunnel.json"))) {
+        const recorded = JSON.parse(readFileSync(join(w.P, "tunnel.json"), "utf8"));
+        const stopped = await tunnel("stop", "--dir", w.P);
+        assert.equal(stopped.status, 0, stopped.out);
+        for (let i = 0; i < 50 && identityOf(recorded.pid) === recorded.identity; i += 1)
+          await new Promise((done) => setTimeout(done, 100));
+        assert.notEqual(
+          identityOf(recorded.pid),
+          recorded.identity,
+          "the owned tunnel is still live",
+        );
+      }
+      rmSync(w.home, { recursive: true, force: true });
+    } finally {
+      squatter.kill();
+    }
   }
 });
 
