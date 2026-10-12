@@ -277,9 +277,15 @@ A server installed by `mend server setup` runs with these defaults:
 - Budgets on at their default sizes. A budget bounds what a client, an account or an organization
   may ask; it refuses new work and never stops running work. Setup does not expose them as options.
 - Database pool caps of 6 connections for Mend's queries (`MEND_DATABASE_POOL_MAX`), 3 for the job
-  queue (`MEND_JOBS_POOL_MAX`) and 3 for sign-in sessions (`MEND_AUTH_DATABASE_POOL_MAX`), plus one
-  for `LISTEN`. When Mend and Sealant share one Postgres, both sets of pools must fit under its
-  `max_connections`.
+  queue (`MEND_JOBS_POOL_MAX`), 1 for keyed enqueues (`MEND_JOBS_ENQUEUE_POOL_MAX`, a positive
+  integer) and 3 for sign-in sessions (`MEND_AUTH_DATABASE_POOL_MAX`), plus one for `LISTEN`. That
+  is 14 connections per Mend server instance at full load. When Mend and Sealant share one Postgres,
+  both sets of pools must fit under its `max_connections`.
+
+Keyed enqueues use a separate pool with five-second connection acquisition and SQL query timeouts,
+not one deadline for the whole operation. Upgrade every enqueue producer before relying on
+same-name, same-key live-job exclusion across instances. Older producers can still enqueue
+duplicates during a rolling deployment; existing queues and pending jobs remain in place.
 
 Changing the rest means running the Compose files yourself or deploying on
 [Kubernetes](/operate/deploy-kubernetes/). [Server environment](/reference/server-environment/)

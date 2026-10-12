@@ -14,6 +14,8 @@
 //   writes `<file>.paused` and waits;
 // - FAKE_DOCKER_PAUSE_RM (a file holding a container or volume name): while the file exists, an
 //   `rm` or `volume rm` of that name writes `<file>.paused` and waits, before it removes anything;
+// - FAKE_DOCKER_FAIL_RM (a file holding a container or volume name): removal of that resource
+//   fails without changing it while the file exists;
 // - FAKE_DOCKER_PAUSE_PULL (a file): while it exists, a `pull` writes `<file>.paused` and waits;
 // - FAKE_DOCKER_RUN (a file holding `{ containers, volumes, networks }` of names, a container's
 //   name optionally with its labels and mounted volumes as `[name, labels, volumes]`): a `run`
@@ -89,6 +91,14 @@ const waitFor = async (condition) => {
 
 const [verb, sub] = args;
 
+const failRm = process.env.FAKE_DOCKER_FAIL_RM;
+if ((verb === "rm" || (verb === "volume" && sub === "rm")) && failRm && exists(failRm)) {
+  const name = readFileSync(failRm, "utf8").trim();
+  const list = await locked((state) => state.containers);
+  const named = list.find((item) => item.Name === `/${name}`)?.Id;
+  if (args.includes(name) || (named && args.includes(named)))
+    fail(`Error: injected removal failure for ${name}`);
+}
 const pauseRm = process.env.FAKE_DOCKER_PAUSE_RM;
 if ((verb === "rm" || (verb === "volume" && sub === "rm")) && pauseRm && exists(pauseRm)) {
   const name = readFileSync(pauseRm, "utf8").trim();

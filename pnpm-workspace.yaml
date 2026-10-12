@@ -37,6 +37,7 @@ catalog:
   "@trpc/server": ^11.7.1
   superjson: ^2.2.6
   "@types/node": ^22.10.2
+  "@types/pg": ^8.11.10
   "@types/qrcode": ^1.5.5
   "@types/react": ^19.2.0
   "@types/react-dom": ^19.2.0

@@ -1,3 +1,8 @@
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { assert, describe, it } from "@effect/vitest";
 import { ORCHESTRATION_V2_WS_METHODS, WS_METHODS } from "@mend/t3-contracts";
 import * as Cause from "effect/Cause";
@@ -232,4 +237,96 @@ describe("splitPatch", () => {
       ],
     );
   });
+});
+
+describe("whole added and deleted files", () => {
+  for (const changeType of ["new", "deleted"] as const) {
+    for (const representation of ["binary notice", "binary patch", "empty text"] as const) {
+      it.live(
+        `${changeType} ${representation} is classified without inventing empty binary contents`,
+        () =>
+          withGateway((mend) =>
+            Effect.gen(function* () {
+              const cwd = mkdtempSync(join(tmpdir(), "mend-review-binary-"));
+              let patch: string;
+              try {
+                writeFileSync(
+                  join(cwd, "asset.bin"),
+                  representation === "empty text" ? "" : Buffer.from([0, 1, 2, 3, 255]),
+                );
+                const sides =
+                  changeType === "new" ? ["/dev/null", "asset.bin"] : ["asset.bin", "/dev/null"];
+                const generated = spawnSync(
+                  "git",
+                  [
+                    "diff",
+                    "--no-index",
+                    "--no-ext-diff",
+                    "--no-textconv",
+                    "--no-color",
+                    ...(representation === "binary patch" ? ["--binary"] : []),
+                    "--",
+                    ...sides,
+                  ],
+                  {
+                    cwd,
+                    encoding: "utf8",
+                    timeout: 5_000,
+                    env: {
+                      PATH: process.env["PATH"],
+                      HOME: cwd,
+                      GIT_CONFIG_NOSYSTEM: "1",
+                      GIT_CONFIG_GLOBAL: "/dev/null",
+                      LC_ALL: "C",
+                    },
+                  },
+                );
+                assert.isUndefined(generated.error);
+                assert.strictEqual(generated.status, 1, generated.stderr);
+                patch = generated.stdout;
+                if (representation === "binary notice") assert.include(patch, "Binary files ");
+                if (representation === "binary patch") assert.include(patch, "GIT binary patch");
+                if (representation === "empty text") assert.notInclude(patch, "Binary files ");
+              } finally {
+                rmSync(cwd, { recursive: true, force: true });
+              }
+              mend.workbench.addProject("project-1", "mend");
+              mend.workbench.addSession({
+                id: "session-1",
+                projectId: "project-1",
+                changeId: "change-1",
+              });
+              mend.workbench.diffs.set("change-1", {
+                diff: patch,
+                files: [{ path: "asset.bin", additions: 0, deletions: 0 }],
+              });
+              const { rpc } = yield* pairAndConnect(mend, "BINARY");
+              const result = yield* Effect.exit(
+                rpc[WS_METHODS.reviewGetDiffFileContents]({
+                  cwd: "/var/lib/mend/store/project-1/worktrees/wt-session-1",
+                  sourceKind: "branch-range",
+                  changeType,
+                  baseRef: null,
+                  headRef: null,
+                  oldPath: "asset.bin",
+                  newPath: "asset.bin",
+                }),
+              );
+              if (representation === "empty text") {
+                assert.deepStrictEqual(result, Exit.succeed({ oldContents: "", newContents: "" }));
+              } else {
+                if (!Exit.isFailure(result)) throw new Error("Binary content must be refused.");
+                const failure = Option.getOrUndefined(Cause.findErrorOption(result.cause));
+                if (failure?._tag !== "VcsUnsupportedOperationError") {
+                  throw new Error("Expected a typed unsupported-content refusal.");
+                }
+                assert.strictEqual(failure.operation, "review.getDiffFileContents");
+                assert.strictEqual(failure.kind, "git");
+                assert.strictEqual(failure.detail, "asset.bin is binary.");
+              }
+            }),
+          ),
+      );
+    }
+  }
 });
