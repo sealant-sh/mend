@@ -533,10 +533,12 @@ const isPressOrRepeat = (key: CsiUKey): boolean => key.event === 1 || key.event 
 /**
  * Whether one stdin chunk is Ctrl+V — the raw 0x16 byte on its own, or one
  * CSI-u report of `v` (118) or `V` (86) with ctrl, on press or repeat. Exact
- * for the raw byte: a paste that happens to carry 0x16 is not a request.
+ * for both encodings: coalesced bytes are left for normal forwarding.
  */
 export const isPasteChunk = (data: Buffer): boolean => {
   if (data.length === 1 && data[0] === 0x16) return true;
+  const match = data.toString("latin1").matchAll(CSI_U).next().value;
+  if (match === undefined || match.index !== 0 || match[0].length !== data.length) return false;
   const keys = csiUKeysOf(data);
   const key = keys[0];
   return (
@@ -544,8 +546,7 @@ export const isPasteChunk = (data: Buffer): boolean => {
     key !== undefined &&
     (key.code === 118 || key.code === 86) &&
     isCtrlChord(key) &&
-    isPressOrRepeat(key) &&
-    data.toString("latin1").startsWith("\u001b[")
+    isPressOrRepeat(key)
   );
 };
 
