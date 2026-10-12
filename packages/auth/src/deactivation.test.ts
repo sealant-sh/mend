@@ -1,17 +1,18 @@
 import { createHash } from "node:crypto";
 
+import { MigratorLive, PgLive } from "@mend/db";
 import { postgresTestConfig } from "@mend/db/testing";
 import { makePublicNetwork, NetworkConfig, PublicOrigin } from "@mend/network";
 import { ConfigProvider, Effect, Layer, Option, Schema } from "effect";
 import { Pool } from "pg";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { Auth, AuthLive, RegistrationPolicy } from "./auth.ts";
+import { Auth, AuthLive, PASSWORD_RESET_TTL_MS, RegistrationPolicy } from "./auth.ts";
 
 /**
  * Deactivated accounts lose every way in (docs/adr/0003-organizations-and-tenancy.md): browser
- * sessions, paired-device tokens and the static dev token. Runs against the dev Postgres
- * (`compose.dev.yaml`, :5434) in a throwaway database. See postgresTestConfig for local opt-out.
+ * sessions, paired-device tokens and the static dev token. Runs against a fully migrated throwaway
+ * PostgreSQL database. See postgresTestConfig for local opt-out.
  */
 const postgres = postgresTestConfig();
 const ADMIN_URL = postgres.adminUrl;
@@ -23,11 +24,15 @@ const scratchUrl = (() => {
 })();
 
 const admin = new Pool({ connectionString: ADMIN_URL, connectionTimeoutMillis: 2000 });
+const scratch = new Pool({ connectionString: scratchUrl });
+let databaseCreated = false;
 
 const origin = "http://localhost:3105";
 const network = makePublicNetwork(Schema.decodeUnknownSync(PublicOrigin)(origin), []);
 const STATIC_TOKEN = "static-dev-token";
 const DEVICE_TOKEN = "mdt_device";
+const OLD_PASSWORD = "disposable-deactivation-password";
+const NEW_PASSWORD = "a-new-disposable-password";
 
 const authLayer = AuthLive.pipe(
   Layer.provide(Layer.succeed(NetworkConfig, network)),
@@ -48,85 +53,82 @@ const authLayer = AuthLive.pipe(
   ),
 );
 
+const runAuth = <A>(effect: Effect.Effect<A, never, Auth>) =>
+  Effect.runPromise(effect.pipe(Effect.provide(authLayer), Effect.scoped));
+
 /** The signed-in account's email, or null when the headers sign nobody in. */
 const signedInAs = (headers: Headers) =>
-  Effect.runPromise(
+  runAuth(
     Effect.gen(function* () {
       const auth = yield* Auth;
       const session = yield* auth.getSession(headers);
       return Option.isSome(session) ? session.value.user.email : null;
-    }).pipe(Effect.provide(authLayer), Effect.scoped),
+    }),
   );
-
-const signedIn = async (headers: Headers) => (await signedInAs(headers)) !== null;
 
 const bearer = (token: string) => new Headers({ authorization: `Bearer ${token}` });
 
-describe.skipIf(postgres.skip)("deactivated accounts", () => {
-  let sessionToken = "";
-  let scratch: Pool | undefined;
+const postAuth = (route: string, body: object) =>
+  runAuth(
+    Effect.gen(function* () {
+      const auth = yield* Auth;
+      return yield* auth.handler(
+        new Request(`${origin}/api/auth/${route}`, {
+          method: "POST",
+          headers: { "content-type": "application/json", origin },
+          body: JSON.stringify(body),
+        }),
+      );
+    }),
+  );
+
+const issueReset = (userId: string) =>
+  runAuth(
+    Effect.gen(function* () {
+      const auth = yield* Auth;
+      return yield* auth.issuePasswordReset(userId);
+    }),
+  );
+
+const reset = (token: string) => postAuth("reset-password", { token, newPassword: NEW_PASSWORD });
+const signIn = (email: string, password: string) => postAuth("sign-in/email", { email, password });
+
+const createdAccount = async (email: string, name: string) => {
+  const response = await postAuth("sign-up/email", { email, password: OLD_PASSWORD, name });
+  expect(response.status).toBe(200);
+  const body = Schema.decodeUnknownSync(
+    Schema.Struct({ user: Schema.Struct({ id: Schema.String, email: Schema.String }) }),
+  )(await response.json());
+  expect(body.user.email).toBe(email);
+  const token = response.headers.get("set-auth-token") ?? "";
+  expect(token).not.toBe("");
+  return { id: body.user.id, email, token };
+};
+
+describe.skipIf(postgres.skip)("deactivation and password reset in migrated Postgres", () => {
+  let operator: Awaited<ReturnType<typeof createdAccount>>;
 
   beforeAll(async () => {
     await admin.query(`CREATE DATABASE ${SCRATCH_DB}`);
-    scratch = new Pool({ connectionString: scratchUrl });
-    // Better Auth's tables as migration 0001 creates them, plus the columns this test reads.
-    await scratch.query(`
-      CREATE TABLE "user" (
-        "id" text PRIMARY KEY, "name" text NOT NULL, "email" text NOT NULL UNIQUE,
-        "emailVerified" boolean NOT NULL DEFAULT false, "image" text,
-        "createdAt" timestamptz NOT NULL DEFAULT now(), "updatedAt" timestamptz NOT NULL DEFAULT now(),
-        "deactivatedAt" timestamptz
-      );
-      CREATE TABLE "session" (
-        "id" text PRIMARY KEY, "expiresAt" timestamptz NOT NULL, "token" text NOT NULL UNIQUE,
-        "createdAt" timestamptz NOT NULL DEFAULT now(), "updatedAt" timestamptz NOT NULL DEFAULT now(),
-        "ipAddress" text, "userAgent" text,
-        "userId" text NOT NULL REFERENCES "user"("id") ON DELETE CASCADE
-      );
-      CREATE TABLE "account" (
-        "id" text PRIMARY KEY, "accountId" text NOT NULL, "providerId" text NOT NULL,
-        "userId" text NOT NULL REFERENCES "user"("id") ON DELETE CASCADE,
-        "accessToken" text, "refreshToken" text, "idToken" text,
-        "accessTokenExpiresAt" timestamptz, "refreshTokenExpiresAt" timestamptz, "scope" text,
-        "password" text, "createdAt" timestamptz NOT NULL DEFAULT now(),
-        "updatedAt" timestamptz NOT NULL DEFAULT now()
-      );
-      CREATE TABLE "verification" (
-        "id" text PRIMARY KEY, "identifier" text NOT NULL, "value" text NOT NULL,
-        "expiresAt" timestamptz NOT NULL, "createdAt" timestamptz NOT NULL DEFAULT now(),
-        "updatedAt" timestamptz NOT NULL DEFAULT now()
-      );
-      CREATE TABLE instance_roles (
-        user_id text NOT NULL REFERENCES "user"(id), role text NOT NULL,
-        granted_by_user_id text, granted_at timestamptz NOT NULL DEFAULT now(),
-        PRIMARY KEY (user_id, role)
-      );
-      CREATE TABLE device_tokens (
-        id text PRIMARY KEY, user_id text NOT NULL REFERENCES "user"(id), name text NOT NULL,
-        platform text NOT NULL, token_hash text NOT NULL UNIQUE,
-        created_at timestamptz NOT NULL DEFAULT now(), last_used_at timestamptz, revoked_at timestamptz
-      );`);
-    const response = await Effect.runPromise(
-      Effect.gen(function* () {
-        const auth = yield* Auth;
-        return yield* auth.handler(
-          new Request(`${origin}/api/auth/sign-up/email`, {
-            method: "POST",
-            headers: { "content-type": "application/json", origin },
-            body: JSON.stringify({
-              email: "operator@example.invalid",
-              password: "disposable-deactivation-password",
-              name: "Operator",
-            }),
-          }),
-        );
-      }).pipe(Effect.provide(authLayer), Effect.scoped),
+    databaseCreated = true;
+    await Effect.runPromise(
+      Layer.build(
+        MigratorLive.pipe(
+          Layer.provide(PgLive),
+          Layer.provide(
+            ConfigProvider.layer(ConfigProvider.fromUnknown({ DATABASE_URL: scratchUrl })),
+          ),
+        ),
+      ).pipe(Effect.scoped),
     );
-    expect(response.status).toBe(200);
-    sessionToken = response.headers.get("set-auth-token") ?? "";
-    const { rows } = await scratch.query<{ id: string }>('SELECT id FROM "user" LIMIT 1');
+  });
+
+  beforeEach(async () => {
+    // Each case starts active, with its own live credentials, regardless of test order.
+    await scratch.query('TRUNCATE "user", "verification" CASCADE');
+    operator = await createdAccount("operator@example.invalid", "Operator");
     await scratch.query("INSERT INTO instance_roles (user_id, role) VALUES ($1, 'operator')", [
-      rows[0]?.id,
+      operator.id,
     ]);
     // An older account that is not the operator: the static token must not act as it.
     await scratch.query(
@@ -136,7 +138,7 @@ describe.skipIf(postgres.skip)("deactivated accounts", () => {
       "INSERT INTO device_tokens (id, user_id, name, platform, token_hash) VALUES ($1, $2, $3, $4, $5)",
       [
         "device-1",
-        rows[0]?.id,
+        operator.id,
         "Phone",
         "ios",
         createHash("sha256").update(DEVICE_TOKEN).digest("hex"),
@@ -144,73 +146,98 @@ describe.skipIf(postgres.skip)("deactivated accounts", () => {
     );
   });
 
-  afterAll(async () => {
-    await scratch?.end();
-    await admin.query(`DROP DATABASE IF EXISTS ${SCRATCH_DB} WITH (FORCE)`);
-  });
+  afterEach(() => vi.useRealTimers());
 
   it("an active account is signed in by its session, its device and the static token", async () => {
-    expect(sessionToken).not.toBe("");
-    expect(await signedIn(bearer(sessionToken))).toBe(true);
-    expect(await signedIn(bearer(DEVICE_TOKEN))).toBe(true);
-    expect(await signedInAs(bearer(STATIC_TOKEN))).toBe("operator@example.invalid");
+    expect(await signedInAs(bearer(operator.token))).toBe(operator.email);
+    expect(await signedInAs(bearer(DEVICE_TOKEN))).toBe(operator.email);
+    expect(await signedInAs(bearer(STATIC_TOKEN))).toBe(operator.email);
   });
 
   it("a deactivated account is refused on every path", async () => {
-    await scratch?.query(`UPDATE "user" SET "deactivatedAt" = now() WHERE id <> 'older'`);
+    // Positive controls in this case prove these credentials worked before deactivation.
+    expect(await signedInAs(bearer(operator.token))).toBe(operator.email);
+    expect(await signedInAs(bearer(DEVICE_TOKEN))).toBe(operator.email);
+    expect(await signedInAs(bearer(STATIC_TOKEN))).toBe(operator.email);
+    await scratch.query(`UPDATE "user" SET "deactivatedAt" = now() WHERE id = $1`, [operator.id]);
     expect({
-      session: await signedIn(bearer(sessionToken)),
-      device: await signedIn(bearer(DEVICE_TOKEN)),
-      static: await signedIn(bearer(STATIC_TOKEN)),
-    }).toEqual({ session: false, device: false, static: false });
+      session: await signedInAs(bearer(operator.token)),
+      device: await signedInAs(bearer(DEVICE_TOKEN)),
+      static: await signedInAs(bearer(STATIC_TOKEN)),
+    }).toEqual({ session: null, device: null, static: null });
   });
 
   it("a handed-over reset link sets a new password once and signs the account out", async () => {
-    const { rows } = await (scratch ?? admin).query<{ id: string }>(
-      `SELECT id FROM "user" WHERE email = 'operator@example.invalid'`,
-    );
-    const userId = rows[0]?.id ?? "";
-    const reset = (token: string) =>
-      Effect.runPromise(
-        Effect.gen(function* () {
-          const auth = yield* Auth;
-          const response = yield* auth.handler(
-            new Request(`${origin}/api/auth/reset-password`, {
-              method: "POST",
-              headers: { "content-type": "application/json", origin },
-              body: JSON.stringify({ token, newPassword: "a-new-disposable-password" }),
-            }),
-          );
-          return response.status;
-        }).pipe(Effect.provide(authLayer), Effect.scoped),
-      );
-    const issued = await Effect.runPromise(
-      Effect.gen(function* () {
-        const auth = yield* Auth;
-        return yield* auth.issuePasswordReset(userId);
-      }).pipe(Effect.provide(authLayer), Effect.scoped),
-    );
-    const newer = await Effect.runPromise(
-      Effect.gen(function* () {
-        const auth = yield* Auth;
-        return yield* auth.issuePasswordReset(userId);
-      }).pipe(Effect.provide(authLayer), Effect.scoped),
-    );
-    // Only the newest link works.
-    expect(await reset(issued.token)).toBe(400);
-    const replaced = issued;
-    expect(await reset(newer.token)).toBe(200);
-    // The old session is gone, and the link does not work twice.
-    const sessions = await (scratch ?? admin).query<{ count: string }>(
+    const account = await createdAccount("reset@example.invalid", "Reset account");
+    expect(await signedInAs(bearer(account.token))).toBe(account.email);
+    const issued = await issueReset(account.id);
+    const newer = await issueReset(account.id);
+    // Only the newest link works, and spending an older link cannot end a live session.
+    const superseded = await reset(issued.token);
+    expect(superseded.status).toBe(400);
+    await expect(superseded.json()).resolves.toMatchObject({ code: "INVALID_TOKEN" });
+    expect(await signedInAs(bearer(account.token))).toBe(account.email);
+    expect((await reset(newer.token)).status).toBe(200);
+    // The old bearer no longer authenticates, in addition to the old session rows being gone.
+    const sessions = await scratch.query<{ count: string }>(
       `SELECT count(*) AS count FROM "session" WHERE "userId" = $1`,
-      [userId],
+      [account.id],
     );
     expect(sessions.rows[0]?.count).toBe("0");
-    expect(await reset(newer.token)).toBe(400);
-    expect(replaced.token).not.toBe(newer.token);
+    expect(await signedInAs(bearer(account.token))).toBeNull();
+    expect((await reset(newer.token)).status).toBe(400);
+    expect(issued.token).not.toBe(newer.token);
+
+    const oldPassword = await signIn(account.email, OLD_PASSWORD);
+    expect(oldPassword.status).toBe(401);
+    await expect(oldPassword.json()).resolves.toMatchObject({ code: "INVALID_EMAIL_OR_PASSWORD" });
+    const newPassword = await signIn(account.email, NEW_PASSWORD);
+    expect(newPassword.status).toBe(200);
+    await expect(newPassword.json()).resolves.toMatchObject({
+      user: { id: account.id, email: account.email },
+    });
+    const newToken = newPassword.headers.get("set-auth-token") ?? "";
+    expect(newToken).not.toBe("");
+    expect(newToken).not.toBe(account.token);
+    expect(await signedInAs(bearer(newToken))).toBe(account.email);
   });
+
+  it.each([
+    { offset: -1, accepted: true },
+    { offset: 1, accepted: false },
+  ])(
+    "a reset link $offset ms from its configured expiry is accepted: $accepted",
+    async ({ offset, accepted }) => {
+      const account = await createdAccount("expiry@example.invalid", "Expiry account");
+      expect(await signedInAs(bearer(account.token))).toBe(account.email);
+      // Auth and Better Auth use Date directly. Only Date is faked; pool and I/O timers stay real.
+      vi.useFakeTimers({ toFake: ["Date"] });
+      const issuedAt = new Date("2030-01-01T00:00:00.000Z").getTime();
+      vi.setSystemTime(issuedAt);
+      const issued = await issueReset(account.id);
+      expect(issued.expiresAt.getTime()).toBe(issuedAt + PASSWORD_RESET_TTL_MS);
+      const stored = await scratch.query<{ expiresAt: Date }>(
+        `SELECT "expiresAt" FROM "verification" WHERE identifier = $1`,
+        [`reset-password:${issued.token}`],
+      );
+      expect(stored.rows[0]?.expiresAt.getTime()).toBe(issued.expiresAt.getTime());
+      vi.setSystemTime(issuedAt + PASSWORD_RESET_TTL_MS + offset);
+      const response = await reset(issued.token);
+      expect(response.status).toBe(accepted ? 200 : 400);
+      if (accepted) {
+        expect((await signIn(account.email, NEW_PASSWORD)).status).toBe(200);
+        expect((await signIn(account.email, OLD_PASSWORD)).status).toBe(401);
+      } else {
+        await expect(response.json()).resolves.toMatchObject({ code: "INVALID_TOKEN" });
+        expect((await signIn(account.email, OLD_PASSWORD)).status).toBe(200);
+        expect((await signIn(account.email, NEW_PASSWORD)).status).toBe(401);
+      }
+    },
+  );
 });
 
 afterAll(async () => {
+  await scratch.end();
+  if (databaseCreated) await admin.query(`DROP DATABASE IF EXISTS ${SCRATCH_DB} WITH (FORCE)`);
   await admin.end();
 });
