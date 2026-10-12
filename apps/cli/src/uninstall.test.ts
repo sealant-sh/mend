@@ -281,7 +281,7 @@ describe("the home scope", () => {
   });
 
   it("reports an unconfigured server as nothing to remove under --all, without creating state", async () => {
-    const f = laptop();
+    const f = laptop({ daemon: new DockerProtocol() });
     const plan = await describeUninstall(f.runtime, "all");
     expect(plan.server).toBe("none");
     expect(planDeletesData(plan)).toBe(false);
@@ -336,6 +336,43 @@ const leftoversDaemon = (options: { readonly anchor?: boolean } = {}) => {
 };
 
 describe("leftovers of an install with no configuration here", () => {
+  it("refuses an unconfigured discovery failure instead of reporting healthy absence", async () => {
+    const daemon = new DockerProtocol();
+    const f = laptop({ daemon, signedIn: false });
+    daemon.response = () => ({ status: 1, stdout: "", stderr: "cannot observe daemon" });
+    const plan = await describeUninstall(f.runtime, "all");
+    expect(plan.server).toEqual({
+      kind: "unobserved",
+      source: "docker",
+      dockerContext: "default",
+      problem: expect.stringContaining("cannot observe daemon"),
+    });
+    expect(planLines(plan, f.runtime.server.configDir)[0]).toContain(
+      "Docker could not be observed on context default",
+    );
+    expect((await executeUninstall(f.runtime, plan)).failures).toContainEqual(
+      expect.stringContaining("cannot observe daemon"),
+    );
+    expect(fs.existsSync(f.cliHome)).toBe(true);
+  });
+
+  it("revalidates orphaned leftovers before removal after the daemon is lost", async () => {
+    const daemon = leftoversDaemon();
+    const f = laptop({ daemon, signedIn: false });
+    const plan = await describeUninstall(f.runtime, "all");
+    const calls = daemon.calls.length;
+    daemon.response = () => ({ status: null, stdout: "", stderr: "orphan discovery interrupted" });
+    expect((await executeUninstall(f.runtime, plan)).failures).not.toEqual([]);
+    expect(daemon.calls.slice(calls).filter(({ args }) => args.includes("rm"))).toEqual([]);
+    expect(daemon.volumes.has("mend-control")).toBe(true);
+    expect(fs.existsSync(f.cliHome)).toBe(true);
+    daemon.response = () => undefined;
+    expect(await executeUninstall(f.runtime, await describeUninstall(f.runtime, "server"))).toEqual(
+      { failures: [], leftovers: [], remaining: [] },
+    );
+    expect(daemon.volumes.has("mend-control")).toBe(false);
+  });
+
   it("lists the labelled volumes, the network and the live workspace, then removes only those", async () => {
     const daemon = leftoversDaemon();
     const f = laptop({ daemon, signedIn: false });

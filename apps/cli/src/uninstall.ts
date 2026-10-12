@@ -196,6 +196,11 @@ export interface ServerPlan {
    * the identity does.
    */
   readonly leftovers?: LeftoversPlan;
+  /** The identity and active generation observed; execution refuses a replacement installation. */
+  readonly observedInstallation: {
+    readonly owner: string | null;
+    readonly directory: string | null;
+  };
 }
 
 /** The server's own Compose containers (by service), volumes and release image Docker holds. */
@@ -219,6 +224,22 @@ export interface LeftoversPlan {
   readonly containers: ReadonlyArray<string>;
   readonly holdings: DockerHoldings;
 }
+
+/** Server cleanup observation is incomplete; neither resources nor local records may be removed. */
+export interface ServerObservationFailure {
+  readonly kind: "unobserved";
+  readonly source: "docker" | "retry-record";
+  readonly dockerContext: string | null;
+  readonly problem: string;
+}
+
+type LeftoversObservation =
+  | {
+      readonly state: "observed";
+      readonly dockerContext: string;
+      readonly leftovers: LeftoversPlan | null;
+    }
+  | ServerObservationFailure;
 
 export interface HomePlan {
   readonly cliConfig: string | null;
@@ -246,7 +267,7 @@ export interface HomePlan {
 export interface UninstallPlan {
   readonly scope: UninstallScope;
   /** `null` when the server is out of scope; `"none"` when nothing is installed here. */
-  readonly server: ServerPlan | LeftoversPlan | "none" | null;
+  readonly server: ServerPlan | LeftoversPlan | ServerObservationFailure | "none" | null;
   readonly home: HomePlan | null;
 }
 
@@ -605,18 +626,95 @@ const serverPresent = async (
   };
 };
 
-/** Whatever an earlier run wrote to `uninstall-left.json`; empty when there is none. */
-const readLeft = (configDir: string): ReadonlyArray<string> => {
+interface UninstallRetryRecord {
+  readonly names: ReadonlyArray<string>;
+  readonly dockerContext: string;
+  readonly owner: string;
+}
+type RetryRecordObservation =
+  | { readonly state: "observed"; readonly record: UninstallRetryRecord | null }
+  | { readonly state: "unknown"; readonly problem: string };
+
+/** Only a missing record or an empty legacy record proves there is no saved cleanup to retry. */
+const readLeft = (
+  configDir: string,
+  owner: string | null,
+  context: string | null,
+): RetryRecordObservation => {
+  const file = path.join(configDir, LEFT_FILE);
+  const unknown = (reason: string): RetryRecordObservation => ({
+    state: "unknown",
+    problem: `Could not read the uninstall retry record ${file}: ${reason}. Keep this record and the server identity; verify the recorded resources' original Docker context and ownership before repairing the record and running mend uninstall again.`,
+  });
+  let content: string;
   try {
-    const parsed: unknown = JSON.parse(fs.readFileSync(path.join(configDir, LEFT_FILE), "utf8"));
-    if (typeof parsed !== "object" || parsed === null || !("names" in parsed)) return [];
-    const names = parsed.names;
-    return Array.isArray(names)
-      ? names.filter((name): name is string => typeof name === "string" && DOCKER_NAME.test(name))
-      : [];
-  } catch {
-    return [];
+    content = fs.readFileSync(file, "utf8");
+  } catch (cause) {
+    if (cause instanceof Error && "code" in cause && cause.code === "ENOENT")
+      return { state: "observed", record: null };
+    return unknown(
+      cause instanceof Error && "code" in cause && typeof cause.code === "string"
+        ? cause.code
+        : "filesystem read failed",
+    );
   }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content);
+  } catch {
+    return unknown("invalid JSON");
+  }
+  if (
+    typeof parsed !== "object" ||
+    parsed === null ||
+    !("names" in parsed) ||
+    !Array.isArray(parsed.names)
+  )
+    return unknown("invalid resource names");
+  const names: Array<string> = [];
+  for (const name of parsed.names) {
+    if (typeof name !== "string" || !DOCKER_NAME.test(name))
+      return unknown("invalid resource name");
+    names.push(name);
+  }
+  if (names.length === 0) return { state: "observed", record: null };
+  if (
+    !("dockerContext" in parsed) ||
+    typeof parsed.dockerContext !== "string" ||
+    !DOCKER_NAME.test(parsed.dockerContext) ||
+    !("owner" in parsed) ||
+    typeof parsed.owner !== "string" ||
+    parsed.owner.length === 0
+  )
+    return unknown("the record has no valid Docker context and installation owner");
+  const record = { names, dockerContext: parsed.dockerContext, owner: parsed.owner };
+  const problem = retryRecordProblem(record, owner, context);
+  return problem === null ? { state: "observed", record } : unknown(problem);
+};
+
+const retryRecordProblem = (
+  record: UninstallRetryRecord | null,
+  owner: string | null,
+  context: string | null,
+): string | null => {
+  if (record === null) return null;
+  if (record.owner !== owner) return "the record belongs to a different installation identity";
+  if (context !== null && record.dockerContext !== context)
+    return "the record belongs to a different Docker context";
+  return null;
+};
+
+const writeLeft = (
+  configDir: string,
+  names: ReadonlyArray<string>,
+  dockerContext: string,
+  owner: string,
+): void => {
+  fs.writeFileSync(
+    path.join(configDir, LEFT_FILE),
+    `${JSON.stringify({ names: [...new Set(names)], dockerContext, owner })}\n`,
+    { mode: 0o600 },
+  );
 };
 
 /** Read the sysctl file through a short container on the Docker host it lives on. */
@@ -747,18 +845,52 @@ const buildCacheSize = async (run: Run, context: string): Promise<string | null>
  * `owner`: the identity a setup that never activated a generation left here; the anchor it
  * claimed is its own and goes too, last.
  */
-const findLeftovers = async (run: Run, owner: string | null): Promise<LeftoversPlan | null> => {
-  const shown = await run("docker", ["context", "show"], { timeoutMs: DOCKER_DEADLINE_MS });
-  const context = shown.status === 0 ? shown.stdout.trim() : "";
-  if (!DOCKER_NAME.test(context)) return null;
+const findLeftovers = async (
+  run: Run,
+  owner: string | null,
+  selectedContext?: string,
+): Promise<LeftoversObservation> => {
+  let context = selectedContext;
+  if (context === undefined) {
+    const shown = await run("docker", ["context", "show"], { timeoutMs: DOCKER_DEADLINE_MS });
+    if (shown.status !== 0)
+      return {
+        kind: "unobserved",
+        source: "docker",
+        dockerContext: null,
+        problem: `could not read the current Docker context: ${detail(shown)}`,
+      };
+    context = shown.stdout.trim();
+    if (!DOCKER_NAME.test(context))
+      return {
+        kind: "unobserved",
+        source: "docker",
+        dockerContext: null,
+        problem: "Docker returned no valid current context",
+      };
+  }
+  const unknown = (problem: string): ServerObservationFailure => ({
+    kind: "unobserved",
+    source: "docker",
+    dockerContext: context,
+    problem,
+  });
+  const observed = (leftovers: LeftoversPlan | null): LeftoversObservation => ({
+    state: "observed",
+    dockerContext: context,
+    leftovers,
+  });
   const listed = await listNamesIn(run, context, "volume", [`label=${SERVER_VOLUME_OWNER_LABEL}`]);
-  if ("problem" in listed) return null;
+  if ("problem" in listed) return unknown(`could not list labelled volumes: ${listed.problem}`);
   // An anchor means an installation stands here, whoever's configuration it is: not leftovers,
   // unless it is this identity's own.
   const store = MEND_DOCKER_NAMESPACE.store;
   if (listed.includes(store)) {
     const anchor = await volumeOwner(run, context, store);
-    if (owner === null || anchor.state !== "present" || anchor.owner !== owner) return null;
+    if (anchor.state === "unknown")
+      return unknown(`could not inspect volume ${store}: ${anchor.detail}`);
+    if (anchor.state === "present" && (owner === null || anchor.owner !== owner))
+      return observed(null);
   }
   const labelled = [
     ...listed.filter((name) => name !== store),
@@ -766,7 +898,10 @@ const findLeftovers = async (run: Run, owner: string | null): Promise<LeftoversP
   ];
   const compose = `label=com.docker.compose.project=${MEND_DOCKER_NAMESPACE.project}`;
   const composeVolumes = await listNamesIn(run, context, "volume", [compose]);
+  if ("problem" in composeVolumes)
+    return unknown(`could not list Compose volumes: ${composeVolumes.problem}`);
   const networks = await listNamesIn(run, context, "network", [compose]);
+  if ("problem" in networks) return unknown(`could not list Compose networks: ${networks.problem}`);
   const composed = await dockerIn(run, context, [
     "container",
     "ls",
@@ -776,19 +911,28 @@ const findLeftovers = async (run: Run, owner: string | null): Promise<LeftoversP
     "--format",
     '{{.Names}}\t{{.Label "com.docker.compose.project.working_dir"}}',
   ]);
-  const found = labelled.includes(MEND_DOCKER_NAMESPACE.control)
+  if (composed.status !== 0)
+    return unknown(`could not list Compose containers: ${detail(composed)}`);
+  let controlIsOurs = labelled.includes(MEND_DOCKER_NAMESPACE.control);
+  if (controlIsOurs && owner !== null) {
+    const control = await volumeOwner(run, context, MEND_DOCKER_NAMESPACE.control);
+    if (control.state === "unknown")
+      return unknown(
+        `could not inspect volume ${MEND_DOCKER_NAMESPACE.control}: ${control.detail}`,
+      );
+    controlIsOurs = control.state === "present" && control.owner === owner;
+  }
+  const found = controlIsOurs
     ? await findWorkspaces(run, context, MEND_DOCKER_NAMESPACE.control)
     : NO_HOLDINGS;
-  const holdings = "problem" in found ? NO_HOLDINGS : found;
+  if ("problem" in found) return unknown(`could not list workspaces: ${found.problem}`);
+  const holdings = found;
   // The bundle's Compose volumes before the labelled ones: the anchor, when it goes, goes last.
   const volumes = [
-    ...("problem" in composeVolumes
-      ? []
-      : composeVolumes.filter((name) => BUNDLE_COMPOSE_VOLUMES.has(name))),
+    ...composeVolumes.filter((name) => BUNDLE_COMPOSE_VOLUMES.has(name)),
     ...labelled,
   ];
-  const bundleNetworksHere =
-    "problem" in networks ? [] : networks.filter((name) => BUNDLE_NETWORKS.has(name));
+  const bundleNetworksHere = networks.filter((name) => BUNDLE_NETWORKS.has(name));
   const containers =
     composed.status === 0
       ? rows(composed.stdout).flatMap(([name, directory]) =>
@@ -804,15 +948,15 @@ const findLeftovers = async (run: Run, owner: string | null): Promise<LeftoversP
     containers.length === 0 &&
     holdings.workspaces.length === 0
   )
-    return null;
-  return {
+    return observed(null);
+  return observed({
     kind: "leftovers",
     dockerContext: context,
     volumes,
     networks: bundleNetworksHere,
     containers,
     holdings,
-  };
+  });
 };
 
 const parseUrl = (value: string): URL | null => {
@@ -863,7 +1007,15 @@ export const describeUninstall = async (
         if (installation._tag === "error") throw installation.error;
         const identity = store.readIdentity();
         if (identity._tag === "error") throw identity.error;
-        return { installation: installation.value, identity: identity.value };
+        return {
+          installation: installation.value,
+          identity: identity.value,
+          retry: readLeft(
+            configDir,
+            identity.value === null ? null : serverVolumeOwner(Buffer.from(identity.value)),
+            installation.value?.config.dockerContext ?? null,
+          ),
+        };
       },
       { create: false },
     );
@@ -871,26 +1023,37 @@ export const describeUninstall = async (
       // An unconfigured directory is not an error for uninstall: there is nothing to remove,
       // unless Docker holds what an earlier install left.
       if (!read.error.message.startsWith("No Mend server is configured")) throw read.error;
-      server = (await findLeftovers(run, null)) ?? "none";
+      const found = await findLeftovers(run, null);
+      server = "kind" in found ? found : (found.leftovers ?? "none");
+    } else if (read.value.retry.state === "unknown") {
+      server = {
+        kind: "unobserved",
+        source: "retry-record",
+        dockerContext: read.value.installation?.config.dockerContext ?? null,
+        problem: read.value.retry.problem,
+      };
     } else if (read.value.installation === null) {
       const identity = read.value.identity;
       // A setup that stopped before it activated a generation still left its identity, and in
       // Docker what it claimed or found there: both go, or the next setup meets them again.
-      const leftovers = await findLeftovers(
-        run,
-        identity === null ? null : serverVolumeOwner(Buffer.from(identity)),
-      );
-      server = exists(path.join(configDir, "identity.env"))
-        ? {
-            version: "(no active generation)",
-            appUrl: "",
-            dockerContext: "",
-            edgeHost: null,
-            generations: countEntries(path.join(configDir, "generations")),
-            backups: countEntries(path.join(configDir, "backups")),
-            ...(leftovers === null ? {} : { leftovers }),
-          }
-        : (leftovers ?? "none");
+      const owner = identity === null ? null : serverVolumeOwner(Buffer.from(identity));
+      const found = await findLeftovers(run, owner, read.value.retry.record?.dockerContext);
+      server =
+        "kind" in found
+          ? found
+          : exists(path.join(configDir, "identity.env"))
+            ? {
+                version: "(no active generation)",
+                appUrl: "",
+                dockerContext: found.dockerContext,
+                observedInstallation: { owner, directory: null },
+                leftByEarlier: read.value.retry.record?.names ?? [],
+                edgeHost: null,
+                generations: countEntries(path.join(configDir, "generations")),
+                backups: countEntries(path.join(configDir, "backups")),
+                ...(found.leftovers === null ? {} : { leftovers: found.leftovers }),
+              }
+            : (found.leftovers ?? "none");
     } else {
       const { config, directory } = read.value.installation;
       const context = config.dockerContext;
@@ -958,6 +1121,13 @@ export const describeUninstall = async (
       }
       server = {
         version: config.serverVersion,
+        observedInstallation: {
+          owner:
+            read.value.identity === null
+              ? null
+              : serverVolumeOwner(Buffer.from(read.value.identity)),
+          directory,
+        },
         appUrl: config.appUrl,
         dockerContext: context,
         edgeHost: config.edgeHost ?? null,
@@ -968,7 +1138,7 @@ export const describeUninstall = async (
         backups: countEntries(path.join(configDir, "backups")),
         dockerProblem,
         holdings,
-        leftByEarlier: readLeft(configDir),
+        leftByEarlier: read.value.retry.record?.names ?? [],
         ...(extras === undefined ? {} : { extras }),
         ...(present === undefined ? {} : { present }),
       };
@@ -1031,10 +1201,21 @@ const isInstallation = (server: UninstallPlan["server"]): server is ServerPlan =
   server !== null && server !== "none" && !("kind" in server);
 
 const isLeftovers = (server: UninstallPlan["server"]): server is LeftoversPlan =>
-  server !== null && server !== "none" && "kind" in server;
+  server !== null && server !== "none" && "kind" in server && server.kind === "leftovers";
 
 /** Why the plan cannot run as asked, before anything is touched; null when it can. */
 export const planRefusal = (plan: UninstallPlan): string | null => {
+  if (
+    plan.server !== null &&
+    plan.server !== "none" &&
+    "kind" in plan.server &&
+    plan.server.kind === "unobserved"
+  ) {
+    if (plan.server.source === "retry-record")
+      return `${plan.server.problem} Nothing was removed${plan.scope === "all" ? "; run mend uninstall --home to remove only this machine's files" : ""}.`;
+    const context = plan.server.dockerContext;
+    return `Docker could not be observed${context === null ? " on the current context" : ` on context ${context}`} (${plan.server.problem}), so nothing was removed. Start Docker and run mend uninstall again${plan.scope === "all" ? ", or run mend uninstall --home to remove only this machine's files" : ""}.`;
+  }
   if (!isInstallation(plan.server) || plan.server.dockerProblem == null) return null;
   return `Docker is not answering on context ${plan.server.dockerContext} (${plan.server.dockerProblem}), so nothing was removed. Start Docker and run mend uninstall again${plan.scope === "all" ? ", or run mend uninstall --home to remove only this machine's files" : ""}.`;
 };
@@ -1067,12 +1248,12 @@ export const planLines = (plan: UninstallPlan, configDir: string): ReadonlyArray
       `server   none configured under ${configDir}, but docker context ${plan.server.dockerContext} holds what an earlier Mend install left:`,
     );
     lines.push(...leftoverLines(plan.server));
-  } else if (plan.server !== null) {
+  } else if (isInstallation(plan.server)) {
     const { version, appUrl, dockerContext, edgeHost, generations, backups } = plan.server;
     lines.push(
       `server   Mend ${version}${appUrl === "" ? "" : ` at ${appUrl}`}${dockerContext === "" ? "" : ` · docker context ${dockerContext}`}`,
     );
-    if (dockerContext !== "") {
+    if (dockerContext !== "" && plan.server.observedInstallation.directory !== null) {
       // Only what Docker still holds, when it was asked: a re-run names nothing already gone.
       const present = plan.server.present;
       const containers = present?.containers ?? serverServices(plan.server);
@@ -1122,6 +1303,12 @@ export const planLines = (plan: UninstallPlan, configDir: string): ReadonlyArray
         );
       }
     }
+  } else if (plan.server !== null) {
+    lines.push(
+      plan.server.source === "retry-record"
+        ? `server   ${plan.server.problem}; server files and resources stay`
+        : `server   Docker could not be observed${plan.server.dockerContext === null ? " on the current context" : ` on context ${plan.server.dockerContext}`}: ${plan.server.problem}; server files and resources stay`,
+    );
   }
   if (plan.home !== null) {
     const parts: Array<string> = [];
@@ -1278,29 +1465,35 @@ const removeEach = async (
   return left;
 };
 
-const listed = (names: ReadonlyArray<string> | { readonly problem: string }, name: string) =>
-  !("problem" in names) && names.includes(name);
-
 /** The pending names from an earlier run that are still there, as workspace holdings. */
 const pendingHoldings = async (
   run: Run,
   context: string,
   names: ReadonlyArray<string>,
-): Promise<{ readonly holdings: DockerHoldings; readonly volumes: ReadonlyArray<string> }> => {
+): Promise<
+  | { readonly holdings: DockerHoldings; readonly volumes: ReadonlyArray<string> }
+  | { readonly problem: string }
+> => {
   if (names.length === 0) return { holdings: NO_HOLDINGS, volumes: [] };
   const containers = await listNamesIn(run, context, "container", []);
+  if ("problem" in containers)
+    return { problem: `could not rediscover pending containers: ${containers.problem}` };
   const networks = await listNamesIn(run, context, "network", []);
+  if ("problem" in networks)
+    return { problem: `could not rediscover pending networks: ${networks.problem}` };
   const volumes = await listNamesIn(run, context, "volume", []);
+  if ("problem" in volumes)
+    return { problem: `could not rediscover pending volumes: ${volumes.problem}` };
   return {
     holdings: {
       workspaces: names
-        .filter((name) => listed(containers, name))
+        .filter((name) => containers.includes(name))
         .map((name) => ({ name, running: false })),
       sidecars: [],
-      networks: names.filter((name) => listed(networks, name)),
+      networks: names.filter((name) => networks.includes(name)),
       images: [],
     },
-    volumes: names.filter((name) => listed(volumes, name)),
+    volumes: names.filter((name) => volumes.includes(name)),
   };
 };
 
@@ -1322,8 +1515,40 @@ const removeServer = async (
       const identity = store.readIdentity();
       if (identity._tag === "error") throw identity.error;
       const left: Array<string> = [];
+      const currentOwner =
+        identity.value === null ? null : serverVolumeOwner(Buffer.from(identity.value));
+      if (
+        currentOwner !== plan.observedInstallation.owner ||
+        (installation?.directory ?? null) !== plan.observedInstallation.directory
+      ) {
+        report.failures.push(
+          "The server installation changed after the uninstall plan was read; nothing was removed. Run mend uninstall again to read its current identity and generation.",
+        );
+        outcome = "refused";
+        return;
+      }
+      const retry = readLeft(
+        configDir,
+        currentOwner,
+        installation?.config.dockerContext ?? plan.dockerContext,
+      );
+      if (retry.state === "unknown") {
+        report.failures.push(retry.problem);
+        outcome = "refused";
+        return;
+      }
+      const pendingNames = retry.record?.names ?? [];
+      const context = installation?.config.dockerContext ?? plan.dockerContext;
+      const pending = await pendingHoldings(run, context, pendingNames);
+      if ("problem" in pending) {
+        report.failures.push(
+          `${pending.problem}. The retry record, anchor and server files stay; run mend uninstall again once Docker answers.`,
+        );
+        report.remaining.push(...pendingNames, `volume ${MEND_DOCKER_NAMESPACE.store}`, configDir);
+        outcome = "refused";
+        return;
+      }
       if (installation !== null) {
-        const context = installation.config.dockerContext;
         // Nothing is touched while Docker does not answer: a refusal in Mend's words.
         const problem = await dockerProblemOn(run, context);
         if (problem !== null) {
@@ -1339,18 +1564,33 @@ const removeServer = async (
             : MEND_DOCKER_NAMESPACE;
         const controlIsOurs = async (): Promise<boolean> => {
           const control = await volumeOwner(run, context, namespace.control);
+          if (control.state === "unknown") {
+            report.failures.push(
+              `could not inspect volume ${namespace.control}: ${control.detail}`,
+            );
+            left.push(namespace.control);
+          }
           return control.state === "present" && owner !== null && control.owner === owner;
         };
         // Workspace networks wait until the server's own containers are gone: the Docker mirror
         // is attached to each of them.
         const workspaceNetworks = new Set<string>();
+        const recordedNames = new Set(pendingNames);
         const sweepWorkspaces = async (): Promise<void> => {
           if (!(await controlIsOurs())) return;
           const found = await findWorkspaces(run, context, namespace.control);
           if ("problem" in found) {
             report.failures.push(`could not list the installation's workspaces: ${found.problem}`);
+            left.push(namespace.control);
             return;
           }
+          for (const name of [
+            ...found.workspaces.map((workspace) => workspace.name),
+            ...found.sidecars,
+            ...found.networks,
+          ])
+            recordedNames.add(name);
+          if (owner !== null) writeLeft(configDir, [...recordedNames], context, owner);
           left.push(...(await removeWorkspaceContainers(run, context, found, report)));
           for (const name of found.networks) workspaceNetworks.add(name);
         };
@@ -1368,7 +1608,6 @@ const removeServer = async (
           timeoutMs: serverProcessDeadlines.stop,
         });
         await sweepWorkspaces();
-        const pending = await pendingHoldings(run, context, plan.leftByEarlier ?? []);
         left.push(...(await removeWorkspaceContainers(run, context, pending.holdings, report)));
         for (const name of pending.holdings.networks) workspaceNetworks.add(name);
 
@@ -1414,8 +1653,16 @@ const removeServer = async (
           left.push(...(await removeEach(run, context, "network", bundle, report)));
         }
         const composeVolumes = await listNamesIn(run, context, "volume", [compose]);
+        if ("problem" in composeVolumes) {
+          report.failures.push(`could not list Compose volumes: ${composeVolumes.problem}`);
+          left.push(namespace.store);
+        }
         const gatewayVolume = `mend_${T3_GATEWAY_VOLUME}`;
         const gateway = await volumeOwner(run, context, gatewayVolume);
+        if (gateway.state === "unknown") {
+          report.failures.push(`could not inspect volume ${gatewayVolume}: ${gateway.detail}`);
+          left.push(gatewayVolume);
+        }
         const strayVolumes = [
           ...new Set([
             ...("problem" in composeVolumes
@@ -1433,6 +1680,10 @@ const removeServer = async (
         for (const name of secondaryVolumesOf(namespace)) {
           const volume = await volumeOwner(run, context, name);
           if (volume.state === "absent") continue;
+          if (volume.state === "unknown") {
+            report.failures.push(`could not inspect volume ${name}: ${volume.detail}`);
+            left.push(name);
+          }
           if (volume.state === "present" && owner !== null && volume.owner === owner) {
             owned.push(name);
           } else {
@@ -1455,16 +1706,14 @@ const removeServer = async (
         }
 
         const anchor = await volumeOwner(run, context, namespace.store);
+        if (anchor.state === "unknown") {
+          report.failures.push(`could not inspect volume ${namespace.store}: ${anchor.detail}`);
+          left.push(namespace.store);
+        }
         if (left.length > 0) {
           // Keep the anchor and the identity: they let the next run find and finish this, and a
           // reinstall over them claims what is left instead of refusing it.
-          fs.writeFileSync(
-            path.join(configDir, LEFT_FILE),
-            `${JSON.stringify({ names: left })}\n`,
-            {
-              mode: 0o600,
-            },
-          );
+          if (owner !== null) writeLeft(configDir, left, context, owner);
           report.failures.push(
             `the uninstall is not finished: ${left.join(", ")} ${left.length === 1 ? "is" : "are"} still there. Volume ${namespace.store} and ${configDir} (identity, generations) stay so that mend uninstall can finish it; run it again, or reinstall over it with mend server setup.`,
           );
@@ -1481,22 +1730,63 @@ const removeServer = async (
           report.remaining.push(`volume ${namespace.store}`);
         }
         if (left.length > 0) {
-          fs.writeFileSync(
-            path.join(configDir, LEFT_FILE),
-            `${JSON.stringify({ names: left })}\n`,
-            {
-              mode: 0o600,
-            },
-          );
+          if (owner !== null) writeLeft(configDir, left, context, owner);
           report.remaining.push(...left, configDir);
           outcome = "partial";
           return;
         }
-      } else if (plan.leftovers !== undefined) {
+      } else {
         // No generation was activated: what Docker holds goes first, and the identity stays while
         // anything does, so the next run still knows the anchor it claimed for its own.
-        const kept = await removeLeftovers(runtime, plan.leftovers, report);
+        const found = await findLeftovers(run, currentOwner, plan.dockerContext);
+        if ("kind" in found) {
+          report.failures.push(
+            planRefusal({ scope: "server", server: found, home: null }) ?? found.problem,
+          );
+          outcome = "refused";
+          return;
+        }
+        const fresh: LeftoversPlan = found.leftovers ?? {
+          kind: "leftovers",
+          dockerContext: context,
+          containers: [],
+          networks: [],
+          volumes: [],
+          holdings: NO_HOLDINGS,
+        };
+        const leftovers: LeftoversPlan = {
+          ...fresh,
+          volumes: [...new Set([...fresh.volumes, ...pending.volumes])],
+          holdings: {
+            ...fresh.holdings,
+            workspaces: [
+              ...fresh.holdings.workspaces,
+              ...pending.holdings.workspaces.filter(
+                ({ name }) =>
+                  !fresh.containers.includes(name) &&
+                  !fresh.holdings.workspaces.some((workspace) => workspace.name === name),
+              ),
+            ],
+            networks: [...new Set([...fresh.holdings.networks, ...pending.holdings.networks])],
+          },
+        };
+        if (currentOwner !== null)
+          writeLeft(
+            configDir,
+            [
+              ...leftovers.containers,
+              ...leftovers.volumes,
+              ...leftovers.networks,
+              ...leftovers.holdings.workspaces.map((workspace) => workspace.name),
+              ...leftovers.holdings.sidecars,
+              ...leftovers.holdings.networks,
+            ],
+            context,
+            currentOwner,
+          );
+        const kept = await removeLeftovers(runtime, leftovers, report, currentOwner);
         if (kept.length > 0) {
+          if (currentOwner !== null) writeLeft(configDir, kept, context, currentOwner);
           report.remaining.push(configDir);
           outcome = "partial";
           return;
@@ -1525,6 +1815,7 @@ const removeLeftovers = async (
   runtime: UninstallRuntime,
   plan: LeftoversPlan,
   report: Report,
+  owner: string | null = null,
 ): Promise<ReadonlyArray<string>> => {
   const run = runtime.server.run;
   const context = plan.dockerContext;
@@ -1549,7 +1840,22 @@ const removeLeftovers = async (
       continue;
     }
     const volume = await volumeOwner(run, context, name);
-    if (volume.state === "present" && volume.owner !== null) volumes.push(name);
+    if (volume.state === "unknown") {
+      left.push(name);
+      report.failures.push(`could not inspect volume ${name}: ${volume.detail}`);
+    }
+    if (
+      volume.state === "present" &&
+      volume.owner !== null &&
+      (owner === null || volume.owner === owner)
+    )
+      volumes.push(name);
+    else if (volume.state === "present") {
+      report.leftovers.push(
+        `volume ${name}: it carries another installation's label, or none, so it stays (docker --context ${context} volume inspect ${name})`,
+      );
+      report.remaining.push(`volume ${name}`);
+    }
   }
   // An anchor here is the unactivated setup's own (the plan holds it only then): it goes last,
   // once nothing else is left.
@@ -1570,6 +1876,46 @@ const removeLeftovers = async (
   }
   if (left.length > 0) report.remaining.push(...left);
   return left;
+};
+
+/** Reobserve orphaned resources under the same lock a setup uses before claiming them. */
+const removeOrphanedLeftovers = async (
+  runtime: UninstallRuntime,
+  plan: LeftoversPlan,
+  report: Report,
+): Promise<"removed" | "partial" | "refused"> => {
+  const result = await withServerStore(runtime.server.configDir, async (store) => {
+    const installation = readServerInstallation(store);
+    if (installation._tag === "error") throw installation.error;
+    const identity = store.readIdentity();
+    if (identity._tag === "error") throw identity.error;
+    if (installation.value !== null || identity.value !== null) {
+      report.failures.push(
+        "The server installation changed after the uninstall plan was read; nothing was removed. Run mend uninstall again to read its current identity and generation.",
+      );
+      return "refused";
+    }
+    const retry = readLeft(runtime.server.configDir, null, plan.dockerContext);
+    if (retry.state === "unknown") {
+      report.failures.push(retry.problem);
+      return "refused";
+    }
+    const found = await findLeftovers(runtime.server.run, null, plan.dockerContext);
+    if ("kind" in found) {
+      report.failures.push(
+        planRefusal({ scope: "server", server: found, home: null }) ?? found.problem,
+      );
+      return "refused";
+    }
+    if (found.leftovers === null) return "removed";
+    const left = await removeLeftovers(runtime, found.leftovers, report);
+    return left.length === 0 ? "removed" : "partial";
+  });
+  if (result._tag === "error") {
+    report.failures.push(result.error.message);
+    return "refused";
+  }
+  return result.value;
 };
 
 /** With `all`: the sysctl file setup wrote, then the images Mend pulled and built. */
@@ -1846,7 +2192,7 @@ export const executeUninstall = async (
       notReached.push(...notReachedExtras(plan.server.extras));
     }
   } else if (isLeftovers(plan.server)) {
-    await removeLeftovers(runtime, plan.server, report);
+    if ((await removeOrphanedLeftovers(runtime, plan.server, report)) === "refused") return done();
   }
   const signedIn = runtime.signedIn;
   const toThisServer =
