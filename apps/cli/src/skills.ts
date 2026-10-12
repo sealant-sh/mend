@@ -55,21 +55,46 @@ export const readFrontmatterDescription = (contents: string): string => {
   return "";
 };
 
-const walkFiles = (root: string): ReadonlyArray<string> => {
+const walkFiles = (root: string, onCycle: (directory: string) => void): ReadonlyArray<string> => {
   const found: string[] = [];
+  const ancestors = new Set<string>();
   const visit = (dir: string) => {
-    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-      if (IGNORED_DIRS.has(entry.name)) continue;
-      const absolute = path.join(dir, entry.name);
-      // stat (not the dirent) so symlinked files and directories both count.
-      let stat: fs.Stats;
-      try {
-        stat = fs.statSync(absolute);
-      } catch {
-        continue; // dangling symlink
+    let realDir: string;
+    try {
+      realDir = fs.realpathSync(dir);
+    } catch (cause) {
+      // A directory link can disappear after stat, or its target can itself be a link loop.
+      if (
+        typeof cause === "object" &&
+        cause !== null &&
+        "code" in cause &&
+        (cause.code === "ENOENT" || cause.code === "ENOTDIR" || cause.code === "ELOOP")
+      )
+        return;
+      throw cause;
+    }
+    if (ancestors.has(realDir)) {
+      onCycle(dir);
+      return;
+    }
+    // Track only this path's ancestors so distinct resource aliases retain their bundle paths.
+    ancestors.add(realDir);
+    try {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (IGNORED_DIRS.has(entry.name)) continue;
+        const absolute = path.join(dir, entry.name);
+        // stat (not the dirent) so symlinked files and directories both count.
+        let stat: fs.Stats;
+        try {
+          stat = fs.statSync(absolute);
+        } catch {
+          continue; // dangling symlink
+        }
+        if (stat.isDirectory()) visit(absolute);
+        else if (stat.isFile()) found.push(absolute);
       }
-      if (stat.isDirectory()) visit(absolute);
-      else if (stat.isFile()) found.push(absolute);
+    } finally {
+      ancestors.delete(realDir);
     }
   };
   visit(root);
@@ -80,6 +105,7 @@ const walkFiles = (root: string): ReadonlyArray<string> => {
  * Scan a skill library directory: every immediate subdirectory carrying a
  * `SKILL.md` becomes one bundle. Oversized and binary files are skipped with
  * a note; a directory without a SKILL.md is noted and left out entirely.
+ * Directory symlink cycles are noted and skipped; other resource aliases keep their bundle paths.
  */
 export const scanSkillLibrary = (
   root: string,
@@ -110,7 +136,13 @@ export const scanSkillLibrary = (
     }
     const files: Array<{ readonly path: string; readonly contents: string }> = [];
     let bytes = 0;
-    for (const absolute of walkFiles(skillDir)) {
+    for (const absolute of walkFiles(skillDir, (directory) => {
+      const relative = path.relative(skillDir, directory).split(path.sep).join("/");
+      notes.push({
+        skill: entry.name,
+        message: `${relative} points to an ancestor directory — skipped`,
+      });
+    })) {
       const relative = path.relative(skillDir, absolute).split(path.sep).join("/");
       const buffer = fs.readFileSync(absolute);
       if (buffer.byteLength > MAX_SKILL_FILE_BYTES) {

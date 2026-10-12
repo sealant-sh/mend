@@ -64,6 +64,85 @@ describe("scanSkillLibrary", () => {
     ]);
   });
 
+  it.each(["back", "references/back"])(
+    "keeps a valid bundle when %s links to an ancestor directory",
+    (link) => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "mend-skill-cycle-"));
+      try {
+        writeSkill(root, "good", "---\ndescription: A small skill.\n---\nUse notes.md.\n");
+        const skillDir = path.join(root, "good");
+        fs.writeFileSync(path.join(skillDir, "notes.md"), "notes\n");
+        fs.mkdirSync(path.dirname(path.join(skillDir, link)), { recursive: true });
+        fs.symlinkSync(skillDir, path.join(skillDir, link), "dir");
+
+        const result = scanSkillLibrary(root);
+        if ("error" in result) throw new Error(result.error);
+        expect(result.skills).toHaveLength(1);
+        expect(result.skills[0]?.files.map((file) => file.path)).toEqual(["SKILL.md", "notes.md"]);
+        expect(result.skills[0]?.bytes).toBe(
+          Buffer.byteLength("---\ndescription: A small skill.\n---\nUse notes.md.\nnotes\n"),
+        );
+        expect(result.notes).toEqual([
+          { skill: "good", message: `${link} points to an ancestor directory — skipped` },
+        ]);
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it("retains separate resource directory aliases and linked files at their bundle paths", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mend-skill-cycle-"));
+    try {
+      writeSkill(root, "good", "Use resources/notes.md or either alias.\n");
+      const skillDir = path.join(root, "good");
+      fs.mkdirSync(path.join(skillDir, "resources"));
+      fs.writeFileSync(path.join(skillDir, "resources", "notes.md"), "resource notes\n");
+      fs.symlinkSync("resources", path.join(skillDir, "alias-a"), "dir");
+      fs.symlinkSync("resources", path.join(skillDir, "alias-b"), "dir");
+      fs.symlinkSync("resources/notes.md", path.join(skillDir, "linked.md"), "file");
+      fs.symlinkSync("missing", path.join(skillDir, "dangling"), "dir");
+
+      const result = scanSkillLibrary(root);
+      if ("error" in result) throw new Error(result.error);
+      expect(result.skills[0]?.files).toEqual([
+        { path: "SKILL.md", contents: "Use resources/notes.md or either alias.\n" },
+        { path: "alias-a/notes.md", contents: "resource notes\n" },
+        { path: "alias-b/notes.md", contents: "resource notes\n" },
+        { path: "linked.md", contents: "resource notes\n" },
+        { path: "resources/notes.md", contents: "resource notes\n" },
+      ]);
+      expect(result.notes).toEqual([]);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("scans a top-level linked skill and its linked external resource directory", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mend-skill-cycle-"));
+    try {
+      const library = path.join(root, "library");
+      fs.mkdirSync(library);
+      writeSkill(root, "source", "Read references/notes.md.\n");
+      fs.mkdirSync(path.join(root, "resources"));
+      fs.writeFileSync(path.join(root, "resources", "notes.md"), "external notes\n");
+      fs.symlinkSync("../resources", path.join(root, "source", "references"), "dir");
+      fs.symlinkSync("../source", path.join(library, "linked-skill"), "dir");
+
+      const result = scanSkillLibrary(library);
+      if ("error" in result) throw new Error(result.error);
+      expect(result.skills).toHaveLength(1);
+      expect(result.skills[0]?.name).toBe("linked-skill");
+      expect(result.skills[0]?.files).toEqual([
+        { path: "SKILL.md", contents: "Read references/notes.md.\n" },
+        { path: "references/notes.md", contents: "external notes\n" },
+      ]);
+      expect(result.notes).toEqual([]);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("an unreadable root is an error, not an empty success", () => {
     const result = scanSkillLibrary(path.join(tmpLibrary(), "missing"));
     expect("error" in result).toBe(true);
