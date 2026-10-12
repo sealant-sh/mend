@@ -1,7 +1,7 @@
 import { OrganizationId } from "@mend/domain";
 import { describe, expect, it } from "vitest";
 
-import { canRemove, runsAsLine, sessionActions } from "./viewer.ts";
+import { canRemove, ownerLine, sessionActions } from "./viewer.ts";
 
 const org = OrganizationId.make("org-1");
 const alice = { userId: "alice", organizationId: org, role: "member" as const };
@@ -39,35 +39,35 @@ describe("session rows", () => {
     });
   });
 
-  it("say whose credentials a session runs on", () => {
+  it("say whose session it is without claiming runtime credentials", () => {
     const names = new Map([["alice", "Alice"]]);
-    expect(runsAsLine(owned, true, names)).toBeNull();
-    expect(runsAsLine(shared, true, names)).toBe("shared control on");
-    expect(runsAsLine(shared, false, names)).toBe("runs as Alice · shared control on");
-    expect(runsAsLine({ ...owned, ownerUserId: "zed" }, false, names)).toBe(
-      "runs as another account",
+    expect(ownerLine(owned, true, names)).toBeNull();
+    expect(ownerLine(shared, true, names)).toBe("shared control on");
+    expect(ownerLine(shared, false, names)).toBe("owned by Alice · shared control on");
+    expect(ownerLine({ ...owned, ownerUserId: "zed" }, false, names)).toBe(
+      "owned by another account",
     );
-    expect(runsAsLine({ ...owned, ownerUserId: null }, false, names)).toBe(
+    expect(ownerLine({ ...owned, ownerUserId: null }, false, names)).toBe(
       "no owner · nobody steers it",
     );
   });
 
   it("say nothing about another account while the roster is read", () => {
-    expect(runsAsLine(shared, false, undefined)).toBeNull();
-    expect(runsAsLine(fromSlack, false, undefined)).toBeNull();
+    expect(ownerLine(shared, false, undefined)).toBeNull();
+    expect(ownerLine(fromSlack, false, undefined)).toBeNull();
     // The owner's own line needs no names.
-    expect(runsAsLine(shared, true, undefined)).toBe("shared control on");
-    expect(runsAsLine({ ...owned, ownerUserId: null }, false, undefined)).toBe(
+    expect(ownerLine(shared, true, undefined)).toBe("shared control on");
+    expect(ownerLine({ ...owned, ownerUserId: null }, false, undefined)).toBe(
       "no owner · nobody steers it",
     );
   });
 
   it("say a session came from Slack, beside its owner", () => {
     const names = new Map([["alice", "Alice"]]);
-    expect(runsAsLine(fromSlack, true, names)).toBe("from Slack");
-    expect(runsAsLine(fromSlack, false, names)).toBe("runs as Alice · from Slack");
-    expect(runsAsLine({ ...fromSlack, sharedControlEnabledAt: new Date() }, false, names)).toBe(
-      "runs as Alice · from Slack · shared control on",
+    expect(ownerLine(fromSlack, true, names)).toBe("from Slack");
+    expect(ownerLine(fromSlack, false, names)).toBe("owned by Alice · from Slack");
+    expect(ownerLine({ ...fromSlack, sharedControlEnabledAt: new Date() }, false, names)).toBe(
+      "owned by Alice · from Slack · shared control on",
     );
   });
 });
