@@ -593,6 +593,70 @@ test("options default to the ADR's run counts and check what they name", () => {
   assert.throws(() => parseOptions(["compare", "a.json"]), /needs 2/);
 });
 
+test("an empty statistics selection is refused by options and comparison", () => {
+  assert.throws(
+    () => compareResults(record({}), record({}), { stats: [] }),
+    /at least one statistic/,
+  );
+  for (const value of ["", ",", " , , "]) {
+    for (const flag of [[`--stats=${value}`], ["--stats", value]]) {
+      assert.throws(
+        () => parseOptions(["compare", "before.json", "after.json", ...flag]),
+        /at least one statistic/,
+      );
+    }
+  }
+});
+
+test("compare CLI checks budgeted records and refuses empty statistics", (t) => {
+  const directory = mkdtempSync(path.join(tmpdir(), "st-bench-compare-stats-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const before = path.join(directory, "before.json");
+  const after = path.join(directory, "after.json");
+  // Independent records: one known timing budget, with ten equal samples on each side.
+  const timed = (value) =>
+    record({
+      "new.claude.first_output_excl_install": {
+        unit: "ms",
+        budget: "start",
+        samples: Array(10).fill(value),
+      },
+    });
+  writeFileSync(before, JSON.stringify(timed(1000)));
+  writeFileSync(after, JSON.stringify(timed(1_000_000)));
+  const compare = (flags) =>
+    spawnSync(
+      process.execPath,
+      [fileURLToPath(new URL("bench.mjs", import.meta.url)), "compare", before, after, ...flags],
+      { encoding: "utf8", timeout: 10_000 },
+    );
+  const selections = [[], ["--stats=median"], ["--stats=p90"], ["--stats=worst"]];
+  for (const flags of selections) {
+    const over = compare(flags);
+    assert.ifError(over.error);
+    assert.equal(over.status, 1);
+    assert.match(over.stderr, /verdict .* FAILED/);
+    assert.match(over.stdout, /new\.claude\.first_output_excl_install/);
+  }
+  for (const value of ["", ",", " , , "]) {
+    for (const flags of [[`--stats=${value}`], ["--stats", value]]) {
+      const refused = compare(flags);
+      assert.ifError(refused.error);
+      assert.equal(refused.status, 1, `compare ${JSON.stringify(flags)} must refuse`);
+      assert.match(refused.stderr, /at least one statistic/);
+      assert.doesNotMatch(`${refused.stdout}\n${refused.stderr}`, /verdict .* passed/);
+    }
+  }
+  writeFileSync(after, JSON.stringify(timed(1000)));
+  for (const flags of selections) {
+    const within = compare(flags);
+    assert.ifError(within.error);
+    assert.equal(within.status, 0);
+    assert.match(within.stderr, /verdict .* passed/);
+    assert.match(within.stdout, /new\.claude\.first_output_excl_install/);
+  }
+});
+
 test("an origin is addressed in the SSH form the git shim carries", () => {
   assert.equal(
     sshRemoteOf("https://github.com/sealant-sh/mend.git"),
