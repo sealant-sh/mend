@@ -77,23 +77,26 @@ export function ownsComposeContainer(container, initialIds, configRoot) {
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
- * A Sealant executor container: named `sealant-<id>` and/or holding a scoped `mend-control` socket
- * volume at /run/sealant with subpath `sealant-<id>`. `<id>` is the workspace's own id, which the
+ * Recognize executor candidates by a Sealant name or a mend-control root mount, even when its
+ * scope evidence is missing or invalid. Scope safety is checked separately. The physical `<id>`
+ * is the workspace's own id, which the
  * hot pool decouples from the session's assigned `sealantWorkspaceId` (a session claims a warm
  * standby, so its container keeps the pool id) — the container cannot be pinned to a session by id.
  * Per-session proof comes from the API and the record (registered capture, flush report); this
- * predicate only recognises that a container is a Sealant executor.
+ * predicate only recognizes candidates; it does not establish cleanup ownership.
  */
 export function isSealantExecutor(container) {
   const name = typeof container.Name === "string" ? container.Name.replace(/^\//, "") : "";
   if (/^sealant-[0-9a-f-]+$/i.test(name)) return true;
-  return (container.HostConfig?.Mounts ?? []).some(
-    (mount) =>
-      mount.Source === "mend-control" &&
-      mount.Type === "volume" &&
-      mount.Target === "/run/sealant" &&
-      typeof mount.VolumeOptions?.Subpath === "string" &&
-      /^sealant-[0-9a-f-]+$/i.test(mount.VolumeOptions.Subpath),
+  const specs = container.HostConfig?.Mounts;
+  const mounts = container.Mounts;
+  return (
+    (Array.isArray(specs) &&
+      specs.some((mount) => mount?.Source === "mend-control" && mount.Target === "/run/sealant")) ||
+    (Array.isArray(mounts) &&
+      mounts.some(
+        (mount) => mount?.Name === "mend-control" && mount.Destination === "/run/sealant",
+      ))
   );
 }
 
@@ -108,10 +111,50 @@ const underRunSealant = (target) =>
  * demanded the store mount that capture mode removes.
  */
 export function captureExecutorMountsAreValid(container) {
-  const specs = container.HostConfig?.Mounts ?? [];
-  const mounts = container.Mounts ?? [];
+  const specs = container.HostConfig?.Mounts;
+  const mounts = container.Mounts;
   const binds = container.HostConfig?.Binds ?? [];
   if (!Array.isArray(specs) || !Array.isArray(mounts) || !Array.isArray(binds)) return false;
+  if (
+    specs.some((mount) => !mount || typeof mount !== "object") ||
+    mounts.some((mount) => !mount || typeof mount !== "object")
+  )
+    return false;
+  const controlSpecs = specs.filter(
+    (mount) => mount.Source === "mend-control" || underRunSealant(mount.Target),
+  );
+  const controlMounts = mounts.filter(
+    (mount) => mount.Name === "mend-control" || underRunSealant(mount.Destination),
+  );
+  if (controlSpecs.length !== 2 || controlMounts.length !== 2) return false;
+  const control = controlSpecs.find((mount) => mount.Target === "/run/sealant");
+  const secret = controlSpecs.find((mount) => mount.Target === "/run/sealant/secrets");
+  const actualControl = controlMounts.find((mount) => mount.Destination === "/run/sealant");
+  const actualSecret = controlMounts.find((mount) => mount.Destination === "/run/sealant/secrets");
+  const subpath = control?.VolumeOptions?.Subpath;
+  if (
+    typeof subpath !== "string" ||
+    !subpath.startsWith("sealant-") ||
+    !uuidPattern.test(subpath.slice(8))
+  )
+    return false;
+  const name = typeof container.Name === "string" ? container.Name.replace(/^\//, "") : "";
+  if (/^sealant-[0-9a-f-]+$/i.test(name) && name.toLowerCase() !== subpath.toLowerCase())
+    return false;
+  if (
+    control?.Type !== "volume" ||
+    control.Source !== "mend-control" ||
+    secret?.Type !== "volume" ||
+    secret.Source !== "mend-control" ||
+    secret.VolumeOptions?.Subpath !== `_dotfiles/sealant-secret-env-${subpath.slice(8)}` ||
+    secret.ReadOnly !== true ||
+    actualControl?.Type !== "volume" ||
+    actualControl.Name !== "mend-control" ||
+    actualSecret?.Type !== "volume" ||
+    actualSecret.Name !== "mend-control" ||
+    actualSecret.RW !== false
+  )
+    return false;
   const storeSpec = specs.some(
     (mount) =>
       mount.Source === "mend-store" ||
@@ -152,8 +195,21 @@ export function assertCaptureExecutor(container) {
   assert.ok(isSealantExecutor(container), "Observed container must be a Sealant executor");
   assert.ok(
     captureExecutorMountsAreValid(container),
-    "Capture executor must mount nothing from mend-store and no host path; it reaches the host only through scoped mend-control volumes under /run/sealant",
+    "Capture executor must mount nothing from mend-store and no host path; mend-control must expose only its matching executor scope and read-only secrets under /run/sealant",
   );
+}
+
+/**
+ * Acceptance inventory, separate from conservative cleanup ownership: refuse any new recognized
+ * executor with invalid mounts before selecting running executors or declaring reclamation.
+ * Pre-existing containers and the server's /run/sealant/sockets mount are not candidates.
+ */
+export function runningCaptureExecutors(containers, initialIds) {
+  const candidates = containers.filter(
+    (container) => !initialIds.has(container.Id) && isSealantExecutor(container),
+  );
+  for (const candidate of candidates) assertCaptureExecutor(candidate);
+  return candidates.filter((container) => container.State?.Running === true);
 }
 
 /** A registered capture for the worktree: the API answers from a capture n ≥ 1, never the base. */
@@ -494,6 +550,55 @@ export function checkpointChainEvidence(chain, { baseSha, checkpoint, worktreeId
   return chain.map((row) => `${row.ordinal} ${row.sha} ${row.ref} ${row.trigger}`).join("\n");
 }
 
+// The acceptance writes a fixed ASCII proof path. Parse that section's complete added-file
+// hunks, rather than accepting marker substrings, another file, or contradictory API metadata.
+function addedProofLine(patch, file, marker) {
+  if (
+    typeof patch !== "string" ||
+    typeof file !== "string" ||
+    !/^[a-zA-Z0-9._/-]+$/.test(file) ||
+    typeof marker !== "string" ||
+    marker.length === 0 ||
+    /[\r\n]/.test(marker)
+  )
+    return false;
+  const lines = patch.split("\n");
+  const header = `diff --git a/${file} b/${file}`;
+  const starts = lines.flatMap((line, index) => (line === header ? [index] : []));
+  if (starts.length !== 1) return false;
+  const start = starts[0] + 1;
+  let end = lines.findIndex((line, index) => index >= start && line.startsWith("diff --git "));
+  if (end === -1) end = lines.length;
+  if (lines[end - 1] === "") end -= 1;
+  let index = start;
+  if (!/^new file mode 100(?:644|755)$/.test(lines[index] ?? "")) return false;
+  index += 1;
+  if (/^index 0+\.\.[0-9a-f]+$/.test(lines[index] ?? "")) index += 1;
+  if (lines[index++] !== "--- /dev/null" || lines[index++] !== `+++ b/${file}`) return false;
+  let nextLine = 1;
+  let found = false;
+  let hunks = 0;
+  while (index < end) {
+    const hunk = /^@@ -0,0 \+(\d+)(?:,(\d+))? @@(?: .*)?$/.exec(lines[index++]);
+    if (!hunk || Number(hunk[1]) !== nextLine) return false;
+    const count = hunk[2] === undefined ? 1 : Number(hunk[2]);
+    if (!Number.isSafeInteger(count) || count < 1) return false;
+    for (let remaining = count; remaining > 0; remaining -= 1) {
+      const line = lines[index++];
+      if (typeof line !== "string" || !line.startsWith("+")) return false;
+      if (line.slice(1) === marker) found = true;
+      if (lines[index] === "\\ No newline at end of file") {
+        // A missing newline can only describe the final added content line.
+        if (remaining !== 1 || index + 1 !== end) return false;
+        index += 1;
+      }
+    }
+    nextLine += count;
+    hunks += 1;
+  }
+  return hunks > 0 && found;
+}
+
 /**
  * The second half: a Review slice anchored at the base whose patch the git runner served from
  * the capture packs, carrying the committed file, observed from a registered capture.
@@ -517,10 +622,11 @@ export function reviewDiffEvidence(view, { baseSha, sliceId, marker, file }) {
     "Review must end at a later checkpoint than its base",
   );
   assert.ok(
-    typeof view.patch === "string" &&
-      view.patch.includes(marker) &&
+    addedProofLine(view.patch, file, marker) &&
       Array.isArray(view.files) &&
-      view.files.some((entry) => entry.newPath === file && entry.status === "added"),
+      view.files.some(
+        (entry) => entry.oldPath === null && entry.newPath === file && entry.status === "added",
+      ),
     "Review patch must carry the committed workspace file",
   );
   assert.ok(
