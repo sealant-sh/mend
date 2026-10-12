@@ -103,7 +103,8 @@ export const sealantProviderLayer = Layer.effect(
       });
 
       const maxRounds = request.maxRounds ?? MAX_TOOL_ROUNDS;
-      for (let round = 0; round < maxRounds; round++) {
+      // The budget counts tool rounds; their last continuation can still be the final answer.
+      for (let round = 0; round <= maxRounds; round++) {
         if (response.turn.type === "text") {
           if (request.outputSchema === undefined) return response.turn.text;
           if (response.turn.json !== undefined) return response.turn.json;
@@ -113,6 +114,7 @@ export const sealantProviderLayer = Layer.effect(
               new InferenceError({ message: "final answer was not valid JSON", cause }),
           });
         }
+        if (round >= maxRounds) break;
         const toolResults = yield* Effect.forEach(response.turn.calls, runTool);
         response = yield* exchange({ sessionId: response.sessionId, toolResults });
       }
