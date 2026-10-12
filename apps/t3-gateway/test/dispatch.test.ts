@@ -15,17 +15,20 @@ import {
   type OrchestrationV2ThreadStreamItem,
 } from "@mend/t3-contracts";
 import * as Cause from "effect/Cause";
+import * as Deferred from "effect/Deferred";
 import type * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as Option from "effect/Option";
 
 import { mendAnswersOf, mendDecisionOf } from "../src/commands.ts";
+import type { MendCommand } from "../src/mend-client.ts";
 import type { QueueTimings } from "../src/queue.ts";
 import { openGatewayState } from "../src/state.ts";
 import { startFakeMend, type FakeMend } from "./support/fake-mend.ts";
 import { feed } from "./support/feed.ts";
-import { gatewayTestLayer } from "./support/gateway.ts";
+import { gatewayTestLayer, type LaunchObserver } from "./support/gateway.ts";
 import { pairAndConnect } from "./support/rpc.ts";
 
 /**
@@ -39,6 +42,7 @@ const withGateway = <A, E, R>(
   options: {
     readonly hubIdleTimeToLive?: Duration.Input;
     readonly queueTimings?: Partial<QueueTimings>;
+    readonly launchObserver?: LaunchObserver;
   } = {},
 ) =>
   Effect.gen(function* () {
@@ -859,55 +863,78 @@ describe("review round 4", () => {
   it.live(
     "a message taken back while its launch is in flight stays cancelled when the launch fails",
     () =>
-      withGateway((mend) =>
-        Effect.gen(function* () {
-          const { workbench } = mend;
-          setup(mend);
-          workbench.stopAgent("session-1");
-          workbench.launchAnswerDelayMs = 800;
-          workbench.launchFailStatus = 500;
-          const { rpc } = yield* pairAndConnect(mend, "FLIP");
-          const thread = yield* feed(
-            rpc[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({
-              threadId: ThreadId.make("session-1"),
+      Effect.gen(function* () {
+        const started = yield* Deferred.make<Fiber.Fiber<unknown, unknown>>();
+        const failed = yield* Deferred.make<Effect.Error<MendCommand<unknown>>>();
+        const observer: LaunchObserver = {
+          started: (sessionId, fiber) => {
+            assert.strictEqual(sessionId, "session-1");
+            return Deferred.succeed(started, fiber).pipe(Effect.asVoid);
+          },
+          failed: (sessionId, error) => {
+            assert.strictEqual(sessionId, "session-1");
+            return Deferred.succeed(failed, error).pipe(Effect.asVoid);
+          },
+        };
+        return yield* withGateway(
+          (mend) =>
+            Effect.gen(function* () {
+              const { workbench } = mend;
+              setup(mend);
+              workbench.stopAgent("session-1");
+              const held = workbench.holdNextLaunch();
+              yield* Effect.addFinalizer(() => Effect.sync(() => held.release(500)));
+              const { rpc } = yield* pairAndConnect(mend, "FLIP");
+              const thread = yield* feed(
+                rpc[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({
+                  threadId: ThreadId.make("session-1"),
+                }),
+              );
+              yield* thread.next(
+                (item): item is Extract<Item, { kind: "snapshot" }> => item.kind === "snapshot",
+              );
+              yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](
+                message("session-1", "message-flip", "hello"),
+              );
+              const preparing = yield* thread.next(
+                runEvent(
+                  (run) => run.userMessageId === "message-flip" && run.status === "preparing",
+                ),
+              );
+              if (preparing.event.type !== "run.updated") {
+                return yield* Effect.die(new Error("the preparing event must identify the run"));
+              }
+              const runId = preparing.event.payload.id;
+              yield* Effect.promise(() => held.entered).pipe(Effect.timeout("5 seconds"));
+              const launchFiber = yield* Deferred.await(started);
+              yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({
+                type: "run.interrupt",
+                commandId: commandId(),
+                threadId: ThreadId.make("session-1"),
+                runId,
+                holdQueue: false,
+              });
+              yield* thread.next(runEvent((run) => run.id === runId && run.status === "cancelled"));
+              held.release(500);
+              const refusal = yield* Deferred.await(failed).pipe(Effect.timeout("5 seconds"));
+              assert.deepInclude(refusal, { _tag: "MendUnavailable", status: 500 });
+              // This is the real launchAgain caller, captured at the live client boundary. Its
+              // completion includes processing the refusal and publishing the resulting queue.
+              const processed = yield* Fiber.await(launchFiber).pipe(Effect.timeout("5 seconds"));
+              assert.isTrue(
+                Exit.isSuccess(processed),
+                "the launch failure processing fiber must complete",
+              );
+              const after = yield* rpc[ORCHESTRATION_V2_WS_METHODS.getThreadProjection]({
+                threadId: ThreadId.make("session-1"),
+              });
+              assert.strictEqual(after.runs.find((run) => run.id === runId)?.status, "cancelled");
+              assert.strictEqual(posts(mend, "/launch").length, 1);
             }),
-          );
-          yield* thread.next(
-            (item): item is Extract<Item, { kind: "snapshot" }> => item.kind === "snapshot",
-          );
-          yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](
-            message("session-1", "message-flip", "hello"),
-          );
-          const preparing = yield* thread.next(
-            runEvent((run) => run.userMessageId === "message-flip" && run.status === "preparing"),
-          );
-          const runId =
-            preparing.event.type === "run.updated"
-              ? preparing.event.payload.id
-              : RunId.make("none");
-          yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({
-            type: "run.interrupt",
-            commandId: commandId(),
-            threadId: ThreadId.make("session-1"),
-            runId,
-            holdQueue: false,
-          });
-          yield* thread.next(runEvent((run) => run.id === runId && run.status === "cancelled"));
-          // The launch answers 500 after the take-back: the run is not rewritten.
-          assert.isTrue(
-            yield* thread.quiet(
-              runEvent((run) => run.id === runId),
-              "2 seconds",
-            ),
-            "the cancelled run changed again",
-          );
-          const after = yield* rpc[ORCHESTRATION_V2_WS_METHODS.getThreadProjection]({
-            threadId: ThreadId.make("session-1"),
-          });
-          assert.strictEqual(after.runs.find((run) => run.id === runId)?.status, "cancelled");
-          assert.strictEqual(posts(mend, "/launch").length, 1);
-        }),
-      ),
+          undefined,
+          { launchObserver: observer },
+        );
+      }),
   );
 });
 
