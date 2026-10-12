@@ -22,7 +22,7 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { deflateSync } from "node:zlib";
+import { crc32, deflateSync } from "node:zlib";
 
 import { identityOf } from "./guard/policy.mjs";
 import { loadSecrets, privateRoot, redactValues, register } from "./secrets.mjs";
@@ -59,6 +59,22 @@ const chunk = (type, data) => {
   const length = Buffer.alloc(4);
   length.writeUInt32BE(data.length);
   return Buffer.concat([length, Buffer.from(type, "latin1"), data, Buffer.alloc(4)]);
+};
+
+/** A valid one-pixel PNG, including a metadata chunk with its actual CRC. */
+const metadataPng = (type, data) => {
+  const checkedChunk = (type, data) => {
+    const bytes = chunk(type, data);
+    bytes.writeUInt32BE(crc32(bytes.subarray(4, -4)), bytes.length - 4);
+    return bytes;
+  };
+  return Buffer.concat([
+    Buffer.from("\x89PNG\r\n\x1a\n", "latin1"),
+    checkedChunk("IHDR", Buffer.from([0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0])),
+    checkedChunk(type, data),
+    checkedChunk("IDAT", deflateSync(Buffer.from([0, 0, 0, 0, 255]))),
+    checkedChunk("IEND", Buffer.alloc(0)),
+  ]);
 };
 
 const scratchRoots = [];
@@ -135,10 +151,38 @@ test(
     const privateDir = privateWithAccount();
     const out = fresh("evidence");
     // A login page whose Sign in leads nowhere: the drive times out after typing the password.
-    const server = createServer((_request, response) => {
+    const observed = [];
+    const server = createServer((request, response) => {
+      if (request.method === "POST" && request.url === "/observation") {
+        let body = "";
+        request.on("data", (data) => (body += data));
+        request.on("end", () => {
+          for (const { event, value, disabled, email } of JSON.parse(body))
+            observed.push({
+              event,
+              passwordMatches: value === PASSWORD,
+              disabled,
+              emailMatches: email === "verifier@verify-stack.invalid",
+            });
+          response.writeHead(204).end();
+        });
+        return;
+      }
       response.setHeader("content-type", "text/html");
       response.end(
-        '<label>Email <input name="email"></label><label>Password <input type="password" disabled></label><button>Sign in</button>',
+        `<label>Email <input name="email"></label><label>Password <input type="password" disabled></label><button>Sign in</button>
+        <script>
+          const password = document.querySelector('[type="password"]');
+          const observations = [];
+          const record = (event) => observations.push({ event, value: password.value,
+            disabled: password.disabled, email: document.querySelector('[name="email"]').value });
+          password.addEventListener('input', () => record('input'));
+          password.addEventListener('change', () => record('change'));
+          document.querySelector('button').addEventListener('click', () => {
+            record('click');
+            fetch('/observation', { method: 'POST', body: JSON.stringify(observations) });
+          });
+        </script>`,
       );
     });
     await new Promise((done) => server.listen(0, "127.0.0.1", done));
@@ -171,8 +215,19 @@ test(
       child.stderr.on("data", (data) => (stderr += data));
       child.stdout.resume();
       child.on("close", (status) => done({ status, stderr }));
-    }).finally(() => server.close());
+    }).finally(() => new Promise((done) => server.close(done)));
     assert.equal(run.status, 1);
+    assert.deepEqual(
+      observed,
+      ["input", "change", "click"].map((event) => ({
+        event,
+        passwordMatches: true,
+        disabled: true,
+        emailMatches: true,
+      })),
+      "the disabled password field received the synthetic password before sign-in",
+    );
+    assert.match(run.stderr, /drive-web: page\.waitForURL: Timeout 1500ms exceeded/);
     assert.ok(!run.stderr.includes(PASSWORD), "the password reached stderr");
     assert.ok(!everything(out).includes(PASSWORD), "the password reached the evidence");
   },
@@ -303,18 +358,52 @@ test("a planted hit fails Cleanup's last lines, deletes the leaking file and kee
   assert.ok(!readFileSync(join(E, "scan.json"), "utf8").includes(PASSWORD));
 });
 
-test("the scan reads PNG text chunks, refuses archives, and knows a lone pairing code and a private key", () => {
+for (const { name, type, data } of [
+  { name: "tEXt", type: "tEXt", data: (text) => Buffer.from(`Comment\0${text}`, "latin1") },
+  {
+    name: "zTXt",
+    type: "zTXt",
+    data: (text) => Buffer.concat([Buffer.from("Comment\0\0", "latin1"), deflateSync(text)]),
+  },
+  ...[false, true].map((compressed) => ({
+    name: `iTXt ${compressed ? "compressed" : "uncompressed"}`,
+    type: "iTXt",
+    data: (text) =>
+      Buffer.concat([
+        Buffer.from(`Comment\0${compressed ? "\x01" : "\x00"}\0en\0Comment\0`, "latin1"),
+        compressed ? deflateSync(Buffer.from(text, "utf8")) : Buffer.from(text, "utf8"),
+      ]),
+  })),
+]) {
+  test(`the scan finds registered metadata in a checked PNG with ${name}`, () => {
+    const P = privateWithAccount();
+    const E = fresh("evidence");
+    for (const [file, text] of [
+      ["metadata.png", `note ${PASSWORD}`],
+      ["clean.png", "ordinary note"],
+    ]) {
+      const png = metadataPng(type, data(text));
+      writeFileSync(join(E, file), png);
+      writeFileSync(
+        join(E, `${file}.checked`),
+        JSON.stringify({ sha256: createHash("sha256").update(png).digest("hex") }),
+      );
+    }
+    const run = node([join(here, "scan-evidence.mjs"), "--dir", E, "--secrets", P]);
+    assert.equal(run.status, 1, run.stderr);
+    assert.match(run.stdout, /metadata\.png · a value from account\.json/);
+    assert.deepEqual(JSON.parse(readFileSync(join(E, "scan.json"), "utf8")).hits, [
+      { file: "metadata.png", kind: "a value from account.json" },
+    ]);
+    assert.ok(
+      !`${run.stdout}${run.stderr}${readFileSync(join(E, "scan.json"), "utf8")}`.includes(PASSWORD),
+    );
+  });
+}
+
+test("the scan refuses archives, and knows a lone pairing code and a private key", () => {
   const P = privateWithAccount();
   const E = fresh("evidence");
-  const png = Buffer.concat([
-    Buffer.from("\x89PNG\r\n\x1a\n", "latin1"),
-    chunk(
-      "zTXt",
-      Buffer.concat([Buffer.from("Comment\0\0", "latin1"), deflateSync(`note ${PASSWORD}`)]),
-    ),
-    chunk("IEND", Buffer.alloc(0)),
-  ]);
-  writeFileSync(join(E, "metadata.png"), png);
   writeFileSync(
     join(E, "trace.zip"),
     Buffer.concat([Buffer.from("PK\x03\x04", "latin1"), Buffer.alloc(16)]),
@@ -326,7 +415,6 @@ test("the scan reads PNG text chunks, refuses archives, and knows a lone pairing
   );
   const run = node([join(here, "scan-evidence.mjs"), "--dir", E, "--secrets", P]);
   assert.equal(run.status, 1);
-  assert.match(run.stdout, /metadata\.png · a value from account\.json/);
   assert.match(run.stdout, /trace\.zip · an archive, which cannot be searched/);
   assert.match(run.stdout, /pairing\.aria\.yml · 1 × pairing code/);
   assert.match(run.stdout, /key\.txt · 1 × private key/);
