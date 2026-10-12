@@ -103,7 +103,7 @@ const harness = (script: Script = {}, options: WorldOptions = {}) => {
     readonly branch: string;
     readonly have?: string;
   }> = [];
-  const held: Array<{ readonly sha: string; readonly base: string }> = [];
+  const held: Array<Parameters<LandingGit["Service"]["holds"]>[1]> = [];
   const git = Layer.succeed(LandingGit, {
     checkpoint: (_scope, trigger) =>
       Effect.suspend(() => {
@@ -789,7 +789,13 @@ describe("Landing.bundle", () => {
     const h = harness({ held: [pulled] });
     return Effect.gen(function* () {
       const bundle = yield* (yield* Landing).bundle({ ...bundleInput(), onto: pulled });
-      expect(h.held).toEqual([{ sha: pulled, base: BASE_SHA }]);
+      expect(h.held).toEqual([
+        {
+          sha: pulled,
+          base: BASE_SHA,
+          checkpoint: checkpointOf(h.world, 2, LATEST_CHECKPOINT_SHA, "turn-boundary"),
+        },
+      ]);
       expect(h.calls).toEqual(["latest", "holds", "commit", "bundle"]);
       // The pull's commit is the last landing for this bundle: Mend's commit builds on it.
       expect(h.commits[0]?.lastLanded).toBe(pulled);

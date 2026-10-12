@@ -4,7 +4,7 @@ import * as path from "node:path";
 
 import { it as effectIt } from "@effect/vitest";
 import { CaptureStoreRepo, CheckpointsRepo, SessionNotFoundError, StoreRefsRepo } from "@mend/db";
-import { Sha } from "@mend/domain";
+import { Sha, WorktreeId } from "@mend/domain";
 import { CapturesBehindError, SessionEngine } from "@mend/sessions";
 import {
   BlobStore,
@@ -52,6 +52,200 @@ describe("the captured adapter over real Git and retained capture objects", () =
             ),
           { detached },
         ),
+    );
+  }
+
+  effectIt.live(
+    "an owner's detached checkpoint uses captured HEAD even when the store retains its old branch ref",
+    () =>
+      withCapturedFixture(
+        (f) =>
+          f.provide(
+            Effect.gen(function* () {
+              f.seedStoreRef(`refs/heads/${f.world.worktree.branch}`, f.base);
+              const recorded = yield* (yield* LandingGit).checkpoint(f.world, "user-mark");
+              expect(recorded.checkpoint).toEqual(f.first.checkpoint);
+              expect(recorded.agentHead).toBe(f.first.agentHead);
+              expect(f.requests()).toEqual(["user-mark"]);
+            }),
+          ),
+        { detached: true },
+      ),
+  );
+
+  for (const { detached, missingCurrent } of [
+    { detached: false, missingCurrent: false },
+    { detached: true, missingCurrent: false },
+    { detached: false, missingCurrent: true },
+  ]) {
+    effectIt.live(
+      `a non-owner pulls only the historical ${detached ? "detached" : "branch"} capture through a cold cache${missingCurrent ? " with the current manifest absent" : ""}`,
+      () =>
+        withCapturedFixture(
+          (f) =>
+            Effect.gen(function* () {
+              const newer = yield* f.addCapture();
+              f.observeCapture(newer);
+              f.seedStoreRef(`refs/heads/${f.world.worktree.branch}`, newer.agentHead);
+              if (missingCurrent)
+                yield* f.provide(
+                  Effect.flatMap(BlobStore, (blobs) => blobs.remove(newer.row.manifestKey)),
+                );
+
+              f.deleteCache();
+              f.resetEvents();
+              const beforeAgent = f.agentState();
+              const beforeRefs = f.refs();
+              const beforeRows = f.inventory();
+              const bundle = yield* f.provide(
+                Effect.gen(function* () {
+                  return yield* (yield* Landing).bundle({
+                    sessionId: f.world.session.id,
+                    actorUserId: "grace",
+                    webOrigin: "https://mend.example.invalid",
+                    limitBytes: 1024 * 1024,
+                    ...(missingCurrent ? { onto: f.first.agentHead } : {}),
+                  });
+                }),
+              );
+              expect(bundle.onto).toBe(missingCurrent ? f.first.agentHead : null);
+              const file = path.join(f.root, "historical.bundle");
+              fs.writeFileSync(file, bundle.bytes);
+              const consumer = path.join(f.root, "historical-consumer");
+              fs.mkdirSync(consumer);
+              f.git(consumer, ["init", "-q", "-b", "main"]);
+              f.git(consumer, ["fetch", "-q", f.origin, "main"]);
+              f.git(consumer, ["update-ref", "refs/heads/main", f.base]);
+              if (missingCurrent) f.git(consumer, ["fetch", "-q", f.agent, f.first.agentHead]);
+              f.git(consumer, [
+                "fetch",
+                "-q",
+                file,
+                `refs/heads/${f.world.worktree.branch}:refs/heads/imported`,
+              ]);
+              expect(f.git(consumer, ["rev-parse", "imported^{tree}"])).toBe(f.first.tree);
+              expect(f.git(consumer, ["show", "-s", "--format=%P", "imported"])).toBe(
+                f.first.agentHead,
+              );
+              expect(f.git(consumer, ["show", "imported:leftover-1.txt"])).toBe("leftover 1");
+              expect(
+                f.git(consumer, ["show", "-s", "--format=%an <%ae>|%cn <%ce>", "imported"]),
+              ).toBe("Ada Owner <ada@example.com>|Ada Owner <ada@example.com>");
+              expect(() => f.git(consumer, ["cat-file", "-e", newer.agentHead])).toThrow();
+              expect(() => f.git(consumer, ["show", "imported:agent-2.txt"])).toThrow();
+              expect(f.git(consumer, ["rev-list", "--count", `${f.base}..imported`])).toBe("2");
+              expect(f.refs()).toEqual(beforeRefs);
+              expect(f.inventory()).toEqual(beforeRows);
+              expect(f.agentState()).toEqual(beforeAgent);
+              expect(f.requests()).toEqual([]);
+              expect(f.events()).toEqual([]);
+            }),
+          { detached },
+        ),
+    );
+  }
+
+  effectIt.live(
+    "an unchanged historical tree exports the old agent commit without an owner leftovers commit",
+    () =>
+      withCapturedFixture(
+        (f) =>
+          Effect.gen(function* () {
+            const newer = yield* f.addCapture();
+            f.observeCapture(newer);
+            f.deleteCache();
+            f.resetEvents();
+            const bundle = yield* f.provide(
+              Effect.gen(function* () {
+                return yield* (yield* Landing).bundle({
+                  sessionId: f.world.session.id,
+                  actorUserId: "grace",
+                  webOrigin: "https://mend.example.invalid",
+                  limitBytes: 1024 * 1024,
+                });
+              }),
+            );
+            expect(bundle.tip).toBe(f.first.agentHead);
+            expect(bundle.commits).toBe(1);
+            expect(f.requests()).toEqual([]);
+            expect(f.events()).toEqual([]);
+          }),
+        { leftovers: false },
+      ),
+  );
+
+  for (const loss of [
+    "null provenance",
+    "pruned capture",
+    "missing manifest",
+    "corrupt manifest",
+    "missing source pack",
+    "corrupt source pack",
+    "missing derived checkpoint pack",
+    "wrong capture association",
+    "wrong capture worktree",
+    "failed capture verification",
+    "unrelated derived checkpoint pack",
+  ]) {
+    effectIt.live(`refuses a historical non-owner bundle with ${loss}`, () =>
+      withCapturedFixture((f) =>
+        Effect.gen(function* () {
+          const newer = yield* f.addCapture();
+          f.observeCapture(newer);
+          if (loss === "null provenance") f.setCheckpointCaptureId(null);
+          if (loss === "pruned capture") f.pruneCapture(f.first.row.id);
+          if (loss === "wrong capture association") f.setCheckpointCaptureId(newer.row.id);
+          if (loss === "wrong capture worktree")
+            f.replaceCaptureRow({ ...f.first.row, worktreeId: WorktreeId.make("wt-other") });
+          if (loss === "failed capture verification")
+            f.replaceCaptureRow({ ...f.first.row, gitFsck: "failed" });
+          if (loss === "unrelated derived checkpoint pack") {
+            for (const key of f.first.objects.keys())
+              if (key.startsWith(f.prefix)) f.movePackToWorktree(key, WorktreeId.make("wt-other"));
+          }
+          yield* f.provide(
+            Effect.gen(function* () {
+              const blobs = yield* BlobStore;
+              if (loss === "missing manifest") yield* blobs.remove(f.first.row.manifestKey);
+              if (loss === "corrupt manifest")
+                yield* blobs.put(f.first.row.manifestKey, new Uint8Array([0]));
+              for (const key of f.first.sourcePacks) {
+                if (loss === "missing source pack") yield* blobs.remove(key);
+                if (loss === "corrupt source pack") yield* blobs.put(key, new Uint8Array([0]));
+              }
+              if (loss === "missing derived checkpoint pack") {
+                for (const key of f.first.objects.keys())
+                  if (key.startsWith(f.prefix)) yield* blobs.remove(key);
+              }
+            }),
+          );
+          f.deleteCache();
+          f.resetEvents();
+          const before = f.agentState();
+          const beforeRefs = f.refs();
+          const beforeRows = f.inventory();
+          const error = yield* f.provide(
+            Effect.gen(function* () {
+              return yield* (yield* Landing)
+                .bundle({
+                  sessionId: f.world.session.id,
+                  actorUserId: "grace",
+                  webOrigin: "https://mend.example.invalid",
+                  limitBytes: 1024 * 1024,
+                })
+                .pipe(Effect.flip);
+            }),
+          );
+          expect(error._tag).toBe("LandingStepError");
+          expect(error.message).toContain("historical Git evidence is unavailable");
+          expect(error.message).toContain("bundle not made");
+          expect(f.requests()).toEqual([]);
+          expect(f.events()).toEqual([]);
+          expect(f.refs()).toEqual(beforeRefs);
+          expect(f.inventory()).toEqual(beforeRows);
+          expect(f.agentState()).toEqual(before);
+        }),
+      ),
     );
   }
 

@@ -67,6 +67,11 @@ export class CheckpointsRepo extends Context.Service<
       checkpoint: NewCheckpoint,
     ) => Effect.Effect<Checkpoint, CheckpointOrdinalTakenError>;
     readonly byId: (id: CheckpointId) => Effect.Effect<Checkpoint | null>;
+    /** Internal capture provenance for this exact checkpoint/worktree; null when not retained. */
+    readonly captureIdOf: (
+      id: CheckpointId,
+      worktreeId: WorktreeId,
+    ) => Effect.Effect<string | null>;
     readonly byOrdinal: (
       worktreeId: WorktreeId,
       ordinal: number,
@@ -122,6 +127,19 @@ export const CheckpointsRepoLive: Layer.Layer<CheckpointsRepo, never, MendDB> = 
         .limit(1)
         .pipe(Effect.orDie);
       return row === undefined ? null : toCheckpoint(row);
+    });
+
+    const captureIdOf = Effect.fn("CheckpointsRepo.captureIdOf")(function* (
+      id: CheckpointId,
+      worktreeId: WorktreeId,
+    ) {
+      const [row] = yield* db
+        .select({ captureId: checkpoints.captureId })
+        .from(checkpoints)
+        .where(and(eq(checkpoints.id, id), eq(checkpoints.worktreeId, worktreeId)))
+        .limit(1)
+        .pipe(Effect.orDie);
+      return row?.captureId ?? null;
     });
 
     const byOrdinal = Effect.fn("CheckpointsRepo.byOrdinal")(function* (
@@ -240,6 +258,7 @@ export const CheckpointsRepoLive: Layer.Layer<CheckpointsRepo, never, MendDB> = 
     return {
       create,
       byId,
+      captureIdOf,
       byOrdinal,
       listForWorktree,
       latestForWorktree,

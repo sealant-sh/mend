@@ -14,7 +14,7 @@ import {
   type PackRow,
   type StoreRef,
 } from "@mend/db";
-import { Sha } from "@mend/domain";
+import { Sha, type WorktreeId } from "@mend/domain";
 import { type Checkpoint } from "@mend/domain/workbench";
 import { SessionEngine } from "@mend/sessions";
 import {
@@ -240,6 +240,9 @@ function createFixture(options: { readonly leftovers?: boolean; readonly detache
       return snapshot;
     };
     const first = makeSnapshot(options.leftovers, options.detached);
+    let checkpointCaptureId: string | null | undefined;
+    const prunedCaptures = new Set<string>();
+    const captureOverrides = new Map<string, CaptureRow>();
     let current = first;
     let latest = first;
     let sequence: ReadonlyArray<{
@@ -292,6 +295,14 @@ function createFixture(options: { readonly leftovers?: boolean; readonly detache
           headEpoch: current.row.epoch,
           head: current.row,
         })).pipe(Effect.map((head) => (worktreeId === world.worktree.id ? head : null))),
+      captureById: (captureId) =>
+        Effect.sync(() =>
+          prunedCaptures.has(captureId)
+            ? null
+            : (captureOverrides.get(captureId) ??
+              snapshots.find((snapshot) => snapshot.row.id === captureId)?.row ??
+              null),
+        ),
       listChain: (worktreeId) =>
         Effect.sync(() =>
           snapshots.map((snapshot) => snapshot.row).filter((row) => row.worktreeId === worktreeId),
@@ -307,6 +318,17 @@ function createFixture(options: { readonly leftovers?: boolean; readonly detache
         }),
     });
     const checkpointLayer: Layer.Layer<CheckpointsRepo> = Layer.mock(CheckpointsRepo, {
+      captureIdOf: (id, worktreeId) =>
+        Effect.sync(() => {
+          const snapshot = snapshots.find(
+            (item) => item.checkpoint.id === id && item.checkpoint.worktreeId === worktreeId,
+          );
+          return snapshot === undefined
+            ? null
+            : checkpointCaptureId === undefined
+              ? snapshot.row.id
+              : checkpointCaptureId;
+        }),
       latestForWorktree: (worktreeId) =>
         Effect.sync(() => (worktreeId === world.worktree.id ? latest.checkpoint : null)),
     });
@@ -422,6 +444,22 @@ function createFixture(options: { readonly leftovers?: boolean; readonly detache
       cachePath: runnerCachePathOf(path.join(root, "store"), world.project.id),
       seed: upload(first),
       addCapture: () => Effect.sync(() => makeSnapshot()).pipe(Effect.tap(upload)),
+      replaceCaptureRow: (row: CaptureRow) => {
+        captureOverrides.set(row.id, row);
+      },
+      movePackToWorktree: (key: string, worktreeId: WorktreeId) => {
+        const row = packRows.get(key);
+        if (row !== undefined) packRows.set(key, { ...row, worktreeId });
+      },
+      setCheckpointCaptureId: (captureId: string | null) => {
+        checkpointCaptureId = captureId;
+      },
+      pruneCapture: (captureId: string) => {
+        prunedCaptures.add(captureId);
+      },
+      observeCapture: (snapshot: CapturedSnapshot) => {
+        current = snapshot;
+      },
       planCheckpoints: (plan: typeof sequence) => {
         sequence = plan;
         attempt = 0;
@@ -437,6 +475,7 @@ function createFixture(options: { readonly leftovers?: boolean; readonly detache
       },
       inventory: () => [...packRows.values()],
       refs: () => [...refRows.values()],
+      seedStoreRef: seedRef,
       deleteCache: () =>
         fs.rmSync(runnerCachePathOf(path.join(root, "store"), world.project.id), {
           recursive: true,
