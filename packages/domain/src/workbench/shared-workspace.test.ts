@@ -31,10 +31,6 @@ describe("what the product says about a shared workspace (docs/adr/0016, decisio
     expect(JOIN_SHARED_HOME_LINE).toBe(
       "Another person's session is running in this worktree, in a workspace that shares one home: what you start there runs on the logins and Git identity of whoever started that workspace, not yours.",
     );
-    // A workspace that shares one home: the joiner runs on whoever started it, not as themselves.
-    expect(JOIN_SHARED_HOME_LINE).toBe(
-      "Another person's session is running in this worktree, in a workspace that shares one home: what you start there runs on the logins and Git identity of whoever started that workspace, not yours.",
-    );
   });
 
   it("names the others on a session while someone else's process is live", () => {
@@ -115,5 +111,13 @@ describe("what the product says about a shared workspace (docs/adr/0016, decisio
     expect(sharedControlLine(false)).toBe(
       "Each turn runs on your provider logins and Git access, whoever sends it.",
     );
+  });
+
+  it("discloses sender login, neutral personal context and prior conversation under shared control", () => {
+    // ADR 0016 decision 13 requires this copy, independently of the production constant.
+    const required =
+      "Each turn runs on its sender's login. From now until this session ends, the agent uses no one's personal memory or instructions. The conversation so far, including what your agent loaded before, becomes visible to whoever steers.";
+    expect(sharedControlConfirm(true).body).toBe(required);
+    expect(sharedControlLine(true)).toBe(required);
   });
 });

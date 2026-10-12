@@ -1,8 +1,9 @@
 import { PgClient } from "@effect/sql-pg";
 import { SessionId, SessionProcessId } from "@mend/domain";
 import { HARNESS_MODEL_SEED, OPENCODE_DEFAULT_MODEL } from "@mend/domain/workbench";
-import { Effect, Layer, Redacted } from "effect";
+import { Effect, Layer, Redacted, Schema } from "effect";
 import { SqlClient } from "effect/unstable/sql";
+import type { SqlError } from "effect/unstable/sql/SqlError";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { MendDBLive } from "../src/client.ts";
@@ -519,7 +520,10 @@ describe.skipIf(postgres.skip)("0035 process kinds and 0036 agent conversation",
         };
       }),
     );
-    expect(refusals).toEqual({ unknownPayer: "refused", deletePayer: "refused" });
+    expect(refusals).toEqual({
+      unknownPayer: { code: "23503", constraint: "agent_turns_billed_user_id_fkey" },
+      deletePayer: { code: "23503", constraint: "agent_turns_billed_user_id_fkey" },
+    });
   });
 });
 
@@ -849,11 +853,24 @@ describe.skipIf(postgres.skip)("0046 worktree containers", () => {
   });
 });
 
-/** Run a statement that a constraint may refuse, reporting which it was. */
-const attempt = (statement: Effect.Effect<unknown, unknown>) =>
+const ConstraintDiagnostic = Schema.Struct({
+  code: Schema.String,
+  constraint: Schema.optional(Schema.String),
+  column: Schema.optional(Schema.String),
+});
+
+/** Preserve PostgreSQL's refusal identity; unexpected SQL errors cannot satisfy a constraint check. */
+const attempt = (statement: Effect.Effect<unknown, SqlError>) =>
   statement.pipe(
     Effect.as("inserted"),
-    Effect.catch(() => Effect.succeed("refused")),
+    Effect.catch((error) =>
+      Effect.sync(() => {
+        const diagnostic = Schema.decodeUnknownSync(ConstraintDiagnostic)(error.reason.cause);
+        return diagnostic.constraint === undefined
+          ? { code: diagnostic.code, column: diagnostic.column }
+          : { code: diagnostic.code, constraint: diagnostic.constraint };
+      }),
+    ),
   );
 
 describe.skipIf(postgres.skip)("0055 organizations", () => {
@@ -937,18 +954,12 @@ describe.skipIf(postgres.skip)("0055 organizations", () => {
 
         const organizationId = organizations[0]?.id ?? "";
         yield* sql`INSERT INTO organizations (id, name) VALUES ('org-other', 'Other')`;
-        const sameNameElsewhere = yield* sql`
+        const sameNameElsewhere = yield* attempt(sql`
           INSERT INTO projects (id, name, organization_id, store_path, default_branch)
-          VALUES ('p-3', 'api', 'org-other', '/store/p-3/repo.git', 'main')`.pipe(
-          Effect.as("inserted"),
-          Effect.catch(() => Effect.succeed("refused")),
-        );
-        const sameNameSameOrganization = yield* sql`
+          VALUES ('p-3', 'api', 'org-other', '/store/p-3/repo.git', 'main')`);
+        const sameNameSameOrganization = yield* attempt(sql`
           INSERT INTO projects (id, name, organization_id, store_path, default_branch)
-          VALUES ('p-4', 'api', ${organizationId}, '/store/p-4/repo.git', 'main')`.pipe(
-          Effect.as("inserted"),
-          Effect.catch(() => Effect.succeed("refused")),
-        );
+          VALUES ('p-4', 'api', ${organizationId}, '/store/p-4/repo.git', 'main')`);
         return {
           organizations,
           members,
@@ -989,7 +1000,10 @@ describe.skipIf(postgres.skip)("0055 organizations", () => {
       { id: "s-owned", owner_user_id: "u-newest" },
     ]);
     expect(result.sameNameElsewhere).toBe("inserted");
-    expect(result.sameNameSameOrganization).toBe("refused");
+    expect(result.sameNameSameOrganization).toEqual({
+      code: "23505",
+      constraint: "projects_organization_name_key",
+    });
   });
 
   it("creates the organization on an empty database, and new projects need one", async () => {
@@ -1001,18 +1015,15 @@ describe.skipIf(postgres.skip)("0055 organizations", () => {
           readonly id: string;
         }>`SELECT id FROM organizations`;
         const members = yield* sql`SELECT 1 FROM organization_members`;
-        const withoutOrganization = yield* sql`
+        const withoutOrganization = yield* attempt(sql`
           INSERT INTO projects (id, name, store_path, default_branch)
-          VALUES ('p-x', 'x', '/store/p-x/repo.git', 'main')`.pipe(
-          Effect.as("inserted"),
-          Effect.catch(() => Effect.succeed("refused")),
-        );
+          VALUES ('p-x', 'x', '/store/p-x/repo.git', 'main')`);
         return { organizations, members, withoutOrganization };
       }),
     );
     expect(result.organizations).toHaveLength(1);
     expect(result.members).toHaveLength(0);
-    expect(result.withoutOrganization).toBe("refused");
+    expect(result.withoutOrganization).toEqual({ code: "23502", column: "organization_id" });
   });
 
   it("the constraints hold the model: roles, one organization per account, consistent invitations, no deletion", async () => {
@@ -1031,7 +1042,7 @@ describe.skipIf(postgres.skip)("0055 organizations", () => {
                     now() + interval '1 day')`),
           validAcceptance: yield* attempt(sql`
             UPDATE organization_invitations
-            SET accepted_by_user_id = 'u-middle', accepted_at = now() WHERE id = 'inv-0'`),
+            SET accepted_by_user_id = 'u-newest', accepted_at = now() WHERE id = 'inv-0'`),
           badRole: yield* attempt(sql`
             UPDATE organization_members SET role = 'admin' WHERE user_id = 'u-middle'`),
           secondMembership: yield* attempt(sql`
@@ -1066,14 +1077,17 @@ describe.skipIf(postgres.skip)("0055 organizations", () => {
     expect(outcomes).toEqual({
       validInvitation: "inserted",
       validAcceptance: "inserted",
-      badRole: "refused",
-      secondMembership: "refused",
-      acceptedWithoutAccepter: "refused",
-      acceptedAndRevoked: "refused",
-      expiredAtBirth: "refused",
-      unfoldedEmail: "refused",
-      deleteMember: "refused",
-      duplicateOrganizationName: "refused",
+      badRole: { code: "23514", constraint: "organization_members_role_check" },
+      secondMembership: { code: "23505", constraint: "organization_members_user_key" },
+      acceptedWithoutAccepter: {
+        code: "23514",
+        constraint: "organization_invitations_accepted_check",
+      },
+      acceptedAndRevoked: { code: "23514", constraint: "organization_invitations_spent_check" },
+      expiredAtBirth: { code: "23514", constraint: "organization_invitations_expiry_check" },
+      unfoldedEmail: { code: "23514", constraint: "organization_invitations_email_check" },
+      deleteMember: { code: "23503", constraint: "organization_members_user_id_fkey" },
+      duplicateOrganizationName: { code: "23505", constraint: "organizations_name_lower_key" },
     });
   });
 });
@@ -1157,8 +1171,11 @@ describe.skipIf(postgres.skip)("0056 per-account resources", () => {
       { organization_id: result.organizationId, created_by_user_id: "u-old" },
     ]);
     expect(result.sameNameElsewhere).toBe("inserted");
-    expect(result.sameNameSameOrganization).toBe("refused");
-    expect(result.deviceWithoutAccount).toBe("refused");
+    expect(result.sameNameSameOrganization).toEqual({
+      code: "23505",
+      constraint: "reference_repos_organization_name_key",
+    });
+    expect(result.deviceWithoutAccount).toEqual({ code: "23502", column: "user_id" });
   });
 });
 
@@ -1220,7 +1237,7 @@ describe.skipIf(postgres.skip)("0058 hot pool owners", () => {
         { id: "hot-legacy", owner_user_id: "u-old" },
         { id: "hot-new", owner_user_id: "u-new" },
       ],
-      ownerless: "refused",
+      ownerless: { code: "23502", column: "owner_user_id" },
     });
   });
 });
@@ -1261,7 +1278,8 @@ describe.skipIf(postgres.skip)("0062 slack", () => {
           INSERT INTO "user" ("id", "name", "email", "createdAt") VALUES
             ('u-alice', 'Alice', 'alice@example.com', '2026-01-01T00:00:00Z'),
             ('u-bob', 'Bob', 'bob@example.com', '2026-02-01T00:00:00Z'),
-            ('u-carol', 'Carol', 'carol@example.com', '2026-03-01T00:00:00Z')`;
+            ('u-carol', 'Carol', 'carol@example.com', '2026-03-01T00:00:00Z'),
+            ('u-dave', 'Dave', 'dave@example.com', '2026-04-01T00:00:00Z')`;
         const [organization] = yield* sql<{ readonly id: string }>`SELECT id FROM organizations`;
         const acme = organization?.id ?? "";
         yield* sql`INSERT INTO organizations (id, name) VALUES ('org-other', 'Other')`;
@@ -1269,6 +1287,7 @@ describe.skipIf(postgres.skip)("0062 slack", () => {
           INSERT INTO organization_members (organization_id, user_id, role) VALUES
             (${acme}, 'u-alice', 'owner'),
             (${acme}, 'u-bob', 'member'),
+            (${acme}, 'u-dave', 'member'),
             ('org-other', 'u-carol', 'owner')`;
         yield* sql`
           INSERT INTO projects (id, name, store_path, default_branch, organization_id)
@@ -1313,7 +1332,8 @@ describe.skipIf(postgres.skip)("0062 slack", () => {
           VALUES (${organizationId}, 'T-ACME', ${slackUserId}, ${userId})`;
         const aliceLinked = yield* attempt(link(acme, "U-ALICE", "u-alice"));
         const bobLinked = yield* attempt(link(acme, "U-BOB", "u-bob"));
-        const slackUserTwice = yield* attempt(link(acme, "U-ALICE", "u-bob"));
+        // Dave is an existing member with no link, so only the Slack-user primary key conflicts.
+        const slackUserTwice = yield* attempt(link(acme, "U-ALICE", "u-dave"));
         const accountTwice = yield* attempt(link(acme, "U-ALICE-2", "u-alice"));
         const outsider = yield* attempt(link(acme, "U-CAROL", "u-carol"));
         const wrongOrganization = yield* attempt(link("org-other", "U-CAROL", "u-carol"));
@@ -1375,24 +1395,24 @@ describe.skipIf(postgres.skip)("0062 slack", () => {
     );
     expect(result).toEqual({
       origins: [{ id: "s-old", origin: "mend" }],
-      unknownOrigin: "refused",
+      unknownOrigin: { code: "23514", constraint: "agent_sessions_origin_check" },
       settings: {
         default_harness: "claude",
         show_agent_messages: true,
         show_diffs: false,
         external_channels: false,
       },
-      sameTeamElsewhere: "refused",
-      secondInstall: "refused",
+      sameTeamElsewhere: { code: "23505", constraint: "slack_installs_team_id_key" },
+      secondInstall: { code: "23505", constraint: "slack_installs_pkey" },
       aliceLinked: "inserted",
       bobLinked: "inserted",
-      slackUserTwice: "refused",
-      accountTwice: "refused",
+      slackUserTwice: { code: "23505", constraint: "slack_links_pkey" },
+      accountTwice: { code: "23505", constraint: "slack_links_team_user_key" },
       // Carol is not a member of the organization that installed the app.
-      outsider: "refused",
+      outsider: { code: "23503", constraint: "slack_links_member_fkey" },
       // Nor can a link claim another organization's workspace.
-      wrongOrganization: "refused",
-      sessionInTwoThreads: "refused",
+      wrongOrganization: { code: "23503", constraint: "slack_links_install_fkey" },
+      sessionInTwoThreads: { code: "23505", constraint: "slack_threads_pkey" },
       linksAfterRemoval: [{ slack_user_id: "U-ALICE" }],
       afterUninstall: { links: 0, codes: 0, channelDefaults: 0, userDefaults: 1, threads: 1 },
       threadsAfterSession: 0,
@@ -1471,8 +1491,8 @@ describe.skipIf(postgres.skip)("0063 slack reports", () => {
     expect(result).toEqual({
       thread: { external: true, reported_state: null, reported_status: null },
       first: "inserted",
-      again: "refused",
-      orphan: "refused",
+      again: { code: "23505", constraint: "slack_thread_posts_pkey" },
+      orphan: { code: "23503", constraint: "slack_thread_posts_session_id_fkey" },
       postsAfterSession: 0,
     });
   });
@@ -1655,15 +1675,15 @@ describe.skipIf(postgres.skip)("0064 landing", () => {
         intent: null,
         intent_source: null,
       },
-      projectChoice: "refused",
+      projectChoice: { code: "23514", constraint: "projects_auto_land_check" },
       intents: {
         read: "inserted",
         option: "inserted",
         unread: "inserted",
-        unreadWithIntent: "refused",
-        readWithoutIntent: "refused",
-        intentWithoutSource: "refused",
-        unknownIntent: "refused",
+        unreadWithIntent: { code: "23514", constraint: "agent_turns_intent_check" },
+        readWithoutIntent: { code: "23514", constraint: "agent_turns_intent_check" },
+        intentWithoutSource: { code: "23514", constraint: "agent_turns_intent_check" },
+        unknownIntent: { code: "23514", constraint: "agent_turns_intent_check" },
       },
       landings: {
         pushed: "inserted",
@@ -1672,13 +1692,13 @@ describe.skipIf(postgres.skip)("0064 landing", () => {
         failedBeforePush: "inserted",
         failedAfterPush: "inserted",
         noCheckpoint: "inserted",
-        pushedWithoutSha: "refused",
-        pullRequestWithoutOne: "refused",
-        refusedButPushed: "refused",
-        halfACheckpoint: "refused",
-        unknownOutcome: "refused",
+        pushedWithoutSha: { code: "23514", constraint: "change_landings_outcome_facts_check" },
+        pullRequestWithoutOne: { code: "23514", constraint: "change_landings_outcome_facts_check" },
+        refusedButPushed: { code: "23514", constraint: "change_landings_outcome_facts_check" },
+        halfACheckpoint: { code: "23514", constraint: "change_landings_checkpoint_check" },
+        unknownOutcome: { code: "23514", constraint: "change_landings_outcome_check" },
       },
-      halfAPullRequest: "refused",
+      halfAPullRequest: { code: "23514", constraint: "change_landings_pull_request_check" },
       // The record of a push outlives its session and its checkpoint, and goes with its change.
       kept: { n: 6, sessions: 0, checkpoints: 0 },
       afterChange: 0,
@@ -1738,6 +1758,15 @@ describe.skipIf(postgres.skip)("0065 turn landing", () => {
           VALUES ('t-done', 's-1', 'proc-1', 0, 'fix it', 'completed', '2026-09-01T00:00:00Z'),
                  ('t-failed', 's-1', 'proc-1', 1, 'fix it', 'failed', NULL),
                  ('t-open', 's-1', 'proc-1', 2, 'fix it', 'running', NULL)`;
+        // A real landing makes the no-attempt probe independent of the landing foreign key.
+        yield* sql`INSERT INTO "user" (id, name, email) VALUES ('u-alice', 'Alice', 'alice@example.com')`;
+        yield* sql`
+          INSERT INTO worktree_changes (id, project_id, worktree_id, session_id, branch, base_sha)
+          VALUES ('c-1', 'p-1', 'wt-1', 's-1', 'mend/one', 'abc')`;
+        yield* sql`
+          INSERT INTO change_landings
+            (id, change_id, session_id, project_id, remote_branch, trigger, outcome, user_id)
+          VALUES ('l-valid', 'c-1', 's-1', 'p-1', 'mend/one', 'manual', 'refused', 'u-alice')`;
         yield* migrations["0065_turn_landing"];
 
         const turns = yield* sql<{
@@ -1761,8 +1790,14 @@ describe.skipIf(postgres.skip)("0065 turn landing", () => {
             unknownDecision: yield* decide("merged", true),
             claimedUndecided: yield* decide(null, true),
             landingWithoutAttempt: yield* attempt(
-              sql`UPDATE agent_turns SET landing_id = 'l-none' WHERE id = 't-done'`,
+              sql`UPDATE agent_turns SET landing_id = 'l-valid' WHERE id = 't-done'`,
             ),
+            missingLanding: yield* attempt(sql`
+              UPDATE agent_turns SET landing = 'attempted', landing_claimed_at = now(),
+                landing_id = 'l-none' WHERE id = 't-open'`),
+            validLanding: yield* attempt(sql`
+              UPDATE agent_turns SET landing = 'attempted', landing_claimed_at = now(),
+                landing_id = 'l-valid' WHERE id = 't-open'`),
           },
         };
       }),
@@ -1775,10 +1810,12 @@ describe.skipIf(postgres.skip)("0065 turn landing", () => {
       ],
       checks: {
         decidedWithClaim: "inserted",
-        decidedWithoutClaim: "refused",
-        unknownDecision: "refused",
+        decidedWithoutClaim: { code: "23514", constraint: "agent_turns_landing_check" },
+        unknownDecision: { code: "23514", constraint: "agent_turns_landing_check" },
         claimedUndecided: "inserted",
-        landingWithoutAttempt: "refused",
+        landingWithoutAttempt: { code: "23514", constraint: "agent_turns_landing_check" },
+        missingLanding: { code: "23503", constraint: "agent_turns_landing_id_fkey" },
+        validLanding: "inserted",
       },
     });
   });
@@ -1964,13 +2001,16 @@ describe.skipIf(postgres.skip)("0073 landing reasons", () => {
       }),
     );
     expect(result).toEqual({
-      before: { land: "refused", notCaptured: "refused" },
+      before: {
+        land: { code: "23514", constraint: "agent_turns_intent_check" },
+        notCaptured: { code: "23514", constraint: "agent_turns_landing_check" },
+      },
       intents: {
         land: "inserted",
         change: "inserted",
         unread: "inserted",
-        unreadLand: "refused",
-        unknown: "refused",
+        unreadLand: { code: "23514", constraint: "agent_turns_intent_check" },
+        unknown: { code: "23514", constraint: "agent_turns_intent_check" },
       },
       decisions: {
         noChange: "inserted",
@@ -1978,7 +2018,7 @@ describe.skipIf(postgres.skip)("0073 landing reasons", () => {
         notCaptured: "inserted",
         question: "inserted",
         skipped: "inserted",
-        unknown: "refused",
+        unknown: { code: "23514", constraint: "agent_turns_landing_check" },
       },
     });
   });
@@ -2077,16 +2117,16 @@ describe.skipIf(postgres.skip)("0075 capture drain", () => {
         executorStartedAt: null,
         removalRequestedAt: null,
       },
-      discardBefore: "refused",
+      discardBefore: { code: "23514", constraint: "session_control_events_kind_check" },
       discardAfter: "inserted",
       drains: {
         stop: "inserted",
         notSaved: "inserted",
         relaunch: "inserted",
-        unknown: "refused",
-        reasonWithoutTime: "refused",
-        timeWithoutReason: "refused",
-        notSavedWithoutDrain: "refused",
+        unknown: { code: "23514", constraint: "agent_sessions_capture_drain_check" },
+        reasonWithoutTime: { code: "23514", constraint: "agent_sessions_capture_drain_check" },
+        timeWithoutReason: { code: "23514", constraint: "agent_sessions_capture_drain_check" },
+        notSavedWithoutDrain: { code: "23514", constraint: "agent_sessions_capture_drain_check" },
         none: "inserted",
       },
     });
@@ -2551,13 +2591,10 @@ describe.skipIf(postgres.skip)("0118 pre-release executors", () => {
         yield* sql`
           INSERT INTO executor_retirements (workspace_id, worktree_id, session_id, pre_release, state)
           VALUES ('ws-1', 'wt-1', 's-1', true, 'marked')`;
-        const refused = yield* sql`
+        const refused = yield* attempt(sql`
           INSERT INTO executor_retirements (workspace_id, worktree_id, session_id, pre_release, state)
-          VALUES ('ws-2', 'wt-1', 's-1', true, 'gone')`.pipe(
-          Effect.as(false),
-          Effect.catch(() => Effect.succeed(true)),
-        );
-        expect(refused).toBe(true);
+          VALUES ('ws-2', 'wt-1', 's-1', true, 'gone')`);
+        expect(refused).toEqual({ code: "23514", constraint: "executor_retirements_state_check" });
         yield* sql`DELETE FROM agent_sessions WHERE worktree_id = 'wt-1'`;
         yield* sql`DELETE FROM worktrees WHERE id = 'wt-1'`;
         const [counts] = yield* sql<{
@@ -2683,12 +2720,9 @@ describe.skipIf(postgres.skip)("0120 hot workspace layout", () => {
         yield* sql`
           INSERT INTO hot_workspaces (id, project_id, owner_user_id, fingerprint, harness_layout)
           VALUES ('hot-person', 'p-1', 'alice', 'fp', 'person')`;
-        const refused = yield* sql`
+        const refused = yield* attempt(sql`
           INSERT INTO hot_workspaces (id, project_id, owner_user_id, fingerprint, harness_layout)
-          VALUES ('hot-other', 'p-1', 'alice', 'fp', 'other')`.pipe(
-          Effect.as(false),
-          Effect.catch(() => Effect.succeed(true)),
-        );
+          VALUES ('hot-other', 'p-1', 'alice', 'fp', 'other')`);
         const rows = yield* sql<{ readonly id: string; readonly layout: string }>`
           SELECT id, harness_layout AS layout FROM hot_workspaces ORDER BY id`;
         return { rows: rows.map((row) => [row.id, row.layout]), refused };
@@ -2699,7 +2733,7 @@ describe.skipIf(postgres.skip)("0120 hot workspace layout", () => {
         ["hot-before", "shared"],
         ["hot-person", "person"],
       ],
-      refused: true,
+      refused: { code: "23514", constraint: "hot_workspaces_harness_layout_check" },
     });
   });
 });

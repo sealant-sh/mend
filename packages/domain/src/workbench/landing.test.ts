@@ -562,15 +562,24 @@ describe("pull requests opened outside Mend (docs/adr/0007, open question 4)", (
 
   it("reads the branches the agent pushed, newest first, without deletions or tags", () => {
     const zero = "0".repeat(40);
+    const branches = agentPushedBranches([
+      `${"d".repeat(40)} ${"e".repeat(40)} refs/heads/wip/review-checks`,
+      `${"a".repeat(40)} ${"b".repeat(40)} refs/heads/chore/bump-deps-tailwind-v4`,
+      `${zero} ${"a".repeat(40)} refs/heads/chore/bump-deps-tailwind-v4`,
+      `${"c".repeat(40)} ${zero} refs/heads/old`,
+      `${zero} ${"d".repeat(40)} refs/tags/v1`,
+      "not a ref update",
+    ]);
+    expect(branches).toEqual(["wip/review-checks", "chore/bump-deps-tailwind-v4"]);
     expect(
-      agentPushedBranches([
-        `${"a".repeat(40)} ${"b".repeat(40)} refs/heads/chore/bump-deps-tailwind-v4`,
-        `${zero} ${"a".repeat(40)} refs/heads/chore/bump-deps-tailwind-v4`,
-        `${"c".repeat(40)} ${zero} refs/heads/old`,
-        `${zero} ${"d".repeat(40)} refs/tags/v1`,
-        "not a ref update",
-      ]),
-    ).toEqual(["chore/bump-deps-tailwind-v4"]);
+      nextLandingBranch({
+        requested: null,
+        landings: [],
+        agentBranches: branches,
+        worktreeBranch: "mend/update-deps",
+        protectedBranches: ["main"],
+      }),
+    ).toBe("wip/review-checks");
   });
 
   it("picks the next landing's branch: asked, landed, the agent's, an adopted head, the worktree's", () => {

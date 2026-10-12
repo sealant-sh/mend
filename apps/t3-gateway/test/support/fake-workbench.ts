@@ -111,6 +111,8 @@ export const advanceClock = (at: number): void => {
 
 export class FakeWorkbench {
   readonly projects = new Map<string, { id: string; name: string; storePath: string }>();
+  /** Explicit access fixtures; unconfigured projects retain the older unrestricted fake. */
+  readonly projectVisibility = new Map<string, "private" | "shared">();
   readonly sessions = new Map<string, FakeSession>();
   readonly agents = new Map<string, FakeProcess>();
   readonly changes = new Map<string, string>();
@@ -172,6 +174,21 @@ export class FakeWorkbench {
   /** How long `POST /launch` takes to answer, and a status it then refuses with (null: it launches). */
   launchAnswerDelayMs = 0;
   launchFailStatus: number | null = null;
+  private nextLaunchAnswer: {
+    readonly entered: () => void;
+    readonly answer: Promise<number>;
+  } | null = null;
+
+  /** Holds the next real HTTP launch request until the test chooses its refusal status. */
+  holdNextLaunch(): {
+    readonly entered: Promise<void>;
+    readonly release: (status: number) => void;
+  } {
+    const entered = Promise.withResolvers<void>();
+    const answer = Promise.withResolvers<number>();
+    this.nextLaunchAnswer = { entered: () => entered.resolve(), answer: answer.promise };
+    return { entered: entered.promise, release: answer.resolve };
+  }
   /** `DELETE /api/sessions/:id` keeps the row until the workspace stops (`removed: false`). */
   removalLeavesWorkspace = false;
 
@@ -456,21 +473,33 @@ export class FakeWorkbench {
     if (method === "GET" && path === "/api/projects" && this.projectsDown) {
       return json(502, { _tag: "BadGateway" });
     }
+    const canReadProject = (projectId: string) => {
+      const visibility = this.projectVisibility.get(projectId);
+      return (
+        visibility === undefined ||
+        visibility === "shared" ||
+        this.accountOf(request.headers.authorization) === "user-1"
+      );
+    };
     if (method === "GET" && path === "/api/projects") {
       return json(
         200,
-        Array.from(this.projects.values(), (project) => this.projectView(project.id)),
+        Array.from(this.projects.values())
+          .filter((project) => canReadProject(project.id))
+          .map((project) => this.projectView(project.id)),
       );
     }
     if (method === "GET" && path === "/api/sessions") {
       return json(
         200,
-        Array.from(this.sessions.values(), (session) => ({
-          ...session,
-          livePeople: this.livePeople.get(session.id) ?? [],
-          sharedControlEnabledAt: this.sharedControl.get(session.id) ?? null,
-          workspaceRetirement: this.retirements.get(session.id)?.state ?? null,
-        })),
+        Array.from(this.sessions.values())
+          .filter((session) => canReadProject(session.projectId))
+          .map((session) => ({
+            ...session,
+            livePeople: this.livePeople.get(session.id) ?? [],
+            sharedControlEnabledAt: this.sharedControl.get(session.id) ?? null,
+            workspaceRetirement: this.retirements.get(session.id)?.state ?? null,
+          })),
       );
     }
     const segments = path.split("/").slice(2);
@@ -619,6 +648,7 @@ export class FakeWorkbench {
       });
     }
     if (method === "GET" && collection === "projects" && sub === undefined) {
+      if (!canReadProject(id)) return json(404, { _tag: "NotFound" });
       const project = this.projectView(id);
       if (project === null) return json(404, { _tag: "NotFound" });
       const sessions = Array.from(this.sessions.values()).filter((s) => s.projectId === id);
@@ -642,7 +672,8 @@ export class FakeWorkbench {
     }
     if (collection === "sessions") {
       const session = this.sessions.get(id);
-      if (session === undefined) return json(404, { _tag: "NotFound" });
+      if (session === undefined || !canReadProject(session.projectId))
+        return json(404, { _tag: "NotFound" });
       const notOwner = () =>
         json(403, { _tag: "SessionNotSteerable", sessionId: id, message: "not yours" });
       if (method === "POST" && sub === "label") {
@@ -738,6 +769,16 @@ export class FakeWorkbench {
           .toSorted((left, right) => left.seq - right.seq)
           .slice(0, limit);
         return json(200, changed);
+      }
+      if (method === "POST" && sub === "launch" && this.nextLaunchAnswer !== null) {
+        const held = this.nextLaunchAnswer;
+        this.nextLaunchAnswer = null;
+        return body().then(async (value) => {
+          record(value);
+          held.entered();
+          const status = await held.answer;
+          return json(status, { _tag: "StoreFailure", message: "launch refused" });
+        });
       }
       if (method === "POST" && sub === "launch" && this.launchAnswerDelayMs > 0) {
         return body().then((value) => {
@@ -1103,7 +1144,7 @@ export class FakeWorkbench {
       id: project.id,
       name: project.name,
       organizationId: "organization-1",
-      visibility: "private",
+      visibility: this.projectVisibility.get(id) ?? "private",
       createdByUserId: "user-1",
       originUrl: "https://github.com/sealant-sh/mend.git",
       storePath: project.storePath,

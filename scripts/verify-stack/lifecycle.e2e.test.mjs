@@ -385,7 +385,7 @@ test("a removal still running after its teardown was killed keeps the daemon unt
   assert.ok(indexOfCall(calls, ownerCreate) > removed, "the claim came after the removal");
 });
 
-test("a cache entry that cannot be read is skipped, and a start failing after its claim removes it (N3)", async () => {
+test("a broken cache symlink does not prevent failed-start cleanup or re-admission (N3)", async () => {
   const fakeDaemon = daemon();
   const contexts = join(fakeDaemon.env.MEND_VERIFY_STACK_CACHE, "contexts");
   mkdirSync(contexts, { recursive: true });
