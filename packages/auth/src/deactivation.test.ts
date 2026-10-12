@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { performance } from "node:perf_hooks";
 
 import { MigratorLive, PgLive } from "@mend/db";
 import { postgresTestConfig } from "@mend/db/testing";
@@ -237,7 +238,34 @@ describe.skipIf(postgres.skip)("deactivation and password reset in migrated Post
 });
 
 afterAll(async () => {
-  await scratch.end();
-  if (databaseCreated) await admin.query(`DROP DATABASE IF EXISTS ${SCRATCH_DB} WITH (FORCE)`);
-  await admin.end();
+  const disposalAdmin = new Pool({
+    connectionString: ADMIN_URL,
+    connectionTimeoutMillis: 2000,
+    query_timeout: 1000,
+  });
+  try {
+    await scratch.end();
+    if (!databaseCreated) return;
+    // pg Pool.end resolves before idle clients finish disconnecting. Observe disposal of this
+    // fixture's backends before dropping its database, so DROP cannot terminate a closing client.
+    const deadline = performance.now() + 5_000;
+    for (;;) {
+      const activity = await disposalAdmin.query<{ pid: number }>(
+        "SELECT pid FROM pg_stat_activity WHERE datname = $1",
+        [SCRATCH_DB],
+      );
+      if (activity.rows.length === 0) break;
+      if (performance.now() >= deadline) {
+        throw new Error(`auth test database still has ${activity.rows.length} backend connections`);
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, 10));
+    }
+    await disposalAdmin.query(`DROP DATABASE ${SCRATCH_DB}`);
+  } finally {
+    try {
+      await disposalAdmin.end();
+    } finally {
+      await admin.end();
+    }
+  }
 });
