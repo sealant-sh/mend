@@ -88,20 +88,21 @@ const isLikelyGenerated = (name: string): boolean =>
   );
 
 /** A legible terminal whitespace mode that preserves git's control prefixes. */
-export const visibleWhitespace = (patch: string): string =>
-  patch
+export const visibleWhitespace = (patch: string): string => {
+  let inHunk = false;
+  return patch
     .split("\n")
     .map((line) => {
-      const hunkContent =
-        (line.startsWith("+") && !line.startsWith("+++")) ||
-        (line.startsWith("-") && !line.startsWith("---")) ||
-        line.startsWith(" ");
+      if (line.startsWith("diff --git ")) inHunk = false;
+      if (line.startsWith("@@ ")) inHunk = true;
+      const hunkContent = inHunk && /^[+ -]/.test(line);
       if (!hunkContent) return line;
       const prefix = line.slice(0, 1);
       const content = line.slice(1).replaceAll("\t", "→····").replaceAll(" ", "·");
       return `${prefix}${content}`;
     })
     .join("\n");
+};
 
 /**
  * Git is the source of this wire value, so a file begins only at a column-zero
@@ -159,9 +160,9 @@ const parseRows = (
     while (bodyIndex < patchLines.length) {
       const bodyLine = patchLines[bodyIndex] ?? "";
       if (bodyLine.startsWith("@@ ")) break;
-      if (bodyLine.startsWith("+") && !bodyLine.startsWith("+++")) {
+      if (bodyLine.startsWith("+")) {
         body.push({ kind: "addition" });
-      } else if (bodyLine.startsWith("-") && !bodyLine.startsWith("---")) {
+      } else if (bodyLine.startsWith("-")) {
         body.push({ kind: "deletion" });
       } else if (bodyLine.startsWith(" ")) {
         body.push({ kind: "context" });
