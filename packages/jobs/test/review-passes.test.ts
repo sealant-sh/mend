@@ -11,17 +11,27 @@ const CHANGE = ChangeId.make("change-1");
 const queueWith = (answer: string | null) => {
   const sent: Array<JobSpec> = [];
   const rows: Array<string> = [];
+  const events: Array<string> = [];
   const layer = Layer.mergeAll(
     Layer.mock(JobRunner, {
-      enqueue: (job) => Effect.sync(() => (sent.push(job), answer)),
+      enqueue: (job) =>
+        Effect.sync(() => {
+          events.push("enqueue");
+          sent.push(job);
+          return answer;
+        }),
     }),
     Layer.mock(ChangePassesRepo, {
-      queue: (_changeId, kind) => Effect.sync(() => void rows.push(`queued:${kind}`)),
+      queue: (_changeId, kind) =>
+        Effect.sync(() => {
+          events.push(`queued:${kind}`);
+          rows.push(`queued:${kind}`);
+        }),
     }),
   );
   return Effect.runPromise(
     queueReviewPass("tour", CHANGE, "user-asker").pipe(Effect.provide(layer)),
-  ).then((queued) => ({ queued, sent, rows }));
+  ).then((queued) => ({ queued, sent, rows, events }));
 };
 
 describe("queueReviewPass", () => {
@@ -32,8 +42,9 @@ describe("queueReviewPass", () => {
   });
 
   it("marks the pass queued, then enqueues its job on the asker's login", async () => {
-    const { queued, sent, rows } = await queueWith("job-1");
+    const { queued, sent, rows, events } = await queueWith("job-1");
     expect(queued).toBe(true);
+    expect(events).toEqual(["queued:tour", "enqueue"]);
     expect(rows).toEqual(["queued:tour"]);
     expect(sent).toEqual([
       {

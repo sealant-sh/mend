@@ -15,7 +15,8 @@ import {
 import { makeMemoryCaptureStore } from "@mend/sessions/testing";
 import { BlobStore, BlobStoreFsLive, captureKeys, packIdxKeyOf } from "@mend/store";
 import { Effect, Layer } from "effect";
-import { afterAll, describe, expect, it } from "vitest";
+import { FastCheck } from "effect/testing";
+import { describe, expect, it } from "vitest";
 
 import {
   CaptureRetention,
@@ -60,27 +61,52 @@ const row = (
 });
 
 describe("thinningPlan", () => {
-  it("keeps checkpoint | suspend | final and the head; keeps every auto|turn for 24 h, one per hour to 7 d, none after", () => {
-    const now = 10 * 24 * HOUR;
-    const rows: Array<CaptureRow> = [
-      row(0, "checkpoint", now - 9 * 24 * HOUR, 1),
-      row(1, "auto", now - 8 * 24 * HOUR, 1), // older than 7 d → dropped
-      row(2, "auto", now - 3 * 24 * HOUR - 20 * 60 * 1000, 1), // 3 d, hour bucket A, older → dropped
-      row(3, "turn", now - 3 * 24 * HOUR - 10 * 60 * 1000, 1), // same bucket, newest → kept
-      row(4, "suspend", now - 2 * 24 * HOUR, 1), // kept by kind
-      row(5, "auto", now - 2 * HOUR, 1), // < 24 h → kept
-      row(6, "auto", now - 60 * 1000, 1), // head → kept
-    ];
-    const drop = thinningPlan(rows, sha("cap6"), now);
-    expect(drop.map((r) => r.n).toSorted()).toEqual([1, 2]);
-    // Boundaries: exactly 24 h old enters hourly thinning; exactly 7 d old is dropped.
-    const edge = [
-      row(7, "auto", now - KEEP_ALL_MS, 1),
-      row(8, "auto", now - KEEP_ALL_MS - 1, 1),
-      row(9, "auto", now - KEEP_HOURLY_MS, 1),
-    ];
-    expect(thinningPlan(edge, null, now).map((r) => r.n)).toEqual([9]);
-  });
+  it.each(["auto", "turn"] as const)(
+    "keeps checkpoint | suspend | final and an old %s head; keeps every auto|turn for 24 h, one per hour to 7 d, none after",
+    (headKind) => {
+      const now = 10 * 24 * HOUR;
+      const rows: Array<CaptureRow> = [
+        row(0, "checkpoint", now - 9 * 24 * HOUR, 1),
+        row(1, "auto", now - 8 * 24 * HOUR, 1), // older than 7 d → dropped
+        row(2, "auto", now - 3 * 24 * HOUR - 20 * 60 * 1000, 1), // 3 d, hour bucket A, older → dropped
+        row(3, "turn", now - 3 * 24 * HOUR - 10 * 60 * 1000, 1), // same bucket, newest → kept
+        row(4, "suspend", now - 2 * 24 * HOUR, 1), // kept by kind
+        row(5, "auto", now - 2 * HOUR, 1), // < 24 h → kept
+        row(6, "auto", now - 60 * 1000, 1), // < 24 h → kept
+        row(7, "final", now - 8 * 24 * HOUR, 1), // past 7 d, kept by kind
+        row(8, "turn", now - 8 * 24 * HOUR, 1), // same age as head, dropped
+        row(9, headKind, now - 8 * 24 * HOUR, 1), // past 7 d, kept only as head
+      ];
+      const drop = thinningPlan(rows, sha("cap9"), now);
+      expect(drop.map((r) => r.n).toSorted()).toEqual([1, 2, 8]);
+      // This literal oracle does not call the policy to decide what each permutation should keep.
+      FastCheck.assert(
+        FastCheck.property(
+          FastCheck.shuffledSubarray(rows, { minLength: rows.length, maxLength: rows.length }),
+          (permutation) => {
+            expect(
+              thinningPlan(permutation, sha("cap9"), now)
+                .map((r) => r.n)
+                .toSorted(),
+            ).toEqual([1, 2, 8]);
+          },
+        ),
+        { seed: 1012, numRuns: 100 },
+      );
+      expect(
+        thinningPlan(rows, null, now)
+          .map((r) => r.n)
+          .toSorted(),
+      ).toEqual([1, 2, 8, 9]);
+      // Boundaries: exactly 24 h old enters hourly thinning; exactly 7 d old is dropped.
+      const edge = [
+        row(7, "auto", now - KEEP_ALL_MS, 1),
+        row(8, "auto", now - KEEP_ALL_MS - 1, 1),
+        row(9, "auto", now - KEEP_HOURLY_MS, 1),
+      ];
+      expect(thinningPlan(edge, null, now).map((r) => r.n)).toEqual([9]);
+    },
+  );
 
   it("names every object a row's sections reference, including git indexes and dir roots", () => {
     expect(
@@ -169,7 +195,7 @@ describe("thinningPlan", () => {
   });
 });
 
-describe("CaptureRetention over dir://", () => {
+const makeRetentionFixture = () => {
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "mend-retention-"));
   const blobRoot = path.join(scratch, "blobs");
   const memory = makeMemoryCaptureStore();
@@ -196,11 +222,16 @@ describe("CaptureRetention over dir://", () => {
     effect: Effect.Effect<A, E, CaptureRetention | CaptureStoreRepo | BlobStore>,
   ) => Effect.runPromise(effect.pipe(Effect.provide(layer)));
   const exists = (key: string) => fs.existsSync(path.join(blobRoot, key));
-  afterAll(() => {
-    fs.rmSync(scratch, { recursive: true, force: true });
-  });
+  const cleanup = () => fs.rmSync(scratch, { recursive: true, force: true });
+  return { memory, run, exists, cleanup };
+};
 
-  it("thins captures, retires unreferenced packs after the grace, and sweeps a fenced epoch prefix", async () => {
+describe("CaptureRetention over dir://", () => {
+  it("thins captures, retires unreferenced packs after the grace, and sweeps a fenced epoch prefix", async ({
+    onTestFinished,
+  }) => {
+    const { memory, run, exists, cleanup } = makeRetentionFixture();
+    onTestFinished(cleanup);
     const now = 30 * 24 * HOUR;
     memory.clock.now = () => now;
     const keys1 = captureKeys(WT, 1);
@@ -298,7 +329,11 @@ describe("CaptureRetention over dir://", () => {
     });
   });
 
-  it("keeps what a live capture needs under a fenced epoch: its dir packs and every dir object below a format-1 root it carries", async () => {
+  it("keeps what a live capture needs under a fenced epoch: its dir packs and every dir object below a format-1 root it carries", async ({
+    onTestFinished,
+  }) => {
+    const { memory, run, exists, cleanup } = makeRetentionFixture();
+    onTestFinished(cleanup);
     // A second worktree: the head stands at epoch 3 in format 2 for the workspace and carries
     // the format-1 bulk section an older executor wrote under epoch 2 (a mixed manifest). The
     // bulk tree's child dir object is named by no row — only by the root above it.
@@ -390,7 +425,11 @@ describe("CaptureRetention over dir://", () => {
     expect(exists(strayTree)).toBe(false);
   });
 
-  it("keeps another platform's dependency tree under a fenced epoch while a live head carries it in other_bulk", async () => {
+  it("keeps another platform's dependency tree under a fenced epoch while a live head carries it in other_bulk", async ({
+    onTestFinished,
+  }) => {
+    const { memory, run, exists, cleanup } = makeRetentionFixture();
+    onTestFinished(cleanup);
     // The session moved: an arm64 executor built a format-1 tree under epoch 1, a riscv one a
     // format-2 tree under epoch 2, and the head, on amd64 at epoch 4, carries both in
     // other_bulk. Every older capture row is gone: only the head names them.
@@ -476,12 +515,29 @@ describe("CaptureRetention over dir://", () => {
     expect(exists(strayManifest)).toBe(false);
   });
 
-  it("aborts orphaned multipart uploads: under a fenced epoch at once, under the live epoch once the part URLs have lapsed", async () => {
-    // The head stands at epoch 2 (previous test); an upload under epoch 1 can never complete
-    // (no lease predicate passes for it), one under epoch 2 may still be in flight.
+  it("aborts orphaned multipart uploads: under a fenced epoch at once, under the live epoch once the part URLs have lapsed", async ({
+    onTestFinished,
+  }) => {
+    const {
+      memory: multipartMemory,
+      run: runMultipart,
+      cleanup: cleanupMultipart,
+    } = makeRetentionFixture();
+    onTestFinished(cleanupMultipart);
+    const now = Date.now();
+    multipartMemory.clock.now = () => now;
+    const head = row(0, "turn", now, 2);
+    multipartMemory.captures.set(head.id, head);
+    multipartMemory.chains.set(WT, { headCapture: head.id, headN: 0, headEpoch: 2 });
+    multipartMemory.leases.set(WT, {
+      executorId: "executor",
+      epoch: 2,
+      expiresAt: now + MULTIPART_ORPHAN_MS + 10_000,
+    });
+    // An upload under epoch 1 is fenced; one under epoch 2 may still be in flight.
     const fencedKey = captureKeys(WT, 1).pack(sha("mp-fenced"));
     const liveKey = captureKeys(WT, 2).pack(sha("mp-live"));
-    const opened = await run(
+    const opened = await runMultipart(
       Effect.gen(function* () {
         const store = yield* BlobStore;
         const fenced = yield* store.createMultipart(fencedKey);
@@ -491,21 +547,39 @@ describe("CaptureRetention over dir://", () => {
     );
     expect(opened).toEqual({ fenced: "created", live: "created" });
     const wallClock = Date.now();
-    const first = await run(
+    const first = await runMultipart(
       Effect.flatMap(CaptureRetention, (retention) => retention.run(wallClock)),
     );
-    expect(first.multipartAborted).toBe(1);
-    const afterFirst = await run(
+    expect(first).toEqual({
+      chains: 1,
+      capturesThinned: 0,
+      packsRetired: 0,
+      objectsRemoved: 0,
+      multipartAborted: 1,
+    });
+    const afterFirst = await runMultipart(
       Effect.flatMap(BlobStore, (store) => store.listMultipart(`captures/${WT}/`)),
     );
     expect(afterFirst.map((upload) => upload.key)).toEqual([liveKey]);
-    const second = await run(
-      Effect.flatMap(CaptureRetention, (retention) =>
-        retention.run(wallClock + MULTIPART_ORPHAN_MS + 1),
+    const live = afterFirst[0];
+    if (live?.initiatedAt === undefined || live.initiatedAt === null) {
+      throw new Error("the filesystem blob store must report the live upload's initiation time");
+    }
+    const expiresAt = live.initiatedAt.getTime() + MULTIPART_ORPHAN_MS;
+    const beforeExpiry = await runMultipart(
+      Effect.flatMap(CaptureRetention, (retention) => retention.run(expiresAt - 1)),
+    );
+    expect(beforeExpiry.multipartAborted).toBe(0);
+    expect(
+      await runMultipart(
+        Effect.flatMap(BlobStore, (store) => store.listMultipart(`captures/${WT}/`)),
       ),
+    ).toEqual(afterFirst);
+    const second = await runMultipart(
+      Effect.flatMap(CaptureRetention, (retention) => retention.run(expiresAt)),
     );
     expect(second.multipartAborted).toBe(1);
-    const afterSecond = await run(
+    const afterSecond = await runMultipart(
       Effect.flatMap(BlobStore, (store) => store.listMultipart(`captures/${WT}/`)),
     );
     expect(afterSecond).toEqual([]);
