@@ -1539,9 +1539,9 @@ function parseLedger(text, where, aside = `mv '${where}' '${where}.bad'`) {
     const ledger = JSON.parse(text);
     if (ledger === null || typeof ledger !== "object") throw new Error("not an object");
     return ledger;
-  } catch (error) {
+  } catch {
     throw new CommandError(
-      `the ledger in ${where} cannot be read (${error.message}); nothing was removed. To tear down without it (the stack's own infrastructure only, and what the rest of the ledger names), move it aside: ${aside}`,
+      `the ledger in ${where} cannot be read (invalid ledger JSON); nothing was removed. To tear down without it (the stack's own infrastructure only, and what the rest of the ledger names), move it aside: ${aside}`,
     );
   }
 }
@@ -1558,6 +1558,7 @@ async function readLedgerFiles() {
 /**
  * The stack's ledger for this daemon: this cache directory's windows and the copy `up` left in the
  * stack's state volume, merged (the copy read with `--pull never`: a teardown fetches nothing).
+ * Genuine file absence emits an empty ledger; every successful read is parsed, even empty output.
  */
 async function readLedger(volumes) {
   const { windows, cutShort } = await readLedgerFiles();
@@ -1579,18 +1580,25 @@ async function readLedger(volumes) {
     "sh",
     FIXTURE_BASE_IMAGE,
     "-c",
-    "if [ -f /state/ledger.json ]; then cat /state/ledger.json; fi",
-  ]).catch(() => "");
-  const copies = copy
-    ? [
-        parseLedger(
-          copy,
-          `the state volume's ledger.json`,
-          `docker run --rm --volume ${STATE_VOLUME}:/s ${FIXTURE_BASE_IMAGE} mv /s/ledger.json /s/ledger.json.bad`,
-        ),
-      ]
-    : [];
-  return { ...mergeLedgers([...windows, ...copies]), cutShort };
+    `[ -d /state ] && [ -r /state ] && [ -x /state ] || exit 1
+if [ -L /state/ledger.json ]; then exit 1; fi
+if [ -e /state/ledger.json ]; then
+  [ -f /state/ledger.json ] && [ -r /state/ledger.json ] || exit 1
+  cat /state/ledger.json
+else
+  printf '%s\\n' '{"containers":[],"volumes":[],"networks":[]}'
+fi`,
+  ]).catch(() => {
+    throw new CommandError(
+      "the state volume's ledger could not be read; nothing was removed. The ledger and state are kept, so the next down tries again",
+    );
+  });
+  const volumeLedger = parseLedger(
+    copy,
+    `the state volume's ledger.json`,
+    `docker run --rm --volume ${STATE_VOLUME}:/s ${FIXTURE_BASE_IMAGE} mv /s/ledger.json /s/ledger.json.bad`,
+  );
+  return { ...mergeLedgers([...windows, volumeLedger]), cutShort };
 }
 
 async function report(args) {
