@@ -1,20 +1,15 @@
 import {
   AuditEventsRepo,
-  DevicesRepo,
   type LastOwnerError,
   type MemberNotFoundError,
-  OrganizationsRepo,
+  MemberRevocationsRepo,
   ProjectsRepo,
-  PushDevicesRepo,
   SessionControlEventsRepo,
-  SessionsRepo,
-  SlackLinksRepo,
   UserEvents,
-  UsersRepo,
 } from "@mend/db";
 import type { OrganizationId } from "@mend/domain";
 import { SessionEngine } from "@mend/sessions";
-import { Duration, Effect, Layer } from "effect";
+import { Cause, Duration, Effect, Layer } from "effect";
 import * as Context from "effect/Context";
 
 import { ConnectionRegistry } from "./connections.ts";
@@ -51,8 +46,8 @@ export class MemberRemoval extends Context.Service<
   MemberRemoval,
   {
     /**
-     * Revocation happens before this answers; stopping sessions and draining hot pools continue in
-     * the background, since a stop waits on the workspace.
+     * Durable local revocation commits before this answers. Connection closure, session stopping
+     * and hot-pool draining are dispatched before notifications and continue in the layer scope.
      */
     readonly remove: (
       input: RemoveMemberInput,
@@ -60,38 +55,39 @@ export class MemberRemoval extends Context.Service<
   }
 >()("@mend/api/MemberRemoval") {}
 
+const bestEffort = (operation: string) => (effect: Effect.Effect<void>) =>
+  effect.pipe(
+    Effect.catchCauseIf(
+      (cause) => !Cause.hasInterrupts(cause),
+      (cause) =>
+        Effect.logWarning("member removal: postcommit delivery failed").pipe(
+          Effect.annotateLogs({ operation, cause: String(cause) }),
+        ),
+    ),
+  );
+
 export const MemberRemovalLive: Layer.Layer<
   MemberRemoval,
   never,
   | AuditEventsRepo
   | ConnectionRegistry
-  | DevicesRepo
-  | OrganizationsRepo
+  | MemberRevocationsRepo
   | ProjectsRepo
-  | PushDevicesRepo
   | SessionControlEventsRepo
   | SessionEngine
-  | SessionsRepo
-  | SlackLinksRepo
   | SshKeyRevoker
   | UserEvents
-  | UsersRepo
 > = Layer.effect(
   MemberRemoval,
   Effect.gen(function* () {
     const audit = yield* AuditEventsRepo;
     const connections = yield* ConnectionRegistry;
     const controlEvents = yield* SessionControlEventsRepo;
-    const devices = yield* DevicesRepo;
-    const organizations = yield* OrganizationsRepo;
+    const revocations = yield* MemberRevocationsRepo;
     const projects = yield* ProjectsRepo;
-    const pushDevices = yield* PushDevicesRepo;
     const revoker = yield* SshKeyRevoker;
     const engine = yield* SessionEngine;
-    const sessions = yield* SessionsRepo;
-    const slackLinks = yield* SlackLinksRepo;
     const userEvents = yield* UserEvents;
-    const users = yield* UsersRepo;
     const scope = yield* Effect.scope;
 
     /**
@@ -116,129 +112,125 @@ export const MemberRemovalLive: Layer.Layer<
         );
       });
 
-    const remove = Effect.fn("MemberRemoval.remove")(function* (input: RemoveMemberInput) {
-      // Read first: the membership going takes the Slack links with it.
-      const linked = yield* slackLinks.listForUser(input.userId);
-      // The owner lock refuses removing the last owner before anything else moves; the keys owed
-      // are recorded in the same transaction as the membership's deletion.
-      const requestedAt = new Date();
-      const { revocationId } = yield* organizations.removeMember(
-        input.organizationId,
-        input.userId,
-        {
-          actorUserId: input.actorUserId,
-          revocationLeaseMs: Duration.toMillis(SSH_KEY_REVOCATION_LEASE),
-        },
-      );
-      // Their open pages hear why before anything they ask is refused: a page that is refused
-      // first walks to a plain sign-in that cannot say why (live pass 2026-10-10). Other
-      // processes close the account's connections on it; this one closes them below.
-      yield* userEvents.changed(input.userId, "access");
-      // Nobody keeps steering on the removed account's credentials, even before their sessions stop.
-      const unshared = yield* sessions.disableSharedControlForOwner(input.userId);
-      yield* Effect.forEach(
-        unshared,
-        (sessionId) =>
-          controlEvents.record({
-            sessionId,
-            actorUserId: input.actorUserId,
-            kind: "shared-control-off",
-            refId: null,
-          }),
-        { discard: true },
-      );
-      // Their queued turns in anyone's session go: none of them runs (docs/adr/0016, decision 6).
-      const inOrganization = yield* projects.listForOrganization(input.organizationId);
-      const live = (yield* Effect.forEach(inOrganization, (project) =>
-        sessions.listForProject(project.id),
-      ))
-        .flat()
-        .filter((session) => session.settledAt === null)
-        .map((session) => session.id);
-      yield* engine.cancelQueuedTurnsBy(input.userId, live);
-      yield* users.deactivate(input.userId);
-      yield* users.revokeAuthSessions(input.userId);
-      yield* devices.revokeAllForUser(input.userId);
-      yield* pushDevices.removeAllForUser(input.userId);
-      yield* audit.record({
-        organizationId: input.organizationId,
-        actorUserId: input.actorUserId,
-        action: "member.removed",
-        subjectType: "member",
-        subjectId: input.userId,
-      });
-      // Nobody in Slack acts as the removed account any more. The database already dropped the
-      // links with the membership; this says so explicitly and records each one.
-      for (const link of linked) {
-        yield* slackLinks.unlink(link.teamId, link.slackUserId);
-        yield* audit.record({
-          organizationId: input.organizationId,
-          actorUserId: input.actorUserId,
-          action: "slack.link_removed",
-          subjectType: "member",
-          subjectId: input.userId,
-          data: { teamId: link.teamId, slackUserId: link.slackUserId, memberRemoved: true },
-        });
-      }
-      // Mend's own revocation never waits on the platform. This process closes the account's
-      // connections now, and the sessions begin to stop.
-      yield* connections.closeForUser(input.userId);
-      yield* Effect.forkIn(
-        windDown(input).pipe(
-          Effect.catchCause((cause) =>
-            Effect.logWarning("member removal: winding down the account's sessions failed").pipe(
-              Effect.annotateLogs({ userId: input.userId, cause: String(cause) }),
-            ),
-          ),
-        ),
-        scope,
-      );
-      // Only now the platform: no workspace SSH key of theirs opens a new connection at the
-      // gateway. Every key is tried, for at most `SshKeyFirstAttemptLimit`; what the platform
-      // does not archive in that time stays owed, the worker retries it, and the owner is told.
-      // An interrupted removal leaves the row too, so nothing below this line is lost with it.
-      const firstAttemptLimit = yield* SshKeyFirstAttemptLimit;
-      const sshKeys = yield* revoker
-        .attempt({
-          id: revocationId,
-          userId: input.userId,
-          organizationId: input.organizationId,
-          actorUserId: input.actorUserId,
-          requestedAt,
-          attempts: 0,
-          outstanding: null,
-          lastError: null,
-        })
-        .pipe(
-          Effect.timeoutOrElse({
-            duration: firstAttemptLimit,
-            orElse: () =>
-              Effect.logWarning(
-                "member removal: SSH key revocation still running at the limit; the sweep takes it",
-              ).pipe(
-                Effect.annotateLogs({ userId: input.userId }),
-                Effect.as<SshKeyRevocationOutcome>({ removed: 0, outstanding: null }),
-              ),
-          }),
-          Effect.catchCause((cause) =>
-            Effect.logWarning("member removal: the first SSH key revocation attempt failed").pipe(
-              Effect.annotateLogs({ userId: input.userId, cause: String(cause) }),
-              Effect.as({ removed: 0, outstanding: null }),
-            ),
-          ),
-        );
-      if (sshKeys.outstanding !== 0) {
-        yield* audit.record({
-          organizationId: input.organizationId,
-          actorUserId: input.actorUserId,
-          action: "ssh_key.revocation_pending",
-          subjectType: "member",
-          subjectId: input.userId,
-          data: { removed: sshKeys.removed, outstanding: sshKeys.outstanding },
-        });
-      }
-      return { sshKeys };
-    });
+    const remove = Effect.fn("MemberRemoval.remove")((input: RemoveMemberInput) =>
+      Effect.uninterruptibleMask((restore) =>
+        Effect.gen(function* () {
+          // The transaction body remains interruptible. Its commit and this short handoff do not:
+          // a request disconnect after commit cannot skip dispatching local cleanup to layer scope.
+          const removed = yield* revocations.beginRemoval({
+            ...input,
+            revocationLeaseMs: Duration.toMillis(SSH_KEY_REVOCATION_LEASE),
+          });
+          yield* Effect.forkIn(
+            connections
+              .closeForUser(input.userId)
+              .pipe(Effect.asVoid, bestEffort("closing connections"), Effect.interruptible),
+            scope,
+          );
+          yield* Effect.forkIn(
+            windDown(input).pipe(bestEffort("winding down sessions"), Effect.interruptible),
+            scope,
+          );
+          return yield* restore(
+            Effect.gen(function* () {
+              // Every local revocation is already committed. Each delivery is independent of the
+              // others; notification failure cannot strand credentials or prevent cleanup dispatch.
+              yield* userEvents
+                .changed(input.userId, "access")
+                .pipe(bestEffort("access notification"));
+              yield* revocations.announce(removed).pipe(bestEffort("change notifications"));
+              for (const session of removed.unshared) {
+                yield* controlEvents
+                  .record({
+                    sessionId: session.id,
+                    actorUserId: input.actorUserId,
+                    kind: "shared-control-off",
+                    refId: null,
+                  })
+                  .pipe(bestEffort("shared control audit"));
+              }
+              yield* audit
+                .record({
+                  organizationId: input.organizationId,
+                  actorUserId: input.actorUserId,
+                  action: "member.removed",
+                  subjectType: "member",
+                  subjectId: input.userId,
+                })
+                .pipe(bestEffort("removal audit"));
+              for (const link of removed.linkedSlackFacts) {
+                yield* audit
+                  .record({
+                    organizationId: input.organizationId,
+                    actorUserId: input.actorUserId,
+                    action: "slack.link_removed",
+                    subjectType: "member",
+                    subjectId: input.userId,
+                    data: {
+                      teamId: link.teamId,
+                      slackUserId: link.slackUserId,
+                      memberRemoved: true,
+                    },
+                  })
+                  .pipe(bestEffort("Slack link audit"));
+              }
+              const { revocationId, requestedAt } = removed;
+              // Only now the platform: no workspace SSH key of theirs opens a new connection at the
+              // gateway. Every key is tried, for at most `SshKeyFirstAttemptLimit`; what the platform
+              // does not archive in that time stays owed, the worker retries it, and the owner is told.
+              // An interrupted removal leaves the row too, so nothing below this line is lost with it.
+              const firstAttemptLimit = yield* SshKeyFirstAttemptLimit;
+              const sshKeys = yield* revoker
+                .attempt({
+                  id: revocationId,
+                  userId: input.userId,
+                  organizationId: input.organizationId,
+                  actorUserId: input.actorUserId,
+                  requestedAt,
+                  attempts: 0,
+                  outstanding: null,
+                  lastError: null,
+                })
+                .pipe(
+                  Effect.timeoutOrElse({
+                    duration: firstAttemptLimit,
+                    orElse: () =>
+                      Effect.logWarning(
+                        "member removal: SSH key revocation still running at the limit; the sweep takes it",
+                      ).pipe(
+                        Effect.annotateLogs({ userId: input.userId }),
+                        Effect.as<SshKeyRevocationOutcome>({ removed: 0, outstanding: null }),
+                      ),
+                  }),
+                  Effect.catchCauseIf(
+                    (cause) => !Cause.hasInterrupts(cause),
+                    (cause) =>
+                      Effect.logWarning(
+                        "member removal: the first SSH key revocation attempt failed",
+                      ).pipe(
+                        Effect.annotateLogs({ userId: input.userId, cause: String(cause) }),
+                        Effect.as({ removed: 0, outstanding: null }),
+                      ),
+                  ),
+                );
+              if (sshKeys.outstanding !== 0) {
+                yield* audit
+                  .record({
+                    organizationId: input.organizationId,
+                    actorUserId: input.actorUserId,
+                    action: "ssh_key.revocation_pending",
+                    subjectType: "member",
+                    subjectId: input.userId,
+                    data: { removed: sshKeys.removed, outstanding: sshKeys.outstanding },
+                  })
+                  .pipe(bestEffort("SSH revocation audit"));
+              }
+              return { sshKeys };
+            }),
+          );
+        }),
+      ),
+    );
 
     return { remove };
   }),

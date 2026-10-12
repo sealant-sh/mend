@@ -38,7 +38,7 @@ import {
 import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
-import { MendDB } from "../client.ts";
+import { MendDB, type MendDatabase } from "../client.ts";
 import { notifyEvent } from "../events.ts";
 import {
   agentItems,
@@ -286,6 +286,38 @@ export class AgentConversationRepo extends Context.Service<
 const toTurn = (row: typeof agentTurns.$inferSelect): AgentTurn => new AgentTurn(row);
 const toItem = (row: typeof agentItems.$inferSelect): AgentItem => new AgentItem(row);
 const toRequest = (row: typeof agentRequests.$inferSelect): AgentRequest => new AgentRequest(row);
+
+/** Cancel queued turns and their open requests in the caller's transaction, without events. */
+export const cancelOpenTurnRows = Effect.fn("AgentConversationRepo.cancelOpenTurnRows")(function* (
+  db: Pick<MendDatabase, "update">,
+  turnIds: ReadonlyArray<AgentTurnId>,
+) {
+  if (turnIds.length === 0) return [];
+  const now = new Date();
+  const rows = yield* db
+    .update(agentRequests)
+    .set({
+      status: "cancelled",
+      decision: sql`COALESCE(${agentRequests.decision}, 'cancel')`,
+      decidedAt: sql`COALESCE(${agentRequests.decidedAt}, ${now})`,
+      responseDelivery: sql`CASE WHEN ${agentRequests.responseDelivery} = 'sending' THEN 'failed' ELSE ${agentRequests.responseDelivery} END`,
+    })
+    .where(
+      and(
+        inArray(agentRequests.turnId, [...turnIds]),
+        eq(agentRequests.status, "pending"),
+        sql`${agentRequests.responseDelivery} <> 'sending'`,
+      ),
+    )
+    .returning({ sessionId: agentRequests.sessionId })
+    .pipe(Effect.orDie);
+  yield* db
+    .update(agentTurns)
+    .set({ status: "cancelled", endedAt: now })
+    .where(and(inArray(agentTurns.id, [...turnIds]), eq(agentTurns.status, "queued")))
+    .pipe(Effect.orDie);
+  return rows;
+});
 
 export const AgentConversationRepoLive: Layer.Layer<
   AgentConversationRepo,
@@ -1070,29 +1102,7 @@ export const AgentConversationRepoLive: Layer.Layer<
     const cancelOpenForTurn = Effect.fn("AgentConversationRepo.cancelOpenForTurn")(function* (
       turnId: AgentTurnId,
     ) {
-      const now = new Date();
-      const rows = yield* db
-        .update(agentRequests)
-        .set({
-          status: "cancelled",
-          decision: sql`COALESCE(${agentRequests.decision}, 'cancel')`,
-          decidedAt: sql`COALESCE(${agentRequests.decidedAt}, ${now})`,
-          responseDelivery: sql`CASE WHEN ${agentRequests.responseDelivery} = 'sending' THEN 'failed' ELSE ${agentRequests.responseDelivery} END`,
-        })
-        .where(
-          and(
-            eq(agentRequests.turnId, turnId),
-            eq(agentRequests.status, "pending"),
-            sql`${agentRequests.responseDelivery} <> 'sending'`,
-          ),
-        )
-        .returning({ sessionId: agentRequests.sessionId })
-        .pipe(Effect.orDie);
-      yield* db
-        .update(agentTurns)
-        .set({ status: "cancelled", endedAt: now })
-        .where(and(eq(agentTurns.id, turnId), eq(agentTurns.status, "queued")))
-        .pipe(Effect.orDie);
+      const rows = yield* cancelOpenTurnRows(db, [turnId]);
       const first = rows[0];
       if (first !== undefined) yield* notify(first.sessionId);
     });

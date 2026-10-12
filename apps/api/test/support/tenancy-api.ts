@@ -1,5 +1,6 @@
 import {
   AuditEventsRepo,
+  MemberRevocationsRepo,
   BriefCommentsRepo,
   BriefsRepo,
   ChangePassesRepo,
@@ -402,6 +403,7 @@ export const createTenancyApi = async (
       recording(AgentMemoryRepo, "agentMemory", options.implement?.agentMemory ?? {}, calls),
       recording(SecretFilesRepo, "secretFiles", options.implement?.secretFiles ?? {}, calls),
       recording(SshKeyRevoker, "sshKeyRevoker", {}, calls),
+      recording(MemberRevocationsRepo, "memberRevocations", {}, calls),
       recording(
         HarnessModelsRepo,
         "harnessModels",

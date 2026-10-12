@@ -25,6 +25,7 @@ export * from "./repos/instance-roles.ts";
 export * from "./repos/issues.ts";
 export * from "./repos/organization-settings.ts";
 export * from "./repos/organizations.ts";
+export * from "./repos/member-revocations.ts";
 export * from "./repos/project-cluster-bindings.ts";
 export * from "./repos/project-environment.ts";
 export * from "./repos/project-mounts.ts";

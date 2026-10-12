@@ -45,7 +45,7 @@ import {
 import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
-import { MendDB } from "../client.ts";
+import { MendDB, type MendDatabase } from "../client.ts";
 import { notifyEvent } from "../events.ts";
 import {
   agentRequests,
@@ -751,6 +751,24 @@ const sessionSeamIntact: ExactKeys<
 > = true;
 void sessionSeamIntact;
 
+/** Disable the owner's shared control in the caller's transaction, without notifications. */
+export const disableOwnerSharedControl = Effect.fn("SessionsRepo.disableOwnerSharedControl")(
+  function* (db: Pick<MendDatabase, "update">, userId: string) {
+    return yield* db
+      .update(agentSessions)
+      .set({
+        sharedControlEnabledByUserId: null,
+        sharedControlEnabledAt: null,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(eq(agentSessions.ownerUserId, userId), isNotNull(agentSessions.sharedControlEnabledAt)),
+      )
+      .returning({ id: agentSessions.id, projectId: agentSessions.projectId })
+      .pipe(Effect.orDie);
+  },
+);
+
 export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClient.PgClient> =
   Layer.effect(
     SessionsRepo,
@@ -1297,21 +1315,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
 
       const disableSharedControlForOwner = Effect.fn("SessionsRepo.disableSharedControlForOwner")(
         function* (userId: string) {
-          const rows = yield* db
-            .update(agentSessions)
-            .set({
-              sharedControlEnabledByUserId: null,
-              sharedControlEnabledAt: null,
-              updatedAt: new Date(),
-            })
-            .where(
-              and(
-                eq(agentSessions.ownerUserId, userId),
-                isNotNull(agentSessions.sharedControlEnabledAt),
-              ),
-            )
-            .returning({ id: agentSessions.id, projectId: agentSessions.projectId })
-            .pipe(Effect.orDie);
+          const rows = yield* disableOwnerSharedControl(db, userId);
           yield* Effect.forEach(
             rows,
             (row) =>
