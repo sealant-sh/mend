@@ -63,7 +63,7 @@ describe("flags a command does not declare", spawning, () => {
     return { fake, requests };
   };
 
-  it.fails.each([
+  it.each([
     { args: ["sync", "--dry-run", ".zshrc"], refused: "--dry-run" },
     { args: ["sync", "--all", "--dry-run"], refused: "--dry-run" },
     { args: ["sync", "--all", "--", "--dry-run"], refused: "--" },

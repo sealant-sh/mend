@@ -62,6 +62,7 @@ import {
 } from "./dotfiles.ts";
 import { formatLoadReport, type EnvironmentLoadReportDto } from "./env.ts";
 import { failureWords, noteRefusal } from "./failure-words.ts";
+import { flagRefusal } from "./flag-gate.ts";
 import { gitAuthorLine, parseGitAuthorArgs, type GitAuthorDto } from "./git-author.ts";
 import {
   findCommand,
@@ -6004,6 +6005,8 @@ const main = async () => {
   ) {
     return helpCommand([command, ...ownArgs.filter((a) => !a.startsWith("-"))]);
   }
+  const refusal = flagRefusal(process.argv.slice(2));
+  if (refusal !== null) return fail(refusal);
   if (command === "server") {
     const result = await serverCommand(rest);
     if (result._tag === "error") return fail(result.message);
