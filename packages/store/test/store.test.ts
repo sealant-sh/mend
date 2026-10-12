@@ -391,113 +391,107 @@ describe("Store", () => {
     );
   });
 
-  it("refuses every gated op while a store's git config holds a login, a token or an include, and changes nothing", async () => {
-    await withStore((tmp, _origin, source) =>
-      Effect.gen(function* () {
-        const store = yield* Store;
-        const adopted = yield* store.adopt("refused", source, {});
-        const configFile = path.join(adopted.storePath, "config");
-        const config = (...args: ReadonlyArray<string>) =>
-          execFileSync("git", ["config", ...args], { cwd: adopted.storePath, encoding: "utf8" });
-        const included = path.join(tmp, "included.gitconfig");
-        fs.writeFileSync(included, "[core]\n");
-        // What a server before 0.36, or a person, may have left in a store's config.
-        const cases: ReadonlyArray<{
-          readonly key: string;
-          readonly set: () => void;
-          readonly unset: () => void;
-        }> = [
-          {
-            key: "remote.origin.pushurl",
-            set: () =>
-              config("remote.origin.pushurl", "https://user:TOKEN-SECRET@example.invalid/o/r.git"),
-            unset: () => config("--unset-all", "remote.origin.pushurl"),
-          },
-          {
-            key: "remote.mirror.url",
-            set: () =>
-              config("remote.mirror.url", "http://user:se'TOKEN-SECRET@example.invalid/o/r.git"),
-            unset: () => config("--remove-section", "remote.mirror"),
-          },
-          {
-            // A value with a newline in it is one value (review 2 of mend#640, N2).
-            key: "remote.multi.pushurl",
-            set: () =>
-              config(
-                "remote.multi.pushurl",
-                "https://user:LINE\nTOKEN-SECRET@example.invalid/o/r.git",
-              ),
-            unset: () => config("--remove-section", "remote.multi"),
-          },
-          {
-            // Named with its base redacted: Mend never prints the address that holds the login.
-            key: "a url rewrite (insteadOf)",
-            set: () =>
-              config(
-                "url.https://ghp_TOKEN-SECRET@example.invalid/.insteadOf",
-                "https://example.invalid/",
-              ),
-            unset: () =>
-              config("--remove-section", "url.https://ghp_TOKEN-SECRET@example.invalid/"),
-          },
-          {
-            // Any include, clean or not, conditional or not: Mend never writes one (R3-2).
-            key: "include.path",
-            set: () => config("include.path", included),
-            unset: () => config("--unset-all", "include.path"),
-          },
-          {
-            key: "an includeIf condition",
-            set: () => config("includeIf.onbranch:mend/**.path", included),
-            unset: () => config("--remove-section", "includeIf.onbranch:mend/**"),
-          },
-          {
-            // A condition can hold a URL with a password: named by its kind, never its text (R5-2).
-            key: "an includeIf condition",
-            set: () =>
-              config(
-                'includeIf.hasconfig:remote.*.url:https://u:p"SECRET-TAIL@github.com/review/*.path',
-                included,
-              ),
-            unset: () =>
-              config(
-                "--remove-section",
-                'includeIf.hasconfig:remote.*.url:https://u:p"SECRET-TAIL@github.com/review/*',
-              ),
-          },
-          {
-            // A remote whose name is a URL: its kind, and an edit, not its name.
-            key: "a remote's url",
-            set: () =>
-              config(
-                "remote.https://u:TOKEN-SECRET@example.invalid/x.url",
-                "https://user:TOKEN-SECRET@example.invalid/o/r.git",
-              ),
-            unset: () =>
-              config("--remove-section", "remote.https://u:TOKEN-SECRET@example.invalid/x"),
-          },
-          {
-            // A name git would read as an option gets an edit, never `remote set-url -odd`.
-            key: "a remote's pushurl",
-            set: () =>
-              config("remote.-odd.pushurl", "https://user:TOKEN-SECRET@example.invalid/o/r.git"),
-            unset: () => config("--remove-section", "remote.-odd"),
-          },
-        ];
-        for (const [index, { key, set, unset }] of cases.entries()) {
-          set();
+  // What a server before 0.36, or a person, may have left in a store's config.
+  const gatedConfigCases = [
+    {
+      name: "an origin push URL with a login",
+      what: "remote.origin.pushurl",
+      key: "remote.origin.pushurl",
+      value: "https://user:TOKEN-SECRET@example.invalid/o/r.git",
+      unset: ["--unset-all", "remote.origin.pushurl"],
+    },
+    {
+      name: "a mirror URL with a quoted password",
+      what: "remote.mirror.url",
+      key: "remote.mirror.url",
+      value: "http://user:se'TOKEN-SECRET@example.invalid/o/r.git",
+      unset: ["--remove-section", "remote.mirror"],
+    },
+    {
+      // A value with a newline in it is one value (review 2 of mend#640, N2).
+      name: "a multiline push URL",
+      what: "remote.multi.pushurl",
+      key: "remote.multi.pushurl",
+      value: "https://user:LINE\nTOKEN-SECRET@example.invalid/o/r.git",
+      unset: ["--remove-section", "remote.multi"],
+    },
+    {
+      // Named with its base redacted: Mend never prints the address that holds the login.
+      name: "a URL rewrite with a token",
+      what: "a url rewrite (insteadOf)",
+      key: "url.https://ghp_TOKEN-SECRET@example.invalid/.insteadOf",
+      value: "https://example.invalid/",
+      unset: ["--remove-section", "url.https://ghp_TOKEN-SECRET@example.invalid/"],
+    },
+    {
+      // Any include, clean or not, conditional or not: Mend never writes one (R3-2).
+      name: "an include",
+      what: "include.path",
+      key: "include.path",
+      value: (included: string) => included,
+      unset: ["--unset-all", "include.path"],
+    },
+    {
+      name: "a conditional include",
+      what: "an includeIf condition",
+      key: "includeIf.onbranch:mend/**.path",
+      value: (included: string) => included,
+      unset: ["--remove-section", "includeIf.onbranch:mend/**"],
+    },
+    {
+      // A condition can hold a URL with a password: named by its kind, never its text (R5-2).
+      name: "a conditional include with a password",
+      what: "an includeIf condition",
+      key: 'includeIf.hasconfig:remote.*.url:https://u:p"SECRET-TAIL@github.com/review/*.path',
+      value: (included: string) => included,
+      unset: [
+        "--remove-section",
+        'includeIf.hasconfig:remote.*.url:https://u:p"SECRET-TAIL@github.com/review/*',
+      ],
+    },
+    {
+      // A remote whose name is a URL: its kind, and an edit, not its name.
+      name: "a remote named with a credential URL",
+      what: "a remote's url",
+      key: "remote.https://u:TOKEN-SECRET@example.invalid/x.url",
+      value: "https://user:TOKEN-SECRET@example.invalid/o/r.git",
+      unset: ["--remove-section", "remote.https://u:TOKEN-SECRET@example.invalid/x"],
+    },
+    {
+      // A name git would read as an option gets an edit, never `remote set-url -odd`.
+      name: "a remote named like an option",
+      what: "a remote's pushurl",
+      key: "remote.-odd.pushurl",
+      value: "https://user:TOKEN-SECRET@example.invalid/o/r.git",
+      unset: ["--remove-section", "remote.-odd"],
+    },
+  ];
+
+  it.each(gatedConfigCases)(
+    "refuses every gated op for $name, redacts the finding and changes no config",
+    async ({ what, key, value, unset }) => {
+      await withStore((tmp, _origin, source) =>
+        Effect.gen(function* () {
+          const store = yield* Store;
+          const adopted = yield* store.adopt("refused", source, {});
+          const configFile = path.join(adopted.storePath, "config");
+          const config = (...args: ReadonlyArray<string>) =>
+            execFileSync("git", ["config", ...args], { cwd: adopted.storePath, encoding: "utf8" });
+          const included = path.join(tmp, "included.gitconfig");
+          fs.writeFileSync(included, "[core]\n");
+          config(key, typeof value === "string" ? value : value(included));
           const before = fs.readFileSync(configFile, "utf8");
           const findings = yield* remoteCredentialFindings(adopted.storePath);
-          expect(findings.map((finding) => finding.what)).toEqual([key]);
+          expect(findings.map((finding) => finding.what)).toEqual([what]);
           const refusals = [
             yield* store.refreshFromOrigin(adopted.storePath, {}).pipe(Effect.flip),
             yield* store
-              .createWorktree(adopted.storePath, wtIdentity(`refused-${index}`), null, null)
+              .createWorktree(adopted.storePath, wtIdentity("refused"), null, null)
               .pipe(Effect.flip),
           ];
           // What a person reads: the kind of thing found and who fixes it; no path, no command.
           for (const refusal of refusals) {
-            expect(refusal.stderr).toContain(key);
+            expect(refusal.stderr).toContain(what);
             expect(refusal.stderr).toContain("mend keys");
             expect(refusal.stderr).toContain("the server log names the exact command");
             expect(refusal.stderr).not.toContain(configFile);
@@ -514,12 +508,25 @@ describe("Store", () => {
           expect(findings.every((finding) => finding.fix.startsWith("git --git-dir="))).toBe(true);
           // Read only: the config is exactly as it was.
           expect(fs.readFileSync(configFile, "utf8")).toBe(before);
-          unset();
-        }
-        // An ssh login is not a credential, and a clean config runs.
-        config("remote.ssh.url", "ssh://git@example.invalid/o/r.git");
+          config(...unset);
+          expect(yield* remoteCredentialFindings(adopted.storePath)).toEqual([]);
+          yield* store.refreshFromOrigin(adopted.storePath, {});
+        }),
+      );
+    },
+  );
+
+  it("runs gated operations with a clean SSH remote URL", async () => {
+    await withStore((_tmp, _origin, source) =>
+      Effect.gen(function* () {
+        const store = yield* Store;
+        const adopted = yield* store.adopt("clean-ssh", source, {});
+        execFileSync("git", ["config", "remote.ssh.url", "ssh://git@example.invalid/o/r.git"], {
+          cwd: adopted.storePath,
+        });
         expect(yield* remoteCredentialFindings(adopted.storePath)).toEqual([]);
         yield* store.refreshFromOrigin(adopted.storePath, {});
+        yield* store.createWorktree(adopted.storePath, wtIdentity("clean-ssh"), null, null);
       }),
     );
   });
