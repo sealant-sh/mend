@@ -23,6 +23,7 @@ import {
   describeUninstall,
   executeUninstall,
   planLines,
+  planRefusal,
   type UninstallRuntime,
 } from "./uninstall.ts";
 
@@ -431,6 +432,420 @@ const uninstallOn = (control: RuntimeControl): UninstallRuntime => ({
   signedIn: null,
   revokeDevice: async () => null,
   removeWorkspaceSshKey: async () => ({ removed: [], stillActive: [], problem: null }),
+});
+
+const prepareUnactivatedUninstall = async () => {
+  const guard =
+    "busybox:1.37@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e";
+  const daemon = new DockerProtocol();
+  const control = makeRuntime({
+    daemon,
+    guardLabel: guard,
+    missingImages: [guard],
+    pullFails: true,
+  });
+  expect(await serverCommand(["setup", "--yes"], control.runtime)).toMatchObject({
+    _tag: "error",
+  });
+  const configDir = control.runtime.configDir;
+  const identityFile = path.join(configDir, "identity.env");
+  const identity = fs.readFileSync(identityFile);
+  const savedGenerations = () =>
+    fs
+      .readdirSync(path.join(configDir, "generations"), { recursive: true, encoding: "utf8" })
+      .flatMap((name) => {
+        const file = path.join(configDir, "generations", name);
+        return fs.statSync(file).isFile() ? [{ name, bytes: fs.readFileSync(file) }] : [];
+      });
+  const generations = savedGenerations();
+  const uninstall = uninstallOn(control);
+  fs.mkdirSync(uninstall.cliHome, { recursive: true });
+  const homeFile = path.join(uninstall.cliHome, "cli.json");
+  fs.writeFileSync(homeFile, "saved sign-in\n");
+  const retained = () => {
+    expect(fs.readFileSync(identityFile)).toEqual(identity);
+    expect(savedGenerations()).toEqual(generations);
+    expect(daemon.volumes.has("mend-store")).toBe(true);
+    expect(fs.readFileSync(homeFile, "utf8")).toBe("saved sign-in\n");
+  };
+  const retry = async () => {
+    daemon.response = () => undefined;
+    expect(await executeUninstall(uninstall, await describeUninstall(uninstall, "server"))).toEqual(
+      { failures: [], leftovers: [], remaining: [] },
+    );
+    expect(daemon.volumes.size).toBe(0);
+    expect(fs.existsSync(identityFile)).toBe(false);
+    expect(await executeUninstall(uninstall, await describeUninstall(uninstall, "server"))).toEqual(
+      { failures: [], leftovers: [], remaining: [] },
+    );
+  };
+  return { daemon, control, uninstall, retained, retry, identityFile, identity };
+};
+
+describe("uninstall Docker observations after an unactivated setup", () => {
+  const prepare = prepareUnactivatedUninstall;
+
+  const probes = [
+    {
+      name: "labelled volumes",
+      matches: (args: ReadonlyArray<string>) =>
+        args[2] === "volume" &&
+        args[3] === "ls" &&
+        args.includes(`label=${SERVER_VOLUME_OWNER_LABEL}`),
+    },
+    {
+      name: "anchor ownership",
+      matches: (args: ReadonlyArray<string>) =>
+        args[2] === "volume" && args[3] === "inspect" && args[4] === "mend-store",
+    },
+    {
+      name: "control ownership",
+      matches: (args: ReadonlyArray<string>) =>
+        args[2] === "volume" && args[3] === "inspect" && args[4] === "mend-control",
+    },
+    {
+      name: "Compose volumes",
+      matches: (args: ReadonlyArray<string>) =>
+        args[2] === "volume" &&
+        args[3] === "ls" &&
+        args.includes("label=com.docker.compose.project=mend"),
+    },
+    {
+      name: "Compose networks",
+      matches: (args: ReadonlyArray<string>) =>
+        args[2] === "network" &&
+        args[3] === "ls" &&
+        args.includes("label=com.docker.compose.project=mend"),
+    },
+    {
+      name: "Compose containers",
+      matches: (args: ReadonlyArray<string>) =>
+        args[2] === "container" &&
+        args[3] === "ls" &&
+        args.includes("label=com.docker.compose.project=mend"),
+    },
+    {
+      name: "mounted workspaces",
+      matches: (args: ReadonlyArray<string>) =>
+        args[2] === "container" && args[3] === "ls" && args.includes("volume=mend-control"),
+    },
+    {
+      name: "workspace sidecars",
+      matches: (args: ReadonlyArray<string>) =>
+        args[2] === "container" && args[3] === "ls" && args.includes("label=sealant.workspace"),
+    },
+    {
+      name: "workspace networks",
+      matches: (args: ReadonlyArray<string>) =>
+        args[2] === "network" && args[3] === "ls" && args.includes("name=sealant-"),
+    },
+  ];
+  for (const status of [1, null]) {
+    it.each(probes)(
+      `refuses $name observation with status ${status}, retaining records for retry`,
+      async ({ matches }) => {
+        const { daemon, uninstall, retained, retry } = await prepare();
+        daemon.containers.set("sealant-session", {});
+        daemon.facts.set("sealant-session", {
+          mounts: ["mend-control"],
+          networks: ["sealant-session-network"],
+        });
+        daemon.networks.set("sealant-session-network", {});
+        let faults = 0;
+        daemon.response = (args) => {
+          if (!matches(args)) return undefined;
+          faults += 1;
+          return { status, stdout: "", stderr: "Docker observation interrupted or unavailable" };
+        };
+        const calls = daemon.calls.length;
+        const plan = await describeUninstall(uninstall, "all");
+        const outcome = await executeUninstall(uninstall, plan);
+        expect(faults).toBeGreaterThan(0);
+        expect(planRefusal(plan)).toContain("Docker observation interrupted or unavailable");
+        expect(planLines(plan, uninstall.server.configDir)[0]).toContain(
+          "Docker could not be observed on context default",
+        );
+        expect(outcome.failures).not.toEqual([]);
+        expect(daemon.calls.slice(calls).filter(({ args }) => args.includes("rm"))).toEqual([]);
+        retained();
+        await retry();
+      },
+    );
+
+    it(`refuses current-context observation with status ${status}`, async () => {
+      const { daemon, uninstall, retained, retry } = await prepare();
+      const runtime: UninstallRuntime = {
+        ...uninstall,
+        server: {
+          ...uninstall.server,
+          run: async (command, args, options) =>
+            args[0] === "context" && args[1] === "show"
+              ? { status, stdout: "", stderr: "context discovery unavailable" }
+              : uninstall.server.run(command, args, options),
+        },
+      };
+      const calls = daemon.calls.length;
+      const plan = await describeUninstall(runtime, "all");
+      expect(planRefusal(plan)).toContain("context discovery unavailable");
+      expect(plan.server).toMatchObject({ kind: "unobserved", dockerContext: null });
+      expect(planLines(plan, runtime.server.configDir)[0]).toContain(
+        "Docker could not be observed on the current context",
+      );
+      expect((await executeUninstall(runtime, plan)).failures).not.toEqual([]);
+      expect(daemon.calls.slice(calls).filter(({ args }) => args.includes("rm"))).toEqual([]);
+      retained();
+      await retry();
+    });
+
+    it(`revalidates under the store lock after a healthy plan, with status ${status}`, async () => {
+      const { daemon, uninstall, retained, retry } = await prepare();
+      const plan = await describeUninstall(uninstall, "all");
+      const calls = daemon.calls.length;
+      daemon.response = () => ({ status, stdout: "", stderr: "daemon lost after planning" });
+      expect((await executeUninstall(uninstall, plan)).failures).not.toEqual([]);
+      expect(daemon.calls.slice(calls).filter(({ args }) => args.includes("rm"))).toEqual([]);
+      retained();
+      await retry();
+    });
+  }
+
+  it.each(["mend-control", "mend-store"])(
+    "retains the anchor and identity when final %s ownership inspection is unknown",
+    async (volume) => {
+      const { daemon, uninstall, retained, retry } = await prepare();
+      const plan = await describeUninstall(uninstall, "server");
+      let inspections = 0;
+      daemon.response = (args) => {
+        if (args[2] !== "volume" || args[3] !== "inspect" || args[4] !== volume) return undefined;
+        inspections += 1;
+        // Discovery proves ownership once; the failure is the second inspection, at removal.
+        if (inspections === 1) return undefined;
+        return { status: null, stdout: "", stderr: "ownership inspection interrupted" };
+      };
+      const outcome = await executeUninstall(uninstall, plan);
+      expect(outcome.failures).toContainEqual(
+        expect.stringContaining("ownership inspection interrupted"),
+      );
+      retained();
+      expect(daemon.volumes.has(volume)).toBe(true);
+      await retry();
+    },
+  );
+
+  it("refuses an old unactivated plan after another setup activates the installation", async () => {
+    const { daemon, control, uninstall } = await prepare();
+    const plan = await describeUninstall(uninstall, "all");
+    expect(
+      await serverCommand(
+        ["setup", "--yes"],
+        makeRuntime({ daemon, configDir: control.runtime.configDir }).runtime,
+      ),
+    ).toEqual({ _tag: "ok" });
+    const identity = fs.readFileSync(path.join(control.runtime.configDir, "identity.env"));
+    const active = fs.readlinkSync(path.join(control.runtime.configDir, "active"));
+    const calls = daemon.calls.length;
+    expect((await executeUninstall(uninstall, plan)).failures).toContainEqual(
+      expect.stringContaining("installation changed"),
+    );
+    expect(fs.readFileSync(path.join(control.runtime.configDir, "identity.env"))).toEqual(identity);
+    expect(fs.readlinkSync(path.join(control.runtime.configDir, "active"))).toEqual(active);
+    expect(daemon.volumes.size).toBe(3);
+    expect(daemon.calls.slice(calls).filter(({ args }) => args.includes("rm"))).toEqual([]);
+  });
+
+  it("refuses an old plan after the saved identity is replaced", async () => {
+    const { daemon, control, uninstall } = await prepare();
+    const plan = await describeUninstall(uninstall, "all");
+    const other = await prepare();
+    const identity = fs.readFileSync(path.join(other.control.runtime.configDir, "identity.env"));
+    fs.writeFileSync(path.join(control.runtime.configDir, "identity.env"), identity);
+    const calls = daemon.calls.length;
+    expect((await executeUninstall(uninstall, plan)).failures).toContainEqual(
+      expect.stringContaining("installation changed"),
+    );
+    expect(fs.readFileSync(path.join(control.runtime.configDir, "identity.env"))).toEqual(identity);
+    expect(daemon.volumes.size).toBe(3);
+    expect(daemon.calls.slice(calls).filter(({ args }) => args.includes("rm"))).toEqual([]);
+  });
+
+  it("removes local records after healthy absence, while leaving a confirmed foreign anchor alone", async () => {
+    for (const foreign of [false, true]) {
+      const { daemon, uninstall } = await prepare();
+      if (foreign) {
+        for (const name of daemon.volumes.keys())
+          daemon.volumes.set(name, { [SERVER_VOLUME_OWNER_LABEL]: "another-installation" });
+      } else daemon.volumes.clear();
+      expect(
+        await executeUninstall(uninstall, await describeUninstall(uninstall, "server")),
+      ).toEqual({ failures: [], leftovers: [], remaining: [] });
+      expect(fs.existsSync(path.join(uninstall.server.configDir, "identity.env"))).toBe(false);
+      expect(daemon.volumes.size).toBe(foreign ? 3 : 0);
+    }
+  });
+
+  it("leaves a foreign control volume and its workspace alone beside this identity's anchor", async () => {
+    const { daemon, uninstall } = await prepare();
+    daemon.volumes.set("mend-control", { [SERVER_VOLUME_OWNER_LABEL]: "another-installation" });
+    daemon.containers.set("sealant-foreign", {});
+    daemon.facts.set("sealant-foreign", { mounts: ["mend-control"] });
+    const outcome = await executeUninstall(uninstall, await describeUninstall(uninstall, "server"));
+    expect(outcome.failures).toEqual([]);
+    expect(outcome.remaining).toContain("volume mend-control");
+    expect(daemon.volumes.has("mend-control")).toBe(true);
+    expect(daemon.containers.has("sealant-foreign")).toBe(true);
+    expect(daemon.volumes.has("mend-store")).toBe(false);
+    expect(fs.existsSync(path.join(uninstall.server.configDir, "identity.env"))).toBe(false);
+  });
+
+  it("revalidates Docker even when the healthy plan found no volumes", async () => {
+    const { daemon, uninstall } = await prepare();
+    daemon.volumes.clear();
+    const identityFile = path.join(uninstall.server.configDir, "identity.env");
+    const identity = fs.readFileSync(identityFile);
+    const plan = await describeUninstall(uninstall, "all");
+    daemon.response = () => ({
+      status: null,
+      stdout: "",
+      stderr: "daemon lost after an empty observation",
+    });
+    expect((await executeUninstall(uninstall, plan)).failures).toContainEqual(
+      expect.stringContaining("daemon lost"),
+    );
+    expect(fs.readFileSync(identityFile)).toEqual(identity);
+    daemon.response = () => undefined;
+    expect(await executeUninstall(uninstall, await describeUninstall(uninstall, "server"))).toEqual(
+      { failures: [], leftovers: [], remaining: [] },
+    );
+    expect(fs.existsSync(identityFile)).toBe(false);
+  });
+});
+
+describe("uninstall retry records after an unactivated setup", () => {
+  const prepare = prepareUnactivatedUninstall;
+  for (const phase of ["planning", "execution"]) {
+    it.each(["malformed JSON", "wrong shape", "invalid entry", "unreadable file", "legacy names"])(
+      `retains an invalid retry record at ${phase}: %s`,
+      async (failure) => {
+        const { daemon, uninstall, identityFile, identity } = await prepare();
+        fs.mkdirSync(uninstall.cliHome, { recursive: true });
+        const homeFile = path.join(uninstall.cliHome, "cli.json");
+        fs.writeFileSync(homeFile, "saved sign-in\n");
+        const ledgerFile = path.join(uninstall.server.configDir, "uninstall-left.json");
+        const healthy = await describeUninstall(uninstall, "all");
+        const record =
+          failure === "malformed JSON"
+            ? "PRIVATE_RETRY_CONTENT{"
+            : failure === "wrong shape"
+              ? '{"names":"PRIVATE_RETRY_CONTENT"}'
+              : failure === "legacy names"
+                ? '{"names":["mend-control"]}'
+                : '{"names":["mend-control","PRIVATE_RETRY_CONTENT / invalid"]}';
+        if (failure === "unreadable file") {
+          fs.mkdirSync(ledgerFile);
+          fs.writeFileSync(path.join(ledgerFile, "record.json"), record);
+        } else fs.writeFileSync(ledgerFile, record);
+        const calls = daemon.calls.length;
+        const plan = phase === "planning" ? await describeUninstall(uninstall, "all") : healthy;
+        const outcome = await executeUninstall(uninstall, plan);
+        expect(outcome.failures).toContainEqual(expect.stringContaining("retry record"));
+        expect(outcome.failures.join("\n")).not.toContain("PRIVATE_RETRY_CONTENT");
+        expect(daemon.calls.slice(calls).filter(({ args }) => args.includes("rm"))).toEqual([]);
+        expect(fs.readFileSync(identityFile)).toEqual(identity);
+        expect(daemon.volumes.size).toBe(3);
+        expect(fs.readFileSync(homeFile, "utf8")).toBe("saved sign-in\n");
+        expect(
+          fs.readFileSync(
+            failure === "unreadable file" ? path.join(ledgerFile, "record.json") : ledgerFile,
+            "utf8",
+          ),
+        ).toBe(record);
+        fs.rmSync(ledgerFile, { recursive: true });
+        expect(
+          await executeUninstall(uninstall, await describeUninstall(uninstall, "server")),
+        ).toEqual({ failures: [], leftovers: [], remaining: [] });
+        expect(daemon.volumes.size).toBe(0);
+        expect(fs.existsSync(identityFile)).toBe(false);
+      },
+    );
+  }
+
+  it("persists an interrupted workspace-network removal and finishes after control is gone", async () => {
+    const { daemon, uninstall, identityFile, identity } = await prepare();
+    daemon.containers.set("sealant-session", {});
+    daemon.facts.set("sealant-session", {
+      mounts: ["mend-control"],
+      networks: ["sealant-session-network"],
+    });
+    daemon.networks.set("sealant-session-network", {});
+    const plan = await describeUninstall(uninstall, "server");
+    const ledgerFile = path.join(uninstall.server.configDir, "uninstall-left.json");
+    let recordedBeforeRemoval = false;
+    daemon.response = (args) => {
+      if (args[2] !== "network" || args[3] !== "rm" || !args.includes("sealant-session-network"))
+        return undefined;
+      recordedBeforeRemoval =
+        fs.existsSync(ledgerFile) &&
+        fs.readFileSync(ledgerFile, "utf8").includes('"sealant-session-network"');
+      return { status: null, stdout: "", stderr: "network removal interrupted" };
+    };
+    expect((await executeUninstall(uninstall, plan)).failures).toContainEqual(
+      expect.stringContaining("network removal interrupted"),
+    );
+    expect(fs.readFileSync(identityFile)).toEqual(identity);
+    expect(daemon.volumes.has("mend-store")).toBe(true);
+    expect(daemon.volumes.has("mend-control")).toBe(false);
+    expect(recordedBeforeRemoval).toBe(true);
+    expect(JSON.parse(fs.readFileSync(ledgerFile, "utf8"))).toEqual({
+      names: ["sealant-session-network", "mend-store"],
+      dockerContext: "default",
+      owner: createHash("sha256").update(identity).digest("hex"),
+    });
+    daemon.response = () => undefined;
+    const contexts: string[] = [];
+    const switched: UninstallRuntime = {
+      ...uninstall,
+      server: {
+        ...uninstall.server,
+        run: async (command, args, options) => {
+          if (args[0] === "context" && args[1] === "show")
+            return { status: 0, stdout: "other-context\n", stderr: "" };
+          if (args[0] === "--context") {
+            contexts.push(args[1] ?? "");
+            if (args[1] === "other-context") return { status: 0, stdout: "", stderr: "" };
+          }
+          return uninstall.server.run(command, args, options);
+        },
+      },
+    };
+    const retry = await describeUninstall(switched, "server");
+    expect(planLines(retry, uninstall.server.configDir)).toContain(
+      "         left by an earlier mend uninstall: sealant-session-network, mend-store",
+    );
+    expect(await executeUninstall(switched, retry)).toEqual({
+      failures: [],
+      leftovers: [],
+      remaining: [],
+    });
+    expect(contexts.length).toBeGreaterThan(0);
+    expect(new Set(contexts)).toEqual(new Set(["default"]));
+    expect(daemon.networks.size).toBe(0);
+    expect(daemon.volumes.size).toBe(0);
+    expect(fs.existsSync(ledgerFile)).toBe(false);
+    expect(fs.existsSync(identityFile)).toBe(false);
+  });
+
+  it("accepts an empty legacy retry record as healthy empty history", async () => {
+    const { daemon, uninstall, identityFile } = await prepare();
+    fs.writeFileSync(
+      path.join(uninstall.server.configDir, "uninstall-left.json"),
+      '{"names":[]}\n',
+    );
+    expect(await executeUninstall(uninstall, await describeUninstall(uninstall, "server"))).toEqual(
+      { failures: [], leftovers: [], remaining: [] },
+    );
+    expect(daemon.volumes.size).toBe(0);
+    expect(fs.existsSync(identityFile)).toBe(false);
+  });
 });
 
 describe("mend server setup", () => {

@@ -2247,6 +2247,12 @@ describe("server uninstall", { timeout: 60_000 }, () => {
     expect(plan.home).toBeNull();
     expect(plan.server).toEqual({
       version: "0.23.0",
+      observedInstallation: {
+        owner: createHash("sha256")
+          .update(fs.readFileSync(path.join(f.configDir, "identity.env")))
+          .digest("hex"),
+        directory: f.active(),
+      },
       appUrl: expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+$/),
       dockerContext: "saved-local",
       edgeHost: null,
@@ -2404,6 +2410,97 @@ const uninstallRuntime = (
 };
 
 describe("server uninstall with live sessions", { timeout: 60_000 }, () => {
+  it.each(["legacy", "owner", "context"])(
+    "refuses a %s retry record before changing an active installation",
+    async (failure) => {
+      const f = await fixture();
+      expect(await f.setup()).toEqual({ _tag: "ok" });
+      const runtime = uninstallRuntime(f);
+      const plan = await describeUninstall(runtime, "all");
+      const identityFile = path.join(f.configDir, "identity.env");
+      const identity = fs.readFileSync(identityFile);
+      const owner = createHash("sha256").update(identity).digest("hex");
+      const ledgerFile = path.join(f.configDir, "uninstall-left.json");
+      const record = JSON.stringify(
+        failure === "legacy"
+          ? { names: ["mend-control"] }
+          : {
+              names: ["mend-control"],
+              dockerContext: failure === "context" ? "other-context" : "saved-local",
+              owner: failure === "owner" ? "another-installation" : owner,
+            },
+      );
+      fs.writeFileSync(ledgerFile, record);
+      const generation = f.active();
+      const files = f.files();
+      const daemon = fs.readFileSync(path.join(f.root, "docker-protocol.json"));
+      const calls = f.calls().length;
+      expect((await executeUninstall(runtime, plan)).failures).toContainEqual(
+        expect.stringContaining("retry record"),
+      );
+      expect(planRefusal(await describeUninstall(runtime, "all"))).toContain("retry record");
+      expect(fs.readFileSync(identityFile)).toEqual(identity);
+      expect(fs.readFileSync(ledgerFile, "utf8")).toBe(record);
+      expect(f.active()).toBe(generation);
+      expect(f.files()).toEqual(files);
+      expect(fs.readFileSync(path.join(f.root, "docker-protocol.json"))).toEqual(daemon);
+      expect(f.calls().slice(calls)).toEqual([]);
+      expect(fs.existsSync(path.join(runtime.cliHome, "cli.json"))).toBe(true);
+      fs.unlinkSync(ledgerFile);
+      expect(await executeUninstall(runtime, await describeUninstall(runtime, "server"))).toEqual({
+        failures: [],
+        leftovers: [],
+        remaining: [],
+      });
+      expect(daemonNames(f, "volumes")).toEqual([]);
+    },
+  );
+
+  it.each(["generation", "identity"])(
+    "refuses a stale active plan after %s replacement and retains the new installation",
+    async (replacement) => {
+      const f = await fixture();
+      expect(await f.setup()).toEqual({ _tag: "ok" });
+      const runtime = uninstallRuntime(f);
+      const plan = await describeUninstall(runtime, "all");
+      if (replacement === "generation") {
+        expect(await f.upgrade()).toEqual({ _tag: "ok" });
+      } else {
+        // A complete valid replacement, not a mismatched root identity the store already refuses.
+        const other = await fixture();
+        expect(await other.setup()).toEqual({ _tag: "ok" });
+        fs.rmSync(f.configDir, { recursive: true });
+        fs.cpSync(other.configDir, f.configDir, { recursive: true, verbatimSymlinks: true });
+        fs.copyFileSync(
+          path.join(other.root, "docker-protocol.json"),
+          path.join(f.root, "docker-protocol.json"),
+        );
+      }
+      const identityFile = path.join(f.configDir, "identity.env");
+      const identity = fs.readFileSync(identityFile);
+      const generation = f.active();
+      const files = f.files();
+      const daemon = fs.readFileSync(path.join(f.root, "docker-protocol.json"));
+      const calls = f.calls().length;
+      expect((await executeUninstall(runtime, plan)).failures).toContainEqual(
+        expect.stringContaining("installation changed"),
+      );
+      expect(fs.readFileSync(identityFile)).toEqual(identity);
+      expect(f.active()).toBe(generation);
+      expect(f.files()).toEqual(files);
+      expect(fs.readFileSync(path.join(f.root, "docker-protocol.json"))).toEqual(daemon);
+      expect(f.calls().slice(calls)).toEqual([]);
+      expect(fs.existsSync(path.join(runtime.cliHome, "cli.json"))).toBe(true);
+      expect(await executeUninstall(runtime, await describeUninstall(runtime, "server"))).toEqual({
+        failures: [],
+        leftovers: [],
+        remaining: [],
+      });
+      expect(fs.existsSync(identityFile)).toBe(false);
+      expect(daemonNames(f, "volumes")).toEqual([]);
+    },
+  );
+
   it("lists the live workspace, stops and removes it with its volumes and network, then everything else", async () => {
     const f = await fixture();
     expect(await f.setup()).toEqual({ _tag: "ok" });
@@ -2549,7 +2646,13 @@ describe("server uninstall with live sessions", { timeout: 60_000 }, () => {
     expect(fs.existsSync(path.join(f.configDir, "identity.env"))).toBe(true);
     expect(
       JSON.parse(fs.readFileSync(path.join(f.configDir, "uninstall-left.json"), "utf8")),
-    ).toEqual({ names: ["sealant-w1-network"] });
+    ).toEqual({
+      names: ["sealant-w1-network"],
+      dockerContext: "saved-local",
+      owner: createHash("sha256")
+        .update(fs.readFileSync(path.join(f.configDir, "identity.env")))
+        .digest("hex"),
+    });
 
     // A reinstall over what is left claims it instead of refusing it (offline, after the
     // release image the uninstall removed is loaded again).
@@ -2577,6 +2680,147 @@ describe("server uninstall with live sessions", { timeout: 60_000 }, () => {
     expect(fs.existsSync(path.join(f.configDir, "identity.env"))).toBe(false);
     expect(fs.existsSync(path.join(f.configDir, "uninstall-left.json"))).toBe(false);
   });
+
+  it.each(["container", "network", "volume"])(
+    "retains partial uninstall records when pending %s discovery fails",
+    async (kind) => {
+      const f = await fixture();
+      expect(await f.setup()).toEqual({ _tag: "ok" });
+      liveWorkspace(f);
+      seedDaemon(f, {
+        containers: [["someone-else", {}]],
+        facts: [["someone-else", { networks: ["sealant-w1-network"] }]],
+      });
+      const base = uninstallRuntime(f);
+      expect(
+        (await executeUninstall(base, await describeUninstall(base, "server"))).failures,
+      ).not.toEqual([]);
+      expect(daemonNames(f, "volumes")).toEqual(["mend-store"]);
+      const file = path.join(f.root, "docker-protocol.json");
+      const saved = JSON.parse(fs.readFileSync(file, "utf8"));
+      saved.facts = saved.facts.filter(([name]: [string]) => name !== "someone-else");
+      fs.writeFileSync(file, JSON.stringify(saved));
+      const identityFile = path.join(f.configDir, "identity.env");
+      const ledgerFile = path.join(f.configDir, "uninstall-left.json");
+      const identity = fs.readFileSync(identityFile);
+      const ledger = fs.readFileSync(ledgerFile);
+      const generation = f.active();
+      const files = f.files();
+      const plan = await describeUninstall(base, "server");
+      let faults = 0;
+      const runtime: UninstallRuntime = {
+        ...base,
+        server: {
+          ...base.server,
+          run: async (command, args, options) => {
+            if (args[2] === kind && args[3] === "ls" && !args.includes("--filter")) {
+              faults += 1;
+              return { status: null, stdout: "", stderr: "pending resource discovery interrupted" };
+            }
+            return base.server.run(command, args, options);
+          },
+        },
+      };
+      expect((await executeUninstall(runtime, plan)).failures).toContainEqual(
+        expect.stringContaining("pending resource discovery interrupted"),
+      );
+      expect(faults).toBeGreaterThan(0);
+      expect(fs.readFileSync(identityFile)).toEqual(identity);
+      expect(fs.readFileSync(ledgerFile)).toEqual(ledger);
+      expect(f.active()).toBe(generation);
+      expect(f.files()).toEqual(files);
+      expect(daemonNames(f, "volumes")).toContain("mend-store");
+      expect(daemonNames(f, "networks")).toContain("sealant-w1-network");
+      expect(await executeUninstall(base, await describeUninstall(base, "server"))).toEqual({
+        failures: [],
+        leftovers: [],
+        remaining: [],
+      });
+      expect(daemonNames(f, "volumes")).toEqual([]);
+      expect(daemonNames(f, "networks")).toEqual([]);
+      expect(fs.existsSync(identityFile)).toBe(false);
+      expect(fs.existsSync(ledgerFile)).toBe(false);
+    },
+  );
+
+  it("rereads names saved by another execution instead of trusting an older plan", async () => {
+    const f = await fixture();
+    expect(await f.setup()).toEqual({ _tag: "ok" });
+    liveWorkspace(f);
+    seedDaemon(f, {
+      containers: [["someone-else", {}]],
+      facts: [["someone-else", { networks: ["sealant-w1-network"] }]],
+    });
+    const runtime = uninstallRuntime(f);
+    const first = await describeUninstall(runtime, "server");
+    const second = await describeUninstall(runtime, "server");
+    expect((await executeUninstall(runtime, first)).failures).not.toEqual([]);
+    expect(daemonNames(f, "volumes")).toEqual(["mend-store"]);
+    const identityFile = path.join(f.configDir, "identity.env");
+    const ledgerFile = path.join(f.configDir, "uninstall-left.json");
+    const identity = fs.readFileSync(identityFile);
+    const ledger = fs.readFileSync(ledgerFile);
+    expect((await executeUninstall(runtime, second)).failures).not.toEqual([]);
+    expect(fs.readFileSync(identityFile)).toEqual(identity);
+    expect(fs.readFileSync(ledgerFile)).toEqual(ledger);
+    expect(daemonNames(f, "volumes")).toEqual(["mend-store"]);
+    expect(daemonNames(f, "networks")).toContain("sealant-w1-network");
+    const file = path.join(f.root, "docker-protocol.json");
+    const saved = JSON.parse(fs.readFileSync(file, "utf8"));
+    saved.facts = saved.facts.filter(([name]: [string]) => name !== "someone-else");
+    fs.writeFileSync(file, JSON.stringify(saved));
+    expect(await executeUninstall(runtime, await describeUninstall(runtime, "server"))).toEqual({
+      failures: [],
+      leftovers: [],
+      remaining: [],
+    });
+    expect(daemonNames(f, "volumes")).toEqual([]);
+    expect(daemonNames(f, "networks")).toEqual([]);
+  });
+
+  it.each(["mend-control", "mend-store"])(
+    "retains active installation records when final %s ownership is unknown",
+    async (volume) => {
+      const f = await fixture();
+      expect(await f.setup()).toEqual({ _tag: "ok" });
+      const base = uninstallRuntime(f);
+      const identityFile = path.join(f.configDir, "identity.env");
+      const identity = fs.readFileSync(identityFile);
+      const plan = await describeUninstall(base, "server");
+      let inspections = 0;
+      const runtime: UninstallRuntime = {
+        ...base,
+        server: {
+          ...base.server,
+          run: async (command, args, options) => {
+            if (args[2] === "volume" && args[3] === "inspect" && args[4] === volume) {
+              inspections += 1;
+              if (volume === "mend-store" || inspections > 2)
+                return {
+                  status: null,
+                  stdout: "",
+                  stderr: "active ownership inspection interrupted",
+                };
+            }
+            return base.server.run(command, args, options);
+          },
+        },
+      };
+      expect((await executeUninstall(runtime, plan)).failures).toContainEqual(
+        expect.stringContaining("active ownership inspection interrupted"),
+      );
+      expect(fs.readFileSync(identityFile)).toEqual(identity);
+      expect(fs.existsSync(path.join(f.configDir, "active"))).toBe(true);
+      expect(daemonNames(f, "volumes")).toContain("mend-store");
+      expect(await executeUninstall(base, await describeUninstall(base, "server"))).toEqual({
+        failures: [],
+        leftovers: [],
+        remaining: [],
+      });
+      expect(fs.existsSync(identityFile)).toBe(false);
+      expect(daemonNames(f, "volumes")).toEqual([]);
+    },
+  );
 
   it("with Docker stopped, refuses everything up front and leaves this machine's files and sign-in alone", async () => {
     const f = await fixture();
