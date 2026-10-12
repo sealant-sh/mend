@@ -63,16 +63,65 @@ const base: HotFingerprintInputs = {
 };
 
 const SHARED: { readonly layout: "shared" } = { layout: "shared" };
+const PERSON: { readonly layout: "person"; readonly imageKey: string } = {
+  layout: "person",
+  imageKey: "digest:sha256:a\u0000docker",
+};
+
+// Keep base unchanged: the compatibility hash below describes its original create-time inputs.
+const multiple: HotFingerprintInputs = {
+  ...base,
+  mounts: [...base.mounts, { name: "tools", hostPath: "/home/u/tools", readOnly: false }],
+  links: [...base.links, { name: "web", rootPath: "/store/web/worktrees" }],
+};
 
 describe("hotFingerprint", () => {
-  it("is stable across skill, reference, and mount ordering", () => {
-    const reordered: HotFingerprintInputs = {
-      ...base,
-      skills: base.skills.toReversed(),
-      references: base.references.toReversed(),
-      mounts: base.mounts.toReversed(),
-    };
-    expect(hotFingerprint(reordered, SHARED)).toBe(hotFingerprint(base, SHARED));
+  it("is stable across skill, reference, mount and link ordering in both layouts", () => {
+    for (const standby of [SHARED, PERSON]) {
+      const expected = hotFingerprint(multiple, standby);
+      // Two distinct entries exercise every mount/link ordering combination.
+      for (const mounts of [multiple.mounts, multiple.mounts.toReversed()])
+        for (const links of [multiple.links, multiple.links.toReversed()])
+          expect(
+            hotFingerprint(
+              {
+                ...multiple,
+                skills: multiple.skills.toReversed(),
+                references: multiple.references.toReversed(),
+                mounts,
+                links,
+              },
+              standby,
+            ),
+          ).toBe(expected);
+    }
+  });
+
+  it("changes when either mount or linked project changes in multi-entry inputs", () => {
+    const variants: ReadonlyArray<HotFingerprintInputs> = [
+      ...multiple.mounts.flatMap((mount) =>
+        [
+          { ...mount, name: `${mount.name}-renamed` },
+          { ...mount, hostPath: `${mount.hostPath}-moved` },
+          { ...mount, readOnly: !mount.readOnly },
+        ].map((changed) => ({
+          ...multiple,
+          mounts: multiple.mounts.map((entry) => (entry.name === mount.name ? changed : entry)),
+        })),
+      ),
+      ...multiple.links.flatMap((link) =>
+        [
+          { ...link, name: `${link.name}-renamed` },
+          { ...link, rootPath: `${link.rootPath}-moved` },
+        ].map((changed) => ({
+          ...multiple,
+          links: multiple.links.map((entry) => (entry.name === link.name ? changed : entry)),
+        })),
+      ),
+    ];
+    for (const standby of [SHARED, PERSON])
+      for (const variant of variants)
+        expect(hotFingerprint(variant, standby)).not.toBe(hotFingerprint(multiple, standby));
   });
 
   it("changes when any create-time input changes", () => {
@@ -166,7 +215,7 @@ describe("hotFingerprint", () => {
     expect(hotFingerprint(changed, SHARED)).not.toBe(hotFingerprint(base, SHARED));
   });
 
-  it("changes when a linked project's root changes, not when its bound worktree does", () => {
+  it("changes when a linked project's root changes", () => {
     const relinked = hotFingerprint(
       {
         ...base,
@@ -175,9 +224,5 @@ describe("hotFingerprint", () => {
       SHARED,
     );
     expect(relinked).not.toBe(hotFingerprint(base, SHARED));
-    // The worktree bound at launch is not a create-time input, so it is not in the inputs at all.
-    expect(hotFingerprint({ ...base, links: [...base.links].toReversed() }, SHARED)).toBe(
-      hotFingerprint(base, SHARED),
-    );
   });
 });
