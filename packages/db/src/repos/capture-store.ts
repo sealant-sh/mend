@@ -1,7 +1,7 @@
 import { PgClient } from "@effect/sql-pg";
-import type { WorktreeId } from "@mend/domain";
+import type { Sha, WorktreeId } from "@mend/domain";
 import { asc, eq, inArray, sql as drizzleSql } from "drizzle-orm";
-import { Effect, Layer, Schema } from "effect";
+import { Effect, Layer, Option, Schema } from "effect";
 import * as Context from "effect/Context";
 
 import { MendDB } from "../client.ts";
@@ -10,7 +10,6 @@ import {
   type CaptureKind,
   type CaptureRow,
   type CaptureSummaryRow,
-  type CaptureSummaryState,
   type PackClass,
   type PackRow,
   type PackState,
@@ -22,9 +21,9 @@ import {
 
 /**
  * The capture store's pointers (docs/adr/0002-session-capture-store.md "Postgres schema"):
- * leases, the chain head, capture rows, packs and summaries. Every write below is ONE
- * statement — no advisory locks, no session settings, no multi-statement transactions — so it
- * behaves identically through transaction-mode pooling and Hyperdrive. The row lock a concurrent
+ * leases, the chain head, capture rows, packs and summaries. Writes use row-fenced statements;
+ * register and observed-summary publication own short transactions over one connection, including
+ * through transaction-mode pooling and Hyperdrive. The row lock a concurrent
  * writer waits on re-evaluates the WHERE, which is the whole serialiser.
  *
  * Register and retention meet on `worktree_chain.guard` (migration 0076): a register bumps the
@@ -359,11 +358,17 @@ export class CaptureStoreRepo extends Context.Service<
       captureId: string,
       key: string,
     ) => Effect.Effect<void, SummaryRejectedError>;
-    /** The observed pass stamps the summary after recomputing it on a runner. */
-    readonly setSummaryState: (
-      captureId: string,
-      state: CaptureSummaryState,
-    ) => Effect.Effect<boolean>;
+    /**
+     * Publish persisted immutable runner bytes only while this capture is the current head,
+     * its Git section has not failed, the base still matches, and its summary remains claimed.
+     * False means no key or state changed. This operation owns its short SQL transaction.
+     */
+    readonly publishObservedSummary: (input: {
+      readonly worktreeId: WorktreeId;
+      readonly captureId: string;
+      readonly baseSha: Sha;
+      readonly key: string;
+    }) => Effect.Effect<boolean>;
     /**
      * Mend's own verification of a capture's git section (`index-pack --verify` plus a
      * connectivity walk of the refs it names): `verified`, `failed`, or `unverified` when the
@@ -841,16 +846,42 @@ export const CaptureStoreRepoLive: Layer.Layer<
       if (rows.length === 0) return yield* new SummaryRejectedError({ worktreeId, captureId });
     });
 
-    const setSummaryState = Effect.fn("CaptureStoreRepo.setSummaryState")(function* (
-      captureId: string,
-      state: CaptureSummaryState,
-    ) {
-      const rows = yield* sql<{ readonly captureId: string }>`
-        UPDATE capture_summaries SET state = ${state}, updated_at = now()
-         WHERE capture_id = ${captureId}
-         RETURNING capture_id`.pipe(Effect.orDie);
-      return rows.length > 0;
-    });
+    const publishObservedSummary = Effect.fn("CaptureStoreRepo.publishObservedSummary")(
+      (input: Parameters<CaptureStoreRepo["Service"]["publishObservedSummary"]>[0]) =>
+        Effect.gen(function* () {
+          if (Option.isSome(yield* Effect.serviceOption(sql.transactionService))) {
+            return yield* Effect.die("summary publication requires its own transaction");
+          }
+          return yield* sql.withTransaction(
+            Effect.gen(function* () {
+              // Subsequent statements must see changes committed while a row lock was waiting.
+              yield* sql`SET TRANSACTION ISOLATION LEVEL READ COMMITTED`;
+              // Parent first, without blocking the FK key-share locks register/accept need. Then
+              // chain before capture, matching register and preventing a head change at publication.
+              const worktrees =
+                yield* sql`SELECT 1 FROM worktrees WHERE id = ${input.worktreeId} FOR NO KEY UPDATE`;
+              if (worktrees.length === 0) return false;
+              const chains =
+                yield* sql`SELECT 1 FROM worktree_chain WHERE worktree_id = ${input.worktreeId} FOR UPDATE`;
+              if (chains.length === 0) return false;
+              const lockedCaptures = yield* sql`SELECT 1 FROM captures WHERE id = ${input.captureId}
+            AND worktree_id = ${input.worktreeId} FOR SHARE`;
+              if (lockedCaptures.length === 0) return false;
+              const rows = yield* sql<{ readonly captureId: string }>`
+            UPDATE capture_summaries s SET key = ${input.key}, state = 'observed', updated_at = now()
+              FROM worktree_chain ch, captures c, worktrees w
+             WHERE s.capture_id = ${input.captureId} AND s.worktree_id = ${input.worktreeId}
+               AND s.state = 'claimed' AND ch.worktree_id = s.worktree_id
+               AND ch.head_capture = s.capture_id AND c.id = s.capture_id
+               AND ch.head_n = c.n
+               AND c.worktree_id = s.worktree_id AND c.git_fsck <> 'failed'
+               AND w.id = s.worktree_id AND w.base_sha = ${input.baseSha}
+             RETURNING s.capture_id`;
+              return rows.length > 0;
+            }),
+          );
+        }).pipe(Effect.orDie),
+    );
 
     const setGitFsck = Effect.fn("CaptureStoreRepo.setGitFsck")(function* (
       captureId: string,
@@ -1522,7 +1553,7 @@ export const CaptureStoreRepoLive: Layer.Layer<
       register,
       release,
       acceptSummary,
-      setSummaryState,
+      publishObservedSummary,
       setGitFsck,
       leaseOf,
       headOf,

@@ -1,7 +1,7 @@
 import { WorktreesRepo } from "@mend/db";
 import { WorktreeId } from "@mend/domain";
-import { CaptureRuntime, WorktreeReads } from "@mend/sessions";
-import { type ChangeSummary, changeSummaryKey, decodeChangeSummary } from "@mend/store";
+import { CaptureRuntime, stampOf, WorktreeReads } from "@mend/sessions";
+import { type ChangeSummary, decodeChangeSummary, observedChangeSummaryKey } from "@mend/store";
 import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
@@ -31,6 +31,7 @@ export class SummaryObserver extends Context.Service<
 >()("@mend/jobs/SummaryObserver") {}
 
 const sameSummary = (claimed: ChangeSummary, observed: ChangeSummary): boolean =>
+  claimed.base_sha === observed.base_sha &&
   claimed.diff === observed.diff &&
   claimed.files.length === observed.files.length &&
   claimed.files.every((file, index) => {
@@ -62,6 +63,13 @@ export const SummaryObserverLive: Layer.Layer<
       if (chain?.head === null || chain?.head === undefined || chain.head.id !== job.captureId) {
         return { outcome: "skipped", reason: "the capture is no longer the chain head" } as const;
       }
+      const head = chain.head;
+      if (head.gitFsck === "failed") {
+        return {
+          outcome: "skipped",
+          reason: "the capture's Git section failed verification",
+        } as const;
+      }
       const summaryRow = yield* capture.repo.summaryOf(job.captureId);
       if (summaryRow === null) {
         return { outcome: "skipped", reason: "no summary was posted for the capture" } as const;
@@ -84,6 +92,25 @@ export const SummaryObserverLive: Layer.Layer<
       const files = yield* reads
         .changedFiles(worktree.projectId, worktree.id, worktree.baseSha)
         .pipe(Effect.orDie);
+      const stamps = [diff.stamp, files.stamp];
+      const expectedStamp = stampOf(head);
+      if (
+        stamps.some(
+          (stamp) =>
+            stamp.source !== "capture" ||
+            stamp.captureId !== job.captureId ||
+            stamp.captureN !== expectedStamp.captureN ||
+            stamp.seq !== expectedStamp.seq ||
+            stamp.kind !== expectedStamp.kind ||
+            stamp.partial !== expectedStamp.partial ||
+            stamp.observedAt !== expectedStamp.observedAt,
+        )
+      ) {
+        return {
+          outcome: "skipped",
+          reason: "the reads do not belong to the job capture",
+        } as const;
+      }
       const observed: ChangeSummary = {
         base_sha: worktree.baseSha,
         files: files.value.map((file) => ({
@@ -103,14 +130,20 @@ export const SummaryObserverLive: Layer.Layer<
             observedFiles: observed.files.length,
           }),
         );
-        yield* capture.blobs
-          .put(
-            changeSummaryKey(job.worktreeId, chain.head.n),
-            new Uint8Array(Buffer.from(JSON.stringify(observed), "utf8")),
-          )
-          .pipe(Effect.orDie);
       }
-      yield* capture.repo.setSummaryState(job.captureId, "observed");
+      // Agreement does not protect the posted key from a concurrent executor repost.
+      const bytes = new Uint8Array(Buffer.from(JSON.stringify(observed), "utf8"));
+      const key = observedChangeSummaryKey(job.worktreeId, head.n, bytes);
+      yield* capture.blobs.put(key, bytes, { ifAbsent: true }).pipe(Effect.orDie);
+      const published = yield* capture.repo.publishObservedSummary({
+        worktreeId: job.worktreeId,
+        captureId: job.captureId,
+        baseSha: worktree.baseSha,
+        key,
+      });
+      if (!published) {
+        return { outcome: "skipped", reason: "the summary changed before publication" } as const;
+      }
       return { outcome: "observed", agreed } as const;
     });
 

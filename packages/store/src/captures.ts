@@ -356,6 +356,10 @@ export const decodeChangeSummary = Schema.decodeUnknownEffect(ChangeSummary);
 export const changeSummaryKey = (worktreeId: string, n: number) =>
   `changes/${worktreeId}/${n}/summary.json`;
 
+/** Immutable recomputed bytes; executor reposts keep writing their separate claimed key. */
+export const observedChangeSummaryKey = (worktreeId: string, n: number, bytes: Uint8Array) =>
+  `changes/${worktreeId}/${n}/observed-${sha256Hex(bytes)}.json`;
+
 // ─── Dir objects ────────────────────────────────────────────────────────────
 
 export const DirEntryKind = Schema.Literals(["file", "symlink", "dir", "hardlink-group"]);
