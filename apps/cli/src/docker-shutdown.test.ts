@@ -158,7 +158,14 @@ describe("what a Docker daemon stop waits for", () => {
           }),
         ),
       ).fix,
-    ).toBe("sudo systemctl edit docker.service and set [Service] TimeoutStopSec=95");
+    ).toBe("systemctl --user edit docker.service and set [Service] TimeoutStopSec=95");
+    expect(
+      dockerStopSetupLine(
+        readDockerStop(facts({ info: ROOTLESS, unit: short }), WORKSPACE_STOP_TIMEOUT_SECONDS),
+      ),
+    ).toBe(
+      "A Docker stop waits up to 60 s (a workspace's stop timeout), but systemd kills docker.service (user) after 30 s, and Docker's next start waits for what it left running: a restart or upgrade of Docker with a live session leaves Docker down until that workspace ends. To avoid it: systemctl --user edit docker.service and set [Service] TimeoutStopSec=95.",
+    );
   });
 
   it("another container's long stop timeout is named, with its own fix", () => {

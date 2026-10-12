@@ -196,9 +196,12 @@ const fixWords = (reading: Extract<DockerStopReading, { readonly kind: "observed
       : `docker stop ${longest.name} before you restart or upgrade Docker`;
   }
   const room = reading.waitSeconds + DOCKERD_SHUTDOWN_GRACE_SECONDS + 30;
-  return reading.limit.kind === "observed"
-    ? `sudo systemctl edit ${reading.limit.unit.replace(" (user)", "")} and set [Service] TimeoutStopSec=${room}`
-    : "stop sessions before you restart, upgrade or quit Docker";
+  if (reading.limit.kind !== "observed")
+    return "stop sessions before you restart, upgrade or quit Docker";
+  const userUnit = reading.limit.unit.endsWith(" (user)");
+  const unit = userUnit ? reading.limit.unit.slice(0, -" (user)".length) : reading.limit.unit;
+  const command = userUnit ? "systemctl --user" : "sudo systemctl";
+  return `${command} edit ${unit} and set [Service] TimeoutStopSec=${room}`;
 };
 
 /** The doctor line (`docker`): what a daemon stop waits for, against what the host allows. */
