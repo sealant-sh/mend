@@ -591,16 +591,17 @@ the map's proof rules:
   credential fields). A page that shows a credential (a field a secret was typed into, a QR code, a
   pairing code, a minted token), in its ARIA snapshot or anywhere in its text (`aria-hidden`
   included), keeps only its redacted snapshot, every credential field's subtree included:
-  `<name>.png.withheld` says why. Pixels no text check can read are never kept: every canvas (a
-  terminal's), video and embedded object is masked, and so is a frame that holds one; a kept
-  screenshot gets `<name>.png.checked` with its digest. No trace, HAR or video is recorded.
-  Cleanup's scan searches every file of `$E` for every registered value and every shape, and counts
-  as a hit an archive and any image without a matching `.checked` (one a recipe saved itself, or
-  changed since): a hit fails the run. What the registry takes from the browser state is the cookies
-  and the credentials a page stores (a token under a secret key, an item named for one, a value
-  shaped like one), not its preferences or the project ids it remembers; from a JSON login
-  (`auth.json`), its tokens and the whole text, not its account id. The skill's fake logins
-  (`fakes.mjs`) are never a hit.
+  `<name>.png.withheld` says why. CSS-discoverable canvases, videos, embedded objects and child
+  frames are masked. A child frame inside a closed shadow root, or one the driver cannot inspect for
+  masking, withholds the image. Main-document text and canvas contents inside closed shadow roots
+  remain outside this inspection; omit screenshot evidence for those views. A kept screenshot gets
+  `<name>.png.checked` with its digest. No trace, HAR or video is recorded. Cleanup's scan searches
+  every file of `$E` for every registered value and every shape, and counts as a hit an archive and
+  any image without a matching `.checked` (one a recipe saved itself, or changed since): a hit fails
+  the run. What the registry takes from the browser state is the cookies and the credentials a page
+  stores (a token under a secret key, an item named for one, a value shaped like one), not its
+  preferences or the project ids it remembers; from a JSON login (`auth.json`), its tokens and the
+  whole text, not its account id. The skill's fake logins (`fakes.mjs`) are never a hit.
 
 ## Cleanup
 
