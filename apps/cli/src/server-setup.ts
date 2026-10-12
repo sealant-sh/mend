@@ -5013,11 +5013,14 @@ const BRIDGE_INTERFACE = /^(docker|br-|veth|virbr|cni|flannel|vmnet|vboxnet|brid
 const ipv4Value = (address: string): number =>
   address.split(".").reduce((sum, octet) => sum * 256 + Number(octet), 0);
 
-/** An IPv4 address that names a network rather than a host on it: x.y.z.0, or its subnet's base. */
+/** A known IPv4 subnet base. The assigned addresses of /31 and /32 interfaces are hosts. */
 const isNetworkAddress = (entry: os.NetworkInterfaceInfo): boolean => {
   if (entry.family !== "IPv4") return false;
-  if (entry.address.endsWith(".0")) return true;
-  const prefix = Number(entry.cidr?.split("/")[1] ?? "32");
+  // Node derives CIDR from the netmask. Without a valid prefix, the assigned address gives no
+  // evidence that it is a subnet base, so do not guess from its last octet.
+  const prefixText = entry.cidr?.split("/")[1];
+  if (prefixText === undefined || !/^(?:[0-9]|[12][0-9]|3[0-2])$/.test(prefixText)) return false;
+  const prefix = Number(prefixText);
   return prefix < 31 && ipv4Value(entry.address) % 2 ** (32 - prefix) === 0;
 };
 
