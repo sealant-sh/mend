@@ -132,7 +132,8 @@ const refusalFor = (scene: Scene) => {
     }),
     Layer.mock(SourcePolicy, {
       profile: "operator",
-      check: () => Effect.succeed({ scheme: "ssh", host: "github.com", port: null, addresses: [] }),
+      check: (source) =>
+        Effect.succeed({ source, scheme: "ssh", host: "github.com", port: null, addresses: [] }),
       pinnedEnv: (_clearance, env) => ({ ...env }),
     }),
     Layer.mock(ProjectAccess, { isOperator: () => Effect.succeed(false) }),

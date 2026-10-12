@@ -28,6 +28,8 @@ export interface SourceActor {
 
 /** A remote the policy let through, with the addresses it checked. */
 export interface SourceClearance {
+  /** Original checked clone URL, retained for Git's URL-specific HTTP configuration. */
+  readonly source: string;
   readonly scheme: "http" | "https" | "ssh" | "git";
   readonly host: string;
   readonly port: number | null;
@@ -46,9 +48,10 @@ export class SourcePolicy extends Context.Service<
     /**
      * The git environment that dials exactly the address the policy checked, so a name cannot
      * answer differently between the check and the connection (DNS rebinding). `tenant` pins
-     * HTTPS through `http.curloptResolve` and ssh through `HostName` with `HostKeyAlias` (known
-     * hosts still match the name); `operator` leaves the environment as it is, so a single
-     * team's ssh configuration keeps working.
+     * HTTP(S) through `http.curloptResolve` and ssh through `HostName` with `HostKeyAlias` (known
+     * hosts still match the name). The supplied HTTP(S) URL refuses redirects, including IP
+     * literals and URLs with inherited redirect settings. Git URL rewrites are not resolved here. `operator` leaves the environment as
+     * it is, so a single team's ssh configuration keeps working.
      */
     readonly pinnedEnv: (
       clearance: SourceClearance,
@@ -152,7 +155,11 @@ export interface SourcePolicyOptions {
   readonly allowedHosts: ReadonlyArray<string>;
   /** Every address a host name resolves to; injected so tests need no DNS. */
   readonly resolve: (host: string) => Promise<ReadonlyArray<string>>;
+  /** Git command configuration captured at startup; explicit caller scopes take precedence. */
+  readonly gitConfig?: Readonly<Record<string, string>>;
 }
+
+const quoteGitConfigParameter = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`;
 
 export const makeSourcePolicy = (options: SourcePolicyOptions): SourcePolicy["Service"] => {
   const refused = (message: string) => new SourceRefused({ message });
@@ -178,6 +185,7 @@ export const makeSourcePolicy = (options: SourcePolicyOptions): SourcePolicy["Se
             });
     if (addresses.length === 0) return yield* refused(`${host} does not resolve from this Mend.`);
     const clearance: SourceClearance = {
+      source,
       scheme: location.scheme,
       host,
       port: location.port,
@@ -210,10 +218,11 @@ export const makeSourcePolicy = (options: SourcePolicyOptions): SourcePolicy["Se
     env: Readonly<Record<string, string>>,
   ): Record<string, string> => {
     const address = clearance.addresses[0];
-    if (options.profile === "operator" || address === undefined || isIP(clearance.host) !== 0) {
+    if (options.profile === "operator" || address === undefined) {
       return { ...env };
     }
     if (clearance.scheme === "ssh") {
+      if (isIP(clearance.host) !== 0) return { ...env };
       return {
         ...env,
         GIT_SSH_COMMAND: `${env["GIT_SSH_COMMAND"] ?? "ssh"} -o HostName=${address} -o HostKeyAlias=${clearance.host}`,
@@ -221,15 +230,36 @@ export const makeSourcePolicy = (options: SourcePolicyOptions): SourcePolicy["Se
     }
     if (clearance.scheme === "http" || clearance.scheme === "https") {
       const port = clearance.port ?? (clearance.scheme === "https" ? 443 : 80);
-      const existing = Number(env["GIT_CONFIG_COUNT"] ?? "0");
-      const index = Number.isInteger(existing) && existing > 0 ? existing : 0;
-      // A redirect would hand git a host the policy never checked, so it is not followed.
-      return {
+      const inherited = options.gitConfig ?? {};
+      const pinned = {
+        ...(env["GIT_CONFIG_COUNT"] === undefined ? inherited : {}),
         ...env,
+      };
+      const existing = Number(pinned["GIT_CONFIG_COUNT"] ?? "0");
+      let index = Number.isInteger(existing) && existing > 0 ? existing : 0;
+      if (isIP(clearance.host) === 0) {
+        pinned[`GIT_CONFIG_KEY_${index}`] = "http.curloptResolve";
+        pinned[`GIT_CONFIG_VALUE_${index}`] =
+          `${clearance.host}:${port}:${isIP(address) === 6 ? `[${address}]` : address}`;
+        index += 1;
+      }
+      // Git prefers URL-specific settings over generic ones, even from a lower config scope.
+      // The exact checked URL must refuse redirects too, before any unchecked host is reached.
+      // PARAMETERS is read after counted config. Append refusals using Git's shell-quote grammar.
+      const parameters = env["GIT_CONFIG_PARAMETERS"] ?? inherited["GIT_CONFIG_PARAMETERS"] ?? "";
+      return {
+        ...pinned,
+        GIT_CONFIG_PARAMETERS: [
+          parameters,
+          `${quoteGitConfigParameter("http.followRedirects")}='false'`,
+          `${quoteGitConfigParameter(`http.${clearance.source}.followRedirects`)}='false'`,
+        ]
+          .filter((entry) => entry !== "")
+          .join(" "),
         GIT_CONFIG_COUNT: String(index + 2),
-        [`GIT_CONFIG_KEY_${index}`]: "http.curloptResolve",
-        [`GIT_CONFIG_VALUE_${index}`]: `${clearance.host}:${port}:${isIP(address) === 6 ? `[${address}]` : address}`,
-        [`GIT_CONFIG_KEY_${index + 1}`]: "http.followRedirects",
+        [`GIT_CONFIG_KEY_${index}`]: "http.followRedirects",
+        [`GIT_CONFIG_VALUE_${index}`]: "false",
+        [`GIT_CONFIG_KEY_${index + 1}`]: `http.${clearance.source}.followRedirects`,
         [`GIT_CONFIG_VALUE_${index + 1}`]: "false",
       };
     }
@@ -257,6 +287,13 @@ export const SourcePolicyLive: Layer.Layer<SourcePolicy, Config.ConfigError> = L
         .map((entry) => entry.trim())
         .filter((entry) => entry !== ""),
       resolve: resolveAll,
+      gitConfig: Object.fromEntries(
+        Object.entries(process.env).filter(
+          (entry): entry is [string, string] =>
+            entry[1] !== undefined &&
+            /^GIT_CONFIG_(?:COUNT|PARAMETERS|KEY_\d+|VALUE_\d+)$/.test(entry[0]),
+        ),
+      ),
     });
   }),
 );

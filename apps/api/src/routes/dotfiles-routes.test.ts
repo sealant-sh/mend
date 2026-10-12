@@ -154,7 +154,8 @@ const putRepository = async (
     // source-policy-routes.test.ts).
     Layer.mock(SourcePolicy, {
       profile: "operator",
-      check: () => Effect.succeed({ scheme: "https", host: "local", port: null, addresses: [] }),
+      check: (source) =>
+        Effect.succeed({ source, scheme: "https", host: "local", port: null, addresses: [] }),
       pinnedEnv: (_clearance, env) => ({ ...env }),
     }),
     Layer.mock(ProjectAccess, { isOperator: () => Effect.succeed(true) }),
@@ -301,7 +302,8 @@ describe("PUT /api/dotfiles/start-after-install (docs/adr/0016, decision 11)", (
       Layer.mock(DotfilesStore, { current: () => Effect.succeed(null) }),
       Layer.mock(SourcePolicy, {
         profile: "operator",
-        check: () => Effect.succeed({ scheme: "https", host: "local", port: null, addresses: [] }),
+        check: (source) =>
+          Effect.succeed({ source, scheme: "https", host: "local", port: null, addresses: [] }),
         pinnedEnv: (_clearance, env) => ({ ...env }),
       }),
       Layer.mock(ProjectAccess, { isOperator: () => Effect.succeed(true) }),
