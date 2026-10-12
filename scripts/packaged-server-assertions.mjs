@@ -116,8 +116,21 @@ export function captureExecutorMountsAreValid(container) {
   const binds = container.HostConfig?.Binds ?? [];
   if (!Array.isArray(specs) || !Array.isArray(mounts) || !Array.isArray(binds)) return false;
   if (
-    specs.some((mount) => !mount || typeof mount !== "object") ||
-    mounts.some((mount) => !mount || typeof mount !== "object")
+    specs.some(
+      (mount) =>
+        !mount ||
+        !["volume", "tmpfs"].includes(mount.Type) ||
+        typeof mount.Target !== "string" ||
+        mount.Target.length === 0,
+    ) ||
+    mounts.some(
+      (mount) =>
+        !mount ||
+        !["volume", "tmpfs"].includes(mount.Type) ||
+        typeof mount.Destination !== "string" ||
+        mount.Destination.length === 0 ||
+        (mount.Type === "volume" && (typeof mount.Name !== "string" || mount.Name.length === 0)),
+    )
   )
     return false;
   const controlSpecs = specs.filter(
@@ -201,14 +214,20 @@ export function assertCaptureExecutor(container) {
 
 /**
  * Acceptance inventory, separate from conservative cleanup ownership: refuse any new recognized
- * executor with invalid mounts before selecting running executors or declaring reclamation.
+ * executor with invalid mounts or unknown running state before selecting or declaring reclamation.
  * Pre-existing containers and the server's /run/sealant/sockets mount are not candidates.
  */
 export function runningCaptureExecutors(containers, initialIds) {
   const candidates = containers.filter(
     (container) => !initialIds.has(container.Id) && isSealantExecutor(container),
   );
-  for (const candidate of candidates) assertCaptureExecutor(candidate);
+  for (const candidate of candidates) {
+    assertCaptureExecutor(candidate);
+    assert.ok(
+      typeof candidate.State?.Running === "boolean",
+      "Executor running state must be observed as a boolean",
+    );
+  }
   return candidates.filter((container) => container.State?.Running === true);
 }
 

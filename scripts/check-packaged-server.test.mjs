@@ -431,6 +431,47 @@ test("a store-less Sealant executor passes acceptance and is owned for cleanup b
 });
 
 const rejectedExecutors = [
+  ...["requested", "observed"].flatMap((evidence) =>
+    [undefined, null, 123, ""].map((destination) => [
+      `unknown ${evidence} extra mount destination ${String(destination)}`,
+      (candidate) => {
+        if (evidence === "requested") {
+          candidate.HostConfig.Mounts.push({
+            Type: "volume",
+            Source: "executor-data",
+            Target: destination,
+          });
+        } else {
+          candidate.Mounts.push({
+            Type: "volume",
+            Name: "executor-data",
+            Destination: destination,
+            RW: true,
+          });
+        }
+      },
+    ]),
+  ),
+  ...[undefined, null, 123, ""].map((name) => [
+    `unknown observed extra volume name ${String(name)}`,
+    (candidate) => {
+      candidate.HostConfig.Mounts.push({ Type: "volume", Target: "/anonymous" });
+      candidate.Mounts.push({ Type: "volume", Name: name, Destination: "/anonymous", RW: true });
+    },
+  ]),
+  ...["requested", "observed"].flatMap((evidence) =>
+    [undefined, null, 123, "unknown"].map((type) => [
+      `unknown ${evidence} extra mount type ${String(type)}`,
+      (candidate) => {
+        const extra = { Type: type, Source: "/sensitive/host/path" };
+        if (evidence === "requested") {
+          candidate.HostConfig.Mounts.push({ ...extra, Target: "/host-data" });
+        } else {
+          candidate.Mounts.push({ ...extra, Destination: "/host-data" });
+        }
+      },
+    ]),
+  ),
   [
     "missing control subpath",
     (c) => {
@@ -604,6 +645,23 @@ for (const [name, invalidate] of rejectedExecutors) {
   });
 }
 
+test("known extra volume and tmpfs mounts preserve store-less executor acceptance", () => {
+  const candidate = executor();
+  candidate.HostConfig.Mounts.push(
+    { Type: "volume", Source: "executor-data", Target: "/workspace" },
+    { Type: "volume", Target: "/anonymous" },
+    { Type: "tmpfs", Target: "/scratch" },
+  );
+  candidate.Mounts.push(
+    { Type: "volume", Name: "executor-data", Destination: "/workspace", RW: true },
+    { Type: "volume", Name: "generated-anonymous-volume", Destination: "/anonymous", RW: true },
+    { Type: "tmpfs", Destination: "/scratch", RW: true },
+  );
+  assert.doesNotThrow(() => assertCaptureExecutor(candidate));
+  assert.equal(ownsWorkspaceContainer(candidate, new Set()), true);
+  assert.deepEqual(runningCaptureExecutors([candidate], new Set()), [candidate]);
+});
+
 test("acceptance inventory checks every new executor before selecting a valid standby", () => {
   const good = executor({ Id: "valid-standby" });
   const invalid = executor({ Id: "unsafe-executor" });
@@ -653,6 +711,21 @@ test("acceptance inventory supports distinct physical pool scopes and excludes C
     [],
   );
 });
+
+for (const state of [
+  undefined,
+  null,
+  {},
+  { Running: null },
+  { Running: "false" },
+  { Running: 0 },
+]) {
+  test(`acceptance inventory refuses unknown running state ${JSON.stringify(state)}`, () => {
+    const candidate = executor({ State: state });
+    assert.throws(() => runningCaptureExecutors([candidate], new Set()), /running state/);
+    assert.deepEqual(runningCaptureExecutors([candidate], new Set([candidate.Id])), []);
+  });
+}
 
 test("capture evidence needs a registered capture n ≥ 1 from the capture source", () => {
   const stamp = (patch) => ({
