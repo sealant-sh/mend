@@ -626,16 +626,18 @@ describe.skipIf(postgres.skip)("capture store (0053)", () => {
         const zero = captureInput(worktreeId, 0, null, epoch);
         yield* repo.register({ ...zero, guards: [{ worktreeId, guard: yield* guardOf }] });
         const one = captureInput(worktreeId, 1, zero.id, epoch);
-        const tryRevive = Effect.gen(function* () {
-          const state = yield* repo.referenceState([worktreeId], [key]);
-          return yield* reasonOf(
-            repo.register({
-              ...one,
-              guards: [{ worktreeId, guard: state.guards.get(worktreeId) ?? -1 }],
-              names: [key],
-            }),
-          );
-        });
+        const tryRevive = (objectKey: string, capture: RegisterCapture) =>
+          Effect.gen(function* () {
+            const state = yield* repo.referenceState([worktreeId], [objectKey]);
+            return yield* reasonOf(
+              repo.register({
+                ...capture,
+                guards: [{ worktreeId, guard: state.guards.get(worktreeId) ?? -1 }],
+                names: [objectKey],
+                sections: { git: { packs: [objectKey] } },
+              }),
+            );
+          });
         const deletedOf = Effect.map(repo.referenceState([worktreeId], [key]), (state) =>
           state.tombstones.map((tombstone) => tombstone.deleted),
         );
@@ -646,13 +648,14 @@ describe.skipIf(postgres.skip)("capture store (0053)", () => {
         yield* repo.finishDeletion(`b-${worktreeId}`, [key]);
         const whileAHolds = yield* deletedOf;
         // The channel refuses on `deleted: false`; the CAS refuses the revive on its own too.
-        const reviveWhileAHolds = yield* tryRevive;
+        const reviveWhileAHolds = yield* tryRevive(key, one);
         const renewedA = yield* repo.renewDeletion(`a-${worktreeId}`, 3600);
         yield* repo.finishDeletion(`a-${worktreeId}`, [key]);
         const afterA = yield* deletedOf;
         const renewedAfterFinish = yield* repo.renewDeletion(`a-${worktreeId}`, 3600);
+        const reviveAfterFinish = yield* tryRevive(key, one);
 
-        // A crashed pass: its claim lapses, it can never renew it, and the key comes back.
+        // A crashed pass cannot renew its lapsed claim, and its condemned key cannot come back.
         const other = `captures/${worktreeId}/1/packs/${"f".repeat(64)}`;
         yield* repo.condemn(worktreeId, yield* guardOf, [other], claimOf(`c-${worktreeId}`));
         yield* repo.condemn(worktreeId, yield* guardOf, [other], claimOf(`d-${worktreeId}`));
@@ -662,16 +665,28 @@ describe.skipIf(postgres.skip)("capture store (0053)", () => {
            WHERE token = ${`c-${worktreeId}`}`;
         const renewedLapsed = yield* repo.renewDeletion(`c-${worktreeId}`, 3600);
         const lapsed = (yield* repo.referenceState([worktreeId], [other])).tombstones;
-        const revived = yield* tryRevive;
+        const headBefore = yield* repo.headOf(worktreeId);
+        const namesOf = Effect.map(repo.listChain(worktreeId), (captures) =>
+          captures.map(({ id, manifestKey, sections }) => ({ id, manifestKey, sections })),
+        );
+        const namesBefore = yield* namesOf;
+        const revived = yield* tryRevive(other, one);
         return {
           whileAHolds,
           reviveWhileAHolds,
           renewedA,
           afterA,
           renewedAfterFinish,
+          reviveAfterFinish,
           renewedLapsed,
           lapsed,
           revived,
+          other,
+          zero,
+          headBefore,
+          headAfter: yield* repo.headOf(worktreeId),
+          namesBefore,
+          namesAfter: yield* namesOf,
         };
       }),
     );
@@ -680,9 +695,16 @@ describe.skipIf(postgres.skip)("capture store (0053)", () => {
     expect(result.renewedA).toBe(1);
     expect(result.afterA).toEqual([true]);
     expect(result.renewedAfterFinish).toBe(0);
+    expect(result.reviveAfterFinish).toBe("guard_moved");
     expect(result.renewedLapsed).toBe(0);
-    expect(result.lapsed).toEqual([{ key: expect.any(String), deleted: true }]);
+    expect(result.lapsed).toEqual([{ key: result.other, deleted: true }]);
     expect(result.revived).toBe("guard_moved");
+    expect(result.headBefore?.headN).toBe(0);
+    expect(result.headAfter).toEqual(result.headBefore);
+    expect(result.namesBefore).toEqual([
+      { id: result.zero.id, manifestKey: result.zero.manifestKey, sections: result.zero.sections },
+    ]);
+    expect(result.namesAfter).toEqual(result.namesBefore);
   });
 
   it("seals (0083): a seal names the launch that sealed, recorded only while the lease names its session", async () => {
