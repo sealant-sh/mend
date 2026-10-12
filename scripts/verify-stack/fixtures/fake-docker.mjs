@@ -3,6 +3,9 @@
 // ($FAKE_DOCKER_STATE), for the commands the stack's claim, preflight, removal and watchdog send.
 // Containers, volumes and networks are kept as `docker inspect` shows them; `files` holds what a
 // `run` wrote into the state volume (the ledger's copy).
+// `Anonymous: true` is test-only volume metadata: a hex-shaped name alone does not prove an
+// anonymous volume. Container removal releases endpoints and mounts before removing unused
+// anonymous volumes, while network/volume removal refuses surviving users.
 // Every call is appended to `<state>.calls`, and to `<state>.locks` with whether it inherited the
 // stack's lock descriptor (FAKE_DOCKER_LOCK, set by the wrapper from fd 9).
 // Faults and pauses, each named by an environment variable:
@@ -117,6 +120,16 @@ if (verb === "pull" && pausePull && exists(pausePull)) {
   await waitFor(() => !exists(pausePull));
 }
 const volumeNamed = (name) => (volume) => volume.Name === name;
+const volumeUsers = (state, name) =>
+  state.containers.filter((item) =>
+    (item.Mounts ?? []).some((mount) => mount.Type === "volume" && mount.Name === name),
+  );
+const networkUsers = (state, network) =>
+  state.containers.filter((item) =>
+    Object.entries(item.NetworkSettings?.Networks ?? {}).some(([name, details]) =>
+      details?.NetworkID ? details.NetworkID === network.Id : name === network.Name,
+    ),
+  );
 /** `--format` of a Go template naming fields only (`{{.Name}}\t{{.CreatedAt}}`), per item. */
 const render = (template, item) =>
   template
@@ -230,9 +243,21 @@ else if (verb === "create") {
   console.log(JSON.stringify(list.filter((item) => args.includes(item.Id))));
 } else if (verb === "rm") {
   await locked((state) => {
-    state.containers = state.containers.filter(
-      (item) => !args.includes(item.Id) && !args.includes(item.Name.slice(1)),
+    const removed = state.containers.filter(
+      (item) => args.includes(item.Id) || args.includes(item.Name.slice(1)),
     );
+    state.containers = state.containers.filter((item) => !removed.includes(item));
+    if (args.includes("--volumes") || args.includes("-v")) {
+      const mounted = removed.flatMap((item) =>
+        (item.Mounts ?? []).filter((mount) => mount.Type === "volume").map((mount) => mount.Name),
+      );
+      state.volumes = state.volumes.filter(
+        (volume) =>
+          !volume.Anonymous ||
+          !mounted.includes(volume.Name) ||
+          volumeUsers(state, volume.Name).length > 0,
+      );
+    }
   });
 } else if (verb === "volume" && sub === "ls")
   console.log((await locked((state) => state.volumes)).map((volume) => volume.Name).join("\n"));
@@ -261,11 +286,18 @@ else if (verb === "volume" && sub === "inspect") {
       });
   });
   console.log(name);
-} else if (verb === "volume" && sub === "rm")
-  await locked((state) => {
-    state.volumes = state.volumes.filter((volume) => !args.includes(volume.Name));
+} else if (verb === "volume" && sub === "rm") {
+  const blocked = await locked((state) => {
+    const inUse = state.volumes.filter(
+      (volume) => args.includes(volume.Name) && volumeUsers(state, volume.Name).length > 0,
+    );
+    state.volumes = state.volumes.filter(
+      (volume) => !args.includes(volume.Name) || inUse.includes(volume),
+    );
+    return inUse.map((volume) => volume.Name);
   });
-else if (verb === "network" && sub === "ls") {
+  if (blocked.length > 0) fail(`Error: volume ${blocked.join(", ")} is in use`);
+} else if (verb === "network" && sub === "ls") {
   const format = formatOf();
   console.log(
     (await locked((state) => state.networks))
@@ -277,18 +309,32 @@ else if (verb === "network" && sub === "ls") {
       .join("\n"),
   );
 } else if (verb === "network" && sub === "inspect") {
-  const list = await locked((state) => state.networks);
   const asked = args.slice(2);
-  const found = list.filter(
-    (network) => asked.includes(network.Id) || asked.includes(network.Name),
+  const found = await locked((state) =>
+    state.networks
+      .filter((network) => asked.includes(network.Id) || asked.includes(network.Name))
+      .map((network) => ({
+        ...network,
+        Containers: Object.fromEntries(
+          networkUsers(state, network).map((item) => [item.Id, { Name: item.Name.slice(1) }]),
+        ),
+      })),
   );
   console.log(JSON.stringify(found));
   if (found.length < asked.length) fail("Error: no such network");
-} else if (verb === "network" && sub === "rm")
-  await locked((state) => {
-    state.networks = state.networks.filter(
-      (network) => !args.includes(network.Name) && !args.includes(network.Id),
+} else if (verb === "network" && sub === "rm") {
+  const blocked = await locked((state) => {
+    const inUse = state.networks.filter(
+      (network) =>
+        (args.includes(network.Name) || args.includes(network.Id)) &&
+        networkUsers(state, network).length > 0,
     );
+    state.networks = state.networks.filter(
+      (network) =>
+        (!args.includes(network.Name) && !args.includes(network.Id)) || inUse.includes(network),
+    );
+    return inUse.map((network) => network.Name);
   });
-else if (verb === "image") console.log("");
+  if (blocked.length > 0) fail(`Error: network ${blocked.join(", ")} has active endpoints`);
+} else if (verb === "image") console.log("");
 else fail(`fake docker: unexpected ${args.join(" ")}`, 2);
