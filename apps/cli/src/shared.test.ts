@@ -11,6 +11,7 @@ import {
   normalizeRemoteUrl,
   jsonWithoutCredentials,
   redactCredentials,
+  takeFlagValue,
   trackBracketedPaste,
 } from "./shared.ts";
 
@@ -381,5 +382,15 @@ describe("jsonWithoutCredentials", () => {
       count: 1,
     });
     expect(jsonWithoutCredentials(undefined)).toBe("null");
+  });
+});
+
+describe("takeFlagValue", () => {
+  it("takes the token after the flag, and never a flag", () => {
+    expect(takeFlagValue(["--project", "web", "--prune"], "--project")).toBe("web");
+    expect(takeFlagValue(["--project", "--prune"], "--project")).toBeNull();
+    expect(takeFlagValue(["--project"], "--project")).toBeNull();
+    expect(takeFlagValue(["web"], "--project")).toBeNull();
+    expect(takeFlagValue(["--from", "-"], "--from")).toBe("-");
   });
 });

@@ -186,6 +186,7 @@ import {
   serviceViewStatus,
   type SessionCaptureLike,
   firstPositional,
+  takeFlagValue,
 } from "./shared.ts";
 import { type AttachOutcome } from "./shared.ts";
 import { DEFAULT_SKILLS_DIR, scanSkillLibrary } from "./skills.ts";
@@ -3498,11 +3499,6 @@ const connectCommand = async (config: CliConfig, args: ReadonlyArray<string>) =>
 };
 
 // ─── login: authorize this terminal through the browser (login.ts) ──────────
-
-const takeFlagValue = (args: ReadonlyArray<string>, flag: string): string | null => {
-  const at = args.indexOf(flag);
-  return at !== -1 && args[at + 1] !== undefined ? String(args[at + 1]) : null;
-};
 
 // Only these three fields persist; `configuredUrl` is derived on every load.
 const saveCliConfig = (next: {

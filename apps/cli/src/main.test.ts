@@ -2131,7 +2131,7 @@ describe("flags a command does not declare", spawning, () => {
     }
   });
 
-  it.fails("mend skills push --project --prune pushes to the cwd's project", async () => {
+  it("mend skills push --project --prune pushes to the cwd's project", async () => {
     const { fake, requests } = await recording();
     const home = scratch();
     const cli = startCli(

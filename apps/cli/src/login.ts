@@ -3,7 +3,7 @@ import * as os from "node:os";
 
 import { failureWords, noteRefusal } from "./failure-words.ts";
 import { groupCode } from "./pair.ts";
-import { redactCredentials } from "./shared.ts";
+import { redactCredentials, takeFlagValue } from "./shared.ts";
 
 /**
  * `mend login`: sign this terminal in through the browser. The CLI opens an
@@ -127,11 +127,6 @@ const say = (line: string) => process.stdout.write(`${redactCredentials(line)}\n
 const fail = (message: string): never => {
   process.stderr.write(`mend: ${redactCredentials(message)}\n`);
   process.exit(1);
-};
-
-const takeFlagValue = (args: ReadonlyArray<string>, flag: string): string | null => {
-  const at = args.indexOf(flag);
-  return at !== -1 && args[at + 1] !== undefined ? String(args[at + 1]) : null;
 };
 
 /**
