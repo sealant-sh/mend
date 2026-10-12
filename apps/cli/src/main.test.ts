@@ -1,4 +1,4 @@
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import { once } from "node:events";
 import * as fs from "node:fs";
@@ -8,7 +8,7 @@ import * as path from "node:path";
 import type { Duplex } from "node:stream";
 import { fileURLToPath } from "node:url";
 
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 
 // Every test here spawns the CLI from source; on a loaded CI runner one start has taken 4 s, so
 // vitest's 5 s default left no headroom.
@@ -18,6 +18,17 @@ const spawning = { timeout: 30_000 };
 // spawn after the first reuse that work (about half of each start's CPU).
 const compileCache = fs.mkdtempSync(path.join(os.tmpdir(), "mend-cli-compile-cache-"));
 afterAll(() => fs.rmSync(compileCache, { recursive: true, force: true }));
+
+const cliChildren = new Set<ChildProcess>();
+afterEach(async () => {
+  await Promise.all(
+    [...cliChildren].map(async (child) => {
+      const closed = new Promise<void>((resolve) => child.once("close", () => resolve()));
+      if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+      await closed;
+    }),
+  );
+});
 
 const project = {
   id: "project-1",
@@ -133,9 +144,24 @@ const startCli = (
   cwd?: string,
 ) => {
   const entrypoint = fileURLToPath(new URL("./main.ts", import.meta.url));
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "mend-cli-process-"));
+  // Only process-launch settings cross into the child. Credentials, provider homes,
+  // Git environment overrides and Node injection settings come from explicit fixtures.
+  const launchEnvironment = Object.fromEntries(
+    ["PATH", "SystemRoot", "COMSPEC", "PATHEXT", "TMPDIR", "TMP", "TEMP", "LANG", "LC_ALL"].flatMap(
+      (key) => (process.env[key] === undefined ? [] : [[key, process.env[key]]]),
+    ),
+  );
   const child = spawn(process.execPath, ["--experimental-strip-types", entrypoint, ...args], {
     env: {
-      ...process.env,
+      ...launchEnvironment,
+      HOME: home,
+      XDG_CONFIG_HOME: path.join(home, "config"),
+      XDG_DATA_HOME: path.join(home, "data"),
+      XDG_STATE_HOME: path.join(home, "state"),
+      XDG_CACHE_HOME: path.join(home, "cache"),
+      CODEX_HOME: path.join(home, "codex"),
+      CLAUDE_CONFIG_DIR: path.join(home, "claude"),
       NODE_COMPILE_CACHE: compileCache,
       MEND_URL: url,
       MEND_DETACH_KEY: "none",
@@ -145,6 +171,11 @@ const startCli = (
     // sees a terminal here and an attach always says so once on stderr.
     stdio: ["ignore", "pipe", "pipe"],
     ...(cwd === undefined ? {} : { cwd }),
+  });
+  cliChildren.add(child);
+  child.once("close", () => {
+    cliChildren.delete(child);
+    fs.rmSync(home, { recursive: true, force: true });
   });
   let stdout = "";
   let stderr = "";
@@ -2064,6 +2095,43 @@ describe("mend uninstall", spawning, () => {
       expect(fs.existsSync(lock)).toBe(true);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("CLI subprocess isolation", spawning, () => {
+  it.each(["environment", "saved login"])("ignores the caller's %s credentials", async (source) => {
+    const caller = fs.mkdtempSync(path.join(os.tmpdir(), "mend-caller-fixture-"));
+    const config = path.join(caller, "config", "mend");
+    fs.mkdirSync(config, { recursive: true });
+    fs.writeFileSync(
+      path.join(config, "cli.json"),
+      JSON.stringify({ token: "synthetic-caller-saved-token" }),
+    );
+    const authorizations: Array<string | undefined> = [];
+    const fake = await startFakeMend((request, response) => {
+      authorizations.push(request.headers.authorization);
+      if (request.url === "/api/projects" || request.url === "/api/sessions") json(response, []);
+      else response.writeHead(404).end();
+    });
+    vi.stubEnv("HOME", caller);
+    vi.stubEnv("XDG_CONFIG_HOME", path.join(caller, "config"));
+    vi.stubEnv("MEND_TOKEN", source === "environment" ? "synthetic-caller-env-token" : undefined);
+    try {
+      const cli = startCli(fake.url, ["projects"]);
+      expect((await cli.exited).code, cli.stderr()).toBe(0);
+      expect(authorizations).toEqual([undefined, undefined]);
+      authorizations.length = 0;
+      const explicit = startCli(fake.url, ["projects"], { MEND_TOKEN: "synthetic-test-token" });
+      expect((await explicit.exited).code, explicit.stderr()).toBe(0);
+      expect(authorizations).toEqual([
+        "Bearer synthetic-test-token",
+        "Bearer synthetic-test-token",
+      ]);
+    } finally {
+      vi.unstubAllEnvs();
+      await fake.close();
+      fs.rmSync(caller, { recursive: true, force: true });
     }
   });
 });
