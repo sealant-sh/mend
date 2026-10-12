@@ -581,6 +581,15 @@ export const firstPositional = (
       !argument.startsWith("--") && (index === 0 || !valued.includes(args[index - 1] ?? "")),
   );
 
+export const isFlag = (token: string): boolean => token.startsWith("-") && token !== "-";
+
+export const takeFlagValue = (args: ReadonlyArray<string>, flag: string): string | null => {
+  const at = args.indexOf(flag);
+  if (at === -1) return null;
+  const next = args[at + 1];
+  return next === undefined || isFlag(next) ? null : next;
+};
+
 /**
  * `text` with the credentials of every URL in it taken out. A server before 0.36 stored a clone URL
  * with a token in it (`https://oauth2:TOKEN@github.com/acme/repo.git`) as typed, and a message may

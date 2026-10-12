@@ -136,9 +136,9 @@ Preconditions:
 - The settings page's sections are not regions either. Scope by their `h2` heading as above.
 - `mend dotfiles sync` replaces the snapshot; the web `Add to snapshot` merges into it. A CLI sync
   after a web add drops the web files.
-- `mend dotfiles sync` ignores any flag other than `--all`. `--dry-run` does not exist and is
-  silently dropped, so `mend dotfiles sync --dry-run .zshrc` uploads `.zshrc`. Preview is the bare
-  command with no paths.
+- `mend dotfiles sync` takes no flag but `--all`. `mend dotfiles sync --dry-run .zshrc` exits `1`
+  with `mend: unknown flag --dry-run · usage: mend dotfiles sync [--all | paths...]` and uploads
+  nothing. Preview is the bare command with no paths.
 - `mend dotfiles sync` reads the CLI machine's real home. Point `HOME` at `<scratch>` and keep
   `XDG_CONFIG_HOME` on the real config, or the CLI loses its sign-in (it keeps `cli.json` under
   `$XDG_CONFIG_HOME/mend`, defaulting under `$HOME`).

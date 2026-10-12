@@ -280,7 +280,9 @@ describe("mend pair", { timeout: 30_000 }, () => {
       const result = await runCli(fake.url, ["pair", ...args], { token: "test-token" });
       expect(result.code).toBe(1);
       expect(result.stderr).toContain(
-        args.length === 0 ? "no configured pairing URLs" : "--url requires an exact URL",
+        args.length === 0
+          ? "no configured pairing URLs"
+          : "--url needs a value · usage: mend pair [--url <base url>]",
       );
       expect(result.stdout).toBe("");
     } finally {
