@@ -309,8 +309,14 @@ const unusedProjectRouteLayers: Layer.Layer<UnusedProjectRouteServices> = Layer.
   Layer.mock(AuditEventsRepo, {}),
   Layer.mock(SourcePolicy, {
     profile: "operator",
-    check: () =>
-      Effect.succeed({ scheme: "https", host: "example.invalid", port: null, addresses: [] }),
+    check: (source) =>
+      Effect.succeed({
+        source,
+        scheme: "https",
+        host: "example.invalid",
+        port: null,
+        addresses: [],
+      }),
     pinnedEnv: (_clearance, env) => ({ ...env }),
   }),
   Layer.mock(AgentBridge, { socketPath: () => "/unused/project-detail-agent-bridge.sock" }),
