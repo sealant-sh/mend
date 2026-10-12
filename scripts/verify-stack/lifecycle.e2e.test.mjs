@@ -116,6 +116,7 @@ function daemon({
       `export FAKE_DOCKER_CREATING='${file("creating")}'`,
       `export FAKE_DOCKER_PAUSE_LIST='${file("pause-list")}'`,
       `export FAKE_DOCKER_PAUSE_RM='${file("pause-rm")}'`,
+      `export FAKE_DOCKER_FAIL_RM='${file("fail-rm")}'`,
       `export FAKE_DOCKER_PAUSE_PULL='${file("pause-pull")}'`,
       `export FAKE_DOCKER_RUN='${file("run")}'`,
       `export FAKE_DOCKER_PAUSE_RUN='${file("pause-run")}'`,
@@ -491,6 +492,65 @@ const ledgerWindows = (fakeDaemon) => {
         .map((name) => JSON.parse(readFileSync(join(dir, name), "utf8")))
     : [];
 };
+
+for (const resource of [STATE_VOLUME, "sealant-5e55", "mend-store"]) {
+  test(`a removal failure keeps the records for retry: ${resource}`, async () => {
+    const copyPath = `/fake/volumes/${STATE_VOLUME}/_data/ledger.json`;
+    const fakeDaemon = daemon({
+      containers: [...generation("retry-cleanup"), ["sealant-5e55", {}, mounts("mend-control")]],
+      volumes: [STATE_VOLUME, volume("mend-store", {}, "2026-10-10T01:00:00Z")],
+    });
+    const owner = ownerOf(fakeDaemon.read());
+    const recorded = fakeDaemon.read().containers.find((item) => item.Name === "/sealant-5e55");
+    const entries = {
+      containers: [recorded.Id],
+      volumes: [{ name: "mend-store", createdAt: "2026-10-10T01:00:00Z" }],
+      networks: [],
+    };
+    ledger(fakeDaemon, entries);
+    const ledgerFile = join(ledgerDirOf(fakeDaemon), "window.json");
+    const localLedger = readFileSync(ledgerFile, "utf8");
+    const stateFile = join(fakeDaemon.env.MEND_VERIFY_STACK_CACHE, "stack.json");
+    const savedState = JSON.stringify({ daemon: ledgerDirOf(fakeDaemon).split("/").at(-1) });
+    writeFileSync(stateFile, savedState, { mode: 0o600 });
+    const before = fakeDaemon.read();
+    const volumeLedger = JSON.stringify(entries);
+    before.files[copyPath] = volumeLedger;
+    writeFileSync(fakeDaemon.file("state.json"), JSON.stringify(before));
+    writeFileSync(fakeDaemon.file("fail-rm"), resource);
+
+    const failed = fakeDaemon.run(["down"]);
+    assert.notEqual(await failed.done, 0, failed.output());
+    assert.match(
+      failed.output(),
+      /could not remove .*the ledger is kept, so the next down tries again/,
+    );
+    const remaining = fakeDaemon.read();
+    assert.deepEqual(ownerOf(remaining), owner, "the same generation still holds the daemon");
+    assert.ok(volumeNames(remaining).includes(STATE_VOLUME), "the retry state volume remains");
+    if (resource === "sealant-5e55")
+      assert.ok(
+        remaining.containers.some((item) => item.Id === recorded.Id),
+        "failed container remains",
+      );
+    else assert.ok(volumeNames(remaining).includes(resource), "failed volume remains");
+    assert.equal(readFileSync(ledgerFile, "utf8"), localLedger, "the local ledger is unchanged");
+    assert.equal(readFileSync(stateFile, "utf8"), savedState, "the local state is unchanged");
+    assert.equal(remaining.files[copyPath], volumeLedger, "the volume ledger is unchanged");
+
+    rmSync(fakeDaemon.file("fail-rm"));
+    const retried = fakeDaemon.run(["down"]);
+    assert.equal(await retried.done, 0, retried.output());
+    assert.deepEqual(
+      names(fakeDaemon.read()),
+      [],
+      "retry removed the owner and remaining containers",
+    );
+    assert.deepEqual(volumeNames(fakeDaemon.read()), [], "retry removed remaining volumes");
+    assert.equal(existsSync(ledgerDirOf(fakeDaemon)), false, "retry removed the local ledger");
+    assert.equal(existsSync(stateFile), false, "retry removed the local state");
+  });
+}
 
 test("down --force on a daemon with no stack of its own removes nothing of a product server (N13)", async () => {
   const fakeDaemon = daemon(product);
