@@ -37,6 +37,12 @@ afterEach(() => {
 const gitConfig = (...args: ReadonlyArray<string>) =>
   execFileSync("git", ["config", "--global", ...args]);
 
+const sshVersion = spawnSync("ssh", ["-V"], { encoding: "utf8" });
+const sshMissing =
+  sshVersion.error !== undefined &&
+  "code" in sshVersion.error &&
+  sshVersion.error.code === "ENOENT";
+
 /** A Mend key that records every ensure: a remote no key signs must never make one. */
 const keysLayer = (ensured: Array<string | null>) =>
   Layer.succeed(MendKeys, {
@@ -307,12 +313,15 @@ describe("the no-signer env", () => {
     }
   });
 
-  it("is what ssh itself resolves to no identity and no agent", () => {
+  it.skipIf(sshMissing)("is what ssh itself resolves to no identity and no agent", () => {
+    expect(sshVersion.error).toBeUndefined();
+    expect(sshVersion.status, sshVersion.stderr).toBe(0);
     const resolved = spawnSync("sh", ["-c", `${NO_SIGNER_SSH_COMMAND} -G github.com`], {
       encoding: "utf8",
       env: { ...process.env, SSH_AUTH_SOCK: "/run/operator/agent.sock" },
     });
-    if (resolved.status !== 0) return; // no ssh client on this machine
+    expect(resolved.error).toBeUndefined();
+    expect(resolved.status, resolved.stderr).toBe(0);
     const lines = resolved.stdout.split("\n");
     expect(lines.filter((line) => line.startsWith("identityfile "))).toEqual(["identityfile none"]);
     expect(lines).toContain("identityagent none");

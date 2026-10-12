@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import {
   chmod,
+  link,
   mkdir,
   mkdtemp,
   readFile,
@@ -337,6 +338,93 @@ test("replacement trust/config and unsafe workspace IDs are refused before conne
   await writeFile(trustFile(f.calls), `${alias} ${f.state.hostKey}# changed\n`);
   await assert.rejects(check("ws-1", "marker"), /changed after preparation/);
   assert.equal(sshCalls(f.calls).length, 0);
+});
+
+test("saved config replacements are refused after successful preparation without reaching ssh", async (t) => {
+  for (const kind of ["valid-changed", "Include", "Match exec"]) {
+    await t.test(kind, async (subtest) => {
+      const f = await fixture(subtest);
+      const { check } = await preparePackagedSshAcceptance(f.options);
+      const config = join(f.options.privateHome, ".ssh/config");
+      const original = await readFile(config, "utf8");
+      const key = setupCall(f.calls).args[3];
+      const trust = trustFile(f.calls);
+      const keyBefore = await readFile(key);
+      const trustBefore = await readFile(trust, "utf8");
+      assert.equal(sshCalls(f.calls).length, 0);
+      const included = join(f.options.scratch, "included-config");
+      if (kind === "Include") {
+        await writeFile(included, 'Match exec "touch config-executed"\n', { mode: 0o600 });
+      }
+      const replacements = {
+        "valid-changed": original.replace("  Port 32123", "  Port 32124"),
+        Include: `${original}Include ${quotePath(included)}\n`,
+        "Match exec": `${original}Match exec "touch config-executed"\n`,
+      };
+      await writeFile(config, replacements[kind]);
+      assert.notEqual(await readFile(config, "utf8"), original);
+      assert.equal((await stat(config)).mode & 0o777, 0o600);
+      assert.deepEqual(await readFile(key), keyBefore);
+      assert.equal(await readFile(trust, "utf8"), trustBefore);
+      await assert.rejects(check("ws-1", "marker"), /changed after preparation/);
+      assert.equal(sshCalls(f.calls).length, 0);
+      assert.ok(!(await readdir(f.options.scratch)).includes("config-executed"));
+    });
+  }
+});
+
+test("saved known_hosts replacement is independently refused before reaching ssh", async (t) => {
+  const f = await fixture(t);
+  const { check } = await preparePackagedSshAcceptance(f.options);
+  const config = join(f.options.privateHome, ".ssh/config");
+  const configBefore = await readFile(config, "utf8");
+  const key = setupCall(f.calls).args[3];
+  const keyBefore = await readFile(key);
+  const trust = trustFile(f.calls);
+  const original = await readFile(trust, "utf8");
+  assert.equal(sshCalls(f.calls).length, 0);
+  await writeFile(trust, original.replace(alias, `${alias}-changed`));
+  assert.notEqual(await readFile(trust, "utf8"), original);
+  assert.equal((await stat(trust)).mode & 0o777, 0o600);
+  assert.equal(await readFile(config, "utf8"), configBefore);
+  assert.deepEqual(await readFile(key), keyBefore);
+  await assert.rejects(check("ws-1", "marker"), /changed after preparation/);
+  assert.equal(sshCalls(f.calls).length, 0);
+});
+
+test("prepared key, config and known_hosts retain private file boundaries before connection", async (t) => {
+  for (const role of ["key", "config", "known_hosts"]) {
+    for (const kind of ["permissions", "symlink", "hardlink"]) {
+      await t.test(`${role}: ${kind}`, async (subtest) => {
+        const f = await fixture(subtest);
+        const { check } = await preparePackagedSshAcceptance(f.options);
+        const files = {
+          key: setupCall(f.calls).args[3],
+          config: join(f.options.privateHome, ".ssh/config"),
+          known_hosts: trustFile(f.calls),
+        };
+        const before = new Map(
+          await Promise.all(Object.values(files).map(async (file) => [file, await readFile(file)])),
+        );
+        const file = files[role];
+        const contents = await readFile(file);
+        assert.equal(sshCalls(f.calls).length, 0);
+        if (kind === "permissions") {
+          await chmod(file, 0o644);
+        } else {
+          const replacement = join(f.options.scratch, `${role}-replacement`);
+          await writeFile(replacement, contents, { mode: 0o600 });
+          await rm(file);
+          if (kind === "symlink") await symlink(replacement, file);
+          else await link(replacement, file);
+        }
+        // Identical contents isolate file privacy from the separate saved-content checks.
+        for (const [path, content] of before) assert.deepEqual(await readFile(path), content);
+        await assert.rejects(check("ws-1", "marker"), /non-symlink, single-link 0600 files/);
+        assert.equal(sshCalls(f.calls).length, 0);
+      });
+    }
+  }
 });
 
 test("remote command only reads the fixed file, compares a safely quoted marker and prints fixed proof", async (t) => {
