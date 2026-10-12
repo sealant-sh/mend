@@ -29,10 +29,11 @@
 // its redacted snapshot, with every credential field's subtree redacted, and its screenshot is
 // withheld: <name>.png.withheld says which kinds were on the page. The page's whole text is checked
 // as well as its ARIA snapshot (text a screen reader is told to skip, `aria-hidden`, is still drawn).
-// Pixels no text check can read are never kept: every canvas (a terminal draws its output on one),
-// video and embedded object is masked in every screenshot, and so is any frame that holds one or
-// cannot be inspected. A kept screenshot gets <name>.png.checked (its sha256 and what was masked):
-// scan-evidence.mjs refuses an image without one. A code a page shows (a pairing code, an
+// CSS-discoverable canvases, videos and embedded objects are masked in every screenshot. Child
+// frames are masked too; a frame inside a closed shadow root withholds the image. The main
+// document's closed shadow roots remain outside the text and opaque-element inspection.
+// A kept screenshot gets <name>.png.checked
+// (its sha256 and what was masked): scan-evidence.mjs refuses an image without one. A code a page shows (a pairing code, an
 // authorization code and its link) joins the registry by value before anything is written. A failing recipe is captured as
 // <out>/failure-<n>.* (the same rules; numbered, so earlier failures stay) before the driver exits 1, and its error is printed redacted.
 // No trace, HAR or video is recorded.
@@ -153,6 +154,7 @@ const redactFieldSubtrees = (snapshot) => {
 
 // Pixels a text check cannot read: masked in every screenshot.
 const OPAQUE = "canvas, video, embed, object";
+const FRAMES = "iframe, frame";
 
 /** Every text node's text, open shadow roots included, scripts and styles not. */
 const deepText = () => {
@@ -173,17 +175,28 @@ const deepText = () => {
   return parts.join("\n");
 };
 
-/** The frames whose pixels cannot be checked: one that holds an opaque element, or cannot be read. */
-const opaqueFrames = async (page) => {
-  const found = [];
-  for (const frame of page.frames()) {
-    if (frame === page.mainFrame()) continue;
-    const opaque = await frame
-      .evaluate((selector) => document.querySelector(selector) !== null, OPAQUE)
-      .catch(() => true);
-    if (opaque) found.push(frame);
+/** A top-level child hidden from masking locators makes the whole screenshot unavailable. */
+const hasUnmaskableFrame = async (page) => {
+  for (const frame of page.mainFrame().childFrames()) {
+    let element;
+    try {
+      element = await frame.frameElement();
+      const closed = await element.evaluate((node) => {
+        let root = node.getRootNode();
+        while (root instanceof ShadowRoot) {
+          if (root.mode === "closed") return true;
+          root = root.host.getRootNode();
+        }
+        return false;
+      });
+      if (closed) return true;
+    } catch {
+      return true;
+    } finally {
+      await element?.dispose().catch(() => {});
+    }
   }
-  return found;
+  return false;
 };
 
 /** The redacted snapshot, and the kinds of credential the page showed. */
@@ -250,6 +263,7 @@ page.setDefaultTimeout(timeout);
 
 const capture = async (name) => {
   const { snapshot, kinds } = await inspect(page);
+  if (await hasUnmaskableFrame(page)) kinds.push("a frame that cannot be masked");
   writeFileSync(join(out, `${name}.aria.yml`), snapshot);
   if (kinds.length > 0) {
     writeFileSync(
@@ -259,21 +273,19 @@ const capture = async (name) => {
     note(`capture ${name} · ${page.url()} · screenshot withheld (${kinds.join(", ")})`);
     return;
   }
-  // Every canvas, video and object is masked (CSS locators reach into open shadow roots), and every
-  // frame that holds one or cannot be read: no pixel a text check cannot read is kept.
-  const frames = await opaqueFrames(page);
-  const mask = [page.locator(OPAQUE)];
-  // A frame nested anywhere sits inside one of the page's own iframes: those are masked whole.
-  if (frames.length > 0) mask.push(page.locator("iframe"));
+  // CSS locators reach open shadow roots. Mask every child document, including readable ones:
+  // inspect() checks only this document. Masking the outer frame covers its nested frames too.
+  const frames = await page.locator(FRAMES).count();
+  const mask = [page.locator(OPAQUE), page.locator(FRAMES)];
   const masked = await page.locator(OPAQUE).count();
   // Playwright writes PNGs with no text chunks: pixels only.
   const png = await page.screenshot({ path: join(out, `${name}.png`), fullPage: true, mask });
   writeFileSync(
     join(out, `${name}.png.checked`),
-    `${JSON.stringify({ sha256: createHash("sha256").update(png).digest("hex"), masked: { opaqueElements: masked, frames: frames.length } })}\n`,
+    `${JSON.stringify({ sha256: createHash("sha256").update(png).digest("hex"), masked: { opaqueElements: masked, frames } })}\n`,
   );
   note(
-    `capture ${name} · ${page.url()}${masked + frames.length > 0 ? ` · ${masked} canvas/video/object and ${frames.length} frame(s) masked` : ""}`,
+    `capture ${name} · ${page.url()}${masked + frames > 0 ? ` · ${masked} canvas/video/object and ${frames} frame(s) masked` : ""}`,
   );
 };
 
