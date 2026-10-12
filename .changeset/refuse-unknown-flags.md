@@ -9,7 +9,8 @@ and the command's usage line. A flag that takes a value no longer takes the next
 `mend land <session> --branch --no-pr` says `--branch needs a value`.
 
 Also refused now: `--` outside `mend run` and `mend service run`, an unknown short flag such as
-`-n`, `--flag=value` spellings other than `--json=v2`, and flags placed before a subcommand's name
-(`mend skills --project web push`), which used to run a different subcommand. The help pages now
-list flags commands already read: `snake --no-tunnel`, `refresh --project`, `ssh --host`,
-`env cluster --clear`, and `-y` for `uninstall`, `session share` and `workspace replace`.
+`-n`, `--flag=value` spellings other than `--json=v2`, a flag value that starts with `-`
+(`--title -wip`), and flags placed before a subcommand's name (`mend skills --project web push`),
+which used to run a different subcommand. The help pages now list flags commands already read:
+`snake --no-tunnel`, `refresh --project`, `ssh --host`, `env cluster --clear`, and `-y` for
+`uninstall`, `session share` and `workspace replace`.
