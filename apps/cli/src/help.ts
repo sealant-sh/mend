@@ -296,11 +296,12 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     name: "snake",
     section: "sessions",
     summary: "the dashboard, with snake over it",
-    synopsis: [],
+    synopsis: ["[--no-tunnel]"],
     description: [
       "Opens the dashboard with a game of snake floating over it. It counts down 3, 2, 1, go before the snake moves. The arrows or h j k l steer, space or p pauses (and counts down again to resume), and esc or q closes the game and leaves you in the dashboard, which has been live underneath the whole time. The same game appears in the session pane while a session is starting: a first session on a new project setup builds its image before it boots, about seven minutes on some families. A start or resume from the dashboard hands the game the keyboard, as does enter or → into that pane; esc or q gives it back to the list you were in.",
       "Needs Node 26 or newer, like the dashboard.",
     ],
+    options: [noTunnel],
     see: ["ui"],
   },
   {
@@ -520,7 +521,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       "The replacement names what it showed you: when more would stop by the time you answer, the server refuses, nothing is stopped, and its words are printed as they are; run it again to look at the list again. An agent turn in flight is never stopped: the server refuses the same way. The workspace goes once its last save is done.",
       "A prefix of the session id is enough. mend sessions shows which sessions wait for this.",
     ],
-    options: [{ flag: "--yes", text: "replace without asking; required without a terminal" }],
+    options: [{ flag: "--yes, -y", text: "replace without asking; required without a terminal" }],
     examples: [{ command: "mend workspace replace 3f2a", text: "" }],
     see: ["sessions", "stop"],
   },
@@ -541,10 +542,11 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     name: "refresh",
     section: "sessions",
     summary: "fetch origin's branches into the store",
-    synopsis: ["[project]"],
+    synopsis: ["[project] [--project <p>]"],
     description: [
       "New sessions base on the tips the store holds; this brings them up to date with origin. Default: the project the current directory belongs to.",
     ],
+    options: [project()],
     see: ["adopt"],
   },
   {
@@ -772,7 +774,13 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     description: [
       "For a Mend server running in Kubernetes. The platform mounts the named objects into the project's workspaces at launch; Mend never reads their contents. sa sets the service account the workspaces run as. Changes apply from the next launch; running workspaces keep what they started with.",
     ],
-    options: [project()],
+    options: [
+      project(),
+      {
+        flag: "--clear",
+        text: "with sa: run the workspaces as the platform's default service account",
+      },
+    ],
     examples: [
       { command: "mend env cluster add secret app-env", text: "" },
       { command: "mend env cluster remove secret/app-env", text: "" },
@@ -1099,7 +1107,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     ],
     options: [
       {
-        flag: "--yes",
+        flag: "--yes, -y",
         text: "turn it on without asking; required without a terminal",
       },
     ],
@@ -1497,6 +1505,9 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       "Without a session: whether this machine can ssh into workspaces, and what is missing if not.",
       "With a session id or its prefix: the exact ssh command that reaches that session's workspace, on its own line, e.g. ssh ws-<workspace>@mend-ws-…. The user is the workspace's id, which no other command shows; a Docker container name is a different id, and the gateway closes the connection after its banner. A session with no running workspace is refused.",
     ],
+    options: [
+      { flag: "--host <hostname>", text: "the SSH hostname to use instead of the server's" },
+    ],
     examples: [{ command: "mend ssh 3f2a9c1e", text: "print the ssh command for that session" }],
     see: ["ssh setup", "ssh keys"],
   },
@@ -1576,7 +1587,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       { flag: "--all", text: "the server and this machine's Mend files" },
       { flag: "--server", text: "only the local server installation" },
       { flag: "--home", text: "only this machine's sign-in, ssh key and config block" },
-      { flag: "--yes", text: "skip the confirmation; required without a terminal" },
+      { flag: "--yes, -y", text: "skip the confirmation; required without a terminal" },
     ],
     examples: [
       { command: "mend uninstall", text: "choose a scope, then confirm" },
@@ -1633,6 +1644,16 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     summary: "render a QR code for the installer",
     synopsis: ["<text>"],
     description: ["The installer renders its pairing QR through this."],
+    hidden: true,
+  },
+  {
+    name: "__complete",
+    section: "this machine",
+    summary: "live session ids for the completion hooks",
+    synopsis: ["session"],
+    description: [
+      "The hooks mend completions prints read live sessions through this: one id per line, with the harness, project and branch after a tab. A server it cannot reach completes nothing.",
+    ],
     hidden: true,
   },
 ];
