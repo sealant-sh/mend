@@ -4,6 +4,7 @@ import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 
+import * as FastCheck from "effect/testing/FastCheck";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { DockerProtocol } from "../test-fixtures/docker-protocol.ts";
@@ -3568,7 +3569,10 @@ describe("mend server setup, guided and unasked", () => {
 /** One IPv4 interface address, as `os.networkInterfaces()` gives it. */
 const v4 = (address: string, cidr: string, internal = false) => ({
   address,
-  netmask: "255.255.255.0",
+  netmask: Array.from({ length: 4 }, (_, index) => {
+    const bits = Math.max(0, Math.min(8, Number(cidr.split("/")[1]) - index * 8));
+    return 256 - 2 ** (8 - bits);
+  }).join("."),
   family: "IPv4" as const,
   mac: "00:00:00:00:00:00",
   internal,
@@ -4066,5 +4070,56 @@ describe("mend server setup beside another server (the RC on a Mac with two Dock
         vmnet8: [v4("172.16.5.1", "172.16.5.1/24")],
       }),
     ).toEqual(["192.168.1.184", "100.64.135.118"]);
+  });
+
+  it.each([
+    { address: "100.70.1.0", prefix: 32, offered: true },
+    { address: "192.168.1.0", prefix: 23, offered: true },
+    { address: "192.168.0.0", prefix: 23, offered: false },
+    { address: "10.0.0.0", prefix: 31, offered: true },
+    { address: "10.0.0.1", prefix: 31, offered: true },
+    { address: "10.8.0.64", prefix: 26, offered: false },
+    { address: "10.8.0.65", prefix: 26, offered: true },
+    { address: "192.168.1.128", prefix: 25, offered: false },
+    { address: "192.168.1.129", prefix: 25, offered: true },
+  ])("offers $address/$prefix only when it is a host", ({ address, prefix, offered }) => {
+    expect(reachableAddressesOf({ en0: [v4(address, `${address}/${prefix}`)] })).toEqual(
+      offered ? [address] : [],
+    );
+  });
+
+  it("does not infer a subnet base when Node cannot derive a CIDR from the netmask", () => {
+    const address = "100.70.1.0";
+    expect(
+      reachableAddressesOf({
+        en0: [{ ...v4(address, `${address}/32`), netmask: "255.0.255.0", cidr: null }],
+      }),
+    ).toEqual([address]);
+  });
+
+  it("keeps assigned /31 and /32 hosts while excluding generated shorter-prefix subnet bases", () => {
+    FastCheck.assert(
+      FastCheck.property(
+        FastCheck.integer({ min: 0, max: 32 }),
+        FastCheck.integer({ min: 0, max: 2 ** 32 - 1 }),
+        (prefix, network) => {
+          const networkBits = network.toString(2).padStart(32, "0").slice(0, prefix);
+          const hostWidth = 32 - prefix;
+          const addressOf = (hostBits: string) =>
+            Array.from({ length: 4 }, (_, index) =>
+              Number.parseInt(`${networkBits}${hostBits}`.slice(index * 8, (index + 1) * 8), 2),
+            ).join(".");
+          const base = addressOf("0".repeat(hostWidth));
+          const firstHost = hostWidth === 0 ? null : addressOf(`${"0".repeat(hostWidth - 1)}1`);
+          const addresses = firstHost === null ? [base] : [base, firstHost];
+          expect(
+            reachableAddressesOf({
+              en0: addresses.map((address) => v4(address, `${address}/${prefix}`)),
+            }),
+          ).toEqual(prefix >= 31 ? addresses : [firstHost]);
+        },
+      ),
+      { seed: 786, numRuns: 1_000 },
+    );
   });
 });
