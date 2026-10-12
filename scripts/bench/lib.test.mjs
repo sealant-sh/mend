@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import {
   chmodSync,
+  copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -329,18 +330,29 @@ test("the worker's drain line and the image line read as numbers", () => {
 
 // ─── sealantd's log ─────────────────────────────────────────────────────────
 
+// Docker receives each line seconds later, with different delay per event.
 const SEALANTD_LOG = [
-  "2026-10-05T22:10:06.000000000Z 2026-10-05T22:10:06.000100Z  INFO sealantd::boot::capture: capture plan fetched worktree=8763c02e epoch=1 head=Some(4) bulk_pending=false",
-  "2026-10-05T22:10:25.500000000Z 2026-10-05T22:10:25.500100Z  INFO sealantd::boot::capture: capture head materialized files=41022 bytes=2412345678 files_skipped=0 bytes_skipped=0 removed=0 git_packs=3 fsck=None",
-  "2026-10-05T22:11:00.000000000Z 2026-10-05T22:11:00.000100Z  INFO sealant_capture::engine: capture staged n=5 kind=Flush class=Small elapsed_ms=40 staged_bytes=1000 files_read=3 chunks_new=2",
-  "2026-10-05T22:11:30.000000000Z 2026-10-05T22:11:30.000100Z  INFO sealant_capture::engine: capture staged n=6 kind=Flush class=Small elapsed_ms=41 staged_bytes=500 files_read=1 chunks_new=1",
-  "2026-10-05T22:11:31.000000000Z 2026-10-05T22:11:31.000100Z  INFO sealant_capture::engine: capture staged n=7 kind=Final class=Bulk elapsed_ms=900 staged_bytes=70000 files_read=10 chunks_new=9",
+  "2026-10-05T22:10:09.300000000Z 2026-10-05T22:10:06.125100Z  INFO sealantd::boot::capture: capture plan fetched worktree=8763c02e epoch=1 head=Some(4) bulk_pending=false",
+  "2026-10-05T22:10:37.900000000Z 2026-10-05T22:10:25.625100Z  INFO sealantd::boot::capture: capture head materialized files=41022 bytes=2412345678 files_skipped=0 bytes_skipped=0 removed=0 git_packs=3 fsck=None",
+  "2026-10-05T22:11:07.400000000Z 2026-10-05T22:11:00.750100Z  INFO sealant_capture::engine: capture staged n=5 kind=Flush class=Small elapsed_ms=40 staged_bytes=1000 files_read=3 chunks_new=2",
+  "2026-10-05T22:11:33.600000000Z 2026-10-05T22:11:30.250100Z  INFO sealant_capture::engine: capture staged n=6 kind=Flush class=Small elapsed_ms=41 staged_bytes=500 files_read=1 chunks_new=1",
+  "2026-10-05T22:11:35.050000000Z 2026-10-05T22:11:31.625100Z  INFO sealant_capture::engine: capture staged n=7 kind=Final class=Bulk elapsed_ms=900 staged_bytes=70000 files_read=10 chunks_new=9",
   "2026-10-05T22:11:32.000000000Z not a tracing line",
 ].join("\n");
 
 test("sealantd's lines parse into message and fields, timed by sealantd's own clock", () => {
   const events = parseSealantdLog(SEALANTD_LOG);
   assert.equal(events.length, 5);
+  assert.deepEqual(
+    events.map((event) => event.at),
+    [
+      Date.parse("2026-10-05T22:10:06.125Z"),
+      Date.parse("2026-10-05T22:10:25.625Z"),
+      Date.parse("2026-10-05T22:11:00.750Z"),
+      Date.parse("2026-10-05T22:11:30.250Z"),
+      Date.parse("2026-10-05T22:11:31.625Z"),
+    ],
+  );
   assert.equal(events[0].message, "capture plan fetched");
   assert.equal(events[0].target, "sealantd::boot::capture");
   assert.equal(events[0].fields.head, "Some(4)");
@@ -1426,30 +1438,75 @@ test("the probes are shell the executor can parse, and reach it intact through t
   execFileSync("sh", ["-n", "-c", PERSON_PROBE_SH]);
   execFileSync("sh", ["-n", "-c", SAVED_SIZES_SH]);
   assert.throws(() => asPersonCommand("sealant-x", "a; rm -rf /", "true"), /not an id/);
-  // A docker that runs the command here: `stat` answers a uid, `exec -u <uid> <c> …` runs `…`.
+  assert.throws(() => asPersonCommand("sealant;x", "acc-1", "true"), /not an id/);
+  assert.throws(() => asPersonCommand("sealant-1", "acc-1", "true", ["a; rm"]), /not an id/);
   const bin = mkdtempSync(path.join(tmpdir(), "st-bench-docker-"));
   try {
+    const log = path.join(bin, "argv.log");
     writeFileSync(
       path.join(bin, "docker"),
       [
         "#!/bin/sh",
+        `printf '%s\\0' "$#" "$@" >> "$ST_BENCH_ARGS"`,
         "shift",
-        'if [ "$1" = "-u" ]; then echo "as $2" >&2; shift 2; fi',
+        'if [ "$1" = "-u" ]; then shift 2; fi',
         "shift",
-        'case "$1" in stat) echo 40003;; *) exec "$@";; esac',
+        'case "$1" in stat) printf "%s\\n" "$ST_BENCH_UID"; exit "$ST_BENCH_STAT_CODE";; *) exec "$@";; esac',
       ].join("\n"),
     );
     chmodSync(path.join(bin, "docker"), 0o755);
-    const command = asPersonCommand(
-      "sealant-1",
-      "acc-1",
-      `printf '%s|%s\\n' "$1" "it's \\"quoted\\" $(echo ok)"`,
-    );
-    const out = execFileSync("sh", ["-c", command], {
-      env: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
-      stdio: ["ignore", "pipe", "pipe"],
-    }).toString();
-    assert.equal(out, `acc-1|it's "quoted" ok\n`);
+    const scriptText = `printf '%s|%s\\n' "$1" "it's \\"quoted\\" $(echo ok)"`;
+    const command = asPersonCommand("sealant-1", "acc-1", scriptText, ["second:arg"]);
+    const execute = (uid, statCode) => {
+      writeFileSync(log, "");
+      const output = execFileSync("sh", ["-c", command], {
+        env: {
+          ...process.env,
+          PATH: `${bin}:${process.env.PATH}`,
+          ST_BENCH_ARGS: log,
+          ST_BENCH_UID: uid,
+          ST_BENCH_STAT_CODE: statCode,
+        },
+        stdio: ["ignore", "pipe", "pipe"],
+        encoding: "utf8",
+      });
+      const fields = readFileSync(log, "utf8").split("\0");
+      assert.equal(fields.pop(), "");
+      const calls = [];
+      while (fields.length > 0) {
+        const count = Number(fields.shift());
+        assert.ok(Number.isInteger(count) && count >= 0 && count <= fields.length);
+        calls.push(fields.splice(0, count));
+      }
+      return { output, calls };
+    };
+    const stat = ["exec", "sealant-1", "stat", "-c", "%u", "/workspace/harness-home/people/acc-1"];
+    const present = execute("40003", "0");
+    assert.equal(present.output, `acc-1|it's "quoted" ok\n`);
+    assert.deepEqual(present.calls, [
+      stat,
+      [
+        "exec",
+        "-u",
+        "40003",
+        "sealant-1",
+        "sh",
+        "-c",
+        scriptText,
+        "st-bench",
+        "acc-1",
+        "second:arg",
+      ],
+    ]);
+    for (const statCode of ["0", "1"]) {
+      const absent = execute("", statCode);
+      assert.equal(absent.output, "probe saved absent\nsize absent\n");
+      assert.deepEqual(
+        absent.calls,
+        [stat],
+        "no uid or missing saved directory runs no person probe",
+      );
+    }
   } finally {
     rmSync(bin, { recursive: true, force: true });
   }
@@ -4239,16 +4296,27 @@ test("an install run again with pnpm's defaults is one install from its running 
 });
 
 /** An opencode 1.18.34 database (its `message` and `part` tables), in WAL mode as opencode runs it. */
-const opencodeTurns = (rows) => {
-  const file = path.join(mkdtempSync(path.join(tmpdir(), "st-bench-opencode-")), "opencode.db");
-  const db = new DatabaseSync(file);
-  db.exec("pragma journal_mode = wal");
+const opencodeTurns = (t, rows) => {
+  const directory = mkdtempSync(path.join(tmpdir(), "st-bench-opencode-"));
+  const file = path.join(directory, "opencode.db");
+  let db;
+  t.after(() => {
+    try {
+      db?.close();
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+  db = new DatabaseSync(file);
+  db.exec("pragma journal_mode = wal; pragma wal_autocheckpoint = 0");
   db.exec(
     "create table message (id text primary key, session_id text not null, time_created integer not null, time_updated integer not null, data text not null)",
   );
   db.exec(
     "create table part (id text primary key, message_id text not null, session_id text not null, time_created integer not null, time_updated integer not null, data text not null)",
   );
+  // Persist only the schema: all following answer rows remain in the live writer's WAL.
+  db.exec("pragma wal_checkpoint(TRUNCATE)");
   for (const [index, row] of rows.entries()) {
     db.prepare("insert into message values (?, 's', ?, ?, ?)").run(
       `m${index}`,
@@ -4264,9 +4332,8 @@ const opencodeTurns = (rows) => {
       JSON.stringify({ type: "text", text: row.text, time: { start: row.at, end: row.at + 50 } }),
     );
   }
-  // Left in the write-ahead log, as a running opencode has it: the reader must take the log too.
-  db.close();
-  return file;
+  // This writer stays open until the test finalizer, while readers run in separate processes.
+  return { directory, file, db };
 };
 
 const readOpencodeAnswer = (file, answer, since) =>
@@ -4277,17 +4344,42 @@ const readOpencodeAnswer = (file, answer, since) =>
     }),
   );
 
-test("opencode's answer is read from its record, the assistant's text only, from the turn on", () => {
-  const file = opencodeTurns([
+test("opencode's answer is read from its record, the assistant's text only, from the turn on", (t) => {
+  const { directory, file, db } = opencodeTurns(t, [
     { role: "user", at: 1000, text: "What is 2111 + 3036? Reply with only the number. 5147" },
     { role: "assistant", at: 2000, text: "5,147" },
     { role: "assistant", at: 9000, text: "5147" },
   ]);
+  assert.equal(db.prepare("pragma wal_autocheckpoint").get().wal_autocheckpoint, 0);
+  assert.ok(existsSync(`${file}-wal`));
+  assert.ok(statSync(`${file}-wal`).size > 0);
+  const mainOnly = path.join(directory, "main-only.db");
+  copyFileSync(file, mainOnly);
+  const checkpointed = new DatabaseSync(mainOnly, { readOnly: true });
+  try {
+    assert.equal(
+      checkpointed.prepare("select count(*) as n from part").get().n,
+      0,
+      "the main file alone has no answer rows; reading this answer requires its WAL",
+    );
+  } finally {
+    checkpointed.close();
+  }
+  const filesBefore = [file, `${file}-wal`].map((name) => readFileSync(name));
+  const messagesBefore = db.prepare("select * from message order by id").all();
+  const partsBefore = db.prepare("select * from part order by id").all();
   // The assistant's first text holding it, its end; the user's prompt never counts.
   assert.deepEqual(readOpencodeAnswer(file, "5147", 0), { endedAt: 2050, reason: null });
   // An earlier turn's is not this one's.
   assert.deepEqual(readOpencodeAnswer(file, "5147", 5000), { endedAt: 9050, reason: null });
   assert.deepEqual(readOpencodeAnswer(file, "9999", 0), { endedAt: null, reason: null });
+  assert.deepEqual(
+    [file, `${file}-wal`].map((name) => readFileSync(name)),
+    filesBefore,
+    "separate answer readers leave original database and WAL bytes unchanged",
+  );
+  assert.deepEqual(db.prepare("select * from message order by id").all(), messagesBefore);
+  assert.deepEqual(db.prepare("select * from part order by id").all(), partsBefore);
   assert.equal(
     readOpencodeAnswer(path.join(tmpdir(), "no-such-st-bench.db"), "1", 0).reason,
     "no opencode database in the executor",
