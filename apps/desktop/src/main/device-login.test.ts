@@ -27,17 +27,27 @@ const opened: OpenedRequest = {
   intervalSeconds: 2,
 };
 
-/** A fake server: each POST takes the next scripted answer; the log records what was sent. */
-const scripted = (
-  answers: ReadonlyArray<{ readonly status: number; readonly body: unknown } | "unreachable">,
-) => {
-  const sent: Array<{ readonly url: string; readonly body: unknown }> = [];
+type ScriptedAnswer = { readonly status: number; readonly body: unknown } | "unreachable";
+
+/** A fake server: each request takes the next scripted answer; the log records what was sent. */
+const scripted = (answers: ReadonlyArray<ScriptedAnswer>) => {
+  const sent: Array<{
+    readonly url: string;
+    readonly method: string;
+    readonly headers: Readonly<Record<string, string>>;
+    readonly body: unknown;
+  }> = [];
   let index = 0;
   let clock = Date.parse("2026-09-24T03:00:00.000Z");
   const deps: DeviceLoginDeps = {
     fetch: async (input, init) => {
       const body: unknown = typeof init?.body === "string" ? JSON.parse(init.body) : null;
-      sent.push({ url: String(input), body });
+      sent.push({
+        url: String(input),
+        method: init?.method ?? "GET",
+        headers: Object.fromEntries(new Headers(init?.headers)),
+        body,
+      });
       const answer = answers[index] ?? { status: 200, body: { status: "pending" } };
       index += 1;
       if (answer === "unreachable") throw new TypeError("fetch failed");
@@ -87,7 +97,12 @@ describe("openDeviceRequest", () => {
     const { deps, sent } = scripted([{ status: 200, body: opened }]);
     const result = await openDeviceRequest("https://alpha.mend.run/", deps);
     expect(sent).toEqual([
-      { url: "https://alpha.mend.run/api/cli/auth", body: { name: "box · desktop" } },
+      {
+        url: "https://alpha.mend.run/api/cli/auth",
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: { name: "box · desktop" },
+      },
     ]);
     expect(result).toEqual({
       ok: true,
@@ -187,11 +202,69 @@ describe("awaitDeviceApproval", () => {
       ok: false,
       reason: "cancelled; the approval that arrived meanwhile was revoked",
     });
-    expect(sent.map((entry) => entry.url)).toEqual([
-      "https://x/api/cli/auth/token",
-      "https://x/api/me/devices/dev-1",
+    expect(sent).toEqual([
+      {
+        url: "https://x/api/cli/auth/token",
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: { deviceCode: "device-secret" },
+      },
+      {
+        url: "https://x/api/me/devices/dev-1",
+        method: "DELETE",
+        headers: { authorization: "Bearer mdt_secret" },
+        body: null,
+      },
     ]);
   });
+
+  const revocationFailures: ReadonlyArray<{
+    readonly name: string;
+    readonly answer: ScriptedAnswer;
+  }> = [
+    { name: "the server refuses revocation", answer: { status: 403, body: {} } },
+    { name: "the server cannot be reached for revocation", answer: "unreachable" },
+  ];
+
+  it.each(revocationFailures)(
+    "names the remaining approved device when $name after cancellation",
+    async ({ answer }) => {
+      const late = {
+        ...approved,
+        token: "mdt_late_synthetic",
+        device: { id: "late/device-2", name: "late approval · desktop" },
+      };
+      let cancel = false;
+      const { deps, sent } = scripted([{ status: 200, body: late }, answer]);
+      const wrapped: DeviceLoginDeps = {
+        ...deps,
+        fetch: async (input, init) => {
+          const response = await deps.fetch(input, init);
+          cancel = true;
+          return response;
+        },
+      };
+      expect(await awaitDeviceApproval("https://x", opened, wrapped, () => cancel)).toEqual({
+        ok: false,
+        reason:
+          "cancelled, but the device late approval · desktop was approved meanwhile and could not be revoked; end it under Settings → Devices",
+      });
+      expect(sent).toEqual([
+        {
+          url: "https://x/api/cli/auth/token",
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: { deviceCode: "device-secret" },
+        },
+        {
+          url: "https://x/api/me/devices/late%2Fdevice-2",
+          method: "DELETE",
+          headers: { authorization: "Bearer mdt_late_synthetic" },
+          body: null,
+        },
+      ]);
+    },
+  );
 
   it("gives up at the request's expiry", async () => {
     const { deps } = scripted([]);
