@@ -109,8 +109,8 @@ export const parsePendingTakeover = (value: unknown): PendingTakeover | null => 
 
 /**
  * The pending takeover THIS window should perform: the record names the window's remote
- * authority (or at least its workspace id — Remote-SSH may rewrite the authority it was
- * handed) and is still fresh. A window on another authority, a local window, or a stale
+ * authority in full, allowing case normalization, and is still fresh. A workspace-id substring
+ * cannot identify its destination. A window on another authority, a local window, or a stale
  * record all read as none — the caller clears a stale record either way.
  */
 export const pendingTakeoverFor = (
@@ -121,11 +121,7 @@ export const pendingTakeoverFor = (
   const pending = parsePendingTakeover(stored);
   if (pending === null || remoteAuthority === undefined) return null;
   if (now - pending.at > PENDING_TAKEOVER_TTL_MS) return null;
-  const window = remoteAuthority.toLowerCase();
-  return window === pending.authority.toLowerCase() ||
-    window.includes(pending.workspaceId.toLowerCase())
-    ? pending
-    : null;
+  return remoteAuthority.toLowerCase() === pending.authority.toLowerCase() ? pending : null;
 };
 
 export const isStalePendingTakeover = (stored: unknown, now: number): boolean => {

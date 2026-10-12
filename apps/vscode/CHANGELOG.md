@@ -5,6 +5,9 @@ patch number is the extension's own.
 
 ## Unreleased
 
+- A pending session takeover runs only in the window with its complete remote authority. A workspace
+  with an overlapping identifier or a different host cannot claim it.
+
 - Cancelling browser sign-in, including choosing **Paste a device token instead**, discards an
   approval that arrives while a poll is pending and revokes its device. If Mend cannot confirm
   revocation, the editor names the device to revoke under Settings → Devices.

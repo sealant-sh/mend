@@ -96,8 +96,37 @@ describe("pendingTakeoverFor", () => {
     expect(pendingTakeoverFor(record, authority, record.at + 5_000)).toEqual(record);
   });
 
-  it("claims it by workspace id when Remote-SSH rewrote the authority", () => {
+  it("claims the same complete authority after case normalization", () => {
     expect(pendingTakeoverFor(record, "SSH-REMOTE+mend-WS1@mend-mini", record.at)).toEqual(record);
+  });
+
+  it.each([
+    "ssh-remote+mend-ws10@mend-mini",
+    "ssh-remote+mend-other-ws1@mend-mini",
+    "ssh-remote+unrelated@ws1.evil.example",
+    "ssh-remote+mend-ws1@other-host",
+    "ssh-remote+mend-ws1@mend-mini.evil.example",
+    "ssh-remote+mend-ws1@mend-mini:2222",
+    "dev-container+mend-ws1@mend-mini",
+    "ssh-remote+mend-ws1@mend-mini/suffix",
+  ])("does not claim a matching workspace substring in %s", (other) => {
+    expect(pendingTakeoverFor(record, other, record.at)).toBeNull();
+    expect(pendingTakeoverFor(record, authority, record.at)).toEqual(record);
+  });
+
+  it("keeps authorities distinct for overlapping workspace identifiers", () => {
+    for (let index = 1; index <= 100; index++) {
+      const workspaceId = `ws${index}`;
+      const destination = `ssh-remote+mend-${workspaceId}@gateway`;
+      const pending = { ...record, workspaceId, authority: destination };
+      expect(pendingTakeoverFor(pending, destination, record.at)).toEqual(pending);
+      expect(
+        pendingTakeoverFor(pending, `ssh-remote+mend-${workspaceId}0@gateway`, record.at),
+      ).toBeNull();
+      expect(
+        pendingTakeoverFor(pending, `ssh-remote+mend-${workspaceId}@other-gateway`, record.at),
+      ).toBeNull();
+    }
   });
 
   it("ignores the record in a local window or another remote", () => {
