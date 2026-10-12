@@ -96,14 +96,13 @@ const originWords = (origin: SessionOrigin): string | null =>
   origin === "slack" ? "from Slack" : null;
 
 /**
- * The line a session page shows beside its owner: whose credentials it runs on when they are not
- * the viewer's, where it was started from when that was not Mend (`from Slack`), and whether
- * control is shared. Null when there is nothing to say. `own` is the API's word for the viewer
+ * The session's ownership, where it was started from when that was not Mend (`from Slack`),
+ * and whether control is shared. Null when there is nothing to say. `own` is the API's word for the viewer
  * (`control.own`). Names come from the roster, undefined while it is read: then a session the
  * viewer does not own says nothing yet, rather than "another account". An owner the roster does
  * not name is "another account".
  */
-export const runsAsLine = (
+export const ownerLine = (
   session: SteeringFacts & { readonly origin: SessionOrigin },
   own: boolean,
   names: ReadonlyMap<string, string> | undefined,
@@ -116,7 +115,7 @@ export const runsAsLine = (
       ? "no owner · nobody steers it"
       : own
         ? null
-        : `runs as ${names?.get(session.ownerUserId) ?? "another account"}`;
+        : `owned by ${names?.get(session.ownerUserId) ?? "another account"}`;
   const parts = [owner, origin, session.ownerUserId === null ? null : shared].filter(
     (part) => part !== null,
   );

@@ -46,7 +46,7 @@ import { noRunWords } from "#/lib/session-record";
 import { sharedControlClick } from "#/lib/shared-workspace";
 import { useResolvedDark } from "#/lib/theme";
 import { useTRPC } from "#/lib/trpc";
-import { runsAsLine, useViewerState } from "#/lib/viewer";
+import { ownerLine, useViewerState } from "#/lib/viewer";
 import { useWorkbenchEvents } from "#/lib/workbench-events";
 
 export const Route = createFileRoute("/sessions/$sessionId")({
@@ -141,7 +141,7 @@ function SessionPage() {
     preReleaseMemory,
   } = useSuspenseQuery(trpc.sessions.detail.queryOptions({ id: sessionId })).data;
   // Steering is the owner's unless they share control (docs/adr/0003); the API says what this
-  // viewer may do, and the roster names whose credentials the session runs on. Whose it is comes
+  // viewer may do, and the roster names the session's owner. Whose it is comes
   // from `control.own`, read with the session; the viewer and the roster arrive on their own, and
   // a line that needs them says nothing until they have (undefined), never the not-the-owner view.
   const viewer = useViewerState();
@@ -149,7 +149,7 @@ function SessionPage() {
   const names = members.isPending
     ? undefined
     : new Map((members.data ?? []).map((member) => [member.userId, member.name]));
-  const runsAs = runsAsLine(session, control.own, names);
+  const ownershipLine = ownerLine(session, control.own, names);
   const ownerName =
     session.ownerUserId === null ? null : (names?.get(session.ownerUserId) ?? "its owner");
   // The agent's liveness, not the session fold: a shell holding the workspace keeps the session
@@ -313,7 +313,7 @@ function SessionPage() {
           {session.startedAt === null
             ? ""
             : ` · started ${new Date(session.startedAt).toLocaleTimeString()}`}
-          {runsAs === null ? "" : ` · ${runsAs}`}
+          {ownershipLine === null ? "" : ` · ${ownershipLine}`}
         </p>
         {sharedLine === null ? null : (
           <p className="mt-1 font-mono text-xs break-words text-ink-2">{sharedLine}</p>
