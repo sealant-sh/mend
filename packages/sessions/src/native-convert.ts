@@ -134,7 +134,7 @@ const ingestClaude = (jsonl: string): CanonicalEvent[] => {
           readonly name?: string;
           readonly input?: unknown;
         };
-        if (p.type === "text" && typeof p.text === "string" && p.text.trim() !== "") {
+        if (p.type === "text" && typeof p.text === "string" && p.text !== "") {
           events.push({ kind: "assistant", text: p.text });
         }
         if (p.type === "thinking" && typeof p.thinking === "string" && p.thinking.trim() !== "") {
@@ -154,7 +154,7 @@ const ingestClaude = (jsonl: string): CanonicalEvent[] => {
     }
     if (entry.type === "user") {
       if (typeof content === "string") {
-        if (content.trim() !== "") events.push({ kind: "user", text: content });
+        if (content !== "") events.push({ kind: "user", text: content });
         continue;
       }
       if (!Array.isArray(content)) continue;
@@ -165,7 +165,7 @@ const ingestClaude = (jsonl: string): CanonicalEvent[] => {
           readonly tool_use_id?: string;
           readonly content?: unknown;
         };
-        if (p.type === "text" && typeof p.text === "string" && p.text.trim() !== "") {
+        if (p.type === "text" && typeof p.text === "string" && p.text !== "") {
           events.push({ kind: "user", text: p.text });
         }
         if (p.type === "tool_result" && typeof p.tool_use_id === "string") {
@@ -181,18 +181,53 @@ const ingestClaude = (jsonl: string): CanonicalEvent[] => {
   return events;
 };
 
+const isCodexEnvironmentContext = (text: string): boolean => {
+  const trimmed = text.trim();
+  const open = "<environment_context>";
+  const close = "</environment_context>";
+  if (!trimmed.startsWith(open) || !trimmed.endsWith(close)) return false;
+  const body = trimmed.slice(open.length, -close.length);
+  return !body.includes(open) && !body.includes(close);
+};
+
 const ingestCodex = (jsonl: string): CanonicalEvent[] => {
   const events: CanonicalEvent[] = [];
   const pending = new Map<string, PendingTool>();
-  for (const line of jsonl.split("\n")) {
-    if (line.trim() === "") continue;
-    let entry: { readonly type?: string; readonly payload?: Record<string, unknown> };
+  const entries = jsonl.split("\n").flatMap((line) => {
+    let entry: unknown;
     try {
-      entry = JSON.parse(line) as typeof entry;
+      entry = JSON.parse(line);
     } catch {
-      continue;
+      return [];
     }
-    if (entry.type !== "response_item" || entry.payload === undefined) continue;
+    if (
+      typeof entry !== "object" ||
+      entry === null ||
+      !("type" in entry) ||
+      typeof entry.type !== "string" ||
+      !("payload" in entry) ||
+      typeof entry.payload !== "object" ||
+      entry.payload === null ||
+      Array.isArray(entry.payload)
+    )
+      return [];
+    return [{ type: entry.type, payload: entry.payload }];
+  });
+  // A user_message records actual input, even when it quotes a context-shaped block.
+  // Codex and our emitter may put this event before or after its response_item.
+  const userInputs = new Set(
+    entries.flatMap(({ type, payload }) =>
+      type === "event_msg" &&
+      "type" in payload &&
+      payload.type === "user_message" &&
+      "message" in payload &&
+      typeof payload.message === "string"
+        ? [payload.message]
+        : [],
+    ),
+  );
+  for (const entry of entries) {
+    if (entry.type !== "response_item") continue;
     const p = entry.payload as {
       readonly type?: string;
       readonly role?: string;
@@ -205,9 +240,12 @@ const ingestCodex = (jsonl: string): CanonicalEvent[] => {
       readonly output?: unknown;
     };
     if (p.type === "message" && (p.role === "user" || p.role === "assistant")) {
-      const text = asText(p.content).trim();
-      // Codex wraps environment/instruction blocks as user items; keep real turns.
-      if (text !== "" && !text.startsWith("<")) events.push({ kind: p.role, text });
+      const text = asText(p.content);
+      // Legacy rollouts lack content classifications. Recognize only the complete known
+      // environment wrapper in user context; arbitrary XML and assistant output are text.
+      const environment =
+        p.role === "user" && !userInputs.has(text) && isCodexEnvironmentContext(text);
+      if (text !== "" && !environment) events.push({ kind: p.role, text });
     }
     if (p.type === "reasoning") {
       const text = asText(p.summary).trim();
