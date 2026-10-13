@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { once } from "node:events";
 import * as fs from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { Duplex } from "node:stream";
@@ -2303,6 +2304,261 @@ describe("CLI subprocess isolation", spawning, () => {
       vi.unstubAllEnvs();
       await fake.close();
       fs.rmSync(caller, { recursive: true, force: true });
+    }
+  });
+});
+
+/** Reserve distinct owned ephemeral ports, then release them for the child CLI's listeners. */
+const serviceConnectPorts = async (count: number): Promise<number[]> => {
+  const reservations: net.Server[] = [];
+  try {
+    const ports: number[] = [];
+    for (let index = 0; index < count; index += 1) {
+      const reservation = net.createServer();
+      reservations.push(reservation);
+      reservation.listen(0, "127.0.0.1");
+      await once(reservation, "listening");
+      const address = reservation.address();
+      if (address === null || typeof address === "string")
+        throw new Error("Missing reserved port.");
+      ports.push(address.port);
+    }
+    return ports;
+  } finally {
+    await Promise.all(
+      reservations.map((server) => new Promise<void>((resolve) => server.close(() => resolve()))),
+    );
+  }
+};
+
+const connectServiceView = (name: string, port: number, transport: "tcp" | "udp" = "tcp") => ({
+  service: {
+    id: `service-${name}`,
+    sessionId: name === "foreign" ? "another-session" : "owned-session",
+    name,
+    workspacePort: port,
+    transport,
+    browserScheme: null,
+    currentAttemptId: null,
+  },
+  attempts: [],
+  currentForward: { id: `forward-${name}`, hostPort: null, state: "bound" },
+  latestObservation: null,
+  workspaceExpiresAt: null,
+  workspaceTtlRenewedAt: null,
+  workspaceTtlRenewalFailedAt: null,
+  workspaceTtlRenewalError: null,
+  endpoints: [],
+});
+
+const connectCases: ReadonlyArray<{
+  readonly label: string;
+  readonly names: ReadonlyArray<string>;
+  readonly selected: ReadonlyArray<string>;
+  readonly portPosition: "before" | "after" | null;
+}> = [
+  { label: "one requested name", names: ["web"], selected: ["web"], portPosition: null },
+  {
+    label: "both requested names",
+    names: ["web", "api"],
+    selected: ["web", "api"],
+    portPosition: null,
+  },
+  {
+    label: "both reversed requested names",
+    names: ["api", "web"],
+    selected: ["web", "api"],
+    portPosition: null,
+  },
+  { label: "an ID prefix", names: ["service-we"], selected: ["web"], portPosition: null },
+  { label: "a port before the name", names: ["web"], selected: ["web"], portPosition: "before" },
+  { label: "a port after the name", names: ["web"], selected: ["web"], portPosition: "after" },
+  {
+    label: "no names (every live TCP service)",
+    names: [],
+    selected: ["web", "api", "foreign"],
+    portPosition: null,
+  },
+];
+
+describe("mend service connect", spawning, () => {
+  it.each(connectCases)(
+    "tunnels $label through the public CLI",
+    async ({ names, selected, portPosition }) => {
+      const [webPort, apiPort, foreignPort, override] = await serviceConnectPorts(4);
+      if (
+        webPort === undefined ||
+        apiPort === undefined ||
+        foreignPort === undefined ||
+        override === undefined
+      )
+        throw new Error("Missing service fixture ports.");
+      const views = [
+        connectServiceView("web", webPort),
+        connectServiceView("api", apiPort),
+        connectServiceView("foreign", foreignPort),
+        connectServiceView("metrics", foreignPort, "udp"),
+      ];
+      const calls: string[] = [];
+      const tickets: string[] = [];
+      const fake = await startFakeMend(
+        (request, response) => {
+          calls.push(`${request.method} ${request.url}`);
+          if (request.url === "/api/services") json(response, views);
+          else if (request.url === "/api/upgrade-tickets") {
+            let body = "";
+            request.on("data", (chunk: Buffer) => {
+              body += chunk.toString();
+            });
+            request.on("end", () => {
+              tickets.push(body);
+              json(response, { ticket: `synthetic-service-ticket-${tickets.length}` });
+            });
+          } else response.writeHead(404).end();
+        },
+        "hold",
+        false,
+      );
+      const sockets: net.Socket[] = [];
+      const args =
+        portPosition === null
+          ? [...names]
+          : portPosition === "before"
+            ? ["--port", String(override), ...names]
+            : [...names, "--port", String(override)];
+      const cli = startCli(fake.url, ["service", "connect", ...args], {
+        MEND_TOKEN: "synthetic-service-token",
+      });
+      try {
+        await waitFor(() => cli.stdout().includes("Ctrl-C stops") || cli.child.exitCode !== null);
+        expect(cli.child.exitCode, cli.stderr()).toBeNull();
+        const opened = [...cli.stdout().matchAll(/● (\w+) → 127\.0\.0\.1:(\d+)/g)].map(
+          (match) => match[1],
+        );
+        expect(opened).toEqual(selected);
+        for (const view of views.filter(
+          (candidate) =>
+            candidate.service.transport === "tcp" && !selected.includes(candidate.service.name),
+        )) {
+          const accepts = await new Promise<boolean>((resolve) => {
+            const socket = net.createConnection({
+              host: "127.0.0.1",
+              port: view.service.workspacePort,
+            });
+            socket.once("connect", () => {
+              socket.destroy();
+              resolve(true);
+            });
+            socket.once("error", () => resolve(false));
+          });
+          expect(accepts, `${view.service.name} must not have a local tunnel`).toBe(false);
+        }
+        for (const view of views.filter((candidate) => selected.includes(candidate.service.name))) {
+          const localPort = portPosition === null ? view.service.workspacePort : override;
+          const socket = net.createConnection({ host: "127.0.0.1", port: localPort });
+          sockets.push(socket);
+          await once(socket, "connect");
+        }
+        await waitFor(() => fake.upgradeCount() === selected.length);
+        expect(tickets.toSorted()).toEqual(
+          selected
+            .map((name) => JSON.stringify({ target: "service-tunnel", service: `service-${name}` }))
+            .toSorted(),
+        );
+        expect(
+          fake
+            .upgradeUrls()
+            .map((value) => new URL(value, fake.url).searchParams.get("service"))
+            .toSorted(),
+        ).toEqual(selected.map((name) => `service-${name}`).toSorted());
+        expect(calls.filter((call) => call === "GET /api/services")).toHaveLength(1);
+        expect(fake.upgradeUrls().some((value) => value.includes("synthetic-service-token"))).toBe(
+          false,
+        );
+        if (names.length > 0) expect(tickets.join(" ")).not.toContain("service-foreign");
+      } finally {
+        try {
+          for (const socket of sockets) socket.destroy();
+          if (cli.child.exitCode === null && cli.child.signalCode === null) {
+            const closed = once(cli.child, "close");
+            cli.child.kill("SIGKILL");
+            await closed;
+          }
+        } finally {
+          await fake.close();
+        }
+      }
+    },
+  );
+});
+
+describe("mend service connect errors", spawning, () => {
+  it.each([
+    {
+      args: ["missing"],
+      message: 'no live TCP service matches "missing"',
+      listed: true,
+      tcp: true,
+    },
+    {
+      args: ["web", "api", "--port", "32123"],
+      message: "--port applies to exactly one service — name it",
+      listed: true,
+      tcp: true,
+    },
+    {
+      args: ["--port", "32123"],
+      message: "--port applies to exactly one service — name it",
+      listed: true,
+      tcp: true,
+    },
+    {
+      args: ["web", "--port", "invalid"],
+      message: "--port takes a port number",
+      listed: false,
+      tcp: true,
+    },
+    {
+      args: [],
+      message: "no live TCP services — mend service run starts one",
+      listed: true,
+      tcp: false,
+    },
+  ])("preserves $message and opens no tunnel", async ({ args, message, listed, tcp }) => {
+    const [webPort, apiPort] = await serviceConnectPorts(2);
+    if (webPort === undefined || apiPort === undefined)
+      throw new Error("Missing error fixture ports.");
+    const calls: string[] = [];
+    const fake = await startFakeMend((request, response) => {
+      calls.push(`${request.method} ${request.url}`);
+      if (request.url === "/api/services")
+        json(
+          response,
+          tcp
+            ? [connectServiceView("web", webPort), connectServiceView("api", apiPort)]
+            : [connectServiceView("metrics", webPort, "udp")],
+        );
+      else response.writeHead(404).end();
+    });
+    const cli = startCli(fake.url, ["service", "connect", ...args]);
+    try {
+      // The missing-name regression used to keep the process alive tunneling every service.
+      await waitFor(() => cli.child.exitCode !== null || cli.stdout().includes("Ctrl-C stops"));
+      expect(cli.child.exitCode, cli.stdout() + cli.stderr()).toBe(1);
+      expect(cli.stderr()).toContain(message);
+      expect(cli.stdout()).not.toContain(" → 127.0.0.1:");
+      expect(calls).toEqual(listed ? ["GET /api/services"] : []);
+      expect(fake.upgradeCount()).toBe(0);
+    } finally {
+      try {
+        if (cli.child.exitCode === null && cli.child.signalCode === null) {
+          const closed = once(cli.child, "close");
+          cli.child.kill("SIGKILL");
+          await closed;
+        }
+      } finally {
+        await fake.close();
+      }
     }
   });
 });

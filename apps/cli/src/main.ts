@@ -2897,7 +2897,9 @@ const serviceConnect = async (config: CliConfig, args: ReadonlyArray<string>) =>
   if (portOverride !== null && !Number.isInteger(portOverride)) {
     return fail("--port takes a port number");
   }
-  const names = args.filter((a, i) => !a.startsWith("--") && i !== portFlag + 1);
+  const names = args.filter(
+    (a, i) => !a.startsWith("--") && (portFlag === -1 || i !== portFlag + 1),
+  );
   const live = (await fetchServices(config)).filter((s) => s.protocol === "tcp");
   const picked =
     names.length === 0
