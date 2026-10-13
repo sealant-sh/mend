@@ -14,7 +14,7 @@ import {
 } from "@mend/sealant";
 import { StoreConfig } from "@mend/store";
 import type { CreateOptions, Run, Workspace, WorkspaceExecResult } from "@sealant/sdk";
-import { Effect, Layer } from "effect";
+import { Deferred, Effect, Exit, Fiber, Layer, Result } from "effect";
 import { afterEach, beforeEach } from "vitest";
 
 import { PullRequestWorkspacesLive, shortLivedMountRoot } from "../src/pull-request-workspaces.ts";
@@ -130,11 +130,16 @@ const process = (overrides: Partial<SessionProcess>): SessionProcess =>
 const fakePlatform = (options: {
   readonly workspaces?: ReadonlyArray<string>;
   readonly createFails?: SealantPlatformError;
+  readonly ownerFails?: SealantPlatformError;
+  readonly lookupFails?: SealantPlatformError;
+  readonly stopFails?: SealantPlatformError;
+  readonly beforeCreated?: Effect.Effect<void>;
 }) => {
   const created: Array<CreateOptions> = [];
   const stopped: Array<string> = [];
   const execs: Array<{ readonly workspace: string; readonly argv: ReadonlyArray<string> }> = [];
   const owners: Array<string> = [];
+  const lookups: Array<string> = [];
   const known = new Set(options.workspaces ?? []);
   const client = Effect.runSync(
     Effect.gen(function* () {
@@ -143,26 +148,34 @@ const fakePlatform = (options: {
       Effect.provide(
         Layer.mock(SealantClient, {
           getWorkspace: (id) =>
-            known.has(id)
-              ? Effect.succeed(fakeWorkspace(id))
-              : Effect.fail(
-                  new SealantPlatformError({
-                    code: "WorkspaceNotFoundError",
-                    status: 404,
-                    message: `workspace ${id} not found`,
-                    cause: null,
-                  }),
-                ),
+            Effect.suspend(() => {
+              lookups.push(id);
+              if (options.lookupFails !== undefined) return Effect.fail(options.lookupFails);
+              return known.has(id)
+                ? Effect.succeed(fakeWorkspace(id))
+                : Effect.fail(
+                    new SealantPlatformError({
+                      code: "WorkspaceNotFoundError",
+                      status: 404,
+                      message: `workspace ${id} not found`,
+                      cause: null,
+                    }),
+                  );
+            }),
           createWorkspace: (createOptions) =>
             Effect.suspend(() => {
               created.push(createOptions);
               if (options.createFails !== undefined) return Effect.fail(options.createFails);
-              return Effect.succeed(fakeWorkspace("ws-short"));
+              return (options.beforeCreated ?? Effect.void).pipe(
+                Effect.as(fakeWorkspace("ws-short")),
+              );
             }),
           stopWorkspace: (workspace) =>
-            Effect.sync(() => {
+            Effect.suspend(() => {
               stopped.push(workspace.id);
-              return { state: "stopped" as const, retained: null, completion: null };
+              return options.stopFails === undefined
+                ? Effect.succeed({ state: "stopped" as const, retained: null, completion: null })
+                : Effect.fail(options.stopFails);
             }),
           exec: (workspace, argv) =>
             Effect.sync(() => {
@@ -179,12 +192,14 @@ const fakePlatform = (options: {
       ),
     ),
   );
-  const clientFor = (userId: string): Effect.Effect<SealantClientShape> =>
-    Effect.sync(() => {
+  const clientFor = (userId: string): Effect.Effect<SealantClientShape, SealantPlatformError> =>
+    Effect.suspend(() => {
       owners.push(userId);
-      return client;
+      return options.ownerFails === undefined
+        ? Effect.succeed(client)
+        : Effect.fail(options.ownerFails);
     });
-  return { created, stopped, execs, owners, clientFor };
+  return { created, stopped, execs, owners, lookups, clientFor };
 };
 
 describe("PullRequestWorkspacesLive", () => {
@@ -331,4 +346,216 @@ describe("PullRequestWorkspacesLive", () => {
       expect(fs.readdirSync(shortLivedMountRoot(storeRoot))).toEqual([]);
     }).pipe(Effect.provide(layerFor(platform, [])));
   });
+
+  for (const scenario of ["no session", "no live process", "stale workspace"] as const) {
+    it.effect(`liveOnly refuses ${scenario} without allocating a workspace`, () => {
+      const platform = fakePlatform({});
+      return Effect.gen(function* () {
+        let used = false;
+        const failure = yield* (yield* PullRequestWorkspaces)
+          .within(
+            {
+              ownerUserId: "ada",
+              sessionId: scenario === "no session" ? null : SESSION,
+              liveOnly: true,
+            },
+            () =>
+              Effect.sync(() => {
+                used = true;
+              }),
+          )
+          .pipe(Effect.flip);
+        expect(failure).toEqual(
+          new PullRequestStepError({ message: "the session has no live workspace to ask gh in" }),
+        );
+        expect(used).toBe(false);
+        expect(platform.owners).toEqual(["ada"]);
+        expect(platform.lookups).toEqual(scenario === "stale workspace" ? ["ws-old"] : []);
+        expect(platform.created).toEqual([]);
+        expect(platform.stopped).toEqual([]);
+        expect(fs.existsSync(shortLivedMountRoot(storeRoot))).toBe(false);
+      }).pipe(
+        Effect.provide(layerFor(platform, scenario === "stale workspace" ? [process({})] : [])),
+      );
+    });
+  }
+
+  it.effect("refuses an unavailable owner account before lookup, allocation or use", () => {
+    const platform = fakePlatform({
+      ownerFails: new SealantPlatformError({
+        code: "AccountUnavailable",
+        status: 403,
+        message: "owner account unavailable",
+        cause: null,
+      }),
+    });
+    return Effect.gen(function* () {
+      let used = false;
+      const failure = yield* (yield* PullRequestWorkspaces)
+        .within({ ownerUserId: "ada", sessionId: SESSION }, () =>
+          Effect.sync(() => {
+            used = true;
+          }),
+        )
+        .pipe(Effect.flip);
+      expect(failure.message).toBe("the owner's platform account · owner account unavailable");
+      expect(used).toBe(false);
+      expect(platform.owners).toEqual(["ada"]);
+      expect(platform.lookups).toEqual([]);
+      expect(platform.created).toEqual([]);
+      expect(platform.stopped).toEqual([]);
+      expect(fs.existsSync(shortLivedMountRoot(storeRoot))).toBe(false);
+    }).pipe(Effect.provide(layerFor(platform, [process({})])));
+  });
+
+  for (const liveOnly of [false, true]) {
+    it.effect(
+      `a transient workspace lookup failure ${liveOnly ? "refuses liveOnly" : "uses the owner's short-lived fallback"}`,
+      () => {
+        const platform = fakePlatform({
+          lookupFails: new SealantPlatformError({
+            code: "Unavailable",
+            status: 503,
+            message: "workspace lookup unavailable",
+            cause: null,
+          }),
+        });
+        return Effect.gen(function* () {
+          const outcome = yield* (yield* PullRequestWorkspaces)
+            .within({ ownerUserId: "ada", sessionId: SESSION, liveOnly }, (workspace) =>
+              workspace.exec(["gh", "--version"]),
+            )
+            .pipe(Effect.result);
+          if (liveOnly) {
+            expect(outcome).toEqual(
+              Result.fail(
+                new PullRequestStepError({
+                  message: "the session has no live workspace to ask gh in",
+                }),
+              ),
+            );
+            expect(platform.created).toEqual([]);
+            expect(platform.stopped).toEqual([]);
+            expect(platform.execs).toEqual([]);
+            expect(fs.existsSync(shortLivedMountRoot(storeRoot))).toBe(false);
+          } else {
+            expect(outcome).toEqual(
+              Result.succeed({ exitCode: 0, stdout: "ran in ws-short", stderr: "" }),
+            );
+            expect(platform.created).toHaveLength(1);
+            expect(platform.stopped).toEqual(["ws-short"]);
+            expect(platform.execs).toEqual([{ workspace: "ws-short", argv: ["gh", "--version"] }]);
+            expect(fs.readdirSync(shortLivedMountRoot(storeRoot))).toEqual([]);
+          }
+          expect(platform.owners).toEqual(["ada"]);
+          expect(platform.lookups).toEqual(["ws-old"]);
+        }).pipe(Effect.provide(layerFor(platform, [process({})])));
+      },
+    );
+  }
+
+  for (const outcome of ["success", "failure", "interrupt"] as const) {
+    it.effect(`a failed Stop preserves ${outcome} and removes the acquired mount`, () =>
+      Effect.gen(function* () {
+        const entered = yield* Deferred.make<void>();
+        const platform = fakePlatform({
+          stopFails: new SealantPlatformError({
+            code: "Unavailable",
+            status: 503,
+            message: "stop unavailable",
+            cause: null,
+          }),
+        });
+        const original = new PullRequestStepError({ message: "original work failure" });
+        const fiber = yield* Effect.gen(function* () {
+          return yield* (yield* PullRequestWorkspaces).within(
+            { ownerUserId: "ada", sessionId: null },
+            () =>
+              Effect.gen(function* () {
+                const source = platform.created[0]?.source;
+                if (source?.kind !== "mount") throw new Error("missing acquired mount");
+                expect(fs.statSync(source.path).isDirectory()).toBe(true);
+                yield* Deferred.succeed(entered, undefined);
+                if (outcome === "failure") return yield* original;
+                if (outcome === "interrupt") return yield* Effect.never;
+                return "completed work";
+              }),
+          );
+        }).pipe(Effect.provide(layerFor(platform, [])), Effect.forkChild);
+        yield* Deferred.await(entered);
+        if (outcome === "interrupt") yield* Fiber.interrupt(fiber);
+        const result = yield* Fiber.await(fiber);
+        if (outcome === "interrupt") expect(Exit.hasInterrupts(result)).toBe(true);
+        else
+          expect(result).toEqual(
+            outcome === "success" ? Exit.succeed("completed work") : Exit.fail(original),
+          );
+        expect(platform.created).toHaveLength(1);
+        expect(platform.stopped).toEqual(["ws-short"]);
+        expect(fs.readdirSync(shortLivedMountRoot(storeRoot))).toEqual([]);
+      }),
+    );
+  }
+
+  it.effect("interruption during use stops the acquired workspace and removes its mount", () =>
+    Effect.gen(function* () {
+      const entered = yield* Deferred.make<void>();
+      const platform = fakePlatform({});
+      const fiber = yield* Effect.gen(function* () {
+        return yield* (yield* PullRequestWorkspaces).within(
+          { ownerUserId: "ada", sessionId: null },
+          () => Deferred.succeed(entered, undefined).pipe(Effect.andThen(Effect.never)),
+        );
+      }).pipe(Effect.provide(layerFor(platform, [])), Effect.forkChild);
+      yield* Deferred.await(entered);
+      const source = platform.created[0]?.source;
+      if (source?.kind !== "mount") throw new Error("missing acquired mount");
+      expect(fs.statSync(source.path).isDirectory()).toBe(true);
+      expect(platform.stopped).toEqual([]);
+      yield* Fiber.interrupt(fiber);
+      expect(Exit.hasInterrupts(yield* Fiber.await(fiber))).toBe(true);
+      expect(platform.stopped).toEqual(["ws-short"]);
+      expect(fs.existsSync(source.path)).toBe(false);
+      expect(fs.readdirSync(shortLivedMountRoot(storeRoot))).toEqual([]);
+    }),
+  );
+
+  it.effect(
+    "interruption waits for acquisition acknowledgement before stopping and removing its mount",
+    () =>
+      Effect.gen(function* () {
+        const creating = yield* Deferred.make<void>();
+        const acknowledge = yield* Deferred.make<void>();
+        const platform = fakePlatform({
+          beforeCreated: Deferred.succeed(creating, undefined).pipe(
+            Effect.andThen(Deferred.await(acknowledge)),
+          ),
+        });
+        let used = false;
+        const fiber = yield* Effect.gen(function* () {
+          return yield* (yield* PullRequestWorkspaces).within(
+            { ownerUserId: "ada", sessionId: null },
+            () =>
+              Effect.sync(() => {
+                used = true;
+              }),
+          );
+        }).pipe(Effect.provide(layerFor(platform, [])), Effect.forkChild);
+        yield* Deferred.await(creating);
+        const cancelling = yield* Fiber.interrupt(fiber).pipe(Effect.forkChild);
+        yield* Effect.gen(function* () {
+          yield* Effect.yieldNow;
+          const source = platform.created[0]?.source;
+          if (source?.kind !== "mount") throw new Error("missing requested mount");
+          expect(fs.statSync(source.path).isDirectory()).toBe(true);
+          expect(platform.stopped).toEqual([]);
+          expect(used).toBe(false);
+        }).pipe(Effect.ensuring(Deferred.succeed(acknowledge, undefined)));
+        yield* Fiber.join(cancelling);
+        expect(Exit.hasInterrupts(yield* Fiber.await(fiber))).toBe(true);
+        expect(used).toBe(false);
+        expect(platform.stopped).toEqual(["ws-short"]);
+        expect(fs.readdirSync(shortLivedMountRoot(storeRoot))).toEqual([]);
+      }),
+  );
 });
