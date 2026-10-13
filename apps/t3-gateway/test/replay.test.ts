@@ -175,11 +175,24 @@ describe("replay sizes as they go out (595-R2-N1)", () => {
             return (yield* thread.next(isThreadSnapshot)).snapshotSequence;
           }),
         );
+        // The first subscription is away; a second client observes the actual publication.
+        const { rpc: observerRpc } = yield* pairAndConnect(mend, "UTF8-OBSERVER");
+        const observer = yield* feed(
+          observerRpc[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({ threadId: THREAD }),
+        );
+        yield* observer.next(isThreadSnapshot);
         // 400,000 characters, 1.2 MB in UTF-8: past the 1 MiB a thread's replay keeps.
         const text = "漢".repeat(400_000);
         assert.isAbove(Buffer.byteLength(text), 1024 * 1024);
         mend.workbench.addItem(turn, { kind: "assistant-message", text });
-        yield* Effect.sleep("500 millis");
+        const published = yield* observer.next(
+          (item): item is Extract<Item, { kind: "event" }> =>
+            item.kind === "event" &&
+            item.event.type === "message.updated" &&
+            item.event.payload.role === "assistant" &&
+            item.event.payload.text === text,
+        );
+        assert.isAbove(published.sequence, before);
         const resumed = yield* Effect.scoped(
           Effect.gen(function* () {
             const thread = yield* feed(
