@@ -65,6 +65,8 @@ jobs:
         run: pnpm exec turbo test --force
       - name: AWS shell regression tests with local command fixtures
         run: pnpm run test:aws-shell
+      - name: Live S3 contracts on disposable Garage and strict MinIO fixtures
+        run: pnpm run test:s3-contract
       - name:
           Check packaging contracts, supervision, acceptance helpers, the mirrors, and the Helm
           chart
