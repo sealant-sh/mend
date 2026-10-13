@@ -21,11 +21,11 @@ import {
   type SlackLinkedMentionJob,
   type SlackPendingMention,
 } from "@mend/domain/workbench";
-import { JobRunner, type JobSpec } from "@mend/jobs";
+import { JobEnqueueError, JobRunner, type JobSpec } from "@mend/jobs";
 import { makePublicNetwork, NetworkConfig, PublicOrigin } from "@mend/network";
 import { makeFakeSlack, SlackApiError, type FakeSlackWorkspace } from "@mend/slack/client";
-import { SecretCipher } from "@mend/store";
-import { Effect, Layer, ManagedRuntime, Option, Schema } from "effect";
+import { SecretCipher, SecretCipherError } from "@mend/store";
+import { Effect, Layer, ManagedRuntime, Option, Redacted, Schema } from "effect";
 import { HttpRouter, HttpServer } from "effect/unstable/http";
 import { HttpApi, HttpApiBuilder } from "effect/unstable/httpapi";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
@@ -85,7 +85,28 @@ const otherApp: FakeSlackWorkspace = {
   botToken: "xoxb-other",
   appToken: "xapp-other",
 };
-const slack = makeFakeSlack([acmeSlack, otherApp]);
+const globexSlack: FakeSlackWorkspace = {
+  ...acmeSlack,
+  teamId: "T-globex",
+  teamName: "Globex workspace",
+  appId: "A-globex",
+  botId: "B-globex",
+  botUserId: "U-globex-bot",
+  botToken: "xoxb-globex",
+  appToken: "xapp-globex",
+  users: [
+    {
+      id: "U-carol",
+      teamId: "T-globex",
+      name: "globex-carol",
+      displayName: "Globex Carol",
+      realName: "Carol from Globex",
+      isBot: false,
+      deleted: false,
+    },
+  ],
+};
+const slack = makeFakeSlack([acmeSlack, otherApp, globexSlack]);
 
 // ─── An in-memory Slack store, as the repositories promise it ──────────────
 
@@ -104,6 +125,12 @@ const codes = new Map<
 const personalDefaults = new Map<string, ProjectId>();
 const audited: Array<NewAuditEvent> = [];
 const enqueued: Array<JobSpec> = [];
+let enqueueOutcome: "queued" | "duplicate" | "typed-failure" | "defect" = "queued";
+
+// Opaque handles preserve token identity without storing plaintext in diagnostics.
+const sealedTokens = new Map<string, Redacted.Redacted<string>>();
+const decrypted: string[] = [];
+let sealSequence = 0;
 
 const installOfTeam = (teamId: string) =>
   [...installs.values()].find((install) => install.teamId === teamId) ?? null;
@@ -262,7 +289,16 @@ const dependencies = Layer.mergeAll(
     record: (event) => Effect.sync(() => void audited.push(event)),
   }),
   Layer.mock(JobRunner, {
-    enqueue: (job) => Effect.sync(() => (enqueued.push(job), "job-1")),
+    enqueue: (job) =>
+      Effect.suspend(() => {
+        enqueued.push(job);
+        if (enqueueOutcome === "typed-failure")
+          return Effect.fail(
+            new JobEnqueueError({ job: job.name, cause: new Error("synthetic enqueue failure") }),
+          );
+        if (enqueueOutcome === "defect") return Effect.die(new Error("synthetic enqueue defect"));
+        return Effect.succeed(enqueueOutcome === "duplicate" ? null : "job-1");
+      }),
   }),
   Layer.mock(ProjectAccess, {
     projectAs: (userId, id) =>
@@ -279,8 +315,25 @@ const dependencies = Layer.mergeAll(
         : Effect.fail(new NotFound({ id })),
   }),
   Layer.succeed(SecretCipher, {
-    encrypt: (plaintext) => Effect.succeed(`sealed(${plaintext.length})`),
-    decrypt: () => Effect.succeed(acmeSlack.botToken),
+    encrypt: (plaintext) =>
+      Effect.sync(() => {
+        const handle = `sealed-fixture-${++sealSequence}`;
+        sealedTokens.set(handle, Redacted.make(plaintext));
+        return handle;
+      }),
+    decrypt: (handle) =>
+      Effect.suspend(() => {
+        decrypted.push(handle);
+        const value = sealedTokens.get(handle);
+        return value === undefined
+          ? Effect.fail(
+              new SecretCipherError({
+                operation: "decrypt",
+                message: "Unknown fixture ciphertext",
+              }),
+            )
+          : Effect.succeed(Redacted.value(value));
+      }),
   }),
   Layer.succeed(
     NetworkConfig,
@@ -362,6 +415,10 @@ beforeEach(() => {
   personalDefaults.clear();
   audited.splice(0, audited.length);
   enqueued.splice(0, enqueued.length);
+  enqueueOutcome = "queued";
+  sealedTokens.clear();
+  decrypted.splice(0, decrypted.length);
+  sealSequence = 0;
 });
 
 describe("the organization's Slack app (docs/adr/0006)", () => {
@@ -405,8 +462,18 @@ describe("the organization's Slack app (docs/adr/0006)", () => {
     expect(text).not.toContain("xapp");
     expect(text).not.toContain("sealed");
     const stored = installs.get(acme.id);
-    expect(stored?.sealedBotToken).toBe("sealed(9)");
-    expect(stored?.sealedAppToken).toBe("sealed(9)");
+    if (stored === undefined) throw new Error("Expected the install to be saved.");
+    const identities = await runtime.runPromise(
+      Effect.gen(function* () {
+        const cipher = yield* SecretCipher;
+        return {
+          appMatches: (yield* cipher.decrypt(stored.sealedAppToken)) === acmeSlack.appToken,
+          botMatches: (yield* cipher.decrypt(stored.sealedBotToken)) === acmeSlack.botToken,
+        };
+      }),
+    );
+    expect(identities).toEqual({ appMatches: true, botMatches: true });
+    expect(stored.sealedAppToken).not.toBe(stored.sealedBotToken);
     expect(audited.map((event) => [event.action, event.subjectType, event.subjectId])).toEqual([
       ["slack.installed", "slack", "T-acme"],
     ]);
@@ -528,6 +595,48 @@ describe("the organization's Slack app (docs/adr/0006)", () => {
 });
 
 describe("linking a Slack user to a Mend account (docs/adr/0006)", () => {
+  it("decrypts the pending code's own install when two Slack workspaces are connected", async () => {
+    expect((await connect()).status).toBe(200);
+    expect((await connect(globexSlack.appToken, globexSlack.botToken, "gus")).status).toBe(200);
+    mintCode("msl_acme");
+    mintCode("msl_globex");
+    const pending = codes.get("msl_globex");
+    if (pending === undefined) throw new Error("Expected a pending code fixture.");
+    codes.set("msl_globex", {
+      ...pending,
+      teamId: globexSlack.teamId,
+      request: { ...mention, text: "<@U-globex-bot> review this workspace's change" },
+    });
+    const acmeInstall = installs.get(acme.id);
+    const globexInstall = installs.get(globex.id);
+    if (acmeInstall === undefined || globexInstall === undefined)
+      throw new Error("Expected both install fixtures.");
+
+    const acmePreview = await call("carol", "POST", "/api/slack/link/preview", {
+      code: "msl_acme",
+    });
+    expect(acmePreview.status).toBe(200);
+    expect(await acmePreview.json()).toMatchObject({
+      teamId: acmeSlack.teamId,
+      slackUserId: "U-carol",
+      slackUserName: "Carol",
+      slackRealName: "Carol Danvers",
+    });
+    const globexPreview = await call("gus", "POST", "/api/slack/link/preview", {
+      code: "msl_globex",
+    });
+    expect(globexPreview.status).toBe(200);
+    const body = await globexPreview.text();
+    expect(JSON.parse(body)).toMatchObject({
+      teamId: globexSlack.teamId,
+      slackUserId: "U-carol",
+      slackUserName: "Globex Carol",
+      slackRealName: "Carol from Globex",
+    });
+    expect(body).not.toMatch(/xapp-|xoxb-|sealed-fixture-/);
+    expect(decrypted).toEqual([acmeInstall.sealedBotToken, globexInstall.sealedBotToken]);
+  });
+
   it("shows who in which workspace is asking, and what runs once linked", async () => {
     await connect();
     mintCode("msl_one");
@@ -589,6 +698,51 @@ describe("linking a Slack user to a Mend account (docs/adr/0006)", () => {
       ["slack.link_created", "carol", { teamId: "T-acme", slackUserId: "U-carol" }],
     ]);
   });
+
+  for (const outcome of ["typed-failure", "defect", "duplicate"] as const) {
+    it(`keeps the linked account and consumed code after ${outcome} enqueue`, async () => {
+      await connect();
+      mintCode("msl_one");
+      enqueueOutcome = outcome;
+      const confirmed = await call("carol", "POST", "/api/slack/link/confirm", { code: "msl_one" });
+      expect(confirmed.status).toBe(200);
+      // JobRunner's null result means an existing live job absorbed the request.
+      const queued = outcome === "duplicate";
+      expect(await confirmed.json()).toMatchObject({
+        link: { teamId: "T-acme", slackUserId: "U-carol", userId: "carol", userName: "carol" },
+        requestQueued: queued,
+      });
+      expect(codes.get("msl_one")?.spent).toBe(true);
+      expect(links).toEqual([
+        {
+          organizationId: acme.id,
+          teamId: "T-acme",
+          slackUserId: "U-carol",
+          userId: "carol",
+          createdAt: NOW,
+        },
+      ]);
+      expect(enqueued).toHaveLength(1);
+      expect(audited.slice(1)).toEqual([
+        {
+          organizationId: acme.id,
+          actorUserId: "carol",
+          action: "slack.link_created",
+          subjectType: "member",
+          subjectId: "carol",
+          data: { teamId: "T-acme", slackUserId: "U-carol" },
+        },
+      ]);
+      const duplicate = await call("carol", "POST", "/api/slack/link/confirm", { code: "msl_one" });
+      expect(duplicate.status).toBe(404);
+      expect(enqueued).toHaveLength(1);
+      expect(links).toHaveLength(1);
+      expect(audited).toHaveLength(2);
+      const me = await call("carol", "GET", "/api/slack/me");
+      expect(me.status).toBe(200);
+      expect(await me.json()).toMatchObject({ link: { slackUserId: "U-carol" } });
+    });
+  }
 
   it("says when confirming replaces the Slack user this account was linked to", async () => {
     await connect();
