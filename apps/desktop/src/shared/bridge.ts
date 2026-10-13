@@ -40,6 +40,7 @@ export type AuthorizeOpened =
       readonly url: string;
       readonly code: string;
       readonly authorizeUrl: string;
+      /** Estimated request expiry on this machine's clock; the server judges approval. */
       readonly expiresAt: string;
     }
   | { readonly ok: false; readonly reason: string };

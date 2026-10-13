@@ -74,6 +74,7 @@ const deviceDeps = (): DeviceLoginDeps => ({
 let pending: {
   readonly base: string;
   readonly request: OpenedRequest;
+  readonly deadline: number;
   cancelled: boolean;
 } | null = null;
 
@@ -83,7 +84,12 @@ export const startAuthorize = async (url: string): Promise<AuthorizeOpened> => {
   pending = null;
   const opened = await openDeviceRequest(url, deviceDeps());
   if (!opened.ok) return opened;
-  pending = { base: opened.view.url, request: opened.request, cancelled: false };
+  pending = {
+    base: opened.view.url,
+    request: opened.request,
+    deadline: opened.deadline,
+    cancelled: false,
+  };
   return { ok: true, ...opened.view };
 };
 
@@ -99,6 +105,7 @@ export const awaitAuthorize = async (): Promise<AuthorizeResult> => {
     flow.request,
     deviceDeps(),
     () => flow.cancelled,
+    flow.deadline,
   );
   if (pending === flow) pending = null;
   if (!result.ok) return result;

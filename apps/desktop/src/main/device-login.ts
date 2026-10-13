@@ -46,7 +46,17 @@ export const parseOpenedRequest = (json: unknown): OpenedRequest | null => {
   ) {
     return null;
   }
-  return { deviceCode, code, verifyPath, expiresAt, intervalSeconds };
+  const expiresIn: unknown = Reflect.get(json, "expiresIn");
+  return {
+    deviceCode,
+    code,
+    verifyPath,
+    expiresAt,
+    intervalSeconds,
+    ...(typeof expiresIn === "number" && Number.isSafeInteger(expiresIn) && expiresIn >= 0
+      ? { expiresIn }
+      : {}),
+  };
 };
 
 /** A poll answer, checked the same way; anything off-shape is null. */
@@ -113,10 +123,31 @@ export const groupCode = (code: string): string => {
 export const pollDelayMs = (intervalSeconds: number): number =>
   Math.min(Math.max(Math.round(intervalSeconds), 1), 10) * 1000;
 
-/** When to stop polling: the request's own expiry, or ten minutes for an unreadable date. */
-export const pollDeadline = (expiresAt: string, now: number): number => {
-  const at = Date.parse(expiresAt);
-  return Number.isNaN(at) ? now + 10 * 60_000 : at;
+/**
+ * Local deadline from response-header receipt, using relative expiry first. Legacy expiry is
+ * read against the server's Date, never this machine's clock alone; absent/unreadable evidence
+ * allows ten minutes, matching the CLI. The server remains authoritative about approval.
+ */
+export const pollDeadline = (
+  request: Pick<OpenedRequest, "expiresAt" | "expiresIn">,
+  receivedAt: number,
+  serverDate: string | null,
+): number => {
+  if (
+    request.expiresIn !== undefined &&
+    Number.isSafeInteger(request.expiresIn) &&
+    request.expiresIn >= 0
+  ) {
+    const relative = receivedAt + request.expiresIn * 1000;
+    if (Number.isFinite(new Date(relative).getTime())) return relative;
+  }
+  const expires = Date.parse(request.expiresAt);
+  const serverNow = serverDate === null ? Number.NaN : Date.parse(serverDate);
+  if (Number.isFinite(expires) && Number.isFinite(serverNow)) {
+    const legacy = receivedAt + Math.max(0, expires - serverNow);
+    if (Number.isFinite(new Date(legacy).getTime())) return legacy;
+  }
+  return receivedAt + 10 * 60_000;
 };
 
 const retryAfterSecondsOf = (json: unknown): number => {
@@ -140,11 +171,18 @@ export interface OpenedView {
   readonly url: string;
   readonly code: string;
   readonly authorizeUrl: string;
+  /** Estimated expiry on this machine's clock, for display; the server judges approval. */
   readonly expiresAt: string;
 }
 
 export type OpenResult =
-  | { readonly ok: true; readonly view: OpenedView; readonly request: OpenedRequest }
+  | {
+      readonly ok: true;
+      readonly view: OpenedView;
+      readonly request: OpenedRequest;
+      /** Local millisecond deadline established at receipt; waiting must retain it. */
+      readonly deadline: number;
+    }
   | { readonly ok: false; readonly reason: string };
 
 export type WaitResult =
@@ -163,7 +201,12 @@ const post = async (
   deps: DeviceLoginDeps,
   url: string,
   body: unknown,
-): Promise<{ readonly status: number; readonly json: unknown }> => {
+): Promise<{
+  readonly status: number;
+  readonly json: unknown;
+  readonly receivedAt: number;
+  readonly date: string | null;
+}> => {
   let response: Response;
   try {
     response = await deps.fetch(url, {
@@ -172,8 +215,10 @@ const post = async (
       body: JSON.stringify(body),
     });
   } catch {
-    return { status: 0, json: null };
+    return { status: 0, json: null, receivedAt: deps.now(), date: null };
   }
+  const receivedAt = deps.now();
+  const date = response.headers.get("date");
   const text = await response.text();
   let json: unknown = null;
   try {
@@ -181,7 +226,7 @@ const post = async (
   } catch {
     // Only the happy path needs JSON, and it always is.
   }
-  return { status: response.status, json };
+  return { status: response.status, json, receivedAt, date };
 };
 
 /**
@@ -240,33 +285,37 @@ export const openDeviceRequest = async (
       reason: `the server at ${base} did not answer like a Mend server — is that the right URL?`,
     };
   }
+  const deadline = pollDeadline(request, started.receivedAt, started.date);
   return {
     ok: true,
     request,
+    deadline,
     view: {
       url: base,
       code: groupCode(request.code),
       authorizeUrl: `${base}${request.verifyPath}`,
-      expiresAt: request.expiresAt,
+      expiresAt: new Date(deadline).toISOString(),
     },
   };
 };
 
 /**
  * Poll until the request is approved, denied, expired, or `cancelled()` says to stop. The token
- * is returned, never stored here: the caller saves it with the device id.
+ * is returned, never stored here: the caller saves it with the device id. The deadline is the
+ * one established when opening the request, so a delayed wait cannot renew its lifetime.
  */
 export const awaitDeviceApproval = async (
   base: string,
   request: OpenedRequest,
   deps: DeviceLoginDeps,
   cancelled: () => boolean,
+  deadline: number,
 ): Promise<WaitResult> => {
-  const deadline = pollDeadline(request.expiresAt, deps.now());
   const delay = pollDelayMs(request.intervalSeconds);
   while (deps.now() < deadline) {
-    await deps.sleep(delay);
+    await deps.sleep(Math.min(delay, Math.max(0, deadline - deps.now())));
     if (cancelled()) return { ok: false, reason: CANCELLED };
+    if (deps.now() >= deadline) break;
     const poll = await post(deps, `${base}/api/cli/auth/token`, {
       deviceCode: request.deviceCode,
     });
