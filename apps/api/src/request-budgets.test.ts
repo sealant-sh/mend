@@ -41,6 +41,7 @@ const read = (request: HttpServerRequest.HttpServerRequest) =>
 const serve = (limits: Partial<BudgetLimits>, trustedProxies: ReadonlyArray<string> = []) => {
   const reached: Array<string> = [];
   const bodies: Array<number | string> = [];
+  const invitations: Array<string> = [];
   const failures: Array<HttpServerError.HttpServerError> = [];
   let clock = 0;
   const routes = HttpRouter.use((router) =>
@@ -70,6 +71,13 @@ const serve = (limits: Partial<BudgetLimits>, trustedProxies: ReadonlyArray<stri
           return HttpServerResponse.text("ok");
         }),
       );
+      // An exact parameterized route prevents the fallback satisfying normalization checks.
+      yield* router.add("POST", "/api/invitations/:id/accept", (request) =>
+        Effect.sync(() => {
+          invitations.push(request.url);
+          return HttpServerResponse.text("invitation handler");
+        }),
+      );
       yield* router.add("POST", "/api/sessions/stream/images", read);
       yield* router.addAll([
         HttpRouter.prefixRoute(HttpRouter.route("POST", "/read", read), "/api/mounted"),
@@ -92,6 +100,7 @@ const serve = (limits: Partial<BudgetLimits>, trustedProxies: ReadonlyArray<stri
   disposers.push(dispose);
   return {
     reached,
+    invitations,
     bodies,
     failures,
     budgeted,
@@ -376,6 +385,7 @@ describe("bodies are bounded before they are decoded", () => {
 
   it("names the upload routes exactly", () => {
     expect(isUploadRoute("POST", "/api/skills/sync")).toBe(true);
+    expect(isUploadRoute("POST", "/api//Skills/sync")).toBe(true);
     expect(isUploadRoute("POST", "/api/organization/folders/f1/files")).toBe(true);
     expect(isUploadRoute("POST", "/api/dotfiles/snapshot")).toBe(true);
     expect(isUploadRoute("PUT", "/api/projects/p1/workspace-image")).toBe(true);
@@ -446,11 +456,28 @@ describe("requests are counted per address and per credential", () => {
     ).toEqual(["Bearer t", "v"]);
   });
 
-  it("matches paths the way the router does: case, doubled slashes and escapes", () => {
-    expect(isSignInAttempt("POST", "/API/Invitations/abc/accept")).toBe(true);
-    expect(isSignInAttempt("POST", "/api//invitations/abc/accept")).toBe(true);
-    expect(isSignInAttempt("POST", "/api/%69nvitations/abc/accept")).toBe(true);
-    expect(isUploadRoute("POST", "/api//Skills/sync")).toBe(true);
+  it.each([
+    "/API/Invitations/abc/accept",
+    "/api//invitations/abc/accept",
+    "/api/%69nvitations/abc/accept",
+  ])("counts %s in the recognized route's sign-in window", async (path) => {
+    const api = await serveOverSocket({ signInAttemptsPerMinute: 1 });
+    const accepted = await api.send(path, { method: "POST" });
+    expect(accepted.status).toBe(200);
+    expect(await accepted.text()).toBe("invitation handler");
+    expect(api.invitations).toEqual([path]);
+    expect(api.reached).toEqual([]);
+    const canonical = await api.send("/api/invitations/abc/accept", { method: "POST" });
+    expect(canonical.status).toBe(429);
+    expect(await canonical.json()).toMatchObject({ budget: "signInAttemptsPerMinute", limit: 1 });
+    const refused = await api.send(path, { method: "POST" });
+    expect(refused.status).toBe(429);
+    expect(refused.headers.get("retry-after")).toBe("60");
+    expect(await refused.json()).toMatchObject({ budget: "signInAttemptsPerMinute", limit: 1 });
+    expect(api.invitations).toEqual([path]);
+    api.advance(60_000);
+    expect((await api.send(path, { method: "POST" })).status).toBe(200);
+    expect(api.invitations).toEqual([path, path]);
   });
 
   it("never exempts a request because its whole chain is trusted", async () => {
@@ -480,10 +507,43 @@ describe("requests are counted per address and per credential", () => {
     expect((await from("2001:db8:1:3::1")).status).toBe(200);
   });
 
-  it("turns one budget off at 0 without touching the others", async () => {
-    const api = await serveOverSocket({ addressRequestsPerMinute: 0, bodyBytes: 0 });
-    for (let i = 0; i < 50; i += 1) expect((await api.send("/api/health")).status).toBe(200);
-    const large = await api.send("/api/projects", { method: "POST", body: "x".repeat(4096) });
+  it("disabled address and body limits leave credential and sign-in limits enforced", async () => {
+    const api = await serveOverSocket({
+      addressRequestsPerMinute: 0,
+      bodyBytes: 0,
+      credentialRequestsPerMinute: 1,
+      signInAttemptsPerMinute: 1,
+    });
+    const headers = { "x-forwarded-for": "203.0.113.10" };
+    for (let i = 0; i < 50; i += 1)
+      expect((await api.send("/api/health", { headers })).status).toBe(200);
+    const large = await api.send("/api/projects", {
+      method: "POST",
+      headers,
+      body: "x".repeat(4096),
+    });
     expect(large.status).toBe(200);
+    expect(api.bodies.at(-1)).toBe(4096);
+    const credential = () =>
+      api.send("/api/projects", {
+        headers: { ...headers, authorization: "Bearer synthetic-budget-token" },
+      });
+    expect((await credential()).status).toBe(200);
+    const refusedCredential = await credential();
+    expect(refusedCredential.status).toBe(429);
+    expect(await refusedCredential.json()).toMatchObject({
+      budget: "credentialRequestsPerMinute",
+      limit: 1,
+    });
+    const signIn = () => api.send("/api/auth/sign-in/email", { method: "POST", headers });
+    expect((await signIn()).status).toBe(200);
+    const refusedSignIn = await signIn();
+    expect(refusedSignIn.status).toBe(429);
+    expect(await refusedSignIn.json()).toMatchObject({
+      budget: "signInAttemptsPerMinute",
+      limit: 1,
+    });
+    expect(api.reached).toHaveLength(53);
+    expect((await api.send("/api/health", { headers })).status).toBe(200);
   });
 });
