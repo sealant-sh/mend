@@ -35,6 +35,10 @@ jobs:
           node-version-file: .node-version
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - name: Install the declared Caddy image for edge access-log tests
+        run: |
+          image=$(node --input-type=module -e 'import {readFileSync} from "node:fs"; const image = readFileSync("deploy/docker/compose.edge.yaml", "utf8").match(/^\s+image: (caddy:\S+)$/m)?.[1]; if (!image) throw new Error("Missing Caddy image"); console.log(image);')
+          docker pull "$image"
       # Leak-evidence tests must exercise Chromium instead of skipping for a missing browser.
       # Reuse the workspace's locked Playwright version, as the mobile-web job does.
       - name: Install Chromium for verification evidence tests
