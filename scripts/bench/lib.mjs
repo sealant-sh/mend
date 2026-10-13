@@ -2111,8 +2111,8 @@ export const turnVerdicts = ({ turn, process, ownerId, fromOwner, maxLive, answe
 
 /**
  * A pi profile's digest as Mend stores it (`piProfileDigest`, packages/db/src/repos/pi-profiles.ts):
- * each file's path and the SHA-256 of its bytes, sorted by path. Mirrored here so the tests can
- * check the shell version the probe runs against it.
+ * each file's path and the SHA-256 of its bytes, sorted by JavaScript string order. Cross-package
+ * integration tests hold both this encoding and the executor probe to the actual stored digest.
  */
 const sha256Hex = (bytes) => createHash("sha256").update(bytes).digest("hex");
 
@@ -2125,17 +2125,29 @@ export const profileDigestOf = (files) =>
       .join(""),
   );
 
+// File paths are canonical JavaScript strings, as in the persisted profile digest. A line-based
+// find/sort pipeline cannot preserve their ordering or names containing newlines. This program
+// uses the executor's Node runtime (already used to deliver pi profiles), without printing paths.
+const PROFILE_TREE_JS = [
+  `try { const fs = require("node:fs"), path = require("node:path"), crypto = require("node:crypto");`,
+  `const sha = bytes => crypto.createHash("sha256").update(bytes).digest("hex"), files = [];`,
+  `const walk = (absolute, relative) => { for (const entry of fs.readdirSync(absolute, { withFileTypes: true })) {`,
+  `const filename = path.join(absolute, entry.name), name = relative === "" ? entry.name : relative + "/" + entry.name;`,
+  `if (entry.isDirectory()) { if (entry.name !== "node_modules") walk(filename, name); }`,
+  `else if (entry.isFile()) files.push([name, sha(fs.readFileSync(filename))]); } };`,
+  `walk(process.argv[1], ""); files.sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0);`,
+  `console.log(process.argv[2] === "count" ? files.length : sha(files.map(([name, digest]) => name + "\\u0000" + digest + "\\n").join("")));`,
+  `} catch { process.exit(1); }`,
+].join("\n");
+
 /**
- * `profile_digest <dir>`: the same digest over a delivered profile directory, leaving out every
- * `node_modules` directory (what the session installs, as the delivery's own comparison does).
- * Prints only the digest and the file count: never a path or a byte of the files.
+ * `profile_digest <dir>` and `profile_files <dir>` inspect regular files in a delivered profile,
+ * leaving out every node_modules directory. Only a digest/count is printed. Missing Node or an
+ * unreadable tree exits nonzero, so the person probe records unavailable evidence.
  */
 export const PROFILE_DIGEST_SH = [
-  `profile_digest() {`,
-  `  ( cd "$1" && find . -type d -name node_modules -prune -o -type f -print | sed 's|^\\./||' | LC_ALL=C sort |`,
-  `    while IFS= read -r f; do printf '%s\\000%s\\n' "$f" "$(sha256sum < "$f" | cut -d' ' -f1)"; done | sha256sum | cut -d' ' -f1 )`,
-  `}`,
-  `profile_files() { ( cd "$1" && find . -type d -name node_modules -prune -o -type f -print | wc -l | tr -d ' ' ); }`,
+  `profile_digest() { command -v node >/dev/null 2>&1 || return 1; node -e '${PROFILE_TREE_JS}' "$1" digest; }`,
+  `profile_files() { command -v node >/dev/null 2>&1 || return 1; node -e '${PROFILE_TREE_JS}' "$1" count; }`,
 ].join("\n");
 
 /** The saved directories of people, under the harness home every executor mounts. */
@@ -2172,7 +2184,8 @@ export const PERSON_PROBE_SH = [
   `login "$home/.pi/agent/auth.json" openai-codex`,
   `login "$home/.local/share/opencode/auth.json" openai`,
   `d="$home/.pi/agent/mend/profile"`,
-  `if [ -d "$d" ]; then echo "probe pi-profile present $(stat -c '%u %a' "$d") $(profile_files "$d") $(profile_digest "$d")"; ` +
+  `if [ -d "$d" ]; then if meta=$(stat -c '%u %a' "$d" 2>/dev/null) && files=$(profile_files "$d") && digest=$(profile_digest "$d"); then ` +
+    `echo "probe pi-profile present $meta $files $digest"; else echo "probe pi-profile unavailable"; fi; ` +
     `else echo "probe pi-profile absent"; fi`,
 ].join("\n");
 
@@ -2229,7 +2242,9 @@ export const parsePersonProbe = (text) => {
         files: Number(match[3]),
         digest: match[4],
       };
-    } else if (line === "probe pi-profile absent") probe.piProfile = { present: false };
+    } else if (line === "probe pi-profile unavailable")
+      probe.piProfile = { present: true, unavailable: true };
+    else if (line === "probe pi-profile absent") probe.piProfile = { present: false };
   }
   return probe;
 };
@@ -2349,38 +2364,44 @@ export const personVerdicts = ({
   }
   if (harness === "pi" && piDigest !== undefined) {
     const profile = probe.piProfile ?? { present: false };
-    if (piDigest === null) {
-      add(
-        "pi_profile",
-        !profile.present,
-        profile.present
-          ? "a pi profile is there, and this person has none"
-          : "no profile, as this person has none",
-      );
+    if (profile.unavailable) {
+      add("pi_profile", null, "skipped: pi profile bytes could not be inspected");
+      if (otherPiDigest !== undefined)
+        add("pi_profile_not_other", null, "skipped: pi profile bytes could not be inspected");
     } else {
-      add(
-        "pi_profile",
-        profile.present && profile.digest === piDigest && profile.owner === probe.uid,
-        profile.present
-          ? `${profile.files} file(s) · owner ${profile.owner} · ${profile.digest === piDigest ? "this person's profile" : "not this person's profile"}`
-          : "no profile delivered, and this person has one",
-      );
-    }
-    if (otherPiDigest !== undefined) {
-      if (otherPiDigest === null || otherPiDigest === piDigest) {
+      if (piDigest === null) {
         add(
-          "pi_profile_not_other",
-          null,
-          "skipped: cannot be told apart, the other person's profile is the same or absent",
+          "pi_profile",
+          !profile.present,
+          profile.present
+            ? "a pi profile is there, and this person has none"
+            : "no profile, as this person has none",
         );
       } else {
         add(
-          "pi_profile_not_other",
-          !(profile.present && profile.digest === otherPiDigest),
-          profile.present && profile.digest === otherPiDigest
-            ? "the other person's profile"
-            : "not the other person's profile",
+          "pi_profile",
+          profile.present && profile.digest === piDigest && profile.owner === probe.uid,
+          profile.present
+            ? `${profile.files} file(s) · owner ${profile.owner} · ${profile.digest === piDigest ? "this person's profile" : "not this person's profile"}`
+            : "no profile delivered, and this person has one",
         );
+      }
+      if (otherPiDigest !== undefined) {
+        if (otherPiDigest === null || otherPiDigest === piDigest) {
+          add(
+            "pi_profile_not_other",
+            null,
+            "skipped: cannot be told apart, the other person's profile is the same or absent",
+          );
+        } else {
+          add(
+            "pi_profile_not_other",
+            !(profile.present && profile.digest === otherPiDigest),
+            profile.present && profile.digest === otherPiDigest
+              ? "the other person's profile"
+              : "not the other person's profile",
+          );
+        }
       }
     }
   }
