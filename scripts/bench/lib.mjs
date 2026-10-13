@@ -110,13 +110,16 @@ export const MEMORY_STAT_SH = [
  * the stream (the same answers missed in both layouts, round after round: 0.36.0-next.652, 708,
  * 754). The database is copied (with its log) before it is opened, so opencode's own file is only
  * read. Environment: `ST_ANSWER` (digits), `ST_SINCE` (server milliseconds: parts older are
- * another turn's), `ST_DATABASES` (colon-separated paths, tests only). Prints one JSON line:
+ * another turn's). Only a successful completed assistant message containing the requested number
+ * alone counts; plain digits or correctly grouped thousands are accepted. `ST_DATABASES` takes
+ * colon-separated paths in tests only. Prints one JSON line:
  * `{"endedAt": <ms>|null, "databases": n}`, or `{"unavailable": "<why>"}`.
  */
 export const OPENCODE_ANSWER_JS = [
   'const fs = require("node:fs"); const os = require("node:os"); const path = require("node:path");',
   'let sqlite; try { sqlite = require("node:sqlite"); } catch { console.log(JSON.stringify({ unavailable: "node has no node:sqlite" })); process.exit(0); }',
   'const answer = process.env.ST_ANSWER || ""; const since = Number(process.env.ST_SINCE || 0);',
+  'if (!/^\\d+$/.test(answer) || !Number.isSafeInteger(since) || since < 0) { console.log(JSON.stringify({ unavailable: "invalid answer or time" })); process.exit(0); }',
   "const found = new Set(); const add = (file) => { try { found.add(fs.realpathSync(file)); } catch {} };",
   'if (process.env.ST_DATABASES) { for (const file of process.env.ST_DATABASES.split(":")) add(file); } else {',
   '  add("/root/.local/share/opencode/opencode.db");',
@@ -133,10 +136,11 @@ export const OPENCODE_ANSWER_JS = [
   '      const rows = db.prepare("select p.data as part, p.time_updated as updated, m.data as message from part p join message m on m.id = p.message_id where p.time_updated >= ?").all(since);',
   "      for (const row of rows) {",
   "        let part, message; try { part = JSON.parse(row.part); message = JSON.parse(row.message); } catch { continue; }",
-  '        if (message.role !== "assistant" || part.type !== "text" || typeof part.text !== "string") continue;',
-  '        if (!part.text.replace(/[\\s,]/g, "").includes(answer)) continue;',
-  "        const at = Number(part.time?.end ?? row.updated);",
-  "        if (Number.isFinite(at) && (endedAt === null || at < endedAt)) endedAt = at;",
+  '        if (message?.role !== "assistant" || message.finish !== "stop" || message.error != null || part?.type !== "text" || typeof part.text !== "string") continue;',
+  '        const text = part.text.trim(); if (!/^(?:\\d+|\\d{1,3}(?:,\\d{3})+)$/.test(text) || text.replace(/,/g, "") !== answer) continue;',
+  "        const at = part.time?.end; const completed = message.time?.completed;",
+  "        if (!Number.isSafeInteger(at) || !Number.isSafeInteger(completed) || at < since || completed < at) continue;",
+  "        if (endedAt === null || at < endedAt) endedAt = at;",
   "      }",
   "    } finally { db.close(); }",
   "  } catch {} finally { fs.rmSync(dir, { recursive: true, force: true }); }",

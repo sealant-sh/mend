@@ -4386,14 +4386,24 @@ const opencodeTurns = (t, rows) => {
       `m${index}`,
       row.at,
       row.at,
-      JSON.stringify({ role: row.role }),
+      JSON.stringify({
+        role: row.role,
+        time: { created: row.at, completed: row.at + 75 },
+        finish: "stop",
+        ...row.message,
+      }),
     );
     db.prepare("insert into part values (?, ?, 's', ?, ?, ?)").run(
       `p${index}`,
       `m${index}`,
       row.at,
       row.at + 100,
-      JSON.stringify({ type: "text", text: row.text, time: { start: row.at, end: row.at + 50 } }),
+      JSON.stringify({
+        type: "text",
+        text: row.text,
+        time: { start: row.at, end: row.at + 50 },
+        ...row.part,
+      }),
     );
   }
   // This writer stays open until the test finalizer, while readers run in separate processes.
@@ -4458,6 +4468,83 @@ test("opencode's answer is read from its record, the assistant's text only, from
   );
   assert.throws(() => opencodeAnswerCommand("a;b", "1", 1), /not a container name/);
   assert.throws(() => opencodeAnswerCommand("c", "1;rm", 1), /not an answer/);
+});
+
+test("opencode numeric replies match the whole requested number", (t) => {
+  const wrong = [
+    ...Array.from({ length: 10 }, (_, digit) => `${digit}5147`),
+    ...Array.from({ length: 10 }, (_, digit) => `5147${digit}`),
+    "-5147",
+    "+5147",
+    "5147.0",
+    "0.5147",
+    "5147e2",
+    "5 147",
+    "51,47",
+    "5,,147",
+    "x5147",
+    "5147x",
+    "5147 is wrong; 6000 is right",
+    "5147\n6000",
+  ];
+  const { file } = opencodeTurns(
+    t,
+    wrong.map((text, index) => ({
+      role: "assistant",
+      at: 6000 + index * 100,
+      text,
+    })),
+  );
+  assert.deepEqual(readOpencodeAnswer(file, "5147", 5000), { endedAt: null, reason: null });
+  for (const text of ["5147", "  5147\n", "5,147"]) {
+    const fixture = opencodeTurns(t, [{ role: "assistant", at: 6000, text }]);
+    assert.deepEqual(readOpencodeAnswer(fixture.file, "5147", 5000), {
+      endedAt: 6050,
+      reason: null,
+    });
+  }
+});
+
+test("opencode waits for successful completed messages and text timestamps in the requested window", (t) => {
+  const rows = [
+    { message: { time: { created: 6000 } } },
+    { message: { finish: "tool-calls" } },
+    { message: { finish: "length" } },
+    { message: { error: { name: "AbortedError" } } },
+    { message: { time: { created: 6000, completed: null } } },
+    { message: { time: { created: 6000, completed: "6075" } } },
+    { part: { time: { start: 6000 } } },
+    { part: { time: { start: 6000, end: null } } },
+    { part: { time: { start: 6000, end: "6050" } } },
+    { part: { time: { start: 4000, end: 4050 } } },
+    { part: { time: { start: 6000, end: 8000 } } },
+  ];
+  for (const [index, override] of rows.entries()) {
+    const fixture = opencodeTurns(t, [{ role: "assistant", at: 6000, text: "5147", ...override }]);
+    assert.deepEqual(
+      readOpencodeAnswer(fixture.file, "5147", 5000),
+      { endedAt: null, reason: null },
+      `incomplete/inconsistent fixture ${index}`,
+    );
+  }
+});
+
+test("opencode reader refuses invalid answer and clock inputs before scanning databases", () => {
+  for (const [answer, since] of [
+    ["", "5000"],
+    ["5,147", "5000"],
+    ["5147", "-1"],
+    ["5147", "not-a-time"],
+  ]) {
+    const text = execFileSync(process.execPath, ["-e", OPENCODE_ANSWER_JS], {
+      env: { PATH: process.env.PATH, ST_ANSWER: answer, ST_SINCE: since },
+      encoding: "utf8",
+    });
+    assert.deepEqual(parseOpencodeAnswer(text), {
+      endedAt: null,
+      reason: "invalid answer or time",
+    });
+  }
 });
 
 test("an answer the screen never shows whole is found in the record once the screen has had its time", async () => {
