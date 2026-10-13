@@ -135,6 +135,7 @@ interface CoreCalls {
   deleteGate: Deferred.Deferred<void> | null;
   /** Held open, a POST waits on it after saying so in `calls`. */
   postGate: Deferred.Deferred<void> | null;
+  postStarted: Deferred.Deferred<void> | null;
   imageReports: number;
   /** How often the control plane was asked what it can do. */
   controlPlaneReads: number;
@@ -151,6 +152,7 @@ const coreCalls = (): CoreCalls => ({
   homes: [],
   deleteGate: null,
   postGate: null,
+  postStarted: null,
   imageReports: 0,
   controlPlaneReads: 0,
   sshAnswers: [],
@@ -210,7 +212,10 @@ const platformOf = (
         core.calls.push(`post:${input.onBehalfOf}:${input.home}`);
         const answer = core.answer(index, input.logins);
         const gate = core.postGate;
-        return (gate === null ? Effect.void : Deferred.await(gate)).pipe(
+        return (
+          core.postStarted === null ? Effect.void : Deferred.succeed(core.postStarted, undefined)
+        ).pipe(
+          Effect.andThen(gate === null ? Effect.void : Deferred.await(gate)),
           Effect.andThen(
             answer instanceof SealantPlatformError
               ? Effect.fail(answer)
@@ -1329,48 +1334,44 @@ describe("logins per person (docs/adr/0016, decision 5)", () => {
     expect(JSON.stringify(result.started?.env)).not.toContain(aliceHome);
   });
 
-  it("tells a joiner's home ready once their user exists, before their logins are written; a later start at once", async () => {
+  it("tells a joiner's home ready while their credential POST is pending; a later start answers at once", async () => {
     const core = coreCalls();
-    const order: Array<string> = [];
     const result = await withPersonExecutor(core, ({ steps }) =>
       Effect.gen(function* () {
-        const ready = (label: string) =>
-          Effect.gen(function* () {
-            const homeReady = yield* Deferred.make<PersonHome | null>();
-            yield* Effect.forkChild(
-              Deferred.await(homeReady).pipe(
-                Effect.tap((home) =>
-                  Effect.sync(() =>
-                    order.push(
-                      `${label}:${home === null ? "none" : home.made ? "made" : "there"}@${core.calls.length}`,
-                    ),
-                  ),
-                ),
-              ),
-            );
-            yield* steps.processAs({
-              workspace,
-              launchId: "launch-1",
-              accountId: "user-maria",
-              sessionId: "sess-1",
-              worktreeId: "wt-1",
-              harness: "claude",
-              live: Effect.succeed(new Set<string>()),
-              homeReady,
-            });
-            yield* Effect.yieldNow;
-            return yield* Deferred.await(homeReady);
-          });
-        const first = yield* ready("first");
-        const second = yield* ready("second");
+        const postGate = yield* Deferred.make<void>();
+        const postStarted = yield* Deferred.make<void>();
+        core.postGate = postGate;
+        core.postStarted = postStarted;
+        const homeReady = yield* Deferred.make<PersonHome | null>();
+        const request = {
+          workspace,
+          launchId: "launch-1",
+          accountId: "user-maria",
+          sessionId: "sess-1",
+          worktreeId: "wt-1",
+          harness: "claude",
+          live: Effect.succeed(new Set<string>()),
+        };
+        const starting = yield* steps.processAs({ ...request, homeReady }).pipe(Effect.forkChild);
+        yield* Deferred.await(postStarted);
+        // The transport has entered POST and cannot answer until this test releases its gate.
+        const first = yield* Deferred.await(homeReady);
+        expect(first?.made).toBe(true);
+        expect(starting.pollUnsafe()).toBeUndefined();
+        expect(yield* Deferred.isDone(postGate)).toBe(false);
+        yield* Deferred.succeed(postGate, undefined);
+        yield* Fiber.join(starting);
+        const secondReady = yield* Deferred.make<PersonHome | null>();
+        yield* steps.processAs({ ...request, homeReady: secondReady });
+        const second = yield* Deferred.await(secondReady);
         return { first, second };
-      }),
+      }).pipe(Effect.timeout("3 seconds")),
     );
     expect(result.first?.made).toBe(true);
     expect(result.first?.user.name).toBe(result.first?.identity.name);
     expect(result.second?.made).toBe(false);
-    // Each start tells it, the first once its home exec made her (beside her one Core call).
-    expect(order.map((line) => line.split("@")[0])).toEqual(["first:made", "second:there"]);
+    expect(result.second?.user).toEqual(result.first?.user);
+    expect(core.posts.filter((post) => post.onBehalfOf === "user-maria")).toHaveLength(1);
   });
 
   it("decides a fresh worktree shared while the launcher's dotfiles cannot be applied as them, and asks only then", async () => {
