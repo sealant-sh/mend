@@ -55,6 +55,15 @@
 // asks for the whole set whatever the records' --only/--harnesses said (see "gate P1" below), a
 // budgeted measure either side lacks, an error on either side, or anything that makes it "not the
 // gate" fails it.
+// Gate completeness requires each fresh harness launch's delivery and executor disk/memory
+// samples on both sides, with the ordinary per-round sample floor. Use --secret-file when the
+// account otherwise has nothing to deliver. A warm join's explicit nothing-to-deliver reason
+// does not replace fresh-launch delivery evidence. Executor memory remains a first-output
+// snapshot, not the scenario peak specified in ADR0016 (tracked in mend#878).
+// Person checks must include the agent's answer and identity, pi/opencode's own ChatGPT login,
+// and pi's own profile, including the joined pi when that second-person workload is requested.
+// A skipped required observation is not a verified observation; partial gates must explicitly
+// select --second-person-harnesses, rather than omit checks from their records.
 //
 // What the record keeps apart, so one run's accident does not read as a regression:
 // - An executor's size (`executor.<harness>.*_bytes`) is taken at the launch's first output, a fixed

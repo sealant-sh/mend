@@ -1073,12 +1073,65 @@ const sampleOf = (budget) =>
 const restoredResumes = () => ({
   "resume.tree_restored.first_output": { unit: "ms", budget: "start", samples: tenOf(30_000) },
 });
+/** Independent ADR0016 fixture policy: never derive complete records from requiredOf. */
+const gateFixtureRequirements = (secondPersonHarnesses = null) => {
+  const harnesses = ["claude", "codex", "pi", "opencode"];
+  const second = secondPersonHarnesses ?? harnesses;
+  const measures = harnesses.flatMap((harness) => [
+    { measure: `new.${harness}.first_output_excl_install`, unit: "ms", budget: "start" },
+    { measure: `new.${harness}.first_turn_excl_install`, unit: "ms", budget: "start" },
+    { measure: `new.${harness}.install_clean`, unit: "ms", budget: "start" },
+    { measure: `stop.${harness}.save`, unit: "ms", budget: "start" },
+    { measure: `new.${harness}.delivery`, unit: "ms", budget: "delivery" },
+    { measure: `executor.${harness}.disk_bytes`, unit: "bytes", budget: "resource" },
+    { measure: `executor.${harness}.memory_bytes`, unit: "bytes", budget: "resource" },
+  ]);
+  measures.push(
+    { measure: "join.same.first_output", unit: "ms", budget: "start" },
+    { measure: "checkpoint.save", unit: "ms", budget: "start" },
+    { measure: "shell.open", unit: "ms", budget: "interactive" },
+    { measure: "terminal.attach", unit: "ms", budget: "interactive" },
+    { measure: "terminal.echo", unit: "ms", budget: "interactive" },
+    { measure: "git.fetch", unit: "ms", budget: "interactive" },
+    { measure: "api.session_list", unit: "ms", budget: "api" },
+    { measure: "api.session_view", unit: "ms", budget: "api" },
+  );
+  const checks = [];
+  for (const harness of second.filter((name) => ["claude", "codex"].includes(name))) {
+    for (const direction of ["to_other", "back"]) {
+      measures.push({
+        measure: `handover.${harness}.${direction}.first_output_over_own`,
+        unit: "ms",
+        budget: "handover",
+      });
+      for (const check of ["billed", "runs_as", "one_agent", "completed", "conversation_kept"])
+        checks.push(`handover.${harness}.${direction}.${check}`);
+    }
+    checks.push(`handover.${harness}.seed.size_read`, `handover.${harness}.round_not_compacted`);
+  }
+  for (const harness of second)
+    measures.push({
+      measure: `growth.${harness}.extra_person_beyond_state_bytes`,
+      unit: "bytes",
+      budget: "growth",
+    });
+  if (second.length > 0)
+    measures.push({ measure: "join.other.first_output", unit: "ms", budget: "join-other" });
+  for (const [harness, prefix] of [
+    ...harnesses.map((name) => [name, `person.${name}`]),
+    ...(second.includes("pi") ? [["pi", "person.pi.joined"]] : []),
+  ]) {
+    for (const check of ["runs_as", "uid", "home", "agent_process", "answers", "agent_identity"])
+      checks.push(`${prefix}.${check}`);
+    if (["pi", "opencode"].includes(harness)) checks.push(`${prefix}.chatgpt_login`);
+    if (harness === "pi") checks.push(`${prefix}.pi_profile`);
+  }
+  return { measures, checks };
+};
+
 /** A person record carrying all of gate P1 (every required measure and check holding). */
 const completePerson = (secondPersonHarnesses = null) => {
-  const required = requiredOf(layoutRecord("person", "1", {}), {
-    gate: true,
-    secondPersonHarnesses,
-  });
+  const required = gateFixtureRequirements(secondPersonHarnesses);
   const measures = {
     ...Object.fromEntries(
       required.measures.map((entry) => [
@@ -1104,7 +1157,7 @@ const completePerson = (secondPersonHarnesses = null) => {
 };
 /** The shared record of gate P1: every launch measure, the different-person join included. */
 const sharedBaseline = () => {
-  const required = requiredOf(layoutRecord("person", "1", {}), { gate: true });
+  const required = gateFixtureRequirements();
   return layoutRecord("shared", "1", {
     ...Object.fromEntries(
       required.measures
@@ -1117,6 +1170,137 @@ const sharedBaseline = () => {
     ...restoredResumes(),
   });
 };
+
+test("gate completeness requires independent identity, login and profile observations", () => {
+  const reference = completePerson();
+  const requiredChecks = gateFixtureRequirements().checks.filter((name) =>
+    name.startsWith("person."),
+  );
+  assert.equal(comparisonFails(compareResults(sharedBaseline(), reference)), false);
+  for (const name of requiredChecks) {
+    const missing = structuredClone(reference);
+    missing.checks = missing.checks.filter((check) => check.check !== name);
+    const comparison = compareResults(sharedBaseline(), missing);
+    assert.ok(
+      comparison.checksNotVerified.some((check) => check.check === name),
+      name,
+    );
+    assert.equal(comparisonFails(comparison), true, name);
+    const skipped = structuredClone(reference);
+    const observation = skipped.checks.find((check) => check.check === name);
+    observation.passed = 0;
+    observation.skipped = 1;
+    observation.detail = "skipped: no host or login evidence";
+    assert.equal(
+      comparisonFails(compareResults(sharedBaseline(), skipped)),
+      true,
+      `${name} skipped`,
+    );
+  }
+});
+
+test("gate completeness requires delivery and executor resources even when both records omit them", () => {
+  for (const { measure } of gateFixtureRequirements().measures.filter((entry) =>
+    ["delivery", "resource"].includes(entry.budget),
+  )) {
+    const shared = sharedBaseline();
+    const person = completePerson();
+    delete shared.measures[measure];
+    delete person.measures[measure];
+    const comparison = compareResults(shared, person);
+    assert.ok(
+      comparison.misses.some((row) => row.measure === measure),
+      measure,
+    );
+    assert.equal(comparisonFails(comparison), true, measure);
+  }
+});
+
+test("gate completeness reports an unmeasured warm join without exempting fresh-launch delivery", () => {
+  const shared = sharedBaseline();
+  const person = completePerson();
+  for (const result of [shared, person]) {
+    result.notRun.push({
+      measure: "join.same.delivery",
+      reason:
+        "nothing to deliver: the person's memory was already in place from their earlier start in this executor",
+    });
+  }
+  const compared = compareResults(shared, person);
+  assert.equal(comparisonFails(compared), false);
+  assert.ok(compared.notRun.some((entry) => entry.measure === "join.same.delivery"));
+  // A reason attached to a warm join cannot excuse the fresh-launch workload. Run with the
+  // benchmark's --secret-file fixture when there would otherwise be nothing to deliver.
+  for (const result of [shared, person]) {
+    delete result.measures["new.claude.delivery"];
+    result.notRun.push({ measure: "new.claude.delivery", reason: "no host access" });
+  }
+  assert.equal(comparisonFails(compareResults(shared, person)), true);
+});
+
+test("gate completeness compares resource and delivery budgets and requires enough samples", () => {
+  for (const measure of ["new.pi.delivery", "executor.pi.memory_bytes", "executor.pi.disk_bytes"]) {
+    for (const samples of [tenOf(100_000), [30_000]]) {
+      const person = completePerson();
+      person.measures[measure].samples = samples;
+      const comparison = compareResults(sharedBaseline(), person);
+      assert.ok(
+        comparison.misses.some((row) => row.measure === measure),
+        measure,
+      );
+      assert.equal(comparisonFails(comparison), true, measure);
+    }
+  }
+});
+
+test("gate completeness reaches the public compare command's response and exit status", (t) => {
+  const directory = mkdtempSync(path.join(tmpdir(), "st-bench-gate-complete-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const before = path.join(directory, "before.json");
+  const after = path.join(directory, "after.json");
+  const compare = (baseline, current) => {
+    writeFileSync(before, JSON.stringify(baseline));
+    writeFileSync(after, JSON.stringify(current));
+    const result = spawnSync(
+      process.execPath,
+      [fileURLToPath(new URL("bench.mjs", import.meta.url)), "compare", before, after],
+      { cwd: directory, encoding: "utf8", timeout: 10_000 },
+    );
+    assert.ifError(result.error);
+    return result;
+  };
+  const complete = compare(sharedBaseline(), completePerson());
+  assert.equal(complete.status, 0, complete.stderr);
+  for (const name of [
+    "person.claude.answers",
+    "person.codex.agent_identity",
+    "person.pi.chatgpt_login",
+    "person.pi.pi_profile",
+    "person.pi.joined.pi_profile",
+    "person.opencode.chatgpt_login",
+  ]) {
+    const person = completePerson();
+    person.checks = person.checks.filter((check) => check.check !== name);
+    const refused = compare(sharedBaseline(), person);
+    assert.equal(refused.status, 1, name);
+    assert.ok(refused.stdout.includes(name), name);
+    assert.match(refused.stderr, /were not seen holding/);
+  }
+  for (const name of [
+    "new.codex.delivery",
+    "executor.codex.disk_bytes",
+    "executor.codex.memory_bytes",
+  ]) {
+    const shared = sharedBaseline();
+    const person = completePerson();
+    delete shared.measures[name];
+    delete person.measures[name];
+    const refused = compare(shared, person);
+    assert.equal(refused.status, 1, name);
+    assert.ok(refused.stdout.includes(name), name);
+    assert.match(refused.stderr, /over their limit or missing/);
+  }
+});
 
 test("a person record that carries everything it was asked for passes, ceilings on itself", () => {
   const result = compareResults(sharedBaseline(), completePerson());
