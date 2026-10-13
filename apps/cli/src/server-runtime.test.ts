@@ -226,14 +226,34 @@ it("passes only the server allowlist to a real child process", async () => {
   });
 });
 
-it("shows inherited stdout on the terminal while still bounding stderr and the deadline", async () => {
-  const shown = await runServerProcess(
+it("forwards inherited stdout to its caller while capturing stderr separately", () => {
+  // A second Node process owns the runner's terminal. Capture that process, so a runner
+  // that accidentally ignores stdout cannot pass merely by returning an empty string.
+  const runtimeUrl = new URL("./server-runtime.ts", import.meta.url).href;
+  const script = `import { runServerProcess } from ${JSON.stringify(runtimeUrl)};
+const result = await runServerProcess(process.execPath,
+  ["-e", "process.stdout.write('progress\\\\n'); process.stderr.write('warned')"],
+  {}, { stdout: "inherit", timeoutMs: 2000 });
+process.stdout.write(JSON.stringify(result));`;
+  const root = temporary();
+  const caller = spawnSync(
     process.execPath,
-    ["-e", "process.stdout.write('progress\\n'); process.stderr.write('warned')"],
-    {},
-    { stdout: "inherit" },
+    ["--experimental-strip-types", "--input-type=module", "-e", script],
+    {
+      env: { PATH: process.env["PATH"], HOME: root, XDG_CONFIG_HOME: root },
+      encoding: "utf8",
+      timeout: 5000,
+    },
   );
-  expect(shown).toEqual({ status: 0, stdout: "", stderr: "warned" });
+  expect(caller.error).toBeUndefined();
+  expect(caller.status).toBe(0);
+  expect(caller.stdout.startsWith("progress\n")).toBe(true);
+  expect(caller.stderr).not.toContain("warned");
+  const result: unknown = JSON.parse(caller.stdout.slice("progress\n".length));
+  expect(result).toEqual({ status: 0, stdout: "", stderr: "warned" });
+});
+
+it("refuses conflicting stdout destinations before running the command", async () => {
   const conflicting = await runServerProcess(
     process.execPath,
     ["-e", "console.log('never runs')"],
