@@ -3,14 +3,19 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
+import { it as effectIt } from "@effect/vitest";
 import { Effect } from "effect";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { BlobStore, BlobStoreFsLive } from "../src/blob-store.ts";
 import {
   captureKeys,
+  type CaptureManifest,
+  type DirEntry,
+  decodeDirObject,
   decodeManifest,
   digestOfKey,
+  encodeDirObject,
   materialize,
   readChunk,
   readPackIndex,
@@ -93,40 +98,97 @@ describe("CDC pack container", () => {
 });
 
 describe("manifest codec", () => {
-  it("decodes ADR-0015's fields and passes unknown ones through", async () => {
-    const built = buildManifest({
-      worktreeId: "wt-1",
-      n: 3,
-      parent: "abc",
-      epoch: 2,
-      kind: "checkpoint",
-      seq: 41,
-      checkpoint: { ordinal: 1, sha: "deadbeef", ref: "refs/mend/checkpoints/wt-1/1" },
-      bulk: { root: "captures/wt-1/2/trees/x", packs: [], platform: "linux-x64-glibc" },
-    });
-    const withExtra = utf8(
-      JSON.stringify({ ...JSON.parse(Buffer.from(built.bytes).toString("utf8")), extra: { a: 1 } }),
-    );
-    const decoded = await Effect.runPromise(decodeManifest(built.key, withExtra));
-    expect(decoded.worktree_id).toBe("wt-1");
-    expect(decoded.n).toBe(3);
-    expect(decoded.parent).toBe("abc");
-    expect(decoded.epoch).toBe(2);
-    expect(decoded.seq).toBe(41);
-    expect(decoded.kind).toBe("checkpoint");
-    expect(decoded.checkpoint).toEqual({
-      ordinal: 1,
-      sha: "deadbeef",
-      ref: "refs/mend/checkpoints/wt-1/1",
-    });
-    expect(decoded.sections.bulk).toEqual({
-      root: "captures/wt-1/2/trees/x",
-      packs: [],
-      platform: "linux-x64-glibc",
-    });
-    expect(built.key).toBe(`captures/wt-1/2/manifests/${built.id}`);
-    expect(digestOfKey(built.key)).toBe(built.id);
-  });
+  effectIt.effect("accepts extra fields and decodes the complete known manifest contract", () =>
+    Effect.gen(function* () {
+      const known = {
+        worktree_id: "wt-1",
+        n: 3,
+        parent: "b".repeat(64),
+        epoch: 2,
+        seq: 41,
+        kind: "checkpoint",
+        created_at: "2026-09-17T10:00:00.000Z",
+        sections: {
+          git: {
+            packs: [`captures/wt-1/2/packs/${"c".repeat(64)}`],
+            refs: { "refs/heads/main": "d".repeat(40) },
+            head: "refs/heads/main",
+            fsck: "verified",
+            symrefs: { "refs/remotes/origin/HEAD": "refs/remotes/origin/main" },
+            worktree_tree: "e".repeat(40),
+            index_tree: "f".repeat(40),
+            raw_tree: "a".repeat(40),
+            object_format: "sha1",
+            ref_format: "files",
+          },
+          workspace: {
+            root: "d".repeat(64),
+            packs: [`captures/wt-1/1/packs/${"e".repeat(64)}`],
+            format: 2,
+            dir_packs: [`captures/wt-1/2/packs/${"f".repeat(64)}`],
+            root_links: { ".claude": "../saved/claude" },
+            worktree_meta: {
+              format: 1,
+              size: 23,
+              sha256: "a".repeat(64),
+              chunks: ["b".repeat(64)],
+              packs: [`captures/wt-1/2/packs/${"e".repeat(64)}`],
+            },
+          },
+          bulk: {
+            root: `captures/wt-1/2/trees/${"a".repeat(64)}`,
+            packs: [],
+            platform: "linux-x64-glibc",
+          },
+          other_bulk: {
+            "linux-arm64-glibc": {
+              root: "c".repeat(64),
+              packs: [],
+              platform: "linux-arm64-glibc",
+              format: 2,
+              dir_packs: [`captures/wt-1/1/packs/${"d".repeat(64)}`],
+            },
+          },
+        },
+        checkpoint: { ordinal: 1, sha: "d".repeat(40), ref: "refs/mend/checkpoints/wt-1/1" },
+        final_seal: {
+          complete: true,
+          epoch: 2,
+          executor: "executor-1",
+          boot_id: "boot-1",
+          boot_generation: 4,
+          observation: 9,
+        },
+      } satisfies CaptureManifest;
+      const bytes = utf8(
+        JSON.stringify({
+          ...known,
+          extra: { a: 1 },
+          sections: {
+            ...known.sections,
+            extra: "ignored section",
+            git: { ...known.sections.git, extra: "ignored git field" },
+          },
+        }),
+      );
+      const decoded = yield* decodeManifest("manifest-with-extra", bytes);
+      // Extra fields are accepted, while the reader's current known-field projection stays exact.
+      expect(decoded).toEqual(known);
+      // Retain the fixture writer's original key/id checks without making it the decode oracle.
+      const built = buildManifest({
+        worktreeId: "wt-1",
+        n: 3,
+        parent: "abc",
+        epoch: 2,
+        kind: "checkpoint",
+        seq: 41,
+        checkpoint: { ordinal: 1, sha: "deadbeef", ref: "refs/mend/checkpoints/wt-1/1" },
+        bulk: { root: "captures/wt-1/2/trees/x", packs: [], platform: "linux-x64-glibc" },
+      });
+      expect(built.key).toBe(`captures/wt-1/2/manifests/${built.id}`);
+      expect(digestOfKey(built.key)).toBe(built.id);
+    }),
+  );
 
   it("rejects a manifest missing a section or with an unknown kind", async () => {
     const built = buildManifest({ worktreeId: "wt-1", n: 0, parent: null, epoch: 1 });
@@ -317,30 +379,111 @@ describe("materialize", () => {
     expect(tamperedTag).toBe("CaptureIntegrityError");
   });
 
-  it("serves a chunk from a prior epoch's pack when the manifest lists it", async () => {
-    const source = buildSource();
-    const first = snapshotDirectory(source, captureKeys("wt-x", 1), { chunkSize: 4000 });
-    fs.writeFileSync(path.join(source, "new.txt"), "second epoch\n");
-    const second = snapshotDirectory(source, captureKeys("wt-x", 2), { chunkSize: 4000 });
-    // Epoch 2 wrote its own copies (never skips an upload); a manifest may still name epoch 1's.
-    const manifest = buildManifest({
-      worktreeId: "wt-x",
-      n: 5,
-      parent: null,
-      epoch: 2,
-      workspace: { root: second.root, packs: [...first.packs, ...second.packs] },
-    });
-    const target = path.join(scratch, "target-x");
-    const stats = await run(
+  effectIt.live(
+    "restores prior-only chunks beside genuinely new epoch bytes and refuses missing prior packs",
+    () =>
       Effect.gen(function* () {
-        yield* uploadObjects(first.objects);
-        yield* uploadObjects(second.objects);
-        return yield* materialize(manifest.manifest, "workspace", target);
+        const source = buildSource();
+        const first = snapshotDirectory(source, captureKeys("wt-x", 1), { chunkSize: 4000 });
+        const rootBytes = first.objects.get(first.root);
+        if (rootBytes === undefined) throw new Error("fixture root missing");
+        const priorEntries = yield* decodeDirObject(first.root, rootBytes);
+        const newBytes = utf8("second epoch\n");
+        fs.writeFileSync(path.join(source, "new.txt"), newBytes);
+        const newStat = fs.lstatSync(path.join(source, "new.txt"), { bigint: true });
+        const newHash = sha256Hex(newBytes);
+        const newPack = writeCdcPack([newBytes]);
+        const keys = captureKeys("wt-x", 2);
+        const newPackKey = keys.pack(sha256Hex(newPack.bytes));
+        const newRootBytes = encodeDirObject(
+          [
+            ...priorEntries,
+            {
+              name: "new.txt",
+              kind: "file",
+              mode: Number(newStat.mode),
+              size: newBytes.byteLength,
+              mtime: newStat.mtimeNs,
+              chunks: [newHash],
+            } satisfies DirEntry,
+          ].toSorted((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)),
+        );
+        const newRoot = keys.tree(sha256Hex(newRootBytes));
+        // Epoch 2 contains only its changed root and the new file's pack. Every unchanged child
+        // tree and file chunk still depends on epoch 1's actual stored objects.
+        const secondObjects = new Map([
+          [newRoot, newRootBytes],
+          [newPackKey, newPack.bytes],
+        ]);
+        const newIndex = yield* readPackIndex(newPackKey, newPack.bytes);
+        expect(newIndex.map(({ hash, size }) => ({ hash, size }))).toEqual([
+          { hash: newHash, size: 13 },
+        ]);
+        for (const key of first.packs) {
+          const bytes = first.objects.get(key);
+          if (bytes === undefined) throw new Error("fixture prior pack missing");
+          const priorIndex = yield* readPackIndex(key, bytes);
+          expect(priorIndex.some((entry) => entry.hash === newHash)).toBe(false);
+        }
+        const manifest = buildManifest({
+          worktreeId: "wt-x",
+          n: 5,
+          parent: null,
+          epoch: 2,
+          workspace: { root: newRoot, packs: [...first.packs, newPackKey] },
+        });
+        const target = path.join(scratch, "target-x");
+        const restored = yield* Effect.gen(function* () {
+          yield* uploadObjects(first.objects);
+          yield* uploadObjects(secondObjects);
+          const stats = yield* materialize(manifest.manifest, "workspace", target);
+          const missingPrior = {
+            ...manifest.manifest,
+            sections: {
+              ...manifest.manifest.sections,
+              workspace: { root: newRoot, packs: [newPackKey] },
+            },
+          };
+          const missingTag = yield* failureTag(
+            materialize(missingPrior, "workspace", path.join(scratch, "target-x-no-prior")),
+          );
+          return { stats, missingTag };
+        }).pipe(Effect.provide(layer()));
+        expect(restored.stats).toEqual({
+          dirs: 3,
+          files: 6,
+          symlinks: 1,
+          hardlinks: 1,
+          bytes: 9_061,
+        });
+        expect(describeTree(target)).toEqual(describeTree(source));
+        for (const relative of [
+          "README.md",
+          "src/index.ts",
+          "src/deep/big.bin",
+          "run.sh",
+          "empty.txt",
+          "src/README-link.md",
+          "new.txt",
+        ]) {
+          expect(fs.readFileSync(path.join(target, relative))).toEqual(
+            fs.readFileSync(path.join(source, relative)),
+          );
+        }
+        expect(fs.readFileSync(path.join(target, "README.md"), "utf8")).toBe("# fixture\n");
+        expect(fs.readFileSync(path.join(target, "src", "index.ts"), "utf8")).toBe(
+          "export const x = 1;\n",
+        );
+        expect(fs.readFileSync(path.join(target, "src", "deep", "big.bin"))).toEqual(
+          Buffer.alloc(9_000, 0xab),
+        );
+        expect(fs.statSync(path.join(target, "README.md")).ino).toBe(
+          fs.statSync(path.join(target, "src", "README-link.md")).ino,
+        );
+        expect(fs.readFileSync(path.join(target, "new.txt"), "utf8")).toBe("second epoch\n");
+        expect(restored.missingTag).toBe("ChunkNotFoundError");
       }),
-    );
-    expect(stats.files).toBe(6);
-    expect(fs.readFileSync(path.join(target, "new.txt"), "utf8")).toBe("second epoch\n");
-  });
+  );
 });
 
 describe("verifyGitPack", () => {
