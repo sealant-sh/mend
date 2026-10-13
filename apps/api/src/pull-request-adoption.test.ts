@@ -48,7 +48,8 @@ const adoptedLanding = new ChangeLanding({
   createdAt: NOW,
 });
 
-const world = (adoption: Adoption) => {
+const world = (adoption: Adoption, currentChange: ChangeId | null = CHANGE) => {
+  const lookedUp: Array<WorktreeId> = [];
   const enqueued: Array<JobSpec> = [];
   const adopts: Array<AdoptInput> = [];
   const audited: Array<NewAuditEvent> = [];
@@ -63,20 +64,23 @@ const world = (adoption: Adoption) => {
       adoptPullRequest: (input) => Effect.sync(() => (adopts.push(input), adoption)),
     }),
     Layer.mock(WorktreeChangesRepo, {
-      byWorktree: () =>
-        Effect.succeed(
-          new Change({
-            id: CHANGE,
-            projectId: PROJECT,
-            worktreeId: WORKTREE,
-            sessionId: event.sessionId,
-            branch: "mend/update-deps",
-            baseSha: Sha.make("a".repeat(40)),
-            headSha: null,
-            createdAt: NOW,
-            updatedAt: NOW,
-          }),
-        ),
+      byWorktree: (worktreeId) =>
+        Effect.sync(() => {
+          lookedUp.push(worktreeId);
+          return currentChange === null || worktreeId !== WORKTREE
+            ? null
+            : new Change({
+                id: currentChange,
+                projectId: PROJECT,
+                worktreeId: WORKTREE,
+                sessionId: event.sessionId,
+                branch: "mend/update-deps",
+                baseSha: Sha.make("a".repeat(40)),
+                headSha: null,
+                createdAt: NOW,
+                updatedAt: NOW,
+              });
+        }),
     }),
     Layer.mock(ProjectsRepo, {
       byId: () =>
@@ -122,7 +126,7 @@ const world = (adoption: Adoption) => {
         Effect.scoped,
       ),
     );
-  return { enqueued, adopts, audited, workers, run };
+  return { enqueued, adopts, audited, workers, lookedUp, run };
 };
 
 describe("PullRequestAdoptionLive", () => {
@@ -164,5 +168,74 @@ describe("PullRequestAdoptionLive", () => {
         data: expect.objectContaining({ pullRequest: 368, branch: "chore/bump-deps", fork: null }),
       }),
     ]);
+  });
+
+  it("adopts the current worktree change with the exact URLs and turn start from the opened hook", async () => {
+    const currentChange = ChangeId.make("current-worktree-change");
+    const landing = new ChangeLanding({ ...adoptedLanding, changeId: currentChange });
+    const w = world({ _tag: "adopted", landing }, currentChange);
+    const urls = ["https://github.com/acme/api/pull/368", "https://github.com/acme/api/pull/369"];
+    const since = new Date("2026-09-25T09:58:23.456Z");
+    await w.run(
+      Effect.gen(function* () {
+        yield* (yield* WorkspaceGitHooks).pullRequestOpened({ ...event, urls, since });
+      }),
+    );
+    expect(w.lookedUp).toEqual([WORKTREE]);
+    expect(w.adopts).toEqual([
+      { changeId: currentChange, background: true, openedInTurn: { urls, since } },
+    ]);
+    expect(w.enqueued).toEqual([]);
+    expect(w.audited).toEqual([
+      {
+        organizationId: OrganizationId.make("org-1"),
+        actorUserId: "alice",
+        action: "change.pull_request_adopted",
+        subjectType: "change",
+        subjectId: currentChange,
+        data: {
+          landingId: landing.id,
+          pullRequest: 368,
+          state: "open",
+          branch: "chore/bump-deps",
+          fork: null,
+        },
+      },
+    ]);
+  });
+
+  it("does nothing when the opened hook's worktree has no current change", async () => {
+    const w = world({ _tag: "adopted", landing: adoptedLanding }, null);
+    await w.run(
+      Effect.gen(function* () {
+        yield* (yield* WorkspaceGitHooks).pullRequestOpened({
+          ...event,
+          urls: ["https://github.com/acme/api/pull/368"],
+          since: NOW,
+        });
+      }),
+    );
+    expect(w.lookedUp).toEqual([WORKTREE]);
+    expect(w.adopts).toEqual([]);
+    expect(w.enqueued).toEqual([]);
+    expect(w.audited).toEqual([]);
+  });
+
+  const notAdopted: ReadonlyArray<Adoption> = [
+    { _tag: "none" },
+    { _tag: "skipped", reason: "pull request belongs to another change" },
+    { _tag: "observed", landing: adoptedLanding },
+  ];
+  it.each(notAdopted)("records no adoption audit for a $_tag result", async (adoption) => {
+    const w = world(adoption);
+    const openedInTurn = { urls: ["https://github.com/acme/api/pull/368"], since: NOW };
+    await w.run(
+      Effect.gen(function* () {
+        yield* (yield* WorkspaceGitHooks).pullRequestOpened({ ...event, ...openedInTurn });
+      }),
+    );
+    expect(w.adopts).toEqual([{ changeId: CHANGE, background: true, openedInTurn }]);
+    expect(w.audited).toEqual([]);
+    expect(w.enqueued).toEqual([]);
   });
 });
