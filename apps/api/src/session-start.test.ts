@@ -4,6 +4,7 @@ import {
   HarnessModelsRepo,
   ProjectsRepo,
   SessionsRepo,
+  SessionNotFoundError,
   SettingsRepo,
 } from "@mend/db";
 import {
@@ -13,6 +14,8 @@ import {
   OrganizationId,
   ProjectId,
   SessionId,
+  SealantRunId,
+  SealantWorkspaceId,
   SessionProcessId,
   WorktreeId,
 } from "@mend/domain";
@@ -28,8 +31,9 @@ import {
   type SessionOrigin,
 } from "@mend/domain/workbench";
 import { JobRunner } from "@mend/jobs";
-import { SessionEngine } from "@mend/sessions";
+import { SessionEngine, SessionLaunchSetupError } from "@mend/sessions";
 import { Deferred, Duration, Effect, Fiber, Layer } from "effect";
+import { TestClock } from "effect/testing";
 import { describe, expect, it } from "vitest";
 
 import { makeProject, makeSession } from "../test/support/tenancy-harness.ts";
@@ -128,9 +132,22 @@ const startWorld = (
     readonly turns?: number;
     /** Alice is the instance operator. */
     readonly operator?: boolean;
+    /** The row observable while launch is pending, including a deleted row. */
+    readonly initial?: Session | null;
+    readonly executorCreate?: string | null;
+    readonly launchFailure?: SessionLaunchSetupError;
+    readonly launchEntered?: Deferred.Deferred<void>;
+    readonly launchFinished?: Deferred.Deferred<void>;
   } = {},
 ) => {
   const effects: Array<string> = [];
+  const settlements: Array<Parameters<SessionsRepo["Service"]["settle"]>> = [];
+  const fibers: Array<Fiber.Fiber<unknown, unknown>> = [];
+  let current =
+    options.initial === undefined
+      ? new Session({ ...provisioned("alice"), status: "starting", summary: "booting" })
+      : options.initial;
+  const budgets = makeBudgets({ ...DEFAULT_BUDGET_LIMITS, ...options.limits });
   const note = (entry: string) => Effect.sync(() => void effects.push(entry));
   const layer = SessionStartLive.pipe(
     Layer.provide(
@@ -149,7 +166,7 @@ const startWorld = (
               Effect.as(options.operator === true && userId === "alice"),
             ),
         }),
-        Layer.succeed(Budgets, makeBudgets({ ...DEFAULT_BUDGET_LIMITS, ...options.limits })),
+        Layer.succeed(Budgets, budgets),
         Layer.mock(SessionsRepo, {
           listUnsettledForOwner: (userId) =>
             note(`sessions.listUnsettledForOwner:${userId}`).pipe(
@@ -173,14 +190,43 @@ const startWorld = (
           // The session as it stands while its launch goes on.
           byId: (id) =>
             note(`sessions.byId:${id}`).pipe(
-              Effect.as(
-                new Session({ ...provisioned("alice"), status: "starting", summary: "booting" }),
+              Effect.andThen(
+                Effect.suspend(() =>
+                  current === null
+                    ? Effect.fail(new SessionNotFoundError({ sessionId: id }))
+                    : Effect.succeed(current),
+                ),
               ),
             ),
+          executorCreateOf: () => Effect.succeed(options.executorCreate ?? null),
+          settle: (id, outcome, summary) =>
+            Effect.sync(() => {
+              settlements.push([id, outcome, summary]);
+              if (current !== null)
+                current = new Session({
+                  ...current,
+                  status: outcome,
+                  summary,
+                  settledAt: new Date("2026-09-24T10:00:00.000Z"),
+                });
+            }),
         }),
         Layer.mock(SessionEngine, {
           launchUnderWay: () => false,
-          detach: (effect) => Effect.forkDetach(effect),
+          detach: (effect) =>
+            effect.pipe(
+              Effect.onExit(() =>
+                options.launchFinished === undefined
+                  ? Effect.void
+                  : Deferred.succeed(options.launchFinished, undefined),
+              ),
+              Effect.forkDetach,
+              Effect.tap((fiber) =>
+                Effect.sync(() => {
+                  fibers.push(fiber);
+                }),
+              ),
+            ),
           provision: (input) =>
             note(
               `engine.provision:${input.projectId}:${input.ownerUserId}:${input.origin}${input.autoLand === null || input.autoLand === undefined ? "" : `:land=${input.autoLand}`}${input.harnessLayout === undefined ? "" : `:layout=${input.harnessLayout}`}`,
@@ -198,9 +244,18 @@ const startWorld = (
               `engine.launchProtocol:${sessionId}:${author}:${start.model ?? "-"}:${start.effort ?? "-"}:${start.prompt}`,
             ).pipe(
               Effect.andThen(
+                options.launchEntered === undefined
+                  ? Effect.void
+                  : Deferred.succeed(options.launchEntered, undefined),
+              ),
+              Effect.andThen(
                 options.launchGate === undefined ? Effect.void : Deferred.await(options.launchGate),
               ),
-              Effect.as(provisioned(author)),
+              Effect.andThen(
+                options.launchFailure === undefined
+                  ? Effect.succeed(provisioned(author))
+                  : Effect.fail(options.launchFailure),
+              ),
             ),
           launch: (sessionId, argv) =>
             note(`engine.launch:${sessionId}:${argv.join(" ")}`).pipe(
@@ -239,7 +294,15 @@ const startWorld = (
       ),
     ),
   );
-  return { effects, layer };
+  return {
+    effects,
+    layer,
+    budgets,
+    settlements,
+    fibers,
+    current: () => current,
+    cleanup: Effect.forEach(fibers, Fiber.interrupt, { discard: true }),
+  };
 };
 
 const startAs = (world: ReturnType<typeof startWorld>, userId: string, input: StartSessionInput) =>
@@ -606,5 +669,171 @@ describe("SessionStart.createAs harnessLayout (docs/adr/0016, decision 14)", () 
     const result = await createAs(world);
     expect(result._tag).toBe("Success");
     expect(world.effects).toContain(`engine.provision:${PROJECT}:alice:mend:layout=person`);
+  });
+});
+
+const unlaunched = () =>
+  new Session({
+    ...provisioned("alice"),
+    status: "starting",
+    summary: "waiting for launch",
+    sealantWorkspaceId: null,
+    sealantRunId: null,
+    sealantSessionId: null,
+    startedAt: null,
+    settledAt: null,
+  });
+const setupFailure = () =>
+  new SessionLaunchSetupError({
+    sessionId: SESSION,
+    command: "owned fixture setup",
+    message: "fixture setup refused",
+  });
+const launchInput = () => new LaunchRequest({ mode: "protocol", prompt: "" });
+const expectLaunchFailure = (result: Awaited<ReturnType<typeof startAs>>) => {
+  expect(result._tag === "Failure" ? result.failure : null).toMatchObject({
+    _tag: "StoreFailure",
+    message: "fixture setup refused",
+  });
+};
+
+describe("API-owned pre-workspace launch failure settlement", () => {
+  it("settles an unanswered launch failure and releases the real account slot", async () => {
+    const row = unlaunched();
+    const world = startWorld({
+      initial: row,
+      limits: { accountLaunchesInFlight: 1 },
+      launchFailure: setupFailure(),
+    });
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const start = yield* SessionStart;
+        const result = yield* start.launchAs("alice", row, launchInput()).pipe(Effect.result);
+        expectLaunchFailure(result);
+        expect(world.settlements).toEqual([
+          [SESSION, "failed", "launch failed: fixture setup refused"],
+        ]);
+        expect(world.current()).toEqual(
+          new Session({
+            ...row,
+            status: "failed",
+            summary: "launch failed: fixture setup refused",
+            settledAt: new Date("2026-09-24T10:00:00.000Z"),
+          }),
+        );
+        expect(yield* world.budgets.withLaunchSlot("alice", Effect.succeed("reused"))).toBe(
+          "reused",
+        );
+      }).pipe(Effect.provide(world.layer), Effect.ensuring(world.cleanup)),
+    );
+  });
+
+  it("settles a late failure after the bounded answer and then releases its still-held slot", async () => {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const entered = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        const finished = yield* Deferred.make<void>();
+        const row = unlaunched();
+        const world = startWorld({
+          initial: row,
+          limits: { accountLaunchesInFlight: 1 },
+          launchEntered: entered,
+          launchGate: release,
+          launchFinished: finished,
+          launchFailure: setupFailure(),
+        });
+        return yield* Effect.gen(function* () {
+          const start = yield* SessionStart;
+          const caller = yield* start
+            .launchAs("alice", row, launchInput(), { within: Duration.seconds(10) })
+            .pipe(Effect.forkChild);
+          yield* Deferred.await(entered);
+          yield* TestClock.adjust("10 seconds");
+          expect(yield* Fiber.join(caller)).toEqual(row);
+          expect(world.settlements).toEqual([]);
+          expect(world.current()).toEqual(row);
+          expect(
+            yield* world.budgets.withLaunchSlot("alice", Effect.succeed("unexpected free slot")),
+          ).toBeNull();
+          yield* Deferred.succeed(release, undefined);
+          // The engine's returned detached fiber completes after settlement and the slot finalizer.
+          yield* Deferred.await(finished);
+          const detached = world.fibers[0];
+          if (detached === undefined) throw new Error("Missing detached launch fiber");
+          const late = yield* Fiber.join(detached).pipe(Effect.result);
+          expect(late._tag === "Failure" ? late.failure : null).toMatchObject({
+            _tag: "StoreFailure",
+            message: "fixture setup refused",
+          });
+          expect(world.settlements).toEqual([
+            [SESSION, "failed", "launch failed: fixture setup refused"],
+          ]);
+          expect(world.current()).toEqual(
+            new Session({
+              ...row,
+              status: "failed",
+              summary: "launch failed: fixture setup refused",
+              settledAt: new Date("2026-09-24T10:00:00.000Z"),
+            }),
+          );
+          expect(yield* world.budgets.withLaunchSlot("alice", Effect.succeed("reused"))).toBe(
+            "reused",
+          );
+        }).pipe(Effect.provide(world.layer), Effect.ensuring(world.cleanup));
+      }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
+    );
+  });
+
+  it.each([
+    {
+      name: "accepted workspace",
+      row: new Session({
+        ...unlaunched(),
+        sealantWorkspaceId: SealantWorkspaceId.make("workspace-existing"),
+      }),
+      intent: null,
+    },
+    {
+      name: "accepted run",
+      row: new Session({ ...unlaunched(), sealantRunId: SealantRunId.make("run-existing") }),
+      intent: null,
+    },
+    { name: "executor create intent", row: unlaunched(), intent: "create-in-flight" },
+    {
+      name: "prior settlement",
+      row: new Session({
+        ...unlaunched(),
+        settledAt: new Date("2026-09-23T10:00:00.000Z"),
+        summary: "earlier result",
+      }),
+      intent: null,
+    },
+    {
+      name: "running status",
+      row: new Session({ ...unlaunched(), status: "running", summary: "engine is running" }),
+      intent: null,
+    },
+    { name: "deleted row", row: null, intent: null },
+  ])("does not overwrite $name on setup failure", async ({ row, intent }) => {
+    const world = startWorld({
+      initial: row,
+      executorCreate: intent,
+      limits: { accountLaunchesInFlight: 1 },
+      launchFailure: setupFailure(),
+    });
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const start = yield* SessionStart;
+        expectLaunchFailure(
+          yield* start.launchAs("alice", row ?? unlaunched(), launchInput()).pipe(Effect.result),
+        );
+        expect(world.current()).toEqual(row);
+        expect(world.settlements).toEqual([]);
+        expect(yield* world.budgets.withLaunchSlot("alice", Effect.succeed("reused"))).toBe(
+          "reused",
+        );
+      }).pipe(Effect.provide(world.layer), Effect.ensuring(world.cleanup)),
+    );
   });
 });

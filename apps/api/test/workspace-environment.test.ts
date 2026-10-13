@@ -1,11 +1,18 @@
+import { SettingsFailure } from "@mend/api-contracts";
+import { SettingsRepo } from "@mend/db";
 import { defaultSettings, defaultWorkspaceImage, MendSettings } from "@mend/domain";
 import type { WorkspaceImage } from "@mend/domain";
-import type { WorkspacePackageResolution } from "@mend/sealant";
-import { Effect } from "effect";
+import {
+  SealantClient,
+  SealantPlatformError,
+  type WorkspacePackageResolution,
+} from "@mend/sealant";
+import { Effect, Layer } from "effect";
 import { describe, expect, it } from "vitest";
 
 import {
   resolveWorkspaceEnvironment,
+  saveResolvedWorkspaceEnvironment,
   saveResolvedWorkspaceEnvironmentWith,
 } from "../src/services/workspace-environment.ts";
 
@@ -162,5 +169,144 @@ describe("resolveWorkspaceEnvironment", () => {
     expect(result.saved).toBe(true);
     expect(result.settings.autoTour).toBe(true);
     expect(result.settings.workspaceImage).toEqual(requested);
+  });
+});
+
+describe("workspace environment save boundaries", () => {
+  it("saves a custom draft verbatim without querying a managed catalog", async () => {
+    const draft: WorkspaceImage = {
+      mode: "custom",
+      baseImage: "example.invalid/own-base:fixture",
+      packages: ["own-package", "own-package"],
+      setupCommands: ["echo fixture"],
+      services: { docker: false },
+    };
+    let current = new MendSettings({ ...defaultSettings, autoTour: false });
+    const resolved: Array<string> = [];
+    let saves = 0;
+    const result = await Effect.runPromise(
+      saveResolvedWorkspaceEnvironmentWith(
+        draft,
+        (latest, image) => new MendSettings({ ...latest, workspaceImage: image }),
+        {
+          getSettings: () => Effect.succeed(current),
+          modifySettings: (update) =>
+            Effect.sync(() => {
+              saves++;
+              current = update(current);
+              return current;
+            }),
+          resolvePackage: (name) => {
+            resolved.push(name);
+            return Effect.die("custom image queried a managed catalog");
+          },
+        },
+      ),
+    );
+    expect(result.saved).toBe(true);
+    expect(result.resolutions).toEqual([]);
+    expect({ saves, resolved }).toEqual({ saves: 1, resolved: [] });
+    expect(current.workspaceImage).toEqual(draft);
+    expect(result.settings).toEqual(
+      new MendSettings({ ...defaultSettings, autoTour: false, workspaceImage: draft }),
+    );
+  });
+
+  it("returns current settings without saving any part of an unresolved draft", async () => {
+    const initial = new MendSettings({ ...defaultSettings, autoTour: false });
+    let current = initial;
+    let saves = 0;
+    const result = await Effect.runPromise(
+      saveResolvedWorkspaceEnvironmentWith(
+        workspaceImage(["pnpm", "missing"]),
+        (latest, image) => new MendSettings({ ...latest, workspaceImage: image }),
+        {
+          getSettings: () => Effect.succeed(current),
+          modifySettings: (update) =>
+            Effect.sync(() => {
+              saves++;
+              current = update(current);
+              return current;
+            }),
+          resolvePackage: (name) =>
+            Effect.succeed(
+              name === "missing"
+                ? resolution(name, { status: "not-found", canonicalId: null, supported: false })
+                : resolution(name),
+            ),
+        },
+      ),
+    );
+    expect(result.saved).toBe(false);
+    expect(result.settings).toEqual(initial);
+    expect(result.resolutions.map(({ requested, status }) => ({ requested, status }))).toEqual([
+      { requested: "pnpm", status: "resolved" },
+      { requested: "missing", status: "not-found" },
+    ]);
+    expect({ saves, current }).toEqual({ saves: 0, current: initial });
+  });
+
+  it("maps a catalog outage at the actual service boundary without writing settings", async () => {
+    const initial = new MendSettings({ ...defaultSettings, autoTour: false });
+    let current = initial;
+    let saves = 0;
+    const result = await Effect.runPromise(
+      saveResolvedWorkspaceEnvironment(
+        workspaceImage(["pnpm"]),
+        (latest, image) => new MendSettings({ ...latest, workspaceImage: image }),
+      ).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            Layer.mock(SettingsRepo, {
+              get: () => Effect.succeed(current),
+              modify: (update) =>
+                Effect.sync(() => {
+                  saves++;
+                  current = update(current);
+                  return current;
+                }),
+            }),
+            Layer.mock(SealantClient, {
+              resolveWorkspacePackage: () =>
+                Effect.fail(
+                  new SealantPlatformError({
+                    status: 503,
+                    code: "fixture_unavailable",
+                    message: "catalog unavailable",
+                    cause: new Error("owned catalog fixture unavailable"),
+                  }),
+                ),
+            }),
+          ),
+        ),
+        Effect.result,
+      ),
+    );
+    expect(result._tag === "Failure" ? result.failure : null).toEqual(
+      new SettingsFailure({ message: "catalog unavailable" }),
+    );
+    expect({ saves, current }).toEqual({ saves: 0, current: initial });
+  });
+
+  it("propagates a refused persistence write without reporting a saved draft", async () => {
+    const initial = new MendSettings({ ...defaultSettings, autoTour: false });
+    let attempts = 0;
+    const failure = new SettingsFailure({ message: "fixture write refused" });
+    const result = await Effect.runPromise(
+      saveResolvedWorkspaceEnvironmentWith(
+        workspaceImage(["pnpm"]),
+        (latest, image) => new MendSettings({ ...latest, workspaceImage: image }),
+        {
+          getSettings: () => Effect.succeed(initial),
+          modifySettings: () => {
+            attempts++;
+            return Effect.fail(failure);
+          },
+          resolvePackage: (name) => Effect.succeed(resolution(name)),
+        },
+      ).pipe(Effect.result),
+    );
+    expect(result._tag === "Failure" ? result.failure : null).toBe(failure);
+    expect(attempts).toBe(1);
   });
 });
