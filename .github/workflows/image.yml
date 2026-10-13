@@ -222,7 +222,9 @@ jobs:
           node-version-file: .node-version
           cache: pnpm
       - run: pnpm install --frozen-lockfile --ignore-scripts
-      - name: Stamp and exercise the actual release package
+      # Both image stamps are built from the resolved candidate commit. This transition
+      # exercises upgrade mechanics, not a previous released server or historical schema.
+      - name: Exercise packaged install and same-source version transition
         env:
           MEND_TEST_IMAGE:
             ghcr.io/${{ github.repository_owner }}/mend:${{ needs.version.outputs.before }}

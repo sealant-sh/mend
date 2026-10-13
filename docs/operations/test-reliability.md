@@ -342,17 +342,28 @@ The verify toolkit can capture evidence without making an LLM verdict a prerequi
 2. Require the automated suites and relevant client/provider acceptance against that candidate.
 3. On a fresh VM snapshot, install the candidate and exercise sign-in, project adoption, a real
    session/turn, stop/resume, captured records, checkpoint/diff review and the intended clients.
-4. In a separate lane, install the actual previous supported released artifacts, seed durable
-   projects/sessions/checkpoints, then upgrade to the exact candidate artifacts. Check old data,
-   authentication, a new session, review and restart recovery.
-5. Exercise backup restoration separately, then uninstall and check owned-resource cleanup. Keep
+4. Exercise backup restoration separately, then uninstall and check owned-resource cleanup. Keep
    logs, exact commands, artifact identities and explicit skipped/failed steps.
-6. Publish the tested artifacts without rebuilding them.
+5. Publish the tested artifacts without rebuilding them.
 
-`REL-01` remains open: the existing same-source version-transition smoke builds both sides from the
-candidate revision. It tests upgrade mechanics, but cannot prove compatibility with the previous
-released code and schema. The fresh-install and historical-upgrade VM lanes above are recommended
-follow-up work, not gates implemented or executed by this PR.
+For 0.36, the owner's 2026-10-10 decision is to run the fresh-install check on stock Ubuntu 24.04
+and repeat it on the release candidate. The previous 0.35.1 upgrade VM test was dropped because
+there were no external Mend installations to support. That is an accepted coverage gap for this
+release, not evidence that historical upgrades work. The VM and client runs remain distinct from CI;
+this audit follow-up has not executed them.
+
+When compatibility with an earlier supported release becomes a release requirement, add a separate
+lane using that release's actual artifacts. Seed durable projects, sessions and checkpoints, upgrade
+to the exact candidate artifacts, then check old data, authentication, a new session, review and
+restart recovery. Rebuilding the candidate with an older version stamp does not supply this
+evidence.
+
+`REL-01` is partially addressed: the existing packaged smoke already labels its same-source
+version-transition evidence in its script header and final output. The CI step now uses the same
+wording. Both images come from the candidate revision; a successful smoke run establishes upgrade
+mechanics and retention, not compatibility with an earlier server implementation or schema. Its
+additional previous-CLI generation check tests configuration compatibility, not an older
+server/database. Historical server-upgrade coverage remains absent under the 0.36 decision above.
 
 ## Provider adapter contracts and compatibility
 
