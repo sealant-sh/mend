@@ -63,7 +63,14 @@ interface TestWorld {
   launches: number;
   /** Who each launch said sent the review comments. */
   launchAuthors: Array<string | null>;
-  launcherMode: "success" | "failure" | "held";
+  launchRequests: Array<{
+    sessionId: SessionId;
+    instruction: string;
+    correlationId: string;
+    author: string | null;
+  }>;
+  acceptedTurns: Array<{ correlationId: string; turn: AgentTurn }>;
+  launcherMode: "success" | "failure" | "held" | "accepted-without-turn";
   launchGate: Deferred.Deferred<void> | null;
   deliveryAttemptId: string | null;
   deliveryLeaseExpiresAt: Date | null;
@@ -128,6 +135,8 @@ const makeWorld = (launcherMode: TestWorld["launcherMode"] = "success"): TestWor
   insideSessionLock: false,
   launches: 0,
   launchAuthors: [],
+  launchRequests: [],
+  acceptedTurns: [],
   launcherMode,
   launchGate: null,
   deliveryAttemptId: null,
@@ -174,7 +183,13 @@ const recordAcceptedProcess = (
   });
 };
 
-const launchForWorld = (world: TestWorld, instruction: string, correlationId: string) =>
+const launchForWorld = (
+  world: TestWorld,
+  sessionId: SessionId,
+  instruction: string,
+  correlationId: string,
+  author: string | null,
+) =>
   Effect.gen(function* () {
     expect(world.insideSessionLock).toBe(false);
     expect(world.followUp?.status).toBe("delivering");
@@ -188,7 +203,30 @@ const launchForWorld = (world: TestWorld, instruction: string, correlationId: st
       if (gate === null) return yield* Effect.die("launch gate missing");
       yield* Deferred.await(gate);
     }
-    recordAcceptedProcess(world, instruction, correlationId);
+    if (world.process?.kind === "agent-protocol") {
+      if (world.launcherMode !== "accepted-without-turn") {
+        world.acceptedTurns.push({
+          correlationId,
+          turn: new AgentTurn({
+            id: AgentTurnId.make("follow-up-turn"),
+            sessionId,
+            processId: world.process.id,
+            ordinal: 1,
+            author,
+            input: instruction,
+            status: "queued",
+            providerTurnId: null,
+            error: null,
+            usage: null,
+            createdAt: now(),
+            startedAt: null,
+            endedAt: null,
+          }),
+        });
+      }
+    } else {
+      recordAcceptedProcess(world, instruction, correlationId);
+    }
     return world.session;
   });
 
@@ -373,25 +411,13 @@ const testLayer = (world: TestWorld) => {
   const conversationLayer = Layer.succeed(AgentConversationRepo, {
     submitTurn: () => Effect.die("not in test"),
     byTurnId: () => Effect.succeed(null),
-    byLaunchCorrelation: () =>
-      Effect.succeed(
-        world.process?.kind === "agent-protocol" && world.followUp !== null
-          ? new AgentTurn({
-              id: AgentTurnId.make("follow-up-turn"),
-              sessionId: SESSION_ID,
-              processId: world.process.id,
-              ordinal: 1,
-              author: null,
-              input: world.followUp.instruction,
-              status: "queued",
-              providerTurnId: null,
-              error: null,
-              usage: null,
-              createdAt: now(),
-              startedAt: null,
-              endedAt: null,
-            })
-          : null,
+    byLaunchCorrelation: (sessionId, correlationId) =>
+      Effect.sync(
+        () =>
+          world.acceptedTurns.find(
+            (accepted) =>
+              accepted.correlationId === correlationId && accepted.turn.sessionId === sessionId,
+          )?.turn ?? null,
       ),
     byProviderTurnId: () => Effect.succeed(null),
     listTurns: () => Effect.succeed([]),
@@ -432,7 +458,7 @@ const testLayer = (world: TestWorld) => {
 
   const processesLayer = Layer.succeed(SessionProcessesRepo, {
     create: () => Effect.die("not in test"),
-    byId: () => Effect.succeed(world.process),
+    byId: (id) => Effect.succeed(world.process?.id === id ? world.process : null),
     byLaunchCorrelation: (correlationId) =>
       Effect.succeed(world.process?.launchCorrelationId === correlationId ? world.process : null),
     listForSession: () => Effect.succeed(world.process === null ? [] : [world.process]),
@@ -534,10 +560,11 @@ const testLayer = (world: TestWorld) => {
   });
 
   const launcherLayer = Layer.succeed(FollowUpLauncher, {
-    launch: (_sessionId, instruction, correlationId, author) =>
+    launch: (sessionId, instruction, correlationId, author) =>
       Effect.suspend(() => {
         world.launchAuthors.push(author);
-        return launchForWorld(world, instruction, correlationId);
+        world.launchRequests.push({ sessionId, instruction, correlationId, author });
+        return launchForWorld(world, sessionId, instruction, correlationId, author);
       }),
   });
 
@@ -623,6 +650,34 @@ const seedAcceptedProcess = (world: TestWorld, followUp: FollowUp) => {
   });
 };
 
+const seedProtocolProcess = (world: TestWorld) => {
+  world.session = new Session({ ...world.session, status: "running", settledAt: null });
+  world.process = new SessionProcess({
+    id: SessionProcessId.make("protocol-process"),
+    sessionId: SESSION_ID,
+    sealantWorkspaceId: SealantWorkspaceId.make("workspace-1"),
+    sealantSessionId: "pipe-1",
+    sealantRunId: SealantRunId.make("protocol-run"),
+    launchCorrelationId: null,
+    serviceId: null,
+    attemptOrdinal: null,
+    kind: "agent-protocol",
+    harness: "codex",
+    providerSessionId: "thread-1",
+    protocolOptions: null,
+    label: "codex",
+    argv: ["codex", "app-server"],
+    status: "running",
+    exitCode: null,
+    workspacePort: null,
+    protocol: "tcp",
+    hostPort: null,
+    createdAt: now(),
+    exitedAt: null,
+    updatedAt: now(),
+  });
+};
+
 describe("FollowUpDelivery", () => {
   it.effect(
     "commits the claim before a transaction-free launch, then replays by correlation",
@@ -648,31 +703,7 @@ describe("FollowUpDelivery", () => {
 
   it.effect("delivers a follow-up as a turn on the live protocol process", () => {
     const world = makeWorld();
-    world.session = new Session({ ...world.session, status: "running", settledAt: null });
-    world.process = new SessionProcess({
-      id: SessionProcessId.make("protocol-process"),
-      sessionId: SESSION_ID,
-      sealantWorkspaceId: SealantWorkspaceId.make("workspace-1"),
-      sealantSessionId: "pipe-1",
-      sealantRunId: SealantRunId.make("protocol-run"),
-      launchCorrelationId: null,
-      serviceId: null,
-      attemptOrdinal: null,
-      kind: "agent-protocol",
-      harness: "codex",
-      providerSessionId: "thread-1",
-      protocolOptions: null,
-      label: "codex",
-      argv: ["codex", "app-server"],
-      status: "running",
-      exitCode: null,
-      workspacePort: null,
-      protocol: "tcp",
-      hostPort: null,
-      createdAt: now(),
-      exitedAt: null,
-      updatedAt: now(),
-    });
+    seedProtocolProcess(world);
     return Effect.gen(function* () {
       const delivery = yield* FollowUpDelivery;
       const result = yield* delivery.deliver(deliveryInput());
@@ -684,8 +715,61 @@ describe("FollowUpDelivery", () => {
       expect(replay.id).toBe(result.id);
       expect(world.launches).toBe(1);
       expect(world.comment.sentToSessionId).toBe(SESSION_ID);
+      expect(world.launchRequests).toEqual([
+        {
+          sessionId: SESSION_ID,
+          instruction: "  Address only the selected comment.\nKeep this spacing.  ",
+          correlationId: "follow-up:follow-up-1",
+          author: "reviewer-1",
+        },
+      ]);
+      expect(world.acceptedTurns).toHaveLength(1);
+      expect(world.acceptedTurns[0]).toMatchObject({
+        correlationId: "follow-up:follow-up-1",
+        turn: {
+          sessionId: SESSION_ID,
+          processId: "protocol-process",
+          author: "reviewer-1",
+          input: "  Address only the selected comment.\nKeep this spacing.  ",
+          status: "queued",
+        },
+      });
     }).pipe(Effect.provide(testLayer(world)));
   });
+
+  it.effect(
+    "keeps comments unsent when an accepted protocol launch records no turn, then retries the same bundle",
+    () => {
+      const world = makeWorld("accepted-without-turn");
+      seedProtocolProcess(world);
+      return Effect.gen(function* () {
+        const delivery = yield* FollowUpDelivery;
+        const failed = yield* delivery.deliver(deliveryInput());
+        expect(failed.status).toBe("delivery_failed");
+        expect(failed.deliveryProcessId).toBeNull();
+        expect(failed.deliverySealantRunId).toBeNull();
+        expect(failed.deliveryError).toBe(
+          "The platform accepted the process, but Mend could not recover its membership. Retry with the same key.",
+        );
+        expect(world.comment.sentToSessionId).toBeNull();
+        expect(world.acceptedTurns).toEqual([]);
+        expect(world.launches).toBe(1);
+        world.launcherMode = "success";
+        const retried = yield* delivery.deliver(deliveryInput());
+        expect(retried.id).toBe(failed.id);
+        expect(retried.status).toBe("delivered");
+        expect(retried.deliveryProcessId).toBe("protocol-process");
+        expect(retried.deliverySealantRunId).toBe("protocol-run");
+        expect(world.comment.sentToSessionId).toBe(SESSION_ID);
+        expect(world.acceptedTurns).toHaveLength(1);
+        expect(world.launches).toBe(2);
+        expect(world.launchRequests.map((request) => request.correlationId)).toEqual([
+          "follow-up:follow-up-1",
+          "follow-up:follow-up-1",
+        ]);
+      }).pipe(Effect.provide(testLayer(world)));
+    },
+  );
 
   it.effect("persists a launch failure without sending the selected comment", () => {
     const world = makeWorld("failure");
