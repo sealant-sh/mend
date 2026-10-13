@@ -4,6 +4,11 @@
  * opentui's renderer loads through node:ffi, so vitest runs this file with --experimental-ffi
  * (vitest.config.ts), as main.ts does for the dashboard itself.
  */
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { RGBA } from "@opentui/core";
 import type { TestRendererSetup } from "@opentui/core/testing";
 import { testRender } from "@opentui/react/test-utils";
@@ -12,7 +17,7 @@ import { act } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { helpSections, KEY_BINDINGS } from "./dashboard-model.ts";
-import { fixtureContext } from "./dashboard.fixture.ts";
+import { fixtureApi, fixtureContext } from "./dashboard.fixture.ts";
 import { App, type DashboardContext } from "./dashboard.tsx";
 import { ACCENT, INK } from "./tui-theme.ts";
 
@@ -381,5 +386,92 @@ describe("the verbs that were here before", () => {
     const drawn = await draw();
     await drawn.press("q");
     expect(drawn.onQuit).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("adoption retry", () => {
+  it("keeps the saved bridge mode without an agent, shows a refusal and retries the same URL with the keyboard-selected mode", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "mend-adoption-retry-"));
+    const cwd = join(directory, "retry-repo");
+    const source = "git@owned.example:team/retry-repo.git";
+    const requests: Array<{ method: string; route: string; body: unknown }> = [];
+    try {
+      mkdirSync(cwd);
+      const gitEnvironment = {
+        PATH: process.env.PATH ?? "",
+        HOME: directory,
+        GIT_CONFIG_NOSYSTEM: "1",
+        GIT_CONFIG_GLOBAL: "/dev/null",
+      };
+      execFileSync("git", ["init", "--quiet", cwd], { env: gitEnvironment });
+      execFileSync("git", ["-C", cwd, "remote", "add", "origin", source], { env: gitEnvironment });
+      const drawn = await draw({
+        ctx: {
+          cwd,
+          gitAccessMode: "bridge",
+          agentShare: null,
+          api: async <T,>(
+            method: "GET" | "POST" | "DELETE",
+            route: string,
+            body?: unknown,
+          ): Promise<T> => {
+            if (method !== "POST" || route !== "/projects") return fixtureApi<T>(method, route);
+            requests.push({ method, route, body });
+            if (requests.length === 1) throw new Error("No agent is sharing this account's key");
+            // SAFETY: The generic dashboard API binds POST /projects to ProjectDto; this
+            // recording boundary supplies the complete project answer for that route only.
+            return {
+              id: "adopted-retry",
+              name: "retry-repo",
+              originUrl: source,
+              storePath: "/store/retry-repo",
+              defaultBranch: "main",
+            } as T;
+          },
+        },
+      });
+      expect(drawn.frame()).toContain("adopt this repository URL?");
+      expect(drawn.frame()).toContain(source);
+      expect(drawn.frame()).toContain("▸ bridge");
+      expect(requests).toEqual([]);
+      await drawn.press("RETURN");
+      expect(requests).toEqual([
+        {
+          method: "POST",
+          route: "/projects",
+          body: { name: "retry-repo", source, gitAuthMode: "bridge" },
+        },
+      ]);
+      expect(drawn.frame()).toContain("No agent is sharing this account's key");
+      expect(drawn.frame()).toContain(source);
+      expect(drawn.frame()).toContain("▸ bridge");
+      expect(drawn.frame()).toContain("enter try again");
+      await drawn.press("ARROW_LEFT");
+      expect(drawn.frame()).toContain("▸ mend-key");
+      expect(requests).toHaveLength(1);
+      await drawn.press("RETURN");
+      expect(requests).toEqual([
+        {
+          method: "POST",
+          route: "/projects",
+          body: { name: "retry-repo", source, gitAuthMode: "bridge" },
+        },
+        {
+          method: "POST",
+          route: "/projects",
+          body: { name: "retry-repo", source, gitAuthMode: "mend-key" },
+        },
+      ]);
+      expect(drawn.frame()).toContain("adopted · retry-repo");
+      expect(drawn.frame()).not.toContain("adopt this repository URL?");
+      expect(drawn.frame()).not.toContain("No agent is sharing this account's key");
+    } finally {
+      try {
+        await act(async () => open?.setup.renderer.destroy());
+      } finally {
+        open = null;
+        rmSync(directory, { recursive: true, force: true });
+      }
+    }
   });
 });

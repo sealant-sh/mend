@@ -228,6 +228,33 @@ const expectExit = async (
 };
 
 describe("mend adopt", spawning, () => {
+  it("refuses removed ambient auth before any server request", async () => {
+    const requests: Array<string> = [];
+    const fake = await startFakeMend(
+      (request, response) => {
+        requests.push(`${request.method} ${request.url}`);
+        response.writeHead(500).end("unexpected request");
+      },
+      "end",
+      false,
+    );
+    try {
+      const cli = startCli(fake.url, [
+        "adopt",
+        "git@owned.example:team/repo.git",
+        "--auth",
+        "ambient",
+      ]);
+      expect((await cli.exited).code, cli.stderr()).toBe(1);
+      expect(cli.stderr()).toContain("ambient");
+      expect(cli.stderr()).toContain("mend-key");
+      expect(cli.stderr()).toContain("bridge");
+      expect(requests).toEqual([]);
+    } finally {
+      await fake.close();
+    }
+  });
+
   it.each([
     ["mend-key", "mend key", "configured for SSH remotes"],
     ["bridge", "bridge", "configured to use `mend keys share` for SSH remotes"],
