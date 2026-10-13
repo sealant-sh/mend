@@ -147,7 +147,8 @@ Defaults:
    - `needs: [plan, mend, mend-image]`,
      `if: !cancelled() && needs.mend-image.result == 'success' && inputs.deploy` (#500: it needs the
      versioned tag, not just the amd64 build);
-   - runs on a GitHub-hosted runner (the box runners cannot reach the box) and writes the `MEND_BOX_DEPLOY_KEY` secret to a 0600 file;
+   - runs on a GitHub-hosted runner (the box runners cannot reach the box) and writes the
+     `MEND_BOX_DEPLOY_KEY` secret to a 0600 file;
    - pins the VM's host key (`[49.12.133.97]:2223 ssh-ed25519 AAAAC3…zqgl/`);
    - runs `ssh -p 2223 deploy@49.12.133.97 deploy "<version>" "<github.sha>" [even-if-live]`.
 6. In the image, `scripts/bundle-supervisor.mjs` gives the bundled Sealant worker
