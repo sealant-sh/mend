@@ -245,27 +245,57 @@ export const planSkills = (
 /**
  * Clears the plan's directories under a harness home (`node -e`, argv: home, the kept directory
  * relative to it or absolute, the `vacate` list as JSON). A directory kept across filesystems (a
- * person's home to their saved directory, docs/adr/0016) is copied whole, then removed. Prints one `skill <outcome> <dir>[ <detail>]` line
+ * person's home to their saved directory, docs/adr/0016) uses checked GNU cp into owned staging.
+ * Bytes, types, modes, owners, exact mtimes, symlink text and internal hardlinks are verified before
+ * the source is removed; a refused copy leaves it in place and prevents delivery writes. External
+ * hardlinks and special files are refused across devices. Custom images need GNU coreutils.
+ * Access times may change from reads; inode identity, ctime and birthtime cannot be copied.
+ * Source snapshots detect observed changes, not arbitrary concurrent writes after the final check.
+ * Prints one `skill <outcome> <dir>[ <detail>]` line
  * per directory: `absent`; `unchanged` (its files are exactly `delivering`, leaving out any
- * directory named in its `skip`; nothing was touched and nothing is written into it); `kept` (moved whole to the detail path; nothing is ever
- * deleted); `error` (the detail is the code). Exits 1 after any `error`,
+ * directory named in its `skip`; nothing was touched and nothing is written into it); `kept` (preserved at the detail path); `error` (the detail is the code). Exits 1 after any `error`,
  * and the caller then writes nothing: a directory that could not be cleared is never written into.
  */
 export const SKILLS_VACATE_PROGRAM = [
-  `const fs=require("fs"),path=require("path"),crypto=require("crypto");`,
+  `const fs=require("fs"),path=require("path"),crypto=require("crypto"),child=require("child_process");`,
   `const [home,kept,list]=process.argv.slice(1);const items=JSON.parse(list);`,
   `const sha=b=>crypto.createHash("sha256").update(b).digest("hex");`,
   `function tree(dir,skip,skipFiles){const out=[];const walk=(abs,rel)=>{for(const e of fs.readdirSync(abs,{withFileTypes:true})){`,
   `const a=path.join(abs,e.name),r=rel===""?e.name:rel+"/"+e.name;`,
   `if(e.isDirectory()){if(!skip.includes(e.name))walk(a,r)}else if(skipFiles.includes(r))continue;else if(e.isFile())out.push([r,sha(fs.readFileSync(a))]);else throw new Error("special")}};`,
   `walk(dir,"");out.sort((x,y)=>x[0]<y[0]?-1:x[0]>y[0]?1:0);return sha(out.map(([r,h])=>r+"\\u0000"+h+"\\n").join(""))}`,
-  `function say(o,d,x){process.stdout.write("skill "+o+" "+d+(x?" "+x:"")+"\\n")}`,
+  `function refuse(words){const e=new Error(words);e.code=words;throw e}`,
+  `function snapshot(root){const entries=[],observed=[],groups=new Map(),counts=new Map();`,
+  `function walk(abs,rel){const st=fs.lstatSync(abs,{bigint:true}),key=st.dev+":"+st.ino;`,
+  `const kind=st.isDirectory()?"directory":st.isFile()?"file":st.isSymbolicLink()?"symlink":null;`,
+  `if(kind===null)refuse("cross-filesystem copy cannot preserve this file type; original kept");`,
+  `if(kind!=="directory"){if(!groups.has(key))groups.set(key,rel);counts.set(key,(counts.get(key)||0)+1)}`,
+  `entries.push({rel,kind,mode:String(st.mode),uid:String(st.uid),gid:String(st.gid),mtime:String(st.mtimeNs),`,
+  `bytes:kind==="file"?sha(fs.readFileSync(abs)):null,target:kind==="symlink"?fs.readlinkSync(abs,{encoding:"buffer"}).toString("hex"):null,group:kind!=="directory"?groups.get(key):null});`,
+  `observed.push([rel,key,String(st.ctimeNs),String(st.nlink)]);`,
+  `if(kind==="directory")for(const name of fs.readdirSync(abs).sort())walk(path.join(abs,name),rel?rel+"/"+name:name)}`,
+  `walk(root,"");for(let i=0;i<observed.length;i++){const [,key,,links]=observed[i],entry=entries[i];`,
+  `if(entry.kind!=="directory"&&BigInt(links)>BigInt(counts.get(key)))refuse("cross-filesystem copy cannot preserve an external hardlink; original kept")}`,
+  `return {entries:JSON.stringify(entries),observed:JSON.stringify(observed)}}`,
+  `function across(abs,to){let staging;try{`,
+  `const capability=child.spawnSync("cp",["--version"],{encoding:"utf8"});`,
+  `if(capability.error||capability.status!==0||!capability.stdout.includes("(GNU coreutils)"))refuse("cross-filesystem preservation requires GNU cp; install coreutils in this image; original kept");`,
+  `const before=snapshot(abs);staging=fs.mkdtempSync(path.join(path.dirname(to),".mend-skills-copy-"));fs.chmodSync(staging,0o700);const copied=path.join(staging,"tree");`,
+  `const result=child.spawnSync("cp",["-R","-P","--preserve=mode,ownership,timestamps,links,xattr","--",abs,copied],{encoding:"utf8"});`,
+  `if(result.error||result.status!==0)refuse("cross-filesystem preservation copy failed; original kept");`,
+  `if(before.entries!==snapshot(copied).entries)refuse("cross-filesystem preservation verification failed; original kept");`,
+  `const after=snapshot(abs);if(before.entries!==after.entries||before.observed!==after.observed)refuse("cross-filesystem preservation source changed during copy; original kept");`,
+  `try{fs.lstatSync(to);refuse("kept destination already exists; original kept")}catch(e){if(e.code!=="ENOENT")throw e};`,
+  `fs.renameSync(copied,to);fs.rmSync(abs,{recursive:true,force:false});`,
+  `}finally{if(staging!==undefined)fs.rmSync(staging,{recursive:true,force:true})}}`,
+  `function say(o,d,x){process.stdout.write("skill "+o+" "+d+(x?" "+x:"")+"\\n");if(o==="error")process.stderr.write("mend: could not preserve "+d+": "+x+"\\n")}`,
   `let failed=false;for(const it of items){const abs=path.join(home,it.dir);let st;`,
   `try{st=fs.lstatSync(abs)}catch(e){if(e.code==="ENOENT"){say("absent",it.dir);continue}say("error",it.dir,e.code);failed=true;continue}`,
   `let digest=null;if(st.isDirectory()){try{digest=tree(abs,it.skip||[],it.skipFiles||[])}catch{digest=null}}`,
   `if(digest!==null&&it.delivering!==null&&digest===it.delivering){say("unchanged",it.dir);continue}`,
   `try{const rel=path.join(kept,it.dir),to=path.isAbsolute(kept)?rel:path.join(home,rel);fs.mkdirSync(path.dirname(to),{recursive:true});`,
-  `try{fs.renameSync(abs,to)}catch(e){if(e.code!=="EXDEV")throw e;fs.cpSync(abs,to,{recursive:true,verbatimSymlinks:true,errorOnExist:true,force:false});fs.rmSync(abs,{recursive:true,force:true})}`,
+  `try{fs.lstatSync(to);refuse("kept destination already exists; original kept")}catch(e){if(e.code!=="ENOENT")throw e}`,
+  `try{fs.renameSync(abs,to)}catch(e){if(e.code!=="EXDEV")throw e;across(abs,to)}`,
   `say("kept",it.dir,rel)}`,
   `catch(e){say("error",it.dir,e.code||"error");failed=true}}`,
   `process.exit(failed?1:0)`,

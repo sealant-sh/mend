@@ -109,6 +109,18 @@ their own home, as their user. A joiner gets theirs, not the session owner's. Me
 it wrote, and the skill directories it moves aside, are in that person's saved directory,
 `/workspace/harness-home/people/<account id>/.mend-saved/` (`skills-kept/` there).
 
+When the home and saved directory are on different filesystems, preservation requires GNU coreutils
+in the workspace image. Mend checks the copied bytes, modes, ownership, exact modification times,
+symbolic links and hard links within the skill tree before clearing the original. A missing copy
+capability, failed copy or failed check stops delivery and leaves the original in place. Special
+files and hard links to names outside that tree are refused across filesystems, because their
+identity cannot be kept by copying. Custom images must provide GNU coreutils for this case; an
+ordinary same-filesystem move needs no copy tool.
+
+A cross-filesystem copy cannot retain inode identity, change time or birth time, and reading the
+files can change access times. Checks detect observed edits during copying, but do not lock out
+concurrent writers after the final inspection.
+
 This works the same in both storage modes. With the captured store, the default, Mend writes the
 skills into the running workspace after its harness home is in place. With a co-located store, it
 writes them into the session's harness home on the server before the workspace starts.
