@@ -205,7 +205,8 @@ import {
 import {
   MINT_REFUSED_IN_TRANSIT,
   type MintTicket,
-  mintRefusedInTransit,
+  upgradeTicketSupport,
+  TICKET_SUPPORT_UNKNOWN,
   type UpgradeParams,
   type UpgradeTarget,
   upgradeUrl,
@@ -565,7 +566,7 @@ const download =
 /**
  * One upgrade ticket for a WebSocket this process is about to open (upgrade-url.ts). The saved
  * token travels in this call's Authorization header, never in the socket's URL. A server older
- * than tickets answers 404, which is the only case the token still rides a URL.
+ * than tickets answers 404 and an observed legacy health response before the token may ride a URL.
  */
 let warnedLegacyBearer = false;
 const mintTicket =
@@ -580,7 +581,9 @@ const mintTicket =
       ...(signal === undefined ? {} : { signal }),
     });
     if (response.status === 404) {
-      if (await mintRefusedInTransit(config.url)) throw new Error(MINT_REFUSED_IN_TRANSIT);
+      const support = await upgradeTicketSupport(config.url, fetch, signal);
+      if (support === "supported") throw new Error(MINT_REFUSED_IN_TRANSIT);
+      if (support === "unknown") throw new Error(TICKET_SUPPORT_UNKNOWN);
       if (config.token !== null && !warnedLegacyBearer) {
         warnedLegacyBearer = true;
         console.error(

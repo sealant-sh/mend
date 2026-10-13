@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  mintRefusedInTransit,
+  upgradeTicketSupport,
   upgradeBaseUrl,
   upgradeUrl,
   type MintTicket,
@@ -64,15 +64,91 @@ describe("upgrade URLs", () => {
     expect(url.searchParams.has("ticket")).toBe(false);
   });
 
-  it("tells a server older than tickets from a mint refused on the way", async () => {
-    // Older server: /health does not mention tickets, so the 404 is the server's own.
-    expect(await mintRefusedInTransit("https://mend.example/", health({ status: "ok" }))).toBe(
-      false,
+  it.each([
+    [{ status: "ok" }, 200, "legacy"],
+    [{ status: "ok", upgradeTickets: false }, 200, "legacy"],
+    [{ upgradeTickets: true }, 200, "supported"],
+    [{ status: "ok", upgradeTickets: "true" }, 200, "unknown"],
+    [{ status: "ok", upgradeTickets: null }, 200, "unknown"],
+    [{ status: "starting" }, 200, "unknown"],
+    [{}, 200, "unknown"],
+    [null, 200, "unknown"],
+    [[], 200, "unknown"],
+    ["ok", 200, "unknown"],
+    [{ status: "ok" }, 502, "unknown"],
+    [{ upgradeTickets: true }, 404, "unknown"],
+  ])("classifies observed health %j at HTTP%s as %s", async (body, status, expected) => {
+    expect(await upgradeTicketSupport("https://mend.example/", health(body, status))).toBe(
+      expected,
     );
-    // This server mints them, so the 404 came from a hop in between: no bearer in a URL.
-    expect(
-      await mintRefusedInTransit("https://mend.example", health({ upgradeTickets: true })),
-    ).toBe(true);
-    expect(await mintRefusedInTransit("https://mend.example", health({}, 502))).toBe(false);
   });
 });
+
+it.each(["headers", "body"])(
+  "abandons health discovery on cancellation during %s",
+  async (phase) => {
+    const controller = new AbortController();
+    const received = Promise.withResolvers<void>();
+    const headers = Promise.withResolvers<void>();
+    const server = createServer((_request, response) => {
+      received.resolve();
+      if (phase === "body") {
+        response.writeHead(200, { "content-type": "application/json" });
+        response.flushHeaders();
+        response.write('{"status":');
+      }
+    });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const address = server.address();
+    if (address === null || typeof address === "string") throw new Error("missing health port");
+    const send: typeof fetch = async (input, init) => {
+      const response = await fetch(input, init);
+      headers.resolve();
+      return response;
+    };
+    try {
+      const discovery = upgradeTicketSupport(
+        `http://127.0.0.1:${address.port}`,
+        send,
+        controller.signal,
+      );
+      await (phase === "body" ? headers.promise : received.promise);
+      controller.abort();
+      expect(await discovery).toBe("unknown");
+    } finally {
+      controller.abort();
+      server.closeAllConnections();
+      server.close();
+      await once(server, "close");
+    }
+  },
+);
+
+it(
+  "bounds health discovery when a server never completes its response body",
+  { timeout: 10_000 },
+  async () => {
+    const requests: string[] = [];
+    const server = createServer((request, response) => {
+      requests.push(`${request.method} ${request.url}`);
+      response.writeHead(200, { "content-type": "application/json" });
+      response.flushHeaders();
+      response.write('{"status":');
+    });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const address = server.address();
+    if (address === null || typeof address === "string") throw new Error("missing health port");
+    try {
+      expect(await upgradeTicketSupport(`http://127.0.0.1:${address.port}`)).toBe("unknown");
+      expect(requests).toEqual(["GET /api/health"]);
+    } finally {
+      server.closeAllConnections();
+      server.close();
+      await once(server, "close");
+    }
+  },
+);
+import { once } from "node:events";
+import { createServer } from "node:http";
