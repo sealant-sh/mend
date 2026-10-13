@@ -21,10 +21,16 @@ import { pairAndConnect } from "./support/rpc.ts";
  * appears without the client asking again.
  */
 
-const withGateway = <A, E, R>(test: (mend: FakeMend) => Effect.Effect<A, E, R>) =>
+const withGateway = <A, E, R>(
+  test: (mend: FakeMend) => Effect.Effect<A, E, R>,
+  options: Parameters<typeof gatewayTestLayer>[2] = {},
+) =>
   Effect.gen(function* () {
     const mend = yield* startFakeMend;
-    return yield* test(mend).pipe(Effect.scoped, Effect.provide(gatewayTestLayer(mend.url)));
+    return yield* test(mend).pipe(
+      Effect.scoped,
+      Effect.provide(gatewayTestLayer(mend.url, ":memory:", options)),
+    );
   });
 
 type Item = OrchestrationV2ShellStreamItem;
@@ -288,30 +294,52 @@ describe("devices and late pointers", () => {
     ),
   );
 
-  it.live("a pointer that arrives during the first full read is applied after it", () =>
-    withGateway((mend) =>
-      Effect.gen(function* () {
-        const { workbench } = mend;
-        workbench.addProject("project-1", "mend");
-        workbench.addSession({ id: "session-1", projectId: "project-1" });
-        const turn = workbench.addTurn("session-1", "A turn that ends during the read");
-        const { rpc } = yield* pairAndConnect(mend, "LATEPOINTER");
-        // The read holds on requests after it read the turn as running; the turn ends meanwhile.
-        workbench.requestsDelayMs = 800;
-        const shell = yield* feed(rpc[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({}));
-        yield* Effect.sleep("300 millis");
-        workbench.setTurn(turn, "completed");
-        const { snapshot } = yield* shell.next(isKind("snapshot"));
-        workbench.requestsDelayMs = 0;
-        assert.strictEqual(snapshot.threads[0]?.status, "running");
-        const caught = yield* shell.next(
-          (item): item is Extract<Item, { kind: "thread.updated" }> =>
-            item.kind === "thread.updated" && item.thread.status === "completed",
-        );
-        assert.strictEqual(caught.thread.id, "session-1");
-      }),
-    ),
-  );
+  it.live("a pointer that arrives during the first full read is applied after it", () => {
+    const pointerConsumed = Promise.withResolvers<void>();
+    const deviceChecked = Promise.withResolvers<void>();
+    let awaitingDeviceCheck = false;
+    return withGateway(
+      (mend) =>
+        Effect.gen(function* () {
+          const { workbench } = mend;
+          workbench.addProject("project-1", "mend");
+          workbench.addSession({ id: "session-1", projectId: "project-1" });
+          const turn = workbench.addTurn("session-1", "A turn that ends during the read");
+          const { rpc } = yield* pairAndConnect(mend, "LATEPOINTER");
+          // Hold the request read until the concurrent turn read captured its running state.
+          const reading = workbench.holdNextRequestsRead("session-1");
+          yield* Effect.addFinalizer(() => Effect.sync(reading.release));
+          const shell = yield* feed(rpc[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({}));
+          yield* Effect.promise(() => Promise.all([reading.entered, reading.turnsRead]));
+          yield* Effect.promise(() => workbench.waitForEventStream());
+          workbench.setTurn(turn, "completed");
+          yield* Effect.promise(() => pointerConsumed.promise);
+          // The worker handles device checks while the full read is held. This following key
+          // proves it handled the conversation pointer before the request answer is released.
+          awaitingDeviceCheck = true;
+          workbench.emit({ type: "user", userId: "user-1", facet: "devices" });
+          yield* Effect.promise(() => deviceChecked.promise);
+          reading.release();
+          const { snapshot } = yield* shell.next(isKind("snapshot"));
+          assert.strictEqual(snapshot.threads[0]?.status, "running");
+          const caught = yield* shell.next(
+            (item): item is Extract<Item, { kind: "thread.updated" }> =>
+              item.kind === "thread.updated" && item.thread.status === "completed",
+          );
+          assert.strictEqual(caught.thread.id, "session-1");
+        }),
+      {
+        eventConsumed: (pointer) =>
+          Effect.sync(() => {
+            if (pointer.type === "agent-conversation" && pointer.sessionId === "session-1") {
+              pointerConsumed.resolve();
+            }
+          }),
+        deviceCheckObserver: () =>
+          awaitingDeviceCheck ? Effect.sync(() => deviceChecked.resolve()) : Effect.void,
+      },
+    );
+  });
 });
 
 describe("Mend's pointers", () => {
