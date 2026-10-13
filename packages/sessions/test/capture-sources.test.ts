@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -56,6 +57,7 @@ const referenceAt = (name: string, clonePath: string) =>
 const published = (
   folders: ReadonlyArray<ReturnType<typeof folderAt>>,
   references: ReadonlyArray<Reference>,
+  storageRoot = blobRoot,
 ) =>
   Effect.runPromise(
     Effect.gen(function* () {
@@ -68,7 +70,7 @@ const published = (
           Layer.provide(
             Layer.mock(ReferencesRepo, { listForProject: () => Effect.succeed(references) }),
           ),
-          Layer.provide(BlobStoreFsLive(blobRoot)),
+          Layer.provide(BlobStoreFsLive(storageRoot)),
         ),
       ),
     ),
@@ -163,6 +165,53 @@ describe("capture sources", () => {
     );
     expect(sources.map((source) => source.name)).toEqual(["good"]);
   });
+
+  it("omits an actually oversized compressed source while publishing its small neighbor", async () => {
+    const owned = fs.mkdtempSync(path.join(scratch, "overflow-"));
+    const large = path.join(owned, "large");
+    const small = path.join(owned, "small");
+    const storage = path.join(owned, "blobs");
+    try {
+      fs.mkdirSync(large);
+      fs.mkdirSync(small);
+      fs.writeFileSync(path.join(small, "keep.txt"), "small source survives\n");
+      const fd = fs.openSync(path.join(large, "noise.bin"), "wx");
+      try {
+        // Fresh noise cannot collapse below the compressed-byte ceiling as repeated zeroes do.
+        for (let offset = 0; offset < 64 * 1024 * 1024 + 64 * 1024; offset += 64 * 1024) {
+          fs.writeSync(fd, randomBytes(64 * 1024));
+        }
+      } finally {
+        fs.closeSync(fd);
+      }
+      const archive = path.join(owned, "large.tar.gz");
+      execFileSync("tar", ["-czf", archive, "."], { cwd: large });
+      expect(fs.statSync(archive).size).toBeGreaterThan(64 * 1024 * 1024);
+
+      const sources = await published(
+        [folderAt("oversized", large, true), folderAt("small", small, true)],
+        [],
+        storage,
+      );
+      expect(sources.map((source) => source.name)).toEqual(["small"]);
+      const [retained] = sources;
+      if (retained === undefined) throw new Error("small source was not published");
+      expect(
+        execFileSync("tar", ["-xOzf", path.join(storage, retained.key), "./keep.txt"], {
+          encoding: "utf8",
+        }),
+      ).toBe("small source survives\n");
+      const files = fs
+        .readdirSync(storage, { recursive: true, withFileTypes: true })
+        .filter((entry) => entry.isFile())
+        .map((entry) => path.relative(storage, path.join(entry.parentPath, entry.name)));
+      expect(files).toEqual([retained.key]);
+      expect(fs.statSync(path.join(storage, retained.key)).size).toBe(retained.bytes);
+      expect(retained.bytes).toBeLessThan(64 * 1024 * 1024);
+    } finally {
+      fs.rmSync(owned, { recursive: true, force: true });
+    }
+  }, 30_000);
 
   it("caps one source at the size sealantd will accept", () => {
     expect(MAX_SOURCE_BYTES).toBe(64 * 1024 * 1024);
