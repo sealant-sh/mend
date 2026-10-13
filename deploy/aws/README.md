@@ -1,5 +1,19 @@
 # AWS capture POC
 
+Run `node --test scripts/aws-tofu.test.mjs` from the repository root for the offline control-plane
+gate tests. They require OpenTofu compatible with `tofu/versions.tf`; CI installs 1.12.0. An
+explicit `MEND_TEST_TOFU_BINARY` can select a local binary. Missing OpenTofu, failed initialization
+and absent plan results fail the test.
+
+The tests copy the checked-in configuration and provider lock into an owned scratch directory,
+initialize without a backend or lockfile changes, and evaluate all four cluster/instance settings
+with a mocked AWS provider in plan mode. They compare the actual planned resource addresses against
+independent cluster, instance and shared inventories. Initialization downloads the locked public
+provider. The test passes no cloud credentials, operator tfvars, state or CLI configuration, and
+does not apply infrastructure. Computed policy/ARN placeholders are fixture data; these tests prove
+resource gating, not live AWS permissions or provisioning. The existing resource-address migration
+checks remain separate source checks.
+
 Mend on EKS or on one EC2 instance, PlanetScale Postgres over PrivateLink, authoritative captures in
 S3, and disposable Lambda MicroVM executors. No FSx. The EKS control plane has no public application
 ingress. The single instance (which runs alpha.mend.run) is public behind the Caddy edge, as its
