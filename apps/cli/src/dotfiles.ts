@@ -68,29 +68,58 @@ export interface SyncFile {
 /** The per-file cap the server enforces; checked here so a mistake fails before the upload. */
 export const MAX_FILE_BYTES = 1024 * 1024;
 
-const statFile = (home: string, relative: string): fs.Stats | null => {
+const resolvedHome = (home: string): string | null => {
   try {
-    const stat = fs.statSync(path.join(home, relative));
-    return stat.isFile() ? stat : null;
+    const resolved = fs.realpathSync(home);
+    return fs.statSync(resolved).isDirectory() ? resolved : null;
   } catch {
     return null;
   }
 };
 
-/** Probe the curated candidates under `home`; only existing regular files appear. */
-export const scanDotfileCandidates = (home: string): ReadonlyArray<ScannedDotfile> =>
-  DOTFILE_CANDIDATES.flatMap(({ group, paths }) =>
+const withinHome = (home: string, target: string): boolean => {
+  const relative = path.relative(home, target);
+  return relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+};
+
+type ContainedFile =
+  | { readonly kind: "file"; readonly resolved: string; readonly stat: fs.Stats }
+  | { readonly kind: "outside" }
+  | { readonly kind: "missing" };
+
+/** Check every logical parent, so an outside directory cannot be hidden by a file link back in. */
+const containedFile = (home: string, relative: string): ContainedFile => {
+  try {
+    let resolved = home;
+    for (const segment of relative.split("/")) {
+      resolved = fs.realpathSync(path.join(resolved, segment));
+      if (!withinHome(home, resolved)) return { kind: "outside" };
+    }
+    // A replacement symlink between realpath and lstat is not a checked regular file.
+    const stat = fs.lstatSync(resolved);
+    return stat.isFile() ? { kind: "file", resolved, stat } : { kind: "missing" };
+  } catch {
+    return { kind: "missing" };
+  }
+};
+
+/** Probe curated regular files whose resolved targets and parents stay within the resolved home. */
+export const scanDotfileCandidates = (home: string): ReadonlyArray<ScannedDotfile> => {
+  const root = resolvedHome(home);
+  if (root === null) return [];
+  return DOTFILE_CANDIDATES.flatMap(({ group, paths }) =>
     paths.flatMap((relative) => {
-      const stat = statFile(home, relative);
-      return stat === null ? [] : [{ path: relative, group, bytes: stat.size }];
+      const file = containedFile(root, relative);
+      return file.kind === "file" ? [{ path: relative, group, bytes: file.stat.size }] : [];
     }),
   );
+};
 
 /**
  * A requested path as the `~`-relative path the server stores, or null when it is not under
  * `home`. Paths are read relative to home; an absolute path under home is taken too (a shell
  * expands `~/.zshrc` before the CLI sees it). Anything that climbs out of home is refused before
- * it is read, so no file from outside home is ever uploaded.
+ * it is read. This normalization is lexical; scanning and reading also check resolved containment.
  */
 export const homeRelativePath = (home: string, requested: string): string | null => {
   const relative = path.relative(home, path.resolve(home, requested));
@@ -105,6 +134,8 @@ export const homeRelativePath = (home: string, requested: string): string | null
 /**
  * Read the selected paths for upload. Explicitly requested paths must exist (a typo should fail,
  * not silently sync nothing) and be under home; oversized files fail with the server's own rule.
+ * File links and every logical parent must resolve inside the resolved home. Reads hold the
+ * checked regular-file descriptor and remain bounded; the mutable tree is not an atomic snapshot.
  * Modes ride along so an executable script stays executable.
  */
 export const readSyncFiles = (
@@ -112,6 +143,20 @@ export const readSyncFiles = (
   paths_: ReadonlyArray<string>,
 ): { readonly files: ReadonlyArray<SyncFile> } | { readonly error: string } => {
   const files: SyncFile[] = [];
+  if (paths_.length === 0) return { files };
+  const root = resolvedHome(home);
+  if (root === null) return { error: `${home} is not a readable home directory` };
+  const noFollow = fs.constants.O_NOFOLLOW;
+  const nonBlock = fs.constants.O_NONBLOCK;
+  // POSIX-only flags are absent on Windows. Resolved containment and descriptor checks still
+  // apply there; they do not promise atomic protection from a concurrently replaced host tree.
+  const flags =
+    fs.constants.O_RDONLY |
+    (typeof noFollow === "number" ? noFollow : 0) |
+    (typeof nonBlock === "number" ? nonBlock : 0);
+  const outside = (relative: string) => ({
+    error: `${relative} resolves outside your home directory — its target and parent directories must stay under ${home}`,
+  });
   for (const requested of paths_) {
     const relative = homeRelativePath(home, requested);
     if (relative === null) {
@@ -119,19 +164,56 @@ export const readSyncFiles = (
         error: `${requested} is not under ${home} — only files in your home directory sync`,
       };
     }
-    const stat = statFile(home, relative);
-    if (stat === null) {
+    const file = containedFile(root, relative);
+    if (file.kind === "outside") return outside(relative);
+    if (file.kind === "missing") {
       return { error: `${relative} is not a file under ${home}` };
     }
-    if (stat.size > MAX_FILE_BYTES) {
+    if (file.stat.size > MAX_FILE_BYTES) {
       return { error: `${relative} is over 1MB — dotfiles are text; trim the selection` };
     }
-    files.push({
-      path: relative,
-      contentsBase64: fs.readFileSync(path.join(home, relative)).toString("base64"),
-      // eslint-disable-next-line no-bitwise -- permission bits are the point
-      mode: (stat.mode & 0o777).toString(8),
-    });
+    try {
+      const fd = fs.openSync(file.resolved, flags);
+      try {
+        const opened = fs.fstatSync(fd);
+        const rechecked = containedFile(root, relative);
+        if (rechecked.kind === "outside") return outside(relative);
+        if (
+          !opened.isFile() ||
+          rechecked.kind !== "file" ||
+          opened.dev !== file.stat.dev ||
+          opened.ino !== file.stat.ino ||
+          opened.dev !== rechecked.stat.dev ||
+          opened.ino !== rechecked.stat.ino ||
+          rechecked.resolved !== file.resolved
+        ) {
+          return { error: `${relative} changed while preparing dotfiles sync — try again` };
+        }
+        // Read from the checked descriptor, not the selectable symlink again. Growth cannot turn
+        // the size check into an unlimited read; this is not an atomic snapshot of a mutable tree.
+        const contents = Buffer.alloc(MAX_FILE_BYTES + 1);
+        let length = 0;
+        while (length < contents.length) {
+          const read = fs.readSync(fd, contents, length, contents.length - length, null);
+          if (read === 0) break;
+          length += read;
+        }
+        if (length > MAX_FILE_BYTES)
+          return { error: `${relative} is over 1MB — dotfiles are text; trim the selection` };
+        files.push({
+          path: relative,
+          contentsBase64: contents.subarray(0, length).toString("base64"),
+          // eslint-disable-next-line no-bitwise -- permission bits are the point
+          mode: (opened.mode & 0o777).toString(8),
+        });
+      } finally {
+        fs.closeSync(fd);
+      }
+    } catch {
+      return {
+        error: `${relative} could not be read under ${home} — check permissions or try again`,
+      };
+    }
   }
   return { files };
 };

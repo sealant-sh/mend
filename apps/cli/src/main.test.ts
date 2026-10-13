@@ -1799,6 +1799,60 @@ describe("mend dotfiles sync", spawning, () => {
     return { fake, posts };
   };
 
+  it.each(["explicit", "all"])(
+    "keeps outside symlink bytes out of %s sync requests",
+    async (selection) => {
+      const home = machine();
+      const { fake, posts } = await startSyncFake();
+      fs.unlinkSync(path.join(home.home, ".zshrc"));
+      fs.symlinkSync(path.join(home.root, "outside"), path.join(home.home, ".zshrc"));
+      try {
+        const cli = startCli(
+          fake.url,
+          ["dotfiles", "sync", selection === "all" ? "--all" : ".zshrc"],
+          home.env,
+        );
+        const exit = await cli.exited;
+        expect(cli.stdout() + cli.stderr()).not.toContain("beside home, never synced");
+        if (selection === "explicit") {
+          expect(exit.code, cli.stderr()).toBe(1);
+          expect(cli.stderr()).toContain(".zshrc resolves outside your home directory");
+          expect(posts).toEqual([]);
+        } else {
+          expect(exit.code, cli.stderr()).toBe(0);
+          expect(posts).toHaveLength(1);
+          expect(decoded(posts[0])).toEqual([
+            { path: ".config/starship.toml", contents: "add_newline = false\n", mode: "644" },
+            { path: ".gitconfig", contents: "[user]\n  name = me\n", mode: "644" },
+          ]);
+        }
+      } finally {
+        await fake.close();
+        home.remove();
+      }
+    },
+  );
+
+  it("syncs an internal file link through a symlinked home using its logical path and mode", async () => {
+    const home = machine();
+    const { fake, posts } = await startSyncFake();
+    fs.renameSync(path.join(home.home, ".zshrc"), path.join(home.home, "shellrc"));
+    fs.symlinkSync("shellrc", path.join(home.home, ".zshrc"));
+    const alias = path.join(home.root, "alias");
+    fs.symlinkSync(home.home, alias);
+    try {
+      const cli = startCli(fake.url, ["dotfiles", "sync", ".zshrc"], { ...home.env, HOME: alias });
+      expect((await cli.exited).code, cli.stderr()).toBe(0);
+      expect(posts).toHaveLength(1);
+      expect(decoded(posts[0])).toEqual([
+        { path: ".zshrc", contents: "export EDITOR=vim\n", mode: "755" },
+      ]);
+    } finally {
+      await fake.close();
+      home.remove();
+    }
+  });
+
   it("without arguments lists what it found under home and uploads nothing", async () => {
     const home = machine();
     const { fake, posts } = await startSyncFake();
