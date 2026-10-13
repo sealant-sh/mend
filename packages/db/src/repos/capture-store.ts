@@ -376,6 +376,17 @@ export class CaptureStoreRepo extends Context.Service<
      */
     readonly setGitFsck: (captureId: string, outcome: CaptureGitFsck) => Effect.Effect<boolean>;
     readonly leaseOf: (worktreeId: WorktreeId) => Effect.Effect<WorktreeLease | null>;
+    /**
+     * Prepare a local result under the current holder's live lease row lock. The synchronous
+     * callback performs no I/O or publication mutation: COMMIT may still fail after it runs.
+     * None means no callback ran. Claim/release waits until this short transaction closes.
+     */
+    readonly withCurrentLease: <A>(
+      worktreeId: WorktreeId,
+      epoch: number,
+      holder: LeaseHolder,
+      prepare: () => A,
+    ) => Effect.Effect<Option.Option<A>>;
     readonly headOf: (worktreeId: WorktreeId) => Effect.Effect<ChainHead | null>;
     /**
      * The sealed completion of `executorId`'s final flush on this worktree: under `epoch` when
@@ -650,6 +661,26 @@ export const CaptureStoreRepoLive: Layer.Layer<
       if (row === undefined) return yield* new WorktreeLeasedError({ worktreeId });
       return { epoch: Number(row.epoch) };
     });
+
+    const withCurrentLease: CaptureStoreRepo["Service"]["withCurrentLease"] = (
+      worktreeId,
+      epoch,
+      holder,
+      prepare,
+    ) =>
+      sql
+        .withTransaction(
+          Effect.gen(function* () {
+            const [lease] = yield* sql<{ readonly held: boolean }>`
+          SELECT (epoch = ${epoch} AND expires_at > clock_timestamp()
+                  AND executor_id = ${holder.executorId}
+                  AND (launch_id IS NULL OR launch_id = ${holder.launchId})) AS held
+            FROM worktree_leases WHERE worktree_id = ${worktreeId} FOR SHARE`;
+            if (lease?.held !== true) return Option.none();
+            return Option.some(yield* Effect.sync(prepare));
+          }),
+        )
+        .pipe(Effect.orDie);
 
     const heartbeat = Effect.fn("CaptureStoreRepo.heartbeat")(function* (
       worktreeId: WorktreeId,
@@ -1556,6 +1587,7 @@ export const CaptureStoreRepoLive: Layer.Layer<
       publishObservedSummary,
       setGitFsck,
       leaseOf,
+      withCurrentLease,
       headOf,
       sealedCompletion,
       recordSeal,

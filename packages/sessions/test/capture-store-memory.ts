@@ -13,7 +13,7 @@ import {
   captureScopesOf,
 } from "@mend/db";
 import type { WorktreeId } from "@mend/domain";
-import { Effect, Layer } from "effect";
+import { Effect, Layer, Option } from "effect";
 
 /**
  * `CaptureStoreRepo` in memory with the SQL's semantics (`repos/capture-store.ts`): the claim
@@ -308,6 +308,17 @@ export const makeMemoryCaptureStore = (
         return true;
       }),
     leaseOf: (worktreeId) => Effect.sync(() => leaseView(worktreeId)),
+    withCurrentLease: (worktreeId, epoch, holder, prepare) =>
+      Effect.sync(() => {
+        const lease = leases.get(worktreeId);
+        return lease !== undefined &&
+          lease.epoch === epoch &&
+          lease.expiresAt !== null &&
+          lease.expiresAt > clock.now() &&
+          holdsAs(lease, holder)
+          ? Option.some(prepare())
+          : Option.none();
+      }),
     headOf: (worktreeId) =>
       Effect.sync(() => {
         const chain = chains.get(worktreeId);

@@ -55,6 +55,7 @@ import {
 } from "@mend/store";
 import { Cause, Deferred, Duration, Effect, Exit, Layer, Option, Result, Schema } from "effect";
 import * as Context from "effect/Context";
+import * as Semaphore from "effect/Semaphore";
 
 import { CaptureRemotes, type PlanRemote } from "./capture-remotes.ts";
 import {
@@ -436,7 +437,7 @@ export type HeartbeatRequest = typeof HeartbeatRequest.Type;
 /**
  * Refusal reasons; the executor pauses on every 409 and never kills. `quota-exceeded` is the
  * request quota (429: calls per hour, a retry later can pass); `byte-quota` is the byte quota
- * (413 on `upload.urls` before any URL is minted, 409 on `capture.register` as the backstop),
+ * (413 on `upload.urls` before any URL is handed out, 409 on `capture.register` as the backstop),
  * which no retry of the same bytes can pass — the body carries `limit`, `used` and `requested`.
  * `unrestorable` (422 on `capture.register`): a section's tree would not restore from what the
  * manifest names — nothing is registered. `manifest-format` (409 on `plan.get`): the head holds
@@ -684,7 +685,7 @@ export const UPLOAD_KEYS_PER_CALL = 1_000;
  * once per object key. It bounds new work only: nothing a draining, kept or recovering executor
  * ships, no `final` capture's register, and no request an executor marks `flush: final`
  * (`isFinalFlush`), is refused for it (cross-repo decisions 30 and 35). `upload.urls` is the enforcement point — a batch whose declared sizes would take
- * the session over is refused with 413 `byte-quota` before any URL is minted, so refused bytes
+ * the session over is refused with 413 `byte-quota` before any URL is handed out, so refused bytes
  * never land; `capture.register` is the backstop for what did land (keys the daemon sends no
  * size for), refusing with 409 `byte-quota`. A key is priced when first reserved or first
  * registered and never again: a later manifest lists every pack of the epoch, and unchanged
@@ -1230,10 +1231,19 @@ export const CaptureChannelLive: Layer.Layer<
      * counts twice, whatever the manifests that list it. A new launch — a new executor, under a
      * fresh epoch — starts a ledger of its own (review 2026-09-28 (10) #6): the budget bounds
      * the new work one executor admits, never what a session wrote across every executor it ever
-     * had. Reservations that mint nothing are refunded. The ledgers of the launches least
-     * recently asked about are dropped past `LEDGERS_KEPT`.
+     * had. Only a successfully prepared upload response charges its declared bytes. The ledgers of the
+     * launches least recently asked about are dropped past `LEDGERS_KEPT`.
      */
     const ledgers = new Map<string, Map<string, number>>();
+    /** Serialize final quota preparation, SQL commit and local accounting per ledger/launch. */
+    const publicationGates = new WeakMap<Map<string, number>, Semaphore.Semaphore>();
+    const publicationGateOf = (ledger: Map<string, number>) => {
+      const existing = publicationGates.get(ledger);
+      if (existing !== undefined) return existing;
+      const gate = Semaphore.makeUnsafe(1);
+      publicationGates.set(ledger, gate);
+      return gate;
+    };
     const ledgerOf = (launch: string): Map<string, number> => {
       const found = ledgers.get(launch);
       if (found !== undefined) {
@@ -1486,6 +1496,7 @@ export const CaptureChannelLive: Layer.Layer<
         BYTE_QUOTA_MULTIPLIER * Math.max(0, scope.footprintBytes),
       );
       const ledger = ledgerOf(launchId);
+      const publicationGate = publicationGateOf(ledger);
       /**
        * Preserving what an executor already holds is never refused for budget (cross-repo
        * decision 30, review 2026-09-28 (10) #6): while its session drains, keeps or recovers it
@@ -1912,419 +1923,479 @@ export const CaptureChannelLive: Layer.Layer<
         for (const key of keys) handed.add(key);
       };
 
-      const uploadUrls = Effect.fn("SessionCaptureApi.uploadUrls")(function* (
-        input: UploadUrlsRequest,
-      ) {
-        yield* requireWorktree(input.worktree_id);
-        yield* requireLease(input.epoch);
-        // The request quota bounds calls, not keys: a call may carry up to `keysPerCall` keys
-        // (the daemon batches 500), and a session gets `callsPerHour` calls. Bytes are bounded
-        // below, before any URL is minted, by the sizes the call declares.
-        if (input.keys.length > policy.keysPerCall) {
-          return yield* bad(
-            `${input.keys.length} keys in one call; the cap is ${policy.keysPerCall} per upload.urls call`,
-          );
-        }
-        const finalFlush = isFinalFlush(input);
-        if (!reserveCall(input.keys, finalFlush)) {
-          return yield* new CaptureRouteError({
-            status: 429,
-            reason: "quota-exceeded",
-            message: `request quota: ${policy.callsPerHour} upload.urls calls per hour per executor`,
-          });
-        }
-        // Only under the caller's own epoch prefix, and only a key that names one capture
-        // object; anything else is dropped, never minted — a prefix is not a key. A size is
-        // only read for a key that is also listed; no size means a single PUT.
-        const sizes = input.sizes ?? {};
-        const wanted = new Map<string, number | null>();
-        for (const key of input.keys) {
-          if (!underOwnPrefix(key, input.epoch) || !isCaptureObjectKey(key)) continue;
-          const size = sizes[key];
-          wanted.set(key, size === undefined || size < 0 ? null : size);
-        }
-        // Write-once (cross-repo decision 19): a key the bucket already holds is verified against
-        // its name first — an object that is there is accepted only as what the key says. Then,
-        // negotiated (cross-repo decision 20, review 2026-09-28 (7) #7): a launch whose
-        // `plan.get` listed `present` gets it answered `present`, no URL, never priced again; any
-        // other gets the legacy answer an older daemon needs to finish — a write-once URL
-        // (`If-None-Match: *`: a bucket that honours it answers 412, which such a daemon reads as
-        // uploaded). On a bucket that ignores `If-None-Match` (Garage) that URL could replace the
-        // verified bytes until it expires: its expiry is recorded, and no seal stands while it
-        // lives (`CaptureSealsStoreLive`, review 2026-09-28 (7) #8).
-        yield* recallUploadAnswers(launchId);
-        const answersPresent = readsPresent.get(launchId) === true;
-        // Before any bucket read: an index binding judged live at this moment stays judged so
-        // through the HEADs below, never later than it was.
-        const callStartedAt = Date.now();
-        // Bytes-bound URLs (`UPLOAD_ANSWER_SHA256`): an executor that sends the checksum, on a
-        // store that checks it but cannot refuse an overwrite. Such a URL writes the bytes it was
-        // minted for or nothing, so it carries no authority to replace an object.
-        const bindable =
-          answersPresent && sendsSha256.get(launchId) === true && (yield* blobs.bindsBytes);
-        const present: Array<string> = [];
-        /** Stored keys answered with a legacy URL: verified, and never priced again. */
-        const storedLegacy = new Set<string>();
-        const verifyStored = (key: string) =>
+      const uploadUrls = Effect.fn("SessionCaptureApi.uploadUrls")((input: UploadUrlsRequest) =>
+        Effect.scoped(
           Effect.gen(function* () {
-            // A key this process already read whole and found what its name says, while that
-            // proof stands (`proofStands`), is not read again.
-            const problem = yield* storedObjectProblem(key, { reuseProofs: true }).pipe(
-              Effect.provideService(BlobStore, blobs),
-              Effect.catchTag("BlobNotFoundError", () => Effect.succeed(null)),
-              Effect.catch(storeError("reading an object already stored", key)),
-            );
-            if (problem !== null) {
-              return yield* new CaptureRouteError({
-                status: 409,
-                reason: "unrestorable",
-                message: `the bucket already holds ${key}, and ${problem}`,
-                key,
-              });
-            }
-          });
-        const heads = yield* Effect.forEach(
-          [...wanted.keys()],
-          (key) =>
-            blobs.head(key).pipe(
-              Effect.map((found) => [key, found !== null] as const),
-              Effect.catch(storeError("asking the bucket for", key)),
-            ),
-          { concurrency: PRESENT_HEADS_IN_FLIGHT },
-        );
-        for (const [key, stored] of heads) {
-          if (!stored) continue;
-          yield* verifyStored(key);
-          if (answersPresent) {
-            present.push(key);
-            wanted.delete(key);
-          } else {
-            storedLegacy.add(key);
-          }
-        }
-        if (policy.requireSizes) {
-          const unsized = [...wanted].find(([, size]) => size === null);
-          if (unsized !== undefined) {
-            return yield* bad(
-              `${unsized[0]} has no declared size; this Mend signs every upload for its exact size`,
-            );
-          }
-        }
-        let plans: Array<{
-          readonly key: string;
-          readonly parts: number;
-          readonly size: number | null;
-        }> = [];
-        for (const [key, size] of wanted) {
-          // A key whose bytes the URL can be bound to (its name says them, or the executor
-          // declared them) goes as one bound PUT well past the multipart threshold: a part URL
-          // would hold the seal for its whole life (`BOUND_SINGLE_PUT_MAX_BYTES`).
-          const boundable =
-            bindable &&
-            size !== null &&
-            size <= BOUND_SINGLE_PUT_MAX_BYTES &&
-            (contentDigestOfKey(key) !== null || input.sha256?.[key] !== undefined);
-          // A stored key's legacy URL is one write-once PUT, whatever its size: there is nothing
-          // to assemble, and a bucket that honours the precondition refuses it outright.
-          if (
-            size === null ||
-            size < policy.multipartThresholdBytes ||
-            boundable ||
-            storedLegacy.has(key)
-          ) {
-            plans.push({ key, parts: 0, size });
-            continue;
-          }
-          const parts = Math.ceil(size / policy.partSizeBytes);
-          if (parts > MULTIPART_MAX_PARTS) {
-            return yield* bad(
-              `${key}: ${size} bytes is ${parts} parts of ${policy.partSizeBytes}; the cap is ${MULTIPART_MAX_PARTS}`,
-            );
-          }
-          plans.push({ key, parts, size });
-        }
-        // What each single PUT is bound to: the SHA-256 its name says (a pack, tree or manifest),
-        // or, for a pack index, the one the executor declared — the same for every URL of the key.
-        const declared = input.sha256 ?? {};
-        const boundTo = new Map<string, string>();
-        if (bindable) {
-          for (const plan of plans) {
-            if (plan.parts > 0) continue;
-            const named = contentDigestOfKey(plan.key);
-            const said = declared[plan.key];
-            if (said !== undefined && !/^[0-9a-f]{64}$/.test(said)) {
-              return yield* bad(`${plan.key}: sha256 must be 64 lowercase hex characters`);
-            }
-            if (named !== null) {
-              if (said !== undefined && said !== named) {
-                return yield* bad(
-                  `${plan.key}: its name says sha256 ${named}, the request ${said}`,
-                );
-              }
-              boundTo.set(plan.key, named);
-              continue;
-            }
-            if (said === undefined) continue;
-            // Reserved in the step that checks it (`reserveBoundIndex`): while a URL of this
-            // index bound to other bytes could live, none is handed out for these, and a seal
-            // never stands over stored bytes a live binding does not name (`sealStandingOf`).
-            const reservedUntil = Date.now() + BOUND_URL_LIFETIME_MS;
-            const reserved = yield* repo.reserveBoundIndex(
-              plan.key,
-              said,
-              new Date(callStartedAt),
-              new Date(reservedUntil),
-            );
-            if (reserved.outcome === "conflict") {
-              return yield* new CaptureRouteError({
-                status: 409,
-                reason: "exists",
-                message: `${plan.key} was handed a URL for other bytes; it is bound to those`,
-                key: plan.key,
-              });
-            }
-            boundTo.set(plan.key, said);
-          }
-        }
-        // A pack index bound above may have been stored, and sealed, since this call first asked
-        // the bucket: a URL for it now could replace bytes a seal stands over with the declared
-        // ones. Its binding is in place (reserved above, in the step that checked it), so a seal
-        // asked from here on sees it; asked of the bucket again now, a stored index is answered
-        // present and gets no URL — the recheck a recorded authority makes for every other call
-        // (review 9 #6), which a bound call never records (Astra re-review, 2026-10-02).
-        const boundIndexes = plans.filter(
-          (plan) => boundTo.has(plan.key) && contentDigestOfKey(plan.key) === null,
-        );
-        if (boundIndexes.length > 0) {
-          const again = yield* Effect.forEach(
-            boundIndexes,
-            (plan) =>
-              blobs.head(plan.key).pipe(
-                Effect.map((found) => [plan.key, found !== null] as const),
-                Effect.catch(storeError("asking the bucket for", plan.key)),
-              ),
-            { concurrency: PRESENT_HEADS_IN_FLIGHT },
-          );
-          const storedNow = new Set(again.filter(([, stored]) => stored).map(([key]) => key));
-          for (const key of storedNow) {
-            yield* verifyStored(key);
-            present.push(key);
-            wanted.delete(key);
-            // The binding stays. Giving it back was only safe while one process held every
-            // binding in one step: another call may have signed a URL under this very row since,
-            // and nothing in the row says whose it is (Astra review, 2026-10-02). A binding that
-            // names the stored bytes holds no seal. One that names other bytes holds a seal over
-            // this index until it lapses, as a URL for those bytes would.
-            boundTo.delete(key);
-          }
-          plans = plans.filter((plan) => !storedNow.has(plan.key));
-        }
-        // Every URL of the call bound to its bytes: the call carries no write authority. A part
-        // URL is not bound (a part's bytes are not the object's), so a call with one records it,
-        // as a call that is not bindable at all (an older daemon, another store) always does.
-        const unbound = !bindable || plans.some((plan) => plan.parts > 0 || !boundTo.has(plan.key));
-        // The byte quota, enforced here: every sized key not yet priced is charged at its
-        // declared size, and a batch that would take the session over is refused whole — no
-        // URL minted, no upload opened, so the refused bytes never reach the bucket. A key
-        // priced before (an earlier batch, a retry, a register) costs nothing again; a key
-        // without a size is priced at register, when the bucket reports what landed.
-        const unpriced = new Map<string, number>();
-        for (const [key, size] of wanted) {
-          if (size === null || ledger.has(key) || storedLegacy.has(key)) continue;
-          unpriced.set(key, size);
-        }
-        const requested = sumOf(unpriced);
-        const used = sumOf(ledger);
-        if (requested > 0 && used + requested > byteBudget) {
-          if (!preserving && !finalFlush) return yield* overByteQuota(413, used, requested);
-          yield* Effect.logInfo(
-            "capture channel: over the byte quota while preserving what the executor holds · not refused",
-          ).pipe(
-            Effect.annotateLogs({
-              worktreeId,
-              epoch: input.epoch,
-              launchId,
-              limit: byteBudget,
-              used,
-              requested,
-              exemptedBytes: used + requested - Math.max(byteBudget, used),
-              exemptedFor: finalFlush ? "flush: final" : "drain",
-            }),
-          );
-        }
-        for (const [key, size] of unpriced) ledger.set(key, size);
-        // Write authority is recorded before it leaves Mend (review 2026-09-28 (7) #8): on a
-        // bucket that ignores `If-None-Match` a URL handed out now could replace an object of
-        // this epoch until it expires, and no seal whose objects live under the epoch stands
-        // before then (`CaptureSealsStoreLive`). The bucket judges expiry by its own clock:
-        // allowed a margin. Recording it is serialized with a seal's acceptance on the epoch's
-        // authority row (cross-repo decision 26, review 2026-09-28 (9) #6), and made only while
-        // the lease is still this launch's, under this epoch (cross-repo decision 31, review
-        // 2026-09-28 (10) #5): the lease was read before the bucket reads above, and a request
-        // that waited through them past its epoch's end records nothing and mints nothing.
-        // Once a seal is recorded whose objects live under this epoch — its own or a later
-        // epoch's that carries this one's packs — no URL that could replace an object it names
-        // is ever handed out. Every object a seal names was stored when it registered, so each
-        // key about to get a URL is asked of the bucket again after the seal was seen: a stored
-        // one is answered `present` (a launch that reads it) or refused (any other), never
-        // handed a URL. Authority is then recorded only against the seals that check was made
-        // for — a newer one is checked anew.
-        let checkedSeals: ReadonlyArray<string> = [];
-        let sealChecked = false;
-        let recordedAt = Date.now();
-        // Every URL of this call lives as long as the call's bytes need (e2e8): the authority
-        // recorded below is that long plus the margin, and every URL is signed for it.
-        const ttlSeconds = putUrlTtlSeconds(
-          plans.some((plan) => plan.size === null)
-            ? null
-            : plans.reduce((total, plan) => total + (plan.size ?? 0), 0),
-        );
-        while (plans.length > 0) {
-          // A call with nothing unbound records nothing: no URL of it can replace an object.
-          if (!unbound) break;
-          recordedAt = Date.now();
-          const record: PutAuthorityRecord = yield* repo.recordPutAuthority(
-            worktreeId,
-            input.epoch,
-            new Date(recordedAt + (ttlSeconds + PUT_URL_CLOCK_MARGIN_SECONDS) * 1000),
-            checkedSeals,
-            holder,
-          );
-          if (record.recorded) break;
-          if (record.reason === "lease") {
-            // Priced for nothing: no URL leaves.
-            for (const key of unpriced.keys()) ledger.delete(key);
+            let published = false;
+            yield* requireWorktree(input.worktree_id);
             yield* requireLease(input.epoch);
-            return yield* leaseLost();
-          }
-          sealChecked = true;
-          const again = yield* Effect.forEach(
-            plans,
-            (plan) =>
-              blobs.head(plan.key).pipe(
-                Effect.map((found) => [plan, found !== null] as const),
-                Effect.catch(storeError("asking the bucket for", plan.key)),
-              ),
-            { concurrency: PRESENT_HEADS_IN_FLIGHT },
-          );
-          const storedNow = again.filter(([, stored]) => stored).map(([plan]) => plan);
-          for (const plan of storedNow) {
-            yield* verifyStored(plan.key);
-            if (!answersPresent || storedLegacy.has(plan.key)) {
-              return yield* new CaptureRouteError({
-                status: 409,
-                reason: "exists",
-                message: `${plan.key} is stored and a final seal over epoch ${input.epoch}'s objects is recorded: no upload URL can be handed out for it`,
-                key: plan.key,
-              });
-            }
-            present.push(plan.key);
-            // Answered present, not uploaded: never priced for this call.
-            if (unpriced.has(plan.key)) ledger.delete(plan.key);
-          }
-          const answered = new Set(storedNow.map((plan) => plan.key));
-          plans = plans.filter((plan) => !answered.has(plan.key));
-          checkedSeals = record.sealedCaptures;
-        }
-        const urls: Record<string, string> = {};
-        const multipart: Record<string, MultipartPlan> = {};
-        for (const plan of plans) {
-          const created =
-            plan.parts === 0
-              ? null
-              : yield* blobs
-                  .createMultipart(plan.key)
-                  .pipe(Effect.catch(storeError("creating a multipart upload", plan.key)));
-          if (created !== null && created.kind === "exists") {
-            // Stored since the HEAD above: verified, and answered like any stored key.
-            yield* verifyStored(plan.key);
-            if (answersPresent) {
-              present.push(plan.key);
-              continue;
-            }
-            // A seal over the epoch's objects was seen: no URL that could replace a stored one.
-            if (sealChecked) {
-              return yield* new CaptureRouteError({
-                status: 409,
-                reason: "exists",
-                message: `${plan.key} is stored and a final seal over epoch ${input.epoch}'s objects is recorded: no upload URL can be handed out for it`,
-                key: plan.key,
-              });
-            }
-            storedLegacy.add(plan.key);
-            urls[plan.key] = yield* blobs
-              .presign(plan.key, "PUT", ttlSeconds, plan.size ?? undefined)
-              .pipe(Effect.catch(storeError("presigning a PUT", plan.key)));
-            continue;
-          }
-          if (created === null) {
-            // Below the threshold: one PUT URL, write-once (`If-None-Match: *` signed in). A
-            // declared size is signed into the URL: the bucket takes those bytes or none. Bound
-            // to its bytes where it can be (`boundTo`): the bucket takes exactly those or none.
-            const digest = boundTo.get(plan.key);
-            urls[plan.key] = yield* blobs
-              .presign(plan.key, "PUT", ttlSeconds, plan.size ?? undefined, digest)
-              .pipe(Effect.catch(storeError("presigning a PUT", plan.key)));
-            // A URL is good from when it was signed: the binding lasts at least that long.
-            if (digest !== undefined && contentDigestOfKey(plan.key) === null) {
-              const signedAt = Date.now();
-              const extended = yield* repo.extendBoundIndex(
-                plan.key,
-                digest,
-                new Date(signedAt),
-                new Date(signedAt + BOUND_URL_LIFETIME_MS),
+            // The request quota bounds calls, not keys: a call may carry up to `keysPerCall` keys
+            // (the daemon batches 500), and a session gets `callsPerHour` calls. Bytes are bounded
+            // below, before any URL is handed out, by the sizes the call declares.
+            if (input.keys.length > policy.keysPerCall) {
+              return yield* bad(
+                `${input.keys.length} keys in one call; the cap is ${policy.keysPerCall} per upload.urls call`,
               );
-              // The binding this URL was signed under is gone, or lapsed while this call stalled
-              // (a seal may have stood over other bytes since): the URL is on no record, and
-              // none of the call's URLs leaves Mend. The executor asks again.
-              if (!extended) {
-                for (const key of unpriced.keys()) ledger.delete(key);
-                return yield* Effect.die(
-                  "capture channel: a pack index URL was signed, and its binding is no longer on record · none handed out",
+            }
+            const finalFlush = isFinalFlush(input);
+            if (!reserveCall(input.keys, finalFlush)) {
+              return yield* new CaptureRouteError({
+                status: 429,
+                reason: "quota-exceeded",
+                message: `request quota: ${policy.callsPerHour} upload.urls calls per hour per executor`,
+              });
+            }
+            // Only under the caller's own epoch prefix, and only a key that names one capture
+            // object; anything else is dropped, never minted — a prefix is not a key. A size is
+            // only read for a key that is also listed; no size means a single PUT.
+            const sizes = input.sizes ?? {};
+            const wanted = new Map<string, number | null>();
+            for (const key of input.keys) {
+              if (!underOwnPrefix(key, input.epoch) || !isCaptureObjectKey(key)) continue;
+              const size = sizes[key];
+              wanted.set(key, size === undefined || size < 0 ? null : size);
+            }
+            // Write-once (cross-repo decision 19): a key the bucket already holds is verified against
+            // its name first — an object that is there is accepted only as what the key says. Then,
+            // negotiated (cross-repo decision 20, review 2026-09-28 (7) #7): a launch whose
+            // `plan.get` listed `present` gets it answered `present`, no URL, never priced again; any
+            // other gets the legacy answer an older daemon needs to finish — a write-once URL
+            // (`If-None-Match: *`: a bucket that honours it answers 412, which such a daemon reads as
+            // uploaded). On a bucket that ignores `If-None-Match` (Garage) that URL could replace the
+            // verified bytes until it expires: its expiry is recorded, and no seal stands while it
+            // lives (`CaptureSealsStoreLive`, review 2026-09-28 (7) #8).
+            yield* recallUploadAnswers(launchId);
+            const answersPresent = readsPresent.get(launchId) === true;
+            // Before any bucket read: an index binding judged live at this moment stays judged so
+            // through the HEADs below, never later than it was.
+            const callStartedAt = Date.now();
+            // Bytes-bound URLs (`UPLOAD_ANSWER_SHA256`): an executor that sends the checksum, on a
+            // store that checks it but cannot refuse an overwrite. Such a URL writes the bytes it was
+            // minted for or nothing, so it carries no authority to replace an object.
+            const bindable =
+              answersPresent && sendsSha256.get(launchId) === true && (yield* blobs.bindsBytes);
+            const present: Array<string> = [];
+            /** Stored keys answered with a legacy URL: verified, and never priced again. */
+            const storedLegacy = new Set<string>();
+            const verifyStored = (key: string) =>
+              Effect.gen(function* () {
+                // A key this process already read whole and found what its name says, while that
+                // proof stands (`proofStands`), is not read again.
+                const problem = yield* storedObjectProblem(key, { reuseProofs: true }).pipe(
+                  Effect.provideService(BlobStore, blobs),
+                  Effect.catchTag("BlobNotFoundError", () => Effect.succeed(null)),
+                  Effect.catch(storeError("reading an object already stored", key)),
+                );
+                if (problem !== null) {
+                  return yield* new CaptureRouteError({
+                    status: 409,
+                    reason: "unrestorable",
+                    message: `the bucket already holds ${key}, and ${problem}`,
+                    key,
+                  });
+                }
+              });
+            const heads = yield* Effect.forEach(
+              [...wanted.keys()],
+              (key) =>
+                blobs.head(key).pipe(
+                  Effect.map((found) => [key, found !== null] as const),
+                  Effect.catch(storeError("asking the bucket for", key)),
+                ),
+              { concurrency: PRESENT_HEADS_IN_FLIGHT },
+            );
+            for (const [key, stored] of heads) {
+              if (!stored) continue;
+              yield* verifyStored(key);
+              if (answersPresent) {
+                present.push(key);
+                wanted.delete(key);
+              } else {
+                storedLegacy.add(key);
+              }
+            }
+            if (policy.requireSizes) {
+              const unsized = [...wanted].find(([, size]) => size === null);
+              if (unsized !== undefined) {
+                return yield* bad(
+                  `${unsized[0]} has no declared size; this Mend signs every upload for its exact size`,
                 );
               }
             }
-            continue;
-          }
-          const partUrls: Array<string> = [];
-          for (let partNumber = 1; partNumber <= plan.parts; partNumber += 1) {
-            const partBytes =
-              plan.size === null
-                ? undefined
-                : partNumber < plan.parts
-                  ? policy.partSizeBytes
-                  : plan.size - policy.partSizeBytes * (plan.parts - 1);
-            partUrls.push(
-              yield* blobs
-                .presignPart(plan.key, created.uploadId, partNumber, ttlSeconds, partBytes)
-                .pipe(Effect.catch(storeError("presigning a part", plan.key))),
+            let plans: Array<{
+              readonly key: string;
+              readonly parts: number;
+              readonly size: number | null;
+            }> = [];
+            for (const [key, size] of wanted) {
+              // A key whose bytes the URL can be bound to (its name says them, or the executor
+              // declared them) goes as one bound PUT well past the multipart threshold: a part URL
+              // would hold the seal for its whole life (`BOUND_SINGLE_PUT_MAX_BYTES`).
+              const boundable =
+                bindable &&
+                size !== null &&
+                size <= BOUND_SINGLE_PUT_MAX_BYTES &&
+                (contentDigestOfKey(key) !== null || input.sha256?.[key] !== undefined);
+              // A stored key's legacy URL is one write-once PUT, whatever its size: there is nothing
+              // to assemble, and a bucket that honours the precondition refuses it outright.
+              if (
+                size === null ||
+                size < policy.multipartThresholdBytes ||
+                boundable ||
+                storedLegacy.has(key)
+              ) {
+                plans.push({ key, parts: 0, size });
+                continue;
+              }
+              const parts = Math.ceil(size / policy.partSizeBytes);
+              if (parts > MULTIPART_MAX_PARTS) {
+                return yield* bad(
+                  `${key}: ${size} bytes is ${parts} parts of ${policy.partSizeBytes}; the cap is ${MULTIPART_MAX_PARTS}`,
+                );
+              }
+              plans.push({ key, parts, size });
+            }
+            // What each single PUT is bound to: the SHA-256 its name says (a pack, tree or manifest),
+            // or, for a pack index, the one the executor declared — the same for every URL of the key.
+            const declared = input.sha256 ?? {};
+            const boundTo = new Map<string, string>();
+            if (bindable) {
+              for (const plan of plans) {
+                if (plan.parts > 0) continue;
+                const named = contentDigestOfKey(plan.key);
+                const said = declared[plan.key];
+                if (said !== undefined && !/^[0-9a-f]{64}$/.test(said)) {
+                  return yield* bad(`${plan.key}: sha256 must be 64 lowercase hex characters`);
+                }
+                if (named !== null) {
+                  if (said !== undefined && said !== named) {
+                    return yield* bad(
+                      `${plan.key}: its name says sha256 ${named}, the request ${said}`,
+                    );
+                  }
+                  boundTo.set(plan.key, named);
+                  continue;
+                }
+                if (said === undefined) continue;
+                // Reserved in the step that checks it (`reserveBoundIndex`): while a URL of this
+                // index bound to other bytes could live, none is handed out for these, and a seal
+                // never stands over stored bytes a live binding does not name (`sealStandingOf`).
+                const reservedUntil = Date.now() + BOUND_URL_LIFETIME_MS;
+                const reserved = yield* repo.reserveBoundIndex(
+                  plan.key,
+                  said,
+                  new Date(callStartedAt),
+                  new Date(reservedUntil),
+                );
+                if (reserved.outcome === "conflict") {
+                  return yield* new CaptureRouteError({
+                    status: 409,
+                    reason: "exists",
+                    message: `${plan.key} was handed a URL for other bytes; it is bound to those`,
+                    key: plan.key,
+                  });
+                }
+                boundTo.set(plan.key, said);
+              }
+            }
+            // A pack index bound above may have been stored, and sealed, since this call first asked
+            // the bucket: a URL for it now could replace bytes a seal stands over with the declared
+            // ones. Its binding is in place (reserved above, in the step that checked it), so a seal
+            // asked from here on sees it; asked of the bucket again now, a stored index is answered
+            // present and gets no URL — the recheck a recorded authority makes for every other call
+            // (review 9 #6), which a bound call never records (Astra re-review, 2026-10-02).
+            const boundIndexes = plans.filter(
+              (plan) => boundTo.has(plan.key) && contentDigestOfKey(plan.key) === null,
             );
-          }
-          multipart[plan.key] = {
-            upload_id: created.uploadId,
-            part_size: policy.partSizeBytes,
-            part_urls: partUrls,
-          };
-        }
-        // The authority recorded above covers a URL for its lifetime plus the margin, counted
-        // from when it was recorded: URLs minted later than the margin allows could outlive it,
-        // so none of them leaves Mend — the executor asks again (review 2026-09-28 (10) #5).
-        if (
-          plans.length > 0 &&
-          unbound &&
-          Date.now() - recordedAt > (PUT_URL_CLOCK_MARGIN_SECONDS * 1000) / 2
-        ) {
-          for (const key of unpriced.keys()) ledger.delete(key);
-          return yield* Effect.die(
-            "capture channel: upload URLs were signed too long after their write authority was recorded · none handed out",
-          );
-        }
-        const answeredPresent = new Set(present);
-        noteMinted(plans.map((plan) => plan.key).filter((key) => !answeredPresent.has(key)));
-        return (
-          present.length === 0 ? { urls, multipart } : { urls, multipart, present }
-        ) satisfies UploadUrlsResponse;
-      });
+            if (boundIndexes.length > 0) {
+              const again = yield* Effect.forEach(
+                boundIndexes,
+                (plan) =>
+                  blobs.head(plan.key).pipe(
+                    Effect.map((found) => [plan.key, found !== null] as const),
+                    Effect.catch(storeError("asking the bucket for", plan.key)),
+                  ),
+                { concurrency: PRESENT_HEADS_IN_FLIGHT },
+              );
+              const storedNow = new Set(again.filter(([, stored]) => stored).map(([key]) => key));
+              for (const key of storedNow) {
+                yield* verifyStored(key);
+                present.push(key);
+                wanted.delete(key);
+                // The binding stays. Giving it back was only safe while one process held every
+                // binding in one step: another call may have signed a URL under this very row since,
+                // and nothing in the row says whose it is (Astra review, 2026-10-02). A binding that
+                // names the stored bytes holds no seal. One that names other bytes holds a seal over
+                // this index until it lapses, as a URL for those bytes would.
+                boundTo.delete(key);
+              }
+              plans = plans.filter((plan) => !storedNow.has(plan.key));
+            }
+            // Every URL of the call bound to its bytes: the call carries no write authority. A part
+            // URL is not bound (a part's bytes are not the object's), so a call with one records it,
+            // as a call that is not bindable at all (an older daemon, another store) always does.
+            const unbound =
+              !bindable || plans.some((plan) => plan.parts > 0 || !boundTo.has(plan.key));
+            // The byte quota, enforced here: every sized key not yet priced is charged at its
+            // declared size, and a batch that would take the session over is refused whole — no
+            // URL handed out, so the refused bytes never reach the bucket. The final publication
+            // check below repeats this after signing, against competing calls' committed charges. A key
+            // priced before (an earlier batch, a retry, a register) costs nothing again; a key
+            // without a size is priced at register, when the bucket reports what landed.
+            const unpriced = new Map<string, number>();
+            for (const [key, size] of wanted) {
+              if (size === null || ledger.has(key) || storedLegacy.has(key)) continue;
+              unpriced.set(key, size);
+            }
+            const requested = sumOf(unpriced);
+            const used = sumOf(ledger);
+            if (requested > 0 && used + requested > byteBudget) {
+              if (!preserving && !finalFlush) return yield* overByteQuota(413, used, requested);
+              yield* Effect.logInfo(
+                "capture channel: over the byte quota while preserving what the executor holds · not refused",
+              ).pipe(
+                Effect.annotateLogs({
+                  worktreeId,
+                  epoch: input.epoch,
+                  launchId,
+                  limit: byteBudget,
+                  used,
+                  requested,
+                  exemptedBytes: used + requested - Math.max(byteBudget, used),
+                  exemptedFor: finalFlush ? "flush: final" : "drain",
+                }),
+              );
+            }
+            // Write authority is recorded before it leaves Mend (review 2026-09-28 (7) #8): on a
+            // bucket that ignores `If-None-Match` a URL handed out now could replace an object of
+            // this epoch until it expires, and no seal whose objects live under the epoch stands
+            // before then (`CaptureSealsStoreLive`). The bucket judges expiry by its own clock:
+            // allowed a margin. Recording it is serialized with a seal's acceptance on the epoch's
+            // authority row (cross-repo decision 26, review 2026-09-28 (9) #6), and made only while
+            // the lease is still this launch's, under this epoch (cross-repo decision 31, review
+            // 2026-09-28 (10) #5): the lease was read before the bucket reads above, and a request
+            // that waited through them past its epoch's end records nothing and mints nothing.
+            // Once a seal is recorded whose objects live under this epoch — its own or a later
+            // epoch's that carries this one's packs — no URL that could replace an object it names
+            // is ever handed out. Every object a seal names was stored when it registered, so each
+            // key about to get a URL is asked of the bucket again after the seal was seen: a stored
+            // one is answered `present` (a launch that reads it) or refused (any other), never
+            // handed a URL. Authority is then recorded only against the seals that check was made
+            // for — a newer one is checked anew.
+            let checkedSeals: ReadonlyArray<string> = [];
+            let sealChecked = false;
+            let recordedAt = Date.now();
+            // Every URL of this call lives as long as the call's bytes need (e2e8): the authority
+            // recorded below is that long plus the margin, and every URL is signed for it.
+            const ttlSeconds = putUrlTtlSeconds(
+              plans.some((plan) => plan.size === null)
+                ? null
+                : plans.reduce((total, plan) => total + (plan.size ?? 0), 0),
+            );
+            while (plans.length > 0) {
+              // A call with nothing unbound records nothing: no URL of it can replace an object.
+              if (!unbound) break;
+              recordedAt = Date.now();
+              const record: PutAuthorityRecord = yield* repo.recordPutAuthority(
+                worktreeId,
+                input.epoch,
+                new Date(recordedAt + (ttlSeconds + PUT_URL_CLOCK_MARGIN_SECONDS) * 1000),
+                checkedSeals,
+                holder,
+              );
+              if (record.recorded) break;
+              if (record.reason === "lease") {
+                // Priced for nothing: no URL leaves.
+                yield* requireLease(input.epoch);
+                return yield* leaseLost();
+              }
+              sealChecked = true;
+              const again = yield* Effect.forEach(
+                plans,
+                (plan) =>
+                  blobs.head(plan.key).pipe(
+                    Effect.map((found) => [plan, found !== null] as const),
+                    Effect.catch(storeError("asking the bucket for", plan.key)),
+                  ),
+                { concurrency: PRESENT_HEADS_IN_FLIGHT },
+              );
+              const storedNow = again.filter(([, stored]) => stored).map(([plan]) => plan);
+              for (const plan of storedNow) {
+                yield* verifyStored(plan.key);
+                if (!answersPresent || storedLegacy.has(plan.key)) {
+                  return yield* new CaptureRouteError({
+                    status: 409,
+                    reason: "exists",
+                    message: `${plan.key} is stored and a final seal over epoch ${input.epoch}'s objects is recorded: no upload URL can be handed out for it`,
+                    key: plan.key,
+                  });
+                }
+                present.push(plan.key);
+                // Answered present, not uploaded: never priced for this call.
+              }
+              const answered = new Set(storedNow.map((plan) => plan.key));
+              plans = plans.filter((plan) => !answered.has(plan.key));
+              checkedSeals = record.sealedCaptures;
+            }
+            const urls: Record<string, string> = {};
+            const multipart: Record<string, MultipartPlan> = {};
+            for (const plan of plans) {
+              const created =
+                plan.parts === 0
+                  ? null
+                  : yield* Effect.acquireRelease(
+                      blobs
+                        .createMultipart(plan.key)
+                        .pipe(Effect.catch(storeError("creating a multipart upload", plan.key))),
+                      (opened) =>
+                        opened.kind === "exists" || published
+                          ? Effect.void
+                          : blobs.abortMultipart(plan.key, opened.uploadId).pipe(
+                              Effect.catchCause((cause) =>
+                                Effect.logWarning(
+                                  "capture channel: incomplete multipart upload could not be aborted",
+                                ).pipe(
+                                  Effect.annotateLogs({
+                                    key: plan.key,
+                                    uploadId: opened.uploadId,
+                                    cause: String(cause),
+                                  }),
+                                ),
+                              ),
+                            ),
+                    );
+              if (created !== null && created.kind === "exists") {
+                // Stored since the HEAD above: verified, and answered like any stored key.
+                yield* verifyStored(plan.key);
+                if (answersPresent) {
+                  present.push(plan.key);
+                  continue;
+                }
+                // A seal over the epoch's objects was seen: no URL that could replace a stored one.
+                if (sealChecked) {
+                  return yield* new CaptureRouteError({
+                    status: 409,
+                    reason: "exists",
+                    message: `${plan.key} is stored and a final seal over epoch ${input.epoch}'s objects is recorded: no upload URL can be handed out for it`,
+                    key: plan.key,
+                  });
+                }
+                storedLegacy.add(plan.key);
+                urls[plan.key] = yield* blobs
+                  .presign(plan.key, "PUT", ttlSeconds, plan.size ?? undefined)
+                  .pipe(Effect.catch(storeError("presigning a PUT", plan.key)));
+                continue;
+              }
+              if (created === null) {
+                // Below the threshold: one PUT URL, write-once (`If-None-Match: *` signed in). A
+                // declared size is signed into the URL: the bucket takes those bytes or none. Bound
+                // to its bytes where it can be (`boundTo`): the bucket takes exactly those or none.
+                const digest = boundTo.get(plan.key);
+                urls[plan.key] = yield* blobs
+                  .presign(plan.key, "PUT", ttlSeconds, plan.size ?? undefined, digest)
+                  .pipe(Effect.catch(storeError("presigning a PUT", plan.key)));
+                // A URL is good from when it was signed: the binding lasts at least that long.
+                if (digest !== undefined && contentDigestOfKey(plan.key) === null) {
+                  const signedAt = Date.now();
+                  const extended = yield* repo.extendBoundIndex(
+                    plan.key,
+                    digest,
+                    new Date(signedAt),
+                    new Date(signedAt + BOUND_URL_LIFETIME_MS),
+                  );
+                  // The binding this URL was signed under is gone, or lapsed while this call stalled
+                  // (a seal may have stood over other bytes since): the URL is on no record, and
+                  // none of the call's URLs leaves Mend. The executor asks again.
+                  if (!extended) {
+                    return yield* Effect.die(
+                      "capture channel: a pack index URL was signed, and its binding is no longer on record · none handed out",
+                    );
+                  }
+                }
+                continue;
+              }
+              const partUrls: Array<string> = [];
+              for (let partNumber = 1; partNumber <= plan.parts; partNumber += 1) {
+                const partBytes =
+                  plan.size === null
+                    ? undefined
+                    : partNumber < plan.parts
+                      ? policy.partSizeBytes
+                      : plan.size - policy.partSizeBytes * (plan.parts - 1);
+                partUrls.push(
+                  yield* blobs
+                    .presignPart(plan.key, created.uploadId, partNumber, ttlSeconds, partBytes)
+                    .pipe(Effect.catch(storeError("presigning a part", plan.key))),
+                );
+              }
+              multipart[plan.key] = {
+                upload_id: created.uploadId,
+                part_size: policy.partSizeBytes,
+                part_urls: partUrls,
+              };
+            }
+            // The authority recorded above covers a URL for its lifetime plus the margin, counted
+            // from when it was recorded: URLs minted later than the margin allows could outlive it,
+            // so none of them leaves Mend — the executor asks again (review 2026-09-28 (10) #5).
+            if (
+              plans.length > 0 &&
+              unbound &&
+              Date.now() - recordedAt > (PUT_URL_CLOCK_MARGIN_SECONDS * 1000) / 2
+            ) {
+              return yield* Effect.die(
+                "capture channel: upload URLs were signed too long after their write authority was recorded · none handed out",
+              );
+            }
+            const answeredPresent = new Set(present);
+            // Bucket reads and signing are finished. The SQL callback only witnesses the lease:
+            // no charge or ownership handoff can survive failed COMMIT. Competing launch calls wait
+            // through commit and the immediate local bookkeeping, never through bucket I/O.
+            return yield* publicationGate.withPermits(1)(
+              Effect.uninterruptibleMask((restore) =>
+                Effect.gen(function* () {
+                  const held = yield* restore(
+                    repo.withCurrentLease(worktreeId, input.epoch, holder, () => undefined),
+                  );
+                  if (Option.isNone(held)) {
+                    yield* restore(requireLease(input.epoch));
+                    return yield* leaseLost();
+                  }
+                  // Register may have changed the ledger while COMMIT waited. Compute against
+                  // its latest values now, with no yield between this check and the charge.
+                  const charges = [...wanted].filter(
+                    ([key, size]) =>
+                      size !== null &&
+                      !ledger.has(key) &&
+                      !storedLegacy.has(key) &&
+                      !answeredPresent.has(key),
+                  );
+                  const usedNow = sumOf(ledger);
+                  const requestedNow = charges.reduce((total, [, size]) => total + (size ?? 0), 0);
+                  if (
+                    requestedNow > 0 &&
+                    usedNow + requestedNow > byteBudget &&
+                    !preserving &&
+                    !finalFlush
+                  )
+                    return yield* overByteQuota(413, usedNow, requestedNow);
+                  // Successful SQL commit is the publication linearization point: holder/epoch
+                  // were checked under its lease lock, and handoff waited through commit. Expiry
+                  // was observed at that check, not promised through HTTP delivery. This masked
+                  // local handoff has no I/O and does not revoke an older URL.
+                  for (const [key, size] of charges) if (size !== null) ledger.set(key, size);
+                  noteMinted(
+                    plans.map((plan) => plan.key).filter((key) => !answeredPresent.has(key)),
+                  );
+                  published = true;
+                  return (
+                    present.length === 0 ? { urls, multipart } : { urls, multipart, present }
+                  ) satisfies UploadUrlsResponse;
+                }),
+              ),
+            );
+          }),
+        ),
+      );
 
       const uploadComplete = Effect.fn("SessionCaptureApi.uploadComplete")(function* (
         input: UploadCompleteRequest,
@@ -3102,29 +3173,38 @@ export const CaptureChannelLive: Layer.Layer<
           // 409 the executor's registrar reads as a refusal of THIS capture, not a transport
           // failure to retry — the bytes are in the bucket and the same register can never
           // pass. What landed is off-chain and retires with its epoch prefix.
-          const used = sumOf(ledger);
-          if (already === null && sumOf(priced) > byteBudget) {
-            const finalFlush = isFinalFlush(input);
-            if (!preserving && manifest.kind !== "final" && !finalFlush) {
-              return yield* overByteQuota(409, used, newBytes);
+          let quotaExemptionReported = false;
+          const checkRegisterQuota = Effect.fn("SessionCaptureApi.checkRegisterQuota")(function* (
+            currentPriced: ReadonlyMap<string, number>,
+            additional: number,
+          ) {
+            const used = sumOf(ledger);
+            if (already === null && sumOf(currentPriced) > byteBudget) {
+              const finalFlush = isFinalFlush(input);
+              if (!preserving && manifest.kind !== "final" && !finalFlush) {
+                return yield* overByteQuota(409, used, additional);
+              }
+              if (quotaExemptionReported) return;
+              yield* Effect.logInfo(
+                "capture channel: register over the byte quota while preserving what the executor holds · not refused",
+              ).pipe(
+                Effect.annotateLogs({
+                  worktreeId,
+                  n: input.n,
+                  epoch: input.epoch,
+                  kind: manifest.kind,
+                  launchId,
+                  limit: byteBudget,
+                  used,
+                  requested: additional,
+                  exemptedBytes: sumOf(currentPriced) - byteBudget,
+                  exemptedFor: preserving ? "drain" : finalFlush ? "flush: final" : "final capture",
+                }),
+              );
+              quotaExemptionReported = true;
             }
-            yield* Effect.logInfo(
-              "capture channel: register over the byte quota while preserving what the executor holds · not refused",
-            ).pipe(
-              Effect.annotateLogs({
-                worktreeId,
-                n: input.n,
-                epoch: input.epoch,
-                kind: manifest.kind,
-                launchId,
-                limit: byteBudget,
-                used,
-                requested: newBytes,
-                exemptedBytes: sumOf(priced) - byteBudget,
-                exemptedFor: preserving ? "drain" : finalFlush ? "flush: final" : "final capture",
-              }),
-            );
-          }
+          });
+          yield* checkRegisterQuota(priced, newBytes);
           // `git_fsck` records Mend's observation, never the executor's claim: the kinds a
           // pickup or a review would restore are verified before the CAS (index-pack --verify
           // and a connectivity walk on the runner); `auto` captures land `unverified` and are
@@ -3263,37 +3343,68 @@ export const CaptureChannelLive: Layer.Layer<
               "capture channel: a final seal over sections not verified restorable · registered without it",
             ).pipe(Effect.annotateLogs({ ...annotations, problems: sealProblem }));
           }
-          const outcome = yield* repo
-            .register({
-              ...(sealed ? { seal: sealFields } : {}),
-              holder,
-              worktreeId,
-              id: input.capture_id,
-              n: input.n,
-              parent: input.parent,
-              epoch: input.epoch,
-              seq: BigInt(manifest.seq),
-              kind: manifest.kind,
-              manifestKey: input.manifest_key,
-              sections: manifest.sections,
-              gitFsck,
-              guards: owners.map((owner) => ({
-                worktreeId: owner,
-                guard: state.guards.get(owner) ?? 0,
-              })),
-              names: referenced,
-            })
-            .pipe(
-              Effect.catch(
-                (error): Effect.Effect<never, CaptureRouteError | GuardMovedError> =>
-                  error.reason === "guard_moved"
-                    ? Effect.fail(new GuardMovedError())
-                    : conflictToRoute(error).pipe(Effect.flatMap(Effect.fail)),
-              ),
-            );
+          // Verification and bucket reads are done. Competing uploads/registers use this
+          // same short gate only for fresh quota facts, durable CAS and local accounting.
+          const outcome = yield* publicationGate.withPermits(1)(
+            Effect.uninterruptibleMask((restore) =>
+              Effect.gen(function* () {
+                const currentPriced = new Map(ledger);
+                const ownPrices = new Map<string, number>();
+                let additional = 0;
+                for (const [key, bytes] of sizes) {
+                  if (!underOwnPrefix(key, input.epoch) || key.endsWith(".idx")) continue;
+                  const reserved = ledger.get(key);
+                  if (reserved !== undefined && reserved !== bytes)
+                    return yield* new CaptureRouteError({
+                      status: 409,
+                      reason: "size-mismatch",
+                      message: `${key} holds ${bytes} bytes, not the ${reserved} declared`,
+                      key,
+                    });
+                  if (reserved === undefined) additional += bytes;
+                  currentPriced.set(key, bytes);
+                  ownPrices.set(key, bytes);
+                }
+                yield* restore(checkRegisterQuota(currentPriced, additional));
+                const accepted = yield* restore(
+                  repo
+                    .register({
+                      ...(sealed ? { seal: sealFields } : {}),
+                      holder,
+                      worktreeId,
+                      id: input.capture_id,
+                      n: input.n,
+                      parent: input.parent,
+                      epoch: input.epoch,
+                      seq: BigInt(manifest.seq),
+                      kind: manifest.kind,
+                      manifestKey: input.manifest_key,
+                      sections: manifest.sections,
+                      gitFsck,
+                      guards: owners.map((owner) => ({
+                        worktreeId: owner,
+                        guard: state.guards.get(owner) ?? 0,
+                      })),
+                      names: referenced,
+                    })
+                    .pipe(
+                      Effect.catch(
+                        (error): Effect.Effect<never, CaptureRouteError | GuardMovedError> =>
+                          error.reason === "guard_moved"
+                            ? Effect.fail(new GuardMovedError())
+                            : conflictToRoute(error).pipe(Effect.flatMap(Effect.fail)),
+                      ),
+                    ),
+                );
+                if (!accepted.lostAck) {
+                  for (const [key, bytes] of ownPrices) ledger.set(key, bytes);
+                }
+                return accepted;
+              }),
+            ),
+          );
           return {
             outcome,
-            priced,
             records,
             sealProblem,
             pendingSeal,
@@ -3304,30 +3415,21 @@ export const CaptureChannelLive: Layer.Layer<
         });
         // One verification pass (e2e8 F2): whatever the attempts read — dir packs, pack indexes,
         // pack payloads, the chunks a member's digest needs — is read once for all of them.
-        const {
-          outcome,
-          priced,
-          records,
-          sealProblem,
-          pendingSeal,
-          unavailable,
-          verdict,
-          already,
-        } = yield* attempt.pipe(
-          Effect.retry({
-            while: (error) => error._tag === "GuardMovedError",
-            times: GUARD_ATTEMPTS - 1,
-          }),
-          Effect.catchTag("GuardMovedError", () =>
-            Effect.die(
-              `capture channel: retention kept moving the chains this capture names (${GUARD_ATTEMPTS} attempts)`,
+        const { outcome, records, sealProblem, pendingSeal, unavailable, verdict, already } =
+          yield* attempt.pipe(
+            Effect.retry({
+              while: (error) => error._tag === "GuardMovedError",
+              times: GUARD_ATTEMPTS - 1,
+            }),
+            Effect.catchTag("GuardMovedError", () =>
+              Effect.die(
+                `capture channel: retention kept moving the chains this capture names (${GUARD_ATTEMPTS} attempts)`,
+              ),
             ),
-          ),
-          withCaptureReadPass,
-          Effect.provideService(BlobStore, blobs),
-        );
+            withCaptureReadPass,
+            Effect.provideService(BlobStore, blobs),
+          );
         if (!outcome.lostAck) {
-          for (const [key, bytes] of priced) ledger.set(key, bytes);
           yield* repo.recordPacks(records);
           const row = yield* repo.captureById(input.capture_id);
           if (row !== null) publish(row);
