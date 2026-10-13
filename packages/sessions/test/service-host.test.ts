@@ -14,7 +14,7 @@ import { SealantClient } from "@mend/sealant";
 import { ServiceHost, ServiceHostLive, validateServiceBindAddresses } from "@mend/sessions";
 import type { Workspace, WorkspaceForward } from "@sealant/sdk";
 import { Effect, Layer, Stream } from "effect";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 /**
  * The host side with real sockets and a fake platform: the forward is an
@@ -22,8 +22,34 @@ import { describe, expect, it } from "vitest";
  * proving accept → dial → pump end to end without a workspace.
  */
 
-process.env["MEND_SERVICE_PORT_MIN"] = "45710";
-process.env["MEND_SERVICE_PORT_MAX"] = "45719";
+let previousMin: string | undefined;
+let previousMax: string | undefined;
+beforeEach(async () => {
+  previousMin = process.env["MEND_SERVICE_PORT_MIN"];
+  previousMax = process.env["MEND_SERVICE_PORT_MAX"];
+  const reservation = net.createServer();
+  try {
+    reservation.listen(0, "127.0.0.1");
+    await once(reservation, "listening");
+    const address = reservation.address();
+    if (address === null || typeof address === "string") throw new Error("no reserved test port");
+    // Start at a kernel-selected port, with room for the real allocator to handle contention.
+    process.env["MEND_SERVICE_PORT_MIN"] = String(address.port);
+    process.env["MEND_SERVICE_PORT_MAX"] = String(Math.min(address.port + 99, 65535));
+  } finally {
+    if (reservation.listening) {
+      const closed = once(reservation, "close");
+      reservation.close();
+      await closed;
+    }
+  }
+});
+afterEach(() => {
+  if (previousMin === undefined) delete process.env["MEND_SERVICE_PORT_MIN"];
+  else process.env["MEND_SERVICE_PORT_MIN"] = previousMin;
+  if (previousMax === undefined) delete process.env["MEND_SERVICE_PORT_MAX"];
+  else process.env["MEND_SERVICE_PORT_MAX"] = previousMax;
+});
 
 const echoForward = (): WorkspaceForward => {
   const pending: Uint8Array[] = [];

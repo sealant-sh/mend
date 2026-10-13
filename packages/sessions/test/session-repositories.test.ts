@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
 import {
   failureReason,
@@ -29,6 +29,16 @@ const git = (cwd: string, args: ReadonlyArray<string>) =>
     .toString("utf8")
     .trim();
 
+const roots: string[] = [];
+const freshDirectory = (prefix: string) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  roots.push(root);
+  return root;
+};
+afterEach(() => {
+  for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
+});
+
 /**
  * The scripts name `/workspace/repo` and `/workspace/repos`: to run them for real they are
  * rewritten onto a scratch root, so the commands are exercised exactly as the workspace sees them.
@@ -43,7 +53,7 @@ const runSh = (script: string) => {
 
 /** A main worktree at `<root>/workspace/repo` and an origin to clone a sibling from. */
 const makeWorkspace = () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mend-repos-"));
+  const root = freshDirectory("mend-repos-");
   const main = path.join(root, "workspace", "repo");
   fs.mkdirSync(main, { recursive: true });
   git(main, ["init", "-q", "-b", "main"]);
@@ -92,7 +102,7 @@ describe("repositories in a session: the shell that brings one in (docs/adr/0010
 
   it("refuses to work behind a link at .mend, where the captures would carry only the link", () => {
     const { root, main, origin, baseSha } = makeWorkspace();
-    const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), "mend-elsewhere-"));
+    const elsewhere = freshDirectory("mend-elsewhere-");
     fs.symlinkSync(elsewhere, path.join(main, ".mend"));
     const cloned = runSh(
       inScratch(
