@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { Effect, Exit } from "effect";
+import { Effect, Exit, Result } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { classifyAddress, makeSourcePolicy, type SourceProfile } from "../src/source-policy.ts";
@@ -413,9 +413,30 @@ describe("a source with a login or token", () => {
     'https://user:"secret"@github.com/org/repo.git',
     "https://user:<secret>@github.com/org/repo.git",
     "https://oauth2:TOKEN@github.com/org/repo.git",
-  ])("is refused before anything is resolved or cloned: %s", async (source) => {
+  ])("is refused before DNS resolution: %s", async (source) => {
     for (const profile of ["operator", "tenant"] as const) {
-      expect(await outcome(profile, source, { operator: true })).toBe("refused");
+      const resolved: Array<string> = [];
+      const sourcePolicy = makeSourcePolicy({
+        profile,
+        allowedHosts: [],
+        resolve: async (host) => {
+          resolved.push(host);
+          return ["140.82.112.3"];
+        },
+      });
+      const result = await Effect.runPromise(
+        sourcePolicy.check(source, { isOperator: true }).pipe(Effect.result),
+      );
+      expect(Result.isFailure(result)).toBe(true);
+      if (Result.isFailure(result)) expect(result.failure._tag).toBe("SourceRefused");
+      expect(resolved).toEqual([]);
+
+      // The same policy must actually use this resolver for an ordinary repository URL.
+      const checked = await Effect.runPromise(
+        sourcePolicy.check("https://github.com/org/repo.git", { isOperator: true }),
+      );
+      expect(checked.host).toBe("github.com");
+      expect(resolved).toEqual(["github.com"]);
     }
   });
 });

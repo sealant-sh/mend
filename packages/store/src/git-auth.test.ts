@@ -79,12 +79,22 @@ describe.skipIf(!hasKeygen)("MendKeys labels", () => {
   });
 
   it("leaves the comment alone when no label is known", async () => {
+    const before = await run(
+      Effect.gen(function* () {
+        const keys = yield* MendKeys;
+        return yield* keys.ensure("user-c", "c@example.com");
+      }),
+    );
+    const privateBytes = fs.readFileSync(before.privateKeyPath);
     const key = await run(
       Effect.gen(function* () {
         const keys = yield* MendKeys;
-        return yield* keys.read("user-b");
+        return yield* keys.read("user-c");
       }),
     );
-    expect(keyComment(key?.publicKey ?? "")).toBe("b@example.com");
+    expect(key).toEqual(before);
+    expect(keyComment(key?.publicKey ?? "")).toBe("c@example.com");
+    // Compare as a boolean so a failure never prints the private key bytes.
+    expect(fs.readFileSync(before.privateKeyPath).equals(privateBytes)).toBe(true);
   });
 });
