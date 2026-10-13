@@ -48,7 +48,7 @@ import {
 } from "./claude-grant.ts";
 import { readClipboardImage } from "./clipboard.ts";
 import { codexCli, codexGrant, personalCodexHome } from "./codex-grant.ts";
-import { adoptedGitAuth } from "./dashboard-adoption.ts";
+import { configuredGitAuth } from "./dashboard-adoption.ts";
 import { bundleCollectors, pathOf } from "./doctor-bundle-collectors.ts";
 import { doctorBundleCommand } from "./doctor-bundle.ts";
 import { doctorCommand, formatCheck, onPath, runChecks } from "./doctor.ts";
@@ -775,9 +775,10 @@ const adopt = async (config: CliConfig, args: ReadonlyArray<string>) => {
   say(
     `${dim("  visible to")} ${visibility === "private" ? "only you" : "everyone in the organization"}`,
   );
-  // Say which signer did the work — the clone already proved it answers.
-  const gitAuth = adoptedGitAuth(source, project.gitAuthMode);
-  if (gitAuth !== null) say(`${dim("  git auth")} ${gitAuth.value} ${dim(`(${gitAuth.note})`)}`);
+  // The API returns configuration; Git may rewrite the source before transport.
+  const gitAuth = configuredGitAuth(project.gitAuthMode);
+  if (gitAuth !== null)
+    say(`${dim("  git auth mode")} ${gitAuth.value} ${dim(`(${gitAuth.note})`)}`);
   say(
     `${dim("  sessions start with:")} mend codex ${dim("(from anywhere —")} --project ${project.name}${dim(")")}`,
   );

@@ -6,7 +6,7 @@ import * as path from "node:path";
 import { describe, expect, it } from "vitest";
 
 import {
-  adoptedGitAuth,
+  configuredGitAuth,
   deriveAdoptOffer,
   refusedAdoptOffer,
   submitDashboardAdoption,
@@ -149,28 +149,9 @@ describe("dashboard adoption", () => {
   });
 });
 
-describe("what adopt says signed the clone", () => {
-  it("names the Mend key only for an ssh clone, which it signed", () => {
-    for (const source of ["git@github.com:octocat/Hello-World.git", "ssh://git@host/repo.git"]) {
-      expect(adoptedGitAuth(source, "mend-key")).toEqual({
-        value: "mend key",
-        note: "your Mend key signed this clone",
-      });
-    }
-  });
-
-  it("says an https or git:// clone went without the key, whatever the project's mode", () => {
-    expect(adoptedGitAuth("https://github.com/octocat/Hello-World", "mend-key")).toEqual({
-      value: "https",
-      note: "cloned over https, which your Mend key does not sign; it signs ssh remotes",
-    });
-    expect(adoptedGitAuth("git://host/repo.git", "bridge")).toEqual({
-      value: "git",
-      note: "cloned over git, which the connected `mend keys share` does not sign; it signs ssh remotes",
-    });
-    // An older server may still answer with a mode this CLI no longer knows: nothing to name.
-    expect(adoptedGitAuth("https://host/repo.git", "ambient")).toBeNull();
-  });
+it("omits auth modes this CLI does not know instead of guessing their signer", () => {
+  expect(configuredGitAuth("ambient")).toBeNull();
+  expect(configuredGitAuth("future-server-mode")).toBeNull();
 });
 
 describe("refusedAdoptOffer", () => {

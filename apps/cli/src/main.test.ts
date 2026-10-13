@@ -221,6 +221,40 @@ const expectExit = async (
 };
 
 describe("mend adopt", spawning, () => {
+  it.each([
+    ["mend-key", "mend key", "configured for SSH remotes"],
+    ["bridge", "bridge", "configured to use `mend keys share` for SSH remotes"],
+  ])(
+    "reports the persisted %s mode without claiming an observed clone signer",
+    async (mode, value, note) => {
+      const source = "https://github.com/acme/fixture.git";
+      const requests: Array<unknown> = [];
+      const fake = await startFakeMend((request, response) => {
+        if (request.method !== "POST" || request.url !== "/api/projects") {
+          response.writeHead(404).end();
+          return;
+        }
+        let body = "";
+        request.on("data", (chunk: Buffer) => {
+          body += chunk.toString();
+        });
+        request.on("end", () => {
+          requests.push(JSON.parse(body));
+          json(response, { ...project, originUrl: source, gitAuthMode: mode });
+        });
+      });
+      try {
+        const cli = startCli(fake.url, ["adopt", source]);
+        expect((await cli.exited).code, cli.stderr()).toBe(0);
+        expect(requests).toEqual([{ name: "fixture", source, visibility: "private" }]);
+        expect(cli.stdout()).toContain(`git auth mode ${value} (${note})`);
+        expect(cli.stdout()).not.toMatch(/cloned over|signed this clone|signed through/);
+      } finally {
+        await fake.close();
+      }
+    },
+  );
+
   it.each(["/tmp/repository", "../repository", "file:///tmp/repository"])(
     "rejects local source %s before an API call",
     async (source) => {

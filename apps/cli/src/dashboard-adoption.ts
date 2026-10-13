@@ -1,5 +1,4 @@
 import {
-  gitRemoteLocation,
   RepositoryCloneUrl,
   repositoryCloneUrlIssue,
   type GitAuthMode,
@@ -78,25 +77,12 @@ export const submitDashboardAdoption = async (
   return { kind: "adopted", project };
 };
 
-/**
- * What adopt says signed the clone: the transport, and the signer only when it did the work. The
- * Mend key and the bridge sign ssh; a clone over http(s) or git:// never asked either, whatever
- * the project's mode. Null for a mode this CLI does not know (an older server's).
- */
-export const adoptedGitAuth = (
-  source: string,
+/** The project's configured Git auth mode; no claim about a clone's actual transport or signer. */
+export const configuredGitAuth = (
   mode: string,
 ): { readonly value: string; readonly note: string } | null => {
   if (mode !== "mend-key" && mode !== "bridge") return null;
-  const signer = mode === "mend-key" ? "your Mend key" : "the connected `mend keys share`";
-  const location = gitRemoteLocation(source);
-  if (location !== null && location.scheme !== "ssh") {
-    return {
-      value: location.scheme,
-      note: `cloned over ${location.scheme}, which ${signer} does not sign; it signs ssh remotes`,
-    };
-  }
   return mode === "mend-key"
-    ? { value: "mend key", note: "your Mend key signed this clone" }
-    : { value: "bridge", note: "signed through the connected `mend keys share`" };
+    ? { value: "mend key", note: "configured for SSH remotes" }
+    : { value: "bridge", note: "configured to use `mend keys share` for SSH remotes" };
 };
