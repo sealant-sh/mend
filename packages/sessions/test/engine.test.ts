@@ -5286,19 +5286,23 @@ describe("SessionEngine", () => {
     );
   });
 
-  it("settles and reaps a protocol process when adapter initialization fails", async () => {
+  it("records an exited protocol process and failed run when adapter initialization fails", async () => {
     const created: CreateOptions[] = [];
+    const attached: SessionProcess[] = [];
     const failingHost = Layer.succeed(ProtocolHost, {
       rehydrate: () => Effect.die("not in test"),
-      attach: () =>
-        Effect.fail(
-          new SealantPlatformError({
-            code: "protocol-init-failed",
-            status: null,
-            message: "initialize failed",
-            cause: null,
-          }),
-        ),
+      attach: (input) =>
+        Effect.gen(function* () {
+          attached.push(input.process);
+          return yield* Effect.fail(
+            new SealantPlatformError({
+              code: "protocol-init-failed",
+              status: null,
+              message: "initialize failed",
+              cause: null,
+            }),
+          );
+        }),
       submitTurn: () => Effect.die("not in test"),
       interruptTurn: () => Effect.die("not in test"),
       respondRequest: () => Effect.die("not in test"),
@@ -5327,12 +5331,32 @@ describe("SessionEngine", () => {
             .launchProtocol(session.id, { mode: "protocol", permissionMode: "ask" }, "user-1")
             .pipe(Effect.flip);
           expect(error).toBeInstanceOf(SealantPlatformError);
-          const process = [...world.processes.values()].find(
-            (candidate) => candidate.kind === "agent-protocol",
-          );
-          expect(process?.exitedAt).not.toBeNull();
+          expect(error).toMatchObject({ code: "protocol-init-failed" });
+          expect(attached).toHaveLength(1);
+          const attempted = attached[0];
+          if (attempted === undefined) throw new Error("protocol adapter was not attached");
+          expect(attempted.sessionId).toBe(session.id);
+          expect(attempted.sealantRunId).not.toBeNull();
+          const process = world.processes.get(attempted.id);
+          expect(process).toMatchObject({
+            id: attempted.id,
+            sessionId: session.id,
+            kind: "agent-protocol",
+            sealantRunId: attempted.sealantRunId,
+            sealantSessionId: attempted.sealantSessionId,
+            status: "exited",
+            exitedAt: expect.any(Date),
+          });
           expect(world.sessions.get(session.id)?.status).toBe("failed");
-          expect([...world.sessionRuns.values()].at(-1)?.status).toBe("failed");
+          expect(
+            [...world.sessionRuns.values()].find(
+              (run) => run.sealantRunId === attempted.sealantRunId,
+            ),
+          ).toMatchObject({
+            sessionId: session.id,
+            status: "failed",
+            settledAt: expect.any(Date),
+          });
         }),
       {
         sealantLayer: sealantLaunchLayer(created),
@@ -29557,6 +29581,7 @@ const joinByAnotherPerson = async (
         });
         const launched = yield* engine.launch(joined.id, ["claude"]).pipe(Effect.result);
         if (launched._tag === "Failure") failure = launched.failure.message;
+        expect(failure, "the successful join required by this scenario").toBeNull();
         joinedWorkspace = world.sessions.get(joined.id)?.sealantWorkspaceId ?? null;
         if (platform === null) throw new Error("the platform client was not handed over");
         if (failure === null) {
@@ -30364,12 +30389,13 @@ describe("a join by another person into a live executor (alpha 2026-10-06, 9e486
     const memory = makeMemoryCaptureStore();
     const states = new Map<string, InteractiveSessionStatus>();
     const shells: Array<SessionProcess> = [];
+    const closed = new Set<string>();
     let refusing = false;
     const platform = workspacesPerOwner(
       sealantLaunchLayer([], undefined, [], undefined, undefined, undefined, states),
       [],
       [],
-      { closeFails: () => refusing },
+      { closeFails: () => refusing, closed },
     );
     try {
       await withEngine(
@@ -30392,7 +30418,7 @@ describe("a join by another person into a live executor (alpha 2026-10-06, 9e486
             yield* SessionEngine;
             const refused = shells[0];
             const healthy = shells[1];
-            if (refused?.sealantSessionId == null || healthy === undefined)
+            if (refused?.sealantSessionId == null || healthy?.sealantSessionId == null)
               throw new Error("missing shells");
             states.set(refused.sealantSessionId, {
               status: "exited",
@@ -30408,7 +30434,16 @@ describe("a join by another person into a live executor (alpha 2026-10-06, 9e486
               "its words cleared",
             );
             // The healthy shell runs on, never marked refused.
-            expect(world.processes.get(healthy.id)?.exitedAt ?? null).toBeNull();
+            expect(world.processes.get(healthy.id)).toMatchObject({
+              id: healthy.id,
+              sessionId: healthy.sessionId,
+              sealantRunId: healthy.sealantRunId,
+              sealantSessionId: healthy.sealantSessionId,
+              kind: "shell",
+              status: "running",
+              exitedAt: null,
+            });
+            expect(closed.has(healthy.sealantSessionId)).toBe(false);
           }),
         { fixture, captured: memory, sealantLayer: platform },
       );
