@@ -28,6 +28,10 @@ test("web tests release their runner resources before exit", { timeout: 45_000 }
           MEND_API_URL: "http://127.0.0.1:0",
           CI: "1",
           NO_COLOR: "1",
+          // Keep CI's worker budget when this lifecycle check launches its own Vitest.
+          VITEST_MAX_THREADS: process.env.VITEST_MAX_THREADS,
+          VITEST_MAX_FORKS: process.env.VITEST_MAX_FORKS,
+          VITEST_MAX_WORKERS: process.env.VITEST_MAX_WORKERS,
         },
         encoding: "utf8",
         timeout: 30_000,

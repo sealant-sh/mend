@@ -104,7 +104,15 @@ jobs:
       - run: pnpm format:check
       # PostgreSQL suites create their own databases. Never reuse a cached local skipped run.
       - name: Tests including required PostgreSQL repositories, migrations and jobs
-        run: pnpm exec turbo test --force
+        # The 8-vCPU / 7-GiB runner hosts Postgres as well. Bound both levels: two
+        # package tasks with at most three Vitest workers each, rather than each
+        # package allocating a pool from the full machine's CPU count.
+        env:
+          # Vitest 3 uses pool-specific controls; Vitest 5 uses MAX_WORKERS.
+          VITEST_MAX_THREADS: "3"
+          VITEST_MAX_FORKS: "3"
+          VITEST_MAX_WORKERS: "3"
+        run: pnpm exec turbo test --force --concurrency=2
       - name: AWS shell regression tests with local command fixtures
         run: pnpm run test:aws-shell
       - name: Live S3 contracts on disposable Garage and strict MinIO fixtures

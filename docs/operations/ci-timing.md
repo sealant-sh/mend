@@ -119,10 +119,16 @@ through their existing options instead of converting those programs to Effect.
 
 After the long-pole work, step 3b splits static checks and build, test shards, packaging and verify,
 and mobile-web into parallel jobs. This step is approved independently of the merge queue. Preserve
-required PostgreSQL, Garage/MinIO and Chromium evidence and measure push-to-green wall time. Shared
-caching, affected-only PR testing, and the merge queue remain pending owner decisions. Do not infer
-cache correctness from the database URL alone: the report must identify whether a result actually
-ran, and required capabilities must fail clearly when absent.
+required PostgreSQL, Garage/MinIO and Chromium evidence and measure push-to-green wall time.
+
+Step 5, the merge queue, is approved after steps 2–3 and 3b establish fast, stable CI on the box.
+Add `merge_group` to required workflows and run the full suite on the proposed merge. Remove the
+duplicate full post-merge main run while preserving main-only Version, next and release jobs. Start
+with batch size one. Prepare that PR after 3b; the runner thread owns branch-rule activation.
+
+Step 4, shared Garage-backed Turbo caching and affected-only PR testing, still needs the owner's
+decision. Do not infer cache correctness from the database URL alone: the report must identify
+whether a result actually ran, and required capabilities must fail clearly when absent.
 
 ## Step 2: track test timeout headroom
 
@@ -161,6 +167,42 @@ by another package's tests. Shared testing exports point to checked-in TypeScrip
 still precedes checks because generated routes must exist for typechecking. The dry task graph has
 27 test nodes, 25 with executable commands, and no test-to-test dependency edges. Packages without a
 build command contribute dependency traversal, not another command to execute.
+
+### Bound concurrency at both levels
+
+The box runners have eight vCPUs and 7 GiB of RAM, including the PostgreSQL service. Removing
+test-to-test dependencies widened the runnable task set without bounding each package's Vitest pool.
+Run 38444968220 failed while opening the auth fixture's admin connection, before executing
+`CREATE DATABASE`. Auth reported 77.80 s of collection and 17.83 s of transformation across two
+files. These reporter totals overlap across workers; they are not extra wall time to add to the
+67.28 s package duration. Host telemetry reported 6.6 GiB in use and 7.5 active vCPUs near failure.
+This supports oversubscription, rather than a new auth assertion failure. The log contains no
+PostgreSQL connection-limit or server-crash report. Turbo's subsequent `SIGSEGV` has no backtrace in
+the job log, so its cause remains unestablished.
+
+CI now uses `turbo test --force --concurrency=2` and three Vitest workers per package. At most six
+Vitest workers run together, leaving CPU and memory room for their controllers, PostgreSQL and
+fixture subprocesses. The two long packages dominate the baseline, sessions at 448.650 s and CLI at
+436.790 s; starting more package pools does not shorten their serial long files. This cap is a
+starting allocation to measure, not a guarantee of a 6 GiB memory peak or a five-minute test step.
+
+Vitest 3.2.7 reads `VITEST_MAX_THREADS` and `VITEST_MAX_FORKS`; Vitest 5.0.1 reads
+`VITEST_MAX_WORKERS`. Set all three to `3` on the CI test step and include them in Turbo's test
+environment hash so strict environment filtering cannot silently discard the limits. Resolved
+configuration checks cover both installed versions. Local commands retain their defaults unless
+these variables are supplied. The web lifecycle integration check forwards the same controls through
+its isolated environment to its nested Vitest process. PostgreSQL connection deadlines, test
+deadlines, assertions and required-suite failure behavior are unchanged by the cap.
+
+Compare the next successful box run with the old dependency graph's 743 s test step from
+run 38389236935. That older run's one-off 1,368 s Chromium download is setup, not test time. Keep
+the Blacksmith 540.506 s baseline separate. Match the capped job's runner and start/end timestamps
+with the runner thread's ten-second memory, swap and load samples. Report minimum available memory,
+peak swap use, run-window swap-in/out deltas and peak load beside durations. Cumulative swap since
+boot cannot establish the amount swapped during this run. If the cap does not beat the old graph,
+report that; step 3b distributes shards across runners instead of oversubscribing one machine.
+
+### Select extra jobs by changed paths
 
 The dependency-free `scripts/ci-scope.mjs` compares the PR's merge base with its head. It emits the
 two extra-job flags below. Main always runs both. Paths use NUL separators and rename detection is
