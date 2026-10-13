@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import * as fs from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
@@ -6,7 +6,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
 import {
   authorizeUrl,
@@ -16,6 +16,19 @@ import {
   pollDeadline,
   pollDelayMs,
 } from "./login.ts";
+
+const homes: Array<string> = [];
+const children: Array<ChildProcess> = [];
+afterEach(async () => {
+  for (const child of children.splice(0)) {
+    if (child.exitCode === null && child.signalCode === null) {
+      const closed = once(child, "close");
+      child.kill("SIGKILL");
+      await closed;
+    }
+  }
+  for (const home of homes.splice(0)) fs.rmSync(home, { recursive: true, force: true });
+});
 
 type Handler = (request: IncomingMessage, response: ServerResponse) => void;
 
@@ -45,6 +58,7 @@ const runCli = async (
   options: { readonly savedUrl?: string } = {},
 ) => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "mend-login-test-"));
+  homes.push(home);
   const entrypoint = fileURLToPath(new URL("./main.ts", import.meta.url));
   if (options.savedUrl !== undefined) {
     const configDir = path.join(home, "config", "mend");
@@ -63,6 +77,7 @@ const runCli = async (
     env,
     stdio: ["ignore", "pipe", "pipe"],
   });
+  children.push(child);
   let stdout = "";
   let stderr = "";
   child.stdout.on("data", (chunk: Buffer) => {
@@ -71,7 +86,7 @@ const runCli = async (
   child.stderr.on("data", (chunk: Buffer) => {
     stderr += chunk.toString();
   });
-  const [code] = await once(child, "exit");
+  const [code] = await once(child, "close");
   return {
     code: typeof code === "number" ? code : null,
     stdout,
@@ -188,58 +203,91 @@ describe("authorize walk facts", () => {
 // polling delays, took 5 s, so vitest's 5 s default left no headroom.
 describe("mend login", { timeout: 30_000 }, () => {
   it("opens a request, polls to approval, and saves url + token + device id", async () => {
-    const requests: Array<string> = [];
+    const requests: Array<{ method: string | undefined; url: string | undefined; body: unknown }> =
+      [];
+    const deviceCode = "mdc_poll-credential-only";
+    const token = "mdt_config-credential-only";
     let polls = 0;
     const fake = await startFakeMend((request, response) => {
-      requests.push(`${request.method ?? ""} ${request.url ?? ""}`);
-      if (request.url === "/api/cli/auth") {
-        response.writeHead(200, { "content-type": "application/json" });
-        response.end(
-          JSON.stringify({
-            deviceCode: "mdc_secret",
-            code: "ABCDEFGH",
-            verifyPath: "/authorize?code=ABCD-EFGH",
-            expiresAt: new Date(Date.now() + 10 * 60_000).toISOString(),
-            intervalSeconds: 1,
-          }),
-        );
-        return;
-      }
-      if (request.url === "/api/cli/auth/token") {
-        polls += 1;
-        response.writeHead(200, { "content-type": "application/json" });
-        response.end(
-          polls === 1
-            ? JSON.stringify({ status: "pending" })
-            : JSON.stringify({
-                status: "approved",
-                token: "mdt_fresh-token",
-                user: { id: "u1", name: "Yiannis", email: "y@example.com" },
-                device: { id: "d1", name: "test-host" },
-              }),
-        );
-        return;
-      }
-      response.writeHead(404).end();
+      let body = "";
+      request.on("data", (chunk: Buffer) => {
+        body += chunk.toString();
+      });
+      request.on("end", () => {
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(body);
+        } catch {
+          response.writeHead(400).end();
+          return;
+        }
+        requests.push({ method: request.method, url: request.url, body: parsed });
+        if (request.method !== "POST") {
+          response.writeHead(405).end();
+          return;
+        }
+        if (request.url === "/api/cli/auth") {
+          response.writeHead(200, { "content-type": "application/json" });
+          response.end(
+            JSON.stringify({
+              deviceCode,
+              code: "ABCDEFGH",
+              verifyPath: "/authorize?code=ABCD-EFGH",
+              expiresAt: new Date(Date.now() + 10 * 60_000).toISOString(),
+              intervalSeconds: 1,
+            }),
+          );
+          return;
+        }
+        if (request.url === "/api/cli/auth/token") {
+          if (
+            typeof parsed !== "object" ||
+            parsed === null ||
+            !("deviceCode" in parsed) ||
+            parsed.deviceCode !== deviceCode
+          ) {
+            response.writeHead(403).end();
+            return;
+          }
+          polls += 1;
+          response.writeHead(200, { "content-type": "application/json" });
+          response.end(
+            JSON.stringify(
+              polls === 1
+                ? { status: "pending" }
+                : {
+                    status: "approved",
+                    token,
+                    user: { id: "u1", name: "Yiannis", email: "y@example.com" },
+                    device: { id: "d1", name: "test-host" },
+                  },
+            ),
+          );
+          return;
+        }
+        response.writeHead(404).end();
+      });
     });
 
     try {
       const result = await runCli(fake.url, ["login"]);
       expect(result.stderr).toBe("");
       expect(result.code).toBe(0);
-      expect(requests[0]).toBe("POST /api/cli/auth");
+      expect(requests).toEqual([
+        { method: "POST", url: "/api/cli/auth", body: { name: os.hostname(), client: "cli" } },
+        { method: "POST", url: "/api/cli/auth/token", body: { deviceCode } },
+        { method: "POST", url: "/api/cli/auth/token", body: { deviceCode } },
+      ]);
       expect(polls).toBe(2);
       expect(result.stdout).toContain("ABCD-EFGH");
       expect(result.stdout).toContain(`${fake.url}/authorize?code=ABCD-EFGH`);
       expect(result.stdout).toContain("signed in as y@example.com");
-      // The token never appears in the output — it goes to the config alone.
-      expect(result.stdout).not.toContain("mdt_fresh-token");
-      const saved = JSON.parse(fs.readFileSync(result.configPath, "utf8")) as {
-        url: string;
-        token: string;
-        deviceId: string;
-      };
-      expect(saved).toEqual({ url: fake.url, token: "mdt_fresh-token", deviceId: "d1" });
+      for (const output of [result.stdout, result.stderr]) {
+        expect(output).not.toContain(token);
+        expect(output).not.toContain(deviceCode);
+      }
+      const saved: unknown = JSON.parse(fs.readFileSync(result.configPath, "utf8"));
+      expect(saved).toEqual({ url: fake.url, token, deviceId: "d1" });
       const mode = fs.statSync(result.configPath).mode & 0o777;
       expect(mode).toBe(0o600);
     } finally {
