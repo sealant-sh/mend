@@ -83,6 +83,7 @@ export class UpgradeTicketsRepo extends Context.Service<
       readonly credential: TicketCredential | null;
       /** Thirty seconds unless stated; only a renewal ticket states otherwise. */
       readonly ttlMs?: number;
+      /** Evaluation time; omitted uses the implementation's clock. */
       readonly now?: Date;
     }) => Effect.Effect<{ readonly ticket: string; readonly expiresAt: Date }>;
     /**
@@ -97,6 +98,7 @@ export class UpgradeTicketsRepo extends Context.Service<
       readonly target: UpgradeTicketTarget;
       readonly scope: string;
       readonly keep?: boolean;
+      /** Evaluation time; omitted uses the implementation's clock. */
       readonly now?: Date;
     }) => Effect.Effect<SpentUpgradeTicket | null>;
     /** Whether the credential a ticket was minted by still stands. Null always does. */
@@ -198,9 +200,9 @@ export const UpgradeTicketsRepoLive: Layer.Layer<UpgradeTicketsRepo, never, Mend
 );
 
 /**
- * The same semantics held in memory, for route tests: an expiry, one target, one scope, and a
- * credential that can be struck. `clock` lets a test walk past the expiry; `revoked` is the set of
- * credentials that no longer stand.
+ * Ticket expiry and use held in memory, for route tests. Explicit `now` takes precedence over
+ * `clock` for mint and consume. `clock` supplies the time when omitted. Credential validity is
+ * supplied by `revoked`: credentials stand unless that test registry marks them revoked.
  */
 export const makeUpgradeTicketsMemory = (
   clock: () => number = Date.now,
@@ -222,7 +224,8 @@ export const makeUpgradeTicketsMemory = (
     mint: (input) =>
       Effect.sync(() => {
         const ticket = mintUpgradeTicket();
-        const expiresAt = clock() + (input.ttlMs ?? UPGRADE_TICKET_TTL_MS);
+        const expiresAt =
+          (input.now?.getTime() ?? clock()) + (input.ttlMs ?? UPGRADE_TICKET_TTL_MS);
         rows.set(hashUpgradeTicket(ticket), {
           userId: input.userId,
           target: input.target,
@@ -238,7 +241,7 @@ export const makeUpgradeTicketsMemory = (
         const row = rows.get(key);
         if (
           row === undefined ||
-          row.expiresAt <= clock() ||
+          row.expiresAt <= (input.now?.getTime() ?? clock()) ||
           row.target !== input.target ||
           row.scope !== input.scope ||
           !standing(row.credential)

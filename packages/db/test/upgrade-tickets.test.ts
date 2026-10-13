@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import { PgClient } from "@effect/sql-pg";
 import { Effect, Layer, Redacted } from "effect";
 import { SqlClient } from "effect/unstable/sql";
@@ -7,14 +9,196 @@ import { MendDBLive } from "../src/client.ts";
 import { migrations } from "../src/migrations.ts";
 import {
   hashUpgradeTicket,
+  makeUpgradeTicketsMemory,
   mintUpgradeTicket,
+  type TicketCredential,
   UPGRADE_TICKET_TTL_MS,
   UpgradeTicketsRepo,
   UpgradeTicketsRepoLive,
-  UpgradeTicketsRepoMemory,
   upgradeTicketScope,
 } from "../src/repos/upgrade-tickets.ts";
 import { postgresTestConfig } from "./postgres.ts";
+
+interface TicketFixture {
+  readonly tickets: UpgradeTicketsRepo["Service"];
+  readonly signIn: TicketCredential;
+  readonly device: TicketCredential;
+  readonly revoke: (credential: TicketCredential) => Effect.Effect<void>;
+}
+
+const ticketContract = (
+  runFixture: (work: (fixture: TicketFixture) => Effect.Effect<void>) => Promise<void>,
+) => {
+  // These are product lifetimes, independent of the implementation's constants.
+  for (const duration of [
+    { label: "default thirty seconds", target: "tty", ttlMs: undefined, expectedMs: 30_000 },
+    { label: "custom short TTL", target: "keys-bridge", ttlMs: 1234, expectedMs: 1234 },
+    { label: "custom renewal TTL", target: "tty-renew", ttlMs: 43_200_000, expectedMs: 43_200_000 },
+  ] satisfies ReadonlyArray<{
+    label: string;
+    target: "tty" | "keys-bridge" | "tty-renew";
+    ttlMs: number | undefined;
+    expectedMs: number;
+  }>) {
+    for (const offset of [-1, 0, 1]) {
+      it(`${duration.label}: accepts only before expiry, offset ${offset}ms`, async () =>
+        runFixture(({ tickets }) =>
+          Effect.gen(function* () {
+            const now = new Date("2030-01-01T00:00:00.000Z");
+            const expectedExpiry = new Date(now.getTime() + duration.expectedMs);
+            const minted = yield* tickets.mint({
+              userId: "alice",
+              target: duration.target,
+              scope: "session=s1",
+              credential: null,
+              ...(duration.ttlMs === undefined ? {} : { ttlMs: duration.ttlMs }),
+              now,
+            });
+            expect(minted.expiresAt).toEqual(expectedExpiry);
+            const spent = yield* tickets.consume({
+              ticket: minted.ticket,
+              target: duration.target,
+              scope: "session=s1",
+              now: new Date(expectedExpiry.getTime() + offset),
+            });
+            expect(spent).toEqual(
+              offset < 0 ? { userId: "alice", credential: null, expiresAt: expectedExpiry } : null,
+            );
+            if (offset < 0)
+              expect(
+                yield* tickets.consume({
+                  ticket: minted.ticket,
+                  target: duration.target,
+                  scope: "session=s1",
+                  now,
+                }),
+              ).toBeNull();
+          }),
+        ));
+    }
+  }
+
+  it("wrong target, wrong scope and unknown ticket do not spend the correct ticket", async () =>
+    runFixture(({ tickets }) =>
+      Effect.gen(function* () {
+        const now = new Date("2030-02-01T00:00:00.000Z");
+        const minted = yield* tickets.mint({
+          userId: "alice",
+          target: "tty",
+          scope: "session=s1",
+          credential: null,
+          now,
+        });
+        const request = {
+          ticket: minted.ticket,
+          target: "tty",
+          scope: "session=s1",
+          now,
+        } satisfies Parameters<typeof tickets.consume>[0];
+        expect(yield* tickets.consume({ ...request, target: "service-tunnel" })).toBeNull();
+        expect(yield* tickets.consume({ ...request, scope: "session=s2" })).toBeNull();
+        expect(yield* tickets.consume({ ...request, ticket: "mut_unknown" })).toBeNull();
+        expect(yield* tickets.consume(request)).toEqual({
+          userId: "alice",
+          credential: null,
+          expiresAt: new Date("2030-02-01T00:00:30.000Z"),
+        });
+        expect(yield* tickets.consume(request)).toBeNull();
+      }),
+    ));
+
+  it("keep preserves the original deadline and permits a later ordinary spend", async () =>
+    runFixture(({ tickets }) =>
+      Effect.gen(function* () {
+        const now = new Date("2030-03-01T00:00:00.000Z");
+        const minted = yield* tickets.mint({
+          userId: "alice",
+          target: "tty-renew",
+          scope: "session=s1",
+          credential: null,
+          ttlMs: 1234,
+          now,
+        });
+        const expected = {
+          userId: "alice",
+          credential: null,
+          expiresAt: new Date("2030-03-01T00:00:01.234Z"),
+        };
+        const request = {
+          ticket: minted.ticket,
+          target: "tty-renew",
+          scope: "session=s1",
+          keep: true,
+        } satisfies Parameters<typeof tickets.consume>[0];
+        expect(yield* tickets.consume({ ...request, now })).toEqual(expected);
+        expect(
+          yield* tickets.consume({ ...request, now: new Date("2030-03-01T00:00:01.233Z") }),
+        ).toEqual(expected);
+        expect(yield* tickets.consume({ ...request, now: expected.expiresAt })).toBeNull();
+        // A refused observation did not delete it; explicit time is a query input, not a clock update.
+        expect(
+          yield* tickets.consume({
+            ...request,
+            keep: false,
+            now: new Date("2030-03-01T00:00:01.233Z"),
+          }),
+        ).toEqual(expected);
+        expect(yield* tickets.consume({ ...request, now })).toBeNull();
+      }),
+    ));
+
+  for (const kind of ["signIn", "device"] satisfies ReadonlyArray<"signIn" | "device">)
+    it(`${kind} revocation ends an otherwise live reusable ticket`, async () =>
+      runFixture(({ tickets, revoke, ...credentials }) =>
+        Effect.gen(function* () {
+          const credential = credentials[kind];
+          const now = new Date("2030-04-01T00:00:00.000Z");
+          const minted = yield* tickets.mint({
+            userId: "alice",
+            target: "tty-renew",
+            scope: "session=s1",
+            credential,
+            ttlMs: 43_200_000,
+            now,
+          });
+          const request = {
+            ticket: minted.ticket,
+            target: "tty-renew",
+            scope: "session=s1",
+            keep: true,
+            now,
+          } satisfies Parameters<typeof tickets.consume>[0];
+          const expected = {
+            userId: "alice",
+            credential,
+            expiresAt: new Date("2030-04-01T12:00:00.000Z"),
+          };
+          expect(yield* tickets.credentialStands(credential)).toBe(true);
+          expect(yield* tickets.consume(request)).toEqual(expected);
+          expect(yield* tickets.consume(request)).toEqual(expected);
+          yield* revoke(credential);
+          expect(yield* tickets.credentialStands(credential)).toBe(false);
+          expect(yield* tickets.consume(request)).toBeNull();
+          expect(yield* tickets.consume({ ...request, keep: false })).toBeNull();
+          expect(yield* tickets.credentialStands(null)).toBe(true);
+        }),
+      ));
+};
+
+const runMemoryContract = (work: (fixture: TicketFixture) => Effect.Effect<void>) => {
+  const revoked = new Set<string>();
+  return Effect.runPromise(
+    work({
+      tickets: makeUpgradeTicketsMemory(() => 1000, revoked),
+      signIn: "session:contract-sign-in",
+      device: "device:contract-device",
+      revoke: (credential) =>
+        Effect.sync(() => {
+          revoked.add(credential);
+        }),
+    }),
+  );
+};
 
 describe("upgrade tickets", () => {
   it("mints recognisable, url-safe tickets and stores only a hash", () => {
@@ -32,26 +216,35 @@ describe("upgrade tickets", () => {
     expect(upgradeTicketScope({ session: "", process: null })).toBe("");
   });
 
-  it("is single use, and bound to its target, scope and thirty seconds (memory)", async () => {
-    await Effect.runPromise(
-      Effect.gen(function* () {
-        const tickets = yield* UpgradeTicketsRepo;
-        const { ticket } = yield* tickets.mint({
-          userId: "alice",
-          target: "tty",
-          scope: "session=s1",
-          credential: null,
-        });
-        expect(yield* tickets.consume({ ticket, target: "tty", scope: "session=s2" })).toBeNull();
-        expect(
-          yield* tickets.consume({ ticket, target: "service-tunnel", scope: "session=s1" }),
-        ).toBeNull();
-        expect(
-          yield* tickets.consume({ ticket, target: "tty", scope: "session=s1" }),
-        ).toMatchObject({ userId: "alice", credential: null });
-        expect(yield* tickets.consume({ ticket, target: "tty", scope: "session=s1" })).toBeNull();
-      }).pipe(Effect.provide(UpgradeTicketsRepoMemory)),
+  describe("memory shared contract", () => ticketContract(runMemoryContract));
+
+  it("uses the injected clock only when explicit now is absent", async () => {
+    let now = 1000;
+    const tickets = makeUpgradeTicketsMemory(() => now);
+    const minted = await Effect.runPromise(
+      tickets.mint({ userId: "alice", target: "tty", scope: "session=s1", credential: null }),
     );
+    expect(minted.expiresAt).toEqual(new Date(31_000));
+    now = 30_999;
+    const request = {
+      ticket: minted.ticket,
+      target: "tty",
+      scope: "session=s1",
+      keep: true,
+    } satisfies Parameters<typeof tickets.consume>[0];
+    expect(await Effect.runPromise(tickets.consume(request))).toEqual({
+      userId: "alice",
+      credential: null,
+      expiresAt: new Date(31_000),
+    });
+    now = 31_000;
+    expect(await Effect.runPromise(tickets.consume(request))).toBeNull();
+    now = 31_001;
+    expect(await Effect.runPromise(tickets.consume(request))).toBeNull();
+    // An explicit observation before expiry wins even while the injected clock is beyond it.
+    expect(
+      await Effect.runPromise(tickets.consume({ ...request, now: new Date(30_999) })),
+    ).not.toBeNull();
   });
 });
 
@@ -77,6 +270,35 @@ const run = <A, E>(
 ) => Effect.runPromise(effect.pipe(Effect.provide(reposLayer), Effect.scoped));
 
 const ORDERED = Object.entries(migrations).toSorted(([a], [b]) => a.localeCompare(b));
+let scratchCreated = false;
+
+const runPostgresContract = (work: (fixture: TicketFixture) => Effect.Effect<void>) =>
+  run(
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const tickets = yield* UpgradeTicketsRepo;
+      const signInId = `contract-sign-in-${randomUUID()}`;
+      const deviceId = `contract-device-${randomUUID()}`;
+      yield* sql`INSERT INTO "session" ("id", "expiresAt", "token", "createdAt", "updatedAt", "userId")
+      VALUES (${signInId}, '2100-01-01T00:00:00Z', ${`token-${signInId}`}, now(), now(), 'alice')`;
+      yield* sql`INSERT INTO device_tokens (id, user_id, name, platform, token_hash)
+      VALUES (${deviceId}, 'alice', 'contract device', 'ios', ${`hash-${deviceId}`})`;
+      const signIn: TicketCredential = `session:${signInId}`;
+      const device: TicketCredential = `device:${deviceId}`;
+      yield* work({
+        tickets,
+        signIn,
+        device,
+        revoke: (credential) =>
+          credential === signIn
+            ? sql`DELETE FROM "session" WHERE id = ${signInId}`.pipe(Effect.orDie, Effect.asVoid)
+            : sql`UPDATE device_tokens SET revoked_at = now() WHERE id = ${deviceId}`.pipe(
+                Effect.orDie,
+                Effect.asVoid,
+              ),
+      });
+    }),
+  );
 
 describe.skipIf(postgres.skip)("upgrade tickets in Postgres", () => {
   beforeAll(async () => {
@@ -84,6 +306,7 @@ describe.skipIf(postgres.skip)("upgrade tickets in Postgres", () => {
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         yield* sql.unsafe(`CREATE DATABASE ${SCRATCH_DB}`);
+        scratchCreated = true;
       }),
     );
     await run(
@@ -98,6 +321,7 @@ describe.skipIf(postgres.skip)("upgrade tickets in Postgres", () => {
   });
 
   afterAll(async () => {
+    if (!scratchCreated) return;
     await withAdmin(
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
@@ -105,6 +329,8 @@ describe.skipIf(postgres.skip)("upgrade tickets in Postgres", () => {
       }),
     );
   });
+
+  describe("live shared contract", () => ticketContract(runPostgresContract));
 
   it("stores the hash, never the ticket", async () => {
     const stored = await run(
