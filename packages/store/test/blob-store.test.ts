@@ -4,13 +4,13 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { Readable } from "node:stream";
 
+import { it as effectIt } from "@effect/vitest";
 import { Effect, Exit, Layer } from "effect";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import {
   BlobStore,
   BlobStoreConfigError,
-  type BlobStoreError,
   BlobStoreFsLive,
   BlobStoreS3Live,
   isValidBlobKey,
@@ -38,7 +38,7 @@ const putPart = async (url: string, body: Uint8Array): Promise<string> => {
 };
 
 /** "ok", or the tag of the error an operation was refused with. */
-const tagOf = <A>(effect: Effect.Effect<A, BlobStoreError>) =>
+const tagOf = <A, E extends { readonly _tag: string }>(effect: Effect.Effect<A, E>) =>
   effect.pipe(
     Effect.map(() => "ok"),
     Effect.catch((error) => Effect.succeed(error._tag)),
@@ -47,6 +47,8 @@ const tagOf = <A>(effect: Effect.Effect<A, BlobStoreError>) =>
 interface ContractOptions {
   /** Bytes per non-final part: S3 refuses parts under 5 MiB; the directory store takes any. */
   readonly partBytes: number;
+  /** MinIO deliberately lists multipart uploads by exact object key only, never by prefix. */
+  readonly multipartListing: "prefix" | "exact-key";
 }
 
 /** The port contract, run against whichever implementation the layer provides. */
@@ -110,6 +112,32 @@ const contract = (
       );
       expect(out).toBe("streamed");
     });
+
+    effectIt.live(
+      "ranges return exact slices, clamp starts and ends, and return empty past EOF",
+      () =>
+        Effect.gen(function* () {
+          const store = yield* BlobStore;
+          yield* store.put(key("ranges/obj"), bytes("abcdef"));
+          expect(text(yield* store.getRange(key("ranges/obj"), 1, 3))).toBe("bcd");
+          expect(text(yield* store.getRange(key("ranges/obj"), -4, 3))).toBe("abc");
+          expect(text(yield* store.getRange(key("ranges/obj"), 4, 99))).toBe("ef");
+          expect(yield* store.getRange(key("ranges/obj"), 6, 2)).toEqual(new Uint8Array());
+          expect(yield* store.getRange(key("ranges/obj"), 100, 2)).toEqual(new Uint8Array());
+          expect(yield* store.getRange(key("ranges/obj"), 0, 0)).toEqual(new Uint8Array());
+          expect(yield* store.getRange(key("ranges/obj"), 0, -1)).toEqual(new Uint8Array());
+        }).pipe(Effect.provide(layerOf())),
+    );
+
+    effectIt.live("ranges refuse missing objects and invalid keys with the named error", () =>
+      Effect.gen(function* () {
+        const store = yield* BlobStore;
+        expect(yield* tagOf(store.getRange(key("ranges/missing"), 0, 1))).toBe("BlobNotFoundError");
+        for (const bad of ["../x", "/abs", "a//b", "a/./b", ""]) {
+          expect(yield* tagOf(store.getRange(bad, 0, 1))).toBe("BlobStoreError");
+        }
+      }).pipe(Effect.provide(layerOf())),
+    );
 
     it("ifAbsent keeps the first write and reports the second as not written", async () => {
       const result = await run(
@@ -184,6 +212,7 @@ const contract = (
 
     it("multipart: parts assemble in part order, the upload is listed until completed, a filled key answers exists", async () => {
       const target = key("mp/object");
+      const listingKey = options.multipartListing === "prefix" ? key("mp/") : target;
       const part1 = new Uint8Array(options.partBytes).fill(0x61);
       const part2 = bytes("-tail");
       const result = await run(
@@ -191,7 +220,9 @@ const contract = (
           const store = yield* BlobStore;
           const created = yield* store.createMultipart(target);
           if (created.kind !== "created") throw new Error("expected a fresh upload");
-          const open = yield* store.listMultipart(key("mp/"));
+          // Keep the full prefix oracle for directory/Garage. The strict MinIO interoperability
+          // lane explicitly covers only its documented exact-key listing profile.
+          const open = yield* store.listMultipart(listingKey);
           const url1 = yield* store.presignPart(target, created.uploadId, 1, 120);
           const url2 = yield* store.presignPart(target, created.uploadId, 2, 120);
           // Uploaded out of order; the complete names the order.
@@ -202,7 +233,7 @@ const contract = (
             { partNumber: 1, etag: etag1 },
           ]);
           const stored = yield* store.get(target);
-          const after = yield* store.listMultipart(key("mp/"));
+          const after = yield* store.listMultipart(listingKey);
           const again = yield* store.createMultipart(target);
           return { open, completed, stored, after, again };
         }),
@@ -340,7 +371,10 @@ describe("BlobStore (dir)", () => {
     fs.rmSync(root, { recursive: true, force: true });
   });
 
-  contract("contract", () => BlobStoreFsLive(root), "t", { partBytes: 16 });
+  contract("contract", () => BlobStoreFsLive(root), "t", {
+    partBytes: 16,
+    multipartListing: "prefix",
+  });
 
   // Only the directory store promises this: the filesystem's `link(2)` decides the race. An
   // S3 backend without conditional writes (Garage) can let several writers through.
@@ -435,6 +469,13 @@ const s3Config = (() => {
   if (accessKeyId === undefined || secretAccessKey === undefined) return null;
   return { target: resolved.target, credentials: { accessKeyId, secretAccessKey } };
 })();
+if (process.env["MEND_TEST_S3_REQUIRED"] === "1" && s3Config === null) {
+  throw new Error("Required S3 contract needs an explicit bucket URL and test credentials");
+}
+const listingProfile = process.env["MEND_TEST_S3_MULTIPART_LISTING"];
+if (listingProfile !== undefined && listingProfile !== "prefix" && listingProfile !== "exact-key") {
+  throw new Error("Unknown S3 test multipart listing profile");
+}
 
 // Skipped without MEND_TEST_S3_URL (s3://bucket?endpoint=…&region=…) + AWS_ACCESS_KEY_ID /
 // AWS_SECRET_ACCESS_KEY: the contract needs a reachable bucket (a local Garage does).
@@ -464,7 +505,62 @@ describe.skipIf(s3Config === null)("BlobStore (s3)", () => {
   // conditional header: the S3 adapter owns a same-key completion lock and HEAD check.
   contract("contract", layerOf, prefix, {
     partBytes: 5 * 1024 * 1024,
+    multipartListing: listingProfile === "exact-key" ? "exact-key" : "prefix",
   });
+
+  effectIt.live("observes the declared backend's replacement and byte-binding capabilities", () =>
+    Effect.gen(function* () {
+      const store = yield* BlobStore;
+      const startup = yield* store.startupUntil;
+      const binds = yield* store.bindsBytes;
+      const until = yield* store.replaceableUntil(`${prefix}/capability/untouched`);
+      if (process.env["MEND_TEST_S3_WRITE_ONCE"] === "1") {
+        expect(startup).toBe(0);
+        expect(binds).toBe(false);
+        expect(until).toBe(0);
+      } else {
+        expect(startup).toBeGreaterThan(Date.now());
+        expect(binds).toBe(true);
+        expect(until).toBe(startup);
+      }
+    }).pipe(Effect.provide(layerOf())),
+  );
+
+  effectIt.live(
+    "real signed fetch refuses altered signatures and wrong lengths without creating bytes",
+    () =>
+      Effect.gen(function* () {
+        const store = yield* BlobStore;
+        const key = `${prefix}/signed/length`;
+        const putUrl = yield* store.presign(key, "PUT", 120, 4);
+        const wrong = yield* Effect.promise(() =>
+          fetch(putUrl, {
+            method: "PUT",
+            body: "bad",
+            headers: { "if-none-match": "*" },
+          }),
+        );
+        expect(wrong.status).toBe(403);
+        expect(yield* store.head(key)).toBeNull();
+        const good = yield* Effect.promise(() =>
+          fetch(putUrl, {
+            method: "PUT",
+            body: "good",
+            headers: { "if-none-match": "*" },
+          }),
+        );
+        expect(good.status).toBe(200);
+        const getUrl = yield* store.presign(key, "GET", 120);
+        const changed = new URL(getUrl);
+        changed.searchParams.set("X-Amz-Signature", "0".repeat(64));
+        const refused = yield* Effect.promise(() => fetch(changed));
+        expect(refused.status).toBe(403);
+        const allowed = yield* Effect.promise(() => fetch(getUrl));
+        expect(allowed.status).toBe(200);
+        expect(yield* Effect.promise(() => allowed.text())).toBe("good");
+        expect(text(yield* store.get(key))).toBe("good");
+      }).pipe(Effect.provide(layerOf())),
+  );
 
   it("presigned PUT and GET URLs work with plain fetch, and name the public endpoint", async () => {
     if (s3Config === null) return;
@@ -546,8 +642,8 @@ describe.skipIf(s3Config === null)("BlobStore (s3)", () => {
   // Garage, 2026-10-02: a bucket that replaces objects can still refuse other bytes. A PUT URL
   // with the bytes' SHA-256 signed in as `x-amz-checksum-sha256` writes those bytes or none, so
   // it gives no authority to replace the object, and `replaceableUntil` does not count it.
-  it("a PUT URL bound to its bytes takes only those bytes, and gives no authority to replace", async () => {
-    if (s3Config === null || process.env["MEND_TEST_S3_WRITE_ONCE"] === "1") return;
+  it("a digest-requested PUT URL binds bytes on Garage or refuses replacement on a strict bucket", async () => {
+    if (s3Config === null) return;
     const good = "the bytes the name says";
     const digest = crypto.createHash("sha256").update(good).digest("hex");
     const key = `${prefix}/bound/packs/${digest}`;
@@ -564,6 +660,26 @@ describe.skipIf(s3Config === null)("BlobStore (s3)", () => {
         };
       }).pipe(Effect.provide(layerOf())),
     );
+    if (process.env["MEND_TEST_S3_WRITE_ONCE"] === "1") {
+      expect(binds).toBe(false);
+      expect(signedHeadersOf(url)).not.toContain("x-amz-checksum-sha256");
+      const put = (body: string) =>
+        fetch(url, {
+          method: "PUT",
+          body,
+          headers: { "if-none-match": "*" },
+        });
+      expect((await put(good)).ok).toBe(true);
+      expect((await put("other bytes, same size!")).status).toBe(412);
+      expect((await put(good)).status).toBe(412);
+      const stored = await Effect.runPromise(
+        Effect.flatMap(BlobStore, (store) => store.get(key)).pipe(Effect.provide(layerOf())),
+      );
+      expect(text(stored)).toBe(good);
+      expect(untilBefore).toBe(0);
+      expect(untilAfter).toBe(0);
+      return;
+    }
     expect(binds).toBe(true);
     expect(signedHeadersOf(url)).toContain("x-amz-checksum-sha256");
     const putWith = (body: string, sum: string | null) =>

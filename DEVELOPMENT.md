@@ -1,5 +1,19 @@
 # Developing Mend
 
+Run `pnpm run test:s3-contract` for the live blob-store contracts. CI runs this mandatory lane with
+disposable local Garage and MinIO instances, synthetic credentials, and owned data volumes. It
+requires local Docker and downloads pinned public fixture artifacts. It never uses the ambient S3
+endpoint, bucket or AWS credentials. Missing fixtures and skipped live cases fail the command.
+
+Garage uses the image declared in `deploy/docker/compose.v2.yaml` and exercises the full prefix
+listing contract plus checksum-bound PUT URLs. The strict conditional-write lane runs the
+checksum-verified official MinIO `RELEASE.2025-09-07T16-13-09Z` binary in pinned Alpine. MinIO
+deliberately lists multipart uploads by **exact key only**, so this lane checks signed HTTP,
+conditional writes, multipart completion and ranges. It does not prove production retention's prefix
+orphan sweep or complete MinIO backend compatibility. The directory and Garage prefix listing
+assertions remain unchanged. The existing explicit `MEND_TEST_S3_URL` suite remains available for
+other test buckets.
+
 Product decisions live in `MEND-AGENT-WORKBENCH-PLAN.md`. This guide covers running source code; for
 an installed server, use [`docs/SELF-HOSTING.md`](docs/SELF-HOSTING.md).
 

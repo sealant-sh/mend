@@ -18,6 +18,7 @@
     "lint:types": "oxlint . --type-aware --type-check",
     "test": "turbo test",
     "test:aws-shell": "bash deploy/aws/kubernetes/smoke.test.sh && bash deploy/aws/scripts/build-workspace-image.test.sh",
+    "test:s3-contract": "node scripts/test-s3-contract.mjs",
     "test:watch": "vitest",
     "typecheck": "turbo typecheck --ui=tui",
     "version-packages": "changeset version && node scripts/sync-chart-version.mjs && pnpm format:fix"
