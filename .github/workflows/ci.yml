@@ -59,6 +59,8 @@ jobs:
       # PostgreSQL suites create their own databases. Never reuse a cached local skipped run.
       - name: Tests including required PostgreSQL repositories, migrations and jobs
         run: pnpm exec turbo test --force
+      - name: AWS shell regression tests with local command fixtures
+        run: pnpm run test:aws-shell
       - name:
           Check packaging contracts, supervision, acceptance helpers, the mirrors, and the Helm
           chart
