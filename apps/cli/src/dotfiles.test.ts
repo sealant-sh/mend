@@ -3,6 +3,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import { DotfilesManager } from "@mend/domain";
+import { FastCheck } from "effect/testing";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -14,6 +15,158 @@ import {
 } from "./dotfiles.ts";
 
 const tmpHome = () => fs.mkdtempSync(path.join(os.tmpdir(), "mend-cli-dotfiles-"));
+
+const withOwnedHome = (work: (root: string, home: string) => void) => {
+  const root = tmpHome();
+  const home = path.join(root, "home");
+  fs.mkdirSync(home);
+  try {
+    work(root, home);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+};
+
+describe("resolved dotfiles containment", () => {
+  it("preserves generated in-home targets and refuses sibling-home targets across aliases", () => {
+    const segment = FastCheck.array(FastCheck.constantFrom("a", "Z", ".", " ", "界"), {
+      minLength: 1,
+      maxLength: 12,
+    }).map((characters) => `target-${characters.join("")}`);
+    FastCheck.assert(
+      FastCheck.property(
+        segment,
+        FastCheck.boolean(),
+        FastCheck.boolean(),
+        FastCheck.boolean(),
+        (name, inside, aliasHome, absoluteTarget) =>
+          withOwnedHome((root, physicalHome) => {
+            const targetRoot = inside ? physicalHome : `${physicalHome}-sibling`;
+            fs.mkdirSync(targetRoot, { recursive: true });
+            const target = path.join(targetRoot, name);
+            fs.writeFileSync(target, "fixture-generated\n");
+            fs.chmodSync(target, 0o644);
+            fs.symlinkSync(
+              absoluteTarget ? target : path.relative(physicalHome, target),
+              path.join(physicalHome, ".zshrc"),
+            );
+            const home = aliasHome ? path.join(root, "alias") : physicalHome;
+            if (aliasHome) fs.symlinkSync(physicalHome, home);
+            expect(scanDotfileCandidates(home).map((entry) => entry.path)).toEqual(
+              inside ? [".zshrc"] : [],
+            );
+            const result = readSyncFiles(home, [".zshrc"]);
+            if (inside)
+              expect(result).toEqual({
+                files: [
+                  {
+                    path: ".zshrc",
+                    contentsBase64: Buffer.from("fixture-generated\n").toString("base64"),
+                    mode: "644",
+                  },
+                ],
+              });
+            else expect(result).toMatchObject({ error: expect.stringContaining("outside") });
+          }),
+      ),
+      { numRuns: 30, seed: 787001 },
+    );
+  });
+  it("does not offer or read a file link outside home", () =>
+    withOwnedHome((root, home) => {
+      const outside = path.join(root, "outside");
+      fs.writeFileSync(outside, "fixture-only-outside");
+      fs.symlinkSync(outside, path.join(home, ".zshrc"));
+      expect(scanDotfileCandidates(home)).toEqual([]);
+      const result = readSyncFiles(home, [".zshrc"]);
+      expect("error" in result && result.error).toMatch(/\.zshrc.*outside.*home/);
+    }));
+
+  it.each([false, true])(
+    "refuses an outside parent even when its file links back inside=%s",
+    (backInside) =>
+      withOwnedHome((root, home) => {
+        const outside = path.join(root, "outside-config");
+        fs.mkdirSync(path.join(outside, "git"), { recursive: true });
+        if (backInside) {
+          fs.writeFileSync(path.join(home, "inside"), "fixture-only-inside");
+          fs.symlinkSync(path.join(home, "inside"), path.join(outside, "git", "config"));
+        } else fs.writeFileSync(path.join(outside, "git", "config"), "fixture-only-outside");
+        fs.symlinkSync(outside, path.join(home, ".config"));
+        expect(scanDotfileCandidates(home)).toEqual([]);
+        const result = readSyncFiles(home, [".config/git/config"]);
+        expect("error" in result && result.error).toMatch(/\.config\/git\/config.*outside.*home/);
+      }),
+  );
+
+  it.each([false, true])(
+    "keeps in-home file and parent links with symlinked home=%s",
+    (aliasHome) =>
+      withOwnedHome((root, physicalHome) => {
+        const dots = path.join(physicalHome, "dotfiles");
+        fs.mkdirSync(path.join(dots, "git"), { recursive: true });
+        fs.writeFileSync(path.join(dots, "shellrc"), "fixture-shell\n");
+        fs.chmodSync(path.join(dots, "shellrc"), 0o755);
+        fs.writeFileSync(path.join(dots, "git", "config"), "fixture-git\n");
+        fs.chmodSync(path.join(dots, "git", "config"), 0o644);
+        fs.symlinkSync("dotfiles/shellrc", path.join(physicalHome, ".zshrc"));
+        fs.symlinkSync("dotfiles", path.join(physicalHome, ".config"));
+        const home = aliasHome ? path.join(root, "alias") : physicalHome;
+        if (aliasHome) fs.symlinkSync(physicalHome, home);
+        expect(scanDotfileCandidates(home).map((entry) => entry.path)).toEqual([
+          ".zshrc",
+          ".config/git/config",
+        ]);
+        const result = readSyncFiles(home, [path.join(home, ".zshrc"), ".config/git/config"]);
+        expect("files" in result && result.files).toEqual([
+          {
+            path: ".zshrc",
+            contentsBase64: Buffer.from("fixture-shell\n").toString("base64"),
+            mode: "755",
+          },
+          {
+            path: ".config/git/config",
+            contentsBase64: Buffer.from("fixture-git\n").toString("base64"),
+            mode: "644",
+          },
+        ]);
+      }),
+  );
+
+  it.each(["broken", "loop"])("omits a %s link and reports an explicit read failure", (kind) =>
+    withOwnedHome((_root, home) => {
+      fs.symlinkSync(kind === "broken" ? "missing" : ".zshrc", path.join(home, ".zshrc"));
+      expect(scanDotfileCandidates(home)).toEqual([]);
+      expect(readSyncFiles(home, [".zshrc"])).toMatchObject({
+        error: expect.stringContaining("not a file"),
+      });
+    }),
+  );
+
+  it("rechecks a selection after its link is retargeted between scan and read", () =>
+    withOwnedHome((root, home) => {
+      fs.writeFileSync(path.join(home, "inside"), "fixture-inside");
+      fs.writeFileSync(path.join(root, "outside"), "fixture-outside");
+      const link = path.join(home, ".zshrc");
+      fs.symlinkSync("inside", link);
+      const selected = scanDotfileCandidates(home).map((entry) => entry.path);
+      expect(selected).toEqual([".zshrc"]);
+      fs.unlinkSync(link);
+      fs.symlinkSync(path.join(root, "outside"), link);
+      expect(readSyncFiles(home, selected)).toMatchObject({
+        error: expect.stringContaining("outside"),
+      });
+    }));
+
+  it("reads exactly the one-MiB boundary through an in-home link", () =>
+    withOwnedHome((_root, home) => {
+      const body = Buffer.alloc(1024 * 1024, 0x5a);
+      fs.writeFileSync(path.join(home, "inside"), body);
+      fs.symlinkSync("inside", path.join(home, ".zshrc"));
+      const result = readSyncFiles(home, [".zshrc"]);
+      expect("files" in result && result.files[0]?.contentsBase64).toBe(body.toString("base64"));
+    }));
+});
 
 describe("scanDotfileCandidates", () => {
   it("reports only curated candidates that exist as files", () => {
