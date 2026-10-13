@@ -20,7 +20,15 @@
 		# ticket in the query, and pairing carries a code. A log holds none of them. Caddy already
 		# redacts Authorization, Cookie and Set-Cookie.
 		format filter {
-			wrap json
+			# Absolute-form request URLs can carry userinfo before the host. Filter that separately
+			# from query parameters, retaining the scheme, host, path and ordinary query values.
+			wrap filter {
+				wrap json
+				fields {
+					# The query filter forwards the selected uri as a leaf to this wrapped encoder.
+					uri regexp "^([A-Za-z][A-Za-z0-9+.-]*://)[^/?#]*@" "${1}REDACTED@"
+				}
+			}
 			fields {
 				request>uri query {
 					replace ticket REDACTED
