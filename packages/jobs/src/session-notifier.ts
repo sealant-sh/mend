@@ -29,9 +29,10 @@ import {
 } from "@mend/domain/workbench";
 import { mayRunIn } from "@mend/sessions";
 import { slackThreadReach } from "@mend/slack";
-import { Effect, Layer, Schema, Stream } from "effect";
+import { Effect, Layer, Redacted, Schema, Stream } from "effect";
 
 import { notificationRecipients } from "./notification-recipients.ts";
+import { PushSender } from "./push-sender.ts";
 
 /**
  * Pushes a notification to registered phones when a session needs the user:
@@ -59,7 +60,6 @@ import { notificationRecipients } from "./notification-recipients.ts";
 type Phase = "attention" | "completed" | "failed";
 
 const TERMINAL_FRESHNESS_MS = 2 * 60_000;
-const EXPO_PUSH_URL = "https://exp.host/--/api/v2/push/send";
 const BODY_LIMIT = 140;
 
 /**
@@ -171,11 +171,6 @@ export const turnNotificationBody = (session: Session, turn: AgentTurn): string 
     : `${name} hit an error${prompt}`;
 };
 
-interface ExpoPushTicket {
-  readonly status: string;
-  readonly details?: { readonly error?: string };
-}
-
 const decodeEvent = Schema.decodeUnknownEffect(Schema.fromJsonString(MendEvent));
 
 /**
@@ -255,6 +250,7 @@ export const SessionNotifierLive = Layer.effectDiscard(
     const processes = yield* SessionProcessesRepo;
     const projects = yield* ProjectsRepo;
     const devices = yield* PushDevicesRepo;
+    const pushSender = yield* PushSender;
     const conversations = yield* AgentConversationRepo;
     const organizations = yield* OrganizationsRepo;
     const notificationSettings = yield* NotificationSettingsRepo;
@@ -290,34 +286,14 @@ export const SessionNotifierLive = Layer.effectDiscard(
       if (targets.length === 0) return;
       const title = project?.name ?? session.harness;
       const messages = targets.map((device) => ({
-        to: device.token,
+        token: Redacted.make(device.token),
         title,
         body,
         data: { sessionId: session.id, projectId: session.projectId },
-        sound: "default",
       }));
-      const tickets = yield* Effect.tryPromise({
-        try: async (): Promise<ReadonlyArray<ExpoPushTicket>> => {
-          const response = await fetch(EXPO_PUSH_URL, {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify(messages),
-          });
-          if (!response.ok) throw new Error(`expo push → ${response.status}`);
-          const parsed = (await response.json()) as { data?: ReadonlyArray<ExpoPushTicket> };
-          return parsed.data ?? [];
-        },
-        catch: (cause) => (cause instanceof Error ? cause : new Error(String(cause))),
-      });
-      // Tickets align with the request order; a dead token is pruned, not retried.
-      yield* Effect.forEach(
-        tickets.flatMap((ticket, index) =>
-          ticket.details?.error === "DeviceNotRegistered" && targets[index] !== undefined
-            ? [targets[index].token]
-            : [],
-        ),
-        (token) => devices.remove(token),
-      );
+      const unavailable = yield* pushSender.send(messages);
+      // The transport pairs provider receipts to request tokens; unavailable devices are not retried.
+      yield* Effect.forEach(unavailable, (token) => devices.remove(Redacted.value(token)));
     });
 
     const observe = Effect.fn("SessionNotifier.observe")(function* (sessionId: string) {
