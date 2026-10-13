@@ -578,103 +578,109 @@ describe("SessionChannelNetworkHost", () => {
       ),
     );
   });
-  it("mend repo lists, names what can be added, and adds through the session's own channel, polling until the row settles (docs/adr/0010)", async () => {
-    await Effect.runPromise(
-      Effect.scoped(
-        Effect.gen(function* () {
-          const network = yield* SessionChannelNetworkHost;
-          const sockets = yield* SessionSocketHost;
-          const tokens = yield* SessionChannelTokensRepo;
-          const address = network.address ?? "";
-          const seen: unknown[] = [];
-          const row = (state: "adding" | "ready" | "failed", error: string | null) =>
-            new SessionRepository({
-              id: SessionRepositoryId.make("repo-1"),
-              sessionId: SESSION,
-              projectId: ProjectId.make("proj-core"),
-              worktreeId: WorktreeId.make("wt-core"),
-              name: "core",
-              path: "/workspace/repos/core",
-              branch: "mend/fix-login",
-              baseSha: Sha.make("a".repeat(40)),
-              baseRef: "main",
-              state,
-              error,
-              capture: "nested",
-              source: "origin",
-              addedByUserId: "user-1",
-              createdAt: new Date(),
-              updatedAt: new Date(),
-              readyAt: null,
+  // Four native helper processes include two required two-second repository polls.
+  // A five-second default leaves under one second for their startup on CI.
+  it(
+    "mend repo lists, names what can be added, and adds through the session's own channel, polling until the row settles (docs/adr/0010)",
+    { timeout: 15_000 },
+    async () => {
+      await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const network = yield* SessionChannelNetworkHost;
+            const sockets = yield* SessionSocketHost;
+            const tokens = yield* SessionChannelTokensRepo;
+            const address = network.address ?? "";
+            const seen: unknown[] = [];
+            const row = (state: "adding" | "ready" | "failed", error: string | null) =>
+              new SessionRepository({
+                id: SessionRepositoryId.make("repo-1"),
+                sessionId: SESSION,
+                projectId: ProjectId.make("proj-core"),
+                worktreeId: WorktreeId.make("wt-core"),
+                name: "core",
+                path: "/workspace/repos/core",
+                branch: "mend/fix-login",
+                baseSha: Sha.make("a".repeat(40)),
+                baseRef: "main",
+                state,
+                error,
+                capture: "nested",
+                source: "origin",
+                addedByUserId: "user-1",
+                createdAt: new Date(),
+                updatedAt: new Date(),
+                readyAt: null,
+              });
+            // The first list after the add still reads `adding`; the next one `ready`.
+            let lists = 0;
+            const dir = yield* sockets.start(SESSION, {
+              ...api(seen),
+              addableProjects: () =>
+                Effect.succeed([
+                  {
+                    id: ProjectId.make("proj-core"),
+                    name: "core",
+                    defaultBranch: "main",
+                    originUrl: "git@github.com:acme/core.git",
+                  },
+                ]),
+              addRepository: (input) =>
+                Effect.sync(() => {
+                  seen.push({ add: input });
+                  return row("adding", null);
+                }),
+              listRepositories: () =>
+                Effect.sync(() => {
+                  lists += 1;
+                  return [row(lists === 1 ? "adding" : "ready", null)];
+                }),
             });
-          // The first list after the add still reads `adding`; the next one `ready`.
-          let lists = 0;
-          const dir = yield* sockets.start(SESSION, {
-            ...api(seen),
-            addableProjects: () =>
-              Effect.succeed([
-                {
-                  id: ProjectId.make("proj-core"),
-                  name: "core",
-                  defaultBranch: "main",
-                  originUrl: "git@github.com:acme/core.git",
-                },
-              ]),
-            addRepository: (input) =>
-              Effect.sync(() => {
-                seen.push({ add: input });
-                return row("adding", null);
-              }),
-            listRepositories: () =>
-              Effect.sync(() => {
-                lists += 1;
-                return [row(lists === 1 ? "adding" : "ready", null)];
-              }),
-          });
-          const token = yield* tokens.issue(SESSION, SESSION);
-          const env = {
-            MEND_SESSION_ENDPOINT: `http://${address}`,
-            MEND_SESSION_ID: SESSION,
-            MEND_SESSION_TOKEN: token,
-          };
-          const helper = (args: string[]) =>
-            Effect.promise(() => runScript(path.join(dir, "bin", "mend"), args, env));
+            const token = yield* tokens.issue(SESSION, SESSION);
+            const env = {
+              MEND_SESSION_ENDPOINT: `http://${address}`,
+              MEND_SESSION_ID: SESSION,
+              MEND_SESSION_TOKEN: token,
+            };
+            const helper = (args: string[]) =>
+              Effect.promise(() => runScript(path.join(dir, "bin", "mend"), args, env));
 
-          const projects = yield* helper(["repo", "projects"]);
-          expect(projects.code).toBe(0);
-          expect(projects.stdout).toContain("core");
-          expect(projects.stdout).toContain("git@github.com:acme/core.git");
+            const projects = yield* helper(["repo", "projects"]);
+            expect(projects.code).toBe(0);
+            expect(projects.stdout).toContain("core");
+            expect(projects.stdout).toContain("git@github.com:acme/core.git");
 
-          const added = yield* helper(["repo", "add", "core", "--worktree", "fix-login"]);
-          expect(added.stderr).toBe("");
-          expect(added.code).toBe(0);
-          expect(seen).toContainEqual({
-            add: { project: "core", name: null, worktree: "fix-login" },
-          });
-          expect(added.stdout).toContain(
-            "adding core · /workspace/repos/core · branch mend/fix-login",
-          );
-          expect(added.stdout).toContain("ready · saved with the main repository");
-          expect(lists).toBe(2);
+            const added = yield* helper(["repo", "add", "core", "--worktree", "fix-login"]);
+            expect(added.stderr).toBe("");
+            expect(added.code).toBe(0);
+            expect(seen).toContainEqual({
+              add: { project: "core", name: null, worktree: "fix-login" },
+            });
+            expect(added.stdout).toContain(
+              "adding core · /workspace/repos/core · branch mend/fix-login",
+            );
+            expect(added.stdout).toContain("ready · saved with the main repository");
+            expect(lists).toBe(2);
 
-          const list = yield* helper(["repo", "list"]);
-          expect(list.code).toBe(0);
-          expect(list.stdout).toContain("/workspace/repos/core");
-          expect(list.stdout).toContain("mend/fix-login");
+            const list = yield* helper(["repo", "list"]);
+            expect(list.code).toBe(0);
+            expect(list.stdout).toContain("/workspace/repos/core");
+            expect(list.stdout).toContain("mend/fix-login");
 
-          // A missing project is a usage line, not a request.
-          const usage = yield* helper(["repo", "add"]);
-          expect(usage.code).toBe(1);
-          expect(usage.stderr).toContain("usage: mend repo add <project>");
-          expect(`${projects.stdout}${added.stdout}${list.stdout}`).not.toContain(token);
-        }).pipe(
-          Effect.provide(
-            layers({ listen: "127.0.0.1:0", url: "http://127.0.0.1:0" }, "kubernetes"),
+            // A missing project is a usage line, not a request.
+            const usage = yield* helper(["repo", "add"]);
+            expect(usage.code).toBe(1);
+            expect(usage.stderr).toContain("usage: mend repo add <project>");
+            expect(`${projects.stdout}${added.stdout}${list.stdout}`).not.toContain(token);
+          }).pipe(
+            Effect.provide(
+              layers({ listen: "127.0.0.1:0", url: "http://127.0.0.1:0" }, "kubernetes"),
+            ),
           ),
         ),
-      ),
-    );
-  });
+      );
+    },
+  );
   it("mend land asks the session's own channel to land, and prints how it ended", async () => {
     await Effect.runPromise(
       Effect.scoped(

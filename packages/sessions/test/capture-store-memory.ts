@@ -13,7 +13,7 @@ import {
   captureScopesOf,
 } from "@mend/db";
 import type { WorktreeId } from "@mend/domain";
-import { Effect, Layer, Option } from "effect";
+import { Clock, Effect, Layer, Option } from "effect";
 
 /**
  * `CaptureStoreRepo` in memory with the SQL's semantics (`repos/capture-store.ts`): the claim
@@ -78,7 +78,10 @@ const holdsAs = (
 export const makeMemoryCaptureStore = (
   baseOf: (worktreeId: WorktreeId) => string | null = () => null,
 ): MemoryCaptureStore => {
-  const clock = { now: () => Date.now() };
+  // The default follows the Clock that owns the store layer. A test can still
+  // replace clock.now to model deliberate store/engine skew without moving timers.
+  let currentTimeMillis = Date.now;
+  const clock = { now: () => currentTimeMillis() };
   const leases = new Map<string, MemoryLease>();
   const chains = new Map<string, MemoryChain>();
   const tombstones = new Map<string, { worktreeId: string; deleted: boolean }>();
@@ -114,7 +117,7 @@ export const makeMemoryCaptureStore = (
           live: live(lease),
         };
   };
-  const layer = Layer.succeed(CaptureStoreRepo, {
+  const repository: CaptureStoreRepo["Service"] = {
     init: (worktreeId) =>
       Effect.sync(() => {
         if (!leases.has(worktreeId)) {
@@ -642,7 +645,14 @@ export const makeMemoryCaptureStore = (
           if (row !== undefined) packs.set(id, { ...row, state, updatedAt: new Date(clock.now()) });
         }
       }),
-  });
+  };
+  const layer: Layer.Layer<CaptureStoreRepo> = Layer.effect(
+    CaptureStoreRepo,
+    Effect.map(Clock.Clock, (owner) => {
+      currentTimeMillis = () => owner.currentTimeMillisUnsafe();
+      return repository;
+    }),
+  );
 
   return {
     layer,

@@ -2,7 +2,6 @@ import * as dgram from "node:dgram";
 import { once } from "node:events";
 import * as net from "node:net";
 
-import { it as effectIt } from "@effect/vitest";
 import { ServiceForwardsRepo, ServiceObservationsRepo } from "@mend/db";
 import {
   SealantWorkspaceId,
@@ -22,6 +21,8 @@ import type { Workspace, WorkspaceForward } from "@sealant/sdk";
 import { Clock, Context, Deferred, Duration, Effect, Exit, Layer, Scope, Stream } from "effect";
 import { TestClock } from "effect/testing";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+
+import { it as effectIt } from "./effect-vitest.ts";
 
 /**
  * The host side with real sockets and a fake platform: the forward is an
