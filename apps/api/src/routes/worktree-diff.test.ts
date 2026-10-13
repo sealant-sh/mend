@@ -242,8 +242,10 @@ describe("a slice too wide to list whole (601-R2-1)", () => {
     { timeout: 120_000 },
     async () => {
       // The outer guard prevents a hung integration fixture; route deadline semantics are controlled
-      // separately and hardware speed is measured only by the explicit performance lane.
-      const fixture = await createWideWorktreeDiff();
+      // separately and hardware speed is measured only by the explicit performance lane. Listing
+      // these files takes 2-4 s on a fast machine and ~10 s on the self-hosted CI VMs, so the
+      // listing deadline here is one no runner reaches; the byte cap still cuts the listing.
+      const fixture = await createWideWorktreeDiff({ listingDeadlineMs: 100_000 });
       try {
         const response = await fixture.request();
         expect(response.status).toBe(200);

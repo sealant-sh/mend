@@ -18,7 +18,7 @@ jobs:
   version:
     name: Open version PR
     if: github.repository == 'sealant-sh/Mend'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: [self-hosted, box, linux, x64]
     timeout-minutes: 15
     permissions:
       contents: write

@@ -22,7 +22,7 @@ permissions:
 jobs:
   version:
     if: github.repository == 'sealant-sh/mend'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: [self-hosted, box, linux, x64]
     outputs:
       value: ${{ steps.resolve.outputs.version }}
       before: ${{ steps.resolve.outputs.before }}
@@ -104,8 +104,8 @@ jobs:
           - { id: mend-api, name: mend-api, dockerfile: apps/api/Dockerfile, baseline: false }
           - { id: mend-web, name: mend-web, dockerfile: apps/web/Dockerfile, baseline: false }
         platform:
-          - { arch: amd64, runner: blacksmith-4vcpu-ubuntu-2404 }
-          - { arch: arm64, runner: blacksmith-4vcpu-ubuntu-2404-arm }
+          - { arch: amd64, runner: [self-hosted, box, linux, x64] }
+          - { arch: arm64, runner: ubuntu-24.04-arm }
     runs-on: ${{ matrix.platform.runner }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -152,7 +152,7 @@ jobs:
     permissions:
       contents: read
       packages: write
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: [self-hosted, box, linux, x64]
     needs: [version, build]
     strategy:
       matrix:
@@ -198,7 +198,7 @@ jobs:
     needs: [version, merge]
     strategy:
       matrix:
-        runner: [blacksmith-4vcpu-ubuntu-2404, blacksmith-4vcpu-ubuntu-2404-arm]
+        runner: [[self-hosted, box, linux, x64], ubuntu-24.04-arm]
     runs-on: ${{ matrix.runner }}
     # Usually ~18 min; v0.35.0's amd64 run took 27.6 (its Ubuntu dotfiles scenario 760 s against
     # 67 s on arm64), 2.4 min inside the old 30. A cold workspace image build on a slow mirror is

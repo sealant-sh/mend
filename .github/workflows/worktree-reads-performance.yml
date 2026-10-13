@@ -12,7 +12,7 @@ concurrency:
 
 jobs:
   measure:
-    runs-on: blacksmith-8vcpu-ubuntu-2404
+    runs-on: [self-hosted, box, linux, x64]
     timeout-minutes: 10
     env:
       GIT_CONFIG_NOSYSTEM: "1"
