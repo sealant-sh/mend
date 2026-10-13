@@ -13330,6 +13330,7 @@ describe("SessionEngine capture mode", () => {
 
   it("a workspace's git transport reaches only the project's own remote with the owner's signer", async () => {
     const created: Array<CreateOptions> = [];
+    const keysAsked: Array<string> = [];
     await withEngine(
       (world, tmp) =>
         Effect.gen(function* () {
@@ -13347,6 +13348,7 @@ describe("SessionEngine capture mode", () => {
           const api = servedSocketApis.get(session.id);
           if (api === undefined) throw new Error("the session serves no socket api");
           const origin = new URL(project.originUrl ?? "");
+          keysAsked.length = 0;
           const elsewhere = yield* api
             .gitTransport({
               host: "github.com",
@@ -13355,23 +13357,31 @@ describe("SessionEngine capture mode", () => {
             })
             .pipe(Effect.exit);
           expect(failureText(elsewhere)).toContain(`bound to ${origin.hostname}`);
-          const home = yield* api
-            .gitTransport({
-              host: origin.hostname,
-              port: null,
-              command: "git-upload-pack 'fixture.git'",
-            })
-            .pipe(Effect.exit);
-          expect(failureText(home)).not.toContain("bound to");
-          // What git really sends: the remote's user rides the destination (`git@host`).
-          const asGitSendsIt = yield* api
-            .gitTransport({
-              host: `git@${origin.hostname}`,
-              port: null,
-              command: "git-upload-pack 'fixture.git'",
-            })
-            .pipe(Effect.exit);
-          expect(failureText(asGitSendsIt)).not.toContain("bound to");
+          // Git may supply the destination with its remote user. Both allowed forms must
+          // produce a usable plan, rather than merely fail for a different reason.
+          for (const destination of [origin.hostname, `git@${origin.hostname}`]) {
+            const allowed = yield* api
+              .gitTransport({
+                host: destination,
+                port: null,
+                command: "git-upload-pack 'fixture.git'",
+              })
+              .pipe(Effect.exit);
+            if (!Exit.isSuccess(allowed)) throw new Error(failureText(allowed));
+            expect(allowed.value.kind).toBe("fetch");
+            expect(allowed.value.argv.slice(0, 5)).toEqual([
+              "ssh",
+              "-F",
+              "/dev/null",
+              "-i",
+              "/keys/user-fixture",
+            ]);
+            expect(allowed.value.argv.slice(-3)).toEqual([
+              "--",
+              destination,
+              "git-upload-pack 'fixture.git'",
+            ]);
+          }
           const posing = yield* api
             .gitTransport({
               host: `${origin.hostname}@github.com`,
@@ -13380,8 +13390,9 @@ describe("SessionEngine capture mode", () => {
             })
             .pipe(Effect.exit);
           expect(failureText(posing)).toContain(`bound to ${origin.hostname}`);
+          expect(keysAsked).toEqual(["user-fixture", "user-fixture"]);
         }),
-      { sealantLayer: sealantLaunchLayer(created) },
+      { sealantLayer: sealantLaunchLayer(created), mendKeysLayer: perAccountKeys(keysAsked) },
     );
   });
 
