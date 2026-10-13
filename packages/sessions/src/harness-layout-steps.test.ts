@@ -19,7 +19,17 @@ import {
   SealantPlatformError,
 } from "@mend/sealant";
 import { claudeCode, type Run, type Workspace } from "@sealant/sdk";
-import { ConfigProvider, Deferred, Duration, Effect, Exit, Fiber, Layer, Scope } from "effect";
+import {
+  ConfigProvider,
+  Deferred,
+  Duration,
+  Effect,
+  Exit,
+  Fiber,
+  Layer,
+  Logger,
+  Scope,
+} from "effect";
 import { TestClock } from "effect/testing";
 import { describe, expect, it } from "vitest";
 
@@ -133,6 +143,7 @@ interface CoreCalls {
   }>;
   /** Held open, a DELETE waits on it after saying so in `calls`. */
   deleteGate: Deferred.Deferred<void> | null;
+  deleteResult: (home: string) => Effect.Effect<void, SealantPlatformError>;
   /** Held open, a POST waits on it after saying so in `calls`. */
   postGate: Deferred.Deferred<void> | null;
   postStarted: Deferred.Deferred<void> | null;
@@ -151,6 +162,7 @@ const coreCalls = (): CoreCalls => ({
   answer: () => null,
   homes: [],
   deleteGate: null,
+  deleteResult: () => Effect.void,
   postGate: null,
   postStarted: null,
   imageReports: 0,
@@ -230,6 +242,7 @@ const platformOf = (
       Effect.gen(function* () {
         core.calls.push(`delete:${input.home}`);
         if (core.deleteGate !== null) yield* Deferred.await(core.deleteGate);
+        yield* core.deleteResult(input.home);
       }),
     sealantUserOf: (accountId) => Effect.succeed(`su-${accountId}`),
     listCredentials: () =>
@@ -1644,6 +1657,84 @@ describe("logins per person (docs/adr/0016, decision 5)", () => {
     expect(result.rehomed).toBe(1);
     expect(core.posts.filter((post) => post.onBehalfOf === "user-maria")).toHaveLength(2);
   });
+
+  it.each([
+    { mode: "transient", failures: 1, attempts: 2 },
+    { mode: "exhausted", failures: 5, attempts: 5 },
+  ])(
+    "observes the $mode credential DELETE policy and the next idle check/start",
+    async ({ mode, failures, attempts }) => {
+      const core = coreCalls();
+      const warnings: Array<string> = [];
+      let heldExternalCredentials = true;
+      let deletes = 0;
+      await withPersonExecutor(core, ({ steps, repo, revoked, execs, log }) =>
+        Effect.gen(function* () {
+          const entered = yield* Deferred.make<void>();
+          core.deleteResult = () =>
+            Effect.gen(function* () {
+              deletes++;
+              yield* Deferred.succeed(entered, undefined);
+              if (deletes <= failures)
+                return yield* new SealantPlatformError({
+                  code: "control_plane_unavailable",
+                  status: 503,
+                  message: "owned credential DELETE unavailable",
+                  cause: null,
+                });
+              heldExternalCredentials = false;
+            });
+          yield* start(steps, "user-maria");
+          const maria = yield* repo.ensureIdentity("user-maria");
+          expect(steps.holdsReleasable(workspace.id)).toBe(true);
+          const releasing = yield* release(steps, ["user-alice"]).pipe(Effect.forkChild);
+          yield* Deferred.await(entered);
+          expect(revoked).toEqual([]);
+          yield* TestClock.adjust("3 seconds");
+          yield* Fiber.join(releasing);
+          expect(core.calls.filter((call) => call.startsWith("delete:"))).toEqual(
+            Array(attempts).fill(`delete:/home/${maria.name}`),
+          );
+          expect(heldExternalCredentials).toBe(mode === "exhausted");
+          expect(revoked).toEqual([{ accountId: "user-maria", issuedBefore: 0 }]);
+          expect(steps.holdsReleasable(workspace.id)).toBe(false);
+          const failedWarnings = warnings.filter((line) =>
+            line.includes("logins were not released"),
+          );
+          expect(failedWarnings).toEqual(
+            mode === "exhausted"
+              ? [
+                  "Warn: session engine: a person's logins were not released; they go with the executor",
+                ]
+              : [],
+          );
+          expect(warnings.filter((line) => line.includes("logins released"))).toEqual(
+            mode === "transient"
+              ? ["Info: session engine: a person's logins released · observed"]
+              : [],
+          );
+          // Current bounded fallback forgets the idle home even if Core could not delete it.
+          // This records existing behavior, not a guarantee that external credentials disappeared.
+          yield* release(steps, ["user-alice"]);
+          expect(deletes).toBe(attempts);
+          const beforeStart = execs.length;
+          yield* start(steps, "user-maria");
+          expect(execs.length - beforeStart).toBe(1);
+          expect(core.posts.filter((post) => post.onBehalfOf === "user-maria")).toHaveLength(2);
+          expect(log.filter((line) => line.startsWith("mint:user-maria"))).toHaveLength(2);
+          expect(revoked).toHaveLength(1);
+        }).pipe(
+          Effect.scoped,
+          Effect.provide(TestClock.layer()),
+          Effect.provide(
+            Logger.layer([
+              Logger.make((entry) => warnings.push(`${entry.logLevel}: ${String(entry.message)}`)),
+            ]),
+          ),
+        ),
+      );
+    },
+  );
 
   it("race: a start while a release waits for the workspace handle keeps its logins and token (review of mend#564, P2-1 B)", async () => {
     const core = coreCalls();
