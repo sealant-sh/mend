@@ -161,6 +161,17 @@ describe("filesystem upload cleanup", () => {
       );
       try {
         await source.piped.promise;
+        const output = source.output;
+        if (output === null) throw new Error("the upload must pipe to a real file stream");
+        // A pipe is connected before its file opens. Acknowledge the open so the close
+        // handler's filesystem obstruction cannot race with creation of the temporary file.
+        await new Promise<void>((resolve, reject) => {
+          output.write(Buffer.alloc(0), (writeError) => {
+            if (writeError) reject(writeError);
+            else resolve();
+          });
+        });
+        expect(output.pending).toBe(false);
         if (interrupted) await Effect.runPromise(Fiber.interrupt(fiber));
         else source.destroy(error);
         const exit = await Effect.runPromise(Fiber.await(fiber));

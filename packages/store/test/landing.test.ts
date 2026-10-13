@@ -743,6 +743,8 @@ describe("landing from a runner cache", () => {
       Layer.provideMerge(BlobStoreFsLive(path.join(tmp, "blobs"))),
     );
 
+  // Two cold Git capture/landing generations include real pushes and a bundle roundtrip.
+  // Their aggregate integration budget is separate from any per-operation deadline.
   it("commits the leftovers, packs the commit, pushes it and bundles it from the cache", async () => {
     // The executor's repository: the base, one agent commit, and a checkpoint with leftovers.
     const origin = path.join(tmp, "origin.git");
@@ -955,7 +957,7 @@ describe("landing from a runner cache", () => {
     expect(sh(origin, ["rev-parse", `refs/heads/${BRANCH}`])).toBe(later.landed.head);
     sh(origin, ["merge-base", "--is-ancestor", agentLater, later.landed.head]);
     sh(origin, ["merge-base", "--is-ancestor", written.sha, later.landed.head]);
-  });
+  }, 15_000);
 });
 
 describe("planLanding (docs/adr/0007-landing.md, Mend never moves the session's branch)", () => {

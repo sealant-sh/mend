@@ -709,6 +709,8 @@ describe.skipIf(postgres.skip)("upgrading to 0108", () => {
     );
   });
 
+  // Creating a real database and replaying the full migration history exceeded 5 s on CI.
+  // Keep all upgrade coverage with a local 15 s budget for DDL under concurrent load.
   it("pins every version kept before it", async () => {
     await withAdmin(
       Effect.gen(function* () {
@@ -737,7 +739,7 @@ describe.skipIf(postgres.skip)("upgrading to 0108", () => {
       }).pipe(Effect.provide(upgradeLayer), Effect.scoped),
     );
     expect(pinned).toEqual([{ pinned: true }]);
-  });
+  }, 15_000);
 });
 
 describe.skipIf(postgres.skip)("agent memory, in Postgres", () => {
