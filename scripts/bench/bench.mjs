@@ -175,9 +175,11 @@ import {
   failedChecks,
   formatComparison,
   formatTable,
+  layoutOf,
   mergeResults,
   parseOptions,
   scenarioOf,
+  seriesHarnessOf,
   RESOURCES_AT_FIRST_OUTPUT,
   settleNotRun,
   stampSeriesIdentity,
@@ -241,8 +243,9 @@ output and comparison
   --out <path>                where the record goes (default: /tmp/st-bench-<id>.json)
   --stats <a,b>               compared statistics (default: median,p90)
   --rerun                     compare: run each missed measure's scenario once more (needs the server
-                              options) and fail only on a repeated miss; the re-run takes the layout
-                              of the record under test unless --layout says otherwise
+                              options), taking at least ten samples and replacing its whole series;
+                              a companion is re-run on its own project and observed harness. The
+                              re-run takes its record's layout unless --layout says otherwise
 
 gate P1 (docs/adr/0016): person launches against shared launches at one commit
   run --layout shared … --out shared.json; run --layout person … --out person.json;
@@ -500,19 +503,83 @@ const runBench = async (opts) => {
   return stampSeriesIdentity(settleNotRun({ ...result, finishedAt: new Date().toISOString() }));
 };
 
-/** The scenarios and harnesses that re-take a set of missed measures. */
-const rerunPlan = (missed, opts) => {
+/** The scenarios and observed harnesses that re-take one record's bare missed measures. */
+const rerunPlan = (missed, record) => {
   const only = [...new Set(missed.map(scenarioOf).filter((scenario) => scenario !== null))];
-  const launchOnly = only.every((scenario) => scenario === "new" || scenario === "stop");
-  const named = [
-    ...new Set(
-      missed
-        .map((name) => /^(?:new|stop|executor)\.([a-z]+)\./.exec(name)?.[1])
-        .filter((harness) => HARNESSES.includes(harness)),
-    ),
-  ];
-  const harnesses = launchOnly && named.length > 0 ? named : opts.harnesses;
+  const harnesses = [...new Set(missed.map((name) => seriesHarnessOf(record, name)))];
+  if (harnesses.length === 0 || harnesses.some((harness) => !HARNESSES.includes(harness))) {
+    throw new Error("not re-run: the missed series' harness is not known");
+  }
   return { only, harnesses };
+};
+
+/** Resolve comparison labels to their owning record before any rerun contacts a server. */
+const rerunGroups = (before, after, missed) => {
+  const records = [];
+  const visit = (baseline, current, keys = [], prefix = "") => {
+    records.push({ keys, prefix, record: current });
+    for (const name of new Set([
+      ...Object.keys(baseline?.companions ?? {}),
+      ...Object.keys(current?.companions ?? {}),
+    ])) {
+      visit(
+        baseline?.companions?.[name],
+        current?.companions?.[name],
+        [...keys, name],
+        `${prefix}${name}: `,
+      );
+    }
+  };
+  visit(before, after);
+  const groups = new Map();
+  for (const name of missed) {
+    // Names may themselves contain ': '. Use the longest exact recorded prefix, never split
+    // a name at its first colon or send an unresolved companion miss to the main project.
+    const candidates = records
+      .filter((entry) => name.startsWith(entry.prefix))
+      .toSorted((a, b) => b.prefix.length - a.prefix.length);
+    const owner = candidates[0];
+    if (
+      owner === undefined ||
+      candidates[1]?.prefix.length === owner.prefix.length ||
+      owner.record === undefined ||
+      (owner.prefix === "" && name.includes(": ")) ||
+      scenarioOf(name.slice(owner.prefix.length)) === null
+    ) {
+      throw new Error(`not re-run: no unambiguous record under test owns ${name}`);
+    }
+    const project = owner.record.target?.project?.id;
+    const layout = layoutOf(owner.record);
+    if (typeof project !== "string" || project === "" || !["shared", "person"].includes(layout)) {
+      throw new Error(
+        `not re-run: ${owner.prefix || "the main record"} does not say its project and layout`,
+      );
+    }
+    const bare = name.slice(owner.prefix.length);
+    const harness = seriesHarnessOf(owner.record, bare);
+    // A record can hold independently rerun series on different carrier harnesses. Re-take
+    // them separately so one run's first harness cannot stand in for another series' identity.
+    const key = JSON.stringify([owner.keys, harness]);
+    const group = groups.get(key) ?? { ...owner, project, layout, missed: [] };
+    group.missed.push(bare);
+    groups.set(key, group);
+  }
+  return [...groups.values()].map((group) => ({
+    ...group,
+    plan: rerunPlan(group.missed, group.record),
+  }));
+};
+
+const replaceRecord = (record, keys, replacement) => {
+  if (keys.length === 0) return replacement;
+  const [name, ...rest] = keys;
+  return {
+    ...record,
+    companions: {
+      ...record.companions,
+      [name]: replaceRecord(record.companions[name], rest, replacement),
+    },
+  };
 };
 
 const main = async () => {
@@ -588,11 +655,30 @@ const main = async () => {
         // The re-run's checks and errors come with its numbers (mergeResults), so a re-run that
         // was fast because it ran as the wrong person fails on its checks.
         const missed = [...new Set(comparison.misses.map((row) => row.measure))];
-        const plan = rerunPlan(missed, opts);
-        log(`re-running ${plan.only.join(", ")} once for: ${missed.join(", ")}`);
-        const layout = opts.layout ?? after.options?.layout ?? null;
-        const again = await runBench({ ...opts, ...plan, layout });
-        after = mergeResults(after, again, (name) => missed.includes(name));
+        for (const group of rerunGroups(before, after, missed)) {
+          log(
+            `re-running ${group.plan.only.join(", ")} on ${group.project} once for: ${group.missed.join(", ")}`,
+          );
+          const again = await runBench({
+            ...opts,
+            ...group.plan,
+            project: group.project,
+            layout: opts.layout ?? group.layout,
+            runs: Math.max(10, opts.runs, group.record.options?.runs ?? 0),
+            apiRuns: Math.max(10, opts.apiRuns, group.record.options?.apiRuns ?? 0),
+            interactiveRuns: Math.max(
+              10,
+              opts.interactiveRuns,
+              group.record.options?.interactiveRuns ?? 0,
+            ),
+            typingRuns: Math.max(10, opts.typingRuns, group.record.options?.typingRuns ?? 0),
+            joinsPerRun: Math.max(opts.joinsPerRun, group.record.options?.joinsPerRun ?? 1),
+            resumesPerRun: Math.max(opts.resumesPerRun, group.record.options?.resumesPerRun ?? 1),
+          });
+          const current = group.keys.reduce((record, name) => record.companions[name], after);
+          const replacement = mergeResults(current, again, (name) => group.missed.includes(name));
+          after = replaceRecord(after, group.keys, replacement);
+        }
         writeJson(opts.out, after);
         comparison = compareResults(before, after, compareOptions);
         process.stdout.write(`\nafter the re-run\n\n${formatComparison(comparison)}\n`);
