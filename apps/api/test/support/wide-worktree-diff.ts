@@ -23,8 +23,14 @@ interface WideWorktreeDiff {
 
 const stamped = <A>(value: A) => ({ value, stamp: WORKTREE_STAMP });
 
-/** Owned Git objects for 400,000 tiny files, shared by correctness and the explicit perf lane. */
-export const createWideWorktreeDiff = async (): Promise<WideWorktreeDiff> => {
+/**
+ * Owned Git objects for 400,000 tiny files, shared by correctness and the explicit perf lane.
+ * `listingDeadlineMs` replaces the route's listing deadline: a correctness test sets one no
+ * hardware reaches, the perf lane keeps the route's own.
+ */
+export const createWideWorktreeDiff = async (
+  fixtureOptions: { readonly listingDeadlineMs?: number } = {},
+): Promise<WideWorktreeDiff> => {
   const root = mkdtempSync(join(tmpdir(), "mend-wide-slice-"));
   const worktreeId = ids("private-alice").worktree;
   let api: TenancyApi | undefined;
@@ -91,7 +97,16 @@ export const createWideWorktreeDiff = async (): Promise<WideWorktreeDiff> => {
             diffRange: (_project, _worktree, from, to, options) =>
               store.diffRange(root, from, to, options).pipe(Effect.map(stamped)),
             diffFileFactsBounded: (_project, _worktree, from, to, options) =>
-              store.diffFileFactsBounded(root, from, to, options).pipe(Effect.map(stamped)),
+              store
+                .diffFileFactsBounded(
+                  root,
+                  from,
+                  to,
+                  fixtureOptions.listingDeadlineMs === undefined
+                    ? options
+                    : { ...options, deadlineMs: fixtureOptions.listingDeadlineMs },
+                )
+                .pipe(Effect.map(stamped)),
           },
         },
       },
