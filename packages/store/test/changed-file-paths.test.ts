@@ -64,25 +64,30 @@ const filenames = [
 ];
 
 describe("changedFiles path identity through real Git", () => {
-  it("preserves generated actual names and counts in Git's NUL-delimited protocol", async () => {
-    const filename = FastCheck.array(
-      FastCheck.constantFrom("a", "Z", " ", "ñ", "界", "🚀", "\t", "\n", '"', "\\"),
-      { minLength: 1, maxLength: 14 },
-    ).map((parts) => `generated-${parts.join("")}.txt`);
-    await FastCheck.assert(
-      FastCheck.asyncProperty(filename, async (name) =>
-        withStore(async (root, git, run) => {
-          write(root, name, "before\n");
-          commit(git);
-          write(root, name, "after\n");
-          expect(
-            await run(Effect.flatMap(Store, (store) => store.changedFiles(root, "HEAD", null))),
-          ).toEqual([{ path: name, additions: 1, deletions: 1 }]);
-        }),
-      ),
-      { numRuns: 30, seed: 858822 },
-    );
-  });
+  // This property creates thirty real Git repositories; it is not a latency assertion.
+  it(
+    "preserves generated actual names and counts in Git's NUL-delimited protocol",
+    { timeout: 30_000 },
+    async () => {
+      const filename = FastCheck.array(
+        FastCheck.constantFrom("a", "Z", " ", "ñ", "界", "🚀", "\t", "\n", '"', "\\"),
+        { minLength: 1, maxLength: 14 },
+      ).map((parts) => `generated-${parts.join("")}.txt`);
+      await FastCheck.assert(
+        FastCheck.asyncProperty(filename, async (name) =>
+          withStore(async (root, git, run) => {
+            write(root, name, "before\n");
+            commit(git);
+            write(root, name, "after\n");
+            expect(
+              await run(Effect.flatMap(Store, (store) => store.changedFiles(root, "HEAD", null))),
+            ).toEqual([{ path: name, additions: 1, deletions: 1 }]);
+          }),
+        ),
+        { numRuns: 30, seed: 858822 },
+      );
+    },
+  );
 
   for (const quotePath of [true, false])
     it(`returns actual tracked filenames with core.quotePath=${quotePath}`, async () =>

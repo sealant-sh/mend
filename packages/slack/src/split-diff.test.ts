@@ -51,24 +51,29 @@ const names = [
 ];
 
 describe("splitDiff through real Git filename output", () => {
-  it("preserves generated UTF-8 filenames through Git quoting and exact patch association", () => {
-    const segment = FastCheck.array(
-      FastCheck.constantFrom("a", "Z", " ", "界", "🚀", "ñ", "\t", "\n", '"', "\\", "\ufeff"),
-      { minLength: 1, maxLength: 14 },
-    ).map((parts) => `generated-${parts.join("")}.txt`);
-    FastCheck.assert(
-      FastCheck.property(segment, (name) =>
-        withGit((repo, git) => {
-          write(repo, name, "before\n");
-          commit(git);
-          write(repo, name, "after\n");
-          const diff = patch(git);
-          expect([...splitDiff(diff)]).toEqual([[name, diff.trimEnd()]]);
-        }),
-      ),
-      { numRuns: 40, seed: 822858 },
-    );
-  });
+  // Forty real Git repositories exceeded the default five-second guard on the shared CI runner.
+  it(
+    "preserves generated UTF-8 filenames through Git quoting and exact patch association",
+    { timeout: 30_000 },
+    () => {
+      const segment = FastCheck.array(
+        FastCheck.constantFrom("a", "Z", " ", "界", "🚀", "ñ", "\t", "\n", '"', "\\", "\ufeff"),
+        { minLength: 1, maxLength: 14 },
+      ).map((parts) => `generated-${parts.join("")}.txt`);
+      FastCheck.assert(
+        FastCheck.property(segment, (name) =>
+          withGit((repo, git) => {
+            write(repo, name, "before\n");
+            commit(git);
+            write(repo, name, "after\n");
+            const diff = patch(git);
+            expect([...splitDiff(diff)]).toEqual([[name, diff.trimEnd()]]);
+          }),
+        ),
+        { numRuns: 40, seed: 822858 },
+      );
+    },
+  );
   it("keeps a leading UTF-8 BOM in a quoted rename destination", () =>
     withGit((repo, git) => {
       const oldName = "old.txt",
