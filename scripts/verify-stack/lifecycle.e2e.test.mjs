@@ -2,9 +2,11 @@
 // (fixtures/fake-docker.mjs): each case of a generation's lifecycle, with real processes, signals,
 // pauses, the real kernel lock (flock) and real timing, and no daemon. Builds fail on the fake (or
 // hang, when a case needs a start that holds its claim), so a start that gets past its claim goes
-// no further.
+// no further. Explicit orchestration cases opt into successful fake builds and stop at a local
+// first-account HTTP refusal after observing offline setup; no real inner installation is run.
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
+import { once } from "node:events";
 import {
   chmodSync,
   existsSync,
@@ -18,6 +20,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
@@ -84,6 +87,7 @@ function daemon({
   failLookups = 0,
   createDelayMs = 0,
   build = "fail",
+  orchestration = null,
 } = {}) {
   const root = mkdtempSync(join(tmpdir(), "verify-stack-e2e-"));
   roots.push(root);
@@ -98,6 +102,7 @@ function daemon({
       volumes: volumes.map(asVolume),
       networks,
       files,
+      ...(orchestration === null ? {} : { orchestration, images: {} }),
     }),
   );
   const file = (name) => join(root, name);
@@ -1366,3 +1371,237 @@ test("every removal a teardown runs carries the lock (N16)", async () => {
     "every removal carries the lock",
   );
 });
+
+// A public up that reaches offline setup. The downstream HTTP refusal is deliberate: this
+// fixture verifies orchestration and command boundaries, not a working inner Mend installation.
+async function orchestrationRun(t, guardPullFailure) {
+  const guard = "example.invalid/guard:fixture";
+  const fakeDaemon = daemon({
+    build: "success",
+    orchestration: { guard, guardPullFailure },
+    containers: [["ordinary-container", { purpose: "ordinary" }]],
+    volumes: [volume("ordinary-volume", { purpose: "ordinary" })],
+    networks: [
+      { Id: "ordinary-network-id", Name: "ordinary-network", Labels: { purpose: "ordinary" } },
+    ],
+  });
+  const repository = fakeDaemon.file("mend-source");
+  mkdirSync(join(repository, "apps/cli"), { recursive: true });
+  mkdirSync(join(repository, "deploy/docker"), { recursive: true });
+  writeFileSync(join(repository, "apps/cli/package.json"), '{"version":"1.2.3"}\n');
+  for (const file of [
+    "Dockerfile",
+    "deploy/docker/compose.v2.yaml",
+    "deploy/docker/compose.mirrors.yaml",
+  ])
+    writeFileSync(join(repository, file), readFileSync(new URL(`../../${file}`, import.meta.url)));
+  for (const args of [
+    ["init", "-q", "-b", "main"],
+    ["config", "user.email", "fixture@example.invalid"],
+    ["config", "user.name", "Fixture"],
+    ["add", "."],
+    ["commit", "-qm", "owned source"],
+  ]) {
+    const result = spawnSync("git", args, {
+      cwd: repository,
+      env: fakeDaemon.env,
+      encoding: "utf8",
+    });
+    assert.equal(result.status, 0, result.stderr);
+  }
+  const requests = [];
+  const failures = [];
+  const server = createServer(async (request, response) => {
+    try {
+      let text = "";
+      for await (const chunk of request) text += chunk;
+      const body = JSON.parse(text);
+      // Never retain the generated password. The request is synthetic and always refused.
+      requests.push({
+        method: request.method,
+        url: request.url,
+        origin: request.headers.origin,
+        email: body.email,
+        name: body.name,
+        passwordValid: /^[0-9a-f]{64}$/.test(body.password),
+      });
+      response
+        .writeHead(503, { "content-type": "application/json" })
+        .end('{"error":"synthetic downstream account boundary"}');
+    } catch (error) {
+      failures.push(error.message);
+      response.writeHead(500).end();
+    }
+  });
+  let running;
+  let timer;
+  t.after(async () => {
+    clearTimeout(timer);
+    if (
+      running !== undefined &&
+      running.child.exitCode === null &&
+      running.child.signalCode === null
+    ) {
+      assert.ok(Number.isSafeInteger(running.child.pid) && running.child.pid > 0);
+      running.child.kill("SIGKILL");
+      await running.done;
+    }
+    server.closeAllConnections();
+    if (server.listening) await new Promise((resolve) => server.close(resolve));
+  });
+  // The public option reserves 10,000 above the relay port for the server's port.
+  let port = 0;
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    port = server.address().port;
+    if (port <= 55_535) break;
+    await new Promise((resolve) => server.close(resolve));
+  }
+  assert.ok(server.listening && port > 1024 && port <= 55_535);
+  running = fakeDaemon.run([
+    "up",
+    ...pinned,
+    "--mend",
+    repository,
+    "--packages",
+    "npm",
+    "--port",
+    String(port),
+  ]);
+  timer = setTimeout(() => {
+    assert.ok(Number.isSafeInteger(running.child.pid) && running.child.pid > 0);
+    running.child.kill("SIGKILL");
+  }, 30_000);
+  const code = await running.done;
+  clearTimeout(timer);
+  assert.equal(running.child.signalCode, null, running.output());
+  assert.deepEqual(failures, []);
+  return { fakeDaemon, code, output: running.output(), requests, guard, port };
+}
+
+for (const guardPullFailure of [false, true]) {
+  test(`public up accepts builds and ${guardPullFailure ? "refuses offline setup after guard preload failure" : "reaches offline setup before the deliberate downstream HTTP503 boundary"}`, async (t) => {
+    const result = await orchestrationRun(t, guardPullFailure);
+    assert.equal(result.code, 1, result.output);
+    const calls = callsOf(result.fakeDaemon);
+    const builds = calls.filter((args) => args[0] === "build");
+    assert.equal(builds.length, 2);
+    const cliBuild = builds.find((args) =>
+      args[args.indexOf("--tag") + 1].startsWith("mend-verify/mend-cli:"),
+    );
+    const bundleBuild = builds.find((args) =>
+      args[args.indexOf("--tag") + 1].startsWith("ghcr.io/sealant-sh/mend:1.2.3-verify.t"),
+    );
+    assert.ok(cliBuild);
+    assert.ok(bundleBuild);
+    assert.equal(cliBuild[cliBuild.indexOf("--file") + 1], "-");
+    assert.equal(
+      bundleBuild[bundleBuild.indexOf("--file") + 1],
+      join(bundleBuild.at(-1), "Dockerfile"),
+    );
+    assert.equal(
+      cliBuild.at(-1),
+      bundleBuild.at(-1),
+      "both builds use the same resolved real Git source context",
+    );
+    const built = result.fakeDaemon.read().builds;
+    assert.equal(built.length, 2);
+    assert.ok(
+      built
+        .find(({ tag }) => tag.startsWith("mend-verify/mend-cli:"))
+        .input.includes("COPY --from=mend-build /pack /pack"),
+    );
+    const version = bundleBuild[bundleBuild.indexOf("--tag") + 1].split(":").at(-1);
+    assert.match(version, /^1\.2\.3-verify\.t[0-9a-f]{12}$/);
+    assert.ok(bundleBuild.includes(`MEND_VERSION=${version}`));
+    // Independent literal shipped image inventory; do not use composeImages to derive this oracle.
+    const pulls = calls.filter((args) => args[0] === "pull");
+    assert.deepEqual(
+      pulls.map((args) => args.at(-1)).toSorted(),
+      [
+        "node:26-bookworm",
+        "dxflrs/garage:v2.4.1",
+        "nginx:1.29-alpine",
+        "postgres:17-alpine",
+        "registry:3.1",
+        result.guard,
+      ].toSorted(),
+    );
+    assert.ok(pulls.every((args) => args.length === 3 && args[1] === "--quiet"));
+    const label = calls.findIndex(
+      (args) =>
+        args[0] === "image" &&
+        args.at(-1) === bundleBuild[bundleBuild.indexOf("--tag") + 1] &&
+        args.includes('{{index .Config.Labels "dev.sealant.mend.network-guard-image"}}'),
+    );
+    const guardInspect = calls.findIndex(
+      (args) => args[0] === "image" && args.at(-1) === result.guard,
+    );
+    const guardPull = calls.findIndex((args) => args[0] === "pull" && args.at(-1) === result.guard);
+    assert.ok(label > calls.indexOf(cliBuild) && label > calls.indexOf(bundleBuild));
+    assert.ok(guardInspect > label && guardPull > guardInspect);
+    const setup = calls.findIndex(
+      (args) =>
+        args[0] === "run" &&
+        args.includes("server") &&
+        args[args.indexOf("server") + 1] === "setup",
+    );
+    if (guardPullFailure) {
+      assert.equal(setup, -1);
+      assert.deepEqual(result.requests, []);
+      assert.match(result.output, /docker pull failed \(exit 44\)/);
+    } else {
+      assert.ok(setup > guardPull);
+      for (const pull of pulls) assert.ok(calls.indexOf(pull) < setup);
+      const args = calls[setup];
+      const image = cliBuild[cliBuild.indexOf("--tag") + 1];
+      assert.deepEqual(args.slice(args.indexOf(image) + 1), [
+        "server",
+        "setup",
+        "--docker-socket",
+        "/var/run/docker.sock",
+        "--version",
+        version,
+        "--assets-dir",
+        "/opt/mend-assets",
+        "--offline",
+        "--port",
+        String(result.port + 10_000),
+        "--ssh-port",
+        "2222",
+        "--url",
+        `http://localhost:${result.port}`,
+        "--origin",
+        `http://127.0.0.1:${result.port}`,
+      ]);
+      assert.ok(args.includes("HOME=/fake/volumes/verify-stack-state/_data/server"));
+      assert.ok(
+        args.includes("XDG_CONFIG_HOME=/fake/volumes/verify-stack-state/_data/server/.config"),
+      );
+      assert.ok(args.includes("verify-stack-state:/fake/volumes/verify-stack-state/_data"));
+      assert.ok(args.includes("/var/run/docker.sock:/var/run/docker.sock"));
+      const relay = calls.findIndex(
+        (argv) => argv[0] === "run" && argv.includes("verify-stack-relay"),
+      );
+      assert.ok(relay > setup);
+      assert.deepEqual(result.requests, [
+        {
+          method: "POST",
+          url: "/api/auth/sign-up/email",
+          origin: `http://localhost:${result.port}`,
+          email: "verifier@verify-stack.invalid",
+          name: "Verifier",
+          passwordValid: true,
+        },
+      ]);
+      assert.match(result.output, /the inner server refused the first account \(HTTP 503\)/);
+    }
+    assert.deepEqual(names(result.fakeDaemon.read()), ["ordinary-container"]);
+    assert.deepEqual(volumeNames(result.fakeDaemon.read()), ["ordinary-volume"]);
+    assert.deepEqual(
+      result.fakeDaemon.read().networks.map(({ Name }) => Name),
+      ["ordinary-network"],
+    );
+  });
+}
