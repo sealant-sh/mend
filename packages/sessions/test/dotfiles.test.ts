@@ -16,6 +16,7 @@ import {
   DOTFILES_LOCAL_GIT_ENV,
   DOTFILES_OWNER_ENV,
   DotfilesCloner,
+  DotfilesResolveError,
   dotfilesCloneAccess,
   dotfilesCloneEnv,
   dotfilesCloneIdentity,
@@ -25,6 +26,180 @@ import {
 } from "../src/dotfiles.ts";
 
 const tmp = (prefix: string) => fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+
+describe("dotfiles operation source preparation", () => {
+  it("checks after owner resets and private HOME, preserving those resets through real clone", async () => {
+    const source = "http://140.82.112.3/dots.git";
+    const requests: string[] = [];
+    const server = http.createServer((request, response) => {
+      requests.push(request.url ?? "");
+      response.writeHead(404).end();
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (address === null || typeof address === "string") throw new Error("No recorder.");
+    const policy = makeSourcePolicy({
+      profile: "tenant",
+      allowedHosts: [],
+      resolve: async () => [],
+      gitConfig: {
+        GIT_CONFIG_COUNT: "1",
+        GIT_CONFIG_KEY_0: "url.http://169.254.169.254/private.git.insteadOf",
+        GIT_CONFIG_VALUE_0: source,
+      },
+    });
+    let cloneHome: string | undefined;
+    let destination: string | undefined;
+    try {
+      const result = await Effect.runPromise(
+        resolveRepositoryArchive(
+          {
+            url: source,
+            ref: null,
+            subdirectory: null,
+            manager: "copy",
+            bootstrap: false,
+          },
+          {
+            access: {
+              identity: { kind: "none" },
+              env: {
+                ...DOTFILES_OWNER_ENV,
+                http_proxy: `http://127.0.0.1:${address.port}`,
+                no_proxy: "",
+              },
+            },
+            prepareCloneEnv: (operation) =>
+              Effect.gen(function* () {
+                cloneHome = operation.env["HOME"];
+                destination = operation.destinationPath;
+                expect(cloneHome).toBeDefined();
+                expect(fs.existsSync(cloneHome ?? "")).toBe(true);
+                expect(operation.cwd).toBe(os.tmpdir());
+                expect(operation.env["GIT_CONFIG_COUNT"]).toBe("0");
+                const cleared = yield* policy
+                  .prepare(source, { isOperator: false }, operation)
+                  .pipe(
+                    Effect.mapError(
+                      (refused) => new DotfilesResolveError({ message: refused.message }),
+                    ),
+                  );
+                expect(cleared.urls).toEqual([source]);
+                const env = cleared.pinnedEnv(operation.env);
+                expect(env["GIT_CONFIG_GLOBAL"]).toBe("/dev/null");
+                expect(env["GIT_CONFIG_PARAMETERS"]).toContain("followRedirects");
+                return env;
+              }),
+          },
+        ).pipe(Effect.result),
+      );
+      expect(Result.isFailure(result)).toBe(true);
+      expect(requests).toEqual([`${source}/info/refs?service=git-upload-pack`]);
+      expect(fs.existsSync(cloneHome ?? "")).toBe(false);
+      expect(fs.existsSync(destination ?? "")).toBe(false);
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => {
+          if (error) {
+            reject(error);
+            return;
+          }
+          resolve();
+        });
+      });
+    }
+  });
+
+  it("the public owner cloner refuses an inherited host rewrite before clone and releases scratch", async () => {
+    const root = tmp("mend-dotfiles-rewrite-");
+    const global = path.join(root, "global");
+    const source = "http://140.82.112.3/dots.git";
+    fs.writeFileSync(global, "");
+    execFileSync("git", [
+      "config",
+      "--file",
+      global,
+      "url.http://169.254.169.254/private.git.insteadOf",
+      source,
+    ]);
+    const requests: string[] = [];
+    const server = http.createServer((request, response) => {
+      requests.push(request.url ?? "");
+      response.writeHead(404).end();
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (address === null || typeof address === "string") throw new Error("No recorder.");
+    const settings = {
+      GIT_CONFIG_GLOBAL: global,
+      GIT_CONFIG_NOSYSTEM: "1",
+      GIT_CONFIG_COUNT: "0",
+      GIT_CONFIG_PARAMETERS: "",
+      http_proxy: `http://127.0.0.1:${address.port}`,
+      no_proxy: "",
+      NO_PROXY: "",
+    };
+    const saved = new Map(Object.keys(settings).map((key) => [key, process.env[key]]));
+    Object.assign(process.env, settings);
+    let destination: string | undefined;
+    try {
+      const policy = makeSourcePolicy({
+        profile: "operator",
+        allowedHosts: [],
+        resolve: async () => [],
+      });
+      const result = await Effect.runPromise(
+        Effect.gen(function* () {
+          return yield* (yield* DotfilesCloner).archive(
+            "owner-1",
+            {
+              url: source,
+              ref: null,
+              subdirectory: null,
+              manager: "copy",
+              bootstrap: false,
+            },
+            {
+              prepareCloneEnv: (operation) => {
+                destination = operation.destinationPath;
+                expect(operation.env["GIT_SSH_COMMAND"]).toBe(DOTFILES_HOST_ENV["GIT_SSH_COMMAND"]);
+                return policy.prepare(source, { isOperator: true }, operation).pipe(
+                  Effect.map((cleared) => cleared.pinnedEnv(operation.env)),
+                  Effect.mapError(
+                    (refused) => new DotfilesResolveError({ message: refused.message }),
+                  ),
+                );
+              },
+            },
+          );
+        }).pipe(
+          Effect.provide(clonerLayer({ tenancy: "single", ownerIsOperator: true })),
+          Effect.result,
+        ),
+      );
+      expect(Result.isFailure(result)).toBe(true);
+      expect(String(result)).toContain("169.254.169.254 is not a repository host");
+      expect(destination).toBeDefined();
+      expect(requests).toEqual([]);
+      expect(fs.existsSync(destination ?? "")).toBe(false);
+    } finally {
+      for (const [key, value] of saved) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => {
+          if (error) {
+            reject(error);
+            return;
+          }
+          resolve();
+        });
+      });
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
 
 const extract = (base64: string): string => {
   const dir = tmp("mend-dotfiles-extract-");

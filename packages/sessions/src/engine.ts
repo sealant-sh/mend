@@ -6,6 +6,7 @@ import * as path from "node:path";
 import { pipeline } from "node:stream/promises";
 
 import {
+  InstanceRolesRepo,
   AgentConversationRepo,
   type AgentRequestAlreadyResolvedError,
   AgentRequestNotFoundError,
@@ -220,7 +221,7 @@ import {
   refuseRemoteCredentials,
   withCaptureReadPass,
   sessionStatePathOf,
-  resolveRemoteEnv,
+  preparedRemoteEnvironment,
   sshTransportArgs,
   unsupportedRepositoryReason,
   worktreePathOf,
@@ -2581,6 +2582,7 @@ type SessionEngineRequirements =
   | MendKeys
   | AgentBridge
   | SourcePolicy
+  | InstanceRolesRepo
   | WorkspaceGitHooks
   | HarnessLayoutsRepo
   | PersonLayoutPlatform
@@ -7827,6 +7829,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const organizations = yield* OrganizationsRepo;
       const foldersRepo = yield* FoldersRepo;
       const sourcePolicy = yield* SourcePolicy;
+      const instanceRoles = yield* InstanceRolesRepo;
       // A workspace's git transport signs with its owner's key, so by default it only reaches the
       // project's own remote (docs/adr/0003, "Multi mode gate"). An operator may turn that off on
       // a machine they alone use, for mirrors and forks.
@@ -8302,26 +8305,25 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       /**
        * The credential env for freshening a session's base at provision — BEST-EFFORT by
        * design: provisioning must survive a disconnected bridge or a broken key the way it
-       * survives an unreachable remote (the fetch itself is already best-effort). Null means
-       * "skip the fetch", with the reason logged, never a refused session.
+       * survives an unreachable remote (the fetch itself is already best-effort). The deferred
+       * provider checks the actual named origin; a refusal skips network work while the Store
+       * keeps local base resolution available. A legacy unidentified owner has no operator role.
        */
       const provisionRemoteEnv = Effect.fn("SessionEngine.provisionRemoteEnv")(function* (
         project: Project,
         ownerUserId: string | null,
       ) {
-        return yield* resolveRemoteEnv(project.gitAuthMode, ownerUserId, project.originUrl).pipe(
+        return yield* preparedRemoteEnvironment({
+          policy: sourcePolicy,
+          source: project.originUrl,
+          actor: {
+            isOperator: ownerUserId !== null && (yield* instanceRoles.isOperator(ownerUserId)),
+          },
+          mode: project.gitAuthMode,
+          userId: ownerUserId,
+        }).pipe(
           Effect.provideService(MendKeys, mendKeys),
           Effect.provideService(AgentBridge, agentBridge),
-          Effect.catch((error) =>
-            Effect.logInfo("session engine: base freshen skipped — no credentials").pipe(
-              Effect.annotateLogs({
-                projectId: project.id,
-                gitAuthMode: project.gitAuthMode,
-                reason: error.message,
-              }),
-              Effect.as(null),
-            ),
-          ),
         );
       });
 
@@ -11180,31 +11182,52 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           );
         // The repository was checked when it was saved; checked again here, and the clone dials the
         // address just checked, because a name can answer differently at every launch. The owner's
-        // actual role was applied at save; this recheck guards the tenant profile's networks.
+        // current role is checked again: a saved operator-only source cannot retain that authority
+        // after the owner loses the role. Preparation checks its effective target with the same actor.
         // The pin composes over the clone's own defaults, so a pinned ssh keeps BatchMode.
         // The clone runs as the owner, with their own git access (DotfilesCloner).
         const repositoryOutcome =
           dotfilesRepository === null || ownerUserId === null
             ? null
-            : yield* sourcePolicy.check(dotfilesRepository.url, { isOperator: true }).pipe(
-                Effect.mapError(
-                  (refused) =>
-                    new DotfilesResolveError({
-                      message: `dotfiles repository refused: ${refused.message}`,
-                    }),
-                ),
-                Effect.flatMap((clearance) =>
-                  dotfilesCloner.archive(ownerUserId, dotfilesRepository, {
-                    pinCloneEnv: (env) => sourcePolicy.pinnedEnv(clearance, env),
-                  }),
-                ),
-                Effect.map((archive) => ({ archive, notApplied: null })),
-                Effect.catchTag("DotfilesResolveError", (error) =>
-                  leftOut("repository", error).pipe(
-                    Effect.map((notApplied) => ({ archive: null, notApplied })),
-                  ),
-                ),
-              );
+            : yield* Effect.gen(function* () {
+                const ownerIsOperator = yield* instanceRoles.isOperator(ownerUserId);
+                return yield* sourcePolicy
+                  .check(dotfilesRepository.url, { isOperator: ownerIsOperator })
+                  .pipe(
+                    Effect.mapError(
+                      (refused) =>
+                        new DotfilesResolveError({
+                          message: `dotfiles repository refused: ${refused.message}`,
+                        }),
+                    ),
+                    Effect.flatMap(() =>
+                      dotfilesCloner.archive(ownerUserId, dotfilesRepository, {
+                        prepareCloneEnv: (operation) =>
+                          sourcePolicy
+                            .prepare(
+                              dotfilesRepository.url,
+                              { isOperator: ownerIsOperator },
+                              operation,
+                            )
+                            .pipe(
+                              Effect.map((cleared) => cleared.pinnedEnv(operation.env)),
+                              Effect.mapError(
+                                (refused) =>
+                                  new DotfilesResolveError({
+                                    message: `dotfiles repository refused: ${refused.message}`,
+                                  }),
+                              ),
+                            ),
+                      }),
+                    ),
+                    Effect.map((archive) => ({ archive, notApplied: null })),
+                    Effect.catchTag("DotfilesResolveError", (error) =>
+                      leftOut("repository", error).pipe(
+                        Effect.map((notApplied) => ({ archive: null, notApplied })),
+                      ),
+                    ),
+                  );
+              });
         const snapshotOutcome =
           dotfilesEnabled && ownerUserId !== null
             ? yield* dotfilesStore.archive(ownerUserId).pipe(

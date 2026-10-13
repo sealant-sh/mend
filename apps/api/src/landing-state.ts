@@ -24,13 +24,7 @@ import {
 } from "@mend/domain/workbench";
 import { LandingGit, LandingStepError, pullRequestBase } from "@mend/landing";
 import { WorktreeReads } from "@mend/sessions";
-import {
-  AgentBridge,
-  MendKeys,
-  type RemoteBranchState,
-  resolveRemoteEnv,
-  SourcePolicy,
-} from "@mend/store";
+import { type RemoteBranchState, preparedRemoteEnvironment, SourcePolicy } from "@mend/store";
 import { Clock, Effect, Result } from "effect";
 
 import { ProjectAccess } from "./access.ts";
@@ -56,36 +50,19 @@ export const changeOwnerOfWorktree = (worktreeId: WorktreeId) =>
  * services are read now; the policy check and the key or signer are resolved only when the
  * returned effect runs, so a landing that never reaches its push resolves nothing.
  */
-export const remoteEnvFor = (project: Project, userId: string, step: LandingStepError["step"]) =>
+export const remoteEnvFor = (project: Project, userId: string, _step: LandingStepError["step"]) =>
   Effect.gen(function* () {
     const policy = yield* SourcePolicy;
     const isOperator = yield* (yield* ProjectAccess).isOperator(userId);
-    const signers = yield* Effect.context<MendKeys | AgentBridge>();
-    const origin = project.originUrl;
-    const failed = (message: string) => new LandingStepError({ step, message });
-    return Effect.gen(function* () {
-      if (origin === null) return yield* failed("the project has no origin");
-      const clearance = yield* policy
-        .check(origin, { isOperator })
-        .pipe(Effect.mapError((refused) => failed(refused.message)));
-      // A push follows git's pushInsteadOf rewrites too; the signer is chosen for the URL git dials.
-      const env = yield* resolveRemoteEnv(
-        project.gitAuthMode,
-        userId,
-        origin,
-        step === "push",
-      ).pipe(
-        Effect.provide(signers),
-        Effect.mapError((error) =>
-          failed(
-            error._tag === "NoSignerError"
-              ? error.message
-              : `Could not create the Mend key: ${error.stderr}`,
-          ),
-        ),
-      );
-      return policy.pinnedEnv(clearance, env);
+    const environment = yield* preparedRemoteEnvironment({
+      policy,
+      source: project.originUrl,
+      actor: { isOperator },
+      mode: project.gitAuthMode,
+      userId,
     });
+    // Keep network preparation lazy: the adapter supplies the actual store/cache and operand.
+    return Effect.succeed(environment);
   });
 
 /** Audit a landing, whatever its outcome and trigger: it acted with the owner's credentials. */
