@@ -2,7 +2,8 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { Effect, Layer, Option } from "effect";
+import { it as effectIt } from "@effect/vitest";
+import { Deferred, Effect, Exit, Fiber, Layer } from "effect";
 import { afterAll, describe, expect, it } from "vitest";
 
 import { BlobStore, BlobStoreFsLive } from "../src/blob-store.ts";
@@ -136,38 +137,81 @@ describe("capture proofs are bound to the store and stand only once nothing can 
     );
   });
 
-  it("Astra review: verifications cut off while their reads hang give their places back, and a waiter verifies for itself", async () => {
-    const root = freshDir("stalled");
-    const packs = Array.from({ length: PACK_VERIFY_WORKERS + 1 }, (_, n) =>
-      packPair(`wt-stalled-${n}`),
-    );
-    // A store whose reads never answer while `stalled`.
-    const hold = { stalled: true };
-    const stalling = Layer.effect(
-      BlobStore,
-      Effect.map(BlobStore, (inner): typeof BlobStore.Service => ({
-        ...inner,
-        get: (key: string) => (hold.stalled ? Effect.never : inner.get(key)),
-      })),
-    ).pipe(Layer.provide(BlobStoreFsLive(root)));
-    await run(uploadObjects(new Map(packs.map((pack) => [pack.key, pack.good]))), stalling);
-    // A background verification takes every place and hangs on its reads, until its bound.
-    const cutOff = await run(
-      verifyPackPayloads(packs.slice(0, PACK_VERIFY_WORKERS).map((pack) => pack.key)).pipe(
-        Effect.timeoutOption("150 millis"),
-      ),
-      stalling,
-    );
-    expect(Option.isNone(cutOff)).toBe(true);
-    // The store answers again. A pack the cut-off pass was reading is verified by the next
-    // asker, and one it never reached finds a free place.
-    hold.stalled = false;
-    const after = await run(
-      verifyPackPayloads(packs.map((pack) => pack.key)).pipe(Effect.timeout("10 seconds")),
-      stalling,
-    );
-    expect(after.packs).toBe(packs.length);
-  });
+  effectIt.live(
+    "interrupted verification releases its slots and an existing waiter reads the pack itself",
+    () =>
+      Effect.gen(function* () {
+        const packs = Array.from({ length: PACK_VERIFY_WORKERS + 1 }, (_, n) =>
+          packPair(`wt-stalled-${n}`),
+        );
+        const waitingPack = packs[0];
+        if (waitingPack === undefined) throw new Error("the fixture needs a pack to wait on");
+        const stalledKeys = packs.slice(0, PACK_VERIFY_WORKERS).map((pack) => pack.key);
+        const allStarted = yield* Deferred.make<void>();
+        const fallbackStarted = yield* Deferred.make<void>();
+        const releaseReads = yield* Deferred.make<void>();
+        const started: Array<string> = [];
+        const completed: Array<string> = [];
+        const interrupted: Array<string> = [];
+        const stalling = Layer.effect(
+          BlobStore,
+          Effect.map(BlobStore, (inner): typeof BlobStore.Service => ({
+            ...inner,
+            get: (key) =>
+              Effect.gen(function* () {
+                started.push(key);
+                if (started.length === PACK_VERIFY_WORKERS)
+                  yield* Deferred.succeed(allStarted, undefined);
+                if (key === waitingPack.key && started.filter((at) => at === key).length === 2) {
+                  yield* Deferred.succeed(fallbackStarted, undefined);
+                }
+                return yield* Effect.gen(function* () {
+                  yield* Deferred.await(releaseReads);
+                  const bytes = yield* inner.get(key);
+                  completed.push(key);
+                  return bytes;
+                }).pipe(
+                  Effect.onInterrupt(() =>
+                    Effect.sync(() => {
+                      interrupted.push(key);
+                    }),
+                  ),
+                );
+              }),
+          })),
+        ).pipe(Layer.provide(BlobStoreFsLive(freshDir("stalled"))));
+
+        yield* Effect.gen(function* () {
+          yield* uploadObjects(new Map(packs.map((pack) => [pack.key, pack.good])));
+          const first = yield* verifyPackPayloads(stalledKeys).pipe(
+            Effect.forkScoped({ startImmediately: true }),
+          );
+          yield* Deferred.await(allStarted);
+          expect(started.toSorted()).toEqual(stalledKeys.toSorted());
+          // Start this caller through its first suspension while the first caller owns the key.
+          // It must share the pending verification, without fetching a second copy yet.
+          const waiter = yield* verifyPackPayloads([waitingPack.key]).pipe(
+            Effect.forkScoped({ startImmediately: true }),
+          );
+          expect(waiter.pollUnsafe()).toBeUndefined();
+          expect(started).toHaveLength(PACK_VERIFY_WORKERS);
+          yield* Fiber.interrupt(first);
+          expect(Exit.hasInterrupts(yield* Fiber.await(first))).toBe(true);
+          expect(interrupted.toSorted()).toEqual(stalledKeys.toSorted());
+          // The already-waiting caller must restart the real read after the first is interrupted.
+          yield* Deferred.await(fallbackStarted);
+          expect(completed).toEqual([]);
+          yield* Deferred.succeed(releaseReads, undefined);
+          expect(yield* Fiber.join(waiter)).toEqual({ packs: 1, chunks: 1 });
+          expect(completed).toEqual([waitingPack.key]);
+          const after = yield* verifyPackPayloads(packs.map((pack) => pack.key));
+          expect(after).toEqual({ packs: PACK_VERIFY_WORKERS, chunks: PACK_VERIFY_WORKERS });
+          expect(completed.toSorted()).toEqual(packs.map((pack) => pack.key).toSorted());
+          expect(started.filter((key) => key === waitingPack.key)).toHaveLength(2);
+        }).pipe(Effect.provide(stalling));
+      }).pipe(Effect.scoped, Effect.timeout("10 seconds")),
+    { timeout: 15_000 },
+  );
 
   it("2026-10-03: files read in one pass fetch each pack once, not once per file", async () => {
     const tree = freshDir("many-files");
