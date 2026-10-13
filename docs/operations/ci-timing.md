@@ -309,3 +309,153 @@ Two further regressions deliver the 60-second wake at 65 or 85 seconds. They req
 followed by the next at 85 or 105 seconds respectively. The next boundary uses each pass's actual
 monotonic start, matching native interval rearming after both short and long event-loop stalls.
 Neither catch-up bursts nor shorter intervals compensating for a late wake are allowed.
+
+## Step 2a measured box result
+
+The corrected Clock change passed run 38459923130 on `73de7254f`, checks job 115515951220,
+`box-151-1791922353`, 2026-10-13 20:13:27–20:34:34 UTC. The test step took 749 s, packaging 304 s,
+and checks 1,267 s. Engine took 461.109 s, CLI lifecycle 700.369 s and run-commands 57.878 s. All 25
+Turbo test tasks ran without cache hits; the downloaded log had no unadvanced-TestClock warning.
+Changes and mobile-web also passed; label-gated release acceptance was skipped.
+
+Run creation to checks completion was 1,799 s, including 532 s before checks started. The runner
+owner attributed 432 s to demand detection omitting GitHub's pending workflow state and fixed the
+runner service. Excluding that incident gives 1,367 s, reported separately from the raw result.
+Actual push time was not independently measured. These numbers establish a comparable baseline, not
+a speed improvement from routing clocks.
+
+Matched host samples for this window showed approximately 4.3 of 7 GiB peak memory use, 2.72 GiB
+minimum available, swap 0.07 GiB initially, 0.11 GiB peak and 0.09 GiB at the end. The window added
+10,699 pages swapped out and 4,498 in, about 0.04 and 0.02 GiB. Peak one-minute load was 11.0 on
+eight vCPUs. Memory fits under the cap; peak CPU demand remains above the runner's vCPU count.
+
+## Step 2b timeout headroom
+
+Use a downloaded job log and its exact local Git revision to compare observed leaf durations with
+source budgets:
+
+```sh
+node scripts/ci-timings.mjs downloaded-job.log --source-ref <job-head> --repo <checkout>
+```
+
+The analyzer reports cases at or above half their effective timeout, alongside the source location,
+resolved revision, budget origin and raw reporter line. It reads Git blobs locally and never runs
+config or test code. Missing durations, ambiguous names, dynamic configuration and cached output
+remain unknown. File durations are never used as test durations. Reporter logs omit many fast cases;
+the report includes the number not observed rather than treating them as healthy.
+
+On the step 2a box run, 797 leaf durations were visible, 554 had resolvable budgets and seven were
+at or above half their timeout. The sessions config added in step 2b installs a plugin, so static
+analysis deliberately leaves its default budgets unknown on later revisions. Explicit case and suite
+budgets can still resolve. Capturing effective budgets from the live runner is the next way to
+remove that uncertainty; trusting arbitrary plugin code during historical log analysis is not.
+
+The sessions runner also fails on a file exceeding 60 seconds in CI and on an unadvanced TestClock
+warning. The guard remains installed when a caller selects JSON output. Vitest 3 can report JSON
+`success: true` while an unhandled reporter error makes the process exit nonzero; consumers must
+check the exit status. Subprocess regressions cover both failure conditions and passing controls.
+
+The source-budget analyzer uses the workspace's TypeScript parser and YAML reader. Its regression
+tests therefore run in `checks` immediately after the existing frozen install. The dependency-free
+path-selection tests stay in `changes`, before installation. Both still run unconditionally.
+
+## Step 2b engine test organization
+
+The original 530 engine cases are divided by concern. Names, suite ancestry, table expansion and all
+original assertions are retained. A mechanical split was run before any Clock conversion, with all
+530 passing. The private `test/engine/` modules hold the existing repository, platform and capture
+fixtures; individual cases still own their engine scopes and temporary files.
+
+| File under `packages/sessions/test/` | Original cases |
+| ------------------------------------ | -------------: |
+| `engine-provision.test.ts`           |            123 |
+| `engine-launch-recovery.test.ts`     |             53 |
+| `engine-capture-launch.test.ts`      |             52 |
+| `engine-standbys.test.ts`            |             34 |
+| `engine-drain-lifecycle.test.ts`     |             42 |
+| `engine-capture-settlement.test.ts`  |             41 |
+| `engine-capture-evidence.test.ts`    |             36 |
+| `engine-person-context.test.ts`      |            124 |
+| `engine-person-joins.test.ts`        |             25 |
+
+Seventeen cases now build their engine inside the caller's TestClock. These cover a saving holder's
+ten-second lease reaper, landing retries at two-second intervals, the in-flight evidence fence,
+three-second joiner settle windows, refused-close retries, real checkpoint registration deadlines,
+and completion of the agent in the live-edit scenario. Deadline values and original case budgets are
+unchanged. Tests acknowledge the actual operation before moving time, assert where applicable
+immediately before the boundary, and retain the final state assertions.
+
+The memory capture store and world-owned repository timestamps follow the same construction Clock.
+Explicit store/engine clock skew remains available for the existing expiry scenarios. Two engine
+fixture regressions exercise clock propagation and temporary-directory cleanup, including failure
+before layer construction. A capture-store regression checks the exact lease-expiry boundary.
+
+Real Git, filesystem, socket and generated-helper operations remain live. The Promise fixture
+adapter preserves the existing integration cases; narrow `TestClock.withLive` sections observe
+native I/O readiness without constructing the engine under a different Clock. This change does not
+claim to convert every engine case or remove every remaining live wait. Additional conversion and
+further file splits should follow measured box results, with the 60-second guard enforcing the file
+limit.
+
+The six historical sessions timeout-headroom flags have specific remedies. The live-edit case waits
+for the actual agent-ended hook instead of exhausting a poll that also waited for its intentionally
+open shell. Three standby cases advance the real two-second registration waits. The saving-holder
+case advances its actual ten-second reaper. The session-channel subprocess case retains two
+mandatory two-second generated-helper polls and four process launches; it has an explicit 15-second
+case budget instead of the five-second default, with those costs documented at the test. The CLI
+health-discovery flag belongs to step 3. The capture raw-name property case keeps all 1,000 runs and
+its fixed seed; its earlier overloaded-runner timeout remains on the box watch list, rather than
+being hidden by a global timeout or reduced property coverage.
+
+All nine engine concern files, the two fixture files, the reporter regression file and the
+session-channel file passed 20 consecutive fresh-process runs each. That is 260 file runs and 11,060
+test passes, without retries or source changes during the run. The local 32-thread machine ran at
+most nine independent file loops at once; each file's rounds were sequential with one worker. This
+is reliability evidence, not a simulation of the eight-vCPU box. Each invocation was:
+
+```sh
+CI=true VITEST_MAX_THREADS=3 VITEST_MAX_FORKS=3 VITEST_MAX_WORKERS=3 \
+  pnpm exec vitest run test/<file> --maxWorkers=1 --reporter=json --outputFile=<round>.json
+```
+
+The timing analyzer separately passed 20 runs of `node --test scripts/ci-timings.test.mjs`, 360 test
+passes on unchanged source. Final per-file timing comparisons use three workers separately from the
+reliability loops.
+
+Four isolated mutations failed behavioral assertions: a landing retry at one rather than two
+seconds, ignoring the evidence fence, reaping another session's agent, and completing the real
+registration timeout at one millisecond. The first and fourth fail boundary assertions; the second
+and third fail the original attestation and holder-state assertions. Production files were restored
+byte-for-byte. Changing only the outer lease guard left a backup production check intact; that
+experiment exposed a synchronization flaw in the converted test, which was corrected before the
+frozen repeats. A test timing out while waiting for its preferred outcome is not counted as proof
+that its state assertions catch the defect.
+
+### Local comparison before box CI
+
+These are same-machine, three-worker runs. The before column is the mechanical split before Clock
+conversion; the after column is the final source. They are not Blacksmith or box estimates.
+
+| Engine file                         | Cases | Mechanical split | After conversion |
+| ----------------------------------- | ----: | ---------------: | ---------------: |
+| `engine-capture-evidence.test.ts`   |    36 |         56.478 s |         46.207 s |
+| `engine-capture-launch.test.ts`     |    52 |         44.550 s |         43.083 s |
+| `engine-capture-settlement.test.ts` |    41 |         53.164 s |         31.621 s |
+| `engine-drain-lifecycle.test.ts`    |    42 |         60.761 s |         44.937 s |
+| `engine-launch-recovery.test.ts`    |    53 |         24.343 s |         22.282 s |
+| `engine-person-context.test.ts`     |   124 |         49.488 s |         47.532 s |
+| `engine-person-joins.test.ts`       |    25 |         47.330 s |         18.708 s |
+| `engine-provision.test.ts`          |   123 |         39.051 s |         35.088 s |
+| `engine-standbys.test.ts`           |    34 |         49.077 s |         37.990 s |
+
+All 530 cases passed in the final comparison. The 17 converted cases took a combined 92.879 s before
+and 5.135 s after, summing their individual durations, not parallel wall time. The final nine-file
+invocation took 115.686 s wall time. Whole-job box measurements remain pending.
+
+The final local full graph passed all 25 tasks without cache hits in 381.830 s, with PostgreSQL
+required and the same two-package/three-worker cap as CI. Sessions took 142.93 s: 1,512 passed,
+three opt-in Garage cases and one existing optional local-corpus case skipped. The three Garage
+capture cases then ran and passed against a disposable live bucket. Store interoperability also
+passed all 16 cases on Garage and all 16 on strict MinIO. The optional corpus case remains a known
+local omission. Forced typecheck and lint each passed all 27 tasks with zero cache hits; formatting
+passed. These local results do not fill the pending box job-duration or push-to-green measurements.
