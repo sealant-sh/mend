@@ -9,8 +9,41 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
+  changes:
+    runs-on: [self-hosted, box, linux, x64]
+    outputs:
+      mobile: ${{ steps.scope.outputs.mobile }}
+      packaging: ${{ steps.scope.outputs.packaging }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .node-version
+      - name: Verify local CI selection and timing tools
+        run: node --test scripts/ci-scope.test.mjs scripts/ci-timings.test.mjs
+      - id: scope
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [ "$EVENT_NAME" = pull_request ]; then
+            node scripts/ci-scope.mjs "$BASE_SHA" "$HEAD_SHA" >> "$GITHUB_OUTPUT"
+          else
+            node scripts/ci-scope.mjs --all >> "$GITHUB_OUTPUT"
+          fi
+
   checks:
+    needs: changes
+    # An unavailable path classification must not suppress required test evidence.
+    if: ${{ !cancelled() }}
     runs-on: [self-hosted, box, linux, x64]
     services:
       postgres:
@@ -79,6 +112,7 @@ jobs:
       - name:
           Check packaging contracts, supervision, acceptance helpers, the mirrors, and the Helm
           chart
+        if: ${{ needs.changes.outputs.packaging != 'false' }}
         run:
           node --test scripts/bundle-packaging.test.mjs scripts/process-supervisor.test.mjs
           scripts/check-packaged-server.test.mjs scripts/release-publication.test.mjs
@@ -99,6 +133,8 @@ jobs:
   # The phone app's web build is what verification runs drive. It must bundle, render statically,
   # and load in a browser from both the export and the dev server (apps/mobile/scripts/check-web.mjs).
   mobile-web:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.mobile != 'false' }}
     runs-on: [self-hosted, box, linux, x64]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0

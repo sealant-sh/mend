@@ -117,6 +117,54 @@ dates and distinguish actual Docker adapters from recording implementations that
 Docker-shaped commands. Preserve a CI tier for real adapters. Shorten non-Effect fixture deadlines
 through their existing options instead of converting those programs to Effect.
 
-Shared caching, affected-only PR testing, and merge-queue topology remain pending owner decisions.
-Do not infer cache correctness from the database URL alone: the report must identify whether a
-result actually ran, and required capabilities must fail clearly when absent.
+After the long-pole work, step 3b splits static checks and build, test shards, packaging and verify,
+and mobile-web into parallel jobs. This step is approved independently of the merge queue. Preserve
+required PostgreSQL, Garage/MinIO and Chromium evidence and measure push-to-green wall time. Shared
+caching, affected-only PR testing, and the merge queue remain pending owner decisions. Do not infer
+cache correctness from the database URL alone: the report must identify whether a result actually
+ran, and required capabilities must fail clearly when absent.
+
+## Step 1: remove serial dependencies and select extra jobs
+
+PR pushes cancel the previous CI run for the same pull request. Runs on main use their own run ID,
+so a newer merge does not cancel evidence for an earlier merge.
+
+Turbo tests depend on upstream builds instead of upstream tests. No test consumes a file generated
+by another package's tests. Shared testing exports point to checked-in TypeScript. The build step
+still precedes checks because generated routes must exist for typechecking. The dry task graph has
+27 test nodes, 25 with executable commands, and no test-to-test dependency edges. Packages without a
+build command contribute dependency traversal, not another command to execute.
+
+The dependency-free `scripts/ci-scope.mjs` compares the PR's merge base with its head. It emits the
+two extra-job flags below. Main always runs both. Paths use NUL separators and rename detection is
+disabled so deleting or moving an input cannot hide its original path.
+
+| Changed paths                                                                          | mobile-web | Packaging and verify |
+| -------------------------------------------------------------------------------------- | ---------- | -------------------- |
+| Only `docs/` files, excluding package manifests                                        | Skip       | Skip                 |
+| Other known apps or `deploy/`                                                          | Skip       | Run                  |
+| Mobile, any shared package, tooling, scripts, workflows or agent configuration         | Run        | Run                  |
+| Root files, any package manifest, unknown paths, empty diff or unavailable Git history | Run        | Run                  |
+
+Mixed changes take the union. Including every shared package deliberately favors extra execution
+when dependencies change. The selection job tests both CI helper scripts before publishing outputs.
+Missing outputs run both extras, and the required checks job runs even if selection fails. Turbo,
+required PostgreSQL tests, S3 contracts and existing forced execution remain enabled for every PR.
+Helm and AWS shell checks also remain unconditional.
+
+Validation includes real Git fixtures for deletion, renaming, independently advancing main,
+malformed references and filenames with newlines. The nine CI-helper tests passed 20 consecutive
+runs. Actionlint passed with `box` declared as a custom runner label and ShellCheck disabled.
+
+The first full run with the new task graph exposed a blob-upload test fixture race. Connecting a
+pipe did not mean its destination file had opened. The fixture could replace the temporary directory
+while that open was still creating a file, throwing `ENOTEMPTY` before it established the cleanup
+failure it intended to test. The fixture now waits for a native zero-byte write acknowledgment
+before inducing source failure or interruption. The exact Cause counts, original failure or
+interruption, cleanup error, closed streams and absence of publication are still asserted. The
+separate interruption-before-open case is unchanged. The owning file passed 20 consecutive runs; a
+mutation that discards cleanup errors still fails both targeted cases. Production code is unchanged.
+
+Timing comparisons must distinguish a failed run from a speed improvement and local timing from CI.
+Step 1 does not shorten the three long test files or the packaging race cases. Those remain the next
+work, and a measured CI result is required before claiming a whole-job improvement.
