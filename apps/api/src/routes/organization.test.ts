@@ -31,7 +31,7 @@ import { DeploymentConfig } from "@mend/store";
 import { Effect, Layer, ManagedRuntime, Option } from "effect";
 import { HttpRouter, HttpServer } from "effect/unstable/http";
 import { HttpApi, HttpApiBuilder } from "effect/unstable/httpapi";
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { makeProject } from "../../test/support/tenancy-harness.ts";
 import { MemberRemoval, type RemoveMemberInput } from "../member-removal.ts";
@@ -54,6 +54,9 @@ const acme = new Organization({
   updatedAt: NOW,
 });
 
+const globex = new Organization({ ...acme, id: OrganizationId.make("org-globex"), name: "Globex" });
+const roleChanges: Array<Parameters<OrganizationsRepo["Service"]["setRole"]>> = [];
+
 const roles: Record<string, OrganizationMembership["role"] | undefined> = {
   alice: "owner",
   carol: "member",
@@ -72,7 +75,7 @@ const projectRows = new Map<
   ["p-carol", { organizationId: OrganizationId.make("org-acme"), createdByUserId: "carol" }],
   ["p-elsewhere", { organizationId: OrganizationId.make("org-other"), createdByUserId: "zed" }],
 ]);
-const minted: Array<{ readonly email: string | null; readonly expiresAt: Date }> = [];
+const minted: Array<Parameters<OrganizationsRepo["Service"]["createInvitation"]>[0]> = [];
 
 const invitation = (email: string | null, expiresAt: Date) =>
   new Invitation({
@@ -90,11 +93,24 @@ const invitation = (email: string | null, expiresAt: Date) =>
 
 const organizationsLayer = Layer.mock(OrganizationsRepo, {
   membershipOf: (userId) => {
+    if (userId === "gina")
+      return Effect.succeed({ organization: globex, role: "owner", joinedAt: NOW });
     const role = roles[userId];
     return Effect.succeed(role === undefined ? null : { organization: acme, role, joinedAt: NOW });
   },
   memberCount: () => Effect.succeed(2),
-  roleOf: (_organizationId, userId) => Effect.succeed(roles[userId] ?? null),
+  roleOf: (organizationId, userId) =>
+    Effect.succeed(
+      organizationId === globex.id
+        ? userId === "gina"
+          ? "owner"
+          : userId === "george"
+            ? "member"
+            : null
+        : organizationId === acme.id
+          ? (roles[userId] ?? null)
+          : null,
+    ),
   members: () =>
     Effect.succeed(
       Object.entries(roles).flatMap(([userId, role]) =>
@@ -112,13 +128,14 @@ const organizationsLayer = Layer.mock(OrganizationsRepo, {
             ],
       ),
     ),
-  setRole: (_organizationId, userId, role) =>
+  setRole: (organizationId, userId, role) =>
     userId === "alice" && role === "member"
       ? Effect.fail(new LastOwnerError({ organizationId: acme.id }))
       : Effect.sync(() => {
+          roleChanges.push([organizationId, userId, role]);
           writes.push(`setRole:${userId}:${role}`);
           return new OrganizationMember({
-            organizationId: acme.id,
+            organizationId,
             userId,
             name: userId,
             email: `${userId}@example.invalid`,
@@ -130,8 +147,16 @@ const organizationsLayer = Layer.mock(OrganizationsRepo, {
   createInvitation: (input) =>
     Effect.sync(() => {
       writes.push("createInvitation");
-      minted.push({ email: input.email, expiresAt: input.expiresAt });
-      return { invitation: invitation(input.email, input.expiresAt), token: "tok-secret" };
+      minted.push(input);
+      return {
+        invitation: new Invitation({
+          ...invitation(input.email, input.expiresAt),
+          organizationId: input.organizationId,
+          role: input.role,
+          createdByUserId: input.createdByUserId,
+        }),
+        token: "tok-secret",
+      };
     }),
   revokeInvitation: () =>
     Effect.sync(() => (writes.push("revokeInvitation"), invitation(null, NOW))),
@@ -298,7 +323,10 @@ afterAll(async () => {
   await runtime.dispose();
 });
 
+afterEach(() => vi.useRealTimers());
+
 beforeEach(() => {
+  roleChanges.length = 0;
   writes.splice(0, writes.length);
   minted.splice(0, minted.length);
   audited.splice(0, audited.length);
@@ -343,6 +371,8 @@ describe("organization routes (docs/adr/0003)", () => {
   });
 
   it("lets an owner mint a link, returning the token once with its join path", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(NOW);
     const response = await call("alice", "/api/organization/invitations", {
       method: "POST",
       body: JSON.stringify({ role: "member", email: " Carol@Example.invalid ", expiresInDays: 90 }),
@@ -352,7 +382,59 @@ describe("organization routes (docs/adr/0003)", () => {
       token: "tok-secret",
       path: "/join/tok-secret",
     });
-    expect(minted[0]?.email).toBe("carol@example.invalid");
+    expect(minted).toEqual([
+      {
+        organizationId: acme.id,
+        role: "member",
+        email: "carol@example.invalid",
+        createdByUserId: "alice",
+        expiresAt: new Date("2026-10-17T10:00:00.000Z"),
+      },
+    ]);
+    expect(audited).toEqual([
+      {
+        organizationId: acme.id,
+        actorUserId: "alice",
+        action: "invitation.created",
+        subjectType: "invitation",
+        subjectId: "inv-1",
+        data: { role: "member", emailBound: true },
+      },
+    ]);
+  });
+
+  it("mints in the other owner's organization and records that actor", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(NOW);
+    const response = await call("gina", "/api/organization/invitations", {
+      method: "POST",
+      body: JSON.stringify({ role: "owner", expiresInDays: 2 }),
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      invitation: { organizationId: globex.id, role: "owner", createdByUserId: "gina" },
+      token: "tok-secret",
+      path: "/join/tok-secret",
+    });
+    expect(minted).toEqual([
+      {
+        organizationId: globex.id,
+        role: "owner",
+        email: null,
+        createdByUserId: "gina",
+        expiresAt: new Date("2026-09-19T10:00:00.000Z"),
+      },
+    ]);
+    expect(audited).toEqual([
+      {
+        organizationId: globex.id,
+        actorUserId: "gina",
+        action: "invitation.created",
+        subjectType: "invitation",
+        subjectId: "inv-1",
+        data: { role: "owner", emailBound: false },
+      },
+    ]);
   });
 
   it("rejects a malformed email without minting", async () => {
@@ -424,8 +506,46 @@ describe("removing members, roles and departed members' projects (docs/adr/0003)
       body: JSON.stringify({ role: "member" }),
     });
     expect(demoted.status).toBe(422);
-    expect(audited.map((event) => [event.action, event.subjectId, event.data])).toEqual([
-      ["member.role_changed", "carol", { role: "owner" }],
+    expect(roleChanges).toEqual([[acme.id, "carol", "owner"]]);
+    expect(audited).toEqual([
+      {
+        organizationId: acme.id,
+        actorUserId: "alice",
+        action: "member.role_changed",
+        subjectType: "member",
+        subjectId: "carol",
+        data: { role: "owner" },
+      },
+    ]);
+  });
+
+  it("changes a role only in the caller's organization", async () => {
+    const refused = await call("gina", "/api/organization/members/carol/role", {
+      method: "PUT",
+      body: JSON.stringify({ role: "owner" }),
+    });
+    expect(refused.status).toBe(404);
+    expect({ roleChanges, audited }).toEqual({ roleChanges: [], audited: [] });
+    const promoted = await call("gina", "/api/organization/members/george/role", {
+      method: "PUT",
+      body: JSON.stringify({ role: "owner" }),
+    });
+    expect(promoted.status).toBe(200);
+    expect(await promoted.json()).toMatchObject({
+      organizationId: globex.id,
+      userId: "george",
+      role: "owner",
+    });
+    expect(roleChanges).toEqual([[globex.id, "george", "owner"]]);
+    expect(audited).toEqual([
+      {
+        organizationId: globex.id,
+        actorUserId: "gina",
+        action: "member.role_changed",
+        subjectType: "member",
+        subjectId: "george",
+        data: { role: "owner" },
+      },
     ]);
   });
 

@@ -3,16 +3,18 @@ import { Auth } from "@mend/auth";
 import {
   AuditEventsRepo,
   OrganizationsRepo,
+  OrganizationNotFoundError,
+  OrganizationNameTakenError,
   UserFacts,
   UsersRepo,
   type NewAuditEvent,
 } from "@mend/db";
-import { OrganizationId } from "@mend/domain";
-import { Organization, OrganizationMember } from "@mend/domain/workbench";
+import { InvitationId, OrganizationId } from "@mend/domain";
+import { Invitation, Organization, OrganizationMember } from "@mend/domain/workbench";
 import { Effect, Layer, ManagedRuntime, Option } from "effect";
 import { HttpRouter, HttpServer } from "effect/unstable/http";
 import { HttpApi, HttpApiBuilder } from "effect/unstable/httpapi";
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ProjectAccess } from "../access.ts";
 import { ExposureConfig, type ExposureOutcome } from "../exposure.ts";
@@ -29,6 +31,11 @@ const acme = new Organization({
   createdAt: NOW,
   updatedAt: NOW,
 });
+
+const globex = new Organization({ ...acme, id: OrganizationId.make("org-globex"), name: "Globex" });
+const organizationRows = new Map<OrganizationId, Organization>();
+const roleChanges: Array<Parameters<OrganizationsRepo["Service"]["setRole"]>> = [];
+const minted: Array<Parameters<OrganizationsRepo["Service"]["createInvitation"]>[0]> = [];
 
 /** alice operates the instance; sam is a member of Acme; everyone else is nobody. */
 const accounts = new Map([
@@ -84,17 +91,51 @@ const OPEN_ITEMS: ReadonlyArray<ExposureOutcome> = [
 const dependencies = Layer.mergeAll(
   authLayer,
   Layer.mock(OrganizationsRepo, {
-    byId: (id) => (id === ACME ? Effect.succeed(acme) : Effect.die("unknown organization")),
-    roleOf: (_organizationId, userId) => Effect.succeed(userId === "sam" ? "member" : null),
+    byId: (id) =>
+      Effect.suspend(() => {
+        const row = organizationRows.get(id);
+        return row === undefined
+          ? Effect.fail(new OrganizationNotFoundError({ organizationId: id }))
+          : Effect.succeed(row);
+      }),
+    rename: (id, name) =>
+      Effect.gen(function* () {
+        const row = organizationRows.get(id);
+        if (row === undefined) return yield* new OrganizationNotFoundError({ organizationId: id });
+        if ([...organizationRows.values()].some((other) => other.id !== id && other.name === name))
+          return yield* new OrganizationNameTakenError({ name });
+        const renamed = new Organization({ ...row, name });
+        writes.push(`rename:${id}:${name}`);
+        organizationRows.set(id, renamed);
+        return renamed;
+      }),
+    createInvitation: (input) =>
+      Effect.sync(() => {
+        minted.push(input);
+        return {
+          token: "operator-invite-token",
+          invitation: new Invitation({
+            ...input,
+            id: InvitationId.make("operator-invitation"),
+            createdAt: NOW,
+            acceptedByUserId: null,
+            acceptedAt: null,
+            revokedAt: null,
+          }),
+        };
+      }),
+    roleOf: (organizationId, userId) =>
+      Effect.succeed(organizationId === ACME && userId === "sam" ? "member" : null),
     membershipOf: (userId) =>
       Effect.succeed(
         userId === "sam" ? { organization: acme, role: "member", joinedAt: NOW } : null,
       ),
-    setRole: (_organizationId, userId, role) =>
+    setRole: (organizationId, userId, role) =>
       Effect.sync(() => {
+        roleChanges.push([organizationId, userId, role]);
         writes.push(`setRole:${userId}:${role}`);
         return new OrganizationMember({
-          organizationId: ACME,
+          organizationId,
           userId,
           name: userId,
           email: `${userId}@example.invalid`,
@@ -153,7 +194,14 @@ afterAll(async () => {
   await runtime.dispose();
 });
 
+afterEach(() => vi.useRealTimers());
+
 beforeEach(() => {
+  organizationRows.clear();
+  organizationRows.set(acme.id, acme);
+  organizationRows.set(globex.id, globex);
+  roleChanges.length = 0;
+  minted.length = 0;
   writes.splice(0, writes.length);
   audited.splice(0, audited.length);
 });
@@ -196,9 +244,106 @@ describe("operator recovery (docs/adr/0003)", () => {
     });
     expect(granted.status).toBe(204);
     expect(writes).toEqual(["setRole:sam:owner"]);
-    expect(audited.map((event) => [event.organizationId, event.action, event.subjectId])).toEqual([
-      [ACME, "recovery.owner_granted", "sam"],
+    expect(roleChanges).toEqual([[ACME, "sam", "owner"]]);
+    expect(audited).toEqual([
+      {
+        organizationId: ACME,
+        actorUserId: "alice",
+        action: "recovery.owner_granted",
+        subjectType: "member",
+        subjectId: "sam",
+      },
     ]);
+  });
+
+  it("renames the selected organization and records the operator and normalized name", async () => {
+    const response = await call("alice", "PUT", `/operator/organizations/${globex.id}/name`, {
+      name: "  Globex renamed  ",
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ id: globex.id, name: "Globex renamed" });
+    expect(writes).toEqual([`rename:${globex.id}:Globex renamed`]);
+    expect(organizationRows.get(acme.id)).toEqual(acme);
+    expect(organizationRows.get(globex.id)?.name).toBe("Globex renamed");
+    expect(audited).toEqual([
+      {
+        organizationId: globex.id,
+        actorUserId: "alice",
+        action: "organization.renamed",
+        subjectType: "organization",
+        subjectId: globex.id,
+        data: { name: "Globex renamed" },
+      },
+    ]);
+  });
+
+  it.each([
+    { id: "org-globex", name: "Acme", status: 422, tag: "OrganizationRejected" },
+    { id: "missing-org", name: "New name", status: 404, tag: "NotFound" },
+    { id: "org-globex", name: "   ", status: 422, tag: "OrganizationRejected" },
+  ])("refuses rename $id/$name without mutation", async ({ id, name, status, tag }) => {
+    const response = await call("alice", "PUT", `/operator/organizations/${id}/name`, { name });
+    expect(response.status).toBe(status);
+    expect(await response.json()).toMatchObject({ _tag: tag });
+    expect([...organizationRows.values()]).toEqual([acme, globex]);
+    expect({ writes, audited }).toEqual({ writes: [], audited: [] });
+  });
+
+  it("invites an owner into the selected organization with a normalized email and thirty-day cap", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(NOW);
+    const response = await call(
+      "alice",
+      "POST",
+      `/operator/organizations/${globex.id}/invitations`,
+      {
+        email: "  New.Owner@Example.invalid  ",
+        expiresInDays: 90,
+      },
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      path: "/join/operator-invite-token",
+      expiresAt: "2026-10-17T10:00:00.000Z",
+    });
+    expect(minted).toEqual([
+      {
+        organizationId: globex.id,
+        role: "owner",
+        email: "new.owner@example.invalid",
+        createdByUserId: "alice",
+        expiresAt: new Date("2026-10-17T10:00:00.000Z"),
+      },
+    ]);
+    expect(audited).toEqual([
+      {
+        organizationId: globex.id,
+        actorUserId: "alice",
+        action: "invitation.created",
+        subjectType: "invitation",
+        subjectId: "operator-invitation",
+        data: { role: "owner", emailBound: true, byOperator: true },
+      },
+    ]);
+  });
+
+  it.each([
+    { id: "missing-org", email: "valid@example.invalid", status: 404 },
+    { id: "org-globex", email: "invalid address", status: 422 },
+  ])("does not mint an owner invitation for $id/$email", async ({ id, email, status }) => {
+    const response = await call("alice", "POST", `/operator/organizations/${id}/invitations`, {
+      email,
+    });
+    expect(response.status).toBe(status);
+    expect({ minted, writes, audited }).toEqual({ minted: [], writes: [], audited: [] });
+  });
+
+  it("does not promote a member of a different organization", async () => {
+    const response = await call("alice", "POST", `/operator/organizations/${globex.id}/owners`, {
+      email: "sam@example.invalid",
+    });
+    expect(response.status).toBe(422);
+    expect({ roleChanges, writes, audited }).toEqual({ roleChanges: [], writes: [], audited: [] });
   });
 
   it("hands over a reset link for an account in an organization, and none for anyone else", async () => {

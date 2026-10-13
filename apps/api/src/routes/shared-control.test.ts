@@ -1,10 +1,10 @@
-import { SessionId, SessionProcessId } from "@mend/domain";
+import { SessionId, SessionProcessId, type AgentTurnId } from "@mend/domain";
 import { AgentTurn, Session, SessionProcess } from "@mend/domain/workbench";
 import { Effect } from "effect";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { createTenancyApi, type TenancyApi } from "../../test/support/tenancy-api.ts";
-import { ids, makeSession } from "../../test/support/tenancy-harness.ts";
+import { ids, makeSession, type HarnessUser } from "../../test/support/tenancy-harness.ts";
 
 /** Shared control (docs/adr/0003, "Sessions and shared control") over the two-organization world. */
 describe("shared control", () => {
@@ -308,28 +308,52 @@ describe("shared control", () => {
     }
   });
 
-  it("a waiting turn is withdrawn by its sender or the owner, and nobody else", async () => {
-    const world = await createTenancyApi();
-    try {
-      await world.request("alice", "PUT", toggle, { enabled: true });
-      // Dave's turn waits on alice's session; Carol steers too, but it is not hers to withdraw.
-      const running = world.world.turns.get(sharedA.turn);
-      if (running === undefined) throw new Error("no fixture turn");
-      world.world.turns.set(
-        sharedA.turn,
-        new AgentTurn({ ...running, author: "dave", status: "queued", providerTurnId: null }),
+  it.each([
+    { sender: "carol", actor: "carol", status: 204 },
+    { sender: "carol", actor: "alice", status: 204 },
+    { sender: "alice", actor: "carol", status: 403 },
+    { sender: "dave", actor: "carol", status: 403 },
+    { sender: "dave", actor: "dave", status: 404 },
+  ] satisfies ReadonlyArray<{ sender: HarnessUser; actor: HarnessUser; status: number }>)(
+    "$actor withdrawing $sender's queued turn returns $status",
+    async ({ sender, actor, status }) => {
+      const interrupted: Array<AgentTurnId> = [];
+      const world = await createTenancyApi(
+        {},
+        {
+          implement: {
+            engine: {
+              launchUnderWay: () => false,
+              interruptTurn: (id) =>
+                Effect.sync(() => {
+                  interrupted.push(id);
+                }),
+            },
+          },
+        },
       );
-      const interrupt = `/api/turns/${sharedA.turn}/interrupt`;
-      world.world.calls.splice(0, world.world.calls.length);
-      const carols = await world.request("carol", "POST", interrupt);
-      expect(carols.status).toBe(403);
-      expect(world.world.calls.filter((call) => call.startsWith("engine."))).toEqual([]);
-      // The owner withdraws it.
-      const alices = await world.request("alice", "POST", interrupt);
-      expect(alices.status).not.toBe(403);
-      expect(world.world.calls).toContain("engine.interruptTurn");
-    } finally {
-      await world.dispose();
-    }
-  });
+      try {
+        expect((await world.request("alice", "PUT", toggle, { enabled: true })).status).toBe(200);
+        const running = world.world.turns.get(sharedA.turn);
+        if (running === undefined) throw new Error("no fixture turn");
+        world.world.turns.set(
+          sharedA.turn,
+          new AgentTurn({ ...running, author: sender, status: "queued", providerTurnId: null }),
+        );
+        world.world.calls.splice(0, world.world.calls.length);
+        const response = await world.request(actor, "POST", `/api/turns/${sharedA.turn}/interrupt`);
+        expect(response.status).toBe(status);
+        expect(interrupted).toEqual(status === 204 ? [sharedA.turn] : []);
+        if (status === 403)
+          expect(await response.json()).toMatchObject({
+            message: "Only the person who sent this turn, or the session's owner, withdraws it.",
+          });
+        expect(world.world.calls.filter((call) => call.startsWith("engine."))).toEqual(
+          status === 204 ? ["engine.interruptTurn"] : [],
+        );
+      } finally {
+        await world.dispose();
+      }
+    },
+  );
 });
