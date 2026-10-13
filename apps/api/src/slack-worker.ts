@@ -10,7 +10,7 @@ import { JobRunner } from "@mend/jobs";
 import { SLACK_TOKEN_REFUSALS } from "@mend/slack/client";
 import { SlackSocket } from "@mend/slack/socket";
 import { SecretCipher } from "@mend/store";
-import { Effect, Exit, FiberMap, Layer, Schedule, Schema, Stream } from "effect";
+import { Clock, Effect, Exit, FiberMap, Layer, Schedule, Schema, Stream } from "effect";
 
 import { SlackRunner } from "./slack-runner.ts";
 
@@ -62,7 +62,7 @@ export const makeSlackSockets = Effect.gen(function* () {
       let failures = 0;
       const log = { organizationId: install.organizationId, teamId: install.teamId };
       while (true) {
-        const openedAt = Date.now();
+        const openedAt = yield* Clock.currentTimeMillis;
         const exit = yield* cipher.decrypt(install.sealedAppToken).pipe(
           Effect.flatMap((appToken) =>
             socket
@@ -75,7 +75,8 @@ export const makeSlackSockets = Effect.gen(function* () {
           Effect.annotateLogs(log),
           Effect.exit,
         );
-        failures = Date.now() - openedAt >= HEALTHY_MS ? 0 : failures + 1;
+        const closedAt = yield* Clock.currentTimeMillis;
+        failures = closedAt - openedAt >= HEALTHY_MS ? 0 : failures + 1;
         const refused =
           Exit.isFailure(exit) &&
           exit.cause.reasons.some(
