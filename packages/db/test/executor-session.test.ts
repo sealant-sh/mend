@@ -141,7 +141,7 @@ describe.skipIf(postgres.skip)("who created a workspace (0114), in Postgres", ()
     expect(result.unknown).toBeNull();
   });
 
-  it("finds it through the partial index on the workspace", async () => {
+  it("indexes workspace IDs only for sessions that own an executor launch", async () => {
     const indexes = await run(
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
@@ -151,7 +151,7 @@ describe.skipIf(postgres.skip)("who created a workspace (0114), in Postgres", ()
       }),
     );
     expect(indexes.map((row) => row.indexdef)).toEqual([
-      expect.stringContaining("WHERE (executor_launch_id IS NOT NULL)"),
+      "CREATE INDEX agent_sessions_executor_workspace_idx ON public.agent_sessions USING btree (sealant_workspace_id) WHERE (executor_launch_id IS NOT NULL)",
     ]);
   });
 });
