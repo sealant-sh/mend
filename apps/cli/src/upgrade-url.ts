@@ -45,38 +45,47 @@ export const upgradeBaseUrl = (
 
 /**
  * What a 404 from the mint means. A server older than tickets has no such route, and its `/health`
- * does not mention them. A server that has them says so, and then the 404 came from something in
- * between (a proxy, a WAF rule): the saved token must not start riding URLs that every hop logs
- * because of it.
+ * does not mention them. Only a successful, recognizable health response establishes that
+ * legacy case. Failed, malformed or cancelled discovery says nothing about server support.
  */
-export const mintRefusedInTransit = async (
+export const upgradeTicketSupport = async (
   serverUrl: string,
   send: typeof fetch = fetch,
-): Promise<boolean> => {
+  signal?: AbortSignal,
+): Promise<"supported" | "legacy" | "unknown"> => {
   try {
-    const response = await send(`${serverUrl.replace(/\/$/, "")}/api/health`);
-    if (!response.ok) return false;
+    const deadline = AbortSignal.timeout(5000);
+    const response = await send(`${serverUrl.replace(/\/$/, "")}/api/health`, {
+      signal: signal === undefined ? deadline : AbortSignal.any([signal, deadline]),
+    });
+    if (!response.ok) return "unknown";
     const health: unknown = await response.json();
-    return (
-      typeof health === "object" &&
-      health !== null &&
-      "upgradeTickets" in health &&
-      health.upgradeTickets === true
-    );
+    if (typeof health !== "object" || health === null || Array.isArray(health)) return "unknown";
+    if ("upgradeTickets" in health && health.upgradeTickets === true) return "supported";
+    if (
+      "status" in health &&
+      health.status === "ok" &&
+      (!("upgradeTickets" in health) || health.upgradeTickets === false)
+    )
+      return "legacy";
+    return "unknown";
   } catch {
-    return false;
+    return "unknown";
   }
 };
 
 export const MINT_REFUSED_IN_TRANSIT =
   "POST /api/upgrade-tickets answered 404, but this server mints upgrade tickets: something between this client and Mend is refusing it. The saved token was not put in a URL.";
 
+export const TICKET_SUPPORT_UNKNOWN =
+  "POST /api/upgrade-tickets answered 404, and /api/health could not establish upgrade-ticket support. The saved token was not put in a URL. Check the server connection and try again.";
+
 /**
  * A URL ready to connect, with a fresh ticket. Tickets are single use, so every connection
  * (and every reconnect) asks again.
  *
- * A server older than tickets answers the mint with 404. Only then does the saved token go in the
- * URL, as it always did with that server; a server that knows tickets never sees it there.
+ * The mint reports unsupported only after a 404 and an observed legacy health response. Only
+ * that case permits the saved token in the URL, as that older server requires.
  */
 export const upgradeUrl = async (input: {
   readonly serverUrl: string;

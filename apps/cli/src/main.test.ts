@@ -88,6 +88,7 @@ type HttpHandler = (request: IncomingMessage, response: ServerResponse) => void;
 const startFakeMend = async (
   handleHttp: HttpHandler,
   behavior: "end" | "drop" | "hold" = "end",
+  mintTickets = true,
 ) => {
   let notifyEndFrame: (() => void) | undefined;
   const endFrameSent = new Promise<void>((resolve) => {
@@ -99,7 +100,11 @@ const startFakeMend = async (
   });
   const upgradeUrls: Array<string> = [];
   const upgradedSockets = new Set<Duplex>();
-  const server = createServer(handleHttp);
+  const server = createServer((request, response) => {
+    if (mintTickets && request.method === "POST" && request.url === "/api/upgrade-tickets") {
+      json(response, { ticket: "fixture-upgrade-ticket" });
+    } else handleHttp(request, response);
+  });
   server.on("upgrade", (request, socket) => {
     upgradeUrls.push(request.url ?? "");
     upgradedSockets.add(socket);
@@ -125,6 +130,7 @@ const startFakeMend = async (
     endFrameSent,
     upgraded,
     upgradeCount: () => upgradeUrls.length,
+    upgradeUrls: () => [...upgradeUrls],
     /** The session each upgrade asked for, in order. */
     upgradedSessions: () =>
       upgradeUrls.map((url) => new URL(url, "http://fake").searchParams.get("session")),
@@ -429,6 +435,83 @@ describe("Mend CLI session selection", spawning, () => {
     try {
       await cli.exited;
       expect(cli.stderr()).toContain("mend attach <session-id-prefix>");
+    } finally {
+      cli.child.kill("SIGKILL");
+      await fake.close();
+    }
+  });
+});
+
+describe("socket ticket support discovery", spawning, () => {
+  it.each([
+    "http-error",
+    "malformed",
+    "null",
+    "array",
+    "empty-object",
+    "disconnect",
+    "modern",
+    "legacy",
+  ])("mint 404 with %s health only permits an observed legacy socket", async (kind) => {
+    const requests: Array<{
+      method: string | undefined;
+      url: string | undefined;
+      auth: string | undefined;
+    }> = [];
+    const fake = await startFakeMend(
+      (request, response) => {
+        requests.push({
+          method: request.method,
+          url: request.url,
+          auth: request.headers.authorization,
+        });
+        if (request.url?.startsWith("/api/sessions?retained") === true) json(response, [session]);
+        else if (request.url === "/api/projects") json(response, [project]);
+        else if (request.url === "/api/upgrade-tickets") response.writeHead(404).end();
+        else if (request.url === "/api/health") {
+          if (kind === "disconnect") request.socket.destroy();
+          else if (kind === "http-error") response.writeHead(502).end();
+          else if (kind === "malformed") response.writeHead(200).end("not JSON");
+          else
+            json(
+              response,
+              kind === "legacy"
+                ? { status: "ok" }
+                : kind === "modern"
+                  ? { status: "ok", upgradeTickets: true }
+                  : kind === "null"
+                    ? null
+                    : kind === "array"
+                      ? []
+                      : {},
+            );
+        } else response.writeHead(404).end();
+      },
+      "end",
+      false,
+    );
+    const token = "synthetic-discovery-token";
+    const cli = startCli(fake.url, ["attach"], { MEND_TOKEN: token });
+    try {
+      const exit = await cli.exited;
+      expect(requests.filter((r) => r.url === "/api/upgrade-tickets")).toEqual([
+        { method: "POST", url: "/api/upgrade-tickets", auth: `Bearer ${token}` },
+      ]);
+      expect(requests.filter((r) => r.url === "/api/health")).toEqual([
+        { method: "GET", url: "/api/health", auth: undefined },
+      ]);
+      expect(cli.stdout() + cli.stderr()).not.toContain(token);
+      if (kind === "legacy") {
+        expect(exit.code, cli.stderr()).toBe(0);
+        expect(fake.upgradeUrls()).toEqual([
+          `/api/tty?session=${session.id}&from=0&token=${token}`,
+        ]);
+        expect(cli.stderr()).toContain("predates upgrade tickets");
+      } else {
+        expect(exit.code, cli.stdout() + cli.stderr()).toBe(1);
+        expect(fake.upgradeUrls()).toEqual([]);
+        expect(cli.stderr()).not.toContain("predates upgrade tickets");
+      }
     } finally {
       cli.child.kill("SIGKILL");
       await fake.close();
