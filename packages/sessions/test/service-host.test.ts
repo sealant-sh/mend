@@ -1,3 +1,4 @@
+import * as dgram from "node:dgram";
 import { once } from "node:events";
 import * as net from "node:net";
 
@@ -283,4 +284,298 @@ describe("ServiceHost", () => {
       }).pipe(Effect.provide(TestLayer)),
     );
   });
+});
+
+// Each candidate is released independently; iterator startup observes attachment
+// even when the implementation loses the queued packet.
+const udpCandidate = () => {
+  const dial = Promise.withResolvers<WorkspaceForward>();
+  const attached = Promise.withResolvers<void>();
+  const closed = Promise.withResolvers<"closed">();
+  const started = Promise.withResolvers<void>();
+  const sent: string[] = [];
+  const output: Uint8Array[] = [];
+  let wake: (() => void) | undefined;
+  let finished = false;
+  let sentWake: (() => void) | undefined;
+  const forward: WorkspaceForward = {
+    send(bytes) {
+      sent.push(Buffer.from(bytes).toString());
+      sentWake?.();
+    },
+    eof() {},
+    close() {
+      finished = true;
+      closed.resolve("closed");
+      wake?.();
+    },
+    closed: closed.promise,
+    output: {
+      [Symbol.asyncIterator]() {
+        attached.resolve();
+        return {
+          async next(): Promise<IteratorResult<Uint8Array>> {
+            for (;;) {
+              const value = output.shift();
+              if (value !== undefined) return { done: false, value };
+              if (finished) return { done: true, value: undefined };
+              await new Promise<void>((resolve) => {
+                wake = resolve;
+              });
+              wake = undefined;
+            }
+          },
+        };
+      },
+    },
+  };
+  return {
+    sent,
+    attached: attached.promise,
+    closed: closed.promise,
+    started: started.promise,
+    connect: () => {
+      started.resolve();
+      return dial.promise;
+    },
+    release: () => dial.resolve(forward),
+    fail: () => dial.reject(new Error("candidate unavailable")),
+    reply: (text: string) => {
+      output.push(Buffer.from(text));
+      wake?.();
+    },
+    waitForSent: async (count: number) => {
+      while (sent.length < count) {
+        await new Promise<void>((resolve) => {
+          sentWake = resolve;
+        });
+        sentWake = undefined;
+      }
+    },
+    dispose: () => {
+      dial.resolve(forward);
+      forward.close();
+    },
+  };
+};
+
+const udpTestLayer = (
+  first: ReturnType<typeof udpCandidate>,
+  second: ReturnType<typeof udpCandidate>,
+  firstHost = "127.0.0.1",
+) =>
+  ServiceHostLive.pipe(
+    Layer.provide(
+      Layer.mock(SealantClient, {
+        getWorkspace: () => Effect.succeed(fakeWorkspace),
+        forward: (_workspace, _port, target) =>
+          Effect.promise(() => (target === firstHost ? first : second).connect()),
+      }),
+    ),
+    Layer.provide(Layer.mergeAll(forwardsStubLayer, observationsStubLayer)),
+  );
+
+describe("ServiceHost UDP candidates", () => {
+  it.each(["127.0.0.1", "docker"])(
+    "replays queued datagrams to both candidates when %s attaches first",
+    async (firstHost) => {
+      const first = udpCandidate();
+      const second = udpCandidate();
+      const layer = udpTestLayer(first, second, firstHost);
+      try {
+        await Effect.runPromise(
+          Effect.gen(function* () {
+            const host = yield* ServiceHost;
+            const binding = yield* host.start({
+              serviceId: SERVICE_ID,
+              forwardId: FORWARD_ID,
+              workspaceId: WORKSPACE_ID,
+              workspacePort: 3000,
+              protocol: "udp",
+              ownerUserId: null,
+              bindAddresses: ["127.0.0.1"],
+            });
+            yield* Effect.promise(async () => {
+              const socket = dgram.createSocket("udp4");
+              try {
+                socket.send("before either dial", binding.hostPort, "127.0.0.1");
+                await Promise.all([first.started, second.started]);
+                first.release();
+                await first.attached;
+                expect(first.sent).toEqual(["before either dial"]);
+                socket.send("between dials", binding.hostPort, "127.0.0.1");
+                await first.waitForSent(2);
+                second.release();
+                await second.attached;
+                expect(second.sent).toEqual(["before either dial", "between dials"]);
+                const reply = once(socket, "message");
+                second.reply("answer");
+                const [bytes] = await reply;
+                expect(Buffer.isBuffer(bytes) && bytes.toString()).toBe("answer");
+                await first.closed;
+                socket.send("after reply", binding.hostPort, "127.0.0.1");
+                await second.waitForSent(3);
+                expect(first.sent).toEqual(["before either dial", "between dials"]);
+                expect(second.sent).toEqual(["before either dial", "between dials", "after reply"]);
+              } finally {
+                socket.close();
+              }
+            });
+          }).pipe(Effect.provide(layer)),
+        );
+      } finally {
+        first.dispose();
+        second.dispose();
+      }
+    },
+  );
+});
+
+it.each(["reply", "stop", "restart"])("closes a late UDP candidate after %s", async (event) => {
+  const first = udpCandidate();
+  const second = udpCandidate();
+  try {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const host = yield* ServiceHost;
+        const binding = yield* host.start({
+          serviceId: SERVICE_ID,
+          forwardId: FORWARD_ID,
+          workspaceId: WORKSPACE_ID,
+          workspacePort: 3000,
+          protocol: "udp",
+          ownerUserId: null,
+          bindAddresses: ["127.0.0.1"],
+        });
+        const socket = dgram.createSocket("udp4");
+        try {
+          yield* Effect.promise(async () => {
+            socket.send("request", binding.hostPort, "127.0.0.1");
+            await Promise.all([first.started, second.started]);
+            first.release();
+            await first.attached;
+            if (event === "reply") {
+              const reply = once(socket, "message");
+              first.reply("response");
+              await reply;
+            }
+          });
+          if (event !== "reply") yield* host.stop(SERVICE_ID);
+          if (event === "restart")
+            yield* host.start({
+              serviceId: SERVICE_ID,
+              forwardId: FORWARD_ID,
+              workspaceId: WORKSPACE_ID,
+              workspacePort: 3000,
+              protocol: "udp",
+              ownerUserId: null,
+              bindAddresses: ["127.0.0.1"],
+            });
+          yield* Effect.promise(async () => {
+            second.release();
+            expect(
+              await Promise.race([
+                second.closed.then(() => "closed"),
+                second.attached.then(() => "attached"),
+              ]),
+            ).toBe("closed");
+            expect(second.sent).toEqual([]);
+          });
+        } finally {
+          socket.close();
+        }
+      }).pipe(Effect.provide(udpTestLayer(first, second))),
+    );
+  } finally {
+    first.dispose();
+    second.dispose();
+  }
+});
+
+it("bounds UDP replay while continuing delivery to an attached candidate", async () => {
+  const first = udpCandidate();
+  const second = udpCandidate();
+  try {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const host = yield* ServiceHost;
+        const binding = yield* host.start({
+          serviceId: SERVICE_ID,
+          forwardId: FORWARD_ID,
+          workspaceId: WORKSPACE_ID,
+          workspacePort: 3000,
+          protocol: "udp",
+          ownerUserId: null,
+          bindAddresses: ["127.0.0.1"],
+        });
+        yield* Effect.promise(async () => {
+          const socket = dgram.createSocket("udp4");
+          try {
+            socket.send("packet-0", binding.hostPort, "127.0.0.1");
+            await Promise.all([first.started, second.started]);
+            first.release();
+            await first.attached;
+            for (let n = 1; n < 20; n++) {
+              socket.send(`packet-${n}`, binding.hostPort, "127.0.0.1");
+              await first.waitForSent(n + 1);
+            }
+            second.release();
+            await second.attached;
+            expect(first.sent).toEqual(Array.from({ length: 20 }, (_, n) => `packet-${n}`));
+            expect(second.sent).toEqual(Array.from({ length: 16 }, (_, n) => `packet-${n}`));
+            socket.send("live", binding.hostPort, "127.0.0.1");
+            await Promise.all([first.waitForSent(21), second.waitForSent(17)]);
+            expect(first.sent.at(-1)).toBe("live");
+            expect(second.sent.at(-1)).toBe("live");
+          } finally {
+            socket.close();
+          }
+        });
+      }).pipe(Effect.provide(udpTestLayer(first, second))),
+    );
+  } finally {
+    first.dispose();
+    second.dispose();
+  }
+});
+
+it("delivers the queued UDP request when the other candidate fails to dial", async () => {
+  const first = udpCandidate();
+  const second = udpCandidate();
+  try {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const host = yield* ServiceHost;
+        const binding = yield* host.start({
+          serviceId: SERVICE_ID,
+          forwardId: FORWARD_ID,
+          workspaceId: WORKSPACE_ID,
+          workspacePort: 3000,
+          protocol: "udp",
+          ownerUserId: null,
+          bindAddresses: ["127.0.0.1"],
+        });
+        yield* Effect.promise(async () => {
+          const socket = dgram.createSocket("udp4");
+          try {
+            socket.send("request", binding.hostPort, "127.0.0.1");
+            await Promise.all([first.started, second.started]);
+            first.fail();
+            second.release();
+            await second.attached;
+            expect(second.sent).toEqual(["request"]);
+            const reply = once(socket, "message");
+            second.reply("response");
+            const [bytes] = await reply;
+            expect(Buffer.isBuffer(bytes) && bytes.toString()).toBe("response");
+          } finally {
+            socket.close();
+          }
+        });
+      }).pipe(Effect.provide(udpTestLayer(first, second))),
+    );
+  } finally {
+    first.dispose();
+    second.dispose();
+  }
 });

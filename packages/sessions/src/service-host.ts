@@ -250,9 +250,9 @@ const pump = (socket: net.Socket, forward: WorkspaceForward): void => {
 interface UdpFlow {
   forwards: WorkspaceForward[];
   pinned: WorkspaceForward | null;
-  /** Datagrams that arrived before any dial finished — flushed on attach so a
-   * single-shot client (DNS-style) does not lose its first packet. Bounded:
-   * UDP's own contract is drop, not queue. */
+  dialing: number;
+  /** Bounded replay for candidates whose dial has not finished yet. Each
+   * candidate gets its own copy until a reply pins the flow. */
   pending: Uint8Array[];
   lastSeen: number;
 }
@@ -518,31 +518,42 @@ export const ServiceHostLive: Layer.Layer<
       }
 
       const openFlow = (socket: dgram.Socket, peer: dgram.RemoteInfo): UdpFlow => {
-        const flow: UdpFlow = { forwards: [], pinned: null, pending: [], lastSeen: Date.now() };
+        const flow: UdpFlow = {
+          forwards: [],
+          pinned: null,
+          pending: [],
+          dialing: 2,
+          lastSeen: Date.now(),
+        };
         // Both possible targets, concurrently: a native process listens on
         // the workspace loopback, inner compose publishes on the sidecar.
         // The first one that sends anything back is THE target; the other
         // forward closes. Until then outbound datagrams go to both — the
         // wrong target simply drops them, which is UDP's own contract.
         const attach = (forward: WorkspaceForward | null): void => {
+          flow.dialing--;
           if (forward === null) {
+            if (flow.dialing === 0) flow.pending = [];
             return;
           }
-          const entry = active.get(input.serviceId);
-          if (entry === undefined) {
+          const current = active.get(input.serviceId)?.flows.get(`${peer.address}:${peer.port}`);
+          if (current !== flow || flow.pinned !== null) {
             forward.close();
             return;
           }
           flow.forwards.push(forward);
-          for (const datagram of flow.pending.splice(0)) {
+          for (const datagram of flow.pending) {
             forward.send(datagram);
           }
+          if (flow.dialing === 0) flow.pending = [];
           void (async () => {
             try {
               for await (const chunk of forward.output) {
+                if (flow.pinned !== null && flow.pinned !== forward) return;
                 flow.lastSeen = Date.now();
                 if (flow.pinned === null) {
                   flow.pinned = forward;
+                  flow.pending = [];
                   for (const other of flow.forwards) {
                     if (other !== forward) {
                       other.close();
@@ -620,12 +631,10 @@ export const ServiceHostLive: Layer.Layer<
               flow.pinned.send(data);
               return;
             }
-            if (flow.forwards.length === 0) {
-              // Dials still in flight — hold a bounded handful for the flush.
-              if (flow.pending.length < UDP_PENDING_MAX) {
-                flow.pending.push(data);
-              }
-              return;
+            // Keep replay for every candidate still dialing, including packets
+            // already sent to a candidate that attached earlier.
+            if (flow.dialing > 0 && flow.pending.length < UDP_PENDING_MAX) {
+              flow.pending.push(data);
             }
             for (const forward of flow.forwards) {
               forward.send(data);
