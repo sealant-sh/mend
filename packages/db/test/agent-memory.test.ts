@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { PgClient } from "@effect/sql-pg";
 import { type ProjectId, WorktreeId } from "@mend/domain";
 import { Effect, Layer, Redacted } from "effect";
+import { FastCheck } from "effect/testing";
 import { SqlClient } from "effect/unstable/sql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -152,10 +153,34 @@ const distinctLines = (side: string, pad: number) =>
 /** How often each line of `contents` occurs. */
 const lineCounts = (contents: string) => {
   const out = new Map<string, number>();
-  for (const line of contents.replace(/\n$/, "").split("\n")) {
+  if (contents === "") return out;
+  for (const line of contents.replaceAll("\r\n", "\n").replace(/\n$/, "").split("\n")) {
     out.set(line, (out.get(line) ?? 0) + 1);
   }
   return out;
+};
+
+/** ADR 0009's multiset obligation, independent of the production loss detector. */
+const expectedMissingLines = (side: string, other: string, base: string | null, merged: string) => {
+  const available = lineCounts(merged);
+  const output = merged.replaceAll("\r\n", "\n").split("\n");
+  const end = output[0] === "---" ? output.indexOf("---", 1) : -1;
+  // This fixture supplies a known note sender/date. Only notes inside frontmatter hold a value.
+  const prefix = "# from laptop, 2026-10-04: ";
+  for (const line of output.slice(1, Math.max(1, end))) {
+    if (line.startsWith(prefix)) {
+      const held = line.slice(prefix.length);
+      available.set(held, (available.get(held) ?? 0) + 1);
+    }
+  }
+  const previous = lineCounts(base ?? "");
+  const peer = lineCounts(other);
+  return [...lineCounts(side)]
+    .flatMap(([line, occurrences]) => {
+      const intentionalRemoval = Math.max(0, (previous.get(line) ?? 0) - (peer.get(line) ?? 0));
+      return (available.get(line) ?? 0) + intentionalRemoval < occurrences ? [line] : [];
+    })
+    .toSorted();
 };
 
 /** A merge that keeps only Mend's side: stands in for any merge that loses a line. */
@@ -448,52 +473,110 @@ describe("importing memory from a machine", () => {
     }
   });
 
-  // Review round 2: the check runs on the final text after every step. Over random files from a
-  // vocabulary of fences, delimiters, frontmatter keys and entries, merged with the real three-way
-  // merge, a line of either side is in the result as often as it was, less the copies the other
-  // side removed since the base, or the merge reports it. No other exemption.
-  it("never loses an incoming line without reporting it", async () => {
-    const vocabulary = ["---", "name: a", "x", "x", "- [a](a.md)", "```", "````", "~~~", "", "# h"];
-    // A fixed seed and exact 32-bit arithmetic (mulberry32): the same files on every machine.
-    let seed = 7;
-    const next = (n: number) => {
-      seed = (seed + 0x6d_2b_79_f5) | 0;
-      let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
-      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-      return ((t ^ (t >>> 14)) >>> 0) % n;
-    };
-    const file = () =>
-      `${next(2) === 0 ? "---\nname: a\n---\n" : ""}${Array.from(
-        { length: next(9) },
-        () => vocabulary[next(vocabulary.length)],
-      ).join("\n")}\n`;
-    let unreported = 0;
-    for (let round = 0; round < 300; round += 1) {
-      const base = next(3) === 0 ? null : file();
-      const ours = file();
-      const theirs = file();
-      for (const path of [`${ROOT}/notes.md`, `${ROOT}/MEMORY.md`]) {
-        const result = await outcome({ path, ours, theirs, base });
-        if (result.kind !== "merged") continue;
-        const have = lineCounts(result.contents);
-        const shared = base === null ? new Map<string, number>() : lineCounts(base);
-        for (const [side, other, reported] of [
-          [theirs, ours, result.lostTheirs],
-          [ours, theirs, result.lostOurs],
-        ] as const) {
-          if (reported.length > 0) continue;
-          const kept = lineCounts(other);
-          for (const [line, count] of lineCounts(side)) {
-            const removed = Math.max(0, (shared.get(line) ?? 0) - (kept.get(line) ?? 0));
-            if ((have.get(line) ?? 0) < count - removed) unreported += 1;
+  it("never loses an incoming line without reporting every deficient identity", async () => {
+    const vocabulary = FastCheck.constantFrom(
+      "---",
+      "name: a",
+      "x",
+      "x",
+      "- [a](a.md)",
+      "```",
+      "````",
+      "~~~",
+      "",
+      "# h",
+    );
+    const file = FastCheck.record({
+      frontmatter: FastCheck.option(
+        FastCheck.record({
+          name: FastCheck.constantFrom("a", "b"),
+          description: FastCheck.constantFrom("first", "second"),
+        }),
+        { nil: null },
+      ),
+      body: FastCheck.array(vocabulary, { maxLength: 10 }),
+      crlf: FastCheck.boolean(),
+    }).map(({ frontmatter, body, crlf }) => {
+      const header =
+        frontmatter === null
+          ? ""
+          : `---\nname: ${frontmatter.name}\ndescription: ${frontmatter.description}\n---\n`;
+      // A body is not accidentally mistaken for unsupported YAML when it starts with a delimiter.
+      const contents = `${header}# memory\n${body.join("\n")}\n`;
+      return crlf ? contents.replaceAll("\n", "\r\n") : contents;
+    });
+    let merged = 0;
+    await FastCheck.assert(
+      FastCheck.asyncProperty(
+        file,
+        file,
+        FastCheck.option(file, { nil: null }),
+        async (ours, theirs, base) => {
+          for (const path of [`${ROOT}/notes.md`, `${ROOT}/MEMORY.md`]) {
+            const result = await outcome({ path, ours, theirs, base });
+            // These bounded, supported frontmatters must merge. A universal refusal cannot pass.
+            expect(result.kind).toBe("merged");
+            if (result.kind !== "merged")
+              throw new Error("supported generated memory did not merge");
+            merged += 1;
+            expect(result.lostOurs.toSorted()).toEqual(
+              expectedMissingLines(ours, theirs, base, result.contents),
+            );
+            expect(result.lostTheirs.toSorted()).toEqual(
+              expectedMissingLines(theirs, ours, base, result.contents),
+            );
           }
-        }
-      }
-    }
-    expect(unreported).toBe(0);
-    // 300 merges spawn `git merge-file` a few hundred times: under a second here, over vitest's
-    // default 5 s on a CI runner.
+        },
+      ),
+      {
+        seed: Number(process.env["MEND_MEMORY_PROP_SEED"] ?? 7),
+        numRuns: 150,
+        ...(process.env["MEND_MEMORY_PROP_PATH"] === undefined
+          ? {}
+          : { path: process.env["MEND_MEMORY_PROP_PATH"] }),
+      },
+    );
+    expect(merged).toBeGreaterThan(0);
   }, 60_000);
+
+  it("reports all distinct losses and repeated-line deficits on either side", async () => {
+    await FastCheck.assert(
+      FastCheck.asyncProperty(
+        FastCheck.uniqueArray(FastCheck.constantFrom("alpha", "beta", "gamma", "delta"), {
+          minLength: 2,
+          maxLength: 4,
+        }),
+        FastCheck.integer({ min: 1, max: 4 }),
+        FastCheck.boolean(),
+        async (identities, copies, crlf) => {
+          const shared = "kept\n";
+          const changed =
+            shared +
+            identities.flatMap((line) => Array.from({ length: copies }, () => line)).join("\n") +
+            "\n";
+          const lineEnding = (s: string) => (crlf ? s.replaceAll("\n", "\r\n") : s);
+          for (const discard of ["ours", "theirs"] as const) {
+            const result = await outcome({
+              ours: lineEnding(discard === "ours" ? changed : shared),
+              theirs: lineEnding(discard === "theirs" ? changed : shared),
+              base: lineEnding(shared),
+              with: ({ ours, theirs }) => Effect.succeed(discard === "ours" ? theirs : ours),
+            });
+            expect(result.kind).toBe("merged");
+            if (result.kind !== "merged") throw new Error("bounded lossy merge did not merge");
+            expect(result.contents).toBe(lineEnding(shared));
+            expect(result.lostOurs.toSorted()).toEqual(
+              discard === "ours" ? identities.toSorted() : [],
+            );
+            expect(result.lostTheirs.toSorted()).toEqual(
+              discard === "theirs" ? identities.toSorted() : [],
+            );
+          }
+        },
+      ),
+      { seed: 20261013, numRuns: 40 },
+    );
+  });
 });
 
 describe("where versions are written", () => {

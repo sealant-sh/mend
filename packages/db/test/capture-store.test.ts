@@ -2,6 +2,7 @@ import { PgClient } from "@effect/sql-pg";
 import { ProjectId, Sha, WorktreeId } from "@mend/domain";
 import { Cause, Deferred, Effect, Exit, Fiber, Layer, Option, Redacted } from "effect";
 import * as Str from "effect/String";
+import { FastCheck } from "effect/testing";
 import { SqlClient } from "effect/unstable/sql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -1527,153 +1528,325 @@ describe.skipIf(postgres.skip)("capture store (0053)", () => {
   });
 
   /**
-   * R5 of the decision record, cheaply: two simulated executors take random actions (claim
-   * with a 0 s or 30 s lease, heartbeat, register the next capture as they believe it, release)
-   * in seeded random interleavings, some steps concurrent. Invariants after every step: no
-   * chain advance by an epoch below the lease's, no two captures share an `n`, the head is the
-   * newest capture and the chain is dense.
+   * Observe each actual insert without enforcing its policy. PostgreSQL's transaction-visible
+   * lease is read in the insert trigger, while the repository's existing lease lock is held.
+   * The generated model supplies expected authority independently of those observed rows.
    */
-  it("property: random two-executor interleavings never advance the chain by a fenced epoch", async () => {
-    const seed = Number(process.env["MEND_CAPTURE_PROP_SEED"] ?? 20260912);
-    let state = seed >>> 0;
-    const rand = () => {
-      // xorshift32
-      state ^= state << 13;
-      state >>>= 0;
-      state ^= state >>> 17;
-      state ^= state << 5;
-      state >>>= 0;
-      return state / 0x1_0000_0000;
-    };
-    const pick = <T>(items: ReadonlyArray<T>): T => items[Math.floor(rand() * items.length)]!;
-    interface Executor {
-      readonly name: string;
-      epoch: number | null;
-      knownN: number;
-      knownHead: string | null;
-      registered: Array<{ n: number; epoch: number }>;
-    }
-    const iterations = Number(process.env["MEND_CAPTURE_PROP_ITERATIONS"] ?? 300);
-    const stepsPer = 6;
-
+  it("property: generated transitions authorize each inserted capture at its lease", async () => {
+    const action = FastCheck.constantFrom(
+      "append",
+      "retry",
+      "handoff",
+      "stale",
+      "wrongLaunch",
+      "race",
+      "concurrentHandoff",
+      "lapse",
+      "heartbeat",
+      "claimOccupied",
+      "wrongParent",
+      "refresh",
+    );
     await run(
       Effect.gen(function* () {
-        const repo = yield* CaptureStoreRepo;
         const sql = yield* SqlClient.SqlClient;
-        for (let iteration = 0; iteration < iterations; iteration += 1) {
-          const worktreeId = yield* freshWorktree;
-          const executors: Array<Executor> = [
-            { name: "A", epoch: null, knownN: -1, knownHead: null, registered: [] },
-            { name: "B", epoch: null, knownN: -1, knownHead: null, registered: [] },
-          ];
-          const step = (executor: Executor) => {
-            const action = pick([
-              "claim",
-              "claim",
-              "heartbeat",
-              "register",
-              "register",
-              "register",
-              "release",
-              "refresh",
-            ] as const);
-            switch (action) {
-              case "claim":
-                return repo.claim(worktreeId, executor.name, pick([0, 30])).pipe(
-                  Effect.map(({ epoch }) => {
-                    executor.epoch = epoch;
-                  }),
-                  Effect.catch(() => Effect.void),
-                );
-              case "heartbeat":
-                return executor.epoch === null
-                  ? Effect.void
-                  : repo.heartbeat(worktreeId, executor.epoch).pipe(Effect.asVoid);
-              case "release":
-                return executor.epoch === null
-                  ? Effect.void
-                  : repo.release(worktreeId, executor.epoch).pipe(Effect.asVoid);
-              case "refresh":
-                return repo.headOf(worktreeId).pipe(
-                  Effect.map((head) => {
-                    if (head !== null) {
-                      executor.knownN = head.headN;
-                      executor.knownHead = head.head?.id ?? null;
-                    }
-                  }),
-                );
-              case "register": {
-                if (executor.epoch === null) return Effect.void;
-                const epoch = executor.epoch;
-                const n = executor.knownN + 1;
-                const input = captureInput(
-                  worktreeId,
-                  n,
-                  executor.knownHead,
-                  epoch,
-                  `cap-${worktreeId}-${executor.name}-${n}-${epoch}-${Math.floor(rand() * 1e9)}`,
-                );
-                return repo.register(input).pipe(
-                  Effect.map(() => {
-                    executor.registered.push({ n, epoch });
-                    executor.knownN = n;
-                    executor.knownHead = input.id;
-                  }),
-                  Effect.catch(() => Effect.void),
-                );
-              }
-            }
-          };
-          for (let s = 0; s < stepsPer; s += 1) {
-            if (rand() < 0.3) {
-              yield* Effect.all([step(executors[0]!), step(executors[1]!)], {
-                concurrency: "unbounded",
-              });
-            } else {
-              yield* step(pick(executors));
-            }
-            // Invariants, read straight from the tables.
-            const [lease] = yield* sql<{ readonly epoch: number }>`
-              SELECT epoch::int AS epoch FROM worktree_leases WHERE worktree_id = ${worktreeId}`;
-            const rows = yield* sql<{
-              readonly n: number;
-              readonly epoch: number;
-              readonly id: string;
-              readonly parent: string | null;
-            }>`
-              SELECT n, epoch::int AS epoch, id, parent FROM captures
-               WHERE worktree_id = ${worktreeId} ORDER BY n`;
-            const [chain] = yield* sql<{
-              readonly headN: number;
-              readonly headCapture: string | null;
-              readonly headEpoch: number;
-            }>`
-              SELECT head_n, head_capture, head_epoch::int AS head_epoch
-                FROM worktree_chain WHERE worktree_id = ${worktreeId}`;
-            const leaseEpoch = Number(lease?.epoch ?? 0);
-            // Dense, parent-linked chain; the head is the newest row.
-            rows.forEach((row, index) => {
-              expect(row.n).toBe(index);
-              expect(row.parent).toBe(index === 0 ? null : rows[index - 1]?.id);
-              // A capture's epoch never exceeds the lease epoch that existed when it landed,
-              // and the chain's epochs are non-decreasing (a fenced epoch never re-advances).
-              expect(row.epoch).toBeLessThanOrEqual(leaseEpoch);
-              if (index > 0) expect(row.epoch).toBeGreaterThanOrEqual(rows[index - 1]?.epoch ?? 0);
-            });
-            expect(chain?.headN).toBe(rows.length - 1);
-            expect(chain?.headCapture).toBe(rows.at(-1)?.id ?? null);
-            expect(Number(chain?.headEpoch)).toBeGreaterThanOrEqual(rows.at(-1)?.epoch ?? 0);
-          }
-          // What each executor believes it registered is exactly what landed under its epoch.
-          const landed = yield* sql<{ readonly n: number; readonly epoch: number }>`
-            SELECT n, epoch::int AS epoch FROM captures WHERE worktree_id = ${worktreeId} ORDER BY n`;
-          const believed = executors
-            .flatMap((executor) => executor.registered)
-            .toSorted((a, b) => a.n - b.n);
-          expect(believed).toEqual(landed.map((row) => ({ n: row.n, epoch: Number(row.epoch) })));
-        }
+        yield* sql.unsafe(`CREATE TABLE capture_property_witness (
+        capture_id text PRIMARY KEY, lease_epoch bigint, executor_id text,
+        launch_id text, live boolean
+      )`);
+        yield* sql.unsafe(`CREATE FUNCTION observe_capture_property() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN
+          INSERT INTO capture_property_witness(capture_id, lease_epoch, executor_id, launch_id, live)
+          SELECT NEW.id, epoch, executor_id, launch_id, expires_at > now()
+            FROM worktree_leases WHERE worktree_id = NEW.worktree_id;
+          RETURN NEW;
+        END $$`);
+        yield* sql.unsafe(`CREATE TRIGGER capture_property_observer AFTER INSERT ON captures
+        FOR EACH ROW EXECUTE FUNCTION observe_capture_property()`);
       }),
     );
+    let completed = 0;
+    try {
+      await FastCheck.assert(
+        FastCheck.asyncProperty(FastCheck.array(action, { maxLength: 16 }), async (actions) => {
+          await run(
+            Effect.gen(function* () {
+              const repo = yield* CaptureStoreRepo;
+              const sql = yield* SqlClient.SqlClient;
+              const worktreeId = yield* freshWorktree;
+              type Authority = {
+                readonly epoch: number;
+                readonly executorId: string;
+                readonly launchId: string;
+              };
+              const first = yield* repo.claim(worktreeId, "A", 3600, "launch-0");
+              expect(first.epoch).toBe(1);
+              let current: Authority = { epoch: 1, executorId: "A", launchId: "launch-0" };
+              const history: Array<Authority> = [];
+              const accepted: Array<
+                RegisterCapture & {
+                  readonly holder: { readonly executorId: string; readonly launchId: string };
+                }
+              > = [];
+              let identifier = 0;
+              const exercise = {
+                claims: 1,
+                appends: 0,
+                handoffs: 0,
+                refusals: 0,
+                races: 0,
+                retries: 0,
+                concurrentHandoffs: 0,
+                lapses: 0,
+              };
+              const candidate = (authority: Authority = current) => ({
+                ...captureInput(
+                  worktreeId,
+                  accepted.length,
+                  accepted.at(-1)?.id ?? null,
+                  authority.epoch,
+                  `property-${worktreeId}-${identifier++}`,
+                ),
+                holder: { executorId: authority.executorId, launchId: authority.launchId },
+              });
+              const settle = (input: ReturnType<typeof candidate>) =>
+                repo.register(input).pipe(
+                  Effect.map((result) => ({
+                    kind: "accepted" as const,
+                    input,
+                    lostAck: result.lostAck,
+                  })),
+                  Effect.catchTag("CaptureConflictError", (error) =>
+                    Effect.succeed({ kind: "refused" as const, input, reason: error.reason }),
+                  ),
+                );
+              const append = () =>
+                Effect.gen(function* () {
+                  const input = candidate();
+                  expect(yield* repo.register(input)).toEqual({ lostAck: false });
+                  accepted.push(input);
+                  exercise.appends += 1;
+                });
+              const handoff = () =>
+                Effect.gen(function* () {
+                  const old = current;
+                  expect(yield* repo.release(worktreeId, old.epoch)).toBe(true);
+                  const executorId = old.executorId === "A" ? "B" : "A";
+                  const launchId = `launch-${exercise.claims}`;
+                  const next = yield* repo.claim(worktreeId, executorId, 3600, launchId);
+                  expect(next.epoch).toBe(old.epoch + 1);
+                  history.push(old);
+                  current = { epoch: old.epoch + 1, executorId, launchId };
+                  exercise.claims += 1;
+                  exercise.handoffs += 1;
+                });
+              const check = () =>
+                Effect.gen(function* () {
+                  const rows = yield* sql<{
+                    readonly id: string;
+                    readonly n: number;
+                    readonly epoch: number;
+                    readonly parent: string | null;
+                  }>`
+              SELECT id, n, epoch::int AS epoch, parent FROM captures WHERE worktree_id = ${worktreeId} ORDER BY n`;
+                  expect(rows).toEqual(
+                    accepted.map(({ id, n, epoch, parent }) => ({ id, n, epoch, parent })),
+                  );
+                  const witnesses = yield* sql<{
+                    readonly captureId: string;
+                    readonly leaseEpoch: number;
+                    readonly executorId: string;
+                    readonly launchId: string;
+                    readonly live: boolean;
+                  }>`
+              SELECT w.capture_id, w.lease_epoch::int AS lease_epoch, w.executor_id, w.launch_id, w.live
+                FROM capture_property_witness w JOIN captures c ON c.id = w.capture_id
+               WHERE c.worktree_id = ${worktreeId} ORDER BY c.n`;
+                  expect(witnesses).toEqual(
+                    accepted.map((input) => ({
+                      captureId: input.id,
+                      leaseEpoch: input.epoch,
+                      executorId: input.holder.executorId,
+                      launchId: input.holder.launchId,
+                      live: true,
+                    })),
+                  );
+                  rows.forEach((row, index) => {
+                    expect(row.n).toBe(index);
+                    expect(row.parent).toBe(index === 0 ? null : rows[index - 1]?.id);
+                    if (index > 0)
+                      expect(row.epoch).toBeGreaterThanOrEqual(rows[index - 1]?.epoch ?? 0);
+                  });
+                  const head = yield* repo.headOf(worktreeId);
+                  expect(head?.headN).toBe(accepted.length - 1);
+                  expect(head?.head?.id ?? null).toBe(accepted.at(-1)?.id ?? null);
+                  expect(head?.headEpoch).toBe(current.epoch);
+                  const lease = yield* repo.leaseOf(worktreeId);
+                  expect(lease).toMatchObject({ ...current, live: true });
+                });
+              const step = (operation: (typeof actions)[number]) =>
+                Effect.gen(function* () {
+                  switch (operation) {
+                    case "append":
+                      yield* append();
+                      break;
+                    case "handoff":
+                      yield* handoff();
+                      break;
+                    case "retry": {
+                      const input = accepted.at(-1);
+                      if (input === undefined)
+                        throw new Error("model requires a capture before retry");
+                      expect(yield* repo.register(input)).toEqual({ lostAck: true });
+                      exercise.retries += 1;
+                      break;
+                    }
+                    case "stale": {
+                      const old = history.at(-1);
+                      if (old === undefined) throw new Error("model requires a completed handoff");
+                      expect(yield* reasonOf(repo.register(candidate(old)))).toBe("stale_epoch");
+                      exercise.refusals += 1;
+                      break;
+                    }
+                    case "wrongLaunch":
+                      expect(
+                        yield* reasonOf(
+                          repo.register(candidate({ ...current, launchId: "unheld-launch" })),
+                        ),
+                      ).toBe("stale_epoch");
+                      exercise.refusals += 1;
+                      break;
+                    case "wrongParent":
+                      expect(
+                        yield* reasonOf(
+                          repo.register({ ...candidate(), parent: "not-the-model-head" }),
+                        ),
+                      ).toBe("wrong_parent");
+                      exercise.refusals += 1;
+                      break;
+                    case "heartbeat":
+                      expect(yield* repo.heartbeat(worktreeId, current.epoch, 3600, current)).toBe(
+                        true,
+                      );
+                      expect(
+                        yield* repo.heartbeat(worktreeId, current.epoch, 3600, {
+                          ...current,
+                          launchId: "unheld-launch",
+                        }),
+                      ).toBe(false);
+                      break;
+                    case "claimOccupied":
+                      expect(
+                        yield* repo.claim(worktreeId, "competitor", 3600, "competitor-launch").pipe(
+                          Effect.map(() => false),
+                          Effect.catchTag("WorktreeLeasedError", () => Effect.succeed(true)),
+                        ),
+                      ).toBe(true);
+                      break;
+                    case "race": {
+                      const pair = [candidate(), candidate()] as const;
+                      const results = yield* Effect.all(pair.map(settle), {
+                        concurrency: "unbounded",
+                      });
+                      const winners = results.filter((result) => result.kind === "accepted");
+                      expect(winners).toHaveLength(1);
+                      const winner = winners[0];
+                      if (winner === undefined) throw new Error("model requires one race winner");
+                      expect(winner.lostAck).toBe(false);
+                      expect(
+                        results
+                          .filter((result) => result.kind === "refused")
+                          .map((result) => result.reason),
+                      ).toEqual(["head_moved"]);
+                      accepted.push(winner.input);
+                      exercise.appends += 1;
+                      exercise.races += 1;
+                      break;
+                    }
+                    case "concurrentHandoff": {
+                      const input = candidate();
+                      const [result] = yield* Effect.all([settle(input), handoff()] as const, {
+                        concurrency: "unbounded",
+                      });
+                      if (result.kind === "accepted") {
+                        expect(result.lostAck).toBe(false);
+                        accepted.push(input);
+                        exercise.appends += 1;
+                      } else expect(result.reason).toBe("stale_epoch");
+                      exercise.concurrentHandoffs += 1;
+                      break;
+                    }
+                    case "lapse": {
+                      const old = current;
+                      yield* sql`UPDATE worktree_leases SET expires_at = now() - interval '1 second' WHERE worktree_id = ${worktreeId}`;
+                      expect(yield* reasonOf(repo.register(candidate()))).toBe("stale_epoch");
+                      const next = yield* repo.claim(
+                        worktreeId,
+                        old.executorId,
+                        3600,
+                        old.launchId,
+                      );
+                      expect(next.epoch).toBe(old.epoch + 1);
+                      history.push(old);
+                      current = { ...old, epoch: old.epoch + 1 };
+                      exercise.claims += 1;
+                      exercise.lapses += 1;
+                      break;
+                    }
+                    case "refresh":
+                      break;
+                  }
+                  yield* check();
+                });
+              // Required transitions cannot vanish with a lucky seed or shrinking to an empty script.
+              for (const operation of [
+                "append",
+                "retry",
+                "handoff",
+                "stale",
+                "wrongLaunch",
+                "append",
+                "race",
+                "concurrentHandoff",
+                "append",
+                "lapse",
+                "stale",
+                "heartbeat",
+                "claimOccupied",
+              ] as const)
+                yield* step(operation);
+              for (const operation of actions) yield* step(operation);
+              expect(exercise.claims).toBeGreaterThanOrEqual(4);
+              expect(exercise.appends).toBeGreaterThanOrEqual(4);
+              expect(exercise.handoffs).toBeGreaterThanOrEqual(2);
+              expect(exercise.refusals).toBeGreaterThanOrEqual(3);
+              expect(exercise.races).toBeGreaterThanOrEqual(1);
+              expect(exercise.retries).toBeGreaterThanOrEqual(1);
+              expect(exercise.concurrentHandoffs).toBeGreaterThanOrEqual(1);
+              expect(exercise.lapses).toBeGreaterThanOrEqual(1);
+              completed += 1;
+            }),
+          );
+        }),
+        {
+          seed: Number(process.env["MEND_CAPTURE_PROP_SEED"] ?? 20260912),
+          numRuns: Number(process.env["MEND_CAPTURE_PROP_ITERATIONS"] ?? 40),
+          ...(process.env["MEND_CAPTURE_PROP_PATH"] === undefined
+            ? {}
+            : { path: process.env["MEND_CAPTURE_PROP_PATH"] }),
+        },
+      );
+      expect(completed).toBeGreaterThan(0);
+    } finally {
+      await run(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          yield* sql.unsafe("DROP TRIGGER IF EXISTS capture_property_observer ON captures");
+          yield* sql.unsafe("DROP FUNCTION IF EXISTS observe_capture_property()");
+          yield* sql.unsafe("DROP TABLE IF EXISTS capture_property_witness");
+        }),
+      );
+    }
   }, 120_000);
 
   it("pack index bindings (0099): one digest per key while a binding lives; extended and read back", async () => {
