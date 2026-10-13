@@ -26,12 +26,11 @@ export const SEALANT_IMAGES = [
   { argument: "SEALANT_SSH_GATEWAY_IMAGE", repository: "sealant-sh/sealant-ssh-gateway" },
 ];
 
-/** Every file that names the pinned Core version or one of its image digests. */
+/** Production consumers that move with the pinned Core version and image digests. Tests are not write targets. */
 export const PIN_FILES = [
   "Dockerfile",
   "pnpm-workspace.yaml",
   "scripts/bundle-supervisor.mjs",
-  "scripts/bundle-packaging.test.mjs",
   "deploy/docker/compose.v2.yaml",
   "deploy/docker/setup-contract.v2.json",
   "apps/cli/test-fixtures/docker/compose.v2.yaml",
