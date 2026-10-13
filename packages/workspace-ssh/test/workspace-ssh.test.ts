@@ -665,6 +665,23 @@ describe("workspace SSH key identity", () => {
     expect(picked.value?.fingerprint).toMatch(/^SHA256:/);
     expect(fs.existsSync(path.join(root, "ssh", "id_ed25519"))).toBe(true);
     if (picked.value === null) throw new Error("Expected a generated key.");
+    const oracle = spawnSync(
+      "ssh-keygen",
+      ["-lf", path.join(root, "ssh", "id_ed25519.pub"), "-E", "sha256"],
+      { encoding: "utf8", timeout: 3_000, stdio: ["ignore", "pipe", "pipe"] },
+    );
+    expect(oracle.error).toBeUndefined();
+    expect(oracle.status).toBe(0);
+    const oracleFingerprint = oracle.stdout.trim().split(/\s+/)[1];
+    expect(oracleFingerprint).toMatch(/^SHA256:[A-Za-z0-9+/]+$/);
+    expect(picked.value.fingerprint).toBe(oracleFingerprint);
+    // Public-key comments do not contribute to OpenSSH's key fingerprint.
+    for (const comment of ["", "owned fixture", "fixture Unicode \u03bb"]) {
+      const publicKey = picked.value.publicKey.trim().split(/\s+/).slice(0, 2).join(" ");
+      const fingerprint = workspaceSshPublicKeyFingerprint(`${publicKey} ${comment}`);
+      if (!fingerprint.ok) throw fingerprint.error;
+      expect(fingerprint.value).toBe(oracleFingerprint);
+    }
     const server = target("http://mend-mini:3105", 2222);
     const configured = managedWorkspaceSshBlock(server, picked.value.identityFile);
     const reused = pickWorkspaceSshKey({
