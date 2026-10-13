@@ -108,7 +108,26 @@ networks, refuses the cloud metadata service, and reaches this machine only for 
 be allowed. A refusal names the rule, never the addresses a host resolved to. Under `tenant`, git
 then dials exactly the address that was checked, so a name cannot answer differently a moment later:
 HTTPS through `http.curloptResolve`, ssh through `HostName` with `HostKeyAlias`, so known hosts
-still match the name. The dotfiles clone at each launch is checked and pinned the same way.
+still match the name. The dotfiles clone at each launch is checked and pinned the same way, using
+the owner's current operator role.
+
+Before transport, Mend asks Git for the effective destination under the operation's actual
+repository and configuration, including `insteadOf`, `pushInsteadOf` and named push URLs. The
+original operand still goes to Git, so a checked URL is never rewritten a second time. Signer
+selection follows the checked destination. Tenant operations refuse several distinct destinations;
+operators retain named multi-destination configuration, with every target checked. Explicit URL
+pushes refuse matching rewrite rules for several bases: use a named remote or one matching base.
+
+Clones bind their template as well. Mend no longer inherits Git's implicit compiled system template.
+An explicit `GIT_TEMPLATE_DIR` or `init.templateDir` remains available when its entries are regular
+files and directories, with no URL, include or remote settings; Mend copies it into an owned
+snapshot for the clone. Template links and special files are refused. An explicit empty template is
+supported. Clones also refuse inherited repository-location overrides, conditional includes and
+preconfigured remote settings because those can select a different destination at the new
+repository. These clone restrictions apply to operators too. Existing-repository reads and named
+pushes keep their local, worktree and conditional configuration. Dotfiles owners retain their
+configuration resets and empty HOME; preparation runs after those resets rather than restoring the
+host's rewrite rules.
 
 A workspace's git transport signs with its owner's key, so it only reaches the project's own remote:
 the origin's host, and its port for ssh. Pushing a mirror or a fork elsewhere from inside a

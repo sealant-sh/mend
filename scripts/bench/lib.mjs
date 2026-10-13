@@ -853,6 +853,8 @@ export const expectedSamplesOf = (result, name) => {
   if (
     /^new\.(?:claude|codex|pi|opencode)\.(?:first_output|first_turn)_excl_install$/.test(name) ||
     /^new\.(?:claude|codex|pi|opencode)\.install_clean$/.test(name) ||
+    /^new\.(?:claude|codex|pi|opencode)\.delivery$/.test(name) ||
+    /^executor\.(?:claude|codex|pi|opencode)\.(?:disk|memory)_bytes$/.test(name) ||
     /^stop\.(?:claude|codex|pi|opencode)\.save$/.test(name) ||
     /^handover\.\w+\.(?:to_other|back)\.first_output_over_own$/.test(name) ||
     /^growth\.\w+\.extra_person_beyond_state_bytes$/.test(name)
@@ -1425,6 +1427,9 @@ const gateLaunchMeasures = () => [
     { measure: `new.${harness}.first_turn_excl_install`, unit: "ms", budget: "start" },
     { measure: `new.${harness}.install_clean`, unit: "ms", budget: "start" },
     { measure: `stop.${harness}.save`, unit: "ms", budget: "start" },
+    { measure: `new.${harness}.delivery`, unit: "ms", budget: "delivery" },
+    { measure: `executor.${harness}.disk_bytes`, unit: "bytes", budget: "resource" },
+    { measure: `executor.${harness}.memory_bytes`, unit: "bytes", budget: "resource" },
   ]),
   { measure: "join.same.first_output", unit: "ms", budget: "start" },
   { measure: "checkpoint.save", unit: "ms", budget: "start" },
@@ -1486,12 +1491,16 @@ export const requiredOf = (result, { gate = false, secondPersonHarnesses = null 
     measures.push({ measure: "join.other.first_output", unit: "ms", budget: "join-other" });
   }
   if (only.includes("person-checks")) {
-    const who = ["runs_as", "uid", "home", "agent_process"];
+    const who = ["runs_as", "uid", "home", "agent_process", "answers", "agent_identity"];
     for (const harness of harnesses) {
       for (const check of who) checks.push(`person.${harness}.${check}`);
+      if (harness === "pi" || harness === "opencode")
+        checks.push(`person.${harness}.chatgpt_login`);
+      if (harness === "pi") checks.push("person.pi.pi_profile");
     }
     if (second.includes("pi")) {
       for (const check of who) checks.push(`person.pi.joined.${check}`);
+      checks.push("person.pi.joined.chatgpt_login", "person.pi.joined.pi_profile");
     }
   }
   return { measures, checks };

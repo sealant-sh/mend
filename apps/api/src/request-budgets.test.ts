@@ -1,16 +1,22 @@
 import { createServer } from "node:http";
 
 import { NodeHttpServer } from "@effect/platform-node";
-import { Effect, Layer, ManagedRuntime } from "effect";
+import { cliAuthGroup, AuthMiddleware, Unauthorized } from "@mend/api-contracts";
+import { DevicesRepo, CliAuthRequest } from "@mend/db";
+import { makePublicNetwork, PublicOrigin, NetworkConfig } from "@mend/network";
+import { Cause, Effect, Layer, ManagedRuntime } from "effect";
 import {
   HttpRouter,
+  HttpServerError,
   HttpServer,
   HttpServerRequest,
   HttpServerResponse,
 } from "effect/unstable/http";
+import { HttpApi, HttpApiBuilder } from "effect/unstable/httpapi";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { DEFAULT_BUDGET_LIMITS, makeBudgets, type BudgetLimits } from "./budgets.ts";
+import { apiMiddleware } from "./http-middleware.ts";
 import {
   boundedWebRequest,
   isSignInAttempt,
@@ -18,6 +24,7 @@ import {
   presentedCredentials,
   requestBudgets,
 } from "./request-budgets.ts";
+import { DevicePairingLive } from "./routes/devices.ts";
 
 /**
  * MEND-05 (docs/adr/0004, "Budgets"): every refusal here happens before the route runs, which the
@@ -28,9 +35,13 @@ afterEach(async () => {
   await Promise.all(disposers.splice(0).map((dispose) => dispose()));
 });
 
+const read = (request: HttpServerRequest.HttpServerRequest) =>
+  request.text.pipe(Effect.map((text) => HttpServerResponse.text(text)));
+
 const serve = (limits: Partial<BudgetLimits>, trustedProxies: ReadonlyArray<string> = []) => {
   const reached: Array<string> = [];
   const bodies: Array<number | string> = [];
+  const failures: Array<HttpServerError.HttpServerError> = [];
   let clock = 0;
   const routes = HttpRouter.use((router) =>
     Effect.gen(function* () {
@@ -39,7 +50,12 @@ const serve = (limits: Partial<BudgetLimits>, trustedProxies: ReadonlyArray<stri
           reached.push(`${request.method} ${request.url}`);
           const body = yield* request.text.pipe(
             Effect.map((text) => text.length),
-            Effect.catch((error) => Effect.succeed(String(error._tag))),
+            Effect.catch((error) =>
+              Effect.sync(() => {
+                failures.push(error);
+                return error._tag;
+              }),
+            ),
           );
           bodies.push(body);
           return HttpServerResponse.text("ok");
@@ -54,6 +70,10 @@ const serve = (limits: Partial<BudgetLimits>, trustedProxies: ReadonlyArray<stri
           return HttpServerResponse.text("ok");
         }),
       );
+      yield* router.add("POST", "/api/sessions/stream/images", read);
+      yield* router.addAll([
+        HttpRouter.prefixRoute(HttpRouter.route("POST", "/read", read), "/api/mounted"),
+      ]);
       yield* router.add("*", "/api/*", echo);
     }),
   );
@@ -73,6 +93,7 @@ const serve = (limits: Partial<BudgetLimits>, trustedProxies: ReadonlyArray<stri
   return {
     reached,
     bodies,
+    failures,
     budgeted,
     advance: (ms: number) => {
       clock += ms;
@@ -110,10 +131,10 @@ const serveOverSocket = async (
 };
 
 /** A body that does not declare its length. */
-const chunked = () =>
+const chunked = (body = "x".repeat(64)) =>
   new ReadableStream<Uint8Array>({
     start(controller) {
-      controller.enqueue(new TextEncoder().encode("x".repeat(64)));
+      controller.enqueue(new TextEncoder().encode(body));
       controller.close();
     },
   });
@@ -132,23 +153,195 @@ describe("bodies are bounded before they are decoded", () => {
     expect(api.reached).toEqual([]);
   });
 
-  it("cuts a body that does not declare its length at the same point", async () => {
+  it("cuts an undeclared oversized body with the body-limit error and reads an exact-limit stream", async () => {
     const api = await serveOverSocket({ bodyBytes: 16 });
-    const stream = new ReadableStream<Uint8Array>({
-      start(controller) {
-        controller.enqueue(new TextEncoder().encode("x".repeat(64)));
-        controller.close();
-      },
-    });
     await api.send("/api/projects", {
       method: "POST",
-      body: stream,
-      // @ts-expect-error -- `duplex` is required by Node for a streamed body and missing from the DOM type.
+      body: chunked(),
+      // @ts-expect-error -- Node requires duplex for a streamed body; DOM RequestInit omits it.
       duplex: "half",
     });
-    // The route ran (no length to refuse on), and its read failed instead of buffering 64 bytes.
-    expect(api.bodies).toHaveLength(1);
-    expect(api.bodies[0]).not.toBe(64);
+    expect(api.reached).toEqual(["POST /api/projects"]);
+    expect(api.bodies).toEqual(["HttpServerError"]);
+    expect(api.failures).toMatchObject([
+      {
+        _tag: "HttpServerError",
+        reason: { _tag: "RequestParseError", cause: new Error("maxBytes exceeded") },
+      },
+    ]);
+    const small = await api.send("/api/projects", {
+      method: "POST",
+      body: chunked("1234567890abcdef"),
+      // @ts-expect-error -- Node requires duplex for a streamed body; DOM RequestInit omits it.
+      duplex: "half",
+    });
+    expect(small.status).toBe(200);
+    expect(await small.text()).toBe("ok");
+    expect(api.bodies).toEqual(["HttpServerError", 16]);
+    expect(api.failures).toHaveLength(1);
+  });
+
+  it.each([
+    { route: "/api/mounted/read", budget: "bodyBytes", limit: 16 },
+    { route: "/api/sessions/stream/images", budget: "uploadBodyBytes", limit: 32 },
+  ])(
+    "reports the right budget for streamed $route and admits its exact byte boundary",
+    async ({ route, budget, limit }) => {
+      const api = await serveOverSocket({ bodyBytes: 16, uploadBodyBytes: 32 });
+      const send = (body: string) =>
+        api.send(route, {
+          method: "POST",
+          body: chunked(body),
+          // @ts-expect-error -- Node requires duplex for a streamed body; DOM RequestInit omits it.
+          duplex: "half",
+        });
+      const refused = await send("é".repeat(limit / 2) + "x");
+      expect(refused.status).toBe(413);
+      expect(await refused.json()).toMatchObject({
+        _tag: "BudgetExceeded",
+        budget,
+        limit,
+        retryAfterSeconds: null,
+      });
+      const exact = "é".repeat(limit / 2);
+      const accepted = await send(exact);
+      expect(accepted.status).toBe(200);
+      expect(await accepted.text()).toBe(exact);
+    },
+  );
+
+  it.each([
+    { kind: "plain-defect", status: 500 },
+    { kind: "other-read-error", status: 400 },
+    { kind: "foreign-request", status: 400 },
+    { kind: "combined", status: 500 },
+    { kind: "combined-interruption", status: 400 },
+    { kind: "interruption", status: 503 },
+  ])(
+    "preserves the complete cause for $kind instead of calling it a size refusal",
+    async ({ kind, status }) => {
+      let original: Cause.Cause<unknown> | undefined;
+      const observed: Array<Cause.Cause<unknown>> = [];
+      const routes = HttpRouter.use((router) =>
+        router.add("POST", "/api/probe", (request) => {
+          const wrapped = new HttpServerError.HttpServerError({
+            reason: new HttpServerError.RequestParseError({
+              request:
+                kind === "foreign-request"
+                  ? HttpServerRequest.fromWeb(new Request("http://elsewhere/api/probe"))
+                  : request,
+              cause: new Error(
+                kind === "other-read-error" ? "synthetic socket read failure" : "maxBytes exceeded",
+              ),
+            }),
+          });
+          original =
+            kind === "plain-defect"
+              ? Cause.die(new Error("maxBytes exceeded"))
+              : kind === "interruption"
+                ? Cause.interrupt()
+                : kind === "combined-interruption"
+                  ? Cause.combine(Cause.fail(wrapped), Cause.interrupt())
+                  : kind === "combined"
+                    ? Cause.combine(Cause.fail(wrapped), Cause.die(new Error("other defect")))
+                    : Cause.fail(wrapped);
+          return Effect.failCause(original);
+        }),
+      );
+      const observer = HttpRouter.middleware(
+        (handler) =>
+          handler.pipe(
+            Effect.tapCause((cause) =>
+              Effect.sync(() => {
+                observed.push(cause);
+              }),
+            ),
+          ),
+        { global: true },
+      );
+      const { handler, dispose } = HttpRouter.toWebHandler(
+        Layer.mergeAll(
+          routes,
+          observer,
+          requestBudgets(makeBudgets({ ...DEFAULT_BUDGET_LIMITS, bodyBytes: 16 }), []),
+        ).pipe(Layer.provide(HttpServer.layerServices)),
+        { disableLogger: true },
+      );
+      disposers.push(dispose);
+      const response = await handler(
+        new Request("http://api.internal/api/probe", { method: "POST" }),
+      );
+      expect(response.status).toBe(status);
+      await response.text();
+      expect(original).toBeDefined();
+      expect(observed).toEqual([original]);
+    },
+  );
+
+  it("bounds an undeclared JSON body before the real CLI authorization handler writes a request", async () => {
+    const opened: Array<Parameters<DevicesRepo["Service"]["createCliAuth"]>[0]> = [];
+    const network = makePublicNetwork(PublicOrigin.make("http://localhost"), []);
+    const routes = HttpApiBuilder.layer(HttpApi.make("mend").add(cliAuthGroup).prefix("/api")).pipe(
+      Layer.provide(DevicePairingLive),
+      // DevicePairingLive also assembles protected endpoints; this unauthenticated route never
+      // uses their middleware. Any unexpected protected request is refused.
+      Layer.provide(Layer.succeed(AuthMiddleware, () => Effect.fail(new Unauthorized()))),
+      Layer.provide(Layer.succeed(NetworkConfig, network)),
+      Layer.provide(
+        Layer.mock(DevicesRepo, {
+          createCliAuth: (input) =>
+            Effect.sync(() => {
+              opened.push(input);
+              return new CliAuthRequest({ ...input, createdAt: new Date() });
+            }),
+        }),
+      ),
+    );
+    const server = createServer();
+    const runtime = ManagedRuntime.make(
+      HttpRouter.serve(
+        Layer.mergeAll(
+          routes,
+          apiMiddleware({
+            network,
+            budgets: makeBudgets({ ...DEFAULT_BUDGET_LIMITS, bodyBytes: 64 }),
+            trustedProxies: [],
+            errorDetail: { mode: "redacted" },
+          }),
+        ),
+        { disableLogger: true, disableListenLog: true },
+      ).pipe(Layer.provide(NodeHttpServer.layer(() => server, { port: 0, host: "127.0.0.1" }))),
+    );
+    disposers.push(() => runtime.dispose());
+    await runtime.runPromise(Effect.void);
+    const address = server.address();
+    if (address === null || typeof address === "string") throw new Error("No HTTP address");
+    const send = (body: string) =>
+      fetch(`http://127.0.0.1:${address.port}/api/cli/auth`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: chunked(body),
+        // @ts-expect-error -- Node requires duplex for a streamed body; DOM RequestInit omits it.
+        duplex: "half",
+      });
+    const large = await send(JSON.stringify({ name: "x".repeat(80) }));
+    const refusal = await large.json();
+    expect(opened).toEqual([]);
+    const small = await send(JSON.stringify({ name: "streamed-cli", client: "cli" }));
+    expect(small.status).toBe(200);
+    const result = await small.json();
+    expect(result).toMatchObject({
+      deviceCode: expect.stringMatching(/^mdc_/),
+      intervalSeconds: 2,
+    });
+    expect(opened).toMatchObject([{ name: "streamed-cli", client: "cli", userCode: result.code }]);
+    expect(large.status).toBe(413);
+    expect(refusal).toMatchObject({
+      _tag: "BudgetExceeded",
+      budget: "bodyBytes",
+      limit: 64,
+      retryAfterSeconds: null,
+    });
   });
 
   it("holds a web-Request handler (the sign-in mount) to the same limit", async () => {

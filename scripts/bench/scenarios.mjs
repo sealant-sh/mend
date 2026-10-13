@@ -269,7 +269,8 @@ const waitForAgent = async (ctx, sessionId, sinceMs, timeoutMs = 600_000, api = 
 /**
  * Reads the agent's recorded output until `answer` shows: the local time it was seen (`at`), or
  * null. A harness that says its account hit a usage or rate limit will not answer: the wait ends
- * there, with its words in `limit`.
+ * there, with its words in `limit`. `timedOut` records deadline expiry even if the wall clock
+ * has not reached its target when the deadline callback fires.
  */
 export const waitForAnswer = async (
   ctx,
@@ -339,7 +340,7 @@ const waitForOutput = async (
       }
       // A synchronous reader can block the event loop beyond the timer's scheduled deadline.
       if (expired || Date.now() >= deadline) break;
-      if (at !== null) return { at, value: true, limit: null };
+      if (at !== null) return { at, value: true, limit: null, timedOut: false };
     }
     const page = await api.get(`/processes/${processId}/logs?from=${from}&limit=500`);
     for (const chunk of page.chunks ?? []) {
@@ -350,13 +351,13 @@ const waitForOutput = async (
     const version = harnessVersionOf(plain);
     if (version !== null) ctx.result.target.harnessVersions[version.harness] = version.version;
     const value = seen(plain);
-    if (value) return { at: Date.now(), value, limit: null };
+    if (value) return { at: Date.now(), value, limit: null, timedOut: false };
     const limit = usageLimitOf(plain);
-    if (limit !== null) return { at: null, value: null, limit };
-    if (page.status === "exited") return { at: null, value: null, limit: null };
+    if (limit !== null) return { at: null, value: null, limit, timedOut: false };
+    if (page.status === "exited") return { at: null, value: null, limit: null, timedOut: false };
     await sleep(250);
   }
-  return { at: null, value: null, limit: null };
+  return { at: null, value: null, limit: null, timedOut: true };
 };
 
 /**
@@ -799,7 +800,7 @@ const newSession = async (ctx, harness, run) => {
   let answerSource = harness === "opencode" && answered.at !== null ? "terminal screen" : null;
   // opencode's answer is timed by its own record whenever it holds it, however the answer was
   // found: one clock for every round of the series, the screen's only where the record has none.
-  if (opencodeRecord !== null && answered.limit === null) {
+  if (opencodeRecord !== null && answered.limit === null && !answered.timedOut) {
     // A post-wait reread can refine an answer inside its window, never revive an expired wait.
     const reread = Date.now() < answerDeadline ? await opencodeRecord().catch(() => null) : null;
     const recorded = Date.now() < answerDeadline ? reread : null;

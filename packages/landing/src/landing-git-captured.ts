@@ -279,7 +279,7 @@ export const LandingGitCapturedLive: Layer.Layer<
               remote,
               sha: input.sha,
               remoteBranch: input.remoteBranch,
-              remoteEnv: { ...input.remoteEnv },
+              remoteEnv: input.remoteEnv,
             })
             .pipe(
               Effect.catchTags({
@@ -310,7 +310,7 @@ export const LandingGitCapturedLive: Layer.Layer<
               remote,
               sha: input.sha,
               remoteBranch: input.remoteBranch,
-              remoteEnv: { ...input.remoteEnv },
+              remoteEnv: input.remoteEnv,
             })
             .pipe(
               Effect.mapError((error) =>

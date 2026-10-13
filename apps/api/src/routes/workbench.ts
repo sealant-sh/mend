@@ -152,6 +152,7 @@ import {
   captureHoldWords,
   detectInstall,
   DotfilesCloner,
+  DotfilesResolveError,
   FollowUpDelivery,
   RECIPE_NAME,
   type ReadStamp,
@@ -171,7 +172,8 @@ import {
   ChangeSummary,
   describeGitRemoteFailure,
   referenceDirectory,
-  resolveRemoteEnv,
+  preparedRemoteEnvironment,
+  type GitRemoteOperation,
   worktreePathOf,
   type DiffFileFact,
   type GitError,
@@ -314,11 +316,15 @@ const reachableSource = <E>(source: string, toError: (message: string) => E) =>
     const caller = yield* CurrentUser;
     const isOperator = yield* (yield* ProjectAccess).isOperator(caller.user.id);
     const policy = yield* SourcePolicy;
-    const clearance = yield* policy
+    yield* policy
       .check(source, { isOperator })
       .pipe(Effect.mapError((refused) => toError(refused.message)));
     // The git that runs next dials the address just checked (DNS rebinding).
-    return (env: Readonly<Record<string, string>>) => policy.pinnedEnv(clearance, env);
+    return (operation: Extract<GitRemoteOperation, { direction: "clone" }>) =>
+      policy.prepare(source, { isOperator }, operation).pipe(
+        Effect.map((cleared) => cleared.pinnedEnv(operation.env)),
+        Effect.mapError((refused) => new DotfilesResolveError({ message: refused.message })),
+      );
   });
 
 export const LIVE_STATES: ReadonlySet<SessionStatus> = new Set([
@@ -407,14 +413,23 @@ const readableGitFailure = (
  * with the same readable lines as before (a hung clone would be worse than
  * an honest no).
  */
-const remoteEnvFor = (mode: GitAuthMode, userId: string | null, remote?: string | null) =>
-  resolveRemoteEnv(mode, userId, remote).pipe(
-    Effect.catchTag("NoSignerError", (error) => new StoreFailure({ message: error.message })),
-    Effect.catchTag(
-      "KeygenError",
-      (error) => new StoreFailure({ message: `Could not create the Mend key: ${error.stderr}` }),
-    ),
-  );
+const remoteEnvFor = (mode: GitAuthMode, userId: string | null, source: string | null) =>
+  Effect.gen(function* () {
+    const policy = yield* SourcePolicy;
+    const caller = yield* CurrentUser;
+    const isOperator = yield* (yield* ProjectAccess).isOperator(caller.user.id);
+    if (source !== null)
+      yield* policy
+        .check(source, { isOperator })
+        .pipe(Effect.mapError((refused) => new StoreFailure({ message: refused.message })));
+    return yield* preparedRemoteEnvironment({
+      policy,
+      source,
+      actor: { isOperator },
+      mode,
+      userId,
+    });
+  });
 
 /**
  * Attribute a bridge-signed op while it runs, so the share CLI of `userId`'s
@@ -530,11 +545,10 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
         if ((yield* projects.byName(organizationId, payload.name)) !== null) {
           return yield* nameTaken;
         }
-        const pinned = yield* reachableSource(source, (message) => new StoreFailure({ message }));
         // The user's git access default decides a new project's mode unless the request says.
         const gitAccess = yield* UserGitAccessRepo;
         const mode = requestedMode ?? (yield* gitAccess.mode(caller.user.id)) ?? "mend-key";
-        const remoteEnv = pinned(yield* remoteEnvFor(mode, caller.user.id, source));
+        const remoteEnv = yield* remoteEnvFor(mode, caller.user.id, source);
         // New stores are laid out by project id: names are unique only within an organization.
         const id = ProjectId.make(crypto.randomUUID());
         const adopted = yield* withSignerContext(
@@ -801,7 +815,14 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
         // signer connects — the card reports presence as an observation.
         if (mode === "mend-key") {
           const caller = yield* CurrentUser;
-          yield* remoteEnvFor("mend-key", caller.user.id);
+          yield* (yield* MendKeys).ensure(caller.user.id).pipe(
+            Effect.mapError(
+              (error) =>
+                new StoreFailure({
+                  message: `Could not create the Mend key: ${error.stderr}`,
+                }),
+            ),
+          );
         }
         return yield* projects
           .setGitAuthMode(params.id, mode)
@@ -972,12 +993,10 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
         const project = yield* (yield* ProjectAccess).project(params.id);
         const caller = yield* CurrentUser;
         // Checked on use too: the policy may have tightened, or the name moved, since adoption.
-        const pinned =
-          project.originUrl === null
-            ? (env: Readonly<Record<string, string>>) => ({ ...env })
-            : yield* reachableSource(project.originUrl, (message) => new StoreFailure({ message }));
-        const remoteEnv = pinned(
-          yield* remoteEnvFor(project.gitAuthMode, caller.user.id, project.originUrl),
+        const remoteEnv = yield* remoteEnvFor(
+          project.gitAuthMode,
+          caller.user.id,
+          project.originUrl,
         );
         yield* withSignerContext(
           project.gitAuthMode,
@@ -1184,7 +1203,7 @@ export const DotfilesGroupLive = HttpApiBuilder.group(MendApi, "dotfiles", (hand
           if (credentialIssue !== null) {
             return yield* new SettingsFailure({ message: credentialIssue });
           }
-          const pinCloneEnv = yield* reachableSource(
+          const prepareCloneEnv = yield* reachableSource(
             payload.repository.url,
             (message) => new SettingsFailure({ message }),
           );
@@ -1198,7 +1217,7 @@ export const DotfilesGroupLive = HttpApiBuilder.group(MendApi, "dotfiles", (hand
           const cloner = yield* DotfilesCloner;
           const tried = yield* budgets.withLaunchSlot(
             caller.user.id,
-            cloner.archive(caller.user.id, payload.repository, { pinCloneEnv }).pipe(
+            cloner.archive(caller.user.id, payload.repository, { prepareCloneEnv }).pipe(
               Effect.mapError((error) => new SettingsFailure({ message: error.message })),
               Effect.as(true),
             ),
@@ -2185,17 +2204,14 @@ export const ReferencesGroupLive = HttpApiBuilder.group(MendApi, "references", (
             message: `"${payload.name}" is not a usable reference name (lowercase letters, digits, ".", "_", "-").`,
           });
         }
-        const pinned = yield* reachableSource(
-          payload.source,
-          (message) => new StoreFailure({ message }),
-        );
+        yield* reachableSource(payload.source, (message) => new StoreFailure({ message }));
         if ((yield* references.byName(viewer.organizationId, payload.name)) !== null) {
           return yield* new StoreFailure({
             message: `A reference named "${payload.name}" already exists.`,
           });
         }
         const { userId, mode } = yield* callerGitMode;
-        const remoteEnv = pinned(yield* remoteEnvFor(mode, userId, payload.source));
+        const remoteEnv = yield* remoteEnvFor(mode, userId, payload.source);
         const id = ReferenceId.make(crypto.randomUUID());
         const cloned = yield* withSignerContext(
           mode,
@@ -2255,12 +2271,8 @@ export const ReferencesGroupLive = HttpApiBuilder.group(MendApi, "references", (
         const reference = yield* ownedReference(params.id);
         const references = yield* ReferencesRepo;
         const store = yield* Store;
-        const pinned = yield* reachableSource(
-          reference.originUrl,
-          (message) => new StoreFailure({ message }),
-        );
         const { userId, mode } = yield* callerGitMode;
-        const remoteEnv = pinned(yield* remoteEnvFor(mode, userId, reference.originUrl));
+        const remoteEnv = yield* remoteEnvFor(mode, userId, reference.originUrl);
         const refreshed = yield* withSignerContext(
           mode,
           userId,

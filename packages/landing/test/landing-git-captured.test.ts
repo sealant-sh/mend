@@ -1,14 +1,20 @@
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
+import * as http from "node:http";
 import * as path from "node:path";
 
 import { it as effectIt } from "@effect/vitest";
 import { CaptureStoreRepo, CheckpointsRepo, SessionNotFoundError, StoreRefsRepo } from "@mend/db";
 import { Sha, WorktreeId } from "@mend/domain";
+import { Project } from "@mend/domain/workbench";
 import { CapturesBehindError, SessionEngine } from "@mend/sessions";
 import {
   BlobStore,
   GitOpsRunner,
+  makeSourcePolicy,
+  preparedRemoteEnvironment,
+  MendKeys,
+  AgentBridge,
   packIdxKeyOf,
   landedRefOf as storeLandedRefOf,
 } from "@mend/store";
@@ -33,6 +39,86 @@ describe("landedRefOf", () => {
 });
 
 describe("the captured adapter over real Git and retained capture objects", () => {
+  it.each(["push", "probe"] as const)(
+    "the captured %s prepares the original URL in the real runner cache",
+    async (operation) => {
+      const source = "http://140.82.112.3/public.git";
+      const requests: string[] = [];
+      const recorder = http.createServer((request, response) => {
+        requests.push(request.url ?? "");
+        response.writeHead(404).end();
+      });
+      await new Promise<void>((resolve) => recorder.listen(0, "127.0.0.1", resolve));
+      const address = recorder.address();
+      if (address === null || typeof address === "string") throw new Error("No recorder.");
+      try {
+        await Effect.runPromise(
+          withCapturedFixture((f) =>
+            f.provide(
+              Effect.gen(function* () {
+                const before = f.agentState();
+                const beforeRefs = f.refs();
+                const scope = {
+                  ...f.world,
+                  project: new Project({ ...f.world.project, originUrl: source }),
+                };
+                const remoteEnv = yield* preparedRemoteEnvironment({
+                  policy: makeSourcePolicy({
+                    profile: "operator",
+                    allowedHosts: [],
+                    resolve: async () => [],
+                  }),
+                  source,
+                  actor: { isOperator: false },
+                  mode: "bridge",
+                  userId: "ada",
+                  env: {
+                    GIT_CONFIG_GLOBAL: "/dev/null",
+                    GIT_CONFIG_NOSYSTEM: "1",
+                    GIT_CONFIG_COUNT: "1",
+                    GIT_CONFIG_KEY_0: "url.http://169.254.169.254/private.git.insteadOf",
+                    GIT_CONFIG_VALUE_0: source,
+                    GIT_CONFIG_PARAMETERS: "",
+                    http_proxy: `http://127.0.0.1:${address.port}`,
+                    NO_PROXY: "",
+                    no_proxy: "",
+                  },
+                });
+                const git = yield* LandingGit;
+                const input = { sha: f.first.agentHead, remoteBranch: "mend/test", remoteEnv };
+                const failure =
+                  operation === "push"
+                    ? yield* git.push(scope, input).pipe(Effect.flip)
+                    : yield* git.probe(scope, input).pipe(Effect.flip);
+                expect(failure.message).toContain("169.254.169.254 is not a repository host");
+                expect(requests).toEqual([]);
+                expect(f.agentState()).toEqual(before);
+                expect(f.refs()).toEqual(beforeRefs);
+              }).pipe(
+                Effect.provide(
+                  Layer.mergeAll(
+                    Layer.mock(MendKeys, {}),
+                    Layer.mock(AgentBridge, { socketPath: () => "/unused/socket" }),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
+      } finally {
+        await new Promise<void>((resolve, reject) => {
+          recorder.close((error) => {
+            if (error) {
+              reject(error);
+              return;
+            }
+            resolve();
+          });
+        });
+      }
+    },
+  );
+
   for (const detached of [false, true]) {
     effectIt.live(
       `pairs a matching checkpoint with its ${detached ? "detached HEAD" : "branch"} capture`,

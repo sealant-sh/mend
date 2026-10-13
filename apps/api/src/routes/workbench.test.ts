@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
+import * as http from "node:http";
 import * as os from "node:os";
 import * as nodePath from "node:path";
 
@@ -44,6 +45,8 @@ import {
   refuseRemoteCredentials,
   Store,
   SourcePolicy,
+  makeSourcePolicy,
+  StoreConfig,
 } from "@mend/store";
 import { Effect, Layer, ManagedRuntime, Option, Schema } from "effect";
 import { HttpRouter, HttpServer } from "effect/unstable/http";
@@ -307,18 +310,14 @@ type UnusedProjectRouteServices = Exclude<
 
 const unusedProjectRouteLayers: Layer.Layer<UnusedProjectRouteServices> = Layer.mergeAll(
   Layer.mock(AuditEventsRepo, {}),
-  Layer.mock(SourcePolicy, {
-    profile: "operator",
-    check: (source) =>
-      Effect.succeed({
-        source,
-        scheme: "https",
-        host: "example.invalid",
-        port: null,
-        addresses: [],
-      }),
-    pinnedEnv: (_clearance, env) => ({ ...env }),
-  }),
+  Layer.succeed(
+    SourcePolicy,
+    makeSourcePolicy({
+      profile: "operator",
+      allowedHosts: [],
+      resolve: async () => ["140.82.112.3"],
+    }),
+  ),
   Layer.mock(AgentBridge, { socketPath: () => "/unused/project-detail-agent-bridge.sock" }),
   Layer.mock(Store, {}),
   Layer.mock(UserGitAccessRepo, {}),
@@ -608,6 +607,68 @@ describe("GET /projects/:id response", () => {
       expect(body).not.toContain("leaky.git");
     },
   );
+
+  it("the public refresh route refuses Git's rewritten metadata destination before real transport", async () => {
+    const root = fs.mkdtempSync(nodePath.join(os.tmpdir(), "mend-refresh-rewrite-"));
+    const gitDir = nodePath.join(root, "repo.git");
+    const requests: string[] = [];
+    const recorder = http.createServer((request, response) => {
+      requests.push(request.url ?? "");
+      response.writeHead(404).end();
+    });
+    await new Promise<void>((resolve) => recorder.listen(0, "127.0.0.1", resolve));
+    const address = recorder.address();
+    if (address === null || typeof address === "string") throw new Error("No recorder address.");
+    try {
+      execFileSync("git", ["init", "--bare", "-q", "--template=", gitDir]);
+      const config = (key: string, value: string) =>
+        execFileSync("git", ["-C", gitDir, "config", key, value]);
+      const original = "http://140.82.112.3/public.git";
+      config("remote.origin.url", original);
+      config("url.http://169.254.169.254/private.git.insteadOf", original);
+      config("http.proxy", `http://127.0.0.1:${address.port}`);
+      const before = fs.readFileSync(nodePath.join(gitDir, "config"), "utf8");
+      const initial = makeWorld([]);
+      const world = {
+        ...initial,
+        projects: initial.projects.map((value) =>
+          value.id === PROJECT_ID
+            ? new Project({
+                ...value,
+                storePath: gitDir,
+                originUrl: original,
+                gitAuthMode: "mend-key",
+              })
+            : value,
+        ),
+      };
+      const { response } = await requestRoute(
+        world,
+        `/api/projects/${PROJECT_ID}/refresh`,
+        AUTHORIZATION,
+        { method: "POST" },
+        Layer.mergeAll(
+          Layer.mock(JobRunner, {}),
+          Store.layer.pipe(Layer.provide(StoreConfig.layerFor(root))),
+        ),
+      );
+      expect(response.status).toBe(422);
+      expect(requests).toEqual([]);
+      expect(await response.text()).toContain("169.254.169.254 is not a repository host");
+      expect(fs.readFileSync(nodePath.join(gitDir, "config"), "utf8")).toBe(before);
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        recorder.close((error) => {
+          if (error) {
+            reject(error);
+            return;
+          }
+          resolve();
+        });
+      });
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
 
   it("refuses a refresh of a store with a credential in its git config: what and who, no key text, path or command", async () => {
     // Review 5 of mend#640: an includeIf condition can hold a URL with a password (R5-2), and the

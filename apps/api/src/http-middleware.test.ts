@@ -5,7 +5,6 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { DEFAULT_BUDGET_LIMITS, makeBudgets, type BudgetLimits } from "./budgets.ts";
 import { apiMiddleware } from "./http-middleware.ts";
-import { API_RESPONSE_HEADERS } from "./response-headers.ts";
 
 /**
  * The order of the API's global middleware, held to what a client observes (docs/adr/0004;
@@ -51,7 +50,13 @@ const serve = (limits: Partial<BudgetLimits> = {}) => {
 };
 
 const expectApiHeaders = (response: Response) => {
-  for (const [name, value] of Object.entries(API_RESPONSE_HEADERS)) {
+  // ADR 0004 promises these policies independently of the production header map.
+  for (const [name, value] of Object.entries({
+    "x-content-type-options": "nosniff",
+    "x-frame-options": "DENY",
+    "referrer-policy": "no-referrer",
+    "content-security-policy": "default-src 'none'; frame-ancestors 'none'",
+  })) {
     expect(response.headers.get(name), name).toBe(value);
   }
 };
