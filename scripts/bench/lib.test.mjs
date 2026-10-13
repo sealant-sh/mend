@@ -5345,7 +5345,7 @@ test("answer waits continue after record errors, stop on usage limits/exit, and 
       },
       async () => null,
     );
-    assert.deepEqual(result, { at: null, value: null, limit });
+    assert.deepEqual(result, { at: null, value: null, limit, timedOut: false });
     assert.equal(reads, 1);
   }
   const exitedAnswer = await waitForAnswer(answerWaitContext(), "process", "5147", 1000, {
@@ -5377,7 +5377,7 @@ test("answer waits continue after record errors, stop on usage limits/exit, and 
       return 6050;
     },
   );
-  assert.deepEqual(expired, { at: null, value: null, limit: null });
+  assert.deepEqual(expired, { at: null, value: null, limit: null, timedOut: true });
   assert.equal(called, false);
   const noAnswer = await waitForAnswer(
     answerWaitContext(),
@@ -5387,7 +5387,7 @@ test("answer waits continue after record errors, stop on usage limits/exit, and 
     { get: async () => ({ chunks: [], nextFrom: null, status: "running" }) },
     async () => null,
   );
-  assert.deepEqual(noAnswer, { at: null, value: null, limit: null });
+  assert.deepEqual(noAnswer, { at: null, value: null, limit: null, timedOut: true });
 });
 
 test("record callbacks cannot extend the answer deadline or trigger a poll after it expires", async () => {
@@ -5399,7 +5399,7 @@ test("record callbacks cannot extend the answer deadline or trigger a poll after
       return { chunks: [], nextFrom: null, status: "running" };
     },
   };
-  const empty = { at: null, value: null, limit: null };
+  const empty = { at: null, value: null, limit: null, timedOut: true };
   let release;
   const late = new Promise((resolve) => {
     release = resolve;
@@ -5454,7 +5454,7 @@ console.log(JSON.stringify(result));
     ],
     { encoding: "utf8", timeout: 2000 },
   );
-  assert.deepEqual(JSON.parse(output), { at: 6050, value: true, limit: null });
+  assert.deepEqual(JSON.parse(output), { at: 6050, value: true, limit: null, timedOut: false });
 });
 
 test("malformed or absent owned SQLite files yield no timing evidence without touching them", (t) => {
@@ -5482,6 +5482,26 @@ test("a new opencode scenario never revives an expired wait with its final recor
     1,
   );
   // The independently bounded host command may settle later; it must not mutate the result.
+  await sleepMs(100);
+  assert.equal(result.measures["new.opencode.first_turn"], undefined);
+});
+
+test("an expired scenario cannot reread its record while the wall clock remains before its deadline", async (t) => {
+  // Expiry is an outcome of the deadline timer, not a second comparison to the wall clock.
+  // Keep native timers running while Date stays before both independently calculated deadlines.
+  t.mock.timers.enable({ apis: ["Date"], now: 1000 });
+  const { result, commands } = await answerScenario({
+    sources: ["late record"],
+    answerTimeoutMs: 20,
+  });
+  assert.equal(result.measures["new.opencode.first_turn"], undefined);
+  assert.equal(result.method.opencodeAnswer, undefined);
+  assert.equal(
+    commands.filter((command) =>
+      command.includes("stat -c %u /workspace/harness-home/people/acc-owned"),
+    ).length,
+    1,
+  );
   await sleepMs(100);
   assert.equal(result.measures["new.opencode.first_turn"], undefined);
 });
