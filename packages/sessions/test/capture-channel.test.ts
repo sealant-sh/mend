@@ -27,7 +27,7 @@ import {
 import { buildManifest, sectionOf, snapshotDirectory, uploadObjects } from "@mend/store/testing";
 import { Duration, Effect, Exit, Layer, Scope } from "effect";
 import type * as Context from "effect/Context";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
   BYTE_QUOTA_FLOOR,
@@ -128,131 +128,129 @@ const bulkOf = (plan: { readonly json: Record<string, unknown> }) =>
 /** What a URL may be minted for: a capture object, or a source archive Mend published. */
 const isReadableKey = (key: string): boolean => isCaptureObjectKey(key) || isCaptureSourceKey(key);
 
-describe("capture channel routes", () => {
+const makeRouteFixture = async () => {
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "mend-capture-channel-"));
-  const blobRoot = path.join(scratch, "blobs");
-  const memory = makeMemoryCaptureStore();
-  /**
-   * Another executor on the worktree takes over its live lease under the same epoch (as a test
-   * shortcut for release + claim): the lease names it, and no launch.
-   */
-  const holdLease = (worktreeId: WorktreeId, executorId: string) => {
-    const lease = memory.leases.get(worktreeId);
-    if (lease === undefined) throw new Error("no lease to hand over");
-    lease.executorId = executorId;
-    lease.launchId = null;
-  };
-  // Every key the routes ask the bucket about, in order: what an S3 access log would show.
-  const headed: Array<string> = [];
-  const presigned: Array<string> = [];
-  const blobs = Layer.effect(
-    BlobStore,
-    Effect.map(BlobStore, (inner): typeof BlobStore.Service => ({
-      ...inner,
-      head: (key) => Effect.sync(() => headed.push(key)).pipe(Effect.andThen(inner.head(key))),
-      presign: (key, method, ttlSeconds) =>
-        Effect.sync(() => presigned.push(key)).pipe(
-          Effect.andThen(inner.presign(key, method, ttlSeconds)),
-        ),
-    })),
-  ).pipe(Layer.provide(BlobStoreFsLive(blobRoot)));
-  // One folder the project selected, so `plan.get` is exercised with content beside the worktree.
-  const folderPath = path.join(scratch, "folder-docs");
-  fs.mkdirSync(folderPath, { recursive: true });
-  fs.writeFileSync(path.join(folderPath, "NOTES.md"), "read me\n");
-  const sources = CaptureSourcesLive.pipe(
-    Layer.provide(
-      Layer.mock(FoldersRepo, {
-        listForProject: () =>
-          Effect.succeed([
-            {
-              folder: new Folder({
-                id: FolderId.make("fold-docs"),
-                organizationId: OrganizationId.make("org-1"),
-                name: "docs",
-                path: folderPath,
-                createdByUserId: null,
-                createdAt: new Date(),
-                updatedAt: new Date(),
-              }),
-              selection: new ProjectFolder({
-                projectId: PROJECT,
-                folderId: FolderId.make("fold-docs"),
-                name: "docs",
-                readOnly: true,
-                createdAt: new Date(),
-              }),
-            },
-          ]),
-      }),
-    ),
-    Layer.provide(Layer.mock(ReferencesRepo, { listForProject: () => Effect.succeed([]) })),
-    Layer.provide(blobs),
-  );
-  const registry = SessionChannelRegistryLive;
-  const tokens = SessionChannelTokensRepoMemory;
-  const deployment = Layer.succeed(DeploymentConfig, {
-    mode: "local",
-    sessionEndpoint: { listen: "127.0.0.1:0", url: "http://127.0.0.1:0" },
-    sessionStore: "captured",
-  });
-  const layer = Layer.mergeAll(
-    SessionChannelNetworkHostLive.pipe(
-      Layer.provide(deployment),
-      Layer.provide(registry),
-      Layer.provide(tokens),
-    ),
-    CaptureChannelLive.pipe(
-      Layer.provide(CaptureGitVerifierOff),
-      Layer.provide(sources),
-      Layer.provide(
-        Layer.succeed(CaptureRemotes, {
-          forProject: () => Effect.succeed([{ name: "origin", url: ORIGIN }]),
-        }),
-      ),
-      Layer.provide(memory.layer),
-      Layer.provide(blobs),
-      // Small numbers so a multipart plan is exercised with bytes a test can afford.
-      Layer.provide(
-        Layer.succeed(CaptureUploadPolicy, {
-          multipartThresholdBytes: 64,
-          partSizeBytes: 32,
-          // Small too: the request quota is exercised below without an hour of calls.
-          callsPerHour: 16,
-          keysPerCall: 4,
-          // The byte quota's floor, for a scope with no footprint; the shared session below
-          // names a footprint that puts its budget well above every byte this file ships.
-          byteQuotaFloorBytes: 4_096,
-          requireSizes: false,
-          manifestFormat: 2,
-        }),
-      ),
-    ),
-    registry,
-    tokens,
-    blobs,
-    memory.layer,
-  );
-  let address = "";
-  let token = "";
-  let otherLaunchToken = "";
-  let cap0 = { id: "", key: "", manifest: {} as CaptureManifest };
-  const keys1 = captureKeys(WORKTREE, 1);
-  let channel: CaptureChannel["Service"];
-  type Services =
-    | SessionChannelNetworkHost
-    | SessionChannelRegistry
-    | SessionChannelTokensRepo
-    | BlobStore
-    | CaptureStoreRepo
-    | CaptureChannel;
-  // One scope for the whole file: the listener must outlive every `run`.
   const scope = Scope.makeUnsafe();
-  let context: Context.Context<Services>;
-  const run = <A, E>(effect: Effect.Effect<A, E, Services>) =>
-    Effect.runPromise(effect.pipe(Effect.provide(context)));
+  try {
+    const blobRoot = path.join(scratch, "blobs");
+    const memory = makeMemoryCaptureStore();
+    /**
+     * Another executor on the worktree takes over its live lease under the same epoch (as a test
+     * shortcut for release + claim): the lease names it, and no launch.
+     */
+    const holdLease = (worktreeId: WorktreeId, executorId: string) => {
+      const lease = memory.leases.get(worktreeId);
+      if (lease === undefined) throw new Error("no lease to hand over");
+      lease.executorId = executorId;
+      lease.launchId = null;
+    };
+    // Every key the routes ask the bucket about, in order: what an S3 access log would show.
+    const headed: Array<string> = [];
+    const presigned: Array<string> = [];
+    const blobs = Layer.effect(
+      BlobStore,
+      Effect.map(BlobStore, (inner): typeof BlobStore.Service => ({
+        ...inner,
+        head: (key) => Effect.sync(() => headed.push(key)).pipe(Effect.andThen(inner.head(key))),
+        presign: (key, method, ttlSeconds) =>
+          Effect.sync(() => presigned.push(key)).pipe(
+            Effect.andThen(inner.presign(key, method, ttlSeconds)),
+          ),
+      })),
+    ).pipe(Layer.provide(BlobStoreFsLive(blobRoot)));
+    // One folder the project selected, so `plan.get` is exercised with content beside the worktree.
+    const folderPath = path.join(scratch, "folder-docs");
+    fs.mkdirSync(folderPath, { recursive: true });
+    fs.writeFileSync(path.join(folderPath, "NOTES.md"), "read me\n");
+    const sources = CaptureSourcesLive.pipe(
+      Layer.provide(
+        Layer.mock(FoldersRepo, {
+          listForProject: () =>
+            Effect.succeed([
+              {
+                folder: new Folder({
+                  id: FolderId.make("fold-docs"),
+                  organizationId: OrganizationId.make("org-1"),
+                  name: "docs",
+                  path: folderPath,
+                  createdByUserId: null,
+                  createdAt: new Date(),
+                  updatedAt: new Date(),
+                }),
+                selection: new ProjectFolder({
+                  projectId: PROJECT,
+                  folderId: FolderId.make("fold-docs"),
+                  name: "docs",
+                  readOnly: true,
+                  createdAt: new Date(),
+                }),
+              },
+            ]),
+        }),
+      ),
+      Layer.provide(Layer.mock(ReferencesRepo, { listForProject: () => Effect.succeed([]) })),
+      Layer.provide(blobs),
+    );
+    const registry = SessionChannelRegistryLive;
+    const tokens = SessionChannelTokensRepoMemory;
+    const deployment = Layer.succeed(DeploymentConfig, {
+      mode: "local",
+      sessionEndpoint: { listen: "127.0.0.1:0", url: "http://127.0.0.1:0" },
+      sessionStore: "captured",
+    });
+    const layer = Layer.mergeAll(
+      SessionChannelNetworkHostLive.pipe(
+        Layer.provide(deployment),
+        Layer.provide(registry),
+        Layer.provide(tokens),
+      ),
+      CaptureChannelLive.pipe(
+        Layer.provide(CaptureGitVerifierOff),
+        Layer.provide(sources),
+        Layer.provide(
+          Layer.succeed(CaptureRemotes, {
+            forProject: () => Effect.succeed([{ name: "origin", url: ORIGIN }]),
+          }),
+        ),
+        Layer.provide(memory.layer),
+        Layer.provide(blobs),
+        // Small numbers so a multipart plan is exercised with bytes a test can afford.
+        Layer.provide(
+          Layer.succeed(CaptureUploadPolicy, {
+            multipartThresholdBytes: 64,
+            partSizeBytes: 32,
+            // Small too: the request quota is exercised below without an hour of calls.
+            callsPerHour: 16,
+            keysPerCall: 4,
+            // The byte quota's floor, for a scope with no footprint; the shared session below
+            // names a footprint that puts its budget well above every byte this file ships.
+            byteQuotaFloorBytes: 4_096,
+            requireSizes: false,
+            manifestFormat: 2,
+          }),
+        ),
+      ),
+      registry,
+      tokens,
+      blobs,
+      memory.layer,
+    );
+    let address = "";
+    let token = "";
+    let otherLaunchToken = "";
+    const keys1 = captureKeys(WORKTREE, 1);
+    type Services =
+      | SessionChannelNetworkHost
+      | SessionChannelRegistry
+      | SessionChannelTokensRepo
+      | BlobStore
+      | CaptureStoreRepo
+      | CaptureChannel;
+    // Each declaration owns a listener and scope that outlive its individual requests.
+    let context: Context.Context<Services>;
+    const run = <A, E>(effect: Effect.Effect<A, E, Services>) =>
+      Effect.runPromise(effect.pipe(Effect.provide(context)));
 
-  beforeAll(async () => {
     context = await Effect.runPromise(
       Layer.build(layer).pipe(Effect.provideService(Scope.Scope, scope)),
     );
@@ -270,7 +268,7 @@ describe("capture channel routes", () => {
       kind: "checkpoint",
       workspace: { root: snapshot.root, packs: snapshot.packs },
     });
-    cap0 = { id: built.id, key: built.key, manifest: built.manifest };
+    const cap0 = { id: built.id, key: built.key, manifest: built.manifest };
     await run(
       Effect.gen(function* () {
         yield* uploadObjects(new Map([...snapshot.objects, [built.key, built.bytes]]));
@@ -292,35 +290,137 @@ describe("capture channel routes", () => {
         yield* repo.release(WORKTREE, claimed.epoch);
       }),
     );
-  });
-  afterAll(async () => {
-    await Effect.runPromise(Scope.close(scope, Exit.void));
-    fs.rmSync(scratch, { recursive: true, force: true });
-  });
 
-  it("listens, registers a capture-scoped api, and refuses a bad token uniformly", async () => {
+    const channel = await run(CaptureChannel);
+    const scopedTo = (launchId: string) =>
+      channel.apiFor({
+        worktreeId: WORKTREE,
+        projectId: PROJECT,
+        executorId: SESSION,
+        launchId,
+        footprintBytes: 1_000_000,
+      });
+
     await run(
       Effect.gen(function* () {
         const host = yield* SessionChannelNetworkHost;
         address = host.address ?? "";
         const registryService = yield* SessionChannelRegistry;
         const tokensRepo = yield* SessionChannelTokensRepo;
-        channel = yield* CaptureChannel;
         token = yield* tokensRepo.issue(SESSION, LAUNCH);
         otherLaunchToken = yield* tokensRepo.issue(SESSION, OTHER_LAUNCH);
-        const scopedTo = (launchId: string) =>
-          channel.apiFor({
-            worktreeId: WORKTREE,
-            projectId: PROJECT,
-            executorId: SESSION,
-            launchId,
-            footprintBytes: 1_000_000,
-          });
         registryService.register(SESSION, {
           ...inertApi,
           capture: scopedTo(SESSION),
           captureAs: scopedTo,
         });
+      }),
+    );
+    const arrangeEpoch = async (epoch: 2 | 3) =>
+      run(
+        Effect.gen(function* () {
+          const repo = yield* CaptureStoreRepo;
+          const next = yield* repo.claim(WORKTREE, SESSION, 30, epoch === 2 ? LAUNCH : undefined);
+          if (epoch === 3) {
+            yield* repo.release(WORKTREE, next.epoch);
+            yield* repo.claim(WORKTREE, SESSION, 30);
+          }
+        }),
+      );
+    const seedSummaryHead = async () => {
+      await arrangeEpoch(2);
+      const summaryTree = path.join(scratch, "summary-head");
+      fs.mkdirSync(path.join(summaryTree, "tree"), { recursive: true });
+      fs.writeFileSync(path.join(summaryTree, "tree", "note.txt"), "edited\n");
+      const summarySnapshot = snapshotDirectory(summaryTree, captureKeys(WORKTREE, 2), {
+        chunkSize: 64,
+      });
+      const summaryManifest = buildManifest({
+        worktreeId: WORKTREE,
+        n: 1,
+        parent: cap0.id,
+        epoch: 2,
+        seq: 7,
+        kind: "turn",
+        workspace: { root: summarySnapshot.root, packs: summarySnapshot.packs },
+      });
+      await run(
+        Effect.gen(function* () {
+          yield* uploadObjects(
+            new Map([...summarySnapshot.objects, [summaryManifest.key, summaryManifest.bytes]]),
+          );
+          const repo = yield* CaptureStoreRepo;
+          yield* repo.register({
+            worktreeId: WORKTREE,
+            id: summaryManifest.id,
+            n: 1,
+            parent: cap0.id,
+            epoch: 2,
+            seq: 7n,
+            kind: "turn",
+            manifestKey: summaryManifest.key,
+            sections: summaryManifest.manifest.sections,
+            gitFsck: "unverified",
+          });
+        }),
+      );
+    };
+    const close = async () => {
+      try {
+        await Effect.runPromise(Scope.close(scope, Exit.void));
+      } finally {
+        fs.rmSync(scratch, { recursive: true, force: true });
+      }
+    };
+    return {
+      scratch,
+      blobRoot,
+      memory,
+      holdLease,
+      headed,
+      presigned,
+      channel,
+      run,
+      address,
+      token,
+      otherLaunchToken,
+      cap0,
+      keys1,
+      scopedTo,
+      arrangeEpoch,
+      seedSummaryHead,
+      close,
+    };
+  } catch (error) {
+    try {
+      await Effect.runPromise(Scope.close(scope, Exit.void));
+    } finally {
+      fs.rmSync(scratch, { recursive: true, force: true });
+    }
+    throw error;
+  }
+};
+
+describe("capture channel routes", () => {
+  let fixture: Awaited<ReturnType<typeof makeRouteFixture>> | undefined;
+  const fixtureOf = () => {
+    if (fixture === undefined) throw new Error("capture route fixture not initialized");
+    return fixture;
+  };
+  beforeEach(async () => {
+    fixture = await makeRouteFixture();
+  });
+  afterEach(async () => {
+    const owned = fixture;
+    fixture = undefined;
+    await owned?.close();
+  });
+  it("listens, registers a capture-scoped api, and refuses a bad token uniformly", async () => {
+    const { run, address, scopedTo } = fixtureOf();
+    await run(
+      Effect.gen(function* () {
+        const registryService = yield* SessionChannelRegistry;
+        const tokensRepo = yield* SessionChannelTokensRepo;
         const bogus = yield* Effect.promise(() =>
           post(address, "/lease.heartbeat", "not-the-token-at-all", { worktree_id: WORKTREE }),
         );
@@ -347,6 +447,7 @@ describe("capture channel routes", () => {
   });
 
   it("plan.get claims the lease on a booting executor and presigns every key the head needs", async () => {
+    const { blobRoot, address, token, otherLaunchToken, cap0 } = fixtureOf();
     const first = await post(address, "/plan.get", token, { worktree_id: null, epoch: 0 });
     expect(first.status).toBe(200);
     expect(first.json["epoch"]).toBe(2);
@@ -400,6 +501,8 @@ describe("capture channel routes", () => {
   });
 
   it("upload.urls mints only under the caller's epoch prefix, only while the lease predicate holds", async () => {
+    const { memory, address, token, keys1, arrangeEpoch } = fixtureOf();
+    await arrangeEpoch(2);
     const keys2 = captureKeys(WORKTREE, 2);
     const own = keys2.pack("a".repeat(64));
     const minted = await post(address, "/upload.urls", token, {
@@ -439,6 +542,8 @@ describe("capture channel routes", () => {
   });
 
   it("upload.urls plans a multipart upload for a sized key at the threshold; upload.complete assembles it write-once", async () => {
+    const { blobRoot, address, token, keys1, arrangeEpoch } = fixtureOf();
+    await arrangeEpoch(2);
     const keys2 = captureKeys(WORKTREE, 2);
     const body = Buffer.alloc(70);
     for (let index = 0; index < body.length; index += 1) body[index] = index;
@@ -613,6 +718,8 @@ describe("capture channel routes", () => {
   });
 
   it("a declared size fixes the parts and the stored bytes: a wrong count is refused, a wrong size removed", async () => {
+    const { blobRoot, address, token, arrangeEpoch } = fixtureOf();
+    await arrangeEpoch(2);
     const keys2 = captureKeys(WORKTREE, 2);
     const key = keys2.pack("7a".repeat(32));
     const minted = await post(address, "/upload.urls", token, {
@@ -654,6 +761,8 @@ describe("capture channel routes", () => {
   });
 
   it("capture.register is the CAS: 409 on a stale epoch or wrong parent, 422 on missing bytes, 200 on a lost ack", async () => {
+    const { scratch, memory, run, address, token, cap0, arrangeEpoch } = fixtureOf();
+    await arrangeEpoch(2);
     const keys2 = captureKeys(WORKTREE, 2);
     const tree = path.join(scratch, "tree2");
     fs.mkdirSync(path.join(tree, "tree"), { recursive: true });
@@ -757,6 +866,8 @@ describe("capture channel routes", () => {
   });
 
   it("change.summary lands in the bucket for the head only; heartbeat 409s once the lease is gone", async () => {
+    const { blobRoot, memory, run, address, token, cap0, seedSummaryHead } = fixtureOf();
+    await seedSummaryHead();
     const headId = memory.chains.get(WORKTREE)?.headCapture ?? "";
     const summary = {
       base_sha: "a".repeat(40),
@@ -833,13 +944,8 @@ describe("capture channel routes", () => {
   });
 
   it("asks the bucket only about capture objects: a pending bulk section names nothing, a prefix or an empty entry is refused before any HEAD, and a plan presigns object keys alone", async () => {
-    // The previous test removed the lease row; hand the worktree a live one under epoch 3, held
-    // by the session the token names, bound to no launch (as a lease taken before 0085 is).
-    memory.leases.set(WORKTREE, {
-      executorId: SESSION,
-      epoch: 3,
-      expiresAt: memory.clock.now() + 60_000,
-    });
+    const { scratch, memory, headed, presigned, run, address, token, arrangeEpoch } = fixtureOf();
+    await arrangeEpoch(3);
     const parent = memory.captures.get(memory.chains.get(WORKTREE)?.headCapture ?? "");
     if (parent === undefined) throw new Error("the chain has no head");
     const keys3 = captureKeys(WORKTREE, 3);
@@ -936,7 +1042,8 @@ describe("capture channel routes", () => {
   });
 
   it("the request quota bounds upload.urls calls, not keys: a call over the key cap is a bad request, and the hour's calls run out whatever each carried", async () => {
-    // The lease under epoch 3 from the previous test is still live.
+    const { address, token, arrangeEpoch } = fixtureOf();
+    await arrangeEpoch(3);
     const keys3 = captureKeys(WORKTREE, 3);
     const key = (index: number) => keys3.tree(index.toString(16).padStart(64, "0"));
     // Five keys against a cap of four: refused as a request shape, not counted.
@@ -947,11 +1054,10 @@ describe("capture channel routes", () => {
     });
     expect(tooMany.status).toBe(400);
     expect(tooMany.json["message"]).toContain("the cap is 4 per upload.urls call");
-    // Every earlier test's successful call counted against the same session's 16; a
-    // four-key call costs exactly what a one-key call does. Run the hour out.
+    // A fresh ledger allows exactly sixteen calls, whether each asks for one or four keys.
     let minted = 0;
     let refused: { status: number; json: Record<string, unknown> } | null = null;
-    for (let index = 0; index < 16 && refused === null; index += 1) {
+    for (let index = 0; index < 17 && refused === null; index += 1) {
       const answer = await post(address, "/upload.urls", token, {
         worktree_id: WORKTREE,
         epoch: 3,
@@ -963,7 +1069,7 @@ describe("capture channel routes", () => {
       if (answer.status === 200) minted += 1;
       else refused = answer;
     }
-    expect(minted).toBeGreaterThan(0);
+    expect(minted).toBe(16);
     expect(refused?.status).toBe(429);
     expect(refused?.json["reason"]).toBe("quota-exceeded");
     expect(refused?.json["message"]).toBe(
@@ -979,6 +1085,8 @@ describe("capture channel routes", () => {
   });
 
   it("the request quota is per executor: a retry of keys already handed out costs nothing, another launch of the session has its own hour, and an executor being drained is never refused (e2e run 5)", async () => {
+    const { channel, run, arrangeEpoch } = fixtureOf();
+    await arrangeEpoch(3);
     const keys3 = captureKeys(WORKTREE, 3);
     const key = (index: number) => keys3.tree((1000 + index).toString(16).padStart(64, "0"));
     const outcome = await run(
@@ -1024,8 +1132,10 @@ describe("capture channel routes", () => {
   });
 
   it("the byte quota refuses an upload.urls batch before any URL is minted, prices a key once, and backstops a register with 409", async () => {
-    // A fresh executor on the same worktree (the lease under epoch 3 is still live; the ledger
-    // and the request window are per executor): no footprint, so the budget is the test floor.
+    const { scratch, blobRoot, memory, holdLease, presigned, channel, run, arrangeEpoch } =
+      fixtureOf();
+    await arrangeEpoch(3);
+    // This executor has no footprint, so its fresh ledger uses the test floor.
     const api = channel.apiFor({
       worktreeId: WORKTREE,
       projectId: PROJECT,
@@ -1167,6 +1277,7 @@ describe("capture channel routes", () => {
   });
 
   it("dir packs (format 2): plan.get announces manifest_format 2; register refuses a key where a digest belongs, then HEADs, prices and records the dir packs; the plan presigns dir packs, not dir objects", async () => {
+    const { scratch, memory, headed, channel, run } = fixtureOf();
     const wt = WorktreeId.make("wt-cap-v2");
     const api = channel.apiFor({
       worktreeId: wt,
@@ -1318,6 +1429,7 @@ describe("capture channel routes", () => {
   });
 
   it("other_bulk (sealantd #101): a move between platforms keeps both trees; plan.get answers each executor its own platform's, else pending; register checks a carried section but asks the bucket only about new ones", async () => {
+    const { scratch, memory, headed, channel, run } = fixtureOf();
     const wt = WorktreeId.make("wt-cap-other-bulk");
     const X86 = "linux-x86_64-gnu";
     const ARM = "linux-aarch64-gnu";
@@ -1518,6 +1630,7 @@ describe("capture channel routes", () => {
   });
 
   it("prices a dir pack against the byte quota like any pack", async () => {
+    const { scratch, channel, run } = fixtureOf();
     const wt = WorktreeId.make("wt-cap-v2-quota");
     // No footprint: the budget is the test floor, 4,096 bytes.
     const api = channel.apiFor({
@@ -1571,7 +1684,9 @@ describe("capture channel routes", () => {
     expect(refused.json["reason"]).toBe("byte-quota");
     expect(refused.json["requested"]).toBe(dirPackBytes);
   });
+});
 
+describe("capture upload policy", () => {
   it("sizes are required only when MEND_CAPTURE_REQUIRE_SIZES says so", () => {
     expect(resolveCaptureUploadPolicy({}).requireSizes).toBe(false);
     expect(resolveCaptureUploadPolicy({ MEND_CAPTURE_REQUIRE_SIZES: "true" }).requireSizes).toBe(
