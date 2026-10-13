@@ -30,6 +30,26 @@
   },
   "overrides": [
     {
+      "files": ["packages/sessions/**/*.ts"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "paths": [
+              {
+                "name": "@effect/vitest",
+                "message": "Use test/effect-vitest.ts so captured TestClock warnings fail the runner; ordinary assertions and hooks come from vitest."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": ["packages/sessions/test/effect-vitest.ts"],
+      "rules": { "no-restricted-imports": "off" }
+    },
+    {
       "files": ["packages/ui/src/components/ui/**"],
       "rules": {
         "no-shadow": "off"

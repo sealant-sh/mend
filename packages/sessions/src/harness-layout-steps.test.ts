@@ -1,4 +1,3 @@
-import { it as effectIt } from "@effect/vitest";
 import {
   HarnessLayoutsRepo,
   type HarnessLayoutsMemoryState,
@@ -23,6 +22,7 @@ import { ConfigProvider, Deferred, Duration, Effect, Exit, Fiber, Layer, Scope }
 import { TestClock } from "effect/testing";
 import { describe, expect, it } from "vitest";
 
+import { it as effectIt } from "../test/effect-vitest.ts";
 import {
   HarnessLayoutConfig,
   HarnessLayoutConfigLive,

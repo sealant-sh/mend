@@ -3,14 +3,15 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { it, expect } from "@effect/vitest";
 import { piProfileDigest } from "@mend/db";
 import { validatePiProfile, type PiProfileFile } from "@mend/domain/workbench";
 import { Effect, Schema } from "effect";
 import { FastCheck } from "effect/testing";
+import { expect } from "vitest";
 
 import { PERSON_SAVED_STATE } from "../src/harness-layout.ts";
 import { PI_PROFILE_HOME_DIR, materializePiProfile, planPiProfile } from "../src/pi-profile.ts";
+import { it } from "./effect-vitest.ts";
 
 const benchUrl = new URL("../../../scripts/bench/lib.mjs", import.meta.url).href;
 const runBench = (program: string, args: ReadonlyArray<string>, home: string): string =>

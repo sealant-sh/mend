@@ -2,7 +2,6 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { describe, expect, it } from "@effect/vitest";
 import { SessionId } from "@mend/domain";
 import { Session, captureStatusLine } from "@mend/domain/workbench";
 import { LAUNCH_WAITING_SAVING } from "@mend/domain/workbench";
@@ -16,8 +15,10 @@ import { captureHoldWords, SessionEngine } from "@mend/sessions";
 import type { CreateOptions, InteractiveSession, InteractiveSessionStatus } from "@sealant/sdk";
 import { Deferred, Duration, Effect, Fiber, Layer, Logger } from "effect";
 import { TestClock } from "effect/testing";
+import { describe, expect } from "vitest";
 
 import { makeMemoryCaptureStore, type MemoryCaptureStore } from "./capture-store-memory.ts";
+import { it } from "./effect-vitest.ts";
 import {
   flushReport,
   launchOnce,

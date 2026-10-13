@@ -1,10 +1,11 @@
 import * as fs from "node:fs";
 
-import { expect, it } from "@effect/vitest";
 import { SessionEngine } from "@mend/sessions";
 import { Clock, Effect, Exit } from "effect";
 import { TestClock } from "effect/testing";
+import { expect } from "vitest";
 
+import { it } from "./effect-vitest.ts";
 import { setup, withEngineEffect } from "./engine/fixture.ts";
 
 it.effect(

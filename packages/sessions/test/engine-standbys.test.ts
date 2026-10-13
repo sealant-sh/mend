@@ -1,7 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-import { describe, expect, it } from "@effect/vitest";
 import {
   CaptureStoreRepo,
   HotWorkspacesRepo,
@@ -40,9 +39,11 @@ import type {
 } from "@sealant/sdk";
 import { Deferred, Duration, Effect, Exit, Fiber, Layer, Queue } from "effect";
 import { TestClock } from "effect/testing";
+import { describe, expect } from "vitest";
 
 import { REMOTE_SSH_ROOT_WORDS } from "../src/harness-layout-steps.ts";
 import { makeMemoryCaptureStore } from "./capture-store-memory.ts";
+import { it } from "./effect-vitest.ts";
 import {
   NEWER_SNAPSHOT,
   SNAPSHOT,
@@ -514,6 +515,17 @@ describe("SessionEngine capture mode", () => {
             expect(created[0]?.dotfiles).toEqual({
               archives: [{ data: SNAPSHOT.data, manager: "copy", bootstrap: false }],
             });
+
+            // Claim the unchanged baseline before applying the mutations. This drives the real
+            // registration deadline while its standby is ready, before the cold Git provisions.
+            const baseline = pool.entries.find((entry) => entry.status === "ready");
+            const baselineClaim = yield* clock.claim(provision);
+            expect(baselineClaim.id).toBe(baseline?.id);
+            yield* engine.reconcileHotSessions(project.id);
+            yield* clock.untilReady(
+              () => pool.entries.some((entry) => entry.status === "ready"),
+              "a replacement after the baseline claim",
+            );
 
             for (const [label, change] of changes) {
               const stale = pool.entries.find((entry) => entry.status === "ready");

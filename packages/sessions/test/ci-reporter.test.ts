@@ -4,11 +4,13 @@ import { createRequire } from "node:module";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
+import { stripVTControlCharacters } from "node:util";
 
 import { expect, it } from "vitest";
 
 const require = createRequire(import.meta.url);
 const vitestCli = path.join(path.dirname(require.resolve("vitest/package.json")), "vitest.mjs");
+const effectTestPath = fileURLToPath(new URL("./effect-vitest.ts", import.meta.url));
 const reporterPath = fileURLToPath(new URL("./ci-reporter.ts", import.meta.url));
 const modulesPath = fileURLToPath(new URL("../node_modules", import.meta.url));
 
@@ -16,6 +18,8 @@ const runFixture = async (options: {
   readonly budgetMs: number;
   readonly testName: string;
   readonly body: string;
+  readonly effectBody?: string;
+  readonly registration?: string;
   readonly jsonReporter: boolean;
 }) => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "mend-sessions-ci-guard-"));
@@ -30,8 +34,11 @@ export default defineConfig({ plugins: [sessionsCiGuard({ fileBudgetMs: ${option
     );
     await writeFile(
       path.join(directory, "guard.test.ts"),
-      `import { it } from "vitest";
-it(${JSON.stringify(options.testName)}, async () => { ${options.body} });
+      `import { it, expect } from "vitest";
+import { it as effectIt } from ${JSON.stringify(effectTestPath)};
+import { Clock, Context, Duration, Effect, Fiber, Layer, Logger } from "effect";
+import { TestClock, TestConsole } from "effect/testing";
+${options.registration ?? (options.effectBody === undefined ? `it(${JSON.stringify(options.testName)}, async () => { ${options.body} });` : `effectIt.effect(${JSON.stringify(options.testName)}, () => ${options.effectBody});`)}
 `,
     );
     const outputFile = path.join(directory, "report.json");
@@ -45,7 +52,7 @@ it(${JSON.stringify(options.testName)}, async () => { ${options.body} });
       // This bounds only the isolated runner's startup and shutdown, not any sessions test.
       const child = spawn(process.execPath, args, {
         cwd: directory,
-        env: { ...process.env, CI: "true" },
+        env: { ...process.env, CI: "true", FORCE_COLOR: "1", NO_COLOR: undefined },
         timeout: 20_000,
         stdio: ["ignore", "pipe", "pipe"],
       });
@@ -137,5 +144,129 @@ it("retains the default reporter for a passing file", { timeout: 30_000 }, async
   });
   expect(result.signal).toBeNull();
   expect(result.code).toBe(0);
-  expect(result.output).toMatch(/Test Files\s+1 passed/);
+  expect(result.output).toContain("\u001b[");
+  expect(stripVTControlCharacters(result.output)).toMatch(/Test Files\s+1 passed/);
 });
+
+for (const capture of ["test console", "private logger"]) {
+  it(
+    `fails on a real unadvanced TestClock warning captured by ${capture}`,
+    { timeout: 30_000 },
+    async () => {
+      const result = await runFixture({
+        budgetMs: 10_000,
+        testName: `unadvanced clock with ${capture}`,
+        body: "",
+        effectBody: `Effect.gen(function* () {
+        const logs = [];
+        const program = Effect.gen(function* () {
+          const sleeper = yield* Effect.sleep("10 seconds").pipe(Effect.forkScoped);
+          yield* TestClock.withLive(Effect.sleep("1200 millis"));
+          ${capture === "test console" ? 'const captured = yield* TestConsole.logLines; expect(JSON.stringify(captured)).toContain("not advancing the test clock");' : 'expect(JSON.stringify(logs)).toContain("not advancing the test clock");'}
+          yield* TestClock.adjust("10 seconds");
+          yield* Fiber.join(sleeper);
+        });
+        yield* ${capture === "private logger" ? "program.pipe(Effect.provide(Logger.layer([Logger.make(({ message }) => logs.push(message))])))" : "program"};
+      })`,
+        jsonReporter: true,
+      });
+      expect(result.signal).toBeNull();
+      expect(result.code).toBe(1);
+      expect(result.output).toContain("sessions Clock warning:");
+      expect(result.output).toContain(`guard.test.ts > unadvanced clock with ${capture}`);
+      expect(result.json).toMatchObject({ numPassedTests: 1 });
+    },
+  );
+}
+
+it(
+  "fails on a real warning from a clock captured during shared-layer construction",
+  { timeout: 30_000 },
+  async () => {
+    const result = await runFixture({
+      budgetMs: 10_000,
+      testName: "shared layer clock",
+      body: "",
+      registration: `
+      class Sleeper extends Context.Service()("guard/Sleeper") {}
+      const sleeperLayer = Layer.effect(Sleeper, Clock.clockWith(clock =>
+        Effect.succeed({ sleep: clock.sleep(Duration.seconds(10)) })));
+      effectIt.layer(sleeperLayer)("shared", it => {
+        it.layer(Layer.empty)("nested", it => {
+          it.effect("captured clock", () => Effect.gen(function* () {
+            const sleeper = yield* Sleeper;
+            const fiber = yield* sleeper.sleep.pipe(Effect.forkScoped);
+            yield* TestClock.withLive(Effect.sleep("1200 millis"));
+            yield* TestClock.adjust("10 seconds");
+            yield* Fiber.join(fiber);
+          }).pipe(Effect.provide(Logger.layer([Logger.make(() => {})]))));
+        });
+      });`,
+      jsonReporter: true,
+    });
+    expect(result.signal).toBeNull();
+    expect(result.code).toBe(1);
+    expect(result.output).toContain("sessions Clock warning:");
+    expect(result.output).toContain("shared > nested > captured clock");
+    expect(result.json).toMatchObject({ numPassedTests: 1 });
+  },
+);
+
+it(
+  "retains virtual boundaries, scoped cancellation and the live-clock escape",
+  { timeout: 30_000 },
+  async () => {
+    const result = await runFixture({
+      budgetMs: 10_000,
+      testName: "clock controls",
+      body: "",
+      effectBody: `Effect.gen(function* () {
+      const ticks = [];
+      yield* TestClock.setTime(100);
+      const sleeper = yield* Effect.sleep("10 millis").pipe(
+        Effect.andThen(Clock.currentTimeMillis), Effect.tap(time => Effect.sync(() => ticks.push(time))), Effect.forkScoped);
+      yield* TestClock.adjust("9 millis");
+      expect(ticks).toEqual([]);
+      yield* TestClock.adjust("1 millis");
+      yield* Fiber.join(sleeper);
+      expect(ticks).toEqual([110]);
+      expect(yield* Clock.currentTimeNanos).toBe(110000000n);
+      yield* Effect.scoped(Effect.sleep("1 hour").pipe(Effect.andThen(Effect.sync(() => ticks.push("late"))), Effect.forkScoped));
+      yield* TestClock.adjust("1 hour");
+      expect(ticks).toEqual([110]);
+      const virtual = yield* Clock.currentTimeMillis;
+      const live = yield* TestClock.withLive(Clock.currentTimeMillis);
+      expect(live).toBeGreaterThan(virtual);
+    })`,
+      jsonReporter: true,
+    });
+    expect(result.signal).toBeNull();
+    expect(result.code).toBe(0);
+    expect(result.json).toMatchObject({ success: true, numPassedTests: 1 });
+  },
+);
+
+it(
+  "preserves the live Clock in a shared layer that excludes test services",
+  { timeout: 30_000 },
+  async () => {
+    const result = await runFixture({
+      budgetMs: 10_000,
+      testName: "live shared layer",
+      body: "",
+      registration: `effectIt.layer(Layer.empty, { excludeTestServices: true })("live shared", it => {
+      it.effect("prototype clock methods", () => Effect.gen(function* () {
+        const clock = yield* Clock.Clock;
+        expect(clock.currentTimeMillisUnsafe()).toBeGreaterThan(0);
+        expect(clock.currentTimeNanosUnsafe()).toBeGreaterThan(0n);
+        yield* Effect.logInfo("live clock logging still works");
+        yield* Effect.sleep("1 millis");
+      }));
+    });`,
+      jsonReporter: true,
+    });
+    expect(result.signal).toBeNull();
+    expect(result.code).toBe(0);
+    expect(result.json).toMatchObject({ success: true, numPassedTests: 1 });
+  },
+);

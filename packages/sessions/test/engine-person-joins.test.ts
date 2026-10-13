@@ -2,7 +2,6 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { describe, expect, it } from "@effect/vitest";
 import { WorktreesRepo } from "@mend/db";
 import { SessionId } from "@mend/domain";
 import { Project, Session, SessionProcess } from "@mend/domain/workbench";
@@ -25,8 +24,10 @@ import { Store } from "@mend/store";
 import type { CreateOptions, InteractiveSessionStatus } from "@sealant/sdk";
 import { Deferred, Duration, Effect, Fiber, Layer, Logger, type Scope } from "effect";
 import { TestClock } from "effect/testing";
+import { describe, expect } from "vitest";
 
 import { makeMemoryCaptureStore, type MemoryCaptureStore } from "./capture-store-memory.ts";
+import { it } from "./effect-vitest.ts";
 import { launchOnce, until } from "./engine/capture-fixture.ts";
 import {
   makeWorld,

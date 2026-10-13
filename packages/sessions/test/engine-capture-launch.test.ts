@@ -3,7 +3,6 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { describe, expect, it } from "@effect/vitest";
 import { WorktreesRepo, AgentMemoryRepo, type AgentMemoryHomes } from "@mend/db";
 import {
   OrganizationId,
@@ -47,9 +46,11 @@ import {
 import { buildManifest, snapshotDirectory, uploadObjects } from "@mend/store/testing";
 import type { CreateOptions, InteractiveSessionStatus, WorkspaceCaptureStatus } from "@sealant/sdk";
 import { Deferred, Duration, Effect, Fiber, Layer } from "effect";
+import { describe, expect } from "vitest";
 
 import { OPENCODE_CAPTURED_SEED } from "../src/harness-seeds.ts";
 import { makeMemoryCaptureStore, type MemoryCaptureStore } from "./capture-store-memory.ts";
+import { it } from "./effect-vitest.ts";
 import {
   configuredHarnessHomePath,
   headFlush,

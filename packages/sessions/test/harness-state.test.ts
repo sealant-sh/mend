@@ -2,7 +2,6 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { describe, expect, it } from "@effect/vitest";
 import {
   HarnessStateInvalidError,
   HarnessStateNotFoundError,
@@ -10,6 +9,9 @@ import {
   readHarnessStateManifest,
 } from "@mend/sessions";
 import { Effect } from "effect";
+import { describe, expect } from "vitest";
+
+import { it } from "./effect-vitest.ts";
 
 const withStateDir = async <A>(run: (stateDir: string) => Promise<A>): Promise<A> => {
   const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "mend-harness-state-test-"));

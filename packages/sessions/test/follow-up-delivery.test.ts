@@ -1,4 +1,3 @@
-import { describe, expect, it } from "@effect/vitest";
 import {
   AgentConversationRepo,
   FollowUpsRepo,
@@ -35,6 +34,7 @@ import {
 } from "@mend/domain/workbench";
 import { Deferred, Effect, Fiber, Layer } from "effect";
 import { TestClock } from "effect/testing";
+import { describe, expect } from "vitest";
 
 import { SessionNotLiveError } from "../src/engine.ts";
 import {
@@ -42,6 +42,7 @@ import {
   FollowUpDeliveryLive,
   FollowUpLauncher,
 } from "../src/follow-up-delivery.ts";
+import { it } from "./effect-vitest.ts";
 
 const now = () => new Date("2026-08-20T12:00:00.000Z");
 const SESSION_ID = SessionId.make("session-1");

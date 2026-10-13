@@ -3,7 +3,6 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { describe, expect, it } from "@effect/vitest";
 import { CaptureStoreRepo } from "@mend/db";
 import {
   ProjectId,
@@ -44,9 +43,11 @@ import type {
   WorkspaceCaptureReplanned,
 } from "@sealant/sdk";
 import { ConfigProvider, Deferred, Duration, Effect, Layer, Stream } from "effect";
+import { describe, expect } from "vitest";
 
 import { installScript } from "../src/dependency-cache.ts";
 import { makeMemoryCaptureStore, type MemoryCaptureStore } from "./capture-store-memory.ts";
+import { it } from "./effect-vitest.ts";
 import {
   CUSTOM_BASE,
   eventually,

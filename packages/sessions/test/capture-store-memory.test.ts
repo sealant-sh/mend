@@ -1,10 +1,11 @@
-import { describe, expect, it } from "@effect/vitest";
 import { CaptureStoreRepo } from "@mend/db";
 import { WorktreeId } from "@mend/domain";
 import { Clock, Effect } from "effect";
 import { TestClock } from "effect/testing";
+import { describe, expect } from "vitest";
 
 import { makeMemoryCaptureStore } from "./capture-store-memory.ts";
+import { it } from "./effect-vitest.ts";
 
 // Fixture fidelity only. The real PostgreSQL claim/register/heartbeat contract is exercised in
 // packages/db/test/capture-store.test.ts, including the launch-bound lease scenario.

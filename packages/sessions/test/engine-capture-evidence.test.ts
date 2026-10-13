@@ -4,7 +4,6 @@ import * as http from "node:http";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { describe, expect, it } from "@effect/vitest";
 import { SessionChannelTokensRepo, SessionChannelTokensRepoMemory } from "@mend/db";
 import { SessionId } from "@mend/domain";
 import { Project, Session, withUnsavedAnswer, executorEndOf } from "@mend/domain/workbench";
@@ -24,8 +23,10 @@ import { captureKeys, DeploymentConfig, SHALLOW_REPOSITORY_REASON } from "@mend/
 import type { CreateOptions, InteractiveSessionStatus, WorkspaceCaptureStatus } from "@sealant/sdk";
 import { Clock, Context, Deferred, Duration, Effect, Layer } from "effect";
 import { TestClock } from "effect/testing";
+import { describe, expect } from "vitest";
 
 import { makeMemoryCaptureStore, type MemoryCaptureStore } from "./capture-store-memory.ts";
+import { it } from "./effect-vitest.ts";
 import {
   CUSTOM_BASE,
   flushReport,

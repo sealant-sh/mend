@@ -5,7 +5,6 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { gunzipSync } from "node:zlib";
 
-import { describe, expect, it } from "@effect/vitest";
 import {
   HotWorkspacesRepo,
   ProjectLinksRepo,
@@ -79,10 +78,12 @@ import type {
   WorkspaceRuntimeInfo,
 } from "@sealant/sdk";
 import { Deferred, Duration, Effect, Exit, Fiber, Layer, Schedule } from "effect";
+import { describe, expect } from "vitest";
 
 import { HarnessLayoutConfigShared } from "../src/harness-layout-steps.ts";
 import { HARNESS_UPDATES_OFF_ENV, NO_PAGER_ENV, OPENCODE_SEED } from "../src/harness-seeds.ts";
 import { makeMemoryCaptureStore, type MemoryCaptureStore } from "./capture-store-memory.ts";
+import { it } from "./effect-vitest.ts";
 import {
   CUSTOM_BASE,
   NEWER_SNAPSHOT,

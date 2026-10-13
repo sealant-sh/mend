@@ -1,4 +1,3 @@
-import { describe, expect, it } from "@effect/vitest";
 import { AgentConversationRepo, SessionProcessesRepo, SessionsRepo } from "@mend/db";
 import {
   AgentItemId,
@@ -11,6 +10,7 @@ import { AgentItem, AgentTurn, SessionProcess, type TurnPayer } from "@mend/doma
 import { SealantPlatformError } from "@mend/sealant";
 import type { InteractiveSession } from "@sealant/sdk";
 import { Effect, Fiber, Layer } from "effect";
+import { describe, expect } from "vitest";
 
 import {
   type ConversationWait,
@@ -22,6 +22,7 @@ import {
   type SteeringDecision,
   waitedOut,
 } from "../src/protocol-host.ts";
+import { it } from "./effect-vitest.ts";
 
 /**
  * Shared steering's dispatch (docs/adr/0016, decision 6, Delivery 18), through the real protocol
