@@ -250,6 +250,21 @@ whichever is larger. The JSON report includes raw samples, database version, fix
 runtime context. Its 120-second test/setup budget is confined to this command. The default suite has
 no performance benchmark to skip, and its semantic checks retain their normal timeouts.
 
+The capture restorability measurement also has an explicit command:
+
+```sh
+MEND_VERIFY_BENCH_REPORT=/tmp/mend-capture-verification.json pnpm --filter @mend/store bench:capture-verification
+```
+
+It builds a format-2 section with 126,000 files and 21,211 directories, verifies it twice against
+local filesystem blobs, and records both raw durations, counts, revision and machine context. The
+report is printed; `MEND_VERIFY_BENCH_REPORT` optionally saves the same JSON to an existing parent
+directory. The first verification follows fixture upload, so it does not establish an OS cold-cache
+result. This is a measurement with no latency budget, not a release gate or a remote blob-store
+result. Its ten-minute hang guard applies only to this command. The ordinary
+`capture-verify-shares-thread.test.ts` responsiveness regression remains in the correctness suite.
+`MEND_MEASURE_VERIFY` is no longer needed; ordinary tests do not collect this measurement.
+
 Keep adverse measurements too. In
 [#740's run before benchmark separation](https://github.com/sealant-sh/mend/actions/runs/38185126396),
 the enriched list read measured 72.6 ms median against 37.1 ms for the plain read, exceeding its

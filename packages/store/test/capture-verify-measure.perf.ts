@@ -1,9 +1,10 @@
+import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
 import { Effect } from "effect";
-import { afterAll, expect, it } from "vitest";
+import { expect, it } from "vitest";
 
 import { BlobStoreFsLive } from "../src/blob-store.ts";
 import {
@@ -17,24 +18,16 @@ import {
 } from "../src/captures.ts";
 import { uploadObjects, writeCdcPack } from "./capture-fixture.ts";
 
-/**
- * What the register-time restorability check costs on a dependency tree the size of a pnpm
- * `node_modules` (ADR-0002 decision 28 measured ≈ 20,860 dir objects; 134,103 files on the
- * cluster). Opt-in: `MEND_MEASURE_VERIFY=1`; it prints the timings it measured.
- */
-const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "mend-verify-measure-"));
-afterAll(() => fs.rmSync(scratch, { recursive: true, force: true }));
-
-it.skipIf(process.env["MEND_MEASURE_VERIFY"] !== "1")(
-  "verifies a node_modules-sized format-2 section",
-  { timeout: 600_000 },
-  async () => {
+// Explicit measurement entrypoint; normal correctness tests never select this file.
+it("measures a node_modules-sized format-2 section", async () => {
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "mend-verify-measure-"));
+  try {
     const DIRS = 21_000;
     const FILES_PER_DIR = 6;
     const keys = captureKeys("wt-measure", 1);
     const chunks: Array<Uint8Array> = [];
     const dirBytes: Array<Uint8Array> = [];
-    // A four-level fan-out tree: leaves hold the files, every level lists its children.
+    // A three-level fan-out tree: leaves hold the files, every level lists its children.
     const leaf = (at: number): string => {
       const entries: Array<DirEntry> = [];
       for (let file = 0; file < FILES_PER_DIR; file += 1) {
@@ -98,13 +91,43 @@ it.skipIf(process.env["MEND_MEASURE_VERIFY"] !== "1")(
       const check = await Effect.runPromise(
         verifySectionRestorable(section).pipe(Effect.provide(layer)),
       );
-      return { check, ms: Math.round(performance.now() - started) };
+      return { check, ms: performance.now() - started };
     };
-    const cold = await timed();
-    const warm = await timed();
-    console.log(
-      `verify: ${cold.check.dirs} dirs, ${cold.check.files} files, ${contentPacks.length} packs, ${dirPacks.length} dir packs · cold ${cold.ms} ms · warm ${warm.ms} ms`,
-    );
-    expect(cold.check.files).toBe(DIRS * FILES_PER_DIR);
-  },
-);
+    const loadBefore = os.loadavg();
+    const first = await timed();
+    const repeat = await timed();
+    const report = {
+      measuredAt: new Date().toISOString(),
+      commit: execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim(),
+      dirty: execFileSync("git", ["status", "--porcelain"], { encoding: "utf8" }).trim() !== "",
+      runtime: {
+        node: process.version,
+        platform: process.platform,
+        architecture: process.arch,
+        release: os.release(),
+        cpu: os.cpus()[0]?.model ?? "unknown",
+        logicalCpus: os.cpus().length,
+        loadBefore,
+        loadAfter: os.loadavg(),
+        temporaryFilesystemType: fs.statfsSync(scratch).type,
+      },
+      fixture: { files: 126_000, dirs: 21_211, contentPacks: 32, dirPacks: 3 },
+      first,
+      repeat,
+      limits:
+        "Two measurements, no latency budget. Fixture upload warms filesystem caches; first does not mean an OS cold cache. Local filesystem blobs, not a remote blob store or whole session startup.",
+    };
+    const output = process.env["MEND_VERIFY_BENCH_REPORT"];
+    const json = `${JSON.stringify(report, null, 2)}\n`;
+    if (output !== undefined) fs.writeFileSync(output, json);
+    console.log(json);
+    expect(contentPacks).toHaveLength(32);
+    expect(dirPacks).toHaveLength(3);
+    for (const measured of [first, repeat]) {
+      expect(measured.check.files).toBe(126_000);
+      expect(measured.check.dirs).toBe(21_211);
+    }
+  } finally {
+    fs.rmSync(scratch, { recursive: true, force: true });
+  }
+});
