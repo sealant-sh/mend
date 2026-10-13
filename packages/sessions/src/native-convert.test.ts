@@ -60,6 +60,19 @@ const codexFreeformToolJsonl = (input: string, name = "exec") =>
 
 describe("native session conversion", () => {
   it("claude → codex: a valid rollout with meta, messages, and a real shell item", () => {
+    expect(ingestNativeSession("claude", claudeJsonl, "/workspace/repo")?.events).toEqual([
+      { kind: "user", text: "add a health endpoint" },
+      { kind: "assistant", text: "Adding it now." },
+      {
+        kind: "tool",
+        name: "shell",
+        args: "",
+        argsFormat: "json",
+        command: "pnpm test",
+        output: "1 passed",
+      },
+      { kind: "assistant", text: "Done — tests pass." },
+    ]);
     const converted = convertNativeSession("claude", "codex", claudeJsonl, {
       cwd: "/workspace/repo",
       now: "2026-07-26T00:00:00.000Z",
@@ -138,23 +151,227 @@ describe("round-trip invariant", () => {
   });
 
   it("preserves Codex free-form tool input through Claude", () => {
-    roundTrip(
-      "codex",
-      codexFreeformToolJsonl(
-        'const result = await tools.exec_command({ cmd: "git status" });\ntext(result.output);',
-      ),
-      "claude",
-    );
+    const input =
+      'const result = await tools.exec_command({ cmd: "git status" });\ntext(result.output);';
+    const native = codexFreeformToolJsonl(input);
+    expect(ingestNativeSession("codex", native, "/workspace/repo")?.events).toEqual([
+      { kind: "user", text: "inspect the repository" },
+      {
+        kind: "tool",
+        name: "exec",
+        args: input,
+        argsFormat: "text",
+        command: null,
+        output: '[{"type":"input_text","text":"On branch main"}]',
+      },
+    ]);
+    roundTrip("codex", native, "claude");
   });
 
   it("preserves JSON-looking Codex free-form tool input through both harnesses", () => {
     const native = codexFreeformToolJsonl('{"looks":"structured"}');
+    expect(ingestNativeSession("codex", native, "/workspace/repo")?.events).toEqual([
+      { kind: "user", text: "inspect the repository" },
+      {
+        kind: "tool",
+        name: "exec",
+        args: '{"looks":"structured"}',
+        argsFormat: "text",
+        command: null,
+        output: '[{"type":"input_text","text":"On branch main"}]',
+      },
+    ]);
     roundTrip("codex", native, "claude");
     roundTrip("codex", native, "codex");
   });
 
   it("does not reinterpret a free-form exec_command custom tool as a shell call", () => {
     const native = codexFreeformToolJsonl('{"cmd":"git status"}', "exec_command");
+    expect(ingestNativeSession("codex", native, "/workspace/repo")?.events).toEqual([
+      { kind: "user", text: "inspect the repository" },
+      {
+        kind: "tool",
+        name: "exec_command",
+        args: '{"cmd":"git status"}',
+        argsFormat: "text",
+        command: null,
+        output: '[{"type":"input_text","text":"On branch main"}]',
+      },
+    ]);
+    roundTrip("codex", native, "claude");
+    roundTrip("codex", native, "codex");
+  });
+});
+
+describe("native reasoning and tool evidence before emission", () => {
+  it.each([
+    '{ "path": "first.ts" }',
+    '{"id":9007199254740993}',
+    '{"scale":1e3,"zero":-0}',
+    '{"id":1,"id":2}',
+    "null",
+    '{"$mend.toolInput":{"format":"text","value":"literal user data"}}',
+  ])("preserves structured argument bytes %s through Claude's input envelope", (args) => {
+    const native = [
+      { type: "function_call", name: "lookup", arguments: args, call_id: "lookup-call" },
+      { type: "function_call_output", call_id: "lookup-call", output: "exact output\n" },
+    ]
+      .map((payload) => JSON.stringify({ type: "response_item", payload }))
+      .join("\n");
+    const expected = [
+      {
+        kind: "tool",
+        name: "lookup",
+        args,
+        argsFormat: "json",
+        command: null,
+        output: "exact output\n",
+      },
+    ];
+    const canonical = ingestNativeSession("codex", native, "/workspace/repo");
+    expect(canonical?.events).toEqual(expected);
+    if (canonical === null) throw new Error("expected canonical tool event");
+    const emitted = emitNativeSession(canonical, "claude", "2026-10-13T00:00:00.000Z");
+    expect(emitted).not.toBeNull();
+    const content = emitted?.files[0]?.content ?? "";
+    expect(content).toContain(
+      `"input":${JSON.stringify({ "$mend.toolInput": { format: "json", value: args } })}`,
+    );
+    expect(ingestNativeSession("claude", content, "/workspace/repo")?.events).toEqual(expected);
+  });
+  it("keeps lossless compact structured arguments as an ordinary native input", () => {
+    const native = [
+      {
+        type: "function_call",
+        name: "lookup",
+        arguments: '{"path":"first.ts","limit":2}',
+        call_id: "lookup-call",
+      },
+      { type: "function_call_output", call_id: "lookup-call", output: "found\n" },
+    ]
+      .map((payload) => JSON.stringify({ type: "response_item", payload }))
+      .join("\n");
+    const canonical = ingestNativeSession("codex", native, "/workspace/repo");
+    if (canonical === null) throw new Error("expected canonical tool event");
+    const emitted = emitNativeSession(canonical, "claude", "2026-10-13T00:00:00.000Z");
+    expect(emitted?.files[0]?.content).toContain('"input":{"path":"first.ts","limit":2}');
+    roundTrip("codex", native, "claude");
+  });
+  it("reads Claude thinking and tool results with their original call association", () => {
+    const native = [
+      {
+        type: "assistant",
+        message: {
+          content: [
+            {
+              type: "thinking",
+              thinking: "Inspect first.\nThen compare.",
+              signature: "provider-private-signature",
+            },
+            { type: "redacted_thinking", data: "provider-private-encrypted-block" },
+            {
+              type: "tool_use",
+              id: "first",
+              name: "Read",
+              input: { file_path: "first.ts", offset: 2 },
+            },
+            {
+              type: "tool_use",
+              id: "second",
+              name: "Bash",
+              input: { command: "printf '  exact\\n'" },
+            },
+          ],
+        },
+      },
+      {
+        type: "user",
+        message: {
+          content: [
+            { type: "tool_result", tool_use_id: "second", content: "  exact\n" },
+            {
+              type: "tool_result",
+              tool_use_id: "first",
+              content: [
+                { type: "text", text: "  first line\n" },
+                { type: "text", text: "second line" },
+              ],
+            },
+          ],
+        },
+      },
+    ]
+      .map((entry) => JSON.stringify(entry))
+      .join("\n");
+    expect(ingestNativeSession("claude", native, "/workspace/repo")?.events).toEqual([
+      { kind: "reasoning", text: "Inspect first.\nThen compare." },
+      {
+        kind: "tool",
+        name: "shell",
+        args: "",
+        argsFormat: "json",
+        command: "printf '  exact\\n'",
+        output: "  exact\n",
+      },
+      {
+        kind: "tool",
+        name: "Read",
+        args: '{"file_path":"first.ts","offset":2}',
+        argsFormat: "json",
+        command: null,
+        output: "  first line\n\nsecond line",
+      },
+    ]);
+    roundTrip("claude", native, "codex");
+    roundTrip("claude", native, "claude");
+  });
+
+  it("reads Codex summary, JSON arguments and exact tool output independently of a round trip", () => {
+    const native = [
+      {
+        type: "reasoning",
+        summary: [
+          { type: "summary_text", text: "Inspect first." },
+          { type: "summary_text", text: "Then compare." },
+        ],
+        encrypted_content: "provider-private-encrypted-block",
+      },
+      {
+        type: "function_call",
+        name: "lookup",
+        arguments: '{ "path": "src/first.ts", "limit": 2 }',
+        call_id: "first",
+      },
+      {
+        type: "function_call",
+        name: "exec_command",
+        arguments: '{"cmd":"git status --short"}',
+        call_id: "second",
+      },
+      { type: "function_call_output", call_id: "second", output: " M first.ts\n" },
+      { type: "function_call_output", call_id: "first", output: "  match one\nmatch two\n" },
+    ]
+      .map((payload) => JSON.stringify({ type: "response_item", payload }))
+      .join("\n");
+    expect(ingestNativeSession("codex", native, "/workspace/repo")?.events).toEqual([
+      { kind: "reasoning", text: "Inspect first.\nThen compare." },
+      {
+        kind: "tool",
+        name: "shell",
+        args: "",
+        argsFormat: "json",
+        command: "git status --short",
+        output: " M first.ts\n",
+      },
+      {
+        kind: "tool",
+        name: "lookup",
+        args: '{ "path": "src/first.ts", "limit": 2 }',
+        argsFormat: "json",
+        command: null,
+        output: "  match one\nmatch two\n",
+      },
+    ]);
     roundTrip("codex", native, "claude");
     roundTrip("codex", native, "codex");
   });

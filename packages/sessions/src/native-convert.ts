@@ -418,12 +418,15 @@ const claudeToolInput = (raw: string, format: ToolArgsFormat): unknown => {
     return { [TOOL_INPUT_ENVELOPE]: { format, value: raw } };
   }
   try {
-    return JSON.parse(raw) as unknown;
+    const input: unknown = JSON.parse(raw);
+    const restored = canonicalToolArgs(input);
+    // JSON parsing can round numbers, discard duplicate keys, or consume our reserved envelope.
+    // Use an ordinary native input only when re-ingestion retains the exact canonical arguments.
+    if (restored.args === raw && restored.argsFormat === format) return input;
   } catch {
-    // Claude tool_use input must be JSON. Preserve malformed structured input
-    // explicitly too, so conversion never changes the canonical record.
-    return { [TOOL_INPUT_ENVELOPE]: { format, value: raw } };
+    // Malformed structured arguments also need the explicit preservation envelope.
   }
+  return { [TOOL_INPUT_ENVELOPE]: { format, value: raw } };
 };
 
 const emitClaude = (session: CanonicalSession, now: string): ConvertedNativeSession => {
