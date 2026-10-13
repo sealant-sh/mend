@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Layer } from "effect";
+import { ConfigProvider, Effect, Layer } from "effect";
 
 import { InferenceError, InferenceProvider, type InferenceRequest } from "./provider.ts";
 import {
@@ -49,6 +49,7 @@ const readWith = (
   outcomes: Array<Effect.Effect<unknown, InferenceError>>,
   requests: Array<InferenceRequest>,
   over: ThreadProjectInput = input,
+  configuration: Readonly<Record<string, string>> = {},
 ) =>
   Effect.gen(function* () {
     const reader = yield* ThreadProjectReader;
@@ -64,11 +65,83 @@ const readWith = (
             },
           }),
         ),
+        Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown(configuration))),
       ),
     ),
   );
 
 describe("ThreadProjectReader", () => {
+  for (const [requestLength, threadTextLength, expectedThread] of [
+    [3999, 11996, `a: ${"t".repeat(11996)}`],
+    [4000, 11997, `a: ${"t".repeat(11997)}`],
+    [4001, 11998, `…: ${"t".repeat(11998)}`],
+  ] as const) {
+    it.effect(
+      `bounds request/thread text at ${requestLength}/${threadTextLength} characters`,
+      () => {
+        const requests: Array<InferenceRequest> = [];
+        return Effect.gen(function* () {
+          yield* readWith(
+            [Effect.succeed({ projectId: "p-web", likeliest: [], options: none })],
+            requests,
+            {
+              ...input,
+              request: "r".repeat(requestLength),
+              thread: [{ author: "a", text: "t".repeat(threadTextLength) }],
+            },
+          );
+          const prompt = requests[0]?.prompt;
+          expect(prompt?.split("The Slack thread:\n")[1]?.split("\n\nThe request:")[0]).toBe(
+            expectedThread,
+          );
+          expect(prompt?.split("The request:\n")[1]?.split("\n\nHarnesses:")[0]).toBe(
+            "r".repeat(Math.min(requestLength, 4000)),
+          );
+        });
+      },
+    );
+  }
+
+  it.effect("uses explicit model overrides on both provider arms", () => {
+    const requests: Array<InferenceRequest> = [];
+    return Effect.gen(function* () {
+      yield* readWith(
+        [
+          Effect.fail(
+            new InferenceError({ message: "Reconnect the claude connected account", cause: null }),
+          ),
+          Effect.succeed({ projectId: "p-web", likeliest: [], options: none }),
+        ],
+        requests,
+        input,
+        {
+          MEND_INFERENCE_SLACK_MODEL_CLAUDE: "custom-claude",
+          MEND_INFERENCE_SLACK_MODEL_CODEX: "custom-codex",
+        },
+      );
+      expect(requests.map((request) => [request.provider, request.model])).toEqual([
+        ["claude", "custom-claude"],
+        ["codex", "custom-codex"],
+      ]);
+    });
+  });
+
+  it.effect("preserves the fallback failure after exactly two provider calls", () => {
+    const requests: Array<InferenceRequest> = [];
+    const failure = new InferenceError({ message: "Codex inference unavailable", cause: null });
+    return Effect.gen(function* () {
+      const result = yield* readWith(
+        [
+          Effect.fail(new InferenceError({ message: "No claude connected account", cause: null })),
+          Effect.fail(failure),
+        ],
+        requests,
+      ).pipe(Effect.flip);
+      expect(result).toBe(failure);
+      expect(requests.map((request) => request.provider)).toEqual(["claude", "codex"]);
+    });
+  });
+
   it.effect(
     "asks the cheap model with the candidates and the thread, and checks the answer",
     () => {

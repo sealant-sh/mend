@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Layer, Schema } from "effect";
+import { ConfigProvider, Effect, Layer, Schema } from "effect";
 
 import { InferenceError, InferenceProvider, type InferenceRequest } from "./provider.ts";
 import {
@@ -7,6 +7,7 @@ import {
   normalizeLabel,
   SessionNamer,
   SessionNamerLive,
+  type SessionNamingInput,
   withoutFirstPrompt,
 } from "./session-namer.ts";
 
@@ -20,10 +21,12 @@ const input = {
 const nameWith = (
   outcomes: Array<Effect.Effect<unknown, InferenceError>>,
   requests: Array<InferenceRequest>,
+  over: SessionNamingInput = input,
+  configuration: Readonly<Record<string, string>> = {},
 ) =>
   Effect.gen(function* () {
     const namer = yield* SessionNamer;
-    return yield* namer.name(input);
+    return yield* namer.name(over);
   }).pipe(
     Effect.provide(
       SessionNamerLive.pipe(
@@ -35,11 +38,87 @@ const nameWith = (
             },
           }),
         ),
+        Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown(configuration))),
       ),
     ),
   );
 
 describe("SessionNamer", () => {
+  for (const malformed of [{ label: 42 }, { name: "wrong field" }, null]) {
+    it.effect(`refuses the malformed label ${JSON.stringify(malformed)} without fallback`, () => {
+      const requests: Array<InferenceRequest> = [];
+      return Effect.gen(function* () {
+        const error = yield* nameWith([Effect.succeed(malformed)], requests).pipe(Effect.flip);
+        expect(error).toMatchObject({
+          _tag: "InferenceError",
+          message: expect.stringContaining("the session name did not match its schema:"),
+        });
+        expect(requests).toHaveLength(1);
+      });
+    });
+  }
+
+  for (const [promptLength, replyLength, expectedPrompt, expectedReply] of [
+    [1999, 999, "p".repeat(1999), "r".repeat(999)],
+    [2000, 1000, "p".repeat(2000), "r".repeat(1000)],
+    [2001, 1001, `${"p".repeat(2000)}…`, `${"r".repeat(1000)}…`],
+  ] as const) {
+    it.effect(`bounds provider prompt/reply at ${promptLength}/${replyLength} characters`, () => {
+      const requests: Array<InferenceRequest> = [];
+      return Effect.gen(function* () {
+        yield* nameWith([Effect.succeed({ label: "name" })], requests, {
+          ...input,
+          firstUserTurn: "p".repeat(promptLength),
+          assistantReply: "r".repeat(replyLength),
+        });
+        expect(requests[0]?.prompt).toBe(
+          `Project: mend. Harness: claude.\n\nThe session's first prompt:\n${expectedPrompt}` +
+            `\n\nThe agent's first reply began:\n${expectedReply}`,
+        );
+      });
+    });
+  }
+
+  it.effect("uses explicit model overrides on both provider arms", () => {
+    const requests: Array<InferenceRequest> = [];
+    return Effect.gen(function* () {
+      yield* nameWith(
+        [
+          Effect.fail(
+            new InferenceError({ message: "Reconnect the claude connected account", cause: null }),
+          ),
+          Effect.succeed({ label: "configured name" }),
+        ],
+        requests,
+        input,
+        {
+          MEND_INFERENCE_NAMING_MODEL_CLAUDE: "custom-claude",
+          MEND_INFERENCE_NAMING_MODEL_CODEX: "custom-codex",
+        },
+      );
+      expect(requests.map((request) => [request.provider, request.model])).toEqual([
+        ["claude", "custom-claude"],
+        ["codex", "custom-codex"],
+      ]);
+    });
+  });
+
+  it.effect("preserves the fallback failure after exactly two provider calls", () => {
+    const requests: Array<InferenceRequest> = [];
+    const failure = new InferenceError({ message: "Codex inference unavailable", cause: null });
+    return Effect.gen(function* () {
+      const result = yield* nameWith(
+        [
+          Effect.fail(new InferenceError({ message: "No claude connected account", cause: null })),
+          Effect.fail(failure),
+        ],
+        requests,
+      ).pipe(Effect.flip);
+      expect(result).toBe(failure);
+      expect(requests.map((request) => request.provider)).toEqual(["claude", "codex"]);
+    });
+  });
+
   it.effect("names on the claude arm with the cheap model and normalizes the answer", () => {
     const requests: Array<InferenceRequest> = [];
     return Effect.gen(function* () {
