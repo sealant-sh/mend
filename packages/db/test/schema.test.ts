@@ -1,852 +1,296 @@
-import { getTableConfig } from "drizzle-orm/pg-core";
-import { describe, expect, it } from "vitest";
+import { PgClient } from "@effect/sql-pg";
+import { is, SQL } from "drizzle-orm";
+import { getTableConfig, IndexedColumn, PgDialect, type PgColumn } from "drizzle-orm/pg-core";
+import { Effect, Redacted } from "effect";
+import { SqlClient } from "effect/unstable/sql";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import {
-  agentItems,
-  agentRequests,
-  agentSessions,
-  agentTurns,
-  briefComments,
-  briefVersions,
-  briefs,
-  changeLandings,
-  changePasses,
-  changeTours,
-  changes,
-  checkpoints,
-  contextSnapshots,
-  followUps,
-  inferenceCalls,
-  issues,
-  projectEnvironmentVariables,
-  projectMounts,
-  projectSecrets,
-  projectReferences,
-  projectServiceRecipes,
-  projects,
-  pushDevices,
-  referenceRepos,
-  reviewQuestions,
-  reviewComments,
-  reviewSlices,
-  runs,
-  serviceForwards,
-  serviceObservations,
-  services,
-  sessionProcesses,
-  sessionRuns,
-  settings,
-  slackChannelDefaults,
-  slackEventClaims,
-  slackInstalls,
-  slackLinkCodes,
-  slackLinks,
-  slackThreadPosts,
-  slackThreads,
-  slackUserDefaults,
-  sessionRepositories,
-  worktreeChanges,
-  worktrees,
-} from "../src/schema/workbench.ts";
+import { migrations } from "../src/migrations.ts";
+import * as tables from "../src/schema/workbench.ts";
+import { postgresTestConfig } from "./postgres.ts";
 
-describe("Mend Drizzle schema", () => {
-  it("maps the retiring issue, change, and run graph", () => {
-    expect([issues, changes, runs].map((table) => getTableConfig(table).name)).toEqual([
-      "issues",
-      "changes",
-      "runs",
-    ]);
-    expect(getTableConfig(issues).columns.map((column) => column.name)).toEqual([
-      "id",
-      "source",
-      "external_ref",
-      "repository",
-      "title",
-      "body",
-      "stage",
-      "position",
-      "last_failure_run_id",
-      "created_at",
-      "updated_at",
-    ]);
-    expect(getTableConfig(issues).indexes[0]?.config.name).toBe("issues_stage_position_idx");
-    expect(getTableConfig(changes).columns[1]?.isUnique).toBe(true);
-    expect(getTableConfig(changes).foreignKeys[0]?.onDelete).toBe("cascade");
-    expect(getTableConfig(runs).columns.map((column) => column.name)).toEqual([
-      "id",
-      "issue_id",
-      "change_id",
-      "kind",
-      "sealant_run_id",
-      "sealant_workspace_id",
-      "status",
-      "outcome",
-      "summary",
-      "last_seen_sequence",
-      "started_at",
-      "settled_at",
-      "created_at",
-      "updated_at",
-      "failure_brief",
-    ]);
-    expect(runs.lastSeenSequence.getSQLType()).toBe("bigint");
-    expect(runs.failureBrief.getSQLType()).toBe("jsonb");
-    expect(getTableConfig(runs).foreignKeys.map((foreignKey) => foreignKey.onDelete)).toEqual([
-      "cascade",
-      "set null",
-    ]);
-  });
+const postgres = postgresTestConfig();
+const database = `mend_schema_parity_${process.pid}_${Date.now()}`;
+const url = new URL(postgres.adminUrl);
+url.pathname = `/${database}`;
+const adminLayer = PgClient.layer({ url: Redacted.make(postgres.adminUrl) });
+const scratchLayer = PgClient.layer({ url: Redacted.make(url.toString()) });
+const withAdmin = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
+  Effect.runPromise(effect.pipe(Effect.provide(adminLayer), Effect.scoped));
+const run = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
+  Effect.runPromise(effect.pipe(Effect.provide(scratchLayer), Effect.scoped));
+const dialect = new PgDialect();
+const quote = (name: string) => dialect.escapeName(name);
+const configs = Object.values(tables).map(getTableConfig);
+let created = false;
 
-  it("maps living briefs, immutable versions, question indexes, and comments", () => {
-    expect(
-      [briefs, briefVersions, reviewQuestions, briefComments].map(
-        (table) => getTableConfig(table).name,
-      ),
-    ).toEqual(["briefs", "brief_versions", "review_questions", "brief_comments"]);
-    expect(briefs.document.getSQLType()).toBe("jsonb");
-    expect(briefVersions.document.getSQLType()).toBe("jsonb");
-    expect(reviewQuestions.evidence.getSQLType()).toBe("jsonb");
-    expect(
-      getTableConfig(briefVersions).primaryKeys[0]?.columns.map((column) => column.name),
-    ).toEqual(["brief_id", "version"]);
-    expect(getTableConfig(reviewQuestions).uniqueConstraints[0]?.name).toBe(
-      "review_questions_brief_id_index_key",
-    );
-    expect(getTableConfig(briefComments).indexes[0]?.config.name).toBe("brief_comments_brief_idx");
-    for (const table of [briefs, briefVersions, reviewQuestions, briefComments]) {
-      expect(getTableConfig(table).foreignKeys[0]?.onDelete).toBe("cascade");
-    }
-  });
+const expression = (value: SQL) => {
+  const query = dialect.sqlToQuery(value);
+  if (query.params.length > 0) throw new Error("Schema DDL must not contain query parameters");
+  return query.sql;
+};
+const defaultClause = (column: PgColumn) => {
+  const value = column.default;
+  if (value === undefined) return "";
+  if (is(value, SQL)) return ` DEFAULT ${expression(value)}`;
+  if (typeof value === "string") return ` DEFAULT ${dialect.escapeString(value)}`;
+  if (typeof value === "number" || typeof value === "bigint" || typeof value === "boolean")
+    return ` DEFAULT ${String(value)}`;
+  if (column.getSQLType() === "jsonb")
+    return ` DEFAULT ${dialect.escapeString(JSON.stringify(value))}`;
+  throw new Error(`Unsupported schema default for ${column.name}`);
+};
 
-  it("maps project defaults for automation and user-scoped setup", () => {
-    const projectColumns = getTableConfig(projects).columns;
-    for (const name of ["auto_tour", "auto_suggest", "auto_name", "auto_land"]) {
-      const column = projectColumns.find((candidate) => candidate.name === name);
-      expect(column?.notNull, name).toBe(true);
-      expect(column?.default, name).toBe("inherit");
-    }
-    for (const name of ["apply_dotfiles", "default_shell_profile", "inherit_user_skills"]) {
-      const column = projectColumns.find((candidate) => candidate.name === name);
-      expect(column?.notNull, name).toBe(true);
-      expect(column?.default, name).toBe(true);
-    }
-  });
-
-  it("maps the session graph to the existing PostgreSQL table and column names", () => {
-    expect(
-      [
-        projects,
-        worktrees,
-        contextSnapshots,
-        agentSessions,
-        sessionRuns,
-        worktreeChanges,
-        checkpoints,
-      ].map((table) => getTableConfig(table).name),
-    ).toEqual([
-      "projects",
-      "worktrees",
-      "context_snapshots",
-      "agent_sessions",
-      "session_runs",
-      "worktree_changes",
-      "checkpoints",
-    ]);
-
-    expect(getTableConfig(agentSessions).columns.map((column) => column.name)).toEqual([
-      "id",
-      "project_id",
-      "worktree_id",
-      "harness",
-      "model",
-      "effort",
-      "provider_session_id",
-      "label",
-      "worktree",
-      "branch",
-      "base_sha",
-      "base_ref",
-      "context_snapshot_id",
-      "reference_mounts",
-      "extra_mounts",
-      "sealant_run_id",
-      "sealant_workspace_id",
-      "sealant_session_id",
-      "workspace_expires_at",
-      "workspace_ttl_renewed_at",
-      "workspace_ttl_renewal_failed_at",
-      "workspace_ttl_renewal_error",
-      "native_ingest_cursor",
-      "workspace_image",
-      "dotfiles",
-      "owner_user_id",
-      "origin",
-      "auto_land",
-      "shared_control_enabled_by_user_id",
-      "shared_control_enabled_at",
-      "shared_control_ever_at",
-      "has_transcript",
-      "idle_stopped_at",
-      "capture_pending",
-      "capture_pending_bytes",
-      "capture_refused",
-      "capture_registered_at",
-      "capture_observed_at",
-      "capture_drain",
-      "capture_drain_requested_at",
-      "capture_drain_progress_at",
-      "capture_not_saved_at",
-      "capture_incomplete_reason",
-      "capture_incomplete_detail",
-      "capture_failing_since",
-      "capture_failing_error",
-      "capture_overdue_step",
-      "capture_overdue_since",
-      "capture_overdue_running_ms",
-      "capture_overdue_bound_ms",
-      "capture_discarded_at",
-      "capture_discarded_by",
-      "capture_drain_resume",
-      "capture_final_workspace_id",
-      "capture_saved_workspace_id",
-      "capture_saved_at",
-      "capture_saved_n",
-      "capture_saved_epoch",
-      "capture_unsaved_workspace_id",
-      "capture_unsaved_at",
-      "capture_unsaved_detail",
-      "capture_observed_position",
-      "executor_resource_id",
-      "executor_create_key",
-      "executor_launch_id",
-      "executor_started_at",
-      "removal_requested_at",
-      "status",
-      "summary",
-      "last_seen_sequence",
-      "record_history_complete",
-      "started_at",
-      "settled_at",
-      "created_at",
-      "updated_at",
-    ]);
-  });
-
-  it("maps the worktree container: identity split, one change each, a dense chain", () => {
-    const worktreeConfig = getTableConfig(worktrees);
-    expect(worktreeConfig.columns.map((column) => column.name)).toEqual([
-      "id",
-      "project_id",
-      "name",
-      "directory",
-      "branch",
-      "base_sha",
-      "base_ref",
-      "created_at",
-      "updated_at",
-    ]);
-    expect(
-      worktreeConfig.uniqueConstraints.map((constraint) => constraint.name).toSorted(),
-    ).toEqual(["worktrees_project_directory_key", "worktrees_project_name_key"]);
-
-    // Sessions belong to a worktree; deleting the worktree takes its conversations.
-    const sessionForeignKeys = getTableConfig(agentSessions).foreignKeys;
-    const worktreeFk = sessionForeignKeys.find((fk) =>
-      fk.reference().columns.some((column) => column.name === "worktree_id"),
-    );
-    expect(worktreeFk?.onDelete).toBe("cascade");
-
-    // One change per worktree; the session pointer is a nullable mirror that
-    // survives conversation deletion.
-    const changeConfig = getTableConfig(worktreeChanges);
-    const changeWorktreeColumn = changeConfig.columns.find(
-      (column) => column.name === "worktree_id",
-    );
-    expect(changeWorktreeColumn?.isUnique).toBe(true);
-    expect(changeConfig.columns.find((column) => column.name === "session_id")?.notNull).toBe(
-      false,
-    );
-    const changeSessionFk = changeConfig.foreignKeys.find((fk) =>
-      fk.reference().columns.some((column) => column.name === "session_id"),
-    );
-    expect(changeSessionFk?.onDelete).toBe("set null");
-
-    // The checkpoint chain: dense per-worktree ordinals, session as provenance only.
-    const checkpointConfig = getTableConfig(checkpoints);
-    const ordinalIndex = checkpointConfig.indexes.find(
-      (index) => index.config.name === "checkpoints_worktree_ordinal_idx",
-    );
-    expect(ordinalIndex?.config.unique).toBe(true);
-    expect(checkpointConfig.columns.find((column) => column.name === "session_id")?.notNull).toBe(
-      false,
-    );
-    const checkpointSessionFk = checkpointConfig.foreignKeys.find((fk) =>
-      fk.reference().columns.some((column) => column.name === "session_id"),
-    );
-    expect(checkpointSessionFk?.onDelete).toBe("set null");
-  });
-
-  it("maps replay-stable protocol conversations and resumable item cursors", () => {
-    expect(sessionProcesses.protocolOutputSeq.getSQLType()).toBe("bigint");
-
-    expect(
-      [agentTurns, agentItems, agentRequests].map((table) => getTableConfig(table).name),
-    ).toEqual(["agent_turns", "agent_items", "agent_requests"]);
-    const itemConfig = getTableConfig(agentItems);
-    expect(itemConfig.uniqueConstraints.map((constraint) => constraint.name).toSorted()).toEqual([
-      "agent_items_process_provider_key",
-      "agent_items_session_seq_key",
-    ]);
-    expect(itemConfig.indexes.map((index) => index.config.name)).toEqual([
-      "agent_items_session_seq_idx",
-      "agent_items_turn_seq_idx",
-    ]);
-    expect(itemConfig.foreignKeys.map((foreignKey) => foreignKey.onDelete)).toEqual([
-      "cascade",
-      "cascade",
-      "cascade",
-    ]);
-
-    const turnIndexes = new Map(
-      getTableConfig(agentTurns).indexes.map((index) => [index.config.name, index.config]),
-    );
-    expect(turnIndexes.get("agent_turns_session_provider_key")?.unique).toBe(true);
-    expect(turnIndexes.get("agent_turns_one_running_process_idx")?.unique).toBe(true);
-    expect(turnIndexes.get("agent_turns_one_running_process_idx")?.where).toBeDefined();
-    for (const name of ["intent", "intent_source"]) {
-      const column = getTableConfig(agentTurns).columns.find(
-        (candidate) => candidate.name === name,
+// PostgreSQL canonicalizes the independently declared Drizzle model and migration DDL.
+// This avoids treating equivalent types/default expressions as textual differences.
+const modelDdl = () => {
+  const statements = ["CREATE SCHEMA parity_model"];
+  for (const config of configs) {
+    if (
+      config.schema !== undefined ||
+      config.checks.length > 0 ||
+      config.policies.length > 0 ||
+      config.enableRLS
+    )
+      throw new Error(
+        `Extend catalog parity for schema/check/policy declarations on ${config.name}`,
       );
-      expect(column?.notNull, name).toBe(false);
-    }
-
-    const requestConfig = getTableConfig(agentRequests);
-    expect(requestConfig.uniqueConstraints.map((constraint) => constraint.name)).toEqual([
-      "agent_requests_process_provider_key",
-    ]);
-    expect(agentRequests.detail.getSQLType()).toBe("jsonb");
-    expect(agentRequests.questions.getSQLType()).toBe("jsonb");
-    expect(agentRequests.answers.getSQLType()).toBe("jsonb");
-    expect(agentRequests.responseDelivery.default).toBe("none");
-  });
-
-  it("preserves run-local bigint cursors and the one-active-run invariant", () => {
-    expect(sessionRuns.lastSeenSequence.getSQLType()).toBe("bigint");
-    expect(checkpoints.seq.getSQLType()).toBe("bigint");
-
-    const activeRunIndex = getTableConfig(sessionRuns).indexes.find(
-      (candidate) => candidate.config.name === "session_runs_one_active_idx",
+    for (const column of config.columns)
+      if (column.generated !== undefined || column.generatedIdentity !== undefined)
+        throw new Error(`Extend catalog parity for generated column ${config.name}.${column.name}`);
+    const columns = config.columns.map(
+      (column) =>
+        `${quote(column.name)} ${column.getSQLType()}${column.notNull ? " NOT NULL" : ""}${defaultClause(column)}`,
     );
-    expect(activeRunIndex?.config.unique).toBe(true);
-    expect(activeRunIndex?.config.where).toBeDefined();
-  });
-
-  it("maps project environment variables with ownership, uniqueness, and revisions", () => {
-    const config = getTableConfig(projectEnvironmentVariables);
-    expect(config.name).toBe("project_environment_variables");
-    expect(config.columns.map((column) => column.name)).toEqual([
-      "id",
-      "project_id",
-      "name",
-      "value",
-      "revision",
-      "created_at",
-      "updated_at",
-    ]);
-    expect(config.foreignKeys[0]?.onDelete).toBe("cascade");
-    expect(config.uniqueConstraints.map((constraint) => constraint.name)).toEqual([
-      "project_environment_variables_project_id_name_key",
-    ]);
-    // The aggregate revision rides the project row; mutations bump it under the row lock.
-    const projectColumns = getTableConfig(projects).columns;
-    expect(projectColumns.find((column) => column.name === "environment_revision")?.notNull).toBe(
-      true,
-    );
-    // Session runs stamp the SAFE manifest — revision + names, both nullable (legacy/unknown).
-    const runColumns = getTableConfig(sessionRuns).columns;
-    expect(runColumns.find((column) => column.name === "environment_revision")?.notNull).toBe(
-      false,
-    );
-    expect(
-      runColumns.find((column) => column.name === "environment_variable_names")?.getSQLType(),
-    ).toBe("jsonb");
-  });
-
-  it("maps project secrets as sealed rows with the same ownership/revision discipline", () => {
-    const config = getTableConfig(projectSecrets);
-    expect(config.name).toBe("project_secrets");
-    expect(config.columns.map((column) => column.name)).toEqual([
-      "id",
-      "project_id",
-      "name",
-      "sealed_value",
-      "revision",
-      "created_at",
-      "updated_at",
-    ]);
-    // No plaintext column exists to leak into: the only value column is the sealed one.
-    expect(config.columns.some((column) => column.name === "value")).toBe(false);
-    expect(config.foreignKeys[0]?.onDelete).toBe("cascade");
-    expect(config.uniqueConstraints.map((constraint) => constraint.name)).toEqual([
-      "project_secrets_project_id_name_key",
-    ]);
-    const projectColumns = getTableConfig(projects).columns;
-    expect(projectColumns.find((column) => column.name === "secret_revision")?.notNull).toBe(true);
-    const runColumns = getTableConfig(sessionRuns).columns;
-    expect(runColumns.find((column) => column.name === "secret_names")?.getSQLType()).toBe("jsonb");
-  });
-
-  it("maps Slack installs with sealed tokens only, and the keys that tie links to one workspace", () => {
-    const installs = getTableConfig(slackInstalls);
-    expect(installs.name).toBe("slack_installs");
-    // No plaintext column exists to leak into: the only token columns are the sealed ones.
-    expect(
-      installs.columns.filter((column) => column.name.includes("token")).map((c) => c.name),
-    ).toEqual(["sealed_app_token", "sealed_bot_token"]);
-    expect(installs.uniqueConstraints.map((constraint) => constraint.name)).toEqual([
-      "slack_installs_team_id_key",
-      "slack_installs_organization_team_key",
-    ]);
-    for (const [name, value] of [
-      ["default_harness", "claude"],
-      ["show_agent_messages", true],
-      ["show_diffs", false],
-      ["external_channels", false],
-      ["land_automatically", true],
-    ] as const) {
-      expect(installs.columns.find((column) => column.name === name)?.default, name).toBe(value);
-    }
-    const origin = getTableConfig(agentSessions).columns.find((column) => column.name === "origin");
-    expect(origin?.notNull).toBe(true);
-    expect(origin?.default).toBe("mend");
-
-    const links = getTableConfig(slackLinks);
-    expect(links.primaryKeys[0]?.columns.map((column) => column.name)).toEqual([
-      "team_id",
-      "slack_user_id",
-    ]);
-    expect(links.uniqueConstraints.map((constraint) => constraint.name)).toEqual([
-      "slack_links_team_user_key",
-    ]);
-    expect(
-      links.foreignKeys.map((foreignKey) => [foreignKey.getName(), foreignKey.onDelete]),
-    ).toEqual([
-      ["slack_links_install_fkey", "cascade"],
-      ["slack_links_member_fkey", "cascade"],
-    ]);
-    expect(getTableConfig(slackLinkCodes).columns.map((column) => column.name)).toEqual([
-      "code_hash",
-      "team_id",
-      "slack_user_id",
-      "request",
-      "expires_at",
-      "used_at",
-      "created_at",
-    ]);
-    for (const table of [slackLinkCodes, slackChannelDefaults]) {
-      expect(getTableConfig(table).foreignKeys[0]?.onDelete).toBe("cascade");
-    }
-    expect(
-      getTableConfig(slackChannelDefaults).primaryKeys[0]?.columns.map((column) => column.name),
-    ).toEqual(["team_id", "channel_id"]);
-    expect(getTableConfig(slackUserDefaults).columns[0]?.primary).toBe(true);
-  });
-
-  it("maps Slack threads one session each, many to a thread, and claims by event id", () => {
-    const threads = getTableConfig(slackThreads);
-    expect(threads.columns.map((column) => column.name)).toEqual([
-      "session_id",
-      "team_id",
-      "channel_id",
-      "thread_ts",
-      "request_ts",
-      "status_ts",
-      "slack_user_id",
-      "project_source",
-      "external",
-      "reported_state",
-      "reported_status",
-      "created_at",
-    ]);
-    expect(threads.columns[0]?.primary).toBe(true);
-    expect(threads.foreignKeys[0]?.onDelete).toBe("cascade");
-    expect(threads.indexes[0]?.config.name).toBe("slack_threads_thread_idx");
-    const posts = getTableConfig(slackThreadPosts);
-    expect(posts.primaryKeys[0]?.columns.map((column) => column.name)).toEqual([
-      "session_id",
-      "key",
-    ]);
-    expect(posts.foreignKeys[0]?.onDelete).toBe("cascade");
-    const claims = getTableConfig(slackEventClaims);
-    expect(claims.columns[0]?.name).toBe("event_id");
-    expect(claims.columns[0]?.primary).toBe(true);
-    expect(claims.indexes[0]?.config.name).toBe("slack_event_claims_claimed_at_idx");
-  });
-
-  it("matches project mount ownership and uniqueness constraints", () => {
-    const config = getTableConfig(projectMounts);
-    expect(config.name).toBe("project_mounts");
-    expect(config.columns.map((column) => column.name)).toEqual([
-      "id",
-      "project_id",
-      "name",
-      "host_path",
-      "read_only",
-      "created_at",
-      "updated_at",
-    ]);
-    expect(config.foreignKeys[0]?.onDelete).toBe("cascade");
-    expect(config.uniqueConstraints.map((constraint) => constraint.name).toSorted()).toEqual([
-      "project_mounts_project_id_host_path_key",
-      "project_mounts_project_id_name_key",
-    ]);
-  });
-
-  it("maps reference repositories and per-project selection", () => {
-    const referenceConfig = getTableConfig(referenceRepos);
-    expect(referenceConfig.name).toBe("reference_repos");
-    expect(referenceConfig.columns.map((column) => column.name)).toEqual([
-      "id",
-      "name",
-      "organization_id",
-      "created_by_user_id",
-      "origin_url",
-      "path",
-      "pinned_ref",
-      "head_sha",
-      "refreshed_at",
-      "created_at",
-      "updated_at",
-    ]);
-    // Names are unique within an organization (docs/adr/0003); clone paths across the instance.
-    expect(referenceConfig.columns[1]?.isUnique).toBe(false);
-    expect(referenceConfig.uniqueConstraints.map((constraint) => constraint.name)).toEqual([
-      "reference_repos_organization_name_key",
-    ]);
-    expect(referenceConfig.columns[5]?.isUnique).toBe(true);
-
-    const selectionConfig = getTableConfig(projectReferences);
-    expect(selectionConfig.name).toBe("project_references");
-    expect(selectionConfig.columns.map((column) => column.name)).toEqual([
-      "project_id",
-      "reference_id",
-      "created_at",
-    ]);
-    expect(selectionConfig.primaryKeys[0]?.columns.map((column) => column.name)).toEqual([
-      "project_id",
-      "reference_id",
-    ]);
-    expect(selectionConfig.foreignKeys.map((foreignKey) => foreignKey.onDelete)).toEqual([
-      "cascade",
-      "cascade",
-    ]);
-  });
-
-  it("maps the singleton settings document without changing its migration shape", () => {
-    const config = getTableConfig(settings);
-    expect(config.name).toBe("settings");
-    expect(config.columns.map((column) => column.name)).toEqual(["key", "value", "updated_at"]);
-    expect(config.columns[0]?.primary).toBe(true);
-    expect(config.columns[1]?.getSQLType()).toBe("jsonb");
-  });
-
-  it("separates stable Services, attempts, forwards, and observations", () => {
-    expect(
-      [services, sessionProcesses, serviceForwards, serviceObservations].map(
-        (table) => getTableConfig(table).name,
+    const keys = [
+      ...config.primaryKeys.map((key) => key.columns.map((column) => column.name)),
+      ...config.columns.filter((column) => column.primary).map((column) => [column.name]),
+    ];
+    columns.push(...keys.map((key) => `PRIMARY KEY (${key.map(quote).join(",")})`));
+    columns.push(
+      ...config.uniqueConstraints.map(
+        (key) =>
+          `UNIQUE${key.nullsNotDistinct ? " NULLS NOT DISTINCT" : ""} (${key.columns.map((column) => quote(column.name)).join(",")})`,
       ),
-    ).toEqual(["services", "session_processes", "service_forwards", "service_observations"]);
-
-    const serviceConfig = getTableConfig(services);
-    expect(serviceConfig.columns.map((column) => column.name)).toContain("current_attempt_id");
-    expect(serviceConfig.columns.map((column) => column.name)).toContain("current_forward_id");
-    expect(serviceConfig.columns.find((column) => column.name === "bind_addresses")?.notNull).toBe(
-      false,
     );
-    expect(serviceConfig.foreignKeys[0]?.onDelete).toBe("cascade");
-
-    const attemptConfig = getTableConfig(sessionProcesses);
-    expect(attemptConfig.columns.map((column) => column.name)).toContain("service_id");
-    expect(attemptConfig.columns.map((column) => column.name)).toContain("attempt_ordinal");
-    const attemptIndexes = new Map(
-      attemptConfig.indexes.map((index) => [index.config.name, index.config]),
+    columns.push(
+      ...config.columns
+        .filter((column) => column.isUnique)
+        .map(
+          (column) =>
+            `UNIQUE${column.uniqueType === "not distinct" ? " NULLS NOT DISTINCT" : ""} (${quote(column.name)})`,
+        ),
     );
-    expect(attemptIndexes.get("session_processes_service_ordinal_idx")?.unique).toBe(true);
-    expect(attemptIndexes.get("session_processes_one_live_service_attempt_idx")?.unique).toBe(true);
-    expect(
-      attemptIndexes.get("session_processes_one_live_service_attempt_idx")?.where,
-    ).toBeDefined();
+    statements.push(`CREATE TABLE parity_model.${quote(config.name)} (${columns.join(",")})`);
+  }
+  for (const config of configs) {
+    for (const key of config.foreignKeys) {
+      const reference = key.reference();
+      statements.push(
+        `ALTER TABLE parity_model.${quote(config.name)} ADD FOREIGN KEY (${reference.columns.map((column) => quote(column.name)).join(",")}) REFERENCES parity_model.${quote(getTableConfig(reference.foreignTable).name)} (${reference.foreignColumns.map((column) => quote(column.name)).join(",")}) ON DELETE ${key.onDelete} ON UPDATE ${key.onUpdate}`,
+      );
+    }
+    for (const index of config.indexes) {
+      const configIndex = index.config;
+      if (configIndex.with !== undefined && Object.keys(configIndex.with).length > 0)
+        throw new Error(`Extend catalog parity for index options on ${configIndex.name}`);
+      if (configIndex.name === undefined)
+        throw new Error("Schema indexes must have explicit names");
+      const columns = configIndex.columns.map((column) => {
+        if (is(column, SQL)) return `(${expression(column)})`;
+        if (!is(column, IndexedColumn)) throw new Error("Unsupported schema index expression");
+        const operator = column.indexConfig.opClass ? ` ${column.indexConfig.opClass}` : "";
+        const order =
+          !configIndex.method || configIndex.method === "btree"
+            ? ` ${column.indexConfig.order ?? "asc"} NULLS ${column.indexConfig.nulls ?? "last"}`
+            : "";
+        return `${quote(column.name)}${operator}${order}`;
+      });
+      statements.push(
+        `CREATE ${configIndex.unique ? "UNIQUE " : ""}INDEX ${quote(configIndex.name)} ON ${configIndex.only ? "ONLY " : ""}parity_model.${quote(config.name)} USING ${configIndex.method ?? "btree"} (${columns.join(",")})${configIndex.where ? ` WHERE ${expression(configIndex.where)}` : ""}`,
+      );
+    }
+  }
+  return statements;
+};
 
-    const forwardConfig = getTableConfig(serviceForwards);
-    expect(forwardConfig.foreignKeys[0]?.onDelete).toBe("cascade");
-    expect(forwardConfig.columns.map((column) => column.name)).toContain("supersedes_forward_id");
+type Column = {
+  schema: string;
+  table_name: string;
+  name: string;
+  type: string;
+  not_null: boolean;
+  default_expr: string | null;
+};
+type Constraint = { schema: string; table_name: string; kind: string; definition: string };
+type Index = {
+  schema: string;
+  table_name: string;
+  name: string;
+  method: string;
+  unique: boolean;
+  nulls_not_distinct: boolean;
+  predicate: string | null;
+  keys: string[];
+  operator_classes: string[];
+};
+const unqualify = (value: string | null) =>
+  value
+    ?.replaceAll("REFERENCES parity_model.", "REFERENCES ")
+    .replaceAll("nextval('parity_model.", "nextval('") ?? null;
 
-    const observationConfig = getTableConfig(serviceObservations);
-    expect(observationConfig.foreignKeys.map((foreignKey) => foreignKey.onDelete)).toEqual([
-      "cascade",
-      "cascade",
-    ]);
-    expect(observationConfig.columns.map((column) => column.name)).toContain("first_observed_at");
-    expect(observationConfig.columns.map((column) => column.name)).toContain("last_observed_at");
+describe.skipIf(postgres.skip)(
+  "Drizzle declarations against the migrated PostgreSQL catalog",
+  () => {
+    beforeAll(async () => {
+      await withAdmin(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          yield* sql.unsafe(`CREATE DATABASE ${quote(database)}`);
+          created = true;
+        }),
+      );
+      await run(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          for (const [, migration] of Object.entries(migrations).toSorted(([a], [b]) =>
+            a.localeCompare(b),
+          ))
+            yield* migration;
+          for (const ddl of modelDdl()) yield* sql.unsafe(ddl);
+        }),
+      );
+    });
+    afterAll(async () => {
+      if (!created) return;
+      await withAdmin(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          yield* sql.unsafe(`DROP DATABASE ${quote(database)} WITH (FORCE)`);
+        }),
+      );
+    });
 
-    expect(getTableConfig(projectServiceRecipes).columns.map((column) => column.name)).toContain(
-      "browser_scheme",
-    );
-  });
+    it("keeps project values and Slack tokens sealed in both the model and migrated tables", async () => {
+      const columns = await run(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          return yield* sql<{ table_name: string; column_name: string }>`
+          SELECT table_name, column_name FROM information_schema.columns
+          WHERE table_schema='public' AND table_name IN ('project_secrets','slack_installs')`;
+        }),
+      );
+      for (const names of [
+        columns
+          .filter((column) => column.table_name === "project_secrets")
+          .map((column) => column.column_name),
+        getTableConfig(tables.projectSecrets).columns.map((column) => column.name),
+      ]) {
+        expect(names).toContain("sealed_value");
+        expect(names).not.toContain("value");
+      }
+      for (const names of [
+        columns
+          .filter((column) => column.table_name === "slack_installs")
+          .map((column) => column.column_name),
+        getTableConfig(tables.slackInstalls).columns.map((column) => column.name),
+      ])
+        expect(names.filter((name) => name.includes("token")).toSorted()).toEqual([
+          "sealed_app_token",
+          "sealed_bot_token",
+        ]);
+    });
 
-  it("maps the append-only inference audit record", () => {
-    const config = getTableConfig(inferenceCalls);
-    expect(config.name).toBe("inference_calls");
-    expect(config.columns.map((column) => column.name)).toEqual([
-      "id",
-      "context",
-      "tool",
-      "input",
-      "output",
-      "occurred_at",
-    ]);
-    expect(config.columns[3]?.getSQLType()).toBe("jsonb");
-    expect(config.columns[4]?.getSQLType()).toBe("jsonb");
-  });
+    it("every declared column has the migrated SQL name, type, nullability and default", async () => {
+      const columns = await run(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          return yield* sql<Column>`SELECT n.nspname AS schema, c.relname AS table_name,
+        a.attname AS name, format_type(a.atttypid,a.atttypmod) AS type,
+        a.attnotnull AS not_null, pg_get_expr(d.adbin,d.adrelid) AS default_expr
+        FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+        JOIN pg_attribute a ON a.attrelid=c.oid
+        LEFT JOIN pg_attrdef d ON d.adrelid=c.oid AND d.adnum=a.attnum
+        WHERE n.nspname IN ('public','parity_model') AND c.relkind='r'
+          AND a.attnum>0 AND NOT a.attisdropped`;
+        }),
+      );
+      const model = columns.filter((column) => column.schema === "parity_model");
+      expect(model.length).toBe(
+        configs.reduce((count, config) => count + config.columns.length, 0),
+      );
+      const actual = new Map(
+        columns
+          .filter((column) => column.schema === "public")
+          .map(({ schema: _, ...column }) => [`${column.table_name}.${column.name}`, column]),
+      );
+      for (const { schema: _, ...column } of model)
+        expect(
+          actual.get(`${column.table_name}.${column.name}`),
+          `${column.table_name}.${column.name}`,
+        ).toEqual({ ...column, default_expr: unqualify(column.default_expr) });
+    });
 
-  it("maps push device identity and activity timestamps", () => {
-    const config = getTableConfig(pushDevices);
-    expect(config.name).toBe("push_devices");
-    expect(config.columns.map((column) => column.name)).toEqual([
-      "token",
-      "platform",
-      "user_id",
-      "created_at",
-      "last_seen_at",
-    ]);
-    expect(config.columns[0]?.primary).toBe(true);
-  });
+    it("declared primary keys, unique constraints and foreign-key actions exist in migrations", async () => {
+      const constraints = await run(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          return yield* sql<Constraint>`SELECT n.nspname AS schema, c.relname AS table_name,
+        co.contype AS kind, pg_get_constraintdef(co.oid) AS definition
+        FROM pg_constraint co JOIN pg_class c ON c.oid=co.conrelid
+        JOIN pg_namespace n ON n.oid=c.relnamespace
+        WHERE n.nspname IN ('public','parity_model') AND co.contype IN ('p','u','f')`;
+        }),
+      );
+      const actual = constraints
+        .filter((row) => row.schema === "public")
+        .map(({ schema: _, ...row }) => row);
+      const model = constraints.filter((row) => row.schema === "parity_model");
+      expect(model.length).toBeGreaterThan(0);
+      for (const { schema: _, ...row } of model)
+        expect(actual, `${row.table_name}: ${row.definition}`).toContainEqual({
+          ...row,
+          definition: unqualify(row.definition),
+        });
+    });
 
-  it("maps immutable follow-up input, idempotency, and delivery correlation", () => {
-    const config = getTableConfig(followUps);
-    expect(config.name).toBe("follow_ups");
-    expect(config.columns.map((column) => column.name)).toEqual([
-      "id",
-      "session_id",
-      "change_id",
-      "review_slice_id",
-      "checkpoint_a_id",
-      "checkpoint_b_id",
-      "diff_digest",
-      "comment_ids",
-      "idempotency_key",
-      "instruction",
-      "status",
-      "delivery_process_id",
-      "delivery_sealant_run_id",
-      "delivery_error",
-      "delivery_started_at",
-      "delivery_attempt_id",
-      "delivery_lease_expires_at",
-      "created_at",
-      "delivered_at",
-    ]);
-    expect(config.foreignKeys.map((foreignKey) => foreignKey.onDelete)).toEqual([
-      "cascade",
-      "cascade",
-      "set null",
-    ]);
-    expect(config.indexes.map((index) => index.config.name)).toEqual([
-      "follow_ups_session_idx",
-      "follow_ups_session_key_idx",
-    ]);
-  });
+    it("declared indexes match migrated keys, operator classes, uniqueness, method and predicates", async () => {
+      const indexes = await run(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          return yield* sql<Index>`SELECT n.nspname AS schema, t.relname AS table_name,
+        c.relname AS name, am.amname AS method, i.indisunique AS unique,
+        i.indnullsnotdistinct AS nulls_not_distinct, pg_get_expr(i.indpred,i.indrelid) AS predicate,
+        ARRAY(SELECT pg_get_indexdef(i.indexrelid,k,true)
+          FROM generate_series(1,i.indnkeyatts) AS k ORDER BY k) AS keys,
+        ARRAY(SELECT op.opcname FROM unnest(i.indclass) WITH ORDINALITY AS key(oid,position)
+          JOIN pg_opclass op ON op.oid=key.oid ORDER BY key.position) AS operator_classes
+        FROM pg_index i JOIN pg_class c ON c.oid=i.indexrelid
+        JOIN pg_class t ON t.oid=i.indrelid JOIN pg_namespace n ON n.oid=t.relnamespace
+        JOIN pg_am am ON am.oid=c.relam WHERE n.nspname IN ('public','parity_model')
+          AND NOT EXISTS (SELECT 1 FROM pg_constraint co
+            WHERE co.conindid=i.indexrelid AND co.contype IN ('p','u'))`;
+        }),
+      );
+      const actual = new Map(
+        indexes
+          .filter((row) => row.schema === "public")
+          .map(({ schema: _, ...row }) => [row.name, row]),
+      );
+      const model = indexes.filter((row) => row.schema === "parity_model");
+      expect(model.length).toBe(
+        configs.reduce((count, config) => count + config.indexes.length, 0),
+      );
+      for (const { schema: _, ...row } of model)
+        expect(actual.get(row.name), row.name).toEqual({
+          ...row,
+          predicate: unqualify(row.predicate),
+        });
+    });
+  },
+);
 
-  it("maps review comment anchors, evidence, and notification ownership", () => {
-    const config = getTableConfig(reviewComments);
-    expect(config.name).toBe("review_comments");
-    expect(config.columns.map((column) => column.name)).toEqual([
-      "id",
-      "change_id",
-      "file",
-      "line",
-      "author_kind",
-      "author_name",
-      "body",
-      "state",
-      "sent_to_session_id",
-      "created_at",
-      "updated_at",
-      "end_line",
-      "evidence",
-      "kind",
-      "suggestion",
-      "anchor",
-    ]);
-    expect(config.columns[12]?.getSQLType()).toBe("jsonb");
-    expect(config.columns[15]?.getSQLType()).toBe("jsonb");
-    expect(config.foreignKeys.map((foreignKey) => foreignKey.onDelete)).toEqual([
-      "cascade",
-      "set null",
-    ]);
-    expect(config.indexes[0]?.config.name).toBe("review_comments_change_idx");
-  });
-
-  it("maps a session's repositories: a worktree of another project each, unique per session by name and worktree, gone with the session (docs/adr/0010)", () => {
-    const config = getTableConfig(sessionRepositories);
-    expect(config.name).toBe("session_repositories");
-    expect(config.columns.map((column) => column.name)).toEqual([
-      "id",
-      "session_id",
-      "project_id",
-      "worktree_id",
-      "name",
-      "path",
-      "branch",
-      "base_sha",
-      "base_ref",
-      "state",
-      "error",
-      "capture",
-      "source",
-      "added_by_user_id",
-      "created_at",
-      "updated_at",
-      "ready_at",
-    ]);
-    expect(config.foreignKeys.map((foreignKey) => foreignKey.onDelete)).toEqual([
-      "cascade",
-      "cascade",
-      "cascade",
-    ]);
-    expect(config.uniqueConstraints.map((constraint) => constraint.name)).toEqual([
-      "session_repositories_session_name_key",
-      "session_repositories_session_worktree_key",
-    ]);
-    expect(config.indexes[0]?.config.name).toBe("session_repositories_worktree_idx");
-    expect(sessionRepositories.state.default).toBe("adding");
-  });
-
-  it("maps immutable Review slices and idempotency", () => {
-    const config = getTableConfig(reviewSlices);
-    expect(config.name).toBe("review_slices");
-    expect(config.columns.map((column) => column.name)).toEqual([
-      "id",
-      "change_id",
-      "checkpoint_a_id",
-      "checkpoint_b_id",
-      "diff_digest",
-      "idempotency_key",
-      "created_at",
-    ]);
-    expect(config.foreignKeys.map((foreignKey) => foreignKey.onDelete)).toEqual([
-      "cascade",
-      "cascade",
-      "cascade",
-    ]);
-    expect(config.indexes.map((index) => index.config.name)).toEqual([
-      "review_slices_change_key_idx",
-      "review_slices_change_created_idx",
-    ]);
-    expect(config.indexes[0]?.config.unique).toBe(true);
-  });
-
-  it("maps one composed tour per change with encoded stops", () => {
-    const config = getTableConfig(changeTours);
-    expect(config.name).toBe("change_tours");
-    expect(config.columns.map((column) => column.name)).toEqual([
-      "id",
-      "change_id",
-      "session_id",
-      "summary",
-      "approach",
-      "stops",
-      "diff_digest",
-      "created_at",
-    ]);
-    expect(config.columns[5]?.getSQLType()).toBe("jsonb");
-    expect(config.columns[1]?.isUnique).toBe(true);
-    // Tour attribution survives the composing session's deletion (worktree pivot).
-    expect(config.foreignKeys.map((foreignKey) => foreignKey.onDelete)).toEqual([
-      "cascade",
-      "set null",
-    ]);
-  });
-
-  it("maps one machine-pass outcome per change and kind", () => {
-    const config = getTableConfig(changePasses);
-    expect(config.name).toBe("change_passes");
-    expect(config.columns.map((column) => column.name)).toEqual([
-      "change_id",
-      "kind",
-      "status",
-      "detail",
-      "findings",
-      "started_at",
-      "finished_at",
-    ]);
-    expect(config.primaryKeys[0]?.columns.map((column) => column.name)).toEqual([
-      "change_id",
-      "kind",
-    ]);
-    expect(config.foreignKeys[0]?.onDelete).toBe("cascade");
-  });
-
-  it("maps change landings: gone with the change, kept past their session and checkpoint", () => {
-    const config = getTableConfig(changeLandings);
-    expect(config.name).toBe("change_landings");
-    expect(config.columns.map((column) => column.name)).toEqual([
-      "id",
-      "change_id",
-      "session_id",
-      "project_id",
-      "checkpoint_id",
-      "checkpoint_ref",
-      "checkpoint_sha",
-      "commit_sha",
-      "remote_branch",
-      "pushed_sha",
-      "trigger",
-      "pull_request_number",
-      "pull_request_url",
-      "pull_request_state",
-      "pull_request_title",
-      "pr_observed_at",
-      "pr_cross_repository",
-      "pr_head_owner",
-      "outcome",
-      "message",
-      "user_id",
-      "described_tour_id",
-      "created_at",
-    ]);
-    expect(
-      config.foreignKeys.map((foreignKey) => [
-        foreignKey.reference().columns[0]?.name,
-        foreignKey.onDelete,
-      ]),
-    ).toEqual([
-      ["change_id", "cascade"],
-      ["session_id", "set null"],
-      ["project_id", "cascade"],
-      ["checkpoint_id", "set null"],
-    ]);
-    expect(config.indexes.map((index) => index.config.name)).toEqual([
-      "change_landings_change_created_idx",
-      "change_landings_session_idx",
-      "change_landings_project_pull_request_idx",
-    ]);
-  });
-
-  it("keeps destructive ownership and nullable evidence links explicit", () => {
-    const sessionForeignKeys = getTableConfig(agentSessions).foreignKeys;
-    const projectForeignKey = sessionForeignKeys.find(
-      (foreignKey) => foreignKey.reference().columns[0]?.name === "project_id",
-    );
-    const snapshotForeignKey = sessionForeignKeys.find(
-      (foreignKey) => foreignKey.reference().columns[0]?.name === "context_snapshot_id",
-    );
-    const checkpointRunForeignKey = getTableConfig(checkpoints).foreignKeys.find(
-      (foreignKey) => foreignKey.reference().columns[0]?.name === "sealant_run_id",
-    );
-
-    expect(projectForeignKey?.onDelete).toBe("cascade");
-    expect(snapshotForeignKey?.onDelete).toBe("set null");
-    expect(checkpointRunForeignKey?.onDelete).toBe("set null");
-  });
-});
+// Migrations remain authoritative. Auth-owned tables, retained legacy columns, cyclic FKs,
+// CHECK constraints and migration-only indexes need not be declared in the runtime model.
+// Repository/migration behavior tests enforce those rules; this checks every declared model
+// member against a real fresh migration, not complete bidirectional schema ownership.
