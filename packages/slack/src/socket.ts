@@ -88,8 +88,14 @@ export const makeSlackSocket = (
             ),
           });
         });
+        let connected = false;
+        client.on("connected", () => {
+          // The SDK emits this synchronously for hello, before start's Promise resumes.
+          connected = true;
+        });
         client.on("disconnected", () => {
-          Queue.endUnsafe(queue);
+          // Before hello, start rejects. Ending the queue here would hide that failure.
+          if (connected) Queue.endUnsafe(queue);
         });
         yield* Effect.addFinalizer(() =>
           Effect.tryPromise(() => client.disconnect()).pipe(

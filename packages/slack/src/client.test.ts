@@ -1,4 +1,4 @@
-import { Effect } from "effect";
+import { Effect, Fiber } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { makeFakeSlack, makeSlackApi, type FakeSlackWorkspace } from "./client.ts";
@@ -241,27 +241,60 @@ describe("the live Slack client (over @slack/web-api)", () => {
     expect(result._tag).toBe("Success");
   });
 
-  it("names the user by display name, then real name, then handle", async () => {
-    const slack = fakeFetch({
-      "users.info": [
-        {
-          ok: true,
-          user: {
-            id: "U1",
-            team_id: "T1",
-            name: "ada",
-            real_name: "Ada Lovelace",
-            profile: { display_name: "", real_name: "Ada Lovelace" },
+  it.each([
+    {
+      profile: { display_name: "Ada display", real_name: "Ada profile" },
+      real: "Ada top",
+      display: "Ada display",
+      expectedReal: "Ada profile",
+    },
+    {
+      profile: { display_name: "", real_name: "Ada profile" },
+      real: "Ada top",
+      display: "Ada profile",
+      expectedReal: "Ada profile",
+    },
+    {
+      profile: { display_name: "", real_name: "" },
+      real: "Ada top",
+      display: "Ada top",
+      expectedReal: "Ada top",
+    },
+    { profile: undefined, real: "Ada top", display: "Ada top", expectedReal: "Ada top" },
+    { profile: {}, real: "", display: "ada", expectedReal: null },
+    { profile: undefined, real: undefined, display: "ada", expectedReal: null },
+  ])(
+    "uses user name precedence for $display with profile $profile",
+    async ({ profile, real, display, expectedReal }) => {
+      const slack = fakeFetch({
+        "users.info": [
+          {
+            ok: true,
+            user: {
+              id: "U1",
+              team_id: "T1",
+              name: "ada",
+              real_name: real,
+              profile,
+            },
           },
+        ],
+      });
+      const result = await run(makeSlackApi({ fetch: slack.fetch }).usersInfo("xoxb-1", "U1"));
+      expect(result).toMatchObject({
+        _tag: "Success",
+        success: {
+          id: "U1",
+          teamId: "T1",
+          displayName: display,
+          realName: expectedReal,
+          name: "ada",
+          isBot: false,
+          deleted: false,
         },
-      ],
-    });
-    const result = await run(makeSlackApi({ fetch: slack.fetch }).usersInfo("xoxb-1", "U1"));
-    expect(result).toMatchObject({
-      _tag: "Success",
-      success: { displayName: "Ada Lovelace", name: "ada", isBot: false, deleted: false },
-    });
-  });
+      });
+    },
+  );
 
   it("sends the bot token for a file only to Slack", async () => {
     const slack = fakeFetch({});
@@ -275,6 +308,183 @@ describe("the live Slack client (over @slack/web-api)", () => {
       expect(result).toMatchObject({ _tag: "Failure", failure: { code: "not_slack_host" } });
     }
     expect(slack.sent).toEqual([]);
+  });
+});
+
+// These tests bound accepted bytes, not peak memory: the adapter reads arrayBuffer in full.
+describe("live Slack file download", () => {
+  const url = "https://files.slack.com/files-pri/T1-F1/image";
+
+  it.each([undefined, "image/png"])(
+    "returns exact byte-boundary content with type %s and guarded bearer",
+    async (type) => {
+      const bytes = Uint8Array.of(0, 255, 42, 128);
+      const calls: Array<{
+        url: string;
+        bearerMatches: boolean;
+        redirect: RequestRedirect | undefined;
+        signal: AbortSignal | null | undefined;
+      }> = [];
+      const fetch: typeof globalThis.fetch = async (input, init) => {
+        calls.push({
+          url: String(input),
+          bearerMatches: new Headers(init?.headers).get("authorization") === "Bearer xoxb-fixture",
+          redirect: init?.redirect,
+          signal: init?.signal,
+        });
+        return new Response(bytes, {
+          headers: {
+            "content-length": "4",
+            ...(type === undefined ? {} : { "content-type": type }),
+          },
+        });
+      };
+      const result = await run(
+        makeSlackApi({ fetch }).filesDownload("xoxb-fixture", url, { maxBytes: 4 }),
+      );
+      expect(result._tag).toBe("Success");
+      if (result._tag !== "Success") throw new Error("Expected downloaded bytes");
+      expect(result.success).toEqual({ bytes, contentType: type ?? null });
+      expect(
+        calls.map(({ signal, ...call }) => ({
+          ...call,
+          abortable: signal instanceof AbortSignal,
+          aborted: signal?.aborted,
+        })),
+      ).toEqual([{ url, bearerMatches: true, redirect: "error", abortable: true, aborted: false }]);
+    },
+  );
+
+  it("refuses a declared oversize before reading its body", async () => {
+    let reads = 0;
+    class ObservedResponse extends Response {
+      override arrayBuffer() {
+        reads += 1;
+        return super.arrayBuffer();
+      }
+    }
+    const fetch: typeof globalThis.fetch = async () =>
+      new ObservedResponse(Uint8Array.of(1), { headers: { "content-length": "5" } });
+    expect(
+      await run(makeSlackApi({ fetch }).filesDownload("xoxb-fixture", url, { maxBytes: 4 })),
+    ).toMatchObject({
+      _tag: "Failure",
+      failure: {
+        method: "files.download",
+        code: "too_large",
+        message: "The file is over 4 bytes.",
+      },
+    });
+    expect(reads).toBe(0);
+  });
+
+  it.each([null, "1"])("refuses actual oversize when declared length is %s", async (declared) => {
+    const fetch: typeof globalThis.fetch = async () =>
+      new Response(Uint8Array.of(1, 2, 3, 4, 5), {
+        headers: declared === null ? {} : { "content-length": declared },
+      });
+    expect(
+      await run(makeSlackApi({ fetch }).filesDownload("xoxb-fixture", url, { maxBytes: 4 })),
+    ).toMatchObject({
+      _tag: "Failure",
+      failure: { method: "files.download", code: "too_large" },
+    });
+  });
+
+  it("classifies HTTP refusal before reading its body", async () => {
+    let reads = 0;
+    class ObservedResponse extends Response {
+      override arrayBuffer() {
+        reads += 1;
+        return super.arrayBuffer();
+      }
+    }
+    const fetch: typeof globalThis.fetch = async () =>
+      new ObservedResponse("private response body", { status: 403 });
+    expect(
+      await run(makeSlackApi({ fetch }).filesDownload("xoxb-fixture", url, { maxBytes: 100 })),
+    ).toMatchObject({
+      _tag: "Failure",
+      failure: expect.objectContaining({
+        method: "files.download",
+        code: "http_403",
+        message: "Slack answered 403 for the file.",
+      }),
+    });
+    expect(reads).toBe(0);
+  });
+
+  it("retains transport refusal when redirect:error prevents following a destination", async () => {
+    const redirects: Array<RequestRedirect | undefined> = [];
+    const fetch: typeof globalThis.fetch = async (_input, init) => {
+      redirects.push(init?.redirect);
+      if (init?.redirect === "error") throw new TypeError("synthetic redirect refused");
+      return new Response(Uint8Array.of(1));
+    };
+    expect(
+      await run(makeSlackApi({ fetch }).filesDownload("xoxb-fixture", url, { maxBytes: 4 })),
+    ).toMatchObject({
+      _tag: "Failure",
+      failure: {
+        method: "files.download",
+        code: "request_failed",
+        message: "synthetic redirect refused",
+      },
+    });
+    expect(redirects).toEqual(["error"]);
+  });
+
+  it("classifies a failed response-body read", async () => {
+    const failure = new Error("synthetic body read failure");
+    const fetch: typeof globalThis.fetch = async () =>
+      new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.error(failure);
+          },
+        }),
+      );
+    expect(
+      await run(makeSlackApi({ fetch }).filesDownload("xoxb-fixture", url, { maxBytes: 4 })),
+    ).toMatchObject({
+      _tag: "Failure",
+      failure: {
+        method: "files.download",
+        code: "request_failed",
+        message: "synthetic body read failure",
+      },
+    });
+  });
+
+  it("aborts the actual supplied fetch when the download is interrupted", async () => {
+    const entered = Promise.withResolvers<AbortSignal>();
+    let aborted = 0;
+    const fetch: typeof globalThis.fetch = (_input, init) =>
+      new Promise((_resolve, reject) => {
+        const signal = init?.signal;
+        if (!(signal instanceof AbortSignal)) throw new Error("Expected an abortable download");
+        signal.addEventListener(
+          "abort",
+          () => {
+            aborted += 1;
+            reject(new DOMException("cancelled", "AbortError"));
+          },
+          { once: true },
+        );
+        entered.resolve(signal);
+      });
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const fiber = yield* makeSlackApi({ fetch })
+          .filesDownload("xoxb-fixture", url, { maxBytes: 4 })
+          .pipe(Effect.forkChild);
+        const signal = yield* Effect.promise(() => entered.promise);
+        expect(signal.aborted).toBe(false);
+        yield* Fiber.interrupt(fiber);
+        expect(signal.aborted).toBe(true);
+        expect(aborted).toBe(1);
+      }).pipe(Effect.timeout("3 seconds")),
+    );
   });
 });
 

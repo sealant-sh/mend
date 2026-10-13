@@ -98,12 +98,14 @@ describe("the status message", () => {
   });
 
   it("claims observed only when a run stands behind the session", () => {
-    expect(statusLine({ ...status, state: "completed", recorded: false })).toContain(
-      "· completed ·",
-    );
-    expect(statusLine({ ...status, state: "failed", recorded: true })).toContain(
-      "failed · observed",
-    );
+    for (const state of ["completed", "failed"] as const) {
+      expect(statusLine({ ...status, state, recorded: false })).toBe(
+        `billing-api · from the thread · claude · ${state} · mend/flaky-login-test`,
+      );
+      expect(statusLine({ ...status, state, recorded: true })).toBe(
+        `billing-api · from the thread · claude · ${state} · observed · mend/flaky-login-test`,
+      );
+    }
     expect(statusLine({ ...status, state: "waiting" })).toContain("waiting for input");
   });
 
