@@ -16,6 +16,9 @@ import {
   SessionControlEventsRepo,
   SessionNotFoundError,
   SessionProcessesRepo,
+  OrganizationsRepo,
+  ProjectsRepo,
+  ServicesRepo,
   SessionsRepo,
   SlackDefaultsRepo,
   SlackEventClaimsRepo,
@@ -62,12 +65,13 @@ import {
   ThreadProjectReaderLive,
   type InferenceRequest,
 } from "@mend/inference";
-import { LandingNotStartedError } from "@mend/landing";
+import { Landing, LandingNotStartedError, type LandInput } from "@mend/landing";
 import { SealantClients, SealantPrincipal } from "@mend/sealant";
 import {
   ProtocolHostNotLiveError,
   SessionEngine,
   SessionNotLiveError,
+  SessionTurnRefusedError,
   storePastedImage,
 } from "@mend/sessions";
 import {
@@ -78,17 +82,25 @@ import {
   type SlackThreadFile,
   type SlackThreadMessage,
 } from "@mend/slack";
-import { makeFakeSlack, type FakeSlackWorkspace } from "@mend/slack/client";
+import { SlackApi, makeFakeSlack, type FakeSlackWorkspace } from "@mend/slack/client";
 import type { SlackEnvelope } from "@mend/slack/socket";
-import { harnessHomePathOf, SecretCipher, Store } from "@mend/store";
+import {
+  AgentBridge,
+  makeSourcePolicy,
+  MendKeys,
+  SourcePolicy,
+  harnessHomePathOf,
+  SecretCipher,
+  Store,
+} from "@mend/store";
 import { Effect, Layer } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { makeProject, makeSession } from "../test/support/tenancy-harness.ts";
 import { ProjectAccess } from "./access.ts";
-import { OwnerLanding, type OwnerLandingInput } from "./owner-landing.ts";
+import { OwnerLanding, OwnerLandingLive, type OwnerLandingInput } from "./owner-landing.ts";
 import { SessionStart, type CreateSessionInput } from "./session-start.ts";
-import { SessionSteering } from "./session-steering.ts";
+import { SessionSteering, SessionSteeringLive } from "./session-steering.ts";
 import {
   chooseProject,
   followUpWhenNotLive,
@@ -218,6 +230,14 @@ const account = (provider: "claude" | "codex", status: "active" | "invalid" = "a
   });
 
 interface WorldOptions {
+  readonly submitRefused?: SessionTurnRefusedError;
+  readonly steeringRefused?: string;
+  /** Literal repository rows for joined-session and existing-thread controls. */
+  readonly sessions?: ReadonlyArray<Session>;
+  readonly threadRows?: ReadonlyArray<SlackThreadSession>;
+  /** Use the owning live authorization and landing adapters, recording only lower boundaries. */
+  readonly liveBoundaries?: boolean;
+
   readonly eventsPerMinute?: number;
   readonly now?: number;
   readonly createFails?: NotFound | StoreFailure | BudgetExceeded;
@@ -386,11 +406,12 @@ const world = (options: WorldOptions = {}) => {
       : []),
   ];
   const minted: Array<{ readonly slackUserId: string; readonly request: SlackPendingMention }> = [];
-  const recorded: Array<SlackThreadSession> = [];
+  const recorded: Array<SlackThreadSession> = [...(options.threadRows ?? [])];
   /** The status line each session's message shows, as `slack_threads.reported_status`. */
   const reported = new Map<string, string>();
   const audited: Array<NewAuditEvent> = [];
   const launches: Array<LaunchRequest> = [];
+  const launchTargets: Array<{ actor: string; sessionId: string; projectId: string }> = [];
   /** Each image placed or refused, as `<session>:<sender>`. */
   const pastedAs: Array<string> = [];
   /** What each create was asked, beyond what `effects` notes. */
@@ -408,7 +429,14 @@ const world = (options: WorldOptions = {}) => {
   /** The state and status message each session shows, as `slack_threads` holds them. */
   const shownState = new Map<string, string>();
   const statusTs = new Map<string, string>();
-  const sessionsCreated = new Map<string, Session>();
+  const sessionsCreated = new Map<string, Session>(
+    (options.sessions ?? []).map((row) => [row.id, row]),
+  );
+  const steeringChecks: Array<{ sessionId: string; sender: string }> = [];
+  const accountReaders: Array<string> = [];
+  const downloads: Array<{ url: string; maxBytes: number }> = [];
+  const landCalls: Array<{ input: LandInput; principal: typeof SealantPrincipal.Service }> = [];
+  const signerEvents: Array<string> = [];
   let createCount = 0;
   const storeRoot = options.storeRoot;
   const visible = [billing, web, notes].map((candidate) =>
@@ -491,8 +519,58 @@ const world = (options: WorldOptions = {}) => {
     };
   };
 
-  const layer = Layer.mergeAll(
-    slack.layer,
+  const fakeOwnerLanding = {
+    land: (input: OwnerLandingInput) =>
+      Effect.suspend(() => {
+        lands.push(input);
+        if (options.landRefused !== undefined) return Effect.fail(options.landRefused);
+        return Effect.succeed({
+          landing: new ChangeLanding({
+            id: ChangeLandingId.make(`landing-${lands.length}`),
+            changeId: ChangeId.make("change-1"),
+            sessionId: input.session.id,
+            projectId: input.project.id,
+            checkpointId: null,
+            checkpointRef: null,
+            checkpointSha: null,
+            commitSha: null,
+            remoteBranch: input.session.branch,
+            pushedSha: Sha.make("3f2a1c0".padEnd(40, "0")),
+            trigger: input.trigger,
+            pullRequest: {
+              number: 412,
+              url: "https://github.com/acme/billing-api/pull/412",
+              state: "open",
+              title: null,
+              observedAt: NOW,
+            },
+            outcome: "pull-request",
+            message: null,
+            userId: input.ownerUserId,
+            createdAt: NOW,
+          }),
+          pullRequest: {
+            _tag: "opened" as const,
+            pullRequest: {
+              number: 412,
+              url: "https://github.com/acme/billing-api/pull/412",
+              state: "open" as const,
+              title: null,
+              observedAt: NOW,
+            },
+          },
+        });
+      }),
+  };
+  const dependencies = Layer.mergeAll(
+    Layer.succeed(SlackApi, {
+      ...slack.service,
+      filesDownload: (token, url, limit) =>
+        Effect.suspend(() => {
+          downloads.push({ url, maxBytes: limit.maxBytes });
+          return slack.service.filesDownload(token, url, limit);
+        }),
+    }),
     Layer.mock(SlackInstallsRepo, {
       byOrganization: (id) => Effect.succeed(id === ACME ? install : null),
       byTeam: (teamId) => Effect.succeed(teamId === install.teamId ? install : null),
@@ -689,7 +767,11 @@ const world = (options: WorldOptions = {}) => {
           );
         }),
       // The sender's own login, as a person-layout worktree asks for it (docs/adr/0016).
-      steeringRefusal: () => Effect.succeed(null),
+      steeringRefusal: (session, sender) =>
+        Effect.sync(() => {
+          steeringChecks.push({ sessionId: session.id, sender });
+          return options.steeringRefused ?? null;
+        }),
       stop: (sessionId) =>
         note(`engine.stop:${sessionId}`).pipe(
           Effect.andThen(
@@ -699,13 +781,13 @@ const world = (options: WorldOptions = {}) => {
           ),
         ),
       submitTurn: (sessionId, input, author) =>
-        note(`engine.submitTurn:${sessionId}:${author}:${input}`).pipe(
-          Effect.andThen(
-            earlier?.live === false
-              ? Effect.fail(new ProtocolHostNotLiveError({ processId: sessionId }))
-              : Effect.succeed(agentTurn(sessionId, "queued", 2)),
-          ),
-        ),
+        Effect.gen(function* () {
+          yield* note(`engine.submitTurn:${sessionId}:${author}:${input}`);
+          if (options.submitRefused !== undefined) return yield* options.submitRefused;
+          if (earlier?.live === false)
+            return yield* new ProtocolHostNotLiveError({ processId: sessionId });
+          return agentTurn(sessionId, "queued", 2);
+        }),
       respondRequest: (requestId, response, decidedBy) =>
         note(
           `engine.respondRequest:${requestId}:${decidedBy}:${JSON.stringify("answers" in response ? response.answers : response.decision)}`,
@@ -714,17 +796,6 @@ const world = (options: WorldOptions = {}) => {
             question === null ? Effect.die("no question in this test") : Effect.succeed(question),
           ),
         ),
-    }),
-    Layer.mock(SessionSteering, {
-      authorizeUser: (session, userId) =>
-        session.ownerUserId === userId || session.sharedControlEnabledAt !== null
-          ? Effect.succeed(session)
-          : Effect.fail(
-              new SessionNotSteerable({
-                sessionId: session.id,
-                message: "only the session owner can steer this session",
-              }),
-            ),
     }),
     Layer.mock(Store, {
       listTopLevel: (dir) =>
@@ -757,6 +828,7 @@ const world = (options: WorldOptions = {}) => {
       decrypt: (sealed) => Effect.succeed(sealed.replace(/^sealed:/, "")),
     }),
     Layer.mock(ProjectAccess, {
+      isOperator: () => Effect.succeed(false),
       visibleProjectsOf: (userId) => Effect.succeed(visibleTo(userId)),
       projectAs: (userId, id) => {
         const found = visibleTo(userId).find((candidate) => candidate.id === id);
@@ -783,7 +855,16 @@ const world = (options: WorldOptions = {}) => {
         ),
       launchAs: (userId, session, request) =>
         note(`start.launchAs:${userId}:${session.id}`).pipe(
-          Effect.andThen(Effect.sync(() => launches.push(request))),
+          Effect.andThen(
+            Effect.sync(() => {
+              launches.push(request);
+              launchTargets.push({
+                actor: userId,
+                sessionId: session.id,
+                projectId: session.projectId,
+              });
+            }),
+          ),
           Effect.andThen(
             options.launchFails === undefined
               ? Effect.sync(() => {
@@ -795,52 +876,52 @@ const world = (options: WorldOptions = {}) => {
           ),
         ),
     }),
-    Layer.mock(OwnerLanding, {
+    Layer.mock(Landing, {
       land: (input) =>
-        Effect.suspend(() => {
-          lands.push(input);
-          if (options.landRefused !== undefined) return Effect.fail(options.landRefused);
-          return Effect.succeed({
-            landing: new ChangeLanding({
-              id: ChangeLandingId.make(`landing-${lands.length}`),
-              changeId: ChangeId.make("change-1"),
-              sessionId: input.session.id,
-              projectId: input.project.id,
-              checkpointId: null,
-              checkpointRef: null,
-              checkpointSha: null,
-              commitSha: null,
-              remoteBranch: input.session.branch,
-              pushedSha: Sha.make("3f2a1c0".padEnd(40, "0")),
-              trigger: input.trigger,
-              pullRequest: {
-                number: 412,
-                url: "https://github.com/acme/billing-api/pull/412",
-                state: "open",
-                title: null,
-                observedAt: NOW,
-              },
-              outcome: "pull-request",
-              message: null,
-              userId: input.ownerUserId,
-              createdAt: NOW,
-            }),
-            pullRequest: {
-              _tag: "opened" as const,
-              pullRequest: {
-                number: 412,
-                url: "https://github.com/acme/billing-api/pull/412",
-                state: "open" as const,
-                title: null,
-                observedAt: NOW,
-              },
-            },
+        Effect.gen(function* () {
+          landCalls.push({ input, principal: yield* SealantPrincipal });
+          const session =
+            sessionsCreated.get(input.sessionId) ??
+            (input.sessionId === EARLIER ? earlierSession : null);
+          if (session === null || session === undefined || input.webOrigin === null)
+            return yield* Effect.die("Missing landing session or actor fixture");
+          const landingProject = visible.find((candidate) => candidate.id === session.projectId);
+          if (landingProject === undefined)
+            return yield* Effect.die("Missing landing project fixture");
+          return yield* fakeOwnerLanding.land({
+            session,
+            project: landingProject,
+            ownerUserId: input.actorUserId,
+            trigger: input.trigger,
+            webOrigin: input.webOrigin,
           });
         }),
     }),
+    Layer.mock(OrganizationsRepo, {}),
+    Layer.mock(ProjectsRepo, {}),
+    Layer.mock(ServicesRepo, {}),
+    Layer.succeed(
+      SourcePolicy,
+      makeSourcePolicy({ profile: "operator", allowedHosts: [], resolve: async () => [] }),
+    ),
+    Layer.mock(MendKeys, {}),
+    Layer.mock(AgentBridge, {
+      socketPath: () => "/unused/agent.sock",
+      begin: (userId) =>
+        Effect.sync(() => {
+          signerEvents.push(`begin:${userId}`);
+          return () => {
+            signerEvents.push(`end:${userId}`);
+          };
+        }),
+    }),
     Layer.mock(SealantClients, {
-      connectedAccounts: () => ({
-        list: () => Effect.succeed(options.accounts ?? [account("claude"), account("codex")]),
+      connectedAccounts: (userId) => ({
+        list: () =>
+          Effect.sync(() => {
+            accountReaders.push(userId);
+            return options.accounts ?? [account("claude"), account("codex")];
+          }),
         connect: () => Effect.die("not in this test"),
         disconnect: () => Effect.die("not in this test"),
       }),
@@ -851,6 +932,25 @@ const world = (options: WorldOptions = {}) => {
       }),
     }),
   );
+
+  const layer = Layer.mergeAll(
+    options.liveBoundaries === true
+      ? SessionSteeringLive
+      : Layer.mock(SessionSteering, {
+          authorizeUser: (session, userId) =>
+            session.ownerUserId === userId || session.sharedControlEnabledAt !== null
+              ? Effect.succeed(session)
+              : Effect.fail(
+                  new SessionNotSteerable({
+                    sessionId: session.id,
+                    message: "only the session owner can steer this session",
+                  }),
+                ),
+        }),
+    options.liveBoundaries === true
+      ? OwnerLandingLive
+      : Layer.succeed(OwnerLanding, fakeOwnerLanding),
+  ).pipe(Layer.provideMerge(dependencies));
 
   const run = <A>(body: (runner: SlackRunner["Service"]) => Effect.Effect<A>) =>
     Effect.runPromise(
@@ -990,11 +1090,22 @@ const world = (options: WorldOptions = {}) => {
 
   return {
     effects,
+    setProject: (row: Project) => {
+      const index = visible.findIndex((candidate) => candidate.id === row.id);
+      if (index < 0) throw new Error("Unknown project fixture");
+      visible[index] = row;
+    },
+    steeringChecks,
+    accountReaders,
+    downloads,
+    landCalls,
+    signerEvents,
     slack,
     minted,
     recorded,
     audited,
     launches,
+    launchTargets,
     pastedAs,
     creates,
     intents,
@@ -1310,7 +1421,16 @@ describe("the Slack runner, choosing a project", () => {
       w.mention("Ev1", { user: "U-alice", text: "<@U-bot> tidy up", ts: "1700000300.000100" }),
     );
 
-    expect(w.recorded[0]).toMatchObject({ projectSource: "channel-default" });
+    expect(w.recorded[0]).toMatchObject({
+      sessionId: "session-1",
+      projectSource: "channel-default",
+    });
+    expect(w.effects.filter((entry) => entry.startsWith("start.createAs:"))).toEqual([
+      "start.createAs:alice:p-web:claude:null:slack",
+    ]);
+    expect(w.launchTargets).toEqual([
+      { actor: "alice", sessionId: "session-1", projectId: "p-web" },
+    ]);
   });
 
   it("continues from a picked project, for the requester only and once", async () => {
@@ -2309,7 +2429,7 @@ describe("the Slack runner, attaching screenshots from the thread", () => {
     });
   });
 
-  it("stops at the turn's image count and bytes, newest first after the request's own", async () => {
+  it("stops at the turn's image count, keeping the newest thread images", async () => {
     await withStore(async (storeRoot) => {
       // Eleven images over two messages, each under the paste's limit, most with no size said.
       const older = Array.from({ length: 6 }, (_, index) =>
@@ -2350,6 +2470,73 @@ describe("the Slack runner, attaching screenshots from the thread", () => {
       );
       expect(posts(w, "postEphemeral")[0]?.text).toBe(
         "not attached · old5.png · past the 10 images one turn carries",
+      );
+    });
+  });
+
+  it("bounds actual persisted image bytes at exactly 24 MiB below the count limit", async () => {
+    await withStore(async (storeRoot) => {
+      const mb = 1024 * 1024;
+      const files = [
+        shot("F-eight-a", "eight-a.png", { size: null }),
+        shot("F-eight-b", "eight-b.png", { size: 1 }),
+        shot("F-seven", "seven.png", { size: null }),
+        shot("F-over", "over.png", { size: 1 }),
+        shot("F-exact", "exact.png", { size: null }),
+        shot("F-after", "after.png", { size: null }),
+      ];
+      const w = world({
+        storeRoot,
+        threads: {
+          [`C-general:${SHOTS_THREAD}`]: [
+            {
+              ...message(SHOTS_MENTION, "U-alice", "<@U-bot> project=billing-api compare them"),
+              files,
+            },
+          ],
+        },
+        files: {
+          [url("F-eight-a")]: png(8 * mb),
+          [url("F-eight-b")]: png(8 * mb),
+          [url("F-seven")]: png(7 * mb),
+          [url("F-over")]: png(2 * mb),
+          [url("F-exact")]: png(mb),
+          [url("F-after")]: png(),
+        },
+      });
+      await w.deliver(
+        w.mention("Ev-total", {
+          user: "U-alice",
+          text: "<@U-bot> project=billing-api compare them",
+          ts: SHOTS_MENTION,
+          thread_ts: SHOTS_THREAD,
+          files: onTheWire(files),
+        }),
+      );
+      expect(w.downloads).toEqual([
+        { url: url("F-eight-a"), maxBytes: 8 * mb },
+        { url: url("F-eight-b"), maxBytes: 8 * mb },
+        { url: url("F-seven"), maxBytes: 8 * mb },
+        { url: url("F-over"), maxBytes: mb },
+        { url: url("F-exact"), maxBytes: mb },
+        { url: url("F-after"), maxBytes: 0 },
+      ]);
+      const written = await pasted(storeRoot, billing.id, "session-1");
+      expect(written.map((file) => file.bytes).toSorted((a, b) => a - b)).toEqual([
+        mb,
+        7 * mb,
+        8 * mb,
+        8 * mb,
+      ]);
+      expect(written.reduce((total, file) => total + file.bytes, 0)).toBe(24 * mb);
+      expect(w.launches[0]?.prompt).toContain(
+        "[image: over.png · not attached · past the 24 MB of images one turn carries]",
+      );
+      expect(w.launches[0]?.prompt).toContain(
+        "[image: after.png · not attached · past the 24 MB of images one turn carries]",
+      );
+      expect(posts(w, "postEphemeral")[0]?.text).toBe(
+        "not attached · over.png · past the 24 MB of images one turn carries; after.png · past the 24 MB of images one turn carries",
       );
     });
   });
@@ -2786,5 +2973,221 @@ describe("a request's intent", () => {
     expect(intentOfRequest(false, null)).toEqual({ intent: "question", source: "option" });
     expect(intentOfRequest(null, "change")).toEqual({ intent: "change", source: "read" });
     expect(intentOfRequest(null, null)).toBeNull();
+  });
+});
+
+describe("existing-thread authorization and joined-session landing", () => {
+  const follow = (w: ReturnType<typeof world>, eventId: string, channel = "C-general") =>
+    w.mention(eventId, {
+      user: "U-alice",
+      channel,
+      text: "<@U-bot> continue the change",
+      ts: eventId === "first" ? "1700000200.000301" : "1700000200.000302",
+      thread_ts: RETRY_THREAD,
+    });
+
+  it("keeps a sender-login submit refusal private without resuming or starting another session", async () => {
+    const w = world({
+      liveBoundaries: true,
+      threadSession: {
+        threadTs: RETRY_THREAD,
+        projectId: web.id,
+        owner: "bob",
+        sharedControl: true,
+      },
+      submitRefused: new SessionTurnRefusedError({
+        sessionId: EARLIER,
+        message: "the sender has no active claude login",
+      }),
+    });
+    await w.deliver(follow(w, "refused"));
+    expect(w.effects.filter((entry) => entry.startsWith("engine.submitTurn:"))).toEqual([
+      "engine.submitTurn:session-earlier:alice:continue the change",
+    ]);
+    expect(w.steeringChecks).toEqual([]);
+    expect(w.creates).toEqual([]);
+    expect(w.launches).toEqual([]);
+    expect(w.recorded).toEqual([]);
+    expect(posts(w, "postEphemeral")).toMatchObject([
+      {
+        user: "U-alice",
+        threadTs: RETRY_THREAD,
+        text: "not sent · the sender has no active claude login",
+      },
+    ]);
+    expect(posts(w, "postMessage")).toEqual([]);
+  });
+
+  it("reports the existing public resume-steering refusal without fallback creation or launch", async () => {
+    const w = world({
+      liveBoundaries: true,
+      threadSession: {
+        threadTs: RETRY_THREAD,
+        projectId: web.id,
+        owner: "bob",
+        sharedControl: true,
+        live: false,
+      },
+      steeringRefused: "the sender's claude login is unavailable",
+    });
+    await w.deliver(follow(w, "refused"));
+    expect(w.steeringChecks).toEqual([{ sessionId: "session-earlier", sender: "alice" }]);
+    // Resume first checks the workspace owner's account; steering checks the turn's sender.
+    expect(w.accountReaders).toEqual(["bob"]);
+    expect(w.creates).toEqual([]);
+    expect(w.launches).toEqual([]);
+    expect(w.recorded).toEqual([]);
+    expect(posts(w, "postMessage")).toMatchObject([
+      { threadTs: RETRY_THREAD, text: "not resumed · the sender's claude login is unavailable" },
+    ]);
+    expect(posts(w, "postEphemeral")).toEqual([]);
+  });
+
+  for (const channel of ["C-general", "D-alice"]) {
+    it(`rechecks shared-to-private visibility for an existing thread in ${channel}`, async () => {
+      const w = world({
+        liveBoundaries: true,
+        threadSession: { threadTs: RETRY_THREAD, projectId: web.id, owner: "alice" },
+      });
+      await w.deliver(follow(w, "first", channel));
+      expect(w.effects.filter((entry) => entry.startsWith("engine.submitTurn:"))).toHaveLength(1);
+      w.setProject(new Project({ ...web, visibility: "private" }));
+      await w.deliver(follow(w, "second", channel));
+      expect(w.creates).toEqual([]);
+      expect(w.launches).toEqual([]);
+      if (channel === "C-general") {
+        expect(w.effects.filter((entry) => entry.startsWith("engine.submitTurn:"))).toHaveLength(1);
+        expect(posts(w, "postEphemeral")).toMatchObject([
+          {
+            user: "U-alice",
+            text: "not sent · the session's project is private · a channel offers shared projects only",
+          },
+        ]);
+      } else {
+        expect(w.effects.filter((entry) => entry.startsWith("engine.submitTurn:"))).toEqual([
+          "engine.submitTurn:session-earlier:alice:continue the change",
+          "engine.submitTurn:session-earlier:alice:continue the change",
+        ]);
+        expect(posts(w, "postEphemeral")).toEqual([]);
+      }
+      expect(posts(w, "postMessage")).toEqual([]);
+    });
+  }
+
+  const joined = (firstOwner: string | null = "alice") => {
+    const first = new Session({
+      ...makeSession(
+        SessionId.make("session-first"),
+        billing.id,
+        WorktreeId.make("wt-joined"),
+        "alice",
+      ),
+      ownerUserId: firstOwner,
+      createdAt: new Date(NOW.getTime() - 1000),
+    });
+    const teammate = new Session({
+      ...makeSession(SessionId.make("session-teammate"), billing.id, first.worktreeId, "bob"),
+      createdAt: NOW,
+    });
+    const thread: SlackThreadSession = {
+      sessionId: teammate.id,
+      teamId: "T-acme",
+      channelId: "C-general",
+      threadTs: THREAD,
+      requestTs: MENTION,
+      statusTs: null,
+      slackUserId: "U-bob",
+      projectSource: "picked",
+      external: false,
+      reportedState: null,
+      reportedStatus: null,
+      createdAt: NOW,
+    };
+    const w = world({
+      liveBoundaries: true,
+      bobLinked: true,
+      sessions: [teammate, first],
+      threadRows: [thread],
+    });
+    w.setProject(new Project({ ...billing, gitAuthMode: "bridge" }));
+    return w;
+  };
+
+  it("lands a teammate's session for the first-session owner through actual owner principal and signer attribution", async () => {
+    const w = joined();
+    await w.deliver(
+      w.landClick({ user: "U-alice", sessionId: "session-teammate", envelopeId: "joined-owner" }),
+    );
+    expect(
+      w.landCalls.map(({ input, principal }) => ({
+        sessionId: input.sessionId,
+        actor: input.actorUserId,
+        trigger: input.trigger,
+        principal,
+      })),
+    ).toEqual([
+      {
+        sessionId: "session-teammate",
+        actor: "alice",
+        trigger: "manual",
+        principal: { kind: "user", userId: "alice" },
+      },
+    ]);
+    expect(w.signerEvents).toEqual(["begin:alice", "end:alice"]);
+    expect(w.audited).toEqual([
+      {
+        organizationId: "org-acme",
+        actorUserId: "alice",
+        action: "change.landed",
+        subjectType: "change",
+        subjectId: "change-1",
+        data: {
+          sessionId: "session-teammate",
+          landingId: "landing-1",
+          outcome: "pull-request",
+          trigger: "manual",
+          remoteBranch: "mend/wt-joined",
+          pushedSha: "3f2a1c0".padEnd(40, "0"),
+          pullRequest: 412,
+        },
+      },
+    ]);
+    expect(posts(w, "postEphemeral")).toMatchObject([{ user: "U-alice" }, { user: "U-alice" }]);
+    expect(posts(w, "postMessage")).toEqual([]);
+  });
+
+  it("refuses the teammate privately even though they own the selected session", async () => {
+    const w = joined();
+    await w.deliver(
+      w.landClick({ user: "U-bob", sessionId: "session-teammate", envelopeId: "joined-teammate" }),
+    );
+    expect(w.landCalls).toEqual([]);
+    expect(w.signerEvents).toEqual([]);
+    expect(w.audited).toEqual([]);
+    expect(posts(w, "postEphemeral")).toMatchObject([
+      {
+        user: "U-bob",
+        threadTs: THREAD,
+        text: "not pushed · only the change's owner lands it · it pushes with their key and speaks on GitHub as them",
+      },
+    ]);
+    expect(posts(w, "postMessage")).toEqual([]);
+  });
+
+  it("lands for nobody when the worktree's first session has no owner", async () => {
+    const w = joined(null);
+    await w.deliver(
+      w.landClick({
+        user: "U-alice",
+        sessionId: "session-teammate",
+        envelopeId: "null-first-alice",
+      }),
+      w.landClick({ user: "U-bob", sessionId: "session-teammate", envelopeId: "null-first-bob" }),
+    );
+    expect(w.landCalls).toEqual([]);
+    expect(w.signerEvents).toEqual([]);
+    expect(w.audited).toEqual([]);
+    expect(posts(w, "postEphemeral")).toMatchObject([{ user: "U-alice" }, { user: "U-bob" }]);
+    expect(posts(w, "postMessage")).toEqual([]);
   });
 });
