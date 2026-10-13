@@ -114,6 +114,7 @@ import {
   CaptureRetentionScheduleLive,
   DependencyInstallerLive,
   DependencyInstallWorkerLive,
+  ExpoPushSenderLive,
   InstallRunnerEngineLive,
   Dispatcher,
   JobRunner,
@@ -203,7 +204,7 @@ import {
   SourcePolicyLive,
 } from "@mend/store";
 import { Cause, Config, Effect, Layer, Option, Schema } from "effect";
-import { HttpRouter, HttpServerResponse } from "effect/unstable/http";
+import { FetchHttpClient, HttpRouter, HttpServerResponse } from "effect/unstable/http";
 
 import { ProjectAccessLive } from "./access.ts";
 import { AutomaticLandingLive } from "./automatic-landing.ts";
@@ -661,7 +662,9 @@ const WorkerLive = Layer.mergeAll(
   // Constructing the engine resumes supervision of unsettled sessions.
   SessionEngineLayer,
   // Pushes to registered phones when a session settles or waits on the user.
-  SessionNotifierLive,
+  SessionNotifierLive.pipe(
+    Layer.provide(ExpoPushSenderLive.pipe(Layer.provide(FetchHttpClient.layer))),
+  ),
   // Mentions of Mend in Slack start sessions as the linked person.
   SlackWorkerLive,
   // Sessions started from Slack report into their thread: status, reactions, agent messages.
