@@ -32,7 +32,7 @@ import {
 } from "@mend/domain/workbench";
 import { SealantPlatformError } from "@mend/sealant";
 import type { InteractiveSession } from "@sealant/sdk";
-import { Deferred, Effect, Layer, Schema, Scope, Stream } from "effect";
+import { Clock, Deferred, Effect, Layer, Schema, Scope, Stream } from "effect";
 import * as Context from "effect/Context";
 import * as Semaphore from "effect/Semaphore";
 
@@ -447,7 +447,7 @@ export const ProtocolHostLive: Layer.Layer<
             yield* Effect.sleep(WAIT_POLL);
             continue;
           }
-          const now = Date.now();
+          const now = yield* Clock.currentTimeMillis;
           // Never a stop on a guess: what the agent would not say is waited for, and then the
           // waiting turn fails with words while the agent goes on (review 2 of mend#572, P2-1).
           // The owner's own takeover of their agent is held by it for as long, no longer.

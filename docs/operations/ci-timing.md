@@ -237,3 +237,75 @@ mutation that discards cleanup errors still fails both targeted cases. Productio
 Timing comparisons must distinguish a failed run from a speed improvement and local timing from CI.
 Step 1 does not shorten the three long test files or the packaging race cases. Those remain the next
 work, and a measured CI result is required before claiming a whole-job improvement.
+
+## Step 1 measured box result
+
+The capped graph passed in run 38449851462 (`6d12a7e1a`, checks job 115477847898,
+`box-151-1791916257`, 2026-10-13 18:50:08–19:11:28 UTC). Tests took 754 s versus 743 s for the old
+box graph; packaging took 305 s and the whole checks job 1,280 s. This establishes a passing bounded
+baseline, not a speedup. Run creation to checks completion took 1,331 s; the push itself was not
+separately timestamped. Release acceptance was label-gated and skipped.
+
+Matched VM 151 samples (121 samples, ten-second intervals) showed approximately 5.0 of 7 GiB in use
+at peak, with 2.03 GiB minimum available. Swap was 0.06 GiB at start, 0.09 GiB peak and 0.08 GiB at
+end; the window added 8,892 pages swapped out and 5,589 in (about 0.03 and 0.02 GiB). Peak
+one-minute load was 12.2 on eight vCPUs. The cap removed the observed memory thrashing. The CLI
+lifecycle file took 706.431 s, engine 460.367 s and run-commands 58.111 s. Load alone does not
+establish how much of CLI time was CPU contention versus subprocess work.
+
+## Step 2a: sessions clock ownership
+
+The sessions engine, capture channel and service host acquire Effect's Clock when their layers are
+built. Their synchronous callbacks read that same service. Epoch milliseconds remain epoch
+milliseconds for persisted records, leases, filesystem comparisons and signed URL authority.
+Existing monotonic waits and identity-answer expiry use Clock nanoseconds; they must not switch to
+wall time, where a system-clock adjustment could stretch a deadline. Date parsing and conversion of
+existing timestamps are unchanged.
+
+Provide TestClock around both layer acquisition and every operation for the lifetime of an engine.
+Providing it only to a method after constructing a live-clock engine would mix clocks: shared caches
+and callbacks use the construction clock, while existing Effect sleeps and timeouts use the
+executing fiber's clock. Real git, sockets, subprocesses and generated workspace scripts still
+require the real-adapter test tier; routing clocks does not make their I/O instantaneous.
+
+Pickup expiry and identity-answer eviction now use scope-owned clock sleeps. Closing the engine
+clears retained ticket and answer bytes as well as cancelling timers. Service polling retains its
+20-second first delay, fixed cadence and overlapping passes; stopping a service cancels future
+triggers, and closing the layer also interrupts unfinished passes. These Effect timers are
+referenced while their scope is open, so shutdown must close the scope. Standalone synchronous
+pickup callers retain the native unreferenced scheduler unless they supply an owner.
+
+PTY output collection retains its three-second cooperative abort: a stream that ends normally on
+abort can still return its collected tail; a rejected read still yields an empty tail. Scope exit
+cancels the timer. A stream that ignores abort can still hang, as it could before; this change does
+not silently replace that contract with a hard timeout that discards partial output.
+
+Remaining native clock uses are explicit boundaries: generated JavaScript runs inside another
+process, and standalone synchronous helper defaults have no Effect context. Effect materializers and
+engine callers pass clock-derived values to those helpers. This phase leaves the existing test cases
+and their deadlines intact. File splitting, TestClock-driven test conversion and timeout headroom
+reporting follow in step 2b; this source change alone makes no speedup claim.
+
+Before adding clock regressions, the source-only change passed the full unchanged local graph: 25
+tasks, zero cache hits, PostgreSQL required, 484.387 s wall time. Engine took 421.171 s, CLI
+lifecycle 392.862 s and run-commands 43.501 s. All 530 original engine cases passed. Separate live
+checks ran all three opt-in Garage capture cases, plus 16 store contract cases on Garage and 16 on
+strict MinIO. These are local validation measurements; box results must be recorded separately.
+
+Five additional regressions cover the first Clock-driven service probe, cancellation after stop,
+overlapping probes, interruption on layer shutdown, and held/spent ticket cleanup. The two owning
+files passed 20 consecutive runs, 35 cases per run and 700 passes, without retries or TestClock
+warnings. Existing test bodies are unchanged. Six isolated mutations failed their intended behavior
+assertions: native probe timing, probes surviving stop, serialized probes, detached in-flight
+probes, retained ticket maps, and uncancelled ticket expiry callbacks.
+
+Independent review found that Effect's `Schedule.fixed` uses epoch milliseconds for interval
+boundaries. The service supervisor now calculates those boundaries from Clock nanoseconds while
+retaining its first delay, overlapping passes and scope ownership. Two regressions independently
+step epoch time backward by 70 seconds and forward by 60 seconds, and require probes at monotonic
+20, 40, 60 and 80 seconds. Both failed against the previous schedule and pass with the correction.
+
+Two further regressions deliver the 60-second wake at 65 or 85 seconds. They require one pass then,
+followed by the next at 85 or 105 seconds respectively. The next boundary uses each pass's actual
+monotonic start, matching native interval rearming after both short and long event-loop stalls.
+Neither catch-up bursts nor shorter intervals compensating for a late wake are allowed.

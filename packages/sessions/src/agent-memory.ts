@@ -105,7 +105,7 @@ export const handOverAgentMemoryExec = (
   ].join(" "),
 ];
 
-/** A fresh kept directory for one hand-over, relative to the harness home. */
+/** A fresh kept directory for one hand-over. Effect callers supply Clock time; the default is for standalone callers. */
 export const agentMemoryHandoverKeptDir = (now: Date = new Date()): string =>
   path.posix.join(
     AGENT_MEMORY_KEPT_DIR,
@@ -185,7 +185,7 @@ export interface AgentMemoryPlan {
   readonly kept: string;
 }
 
-/** The plan for the stored memory; a path that fails validation is left out. */
+/** The plan for the stored memory; a path that fails validation is left out. Effect callers supply Clock time. */
 export const planAgentMemory = (
   stored: ReadonlyArray<StoredMemoryFile>,
   now: Date = new Date(),

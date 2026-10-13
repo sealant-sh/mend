@@ -94,6 +94,7 @@ const CLAUDE_SEED_PROGRAM = [
  *
  * `argv[1]` is the repository, `argv[2]` the budget in milliseconds.
  */
+// Runs in the workspace's dependency-free Node process, outside the server's Effect Clock.
 const CLAUDE_PLUGINS_PROGRAM = [
   `const repo=process.argv[1],deadline=Date.now()+Number(process.argv[2]),{spawn}=require("child_process");`,
   `const ID=/^[A-Za-z0-9][A-Za-z0-9._-]*@[A-Za-z0-9][A-Za-z0-9._-]*$/,REF=/^[A-Za-z0-9._\\/-]+$/;`,

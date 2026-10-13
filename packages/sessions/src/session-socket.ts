@@ -197,6 +197,7 @@ export const SESSION_SOCKET_MOUNT_PATH = "/run/mend";
  * pact between this script and the routes, versioned together because they
  * ship together.
  */
+// Staged in the workspace: its request deadlines and polls use that process's native clock.
 const HELPER_SCRIPT = `#!/usr/bin/env node
 // mend — the in-workspace helper. Talks to YOUR session over /run/mend/mend.sock,
 // or over the authenticated session endpoint when this workspace has no socket.
