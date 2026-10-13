@@ -723,7 +723,7 @@ describe("a capture-backed landing's checkpoint", () => {
     expect(asked).toEqual(["landingCheckpoint"]);
   });
 
-  it("names what is missing in words, and keeps the error's tag for the log", async () => {
+  it("describes a missing session without exposing the internal error tag", async () => {
     const world = makeWorld();
     const engine = Layer.mock(SessionEngine, {
       launchUnderWay: () => false,
