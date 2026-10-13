@@ -606,9 +606,21 @@ describe("workspace SSH key identity", () => {
     generateKey(selected);
     generateKey(other);
     fs.copyFileSync(`${other}.pub`, `${selected}.pub`);
-    expect(
-      pickWorkspaceSshKey({ configHome: root, explicitKeyPath: selected, create: true }).ok,
-    ).toBe(false);
+    const privateBefore = fs.readFileSync(selected);
+    const publicBefore = fs.readFileSync(`${selected}.pub`);
+    const entriesBefore = fs.readdirSync(root).toSorted();
+    const refused = pickWorkspaceSshKey({
+      configHome: root,
+      explicitKeyPath: selected,
+      create: true,
+    });
+    expect(refused.ok).toBe(false);
+    if (refused.ok) throw new Error("Expected mismatched key refusal.");
+    expect(refused.error.operation).toBe("key");
+    // Boolean equality keeps private material out of assertion diagnostics.
+    expect(fs.readFileSync(selected).equals(privateBefore)).toBe(true);
+    expect(fs.readFileSync(`${selected}.pub`).equals(publicBefore)).toBe(true);
+    expect(fs.readdirSync(root).toSorted()).toEqual(entriesBefore);
   });
   it("rejects an orphan public key without an agent", () => {
     vi.stubEnv("SSH_AUTH_SOCK", "");

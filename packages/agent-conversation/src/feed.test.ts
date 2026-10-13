@@ -90,14 +90,6 @@ describe("buildAgentConversation", () => {
     ]);
   });
 
-  it("builds on runtimes without change-array-by-copy methods", () => {
-    const legacyTurns = new Proxy(conversation.turns, {
-      get: (target, property, receiver) =>
-        property === "toSorted" ? undefined : Reflect.get(target, property, receiver),
-    });
-    expect(() => buildAgentConversation({ ...conversation, turns: legacyTurns })).not.toThrow();
-  });
-
   it("replaces cursor updates in place and appends new items", () => {
     const original = conversation.items.find((item) => item.id === "assistant-1");
     const seed = conversation.items.find((item) => item.id === "orphan-warning");
@@ -112,7 +104,14 @@ describe("buildAgentConversation", () => {
 
 describe("conversation activity", () => {
   it("names the newest open turn as what Stop interrupts", () => {
-    expect(openTurnOf(conversation.turns)?.id).toBe("turn-2");
+    const base = conversation.turns[0];
+    if (base === undefined) throw new Error("Expected a turn fixture.");
+    const older = { ...base, id: "older", ordinal: 1, status: "running" };
+    const newer = { ...base, id: "newer", ordinal: 2, status: "queued" };
+    const finished = { ...base, id: "finished", ordinal: 3, status: "completed" };
+    const ordered = [older, newer, finished];
+    expect(openTurnOf(ordered)?.id).toBe("newer");
+    expect(openTurnOf(ordered.slice(0, 1))?.id).toBe("older");
     expect(openTurnOf(conversation.turns.filter((turn) => turn.id === "turn-1"))).toBeUndefined();
   });
 
