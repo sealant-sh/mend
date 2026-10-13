@@ -1,3 +1,8 @@
+import { execFileSync } from "node:child_process";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+
 import {
   AgentConversationRepo,
   ChangeLandingsRepo,
@@ -52,7 +57,7 @@ import {
 import { WORKTREE_STAMP, WorktreeReads } from "@mend/sessions";
 import { PRIVATE_PROJECT_STATUS, SLACK_ACTIONS, statusLine, SUMMARY_PROVENANCE } from "@mend/slack";
 import { makeFakeSlack, type FakeSlackCall } from "@mend/slack/client";
-import { SecretCipher } from "@mend/store";
+import { SecretCipher, Store, StoreConfig, type ChangedFile } from "@mend/store";
 import { Effect, Layer } from "effect";
 import { describe, expect, it } from "vitest";
 
@@ -402,6 +407,8 @@ const startingLine = statusLine({
 });
 
 interface WorldOptions {
+  /** A real Store observation supplied at the existing WorktreeReads boundary. */
+  readonly diff?: { readonly files: ReadonlyArray<ChangedFile>; readonly patch: string };
   readonly settings?: Partial<SlackInstallSettings>;
   /** The channel the thread is in; a `D…` channel is a direct message with the bot. */
   readonly channelId?: string;
@@ -527,13 +534,14 @@ const world = (options: WorldOptions = {}) => {
     Layer.mock(WorktreeReads, {
       changedFiles: () =>
         Effect.succeed({
-          value: [
+          value: options.diff?.files ?? [
             { path: "src/login.ts", additions: 2, deletions: 1 },
             { path: "test/login.test.ts", additions: 1, deletions: 0 },
           ],
           stamp: WORKTREE_STAMP,
         }),
-      diffWorktree: () => Effect.succeed({ value: DIFF, stamp: WORKTREE_STAMP }),
+      diffWorktree: () =>
+        Effect.succeed({ value: options.diff?.patch ?? DIFF, stamp: WORKTREE_STAMP }),
     }),
     Layer.succeed(SecretCipher, {
       encrypt: (plaintext) => Effect.succeed(`sealed:${plaintext}`),
@@ -996,6 +1004,67 @@ describe("the Slack thread reporter", () => {
     const text = diff?.blocks?.[0]?.type === "markdown" ? diff.blocks[0].text : "";
     expect(text).toContain("**src/login.ts** · +2 −1\n\n```diff\ndiff --git a/src/login.ts");
     expect(text).toContain("**test/login.test.ts** · +1 −0");
+  });
+
+  it("posts actual Store diffs for quoted UTF-8 and renamed filenames instead of No text diff", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mend-slack-paths-"));
+    const git = (...args: string[]) =>
+      execFileSync("git", args, {
+        cwd: root,
+        encoding: "utf8",
+        env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" },
+      });
+    try {
+      git("init", "-q");
+      git("config", "core.quotePath", "true");
+      fs.writeFileSync(path.join(root, "naïve.txt"), "before\n");
+      fs.writeFileSync(path.join(root, "old-ñ.txt"), "same content\n");
+      git("add", "--all");
+      git(
+        "-c",
+        "user.name=fixture",
+        "-c",
+        "user.email=fixture@example.test",
+        "commit",
+        "-qm",
+        "base",
+      );
+      fs.writeFileSync(path.join(root, "naïve.txt"), "after\n");
+      const destination = 'new b/quote".txt';
+      fs.mkdirSync(path.dirname(path.join(root, destination)), { recursive: true });
+      fs.renameSync(path.join(root, "old-ñ.txt"), path.join(root, destination));
+      git("add", "--all");
+      const untracked = "untracked-界\tline\n.txt";
+      fs.writeFileSync(path.join(root, untracked), "untracked-content\n");
+      const observed = await Effect.runPromise(
+        Effect.gen(function* () {
+          const store = yield* Store;
+          return {
+            files: yield* store.changedFiles(root, "HEAD", null),
+            patch: yield* store.diffWorktree(root, "HEAD"),
+          };
+        }).pipe(Effect.provide(Store.layer), Effect.provide(StoreConfig.layerFor(root))),
+      );
+      expect(observed.files.map((file) => file.path).toSorted()).toEqual(
+        ["naïve.txt", destination, untracked].toSorted(),
+      );
+      const w = world({ settings: { showDiffs: true }, threadCreatedAt: NOW, diff: observed });
+      w.state.change = change;
+      w.state.turns = [turn(1, "completed", NOW)];
+      await w.observe(w.worker());
+      expect(w.posts()).toHaveLength(1);
+      const block = w.posts()[0]?.blocks?.[0];
+      const text = block?.type === "markdown" ? block.text : "";
+      expect(text).toContain("**naïve.txt**");
+      expect(text).toContain(`**${destination}**`);
+      expect(text).toContain("+untracked-content");
+      expect(text).toContain(`**${untracked}**`);
+      expect(text).toContain("+after");
+      expect(text).toContain("rename to ");
+      expect(text).not.toContain("No text diff.");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("posts the diff once, when the session first settles, not on every turn", async () => {
