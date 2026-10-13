@@ -47,8 +47,6 @@ const tagOf = <A>(effect: Effect.Effect<A, BlobStoreError>) =>
 interface ContractOptions {
   /** Bytes per non-final part: S3 refuses parts under 5 MiB; the directory store takes any. */
   readonly partBytes: number;
-  /** Whether the backend refuses a second complete of the same key (S3, R2, dir: yes; Garage: no). */
-  readonly writeOnce: boolean;
 }
 
 /** The port contract, run against whichever implementation the layer provides. */
@@ -219,7 +217,7 @@ const contract = (
       expect(result.again).toEqual({ kind: "exists" });
     });
 
-    it("multipart: complete is write-once where the backend enforces it; abort discards; bad inputs are refused", async () => {
+    it("multipart: complete keeps the first exact bytes on every backend; abort discards; bad inputs are refused", async () => {
       const target = key("mp/race");
       const result = await run(
         Effect.gen(function* () {
@@ -237,6 +235,7 @@ const contract = (
           const first = yield* store.completeMultipart(target, a.uploadId, [
             { partNumber: 1, etag: etagA },
           ]);
+          const afterFirst = yield* store.get(target);
           const second = yield* store.completeMultipart(target, b.uploadId, [
             { partNumber: 1, etag: etagB },
           ]);
@@ -266,19 +265,66 @@ const contract = (
               ]),
             ),
           ]);
-          return { first, second, stored, afterAbort, completeAborted, refused };
+          return { first, afterFirst, second, stored, afterAbort, completeAborted, refused };
         }),
       );
       expect(result.first).toEqual({ written: true });
-      if (options.writeOnce) {
-        expect(result.second).toEqual({ written: false });
-        expect(result.stored[0]).toBe(0x41);
-      } else {
-        expect([0x41, 0x42]).toContain(result.stored[0]);
-      }
+      const expected = Buffer.alloc(options.partBytes, 0x41);
+      expect(Buffer.from(result.afterFirst).equals(expected)).toBe(true);
+      expect(result.second).toEqual({ written: false });
+      expect(Buffer.from(result.stored).equals(expected)).toBe(true);
       expect(result.afterAbort).toEqual([]);
       expect(result.completeAborted).toBe("BlobStoreError");
       expect(result.refused).toEqual(Array<string>(4).fill("BlobStoreError"));
+    });
+
+    it("multipart: concurrent completions have exactly one winner and retain its exact bytes", async () => {
+      const target = key("mp/concurrent");
+      const bodies = [0x41, 0x42, 0x43].map((value) =>
+        new Uint8Array(options.partBytes).fill(value),
+      );
+      const result = await run(
+        Effect.gen(function* () {
+          const store = yield* BlobStore;
+          const uploads = yield* Effect.forEach(bodies, (body) =>
+            Effect.gen(function* () {
+              const upload = yield* store.createMultipart(target);
+              if (upload.kind !== "created") throw new Error("expected an open upload");
+              const url = yield* store.presignPart(target, upload.uploadId, 1, 120);
+              const etag = yield* Effect.promise(() => putPart(url, body));
+              return { uploadId: upload.uploadId, etag };
+            }),
+          );
+          // Resolve the backend capability before the overlapping publication attempts, so its
+          // one-time probe does not stagger the race being exercised.
+          yield* store.startupUntil;
+          // The same service owns all completes, as the API's multipart publication boundary does.
+          const outcomes = yield* Effect.forEach(
+            uploads,
+            (upload) =>
+              store.completeMultipart(target, upload.uploadId, [
+                { partNumber: 1, etag: upload.etag },
+              ]),
+            { concurrency: "unbounded" },
+          );
+          return {
+            outcomes,
+            stored: yield* store.get(target),
+            open: yield* store.listMultipart(target),
+          };
+        }),
+      );
+      const winners = result.outcomes.flatMap((outcome, index) => (outcome.written ? [index] : []));
+      expect(winners).toHaveLength(1);
+      const winner = winners[0];
+      if (winner === undefined) throw new Error("expected one winning completion");
+      expect(result.outcomes).toEqual(
+        bodies.map((_body, index) => ({ written: index === winner })),
+      );
+      const winningBody = bodies[winner];
+      if (winningBody === undefined) throw new Error("winning completion did not have input bytes");
+      expect(Buffer.from(result.stored).equals(Buffer.from(winningBody))).toBe(true);
+      expect(result.open).toEqual([]);
     });
   });
 };
@@ -294,7 +340,7 @@ describe("BlobStore (dir)", () => {
     fs.rmSync(root, { recursive: true, force: true });
   });
 
-  contract("contract", () => BlobStoreFsLive(root), "t", { partBytes: 16, writeOnce: true });
+  contract("contract", () => BlobStoreFsLive(root), "t", { partBytes: 16 });
 
   // Only the directory store promises this: the filesystem's `link(2)` decides the race. An
   // S3 backend without conditional writes (Garage) can let several writers through.
@@ -414,11 +460,10 @@ describe.skipIf(s3Config === null)("BlobStore (s3)", () => {
     );
   });
 
-  // Garage accepts `If-None-Match: *` on a complete silently (measured, v2.4.1); S3 and R2
-  // refuse with a 412. MEND_TEST_S3_WRITE_ONCE=1 asserts the strict behaviour.
+  // Multipart publication is write-once through BlobStore even when the bucket ignores the
+  // conditional header: the S3 adapter owns a same-key completion lock and HEAD check.
   contract("contract", layerOf, prefix, {
     partBytes: 5 * 1024 * 1024,
-    writeOnce: process.env["MEND_TEST_S3_WRITE_ONCE"] === "1",
   });
 
   it("presigned PUT and GET URLs work with plain fetch, and name the public endpoint", async () => {
