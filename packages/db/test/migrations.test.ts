@@ -873,6 +873,35 @@ const attempt = (statement: Effect.Effect<unknown, SqlError>) =>
     ),
   );
 
+/** A valid owned session at either of the migration boundaries exercised below. */
+const seedMigrationSession = (prefix: string) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const [organization] = yield* sql<{ readonly id: string }>`SELECT id FROM organizations`;
+    if (organization === undefined) throw new Error("migration fixture needs an organization");
+    const actor = `${prefix}-actor`;
+    const project = `${prefix}-project`;
+    const worktree = `${prefix}-worktree`;
+    const session = `${prefix}-session`;
+    yield* sql`
+      INSERT INTO "user" (id, name, email, "createdAt")
+      VALUES (${actor}, 'Migration owner', ${`${prefix}@example.invalid`}, '2026-01-01T00:00:00Z')`;
+    yield* sql`
+      INSERT INTO organization_members (organization_id, user_id, role)
+      VALUES (${organization.id}, ${actor}, 'owner')`;
+    yield* sql`
+      INSERT INTO projects (id, name, organization_id, created_by_user_id, store_path, default_branch)
+      VALUES (${project}, ${prefix}, ${organization.id}, ${actor}, ${`/store/${prefix}/repo.git`}, 'main')`;
+    yield* sql`
+      INSERT INTO worktrees (id, project_id, name, directory, branch, base_sha)
+      VALUES (${worktree}, ${project}, 'fixture', 'fixture', 'mend/fixture', ${"a".repeat(40)})`;
+    yield* sql`
+      INSERT INTO agent_sessions
+        (id, project_id, worktree_id, owner_user_id, harness, worktree, branch, base_sha, status)
+      VALUES (${session}, ${project}, ${worktree}, ${actor}, 'claude', 'fixture', 'mend/fixture', ${"a".repeat(40)}, 'running')`;
+    return { actor, project, worktree, session };
+  });
+
 describe.skipIf(postgres.skip)("0055 organizations", () => {
   const ORG_DB = `${SCRATCH_DB}_org`;
   const EMPTY_DB = `${SCRATCH_DB}_org_empty`;
@@ -1848,19 +1877,54 @@ describe.skipIf(postgres.skip)("0066 landing description", () => {
     );
   });
 
-  it("adds the tour claim to every landing, unclaimed", async () => {
-    const columns = await withDescriptionDb(
+  it("keeps existing landing facts and gives every old landing an unclaimed nullable tour field", async () => {
+    const result = await withDescriptionDb(
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         yield* upTo("0065_turn_landing");
+        const fixture = yield* seedMigrationSession("description");
+        yield* sql`
+          INSERT INTO worktree_changes (id, project_id, worktree_id, session_id, branch, base_sha)
+          VALUES ('description-change', ${fixture.project}, ${fixture.worktree}, ${fixture.session}, 'mend/fixture', ${"a".repeat(40)})`;
+        yield* sql`
+          INSERT INTO checkpoints (id, worktree_id, session_id, ordinal, ref, sha, trigger)
+          VALUES ('description-checkpoint', ${fixture.worktree}, ${fixture.session}, 0,
+                  'refs/mend/checkpoints/description/0', ${"b".repeat(40)}, 'session-start')`;
+        yield* sql`
+          INSERT INTO change_landings
+            (id, change_id, session_id, project_id, checkpoint_id, checkpoint_ref, checkpoint_sha,
+             commit_sha, remote_branch, pushed_sha, trigger, pull_request_number, pull_request_url,
+             pull_request_state, pr_observed_at, outcome, message, user_id, created_at)
+          VALUES
+            ('landing-rich', 'description-change', ${fixture.session}, ${fixture.project}, 'description-checkpoint',
+             'refs/mend/checkpoints/description/0', ${"b".repeat(40)}, ${"c".repeat(40)}, 'mend/description',
+             ${"c".repeat(40)}, 'automatic', 42, 'https://github.com/example/fixture/pull/42', 'open',
+             '2026-09-21T12:00:00Z', 'pull-request', 'opened with recorded provenance', ${fixture.actor}, '2026-09-21T11:00:00Z'),
+            ('landing-refused', 'description-change', NULL, ${fixture.project}, NULL, NULL, NULL,
+             NULL, 'mend/refused', NULL, 'manual', NULL, NULL, NULL, NULL, 'refused',
+             'origin moved', ${fixture.actor}, '2026-09-20T11:00:00Z')`;
+        const before = yield* sql<{ readonly id: string; readonly facts: unknown }>`
+          SELECT id, to_jsonb(l) AS facts FROM change_landings l ORDER BY id`;
+        expect(before.map((row) => row.id)).toEqual(["landing-refused", "landing-rich"]);
         yield* migrations["0066_landing_description"];
-        const rows = yield* sql<{ readonly column_name: string; readonly is_nullable: string }>`
+        const columns = yield* sql<{ readonly column_name: string; readonly is_nullable: string }>`
           SELECT column_name, is_nullable FROM information_schema.columns
           WHERE table_name = 'change_landings' AND column_name = 'described_tour_id'`;
-        return rows.map((row) => ({ ...row }));
+        const after = yield* sql<{
+          readonly id: string;
+          readonly facts: unknown;
+          readonly described_tour_id: string | null;
+        }>`SELECT id, to_jsonb(l) - 'described_tour_id' AS facts, described_tour_id
+             FROM change_landings l ORDER BY id`;
+        return { before, after, columns: columns.map((row) => ({ ...row })) };
       }),
     );
-    expect(columns).toEqual([{ column_name: "described_tour_id", is_nullable: "YES" }]);
+    expect(result.columns).toEqual([{ column_name: "described_tour_id", is_nullable: "YES" }]);
+    expect(result.after.map(({ id, facts }) => ({ id, facts }))).toEqual(result.before);
+    expect(result.after.map(({ id, described_tour_id }) => ({ id, described_tour_id }))).toEqual([
+      { id: "landing-refused", described_tour_id: null },
+      { id: "landing-rich", described_tour_id: null },
+    ]);
   });
 });
 
@@ -2276,23 +2340,10 @@ describe.skipIf(postgres.skip)("0106 terminal watch control", () => {
     );
   });
 
-  it("lets the control log record a read-only attach beside every kind it already took", async () => {
-    const definition = await withWatchDb(
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        yield* upTo("0105_turn_origin");
-        yield* migrations["0106_terminal_watch_control"];
-        const rows = yield* sql<{ readonly definition: string }>`
-          SELECT pg_get_constraintdef(oid) AS definition
-          FROM pg_constraint
-          WHERE conname = 'session_control_events_kind_check'`;
-        return rows[0]?.definition ?? "";
-      }),
-    );
-    for (const kind of [
+  it("keeps old control events, accepts every supported kind and refuses unknown kinds", async () => {
+    const previousKinds = [
       "interrupt",
       "terminal-attach",
-      "terminal-watch",
       "shell-open",
       "stop",
       "services-stop",
@@ -2300,9 +2351,54 @@ describe.skipIf(postgres.skip)("0106 terminal watch control", () => {
       "shared-control-on",
       "shared-control-off",
       "discard-unsaved-stop",
-    ]) {
-      expect(definition).toContain(`'${kind}'`);
-    }
+    ];
+    const supportedKinds = [...previousKinds, "terminal-watch"];
+    const result = await withWatchDb(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* upTo("0105_turn_origin");
+        const fixture = yield* seedMigrationSession("watch");
+        for (const kind of previousKinds) {
+          yield* sql`
+            INSERT INTO session_control_events (id, session_id, actor_user_id, kind, ref_id, created_at)
+            VALUES (${`existing-${kind}`}, ${fixture.session}, ${fixture.actor}, ${kind},
+                    ${`reference-${kind}`}, '2026-10-01T12:00:00Z')`;
+        }
+        const before = yield* sql<{ readonly id: string; readonly facts: unknown }>`
+          SELECT id, to_jsonb(e) AS facts FROM session_control_events e ORDER BY id`;
+        expect(before.map((row) => row.id)).toEqual(
+          previousKinds.map((kind) => `existing-${kind}`).toSorted(),
+        );
+        yield* migrations["0106_terminal_watch_control"];
+        const preserved = yield* sql<{ readonly id: string; readonly facts: unknown }>`
+          SELECT id, to_jsonb(e) AS facts FROM session_control_events e ORDER BY id`;
+        for (const kind of supportedKinds) {
+          yield* sql`
+            INSERT INTO session_control_events (id, session_id, actor_user_id, kind, ref_id, created_at)
+            VALUES (${`new-${kind}`}, ${fixture.session}, ${fixture.actor}, ${kind},
+                    ${`new-reference-${kind}`}, '2026-10-02T12:00:00Z')`;
+        }
+        const accepted = yield* sql<{ readonly id: string; readonly kind: string }>`
+          SELECT id, kind FROM session_control_events WHERE id LIKE 'new-%' ORDER BY id`;
+        const rejected = [];
+        for (const kind of ["unknown-control", "TERMINAL-WATCH"]) {
+          rejected.push(
+            yield* attempt(sql`
+            INSERT INTO session_control_events (id, session_id, actor_user_id, kind)
+            VALUES (${`invalid-${kind}`}, ${fixture.session}, ${fixture.actor}, ${kind})`),
+          );
+        }
+        return { before, preserved, accepted, rejected };
+      }),
+    );
+    expect(result.preserved).toEqual(result.before);
+    expect(result.accepted).toEqual(
+      supportedKinds.toSorted().map((kind) => ({ id: `new-${kind}`, kind })),
+    );
+    expect(result.rejected).toEqual([
+      { code: "23514", constraint: "session_control_events_kind_check" },
+      { code: "23514", constraint: "session_control_events_kind_check" },
+    ]);
   });
 });
 
