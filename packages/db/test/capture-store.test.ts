@@ -1,6 +1,6 @@
 import { PgClient } from "@effect/sql-pg";
 import { ProjectId, Sha, WorktreeId } from "@mend/domain";
-import { Cause, Deferred, Effect, Exit, Fiber, Layer, Redacted } from "effect";
+import { Cause, Deferred, Effect, Exit, Fiber, Layer, Option, Redacted } from "effect";
 import * as Str from "effect/String";
 import { SqlClient } from "effect/unstable/sql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -178,6 +178,135 @@ describe.skipIf(postgres.skip)("capture store (0053)", () => {
     expect(outcomes.head?.headEpoch).toBe(1);
     expect(outcomes.head?.headN).toBe(-1);
   });
+
+  it("publication guard prepares only for the current live epoch and exact holder", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const repo = yield* CaptureStoreRepo;
+        const worktreeId = yield* freshWorktree;
+        const holder = { executorId: "guard-executor", launchId: "guard-launch" };
+        const { epoch } = yield* repo.claim(worktreeId, holder.executorId, 3600, holder.launchId);
+        let calls = 0;
+        const prepare = () => ++calls;
+        const valid = yield* repo.withCurrentLease(worktreeId, epoch, holder, prepare);
+        const wrongEpoch = yield* repo.withCurrentLease(worktreeId, epoch + 1, holder, prepare);
+        const wrongExecutor = yield* repo.withCurrentLease(
+          worktreeId,
+          epoch,
+          { ...holder, executorId: "other-executor" },
+          prepare,
+        );
+        const wrongLaunch = yield* repo.withCurrentLease(
+          worktreeId,
+          epoch,
+          { ...holder, launchId: "other-launch" },
+          prepare,
+        );
+        yield* sql`UPDATE worktree_leases SET expires_at = clock_timestamp() - interval '1 second'
+        WHERE worktree_id = ${worktreeId}`;
+        const expired = yield* repo.withCurrentLease(worktreeId, epoch, holder, prepare);
+        yield* repo.release(worktreeId, epoch);
+        const released = yield* repo.withCurrentLease(worktreeId, epoch, holder, prepare);
+        const legacy = yield* repo.claim(worktreeId, holder.executorId, 3600);
+        const legacyExecutor = yield* repo.withCurrentLease(
+          worktreeId,
+          legacy.epoch,
+          holder,
+          prepare,
+        );
+        return {
+          valid,
+          wrongEpoch,
+          wrongExecutor,
+          wrongLaunch,
+          expired,
+          released,
+          legacyExecutor,
+          calls,
+        };
+      }),
+    );
+    expect(result.valid).toEqual(Option.some(1));
+    expect([
+      result.wrongEpoch,
+      result.wrongExecutor,
+      result.wrongLaunch,
+      result.expired,
+      result.released,
+    ]).toEqual(Array.from({ length: 5 }, () => Option.none()));
+    expect(result.legacyExecutor).toEqual(Option.some(2));
+    expect(result.calls).toBe(2);
+  });
+
+  for (const end of ["commit", "interruption"]) {
+    it(`publication guard shares the transaction connection and releases its lock on ${end}`, async () => {
+      const result = await run(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          const repo = yield* CaptureStoreRepo;
+          const worktreeId = yield* freshWorktree;
+          const holder = { executorId: "guard-lock", launchId: "guard-lock-launch" };
+          const { epoch } = yield* repo.claim(worktreeId, holder.executorId, 3600, holder.launchId);
+          const locked = yield* Deferred.make<void>();
+          const finish = yield* Deferred.make<void>();
+          const waiterPid = yield* Deferred.make<number>();
+          const holding = yield* Effect.forkChild(
+            sql.withTransaction(
+              Effect.gen(function* () {
+                const guarded = yield* repo.withCurrentLease(
+                  worktreeId,
+                  epoch,
+                  holder,
+                  () => "prepared",
+                );
+                expect(guarded).toEqual(Option.some("prepared"));
+                yield* Deferred.succeed(locked, undefined);
+                // Test-only hold after the callback: production never waits here or does bucket I/O.
+                yield* Deferred.await(finish);
+              }),
+            ),
+          );
+          yield* Deferred.await(locked);
+          const releasing = yield* Effect.forkChild(
+            sql.withTransaction(
+              Effect.gen(function* () {
+                const [row] = yield* sql<{ pid: number }>`SELECT pg_backend_pid() AS pid`;
+                if (row === undefined) return yield* Effect.die("missing test backend PID");
+                yield* Deferred.succeed(waiterPid, row.pid);
+                return yield* repo.release(worktreeId, epoch);
+              }),
+            ),
+          );
+          const pid = yield* Deferred.await(waiterPid);
+          const waited = yield* Effect.gen(function* () {
+            for (;;) {
+              const [state] = yield* sql<{
+                waiting: boolean;
+              }>`SELECT wait_event_type = 'Lock' AS waiting
+              FROM pg_stat_activity WHERE pid = ${pid}`;
+              if (state?.waiting === true) return true;
+              yield* Effect.sleep("10 millis");
+            }
+          }).pipe(
+            Effect.timeout("4 seconds"),
+            Effect.onExit(() =>
+              end === "interruption"
+                ? Fiber.interrupt(holding)
+                : Deferred.succeed(finish, undefined),
+            ),
+          );
+          const holderExit = yield* Fiber.await(holding);
+          return { waited, holderExit, released: yield* Fiber.join(releasing) };
+        }),
+      );
+      expect(result.waited).toBe(true);
+      expect(result.released).toBe(true);
+      expect(
+        Exit.isFailure(result.holderExit) && Cause.hasInterrupts(result.holderExit.cause),
+      ).toBe(end === "interruption");
+    });
+  }
 
   it("heartbeat renews only under the holder's epoch; release lets the next claimer in", async () => {
     const result = await run(
