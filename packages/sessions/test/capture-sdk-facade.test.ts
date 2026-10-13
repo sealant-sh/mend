@@ -6,14 +6,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { readCaptureReport } from "../src/capture-runtime.ts";
 
-/**
- * The installed `@sealant/sdk` facade between the daemon's answer and Mend's landing barrier
- * (review 2026-09-28 #16, cross-repo decision 9). The engine's tests hand `readCaptureReport` the
- * daemon's own fields; the SDK Mend pins rebuilds `capture.flush()`'s answer field by field and
- * may drop every snapshot-health field on the way. This drives the real facade over real HTTP
- * against a control plane that answers what a current sealantd reports, and holds that an answer
- * that lost its health reads not caught up — never a clean snapshot.
- */
+/** Exercise the installed public SDK over HTTP before applying Mend's landing barrier. */
 
 const now = new Date().toISOString();
 const DETAILS = {
@@ -41,7 +34,7 @@ const CARRIED = {
   carried: 1,
   unreadablePaths: ["tree/app.ts"],
   lastSnapError: "unreadable current source file",
-  snapFailingSinceUnixMs: Date.now(),
+  snapFailingSinceUnixMs: Date.parse("2026-09-28T06:54:14Z"),
 };
 
 /** The same daemon when every path read. */
@@ -61,8 +54,13 @@ beforeAll(async () => {
   const address = server.address();
   baseUrl = `http://127.0.0.1:${typeof address === "object" && address !== null ? address.port : 0}`;
 });
-afterAll(() => {
-  server.close();
+afterAll(async () => {
+  await new Promise<void>((resolve, reject) =>
+    server.close((error) => {
+      if (error) return reject(error);
+      resolve();
+    }),
+  );
 });
 
 const flushThroughSdk = async (body: object) => {
@@ -77,29 +75,55 @@ const flushThroughSdk = async (body: object) => {
 };
 
 describe("the pinned SDK facade and the landing barrier", () => {
-  it("reads a carried unreadable path as not caught up, whatever the facade kept of it", async () => {
-    expect(captureCaughtUp(readCaptureReport({ ...CARRIED }))).toBe(false);
+  it("preserves unreadable paths and snapshot failures through the installed SDK", async () => {
     const returned = await flushThroughSdk(CARRIED);
+    expect(returned).toMatchObject(CARRIED);
     const reading = readCaptureReport(returned);
-    expect(reading.pending).toBe(0);
+    expect(reading).toMatchObject({
+      pending: 0,
+      unreadable: 1,
+      unreadablePaths: ["tree/app.ts"],
+      snapError: "unreadable current source file",
+      snapFailingSince: new Date("2026-09-28T06:54:14Z"),
+    });
     expect(captureCaughtUp(reading)).toBe(false);
-    // SDK 0.37.2 dropped the health fields; a facade that forwards them (0.38.0) reads the path.
-    expect(["unreadable", "snapshot health not reported"]).toContain(captureBehindReason(reading));
+    expect(captureSaved(reading)).toBe(false);
+    expect(captureBehindReason(reading)).toBe("unreadable");
   });
 
-  it("reads a clean answer as caught up only when the facade carries its health", async () => {
+  it("preserves clean snapshot health and permits the landing barrier", async () => {
     const returned = await flushThroughSdk(CLEAN_NO_ERROR);
+    expect(returned).toMatchObject(CLEAN_NO_ERROR);
     const reading = readCaptureReport(returned);
-    const forwarded = "unreadable" in returned;
-    expect(captureCaughtUp(reading)).toBe(forwarded);
-    if (!forwarded) expect(captureBehindReason(reading)).toBe("snapshot health not reported");
+    expect(reading).toMatchObject({ unreadable: 0, unreadablePaths: [], snapError: null });
+    expect(captureCaughtUp(reading)).toBe(true);
+    expect(captureBehindReason(reading)).toBeNull();
+    // A healthy status without a final completion claim still does not prove a saved final.
+    expect(captureSaved(reading)).toBe(false);
+  });
+
+  it("refuses a legacy answer that omits snapshot health", async () => {
+    const returned = await flushThroughSdk({
+      epoch: 2,
+      worktreeId: "wt",
+      pending: 0,
+      stagedBytes: 0,
+      uploadedObjects: 1,
+      uploadedBytes: 9,
+      registered: 1,
+      fenced: false,
+      paused: false,
+      refused: [],
+    });
+    const reading = readCaptureReport(returned);
+    expect(reading.unreadable).toBeNull();
+    expect(captureBehindReason(reading)).toBe("snapshot health not reported");
+    expect(captureCaughtUp(reading)).toBe(false);
+    expect(captureSaved(reading)).toBe(false);
   });
 });
 
-// e2e8 F1: a capture deadlocked for 17 minutes while every status read `running · 0 pending`.
-// sealantd reports a step past its bound as `overdue` (status report field 31). Mend reads it
-// wherever it is in the answer; whether it reaches Mend is Core's projection and SDK
-// (PLATFORM-FEEDBACK.md, "A capture step past its bound").
+// An empty queue cannot hide a capture step that exceeded its bound.
 describe("a capture step past its bound", () => {
   const OVERDUE = {
     ...CLEAN_NO_ERROR,
@@ -127,13 +151,18 @@ describe("a capture step past its bound", () => {
     expect(readCaptureReport({ ...CLEAN_NO_ERROR }).overdue).toBeNull();
   });
 
-  it("through the pinned SDK facade: forwarded, it is read; dropped, it reads none (a platform gap)", async () => {
-    const returned = await flushThroughSdk(OVERDUE);
+  it("preserves overdue timing through the installed SDK and holds both barriers", async () => {
+    const returned = await flushThroughSdk({ ...OVERDUE, complete: true });
+    expect(returned).toMatchObject({ overdue: OVERDUE.overdue, complete: true });
     const reading = readCaptureReport(returned);
-    if ("overdue" in returned) {
-      expect(reading.overdue?.step).toBe("small snap › git cat-file --batch-check");
-    } else {
-      expect(reading.overdue).toBeNull();
-    }
+    expect(reading.overdue).toEqual({
+      step: "small snap › git cat-file --batch-check",
+      startedAt: new Date("2026-09-28T06:54:14Z"),
+      runningMs: 1_020_000,
+      boundMs: 120_000,
+    });
+    expect(captureBehindReason(reading)).toBe("capture step overdue");
+    expect(captureCaughtUp(reading)).toBe(false);
+    expect(captureSaved(reading)).toBe(false);
   });
 });
