@@ -751,7 +751,8 @@ describe("Store", () => {
           const refused = yield* store
             .resolveBase(adopted.storePath, "never-pushed", null)
             .pipe(Effect.flip);
-          expect(refused.stderr).toContain('base "never-pushed" is not a branch');
+          expect(refused.args).toEqual(["fetch", "origin"]);
+          expect(refused.stderr).not.toContain("origin was fetched");
           expect(fs.readFileSync(path.join(tmp, "ssh-sock"), "utf8")).toBe("");
           const args = fs.readFileSync(path.join(tmp, "ssh-args"), "utf8").split("\n");
           expect(args.slice(0, 2)).toEqual(["-F", "/dev/null"]);
