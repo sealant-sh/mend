@@ -302,8 +302,8 @@ describe("landing routes", () => {
         body: "Closes #12",
         webOrigin: "http://api.internal",
       });
-      // The project's auth mode resolved for the owner, pinned by the policy.
-      expect(state.lands[0]?.env).toMatchObject({ GIT_TERMINAL_PROMPT: "0" });
+      // Actual adapters receive the deferred owner/policy environment without resolving it here.
+      expect(typeof state.lands[0]?.env).toBe("function");
       expect(state.audited).toEqual([
         {
           organizationId: "org-A",

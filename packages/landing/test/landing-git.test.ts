@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
+import * as http from "node:http";
 import * as os from "node:os";
 import * as path from "node:path";
 
@@ -7,7 +8,15 @@ import { CheckpointsRepo } from "@mend/db";
 import { Sha } from "@mend/domain";
 import { Checkpoint } from "@mend/domain/workbench";
 import { SessionEngine } from "@mend/sessions";
-import { Store, StoreConfig, worktreePathOf } from "@mend/store";
+import {
+  Store,
+  StoreConfig,
+  worktreePathOf,
+  makeSourcePolicy,
+  preparedRemoteEnvironment,
+  MendKeys,
+  AgentBridge,
+} from "@mend/store";
 import { Effect, Layer } from "effect";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
@@ -201,6 +210,77 @@ describe("landing a co-located session", () => {
 
   const originHead = () =>
     sh(repos.origin, ["for-each-ref", "--format=%(objectname)", `refs/heads/${BRANCH}`]);
+
+  it.each(["push", "probe"] as const)(
+    "the real %s adapter retains preparation until the named operation",
+    async (operation) => {
+      const source = "http://140.82.112.3/public.git";
+      const requests: string[] = [];
+      const recorder = http.createServer((request, response) => {
+        requests.push(request.url ?? "");
+        response.writeHead(404).end();
+      });
+      await new Promise<void>((resolve) => recorder.listen(0, "127.0.0.1", resolve));
+      const address = recorder.address();
+      if (address === null || typeof address === "string") throw new Error("No recorder.");
+      try {
+        sh(repos.storePath, ["remote", "set-url", "origin", source]);
+        sh(repos.storePath, ["config", "url.http://169.254.169.254/private.git.insteadOf", source]);
+        const before = fs.readFileSync(path.join(repos.storePath, "config"), "utf8");
+        const failure = await Effect.runPromise(
+          Effect.gen(function* () {
+            const remoteEnv = yield* preparedRemoteEnvironment({
+              policy: makeSourcePolicy({
+                profile: "operator",
+                allowedHosts: [],
+                resolve: async () => [],
+              }),
+              source,
+              actor: { isOperator: false },
+              mode: "bridge",
+              userId: OWNER,
+              env: {
+                GIT_CONFIG_GLOBAL: "/dev/null",
+                GIT_CONFIG_NOSYSTEM: "1",
+                GIT_CONFIG_COUNT: "0",
+                GIT_CONFIG_PARAMETERS: "",
+                http_proxy: `http://127.0.0.1:${address.port}`,
+                NO_PROXY: "",
+                no_proxy: "",
+              },
+            });
+            const git = yield* LandingGit;
+            const input = { sha: Sha.make(repos.baseSha), remoteBranch: BRANCH, remoteEnv };
+            return operation === "push"
+              ? yield* git.push(world, input).pipe(Effect.flip)
+              : yield* git.probe(world, input).pipe(Effect.flip);
+          }).pipe(
+            Effect.provide(layer()),
+            Effect.provide(
+              Layer.mergeAll(
+                Layer.mock(MendKeys, {}),
+                Layer.mock(AgentBridge, { socketPath: () => "/unused/socket" }),
+              ),
+            ),
+          ),
+        );
+        expect(failure.message).toContain("169.254.169.254 is not a repository host");
+        expect(requests).toEqual([]);
+        expect(fs.readFileSync(path.join(repos.storePath, "config"), "utf8")).toBe(before);
+        expect(sh(repos.storePath, ["rev-parse", "HEAD"])).toBe(repos.baseSha);
+      } finally {
+        await new Promise<void>((resolve, reject) => {
+          recorder.close((error) => {
+            if (error) {
+              reject(error);
+              return;
+            }
+            resolve();
+          });
+        });
+      }
+    },
+  );
 
   it("commits the uncommitted work as the owner, pushes it, and leaves the worktree alone", async () => {
     fs.writeFileSync(path.join(repos.worktree, "app.ts"), "export const answer = 42\n");

@@ -7,6 +7,7 @@ import { Sha } from "@mend/domain";
 import { Effect, Schema } from "effect";
 
 import { git, GitError, gitOutput } from "./git.ts";
+import { gitRemoteEnvironment, type GitRemoteEnvironment } from "./remote-operation-env.ts";
 
 /**
  * Landing's git half (docs/adr/0007-landing.md, steps 2 and 3 and "Pulling a change into your own
@@ -69,7 +70,7 @@ export interface PushInput {
   readonly sha: string;
   /** The branch on origin, without `refs/heads/` (`mend/fix-login`). */
   readonly remoteBranch: string;
-  readonly remoteEnv: Record<string, string>;
+  readonly remoteEnv: GitRemoteEnvironment;
 }
 
 export interface Pushed {
@@ -86,7 +87,7 @@ export interface ProbeInput {
   readonly remoteBranch: string;
   /** The commit origin's branch is compared with: the landed commit, or the branch head. */
   readonly sha: string;
-  readonly remoteEnv: Record<string, string>;
+  readonly remoteEnv: GitRemoteEnvironment;
 }
 
 /** Origin's branch against one local commit, as a fetch observed it. */
@@ -363,7 +364,13 @@ export const probeRemoteBranch = Effect.fn("probeRemoteBranch")(function* (
 ) {
   const ref = yield* checkBranch(input.remoteBranch);
   const local = yield* commitOf(dir, input.sha);
-  const listed = yield* git(["ls-remote", "--", input.remote, ref], dir, input.remoteEnv);
+  const env = yield* gitRemoteEnvironment(input.remoteEnv, {
+    direction: "read",
+    remote: input.remote,
+    repositoryPath: dir,
+    env: {},
+  });
+  const listed = yield* git(["ls-remote", "--", input.remote, ref], dir, env);
   const remoteSha =
     listed
       .split("\n")
@@ -395,7 +402,7 @@ export const probeRemoteBranch = Effect.fn("probeRemoteBranch")(function* (
         `+${ref}:${probeRef}`,
       ],
       dir,
-      input.remoteEnv,
+      env,
     );
   }
   const counts = yield* git(
@@ -416,7 +423,7 @@ export const probeRemoteBranch = Effect.fn("probeRemoteBranch")(function* (
     ahead: Number(ahead),
     holds: Number(ahead) === 0,
   } satisfies RemoteBranchState;
-});
+}, Effect.scoped);
 
 /**
  * Step 3: push `sha` to `refs/heads/<remoteBranch>` on the remote, fast-forward only: the refspec
@@ -428,7 +435,13 @@ export const pushBranch = Effect.fn("pushBranch")(function* (dir: string, input:
   const ref = yield* checkBranch(input.remoteBranch);
   const sha = yield* commitOf(dir, input.sha);
   const args = ["push", "--porcelain", "--", input.remote, `${sha}:${ref}`];
-  const out = yield* gitOutput(args, dir, input.remoteEnv);
+  const env = yield* gitRemoteEnvironment(input.remoteEnv, {
+    direction: "push",
+    remote: input.remote,
+    repositoryPath: dir,
+    env: {},
+  });
+  const out = yield* gitOutput(args, dir, env);
   const words = remoteWords(out.stderr);
   const status = parsePushPorcelain(out.stdout).find((line) => line.to === ref);
   if (status === undefined) {
@@ -481,7 +494,7 @@ export const pushBranch = Effect.fn("pushBranch")(function* (dir: string, input:
     remoteSha: state._tag === "Some" ? state.value.remoteSha : null,
     unseen: state._tag === "Some" ? state.value.unseen : null,
   });
-});
+}, Effect.scoped);
 
 /**
  * A git bundle of `base..tip` naming `refs/heads/<branch>`, for `mend pull`. It is written in a

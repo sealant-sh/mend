@@ -6,8 +6,14 @@ import * as path from "node:path";
 import { type GitAccessMode, InstanceRolesRepo, UserGitAccessRepo } from "@mend/db";
 import type { DotfilesRepository } from "@mend/domain";
 import { gitRemoteLocation, TenancyMode } from "@mend/domain/workbench";
-import { AgentBridge, describeGitRemoteFailure, MendKeys, resolveRemoteEnv } from "@mend/store";
-import { Config, Duration, Effect, Layer, Schema } from "effect";
+import {
+  type GitRemoteOperation,
+  AgentBridge,
+  describeGitRemoteFailure,
+  MendKeys,
+  resolveRemoteEnv,
+} from "@mend/store";
+import { Config, Duration, Effect, Layer, Schema, type Scope } from "effect";
 import * as Context from "effect/Context";
 
 /**
@@ -321,6 +327,7 @@ const buildRepositoryArchive = (
   identity: DotfilesCloneIdentity,
   cloneEnv: Readonly<Record<string, string>>,
   bounds: DotfilesCloneBounds,
+  prepareCloneEnv?: PrepareDotfilesClone,
 ): Effect.Effect<ResolvedDotfilesArchive, DotfilesResolveError> =>
   Effect.gen(function* () {
     const checkout = yield* Effect.sync(() =>
@@ -352,6 +359,17 @@ const buildRepositoryArchive = (
     // below, never fetched.
     const localEnv = DOTFILES_LOCAL_GIT_ENV;
     const pack = Effect.gen(function* () {
+      const env =
+        prepareCloneEnv === undefined
+          ? cloneEnvironment
+          : yield* prepareCloneEnv({
+              direction: "clone",
+              remote: repository.url,
+              env: cloneEnvironment,
+              cwd: os.tmpdir(),
+              destinationPath: checkout,
+              cloneKind: "checkout",
+            });
       yield* Effect.raceFirst(
         runGit(
           [
@@ -368,7 +386,7 @@ const buildRepositoryArchive = (
             repository.url,
             checkout,
           ],
-          { cwd: os.tmpdir(), env: cloneEnvironment },
+          { cwd: os.tmpdir(), env },
           ({ stderr }) =>
             `dotfiles clone of ${repository.url} failed: ${describeCloneFailure(identity, repository.url, stderr)}`,
         ),
@@ -437,6 +455,7 @@ const buildRepositoryArchive = (
       };
     });
     return yield* pack.pipe(
+      Effect.scoped,
       Effect.timeoutOrElse({
         duration: Duration.millis(bounds.timeoutMs),
         orElse: () =>
@@ -449,6 +468,11 @@ const buildRepositoryArchive = (
       Effect.ensuring(cleanup),
     );
   });
+
+/** Clear the clone after its identity's configuration resets and private HOME are in place. */
+export type PrepareDotfilesClone = (
+  operation: Extract<GitRemoteOperation, { direction: "clone" }>,
+) => Effect.Effect<Record<string, string>, DotfilesResolveError, Scope.Scope>;
 
 /**
  * A dotfiles REPOSITORY as a launch archive: the bounded clone and pack above, as `access` (the
@@ -464,6 +488,7 @@ export const resolveRepositoryArchive = (
     readonly access?: DotfilesCloneAccess;
     /** Pins the clone to the address the source policy checked; composes over the access env. */
     readonly pinCloneEnv?: (env: Readonly<Record<string, string>>) => Record<string, string>;
+    readonly prepareCloneEnv?: PrepareDotfilesClone;
     /** Tests shrink these; production uses {@link DOTFILES_CLONE_BOUNDS}. */
     readonly bounds?: DotfilesCloneBounds;
   } = {},
@@ -474,6 +499,7 @@ export const resolveRepositoryArchive = (
     access.identity,
     dotfilesCloneEnv(options.pinCloneEnv, access),
     options.bounds ?? DOTFILES_CLONE_BOUNDS,
+    options.prepareCloneEnv,
   );
 };
 
@@ -531,6 +557,7 @@ export class DotfilesCloner extends Context.Service<
       options?: {
         /** The source policy's pin for the address it checked. */
         readonly pinCloneEnv?: (env: Readonly<Record<string, string>>) => Record<string, string>;
+        readonly prepareCloneEnv?: PrepareDotfilesClone;
       },
     ) => Effect.Effect<ResolvedDotfilesArchive, DotfilesResolveError>;
   }
@@ -556,6 +583,7 @@ export const makeDotfilesClonerLayer = (
         repository: DotfilesRepository,
         options: {
           readonly pinCloneEnv?: (env: Readonly<Record<string, string>>) => Record<string, string>;
+          readonly prepareCloneEnv?: PrepareDotfilesClone;
         } = {},
       ) {
         const identity = dotfilesCloneIdentity({
@@ -572,6 +600,9 @@ export const makeDotfilesClonerLayer = (
         const clone = resolveRepositoryArchive(repository, {
           access,
           ...(options.pinCloneEnv === undefined ? {} : { pinCloneEnv: options.pinCloneEnv }),
+          ...(options.prepareCloneEnv === undefined
+            ? {}
+            : { prepareCloneEnv: options.prepareCloneEnv }),
         });
         if (identity.kind !== "owner-ssh" || identity.mode !== "bridge") return yield* clone;
         // The share client says what asked for the signature.

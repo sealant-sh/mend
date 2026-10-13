@@ -30,6 +30,7 @@ import {
 } from "./landing.ts";
 import { mendHome } from "./paths.ts";
 import { refuseRemoteCredentials } from "./remote-credentials.ts";
+import { gitRemoteEnvironment, type GitRemoteEnvironment } from "./remote-operation-env.ts";
 
 /** Where the store lives on disk. One root, one directory per project. */
 export class StoreConfig extends Context.Service<
@@ -750,7 +751,7 @@ export class Store extends Context.Service<
     readonly adopt: (
       directory: string,
       source: RepositoryCloneUrl,
-      remoteEnv: Record<string, string>,
+      remoteEnv: GitRemoteEnvironment,
     ) => Effect.Effect<AdoptedRepo, AdoptError>;
     /**
      * Create a worktree on its own branch from `base` (default branch when null). The caller
@@ -762,7 +763,7 @@ export class Store extends Context.Service<
       storePath: string,
       identity: { readonly directory: string; readonly branch: string },
       base: string | null,
-      remoteEnv: Record<string, string> | null,
+      remoteEnv: GitRemoteEnvironment | null,
     ) => Effect.Effect<SessionWorktree, GitError>;
     /**
      * The base a new worktree starts from, resolved the way `createWorktree` resolves it (the
@@ -772,7 +773,7 @@ export class Store extends Context.Service<
     readonly resolveBase: (
       storePath: string,
       base: string | null,
-      remoteEnv: Record<string, string> | null,
+      remoteEnv: GitRemoteEnvironment | null,
     ) => Effect.Effect<{ readonly baseRef: string; readonly baseSha: Sha }, GitError>;
     /**
      * Rename the branch a worktree is on in place (`git branch -m`) — the display-identity
@@ -792,7 +793,7 @@ export class Store extends Context.Service<
       storePath: string,
       name: string,
       base: string | null,
-      remoteEnv: Record<string, string> | null,
+      remoteEnv: GitRemoteEnvironment | null,
     ) => Effect.Effect<
       { readonly path: string; readonly baseSha: Sha; readonly baseRef: string },
       GitError
@@ -804,7 +805,7 @@ export class Store extends Context.Service<
      */
     readonly refreshFromOrigin: (
       storePath: string,
-      remoteEnv: Record<string, string>,
+      remoteEnv: GitRemoteEnvironment,
     ) => Effect.Effect<void, GitError>;
     /** Branches a session can base on — origin's view merged with local-only heads. */
     readonly listBranches: (
@@ -944,13 +945,13 @@ export class Store extends Context.Service<
       directory: string,
       source: string,
       ref: string | null,
-      remoteEnv: Record<string, string>,
+      remoteEnv: GitRemoteEnvironment,
     ) => Effect.Effect<ReferenceClone, ReferenceCloneError>;
     /** Re-fetch the pinned ref (or the clone's branch) shallow and hard-reset to it. */
     readonly refreshReference: (
       clonePath: string,
       ref: string | null,
-      remoteEnv: Record<string, string>,
+      remoteEnv: GitRemoteEnvironment,
     ) => Effect.Effect<ReferenceClone, GitError>;
     /** Delete the clone directory. Selection rows are the caller's concern. */
     readonly removeReference: (clonePath: string) => Effect.Effect<void>;
@@ -1038,13 +1039,21 @@ export class Store extends Context.Service<
       const adopt = Effect.fn("Store.adopt")(function* (
         directory: string,
         source: RepositoryCloneUrl,
-        remoteEnv: Record<string, string>,
+        remoteEnv: GitRemoteEnvironment,
       ) {
         const projectDir = path.join(config.root, directory);
         const storePath = path.join(projectDir, "repo.git");
         const attempt = Effect.gen(function* () {
           yield* Effect.sync(() => fs.mkdirSync(config.root, { recursive: true }));
-          yield* git(["clone", "--bare", "--", source, storePath], config.root, remoteEnv);
+          const env = yield* gitRemoteEnvironment(remoteEnv, {
+            direction: "clone",
+            remote: source,
+            env: {},
+            cwd: config.root,
+            destinationPath: storePath,
+            cloneKind: "bare",
+          });
+          yield* git(["clone", "--bare", "--", source, storePath], config.root, env);
           // A SHA-256 repository is refused before anything is made of it, and the clone it just
           // made is removed (and the project directory, when that left it empty).
           yield* refuseUnsupportedRepository(storePath).pipe(
@@ -1071,7 +1080,7 @@ export class Store extends Context.Service<
         return yield* attempt.pipe(
           Effect.catch((cause) => Effect.fail(new AdoptError({ directory, source, cause }))),
         );
-      });
+      }, Effect.scoped);
 
       /**
        * Freshen one base ref from the project origin before resolving it — best-effort by
@@ -1082,11 +1091,19 @@ export class Store extends Context.Service<
       const freshenBase = Effect.fn("Store.freshenBase")(function* (
         storePath: string,
         baseRef: string,
-        remoteEnv: Record<string, string> | null,
+        remoteEnv: GitRemoteEnvironment | null,
       ) {
         if (remoteEnv === null) return;
         yield* refuseRemoteCredentials(storePath).pipe(
-          Effect.andThen(git(["fetch", "origin", baseRef], storePath, remoteEnv)),
+          Effect.andThen(
+            gitRemoteEnvironment(remoteEnv, {
+              direction: "read",
+              remote: "origin",
+              repositoryPath: storePath,
+              env: {},
+            }),
+          ),
+          Effect.flatMap((env) => git(["fetch", "origin", baseRef], storePath, env)),
           Effect.tapError((error) =>
             Effect.logDebug("store: base freshen skipped").pipe(
               Effect.annotateLogs({ storePath, baseRef, stderr: error.stderr }),
@@ -1094,7 +1111,7 @@ export class Store extends Context.Service<
           ),
           Effect.ignore,
         );
-      });
+      }, Effect.scoped);
 
       /**
        * Resolve a requested base to a commit, preferring what origin says over the store's own
@@ -1108,7 +1125,7 @@ export class Store extends Context.Service<
       const resolveBaseSha = Effect.fn("Store.resolveBaseSha")(function* (
         storePath: string,
         baseRef: string,
-        remoteEnv: Record<string, string> | null,
+        remoteEnv: GitRemoteEnvironment | null,
       ) {
         const tryResolve = (ref: string) => git(["rev-parse", `${ref}^{commit}`], storePath);
         return yield* tryResolve(`refs/remotes/origin/${baseRef}`).pipe(
@@ -1117,7 +1134,12 @@ export class Store extends Context.Service<
             refuseRemoteCredentials(storePath).pipe(
               Effect.andThen(
                 // Without a signer, ssh refuses rather than answer as the server process.
-                git(["fetch", "origin"], storePath, remoteEnv ?? noSignerGitEnv()),
+                gitRemoteEnvironment(remoteEnv ?? noSignerGitEnv(), {
+                  direction: "read",
+                  remote: "origin",
+                  repositoryPath: storePath,
+                  env: {},
+                }).pipe(Effect.flatMap((env) => git(["fetch", "origin"], storePath, env))),
               ),
               Effect.ignore,
               Effect.andThen(
@@ -1135,13 +1157,13 @@ export class Store extends Context.Service<
             ),
           ),
         );
-      });
+      }, Effect.scoped);
 
       const createWorktree = Effect.fn("Store.createWorktree")(function* (
         storePath: string,
         identity: { readonly directory: string; readonly branch: string },
         base: string | null,
-        remoteEnv: Record<string, string> | null,
+        remoteEnv: GitRemoteEnvironment | null,
       ) {
         // The worktree's admin dir, and on the co-located store the whole store, reach a workspace.
         yield* refuseRemoteCredentials(storePath);
@@ -1177,7 +1199,7 @@ export class Store extends Context.Service<
       const resolveBase = Effect.fn("Store.resolveBase")(function* (
         storePath: string,
         base: string | null,
-        remoteEnv: Record<string, string> | null,
+        remoteEnv: GitRemoteEnvironment | null,
       ) {
         const baseRef = base ?? (yield* git(["symbolic-ref", "--short", "HEAD"], storePath));
         yield* freshenBase(storePath, baseRef, remoteEnv);
@@ -1196,7 +1218,7 @@ export class Store extends Context.Service<
         storePath: string,
         name: string,
         base: string | null,
-        remoteEnv: Record<string, string> | null,
+        remoteEnv: GitRemoteEnvironment | null,
       ) {
         const worktreePath = path.join(path.dirname(storePath), "worktrees", name);
         yield* refuseRemoteCredentials(storePath);
@@ -1210,7 +1232,7 @@ export class Store extends Context.Service<
 
       const refreshFromOrigin = Effect.fn("Store.refreshFromOrigin")(function* (
         storePath: string,
-        remoteEnv: Record<string, string>,
+        remoteEnv: GitRemoteEnvironment,
       ) {
         // Both refspecs in one fetch: heads for the store's own tree reads (files listing,
         // default-branch resolution), remote-tracking for base resolution. Forced — the store
@@ -1219,6 +1241,12 @@ export class Store extends Context.Service<
         // keeps origin's `mend/*` from overwriting, or refusing to fetch into, a session branch a
         // worktree has checked out.
         yield* refuseRemoteCredentials(storePath);
+        const env = yield* gitRemoteEnvironment(remoteEnv, {
+          direction: "read",
+          remote: "origin",
+          repositoryPath: storePath,
+          env: {},
+        });
         yield* git(
           [
             "fetch",
@@ -1228,9 +1256,9 @@ export class Store extends Context.Service<
             `^${SESSION_BRANCHES}`,
           ],
           storePath,
-          remoteEnv,
+          env,
         );
-      });
+      }, Effect.scoped);
 
       /** `for-each-ref` line → parts; the formats below join with a tab (refnames cannot hold one). */
       const branchLine = (line: string): { name: string; sha: Sha; committedAt: string } | null => {
@@ -1625,13 +1653,21 @@ export class Store extends Context.Service<
         directory: string,
         source: string,
         ref: string | null,
-        remoteEnv: Record<string, string>,
+        remoteEnv: GitRemoteEnvironment,
       ) {
         const clonePath = path.join(config.root, directory);
         const referencesRoot = path.dirname(clonePath);
         const name = path.basename(clonePath);
         const attempt = Effect.gen(function* () {
           yield* Effect.sync(() => fs.mkdirSync(referencesRoot, { recursive: true }));
+          const env = yield* gitRemoteEnvironment(remoteEnv, {
+            direction: "clone",
+            remote: source,
+            env: {},
+            cwd: referencesRoot,
+            destinationPath: clonePath,
+            cloneKind: "checkout",
+          });
           yield* git(
             [
               "clone",
@@ -1643,7 +1679,7 @@ export class Store extends Context.Service<
               clonePath,
             ],
             referencesRoot,
-            remoteEnv,
+            env,
           );
           const head = yield* git(["rev-parse", "HEAD"], clonePath);
           return { path: clonePath, headSha: sha(head) };
@@ -1655,12 +1691,12 @@ export class Store extends Context.Service<
             ),
           ),
         );
-      });
+      }, Effect.scoped);
 
       const refreshReference = Effect.fn("Store.refreshReference")(function* (
         clonePath: string,
         ref: string | null,
-        remoteEnv: Record<string, string>,
+        remoteEnv: GitRemoteEnvironment,
       ) {
         // No pin = follow whatever branch the clone is on. FETCH_HEAD + hard
         // reset handles branches and tags uniformly, force-pushes included —
@@ -1668,11 +1704,17 @@ export class Store extends Context.Service<
         // A reference clone is mounted into co-located workspaces, its config included.
         yield* refuseRemoteCredentials(clonePath);
         const target = ref ?? (yield* git(["symbolic-ref", "--short", "HEAD"], clonePath));
-        yield* git(["fetch", "--depth", "1", "origin", target], clonePath, remoteEnv);
+        const env = yield* gitRemoteEnvironment(remoteEnv, {
+          direction: "read",
+          remote: "origin",
+          repositoryPath: clonePath,
+          env: {},
+        });
+        yield* git(["fetch", "--depth", "1", "origin", target], clonePath, env);
         yield* git(["reset", "--hard", "FETCH_HEAD"], clonePath);
         const head = yield* git(["rev-parse", "HEAD"], clonePath);
         return { path: clonePath, headSha: sha(head) };
-      });
+      }, Effect.scoped);
 
       const removeReference = Effect.fn("Store.removeReference")(function* (clonePath: string) {
         yield* Effect.sync(() => fs.rmSync(clonePath, { recursive: true, force: true }));
