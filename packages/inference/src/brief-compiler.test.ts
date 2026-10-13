@@ -10,23 +10,17 @@ import {
   type BriefVersion,
   type Run,
 } from "@mend/domain";
-import { Effect, Layer, Schema } from "effect";
+import { Effect, Layer, Result, Schema } from "effect";
 
 import { BriefCompiler, CompileBriefJob } from "./brief-compiler.ts";
+import { publishBriefLayer } from "./live-tools.ts";
 import {
   InferenceError,
   InferenceProvider,
   InferenceToolError,
   type InferenceRequest,
 } from "./provider.ts";
-import {
-  IssueView,
-  PublishBrief,
-  ReadBrief,
-  ReadChange,
-  ReadIssue,
-  ReadRecording,
-} from "./tools.ts";
+import { IssueView, ReadBrief, ReadChange, ReadIssue, ReadRecording } from "./tools.ts";
 
 const changeId = ChangeId.make("22222222-2222-2222-2222-222222222222");
 const issueId = IssueId.make("33333333-3333-3333-3333-333333333333");
@@ -66,36 +60,40 @@ const wireDocument = {
   evidenceUsed: [],
 };
 
-/** In-memory BriefsRepo — versions bump exactly like the SQL layer. */
-const briefsMemoryLayer = Layer.sync(BriefsRepo, () => {
-  const store = new Map<string, Brief>();
-  return {
-    byChange: (id: ChangeId) => {
-      const brief = store.get(id);
-      return brief === undefined
-        ? Effect.fail(new BriefNotFoundError({ changeId: id }))
-        : Effect.succeed(brief);
-    },
-    versions: () => Effect.succeed([] as ReadonlyArray<BriefVersion>),
-    publish: (id: ChangeId, document: BriefDocument) =>
-      Effect.sync(() => {
-        const existing = store.get(id);
-        const version = (existing?.currentVersion ?? 0) + 1;
-        store.set(
-          id,
-          new Brief({
-            id: existing?.id ?? BriefId.make(crypto.randomUUID()),
-            changeId: id,
-            currentVersion: version,
-            document,
-            createdAt: new Date(0),
-            updatedAt: new Date(0),
-          }),
-        );
-        return { version };
-      }),
-  };
-});
+type Publication = { readonly changeId: ChangeId; readonly document: BriefDocument };
+
+/** Recording repository for the compiler boundary; SQL version arithmetic is outside this test. */
+const briefsMemoryLayer = (writes: Array<Publication>) =>
+  Layer.sync(BriefsRepo, () => {
+    const store = new Map<string, Brief>();
+    return {
+      byChange: (id: ChangeId) => {
+        const brief = store.get(id);
+        return brief === undefined
+          ? Effect.fail(new BriefNotFoundError({ changeId: id }))
+          : Effect.succeed(brief);
+      },
+      versions: () => Effect.succeed([] as ReadonlyArray<BriefVersion>),
+      publish: (id: ChangeId, document: BriefDocument) =>
+        Effect.sync(() => {
+          writes.push({ changeId: id, document });
+          const existing = store.get(id);
+          const version = (existing?.currentVersion ?? 0) + 1;
+          store.set(
+            id,
+            new Brief({
+              id: existing?.id ?? BriefId.make(crypto.randomUUID()),
+              changeId: id,
+              currentVersion: version,
+              document,
+              createdAt: new Date(0),
+              updatedAt: new Date(0),
+            }),
+          );
+          return { version };
+        }),
+    };
+  });
 
 /** A RunsRepo with no runs — the compiler only lists recordings for the prompt. */
 const runsEmptyLayer = Layer.succeed(RunsRepo, {
@@ -143,38 +141,35 @@ const readBriefLiveOnMemory = Layer.effect(
   }),
 );
 
-const publishBriefLiveOnMemory = Layer.effect(
-  PublishBrief,
-  Effect.gen(function* () {
-    const briefs = yield* BriefsRepo;
-    return {
-      publish: (id: ChangeId, document: BriefDocument) => briefs.publish(id, document),
-    };
-  }),
-);
-
 /** A provider scripted to call the named tools in order, like the model would. */
-const scriptedProviderLayer = (script: ReadonlyArray<{ name: string; input: unknown }>) =>
+const scriptedProviderLayer = (
+  script: ReadonlyArray<{ name: string; input: unknown }>,
+  results: Array<Result.Result<unknown, InferenceToolError>>,
+) =>
   Layer.succeed(InferenceProvider, {
     respond: (request: InferenceRequest) =>
       Effect.gen(function* () {
         for (const call of script) {
           const tool = request.tools?.find((candidate) => candidate.name === call.name);
-          if (tool === undefined) continue;
+          if (tool === undefined) return yield* Effect.die(`Missing scripted tool: ${call.name}`);
           // A failed tool call comes back to the model as an error result — not a crash.
-          yield* tool.handle(call.input).pipe(Effect.ignore);
+          results.push(yield* tool.handle(call.input).pipe(Effect.result));
         }
         return "done";
       }),
   });
 
-const testLayer = (script: ReadonlyArray<{ name: string; input: unknown }>) =>
+const testLayer = (
+  script: ReadonlyArray<{ name: string; input: unknown }>,
+  writes: Array<Publication> = [],
+  results: Array<Result.Result<unknown, InferenceToolError>> = [],
+) =>
   BriefCompiler.layer.pipe(
-    Layer.provideMerge(scriptedProviderLayer(script)),
+    Layer.provideMerge(scriptedProviderLayer(script, results)),
     Layer.provideMerge(runsEmptyLayer),
     Layer.provideMerge(
-      Layer.mergeAll(unusedToolLayers, readBriefLiveOnMemory, publishBriefLiveOnMemory).pipe(
-        Layer.provideMerge(briefsMemoryLayer),
+      Layer.mergeAll(unusedToolLayers, readBriefLiveOnMemory, publishBriefLayer).pipe(
+        Layer.provideMerge(briefsMemoryLayer(writes)),
       ),
     ),
   );
@@ -208,40 +203,84 @@ describe("BriefCompiler", () => {
     }).pipe(Effect.provide(testLayer([]))),
   );
 
-  it.effect("rejects a document that does not match the schema, then fails unpublished", () =>
-    Effect.gen(function* () {
+  it.effect("refuses malformed publication at the tool boundary without a repository write", () => {
+    const writes: Array<Publication> = [];
+    const results: Array<Result.Result<unknown, InferenceToolError>> = [];
+    return Effect.gen(function* () {
       const compiler = yield* BriefCompiler;
       const outcome = yield* compiler.compile(job).pipe(Effect.flip);
-      // The bad publish was answered with a tool error; no version was written.
-      expect(outcome).toBeInstanceOf(InferenceError);
+      expect(outcome).toMatchObject({
+        _tag: "InferenceError",
+        message: "the compile finished without publishing (version stayed at 0)",
+      });
+      expect(results).toHaveLength(1);
+      const result = results[0];
+      if (result === undefined || Result.isSuccess(result))
+        throw new Error("Malformed publication must return a tool failure");
+      expect(result.failure).toMatchObject({
+        _tag: "InferenceToolError",
+        tool: "publish_brief",
+        message: expect.stringContaining("input did not match the schema:"),
+      });
+      expect(writes).toEqual([]);
+      const absent = yield* (yield* BriefsRepo).byChange(changeId).pipe(Effect.flip);
+      expect(absent).toEqual(new BriefNotFoundError({ changeId }));
     }).pipe(
       Effect.provide(
-        testLayer([
-          {
-            name: "publish_brief",
-            input: { change: changeId, document: { nonsense: true } },
-          },
-        ]),
+        testLayer(
+          [{ name: "publish_brief", input: { change: changeId, document: { nonsense: true } } }],
+          writes,
+          results,
+        ),
       ),
-    ),
-  );
+    );
+  });
 
-  it.effect("a recompile bumps the version and replaces the document", () =>
-    Effect.gen(function* () {
+  it.effect("a recompile publishes distinct replacement content through the live tool", () => {
+    const replacement = {
+      ...wireDocument,
+      whatWasDone: "Rounded each invoice at its currency boundary.",
+      statusNow: "Both invoice cases have recorded results.",
+      causalProof: {
+        ...wireDocument.causalProof,
+        headPasses: { runId, sequence: "84", excerpt: "second exit 0" },
+      },
+    };
+    const script = [{ name: "publish_brief", input: { change: changeId, document: wireDocument } }];
+    const writes: Array<Publication> = [];
+    const results: Array<Result.Result<unknown, InferenceToolError>> = [];
+    return Effect.gen(function* () {
       const compiler = yield* BriefCompiler;
       const briefs = yield* BriefsRepo;
-
       yield* compiler.compile(job);
+      const first = yield* briefs.byChange(changeId);
+      expect(first.document.whatWasDone).toBe("Rounded once, after the discount.");
+      script[0] = { name: "publish_brief", input: { change: changeId, document: replacement } };
       yield* compiler.compile(job);
-
-      const brief = yield* briefs.byChange(changeId);
-      expect(brief.currentVersion).toBe(2);
-    }).pipe(
-      Effect.provide(
-        testLayer([{ name: "publish_brief", input: { change: changeId, document: wireDocument } }]),
-      ),
-    ),
-  );
+      const second = yield* briefs.byChange(changeId);
+      expect(
+        writes.map((write) => ({
+          change: write.changeId,
+          whatWasDone: write.document.whatWasDone,
+          sequence: write.document.causalProof.headPasses?.sequence,
+        })),
+      ).toEqual([
+        { change: changeId, whatWasDone: "Rounded once, after the discount.", sequence: 42n },
+        {
+          change: changeId,
+          whatWasDone: "Rounded each invoice at its currency boundary.",
+          sequence: 84n,
+        },
+      ]);
+      expect(results).toHaveLength(2);
+      expect(results.map((result) => (Result.isSuccess(result) ? result.success : null))).toEqual([
+        { version: 1 },
+        { version: 2 },
+      ]);
+      expect(second.document).toEqual(Schema.decodeUnknownSync(BriefDocument)(replacement));
+      expect(second.document).not.toEqual(first.document);
+    }).pipe(Effect.provide(testLayer(script, writes, results)));
+  });
 });
 
 describe("the publish_brief wire codec", () => {

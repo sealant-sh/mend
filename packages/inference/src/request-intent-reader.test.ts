@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Layer } from "effect";
+import { ConfigProvider, Effect, Layer } from "effect";
 
 import { InferenceError, InferenceProvider, type InferenceRequest } from "./provider.ts";
 import {
@@ -22,6 +22,7 @@ const readWith = (
   outcomes: Array<Effect.Effect<unknown, InferenceError>>,
   requests: Array<InferenceRequest>,
   over: RequestIntentInput = input,
+  configuration: Readonly<Record<string, string>> = {},
 ) =>
   Effect.gen(function* () {
     const reader = yield* RequestIntentReader;
@@ -37,6 +38,7 @@ const readWith = (
             },
           }),
         ),
+        Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown(configuration))),
       ),
     ),
   );
@@ -47,6 +49,46 @@ const unusable = new InferenceError({
 });
 
 describe("RequestIntentReader (docs/adr/0007, Questions do not open pull requests)", () => {
+  it.effect("uses explicit model overrides on both provider arms", () => {
+    const requests: Array<InferenceRequest> = [];
+    return Effect.gen(function* () {
+      yield* readWith(
+        [
+          Effect.fail(
+            new InferenceError({ message: "Reconnect the claude connected account", cause: null }),
+          ),
+          Effect.succeed({ intent: "question" }),
+        ],
+        requests,
+        input,
+        {
+          MEND_INFERENCE_INTENT_MODEL_CLAUDE: "custom-claude",
+          MEND_INFERENCE_INTENT_MODEL_CODEX: "custom-codex",
+        },
+      );
+      expect(requests.map((request) => [request.provider, request.model])).toEqual([
+        ["claude", "custom-claude"],
+        ["codex", "custom-codex"],
+      ]);
+    });
+  });
+
+  it.effect("preserves the fallback failure after exactly two provider calls", () => {
+    const requests: Array<InferenceRequest> = [];
+    const failure = new InferenceError({ message: "Codex inference unavailable", cause: null });
+    return Effect.gen(function* () {
+      const result = yield* readWith(
+        [
+          Effect.fail(new InferenceError({ message: "No claude connected account", cause: null })),
+          Effect.fail(failure),
+        ],
+        requests,
+      ).pipe(Effect.flip);
+      expect(result).toBe(failure);
+      expect(requests.map((request) => request.provider)).toEqual(["claude", "codex"]);
+    });
+  });
+
   it.effect("asks the cheap model once, with the request and what came before it", () => {
     const requests: Array<InferenceRequest> = [];
     return Effect.gen(function* () {
@@ -138,6 +180,25 @@ describe("RequestIntentReader (docs/adr/0007, Questions do not open pull request
       expect(error.message).toContain("did not match its schema");
     }),
   );
+
+  it.each([5999, 6000, 6001])(
+    "bounds the request at %d characters without dropping its prefix",
+    (length) => {
+      expect(requestIntentPrompt({ request: "  " + "r".repeat(length) + "  ", context: [] })).toBe(
+        `Context, oldest first:\n(none)\n\nThe request:\n${"r".repeat(Math.min(length, 6000))}`,
+      );
+    },
+  );
+
+  it.each([
+    [5996, `a: ${"c".repeat(5996)}`],
+    [5997, `a: ${"c".repeat(5997)}`],
+    [5998, `…: ${"c".repeat(5998)}`],
+  ] as const)("keeps the latest context characters for text length %d", (length, expected) => {
+    expect(
+      requestIntentPrompt({ request: "fix", context: [{ author: "a", text: "c".repeat(length) }] }),
+    ).toBe(`Context, oldest first:\n${expected}\n\nThe request:\nfix`);
+  });
 
   it("says so when there is no context, and keeps the newest of a long one", () => {
     expect(requestIntentPrompt({ request: "fix it", context: [] })).toContain(
