@@ -196,23 +196,28 @@ describe("changedFiles path identity through real Git", () => {
       });
       expect(observed.patch).toContain("+untracked-odd-two");
     }));
-  it("keeps exact untracked names, two-line counts and the 200-file render limit", async () =>
-    withStore(async (root, git, run) => {
-      write(root, "keep.txt", "keep\n");
-      commit(git);
-      const names = Array.from(
-        { length: 205 },
-        (_, i) => `${String(i).padStart(3, "0")}-naïve\tline\n.txt`,
-      );
-      for (const name of names) write(root, name, "one\ntwo\n");
-      const rows = await run(
-        Effect.flatMap(Store, (store) => store.changedFiles(root, "HEAD", null)),
-      );
-      expect(rows.slice(0, 200)).toEqual(
-        names.slice(0, 200).map((name) => ({ path: name, additions: 2, deletions: 0 })),
-      );
-      expect(rows.slice(200)).toEqual([
-        { path: "… 5 more untracked files (not rendered)", additions: 0, deletions: 0 },
-      ]);
-    }));
+  // This boundary case launches 200 real Git processes; its deadline is not a latency assertion.
+  it(
+    "keeps exact untracked names, two-line counts and the 200-file render limit",
+    { timeout: 30_000 },
+    async () =>
+      withStore(async (root, git, run) => {
+        write(root, "keep.txt", "keep\n");
+        commit(git);
+        const names = Array.from(
+          { length: 205 },
+          (_, i) => `${String(i).padStart(3, "0")}-naïve\tline\n.txt`,
+        );
+        for (const name of names) write(root, name, "one\ntwo\n");
+        const rows = await run(
+          Effect.flatMap(Store, (store) => store.changedFiles(root, "HEAD", null)),
+        );
+        expect(rows.slice(0, 200)).toEqual(
+          names.slice(0, 200).map((name) => ({ path: name, additions: 2, deletions: 0 })),
+        );
+        expect(rows.slice(200)).toEqual([
+          { path: "… 5 more untracked files (not rendered)", additions: 0, deletions: 0 },
+        ]);
+      }),
+  );
 });
