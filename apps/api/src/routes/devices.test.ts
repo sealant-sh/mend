@@ -74,6 +74,14 @@ describe("device tokens", () => {
     const hash = hashDeviceToken("mdt_example");
     expect(hash).toMatch(/^[0-9a-f]{64}$/);
     expect(hash).not.toContain("mdt_");
+    // Fixed SHA-256 vectors, independent of both the route and Auth implementations.
+    expect(hashDeviceToken("abc")).toBe(
+      "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+    );
+    expect(hashDeviceToken("")).toBe(
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    );
+    expect(hashDeviceToken("mdt_other")).not.toBe(hash);
     expect(hashDeviceToken("mdt_example")).toBe(hash);
   });
 });
