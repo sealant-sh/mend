@@ -840,13 +840,88 @@ describe("capture.register checks the metadata against the tree it applies to (r
     }
   });
 
-  it("registers, unsealed, a document it could not check (the tree could not be listed)", async () => {
+  it("keeps a final capture for salvage while its tree cannot be listed, then seals it after recovery", async () => {
     const wt = WorktreeId.make("wt-review3-meta-unlisted");
-    const section = withMeta(wt, documentOf(plainDocument));
-    const result = await registerOnce(wt, section.workspace, section.objects, undefined, {
-      tracked: null,
+    const section = withMeta(
+      wt,
+      documentOf({ format: 1, entries: [{ path: "a", kind: "file", mode: 0o644, mtime: 0 }] }),
+    );
+    let available = false;
+    const listed: Array<string> = [];
+    const verifier = Layer.effect(
+      CaptureGitVerifier,
+      Effect.map(CaptureGitVerifier, (inner) => ({
+        ...inner,
+        treeObjects: (projectId, manifest, tree) =>
+          Effect.suspend(() => {
+            listed.push(tree);
+            return available ? inner.treeObjects(projectId, manifest, tree) : Effect.succeed(null);
+          }),
+      })),
+    ).pipe(Layer.provide(verifierObserving({ a: "file" })));
+    const world = worldOf(2, verifier);
+    const base = buildManifest({
+      worktreeId: wt,
+      epoch: 1,
+      n: 0,
+      parent: null,
+      kind: "final",
+      git: gitWithTree,
+      workspace: section.workspace,
+      bulk: { root: "", packs: [], platform: "linux-x86_64-glibc" },
     });
-    expect(result.said).toBe("ok");
+    const manifest = {
+      ...base.manifest,
+      final_seal: { complete: true, epoch: 1, executor: "executor" },
+    };
+    const bytes = utf8(JSON.stringify(manifest));
+    const id = sha256Hex(bytes);
+    const key = captureKeys(wt, 1).manifest(id);
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const repo = yield* CaptureStoreRepo;
+        yield* repo.init(wt);
+        yield* repo.claim(wt, "executor");
+        yield* uploadObjects(new Map([...section.objects, [key, bytes]]));
+        const api = yield* apiOf(wt);
+        const request = {
+          worktree_id: wt,
+          epoch: 1,
+          n: 0,
+          parent: null,
+          capture_id: id,
+          manifest_key: key,
+          manifest,
+        };
+        const first = yield* api.register(request);
+        expect(first).toEqual({
+          head_n: 0,
+          head_capture_id: id,
+          epoch: 1,
+          seal: { state: "withheld", reason: "unavailable" },
+        });
+        expect((yield* repo.headOf(wt))?.head?.id).toBe(id);
+        expect(yield* repo.sealedCompletion(wt, "executor", 1)).toBeNull();
+        expect(listed).toEqual([WORKTREE_TREE]);
+        available = true;
+        const recovered = yield* api.register(request);
+        expect(recovered).toEqual({
+          head_n: 0,
+          head_capture_id: id,
+          epoch: 1,
+          seal: { state: "recorded" },
+        });
+        expect((yield* repo.headOf(wt))?.head?.id).toBe(id);
+        expect(yield* repo.sealedCompletion(wt, "executor", 1)).toMatchObject({
+          captureId: id,
+          epoch: 1,
+          executorId: "executor",
+          n: 0,
+        });
+        expect(listed.length).toBeGreaterThan(1);
+        expect(listed.every((tree) => tree === WORKTREE_TREE)).toBe(true);
+      }).pipe(Effect.provide(world.layer)),
+    );
   });
 });
 
