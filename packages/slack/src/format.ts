@@ -11,7 +11,7 @@ import {
   type SlackProjectSource,
   type SlackSessionState,
 } from "@mend/domain/workbench";
-import { Option, Schema } from "effect";
+import { Option, Result, Schema } from "effect";
 
 import type {
   ActionsBlock,
@@ -766,19 +766,125 @@ export interface FileDiff {
   readonly diff: string | null;
 }
 
+class GitPathSyntaxError extends Schema.TaggedErrorClass<GitPathSyntaxError>()(
+  "GitPathSyntaxError",
+  { reason: Schema.String },
+) {
+  override get message(): string {
+    return `Git path syntax is unsupported: ${this.reason}`;
+  }
+}
+
+/** Git C quoting escapes bytes, including UTF-8 octets; JSON string decoding would change them. */
+const parseGitPath = (raw: string): Result.Result<string, GitPathSyntaxError> => {
+  const invalid = (reason: string) => Result.fail(new GitPathSyntaxError({ reason }));
+  if (!raw.startsWith('"'))
+    return raw.length === 0 || raw.includes("\0")
+      ? invalid("empty or NUL path")
+      : Result.succeed(raw);
+  if (!raw.endsWith('"')) return invalid("unterminated quoting");
+  const body = raw.slice(1, -1);
+  const bytes: number[] = [];
+  const escapes: Readonly<Record<string, number>> = {
+    a: 7,
+    b: 8,
+    t: 9,
+    n: 10,
+    v: 11,
+    f: 12,
+    r: 13,
+    '"': 34,
+    "\\": 92,
+  };
+  let cursor = 0;
+  while (cursor < body.length) {
+    if (body[cursor] === '"') return invalid("unescaped quotation mark");
+    if (body[cursor] !== "\\") {
+      const next = body.indexOf("\\", cursor);
+      const end = next < 0 ? body.length : next;
+      const literal = body.slice(cursor, end);
+      if (literal.includes('"')) return invalid("unescaped quotation mark");
+      for (const byte of Buffer.from(literal, "utf8")) bytes.push(byte);
+      cursor = end;
+      continue;
+    }
+    const escape = body[cursor + 1] ?? "";
+    const short = escapes[escape];
+    if (short !== undefined) {
+      bytes.push(short);
+      cursor += 2;
+      continue;
+    }
+    const octal = /^[0-3][0-7]{2}/.exec(body.slice(cursor + 1));
+    if (octal === null) return invalid("unknown byte escape");
+    bytes.push(Number.parseInt(octal[0], 8));
+    cursor += 4;
+  }
+  try {
+    const decoded = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(
+      new Uint8Array(bytes),
+    );
+    return decoded.includes("\0") || decoded.length === 0
+      ? invalid("empty or NUL path")
+      : Result.succeed(decoded);
+  } catch {
+    return invalid("path is not UTF-8");
+  }
+};
+
+const diffSidePath = (raw: string): string | null => {
+  // Git appends a tab to some bare ---/+++ labels containing spaces. Preserve the filename's
+  // spaces; a tab in the actual filename is C-quoted, never this terminal label separator.
+  const parsed = parseGitPath(raw.endsWith("\t") ? raw.slice(0, -1) : raw);
+  if (Result.isFailure(parsed)) return null;
+  const name = parsed.success;
+  return name.startsWith("a/") || name.startsWith("b/") ? name.slice(2) : null;
+};
+
+/** Header fallback for Git's same-path binary and mode patches, including literal ` b/`. */
+const sameHeaderPath = (raw: string): string | null => {
+  let left: string, right: string;
+  if (raw.startsWith('"')) {
+    const token = /^"(?:[^"\\]|\\.)*"/.exec(raw)?.[0];
+    if (token === undefined || raw[token.length] !== " ") return null;
+    left = token;
+    right = raw.slice(token.length + 1);
+  } else {
+    const middle = Math.floor(raw.length / 2);
+    if (raw[middle] !== " ") return null;
+    left = raw.slice(0, middle);
+    right = raw.slice(middle + 1);
+  }
+  const before = diffSidePath(left),
+    after = diffSidePath(right);
+  return before !== null && before === after ? after : null;
+};
+
 /**
- * A rendered `git diff`, split per file. The path is the new one (`+++ b/…`), or the old one for
- * a deleted file.
+ * Split native two-sided Git patches by actual UTF-8 filename, decoding Git's byte quoting.
+ * Use the destination path, or source for deletion. Unsupported/malformed path labels are
+ * omitted; combined diffs and custom/no-prefix output are outside this a/b patch contract.
  */
 export const splitDiff = (diff: string): ReadonlyMap<string, string> => {
   const files = new Map<string, string>();
   const chunks = diff.split(/^(?=diff --git )/m).filter((chunk) => chunk.startsWith("diff --git "));
   for (const chunk of chunks) {
-    const added = /^\+\+\+ b\/(.+)$/m.exec(chunk)?.[1];
-    const removed = /^--- a\/(.+)$/m.exec(chunk)?.[1];
-    const header = /^diff --git a\/.+ b\/(.+)$/m.exec(chunk)?.[1];
-    const path = added ?? removed ?? header;
-    if (path !== undefined) files.set(path, chunk.trimEnd());
+    const lines = chunk.split("\n");
+    let added: string | null = null,
+      removed: string | null = null,
+      destination: string | null = null;
+    for (const line of lines.slice(1)) {
+      if (line.startsWith("@@") || line === "GIT binary patch" || line.startsWith("Binary files "))
+        break;
+      if (line.startsWith("+++ ")) added = diffSidePath(line.slice(4));
+      else if (line.startsWith("--- ")) removed = diffSidePath(line.slice(4));
+      else if (line.startsWith("rename to ") || line.startsWith("copy to ")) {
+        const parsed = parseGitPath(line.slice(line.startsWith("rename") ? 10 : 8));
+        if (Result.isSuccess(parsed)) destination = parsed.success;
+      }
+    }
+    const name = added ?? removed ?? destination ?? sameHeaderPath((lines[0] ?? "").slice(11));
+    if (name !== null) files.set(name, chunk.trimEnd());
   }
   return files;
 };

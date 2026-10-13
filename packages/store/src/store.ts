@@ -203,6 +203,7 @@ export interface CheckpointSnapshot {
 }
 
 export interface ChangedFile {
+  /** Actual filename, using the destination for a rename/copy and source for deletion. */
   readonly path: string;
   readonly additions: number;
   readonly deletions: number;
@@ -468,6 +469,8 @@ export interface DiffFileFact {
 }
 
 interface NumstatEntry {
+  /** Actual destination name from -z, or the source name for a deletion. */
+  readonly path: string;
   readonly additions: number;
   readonly deletions: number;
   readonly binary: boolean;
@@ -504,15 +507,22 @@ const parseNumstat = (raw: string): ReadonlyArray<NumstatEntry> => {
     const added = raw.slice(cursor, firstTab);
     const deleted = raw.slice(firstTab + 1, secondTab);
     cursor = secondTab + 1;
+    let file: string;
     if (raw[cursor] === "\0") {
-      cursor += 1;
-      cursor = raw.indexOf("\0", cursor) + 1;
-      cursor = raw.indexOf("\0", cursor) + 1;
+      // Renames/copies use an empty path field, then old\0new\0, never display braces.
+      const oldEnd = raw.indexOf("\0", cursor + 1);
+      const newEnd = oldEnd < 0 ? -1 : raw.indexOf("\0", oldEnd + 1);
+      if (newEnd < 0) break;
+      file = raw.slice(oldEnd + 1, newEnd);
+      cursor = newEnd + 1;
     } else {
       const terminator = raw.indexOf("\0", cursor);
-      cursor = terminator < 0 ? raw.length : terminator + 1;
+      if (terminator < 0) break;
+      file = raw.slice(cursor, terminator);
+      cursor = terminator + 1;
     }
     entries.push({
+      path: file,
       additions: added === "-" ? 0 : Number(added),
       deletions: deleted === "-" ? 0 : Number(deleted),
       binary: added === "-" || deleted === "-",
@@ -539,7 +549,9 @@ const parseNameStatus = (
       oldPath: status === "added" ? null : firstPath,
       newPath: status === "deleted" ? null : secondPath,
       status,
-      ...counts,
+      additions: counts.additions,
+      deletions: counts.deletions,
+      binary: counts.binary,
     });
   }
   return files;
@@ -663,8 +675,8 @@ const shareTree = (root: string): void => {
 
 /** Untracked paths — invisible to `git diff <base>` but part of the change. */
 const untrackedIn = (worktreePath: string) =>
-  git(["ls-files", "--others", "--exclude-standard"], worktreePath).pipe(
-    Effect.map((out) => (out === "" ? [] : out.split("\n"))),
+  git(["ls-files", "--others", "--exclude-standard", "-z"], worktreePath).pipe(
+    Effect.map((out) => out.split("\0").filter((name) => name !== "")),
   );
 
 const capListing = (paths: ReadonlyArray<string>, limit: number): FileListing => {
@@ -1381,19 +1393,14 @@ export class Store extends Context.Service<
         a: string,
         b: string | null,
       ) {
-        const args = b === null ? ["diff", "--numstat", a] : ["diff", "--numstat", a, b];
+        const args =
+          b === null ? ["diff", "--numstat", "-z", a] : ["diff", "--numstat", "-z", a, b];
         const out = yield* git(args, dir);
-        const tracked =
-          out === ""
-            ? []
-            : out.split("\n").map((line) => {
-                const [additions = "0", deletions = "0", ...rest] = line.split("\t");
-                return {
-                  path: rest.join("\t"),
-                  additions: additions === "-" ? 0 : Number(additions),
-                  deletions: deletions === "-" ? 0 : Number(deletions),
-                };
-              });
+        const tracked = parseNumstat(out).map(({ path: file, additions, deletions }) => ({
+          path: file,
+          additions,
+          deletions,
+        }));
         // A live-worktree comparison (b = null) also owns its untracked files.
         if (b !== null) return tracked;
         const untracked = yield* untrackedIn(dir);
