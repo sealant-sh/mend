@@ -7,6 +7,25 @@ around by importing internals.
 Format: date · SDK version · what Mend needed · what exists today · suggested surface. Entries stay
 after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
+## 2026-10-13 · 0.39.0-next.726 · Workspace exec rejection does not confirm command termination
+
+Landing needs to remove a private pull request description after a failed or interrupted write.
+
+- **Today:** public `workspace.exec` returns a promise and accepts working-directory and user
+  options, but exposes no cancellation or command-quiescence acknowledgement. The SDK's exec timeout
+  and terminal-read failures can reject while the command still runs. Interrupting Mend's
+  promise-backed Effect also does not wait for the remote command to stop.
+- **Mend now:** landing creates a fresh private directory in a separate command and writes only
+  `body.md` beneath it. Acquisition waits for a successful reply before assuming ownership; release
+  removes the owned directory recursively. The writer never creates its parent, so a late write
+  cannot recreate the pathname after successful removal. An already opened file may finish writing
+  through an unlinked descriptor. A failed or ambiguous directory-creation reply may leave an empty
+  directory whose ownership Mend could not confirm; removal failure can also leave resources.
+- **Needed:** a public execution handle with cancellation and a wait-for-termination operation, and
+  a distinction between a settled command failure and an observation failure while the command may
+  still run. Resource acquisition needs a durable identifier before waiting for the result, so
+  callers can reconcile ambiguous outcomes without importing platform internals.
+
 ## 2026-10-11 · 0.39.0-next.720 · A package resolves to a project a managed family cannot install
 
 The 0.36.0-next.754 drive saved `tree` on an Arch override as `python-urwidtrees`, and every launch

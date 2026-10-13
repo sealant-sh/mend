@@ -137,6 +137,23 @@ export const writeFileArgv = (file: string, content: string): ReadonlyArray<stri
 
 export const removeFileArgv = (file: string): ReadonlyArray<string> => ["rm", "-f", "--", file];
 
+/** Create a private directory without adopting an existing one. */
+export const createDirectoryArgv = (directory: string): ReadonlyArray<string> => [
+  "mkdir",
+  "-m",
+  "700",
+  "--",
+  directory,
+];
+
+/** Remove an owned directory, so a late child-file open cannot recreate its pathname. */
+export const removeDirectoryArgv = (directory: string): ReadonlyArray<string> => [
+  "rm",
+  "-rf",
+  "--",
+  directory,
+];
+
 // ─── What gh answers ────────────────────────────────────────────────────────
 
 const GhPullRequest = Schema.Struct({
