@@ -217,3 +217,67 @@ describe.skipIf(claudeCorpus === null)("corpus: real harvested claude session", 
     roundTrip("claude", native, "claude");
   });
 });
+
+const codexMessage = (role: "user" | "assistant", text: string) =>
+  JSON.stringify({
+    type: "response_item",
+    payload: {
+      type: "message",
+      role,
+      content: [{ type: role === "user" ? "input_text" : "output_text", text }],
+    },
+  });
+
+describe("Codex source text fidelity", () => {
+  it.each([
+    "  preserve indentation\n",
+    " \t\n",
+    "\tif ready:\n    continue\n\n",
+    "<svg>please fix this</svg>",
+    "  <example>\n    exact code\n  </example>\n",
+    "<!-- a real comment -->",
+    "<environment_context>a</environment_context>\nactual request\n<environment_context>b</environment_context>",
+    "<environment_context>nested <environment_context>example</environment_context></environment_context>",
+    "<environment_context>unfinished example",
+    "<environment_context>example</environment_context>\nPlease explain the block.",
+  ])("preserves original user and assistant text %j before and after conversion", (text) => {
+    for (const role of ["user", "assistant"] as const) {
+      const native = codexMessage(role, text);
+      const original = ingestNativeSession("codex", native, "/workspace/repo");
+      expect(original?.events).toEqual([{ kind: role, text }]);
+      roundTrip("codex", native, "claude");
+      roundTrip("codex", native, "codex");
+    }
+  });
+
+  it("omits a complete legacy environment wrapper only in a user-role context item", () => {
+    const wrapper = "<environment_context>\n  <cwd>/workspace/repo</cwd>\n</environment_context>";
+    const native = [
+      codexMessage("user", wrapper),
+      codexMessage("user", "work on this"),
+      codexMessage("assistant", wrapper),
+    ].join("\n");
+    expect(ingestNativeSession("codex", native, "/workspace/repo")?.events).toEqual([
+      { kind: "user", text: "work on this" },
+      { kind: "assistant", text: wrapper },
+    ]);
+  });
+
+  it.each(["before", "after"])(
+    "keeps an environment-shaped user turn with its input event %s the response",
+    (order) => {
+      const text = "<environment_context>example to edit</environment_context>";
+      const native = [
+        codexMessage("user", text),
+        JSON.stringify({ type: "event_msg", payload: { type: "user_message", message: text } }),
+      ];
+      if (order === "before") native.reverse();
+      const rollout = native.join("\n");
+      expect(ingestNativeSession("codex", rollout, "/workspace/repo")?.events).toEqual([
+        { kind: "user", text },
+      ]);
+      roundTrip("codex", rollout, "codex");
+      roundTrip("codex", rollout, "claude");
+    },
+  );
+});
