@@ -538,7 +538,6 @@ export const createTenancyWorld = async (
     makeSession(NULL_OWNER_SESSION, sharedA.project, sharedA.worktree, null),
   );
   for (const extra of extraSessions) sessions.set(extra.id, extra);
-  for (const extra of extraProcesses) processes.set(extra.id, extra);
   const aliceProcess = processes.get(sharedA.process);
   if (aliceProcess !== undefined) {
     processes.set(
@@ -567,6 +566,8 @@ export const createTenancyWorld = async (
       }),
     );
   }
+  // Explicit fixture rows override the generated shell/protocol rows as well as ordinary rows.
+  for (const extra of extraProcesses) processes.set(extra.id, extra);
   const aliceService = services.get(sharedA.service);
   if (aliceService !== undefined) {
     services.set(UDP_SERVICE, new Service({ ...aliceService, id: UDP_SERVICE, transport: "udp" }));
