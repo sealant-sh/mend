@@ -16,6 +16,7 @@ import { SealantClients, SealantPlatformError } from "@mend/sealant";
 import { SessionEngine } from "@mend/sessions";
 import { Deferred, Duration, Effect, Exit, Fiber, Layer, Queue, Scope, Stream } from "effect";
 import * as Context from "effect/Context";
+import { TestClock } from "effect/testing";
 import { Socket } from "effect/unstable/socket";
 import { describe, expect, it } from "vitest";
 
@@ -462,6 +463,21 @@ describe("member removal (docs/adr/0003)", () => {
   });
 });
 
+// A later event's close callback acknowledges that the registry finished preceding signals.
+const processed = (registry: ConnectionRegistry["Service"], source: Queue.Queue<string>) =>
+  Effect.gen(function* () {
+    const acknowledged = yield* Deferred.make<void>();
+    yield* registry.register(
+      "event-marker",
+      Deferred.succeed(acknowledged, undefined).pipe(Effect.asVoid),
+    );
+    yield* Queue.offer(
+      source,
+      JSON.stringify({ type: "user", userId: "event-marker", facet: "access" }),
+    );
+    yield* Deferred.await(acknowledged);
+  });
+
 describe("the connection registry", () => {
   const membersOnly = (members: ReadonlySet<string>) =>
     Layer.mock(OrganizationsRepo, {
@@ -502,7 +518,9 @@ describe("the connection registry", () => {
             new Set(["alice", "carol"]),
           );
           const log: Array<string> = [];
-          const open = yield* Scope.make();
+          const open = yield* Effect.acquireRelease(Scope.make(), (scope) =>
+            Scope.close(scope, Exit.void),
+          );
           const ended = yield* Scope.make();
           yield* registry
             .register(
@@ -527,7 +545,7 @@ describe("the connection registry", () => {
             source,
             JSON.stringify({ type: "user", userId: "carol", facet: "access" }),
           );
-          yield* Effect.sleep("30 millis");
+          yield* processed(registry, source);
           return log;
         }),
       ),
@@ -540,25 +558,39 @@ describe("the connection registry", () => {
       Effect.scoped(
         Effect.gen(function* () {
           const lost = yield* Deferred.make<void>();
+          const closedCarol = yield* Deferred.make<void>();
+          const source = yield* Queue.unbounded<string>();
+          let attempts = 0;
           // The connection drops only once the registry listens and both accounts are connected.
-          const listen = Stream.fromEffect(Deferred.await(lost)).pipe(
-            Stream.flatMap(() => Stream.fail("connection lost")),
+          const listen = Stream.unwrap(
+            Effect.sync(() => {
+              attempts++;
+              return attempts === 1
+                ? Stream.fromEffect(Deferred.await(lost)).pipe(
+                    Stream.flatMap(() => Stream.fail("connection lost")),
+                  )
+                : Stream.fromQueue(source);
+            }),
           );
           const registry = yield* buildRegistry(listen, new Set(["alice"]));
           const log: Array<string> = [];
           yield* registry.register(
             "carol",
-            Effect.sync(() => void log.push("carol")),
+            Effect.sync(() => void log.push("carol")).pipe(
+              Effect.andThen(Deferred.succeed(closedCarol, undefined)),
+            ),
           );
           yield* registry.register(
             "alice",
             Effect.sync(() => void log.push("alice")),
           );
           yield* Deferred.succeed(lost, undefined);
-          yield* Effect.sleep("30 millis");
+          yield* Deferred.await(closedCarol);
+          yield* TestClock.adjust("1 second");
+          yield* processed(registry, source);
           return log;
         }),
-      ),
+      ).pipe(Effect.provide(TestClock.layer()), Effect.timeout("3 seconds")),
     );
     expect(closed).toEqual(["carol"]);
   });
@@ -568,6 +600,7 @@ describe("the connection registry", () => {
       Effect.scoped(
         Effect.gen(function* () {
           const lost = yield* Deferred.make<void>();
+          const resyncRead = yield* Deferred.make<void>();
           const source = yield* Queue.unbounded<string>();
           // The first listen drops once carol is connected (a resync whose membership read dies);
           // the bus reconnects and the second listen carries events.
@@ -586,7 +619,12 @@ describe("the connection registry", () => {
             ConnectionRegistryLive.pipe(
               Layer.provide(Layer.effect(EventBus, makeEventBus(listen))),
               Layer.provide(
-                Layer.mock(OrganizationsRepo, { membershipOf: () => Effect.die("db down") }),
+                Layer.mock(OrganizationsRepo, {
+                  membershipOf: () =>
+                    Deferred.succeed(resyncRead, undefined).pipe(
+                      Effect.andThen(Effect.die("db down")),
+                    ),
+                }),
               ),
             ),
           );
@@ -598,16 +636,17 @@ describe("the connection registry", () => {
           );
           yield* Deferred.succeed(lost, undefined);
           // The bus waits a second before listening again.
-          yield* Effect.sleep("1200 millis");
+          yield* Deferred.await(resyncRead);
+          yield* TestClock.adjust("1 second");
           const afterResync = [...log];
           yield* Queue.offer(
             source,
             JSON.stringify({ type: "user", userId: "carol", facet: "access" }),
           );
-          yield* Effect.sleep("30 millis");
+          yield* processed(registry, source);
           return { afterResync, log };
         }),
-      ),
+      ).pipe(Effect.provide(TestClock.layer()), Effect.timeout("3 seconds")),
     );
     expect(closed).toEqual({ afterResync: [], log: ["carol"] });
   });
@@ -636,7 +675,7 @@ describe("the connection registry", () => {
               ownerUserId: "alice",
             }),
           );
-          yield* Effect.sleep("30 millis");
+          yield* processed(registry, source);
           return log;
         }),
       ),

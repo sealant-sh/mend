@@ -409,20 +409,27 @@ describe("SessionStart.startAs", () => {
 
   it("records nothing when the account's launch slots refuse the launch", async () => {
     const gate = Effect.runSync(Deferred.make<void>());
-    const world = startWorld({ limits: { accountLaunchesInFlight: 1 }, launchGate: gate });
+    const entered = Effect.runSync(Deferred.make<void>());
+    const world = startWorld({
+      limits: { accountLaunchesInFlight: 1 },
+      launchGate: gate,
+      launchEntered: entered,
+    });
     await Effect.runPromise(
       Effect.gen(function* () {
         const start = yield* SessionStart;
         const first = yield* Effect.forkChild(
           start.startAs("alice", request({ mode: "protocol", prompt: "first" })),
         );
-        while (!world.effects.some((entry) => entry.includes(":first"))) {
-          yield* Effect.yieldNow;
-        }
+        yield* Deferred.await(entered);
         yield* start.startAs("alice", request({ effort: "high" })).pipe(Effect.result);
         yield* Deferred.succeed(gate, undefined);
         yield* Fiber.join(first);
-      }).pipe(Effect.provide(world.layer)),
+      }).pipe(
+        Effect.provide(world.layer),
+        Effect.ensuring(world.cleanup),
+        Effect.timeout("3 seconds"),
+      ),
     );
     expect(world.effects.some((entry) => entry.startsWith("sessions.setLaunchOptions"))).toBe(
       false,
@@ -472,7 +479,12 @@ describe("SessionStart.startAs", () => {
 
   it("refuses a launch while the account's launch slots are held, after provisioning", async () => {
     const gate = Effect.runSync(Deferred.make<void>());
-    const world = startWorld({ limits: { accountLaunchesInFlight: 1 }, launchGate: gate });
+    const entered = Effect.runSync(Deferred.make<void>());
+    const world = startWorld({
+      limits: { accountLaunchesInFlight: 1 },
+      launchGate: gate,
+      launchEntered: entered,
+    });
     const result = await Effect.runPromise(
       Effect.gen(function* () {
         const start = yield* SessionStart;
@@ -480,16 +492,18 @@ describe("SessionStart.startAs", () => {
           start.startAs("alice", request({ mode: "protocol", prompt: "first" })),
         );
         // Wait until the first launch holds its slot.
-        while (!world.effects.some((entry) => entry.includes(":first"))) {
-          yield* Effect.yieldNow;
-        }
+        yield* Deferred.await(entered);
         const second = yield* start
           .startAs("alice", request({ mode: "protocol", prompt: "second" }))
           .pipe(Effect.result);
         yield* Deferred.succeed(gate, undefined);
         yield* Fiber.join(first);
         return second;
-      }).pipe(Effect.provide(world.layer)),
+      }).pipe(
+        Effect.provide(world.layer),
+        Effect.ensuring(world.cleanup),
+        Effect.timeout("3 seconds"),
+      ),
     );
 
     expect(result._tag === "Failure" ? result.failure : null).toMatchObject({
@@ -505,17 +519,27 @@ describe("SessionStart.startAs", () => {
     // Alpha 2026-09-30: a launch held its request for the whole ~8 min image build and the CLI
     // gave up at ~5 min with a false `cannot reach the Mend server`.
     const gate = Effect.runSync(Deferred.make<void>());
-    const world = startWorld({ limits: { accountLaunchesInFlight: 1 }, launchGate: gate });
+    const entered = Effect.runSync(Deferred.make<void>());
+    const world = startWorld({
+      limits: { accountLaunchesInFlight: 1 },
+      launchGate: gate,
+      launchEntered: entered,
+    });
     const answers = await Effect.runPromise(
       Effect.gen(function* () {
         const start = yield* SessionStart;
         const session = provisioned("alice");
-        const first = yield* start.launchAs(
-          "alice",
-          session,
-          new LaunchRequest({ mode: "protocol", prompt: "first" }),
-          { within: Duration.millis(20) },
+        const answering = yield* Effect.forkChild(
+          start.launchAs(
+            "alice",
+            session,
+            new LaunchRequest({ mode: "protocol", prompt: "first" }),
+            { within: Duration.millis(20) },
+          ),
         );
+        yield* Deferred.await(entered);
+        yield* TestClock.adjust(20);
+        const first = yield* Fiber.join(answering);
         // The first launch still holds the account's one slot after its caller was answered.
         const second = yield* start
           .launchAs("alice", session, new LaunchRequest({ mode: "protocol", prompt: "second" }), {
@@ -524,15 +548,22 @@ describe("SessionStart.startAs", () => {
           .pipe(Effect.result);
         yield* Deferred.succeed(gate, undefined);
         // Once the first launch has ended, its slot is free again.
-        while (!world.effects.includes("jobs.enqueue:name-session:0")) yield* Effect.yieldNow;
-        yield* Effect.sleep(Duration.millis(5));
+        const running = world.fibers[0];
+        if (running === undefined)
+          return yield* Effect.die("launch fixture did not record its owned fiber");
+        yield* Fiber.join(running);
         const third = yield* start
           .launchAs("alice", session, new LaunchRequest({ mode: "protocol", prompt: "third" }), {
             within: Duration.seconds(5),
           })
           .pipe(Effect.result);
         return { first, second, third };
-      }).pipe(Effect.provide(world.layer)),
+      }).pipe(
+        Effect.provide(world.layer),
+        Effect.ensuring(world.cleanup),
+        Effect.provide(TestClock.layer()),
+        Effect.timeout("3 seconds"),
+      ),
     );
 
     expect(answers.first.status).toBe("starting");
