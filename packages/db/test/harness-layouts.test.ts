@@ -2,7 +2,7 @@ import { PgClient } from "@effect/sql-pg";
 import { WorktreeId } from "@mend/domain";
 import { Effect, Layer, Redacted } from "effect";
 import { SqlClient } from "effect/unstable/sql";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { migrations } from "../src/migrations.ts";
 import {
@@ -44,6 +44,18 @@ describe("Linux login names", () => {
 });
 
 describe.skipIf(postgres.skip)("per-person harness homes, in Postgres", () => {
+  beforeEach(async () => {
+    await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`DELETE FROM executor_layouts`;
+        yield* sql`DELETE FROM image_layout_capabilities`;
+        yield* sql`DELETE FROM linux_identities`;
+        yield* sql`UPDATE worktrees SET harness_layout = NULL, harness_layout_requested = NULL`;
+      }),
+    );
+  });
+
   beforeAll(async () => {
     await withAdmin(
       Effect.gen(function* () {
@@ -75,7 +87,7 @@ describe.skipIf(postgres.skip)("per-person harness homes, in Postgres", () => {
     );
   });
 
-  // Runs first: nothing recorded yet. What startup reads once to know it may read no more.
+  // What startup reads once to know it may read no more.
   it("says no layout is recorded on a fresh store, and an operator's request counts", async () => {
     const result = await run(
       Effect.gen(function* () {
@@ -137,6 +149,7 @@ describe.skipIf(postgres.skip)("per-person harness homes, in Postgres", () => {
       Effect.gen(function* () {
         const repo = yield* HarnessLayoutsRepo;
         expect(yield* repo.worktreeLayout(worktree)).toEqual({ layout: null, requested: null });
+        expect(yield* repo.anyRecorded()).toBe(false);
         // A predicted person launch is not the worktree's layout until prepare confirms it.
         yield* repo.recordLaunch({
           launchId: "launch-1",
@@ -169,7 +182,9 @@ describe.skipIf(postgres.skip)("per-person harness homes, in Postgres", () => {
           imageKey: "img",
           confirmed: false,
         });
+        expect(yield* repo.anyRecorded()).toBe(true);
         yield* repo.confirmPerson("launch-2", worktree);
+        expect(yield* repo.anyRecorded()).toBe(true);
         expect((yield* repo.worktreeLayout(worktree)).layout).toBe("person");
         // A later shared record (nothing should make one, but nothing may undo the worktree).
         yield* repo.recordLaunch({
@@ -297,11 +312,6 @@ describe.skipIf(postgres.skip)("per-person harness homes, in Postgres", () => {
         expect(yield* repo.capabilityOf("img2", "docker")).toMatchObject({ person: true });
       }),
     );
-  });
-
-  // Runs last: the person launches above are recorded.
-  it("says a layout is recorded once a person launch is", async () => {
-    expect(await run(Effect.flatMap(HarnessLayoutsRepo, (repo) => repo.anyRecorded()))).toBe(true);
   });
 });
 

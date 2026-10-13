@@ -44,6 +44,7 @@ const run = <A, E>(effect: Effect.Effect<A, E, Repos>) =>
 const PROJECT = ProjectId.make("p-web");
 const WORKTREE = WorktreeId.make("wt-1");
 const IDLE = SessionId.make("s-idle");
+const RECLAIM = SessionId.make("s-reclaim");
 const TURNING = SessionId.make("s-turning");
 const ASKING = SessionId.make("s-asking");
 const SETTLED = SessionId.make("s-settled");
@@ -90,7 +91,7 @@ describe.skipIf(postgres.skip)("the idle stop's claim, in Postgres", () => {
           ownerUserId: "alice",
           origin: "slack" as const,
         };
-        for (const id of [IDLE, TURNING, ASKING, SETTLED, QUIET, ...RACES]) {
+        for (const id of [IDLE, RECLAIM, TURNING, ASKING, SETTLED, QUIET, ...RACES]) {
           yield* sessions.create({ ...base, id });
           yield* sessions.setStatus(id, "running");
           yield* sql`
@@ -157,23 +158,24 @@ describe.skipIf(postgres.skip)("the idle stop's claim, in Postgres", () => {
     await run(
       Effect.gen(function* () {
         const sessions = yield* SessionsRepo;
-        // Still held by the first test's claim; older than a moment from now, so stale then.
-        expect(yield* sessions.claimIdleStop(IDLE, LONG_AGO)).toBe(false);
-        expect(yield* sessions.claimIdleStop(IDLE, new Date(Date.now() + 60_000))).toBe(true);
+        expect(yield* sessions.claimIdleStop(RECLAIM, LONG_AGO)).toBe(true);
+        // This case owns the claim; a later evaluation can take it over as stale.
+        expect(yield* sessions.claimIdleStop(RECLAIM, LONG_AGO)).toBe(false);
+        expect(yield* sessions.claimIdleStop(RECLAIM, new Date(Date.now() + 60_000))).toBe(true);
 
-        yield* sessions.releaseIdleStop(IDLE);
-        expect((yield* sessions.byId(IDLE)).idleStoppedAt).toBeNull();
-        expect(yield* sessions.claimIdleStop(IDLE, LONG_AGO)).toBe(true);
+        yield* sessions.releaseIdleStop(RECLAIM);
+        expect((yield* sessions.byId(RECLAIM)).idleStoppedAt).toBeNull();
+        expect(yield* sessions.claimIdleStop(RECLAIM, LONG_AGO)).toBe(true);
 
         // The stop settles it; the next reply reopens it, and a later idle spell may claim again.
-        yield* sessions.settle(IDLE, "stopped", "idle · stopped after 15 min · reply to resume");
-        expect(yield* sessions.claimIdleStop(IDLE, LONG_AGO)).toBe(false);
-        const stopped = yield* sessions.byId(IDLE);
+        yield* sessions.settle(RECLAIM, "stopped", "idle · stopped after 15 min · reply to resume");
+        expect(yield* sessions.claimIdleStop(RECLAIM, LONG_AGO)).toBe(false);
+        const stopped = yield* sessions.byId(RECLAIM);
         expect(stopped.status).toBe("stopped");
         expect(stopped.idleStoppedAt).not.toBeNull();
-        yield* sessions.reopen(IDLE, "running");
-        expect((yield* sessions.byId(IDLE)).idleStoppedAt).toBeNull();
-        expect(yield* sessions.claimIdleStop(IDLE, LONG_AGO)).toBe(true);
+        yield* sessions.reopen(RECLAIM, "running");
+        expect((yield* sessions.byId(RECLAIM)).idleStoppedAt).toBeNull();
+        expect(yield* sessions.claimIdleStop(RECLAIM, LONG_AGO)).toBe(true);
       }),
     );
   });

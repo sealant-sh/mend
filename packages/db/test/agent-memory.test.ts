@@ -8,7 +8,7 @@ import { type ProjectId, WorktreeId } from "@mend/domain";
 import { Effect, Layer, Redacted } from "effect";
 import { FastCheck } from "effect/testing";
 import { SqlClient } from "effect/unstable/sql";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { MendDBLive } from "../src/client.ts";
 import { migrations } from "../src/migrations.ts";
@@ -741,6 +741,21 @@ describe.skipIf(postgres.skip)("upgrading to 0108", () => {
 });
 
 describe.skipIf(postgres.skip)("agent memory, in Postgres", () => {
+  beforeEach(async () => {
+    lastMergeBase = null;
+    await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`DELETE FROM agent_memory_import_bases`;
+        yield* sql`DELETE FROM agent_memory_versions`;
+        yield* sql`DELETE FROM agent_memory_files`;
+        yield* sql`INSERT INTO "user" ("id", "name", "email", "createdAt")
+        VALUES ('anna', 'Anna Example', 'anna@example.com', '2026-01-01T00:00:00Z')
+        ON CONFLICT (id) DO NOTHING`;
+      }),
+    );
+  });
+
   beforeAll(async () => {
     await withAdmin(
       Effect.gen(function* () {
@@ -876,6 +891,14 @@ describe.skipIf(postgres.skip)("agent memory, in Postgres", () => {
       Effect.gen(function* () {
         const repo = yield* AgentMemoryRepo;
         const path = `${ROOT}/notes.md`;
+        yield* repo.readBack({
+          userId: "anna",
+          projectId: project,
+          sessionId: "s1",
+          delivered: {},
+          session: [text("notes.md", "build with pnpm")],
+          merge: unionMerge,
+        });
         const before = (yield* repo.read("anna", project, path))?.file.contents;
         expect(before).toBe("build with pnpm");
         const again = yield* repo.readBack({
@@ -896,6 +919,17 @@ describe.skipIf(postgres.skip)("agent memory, in Postgres", () => {
       Effect.gen(function* () {
         const repo = yield* AgentMemoryRepo;
         const sql = yield* SqlClient.SqlClient;
+        yield* repo.readBack({
+          userId: "anna",
+          projectId: project,
+          sessionId: "s1",
+          delivered: {},
+          session: [
+            text("notes.md", "build with pnpm\ntest with vitest"),
+            text("MEMORY.md", "- retained"),
+          ],
+          merge: unionMerge,
+        });
         const notes = (yield* repo.read("anna", project, `${ROOT}/notes.md`))?.file;
         if (notes === undefined) throw new Error("notes.md is stored");
         const done = yield* repo.readBack({
@@ -912,8 +946,9 @@ describe.skipIf(postgres.skip)("agent memory, in Postgres", () => {
           deleted: [notes.path],
           skipped: [".claude/.credentials.json"],
         });
-        const kept = yield* sql`SELECT 1 FROM agent_memory_versions WHERE path = ${notes.path}`;
-        expect(kept.length).toBeGreaterThan(0);
+        const kept =
+          yield* sql`SELECT contents FROM agent_memory_versions WHERE path = ${notes.path}`;
+        expect(kept).toEqual([{ contents: "build with pnpm\ntest with vitest" }]);
         expect(yield* repo.remove("anna", project, `${ROOT}/MEMORY.md`)).toBe(true);
         expect(yield* repo.remove("anna", project, `${ROOT}/MEMORY.md`)).toBe(false);
         expect(yield* repo.list("anna", project)).toEqual([]);
