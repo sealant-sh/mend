@@ -12,12 +12,13 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { createTenancyApi, type TenancyApi } from "../../test/support/tenancy-api.ts";
 import { CAROL_WORKTREE_IN_SHARED_A, ids } from "../../test/support/tenancy-harness.ts";
+import { createWideWorktreeDiff, wideLeafName } from "../../test/support/wide-worktree-diff.ts";
 import { patchedPaths } from "./worktrees.ts";
 
 /**
  * `GET /api/worktrees/:id/diff?from=&to=` (ADR 0012, phase 3): a slice of a worktree's checkpoint
  * chain over the colocated `WorktreeReads` on a real repository, behind the worktree's visibility.
- * The last test prints its latency: median and 90th percentile of 40 requests.
+ * Hardware latency is measured separately by the explicit worktree-reads performance command.
  */
 
 const git = (cwd: string, ...args: ReadonlyArray<string>) =>
@@ -233,120 +234,35 @@ describe("a slice of a worktree's checkpoint chain", () => {
     expect(body.listingCut).toBe(false);
     expect(body.omitted).toEqual([]);
   });
-
-  it("answers in time: median and p90 of 40 requests over a forty-file turn", async () => {
-    const samples: Array<number> = [];
-    for (let i = 0; i < 40; i++) {
-      const started = performance.now();
-      const response = await slice("alice", "from=checkpoint-0&to=checkpoint-1");
-      expect((await response.json()).files).toHaveLength(40);
-      samples.push(performance.now() - started);
-    }
-    const sorted = samples.toSorted((a, b) => a - b);
-    const median = sorted[20] ?? 0;
-    const p90 = sorted[36] ?? 0;
-    console.log(
-      `GET /api/worktrees/:id/diff · median ${median.toFixed(1)} ms · p90 ${p90.toFixed(1)} ms`,
-    );
-    expect(p90).toBeLessThan(1_000);
-  });
 });
-
-/** A 200-character file name of the wide slice. */
-const leafName = (index: number) => `f${String(index).padStart(4, "0")}${"x".repeat(195)}`;
 
 describe("a slice too wide to list whole (601-R2-1)", () => {
   it(
     "answers its first files, cut, and any one file by path: never 422",
     { timeout: 120_000 },
     async () => {
-      // 400,000 tiny files with 200-character names, made of git objects alone (no checkout): the
-      // listing alone is past any buffer. Before, the metadata pass failed with maxBuffer, 422.
-      const root = mkdtempSync(join(tmpdir(), "mend-wide-slice-"));
-      const plumbing = (args: ReadonlyArray<string>, input = "") =>
-        execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@localhost", ...args], {
-          cwd: root,
-          input,
-          stdio: ["pipe", "pipe", "pipe"],
-          maxBuffer: 64 * 1024 * 1024,
-        })
-          .toString()
-          .trim();
-      let wide: TenancyApi | undefined;
+      // The outer guard prevents a hung integration fixture; route deadline semantics are controlled
+      // separately and hardware speed is measured only by the explicit performance lane.
+      const fixture = await createWideWorktreeDiff();
       try {
-        plumbing(["init", "-q", "-b", "main"]);
-        const base = plumbing(["commit-tree", plumbing(["mktree"]), "-m", "base"]);
-        const blob = plumbing(["hash-object", "-w", "--stdin"], "one\n");
-        const leaf = plumbing(
-          ["mktree"],
-          Array.from({ length: 500 }, (_, i) => `100644 blob ${blob}\t${leafName(i)}\n`).join(""),
-        );
-        const tree = plumbing(
-          ["mktree"],
-          Array.from(
-            { length: 800 },
-            (_, i) => `040000 tree ${leaf}\td${String(i).padStart(4, "0")}\n`,
-          ).join(""),
-        );
-        const top = plumbing(["commit-tree", tree, "-p", base, "-m", "wide"]);
-        const store = await Effect.runPromise(
-          Effect.gen(function* () {
-            return yield* Store;
-          }).pipe(Effect.provide(Store.layer.pipe(Layer.provide(StoreConfig.layerFor(root))))),
-        );
-        const chain = [
-          checkpoint(0, base, WORKTREE, "wide-0"),
-          checkpoint(1, top, WORKTREE, "wide-1"),
-        ];
-        wide = await createTenancyApi(
-          {},
-          {
-            implement: {
-              checkpoints: { listForWorktree: () => Effect.succeed(chain) },
-              reads: {
-                diffRange: (_p, _w, a, b, options) =>
-                  store.diffRange(root, a, b, options).pipe(Effect.map(stamped)),
-                diffFileFactsBounded: (_p, _w, a, b, options) =>
-                  store.diffFileFactsBounded(root, a, b, options).pipe(Effect.map(stamped)),
-              },
-            },
-          },
-        );
-        const started = performance.now();
-        const response = await wide.request(
-          "alice",
-          "GET",
-          `/api/worktrees/${WORKTREE}/diff?from=wide-0&to=wide-1`,
-        );
-        const elapsed = performance.now() - started;
+        const response = await fixture.request();
         expect(response.status).toBe(200);
         const body = await response.json();
         expect(body.listingCut).toBe(true);
         expect(body.truncated).toBe(true);
         expect(body.files.length).toBeGreaterThan(200);
         expect(body.files.length).toBeLessThan(400_000);
-        expect(body.files[0].newPath).toBe(`d0000/${leafName(0)}`);
+        expect(body.files[0].newPath).toBe(`d0000/${wideLeafName(0)}`);
         expect(body.diff.match(/^diff --git /gm)?.length).toBe(200);
-        console.log(
-          `wide slice · ${body.files.length} of 400000 files listed · ${elapsed.toFixed(0)} ms`,
-        );
-        expect(elapsed).toBeLessThan(25_000);
-
-        // A file far past the listing, asked for by path: git lists that file alone.
-        const far = `d0799/${leafName(499)}`;
-        const one = await wide.request(
-          "alice",
-          "GET",
-          `/api/worktrees/${WORKTREE}/diff?from=wide-0&to=wide-1&path=${encodeURIComponent(far)}`,
-        );
+        const far = `d0799/${wideLeafName(499)}`;
+        const one = await fixture.request(far);
         expect(one.status).toBe(200);
         const alone = await one.json();
         expect(alone.listingCut).toBe(false);
         expect(alone.files.map((file: { newPath: string }) => file.newPath)).toEqual([far]);
         expect(alone.diff).toContain(`b/${far}`);
       } finally {
-        await wide?.dispose();
-        rmSync(root, { recursive: true, force: true });
+        await fixture.dispose();
       }
     },
   );
@@ -424,6 +340,23 @@ describe("a slice past git's rename limit (601-R2-2)", () => {
         const answer = await response.json();
         expect(answer.files).toHaveLength(2_400);
         const omitted = new Set<string>(answer.omitted);
+        // Independent fixture oracle: the 200-path page covers both sides of the first 100 moves.
+        // These names and expected tail come from the created files, never patchedPaths.
+        for (const path of ["p0000-old", "p0000-new", "p0099-old", "p0099-new"]) {
+          expect(answer.diff).toContain(path);
+          expect(omitted.has(path)).toBe(false);
+        }
+        expect(answer.diff).toContain("rename from p0000-old\nrename to p0000-new");
+        expect(answer.diff).toContain("rename from p0099-old\nrename to p0099-new");
+        expect(answer.diff).not.toContain("p0100-old");
+        expect(answer.diff).not.toContain("p0100-new");
+        const expectedTail = Array.from({ length: 1_100 }, (_, offset) => {
+          const index = String(offset + 100).padStart(4, "0");
+          return [`p${index}-old`, `p${index}-new`];
+        }).flat();
+        expect([...omitted].toSorted()).toEqual(expectedTail.toSorted());
+        expect([...omitted]).toContain("p1199-old");
+        expect([...omitted]).toContain("p1199-new");
         // Every path a patch names is not omitted, and every file is either patched or omitted.
         const patched = patchedPaths(answer.diff);
         expect(patched.size).toBeGreaterThan(0);
