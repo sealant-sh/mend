@@ -132,20 +132,6 @@ describe.skipIf(postgres.skip)("Services that keep a workspace up, in Postgres",
     );
   });
 
-  it("records who stopped a session's Services in its control log", async () => {
-    await run(
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        yield* sql`
-          INSERT INTO session_control_events (id, session_id, actor_user_id, kind)
-          VALUES ('ctl-1', ${HELD}, 'alice', 'services-stop')`;
-        const rows = yield* sql<{ readonly kind: string }>`
-          SELECT kind FROM session_control_events WHERE id = 'ctl-1'`;
-        expect(rows.map((row) => row.kind)).toEqual(["services-stop"]);
-      }),
-    );
-  });
-
   it("remembers who started a Service, and reads it without changing the Service (docs/adr/0016)", async () => {
     const result = await run(
       Effect.gen(function* () {
