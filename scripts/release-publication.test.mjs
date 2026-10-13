@@ -1,17 +1,30 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import * as path from "node:path";
 import test from "node:test";
 
-const workflow = readFileSync(
+import { parse } from "yaml";
+
+const releaseWorkflow = readFileSync(
   new URL("../.github/workflows/release-cli.yml", import.meta.url),
   "utf8",
 );
 
 // Inspect the checked-in job boundaries, not a second model of the release workflow.
 function job(name) {
-  const start = workflow.indexOf(`\n  ${name}:\n`);
+  const start = releaseWorkflow.indexOf(`\n  ${name}:\n`);
   assert.notEqual(start, -1, `Missing release job ${name}`);
-  const remaining = workflow.slice(start + 1);
+  const remaining = releaseWorkflow.slice(start + 1);
   const next = remaining.slice(1).search(/^  [\w-]+:\s*$/m);
   return next < 0 ? remaining : remaining.slice(0, next + 1);
 }
@@ -25,6 +38,312 @@ function dependencies(name) {
     .split(",")
     .map((value) => value.trim());
 }
+
+function shellStep(file, jobName, name) {
+  const document = parse(readFileSync(new URL(file, import.meta.url), "utf8"));
+  const step = document.jobs[jobName].steps.find((entry) => entry.name === name);
+  assert.equal(typeof step?.run, "string", `Missing shell step ${name}`);
+  return step.run;
+}
+
+// These commands only read/write the owned fixture. Unsupported operations fail without a real
+// publication interface. JSON records preserve individual argv elements.
+const recordingCommand = `#!${process.execPath}
+import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
+const args = process.argv.slice(2);
+appendFileSync(process.env.FIXTURE_CALLS, JSON.stringify(args) + "\\n");
+const state = JSON.parse(readFileSync(process.env.FIXTURE_STATE, "utf8"));
+const save = () => writeFileSync(process.env.FIXTURE_STATE, JSON.stringify(state));
+const refuse = () => { console.error("Unknown owned fixture argv", args); process.exit(79); };
+if (process.env.FIXTURE_COMMAND === "gh" && args[0] === "release") {
+  if (args[1] === "view") {
+    if (!state.releaseExists) process.exit(1);
+    if (args.length > 3) console.log(Object.keys(state.assets).join("\\n"));
+    process.exit(0);
+  }
+  if (args[1] === "upload" && args.length === 4) {
+    const name = args[3].split("/").at(-1);
+    if (state.failAsset === name) process.exit(73);
+    if (state.assets[name] !== undefined) process.exit(79);
+    state.assets[name] = readFileSync(args[3], "utf8"); save(); process.exit(0);
+  }
+  if (args[1] === "create" && !state.releaseExists) {
+    for (const source of state.sources) {
+      if (args.includes(source)) state.assets[source.split("/").at(-1)] = readFileSync(source, "utf8");
+    }
+    state.releaseExists = true; save(); process.exit(0);
+  }
+} else if (process.env.FIXTURE_COMMAND === "docker" &&
+           args[0] === "buildx" && args[1] === "imagetools") {
+  if (args[2] === "inspect" && args.length === 4) {
+    if (state.created && state.failInspect) process.exit(74);
+    process.exit(state.imageExists ? 0 : 1);
+  }
+  if (args[2] === "create" && args[3] === "--tag") {
+    if (state.failCreate) process.exit(73);
+    state.imageExists = true; state.created = true; state.sources = args.slice(5);
+    save(); process.exit(0);
+  }
+}
+refuse();
+`;
+
+function withPublicationFixture(command, initial, files, check) {
+  const directory = mkdtempSync(path.join(tmpdir(), "mend-publication-"));
+  try {
+    for (const subdirectory of ["bin", "home", "tmp", "work"]) {
+      mkdirSync(path.join(directory, subdirectory));
+    }
+    const binary = path.join(directory, "bin", command);
+    writeFileSync(binary, recordingCommand);
+    chmodSync(binary, 0o755);
+    const stateFile = path.join(directory, "state.json");
+    const callsFile = path.join(directory, "calls.jsonl");
+    writeFileSync(stateFile, JSON.stringify(initial));
+    writeFileSync(callsFile, "");
+    for (const [name, contents] of Object.entries(files)) {
+      const file = path.join(directory, "work", name);
+      mkdirSync(path.dirname(file), { recursive: true });
+      writeFileSync(file, contents);
+    }
+    const run = (script, environment) => {
+      // Keep GitHub's bash -e behavior and disable local shell startup files. The image step
+      // adds its own pipefail; fixture HOME and environment carry no publication credentials.
+      const result = spawnSync("bash", ["--noprofile", "--norc", "-e", "-c", script], {
+        cwd: path.join(directory, "work"),
+        env: {
+          PATH: `${path.join(directory, "bin")}:/usr/bin:/bin`,
+          HOME: path.join(directory, "home"),
+          TMPDIR: path.join(directory, "tmp"),
+          FIXTURE_COMMAND: command,
+          FIXTURE_STATE: stateFile,
+          FIXTURE_CALLS: callsFile,
+          ...environment,
+        },
+        encoding: "utf8",
+        timeout: 5000,
+      });
+      assert.ifError(result.error);
+      assert.equal(result.signal, null);
+      const calls = readFileSync(callsFile, "utf8")
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => JSON.parse(line));
+      return { ...result, calls, state: JSON.parse(readFileSync(stateFile, "utf8")) };
+    };
+    check(run);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+  assert.equal(existsSync(directory), false);
+}
+
+const setupSources = [
+  "deploy/docker/compose.v2.yaml",
+  "deploy/docker/postgres-init.sh",
+  "deploy/docker/setup-contract.v2.json",
+  "install.sh",
+];
+const setupFiles = {
+  "deploy/docker/compose.v2.yaml": "new compose bytes\n",
+  "deploy/docker/postgres-init.sh": "new postgres bytes\n",
+  "deploy/docker/setup-contract.v2.json": "new setup contract bytes\n",
+  "install.sh": "new install bytes\n",
+  "release-notes.md": "owned release notes\n",
+};
+
+test("the actual release shell retries only missing assets and preserves published bytes", () => {
+  const script = shellStep(
+    "../.github/workflows/release-cli.yml",
+    "github-release",
+    "Create the release",
+  );
+  const published = {
+    "compose.v2.yaml": "already published compose\n",
+    "setup-contract.v2.json": "already published contract\n",
+  };
+  withPublicationFixture("gh", { releaseExists: true, assets: published }, setupFiles, (run) => {
+    const first = run(script, { GITHUB_REF_NAME: "v1.2.3" });
+    assert.equal(first.status, 0, first.stderr);
+    assert.deepEqual(first.calls, [
+      ["release", "view", "v1.2.3"],
+      ["release", "view", "v1.2.3", "--json", "assets", "--jq", ".assets[].name"],
+      ["release", "upload", "v1.2.3", "deploy/docker/postgres-init.sh"],
+      ["release", "upload", "v1.2.3", "install.sh"],
+    ]);
+    assert.deepEqual(first.state.assets, {
+      ...published,
+      "postgres-init.sh": "new postgres bytes\n",
+      "install.sh": "new install bytes\n",
+    });
+    const retry = run(script, { GITHUB_REF_NAME: "v1.2.3" });
+    assert.equal(retry.status, 0, retry.stderr);
+    assert.deepEqual(retry.calls.slice(first.calls.length), [
+      ["release", "view", "v1.2.3"],
+      ["release", "view", "v1.2.3", "--json", "assets", "--jq", ".assets[].name"],
+    ]);
+    assert.deepEqual(retry.state.assets, first.state.assets);
+  });
+});
+
+test("the actual release shell creates stable and prerelease assets with exact publication flags", () => {
+  const script = shellStep(
+    "../.github/workflows/release-cli.yml",
+    "github-release",
+    "Create the release",
+  );
+  for (const [tag, version, flags] of [
+    ["v1.2.3", "1.2.3", []],
+    ["cli-v1.2.4-next.1", "1.2.4-next.1", ["--prerelease"]],
+  ]) {
+    withPublicationFixture(
+      "gh",
+      { releaseExists: false, assets: {}, sources: setupSources },
+      setupFiles,
+      (run) => {
+        const result = run(script, { GITHUB_REF_NAME: tag });
+        assert.equal(result.status, 0, result.stderr);
+        assert.deepEqual(result.calls, [
+          ["release", "view", tag],
+          [
+            "release",
+            "create",
+            tag,
+            ...flags,
+            ...setupSources,
+            "--title",
+            `Mend ${version}`,
+            "--notes-file",
+            "release-notes.md",
+            "--latest=false",
+            "--verify-tag",
+          ],
+        ]);
+        assert.deepEqual(result.state.assets, {
+          "compose.v2.yaml": "new compose bytes\n",
+          "postgres-init.sh": "new postgres bytes\n",
+          "setup-contract.v2.json": "new setup contract bytes\n",
+          "install.sh": "new install bytes\n",
+        });
+      },
+    );
+  }
+});
+
+test("the actual release shell propagates an upload refusal without uploading later assets", () => {
+  const script = shellStep(
+    "../.github/workflows/release-cli.yml",
+    "github-release",
+    "Create the release",
+  );
+  const assets = { "compose.v2.yaml": "published compose\n" };
+  withPublicationFixture(
+    "gh",
+    { releaseExists: true, assets, failAsset: "postgres-init.sh" },
+    setupFiles,
+    (run) => {
+      const result = run(script, { GITHUB_REF_NAME: "v1.2.3" });
+      assert.equal(result.status, 73);
+      assert.deepEqual(result.calls, [
+        ["release", "view", "v1.2.3"],
+        ["release", "view", "v1.2.3", "--json", "assets", "--jq", ".assets[].name"],
+        ["release", "upload", "v1.2.3", "deploy/docker/postgres-init.sh"],
+      ]);
+      assert.deepEqual(result.state.assets, assets);
+    },
+  );
+});
+
+test("the actual image merge shell refuses existing immutable versions before any create", () => {
+  const script = shellStep(
+    "../.github/workflows/image.yml",
+    "merge",
+    "Create and inspect the multi-arch candidate",
+  );
+  for (const version of ["1.2.3", "1.2.4-next.1"]) {
+    withPublicationFixture(
+      "docker",
+      { imageExists: true },
+      { ["a".repeat(64)]: "", ["b".repeat(64)]: "" },
+      (run) => {
+        const result = run(script, { REPOSITORY: "ghcr.invalid/fixture/mend", VERSION: version });
+        assert.equal(result.status, 1);
+        assert.deepEqual(result.calls, [
+          ["buildx", "imagetools", "inspect", `ghcr.invalid/fixture/mend:${version}`],
+        ]);
+        assert.equal(result.state.created, undefined);
+      },
+    );
+  }
+});
+
+test("the actual image merge shell creates exact digest sources for new and rebuildable versions", () => {
+  const script = shellStep(
+    "../.github/workflows/image.yml",
+    "merge",
+    "Create and inspect the multi-arch candidate",
+  );
+  const digests = ["a".repeat(64), "b".repeat(64)];
+  for (const [version, exists] of [
+    ["1.2.3", false],
+    ["0.0.0-dev.sha0123456789ab", true],
+    ["0.0.0-acceptance.601", true],
+  ]) {
+    withPublicationFixture(
+      "docker",
+      { imageExists: exists },
+      { [digests[0]]: "", [digests[1]]: "" },
+      (run) => {
+        const result = run(script, { REPOSITORY: "ghcr.invalid/fixture/mend", VERSION: version });
+        assert.equal(result.status, 0, result.stderr);
+        const target = `ghcr.invalid/fixture/mend:${version}`;
+        const sources = digests.map((digest) => `ghcr.invalid/fixture/mend@sha256:${digest}`);
+        assert.deepEqual(result.calls, [
+          ...(exists ? [] : [["buildx", "imagetools", "inspect", target]]),
+          ["buildx", "imagetools", "create", "--tag", target, ...sources],
+          ["buildx", "imagetools", "inspect", target],
+        ]);
+        assert.deepEqual(result.state.sources, sources);
+      },
+    );
+  }
+});
+
+test("the actual image merge shell propagates create and final-inspection failures", () => {
+  const script = shellStep(
+    "../.github/workflows/image.yml",
+    "merge",
+    "Create and inspect the multi-arch candidate",
+  );
+  for (const [failure, status] of [
+    ["failCreate", 73],
+    ["failInspect", 74],
+  ]) {
+    withPublicationFixture(
+      "docker",
+      { imageExists: false, [failure]: true },
+      { ["a".repeat(64)]: "" },
+      (run) => {
+        const result = run(script, { REPOSITORY: "ghcr.invalid/fixture/mend", VERSION: "1.2.3" });
+        assert.equal(result.status, status);
+        assert.deepEqual(result.calls, [
+          ["buildx", "imagetools", "inspect", "ghcr.invalid/fixture/mend:1.2.3"],
+          [
+            "buildx",
+            "imagetools",
+            "create",
+            "--tag",
+            "ghcr.invalid/fixture/mend:1.2.3",
+            `ghcr.invalid/fixture/mend@sha256:${"a".repeat(64)}`,
+          ],
+          ...(failure === "failInspect"
+            ? [["buildx", "imagetools", "inspect", "ghcr.invalid/fixture/mend:1.2.3"]]
+            : []),
+        ]);
+      },
+    );
+  }
+});
 
 test("npm waits for verified images and public setup assets", () => {
   assert.ok(dependencies("npm").includes("images"));
@@ -104,9 +423,6 @@ test("image.yml pushes a version once, and only its own dispatch is held to main
     .split("\n")
     .map((line) => line.replace(/^ {10}/, ""))
     .join("\n");
-  const { mkdtempSync, writeFileSync, chmodSync, rmSync } = await import("node:fs");
-  const { tmpdir } = await import("node:os");
-  const { spawnSync } = await import("node:child_process");
   const bin = mkdtempSync(`${tmpdir()}/image-dispatch-`);
   t.after(() => rmSync(bin, { recursive: true, force: true }));
   const tagCommit = "a".repeat(40);
