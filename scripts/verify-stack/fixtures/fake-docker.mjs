@@ -27,7 +27,9 @@
 //   of the
 //   inner CLI makes them, as an inner session would; then, while FAKE_DOCKER_PAUSE_RUN (a file)
 //   exists, it writes `<file>.paused` and waits;
-// - FAKE_DOCKER_BUILD: `hang` makes `build` wait a minute; otherwise `build` fails at once.
+// - FAKE_DOCKER_BUILD: `hang` waits a minute, `success` enables the explicit orchestration
+//   fixture image/setup state, and the default still fails every build.
+import { createHash } from "node:crypto";
 import { appendFileSync, mkdirSync, readFileSync, rmdirSync, writeFileSync } from "node:fs";
 
 const args = process.argv.slice(2);
@@ -95,6 +97,14 @@ const waitFor = async (condition) => {
 };
 
 const [verb, sub] = args;
+const orchestration =
+  process.env.FAKE_DOCKER_BUILD === "success"
+    ? await locked((state) => state.orchestration ?? null)
+    : null;
+const imageRecord = (tag, labels = {}) => ({
+  Id: `sha256:${createHash("sha256").update(tag).digest("hex")}`,
+  Labels: labels,
+});
 
 const failRm = process.env.FAKE_DOCKER_FAIL_RM;
 if ((verb === "rm" || (verb === "volume" && sub === "rm")) && failRm && exists(failRm)) {
@@ -147,8 +157,16 @@ const formatOf = () => (args.includes("--format") ? args[args.indexOf("--format"
 const newId = (state, fill) => `${String(state.next++).padStart(4, "0")}${fill.repeat(60)}`;
 
 if (verb === "version") console.log("27.5.1");
-else if (verb === "pull") console.log(args.at(-1));
-else if (verb === "run" && args.some((arg) => arg.includes("umask 077"))) {
+else if (verb === "pull") {
+  const tag = args.at(-1);
+  if (orchestration?.guard === tag && orchestration.guardPullFailure)
+    fail("synthetic guard preload refused", 44);
+  if (orchestration !== null)
+    await locked((state) => {
+      (state.images ??= {})[tag] = imageRecord(tag);
+    });
+  console.log(tag);
+} else if (verb === "run" && args.some((arg) => arg.includes("umask 077"))) {
   const chunks = [];
   for await (const chunk of process.stdin) chunks.push(chunk);
   await locked((state) => {
@@ -165,6 +183,38 @@ else if (verb === "run" && args.some((arg) => arg.includes("umask 077"))) {
   const copy = Object.entries(files).find(([path]) => path.endsWith("/ledger.json"));
   if (copy) process.stdout.write(copy[1]);
   else process.stdout.write('{"containers":[],"volumes":[],"networks":[]}\n');
+} else if (
+  verb === "run" &&
+  orchestration !== null &&
+  args.includes("server") &&
+  args[args.indexOf("server") + 1] === "setup"
+) {
+  await locked((state) => {
+    if (!state.networks.some((network) => network.Name === "mend_default"))
+      state.networks.push({
+        Id: newId(state, "b"),
+        Name: "mend_default",
+        Labels: { "com.docker.compose.project": "mend" },
+      });
+  });
+  console.log("synthetic offline setup returned; no real inner install executed");
+} else if (
+  verb === "run" &&
+  orchestration !== null &&
+  args[args.indexOf("--name") + 1] === "verify-stack-relay"
+) {
+  const id = await locked((state) => {
+    const containerId = newId(state, "a");
+    const network = state.networks.find((candidate) => candidate.Name === "mend_default");
+    state.containers.push({
+      Id: containerId,
+      Name: "/verify-stack-relay",
+      Config: { Labels: labelsOf(args) },
+      NetworkSettings: { Networks: { mend_default: { NetworkID: network.Id } } },
+    });
+    return containerId;
+  });
+  console.log(id);
 } else if (verb === "run") {
   const script = process.env.FAKE_DOCKER_RUN;
   if (script && exists(script)) {
@@ -197,7 +247,20 @@ else if (verb === "run" && args.some((arg) => arg.includes("umask 077"))) {
   }
 } else if (verb === "info" && args.includes("{{.ID}}")) console.log(`FAKE:${statePath}`);
 else if (verb === "info") console.log(JSON.stringify({ SecurityOptions: [] }));
-else if (verb === "build") {
+else if (verb === "build" && orchestration !== null) {
+  const chunks = [];
+  for await (const chunk of process.stdin) chunks.push(chunk);
+  const tag = args[args.indexOf("--tag") + 1];
+  if (typeof tag !== "string") fail("orchestration build requires a tag");
+  await locked((state) => {
+    const labels = labelsOf(args);
+    if (tag.startsWith("ghcr.io/sealant-sh/mend:"))
+      labels["dev.sealant.mend.network-guard-image"] = orchestration.guard;
+    (state.images ??= {})[tag] = imageRecord(tag, labels);
+    (state.builds ??= []).push({ tag, input: Buffer.concat(chunks).toString() });
+  });
+  console.log("synthetic build accepted");
+} else if (verb === "build") {
   if (process.env.FAKE_DOCKER_BUILD === "hang") await sleep(60_000);
   fail("ERROR: the fake daemon builds nothing");
 } else if (verb === "buildx") console.log("github.com/docker/buildx v0.20.1");
@@ -336,5 +399,14 @@ else if (verb === "volume" && sub === "inspect") {
     return inUse.map((network) => network.Name);
   });
   if (blocked.length > 0) fail(`Error: network ${blocked.join(", ")} has active endpoints`);
+} else if (verb === "image" && orchestration !== null && sub === "inspect") {
+  const tag = args.at(-1);
+  const item = await locked((state) => state.images?.[tag]);
+  if (item === undefined) fail(`Error: no such image ${tag}`);
+  const format = formatOf();
+  if (format === "{{.Id}}") console.log(item.Id);
+  else if (format === '{{index .Config.Labels "dev.sealant.mend.network-guard-image"}}')
+    console.log(item.Labels["dev.sealant.mend.network-guard-image"] ?? "");
+  else fail("unexpected orchestration image format", 2);
 } else if (verb === "image") console.log("");
 else fail(`fake docker: unexpected ${args.join(" ")}`, 2);
