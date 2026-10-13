@@ -1,15 +1,14 @@
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import * as fs from "node:fs";
-import { createRequire, syncBuiltinESMExports } from "node:module";
 import * as os from "node:os";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 import { Worker } from "node:worker_threads";
 
 import { Effect, Layer } from "effect";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import {
-  containmentUnavailable,
   GREP_LINE_LIMIT,
   isWorktreeRelativePath,
   parseGrep,
@@ -34,11 +33,6 @@ let repo = "";
 let head = "";
 let store: Store["Service"];
 const run = <A, E>(effect: Effect.Effect<A, E>) => Effect.runPromise(Effect.orDie(effect));
-
-const require = createRequire(import.meta.url);
-/** The `fs` the store calls: a function replaced here reaches it (as in mend#615's tests). */
-const nodeFs: typeof fs = require("node:fs");
-const originalStatSync = nodeFs.statSync;
 
 beforeAll(async () => {
   tmp = fs.mkdtempSync(path.join(os.tmpdir(), "mend-worktree-contents-"));
@@ -164,35 +158,50 @@ describe("reading one file", () => {
     },
   );
 
-  it("refuses to read where no descriptor can be walked into, never walking the path (602-R2-1)", async () => {
-    // No `/proc` (a container without it, a sandbox): the walk has no descriptor directory to go
-    // through. Walking the literal path instead let a swapped directory lead outside; it refuses.
-    const plain = path.join(tmp, "no-proc");
-    fs.mkdirSync(path.join(plain, "dir"), { recursive: true });
-    fs.writeFileSync(path.join(plain, "dir", "file"), "inside");
-    const root = fs.realpathSync(plain);
-    Reflect.set(nodeFs, "statSync", (...args: Parameters<typeof fs.statSync>) => {
-      const at = String(args[0]);
-      if (at.startsWith("/proc/self/fd/") || at.startsWith("/dev/fd/")) {
-        throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
-      }
-      return originalStatSync(...args);
-    });
-    syncBuiltinESMExports();
-    try {
-      const read = await Effect.runPromise(
-        Effect.flip(store.readWorktreeFile(plain, "dir/file", 1024)),
+  it(
+    "refuses to read where no descriptor can be walked into, never walking the path (602-R2-1)",
+    { timeout: 15_000 },
+    async () => {
+      // No `/proc` (a container without it, a sandbox): the walk has no descriptor directory to go
+      // through. Walking the literal path instead let a swapped directory lead outside; it refuses.
+      const plain = path.join(tmp, "no-proc");
+      fs.mkdirSync(path.join(plain, "dir"), { recursive: true });
+      fs.writeFileSync(path.join(plain, "dir", "file"), "inside");
+      const root = fs.realpathSync(plain);
+      const parentStat = fs.statSync;
+      const stdout = await new Promise<string>((resolve, reject) => {
+        execFile(
+          process.execPath,
+          [
+            "--experimental-strip-types",
+            fileURLToPath(new URL("./fixtures/no-descriptor-read.ts", import.meta.url)),
+            root,
+          ],
+          {
+            timeout: 10_000,
+            env: { HOME: tmp, XDG_CONFIG_HOME: tmp },
+          },
+          (error, output) => {
+            if (error !== null) reject(error);
+            else resolve(output);
+          },
+        );
+      });
+      const observed: unknown = JSON.parse(stdout);
+      expect(observed).toEqual({
+        tag: "GitError",
+        stderr: `no /proc/self/fd or /dev/fd here to keep the read inside ${root}`,
+        probes: ["/proc/self/fd/", "/dev/fd/"],
+        pid: expect.any(Number),
+      });
+      expect(observed).not.toMatchObject({ pid: process.pid });
+      expect(fs.statSync).toBe(parentStat);
+      // The child never restored its fault; the parent still reads through its real descriptor paths.
+      expect(text((await run(store.readWorktreeFile(plain, "dir/file", 1024)))?.bytes)).toBe(
+        "inside",
       );
-      expect(read.stderr).toBe(containmentUnavailable(root));
-    } finally {
-      Reflect.set(nodeFs, "statSync", originalStatSync);
-      syncBuiltinESMExports();
-    }
-    // With a descriptor directory again, the same read answers.
-    expect(text((await run(store.readWorktreeFile(plain, "dir/file", 1024)))?.bytes)).toBe(
-      "inside",
-    );
-  });
+    },
+  );
 
   it("takes only a path inside the worktree", () => {
     expect(isWorktreeRelativePath("src/app.ts")).toBe(true);
