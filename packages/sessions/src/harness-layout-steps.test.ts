@@ -19,10 +19,9 @@ import {
 } from "@mend/sealant";
 import { claudeCode, type Run, type Workspace } from "@sealant/sdk";
 import { ConfigProvider, Deferred, Duration, Effect, Exit, Fiber, Layer, Scope } from "effect";
-import { TestClock } from "effect/testing";
 import { describe, expect, it } from "vitest";
 
-import { it as effectIt } from "../test/effect-vitest.ts";
+import { it as effectIt, TestClock } from "../test/effect-vitest.ts";
 import {
   HarnessLayoutConfig,
   HarnessLayoutConfigLive,

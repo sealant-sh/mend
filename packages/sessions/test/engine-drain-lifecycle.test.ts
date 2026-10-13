@@ -14,11 +14,10 @@ import {
 import { captureHoldWords, SessionEngine } from "@mend/sessions";
 import type { CreateOptions, InteractiveSession, InteractiveSessionStatus } from "@sealant/sdk";
 import { Deferred, Duration, Effect, Fiber, Layer, Logger } from "effect";
-import { TestClock } from "effect/testing";
 import { describe, expect } from "vitest";
 
 import { makeMemoryCaptureStore, type MemoryCaptureStore } from "./capture-store-memory.ts";
-import { it } from "./effect-vitest.ts";
+import { it, TestClock } from "./effect-vitest.ts";
 import {
   flushReport,
   launchOnce,

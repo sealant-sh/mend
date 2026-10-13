@@ -38,12 +38,11 @@ import type {
   WorkspaceCaptureReplanned,
 } from "@sealant/sdk";
 import { Deferred, Duration, Effect, Exit, Fiber, Layer, Queue } from "effect";
-import { TestClock } from "effect/testing";
 import { describe, expect } from "vitest";
 
 import { REMOTE_SSH_ROOT_WORDS } from "../src/harness-layout-steps.ts";
 import { makeMemoryCaptureStore } from "./capture-store-memory.ts";
-import { it } from "./effect-vitest.ts";
+import { it, TestClock } from "./effect-vitest.ts";
 import {
   NEWER_SNAPSHOT,
   SNAPSHOT,

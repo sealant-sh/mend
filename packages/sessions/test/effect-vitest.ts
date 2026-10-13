@@ -1,35 +1,71 @@
 import * as EffectVitest from "@effect/vitest";
-import { Clock, Effect, Layer, Logger } from "effect";
+import { Clock, Effect, Layer, Logger, LogLevel, References } from "effect";
+import { TestClock as RawTestClock } from "effect/testing";
 
 export * from "@effect/vitest";
 
 const clockWarning =
   "A test is using time, but is not advancing the test clock, which may result in the test hanging. Use TestClock.adjust to manually advance the time.";
 const hostWarn = console.warn.bind(console);
-const warningLogger = Logger.make<unknown, void>(({ message }) => {
-  if (message === clockWarning || (Array.isArray(message) && message.includes(clockWarning))) {
-    hostWarn(clockWarning);
-  }
-});
+// Constructors and test boundaries can both see the same clock. Decoration is
+// idempotent so one warning retains one diagnostic and one copy in fixture logs.
+const guardedClocks = new WeakSet<Clock.Clock>();
+const guardClock = <C extends Clock.Clock>(clock: C): C => {
+  if (guardedClocks.has(clock)) return clock;
+  const guarded = {
+    ...clock,
+    currentTimeMillisUnsafe: () => clock.currentTimeMillisUnsafe(),
+    currentTimeNanosUnsafe: () => clock.currentTimeNanosUnsafe(),
+    currentTimeMillis: clock.currentTimeMillis,
+    currentTimeNanos: clock.currentTimeNanos,
+    sleep: (duration: Parameters<Clock.Clock["sleep"]>[0]) =>
+      Effect.gen(function* () {
+        const loggers = yield* Logger.CurrentLoggers;
+        const minimum = yield* References.MinimumLogLevel;
+        const diagnostic = Logger.make<unknown, void>((options) => {
+          const { message } = options;
+          if (
+            message === clockWarning ||
+            (Array.isArray(message) && message.includes(clockWarning))
+          ) {
+            hostWarn(clockWarning);
+          }
+          // Effect filters before invoking loggers. Let the diagnostic reach us,
+          // then retain the fixture's original filter for its own loggers.
+          if (LogLevel.isGreaterThanOrEqualTo(options.logLevel, minimum)) {
+            for (const logger of loggers) logger.log(options);
+          }
+        });
+        return yield* clock
+          .sleep(duration)
+          .pipe(
+            Effect.provideService(Logger.CurrentLoggers, new Set([diagnostic])),
+            Effect.provideService(References.MinimumLogLevel, "All"),
+          );
+      }),
+  };
+  guardedClocks.add(guarded);
+  return guarded;
+};
 
-// The warning child inherits the sleeping fiber's logger. Install the forwarding
-// logger at that boundary so a private Logger.layer cannot hide it from Vitest.
-const guardClock = (clock: Clock.Clock): Clock.Clock => ({
-  // TestClock's adjust/setTime/withLive are own members. Delegate Clock's contract
-  // explicitly as well: the live Clock keeps its unsafe readers on its prototype.
-  ...clock,
-  currentTimeMillisUnsafe: () => clock.currentTimeMillisUnsafe(),
-  currentTimeNanosUnsafe: () => clock.currentTimeNanosUnsafe(),
-  currentTimeMillis: clock.currentTimeMillis,
-  currentTimeNanos: clock.currentTimeNanos,
-  sleep: (duration) =>
-    Effect.gen(function* () {
-      const loggers = yield* Logger.CurrentLoggers;
-      return yield* clock
-        .sleep(duration)
-        .pipe(Effect.provideService(Logger.CurrentLoggers, new Set([...loggers, warningLogger])));
-    }),
-});
+const makeTestClock: typeof RawTestClock.make = (options) =>
+  RawTestClock.make(options).pipe(Effect.map(guardClock));
+const testClockLayer: typeof RawTestClock.layer = (options) => {
+  // Each constructor owns a memoized decorator. Reusing this layer must expose
+  // the same clock object to every consumer, just like the upstream layer.
+  const decorator: Layer.Layer<never> = Layer.effect(
+    Clock.Clock,
+    Clock.clockWith((clock) => Effect.succeed(guardClock(clock))),
+  );
+  return decorator.pipe(Layer.provideMerge(RawTestClock.layer(options)));
+};
+
+/** TestClock controls and constructors whose unadvanced-time diagnostics cannot be hidden. */
+export const TestClock: typeof RawTestClock = {
+  ...RawTestClock,
+  make: makeTestClock,
+  layer: testClockLayer,
+};
 
 const guardedClockLayer: Layer.Layer<never> = Layer.effect(
   Clock.Clock,

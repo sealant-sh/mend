@@ -19,10 +19,9 @@ import {
 } from "@mend/sessions";
 import type { Workspace, WorkspaceForward } from "@sealant/sdk";
 import { Clock, Context, Deferred, Duration, Effect, Exit, Layer, Scope, Stream } from "effect";
-import { TestClock } from "effect/testing";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { it as effectIt } from "./effect-vitest.ts";
+import { it as effectIt, TestClock } from "./effect-vitest.ts";
 
 /**
  * The host side with real sockets and a fake platform: the forward is an

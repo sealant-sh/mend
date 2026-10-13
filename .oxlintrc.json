@@ -37,8 +37,23 @@
           {
             "paths": [
               {
+                "name": "effect/testing",
+                "message": "Import TestClock from test/effect-vitest.ts so replacement clocks keep the CI warning guard."
+              },
+              {
                 "name": "@effect/vitest",
                 "message": "Use test/effect-vitest.ts so captured TestClock warnings fail the runner; ordinary assertions and hooks come from vitest."
+              }
+            ],
+            "patterns": [
+              {
+                "group": [
+                  "effect/testing/TestClock",
+                  "effect/testing/TestClock.*",
+                  "effect/testing/index",
+                  "effect/testing/index.*"
+                ],
+                "message": "Import TestClock from test/effect-vitest.ts so replacement clocks keep the CI warning guard."
               }
             ]
           }

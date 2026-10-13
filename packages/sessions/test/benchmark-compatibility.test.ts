@@ -6,7 +6,7 @@ import * as path from "node:path";
 import { piProfileDigest } from "@mend/db";
 import { validatePiProfile, type PiProfileFile } from "@mend/domain/workbench";
 import { Effect, Schema } from "effect";
-import { FastCheck } from "effect/testing";
+import * as FastCheck from "effect/testing/FastCheck";
 import { expect } from "vitest";
 
 import { PERSON_SAVED_STATE } from "../src/harness-layout.ts";

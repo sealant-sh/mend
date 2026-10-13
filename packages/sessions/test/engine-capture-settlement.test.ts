@@ -33,11 +33,10 @@ import type {
   WorkspaceCaptureStatus,
 } from "@sealant/sdk";
 import { Clock, Deferred, Duration, Effect, Fiber, Layer, Option, Queue, Schedule } from "effect";
-import { TestClock } from "effect/testing";
 import { describe, expect } from "vitest";
 
 import { makeMemoryCaptureStore, type MemoryCaptureStore } from "./capture-store-memory.ts";
-import { it } from "./effect-vitest.ts";
+import { it, TestClock } from "./effect-vitest.ts";
 import {
   CUSTOM_BASE,
   flushReport,

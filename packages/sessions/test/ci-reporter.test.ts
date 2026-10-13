@@ -35,9 +35,9 @@ export default defineConfig({ plugins: [sessionsCiGuard({ fileBudgetMs: ${option
     await writeFile(
       path.join(directory, "guard.test.ts"),
       `import { it, expect } from "vitest";
-import { it as effectIt } from ${JSON.stringify(effectTestPath)};
-import { Clock, Context, Duration, Effect, Fiber, Layer, Logger } from "effect";
-import { TestClock, TestConsole } from "effect/testing";
+import { it as effectIt, TestClock } from ${JSON.stringify(effectTestPath)};
+import { Clock, Context, Duration, Effect, Fiber, Layer, Logger, References } from "effect";
+import * as TestConsole from "effect/testing/TestConsole";
 ${options.registration ?? (options.effectBody === undefined ? `it(${JSON.stringify(options.testName)}, async () => { ${options.body} });` : `effectIt.effect(${JSON.stringify(options.testName)}, () => ${options.effectBody});`)}
 `,
     );
@@ -267,6 +267,134 @@ it(
     });
     expect(result.signal).toBeNull();
     expect(result.code).toBe(0);
+    expect(result.json).toMatchObject({ success: true, numPassedTests: 1 });
+  },
+);
+
+const unadvancedSleeper = `Effect.gen(function* () {
+  const sleeper = yield* Effect.sleep("10 seconds").pipe(Effect.forkScoped);
+  yield* TestClock.withLive(Effect.sleep("1200 millis"));
+  yield* TestClock.adjust("10 seconds");
+  yield* Fiber.join(sleeper);
+})`;
+
+for (const { name, registration } of [
+  {
+    name: "replacement layer",
+    registration: `effectIt.effect("replacement layer", () =>
+    ${unadvancedSleeper}.pipe(Effect.provide(TestClock.layer()), TestClock.withLive));`,
+  },
+  {
+    name: "constructed replacement",
+    registration: `effectIt.effect("constructed replacement", () => Effect.gen(function* () {
+    const clock = yield* TestClock.withLive(TestClock.make());
+    yield* ${unadvancedSleeper}.pipe(Effect.provideService(Clock.Clock, clock));
+  }));`,
+  },
+  {
+    name: "internally supplied shared-layer clock",
+    registration: `
+    class Sleeper extends Context.Service()("guard/ReplacementSleeper") {}
+    const sleeperLayer = Layer.effect(Sleeper, TestClock.testClockWith(clock => Effect.succeed({
+      sleep: clock.sleep(Duration.seconds(10)),
+      advance: clock.adjust("10 seconds"),
+      wait: clock.withLive(Effect.sleep("1200 millis"))
+    }))).pipe(Layer.provide(TestClock.layer()));
+    effectIt.layer(sleeperLayer, { excludeTestServices: true })("shared replacement", it => {
+      it.effect("internally supplied shared-layer clock", () => Effect.gen(function* () {
+        const service = yield* Sleeper;
+        const fiber = yield* service.sleep.pipe(Effect.forkScoped);
+        yield* service.wait;
+        yield* service.advance;
+        yield* Fiber.join(fiber);
+      }).pipe(Effect.provide(Logger.layer([Logger.make(() => {})]))));
+    });`,
+  },
+  {
+    name: "live test with test services",
+    registration: `effectIt.live("live test with test services", () =>
+    ${unadvancedSleeper}.pipe(Effect.provide([TestClock.layer(), TestConsole.layer])));`,
+  },
+  {
+    name: "minimum log level Error",
+    registration: `effectIt.effect("minimum log level Error", () =>
+    Effect.gen(function* () {
+      yield* Effect.logInfo("hidden before");
+      yield* Effect.logError("visible before");
+      yield* ${unadvancedSleeper};
+      yield* Effect.logInfo("hidden after");
+      yield* Effect.logError("visible after");
+      const captured = JSON.stringify(yield* TestConsole.logLines);
+      expect(captured).not.toContain("hidden");
+      expect(captured).not.toContain("not advancing the test clock");
+      expect(captured).toContain("visible before"); expect(captured).toContain("visible after");
+    }).pipe(Effect.provideService(References.MinimumLogLevel, "Error")));`,
+  },
+  {
+    name: "minimum log level None",
+    registration: `effectIt.effect("minimum log level None", () =>
+    Effect.gen(function* () {
+      yield* Effect.logInfo("hidden before");
+      yield* Effect.logError("visible before");
+      yield* ${unadvancedSleeper};
+      yield* Effect.logInfo("hidden after");
+      yield* Effect.logError("visible after");
+      const captured = JSON.stringify(yield* TestConsole.logLines);
+      expect(captured).not.toContain("hidden");
+      expect(captured).not.toContain("not advancing the test clock");
+      expect(captured).not.toContain("visible");
+    }).pipe(Effect.provideService(References.MinimumLogLevel, "None")));`,
+  },
+]) {
+  it(`fails the runner for ${name}`, { timeout: 30_000 }, async () => {
+    const result = await runFixture({
+      budgetMs: 10_000,
+      testName: name,
+      body: "",
+      registration,
+      jsonReporter: true,
+    });
+    expect(result.signal).toBeNull();
+    expect(result.code).toBe(1);
+    expect(result.output, JSON.stringify(result.json)).toContain("sessions Clock warning:");
+    expect(result.output).toContain(name);
+    expect(result.json).toMatchObject({ numPassedTests: 1 });
+  });
+}
+
+it(
+  "shares one replacement clock across consumers of the same layer",
+  { timeout: 30_000 },
+  async () => {
+    const result = await runFixture({
+      budgetMs: 10_000,
+      testName: "shared replacement identity",
+      body: "",
+      registration: `
+      class First extends Context.Service()("guard/First") {}
+      class Second extends Context.Service()("guard/Second") {}
+      const clockLayer = TestClock.layer();
+      const firstLayer = Layer.effect(First, Clock.clockWith(Effect.succeed)).pipe(Layer.provide(clockLayer));
+      const secondLayer = Layer.effect(Second, Clock.clockWith(Effect.succeed)).pipe(Layer.provide(clockLayer));
+      effectIt.layer(Layer.merge(firstLayer, secondLayer), { excludeTestServices: true })(it => {
+        it.effect("shared replacement identity", () => Effect.gen(function* () {
+          const first = yield* First;
+          const second = yield* Second;
+          expect(first).toBe(second);
+          const completed = [];
+          const sleeper = yield* first.sleep(Duration.millis(10)).pipe(
+            Effect.andThen(Effect.sync(() => completed.push(second.currentTimeMillisUnsafe()))), Effect.forkScoped);
+          yield* second.adjust(9);
+          expect(completed).toEqual([]);
+          yield* second.adjust(1);
+          yield* Fiber.join(sleeper);
+          expect(completed).toEqual([10]);
+        }));
+      });`,
+      jsonReporter: true,
+    });
+    expect(result.signal).toBeNull();
+    expect(result.code, JSON.stringify(result.json)).toBe(0);
     expect(result.json).toMatchObject({ success: true, numPassedTests: 1 });
   },
 );
