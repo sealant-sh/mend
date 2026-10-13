@@ -1,9 +1,10 @@
 import { addressSubject, clientAddressOf } from "@mend/network";
-import { Effect, FileSystem, Option, type Layer } from "effect";
+import { Cause, Effect, FileSystem, Option, type Layer } from "effect";
 import {
   HttpIncomingMessage,
   HttpRouter,
   HttpServerRequest,
+  HttpServerError,
   HttpServerResponse,
 } from "effect/unstable/http";
 
@@ -188,6 +189,30 @@ export const requestBudgets = (
         }
         return yield* handler.pipe(
           Effect.provideService(HttpIncomingMessage.MaxBodySize, FileSystem.Size(bodyLimit)),
+          Effect.catchCause((cause) => {
+            // The pinned Node adapter has no tagged size-limit cause: it wraps this exact Error
+            // in RequestParseError. HttpApi payload decoding promotes that typed error to a defect.
+            // Translate only this request's sole limit error; retain interruption and other failures.
+            const reason = cause.reasons.length === 1 ? cause.reasons[0] : undefined;
+            const error =
+              reason === undefined
+                ? undefined
+                : Cause.isFailReason(reason)
+                  ? reason.error
+                  : Cause.isDieReason(reason)
+                    ? reason.defect
+                    : undefined;
+            if (
+              HttpServerError.isHttpServerError(error) &&
+              error.reason._tag === "RequestParseError" &&
+              error.reason.request.source === request.source &&
+              error.reason.cause instanceof Error &&
+              error.reason.cause.message === "maxBytes exceeded"
+            ) {
+              return Effect.succeed(budgetRefusal(413, bodyBudget, bodyLimit, null));
+            }
+            return Effect.failCause(cause);
+          }),
         );
       }),
     { global: true },
