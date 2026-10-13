@@ -34,6 +34,13 @@ License in `LICENSE` (t3code's own, copied with the files):
   `t3` catalog to t3code's versions at that tag (its `pnpm-workspace.yaml`), then run `pnpm install`
   and this package's tests.
 
+  All source reads and the new pin are staged before the old copy changes. A publication error
+  restores the previous files and pin. If restoration itself fails, the command retains its
+  `.sync-*/previous` backup and reports its location. Run sync exclusively, without builds or
+  another sync reading/writing the package. Multiple filesystem renames are not a crash-atomic
+  transaction; after process or machine loss, inspect the retained staging directory before
+  retrying.
+
 - `scripts/drift.ts` says whether t3code moved on: it lists the files under the vendored sources at
   the newest nightly tag (or `--tag`) by git blob id and compares them with the pin, writing nothing
   here. Exit 0 is no drift, 1 drift (the report lists what changed, what is new, what is gone), 2
@@ -43,6 +50,8 @@ License in `LICENSE` (t3code's own, copied with the files):
 ## Tests
 
 - `test/verbatim.test.ts`: every copied file matches the pin, and nothing was added or removed.
+- `test/sync.test.ts`: the actual sync command copies a complete tagged fixture, ignores dirty
+  files, and preserves the old copy and pin on source-read and publication failures.
 - `test/drift.test.ts`: the drift job's tag order, comparison and report.
 - `test/rpc-group.test.ts`: `WsRpcGroup` loads on the `t3` catalog and its schemas decode real
   frames.
