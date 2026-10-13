@@ -101,7 +101,8 @@ interface State {
   /** The branch the bundle carries. */
   branch: string;
   landings: Array<ChangeLanding>;
-  refreshed: ChangeLanding | PullRequestStepError | null;
+  refreshes: Array<ChangeLandingId>;
+  refreshed: Map<ChangeLandingId, ChangeLanding | PullRequestStepError>;
   unseen: number;
   sinceLanding: Array<ChangedFile>;
   adoption: Adoption | null;
@@ -116,7 +117,8 @@ const fresh = (): State => ({
   bundle: "ok",
   branch: "mend/shared-a",
   landings: [],
-  refreshed: null,
+  refreshes: [],
+  refreshed: new Map(),
   unseen: 0,
   sinceLanding: [],
   adoption: null,
@@ -206,10 +208,11 @@ describe("landing routes", () => {
                   ? Effect.die("no adoption scripted")
                   : Effect.succeed(state.adoption);
               }),
-            refreshPullRequest: () =>
+            refreshPullRequest: (id) =>
               Effect.suspend(() => {
-                const refreshed = state.refreshed;
-                if (refreshed === null) return Effect.die("no refresh scripted");
+                state.refreshes.push(id);
+                const refreshed = state.refreshed.get(id);
+                if (refreshed === undefined) return Effect.die("no refresh scripted for this id");
                 return refreshed instanceof PullRequestStepError
                   ? Effect.fail(refreshed)
                   : Effect.succeed(refreshed);
@@ -590,16 +593,32 @@ describe("landing routes", () => {
     const refresh = "/api/landings/landing-1/refresh";
 
     it("records what gh reports now for the owner, and audits it", async () => {
-      state.landings = [landingRow()];
-      state.refreshed = landingRow({ pullRequest: { ...PR, state: "merged" } });
-      const response = await api.request("alice", "POST", refresh);
+      const selectedPr = { ...PR, number: 413, url: "https://github.com/acme/api/pull/413" };
+      const selected = landingRow({
+        id: ChangeLandingId.make("landing-2"),
+        pullRequest: selectedPr,
+      });
+      state.landings = [landingRow(), selected];
+      state.refreshed.set(ChangeLandingId.make("landing-1"), landingRow());
+      state.refreshed.set(
+        selected.id,
+        new ChangeLanding({ ...selected, pullRequest: { ...selectedPr, state: "merged" } }),
+      );
+      const response = await api.request("alice", "POST", `/api/landings/${selected.id}/refresh`);
       expect(response.status).toBe(200);
-      expect(await response.json()).toMatchObject({ pullRequest: { state: "merged" } });
-      expect(state.audited).toMatchObject([
+      expect(await response.json()).toMatchObject({
+        id: selected.id,
+        pullRequest: { number: 413, url: selectedPr.url, state: "merged" },
+      });
+      expect(state.refreshes).toEqual([selected.id]);
+      expect(state.audited).toEqual([
         {
+          organizationId: "org-A",
+          actorUserId: "alice",
           action: "change.pull_request_refreshed",
+          subjectType: "change",
           subjectId: sharedA.change,
-          data: { pullRequest: 412, state: "merged" },
+          data: { landingId: selected.id, pullRequest: 413, state: "merged" },
         },
       ]);
     });
@@ -614,17 +633,23 @@ describe("landing routes", () => {
         calls: [],
       });
       expect(await bob.json()).toMatchObject({ id: "landing-1" });
+      expect(state.refreshes).toEqual([]);
     });
 
     it("answers gh's words when it cannot say", async () => {
       state.landings = [landingRow()];
-      state.refreshed = new PullRequestStepError({ message: "gh pr view · HTTP 401" });
+      state.refreshed.set(
+        ChangeLandingId.make("landing-1"),
+        new PullRequestStepError({ message: "gh pr view · HTTP 401" }),
+      );
       const response = await api.request("alice", "POST", refresh);
       expect(response.status).toBe(502);
       expect(await response.json()).toEqual({
         _tag: "PullRequestStepFailed",
         message: "gh pr view · HTTP 401",
       });
+      expect(state.refreshes).toEqual([ChangeLandingId.make("landing-1")]);
+      expect(state.audited).toEqual([]);
     });
 
     it("is 404 for a landing that does not exist", async () => {
