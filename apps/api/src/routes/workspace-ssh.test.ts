@@ -10,7 +10,7 @@ import {
   type SshKeysApi,
 } from "@mend/sealant";
 import { Effect } from "effect";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { createTenancyApi, type TenancyApi } from "../../test/support/tenancy-api.ts";
 import {
@@ -59,6 +59,7 @@ const view = (row: Row): PlatformSshKey => ({
 const makePlatform = () => {
   const rows: Array<Row> = [];
   let down = false;
+  let registrationFailure: SealantPlatformError | null = null;
   const sshKeys = (userId: string): SshKeysApi => ({
     list: () =>
       down
@@ -67,6 +68,7 @@ const makePlatform = () => {
     ensure: (input) =>
       Effect.suspend(() => {
         if (down) return Effect.fail(unavailable());
+        if (registrationFailure !== null) return Effect.fail(registrationFailure);
         const fingerprint = fingerprintOf(input.publicKey);
         const active = rows.find((row) => row.fingerprint === fingerprint && !row.archived);
         if (active !== undefined && active.userId !== userId) {
@@ -112,6 +114,10 @@ const makePlatform = () => {
   return {
     sshKeys,
     resolve,
+    snapshot: () => rows.map((row) => ({ ...row })),
+    setRegistrationFailure: (error: SealantPlatformError) => {
+      registrationFailure = error;
+    },
     setDown: (value: boolean) => {
       down = value;
     },
@@ -130,11 +136,10 @@ const running = (id: SessionId, owner: string, label: string) =>
   });
 
 /** What the platform reports; `ends` says whether removing a key ends its connections. */
-const platformFeatures = { ends: false };
 type SealantFeatures = Effect.Success<
   ReturnType<SealantClients["Service"]["controlPlaneFeatures"]>
 >;
-const featuresOf = (): SealantFeatures => ({
+const featuresOf = (ends: boolean): SealantFeatures => ({
   processUserRoutes: true,
   dotfilesApply: true,
   credentialsPartialPut: true,
@@ -142,21 +147,28 @@ const featuresOf = (): SealantFeatures => ({
   captureOwnerMap: true,
   workspaceSshUser: true,
   personBinding: true,
-  sshKeyRemovalEndsConnections: platformFeatures.ends,
+  sshKeyRemovalEndsConnections: ends,
 });
 
 describe("workspace SSH keys", () => {
   let api: TenancyApi;
-  const platform = makePlatform();
-  const audited: Array<NewAuditEvent> = [];
-  beforeAll(async () => {
+  let platform: ReturnType<typeof makePlatform>;
+  let audited: Array<NewAuditEvent>;
+  let ends = false;
+  let discoveryFails = false;
+  beforeEach(async () => {
+    platform = makePlatform();
+    audited = [];
+    ends = false;
+    discoveryFails = false;
     api = await createTenancyApi(undefined, {
       sessions: [
         running(CAROL_RUNNING, "carol", "reaper retry storm"),
         running(BOB_RUNNING, "bob", "bob's work"),
       ],
       implement: {
-        controlPlaneFeatures: () => Effect.succeed(featuresOf()),
+        controlPlaneFeatures: () =>
+          discoveryFails ? Effect.fail(unavailable()) : Effect.succeed(featuresOf(ends)),
         sshKeys: platform.sshKeys,
         workspaceSshInfo: () =>
           Effect.succeed({ host: "0.0.0.0", port: 2222, usernamePrefix: "workspace" }),
@@ -169,12 +181,8 @@ describe("workspace SSH keys", () => {
       },
     });
   });
-  afterAll(async () => {
+  afterEach(async () => {
     await api.dispose();
-  });
-  beforeEach(() => {
-    platform.setDown(false);
-    platformFeatures.ends = false;
   });
 
   const register = async (user: "carol" | "bob" | "alice", publicKey: string, name: string) => {
@@ -215,9 +223,16 @@ describe("workspace SSH keys", () => {
     expect(await fingerprintsOf("carol")).toEqual([fingerprintOf(LAPTOP)]);
     expect(await fingerprintsOf("bob")).toEqual([fingerprintOf(DESKTOP)]);
     expect(await fingerprintsOf("alice")).toEqual([]);
-    expect(audited.map((event) => [event.action, event.actorUserId, event.subjectId])).toEqual([
-      ["ssh_key.added", "carol", "carol"],
-      ["ssh_key.added", "bob", "bob"],
+    expect(
+      audited.map((event) => [
+        event.organizationId,
+        event.action,
+        event.actorUserId,
+        event.subjectId,
+      ]),
+    ).toEqual([
+      ["org-A", "ssh_key.added", "carol", "carol"],
+      ["org-B", "ssh_key.added", "bob", "bob"],
     ]);
     expect(audited[0]?.data).toEqual({
       sshKeyId: carolKey,
@@ -243,7 +258,7 @@ describe("workspace SSH keys", () => {
     expect(platform.resolve(DESKTOP)).toBe("bob");
   });
 
-  it("removes the caller's key so the gateway resolves it to nobody, and audits the removal", async () => {
+  it("removes the caller's key at the platform boundary, and audits the removal", async () => {
     const carolKey = await register("carol", LAPTOP, "carol-laptop");
     expect(platform.resolve(LAPTOP)).toBe("carol");
     const before = audited.length;
@@ -258,7 +273,7 @@ describe("workspace SSH keys", () => {
     expect(await fingerprintsOf("carol")).toEqual([]);
     expect(audited.slice(before)).toEqual([
       {
-        organizationId: expect.any(String),
+        organizationId: "org-A",
         actorUserId: "carol",
         action: "ssh_key.removed",
         subjectType: "member",
@@ -274,7 +289,7 @@ describe("workspace SSH keys", () => {
   });
 
   it("says connections opened with the key end, on a platform that ends them", async () => {
-    platformFeatures.ends = true;
+    ends = true;
     const carolKey = await register("carol", LAPTOP, "carol-laptop");
     const removed = await api.request("carol", "DELETE", `/api/workspace-ssh/keys/${carolKey}`);
     expect(removed.status).toBe(200);
@@ -296,8 +311,105 @@ describe("workspace SSH keys", () => {
         ? body.runningSessions
         : null;
     // Carol's own, never Bob's.
-    expect(named).toContainEqual({ sessionId: CAROL_RUNNING, label: "reaper retry storm" });
-    expect(named).not.toContainEqual(expect.objectContaining({ sessionId: BOB_RUNNING }));
+    expect(named).toEqual([
+      { sessionId: "session-private-carol", label: "Tenancy harness" },
+      { sessionId: "session-shared-a-carol", label: "Tenancy harness" },
+      { sessionId: CAROL_RUNNING, label: "reaper retry storm" },
+    ]);
+  });
+
+  it("refuses another account's fingerprint without changing keys or adding an audit event", async () => {
+    await register("bob", LAPTOP, "bob-laptop");
+    await register("carol", DESKTOP, "carol-desktop");
+    const beforeKeys = platform.snapshot();
+    const beforeAudit = [...audited];
+    const refused = await api.request("carol", "POST", "/api/workspace-ssh/keys", {
+      publicKey: LAPTOP,
+      name: "duplicate",
+    });
+    expect(refused.status).toBe(400);
+    expect(await refused.json()).toEqual({
+      _tag: "AccountRejected",
+      message: "This SSH key is already registered to another account.",
+    });
+    expect(platform.snapshot()).toEqual(beforeKeys);
+    expect(audited).toEqual(beforeAudit);
+    expect(await fingerprintsOf("carol")).toEqual([fingerprintOf(DESKTOP)]);
+    expect(await fingerprintsOf("bob")).toEqual([fingerprintOf(LAPTOP)]);
+  });
+
+  it.each([
+    {
+      label: "invalid public key",
+      status: 400,
+      code: "InvalidSshKey",
+      message: "Invalid OpenSSH public key.",
+      response: 400,
+      tag: "AccountRejected",
+    },
+    {
+      label: "registration unavailable",
+      status: 503,
+      code: "UNREACHABLE",
+      message: "platform unreachable",
+      response: 502,
+      tag: "SealantUnavailable",
+    },
+  ])("keeps keys and audit unchanged when the platform reports $label", async (failure) => {
+    await register("carol", LAPTOP, "carol-laptop");
+    await register("bob", DESKTOP, "bob-desktop");
+    const beforeKeys = platform.snapshot();
+    const beforeAudit = [...audited];
+    // The remote service judges syntax. This fixture supplies its declared refusal, not a local parser.
+    platform.setRegistrationFailure(
+      new SealantPlatformError({
+        code: failure.code,
+        status: failure.status,
+        message: failure.message,
+        cause: null,
+      }),
+    );
+    const refused = await api.request("carol", "POST", "/api/workspace-ssh/keys", {
+      publicKey: "not-an-openssh-key",
+      name: "refused",
+    });
+    expect(refused.status).toBe(failure.response);
+    expect(await refused.json()).toMatchObject({ _tag: failure.tag, message: failure.message });
+    expect(platform.snapshot()).toEqual(beforeKeys);
+    expect(audited).toEqual(beforeAudit);
+    expect(await fingerprintsOf("carol")).toEqual([fingerprintOf(LAPTOP)]);
+    expect(await fingerprintsOf("bob")).toEqual([fingerprintOf(DESKTOP)]);
+  });
+
+  it("removes the key with a conservative caller-only report when feature discovery fails", async () => {
+    await register("bob", DESKTOP, "bob-desktop");
+    const carolKey = await register("carol", LAPTOP, "carol-laptop");
+    discoveryFails = true;
+    const removed = await api.request("carol", "DELETE", `/api/workspace-ssh/keys/${carolKey}`);
+    expect(removed.status).toBe(200);
+    expect(await removed.json()).toEqual({
+      sshKeyId: carolKey,
+      name: "carol-laptop",
+      algorithm: "ssh-ed25519",
+      fingerprint: fingerprintOf(LAPTOP),
+      createdAt: "2026-10-10T00:00:00.000Z",
+      openConnections: "stay",
+      runningSessions: [
+        { sessionId: "session-private-carol", label: "Tenancy harness" },
+        { sessionId: "session-shared-a-carol", label: "Tenancy harness" },
+        { sessionId: CAROL_RUNNING, label: "reaper retry storm" },
+      ],
+    });
+    expect(await fingerprintsOf("carol")).toEqual([]);
+    expect(await fingerprintsOf("bob")).toEqual([fingerprintOf(DESKTOP)]);
+    expect(audited.at(-1)).toEqual({
+      organizationId: "org-A",
+      actorUserId: "carol",
+      action: "ssh_key.removed",
+      subjectType: "member",
+      subjectId: "carol",
+      data: { sshKeyId: carolKey, fingerprint: fingerprintOf(LAPTOP), name: "carol-laptop" },
+    });
   });
 
   it("answers 502 and records nothing when the platform cannot be reached", async () => {

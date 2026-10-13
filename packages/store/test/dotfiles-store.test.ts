@@ -39,6 +39,19 @@ const cleanup = () => {
 afterEach(cleanup);
 afterAll(cleanup);
 
+const archiveFiles = (data: string) => {
+  const out = freshRoot("mend-dotstore-out-");
+  const tarball = path.join(out, "snapshot.tar.gz");
+  fs.writeFileSync(tarball, Buffer.from(data, "base64"));
+  const names = execFileSync("tar", ["-tzf", tarball], { encoding: "utf8" })
+    .split("\n")
+    .filter((name) => name !== "" && !name.endsWith("/"));
+  execFileSync("tar", ["-xzf", tarball, "-C", out]);
+  return Object.fromEntries(
+    names.map((name): [string, string] => [name, fs.readFileSync(path.join(out, name), "utf8")]),
+  );
+};
+
 describe("DotfilesStore", () => {
   it("has no snapshot until the first sync", async () => {
     const root = freshRoot();
@@ -150,16 +163,24 @@ describe("DotfilesStore", () => {
           [{ path: ".zshrc", contentsBase64: b64("two\n") }],
           { source: "web", merge: true },
         );
+        const mergedArchive = yield* store.archive("user_a");
         const replaced = yield* store.snapshot(
           "user_a",
           [{ path: ".gitconfig", contentsBase64: b64("[user]\n") }],
           { source: "thinkpad", merge: false },
         );
-        return { merged, replaced };
+        return { merged, mergedArchive, replaced, replacedArchive: yield* store.archive("user_a") };
       }),
     );
     expect(result.merged.files.map((f) => f.path).toSorted()).toEqual([".vimrc", ".zshrc"]);
     expect(result.replaced.files.map((f) => f.path)).toEqual([".gitconfig"]);
+    expect(result.mergedArchive?.sha).toBe(result.merged.sha);
+    expect(archiveFiles(result.mergedArchive?.data ?? "")).toEqual({
+      ".zshrc": "two\n",
+      ".vimrc": "vim\n",
+    });
+    expect(result.replacedArchive?.sha).toBe(result.replaced.sha);
+    expect(archiveFiles(result.replacedArchive?.data ?? "")).toEqual({ ".gitconfig": "[user]\n" });
   });
 
   it("returns the current summary unchanged for an identical sync", async () => {
