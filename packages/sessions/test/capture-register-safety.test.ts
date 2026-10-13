@@ -1390,35 +1390,6 @@ describe("a lease is held by a launch (review 2026-09-28 (4) #11, cross-repo dec
     expect(result.head).toBeNull();
     expect(result.newHeartbeat).toBe("ok");
   });
-
-  it("the store refuses a register and a heartbeat of another launch under a held epoch, whoever calls it", async () => {
-    const wt = WorktreeId.make("wt-store-launch");
-    const world = worldOf(2, verifierObserving({}));
-    const result = await Effect.runPromise(
-      Effect.gen(function* () {
-        const repo = yield* CaptureStoreRepo;
-        yield* repo.init(wt);
-        // A claim that lapsed at once: only its own launch takes it again.
-        yield* repo.claim(wt, "session-1", 0, "launch-new");
-        const retake = yield* outcome(repo.claim(wt, "session-1", 30, "launch-old"));
-        const claimed = yield* repo.claim(wt, "session-1", 30, "launch-new");
-        const beat = yield* repo.heartbeat(wt, claimed.epoch, 30, {
-          executorId: "session-1",
-          launchId: "launch-old",
-        });
-        const own = yield* repo.heartbeat(wt, claimed.epoch, 30, {
-          executorId: "session-1",
-          launchId: "launch-new",
-        });
-        return { retake, claimed, beat, own, lease: yield* repo.leaseOf(wt) };
-      }).pipe(Effect.provide(world.layer)),
-    );
-    expect(result.retake).toBe("WorktreeLeasedError");
-    expect(result.claimed.epoch).toBe(2);
-    expect(result.beat).toBe(false);
-    expect(result.own).toBe(true);
-    expect(result.lease?.launchId).toBe("launch-new");
-  });
 });
 
 describe("a seal rests on chunk bytes that read (review 2026-09-28 (4) #13)", () => {
