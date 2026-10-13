@@ -1,3 +1,4 @@
+import { mkdtempSync, rmSync } from "node:fs";
 import * as http from "node:http";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -7,7 +8,7 @@ import { SessionSocketHost, SessionSocketHostLive, makeFrameFeed, frame } from "
 import { DeploymentConfigColocated, StoreConfig } from "@mend/store";
 import { Layer } from "effect";
 import { Effect } from "effect";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { SessionChannelRegistryLive } from "../src/session-channel.ts";
 import type { SessionSocketApi } from "../src/session-socket.ts";
@@ -17,14 +18,26 @@ import type { SessionSocketApi } from "../src/session-socket.ts";
  * helper, route to the provided closures, tear down.
  */
 
-process.env["MEND_RUN_DIR"] = path.join(os.tmpdir(), `mend-socket-test-${process.pid}`);
+let root: string;
+let previousRunDir: string | undefined;
+beforeEach(() => {
+  previousRunDir = process.env["MEND_RUN_DIR"];
+  root = mkdtempSync(path.join(os.tmpdir(), "mend-socket-"));
+  process.env["MEND_RUN_DIR"] = path.join(root, "run");
+});
+afterEach(() => {
+  if (previousRunDir === undefined) delete process.env["MEND_RUN_DIR"];
+  else process.env["MEND_RUN_DIR"] = previousRunDir;
+  rmSync(root, { recursive: true, force: true });
+});
 
-const SocketHostLayer = SessionSocketHostLive.pipe(
-  Layer.provide(StoreConfig.layerFor(path.join(os.tmpdir(), `mend-socket-store-${process.pid}`))),
-  // The socket is the co-located store's transport: capture mode binds none (docs/adr/0016).
-  Layer.provide(DeploymentConfigColocated),
-  Layer.provide(SessionChannelRegistryLive),
-);
+const socketHostLayer = () =>
+  SessionSocketHostLive.pipe(
+    Layer.provide(StoreConfig.layerFor(path.join(root, "store"))),
+    // The socket is the co-located store's transport: capture mode binds none (docs/adr/0016).
+    Layer.provide(DeploymentConfigColocated),
+    Layer.provide(SessionChannelRegistryLive),
+  );
 
 const SESSION = SessionId.make("sess-socket-1");
 
@@ -150,7 +163,7 @@ describe("SessionSocketHost", () => {
           );
           expect(refused).toBe(true);
         }),
-      ).pipe(Effect.provide(SocketHostLayer)),
+      ).pipe(Effect.provide(socketHostLayer())),
     );
   });
 
@@ -271,7 +284,7 @@ describe("SessionSocketHost", () => {
 
           yield* host.stop(SESSION);
         }),
-      ).pipe(Effect.provide(SocketHostLayer)),
+      ).pipe(Effect.provide(socketHostLayer())),
     );
   });
 });
