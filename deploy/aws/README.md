@@ -204,6 +204,13 @@ Tags are `project=mend`, `environment=aws-capture-poc`; CSI volumes also carry t
 AWS provider cannot tag the MicroVM connector. The inventory script includes separate runtime
 resources. This is not HA: one worker/NAT, one CoreDNS/CSI controller, and non-surge node updates.
 
+## Local regression tests
+
+Run `pnpm test:aws-shell` from the repository root. CI runs the same command. The tests exercise
+`kubernetes/smoke.sh` and `scripts/build-workspace-image.sh` with local command fixtures. They make
+no AWS or network calls and build no images. They require Bash, Python 3 and standard Linux
+command-line tools; AWS CLI, kubectl and curl are replaced by the fixtures.
+
 ## Provision and render
 
 Use `nix-shell deploy/aws/shell.nix` for AWS CLI, OpenTofu, kubectl, Helm and Python/boto3. The
