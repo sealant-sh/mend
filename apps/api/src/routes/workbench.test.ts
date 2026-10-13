@@ -33,7 +33,7 @@ import {
   Worktree,
   type SessionStatus,
 } from "@mend/domain/workbench";
-import { JobRunner } from "@mend/jobs";
+import { JobEnqueueError, JobRunner } from "@mend/jobs";
 import { SealantClient } from "@mend/sealant";
 import { SessionEngine, WorktreeReads } from "@mend/sessions";
 import {
@@ -66,6 +66,7 @@ const OTHER_PROJECT_ID = ProjectId.make("project-other");
 const WORKTREE_ID = WorktreeId.make("worktree-visible");
 const OTHER_WORKTREE_ID = WorktreeId.make("worktree-other");
 const AUTHORIZATION = "Bearer project-detail-test";
+const OTHER_AUTHORIZATION = "Bearer other-install-owner";
 const NOW = new Date("2026-09-12T10:00:00.000Z");
 
 const project = (id: ProjectId, name: string): Project =>
@@ -265,7 +266,16 @@ const authLayer: Layer.Layer<Auth> = Layer.succeed(Auth, {
             },
             expiresAt: new Date("2026-09-13T10:00:00.000Z"),
           })
-        : Option.none(),
+        : headers.get("authorization") === OTHER_AUTHORIZATION
+          ? Option.some({
+              user: {
+                id: "other-install-owner",
+                name: "Other install owner",
+                email: "other@example.invalid",
+              },
+              expiresAt: new Date("2026-09-13T10:00:00.000Z"),
+            })
+          : Option.none(),
     ),
 });
 
@@ -803,6 +813,12 @@ const put = (body: unknown): RequestInit => ({ method: "PUT", body: JSON.stringi
 const unknownRef = (ref: string) =>
   Effect.fail(new GitError({ args: ["ls-tree", ref], cwd: "/store", exitCode: 128, stderr: "" }));
 
+const expectedInstallJob = (projectId: ProjectId, requester: string): EnqueuedJob => ({
+  name: "dependency-install",
+  payload: { projectId, requestedByUserId: requester },
+  idempotencyKey: `dependency-install:${projectId}:2026-09-12T10:00:00.000Z`,
+});
+
 describe("automatic install routes", () => {
   const withProjects = (installEnabled: boolean): TestWorld => {
     const world = makeWorld([]);
@@ -811,6 +827,15 @@ describe("automatic install routes", () => {
       projects: world.projects.map((row) => new Project({ ...row, installEnabled })),
     };
   };
+  const callers = [
+    { projectId: PROJECT_ID, authorization: AUTHORIZATION, requester: "user-project-detail" },
+    {
+      projectId: OTHER_PROJECT_ID,
+      authorization: OTHER_AUTHORIZATION,
+      requester: "other-install-owner",
+    },
+  ];
+
   for (const [before, after, queued] of [
     [false, true, ["dependency-install"]],
     [true, true, []],
@@ -818,35 +843,97 @@ describe("automatic install routes", () => {
     [false, false, []],
   ] as const) {
     it(`PUT install-enabled ${before ? "on" : "off"} → ${after ? "on" : "off"} queues ${queued.length === 0 ? "nothing" : "the install job"}`, async () => {
-      const enqueued: Array<EnqueuedJob> = [];
-      const { response, body } = await requestRoute(
-        withProjects(before),
-        `/api/projects/${PROJECT_ID}/install-enabled`,
-        AUTHORIZATION,
-        put({ installEnabled: after }),
-        Layer.mergeAll(recordingJobs(enqueued), Layer.mock(Store, {})),
-      );
-      expect(response.status).toBe(200);
-      expect(Schema.decodeUnknownSync(Project)(body).installEnabled).toBe(after);
-      expect(enqueued.map((job) => job.name)).toEqual(queued);
+      for (const caller of callers) {
+        const enqueued: Array<EnqueuedJob> = [];
+        const { response, body } = await requestRoute(
+          withProjects(before),
+          `/api/projects/${caller.projectId}/install-enabled`,
+          caller.authorization,
+          put({ installEnabled: after }),
+          Layer.mergeAll(recordingJobs(enqueued), Layer.mock(Store, {})),
+        );
+        expect(response.status).toBe(200);
+        expect(Schema.decodeUnknownSync(Project)(body)).toMatchObject({
+          id: caller.projectId,
+          installEnabled: after,
+        });
+        expect(enqueued.map((job) => job.name)).toEqual(queued);
+        expect(enqueued).toEqual(
+          queued.length === 0 ? [] : [expectedInstallJob(caller.projectId, caller.requester)],
+        );
+      }
     });
   }
 
   it("PUT install-command keeps the old payload, and queues nothing while automatic install is off", async () => {
-    for (const installEnabled of [true, false]) {
-      const enqueued: Array<EnqueuedJob> = [];
+    for (const installEnabled of [true, false])
+      for (const caller of callers) {
+        const enqueued: Array<EnqueuedJob> = [];
+        const { response, body } = await requestRoute(
+          withProjects(installEnabled),
+          `/api/projects/${caller.projectId}/install-command`,
+          caller.authorization,
+          put({ installCommand: "  pnpm install  " }),
+          Layer.mergeAll(recordingJobs(enqueued), Layer.mock(Store, {})),
+        );
+        expect(response.status).toBe(200);
+        expect(Schema.decodeUnknownSync(Project)(body)).toMatchObject({
+          id: caller.projectId,
+          installCommand: "pnpm install",
+        });
+        expect(enqueued).toEqual(
+          installEnabled ? [expectedInstallJob(caller.projectId, caller.requester)] : [],
+        );
+      }
+  });
+
+  it.each([
+    {
+      route: "install-enabled",
+      before: false,
+      payload: { installEnabled: true },
+      expected: { installEnabled: true },
+    },
+    {
+      route: "install-command",
+      before: true,
+      payload: { installCommand: "  pnpm install  " },
+      expected: { installCommand: "pnpm install" },
+    },
+  ])(
+    "saving $route stays successful when its best-effort job enqueue fails",
+    async ({ route, before, payload, expected }) => {
+      const caller = callers[1];
+      if (caller === undefined) throw new Error("Missing second install caller");
+      const attempted: Array<EnqueuedJob> = [];
       const { response, body } = await requestRoute(
-        withProjects(installEnabled),
-        `/api/projects/${PROJECT_ID}/install-command`,
-        AUTHORIZATION,
-        put({ installCommand: "  pnpm install  " }),
-        Layer.mergeAll(recordingJobs(enqueued), Layer.mock(Store, {})),
+        withProjects(before),
+        `/api/projects/${caller.projectId}/${route}`,
+        caller.authorization,
+        put(payload),
+        Layer.mergeAll(
+          Layer.mock(JobRunner, {
+            enqueue: (job) => {
+              attempted.push(job);
+              return Effect.fail(
+                new JobEnqueueError({
+                  job: job.name,
+                  cause: new Error("owned fixture queue unavailable"),
+                }),
+              );
+            },
+          }),
+          Layer.mock(Store, {}),
+        ),
       );
       expect(response.status).toBe(200);
-      expect(Schema.decodeUnknownSync(Project)(body).installCommand).toBe("pnpm install");
-      expect(enqueued.length).toBe(installEnabled ? 1 : 0);
-    }
-  });
+      expect(Schema.decodeUnknownSync(Project)(body)).toMatchObject({
+        id: caller.projectId,
+        ...expected,
+      });
+      expect(attempted).toEqual([expectedInstallJob(caller.projectId, caller.requester)]);
+    },
+  );
 
   const detect = async (
     listTopLevel: (ref: string) => Effect.Effect<FileListing, GitError>,
