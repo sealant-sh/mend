@@ -380,3 +380,49 @@ partial until a separate mandatory lane pins actual provider versions and drives
 homes and owned model-server fixtures, without live accounts or paid provider requests. Engine
 workspace setup flags and platform pipe behavior also remain covered at their existing seams, not by
 this subprocess fixture.
+
+## Worktree route performance
+
+Ordinary API tests exercise real Git file/checkpoint reads, search and path/visibility refusals,
+large bounded patches, the 400,000-file listing fixture, and 1,200 renames. They contain no hardware
+latency assertions or skipped benchmark rows. The rename integration also checks independently known
+rendered paths and the exact omitted tail; the parser's own literal table remains separate. Actual
+route deadline tests use Deferred read readiness and TestClock: a blocked listing cuts at 20
+seconds, while a listing that consumed 10 seconds leaves only 10 seconds for rendering. They observe
+reader interruption and preserve known omitted paths. Their live hang guard only cleans up broken
+tests; it is not a production latency budget.
+
+Run the explicit performance lane on an otherwise idle Linux machine, using the same candidate,
+Node/Git versions, filesystem and hardware when comparing results:
+
+```sh
+GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
+MEND_WORKTREE_PERF_CONTEXT=local-serial \
+MEND_WORKTREE_PERF_REPORT=/tmp/mend-worktree-reads.json \
+pnpm --filter @mend/api-server bench:worktree-reads
+```
+
+The command creates and removes only its owned temporary Git repositories. It disables global and
+system Git configuration and rejects inherited Git location, template, counted and parameter
+configuration overrides. It uses explicit empty init templates. No account, database or external
+service is required. The measurement uses the actual HTTP Request handler, tenancy fixture and Store
+reads; it does not measure TCP, real login/database/platform services or a deployed instance.
+
+After five warmup rounds it records three rounds of 40 samples per query, rotating query order.
+Every round retains the existing strict p90 budgets: under 1,000 ms for a forty-file diff and for
+one file, and under 2,000 ms for search across 2,000 forty-line files plus the parser file. The
+400,000-file fixture retains its single response-time budget of under 25,000 ms. Diff timing
+includes JSON body consumption; contents timing includes array-buffer consumption, with checks after
+timing; the wide timing ends when the response arrives, as its original budget did. The lane runs
+one worker with file parallelism disabled and a 120-second outer test/setup guard.
+
+The JSON report contains raw samples and partial rounds, completeness, budgets, workload counts,
+source hashes, commit/dirty state, Node/Git/OS/CPU/memory/load and filesystem context. It is written
+before budget assertions, so retain failures alongside passes. A pass applies to that fixture and
+recorded environment; neither an idle declaration nor a local pass proves every production workload
+meets the budget. Default `pnpm test` does not run this lane.
+
+The manually dispatched **Worktree reads performance** workflow runs this command on the existing
+8-vCPU Ubuntu 24.04 runner, with no other package tests or builds in that job, and uploads the JSON
+report even when a budget fails. Dispatch it for the candidate branch when release evidence is
+needed. A workflow definition or an ordinary CI pass does not mean that dispatch ran.
