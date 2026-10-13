@@ -2497,3 +2497,58 @@ test("a failed server setup is classified by its own headline and its containers
     "DIAGNOSIS container mend: unknown · health unknown",
   ]);
 });
+
+for (const outcome of [
+  "partial · fenced",
+  "partial · pending",
+  "partial · paused",
+  "partial · repairing",
+  "partial · capture step overdue",
+  "partial · refused",
+  "partial · snapshot health not reported",
+  "partial · unreadable",
+  "partial · snapshot failed",
+  "final · incomplete",
+  "final · completion not reported",
+]) {
+  test(`flush evidence recognizes current ${outcome} without claiming completion`, () => {
+    const log = `session engine: capture flush · ${outcome} · observed {\n  sessionId: 'flush-session',\n  why: 'planned stop',\n  pending: 0,\n  registered: 1,\n  fenced: false\n}`;
+    assert.deepEqual(flushAttemptEvidence(log, "flush-session"), [
+      `${outcome} · observed · planned stop · pending 0, fenced false`,
+    ]);
+    assert.deepEqual(flushAttemptEvidence(log, "other-session"), []);
+    assert.equal(flushReportEvidence(log, "flush-session"), false);
+  });
+}
+
+test("current final completed reports require the same session and complete counters", () => {
+  const log =
+    "session engine: capture flush · final · completed · observed {\n  sessionId: 'flush-session',\n  why: 'planned stop',\n  pending: 0,\n  registered: 1,\n  fenced: false\n}";
+  assert.equal(flushReportEvidence(log, "flush-session").registered, 1);
+  assert.deepEqual(flushAttemptEvidence(log, "flush-session"), []);
+  assert.equal(flushReportEvidence(log, "other-session"), false);
+  for (const [before, after] of [
+    ["pending: 0", "pending: 1"],
+    ["registered: 1", "registered: 0"],
+    ["fenced: false", "fenced: true"],
+  ])
+    assert.equal(flushReportEvidence(log.replace(before, after), "flush-session"), false);
+  assert.throws(
+    () => flushReportEvidence(log.replace("registered: 1,", ""), "flush-session"),
+    /pending, registered and fenced/,
+  );
+});
+
+test("unknown or private flush headlines are not copied into public attempts", () => {
+  for (const outcome of [
+    "partial · PrivateSyntheticCredential7pQ9",
+    "partial · pending PrivateSyntheticCredential7pQ9",
+    "final · incomplete PrivateSyntheticCredential7pQ9",
+    "partial · pending\nprivate context",
+    "final · completed PrivateSyntheticCredential7pQ9",
+  ]) {
+    const log = `session engine: capture flush · ${outcome} · observed {\n  sessionId: 'flush-session',\n  why: 'PrivateSyntheticCredential7pQ9',\n  pending: 0,\n  registered: 1,\n  fenced: false\n}`;
+    assert.deepEqual(flushAttemptEvidence(log, "flush-session"), []);
+    assert.equal(flushReportEvidence(log, "flush-session"), false);
+  }
+});

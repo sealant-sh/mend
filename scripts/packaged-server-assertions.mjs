@@ -287,12 +287,12 @@ const quotedFlushAnnotation = (body, key) =>
 /**
  * The engine's flush report at a turn boundary or stop, as logged by the Mend container:
  * "session engine: capture flush · completed · observed { sessionId: '…', …, registered: n, … }".
- * Only a completed report for THIS session counts; partial, refused and timed-out flushes are
+ * Only a completed or final completed report for THIS session counts; incomplete flushes are
  * distinct lines and never match.
  */
 export function flushReportEvidence(logText, sessionId) {
   if (typeof logText !== "string" || typeof sessionId !== "string" || !sessionId) return false;
-  const pattern = /session engine: capture flush · completed · observed \{([^}]*)\}/g;
+  const pattern = /session engine: capture flush · (?:final · )?completed · observed \{([^}]*)\}/g;
   for (const match of logText.matchAll(pattern)) {
     const body = match[1];
     if (!body.includes(`sessionId: '${sessionId}'`)) continue;
@@ -326,7 +326,7 @@ export function flushReportEvidence(logText, sessionId) {
 
 /**
  * Every flush the engine logged for THIS session that did not complete: refusals, timeouts and
- * partial reports, newest last, each as "<kind> · <known context> · <classified detail>".
+ * partial or final incomplete reports, newest last, each as "<kind> · <known context> · <classified detail>".
  * An error annotation can carry a credential or private path: it is never copied to this public
  * timeout diagnostic. Only exact known refusal classifications and validated state fields leave
  * the runner; unknown detail is explicitly withheld. Both the count and each line are bounded.
@@ -334,7 +334,7 @@ export function flushReportEvidence(logText, sessionId) {
 export function flushAttemptEvidence(logText, sessionId, limit = 6) {
   if (typeof logText !== "string" || typeof sessionId !== "string" || !sessionId) return [];
   const pattern =
-    /session engine: capture flush · (refused|timed out|partial · observed) \{([^}]*)\}/g;
+    /session engine: capture flush · (refused|timed out|partial · (?:(?:fenced|pending|paused|repairing|capture step overdue|refused|snapshot health not reported|unreadable|snapshot failed) · )?observed|final · (?:incomplete|completion not reported) · observed) \{([^}]*)\}/g;
   const seen = [];
   for (const match of logText.matchAll(pattern)) {
     const body = match[2];
