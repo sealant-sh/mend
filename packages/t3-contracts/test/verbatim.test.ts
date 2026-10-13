@@ -75,7 +75,7 @@ describe("vendored t3code contracts", () => {
     expect(onDisk).toEqual(Object.keys(pin.files).toSorted());
   });
 
-  it("copies t3code's contracts source whole: every file of packages/contracts/src", () => {
+  it("maps each locally pinned contract file and records required shared files", () => {
     const upstream = Object.values(pin.files).map((file) => file.upstream);
     const contracts = upstream.filter((file) => file.startsWith("packages/contracts/src/"));
     expect(contracts.length).toBe(listFiles("src").length);
