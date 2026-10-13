@@ -4,6 +4,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { recordingRegistry } from "./fixtures/recording-registry.mjs";
 import {
   PIN_FILES,
   SEALANT_IMAGES,
@@ -12,6 +13,7 @@ import {
   pinProblems,
   pinnedDigest,
   readPins,
+  registryDigest,
   repositoryFor,
   rewritePins,
 } from "./sealant-pins.mjs";
@@ -183,47 +185,149 @@ test("a version is replaced only whole", () => {
   );
 });
 
+const manifestAccept = [
+  "application/vnd.oci.image.index.v1+json",
+  "application/vnd.docker.distribution.manifest.list.v2+json",
+  "application/vnd.oci.image.manifest.v1+json",
+  "application/vnd.docker.distribution.manifest.v2+json",
+].join(", ");
+
+const pullToken = "synthetic-anonymous-pull-token";
+const validTokenRequest = (request, repository) =>
+  request.method === "GET" &&
+  request.path === `/token?scope=repository:${repository}:pull` &&
+  request.authorization === null;
+const validManifestRequest = (request, repository, tag) =>
+  request.method === "HEAD" &&
+  request.path === `/v2/${repository}/manifests/${tag}` &&
+  request.authorization === `Bearer ${pullToken}` &&
+  request.accept === manifestAccept;
+
+for (const repository of ["sealant-sh/sealant-api", "sealant-sh/sealant-api-next"]) {
+  test(`GHCR resolves ${repository} by exact scoped token and authenticated manifest HEAD`, async () => {
+    const tag = repository.endsWith("-next") ? "0.39.0-next.12" : "0.38.1";
+    const registry = await recordingRegistry("https://ghcr.io", (request, response) => {
+      if (validTokenRequest(request, repository))
+        response
+          .writeHead(200, { "Content-Type": "application/json" })
+          .end(JSON.stringify({ token: pullToken }));
+      else if (validManifestRequest(request, repository, tag))
+        response.writeHead(200, { "Docker-Content-Digest": digest("b") }).end();
+      else response.writeHead(401).end();
+    });
+    try {
+      assert.equal(await registryDigest(repository, tag, registry.fetchImpl), digest("b"));
+      assert.deepEqual(registry.requests, [
+        {
+          method: "GET",
+          path: `/token?scope=repository:${repository}:pull`,
+          authorization: null,
+          accept: "*/*",
+        },
+        {
+          method: "HEAD",
+          path: `/v2/${repository}/manifests/${tag}`,
+          authorization: `Bearer ${pullToken}`,
+          accept: manifestAccept,
+        },
+      ]);
+    } finally {
+      await registry.close();
+    }
+  });
+}
+
 test("each pinned digest must be what GHCR serves for the pinned version", async () => {
   const pins = {
     sealantVersion: "0.38.1",
-    images: Object.fromEntries(
-      SEALANT_IMAGES.map(({ argument, repository }) => [
-        argument,
-        `ghcr.io/${repository}@${digest("a")}`,
+    images: {
+      SEALANT_API_IMAGE: `ghcr.io/sealant-sh/sealant-api@${digest("a")}`,
+      SEALANT_WORKER_IMAGE: `ghcr.io/sealant-sh/sealant-worker@${digest("a")}`,
+      SEALANT_SSH_GATEWAY_IMAGE: `ghcr.io/sealant-sh/sealant-ssh-gateway@${digest("a")}`,
+    },
+  };
+  const repositories = [
+    "sealant-sh/sealant-api",
+    "sealant-sh/sealant-worker",
+    "sealant-sh/sealant-ssh-gateway",
+  ];
+  const registry = await recordingRegistry("https://ghcr.io", (request, response) => {
+    const repository = repositories.find(
+      (candidate) =>
+        validTokenRequest(request, candidate) || validManifestRequest(request, candidate, "0.38.1"),
+    );
+    if (repository === undefined) return response.writeHead(401).end();
+    if (validTokenRequest(request, repository))
+      return response.writeHead(200).end(JSON.stringify({ token: pullToken }));
+    if (repository === "sealant-sh/sealant-ssh-gateway") return response.writeHead(404).end();
+    return response
+      .writeHead(200, {
+        "Docker-Content-Digest": digest(repository.endsWith("worker") ? "f" : "a"),
+      })
+      .end();
+  });
+  try {
+    assert.deepEqual(await digestProblems(pins, registry.fetchImpl), [
+      `ARG SEALANT_WORKER_IMAGE pins ${digest("a")}, but ghcr.io/sealant-sh/sealant-worker:0.38.1 is ${digest("f")}.`,
+      "ghcr.io/sealant-sh/sealant-ssh-gateway:0.38.1 is not published (HTTP 404).",
+    ]);
+    assert.deepEqual(
+      registry.requests.map(({ method, path: requestPath }) => ({ method, path: requestPath })),
+      repositories.flatMap((repository) => [
+        { method: "GET", path: `/token?scope=repository:${repository}:pull` },
+        { method: "HEAD", path: `/v2/${repository}/manifests/0.38.1` },
       ]),
-    ),
-  };
-  const served = {
-    "sealant-sh/sealant-api": digest("a"),
-    "sealant-sh/sealant-worker": digest("f"),
-  };
-  const requests = [];
-  const fetchImpl = async (url, init) => {
-    requests.push([url, init?.method ?? "GET"]);
-    if (url.startsWith("https://ghcr.io/token")) {
-      return { ok: true, status: 200, json: async () => ({ token: "anonymous" }) };
-    }
-    const repository = /\/v2\/(.+)\/manifests\//.exec(url)[1];
-    const published = served[repository];
-    return {
-      ok: published !== undefined,
-      status: published === undefined ? 404 : 200,
-      headers: { get: () => published ?? null },
-    };
-  };
-  const problems = await digestProblems(pins, fetchImpl);
-  assert.equal(problems.length, 2);
-  assert.match(
-    problems[0],
-    /SEALANT_WORKER_IMAGE pins sha256:a+, but ghcr\.io\/sealant-sh\/sealant-worker:0\.38\.1 is sha256:f+/,
-  );
-  assert.match(problems[1], /sealant-ssh-gateway:0\.38\.1 is not published \(HTTP 404\)/);
-  assert.ok(
-    requests.some(
-      ([url, method]) => url.endsWith("/sealant-api/manifests/0.38.1") && method === "HEAD",
-    ),
-  );
+    );
+  } finally {
+    await registry.close();
+  }
 });
+
+for (const failure of [
+  "token HTTP",
+  "manifest HTTP",
+  "missing digest",
+  "malformed digest",
+  "network",
+]) {
+  test(`GHCR ${failure} rejects digest evidence`, async () => {
+    const registry = await recordingRegistry("https://ghcr.io", (request, response) => {
+      if (validTokenRequest(request, "sealant-sh/sealant-api")) {
+        if (failure === "token HTTP") return response.writeHead(403).end();
+        if (failure === "network") return response.destroy();
+        return response.writeHead(200).end(JSON.stringify({ token: pullToken }));
+      }
+      if (!validManifestRequest(request, "sealant-sh/sealant-api", "0.38.1"))
+        return response.writeHead(401).end();
+      if (failure === "manifest HTTP") return response.writeHead(503).end();
+      const headers =
+        failure === "malformed digest"
+          ? { "Docker-Content-Digest": "sha256:not-a-digest" }
+          : { "X-Unrelated-Digest": digest("a") };
+      return response.writeHead(200, headers).end();
+    });
+    try {
+      const expected =
+        failure === "token HTTP"
+          ? /GHCR refused a pull token for sealant-sh\/sealant-api: 403/
+          : failure === "manifest HTTP"
+            ? /is not published \(HTTP 503\)/
+            : failure === "network"
+              ? /fetch failed/
+              : /came back without a digest/;
+      await assert.rejects(
+        registryDigest("sealant-sh/sealant-api", "0.38.1", registry.fetchImpl),
+        expected,
+      );
+      assert.equal(
+        registry.requests.length,
+        failure === "token HTTP" || failure === "network" ? 1 : 2,
+      );
+    } finally {
+      await registry.close();
+    }
+  });
+}
 
 test("the setup assets and the supervisor name the pinned Core version", async () => {
   const pins = await repositoryPins();

@@ -12,6 +12,7 @@ import {
   promotionProblems,
   published,
 } from "./check-release-pins.mjs";
+import { recordingRegistry } from "./fixtures/recording-registry.mjs";
 
 const versionOnly = `diff --git a/apps/cli/package.json b/apps/cli/package.json
 --- a/apps/cli/package.json
@@ -146,17 +147,58 @@ test("a file moved into docs counts as removed from where it was", (t) => {
   git("mv", "packages/x/src/guard.ts", "docs/guard.ts");
   git("commit", "-q", "-m", "move");
   const files = git("diff", "--no-renames", "--name-only", "v0.36.0-next.1..HEAD").split("\n");
-  assert.deepEqual(files.sort(), ["docs/guard.ts", "packages/x/src/guard.ts"]);
+  assert.deepEqual(files.toSorted(), ["docs/guard.ts", "packages/x/src/guard.ts"]);
   assert.match(promotion({ files })[0], /packages\/x\/src\/guard\.ts/);
 });
 
-test("a next build proves something only once npm has it", async () => {
-  const fetchImpl = async (url) => ({
-    ok: url.endsWith("/0.36.0-next.56"),
-    status: url.endsWith("/0.36.0-next.56") ? 200 : 404,
+test("npm publication uses the exact package/version GET and distinguishes a missing build", async () => {
+  const registry = await recordingRegistry("https://registry.npmjs.org", (request, response) => {
+    if (request.method === "GET" && request.path === "/@sealant%2fmend/0.36.0-next.56")
+      response.writeHead(200).end("{}");
+    else response.writeHead(404).end();
   });
-  assert.equal(await published("0.36.0-next.56", fetchImpl), true);
-  assert.equal(await published("0.36.0-next.57", fetchImpl), false);
+  try {
+    assert.equal(await published("0.36.0-next.56", registry.fetchImpl), true);
+    assert.equal(await published("0.36.0-next.57", registry.fetchImpl), false);
+    assert.deepEqual(
+      registry.requests.map(({ method, path: requestPath }) => ({ method, path: requestPath })),
+      [
+        { method: "GET", path: "/@sealant%2fmend/0.36.0-next.56" },
+        { method: "GET", path: "/@sealant%2fmend/0.36.0-next.57" },
+      ],
+    );
+    assert.ok(registry.requests.every(({ authorization }) => authorization === null));
+  } finally {
+    await registry.close();
+  }
+});
+
+for (const status of [401, 429, 500]) {
+  test(`npm HTTP ${status} is an error, not evidence of an unpublished build`, async () => {
+    const registry = await recordingRegistry("https://registry.npmjs.org", (_request, response) =>
+      response.writeHead(status).end(),
+    );
+    try {
+      await assert.rejects(published("0.36.0-next.56", registry.fetchImpl), {
+        message: `npm answered ${status} for @sealant/mend@0.36.0-next.56.`,
+      });
+      assert.equal(registry.requests[0]?.path, "/@sealant%2fmend/0.36.0-next.56");
+    } finally {
+      await registry.close();
+    }
+  });
+}
+
+test("npm transport failure rejects publication evidence", async () => {
+  const registry = await recordingRegistry("https://registry.npmjs.org", (_request, response) =>
+    response.destroy(),
+  );
+  try {
+    await assert.rejects(published("0.36.0-next.56", registry.fetchImpl), /fetch failed/);
+    assert.equal(registry.requests.length, 1);
+  } finally {
+    await registry.close();
+  }
 });
 
 test("a stable release reads prerelease packages from the lockfile, wherever they were declared", () => {
