@@ -4,7 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import { Effect, Layer, Result } from "effect";
-import { describe, expect, it } from "vitest";
+import { afterAll, afterEach, describe, expect, it } from "vitest";
 
 import { DotfilesStore, DotfilesStoreLive } from "../src/dotfiles-store.ts";
 import { StoreConfig } from "../src/store.ts";
@@ -17,9 +17,31 @@ const run = <A, E>(root: string, effect: Effect.Effect<A, E, DotfilesStore>) =>
 
 const b64 = (value: string) => Buffer.from(value).toString("base64");
 
+const roots = new Set<string>();
+const freshRoot = (prefix = "mend-dotstore-") => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  roots.add(root);
+  return root;
+};
+const cleanup = () => {
+  const failures: Array<unknown> = [];
+  for (const root of roots) {
+    try {
+      fs.rmSync(root, { recursive: true, force: true });
+      expect(fs.existsSync(root)).toBe(false);
+      roots.delete(root);
+    } catch (error) {
+      failures.push(error);
+    }
+  }
+  if (failures.length > 0) throw new AggregateError(failures, "dotfiles fixture cleanup failed");
+};
+afterEach(cleanup);
+afterAll(cleanup);
+
 describe("DotfilesStore", () => {
   it("has no snapshot until the first sync", async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mend-dotstore-"));
+    const root = freshRoot();
     const current = await run(
       root,
       Effect.gen(function* () {
@@ -30,8 +52,62 @@ describe("DotfilesStore", () => {
     expect(current).toBeNull();
   });
 
+  it("clear removes one user's current snapshot, archive and history, and a later sync starts fresh", async () => {
+    const root = freshRoot();
+    const result = await run(
+      root,
+      Effect.gen(function* () {
+        const store = yield* DotfilesStore;
+        yield* store.snapshot("user_a", [{ path: ".zshrc", contentsBase64: b64("first\n") }], {
+          source: "first",
+          merge: false,
+        });
+        yield* store.snapshot("user_a", [{ path: ".zshrc", contentsBase64: b64("second\n") }], {
+          source: "second",
+          merge: false,
+        });
+        const other = yield* store.snapshot(
+          "user_b",
+          [{ path: ".bashrc", contentsBase64: b64("other\n") }],
+          { source: "other", merge: false },
+        );
+        expect(yield* store.current("user_a")).not.toBeNull();
+        expect(yield* store.archive("user_a")).not.toBeNull();
+        yield* store.clear("user_a");
+        expect(yield* store.current("user_a")).toBeNull();
+        expect(yield* store.archive("user_a")).toBeNull();
+        expect(fs.existsSync(path.join(root, "_dotfiles", "user_a.git"))).toBe(false);
+        expect(yield* store.current("user_b")).toEqual(other);
+        expect((yield* store.archive("user_b"))?.sha).toBe(other.sha);
+        // Repeated clearing and a user that never synced are both harmless.
+        yield* store.clear("user_a");
+        yield* store.clear("never_synced");
+        const fresh = yield* store.snapshot(
+          "user_a",
+          [{ path: ".vimrc", contentsBase64: b64("fresh\n") }],
+          { source: "fresh", merge: true },
+        );
+        return {
+          fresh,
+          current: yield* store.current("user_a"),
+          archive: yield* store.archive("user_a"),
+        };
+      }),
+    );
+    expect(result.current).toEqual(result.fresh);
+    expect(result.fresh.files).toEqual([{ path: ".vimrc", bytes: 6 }]);
+    expect(result.archive?.sha).toBe(result.fresh.sha);
+    expect(
+      execFileSync(
+        "git",
+        ["--git-dir", path.join(root, "_dotfiles", "user_a.git"), "rev-list", "--count", "HEAD"],
+        { encoding: "utf8" },
+      ).trim(),
+    ).toBe("1");
+  });
+
   it("commits a snapshot per user and keeps users apart", async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mend-dotstore-"));
+    const root = freshRoot();
     const summaries = await run(
       root,
       Effect.gen(function* () {
@@ -56,7 +132,7 @@ describe("DotfilesStore", () => {
   });
 
   it("merge overlays the current snapshot; replace supersedes it", async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mend-dotstore-"));
+    const root = freshRoot();
     const result = await run(
       root,
       Effect.gen(function* () {
@@ -87,7 +163,7 @@ describe("DotfilesStore", () => {
   });
 
   it("returns the current summary unchanged for an identical sync", async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mend-dotstore-"));
+    const root = freshRoot();
     const files = [{ path: ".zshrc", contentsBase64: b64("same\n") }];
     const shas = await run(
       root,
@@ -108,7 +184,7 @@ describe("DotfilesStore", () => {
   });
 
   it("packs the snapshot as a tar.gz whose contents extract intact", async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mend-dotstore-"));
+    const root = freshRoot();
     const archive = await run(
       root,
       Effect.gen(function* () {
@@ -122,7 +198,7 @@ describe("DotfilesStore", () => {
       }),
     );
     expect(archive).not.toBeNull();
-    const out = fs.mkdtempSync(path.join(os.tmpdir(), "mend-dotstore-out-"));
+    const out = freshRoot("mend-dotstore-out-");
     const tarball = path.join(out, "a.tar.gz");
     fs.writeFileSync(tarball, Buffer.from(archive?.data ?? "", "base64"));
     execFileSync("tar", ["-xzf", tarball, "-C", out]);
@@ -130,7 +206,7 @@ describe("DotfilesStore", () => {
   });
 
   it("rejects escapes, oversized files, and hostile user ids", async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mend-dotstore-"));
+    const root = freshRoot();
     const escape = await run(
       root,
       Effect.gen(function* () {
@@ -169,7 +245,7 @@ describe("DotfilesStore", () => {
   });
 
   it("caps a merge at 4MB counting the files it keeps", async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mend-dotstore-"));
+    const root = freshRoot();
     const mb = Buffer.alloc(1024 * 1024).toString("base64");
     const result = await run(
       root,

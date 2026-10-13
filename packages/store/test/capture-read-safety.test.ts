@@ -2,7 +2,8 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { Effect } from "effect";
+import { it as effectIt } from "@effect/vitest";
+import { Effect, Layer, Result } from "effect";
 import { afterAll, describe, expect, it } from "vitest";
 
 import { BlobStore, BlobStoreFsLive } from "../src/blob-store.ts";
@@ -83,6 +84,127 @@ const fileEntry = (name: string, bytes: Uint8Array): DirEntry => ({
 const utf8 = (text: string) => new Uint8Array(Buffer.from(text, "utf8"));
 
 describe("readPackIndexRemote", () => {
+  const rangedFixture = (count: number, truncateCall?: number) => {
+    const blobs = freshDir("recorded-index");
+    const pack = writeCdcPack(Array.from({ length: count }, (_, index) => utf8(`chunk ${index}`)));
+    const key = captureKeys("wt-recorded-index", 1).pack(sha256Hex(pack.bytes));
+    const size = pack.bytes.byteLength;
+    // Independently read the writer's wire trailer, rather than using the production decoder.
+    const indexLength = Number(Buffer.from(pack.bytes).readBigUInt64LE(size - 16));
+    const indexStart = size - 16 - indexLength;
+    const tailStart = Math.max(0, size - 256 * 1024);
+    const calls: Array<{ readonly key: string; readonly start: number; readonly length: number }> =
+      [];
+    const layer: Layer.Layer<BlobStore> = Layer.effect(
+      BlobStore,
+      Effect.map(BlobStore, (inner): typeof BlobStore.Service => ({
+        ...inner,
+        getRange: (rangeKey, start, length) =>
+          Effect.gen(function* () {
+            calls.push({ key: rangeKey, start, length });
+            const bytes = yield* inner.getRange(rangeKey, start, length);
+            return calls.length === truncateCall ? bytes.subarray(0, bytes.length - 1) : bytes;
+          }),
+      })),
+    ).pipe(Layer.provide(BlobStoreFsLive(blobs)));
+    const prepare = Effect.gen(function* () {
+      const store = yield* BlobStore;
+      yield* store.put(key, pack.bytes);
+      const head = yield* store.head(key);
+      if (head === null) throw new Error("the owned pack must have a HEAD");
+      expect(head.size).toBe(size);
+      return head.size;
+    });
+    return { blobs, pack, key, size, indexStart, indexLength, tailStart, calls, layer, prepare };
+  };
+
+  effectIt.live(
+    "a short tail refuses with the HEAD size mismatch before parsing or another GET",
+    () => {
+      const fixture = rangedFixture(1, 1);
+      return Effect.gen(function* () {
+        const size = yield* fixture.prepare;
+        const result = yield* readPackIndexRemote(fixture.key, size).pipe(Effect.result);
+        expect(Result.isFailure(result)).toBe(true);
+        if (Result.isFailure(result))
+          expect(result.failure).toMatchObject({
+            _tag: "CaptureFormatError",
+            key: fixture.key,
+            reason: `pack is ${size - 1} bytes, not the ${size} its HEAD reported`,
+          });
+        expect(fixture.calls).toEqual([{ key: fixture.key, start: 0, length: size }]);
+      }).pipe(Effect.provide(fixture.layer));
+    },
+  );
+
+  effectIt.live(
+    "an oversized index uses exact second-range bounds and refuses a truncated response",
+    () => {
+      const fixture = rangedFixture(5000, 2);
+      expect(fixture.indexStart).toBeLessThan(fixture.tailStart);
+      return Effect.gen(function* () {
+        const size = yield* fixture.prepare;
+        const result = yield* readPackIndexRemote(fixture.key, size).pipe(Effect.result);
+        expect(Result.isFailure(result)).toBe(true);
+        if (Result.isFailure(result))
+          expect(result.failure).toMatchObject({
+            _tag: "CaptureFormatError",
+            key: fixture.key,
+            reason: "pack index cut short",
+          });
+        expect(fixture.calls).toEqual([
+          { key: fixture.key, start: fixture.tailStart, length: 256 * 1024 },
+          { key: fixture.key, start: fixture.indexStart, length: fixture.indexLength },
+        ]);
+      }).pipe(Effect.provide(fixture.layer));
+    },
+  );
+
+  effectIt.live("an honest oversized response returns the independently written index", () => {
+    const fixture = rangedFixture(5000);
+    return Effect.gen(function* () {
+      const size = yield* fixture.prepare;
+      expect(yield* readPackIndexRemote(fixture.key, size)).toEqual(fixture.pack.index);
+      expect(fixture.calls).toEqual([
+        { key: fixture.key, start: fixture.tailStart, length: 256 * 1024 },
+        { key: fixture.key, start: fixture.indexStart, length: fixture.indexLength },
+      ]);
+    }).pipe(Effect.provide(fixture.layer));
+  });
+
+  for (const fault of ["missing", "read-error"] as const) {
+    effectIt.live(
+      `propagates the named ${fault} after HEAD without retrying or accepting an index`,
+      () => {
+        const fixture = rangedFixture(1);
+        return Effect.gen(function* () {
+          const size = yield* fixture.prepare;
+          yield* (yield* BlobStore).remove(fixture.key);
+          if (fault === "read-error") {
+            // A self-referential symlink produces a real open(2) ELOOP, even when tests run as root.
+            const file = path.join(fixture.blobs, fixture.key);
+            fs.symlinkSync(path.basename(file), file);
+          }
+          const result = yield* readPackIndexRemote(fixture.key, size).pipe(Effect.result);
+          expect(Result.isFailure(result)).toBe(true);
+          if (Result.isFailure(result)) {
+            expect(result.failure).toMatchObject(
+              fault === "missing"
+                ? { _tag: "BlobNotFoundError", key: fixture.key }
+                : {
+                    _tag: "BlobStoreError",
+                    operation: "getRange",
+                    key: fixture.key,
+                    cause: { code: "ELOOP" },
+                  },
+            );
+          }
+          expect(fixture.calls).toEqual([{ key: fixture.key, start: 0, length: size }]);
+        }).pipe(Effect.provide(fixture.layer));
+      },
+    );
+  }
+
   it("reads the same index from the pack's tail as from the whole pack, whatever the index size", async () => {
     const blobs = freshDir("remote-index");
     for (const count of [1, 40, 5_000]) {
