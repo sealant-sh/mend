@@ -11,7 +11,13 @@ import {
 import { Change, ChangeLanding, Project, Worktree } from "@mend/domain/workbench";
 import { LandingGit, LandingStepError } from "@mend/landing";
 import { WorktreeReads } from "@mend/sessions";
-import { AgentBridge, type ChangedFile, MendKeys, SourcePolicy } from "@mend/store";
+import {
+  AgentBridge,
+  type ChangedFile,
+  MendKeys,
+  SourcePolicy,
+  makeSourcePolicy,
+} from "@mend/store";
 import { Effect, Layer } from "effect";
 import { describe, expect, it } from "vitest";
 
@@ -130,14 +136,16 @@ const refusalFor = (scene: Scene) => {
               });
         }),
     }),
-    Layer.mock(SourcePolicy, {
-      profile: "operator",
-      check: (source) =>
-        Effect.succeed({ source, scheme: "ssh", host: "github.com", port: null, addresses: [] }),
-      pinnedEnv: (_clearance, env) => ({ ...env }),
-    }),
+    Layer.succeed(
+      SourcePolicy,
+      makeSourcePolicy({
+        profile: "operator",
+        allowedHosts: [],
+        resolve: async () => ["140.82.112.3"],
+      }),
+    ),
     Layer.mock(ProjectAccess, { isOperator: () => Effect.succeed(false) }),
-    // The project signs with the Mend key: the probe resolves the owner's key before it dials.
+    // Signer services are captured here; transport adapters resolve them in their actual operation.
     Layer.mock(MendKeys, {
       ensure: () =>
         Effect.succeed({

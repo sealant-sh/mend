@@ -3268,6 +3268,7 @@ const withEngine = <A, E>(
     /** Where session sockets go; kept in `servedSocketApis` unless a test says. */
     readonly socketHostLayer?: Layer.Layer<SessionSocketHost>;
     /** Every account's Mend key; one shared stub path unless a test says. */
+    readonly instanceRolesLayer?: Layer.Layer<InstanceRolesRepo>;
     readonly mendKeysLayer?: Layer.Layer<MendKeys>;
     readonly gitOpsLayer?: Layer.Layer<SessionGitOpsRepo>;
     /** Every account's signer; never connected unless a test says. */
@@ -3414,6 +3415,8 @@ const withEngine = <A, E>(
         organizationsLayer(world),
         auditLayer(world),
         sourcePolicyLayer,
+        options.instanceRolesLayer ??
+          Layer.mock(InstanceRolesRepo, { isOperator: () => Effect.succeed(true) }),
         foldersEmptyLayer,
         projectRecipesEmptyLayer,
         options.hotWorkspacesLayer ?? hotWorkspacesEmptyLayer,
@@ -3492,6 +3495,79 @@ const withEngine = <A, E>(
 };
 
 describe("SessionEngine", () => {
+  it.each([
+    { ownerUserId: null, isOperator: false, transports: false },
+    { ownerUserId: "non-operator", isOperator: false, transports: false },
+    { ownerUserId: "verified-operator", isOperator: true, transports: true },
+  ])(
+    "starts locally with owner $ownerUserId while enforcing the named origin's authority",
+    async (control) => {
+      const requested: string[] = [];
+      const roleQueries: string[] = [];
+      const server = http.createServer((request, response) => {
+        requested.push(request.url ?? "");
+        response.writeHead(404).end();
+      });
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const address = server.address();
+      if (address === null || typeof address === "string") throw new Error("No recorder address.");
+      try {
+        await withEngine(
+          (world, tmp) =>
+            Effect.gen(function* () {
+              const project = yield* setup(tmp, world);
+              execFileSync("git", [
+                "-C",
+                project.storePath,
+                "remote",
+                "set-url",
+                "origin",
+                `http://127.0.0.1:${address.port}/private.git`,
+              ]);
+              // Older projects may have no recorded source; their actual named target is still checked.
+              world.projects.set(
+                project.id,
+                new Project({ ...project, originUrl: null, gitAuthMode: "bridge" }),
+              );
+              const session = yield* (yield* SessionEngine).provision({
+                projectId: project.id,
+                harness: "codex",
+                label: null,
+                name: null,
+                ownerUserId: control.ownerUserId,
+                base: null,
+              });
+              expect(session.baseSha).toBe(project.adoptedSha);
+              expect(world.sessions.has(session.id)).toBe(true);
+            }),
+          {
+            instanceRolesLayer: Layer.mock(InstanceRolesRepo, {
+              isOperator: (userId) =>
+                Effect.sync(() => {
+                  roleQueries.push(userId);
+                  return control.isOperator;
+                }),
+            }),
+          },
+        );
+        expect(requested.length > 0).toBe(control.transports);
+        expect(roleQueries).toEqual(control.ownerUserId === null ? [] : [control.ownerUserId]);
+        if (control.transports)
+          expect(requested).toEqual(["/private.git/info/refs?service=git-upload-pack"]);
+      } finally {
+        await new Promise<void>((resolve, reject) => {
+          server.close((error) => {
+            if (error) {
+              reject(error);
+              return;
+            }
+            resolve();
+          });
+        });
+      }
+    },
+  );
+
   it("launches with the configured image and the user's GitHub token", async () => {
     const created: CreateOptions[] = [];
     await withEngine(
@@ -7768,6 +7844,7 @@ describe("SessionEngine", () => {
           organizationsLayer(world),
           auditLayer(world),
           sourcePolicyLayer,
+          Layer.mock(InstanceRolesRepo, { isOperator: () => Effect.succeed(true) }),
           foldersEmptyLayer,
           projectRecipesEmptyLayer,
           hotWorkspacesEmptyLayer,
@@ -15069,6 +15146,68 @@ describe("SessionEngine capture drain (no loss of work product)", () => {
 });
 
 describe("SessionEngine dotfiles", () => {
+  it.each([false, true])(
+    "saved loopback dotfiles require the owner's current operator role: %s",
+    async (isOperator) => {
+      const created: CreateOptions[] = [];
+      const requests: string[] = [];
+      const roles: string[] = [];
+      const recorder = http.createServer((request, response) => {
+        requests.push(request.url ?? "");
+        response.writeHead(404).end();
+      });
+      await new Promise<void>((resolve) => recorder.listen(0, "127.0.0.1", resolve));
+      const address = recorder.address();
+      if (address === null || typeof address === "string") throw new Error("No recorder.");
+      const url = `http://127.0.0.1:${address.port}/saved-dots.git`;
+      try {
+        await withEngine(
+          (world, tmp) =>
+            Effect.gen(function* () {
+              const { engine, session } = yield* launchOnce(world, tmp);
+              yield* engine.launch(session.id, ["codex"]);
+              expect(created).toHaveLength(1);
+              expect(world.sessions.get(session.id)?.status).toBe("running");
+              expect(requests).toEqual(
+                isOperator ? ["/saved-dots.git/info/refs?service=git-upload-pack"] : [],
+              );
+              const omitted = world.sessions.get(session.id)?.dotfiles?.notApplied;
+              expect(omitted).toHaveLength(1);
+              expect(omitted?.[0]?.reason).toContain(isOperator ? "failed" : "only the operator");
+            }),
+          {
+            sealantLayer: sealantLaunchLayer(created),
+            userDotfilesLayer: ownedRepositoriesLayer(
+              new Map([["user-fixture", repositoryOf(url)]]),
+            ),
+            dotfilesClonerLayer: dotfilesClonerLayer({ ownerIsOperator: isOperator }),
+            instanceRolesLayer: Layer.mock(InstanceRolesRepo, {
+              isOperator: (userId) =>
+                Effect.sync(() => {
+                  roles.push(userId);
+                  return isOperator;
+                }),
+            }),
+          },
+        );
+        expect(roles).toEqual(["user-fixture", "user-fixture"]);
+        expect(requests).toEqual(
+          isOperator ? ["/saved-dots.git/info/refs?service=git-upload-pack"] : [],
+        );
+      } finally {
+        await new Promise<void>((resolve, reject) => {
+          recorder.close((error) => {
+            if (error) {
+              reject(error);
+              return;
+            }
+            resolve();
+          });
+        });
+      }
+    },
+  );
+
   it("ships the repository before the snapshot and stamps both as applied", async () => {
     const created: CreateOptions[] = [];
     const cell: { repository: DotfilesRepository | null } = { repository: null };

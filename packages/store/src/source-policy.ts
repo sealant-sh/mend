@@ -2,8 +2,10 @@ import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 
 import { gitRemoteLocation, repositoryCloneUrlIssue } from "@mend/domain/workbench";
-import { Config, Effect, Layer, Schema } from "effect";
+import { Config, Effect, Layer, Schema, type Scope } from "effect";
 import * as Context from "effect/Context";
+
+import { resolveGitRemoteOperation, type GitRemoteOperation } from "./git-remote-operation.ts";
 
 /**
  * Where Mend's own git may reach (docs/adr/0003-organizations-and-tenancy.md, "Multi mode gate").
@@ -28,7 +30,7 @@ export interface SourceActor {
 
 /** A remote the policy let through, with the addresses it checked. */
 export interface SourceClearance {
-  /** Original checked clone URL, retained for Git's URL-specific HTTP configuration. */
+  /** Checked destination URL, retained for Git's URL-specific HTTP configuration. */
   readonly source: string;
   readonly scheme: "http" | "https" | "ssh" | "git";
   readonly host: string;
@@ -45,6 +47,12 @@ export class SourcePolicy extends Context.Service<
       source: string,
       actor: SourceActor,
     ) => Effect.Effect<SourceClearance, SourceRefused>;
+    /** Resolve and clear the original operand in its actual operation context before transport. */
+    readonly prepare: (
+      source: string | null,
+      actor: SourceActor,
+      operation: GitRemoteOperation,
+    ) => Effect.Effect<GitRemoteClearance, SourceRefused, Scope.Scope>;
     /**
      * The git environment that dials exactly the address the policy checked, so a name cannot
      * answer differently between the check and the connection (DNS rebinding). `tenant` pins
@@ -59,6 +67,13 @@ export class SourcePolicy extends Context.Service<
     ) => Record<string, string>;
   }
 >()("@mend/store/SourcePolicy") {}
+
+/** Cleared effective destinations and the final environment composer for authentication. */
+export interface GitRemoteClearance {
+  readonly urls: ReadonlyArray<string>;
+  /** Compose SSH command/socket and prompt overrides; other configuration stays as checked. */
+  readonly pinnedEnv: (authentication: Readonly<Record<string, string>>) => Record<string, string>;
+}
 
 // ─── Addresses ──────────────────────────────────────────────────────────────
 
@@ -213,6 +228,19 @@ export const makeSourcePolicy = (options: SourcePolicyOptions): SourcePolicy["Se
     return clearance;
   });
 
+  const gitEnv = (env: Readonly<Record<string, string>>): Record<string, string> => {
+    if (options.profile === "operator") return { ...env };
+    const inherited = options.gitConfig ?? {};
+    return {
+      ...(env["GIT_CONFIG_COUNT"] === undefined ? inherited : {}),
+      ...(env["GIT_CONFIG_PARAMETERS"] === undefined &&
+      inherited["GIT_CONFIG_PARAMETERS"] !== undefined
+        ? { GIT_CONFIG_PARAMETERS: inherited["GIT_CONFIG_PARAMETERS"] }
+        : {}),
+      ...env,
+    };
+  };
+
   const pinnedEnv = (
     clearance: SourceClearance,
     env: Readonly<Record<string, string>>,
@@ -230,14 +258,10 @@ export const makeSourcePolicy = (options: SourcePolicyOptions): SourcePolicy["Se
     }
     if (clearance.scheme === "http" || clearance.scheme === "https") {
       const port = clearance.port ?? (clearance.scheme === "https" ? 443 : 80);
-      const inherited = options.gitConfig ?? {};
-      const pinned = {
-        ...(env["GIT_CONFIG_COUNT"] === undefined ? inherited : {}),
-        ...env,
-      };
+      const pinned = gitEnv(env);
       const existing = Number(pinned["GIT_CONFIG_COUNT"] ?? "0");
       let index = Number.isInteger(existing) && existing > 0 ? existing : 0;
-      const parameters = [env["GIT_CONFIG_PARAMETERS"] ?? inherited["GIT_CONFIG_PARAMETERS"] ?? ""];
+      const parameters = [pinned["GIT_CONFIG_PARAMETERS"] ?? ""];
       if (isIP(clearance.host) === 0) {
         const resolve = `${clearance.host}:${port}:${isIP(address) === 6 ? `[${address}]` : address}`;
         pinned[`GIT_CONFIG_KEY_${index}`] = "http.curloptResolve";
@@ -272,7 +296,60 @@ export const makeSourcePolicy = (options: SourcePolicyOptions): SourcePolicy["Se
     return { ...env };
   };
 
-  return { profile: options.profile, check, pinnedEnv };
+  /**
+   * Resolve and clear an operation before transport, retaining its original operand. The supplied
+   * source still passes the existing policy. Captured command config composes before Git resolves
+   * rewrites; only the effective destination receives pins, including SSH's first-option precedence.
+   * Tenant operations with several distinct destinations refuse rather than share an ambiguous SSH
+   * or DNS pin. Operators retain their configuration and every destination is checked.
+   */
+  const prepare = Effect.fn("SourcePolicy.prepare")(function* (
+    source: string | null,
+    actor: SourceActor,
+    operation: GitRemoteOperation,
+  ): Effect.fn.Return<GitRemoteClearance, SourceRefused, Scope.Scope> {
+    if (source !== null) yield* check(source, actor);
+    else if (operation.direction === "clone") {
+      return yield* new SourceRefused({ message: "A clone requires a repository source." });
+    }
+    const env = gitEnv(operation.env);
+    const resolved = yield* resolveGitRemoteOperation({ ...operation, env }).pipe(
+      Effect.mapError(
+        (error) =>
+          new SourceRefused({
+            message:
+              error.stage === "ambiguous-push" || error.stage.startsWith("clone-")
+                ? error.message
+                : "Git's effective repository destination could not be checked. The operation was refused.",
+          }),
+      ),
+    );
+    const { urls } = resolved;
+    if (options.profile === "tenant" && new Set(urls).size > 1) {
+      return yield* new SourceRefused({
+        message:
+          "This Git operation has several repository destinations. Tenant source policy requires one destination.",
+      });
+    }
+    const clearances = yield* Effect.forEach(urls, (url) => check(url, actor));
+    return {
+      urls,
+      pinnedEnv: (authentication) =>
+        clearances.reduce((pinned, clearance) => pinnedEnv(clearance, pinned), {
+          ...resolved.env,
+          ...Object.fromEntries(
+            Object.entries(authentication).filter(
+              ([name]) =>
+                name === "GIT_SSH_COMMAND" ||
+                name === "SSH_AUTH_SOCK" ||
+                name === "GIT_TERMINAL_PROMPT",
+            ),
+          ),
+        }),
+    };
+  });
+
+  return { profile: options.profile, check, prepare, pinnedEnv };
 };
 
 const resolveAll = async (host: string): Promise<ReadonlyArray<string>> =>

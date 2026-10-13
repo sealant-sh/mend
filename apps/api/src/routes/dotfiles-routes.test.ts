@@ -1,5 +1,6 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import * as fs from "node:fs";
+import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 
@@ -14,7 +15,14 @@ import {
 } from "@mend/db";
 import type { DotfilesRepository } from "@mend/domain";
 import { DotfilesCloner, makeDotfilesClonerLayer, SessionEngine } from "@mend/sessions";
-import { AgentBridge, DotfilesStore, MendKeys, NO_SIGNER_MESSAGE, SourcePolicy } from "@mend/store";
+import {
+  AgentBridge,
+  DotfilesStore,
+  MendKeys,
+  NO_SIGNER_MESSAGE,
+  SourcePolicy,
+  makeSourcePolicy,
+} from "@mend/store";
 import { Deferred, Effect, Fiber, Layer, ManagedRuntime, Option } from "effect";
 import { HttpRouter, HttpServer } from "effect/unstable/http";
 import { HttpApi, HttpApiBuilder } from "effect/unstable/httpapi";
@@ -34,17 +42,25 @@ const AUTHORIZATION = "Bearer dotfiles-routes-test";
 const DotfilesApi = HttpApi.make("mend").add(dotfilesGroup).prefix("/api");
 
 const scratch: Array<string> = [];
+const daemons: ChildProcess[] = [];
 const tmp = (prefix: string): string => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
   scratch.push(dir);
   return dir;
 };
-afterAll(() => {
+afterAll(async () => {
+  for (const daemon of daemons) {
+    if (daemon.exitCode !== null || daemon.signalCode !== null) continue;
+    await new Promise<void>((resolve) => {
+      daemon.once("close", resolve);
+      daemon.kill("SIGKILL");
+    });
+  }
   for (const dir of scratch) fs.rmSync(dir, { recursive: true, force: true });
 });
 
-/** A committed repo on disk, cloned over `file://` (the stubbed policy lets it through). */
-const originWith = (files: Readonly<Record<string, string>>): string => {
+/** A committed repo served by an owned loopback Git daemon, checked by the real operator policy. */
+const originWith = async (files: Readonly<Record<string, string>>): Promise<string> => {
   const origin = tmp("mend-dotfiles-route-origin-");
   execFileSync("git", ["init", "--initial-branch", "trunk"], { cwd: origin });
   for (const [name, content] of Object.entries(files)) {
@@ -62,7 +78,46 @@ const originWith = (files: Readonly<Record<string, string>>): string => {
       GIT_COMMITTER_EMAIL: "t@t",
     },
   });
-  return `file://${origin}`;
+  const reserved = net.createServer();
+  await new Promise<void>((resolve) => reserved.listen(0, "127.0.0.1", resolve));
+  const address = reserved.address();
+  if (address === null || typeof address === "string") throw new Error("No fixture port.");
+  const port = address.port;
+  await new Promise<void>((resolve, reject) => {
+    reserved.close((error) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve();
+    });
+  });
+  const daemon = spawn(
+    "git",
+    [
+      "daemon",
+      "--reuseaddr",
+      "--export-all",
+      `--base-path=${path.dirname(origin)}`,
+      "--listen=127.0.0.1",
+      `--port=${port}`,
+    ],
+    { stdio: "ignore" },
+  );
+  daemons.push(daemon);
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    const listening = await new Promise<boolean>((resolve) => {
+      const socket = net.createConnection({ host: "127.0.0.1", port });
+      socket.once("connect", () => {
+        socket.destroy();
+        resolve(true);
+      });
+      socket.once("error", () => resolve(false));
+    });
+    if (listening) return `git://127.0.0.1:${port}/${path.basename(origin)}`;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error("Owned Git fixture did not listen.");
 };
 
 const authLayer: Layer.Layer<Auth> = Layer.succeed(Auth, {
@@ -150,14 +205,15 @@ const putRepository = async (
       setStartAgentsAfterInstall: (_userId, value) => Effect.succeed(value),
     }),
     Layer.mock(DotfilesStore, { current: () => Effect.succeed(null) }),
-    // Every remote passes: what this route adds is the clone, not the address rules (tested in
-    // source-policy-routes.test.ts).
-    Layer.mock(SourcePolicy, {
-      profile: "operator",
-      check: (source) =>
-        Effect.succeed({ source, scheme: "https", host: "local", port: null, addresses: [] }),
-      pinnedEnv: (_clearance, env) => ({ ...env }),
-    }),
+    // Owned daemon remotes use the actual policy; the fixture owner holds the operator role.
+    Layer.succeed(
+      SourcePolicy,
+      makeSourcePolicy({
+        profile: "operator",
+        allowedHosts: [],
+        resolve: async () => ["140.82.112.3"],
+      }),
+    ),
     Layer.mock(ProjectAccess, { isOperator: () => Effect.succeed(true) }),
     Layer.mock(ProjectsRepo, { listAll: () => Effect.succeed([]) }),
     Layer.mock(SessionEngine, { launchUnderWay: () => false }),
@@ -189,7 +245,7 @@ const putRepository = async (
 
 describe("PUT /api/dotfiles/repository", () => {
   it("saves a repository the launch's clone and pack can read", async () => {
-    const url = originWith({ "dots/.vimrc": "set nocompatible\n" });
+    const url = await originWith({ "dots/.vimrc": "set nocompatible\n" });
     const result = await putRepository({ url, subdirectory: "dots" });
     expect(result.status).toBe(200);
     expect(result.saved).toEqual([
@@ -198,12 +254,12 @@ describe("PUT /api/dotfiles/repository", () => {
   });
 
   it("refuses a repository that cannot be cloned, with git's reason, and saves nothing", async () => {
-    const url = `file://${path.join(tmp("mend-dotfiles-route-missing-"), "nothing-here")}`;
+    const url = `${await originWith({ ".vimrc": "fixture\n" })}-missing`;
     const result = await putRepository({ url });
     expect(result.status).toBe(422);
     expect(result.body).toMatchObject({
       _tag: "SettingsFailure",
-      message: expect.stringMatching(/^dotfiles clone of file:\/\/\S+nothing-here failed: /),
+      message: expect.stringMatching(/^dotfiles clone of git:\/\/\S+-missing failed: /),
     });
     expect(result.saved).toEqual([]);
   });
@@ -219,7 +275,7 @@ describe("PUT /api/dotfiles/repository", () => {
   });
 
   it("refuses a subdirectory the repository does not have, and saves nothing", async () => {
-    const url = originWith({ ".vimrc": "set nocompatible\n" });
+    const url = await originWith({ ".vimrc": "set nocompatible\n" });
     const result = await putRepository({ url, subdirectory: "dots" });
     expect(result.status).toBe(422);
     expect(result.body).toMatchObject({
@@ -229,7 +285,7 @@ describe("PUT /api/dotfiles/repository", () => {
   });
 
   it("refuses a branch the repository does not have, and saves nothing", async () => {
-    const url = originWith({ ".vimrc": "set nocompatible\n" });
+    const url = await originWith({ ".vimrc": "set nocompatible\n" });
     const result = await putRepository({ url, ref: "no-such-branch" });
     expect(result.status).toBe(422);
     expect(result.body).toMatchObject({
@@ -239,7 +295,7 @@ describe("PUT /api/dotfiles/repository", () => {
   });
 
   it("holds one of the account's launch slots while it clones, and refuses past the budget", async () => {
-    const url = originWith({ ".vimrc": "set nocompatible\n" });
+    const url = await originWith({ ".vimrc": "set nocompatible\n" });
     const budgets = makeBudgets({ ...DEFAULT_BUDGET_LIMITS, accountLaunchesInFlight: 1 });
     // The account's one slot is taken by a launch still starting.
     const release = await Effect.runPromise(Deferred.make<void>());
@@ -300,12 +356,14 @@ describe("PUT /api/dotfiles/start-after-install (docs/adr/0016, decision 11)", (
           }),
       }),
       Layer.mock(DotfilesStore, { current: () => Effect.succeed(null) }),
-      Layer.mock(SourcePolicy, {
-        profile: "operator",
-        check: (source) =>
-          Effect.succeed({ source, scheme: "https", host: "local", port: null, addresses: [] }),
-        pinnedEnv: (_clearance, env) => ({ ...env }),
-      }),
+      Layer.succeed(
+        SourcePolicy,
+        makeSourcePolicy({
+          profile: "operator",
+          allowedHosts: [],
+          resolve: async () => ["140.82.112.3"],
+        }),
+      ),
       Layer.mock(ProjectAccess, { isOperator: () => Effect.succeed(true) }),
       Layer.mock(ProjectsRepo, { listAll: () => Effect.succeed([]) }),
       Layer.mock(SessionEngine, { launchUnderWay: () => false }),

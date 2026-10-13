@@ -29,6 +29,7 @@ import {
   type Worktree,
 } from "@mend/domain/workbench";
 import type {
+  GitRemoteEnvironment,
   BundleEmptyError,
   BundleTooLargeError,
   ChangeBundle,
@@ -147,7 +148,7 @@ export class LandingGit extends Context.Service<
       input: {
         readonly sha: Sha;
         readonly remoteBranch: string;
-        readonly remoteEnv: Readonly<Record<string, string>>;
+        readonly remoteEnv: GitRemoteEnvironment;
       },
     ) => Effect.Effect<Pushed, PushRefusedError | LandingStepError>;
     /** The landed range's files with their line counts, for the description. */
@@ -164,7 +165,7 @@ export class LandingGit extends Context.Service<
       input: {
         readonly sha: Sha;
         readonly remoteBranch: string;
-        readonly remoteEnv: Readonly<Record<string, string>>;
+        readonly remoteEnv: GitRemoteEnvironment;
       },
     ) => Effect.Effect<RemoteBranchState, LandingStepError>;
     /**
@@ -260,7 +261,7 @@ export interface LandInput {
    * The env step 3 authenticates with: the project's `gitAuthMode` for the owner, pinned by the
    * caller's source policy. Resolved only when the landing reaches the push.
    */
-  readonly remoteEnv: Effect.Effect<Readonly<Record<string, string>>, LandingStepError>;
+  readonly remoteEnv: Effect.Effect<GitRemoteEnvironment, LandingStepError>;
 }
 
 /** How step 4 went, beside the recorded row. */
