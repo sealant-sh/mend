@@ -49,7 +49,7 @@ permissions:
 jobs:
   plan:
     if: github.repository == 'sealant-sh/mend'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: [self-hosted, box, linux, x64]
     outputs:
       version: ${{ steps.resolve.outputs.version }}
       sealant_sha: ${{ steps.resolve.outputs.sealant_sha }}
@@ -94,8 +94,8 @@ jobs:
           # moves between next builds and previews in order (docs/adr/0015-next-channel.md).
           version=$(node scripts/next-version.mjs --package apps/cli --preview "$RUN_NUMBER" --main origin/main HEAD)
 
-          amd64='{"arch":"amd64","runner":"blacksmith-4vcpu-ubuntu-2404"}'
-          arm64='{"arch":"arm64","runner":"blacksmith-4vcpu-ubuntu-2404-arm"}'
+          amd64='{"arch":"amd64","runner":["self-hosted","box","linux","x64"]}'
+          arm64='{"arch":"arm64","runner":"ubuntu-24.04-arm"}'
           case $PLATFORMS in
             linux/amd64) platforms="[$amd64]" ;;
             linux/arm64) platforms="[$arm64]" ;;
@@ -175,7 +175,7 @@ jobs:
       contents: read
       packages: write
     needs: [plan, sealantd]
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: [self-hosted, box, linux, x64]
     outputs:
       ref: ${{ steps.merge.outputs.ref }}
     steps:
@@ -264,7 +264,7 @@ jobs:
       contents: read
       packages: write
     needs: [plan, core]
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: [self-hosted, box, linux, x64]
     outputs:
       api: ${{ steps.merge.outputs.api }}
       worker: ${{ steps.merge.outputs.worker }}
@@ -387,7 +387,7 @@ jobs:
       packages: write
     needs: [plan, sealantd-image, core-images, mend]
     if: ${{ !cancelled() && needs.mend.result == 'success' }}
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: [self-hosted, box, linux, x64]
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
@@ -477,7 +477,8 @@ jobs:
     # before the tag existed (2026-10-03).
     needs: [plan, mend, mend-image]
     if: ${{ !cancelled() && needs.mend-image.result == 'success' && inputs.deploy }}
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    # GitHub-hosted: the self-hosted runner VMs on the box are firewalled off the box itself.
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: box-deploy
     steps:

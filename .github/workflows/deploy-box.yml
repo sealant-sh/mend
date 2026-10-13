@@ -35,7 +35,8 @@ permissions:
 jobs:
   deploy:
     if: github.repository == 'sealant-sh/mend'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    # GitHub-hosted: the self-hosted runner VMs on the box are firewalled off the box itself.
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: box-deploy
     steps:

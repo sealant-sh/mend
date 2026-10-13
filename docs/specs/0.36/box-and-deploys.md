@@ -127,7 +127,7 @@ Defaults:
 
 ### Build (`preview.yml`)
 
-1. `plan` (Blacksmith, guarded `github.repository == 'sealant-sh/mend'`):
+1. `plan` (self-hosted box runner, guarded `github.repository == 'sealant-sh/mend'`):
    - resolves `sealant_ref` and `sealantd_ref` to commits once, through
      `gh api repos/<r>/commits/<ref>`. A ref must match `^[A-Za-z0-9._/-]+$`;
    - computes the version with
@@ -147,7 +147,7 @@ Defaults:
    - `needs: [plan, mend, mend-image]`,
      `if: !cancelled() && needs.mend-image.result == 'success' && inputs.deploy` (#500: it needs the
      versioned tag, not just the amd64 build);
-   - runs on a Blacksmith hosted runner and writes the `MEND_BOX_DEPLOY_KEY` secret to a 0600 file;
+   - runs on a GitHub-hosted runner (the box runners cannot reach the box) and writes the `MEND_BOX_DEPLOY_KEY` secret to a 0600 file;
    - pins the VM's host key (`[49.12.133.97]:2223 ssh-ed25519 AAAAC3…zqgl/`);
    - runs `ssh -p 2223 deploy@49.12.133.97 deploy "<version>" "<github.sha>" [even-if-live]`.
 6. In the image, `scripts/bundle-supervisor.mjs` gives the bundled Sealant worker

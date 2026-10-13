@@ -21,7 +21,7 @@ permissions:
 jobs:
   pins:
     name: Check what the release pins
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: [self-hosted, box, linux, x64]
     timeout-minutes: 10
     steps:
       # Full history and every tag: N counts the whole history, B reads the next tags handed out,
@@ -48,7 +48,7 @@ jobs:
   npm-pack:
     name: Pack @sealant/mend
     needs: pins
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: [self-hosted, box, linux, x64]
     timeout-minutes: 20
     permissions:
       contents: read
@@ -99,7 +99,7 @@ jobs:
     needs: [images, github-release, npm-pack]
     # Github-hosted runner on purpose: the OIDC id-token should be minted on
     # infrastructure GitHub controls.
-    # npm trusted publishing (OIDC) needs a GitHub-hosted runner: this job stays off Blacksmith.
+    # npm trusted publishing (OIDC) needs a GitHub-hosted runner: this job stays off the self-hosted runners.
     runs-on: ubuntu-latest
     environment: release
     permissions:
@@ -311,7 +311,7 @@ jobs:
   github-release:
     name: Publish and verify setup assets
     needs: images
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: [self-hosted, box, linux, x64]
     timeout-minutes: 15
     permissions:
       contents: write
@@ -397,7 +397,7 @@ jobs:
   promote-images:
     name: Promote the complete stable release
     needs: [npm, github-release]
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: [self-hosted, box, linux, x64]
     permissions:
       contents: write
       packages: write
