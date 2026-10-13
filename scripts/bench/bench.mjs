@@ -125,7 +125,9 @@
 //   executor once the turn is answered), not by the terminal stream, whose differential redraw
 //   never shows some answers whole (the same ones missed in both layouts, at next.652, 708 and
 //   754). The stream is still watched; after 30 s without the answer the record is read too, every
-//   5 s. Each round says which one found it (`method.opencodeAnswer`).
+//   5 s. Each accepted timing keeps its source beside the sample (`sampleSources`); mixed rounds
+//   and reruns do not inherit a last-round source claim. The record lookup is bound to the observed
+//   account and exact marked user request, never every account in the executor.
 // - A record says the harness its joins, resume and interactive scenarios rode on
 //   (`method.firstHarness`), and each series a harness produced is stamped with that harness and
 //   its version (`harness`, `harnessVersion` on the measure), and every series with the layout it
