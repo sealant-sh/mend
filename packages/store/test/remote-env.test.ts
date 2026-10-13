@@ -8,7 +8,7 @@ import { Effect, Layer } from "effect";
 
 import { AgentBridge } from "../src/agent-bridge.ts";
 import { MendKeys, NO_SIGNER_SSH_COMMAND, noSignerGitEnv } from "../src/git-auth.ts";
-import { effectiveGitUrl, resolveRemoteEnv } from "../src/remote-env.ts";
+import { effectiveGitUrl, resolveRemoteEnv, resolveRemoteEnvForUrls } from "../src/remote-env.ts";
 
 /**
  * Every test reads a git config of its own: the host's global config (an `insteadOf` of the
@@ -282,6 +282,30 @@ describe("effectiveGitUrl", () => {
         Effect.flip,
       );
       expect(refused._tag).toBe("NoSignerError");
+    }),
+  );
+});
+
+describe("already-cleared authentication", () => {
+  it.effect("authenticates already-cleared URLs without a second rewrite", () =>
+    Effect.gen(function* () {
+      gitConfig("url.git@second.invalid:.insteadOf", "https://first.invalid/");
+      const layers = Layer.mergeAll(keysLayer([]), bridgeLayer(false));
+      const env = yield* resolveRemoteEnvForUrls("bridge", "anna", [
+        "https://first.invalid/repo",
+      ]).pipe(Effect.provide(layers));
+      expect(env["GIT_SSH_COMMAND"]).toBe(NO_SIGNER_SSH_COMMAND);
+      for (const urls of [
+        [],
+        ["not a URL"],
+        ["https://first.invalid/repo", "git@second.invalid:repo"],
+      ]) {
+        const refusal = yield* resolveRemoteEnvForUrls("bridge", "anna", urls).pipe(
+          Effect.provide(layers),
+          Effect.flip,
+        );
+        expect(refusal._tag).toBe("NoSignerError");
+      }
     }),
   );
 });

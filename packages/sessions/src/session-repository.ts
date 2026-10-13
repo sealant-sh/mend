@@ -6,6 +6,7 @@ import {
   type CaptureManifest,
   type CheckpointSnapshot,
   type GitError,
+  type GitRemoteEnvironment,
 } from "@mend/store";
 import { Effect, Layer } from "effect";
 import * as Context from "effect/Context";
@@ -54,7 +55,7 @@ export class SessionRepository extends Context.Service<
       projectId: ProjectId,
       identity: { readonly directory: string; readonly branch: string },
       base: string | null,
-      remoteEnv: Record<string, string> | null,
+      remoteEnv: GitRemoteEnvironment | null,
     ) => Effect.Effect<SessionWorktreeSummary, SessionRepositoryError>;
     /**
      * Capture mode only (ADR-0002): once the worktree ROW exists, bind the authority's own
@@ -98,7 +99,7 @@ export class SessionRepository extends Context.Service<
       projectId: ProjectId,
       worktreeName: string,
       base: string | null,
-      remoteEnv: Record<string, string> | null,
+      remoteEnv: GitRemoteEnvironment | null,
     ) => Effect.Effect<{ readonly baseSha: Sha; readonly baseRef: string }, SessionRepositoryError>;
     /** Best-effort removal; a surviving path is reported, never thrown. */
     readonly removeWorktreeForce: (

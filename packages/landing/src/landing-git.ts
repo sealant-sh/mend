@@ -115,7 +115,7 @@ export const LandingGitColocatedLive: Layer.Layer<
             remote: "origin",
             sha: input.sha,
             remoteBranch: input.remoteBranch,
-            remoteEnv: { ...input.remoteEnv },
+            remoteEnv: input.remoteEnv,
           })
           .pipe(
             Effect.catchTags({
@@ -144,7 +144,7 @@ export const LandingGitColocatedLive: Layer.Layer<
             remote: "origin",
             sha: input.sha,
             remoteBranch: input.remoteBranch,
-            remoteEnv: { ...input.remoteEnv },
+            remoteEnv: input.remoteEnv,
           })
           .pipe(
             Effect.mapError(

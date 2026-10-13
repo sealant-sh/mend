@@ -1,16 +1,19 @@
 import { MendApi } from "@mend/api-contracts";
 import { defaultSettings, defaultWorkspaceImage, MendSettings, WorkspaceImage } from "@mend/domain";
-import { Schema } from "effect";
+import { AgentTurn, Session, SessionProcess } from "@mend/domain/workbench";
+import { Effect, Schema } from "effect";
 import { HttpApi } from "effect/unstable/httpapi";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { createTenancyApi, type TenancyApi } from "../../test/support/tenancy-api.ts";
 import {
   CAROL_SESSION_IN_SHARED_A,
+  CAROL_SHELL_IN_SHARED_A,
   CAROL_USER_SKILL,
   CAROL_WORKTREE_IN_SHARED_A,
   FOLDER_A,
   FOLDER_B,
+  PROTOCOL_PROCESS,
   REFERENCE_A,
   REFERENCE_B,
   ids,
@@ -21,8 +24,9 @@ import {
 /**
  * Every endpoint of the Mend API against the two-organization world (docs/adr/0003). A refused
  * request answers exactly like a missing resource, names the id the caller asked for, and has
- * touched nothing beyond the reads authorization needs. An admitted request gets past
- * authorization (whatever the unimplemented mocks do after that).
+ * touched nothing beyond the reads authorization needs. An admitted request must reach its
+ * named downstream method or return the expected fixture data/business refusal. Most downstream
+ * methods intentionally defect: these rows prove authorization and invocation, not feature success.
  */
 
 type Target = HarnessProject;
@@ -618,6 +622,308 @@ const CASES: ReadonlyArray<AccessCase> = [
   session("project-read", "GET", "/git-ops")("landings.gitOps"),
 ];
 
+/**
+ * Independent expectations from each handler and the fixture, not its observed status alone.
+ * Calls are method invocations. Eager Effect construction is not proof an operation completed.
+ * Comments name prerequisites that deliberately limit a row to an earlier authorized boundary.
+ */
+const ADMITTED: Readonly<
+  Record<
+    string,
+    { readonly status: number; readonly calls: ReadonlyArray<string>; readonly body?: unknown }
+  >
+> = {
+  "settings.scanHostEnvironment": { status: 500, calls: ["hostEnvironment.scan"] },
+  // Settings get defects before save.
+  "settings.set": { status: 500, calls: ["settings.get"] },
+  "settings.setWorkspaceEnvironment": { status: 500, calls: ["sealant.resolveWorkspacePackage"] },
+  "issues.list": { status: 500, calls: ["issues.list"] },
+  "issues.create": { status: 500, calls: ["issues.create"] },
+  "issues.detail": { status: 500, calls: ["issues.byId"] },
+  "issues.move": { status: 500, calls: ["issues.move"] },
+  // Shared legacy issue→change→brief lookup defects before endpoint-specific behavior; current oracle proves operator admission only.
+  "briefs.byIssue": { status: 500, calls: ["legacyChanges.byIssue"] },
+  // Shared legacy issue→change→brief lookup defects before endpoint-specific behavior; current oracle proves operator admission only.
+  "briefs.comments": { status: 500, calls: ["legacyChanges.byIssue"] },
+  // Shared legacy issue→change→brief lookup defects before endpoint-specific behavior; current oracle proves operator admission only.
+  "briefs.comment": { status: 500, calls: ["legacyChanges.byIssue"] },
+  // Shared legacy issue→change→brief lookup defects before endpoint-specific behavior; current oracle proves operator admission only.
+  "briefs.versions": { status: 500, calls: ["legacyChanges.byIssue"] },
+  // Shared runs.byId lookup defects before distinct SDK/detail behavior.
+  "runs.detail": { status: 500, calls: ["runs.byId"] },
+  "operator.organizations": { status: 500, calls: ["organizations.listWithCounts"] },
+  "operator.gate": { status: 200, calls: [], body: [] },
+  "operator.exposure": { status: 200, calls: [], body: { declared: "loopback", items: [] } },
+  "operator.createOrganization": {
+    status: 422,
+    calls: [],
+    body: {
+      _tag: "OrganizationRejected",
+      message: "This Mend runs one organization (MEND_TENANCY=single). Rename it instead.",
+    },
+  },
+  "operator.renameOrganization": { status: 500, calls: ["organizations.rename"] },
+  // Same organization lookup masks invitation creation.
+  "operator.inviteOwner": { status: 500, calls: ["organizations.byId"] },
+  // Same organization lookup masks user/membership/role operation.
+  "operator.grantOwner": { status: 500, calls: ["organizations.byId"] },
+  // User lookup masks reset operation.
+  "operator.issuePasswordReset": { status: 500, calls: ["users.byEmail"] },
+  // Shared runs.byId lookup defects before distinct SDK/detail behavior.
+  "runs.trace": { status: 500, calls: ["runs.byId"] },
+  // Shared runs.byId lookup defects before distinct SDK/detail behavior.
+  "runs.sources": { status: 500, calls: ["runs.byId"] },
+  // Settings snapshot masks save.
+  "organization.setSettings": { status: 500, calls: ["organizationSettings.get"] },
+  // Same settings snapshot masks environment save.
+  "organization.setWorkspaceEnvironment": { status: 500, calls: ["organizationSettings.get"] },
+  "slack.app": { status: 500, calls: ["slackInstalls.byOrganization"] },
+  "slack.connect": { status: 500, calls: ["slackApi.authTest"] },
+  "slack.disconnect": { status: 500, calls: ["slackInstalls.remove"] },
+  // Install lookup masks settings write.
+  "slack.setSettings": { status: 500, calls: ["slackInstalls.byOrganization"] },
+  "slack.manifest": {
+    status: 200,
+    calls: [],
+    body: {
+      manifest: {
+        _metadata: { major_version: 1, minor_version: 1 },
+        display_information: {
+          name: "Mend",
+          description: "Start a Mend session by mentioning Mend in a thread.",
+        },
+        features: {
+          app_home: {
+            home_tab_enabled: false,
+            messages_tab_enabled: true,
+            messages_tab_read_only_enabled: false,
+          },
+          bot_user: { display_name: "mend", always_online: true },
+        },
+        oauth_config: {
+          scopes: {
+            bot: [
+              "app_mentions:read",
+              "channels:history",
+              "groups:history",
+              "im:history",
+              "mpim:history",
+              "chat:write",
+              "im:write",
+              "reactions:write",
+              "files:read",
+              "users:read",
+            ],
+          },
+        },
+        settings: {
+          event_subscriptions: { bot_events: ["app_mention", "message.im"] },
+          interactivity: { is_enabled: true },
+          org_deploy_enabled: false,
+          socket_mode_enabled: true,
+          token_rotation_enabled: false,
+        },
+      },
+      steps: [
+        "Create an app in Slack from this manifest (api.slack.com/apps → Create New App → From a manifest).",
+        "Under Basic Information → App-Level Tokens, generate a token with the connections:write scope. It starts with xapp-.",
+        "Install the app to your workspace, then copy the Bot User OAuth Token from OAuth & Permissions. It starts with xoxb-.",
+        "Paste both tokens here. Before it saves them, Mend checks the bot token with auth.test and the app-level token with apps.connections.open, and that both belong to the same app.",
+      ],
+      appTokenScope: "connections:write",
+    },
+  },
+  "slack.links": { status: 500, calls: ["slackLinks.listForOrganization"] },
+  // Install lookup masks unlink.
+  "slack.removeLink": { status: 500, calls: ["slackInstalls.byOrganization"] },
+  "slack.setDefaultProject": { status: 500, calls: ["slackDefaults.setPersonalDefault"] },
+  // Name collision read masks clone.
+  "references.add": { status: 500, calls: ["references.byName"] },
+  "references.remove": { status: 500, calls: ["store.removeReference"] },
+  // Git preference read masks reference refresh.
+  "references.refresh": { status: 500, calls: ["gitAccess.mode"] },
+  "references.forProject": { status: 500, calls: ["references.listForProject"] },
+  "references.selectForProject": { status: 500, calls: ["references.setForProject"] },
+  "folders.create": { status: 500, calls: ["folderStore.create"] },
+  "folders.remove": { status: 500, calls: ["folders.remove"] },
+  "folders.files": { status: 500, calls: ["folderStore.list"] },
+  "folders.upload": { status: 500, calls: ["folderStore.write"] },
+  "folders.deleteFile": { status: 500, calls: ["folderStore.deleteFile"] },
+  "folders.forProject": { status: 500, calls: ["folders.listForProject"] },
+  // Empty selection still probes host-mount name collisions first.
+  "folders.selectForProject": { status: 500, calls: ["mounts.listForProject"] },
+  // Unimplemented sessions.listForProject stops detail assembly.
+  "projects.detail": { status: 500, calls: ["sessions.listForProject"] },
+  // Same session listing stops removal before any stop/delete.
+  "projects.remove": { status: 500, calls: ["sessions.listForProject"] },
+  "projects.visibility": { status: 500, calls: ["projects.setVisibility"] },
+  "projects.automation": { status: 500, calls: ["projects.setAutomation"] },
+  "projects.gitAuth": { status: 500, calls: ["projects.setGitAuthMode"] },
+  "projects.workspaceImage": { status: 500, calls: ["projects.setWorkspaceImage"] },
+  "projects.applyDotfiles": { status: 500, calls: ["projects.setApplyDotfiles"] },
+  "projects.defaultShellProfile": { status: 500, calls: ["projects.setDefaultShellProfile"] },
+  "projects.inheritUserSkills": { status: 500, calls: ["projects.setInheritUserSkills"] },
+  "projects.hotSessions": { status: 500, calls: ["projects.setHotSessions"] },
+  "projects.installCommand": { status: 500, calls: ["projects.setInstallCommand"] },
+  "projects.installEnabled": { status: 500, calls: ["projects.setInstallEnabled"] },
+  "projects.installDetection": { status: 500, calls: ["store.listTopLevel"] },
+  "projects.hotSessionsStatus": { status: 500, calls: ["hotWorkspaces.listForProject"] },
+  "projects.branches": { status: 500, calls: ["store.listBranches"] },
+  "projects.refresh": { status: 500, calls: ["store.refreshFromOrigin"] },
+  "projects.files": { status: 500, calls: ["store.listTreeFiles"] },
+  "projects.pullRequests": {
+    status: 200,
+    calls: [],
+    body: {
+      origin: "not-github",
+      repo: null,
+      availability: "not-github",
+      detail: null,
+      pullRequests: [],
+      fetchedAt: null,
+    },
+  },
+  "agentMemory.list": { status: 500, calls: ["agentMemory.list"] },
+  "agentMemory.file": { status: 500, calls: ["agentMemory.read"] },
+  "agentMemory.remove": { status: 500, calls: ["agentMemory.remove"] },
+  "agentMemory.import": { status: 500, calls: ["agentMemory.importFiles"] },
+  "agentMemory.importPlan": { status: 500, calls: ["agentMemory.importFiles"] },
+  "skills.forProject": { status: 500, calls: ["skills.listForProject"] },
+  "projectEnvironment.get": { status: 500, calls: ["environment.snapshot"] },
+  // Secret-lane guard defects before plaintext write.
+  "projectEnvironment.create": { status: 500, calls: ["secrets.snapshot"] },
+  // Same secret-lane guard masks update.
+  "projectEnvironment.update": { status: 500, calls: ["secrets.snapshot"] },
+  "projectEnvironment.remove": { status: 500, calls: ["environment.remove"] },
+  "projectEnvironment.load": { status: 500, calls: ["environment.snapshot", "secrets.snapshot"] },
+  "projectSecrets.get": { status: 500, calls: ["secrets.snapshot"] },
+  // Cipher encrypt masks secret persistence.
+  "projectSecrets.create": { status: 500, calls: ["cipher.encrypt"] },
+  // Cipher encrypt masks update.
+  "projectSecrets.update": { status: 500, calls: ["cipher.encrypt"] },
+  "projectSecrets.remove": { status: 500, calls: ["secrets.remove"] },
+  "projectClusterBindings.get": { status: 500, calls: ["clusterBindings.snapshot"] },
+  "projectClusterBindings.add": { status: 500, calls: ["clusterBindings.add"] },
+  "projectClusterBindings.remove": { status: 500, calls: ["clusterBindings.remove"] },
+  "projectClusterBindings.setServiceAccount": {
+    status: 500,
+    calls: ["clusterBindings.setServiceAccount"],
+  },
+  "projectMounts.list": { status: 500, calls: ["mounts.listForProject"] },
+  // Name/path clash listing masks creation; /tmp real stat is an environmental prerequisite.
+  "projectMounts.add": { status: 500, calls: ["mounts.listForProject"] },
+  // Unimplemented subordinate byId is a named lookup only.
+  "projectMounts.remove": { status: 500, calls: ["mounts.byId"] },
+  "projectLinks.list": { status: 500, calls: ["links.listForProject"] },
+  // Missing project-other stops before all link operations.
+  "projectLinks.add": { status: 404, calls: [], body: { _tag: "NotFound", id: "project-other" } },
+  // Unimplemented subordinate link lookup masks remove.
+  "projectLinks.remove": { status: 500, calls: ["links.byId"] },
+  "projectRecipes.list": { status: 500, calls: ["recipes.listForProject"] },
+  "projectRecipes.add": { status: 500, calls: ["recipes.create"] },
+  "projectRecipes.remove": { status: 500, calls: ["recipes.remove"] },
+  "sessions.create": { status: 500, calls: ["engine.provision"] },
+  // Refresh-capture helper defects before detail reads.
+  "sessions.detail": {
+    status: 500,
+    calls: ["sessions.launchersOf", "engine.refreshCaptureStatus"],
+  },
+  "sessions.submitTurn": { status: 500, calls: ["engine.submitTurn"] },
+  "sessions.pasteImage": { status: 500, calls: ["engine.storePastedImage"] },
+  "sessions.interruptTurn": { status: 500, calls: ["engine.interruptTurn"] },
+  "sessions.conversationWait": { status: 500, calls: ["engine.conversationWait"] },
+  "sessions.workspaceRetirement": {
+    status: 200,
+    calls: ["engine.workspaceRetirement"],
+    body: null,
+  },
+  "sessions.replaceWorkspace": { status: 500, calls: ["engine.replaceWorkspaceNow"] },
+  "sessions.endBackgroundWork": { status: 500, calls: ["engine.endBackgroundWork"] },
+  "sessions.listTurns": { status: 200, calls: ["conversation.listTurns"] },
+  "sessions.listItems": { status: 500, calls: ["conversation.listItems"] },
+  "sessions.listAgentRequests": { status: 500, calls: ["conversation.listRequests"] },
+  "sessions.respondAgentRequest": { status: 500, calls: ["engine.respondRequest"] },
+  "sessions.listProcesses": { status: 200, calls: [] },
+  "sessions.openShell": { status: 500, calls: ["engine.openShell"] },
+  "sessions.stopShell": { status: 500, calls: ["engine.stopShell"] },
+  "sessions.renameShell": { status: 500, calls: ["engine.renameShell"] },
+  "sessions.addService": { status: 500, calls: ["engine.addService"] },
+  "sessions.runService": { status: 500, calls: ["engine.runService"] },
+  "sessions.runServiceRecipe": { status: 500, calls: ["engine.runServiceRecipe"] },
+  "sessions.listRecipes": { status: 500, calls: ["engine.listServiceRecipes"] },
+  "sessions.processLogs": {
+    status: 500,
+    calls: ["sealant.sessionOutput", "workspaceCaller.observe"],
+  },
+  "sessions.restartService": { status: 500, calls: ["engine.restartService"] },
+  "sessions.stopService": { status: 500, calls: ["engine.stopService"] },
+  // Open-forward read masks actual removal.
+  "sessions.remove": { status: 500, calls: ["services.listForSession", "forwards.listOpen"] },
+  "sessions.discardUnsaved": { status: 500, calls: ["engine.discardUnsavedAndStop"] },
+  "sessions.label": { status: 500, calls: ["sessions.setLabel"] },
+  "sessions.stop": { status: 500, calls: ["engine.stop"] },
+  "sessions.stopServices": { status: 500, calls: ["engine.stopServices"] },
+  "sessions.sharedControl": {
+    status: 200,
+    calls: [
+      "sessions.setSharedControl",
+      "engine.cancelSteeredTurns",
+      "controlEvents.record",
+      "audit.record",
+    ],
+  },
+  "sessions.controlEvents": { status: 500, calls: ["controlEvents.listForSession"] },
+  "sessions.checkpoint": { status: 500, calls: ["engine.checkpointNow"] },
+  // Service factories log setLaunchOptions and launch before engine.detach defects; no actual launch ran.
+  "sessions.launch": {
+    status: 500,
+    calls: ["sessions.setLaunchOptions", "engine.launch", "engine.detach"],
+  },
+  "sessions.transcript": { status: 500, calls: ["engine.transcript"] },
+  "sessions.resume": { status: 500, calls: ["engine.resumeSession"] },
+  "sessions.handoff": { status: 500, calls: ["engine.handoff"] },
+  "sessions.followUpPending": { status: 500, calls: ["followUps.activeForSession"] },
+  "sessions.followUpDeliver": { status: 500, calls: ["followUpDelivery.deliver"] },
+  "worktrees.create": { status: 500, calls: ["engine.ensureWorktree"] },
+  "worktrees.list": { status: 500, calls: ["worktrees.listForProject"] },
+  "worktrees.detail": { status: 500, calls: ["changes.byWorktree", "checkpoints.listForWorktree"] },
+  // Open-forward check masks capture/unlanded/disk/row removal.
+  "worktrees.remove": { status: 500, calls: ["forwards.listOpen"] },
+  "worktrees.createSession": { status: 500, calls: ["engine.provisionSessionIn"] },
+  // Chain listing masks diff generation.
+  "worktrees.diff": { status: 500, calls: ["checkpoints.listForWorktree"] },
+  "worktrees.contents": { status: 500, calls: ["reads.readFile"] },
+  // newestLiveSessionId masks engine checkpoint after change lookup.
+  "worktrees.checkpoint": {
+    status: 500,
+    calls: ["changes.byWorktree", "worktrees.newestLiveSessionId"],
+  },
+  "sessionChanges.openReview": { status: 500, calls: ["slices.withChangeLock"] },
+  // Review-context byId masks patch read.
+  "sessionChanges.reviewDiff": { status: 500, calls: ["slices.byId"] },
+  // Same review-context resolver masks anchor verification/comment creation.
+  "sessionChanges.sliceComment": { status: 500, calls: ["slices.byId"] },
+  "sessionChanges.diff": { status: 500, calls: ["reads.diffWorktree"] },
+  "sessionChanges.stats": { status: 500, calls: ["reads.changedFiles"] },
+  "sessionChanges.comments": { status: 500, calls: ["comments.listForChange"] },
+  // Subordinate comment lookup masks write.
+  "sessionChanges.commentState": { status: 500, calls: ["comments.byId"] },
+  // Shared queue helper defects at passes.queue before distinct job selection.
+  "sessionChanges.read": { status: 500, calls: ["changePasses.queue"] },
+  "sessionChanges.tour": { status: 500, calls: ["changeTours.byChange"] },
+  // Same helper cannot distinguish tour from read/suggest when only method name recorded.
+  "sessionChanges.composeTour": { status: 500, calls: ["changePasses.queue"] },
+  // Same helper cannot distinguish suggest from read/tour.
+  "sessionChanges.suggest": { status: 500, calls: ["changePasses.queue"] },
+  "sessionChanges.passes": { status: 500, calls: ["changePasses.listForChange"] },
+  "landings.land": { status: 500, calls: ["landing.land"] },
+  "landings.forSession": { status: 500, calls: ["changes.byWorktree", "landings.listForChange"] },
+  "landings.forChange": { status: 500, calls: ["landings.listForChange"] },
+  "landings.bundle": { status: 500, calls: ["landing.bundle"] },
+  "landings.checkGitHub": { status: 500, calls: ["landing.adoptPullRequest"] },
+  "landings.gitOps": { status: 500, calls: ["gitOps.listForSession"] },
+};
+
 type Expectation = "refused" | "forbidden" | "admitted";
 
 /** Who may do what, per rule: [user, target project, expectation]. */
@@ -756,12 +1062,47 @@ describe("every endpoint is classified", () => {
       },
     });
     expect(missing).toEqual([]);
+    expect(Object.keys(ADMITTED).toSorted()).toEqual([...covered].toSorted());
   });
 });
+
+/** Capture expected fixture DTOs before a request can mutate the in-memory world. */
+const admittedBody = (endpoint: string, target: Target): unknown => {
+  if (endpoint === "sessions.listTurns") {
+    const turn = api.world.turns.get(ids(target).turn);
+    if (turn === undefined) throw new Error("missing target turn fixture");
+    return Schema.encodeSync(Schema.Array(AgentTurn))([turn]);
+  }
+  if (endpoint === "sessions.listProcesses") {
+    const keys =
+      target === "shared-a" ? [ids(target).process, PROTOCOL_PROCESS] : [ids(target).process];
+    return Schema.encodeSync(Schema.Array(SessionProcess))(
+      keys.map((key) => {
+        const process = api.world.processes.get(key);
+        if (process === undefined) throw new Error("missing target process fixture");
+        return process;
+      }),
+    );
+  }
+  if (endpoint === "sessions.sharedControl") {
+    const targetSession = api.world.sessions.get(ids(target).session);
+    if (targetSession === undefined) throw new Error("missing target session fixture");
+    return Schema.encodeSync(Session)(
+      new Session({
+        ...targetSession,
+        sharedControlEnabledByUserId: null,
+        sharedControlEnabledAt: null,
+      }),
+    );
+  }
+  return ADMITTED[endpoint]?.body;
+};
 
 describe.each(CASES)("$endpoint", (entry) => {
   it.each(MATRIX[entry.rule])("%s on %s: %s", async (user, target, expectation) => {
     const call = entry.call(target);
+    const expectedBody =
+      expectation === "admitted" ? admittedBody(entry.endpoint, target) : undefined;
     const { status, body } = await send(user, call);
     if (expectation === "refused") {
       expect({ status, id: idOf(body), calls: api.world.calls }).toEqual({
@@ -772,30 +1113,92 @@ describe.each(CASES)("$endpoint", (entry) => {
     } else if (expectation === "forbidden") {
       expect({ status, calls: api.world.calls }).toEqual({ status: 403, calls: [] });
     } else {
-      expect(status).not.toBe(400);
-      expect(status).not.toBe(401);
-      expect(status).not.toBe(403);
-      if (status === 404) expect(idOf(body)).not.toBe(call.id);
+      const expected = ADMITTED[entry.endpoint];
+      if (expected === undefined) throw new Error(`missing admission oracle: ${entry.endpoint}`);
+      expect(status).toBe(expected.status);
+      // Parallel default-package resolution can begin the same method more than once before
+      // the fixture failure interrupts siblings; neither scheduler count nor order is a contract.
+      const calls =
+        entry.endpoint === "settings.setWorkspaceEnvironment"
+          ? [...new Set(api.world.calls)]
+          : api.world.calls;
+      expect(calls).toEqual(expected.calls);
+      if (entry.endpoint === "slack.manifest") {
+        if (
+          typeof body !== "object" ||
+          body === null ||
+          !("manifest" in body) ||
+          typeof body.manifest !== "string"
+        ) {
+          throw new Error("expected a Slack manifest response");
+        }
+        expect({ ...body, manifest: JSON.parse(body.manifest) }).toEqual(expectedBody);
+      } else if (expected.status !== 500) {
+        expect(body).toEqual(expectedBody);
+      }
     }
   });
 });
 
 describe("owners stop sessions in their organization", () => {
   it("alice (owner) may stop carol's session in her shared project; carol may not stop alice's", async () => {
-    const byOwner = await send("alice", {
-      method: "POST",
-      path: `/api/sessions/${CAROL_SESSION_IN_SHARED_A}/stop`,
-      id: CAROL_SESSION_IN_SHARED_A,
-    });
-    expect(byOwner.status).not.toBe(403);
-    expect(byOwner.status).not.toBe(404);
-    api.world.calls.splice(0, api.world.calls.length);
-    const byMember = await send("carol", {
-      method: "POST",
-      path: `/api/sessions/${ids("shared-a").session}/stop`,
-      id: ids("shared-a").session,
-    });
-    expect({ status: byMember.status, calls: api.world.calls }).toEqual({ status: 403, calls: [] });
+    const stopped: string[] = [];
+    const controls: Array<{
+      readonly sessionId: string;
+      readonly actorUserId: string;
+      readonly kind: string;
+      readonly refId: string | null;
+    }> = [];
+    const instance = await createTenancyApi(
+      {},
+      {
+        implement: {
+          engine: {
+            launchUnderWay: () => false,
+            stop: (sessionId) =>
+              Effect.sync(() => {
+                stopped.push(sessionId);
+              }),
+          },
+          controlEvents: {
+            record: (event) =>
+              Effect.sync(() => {
+                controls.push(event);
+              }),
+          },
+        },
+      },
+    );
+    try {
+      const byOwner = await instance.request(
+        "alice",
+        "POST",
+        `/api/sessions/${CAROL_SESSION_IN_SHARED_A}/stop`,
+      );
+      expect(byOwner.status).toBe(200);
+      expect(await byOwner.json()).toMatchObject({
+        id: CAROL_SESSION_IN_SHARED_A,
+        ownerUserId: "carol",
+      });
+      expect(stopped).toEqual([CAROL_SESSION_IN_SHARED_A]);
+      expect(controls).toEqual([
+        { sessionId: CAROL_SESSION_IN_SHARED_A, actorUserId: "alice", kind: "stop", refId: null },
+      ]);
+      instance.world.calls.length = 0;
+      const byMember = await instance.request(
+        "carol",
+        "POST",
+        `/api/sessions/${ids("shared-a").session}/stop`,
+      );
+      expect({ status: byMember.status, calls: instance.world.calls }).toEqual({
+        status: 403,
+        calls: [],
+      });
+      expect(stopped).toEqual([CAROL_SESSION_IN_SHARED_A]);
+      expect(controls).toHaveLength(1);
+    } finally {
+      await instance.dispose();
+    }
   });
 });
 
@@ -804,19 +1207,69 @@ const remove = (id: string): Call => ({ method: "DELETE", path: `/api/skills/${i
 
 describe("worktree removal by a member", () => {
   it("is allowed when the member owns every session in it, and refused before any effect otherwise", async () => {
-    const own = await send("carol", {
-      method: "DELETE",
-      path: `/api/worktrees/${CAROL_WORKTREE_IN_SHARED_A}`,
-      id: CAROL_WORKTREE_IN_SHARED_A,
-    });
-    expect(own.status).not.toBe(404);
-    api.world.calls.splice(0, api.world.calls.length);
-    const shared = await send("carol", {
-      method: "DELETE",
-      path: `/api/worktrees/${ids("shared-a").worktree}`,
-      id: ids("shared-a").worktree,
-    });
-    expect({ status: shared.status, calls: api.world.calls }).toEqual({ status: 404, calls: [] });
+    const removed: Array<{ readonly storePath: string; readonly directory: string }> = [];
+    const shell = api.world.processes.get(CAROL_SHELL_IN_SHARED_A);
+    if (shell === undefined) throw new Error("missing member shell fixture");
+    const instance = await createTenancyApi(
+      {},
+      {
+        processes: [
+          new SessionProcess({
+            ...shell,
+            status: "stopped",
+            exitCode: 0,
+            exitedAt: new Date("2026-09-17T10:01:00.000Z"),
+          }),
+        ],
+        implement: {
+          engine: { launchUnderWay: () => false, captureHolds: () => Effect.succeed([]) },
+          forwards: { listOpen: () => Effect.succeed([]) },
+          store: {
+            removeWorktreeForce: (storePath, directory) =>
+              Effect.sync(() => {
+                removed.push({ storePath, directory });
+                return { leftover: null };
+              }),
+          },
+        },
+      },
+    );
+    try {
+      const worktree = instance.world.worktrees.get(CAROL_WORKTREE_IN_SHARED_A);
+      const targetProject = instance.world.projects.get(ids("shared-a").project);
+      if (worktree === undefined || targetProject === undefined)
+        throw new Error("missing removal fixture");
+      // Explicit force bypasses unlanded-change inspection, never the ownership check.
+      const own = await instance.request(
+        "carol",
+        "DELETE",
+        `/api/worktrees/${CAROL_WORKTREE_IN_SHARED_A}?force=true`,
+      );
+      expect(own.status).toBe(200);
+      expect(await own.json()).toEqual({ removed: true, leftover: null });
+      expect(removed).toEqual([
+        { storePath: targetProject.storePath, directory: worktree.directory },
+      ]);
+      expect(instance.world.worktrees.has(CAROL_WORKTREE_IN_SHARED_A)).toBe(false);
+      instance.world.calls.length = 0;
+      const shared = await instance.request(
+        "carol",
+        "DELETE",
+        `/api/worktrees/${ids("shared-a").worktree}?force=true`,
+      );
+      expect({ status: shared.status, calls: instance.world.calls }).toEqual({
+        status: 404,
+        calls: [],
+      });
+      expect(await shared.json()).toEqual({
+        _tag: "WorktreeNotFound",
+        id: ids("shared-a").worktree,
+      });
+      expect(removed).toHaveLength(1);
+      expect(instance.world.worktrees.has(ids("shared-a").worktree)).toBe(true);
+    } finally {
+      await instance.dispose();
+    }
   });
 });
 
