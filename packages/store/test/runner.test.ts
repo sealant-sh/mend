@@ -237,8 +237,25 @@ describe("GitOpsRunner", () => {
         const c1 = yield* runner.ensure({ projectId: "proj-i", manifest: first, storeRefs: {} });
         const head1 = yield* runner.headSha(c1);
         const c2 = yield* runner.ensure({ projectId: "proj-i", manifest: second, storeRefs: {} });
+        const read = (cache: typeof c1) =>
+          Effect.gen(function* () {
+            return {
+              head: yield* runner.headSha(cache),
+              diff: yield* runner.diffRange(cache, featSha, "HEAD"),
+              tree: yield* runner.listTreeFiles(cache, "HEAD", 100),
+              log: (yield* runner.log(cache, "HEAD")).map(({ sha, subject }) => [sha, subject]),
+              branches: yield* runner.listBranches(cache),
+            };
+          });
+        const afterSecond = [yield* read(c1), yield* read(c2)];
+        yield* runner.ensure({ projectId: "proj-i", manifest: first, storeRefs: {} });
+        const afterFirst = [yield* read(c2), yield* read(c1)];
         return {
+          afterSecond,
+          afterFirst,
           head1,
+          head1AfterSibling: yield* runner.headSha(c1),
+          branches1AfterSibling: yield* runner.listBranches(c1),
           head2: yield* runner.headSha(c2),
           diff: yield* runner.diffRange(c2, featSha, feat2),
           packs: fs
@@ -248,9 +265,178 @@ describe("GitOpsRunner", () => {
       }),
     );
     expect(result.head1).toBe(featSha);
+    expect(result.head1AfterSibling).toBe(featSha);
+    expect(result.branches1AfterSibling.find((branch) => branch.name === "feat")?.sha).toBe(
+      featSha,
+    );
     expect(result.head2).toBe(feat2);
     expect(result.diff).toBe(sh(repo, ["diff", "--find-renames", featSha, feat2]));
     expect(result.packs).toBe(2);
+    const firstView = {
+      head: featSha,
+      diff: "",
+      tree: { files: ["a.txt", "b.txt"], truncated: false },
+      log: [
+        [featSha, "feat: add b, drop keep"],
+        [baseSha, "base"],
+      ],
+      branches: [
+        { name: "feat", sha: featSha, committedAt: "2026-01-02T03:04:05Z", isDefault: true },
+      ],
+    };
+    const secondView = {
+      head: feat2,
+      diff: sh(repo, ["diff", "--find-renames", featSha, feat2]),
+      tree: { files: ["a.txt", "b.txt"], truncated: false },
+      log: [[feat2, "feat: more"], ...firstView.log],
+      branches: [
+        { name: "feat", sha: feat2, committedAt: "2026-01-02T03:04:05Z", isDefault: true },
+      ],
+    };
+    expect(result.afterSecond).toEqual([firstView, secondView]);
+    expect(result.afterFirst).toEqual([secondView, firstView]);
+  });
+
+  it("lists captured branches with no default for detached HEAD and permits an empty branch view", async () => {
+    const packed = packRepo(repo, captureKeys("wt-detached", 1), [featSha]);
+    const detached = buildManifest({
+      worktreeId: "wt-detached",
+      n: 1,
+      parent: null,
+      epoch: 1,
+      git: gitSection([packed.key], { "refs/heads/feat": featSha }, featSha),
+    }).manifest;
+    const empty = buildManifest({
+      worktreeId: "wt-detached",
+      n: 2,
+      parent: "x",
+      epoch: 1,
+      git: gitSection([packed.key], {}, featSha),
+    }).manifest;
+    const result = await run(
+      Effect.gen(function* () {
+        yield* upload(packed.objects);
+        const runner = yield* GitOpsRunner;
+        const withBranches = yield* runner.ensure({
+          projectId: "proj-detached",
+          manifest: detached,
+          storeRefs: {},
+        });
+        const noBranches = yield* runner.ensure({
+          projectId: "proj-detached",
+          manifest: empty,
+          storeRefs: {},
+        });
+        return {
+          branches: yield* runner.listBranches(withBranches),
+          empty: yield* runner.listBranches(noBranches),
+        };
+      }),
+    );
+    expect(result).toEqual({
+      branches: [
+        { name: "feat", sha: featSha, committedAt: "2026-01-02T03:04:05Z", isDefault: false },
+      ],
+      empty: [],
+    });
+  });
+
+  it("keeps same-named branches from two source worktrees distinct after either is ensured", async () => {
+    const makeSource = (label: string) => {
+      const source = path.join(scratch, `source-${label}`);
+      sh(scratch, ["clone", "-q", "--no-local", repo, source]);
+      sh(source, ["checkout", "-q", "-B", "shared", baseSha]);
+      fs.writeFileSync(path.join(source, `${label}.txt`), `${label} content\n`);
+      sh(source, ["add", "."]);
+      const committedAt = label === "left" ? "2026-01-03T03:04:05Z" : "2026-01-04T03:04:05Z";
+      execFileSync("git", ["commit", "-q", "-m", `${label} change`], {
+        cwd: source,
+        env: { ...gitEnv, GIT_AUTHOR_DATE: committedAt, GIT_COMMITTER_DATE: committedAt },
+      });
+      const tip = sh(source, ["rev-parse", "HEAD"]);
+      const packed = packRepo(source, captureKeys(`wt-${label}`, 1), [tip]);
+      const manifest = buildManifest({
+        worktreeId: `wt-${label}`,
+        n: 1,
+        parent: null,
+        epoch: 1,
+        git: gitSection(
+          [packed.key],
+          {
+            "refs/heads/shared": tip,
+            "refs/heads/local-only": tip,
+            "refs/heads/mend/session/hidden": tip,
+            "refs/remotes/origin/shared": baseSha,
+            "refs/remotes/origin/HEAD": baseSha,
+            "refs/remotes/origin/mend/hidden": tip,
+          },
+          label === "left" ? "refs/heads/shared" : "refs/heads/local-only",
+        ),
+      }).manifest;
+      return { label, source, tip, committedAt, packed, manifest };
+    };
+    const left = makeSource("left");
+    const right = makeSource("right");
+    expect(left.tip).not.toBe(right.tip);
+    const result = await run(
+      Effect.gen(function* () {
+        yield* upload(left.packed.objects);
+        yield* upload(right.packed.objects);
+        const runner = yield* GitOpsRunner;
+        const a = yield* runner.ensure({
+          projectId: "proj-two-worktrees",
+          manifest: left.manifest,
+          storeRefs: {},
+        });
+        const b = yield* runner.ensure({
+          projectId: "proj-two-worktrees",
+          manifest: right.manifest,
+          storeRefs: {},
+        });
+        const read = (cache: typeof a) =>
+          Effect.gen(function* () {
+            return {
+              head: yield* runner.headSha(cache),
+              diff: yield* runner.diffRange(cache, baseSha, "refs/heads/shared"),
+              tree: yield* runner.listTreeFiles(cache, "HEAD", 100),
+              log: (yield* runner.log(cache, "HEAD", { limit: 1 })).map(({ sha, subject }) => [
+                sha,
+                subject,
+              ]),
+              branches: yield* runner.listBranches(cache),
+            };
+          });
+        const afterRight = [yield* read(a), yield* read(b)];
+        yield* runner.ensure({
+          projectId: "proj-two-worktrees",
+          manifest: left.manifest,
+          storeRefs: {},
+        });
+        return { afterRight, afterLeft: [yield* read(b), yield* read(a)] };
+      }),
+    );
+    const expected = (source: typeof left) => ({
+      head: source.tip,
+      diff: sh(source.source, ["diff", "--find-renames", baseSha, source.tip]),
+      tree: { files: ["a.txt", "keep.md", `${source.label}.txt`], truncated: false },
+      log: [[source.tip, `${source.label} change`]],
+      branches: [
+        {
+          name: "local-only",
+          sha: source.tip,
+          committedAt: source.committedAt,
+          isDefault: source.label === "right",
+        },
+        {
+          name: "shared",
+          sha: baseSha,
+          committedAt: "2026-01-02T03:04:05Z",
+          isDefault: source.label === "left",
+        },
+      ],
+    });
+    expect(result.afterRight).toEqual([expected(left), expected(right)]);
+    expect(result.afterLeft).toEqual([expected(right), expected(left)]);
   });
 
   it("2026-10-02: a seal's read-back reuses the pack the runner installed, and reads it again when its index changed", async () => {

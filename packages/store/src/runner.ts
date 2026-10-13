@@ -22,13 +22,7 @@ import {
   type GitObjectFormat,
   verifyGitPack,
 } from "./captures.ts";
-import {
-  git,
-  type GitError,
-  gitExitUnexplained,
-  gitHostFaultWords,
-  gitRejectsContent,
-} from "./git.ts";
+import { git, GitError, gitExitUnexplained, gitHostFaultWords, gitRejectsContent } from "./git.ts";
 import {
   type BundleEmptyError,
   type BundleInput,
@@ -57,6 +51,7 @@ import {
   type FileRead,
   type GrepQuery,
   type GrepResult,
+  isSessionBranch,
   type StoreBranch,
   Store,
   StoreConfig,
@@ -210,6 +205,7 @@ export class GitOpsRunner extends Context.Service<
       limit: number,
     ) => Effect.Effect<GrepResult, GitError>;
     readonly headSha: (cache: RunnerCache) => Effect.Effect<Sha, GitError>;
+    /** Branch tips and default branch from this handle, even after another capture is ensured. */
     readonly listBranches: (
       cache: RunnerCache,
     ) => Effect.Effect<ReadonlyArray<StoreBranch>, GitError>;
@@ -627,7 +623,74 @@ export const GitOpsRunnerLive: Layer.Layer<GitOpsRunner, never, Store | StoreCon
       });
 
       const listBranches = Effect.fn("GitOpsRunner.listBranches")(function* (cache: RunnerCache) {
-        return yield* store.listBranches(cache.path);
+        // The on-disk refs belong to the most recent ensure, not necessarily this handle.
+        // Preserve Store's origin-over-local precedence and exclusion of session branches.
+        const refs = Object.entries(cache.refs)
+          .map(([key, sha]) => ({ ref: bytesOfKey(key).toString("utf8"), sha }))
+          .toSorted((a, b) => Buffer.compare(Buffer.from(a.ref), Buffer.from(b.ref)));
+        const byName = new Map<string, string>();
+        for (const prefix of ["refs/heads/", "refs/remotes/origin/"]) {
+          for (const { ref, sha } of refs) {
+            if (!ref.startsWith(prefix)) continue;
+            const name = ref.slice(prefix.length);
+            if (isSessionBranch(name) || (prefix === "refs/remotes/origin/" && name === "HEAD"))
+              continue;
+            if (
+              !GIT_OBJECT_ID.test(sha) ||
+              ref.includes("\r") ||
+              ref.includes("\n") ||
+              ref.includes("\0")
+            )
+              continue;
+            byName.set(name, sha);
+          }
+        }
+        if (byName.size === 0) return [];
+        // Ask for immutable object IDs over stdin, avoiding both mutable refs and argv limits.
+        const args = ["log", "--no-walk=unsorted", "--format=%H%x09%cI", "--stdin"];
+        const raw = yield* git(
+          args,
+          cache.path,
+          undefined,
+          undefined,
+          `${[...new Set(byName.values())].join("\n")}\n`,
+        );
+        const dates = new Map<string, string>();
+        for (const line of raw.split("\n")) {
+          const [sha, committedAt] = line.split("\t");
+          if (
+            sha !== undefined &&
+            GIT_OBJECT_ID.test(sha) &&
+            committedAt !== undefined &&
+            /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:Z|[+-]\d{2}:\d{2})$/.test(committedAt)
+          ) {
+            dates.set(sha, committedAt);
+          }
+        }
+        const defaultBranch = bytesOfKey(cache.head)
+          .toString("utf8")
+          .replace(/^refs\/heads\//, "");
+        const branches: Array<StoreBranch> = [];
+        for (const [name, sha] of byName) {
+          const committedAt = dates.get(sha);
+          if (committedAt === undefined) {
+            return yield* Effect.fail(
+              new GitError({
+                args,
+                cwd: cache.path,
+                exitCode: null,
+                stderr: `Git branch metadata missing for captured commit ${sha}`,
+              }),
+            );
+          }
+          branches.push({
+            name,
+            sha: Sha.make(sha),
+            committedAt,
+            isDefault: name === defaultBranch,
+          });
+        }
+        return branches.toSorted((a, b) => b.committedAt.localeCompare(a.committedAt));
       });
 
       const blame = Effect.fn("GitOpsRunner.blame")(function* (
