@@ -133,6 +133,31 @@ export const resolveRemoteEnv = (
 ): Effect.Effect<Record<string, string>, NoSignerError | KeygenError, MendKeys | AgentBridge> =>
   Effect.gen(function* () {
     if (!(yield* needsSigner(remote, push))) return noSignerGitEnv();
+    return yield* signerEnv(mode, userId);
+  });
+
+/**
+ * Choose this account's signer from destinations already established for the actual operation.
+ * These URLs are not rewritten again. HTTP(S)/git-only operations retain the no-signer env.
+ */
+export const resolveRemoteEnvForUrls = (
+  mode: GitAuthMode,
+  userId: string | null,
+  urls: ReadonlyArray<string>,
+): Effect.Effect<Record<string, string>, NoSignerError | KeygenError, MendKeys | AgentBridge> =>
+  urls.length > 0 &&
+  urls.every((url) => {
+    const location = gitRemoteLocation(url);
+    return location !== null && location.scheme !== "ssh";
+  })
+    ? Effect.succeed(noSignerGitEnv())
+    : signerEnv(mode, userId);
+
+const signerEnv = (
+  mode: GitAuthMode,
+  userId: string | null,
+): Effect.Effect<Record<string, string>, NoSignerError | KeygenError, MendKeys | AgentBridge> =>
+  Effect.gen(function* () {
     if (mode === "bridge") {
       if (userId === null) {
         return yield* new NoSignerError({
