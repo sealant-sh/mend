@@ -69,6 +69,15 @@ describe("parsing the server's answers", () => {
     expect(parseOpenedRequest("<html>")).toBeNull();
   });
 
+  it("retains receipt-relative integer expiry and ignores unusable optional values", () => {
+    expect(parseOpenedRequest({ ...opened, expiresIn: 600 })).toEqual({
+      ...opened,
+      expiresIn: 600,
+    });
+    expect(parseOpenedRequest({ ...opened, expiresIn: 0 })).toEqual({ ...opened, expiresIn: 0 });
+    for (const expiresIn of [-1, NaN, Infinity, "600", null, 1.5])
+      expect(parseOpenedRequest({ ...opened, expiresIn })).toEqual(opened);
+  });
   it("reads pending and approved polls", () => {
     expect(parsePollAnswer({ status: "pending" })).toEqual({ status: "pending" });
     expect(parsePollAnswer(approved)).toEqual(approved);
@@ -107,6 +116,7 @@ describe("openDeviceRequest", () => {
     expect(result).toEqual({
       ok: true,
       request: opened,
+      deadline: Date.parse(opened.expiresAt),
       view: {
         url: "https://alpha.mend.run",
         code: "ABCD-2345",
@@ -143,7 +153,13 @@ describe("awaitDeviceApproval", () => {
       "unreachable",
       { status: 200, body: approved },
     ]);
-    const result = await awaitDeviceApproval("https://x", opened, deps, () => false);
+    const result = await awaitDeviceApproval(
+      "https://x",
+      opened,
+      deps,
+      () => false,
+      Date.parse(opened.expiresAt),
+    );
     expect(result).toEqual({
       ok: true,
       url: "https://x",
@@ -166,6 +182,8 @@ describe("awaitDeviceApproval", () => {
         opened,
         scripted([{ status: 403, body: {} }]).deps,
         () => false,
+
+        Date.parse(opened.expiresAt),
       ),
     ).toEqual({ ok: false, reason: "denied in the browser; nothing was granted" });
     expect(
@@ -174,10 +192,20 @@ describe("awaitDeviceApproval", () => {
         opened,
         scripted([{ status: 410, body: {} }]).deps,
         () => false,
+
+        Date.parse(opened.expiresAt),
       ),
     ).toMatchObject({ ok: false, reason: expect.stringContaining("no longer open") });
     const { deps, sent } = scripted([]);
-    expect(await awaitDeviceApproval("https://x", opened, deps, () => true)).toEqual({
+    expect(
+      await awaitDeviceApproval(
+        "https://x",
+        opened,
+        deps,
+        () => true,
+        Date.parse(opened.expiresAt),
+      ),
+    ).toEqual({
       ok: false,
       reason: "cancelled; nothing was granted",
     });
@@ -198,7 +226,15 @@ describe("awaitDeviceApproval", () => {
         return answer;
       },
     };
-    expect(await awaitDeviceApproval("https://x", opened, wrapped, () => cancel)).toEqual({
+    expect(
+      await awaitDeviceApproval(
+        "https://x",
+        opened,
+        wrapped,
+        () => cancel,
+        Date.parse(opened.expiresAt),
+      ),
+    ).toEqual({
       ok: false,
       reason: "cancelled; the approval that arrived meanwhile was revoked",
     });
@@ -244,7 +280,15 @@ describe("awaitDeviceApproval", () => {
           return response;
         },
       };
-      expect(await awaitDeviceApproval("https://x", opened, wrapped, () => cancel)).toEqual({
+      expect(
+        await awaitDeviceApproval(
+          "https://x",
+          opened,
+          wrapped,
+          () => cancel,
+          Date.parse(opened.expiresAt),
+        ),
+      ).toEqual({
         ok: false,
         reason:
           "cancelled, but the device late approval · desktop was approved meanwhile and could not be revoked; end it under Settings → Devices",
@@ -268,7 +312,13 @@ describe("awaitDeviceApproval", () => {
 
   it("gives up at the request's expiry", async () => {
     const { deps } = scripted([]);
-    const result = await awaitDeviceApproval("https://x", opened, deps, () => false);
+    const result = await awaitDeviceApproval(
+      "https://x",
+      opened,
+      deps,
+      () => false,
+      Date.parse(opened.expiresAt),
+    );
     expect(result).toEqual({
       ok: false,
       reason: "the authorize request expired before anyone approved it",
