@@ -353,3 +353,19 @@ The verify toolkit can capture evidence without making an LLM verdict a prerequi
 candidate revision. It tests upgrade mechanics, but cannot prove compatibility with the previous
 released code and schema. The fresh-install and historical-upgrade VM lanes above are recommended
 follow-up work, not gates implemented or executed by this PR.
+
+## Provider adapter contracts and compatibility
+
+`packages/agent-protocol/test/subprocess-contracts.test.ts` always runs in the normal test lane. It
+drives Mend's Codex and Claude adapters with composed core protocol launch arguments across real
+child-process stdin/stdout pipes. Synthetic peers check turn input, approval responses, interrupt
+requests and fresh/resumed identity, and the tests release children on success, failure and scoped
+cancellation. The tests do not inspect installed provider binaries or read account credentials.
+
+This is adapter contract evidence against synthetic wire exchanges. It does not establish
+compatibility with a released provider. The former auto-detected binary smoke tests were retired:
+they could skip entirely, bypassed the adapters, and exercised only startup. FOUND-12 remains
+partial until a separate mandatory lane pins actual provider versions and drives them with isolated
+homes and owned model-server fixtures, without live accounts or paid provider requests. Engine
+workspace setup flags and platform pipe behavior also remain covered at their existing seams, not by
+this subprocess fixture.
