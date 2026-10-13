@@ -1,6 +1,12 @@
+import { execFileSync } from "node:child_process";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as nodePath from "node:path";
+
 import type { DotfilesCloner } from "@mend/sessions";
-import { Effect } from "effect";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { DotfilesStore, DotfilesStoreLive, StoreConfig } from "@mend/store";
+import { Effect, Layer } from "effect";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { createTenancyApi, type TenancyApi } from "../../test/support/tenancy-api.ts";
 import type { HarnessUser } from "../../test/support/tenancy-harness.ts";
@@ -80,20 +86,45 @@ const sync = (files: ReadonlyArray<ReturnType<typeof file>>, merge = false) => (
   merge,
 });
 
+/** Read the public archive of the same owned store the route wrote, not its summary metadata. */
+const archivedSnapshot = async (api: TenancyApi, user: HarnessUser) => {
+  const archive = await Effect.runPromise(
+    Effect.flatMap(DotfilesStore, (store) => store.archive(user)).pipe(
+      Effect.provide(DotfilesStoreLive.pipe(Layer.provide(StoreConfig.layerFor(api.world.root)))),
+    ),
+  );
+  if (archive === null) throw new Error("Missing route-created archive");
+  const out = fs.mkdtempSync(nodePath.join(os.tmpdir(), "mend-dotfiles-api-archive-"));
+  try {
+    const tarball = nodePath.join(out, "snapshot.tar.gz");
+    fs.writeFileSync(tarball, Buffer.from(archive.data, "base64"));
+    const names = execFileSync("tar", ["-tzf", tarball], { encoding: "utf8" })
+      .split("\n")
+      .filter((name) => name !== "" && !name.endsWith("/"));
+    execFileSync("tar", ["-xzf", tarball, "-C", out]);
+    return {
+      sha: archive.sha,
+      files: Object.fromEntries(
+        names.map((name): [string, string] => [
+          name,
+          fs.readFileSync(nodePath.join(out, name), "utf8"),
+        ]),
+      ),
+    };
+  } finally {
+    fs.rmSync(out, { recursive: true, force: true });
+  }
+};
+
 describe("dotfiles routes on a single-tenant instance", () => {
   let api: TenancyApi;
-  beforeAll(async () => {
+  beforeEach(async () => {
+    clones.length = 0;
     api = await createTenancyApi({}, { dotfiles: { cloner } });
   });
-  afterAll(async () => {
-    await api.dispose();
-  });
   afterEach(async () => {
+    await api.dispose();
     clones.length = 0;
-    for (const user of ["alice", "carol", "bob"] as const) {
-      await send(api, user, "PUT", "/dotfiles/repository", { repository: null });
-      await send(api, user, "DELETE", "/dotfiles/snapshot");
-    }
   });
 
   it("each account reads and changes only its own dotfiles", async () => {
@@ -156,6 +187,14 @@ describe("dotfiles routes on a single-tenant instance", () => {
     );
     expect(snapshotFiles(merged)).toEqual([".config/starship.toml", ".gitconfig", ".zshrc"]);
     expect(merged.snapshot?.files.find((entry) => entry.path === ".zshrc")?.bytes).toBe(2);
+    expect(await archivedSnapshot(api, "carol")).toEqual({
+      sha: merged.snapshot?.sha,
+      files: {
+        ".zshrc": "b\n",
+        ".gitconfig": "[user]\n",
+        ".config/starship.toml": "add_newline = false\n",
+      },
+    });
 
     const replaced = await viewOf(
       api,
@@ -165,6 +204,10 @@ describe("dotfiles routes on a single-tenant instance", () => {
       sync([file(".tmux.conf", "set -g mouse on\n")]),
     );
     expect(snapshotFiles(replaced)).toEqual([".tmux.conf"]);
+    expect(await archivedSnapshot(api, "carol")).toEqual({
+      sha: replaced.snapshot?.sha,
+      files: { ".tmux.conf": "set -g mouse on\n" },
+    });
   });
 
   it.each([
@@ -230,13 +273,12 @@ describe("dotfiles routes on a single-tenant instance", () => {
 
 describe("dotfiles routes on a multi-tenant instance", () => {
   let api: TenancyApi;
-  beforeAll(async () => {
+  beforeEach(async () => {
+    clones.length = 0;
     api = await createTenancyApi({}, { dotfiles: { cloner }, tenancy: "multi" });
   });
-  afterAll(async () => {
+  afterEach(async () => {
     await api.dispose();
-  });
-  afterEach(() => {
     clones.length = 0;
   });
 

@@ -2,7 +2,7 @@ import { ProjectId, SessionRepositoryId, Sha, type SessionId } from "@mend/domai
 import { SessionRepository, worktreeRemovalRefusalOf } from "@mend/domain/workbench";
 import { WORKTREE_STAMP } from "@mend/sessions";
 import { Effect } from "effect";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { createTenancyApi, type TenancyApi } from "../../test/support/tenancy-api.ts";
 import { ids } from "../../test/support/tenancy-harness.ts";
@@ -47,7 +47,9 @@ let removed: Array<string> = [];
 describe("DELETE /worktrees/:id with repositories added by its sessions", () => {
   let api: TenancyApi;
 
-  beforeAll(async () => {
+  beforeEach(async () => {
+    held = [];
+    removed = [];
     api = await createTenancyApi(
       {},
       {
@@ -75,13 +77,8 @@ describe("DELETE /worktrees/:id with repositories added by its sessions", () => 
     );
   });
 
-  afterAll(async () => {
+  afterEach(async () => {
     await api.dispose();
-  });
-
-  beforeEach(() => {
-    held = [];
-    removed = [];
   });
 
   const remove = (force = false) =>
@@ -152,7 +149,6 @@ describe("DELETE /worktrees/:id with repositories added by its sessions", () => 
     }
   });
 
-  // Last: it deletes the world's row.
   it("removes the worktree with force=true", async () => {
     held = [repository("core")];
     const response = await remove(true);
@@ -165,7 +161,7 @@ describe("DELETE /worktrees/:id with repositories added by its sessions", () => 
 describe("DELETE /worktrees/:id with repositories saved elsewhere", () => {
   let api: TenancyApi;
 
-  beforeAll(async () => {
+  beforeEach(async () => {
     api = await createTenancyApi(
       {},
       {
@@ -188,7 +184,7 @@ describe("DELETE /worktrees/:id with repositories saved elsewhere", () => {
     );
   });
 
-  afterAll(async () => {
+  afterEach(async () => {
     await api.dispose();
   });
 

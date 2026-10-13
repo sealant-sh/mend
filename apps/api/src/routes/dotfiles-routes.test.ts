@@ -396,7 +396,12 @@ describe("PUT /api/dotfiles/start-after-install (docs/adr/0016, decision 11)", (
         await ask("PUT", "/start-after-install", { startAgentsAfterInstall: true }),
       ).toMatchObject({ status: 200, body: { startAgentsAfterInstall: true } });
       expect(await ask("GET", "")).toMatchObject({ body: { startAgentsAfterInstall: true } });
-      expect(cell.setBy).toEqual(["user-dotfiles"]);
+      expect(
+        await ask("PUT", "/start-after-install", { startAgentsAfterInstall: false }),
+      ).toMatchObject({ status: 200, body: { startAgentsAfterInstall: false } });
+      expect(await ask("GET", "")).toMatchObject({ body: { startAgentsAfterInstall: false } });
+      expect(cell.on).toBe(false);
+      expect(cell.setBy).toEqual(["user-dotfiles", "user-dotfiles"]);
     } finally {
       await dispose();
       await runtime.dispose();
