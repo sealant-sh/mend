@@ -176,10 +176,15 @@ export const settlePending = async (ctx, waitMs = CLEANUP_WAITS.pending) => {
 // ─── the recorder ───────────────────────────────────────────────────────────
 
 export const makeRecorder = (result, log) => ({
-  /** `extra` is said of the measure once, beside its unit and budget (`cappedAtMs`). */
+  /** Metadata is set once; sampleSource is appended only with its accepted timing sample. */
   sample: (name, value, unit, budget = null, extra = null) => {
     if (typeof value !== "number" || !Number.isFinite(value)) return;
-    const measure = (result.measures[name] ??= { unit, budget, ...extra, samples: [] });
+    const { sampleSource = null, ...metadata } = extra ?? {};
+    const measure = (result.measures[name] ??= { unit, budget, ...metadata, samples: [] });
+    if (sampleSource !== null || measure.sampleSources !== undefined) {
+      measure.sampleSources ??= Array(measure.samples.length).fill(null);
+      measure.sampleSources.push(sampleSource);
+    }
     measure.samples.push(Math.round(value * 10) / 10);
   },
   note: (text) => {
@@ -311,7 +316,29 @@ const waitForOutput = async (
   while (Date.now() < deadline) {
     if (fromRecord !== null && Date.now() >= nextRecord) {
       nextRecord = Date.now() + (ctx.recordEveryMs ?? RECORD_EVERY_MS);
-      const at = await fromRecord().catch(() => null);
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) break;
+      let timer;
+      let expired = false;
+      let at;
+      try {
+        // Bound waiting, not the host command's lifetime. Consume a late rejection as well.
+        at = await Promise.race([
+          Promise.resolve()
+            .then(fromRecord)
+            .catch(() => null),
+          new Promise((resolve) => {
+            timer = setTimeout(() => {
+              expired = true;
+              resolve(null);
+            }, remaining);
+          }),
+        ]);
+      } finally {
+        clearTimeout(timer);
+      }
+      // A synchronous reader can block the event loop beyond the timer's scheduled deadline.
+      if (expired || Date.now() >= deadline) break;
       if (at !== null) return { at, value: true, limit: null };
     }
     const page = await api.get(`/processes/${processId}/logs?from=${from}&limit=500`);
@@ -509,12 +536,12 @@ export const recordInstall = (ctx, prefix, install, budget, check, label) => {
  * their own (`recordInstall`). A launch that ran no install subtracts nothing; one whose install
  * the log does not show, or shows more than once, is not run.
  */
-export const recordExcludingInstall = (ctx, name, value, budget, install) => {
+export const recordExcludingInstall = (ctx, name, value, budget, install, sampleSource = null) => {
   if (install.kind === "unknown") {
     ctx.rec.notRun(`${name}_excl_install`, install.reason);
     return;
   }
-  ctx.rec.sample(`${name}_excl_install`, value - install.ms, "ms", budget);
+  ctx.rec.sample(`${name}_excl_install`, value - install.ms, "ms", budget, { sampleSource });
 };
 
 /**
@@ -674,7 +701,11 @@ const newSession = async (ctx, harness, run) => {
   const a = 2000 + 37 * run + HARNESSES.indexOf(harness);
   const b = 3000 + 11 * run;
   const answer = String(a + b);
-  const prompt = `What is ${a} + ${b}? Reply with only the number. Do not use any tools.`;
+  const question = `What is ${a} + ${b}? Reply with only the number. Do not use any tools.`;
+  const prompt =
+    harness === "opencode"
+      ? `${question} Request marker: st-bench-request-${randomBytes(16).toString("hex")}`
+      : question;
   const name = `${PREFIX}${ctx.rid}-${harness}-${run}`;
   const { session, startedAt, createMs } = await createSession(ctx, {
     harness,
@@ -706,6 +737,7 @@ const newSession = async (ctx, harness, run) => {
   const lookup = ctx.host === null ? Promise.resolve(null) : executorOf(ctx.host, session.id);
   lookup.catch(() => {});
   // opencode's own record of the turn: when it wrote the answer (local time), or null.
+  let lastRecordAt = null;
   const opencodeRecord =
     harness === "opencode" && ctx.host !== null
       ? async () => {
@@ -713,15 +745,22 @@ const newSession = async (ctx, harness, run) => {
           if (executor === null) return null;
           const read = parseOpencodeAnswer(
             await ctx.host.shell(
-              opencodeAnswerCommand(executor, answer, Math.round(startedAt + ctx.clockOffsetMs)),
+              opencodeAnswerCommand(executor, answer, Math.round(startedAt + ctx.clockOffsetMs), {
+                runsAs: agent.runsAs,
+                prompt,
+              }),
             ),
           );
-          return read.endedAt === null ? null : read.endedAt - ctx.clockOffsetMs;
+          if (read.endedAt === null) return null;
+          lastRecordAt = read.endedAt - ctx.clockOffsetMs;
+          return lastRecordAt;
         }
       : null;
   // The answer is watched for from here, while the executor is sized beside it: the sampling
   // never delays when the answer is seen.
-  const answering = waitForAnswer(ctx, agent.id, answer, 180_000, ctx.api, opencodeRecord);
+  const answerTimeoutMs = ctx.answerTimeoutMs ?? 180_000;
+  const answerDeadline = Date.now() + answerTimeoutMs;
+  const answering = waitForAnswer(ctx, agent.id, answer, answerTimeoutMs, ctx.api, opencodeRecord);
   answering.catch(() => {});
   // Never after the answer wait: its length depends on the answer, and a missing one moved the
   // sample 3 minutes on, into the capture's staging (0.36.0-next.628, Claude at its weekly limit).
@@ -757,10 +796,13 @@ const newSession = async (ctx, harness, run) => {
   }
   ctx.log(`${harness} #${run} · first output ${(firstOutput / 1000).toFixed(1)} s`);
   const answered = await answering;
+  let answerSource = harness === "opencode" && answered.at !== null ? "terminal screen" : null;
   // opencode's answer is timed by its own record whenever it holds it, however the answer was
   // found: one clock for every round of the series, the screen's only where the record has none.
   if (opencodeRecord !== null && answered.limit === null) {
-    const recorded = await opencodeRecord().catch(() => null);
+    // A post-wait reread can refine an answer inside its window, never revive an expired wait.
+    const reread = Date.now() < answerDeadline ? await opencodeRecord().catch(() => null) : null;
+    const recorded = Date.now() < answerDeadline ? reread : null;
     if (recorded !== null) {
       if (answered.at === null) {
         ctx.rec.note(
@@ -768,18 +810,29 @@ const newSession = async (ctx, harness, run) => {
         );
       }
       answered.at = recorded;
+      answerSource = "opencode record";
+    } else if (answered.at !== null && lastRecordAt === answered.at) {
+      answerSource = "opencode record";
     } else if (answered.at !== null) {
       ctx.rec.note(
         `opencode #${run}: the answer was seen on screen but not in opencode's record; the screen's time is kept`,
       );
     }
-    ctx.result.method = { ...ctx.result.method, opencodeAnswer: "opencode's record (opencode.db)" };
   }
   // After the answer and the sizes, so it never runs inside a measured window.
   await noteHarnessVersion(ctx, container, harness, session.ownerUserId);
   if (answered.at !== null) {
-    ctx.rec.sample(`${prefix}.first_turn`, answered.at - startedAt, "ms");
-    ctx.rec.sample(`${prefix}.output_to_answer`, answered.at - outputAt, "ms");
+    if (answerSource !== null)
+      ctx.result.method = {
+        ...ctx.result.method,
+        opencodeAnswer: "timing source recorded per sample",
+      };
+    ctx.rec.sample(`${prefix}.first_turn`, answered.at - startedAt, "ms", null, {
+      sampleSource: answerSource,
+    });
+    ctx.rec.sample(`${prefix}.output_to_answer`, answered.at - outputAt, "ms", null, {
+      sampleSource: answerSource,
+    });
     if (ctx.host !== null && container !== null) {
       const after = await executorResources(ctx.host, container);
       ctx.rec.sample(
@@ -809,7 +862,14 @@ const newSession = async (ctx, harness, run) => {
   recordInstall(ctx, prefix, install, budget, `new.${harness}`, `${harness} #${run}`);
   recordExcludingInstall(ctx, `${prefix}.first_output`, firstOutput, budget, install);
   if (answered.at !== null) {
-    recordExcludingInstall(ctx, `${prefix}.first_turn`, answered.at - startedAt, budget, install);
+    recordExcludingInstall(
+      ctx,
+      `${prefix}.first_turn`,
+      answered.at - startedAt,
+      budget,
+      install,
+      answerSource,
+    );
   }
   if (container !== null && ctx.host !== null) {
     const boot = restoreOf(

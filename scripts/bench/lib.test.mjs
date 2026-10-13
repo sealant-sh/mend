@@ -4359,6 +4359,9 @@ test("an install run again with pnpm's defaults is one install from its running 
   });
 });
 
+const EARLY_REQUEST = `What is 2111 + 3036? Reply with only the number. Request marker: st-bench-request-${"a".repeat(32)}`;
+const LATE_REQUEST = `What is 2111 + 3036? Reply with only the number. Request marker: st-bench-request-${"b".repeat(32)}`;
+
 /** An opencode 1.18.34 database (its `message` and `part` tables), in WAL mode as opencode runs it. */
 const opencodeTurns = (t, rows) => {
   const directory = mkdtempSync(path.join(tmpdir(), "st-bench-opencode-"));
@@ -4379,15 +4382,26 @@ const opencodeTurns = (t, rows) => {
   db.exec(
     "create table part (id text primary key, message_id text not null, session_id text not null, time_created integer not null, time_updated integer not null, data text not null)",
   );
+  db.exec("create table session (id text primary key, parent_id text, directory text not null)");
+  db.prepare("insert into session values ('s', null, '/workspace/repo')").run();
   // Persist only the schema: all following answer rows remain in the live writer's WAL.
   db.exec("pragma wal_checkpoint(TRUNCATE)");
+  if (!rows.some((row) => row.role === "user")) {
+    db.prepare("insert into message values ('request-late', 's', 5500, 5500, ?)").run(
+      JSON.stringify({ role: "user", time: { created: 5500 } }),
+    );
+    db.prepare("insert into part values ('request-part', 'request-late', 's', 5500, 5500, ?)").run(
+      JSON.stringify({ type: "text", text: LATE_REQUEST }),
+    );
+  }
   for (const [index, row] of rows.entries()) {
     db.prepare("insert into message values (?, 's', ?, ?, ?)").run(
-      `m${index}`,
+      row.id ?? `m${index}`,
       row.at,
       row.at,
       JSON.stringify({
         role: row.role,
+        parentID: row.at < 5000 ? "request-early" : "request-late",
         time: { created: row.at, completed: row.at + 75 },
         finish: "stop",
         ...row.message,
@@ -4395,7 +4409,7 @@ const opencodeTurns = (t, rows) => {
     );
     db.prepare("insert into part values (?, ?, 's', ?, ?, ?)").run(
       `p${index}`,
-      `m${index}`,
+      row.id ?? `m${index}`,
       row.at,
       row.at + 100,
       JSON.stringify({
@@ -4410,18 +4424,32 @@ const opencodeTurns = (t, rows) => {
   return { directory, file, db };
 };
 
-const readOpencodeAnswer = (file, answer, since) =>
+const readOpencodeAnswer = (
+  file,
+  answer,
+  since,
+  request = since < 5000 ? EARLY_REQUEST : LATE_REQUEST,
+) =>
   parseOpencodeAnswer(
     execFileSync(process.execPath, ["-e", OPENCODE_ANSWER_JS], {
-      env: { ...process.env, ST_ANSWER: answer, ST_SINCE: String(since), ST_DATABASES: file },
+      env: {
+        ...process.env,
+        ST_ANSWER: answer,
+        ST_SINCE: String(since),
+        ST_DATABASE: file,
+        // Keep baseline red runs confined to the same owned fixture; the new reader ignores this.
+        ST_DATABASES: file,
+        ST_REQUEST_HEX: Buffer.from(request).toString("hex"),
+      },
       encoding: "utf8",
     }),
   );
 
 test("opencode's answer is read from its record, the assistant's text only, from the turn on", (t) => {
   const { directory, file, db } = opencodeTurns(t, [
-    { role: "user", at: 1000, text: "What is 2111 + 3036? Reply with only the number. 5147" },
+    { id: "request-early", role: "user", at: 1000, text: EARLY_REQUEST },
     { role: "assistant", at: 2000, text: "5,147" },
+    { id: "request-late", role: "user", at: 8000, text: LATE_REQUEST },
     { role: "assistant", at: 9000, text: "5147" },
   ]);
   assert.equal(db.prepare("pragma wal_autocheckpoint").get().wal_autocheckpoint, 0);
@@ -4460,12 +4488,14 @@ test("opencode's answer is read from its record, the assistant's text only, from
   );
   assert.match(parseOpencodeAnswer("garbage").reason, /could not be read/);
   // The host command takes a container name, an answer of digits and a time, nothing else.
-  const command = opencodeAnswerCommand("sealant-abc_1", "5147", 1234);
-  assert.match(command, /^docker exec -e ST_ANSWER=5147 -e ST_SINCE=1234 sealant-abc_1 node -e /);
-  assert.equal(
-    Buffer.from(/printf %s '([^']+)'/.exec(command)[1], "base64").toString("utf8"),
-    OPENCODE_ANSWER_JS,
-  );
+  const command = opencodeAnswerCommand("sealant-abc_1", "5147", 1234, {
+    runsAs: null,
+    prompt: LATE_REQUEST,
+  });
+  execFileSync("sh", ["-n", "-c", command]);
+  assert.match(command, /^docker exec sealant-abc_1 sh -c /);
+  assert.ok(command.includes("ST_ANSWER=5147 ST_SINCE=1234"));
+  assert.ok(command.includes(Buffer.from(OPENCODE_ANSWER_JS, "utf8").toString("base64")));
   assert.throws(() => opencodeAnswerCommand("a;b", "1", 1), /not a container name/);
   assert.throws(() => opencodeAnswerCommand("c", "1;rm", 1), /not an answer/);
 });
@@ -4590,4 +4620,713 @@ test("an answer the screen never shows whole is found in the record once the scr
   );
   assert.notEqual(shown.at, null);
   assert.equal(untouched, 0);
+});
+/** Independent opencode request/session rows, including SQL identities omitted from JSON data. */
+const ownedOpencodeTurn = (t, options = {}) => {
+  const directory = mkdtempSync(path.join(tmpdir(), "st-bench-owned-opencode-"));
+  const file = path.join(directory, "opencode.db");
+  const db = new DatabaseSync(file);
+  t.after(() => {
+    db.close();
+    rmSync(directory, { recursive: true, force: true });
+  });
+  db.exec(
+    "pragma journal_mode=wal; pragma wal_autocheckpoint=0; create table session(id text primary key,parent_id text,directory text); create table message(id text primary key,session_id text,time_created integer,time_updated integer,data text); create table part(id text primary key,message_id text,session_id text,time_updated integer,data text); pragma wal_checkpoint(TRUNCATE);",
+  );
+  db.prepare("insert into session values(?,?,?)").run(
+    "owned",
+    options.sessionParent ?? null,
+    options.directory ?? "/workspace/repo",
+  );
+  db.prepare("insert into session values('foreign',null,'/workspace/repo')").run();
+  const userAt = options.userAt ?? 5500;
+  const user = options.userData ?? { role: "user", time: { created: userAt } };
+  db.prepare("insert into message values('user-owned','owned',?,?,?)").run(
+    userAt,
+    userAt,
+    typeof user === "string" ? user : JSON.stringify(user),
+  );
+  const userPart = options.userPart ?? { type: "text", text: options.prompt ?? LATE_REQUEST };
+  db.prepare("insert into part values('user-part','user-owned',?,?,?)").run(
+    options.userPartSession ?? "owned",
+    userAt,
+    typeof userPart === "string" ? userPart : JSON.stringify(userPart),
+  );
+  const assistantAt = options.assistantAt ?? 6000;
+  const assistant = options.assistantData ?? {
+    role: "assistant",
+    parentID: options.parentID ?? "user-owned",
+    time: { created: assistantAt, completed: assistantAt + 75 },
+    finish: "stop",
+  };
+  db.prepare("insert into message values('assistant',?,?,?,?)").run(
+    options.assistantSession ?? "owned",
+    assistantAt,
+    assistantAt + 75,
+    typeof assistant === "string" ? assistant : JSON.stringify(assistant),
+  );
+  const part = options.assistantPart ?? {
+    type: "text",
+    text: "5147",
+    time: { start: assistantAt, end: assistantAt + 50 },
+  };
+  db.prepare("insert into part values('assistant-part','assistant',?,?,?)").run(
+    options.partSession ?? "owned",
+    assistantAt + 100,
+    typeof part === "string" ? part : JSON.stringify(part),
+  );
+  if (options.duplicate) {
+    db.prepare("insert into message values('user-duplicate','foreign',5600,5600,?)").run(
+      JSON.stringify({ role: "user", time: { created: 5600 } }),
+    );
+    db.prepare("insert into part values('duplicate-part','user-duplicate','foreign',5600,?)").run(
+      JSON.stringify({ type: "text", text: LATE_REQUEST }),
+    );
+  }
+  return { directory, file, db };
+};
+
+test("opencode answers belong to a unique marked user request and its native session", (t) => {
+  const positive = ownedOpencodeTurn(t);
+  const before = [positive.file, `${positive.file}-wal`].map((file) => readFileSync(file));
+  assert.deepEqual(readOpencodeAnswer(positive.file, "5147", 5000), {
+    endedAt: 6050,
+    reason: null,
+  });
+  assert.deepEqual(
+    [positive.file, `${positive.file}-wal`].map((file) => readFileSync(file)),
+    before,
+  );
+  const invalid = [
+    { assistantSession: "foreign", partSession: "foreign" },
+    { userPartSession: "foreign" },
+    { partSession: "foreign" },
+    { parentID: "another-request" },
+    { userAt: 4500 },
+    { assistantAt: 5000 },
+    { prompt: `${LATE_REQUEST} changed` },
+    { sessionParent: "parent-conversation" },
+    { directory: "/workspace/other-repository" },
+    { userData: { role: "assistant", time: { created: 5500 } } },
+    { userPart: { type: "tool", text: LATE_REQUEST } },
+    {
+      assistantData: {
+        role: "user",
+        parentID: "user-owned",
+        finish: "stop",
+        time: { created: 6000, completed: 6075 },
+      },
+    },
+    { assistantPart: { type: "reasoning", text: "5147", time: { start: 6000, end: 6050 } } },
+    { duplicate: true },
+    { userData: "not json" },
+    { userPart: "not json" },
+    { assistantData: "not json" },
+    { assistantPart: "not json" },
+  ];
+  for (const [index, options] of invalid.entries()) {
+    const fixture = ownedOpencodeTurn(t, options);
+    assert.equal(
+      readOpencodeAnswer(fixture.file, "5147", 5000).endedAt,
+      null,
+      `unowned/ambiguous/malformed fixture ${index}`,
+    );
+  }
+});
+
+test("opencode command refuses unknown accounts and unmarked requests before any host execution", () => {
+  for (const runsAs of [undefined, "", ".", "..", "acc/other", "acc;echo", 123])
+    assert.throws(
+      () => opencodeAnswerCommand("sealant-owned", "5147", 5000, { runsAs, prompt: LATE_REQUEST }),
+      /account is not known/,
+    );
+  assert.throws(() => opencodeAnswerCommand("sealant-owned", "5147", 5000), /account is not known/);
+  assert.throws(
+    () =>
+      opencodeAnswerCommand("sealant-owned", "5147", 5000, { runsAs: null, prompt: "unmarked" }),
+    /marked request/,
+  );
+});
+
+test("the owning recorder appends timing sources only with accepted samples and derived timings", () => {
+  const result = { measures: {}, notes: [], notRun: [], errors: [] };
+  const rec = makeRecorder(result, () => {});
+  rec.sample("new.opencode.first_turn", null, "ms", null, { sampleSource: "opencode record" });
+  rec.sample("new.opencode.first_turn", 10, "ms", null, { sampleSource: "terminal screen" });
+  rec.sample("new.opencode.first_turn", Number.NaN, "ms", null, {
+    sampleSource: "opencode record",
+  });
+  rec.sample("new.opencode.first_turn", 20, "ms", null, { sampleSource: "opencode record" });
+  rec.sample("new.opencode.first_turn", 30, "ms");
+  assert.deepEqual(result.measures["new.opencode.first_turn"].samples, [10, 20, 30]);
+  assert.deepEqual(result.measures["new.opencode.first_turn"].sampleSources, [
+    "terminal screen",
+    "opencode record",
+    null,
+  ]);
+  recordExcludingInstall(
+    { rec },
+    "new.opencode.first_turn",
+    100,
+    "start",
+    { kind: "skipped", ms: 10 },
+    "terminal screen",
+  );
+  recordExcludingInstall(
+    { rec },
+    "new.opencode.first_turn",
+    null,
+    "start",
+    { kind: "unknown", reason: "not observed" },
+    "opencode record",
+  );
+  assert.deepEqual(result.measures["new.opencode.first_turn_excl_install"].samples, [90]);
+  assert.deepEqual(result.measures["new.opencode.first_turn_excl_install"].sampleSources, [
+    "terminal screen",
+  ]);
+});
+
+test("opencode generated commands read only the observed account or explicit shared database", (t) => {
+  const owned = ownedOpencodeTurn(t);
+  const foreign = ownedOpencodeTurn(t, { prompt: `${LATE_REQUEST} foreign` });
+  const root = mkdtempSync(path.join(tmpdir(), "st-bench-docker-reader-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const calls = path.join(root, "calls.jsonl");
+  const uid = String(process.getuid());
+  writeFileSync(
+    path.join(root, "docker"),
+    `#!${process.execPath}
+const fs = require('node:fs');
+const {spawnSync} = require('node:child_process');
+const a = process.argv.slice(2);
+fs.appendFileSync(process.env.FIXTURE_CALLS, JSON.stringify(a)+'\\n');
+if (a[0] !== 'exec') process.exit(91);
+if (a[2] === 'stat') {
+  if (a.slice(2).join(' ') !== 'stat -c %u /workspace/harness-home/people/acc-owned') process.exit(92);
+  if (process.env.FIXTURE_ABSENT !== '1') process.stdout.write(process.env.FIXTURE_UID+'\\n');
+  process.exit(0);
+}
+const personal = a[1] === '-u';
+if (personal && a[2] !== process.env.FIXTURE_UID) process.exit(93);
+const command = a.slice(personal ? 4 : 2);
+if (command[0] !== 'sh' || command[1] !== '-c') process.exit(94);
+const expected = personal ? '/workspace/harness-home/people/acc-owned/.local/share/opencode/opencode.db' : '/root/.local/share/opencode/opencode.db';
+let script = command[2];
+// Map only the declared container pathname; execute the actual generated reader, not an oracle.
+if (!script.includes(expected)) process.exit(95);
+script = script.replaceAll(expected, personal ? process.env.FIXTURE_OWNED : process.env.FIXTURE_FOREIGN);
+const result = spawnSync('sh', ['-c', script, ...command.slice(3)], {encoding:'utf8', env:{...process.env, ST_DATABASES:process.env.FIXTURE_FOREIGN}});
+process.stdout.write(result.stdout || ''); process.stderr.write(result.stderr || ''); process.exit(result.status ?? 96);
+`,
+  );
+  chmodSync(path.join(root, "docker"), 0o755);
+  const run = (runsAs, absent = false, sharedFile = foreign.file, personalFile = owned.file) =>
+    spawnSync(
+      "sh",
+      [
+        "-c",
+        opencodeAnswerCommand("sealant-owned", "5147", 5000, { runsAs, prompt: LATE_REQUEST }),
+      ],
+      {
+        env: {
+          PATH: `${root}:${process.env.PATH}`,
+          FIXTURE_CALLS: calls,
+          FIXTURE_UID: uid,
+          FIXTURE_OWNED: personalFile,
+          FIXTURE_FOREIGN: sharedFile,
+          FIXTURE_ABSENT: absent ? "1" : "0",
+        },
+        encoding: "utf8",
+        timeout: 10_000,
+      },
+    );
+  const original = [owned.file, `${owned.file}-wal`, foreign.file, `${foreign.file}-wal`].map((f) =>
+    readFileSync(f),
+  );
+  const personal = run("acc-owned");
+  assert.equal(personal.status, 0, personal.stderr);
+  assert.deepEqual(parseOpencodeAnswer(personal.stdout), { endedAt: 6050, reason: null });
+  const shared = run(null);
+  assert.equal(shared.status, 0, shared.stderr);
+  assert.equal(parseOpencodeAnswer(shared.stdout).endedAt, null);
+  const sharedPositive = run(null, false, owned.file);
+  assert.equal(sharedPositive.status, 0, sharedPositive.stderr);
+  assert.deepEqual(parseOpencodeAnswer(sharedPositive.stdout), { endedAt: 6050, reason: null });
+  // A matching answer in the shared account must not rescue a different personal request.
+  const foreignMatch = run("acc-owned", false, owned.file, foreign.file);
+  assert.equal(foreignMatch.status, 0, foreignMatch.stderr);
+  assert.equal(parseOpencodeAnswer(foreignMatch.stdout).endedAt, null);
+  const beforeAbsent = readFileSync(calls, "utf8").trim().split("\n").length;
+  const absent = run("acc-owned", true);
+  assert.equal(absent.status, 0, absent.stderr);
+  assert.equal(parseOpencodeAnswer(absent.stdout).endedAt, null);
+  const argv = readFileSync(calls, "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  assert.deepEqual(argv[0], [
+    "exec",
+    "sealant-owned",
+    "stat",
+    "-c",
+    "%u",
+    "/workspace/harness-home/people/acc-owned",
+  ]);
+  assert.deepEqual(argv[1].slice(0, 6), ["exec", "-u", uid, "sealant-owned", "sh", "-c"]);
+  assert.match(
+    argv[1][6],
+    /\/workspace\/harness-home\/people\/acc-owned\/\.local\/share\/opencode\/opencode\.db/,
+  );
+  assert.deepEqual(argv[2].slice(0, 4), ["exec", "sealant-owned", "sh", "-c"]);
+  assert.match(argv[2][4], /\/root\/\.local\/share\/opencode\/opencode\.db/);
+  assert.equal(argv.length, beforeAbsent + 1, "absent saved directory never starts a reader");
+  assert.deepEqual(
+    [owned.file, `${owned.file}-wal`, foreign.file, `${foreign.file}-wal`].map((f) =>
+      readFileSync(f),
+    ),
+    original,
+  );
+});
+
+test("rerunning a measure keeps timing sources attached to precisely its replacement samples", () => {
+  const base = ofWorkload({
+    method: { opencodeAnswer: "opencode's record (opencode.db)" },
+    measures: {
+      "new.opencode.first_turn": {
+        unit: "ms",
+        samples: [10, 20],
+        sampleSources: ["terminal screen", "opencode record"],
+      },
+      "new.opencode.output_to_answer": {
+        unit: "ms",
+        samples: [5],
+        sampleSources: ["terminal screen"],
+      },
+    },
+    notRun: [],
+    notes: [],
+    errors: [],
+    checks: [],
+  });
+  const later = ofWorkload({
+    measures: {
+      "new.opencode.first_turn": { unit: "ms", samples: [30], sampleSources: ["opencode record"] },
+    },
+    notRun: [],
+    notes: [],
+    errors: [],
+    checks: [],
+  });
+  const merged = mergeResults(base, later, (name) => name === "new.opencode.first_turn");
+  assert.equal(merged.method.opencodeAnswer, "timing source recorded per sample");
+  assert.deepEqual(merged.measures["new.opencode.first_turn"].samples, [30]);
+  assert.deepEqual(merged.measures["new.opencode.first_turn"].sampleSources, ["opencode record"]);
+  assert.deepEqual(merged.measures["new.opencode.output_to_answer"].samples, [5]);
+  assert.deepEqual(merged.measures["new.opencode.output_to_answer"].sampleSources, [
+    "terminal screen",
+  ]);
+});
+
+/** Drive the public scenario runner against a recording API and synthetic host, without services. */
+const answerScenario = async ({
+  sources = ["screen"],
+  harness = "opencode",
+  runsAs = "acc-owned",
+  host = true,
+  answerTimeoutMs,
+} = {}) => {
+  const result = {
+    startedAt: new Date().toISOString(),
+    target: { harnessVersions: { opencode: "1.18.34", codex: "0.160.0" } },
+    measures: {},
+    notes: [],
+    notRun: [],
+    errors: [],
+    checks: [],
+  };
+  const prompts = [],
+    commands = [];
+  let session,
+    agent,
+    source,
+    answer,
+    recordReads = 0;
+  const api = {
+    call: async (_method, route, payload) => {
+      if (route.endsWith("/sessions")) {
+        session = {
+          id: `session-${prompts.length}`,
+          ownerUserId: "acc-owned",
+          worktree: payload.name,
+          worktreeId: `worktree-${prompts.length}`,
+          harness,
+          sealantWorkspaceId: null,
+          status: "running",
+          settledAt: null,
+        };
+        source = sources[prompts.length];
+        recordReads = 0;
+        return { value: session, ms: 1 };
+      }
+      if (route.endsWith("/launch")) {
+        prompts.push(payload.prompt);
+        const [a, b] = /What is (\d+) \+ (\d+)/.exec(payload.prompt).slice(1).map(Number);
+        answer = String(a + b);
+        const agentTime = new Date().toISOString();
+        agent = { id: "process", createdAt: agentTime, firstOutputAt: agentTime, runsAs };
+        return { value: {}, ms: 1 };
+      }
+      if (route.endsWith("/stop")) {
+        session = { ...session, status: "stopped", settledAt: new Date().toISOString() };
+        return { value: {}, ms: 1 };
+      }
+      throw new Error(`Unexpected call ${route}`);
+    },
+    get: async (route) => {
+      if (route.startsWith("/processes/"))
+        return {
+          chunks: ["absent", "late record"].includes(source)
+            ? []
+            : [{ dataBase64: Buffer.from(answer).toString("base64") }],
+          nextFrom: null,
+          status: source === "absent" ? "exited" : "running",
+        };
+      if (route.startsWith("/sessions/")) return { session, currentAgent: agent };
+      if (route.startsWith("/worktrees/")) return { sessions: [] };
+      throw new Error(`Unexpected get ${route}`);
+    },
+    delete: async () => ({}),
+  };
+  const ctx = {
+    api,
+    api2: null,
+    host: host
+      ? {
+          shell: async (command) => {
+            commands.push(command);
+            if (command.startsWith("for c in")) return "sealant-owned\n";
+            if (
+              command.includes("stat -c %u /workspace/harness-home/people/acc-owned") ||
+              command.includes("ST_ANSWER=")
+            ) {
+              recordReads += 1;
+              if (source === "late record") {
+                await sleepMs(80);
+                return JSON.stringify({ endedAt: Date.now() });
+              }
+              const found =
+                source === "record" || (source === "cached record" && recordReads === 1);
+              return JSON.stringify({
+                endedAt: found ? Date.parse(agent.firstOutputAt) + 2 : null,
+              });
+            }
+            return "";
+          },
+          follow: () => ({ stop: async () => "" }),
+        }
+      : null,
+    opts: {
+      only: ["new"],
+      harnesses: [harness],
+      runs: sources.length,
+      layout: "person",
+      secretFile: null,
+      mendContainer: "mend",
+      resumesPerRun: 0,
+    },
+    rid: "synthetic-owner",
+    project: { id: "project" },
+    clockOffsetMs: 0,
+    created: { sessions: new Set(), worktrees: new Map(), remoteRefs: new Set() },
+    result,
+    log: () => {},
+    rec: makeRecorder(result, () => {}),
+    answerTimeoutMs,
+    recordAfterMs: sources.some((value) => ["cached record", "late record"].includes(value))
+      ? 0
+      : 30_000,
+  };
+  await runAll(ctx);
+  assert.deepEqual(result.errors, []);
+  return { result, prompts, commands };
+};
+
+test("new opencode requests carry fresh markers and truthful per-sample screen/record sources", async () => {
+  const { result, prompts, commands } = await answerScenario({
+    sources: ["screen", "record", "screen"],
+  });
+  const markers = prompts.map(
+    (prompt) => /Request marker: (st-bench-request-[0-9a-f]{32})$/.exec(prompt)?.[1],
+  );
+  assert.equal(markers.length, 3);
+  assert.ok(markers.every((marker) => marker !== undefined));
+  assert.equal(new Set(markers).size, 3);
+  assert.ok(
+    prompts.every((prompt) =>
+      /^What is \d+ \+ \d+\? Reply with only the number\. Do not use any tools\./.test(prompt),
+    ),
+  );
+  assert.equal(result.method.opencodeAnswer, "timing source recorded per sample");
+  for (const name of ["first_turn", "output_to_answer"]) {
+    const measure = result.measures[`new.opencode.${name}`];
+    assert.equal(measure.samples.length, 3);
+    assert.deepEqual(measure.sampleSources, [
+      "terminal screen",
+      "opencode record",
+      "terminal screen",
+    ]);
+  }
+  // The exact launch text travels to the reader, rather than another session's provider id.
+  const readerCommands = commands.filter((command) =>
+    command.includes("stat -c %u /workspace/harness-home/people/acc-owned"),
+  );
+  assert.equal(readerCommands.length, 3);
+  for (const [index, command] of readerCommands.entries()) {
+    const encoded = /printf %s '([^']+)'/.exec(command)?.[1];
+    assert.ok(encoded);
+    const script = Buffer.from(encoded, "base64").toString("utf8");
+    assert.ok(script.includes(`ST_REQUEST_HEX=${Buffer.from(prompts[index]).toString("hex")}`));
+  }
+  const codex = await answerScenario({ harness: "codex" });
+  assert.equal(
+    codex.prompts[0],
+    "What is 2038 + 3011? Reply with only the number. Do not use any tools.",
+  );
+  assert.equal(codex.result.method.opencodeAnswer, undefined);
+});
+
+test("opencode keeps a previously observed record source when the final reread is unavailable", async () => {
+  const { result } = await answerScenario({ sources: ["cached record"] });
+  assert.deepEqual(result.measures["new.opencode.first_turn"].sampleSources, ["opencode record"]);
+});
+
+test("opencode screen fallback needs no known account/host and absent answers create no source", async () => {
+  for (const options of [{ host: false }, { runsAs: "" }]) {
+    const { result, commands } = await answerScenario(options);
+    const timing = Object.entries(result.measures).find(([name]) =>
+      name.endsWith(".first_turn"),
+    )?.[1];
+    assert.deepEqual(timing.sampleSources, ["terminal screen"]);
+    assert.ok(
+      !commands.some((command) => command.includes("stat -c %u /workspace/harness-home/people/")),
+    );
+  }
+  const { result } = await answerScenario({ sources: ["absent"] });
+  assert.equal(result.measures["new.opencode.first_turn"], undefined);
+  assert.equal(result.method.opencodeAnswer, undefined);
+});
+
+const answerWaitContext = () => ({ result: { target: { harnessVersions: {} } }, recordAfterMs: 0 });
+
+test("answer waits continue after record errors, stop on usage limits/exit, and preserve completed answers", async () => {
+  let failedReads = 0;
+  const errors = await waitForAnswer(
+    answerWaitContext(),
+    "process",
+    "5147",
+    1000,
+    {
+      get: async () => ({
+        chunks: [{ dataBase64: Buffer.from("5147").toString("base64") }],
+        nextFrom: null,
+        status: "running",
+      }),
+    },
+    async () => {
+      failedReads += 1;
+      throw new Error("synthetic reader unavailable");
+    },
+  );
+  assert.notEqual(errors.at, null);
+  assert.equal(failedReads, 1);
+  for (const [status, text, limit] of [
+    ["running", "You've hit your weekly limit", "You've hit your weekly limit"],
+    ["exited", "no answer", null],
+  ]) {
+    let reads = 0;
+    const result = await waitForAnswer(
+      answerWaitContext(),
+      "process",
+      "5147",
+      1000,
+      {
+        get: async () => {
+          reads += 1;
+          return {
+            chunks: [{ dataBase64: Buffer.from(text).toString("base64") }],
+            nextFrom: null,
+            status,
+          };
+        },
+      },
+      async () => null,
+    );
+    assert.deepEqual(result, { at: null, value: null, limit });
+    assert.equal(reads, 1);
+  }
+  const exitedAnswer = await waitForAnswer(answerWaitContext(), "process", "5147", 1000, {
+    get: async () => ({
+      chunks: [{ dataBase64: Buffer.from("5147").toString("base64") }],
+      nextFrom: null,
+      status: "exited",
+    }),
+  });
+  assert.notEqual(
+    exitedAnswer.at,
+    null,
+    "the completed answer in a final exited page remains observable",
+  );
+  let called = false;
+  const expired = await waitForAnswer(
+    answerWaitContext(),
+    "process",
+    "5147",
+    0,
+    {
+      get: async () => {
+        called = true;
+        throw new Error("expired waits must not fetch");
+      },
+    },
+    async () => {
+      called = true;
+      return 6050;
+    },
+  );
+  assert.deepEqual(expired, { at: null, value: null, limit: null });
+  assert.equal(called, false);
+  const noAnswer = await waitForAnswer(
+    answerWaitContext(),
+    "process",
+    "5147",
+    1,
+    { get: async () => ({ chunks: [], nextFrom: null, status: "running" }) },
+    async () => null,
+  );
+  assert.deepEqual(noAnswer, { at: null, value: null, limit: null });
+});
+
+test("record callbacks cannot extend the answer deadline or trigger a poll after it expires", async () => {
+  const ctx = { result: { target: { harnessVersions: {} } }, recordAfterMs: 0 };
+  let polls = 0;
+  const api = {
+    get: async () => {
+      polls += 1;
+      return { chunks: [], nextFrom: null, status: "running" };
+    },
+  };
+  const empty = { at: null, value: null, limit: null };
+  let release;
+  const late = new Promise((resolve) => {
+    release = resolve;
+  });
+  let guard;
+  try {
+    const guarded = new Promise((_, reject) => {
+      guard = setTimeout(
+        () => reject(new Error("answer deadline did not return while its reader remained pending")),
+        1000,
+      );
+    });
+    assert.deepEqual(
+      await Promise.race([waitForAnswer(ctx, "process", "5147", 20, api, () => late), guarded]),
+      empty,
+    );
+  } finally {
+    clearTimeout(guard);
+    release(Date.now());
+  }
+  assert.equal(polls, 0);
+  // Synchronous work delays the event loop, so the timer alone cannot reject this late result.
+  const blocking = await waitForAnswer(ctx, "process", "5147", 10, api, () => {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 30);
+    return Promise.resolve(Date.now());
+  });
+  assert.deepEqual(blocking, empty);
+  assert.equal(polls, 0);
+  let rejectLate;
+  const rejection = new Promise((_, reject) => {
+    rejectLate = reject;
+  });
+  assert.deepEqual(await waitForAnswer(ctx, "process", "5147", 20, api, () => rejection), empty);
+  rejectLate(new Error("late synthetic host failure"));
+  await sleepMs(0);
+  assert.equal(polls, 0);
+});
+
+test("successful record callbacks release their deadline timer so a native reader process can exit", () => {
+  const source = new URL("./scenarios.mjs", import.meta.url).href;
+  const output = execFileSync(
+    process.execPath,
+    [
+      "--input-type=module",
+      "-e",
+      `
+import { waitForAnswer } from ${JSON.stringify(source)};
+const ctx = { result: { target: { harnessVersions: {} } }, recordAfterMs: 0 };
+const result = await waitForAnswer(ctx, "synthetic", "5147", 10_000, { get: async () => { throw new Error("record answer should not poll"); } }, async () => 6050);
+console.log(JSON.stringify(result));
+`,
+    ],
+    { encoding: "utf8", timeout: 2000 },
+  );
+  assert.deepEqual(JSON.parse(output), { at: 6050, value: true, limit: null });
+});
+
+test("malformed or absent owned SQLite files yield no timing evidence without touching them", (t) => {
+  const root = mkdtempSync(path.join(tmpdir(), "st-bench-broken-db-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const file = path.join(root, "opencode.db");
+  writeFileSync(file, "synthetic non-SQLite bytes\n");
+  const before = readFileSync(file);
+  assert.equal(readOpencodeAnswer(file, "5147", 5000).endedAt, null);
+  assert.deepEqual(readFileSync(file), before);
+  assert.equal(readOpencodeAnswer(path.join(root, "absent.db"), "5147", 5000).endedAt, null);
+});
+
+test("a new opencode scenario never revives an expired wait with its final record reread", async () => {
+  const { result, commands } = await answerScenario({
+    sources: ["late record"],
+    answerTimeoutMs: 20,
+  });
+  assert.equal(result.measures["new.opencode.first_turn"], undefined);
+  assert.equal(result.method.opencodeAnswer, undefined);
+  assert.equal(
+    commands.filter((command) =>
+      command.includes("stat -c %u /workspace/harness-home/people/acc-owned"),
+    ).length,
+    1,
+  );
+  // The independently bounded host command may settle later; it must not mutate the result.
+  await sleepMs(100);
+  assert.equal(result.measures["new.opencode.first_turn"], undefined);
+});
+
+test("legacy rerun merges replace the uniform record label without inventing sources for old samples", () => {
+  const legacy = ofWorkload({
+    method: { opencodeAnswer: "opencode's record (opencode.db)" },
+    measures: {
+      "new.opencode.first_turn": { unit: "ms", samples: [10] },
+      "new.opencode.output_to_answer": { unit: "ms", samples: [5] },
+    },
+    notRun: [],
+    notes: [],
+    errors: [],
+    checks: [],
+  });
+  const screenRerun = ofWorkload({
+    measures: {
+      "new.opencode.first_turn": { unit: "ms", samples: [30], sampleSources: ["terminal screen"] },
+    },
+    notRun: [],
+    notes: [],
+    errors: [],
+    checks: [],
+  });
+  const merged = mergeResults(legacy, screenRerun, (name) => name === "new.opencode.first_turn");
+  assert.equal(merged.method.opencodeAnswer, "timing source recorded per sample");
+  assert.deepEqual(merged.measures["new.opencode.first_turn"].samples, [30]);
+  assert.deepEqual(merged.measures["new.opencode.first_turn"].sampleSources, ["terminal screen"]);
+  assert.deepEqual(merged.measures["new.opencode.output_to_answer"].samples, [5]);
+  assert.equal(merged.measures["new.opencode.output_to_answer"].sampleSources, undefined);
 });

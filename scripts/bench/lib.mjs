@@ -109,52 +109,77 @@ export const MEMORY_STAT_SH = [
  * change, so an answer whose digits share cells with what was on screen never appears whole in
  * the stream (the same answers missed in both layouts, round after round: 0.36.0-next.652, 708,
  * 754). The database is copied (with its log) before it is opened, so opencode's own file is only
- * read. Environment: `ST_ANSWER` (digits), `ST_SINCE` (server milliseconds: parts older are
- * another turn's). Only a successful completed assistant message containing the requested number
- * alone counts; plain digits or correctly grouped thousands are accepted. `ST_DATABASES` takes
- * colon-separated paths in tests only. Prints one JSON line:
+ * read. Environment: `ST_ANSWER` (digits), `ST_SINCE` (server milliseconds), `ST_REQUEST_HEX`
+ * (exact marked user prompt) and `ST_DATABASE` (one observed account's database). A unique marked
+ * user turn in a top-level repository conversation owns the answer through its parent id.
+ * Only a successful completed assistant message containing the requested number
+ * alone counts; plain digits or correctly grouped thousands are accepted. Prints one JSON line:
  * `{"endedAt": <ms>|null, "databases": n}`, or `{"unavailable": "<why>"}`.
  */
 export const OPENCODE_ANSWER_JS = [
   'const fs = require("node:fs"); const os = require("node:os"); const path = require("node:path");',
   'let sqlite; try { sqlite = require("node:sqlite"); } catch { console.log(JSON.stringify({ unavailable: "node has no node:sqlite" })); process.exit(0); }',
   'const answer = process.env.ST_ANSWER || ""; const since = Number(process.env.ST_SINCE || 0);',
+  'const encoded = process.env.ST_REQUEST_HEX || ""; const file = process.env.ST_DATABASE || "";',
   'if (!/^\\d+$/.test(answer) || !Number.isSafeInteger(since) || since < 0) { console.log(JSON.stringify({ unavailable: "invalid answer or time" })); process.exit(0); }',
-  "const found = new Set(); const add = (file) => { try { found.add(fs.realpathSync(file)); } catch {} };",
-  'if (process.env.ST_DATABASES) { for (const file of process.env.ST_DATABASES.split(":")) add(file); } else {',
-  '  add("/root/.local/share/opencode/opencode.db");',
-  '  for (const home of (() => { try { return fs.readdirSync("/home"); } catch { return []; } })()) add(path.join("/home", home, ".local/share/opencode/opencode.db"));',
-  "}",
-  "let endedAt = null;",
-  "for (const file of found) {",
-  '  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "st-bench-opencode-"));',
+  'if (!/^(?:[0-9a-f]{2})+$/.test(encoded) || file === "") { console.log(JSON.stringify({ unavailable: "marked request or database absent" })); process.exit(0); }',
+  'const request = Buffer.from(encoded, "hex").toString("utf8");',
+  'if (!/st-bench-request-[0-9a-f]{32}/.test(request)) { console.log(JSON.stringify({ unavailable: "request marker absent" })); process.exit(0); }',
+  "if (!fs.existsSync(file)) { console.log(JSON.stringify({ endedAt: null, databases: 0 })); process.exit(0); }",
+  'let endedAt = null, unavailable = null; const dir = fs.mkdtempSync(path.join(os.tmpdir(), "st-bench-opencode-"));',
+  'try { const copy = path.join(dir, "opencode.db"); fs.copyFileSync(file, copy);',
+  '  try { fs.copyFileSync(file + "-wal", copy + "-wal"); } catch (e) { if (e.code !== "ENOENT") throw e; }',
+  "  const db = new sqlite.DatabaseSync(copy);",
   "  try {",
-  '    const copy = path.join(dir, "opencode.db"); fs.copyFileSync(file, copy);',
-  '    try { fs.copyFileSync(file + "-wal", copy + "-wal"); } catch {}',
-  "    const db = new sqlite.DatabaseSync(copy);",
-  "    try {",
-  '      const rows = db.prepare("select p.data as part, p.time_updated as updated, m.data as message from part p join message m on m.id = p.message_id where p.time_updated >= ?").all(since);',
-  "      for (const row of rows) {",
-  "        let part, message; try { part = JSON.parse(row.part); message = JSON.parse(row.message); } catch { continue; }",
-  '        if (message?.role !== "assistant" || message.finish !== "stop" || message.error != null || part?.type !== "text" || typeof part.text !== "string") continue;',
+  '    const rows = db.prepare("select m.id as message_id, m.session_id as session_id, m.time_created as created, p.session_id as part_session, p.data as part, m.data as message from message m join part p on p.message_id = m.id join session s on s.id = m.session_id where s.directory = ? and s.parent_id is null and m.time_created >= ?").all("/workspace/repo", since);',
+  "    const candidates = [];",
+  "    for (const row of rows) { const message = JSON.parse(row.message), part = JSON.parse(row.part);",
+  '      if (row.part_session !== row.session_id || message?.role !== "user" || part?.type !== "text" || part.text !== request) continue;',
+  '      if (!Number.isSafeInteger(row.created) || !Number.isSafeInteger(message.time?.created) || message.time.created < since) throw new Error("invalid request time");',
+  "      candidates.push({ id: row.message_id, session: row.session_id, created: Math.max(row.created, message.time.created) });",
+  "    }",
+  '    if (candidates.length !== 1) { unavailable = candidates.length === 0 ? "owned request not found" : "owned request is ambiguous"; } else {',
+  "      const owned = candidates[0];",
+  '      const replies = db.prepare("select p.data as part, p.time_updated as updated, m.time_created as created, m.data as message from part p join message m on m.id = p.message_id where m.session_id = ? and p.session_id = ? and p.time_updated >= ?").all(owned.session, owned.session, since);',
+  "      for (const row of replies) { const part = JSON.parse(row.part), message = JSON.parse(row.message);",
+  '        if (message?.role !== "assistant" || message.parentID !== owned.id || message.finish !== "stop" || message.error != null || part?.type !== "text" || typeof part.text !== "string") continue;',
   '        const text = part.text.trim(); if (!/^(?:\\d+|\\d{1,3}(?:,\\d{3})+)$/.test(text) || text.replace(/,/g, "") !== answer) continue;',
-  "        const at = part.time?.end; const completed = message.time?.completed;",
-  "        if (!Number.isSafeInteger(at) || !Number.isSafeInteger(completed) || at < since || completed < at) continue;",
+  "        const at = part.time?.end, completed = message.time?.completed, created = message.time?.created;",
+  "        if (!Number.isSafeInteger(row.created) || row.created < owned.created || !Number.isSafeInteger(created) || created < owned.created || !Number.isSafeInteger(at) || !Number.isSafeInteger(completed) || at < created || at < since || completed < at) continue;",
   "        if (endedAt === null || at < endedAt) endedAt = at;",
   "      }",
-  "    } finally { db.close(); }",
-  "  } catch {} finally { fs.rmSync(dir, { recursive: true, force: true }); }",
-  "}",
-  "console.log(JSON.stringify({ endedAt, databases: found.size }));",
+  "    }",
+  "  } finally { db.close(); }",
+  ' } catch { unavailable = "opencode record could not be associated"; endedAt = null; } finally { fs.rmSync(dir, { recursive: true, force: true }); }',
+  "console.log(JSON.stringify(unavailable === null ? { endedAt, databases: 1 } : { unavailable }));",
 ].join("\n");
 
-/** The host command that runs `OPENCODE_ANSWER_JS` in an executor, as root, for one answer. */
-export const opencodeAnswerCommand = (container, answer, sinceMs) => {
+/** Read only the observed account's saved record for an exact marked request; unknown scope refuses. */
+export const opencodeAnswerCommand = (container, answer, sinceMs, scope) => {
   if (!/^[\w.-]+$/.test(String(container))) throw new Error(`not a container name: ${container}`);
   if (!/^\d+$/.test(String(answer))) throw new Error(`not an answer: ${answer}`);
-  if (!Number.isSafeInteger(sinceMs)) throw new Error(`not a time: ${sinceMs}`);
+  if (!Number.isSafeInteger(sinceMs) || sinceMs < 0) throw new Error(`not a time: ${sinceMs}`);
+  if (
+    scope === null ||
+    typeof scope !== "object" ||
+    !Object.hasOwn(scope, "runsAs") ||
+    (scope.runsAs !== null &&
+      (typeof scope.runsAs !== "string" || !/^[A-Za-z0-9_-]+$/.test(scope.runsAs)))
+  )
+    throw new Error("the agent's account is not known");
+  if (typeof scope.prompt !== "string" || !/st-bench-request-[0-9a-f]{32}/.test(scope.prompt))
+    throw new Error("the marked request is not known");
+  const database =
+    scope.runsAs === null
+      ? "/root/.local/share/opencode/opencode.db"
+      : `${PEOPLE_ROOT}/${scope.runsAs}/.local/share/opencode/opencode.db`;
+  const request = Buffer.from(scope.prompt, "utf8").toString("hex");
   const encoded = Buffer.from(OPENCODE_ANSWER_JS, "utf8").toString("base64");
-  return `docker exec -e ST_ANSWER=${answer} -e ST_SINCE=${sinceMs} ${container} node -e "$(printf %s '${encoded}' | base64 -d)"`;
+  const script = `ST_ANSWER=${answer} ST_SINCE=${sinceMs} ST_REQUEST_HEX=${request} ST_DATABASE=${database} node -e "$(printf %s '${encoded}' | base64 -d)"`;
+  const personal = `reader_uid=$(id -u) || exit 1; case "$reader_uid" in 0|""|*[!0-9]*) printf '%s\\n' '{"unavailable":"saved account has no person uid"}' ;; *) ${script} ;; esac`;
+  return scope.runsAs === null
+    ? `docker exec ${container} sh -c '${script.replaceAll("'", "'\\''")}'`
+    : asPersonCommand(container, scope.runsAs, personal);
 };
 
 /**
@@ -2938,8 +2963,15 @@ export const mergeResults = (unstampedBase, unstampedExtra, takes = null) => {
   const kept = Object.fromEntries(
     Object.entries(base.measures ?? {}).filter(([name]) => takes !== null || !accept(name)),
   );
+  const measures = { ...stampSampling(base, kept), ...stampSampling(extra, taken) };
+  const sourcedAnswers = Object.entries(measures).some(
+    ([name, measure]) => name.startsWith("new.opencode.") && Array.isArray(measure.sampleSources),
+  );
   return settleNotRun({
     ...base,
+    ...(sourcedAnswers
+      ? { method: { ...base.method, opencodeAnswer: "timing source recorded per sample" } }
+      : {}),
     target:
       base.target === undefined || base.target === null
         ? (extra.target ?? null)
@@ -2952,7 +2984,7 @@ export const mergeResults = (unstampedBase, unstampedExtra, takes = null) => {
             },
           },
     // Each executor size keeps the point its own record sampled it at.
-    measures: { ...stampSampling(base, kept), ...stampSampling(extra, taken) },
+    measures,
     notRun: [
       ...(base.notRun ?? []).filter(
         (entry) => !extraNotRun.some((other) => other.measure === entry.measure),
