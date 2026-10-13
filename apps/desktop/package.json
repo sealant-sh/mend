@@ -41,6 +41,7 @@
     "electron-builder": "catalog:",
     "electron-vite": "catalog:",
     "lucide-react": "catalog:",
+    "playwright-core": "catalog:",
     "react": "catalog:",
     "react-dom": "catalog:",
     "tailwindcss": "catalog:",

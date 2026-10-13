@@ -147,6 +147,9 @@ catalogs:
     pg-boss:
       specifier: ^12.25.1
       version: 12.26.0
+    playwright-core:
+      specifier: ^1.64.0
+      version: 1.64.0
     qrcode:
       specifier: ^1.5.4
       version: 1.5.4
@@ -432,6 +435,9 @@ importers:
       lucide-react:
         specifier: 'catalog:'
         version: 0.545.0(react@19.2.3)
+      playwright-core:
+        specifier: 'catalog:'
+        version: 1.64.0
       react:
         specifier: 'catalog:'
         version: 19.2.3
@@ -736,7 +742,7 @@ importers:
         specifier: ~57.0.5
         version: 57.0.5(@babel/core@7.29.7)(@babel/runtime@7.29.7)(expo@57.0.9)(react-refresh@0.18.0)
       playwright-core:
-        specifier: ^1.64.0
+        specifier: 'catalog:'
         version: 1.64.0
       typescript:
         specifier: ~6.0.3
