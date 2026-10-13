@@ -689,48 +689,86 @@ describe("harness home", () => {
 describe("the co-located harvest keeps no login", () => {
   it("archives opencode's data and state without its login files, and no harness's login", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "mend-harvest-logins-"));
-    const home = path.join(root, "home");
-    const put = (relative: string, text: string) => {
-      fs.mkdirSync(path.dirname(path.join(home, relative)), { recursive: true });
-      fs.writeFileSync(path.join(home, relative), text);
-    };
-    for (const credential of HARNESS_HOME_CREDENTIALS) {
-      put(credential, `{"access":"SYNTHETIC-LOGIN-${credential}"}`);
-    }
-    put(".local/share/opencode/opencode.db", "the conversations");
-    put(".local/share/opencode/snapshot/x", "a snapshot");
-    put(".local/state/opencode/model.json", '{"recent":[]}');
-    put(".claude/projects/-workspace-repo/s.jsonl", "{}\n");
-    put(".pi/agent/settings.json", "{}");
-    for (const [harness, shape] of Object.entries(HARNESS_STATE)) {
-      const packed = spawnSync(
-        "sh",
-        ["-c", harvestHarnessStateScript(shape.paths, path.join(root, "no-mount"))],
-        { env: { ...process.env, HOME: home, TMPDIR: root }, encoding: "utf8" },
-      );
-      if (packed.status === 3) continue;
-      expect(packed.status, `${harness}: ${packed.stderr}`).toBe(0);
-      const archive = path.join(root, `${harness}.tgz`);
-      fs.writeFileSync(archive, Buffer.from(packed.stdout.trim(), "base64"));
-      const listed = spawnSync("tar", ["-tzf", archive], { encoding: "utf8" }).stdout;
+    try {
+      const home = path.join(root, "home");
+      const put = (relative: string, text: string) => {
+        fs.mkdirSync(path.dirname(path.join(home, relative)), { recursive: true });
+        fs.writeFileSync(path.join(home, relative), text);
+      };
       for (const credential of HARNESS_HOME_CREDENTIALS) {
-        expect(listed, `${harness}: ${credential}`).not.toContain(credential);
+        put(credential, `{"access":"SYNTHETIC-LOGIN-${credential}"}`);
       }
-      const unpacked = path.join(root, `unpacked-${harness}`);
-      fs.mkdirSync(unpacked);
-      spawnSync("tar", ["-xzf", archive, "-C", unpacked]);
-      const bytes = execFileSync("sh", ["-c", 'find "$1" -type f -exec cat {} +', "sh", unpacked], {
-        encoding: "utf8",
-      });
-      expect(bytes, harness).not.toContain("SYNTHETIC-LOGIN");
-      if (harness === "opencode") {
-        expect(listed).toContain(".local/share/opencode/opencode.db");
-        expect(listed).toContain(".local/share/opencode/snapshot/x");
-        expect(listed).toContain(".local/state/opencode/model.json");
+      put(".local/share/opencode/opencode.db", "the conversations");
+      put(".local/share/opencode/snapshot/x", "a snapshot");
+      put(".local/state/opencode/model.json", '{"recent":[]}');
+      put(".claude/projects/-workspace-repo/s.jsonl", "{}\n");
+      put(".codex/sessions/2026/10/13/rollout-session.jsonl", '{"type":"session_meta"}\n');
+      put(".pi/agent/settings.json", "{}");
+      for (const [harness, shape] of Object.entries(HARNESS_STATE)) {
+        const packed = spawnSync(
+          "sh",
+          ["-c", harvestHarnessStateScript(shape.paths, path.join(root, "no-mount"))],
+          { env: { ...process.env, HOME: home, TMPDIR: root }, encoding: "utf8" },
+        );
+        expect(packed.status, `${harness}: ${packed.stderr}`).toBe(0);
+        const archive = path.join(root, `${harness}.tgz`);
+        fs.writeFileSync(archive, Buffer.from(packed.stdout.trim(), "base64"));
+        const listed = execFileSync("tar", ["-tzf", archive], { encoding: "utf8" });
+        for (const credential of HARNESS_HOME_CREDENTIALS) {
+          expect(listed, `${harness}: ${credential}`).not.toContain(credential);
+        }
+        const unpacked = path.join(root, `unpacked-${harness}`);
+        fs.mkdirSync(unpacked);
+        execFileSync("tar", ["-xzf", archive, "-C", unpacked]);
+        const bytes = execFileSync(
+          "sh",
+          ["-c", 'find "$1" -type f -exec cat {} +', "sh", unpacked],
+          {
+            encoding: "utf8",
+          },
+        );
+        expect(bytes, harness).not.toContain("SYNTHETIC-LOGIN");
+        if (harness === "opencode") {
+          expect(listed).toContain(".local/share/opencode/opencode.db");
+          expect(listed).toContain(".local/share/opencode/snapshot/x");
+          expect(listed).toContain(".local/state/opencode/model.json");
+          expect(
+            fs.readFileSync(path.join(unpacked, ".local/share/opencode/opencode.db"), "utf8"),
+          ).toBe("the conversations");
+          expect(
+            fs.readFileSync(path.join(unpacked, ".local/share/opencode/snapshot/x"), "utf8"),
+          ).toBe("a snapshot");
+          expect(
+            fs.readFileSync(path.join(unpacked, ".local/state/opencode/model.json"), "utf8"),
+          ).toBe('{"recent":[]}');
+        }
       }
+      expect(HARNESS_HOME_CREDENTIALS).toContain(".local/share/opencode/mcp-auth.json");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
     }
-    expect(HARNESS_HOME_CREDENTIALS).toContain(".local/share/opencode/mcp-auth.json");
-    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it("reports absent state explicitly for every harness in an empty owned home", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mend-harvest-absent-"));
+    try {
+      const home = path.join(root, "home");
+      fs.mkdirSync(home);
+      for (const [harness, shape] of Object.entries(HARNESS_STATE)) {
+        const packed = spawnSync(
+          "sh",
+          ["-c", harvestHarnessStateScript(shape.paths, path.join(root, "no-mount"))],
+          {
+            env: { ...process.env, HOME: home, TMPDIR: root },
+            encoding: "utf8",
+          },
+        );
+        expect(packed.status, `${harness}: ${packed.stderr}`).toBe(3);
+        expect(packed.stdout, harness).toBe("");
+      }
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 
