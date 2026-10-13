@@ -194,6 +194,7 @@ export const createTenancyApi = async (
       readonly reads?: Layer.PartialEffectful<WorktreeReads["Service"]>;
       readonly checkpoints?: Layer.PartialEffectful<CheckpointsRepo["Service"]>;
       readonly engine?: Layer.PartialEffectful<SessionEngine["Service"]>;
+      readonly controlEvents?: Layer.PartialEffectful<SessionControlEventsRepo["Service"]>;
       readonly jobs?: Layer.PartialEffectful<JobRunner["Service"]>;
       readonly changePasses?: Layer.PartialEffectful<ChangePassesRepo["Service"]>;
       readonly piProfiles?: Layer.PartialEffectful<PiProfilesRepo["Service"]>;
@@ -308,7 +309,12 @@ export const createTenancyApi = async (
     ),
     Layer.mergeAll(
       recording(ReviewSlicesRepo, "slices", options.implement?.slices ?? {}, calls),
-      recording(SessionControlEventsRepo, "controlEvents", { record: () => Effect.void }, calls),
+      recording(
+        SessionControlEventsRepo,
+        "controlEvents",
+        { record: () => Effect.void, ...options.implement?.controlEvents },
+        calls,
+      ),
       recording(RunsRepo, "runs", {}, calls),
       recording(ServiceForwardsRepo, "forwards", options.implement?.forwards ?? {}, calls),
       recording(ServiceObservationsRepo, "observations", {}, calls),
