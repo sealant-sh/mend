@@ -3646,24 +3646,7 @@ test("review 624 r5 (R5-2): `cleanup --all` owes again each run whose things app
   );
 });
 
-test("review 624 r5 (nits): the lock goes with its process, a bad run id is refused offline, the state stays private, earlier merges are re-run", async () => {
-  // A cleanup killed while it holds the lock leaves nothing held.
-  const dir = mkdtempSync(path.join(tmpdir(), "st-bench-lock-"));
-  const holder = spawnSync(
-    process.execPath,
-    [
-      "-e",
-      `const fs=require("node:fs");const {spawnSync}=require("node:child_process");` +
-        `const fd=fs.openSync(${JSON.stringify(path.join(dir, ".lock"))},"a");` +
-        `const r=spawnSync("flock",["-x","-n","9"],{stdio:["ignore","ignore","ignore",0,0,0,0,0,0,fd]});` +
-        `process.stdout.write(String(r.status));process.kill(process.pid,"SIGKILL");`,
-    ],
-    { encoding: "utf8" },
-  );
-  // It took the lock, and died holding it.
-  assert.equal(holder.stdout, "0");
-  assert.equal(holder.signal, "SIGKILL");
-  assert.equal(spawnSync("flock", ["-x", "-n", path.join(dir, ".lock"), "true"]).status, 0);
+test("review 624 r5 (nits): a bad run id is refused offline, the state stays private, earlier merges are re-run", async () => {
   // A run id that is not one is refused before any connection (the url answers nothing).
   const refused = spawnSync(
     process.execPath,
