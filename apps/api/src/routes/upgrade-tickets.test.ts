@@ -135,6 +135,45 @@ const renewOf = (body: unknown): string => {
 };
 
 describe("the embed exchange", () => {
+  it.each([0, 15_000, 29_999])(
+    "keeps the renewal deadline at original mint plus twelve hours after a %dms first-exchange delay",
+    async (delayMs) => {
+      const mintedAt = 1_000_000;
+      let now = mintedAt;
+      api = await createTenancyApi({}, { clock: () => now });
+      const original = await mint(api, "carol", { target: "tty-embed", session: sharedA.session });
+      expect(original.status).toBe(200);
+      expect(original.minted).toMatchObject({ expiresInSeconds: 30 });
+      now = mintedAt + delayMs;
+      const initial = await exchange(api, ticketOf(original.minted), sharedA.session);
+      expect(initial.status).toBe(200);
+      const first: unknown = await initial.json();
+      expect(first).toMatchObject({ expiresInSeconds: 30 });
+      const renewal = renewOf(first);
+      // Reusing the same renewal never extends its absolute expiry.
+      now = mintedAt + 43_200_000 - 1;
+      const last = await exchange(api, renewal, sharedA.session);
+      expect(last.status).toBe(200);
+      const lastBody: unknown = await last.json();
+      expect(lastBody).toMatchObject({ expiresInSeconds: 30 });
+      expect(renewOf(lastBody)).toBe(renewal);
+      now = mintedAt + 43_200_000;
+      expect((await exchange(api, renewal, sharedA.session)).status).toBe(401);
+      now += 1;
+      expect((await exchange(api, renewal, sharedA.session)).status).toBe(401);
+    },
+  );
+
+  it("refuses the initial embed ticket at exactly thirty seconds before issuing any renewal", async () => {
+    let now = 1_000_000;
+    api = await createTenancyApi({}, { clock: () => now });
+    const original = await mint(api, "carol", { target: "tty-embed", session: sharedA.session });
+    expect(original.status).toBe(200);
+    expect(original.minted).toMatchObject({ expiresInSeconds: 30 });
+    now += 30_000;
+    expect((await exchange(api, ticketOf(original.minted), sharedA.session)).status).toBe(401);
+  });
+
   it("trades an embed ticket for a terminal ticket with the same parameters, once", async () => {
     api = await createTenancyApi();
     const embed = ticketOf(

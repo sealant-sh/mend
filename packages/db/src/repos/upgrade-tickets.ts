@@ -71,21 +71,35 @@ export interface SpentUpgradeTicket {
   readonly expiresAt: Date;
 }
 
+/** A relative lifetime or a retained absolute deadline, never both. */
+type UpgradeTicketMintInput = {
+  readonly userId: string;
+  readonly target: UpgradeTicketTarget;
+  readonly scope: string;
+  /** Null only for a credential with no row, such as the dev token. */
+  readonly credential: TicketCredential | null;
+  /** Evaluation time; omitted uses the implementation's clock. */
+  readonly now?: Date;
+} & (
+  | {
+      /** Thirty seconds unless stated; renewal tickets use a longer lifetime. */
+      readonly ttlMs?: number;
+      readonly expiresAt?: never;
+    }
+  | {
+      /** Preserve this cutoff regardless of when mint runs; it can already have passed. */
+      readonly expiresAt: Date;
+      readonly ttlMs?: never;
+    }
+);
+
 export class UpgradeTicketsRepo extends Context.Service<
   UpgradeTicketsRepo,
   {
     /** Mint and persist a ticket; returns the plaintext ONCE. */
-    readonly mint: (input: {
-      readonly userId: string;
-      readonly target: UpgradeTicketTarget;
-      readonly scope: string;
-      /** The sign-in or device that asked. Null only for a credential with no row (the dev token). */
-      readonly credential: TicketCredential | null;
-      /** Thirty seconds unless stated; only a renewal ticket states otherwise. */
-      readonly ttlMs?: number;
-      /** Evaluation time; omitted uses the implementation's clock. */
-      readonly now?: Date;
-    }) => Effect.Effect<{ readonly ticket: string; readonly expiresAt: Date }>;
+    readonly mint: (
+      input: UpgradeTicketMintInput,
+    ) => Effect.Effect<{ readonly ticket: string; readonly expiresAt: Date }>;
     /**
      * Spend a ticket, or null. One statement deletes it only when it is unexpired, for exactly
      * this target and scope, and minted by a credential that still stands (the sign-in exists and
@@ -122,19 +136,13 @@ export const UpgradeTicketsRepoLive: Layer.Layer<UpgradeTicketsRepo, never, Mend
   Effect.gen(function* () {
     const db = yield* MendDB;
 
-    const mint = Effect.fn("UpgradeTicketsRepo.mint")(function* (input: {
-      readonly userId: string;
-      readonly target: UpgradeTicketTarget;
-      readonly scope: string;
-      readonly credential: TicketCredential | null;
-      readonly ttlMs?: number;
-      readonly now?: Date;
-    }) {
+    const mint = Effect.fn("UpgradeTicketsRepo.mint")(function* (input: UpgradeTicketMintInput) {
       const now = input.now ?? new Date();
       // Expired rows are dead weight, and minting is the only thing that grows the table.
       yield* db.delete(upgradeTickets).where(lt(upgradeTickets.expiresAt, now)).pipe(Effect.orDie);
       const ticket = mintUpgradeTicket();
-      const expiresAt = new Date(now.getTime() + (input.ttlMs ?? UPGRADE_TICKET_TTL_MS));
+      const expiresAt =
+        input.expiresAt ?? new Date(now.getTime() + (input.ttlMs ?? UPGRADE_TICKET_TTL_MS));
       yield* db
         .insert(upgradeTickets)
         .values({
@@ -225,6 +233,7 @@ export const makeUpgradeTicketsMemory = (
       Effect.sync(() => {
         const ticket = mintUpgradeTicket();
         const expiresAt =
+          input.expiresAt?.getTime() ??
           (input.now?.getTime() ?? clock()) + (input.ttlMs ?? UPGRADE_TICKET_TTL_MS);
         rows.set(hashUpgradeTicket(ticket), {
           userId: input.userId,

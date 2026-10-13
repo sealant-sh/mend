@@ -125,7 +125,11 @@ export const UpgradeTicketExchangeGroupLive = HttpApiBuilder.group(
                 credential,
                 target: "tty-renew",
                 scope,
-                ttlMs: UPGRADE_RENEWAL_TTL_MS,
+                // The HTTP mint always gives an embed ticket thirty seconds. Recover that
+                // original mint time from its immutable expiry, without reading another clock.
+                expiresAt: new Date(
+                  first.expiresAt.getTime() - UPGRADE_TICKET_TTL_MS + UPGRADE_RENEWAL_TTL_MS,
+                ),
               })).ticket;
         return new EmbedTickets({ ticket: minted.ticket, renew, expiresInSeconds });
       }),

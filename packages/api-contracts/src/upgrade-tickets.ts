@@ -66,7 +66,7 @@ export class EmbedTickets extends Schema.Class<EmbedTickets>("EmbedTickets")({
   ticket: Schema.String,
   /**
    * For the next exchange, when the page reconnects. Kept in the page's memory and sent only in a
-   * request body, never in a URL. Every exchange replaces it.
+   * request body, never in a URL. Later exchanges reuse it without extending its original deadline.
    */
   renew: Schema.String,
   expiresInSeconds: Schema.Int,
