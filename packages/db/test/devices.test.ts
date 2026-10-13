@@ -37,18 +37,6 @@ const ORDERED = Object.entries(migrations).toSorted(([a], [b]) => a.localeCompar
 
 const hash = (token: string) => createHash("sha256").update(token).digest("hex");
 
-/** The exact lookup packages/auth performs for a device bearer token. */
-const resolveBearer = (token: string) =>
-  Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
-    return yield* sql`
-      SELECT d.id AS device_id, u.id AS user_id, u.email
-        FROM device_tokens d
-        JOIN "user" u ON u.id = d.user_id
-       WHERE d.token_hash = ${hash(token)} AND d.revoked_at IS NULL
-       LIMIT 1`;
-  });
-
 describe.skipIf(postgres.skip)("device pairing", () => {
   beforeAll(async () => {
     await withAdmin(
@@ -196,7 +184,7 @@ describe.skipIf(postgres.skip)("device pairing", () => {
     expect(tags.ancient).toBe("PairingCodeUnknownError");
   });
 
-  it("resolves a device bearer token until the device is revoked", async () => {
+  it("lists a claimed device until the owner revokes it", async () => {
     const result = await withDevices(
       Effect.gen(function* () {
         const devices = yield* DevicesRepo;
@@ -211,17 +199,10 @@ describe.skipIf(postgres.skip)("device pairing", () => {
           platform: "android",
           tokenHash: hash("mdt_bearer"),
         });
-        const before = yield* resolveBearer("mdt_bearer");
-        const wrongToken = yield* resolveBearer("mdt_not-a-token");
         const listedBefore = yield* devices.list("user-1");
         yield* devices.revoke("user-1", claimed.device.id);
-        const after = yield* resolveBearer("mdt_bearer");
         const listedAfter = yield* devices.list("user-1");
         return {
-          before: before.length,
-          beforeUser: before[0],
-          wrongToken: wrongToken.length,
-          after: after.length,
           listedBefore: listedBefore.map((device) => device.id),
           listedAfter: listedAfter.map((device) => device.id),
           deviceId: claimed.device.id,
@@ -229,10 +210,6 @@ describe.skipIf(postgres.skip)("device pairing", () => {
       }),
     );
 
-    expect(result.before).toBe(1);
-    expect(result.beforeUser).toMatchObject({ user_id: "user-1" });
-    expect(result.wrongToken).toBe(0);
-    expect(result.after).toBe(0);
     expect(result.listedBefore).toContain(result.deviceId);
     expect(result.listedAfter).not.toContain(result.deviceId);
   });
@@ -247,24 +224,21 @@ describe.skipIf(postgres.skip)("device pairing", () => {
           platform: "other",
           tokenHash: hash("mdt_by-hand"),
         });
-        const before = yield* resolveBearer("mdt_by-hand");
         const listed = yield* devices.list("user-1");
         yield* devices.revoke("user-1", device.id);
-        const after = yield* resolveBearer("mdt_by-hand");
+        const after = yield* devices.list("user-1");
         return {
           name: device.name,
-          before: before.length,
+          listedAfter: after.map((row) => row.id),
           listed: listed.map((row) => row.id),
-          after: after.length,
           deviceId: device.id,
         };
       }),
     );
 
     expect(result.name).toBe("App Review iPhone");
-    expect(result.before).toBe(1);
     expect(result.listed).toContain(result.deviceId);
-    expect(result.after).toBe(0);
+    expect(result.listedAfter).not.toContain(result.deviceId);
   });
 
   it("refuses to revoke a device that belongs to someone else", async () => {

@@ -12,7 +12,13 @@ describe("session channel tokens", () => {
   it("mints url-safe tokens and hashes them deterministically", () => {
     const token = mintSessionChannelToken();
     expect(token).toMatch(/^[A-Za-z0-9_-]{43}$/);
-    expect(hashSessionChannelToken(token)).toBe(hashSessionChannelToken(token));
+    expect(hashSessionChannelToken("abc")).toBe(
+      "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+    );
+    expect(hashSessionChannelToken("")).toBe(
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    );
+    expect(hashSessionChannelToken("different-token")).not.toBe(hashSessionChannelToken(token));
     expect(hashSessionChannelToken(token)).toHaveLength(64);
     expect(mintSessionChannelToken()).not.toBe(token);
   });
