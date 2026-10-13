@@ -2356,8 +2356,23 @@ const connectCases: ReadonlyArray<{
   readonly names: ReadonlyArray<string>;
   readonly selected: ReadonlyArray<string>;
   readonly portPosition: "before" | "after" | null;
+  readonly ownedCollisions?: number;
 }> = [
   { label: "one requested name", names: ["web"], selected: ["web"], portPosition: null },
+  {
+    label: "one name after an owned port collision",
+    names: ["web"],
+    selected: ["web"],
+    portPosition: null,
+    ownedCollisions: 1,
+  },
+  {
+    label: "bounded refusal after three owned port collisions",
+    names: ["web"],
+    selected: ["web"],
+    portPosition: null,
+    ownedCollisions: 3,
+  },
   {
     label: "both requested names",
     names: ["web", "api"],
@@ -2384,110 +2399,141 @@ const connectCases: ReadonlyArray<{
 describe("mend service connect", spawning, () => {
   it.each(connectCases)(
     "tunnels $label through the public CLI",
-    async ({ names, selected, portPosition }) => {
-      const [webPort, apiPort, foreignPort, override] = await serviceConnectPorts(4);
-      if (
-        webPort === undefined ||
-        apiPort === undefined ||
-        foreignPort === undefined ||
-        override === undefined
-      )
-        throw new Error("Missing service fixture ports.");
-      const views = [
-        connectServiceView("web", webPort),
-        connectServiceView("api", apiPort),
-        connectServiceView("foreign", foreignPort),
-        connectServiceView("metrics", foreignPort, "udp"),
-      ];
-      const calls: string[] = [];
-      const tickets: string[] = [];
-      const fake = await startFakeMend(
-        (request, response) => {
-          calls.push(`${request.method} ${request.url}`);
-          if (request.url === "/api/services") json(response, views);
-          else if (request.url === "/api/upgrade-tickets") {
-            let body = "";
-            request.on("data", (chunk: Buffer) => {
-              body += chunk.toString();
-            });
-            request.on("end", () => {
-              tickets.push(body);
-              json(response, { ticket: `synthetic-service-ticket-${tickets.length}` });
-            });
-          } else response.writeHead(404).end();
-        },
-        "hold",
-        false,
-      );
-      const sockets: net.Socket[] = [];
-      const args =
-        portPosition === null
-          ? [...names]
-          : portPosition === "before"
-            ? ["--port", String(override), ...names]
-            : [...names, "--port", String(override)];
-      const cli = startCli(fake.url, ["service", "connect", ...args], {
-        MEND_TOKEN: "synthetic-service-token",
-      });
-      try {
-        await waitFor(() => cli.stdout().includes("Ctrl-C stops") || cli.child.exitCode !== null);
-        expect(cli.child.exitCode, cli.stderr()).toBeNull();
-        const opened = [...cli.stdout().matchAll(/● (\w+) → 127\.0\.0\.1:(\d+)/g)].map(
-          (match) => match[1],
-        );
-        expect(opened).toEqual(selected);
-        for (const view of views.filter(
-          (candidate) =>
-            candidate.service.transport === "tcp" && !selected.includes(candidate.service.name),
-        )) {
-          const accepts = await new Promise<boolean>((resolve) => {
-            const socket = net.createConnection({
-              host: "127.0.0.1",
-              port: view.service.workspacePort,
-            });
-            socket.once("connect", () => {
-              socket.destroy();
-              resolve(true);
-            });
-            socket.once("error", () => resolve(false));
-          });
-          expect(accepts, `${view.service.name} must not have a local tunnel`).toBe(false);
-        }
-        for (const view of views.filter((candidate) => selected.includes(candidate.service.name))) {
-          const localPort = portPosition === null ? view.service.workspacePort : override;
-          const socket = net.createConnection({ host: "127.0.0.1", port: localPort });
-          sockets.push(socket);
-          await once(socket, "connect");
-        }
-        await waitFor(() => fake.upgradeCount() === selected.length);
-        expect(tickets.toSorted()).toEqual(
-          selected
-            .map((name) => JSON.stringify({ target: "service-tunnel", service: `service-${name}` }))
-            .toSorted(),
-        );
-        expect(
-          fake
-            .upgradeUrls()
-            .map((value) => new URL(value, fake.url).searchParams.get("service"))
-            .toSorted(),
-        ).toEqual(selected.map((name) => `service-${name}`).toSorted());
-        expect(calls.filter((call) => call === "GET /api/services")).toHaveLength(1);
-        expect(fake.upgradeUrls().some((value) => value.includes("synthetic-service-token"))).toBe(
-          false,
-        );
-        if (names.length > 0) expect(tickets.join(" ")).not.toContain("service-foreign");
-      } finally {
+    async ({ names, selected, portPosition, ownedCollisions = 0 }) => {
+      // A released ephemeral reservation cannot be transferred to another process. Retry only
+      // the exact startup bind refusal, before any behavioral assertions or traffic begin.
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const occupied = net.createServer();
+        const sockets: net.Socket[] = [];
+        let running: ReturnType<typeof startCli> | undefined;
+        let serverFixture: Awaited<ReturnType<typeof startFakeMend>> | undefined;
         try {
-          for (const socket of sockets) socket.destroy();
-          if (cli.child.exitCode === null && cli.child.signalCode === null) {
-            const closed = once(cli.child, "close");
-            cli.child.kill("SIGKILL");
-            await closed;
+          const [reservedWebPort, apiPort, foreignPort, override] = await serviceConnectPorts(4);
+          if (
+            reservedWebPort === undefined ||
+            apiPort === undefined ||
+            foreignPort === undefined ||
+            override === undefined
+          )
+            throw new Error("Missing service fixture ports.");
+          let webPort = reservedWebPort;
+          if (attempt < ownedCollisions) {
+            occupied.listen(0, "127.0.0.1");
+            await once(occupied, "listening");
+            const address = occupied.address();
+            if (address === null || typeof address === "string")
+              throw new Error("No owned collision port");
+            webPort = address.port;
           }
+          const views = [
+            connectServiceView("web", webPort),
+            connectServiceView("api", apiPort),
+            connectServiceView("foreign", foreignPort),
+            connectServiceView("metrics", foreignPort, "udp"),
+          ];
+          const calls: string[] = [];
+          const tickets: string[] = [];
+          const fake = await startFakeMend(
+            (request, response) => {
+              calls.push(`${request.method} ${request.url}`);
+              if (request.url === "/api/services") json(response, views);
+              else if (request.url === "/api/upgrade-tickets") {
+                let body = "";
+                request.on("data", (chunk: Buffer) => {
+                  body += chunk.toString();
+                });
+                request.on("end", () => {
+                  tickets.push(body);
+                  json(response, { ticket: `synthetic-service-ticket-${tickets.length}` });
+                });
+              } else response.writeHead(404).end();
+            },
+            "hold",
+            false,
+          );
+          serverFixture = fake;
+          const args =
+            portPosition === null
+              ? [...names]
+              : portPosition === "before"
+                ? ["--port", String(override), ...names]
+                : [...names, "--port", String(override)];
+          const cli = startCli(fake.url, ["service", "connect", ...args], {
+            MEND_TOKEN: "synthetic-service-token",
+          });
+          running = cli;
+          await waitFor(() => cli.stdout().includes("Ctrl-C stops") || cli.child.exitCode !== null);
+          const startupRefusal =
+            cli.child.exitCode === 1 &&
+            /^mend: 127\.0\.0\.1:\d+ is already in use here — pick one with: mend service connect \w+ --port <n>\s*$/.test(
+              cli.stderr(),
+            );
+          if (attempt < ownedCollisions) expect(startupRefusal, cli.stderr()).toBe(true);
+          if (startupRefusal && attempt < 2) continue;
+          if (ownedCollisions === 3) {
+            expect(attempt).toBe(2);
+            expect(startupRefusal, cli.stderr()).toBe(true);
+            expect(tickets).toEqual([]);
+            return;
+          }
+          expect(cli.child.exitCode, cli.stderr()).toBeNull();
+          const opened = [...cli.stdout().matchAll(/● (\w+) → 127\.0\.0\.1:(\d+)/g)].map(
+            (match) => match[1],
+          );
+          expect(opened).toEqual(selected);
+          // Exact opened names and ticket targets prove selection. Probing released unselected
+          // ports cannot prove absence: another process may legitimately acquire those ports.
+          for (const view of views.filter((candidate) =>
+            selected.includes(candidate.service.name),
+          )) {
+            const localPort = portPosition === null ? view.service.workspacePort : override;
+            const socket = net.createConnection({ host: "127.0.0.1", port: localPort });
+            sockets.push(socket);
+            await once(socket, "connect");
+          }
+          await waitFor(() => fake.upgradeCount() === selected.length);
+          expect(tickets.toSorted()).toEqual(
+            selected
+              .map((name) =>
+                JSON.stringify({ target: "service-tunnel", service: `service-${name}` }),
+              )
+              .toSorted(),
+          );
+          expect(
+            fake
+              .upgradeUrls()
+              .map((value) => new URL(value, fake.url).searchParams.get("service"))
+              .toSorted(),
+          ).toEqual(selected.map((name) => `service-${name}`).toSorted());
+          expect(calls.filter((call) => call === "GET /api/services")).toHaveLength(1);
+          expect(
+            fake.upgradeUrls().some((value) => value.includes("synthetic-service-token")),
+          ).toBe(false);
+          if (names.length > 0) expect(tickets.join(" ")).not.toContain("service-foreign");
+          return;
         } finally {
-          await fake.close();
+          try {
+            for (const socket of sockets) socket.destroy();
+            if (
+              running !== undefined &&
+              running.child.exitCode === null &&
+              running.child.signalCode === null
+            ) {
+              const closed = once(running.child, "close");
+              running.child.kill("SIGKILL");
+              await closed;
+            }
+          } finally {
+            try {
+              if (occupied.listening)
+                await new Promise<void>((resolve) => occupied.close(() => resolve()));
+            } finally {
+              await serverFixture?.close();
+            }
+          }
         }
       }
+      throw new Error("No service connection attempt completed");
     },
   );
 });
