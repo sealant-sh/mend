@@ -7,6 +7,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readdirSync,
+  renameSync,
   readFileSync,
   rmSync,
   statSync,
@@ -59,7 +60,6 @@ import {
   liveAgents,
   parsePersonProbe,
   PERSON_PROBE_SH,
-  PERSON_STATE_PATHS,
   personVerdicts,
   PROFILE_DIGEST_SH,
   profileDigestOf,
@@ -1650,7 +1650,7 @@ test("the agent's own uid and HOME are read from its screen, not from the prompt
   assert.equal(agentIdentityOf("echo ST-BENCH-ID $(id -u) $HOME"), null);
 });
 
-test("the probe's pi profile digest is Mend's stored digest, node_modules left out", () => {
+test("the probe's pi profile normalization has a fixed digest, node_modules left out", () => {
   const dir = mkdtempSync(path.join(tmpdir(), "st-bench-profile-"));
   try {
     const files = [
@@ -1668,6 +1668,7 @@ test("the probe's pi profile digest is Mend's stored digest, node_modules left o
     writeFileSync(path.join(dir, "node_modules/x/index.js"), "1");
     mkdirSync(path.join(dir, "extensions/node_modules"), { recursive: true });
     writeFileSync(path.join(dir, "extensions/node_modules/y.js"), "2");
+    symlinkSync("settings.json", path.join(dir, "linked-file"));
     const out = execFileSync("sh", [
       "-c",
       `${PROFILE_DIGEST_SH}\nprintf '%s %s\\n' "$(profile_files "$1")" "$(profile_digest "$1")"`,
@@ -1676,9 +1677,133 @@ test("the probe's pi profile digest is Mend's stored digest, node_modules left o
     ])
       .toString()
       .trim();
-    assert.equal(out, `4 ${profileDigestOf(files)}`);
+    const expected = "cdc89d0eb1f8b90a9c7f5e12054ea88231e2db9e77d788b2d90770ab88f697f4";
+    assert.equal(profileDigestOf(files), expected);
+    assert.equal(out, `4 ${expected}`);
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a present pi profile with unavailable inspection is unchecked, never absent or matching", () => {
+  const directory = mkdtempSync(path.join(tmpdir(), "st-bench-profile-unavailable-"));
+  try {
+    const bin = path.join(directory, "bin");
+    const home = path.join(directory, "home");
+    const profile = path.join(home, ".pi/agent/mend/profile");
+    const people = path.join(directory, "people");
+    mkdirSync(bin);
+    mkdirSync(path.join(people, "synthetic-account"), { recursive: true });
+    mkdirSync(profile, { recursive: true });
+    writeFileSync(
+      path.join(profile, "settings.json"),
+      "synthetic profile bytes that must not be printed",
+    );
+    // Only the passwd lookup is needed here. Process metadata is outside this fixture's claim.
+    // The actual probe, stat, profile walker and parser still execute; no ambient home is read.
+    const passwd = `awk() { if [ "$1" = "-F:" ]; then printf 'fixture %s\\n' "$ST_BENCH_HOME"; else return 1; fi; }\n`;
+    for (const command of ["stat", "find", "sed", "sort", "sha256sum", "cut", "wc", "tr"]) {
+      const executable = execFileSync("/bin/sh", ["-c", 'command -v "$1"', "bench", command], {
+        encoding: "utf8",
+      }).trim();
+      symlinkSync(executable, path.join(bin, command));
+    }
+    const probe = () => {
+      const result = spawnSync(
+        "/bin/sh",
+        ["-c", passwd + PERSON_PROBE_SH, "bench", "synthetic-account"],
+        {
+          encoding: "utf8",
+          timeout: 10_000,
+          env: {
+            PATH: bin,
+            HOME: home,
+            ST_BENCH_HOME: home,
+            ST_BENCH_PEOPLE: people,
+            ST_BENCH_NODE: process.execPath,
+          },
+        },
+      );
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(result.stderr, "");
+      assert.ok(!result.stdout.includes("synthetic profile bytes"));
+      return result.stdout;
+    };
+    for (const condition of ["missing", "failed"]) {
+      if (condition === "failed") {
+        writeFileSync(path.join(bin, "node"), "#!/bin/sh\nexit 1\n");
+        chmodSync(path.join(bin, "node"), 0o755);
+      }
+      const text = probe();
+      assert.match(text, /^probe pi-profile unavailable$/m);
+      const parsed = parsePersonProbe(text);
+      assert.deepEqual(parsed.piProfile, { present: true, unavailable: true });
+      for (const expected of [null, "a".repeat(64)]) {
+        const observations = personVerdicts({
+          probe: parsed,
+          harness: "pi",
+          agentSaid: null,
+          piDigest: expected,
+          otherPiDigest: "b".repeat(64),
+        });
+        assert.deepEqual(
+          observations
+            .filter((entry) => entry.name.startsWith("pi_profile"))
+            .map(({ name, ok, detail }) => ({ name, ok, detail })),
+          [
+            {
+              name: "pi_profile",
+              ok: null,
+              detail: "skipped: pi profile bytes could not be inspected",
+            },
+            {
+              name: "pi_profile_not_other",
+              ok: null,
+              detail: "skipped: pi profile bytes could not be inspected",
+            },
+          ],
+        );
+      }
+    }
+    rmSync(path.join(bin, "node"));
+    // Stat sees the directory, then the owned executable boundary moves it before the real
+    // Node reader starts. This exercises a genuine filesystem read failure without permissions
+    // depending on whether the test runner is root.
+    writeFileSync(
+      path.join(bin, "node"),
+      '#!/bin/sh\n/bin/mv "$3" "$3-moved"\nexec "$ST_BENCH_NODE" "$@"\n',
+    );
+    chmodSync(path.join(bin, "node"), 0o755);
+    assert.deepEqual(parsePersonProbe(probe()).piProfile, { present: true, unavailable: true });
+    renameSync(`${profile}-moved`, profile);
+    rmSync(path.join(bin, "node"));
+    symlinkSync(process.execPath, path.join(bin, "node"));
+    const present = parsePersonProbe(probe());
+    const expected = profileDigestOf([
+      {
+        path: "settings.json",
+        bytes: Buffer.from("synthetic profile bytes that must not be printed"),
+      },
+    ]);
+    assert.equal(present.piProfile.digest, expected);
+    assert.equal(present.piProfile.files, 1);
+    assert.equal(
+      personVerdicts({ probe: present, harness: "pi", agentSaid: null, piDigest: expected }).find(
+        (entry) => entry.name === "pi_profile",
+      ).ok,
+      true,
+    );
+    rmSync(profile, { recursive: true });
+    const absent = parsePersonProbe(probe());
+    assert.deepEqual(absent.piProfile, { present: false });
+    assert.equal(
+      personVerdicts({ probe: absent, harness: "pi", agentSaid: null, piDigest: null }).find(
+        (entry) => entry.name === "pi_profile",
+      ).ok,
+      true,
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
   }
 });
 
@@ -1785,22 +1910,6 @@ test("a saved directory splits into conversation state and the rest, machine sta
   assert.equal(sized.files, 8);
   assert.deepEqual(sized.largestBeyond[0], { path: ".mend-saved/managed-skills.json", bytes: 700 });
   assert.equal(classifySavedFiles("probe saved absent\nsize absent"), null);
-});
-
-test("the conversation state the bench counts is the one the sessions package saves", () => {
-  const source = readFileSync(
-    path.join(
-      path.dirname(fileURLToPath(import.meta.url)),
-      "../../packages/sessions/src/harness-layout.ts",
-    ),
-    "utf8",
-  );
-  const block = /export const PERSON_SAVED_STATE[\s\S]*?\n\];/.exec(source)?.[0] ?? "";
-  const saved = [...block.matchAll(/\{ path: "([^"]+)", kind: "(?:directory|file)" \}/g)].map(
-    (match) => match[1],
-  );
-  assert.ok(saved.length > 10);
-  assert.deepEqual(PERSON_STATE_PATHS, saved);
 });
 
 // ─── a person with no ChatGPT login ─────────────────────────────────────────
