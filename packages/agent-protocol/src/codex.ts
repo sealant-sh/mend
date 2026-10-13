@@ -581,7 +581,9 @@ export const CodexAdapter: AgentAdapter = {
 
       yield* transport.output.pipe(
         Stream.runForEach(handleBytes),
-        Effect.andThen(Effect.forEach(decoder.finish(), handleLine, { discard: true })),
+        Effect.andThen(
+          Effect.suspend(() => Effect.forEach(decoder.finish(), handleLine, { discard: true })),
+        ),
         Effect.tap(() =>
           failPendingRpc("Codex process output ended.", null).pipe(
             Effect.andThen(
