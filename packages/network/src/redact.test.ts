@@ -23,4 +23,12 @@ describe("redacting credentials from a URL", () => {
     expect(redactUrl("/api/health")).toBe("/api/health");
     expect(redactUrl("/api/tty?")).toBe("/api/tty");
   });
+
+  it("characterizes fragment-only input outside the parsed request-log target shape", () => {
+    const target = "/path#ticket=synthetic";
+    expect(redactUrl(target)).toBe(target);
+    const url = new URL(`https://mend.example${target}`);
+    // The actual request logger calls the helper with these two parsed fields.
+    expect(redactUrl(`${url.pathname}${url.search}`)).toBe("/path");
+  });
 });

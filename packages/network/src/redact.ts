@@ -9,6 +9,8 @@ export const CREDENTIAL_QUERY_PARAMETERS: ReadonlyArray<string> = ["token", "tic
 /**
  * The URL (absolute, or a path with a query) with every credential parameter's value replaced.
  * Malformed input comes back with its whole query dropped: when in doubt, less.
+ * Input without a query is returned unchanged. Request log callers pass a parsed URL's
+ * pathname plus search, which excludes fragments; this is a query-credential helper.
  */
 export const redactUrl = (url: string): string => {
   const at = url.indexOf("?");

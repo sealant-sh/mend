@@ -186,7 +186,7 @@ export const buildAgentConversation = <
 export const isOpenTurn = (turn: AgentTurnDto): boolean =>
   turn.status === "queued" || turn.status === "running";
 
-/** The newest turn still queued or running: what Stop interrupts. */
+/** The newest turn still queued or running in ascending ordinal input: what Stop interrupts. */
 export const openTurnOf = <T extends AgentTurnDto>(turns: ReadonlyArray<T>): T | undefined =>
   lastMatching(turns, isOpenTurn);
 
