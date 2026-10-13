@@ -1,6 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import type { AgentEvent } from "@mend/domain/workbench";
 import { Effect, Fiber, Option, Queue, Stream } from "effect";
+import { vi } from "vitest";
 
 import {
   AgentProtocolError,
@@ -29,8 +30,12 @@ const makeTransport = Effect.fn("test.makeTransport")(function* (
   onAcknowledge?: () => void,
 ) {
   const output = yield* Queue.unbounded<Uint8Array, AgentProtocolError>();
+  const acknowledged = yield* Queue.unbounded<number>();
   const sent: JsonObject[] = [];
+  let pushed = 0;
+  let projected = 0;
   const push = (value: unknown): void => {
+    pushed += 1;
     Queue.offerUnsafe(output, line(value));
   };
   const transport: AgentTransport = {
@@ -41,10 +46,23 @@ const makeTransport = Effect.fn("test.makeTransport")(function* (
         onSend(message, push);
       }),
     output: Stream.fromQueue(output),
-    ...(onAcknowledge === undefined ? {} : { acknowledgeOutput: () => Effect.sync(onAcknowledge) }),
+    acknowledgeOutput: () =>
+      Effect.sync(() => {
+        onAcknowledge?.();
+        projected += 1;
+        Queue.offerUnsafe(acknowledged, projected);
+      }),
     close: () => Queue.shutdown(output),
   };
-  return { transport, sent, push, end: Queue.shutdown(output) };
+  // Each push is one newline-terminated frame. The adapter acknowledges only
+  // after its projection hook completes, so this waits for handled output.
+  const drain = () =>
+    Effect.gen(function* () {
+      const target = pushed;
+      let observed = projected;
+      while (observed < target) observed = yield* Queue.take(acknowledged);
+    });
+  return { transport, sent, push, drain, end: Queue.shutdown(output) };
 });
 
 const codexTransport = makeTransport((message, push) => {
@@ -228,7 +246,7 @@ describe("CodexAdapter", () => {
             }),
         });
         yield* session.sendTurn("inspect");
-        yield* Effect.yieldNow;
+        yield* fake.drain();
         order.length = 0;
         const itemFiber = yield* firstEvent(session.events, "item.updated").pipe(Effect.forkChild);
         fake.push({
@@ -239,7 +257,7 @@ describe("CodexAdapter", () => {
           },
         });
         yield* Fiber.join(itemFiber);
-        yield* Effect.yieldNow;
+        yield* fake.drain();
         expect(order).toEqual(["event", "ack"]);
       }),
     ),
@@ -276,6 +294,15 @@ describe("ClaudeAdapter", () => {
           permissionMode: "ask",
         });
         const turnId = yield* session.sendTurn("edit the file");
+        expect(fake.sent).toEqual([
+          {
+            type: "user",
+            session_id: "11111111-1111-4111-8111-111111111111",
+            parent_tool_use_id: null,
+            origin: { kind: "human" },
+            message: { role: "user", content: [{ type: "text", text: "edit the file" }] },
+          },
+        ]);
         const openedFiber = yield* firstEvent(session.events, "request.opened").pipe(
           Effect.forkChild,
         );
@@ -313,6 +340,101 @@ describe("ClaudeAdapter", () => {
       }),
     ),
   );
+
+  it.effect("preserves structured AskUserQuestion answers and the original tool input", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fake = yield* makeTransport(() => undefined);
+        const session = yield* ClaudeAdapter.start(fake.transport, {
+          cwd: "/workspace/repo",
+          providerSessionId: "11111111-1111-4111-8111-111111111111",
+          permissionMode: "ask",
+        });
+        const turn = yield* session.sendTurn("ask me");
+        const input = {
+          tool_use_id: "tool-question",
+          questions: [
+            {
+              id: "scope",
+              header: "Scope",
+              question: "Which files?",
+              options: [{ label: "All", description: "Every changed file" }],
+              multiSelect: true,
+            },
+          ],
+        };
+        const openedFiber = yield* firstEvent(session.events, "request.opened").pipe(
+          Effect.forkChild,
+        );
+        fake.push({
+          type: "control_request",
+          request_id: "question-1",
+          request: { subtype: "can_use_tool", tool_name: "AskUserQuestion", input },
+        });
+        const opened = Option.getOrThrow(yield* Fiber.join(openedFiber));
+        yield* fake.drain();
+        expect(opened.request).toMatchObject({
+          providerRequestId: "question-1",
+          providerTurnId: turn,
+          providerItemId: "tool-question",
+          kind: "user-input",
+          questions: input.questions,
+        });
+        expect(fake.sent).toHaveLength(1);
+        const answers = { scope: ["All", "Also preserve Unicode \u03bb"] };
+        yield* session.respondInput("question-1", answers);
+        expect(fake.sent.at(-1)).toEqual({
+          type: "control_response",
+          response: {
+            subtype: "success",
+            request_id: "question-1",
+            response: { behavior: "allow", updatedInput: { ...input, answers } },
+          },
+        });
+        const stale = yield* session.respondInput("question-1", answers).pipe(Effect.flip);
+        expect(stale.operation).toBe("respondInput");
+        expect(fake.sent).toHaveLength(2);
+      }),
+    ),
+  );
+
+  for (const decision of ["decline", "cancel"] as const) {
+    it.effect(`sends the exact ${decision} permission response without answering twice`, () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fake = yield* makeTransport(() => undefined);
+          const session = yield* ClaudeAdapter.start(fake.transport, {
+            cwd: "/workspace/repo",
+            permissionMode: "ask",
+          });
+          yield* session.sendTurn("edit");
+          fake.push({
+            type: "control_request",
+            request_id: "permission-denied",
+            request: { subtype: "can_use_tool", tool_name: "Edit", input: { file_path: "a.ts" } },
+          });
+          yield* fake.drain();
+          expect(fake.sent).toHaveLength(1);
+          yield* session.respond("permission-denied", decision);
+          expect(fake.sent.at(-1)).toEqual({
+            type: "control_response",
+            response: {
+              subtype: "success",
+              request_id: "permission-denied",
+              response: {
+                behavior: "deny",
+                message: decision === "cancel" ? "Cancelled by user" : "Declined by user",
+                interrupt: decision === "cancel",
+              },
+            },
+          });
+          const stale = yield* session.respond("permission-denied", decision).pipe(Effect.flip);
+          expect(stale.operation).toBe("respond");
+          expect(fake.sent).toHaveLength(2);
+        }),
+      ),
+    );
+  }
 });
 
 const collectItems = () => {
@@ -735,16 +857,25 @@ describe("regression: reviewer findings", () => {
   );
 });
 
-/** The adapter has read every line pushed so far: its output fiber runs on its own. */
-const drained = Effect.sleep("25 millis");
+// The adapters read Date.now directly. Control only Date, leaving Effect's
+// scheduler and transport fibers untouched; always restore it with the scope.
+const controlledTime = Effect.acquireRelease(
+  Effect.sync(() => {
+    let now = 1_000_000;
+    vi.useFakeTimers({ toFake: ["Date"], now });
+    return (milliseconds: number) => Effect.sync(() => vi.setSystemTime((now += milliseconds)));
+  }),
+  () => Effect.sync(() => vi.useRealTimers()),
+);
 
 const kinds = (work: ReadonlyArray<{ readonly kind: string; readonly id: string }>) =>
   work.map((entry) => `${entry.kind}:${entry.id}`);
 
 describe("quiescence (docs/adr/0016, decision 6)", () => {
-  it.live("Claude: an open turn, then idle once it says so, with nothing in the background", () =>
+  it.effect("Claude: an open turn, then idle once it says so, with nothing in the background", () =>
     Effect.scoped(
       Effect.gen(function* () {
+        yield* controlledTime;
         const fake = yield* makeTransport(() => undefined);
         const session = yield* ClaudeAdapter.start(fake.transport, {
           cwd: "/workspace/repo",
@@ -754,10 +885,10 @@ describe("quiescence (docs/adr/0016, decision 6)", () => {
         expect((yield* session.quiescence()).quiescent).toBe(true);
         yield* session.sendTurn("go");
         fake.push({ type: "system", subtype: "session_state_changed", state: "running" });
-        yield* drained;
+        yield* fake.drain();
         expect((yield* session.quiescence()).openTurn).toBe(true);
         fake.push({ type: "result", subtype: "success" });
-        yield* drained;
+        yield* fake.drain();
         // The result is in, but Claude still says it runs: it may flush a held result, or go on
         // with a background agent's answer. Only its `idle` ends the turn for a new sender.
         const after = yield* session.quiescence();
@@ -765,7 +896,7 @@ describe("quiescence (docs/adr/0016, decision 6)", () => {
         expect(after.quiescent).toBe(false);
         expect(after.settleMs).toBeGreaterThan(0);
         fake.push({ type: "system", subtype: "session_state_changed", state: "idle" });
-        yield* drained;
+        yield* fake.drain();
         expect(yield* session.quiescence()).toEqual({
           quiescent: true,
           openTurn: false,
@@ -776,11 +907,12 @@ describe("quiescence (docs/adr/0016, decision 6)", () => {
     ),
   );
 
-  it.live(
+  it.effect(
     "Claude: background tasks as a level, paused tasks, monitors, wakeups and session crons",
     () =>
       Effect.scoped(
         Effect.gen(function* () {
+          yield* controlledTime;
           const fake = yield* makeTransport(() => undefined);
           const session = yield* ClaudeAdapter.start(fake.transport, {
             cwd: "/workspace/repo",
@@ -871,7 +1003,7 @@ describe("quiescence (docs/adr/0016, decision 6)", () => {
           });
           fake.push({ type: "result", subtype: "success" });
           fake.push({ type: "system", subtype: "session_state_changed", state: "idle" });
-          yield* drained;
+          yield* fake.drain();
           const busy = yield* session.quiescence();
           expect(busy.quiescent).toBe(false);
           expect(kinds(busy.work).toSorted()).toEqual([
@@ -939,7 +1071,7 @@ describe("quiescence (docs/adr/0016, decision 6)", () => {
             },
           });
           result("tu-del", { id: "cron-1" });
-          yield* drained;
+          yield* fake.drain();
           expect(kinds((yield* session.quiescence()).work)).toEqual(["wakeup:tu-wake"]);
         }),
       ),
@@ -950,6 +1082,7 @@ describe("quiescence (docs/adr/0016, decision 6)", () => {
     () =>
       Effect.scoped(
         Effect.gen(function* () {
+          yield* controlledTime;
           const fake = yield* makeTransport(() => undefined);
           yield* ClaudeAdapter.start(fake.transport, {
             cwd: "/workspace/repo",
@@ -970,11 +1103,12 @@ describe("quiescence (docs/adr/0016, decision 6)", () => {
       ),
   );
 
-  it.live(
+  it.effect(
     "Codex: sub-agent threads, background terminals, an active goal, and the 1 s settle",
     () =>
       Effect.scoped(
         Effect.gen(function* () {
+          const advance = yield* controlledTime;
           const state = {
             terminals: [{ processId: "42", command: "npm run dev", itemId: "i", cwd: "/" }],
             goal: "active" as string | null,
@@ -1017,7 +1151,7 @@ describe("quiescence (docs/adr/0016, decision 6)", () => {
             method: "turn/started",
             params: { threadId: "child-1", turn: { id: "child-turn" } },
           });
-          yield* drained;
+          yield* fake.drain();
           const busy = yield* session.quiescence();
           expect(kinds(busy.work)).toEqual(["sub-agent:child-1", "terminal:42", "goal:thread-1"]);
           yield* session.endWork({ kind: "terminal", id: "42" });
@@ -1036,20 +1170,30 @@ describe("quiescence (docs/adr/0016, decision 6)", () => {
             method: "turn/completed",
             params: { threadId: "child-1", turn: { id: "child-turn", status: "completed" } },
           });
-          yield* drained;
+          yield* fake.drain();
           const settling = yield* session.quiescence();
           expect(settling.work).toEqual([]);
           expect(settling.quiescent).toBe(false);
-          expect(settling.settleMs).toBeGreaterThan(500);
-          yield* Effect.sleep("1 second");
-          expect((yield* session.quiescence()).quiescent).toBe(true);
+          expect(settling.settleMs).toBe(1_000);
+          yield* advance(999);
+          const almost = yield* session.quiescence();
+          expect(almost.quiescent).toBe(false);
+          expect(almost.settleMs).toBe(1);
+          yield* advance(1);
+          expect(yield* session.quiescence()).toEqual({
+            quiescent: true,
+            openTurn: false,
+            work: [],
+            settleMs: 0,
+          });
         }),
       ),
   );
 
-  it.live('Codex: a method it refuses is "cannot tell", never "no work"', () =>
+  it.effect('Codex: a method it refuses is "cannot tell", never "no work"', () =>
     Effect.scoped(
       Effect.gen(function* () {
+        yield* controlledTime;
         const fake = yield* makeTransport((message, push) => {
           const id = message["id"];
           const method = message["method"];
@@ -1065,7 +1209,7 @@ describe("quiescence (docs/adr/0016, decision 6)", () => {
           permissionMode: "bypass",
           steering: true,
         });
-        yield* drained;
+        yield* fake.drain();
         // An older Codex that refuses both: running terminals would read as none, and the
         // staging would kill them after 10 s (review of mend#572, P3-3). It is waited for.
         const looked = yield* session.quiescence();
@@ -1079,9 +1223,10 @@ describe("quiescence (docs/adr/0016, decision 6)", () => {
     ),
   );
 
-  it.live("Codex: a turn it starts on its own is the harness's, never a turn Mend sent", () =>
+  it.effect("Codex: a turn it starts on its own is the harness's, never a turn Mend sent", () =>
     Effect.scoped(
       Effect.gen(function* () {
+        yield* controlledTime;
         const fake = yield* codexTransport;
         const events: Array<AgentEvent> = [];
         yield* CodexAdapter.start(fake.transport, {
@@ -1093,7 +1238,7 @@ describe("quiescence (docs/adr/0016, decision 6)", () => {
           method: "turn/started",
           params: { threadId: "thread-1", turn: { id: "goal-turn" } },
         });
-        yield* drained;
+        yield* fake.drain();
         expect(events.filter((event) => event._tag === "harness-turn.started")).toEqual([
           {
             _tag: "harness-turn.started",
