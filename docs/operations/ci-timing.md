@@ -298,3 +298,14 @@ files passed 20 consecutive runs, 35 cases per run and 700 passes, without retri
 warnings. Existing test bodies are unchanged. Six isolated mutations failed their intended behavior
 assertions: native probe timing, probes surviving stop, serialized probes, detached in-flight
 probes, retained ticket maps, and uncancelled ticket expiry callbacks.
+
+Independent review found that Effect's `Schedule.fixed` uses epoch milliseconds for interval
+boundaries. The service supervisor now calculates those boundaries from Clock nanoseconds while
+retaining its first delay, overlapping passes and scope ownership. Two regressions independently
+step epoch time backward by 70 seconds and forward by 60 seconds, and require probes at monotonic
+20, 40, 60 and 80 seconds. Both failed against the previous schedule and pass with the correction.
+
+Two further regressions deliver the 60-second wake at 65 or 85 seconds. They require one pass then,
+followed by the next at 85 or 105 seconds respectively. The next boundary uses each pass's actual
+monotonic start, matching native interval rearming after both short and long event-loop stalls.
+Neither catch-up bursts nor shorter intervals compensating for a late wake are allowed.

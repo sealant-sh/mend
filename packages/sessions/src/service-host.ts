@@ -299,22 +299,34 @@ export const ServiceHostLive: Layer.Layer<
     const scope = yield* Scope.Scope;
     const active = new Map<ServiceId, ActiveService>();
 
+    // Schedule.fixed uses epoch milliseconds. Native intervals were independent of
+    // wall-clock corrections, so keep these boundaries on the monotonic clock.
+    const intervalNanos = BigInt(PROBE_INTERVAL_MS) * 1_000_000n;
+    const cadence = Schedule.fromStep(
+      Effect.succeed((_now: number, started: bigint) =>
+        Effect.sync((): [void, Duration.Duration] => {
+          // Native intervals rearm from the actual callback start, including
+          // late wakes. Never catch up to an older phase after an event-loop stall.
+          const remaining = started + intervalNanos - clock.currentTimeNanosUnsafe();
+          return [undefined, Duration.nanos(remaining > 0n ? remaining : 0n)];
+        }),
+      ),
+    );
+
     // Fixed triggers preserve interval overlap: a slow pass does not postpone the next one.
     // Stop cancels only the triggers; passes already started remain owned by the layer scope.
     const supervise = (pass: Effect.Effect<void>) =>
       Effect.forkIn(
-        clock
-          .sleep(Duration.millis(PROBE_INTERVAL_MS))
-          .pipe(
-            Effect.andThen(
-              Effect.forkIn(pass, scope).pipe(
-                Effect.asVoid,
-                Effect.repeat(Schedule.fixed(PROBE_INTERVAL_MS)),
-                Effect.asVoid,
-              ),
-            ),
-            Effect.provideService(Clock.Clock, clock),
+        clock.sleep(Duration.millis(PROBE_INTERVAL_MS)).pipe(
+          Effect.andThen(
+            Effect.gen(function* () {
+              const started = clock.currentTimeNanosUnsafe();
+              yield* Effect.forkIn(pass, scope);
+              return started;
+            }).pipe(Effect.repeat(cadence), Effect.asVoid),
           ),
+          Effect.provideService(Clock.Clock, clock),
+        ),
         scope,
       );
 

@@ -19,7 +19,7 @@ import {
   type ServiceStartInput,
 } from "@mend/sessions";
 import type { Workspace, WorkspaceForward } from "@sealant/sdk";
-import { Context, Deferred, Effect, Exit, Layer, Scope, Stream } from "effect";
+import { Clock, Context, Deferred, Duration, Effect, Exit, Layer, Scope, Stream } from "effect";
 import { TestClock } from "effect/testing";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
@@ -640,6 +640,66 @@ const clockStartInput: ServiceStartInput = {
   bindAddresses: ["127.0.0.1"],
 };
 
+for (const correction of [
+  { name: "backward", millis: -70_000 },
+  { name: "forward", millis: 60_000 },
+]) {
+  effectIt.effect(`keeps the polling cadence when epoch time steps ${correction.name}`, () =>
+    Effect.gen(function* () {
+      const monotonic = yield* TestClock.testClockWith(Effect.succeed);
+      let epochOffset = 0;
+      const clock: Clock.Clock = {
+        currentTimeMillisUnsafe: () => monotonic.currentTimeMillisUnsafe() + epochOffset,
+        currentTimeMillis: Effect.sync(() => monotonic.currentTimeMillisUnsafe() + epochOffset),
+        currentTimeNanosUnsafe: () => monotonic.currentTimeNanosUnsafe(),
+        currentTimeNanos: monotonic.currentTimeNanos,
+        sleep: (duration) => monotonic.sleep(duration),
+      };
+      const probes: bigint[] = [];
+      const recordingForwards: Layer.Layer<ServiceForwardsRepo> = Layer.effect(
+        ServiceForwardsRepo,
+        Effect.map(ServiceForwardsRepo, (repo) => ({
+          ...repo,
+          byId: () =>
+            Effect.sync(() => {
+              probes.push(clock.currentTimeNanosUnsafe());
+              // Correct wall time during a pass. Relative sleeps and nanoseconds
+              // still use the independently advanced TestClock.
+              if (probes.length === 2) epochOffset = correction.millis;
+            }).pipe(Effect.andThen(Effect.never)),
+        })),
+      ).pipe(Layer.provide(forwardsStubLayer));
+      const layer: Layer.Layer<ServiceHost> = ServiceHostLive.pipe(
+        Layer.provide(sealantFakeLayer),
+        Layer.provide(Layer.mergeAll(recordingForwards, observationsStubLayer)),
+      );
+      yield* Effect.gen(function* () {
+        const host = yield* ServiceHost;
+        yield* host.start(clockStartInput);
+        yield* monotonic.adjust(19_999);
+        expect(probes).toEqual([]);
+        yield* monotonic.adjust(1);
+        expect(probes).toEqual([20_000_000_000n]);
+        yield* monotonic.adjust(20_000);
+        expect(clock.currentTimeMillisUnsafe()).toBe(40_000 + correction.millis);
+        expect(clock.currentTimeNanosUnsafe()).toBe(40_000_000_000n);
+        expect(probes).toEqual([20_000_000_000n, 40_000_000_000n]);
+        yield* monotonic.adjust(19_999);
+        expect(probes).toEqual([20_000_000_000n, 40_000_000_000n]);
+        yield* monotonic.adjust(1);
+        expect(probes).toEqual([20_000_000_000n, 40_000_000_000n, 60_000_000_000n]);
+        yield* monotonic.adjust(20_000);
+        expect(probes).toEqual([
+          20_000_000_000n,
+          40_000_000_000n,
+          60_000_000_000n,
+          80_000_000_000n,
+        ]);
+      }).pipe(Effect.provide(layer), Effect.provideService(Clock.Clock, clock));
+    }),
+  );
+}
+
 effectIt.effect("closes a missing forward at the first Clock supervisor interval", () =>
   Effect.gen(function* () {
     const host = yield* ServiceHost;
@@ -756,3 +816,59 @@ effectIt.effect(
       expect(yield* tcpAccepts(binding.hostPort)).toBe(false);
     }),
 );
+
+for (const lagMillis of [5_000, 25_000]) {
+  effectIt.effect(`a polling wake delayed by ${lagMillis}ms rearms from its actual start`, () =>
+    Effect.gen(function* () {
+      const monotonic = yield* TestClock.testClockWith(Effect.succeed);
+      let delayed = false;
+      const clock: Clock.Clock = {
+        currentTimeMillisUnsafe: () => monotonic.currentTimeMillisUnsafe(),
+        currentTimeMillis: monotonic.currentTimeMillis,
+        currentTimeNanosUnsafe: () => monotonic.currentTimeNanosUnsafe(),
+        currentTimeNanos: monotonic.currentTimeNanos,
+        sleep: (duration) =>
+          Effect.suspend(() => {
+            // Deliver one timer late, as a stalled event loop could. Ordinary
+            // TestClock.adjust visits each scheduled timer on time.
+            if (!delayed && monotonic.currentTimeNanosUnsafe() >= 40_000_000_000n) {
+              delayed = true;
+              return monotonic.sleep(Duration.millis(Duration.toMillis(duration) + lagMillis));
+            }
+            return monotonic.sleep(duration);
+          }),
+      };
+      const late = BigInt(60_000 + lagMillis) * 1_000_000n;
+      const following = late + 20_000_000_000n;
+      const probes: bigint[] = [];
+      const recordingForwards: Layer.Layer<ServiceForwardsRepo> = Layer.effect(
+        ServiceForwardsRepo,
+        Effect.map(ServiceForwardsRepo, (repo) => ({
+          ...repo,
+          byId: () =>
+            Effect.sync(() => {
+              probes.push(clock.currentTimeNanosUnsafe());
+            }).pipe(Effect.andThen(Effect.never)),
+        })),
+      ).pipe(Layer.provide(forwardsStubLayer));
+      const layer: Layer.Layer<ServiceHost> = ServiceHostLive.pipe(
+        Layer.provide(sealantFakeLayer),
+        Layer.provide(Layer.mergeAll(recordingForwards, observationsStubLayer)),
+      );
+      yield* Effect.gen(function* () {
+        const host = yield* ServiceHost;
+        yield* host.start(clockStartInput);
+        yield* monotonic.adjust(40_000);
+        expect(probes).toEqual([20_000_000_000n, 40_000_000_000n]);
+        yield* monotonic.adjust(19_999 + lagMillis);
+        expect(probes).toEqual([20_000_000_000n, 40_000_000_000n]);
+        yield* monotonic.adjust(1);
+        expect(probes).toEqual([20_000_000_000n, 40_000_000_000n, late]);
+        yield* monotonic.adjust(19_999);
+        expect(probes).toEqual([20_000_000_000n, 40_000_000_000n, late]);
+        yield* monotonic.adjust(1);
+        expect(probes).toEqual([20_000_000_000n, 40_000_000_000n, late, following]);
+      }).pipe(Effect.provide(layer), Effect.provideService(Clock.Clock, clock));
+    }),
+  );
+}
