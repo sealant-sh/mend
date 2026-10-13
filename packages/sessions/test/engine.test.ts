@@ -14288,6 +14288,8 @@ describe("SessionEngine capture mode", () => {
     let standbyFinal = false;
     let standbyAlias = "";
     let standbyEpoch = 0;
+    let standbyLaunch = "";
+    const flushed: Array<string> = [];
     const flushKinds: Array<CaptureFlushKind> = [];
     const stopOptions: Array<WorkspaceStopOptions | undefined> = [];
     await withEngine(
@@ -14302,6 +14304,7 @@ describe("SessionEngine capture mode", () => {
           if (standby === undefined) throw new Error("no standby");
           standbyAlias = `standby-${standby.id}`;
           standbyEpoch = standby.createdAt.getTime();
+          standbyLaunch = `standby:${standby.id}`;
           const session = yield* engine.provision({
             projectId: project.id,
             harness: "codex",
@@ -14314,6 +14317,21 @@ describe("SessionEngine capture mode", () => {
           yield* engine.launch(session.id, ["codex"]);
           expect(Date.now() - startedAt).toBeLessThan(10_000);
           expect(standbyFinal).toBe(true);
+          const incoming = world.executorEvidence.get(standby.sealantWorkspaceId ?? "")?.saved;
+          expect(incoming?.epoch).toBe(standbyEpoch);
+          expect(incoming?.position).toMatchObject({
+            epoch: standbyEpoch,
+            launchId: standbyLaunch,
+            bootId: "placeholder-boot",
+            observation: 1,
+          });
+          expect(memory.leases.get(session.worktreeId)?.epoch).not.toBe(standbyEpoch);
+          // The session row repeats the received answer; it is not a current-save selection.
+          expect(world.captureSaved.get(session.id)).toMatchObject({
+            workspaceId: standby.sealantWorkspaceId,
+            epoch: standbyEpoch,
+            position: { epoch: standbyEpoch, launchId: standbyLaunch },
+          });
           expect(flushKinds).toContain("final");
           const after = world.sessions.get(session.id);
           expect(after?.status).toBe("running");
@@ -14324,38 +14342,127 @@ describe("SessionEngine capture mode", () => {
           expect(stopOptions.every((options) => options?.completion === undefined)).toBe(true);
           // One cold executor after the standby, under the session's own launch.
           expect(created.length).toBeGreaterThanOrEqual(2);
-          expect(world.executorLaunches.get(session.id)?.launchId).not.toBe(
-            `standby:${standby.id}`,
-          );
+          const current = world.sessions.get(session.id);
+          const lease = memory.leases.get(session.worktreeId);
+          const launch = world.executorLaunches.get(session.id);
+          if (current?.sealantWorkspaceId == null || lease === undefined || launch === undefined) {
+            throw new Error("the cold successor has no workspace, lease or launch");
+          }
+          expect(current.sealantWorkspaceId).not.toBe(standby.sealantWorkspaceId);
+          expect(launch.launchId).not.toBe(standbyLaunch);
+          expect(lease.executorId).toBe(session.id);
+          // The public read asks the cold executor, not the saved placeholder answer retained above.
+          const reading = yield* engine.readCaptures(session.id);
+          expect(reading).toMatchObject({
+            pending: 3,
+            epoch: lease.epoch,
+            complete: null,
+            position: { epoch: lease.epoch, launchId: launch.launchId, bootId: "stand-in-boot" },
+          });
+          expect(reading?.epoch).not.toBe(standbyEpoch);
+          expect(flushed.at(-1)).toBe(`flush:${current.sealantWorkspaceId}`);
+          expect(flushKinds.at(-1)).toBe("suspend");
+          expect(stopOptions.every((options) => options?.completion === undefined)).toBe(true);
         }),
       {
         captured: memory,
         hotWorkspacesLayer: pool.layer,
         drainPolicy: { terminationWait: Duration.millis(50) },
-        sealantLayer: lifecycleLayer(created, {
-          captureOps: {
-            flushKinds,
-            stopOptions,
-            // Exit 76 after its FINAL, released by Core: the workspace reads stopped from then on.
-            status: () => (standbyFinal ? "stopped" : "ready"),
-            stopAnswer: () => "stopped",
-            resourceId: () => "standby-container",
-            flush: () =>
-              Effect.sync(() => {
-                standbyFinal = true;
-                return flushReport(0, 0, { worktreeId: standbyAlias, epoch: standbyEpoch });
-              }),
-            replan: () =>
-              Effect.fail(
-                new SealantPlatformError({
-                  code: "replan_refused",
-                  status: 503,
-                  message: "capture plan.get failed: transport: timeout",
-                  cause: null,
+        sealantLayer: distinctWorkspaces(
+          lifecycleLayer(created, {
+            captureOps: {
+              flushed,
+              flushKinds,
+              stopOptions,
+              // Exit 76 after its FINAL, released by Core: the workspace reads stopped from then on.
+              stopAnswer: () => "stopped",
+              resourceId: () => "standby-container",
+              flush: (target) =>
+                Effect.sync(() => {
+                  if (target.id !== "workspace-1") return flushReport(3, 0);
+                  standbyFinal = true;
+                  return flushReport(0, 0, {
+                    worktreeId: standbyAlias,
+                    epoch: standbyEpoch,
+                    origin: {
+                      epoch: standbyEpoch,
+                      launch: standbyLaunch,
+                      bootId: "placeholder-boot",
+                      bootGeneration: 1,
+                      observation: 1,
+                    },
+                  });
                 }),
-              ),
-          },
+              replan: () =>
+                Effect.fail(
+                  new SealantPlatformError({
+                    code: "replan_refused",
+                    status: 503,
+                    message: "capture plan.get failed: transport: timeout",
+                    cause: null,
+                  }),
+                ),
+            },
+          }),
+          (id) => id === "workspace-1" && standbyFinal,
+        ),
+      },
+    );
+  }, 30_000);
+
+  it("reads each live executor under its own lease and launch when another worktree was claimed first", async () => {
+    const created: Array<CreateOptions> = [];
+    const memory = makeMemoryCaptureStore();
+    const flushed: Array<string> = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const { project, engine, session: first } = yield* launchOnce(world, tmp);
+          yield* engine.launch(first.id, ["codex"]);
+          const second = yield* engine.provision({
+            projectId: project.id,
+            harness: "claude",
+            label: null,
+            name: null,
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+          // Two completed claims before launch make this worktree's epoch differ independently.
+          yield* Effect.gen(function* () {
+            const repo = yield* CaptureStoreRepo;
+            yield* repo.init(second.worktreeId);
+            for (let attempt = 0; attempt < 2; attempt++) {
+              const lease = yield* repo.claim(second.worktreeId, second.id, 30);
+              expect(yield* repo.release(second.worktreeId, lease.epoch)).toBe(true);
+            }
+          }).pipe(Effect.provide(memory.layer));
+          yield* engine.launch(second.id, ["claude"]);
+          const firstLease = memory.leases.get(first.worktreeId);
+          const secondLease = memory.leases.get(second.worktreeId);
+          expect(firstLease?.epoch).not.toBe(secondLease?.epoch);
+          expect(world.sessions.get(first.id)?.sealantWorkspaceId).toBe("workspace-1");
+          expect(world.sessions.get(second.id)?.sealantWorkspaceId).toBe("workspace-2");
+          for (const session of [first, second]) {
+            const lease = memory.leases.get(session.worktreeId);
+            const launch = world.executorLaunches.get(session.id);
+            if (lease === undefined || launch === undefined)
+              throw new Error("no executor identity");
+            const reading = yield* engine.readCaptures(session.id);
+            expect(reading).toMatchObject({
+              pending: 1,
+              epoch: lease.epoch,
+              position: { epoch: lease.epoch, launchId: launch.launchId },
+            });
+          }
+          expect(flushed).toEqual(["flush:workspace-1", "flush:workspace-2"]);
         }),
+      {
+        captured: memory,
+        sealantLayer: distinctWorkspaces(
+          lifecycleLayer(created, {
+            captureOps: { flushed, flush: () => Effect.succeed(captureAnswer({ pending: 1 })) },
+          }),
+        ),
       },
     );
   }, 30_000);
@@ -14440,12 +14547,52 @@ const launchOnce = (world: World, tmp: string) =>
     return { project, engine, session };
   });
 
-/** A flush answer with `pending` left; the lifetime counters grow with every capture shipped. */
+/** Distinct created workspace handles and their ends, while the underlying fixture serves PTYs/exec. */
+const distinctWorkspaces = (
+  layer: Layer.Layer<SealantClient>,
+  ended: (id: string) => boolean = () => false,
+): Layer.Layer<SealantClient> =>
+  Layer.effect(
+    SealantClient,
+    Effect.map(SealantClient, (client) => {
+      const workspaces = new Map<string, Workspace>();
+      const stopped = new Set<string>();
+      return {
+        ...client,
+        createWorkspace: (options, launch, watch) =>
+          client.createWorkspace(options, launch, watch).pipe(
+            Effect.map((workspace) => {
+              const id = `workspace-${workspaces.size + 1}`;
+              const created: Workspace = {
+                ...workspace,
+                id,
+                status: async () => (stopped.has(id) || ended(id) ? "stopped" : "ready"),
+              };
+              workspaces.set(id, created);
+              return created;
+            }),
+          ),
+        getWorkspace: (id) => {
+          const workspace = workspaces.get(id);
+          return workspace === undefined ? client.getWorkspace(id) : Effect.succeed(workspace);
+        },
+        stopWorkspace: (workspace, options) =>
+          client.stopWorkspace(workspace, options).pipe(
+            Effect.tap((answer) =>
+              Effect.sync(() => {
+                if (answer.state !== "kept") stopped.add(workspace.id);
+              }),
+            ),
+          ),
+      } satisfies SealantClientShape;
+    }),
+  ).pipe(Layer.provide(layer));
+
 /**
  * The stand-in daemon as a current sealantd answers (cross-repo decision 17): every flush answer
- * under the epoch its lease holds, stamped with where the executor made it — that epoch, the
- * launch the lease is bound to, its boot and an observation that only counts up — unless the test
- * stamped it itself. Mend
+ * under the lease held by the requested workspace, stamped with where the executor made it:
+ * that epoch, the lease's launch, its boot and an increasing observation. An explicit origin
+ * passes through unchanged, including a foreign placeholder identity. Mend
  * orders evidence by that alone: an answer without it is ordered against nothing, and a save
  * never stands over one.
  */
@@ -14463,7 +14610,12 @@ const stampedAnswers = (
         client.captureFlush(target, kind).pipe(
           Effect.map((answer) => {
             if ("origin" in answer) return answer;
-            const lease = [...memory.leases.values()].find((held) => held.executorId !== null);
+            const lease = [...memory.leases.values()].find(
+              (held) =>
+                held.executorId !== null &&
+                (world.sessions.get(held.executorId)?.sealantWorkspaceId === target.id ||
+                  world.executorLaunches.get(held.executorId)?.workspaceId === target.id),
+            );
             // The launch the lease is bound to, else the one Mend recorded with this workspace.
             const launch =
               lease?.launchId ??
@@ -14491,6 +14643,7 @@ const stampedAnswers = (
   ).pipe(Layer.provide(layer));
 };
 
+/** A flush answer with `pending` left; the lifetime counters grow with every capture shipped. */
 const flushReport = (
   pending: number,
   shipped: number,
