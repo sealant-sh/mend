@@ -5,6 +5,8 @@ import * as path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { parse } from "yaml";
+
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const composeDirectory = path.join(root, "deploy/docker");
 const composeFixtureDirectory = path.join(root, "apps/cli/test-fixtures/docker");
@@ -119,7 +121,24 @@ test("named-volume lowering and persistence paths stay aligned", () => {
   assert.equal(compose.volumes["mend-registry"], undefined);
 });
 
-test("the bundle pins published Sealant 0.39.0-next.726 artifacts and its official migrator", async () => {
+test("the bundle uses the catalog Core version and declared digest images with its official migrator", async () => {
+  // The catalog is the package version authority; do not ask the production pin reader or writer
+  // to generate these expectations. Exact image payloads live in the Dockerfile ARG defaults.
+  const { catalog } = parse(await readFile(path.join(root, "pnpm-workspace.yaml"), "utf8"));
+  const sdk = catalog["@sealant/sdk"];
+  assert.equal(typeof sdk, "string");
+  const nextPrefix = "npm:@sealant/sdk-next@";
+  const version = sdk.startsWith(nextPrefix) ? sdk.slice(nextPrefix.length) : sdk;
+  assert.match(
+    version,
+    /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/,
+  );
+  const prerelease = version.includes("-");
+  assert.equal(sdk, prerelease ? `${nextPrefix}${version}` : version);
+  assert.equal(
+    catalog["@sealant/api-contracts"],
+    prerelease ? `npm:@sealant/api-contracts-next@${version}` : version,
+  );
   const [dockerfile, supervisor, contract, contractFixture, composeTemplate, composeFixture] =
     await Promise.all([
       readFile(path.join(root, "Dockerfile"), "utf8"),
@@ -131,50 +150,53 @@ test("the bundle pins published Sealant 0.39.0-next.726 artifacts and its offici
       readFile(path.join(composeDirectory, "compose.v2.yaml"), "utf8"),
       readFile(path.join(composeFixtureDirectory, "compose.v2.yaml"), "utf8"),
     ]);
-  assert.equal(contract.sealantVersion, "0.39.0-next.726");
+  assert.equal(contract.sealantVersion, version);
   assert.equal(
     contract.bootstrap.sealantMigrations,
-    "node /opt/sealant/api/dist/migrate.js from sealant-api 0.39.0-next.726",
+    `node /opt/sealant/api/dist/migrate.js from sealant-api ${version}`,
   );
-  assert.match(contract.captureStore.workspaceNetwork, /Sealant 0\.39\.0-next\.726 runtime/);
+  assert.ok(contract.captureStore.workspaceNetwork.includes(`Sealant ${version} runtime`));
   assert.deepEqual(contractFixture, contract);
   assert.equal(composeFixture, composeTemplate);
-  assert.match(composeTemplate, /Sealant 0\.39\.0-next\.726 API/);
+  assert.ok(composeTemplate.includes(`Sealant ${version} API`));
   assert.equal(contract.schemaVersion, 2);
   assert.deepEqual(contract.runtimeContainers, ["mend", "postgres", "garage"]);
   assert.equal(contract.captureStore.image, "dxflrs/garage:v2.4.1");
   assert.equal(contract.registry, undefined);
   assert.match(dockerfile, /MEND_VERSION=\$\{MEND_VERSION\}/);
-  // A release build passes no image arguments, so these defaults are the release pins. Only a
-  // preview build (.github/workflows/preview.yml) overrides them.
-  assert.match(
-    dockerfile,
-    /^ARG SEALANT_API_IMAGE=ghcr\.io\/sealant-sh\/sealant-api-next@sha256:2d2d62299b070b3acded990e7b144a86a99f4750feb666d31aa5f7685610d9d1$/m,
-  );
-  assert.match(
-    dockerfile,
-    /^ARG SEALANT_WORKER_IMAGE=ghcr\.io\/sealant-sh\/sealant-worker-next@sha256:88a05fdcfccfd66362fa52945dc0645eee160416526f912b77b20e6b23146e6e$/m,
-  );
-  assert.match(
-    dockerfile,
-    /^ARG SEALANT_SSH_GATEWAY_IMAGE=ghcr\.io\/sealant-sh\/sealant-ssh-gateway-next@sha256:729e033269575aea077903828009c9a983a4e99760f4fbefa8821157e927d5c0$/m,
-  );
-  // Declared before the first FROM, so the FROM lines can read them.
+  // Release builds use these defaults. Repository/channel/shape are independently checked here;
+  // the registry tag-to-digest attestation remains the release pin check, not a shape assertion.
   const firstFrom = dockerfile.search(/^FROM /m);
-  for (const [argument, stage] of [
-    ["SEALANT_API_IMAGE", "sealant-api"],
-    ["SEALANT_WORKER_IMAGE", "sealant-worker"],
-    ["SEALANT_SSH_GATEWAY_IMAGE", "sealant-ssh-gateway"],
+  assert.ok(firstFrom >= 0);
+  for (const [argument, repository, stage] of [
+    ["SEALANT_API_IMAGE", "sealant-sh/sealant-api", "sealant-api"],
+    ["SEALANT_WORKER_IMAGE", "sealant-sh/sealant-worker", "sealant-worker"],
+    ["SEALANT_SSH_GATEWAY_IMAGE", "sealant-sh/sealant-ssh-gateway", "sealant-ssh-gateway"],
   ]) {
-    assert.ok(dockerfile.search(new RegExp(`^ARG ${argument}=`, "m")) < firstFrom, argument);
-    assert.match(dockerfile, new RegExp(`^FROM \\$\\{${argument}\\} AS ${stage}$`, "m"));
+    const declarations = [...dockerfile.matchAll(new RegExp(`^ARG ${argument}=(.*)$`, "gm"))];
+    assert.equal(declarations.length, 1, argument);
+    const [declaration] = declarations;
+    assert.ok(declaration.index < firstFrom, argument);
+    const imageRepository = `${repository}${prerelease ? "-next" : ""}`;
+    assert.match(
+      declaration[1],
+      new RegExp(`^ghcr\\.io/${imageRepository}@sha256:[0-9a-f]{64}$`),
+      argument,
+    );
+    assert.equal(
+      dockerfile.match(new RegExp(`^FROM \\$\\{${argument}\\} AS ${stage}$`, "gm"))?.length,
+      1,
+      stage,
+    );
   }
   assert.equal(dockerfile.match(/^FROM .*sealant-sh\/sealant-/gm), null);
-  assert.match(dockerfile, /dev\.sealant\.mend\.sealant-version="0\.39\.0-next\.726"/);
+  const labels = [...dockerfile.matchAll(/dev\.sealant\.mend\.sealant-version="([^"]*)"/g)];
+  assert.equal(labels.length, 1);
+  assert.equal(labels[0][1], version);
   // The image lists every migration it carries, for `mend server upgrade --from-preview`.
   assert.match(dockerfile, /RUN node scripts\/mend-migrations\.mjs > \/app\/mend-migrations\.txt/);
   assert.match(dockerfile, /> \/app\/migrations\.txt/);
-  assert.match(supervisor, /applying Sealant 0\.39\.0-next\.726 migrations/);
+  assert.ok(supervisor.includes(`applying Sealant ${version} migrations`));
   assert.doesNotMatch(
     [dockerfile, supervisor, JSON.stringify(contract), composeTemplate].join("\n"),
     /0\.32\.0/,
