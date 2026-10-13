@@ -53,7 +53,7 @@ export const makeWriteTokens = (deps: {
   readonly sweepEvery?: Duration.Duration;
   /** The most tokens kept for the sweep; 1000 unless a test says. */
   readonly maxPending?: number;
-  /** Now, in milliseconds; `Date.now` unless a test says. */
+  /** Now, in milliseconds. Effect owners inject their Clock; standalone callers use host time. */
   readonly now?: () => number;
 }): WriteTokens => {
   const attempts = deps.attempts ?? 3;

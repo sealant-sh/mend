@@ -960,6 +960,7 @@ export const identityPickupScript = (
  * the author is set in the file directly, only the keys it does not set, and that is reported too.
  * Exits 0 when the include is there; else says what failed, on one line.
  */
+// Executes in a separate dependency-free Node process; lock expiry and pickup retries stay native.
 const INCLUDE_SOURCE = String.raw`const fs = require("node:fs"), cp = require("node:child_process");
 const [file, include] = process.argv.slice(1);
 const fail = (code, why) => { process.stderr.write(why.replace(/\s+/g, " ").trim() + "\n"); process.exit(code); };

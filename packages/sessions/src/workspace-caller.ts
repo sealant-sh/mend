@@ -7,7 +7,7 @@ import {
   SealantPlatformError,
   SealantPrincipal,
 } from "@mend/sealant";
-import { Effect, Layer, Stream } from "effect";
+import { Clock, Effect, Layer, Stream } from "effect";
 import * as Context from "effect/Context";
 
 /**
@@ -160,6 +160,7 @@ export const WorkspaceCallerLive: Layer.Layer<
   Effect.gen(function* () {
     const sessions = yield* SessionsRepo;
     const sessionRuns = yield* SessionRunsRepo;
+    const clock = yield* Clock.Clock;
     // A workspace's creator never changes, nor a run's workspace: an answer is kept for good, "none
     // on record" for `UNKNOWN_CREATOR_MS` (the co-located store records none, ever).
     const creators = new Map<string, string>();
@@ -172,14 +173,18 @@ export const WorkspaceCallerLive: Layer.Layer<
         const known = creators.get(workspaceId);
         if (known !== undefined) return Effect.succeed(known);
         const since = unknownSince.get(workspaceId);
-        if (trustUnknown && since !== undefined && Date.now() - since < UNKNOWN_CREATOR_MS) {
+        if (
+          trustUnknown &&
+          since !== undefined &&
+          clock.currentTimeMillisUnsafe() - since < UNKNOWN_CREATOR_MS
+        ) {
           return Effect.succeed(null);
         }
         return sessions.executorSessionOf(SealantWorkspaceId.make(workspaceId)).pipe(
           Effect.map((session) => {
             const userId = session?.ownerUserId ?? null;
             if (userId === null) {
-              remember(unknownSince, workspaceId, Date.now());
+              remember(unknownSince, workspaceId, clock.currentTimeMillisUnsafe());
               return null;
             }
             unknownSince.delete(workspaceId);

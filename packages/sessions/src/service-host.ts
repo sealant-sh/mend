@@ -8,7 +8,17 @@ import type { SealantWorkspaceId, ServiceForwardId, ServiceId } from "@mend/doma
 import type { ServiceObservationSource } from "@mend/domain/workbench";
 import { asSealantUser, SealantClient } from "@mend/sealant";
 import type { WorkspaceForward } from "@sealant/sdk";
-import { Effect, Layer, Option, Schema } from "effect";
+import {
+  Clock,
+  Duration,
+  Effect,
+  type Fiber,
+  Layer,
+  Option,
+  Schedule,
+  Schema,
+  Scope,
+} from "effect";
 import * as Context from "effect/Context";
 
 /**
@@ -264,7 +274,7 @@ interface ActiveService {
   readonly servers: ReadonlyArray<net.Server>;
   readonly dgrams: ReadonlyArray<dgram.Socket>;
   readonly flows: Map<string, UdpFlow>;
-  readonly timer: NodeJS.Timeout;
+  readonly timer: Fiber.Fiber<void>;
   /** Live pump sockets — a shutdown must sever these or the process never exits. */
   readonly sockets: Set<net.Socket>;
   lastStatus: "reachable" | "unreachable" | null;
@@ -285,7 +295,28 @@ export const ServiceHostLive: Layer.Layer<
     const sealant = yield* SealantClient;
     const forwards = yield* ServiceForwardsRepo;
     const observations = yield* ServiceObservationsRepo;
+    const clock = yield* Clock.Clock;
+    const scope = yield* Scope.Scope;
     const active = new Map<ServiceId, ActiveService>();
+
+    // Fixed triggers preserve interval overlap: a slow pass does not postpone the next one.
+    // Stop cancels only the triggers; passes already started remain owned by the layer scope.
+    const supervise = (pass: Effect.Effect<void>) =>
+      Effect.forkIn(
+        clock
+          .sleep(Duration.millis(PROBE_INTERVAL_MS))
+          .pipe(
+            Effect.andThen(
+              Effect.forkIn(pass, scope).pipe(
+                Effect.asVoid,
+                Effect.repeat(Schedule.fixed(PROBE_INTERVAL_MS)),
+                Effect.asVoid,
+              ),
+            ),
+            Effect.provideService(Clock.Clock, clock),
+          ),
+        scope,
+      );
 
     // Graceful shutdown: close every listener and sever every pump, or the
     // open handles keep the process alive and `pnpm dev` restarts wedge into
@@ -343,7 +374,7 @@ export const ServiceHostLive: Layer.Layer<
         return;
       }
       active.delete(serviceId);
-      clearInterval(entry.timer);
+      entry.timer.interruptUnsafe();
       for (const server of entry.servers) {
         server.close();
       }
@@ -452,22 +483,19 @@ export const ServiceHostLive: Layer.Layer<
         // The supervisor: keep an idle Service's state honest, and follow
         // the record — a row that exited (stopped, workspace reaped) closes
         // the listener from here.
-        const timer = setInterval(() => {
-          void Effect.runPromise(
-            Effect.gen(function* () {
-              const row = yield* forwards.byId(input.forwardId);
-              if (row === null || (row.state !== "binding" && row.state !== "bound")) {
-                stopSync(input.serviceId);
-                return;
-              }
-              const reachable = yield* probe(input.workspaceId, input.workspacePort);
-              yield* Effect.promise(() =>
-                observe(input, reachable ? "reachable" : "unreachable", "probe"),
-              );
-            }).pipe(asSealantUser(input.ownerUserId), Effect.ignore),
-          );
-        }, PROBE_INTERVAL_MS);
-        timer.unref();
+        const timer = yield* supervise(
+          Effect.gen(function* () {
+            const row = yield* forwards.byId(input.forwardId);
+            if (row === null || (row.state !== "binding" && row.state !== "bound")) {
+              stopSync(input.serviceId);
+              return;
+            }
+            const reachable = yield* probe(input.workspaceId, input.workspacePort);
+            yield* Effect.promise(() =>
+              observe(input, reachable ? "reachable" : "unreachable", "probe"),
+            );
+          }).pipe(asSealantUser(input.ownerUserId), Effect.ignore),
+        );
         active.set(input.serviceId, {
           servers,
           dgrams: [],
@@ -523,7 +551,7 @@ export const ServiceHostLive: Layer.Layer<
           pinned: null,
           pending: [],
           dialing: 2,
-          lastSeen: Date.now(),
+          lastSeen: clock.currentTimeMillisUnsafe(),
         };
         // Both possible targets, concurrently: a native process listens on
         // the workspace loopback, inner compose publishes on the sidecar.
@@ -550,7 +578,7 @@ export const ServiceHostLive: Layer.Layer<
             try {
               for await (const chunk of forward.output) {
                 if (flow.pinned !== null && flow.pinned !== forward) return;
-                flow.lastSeen = Date.now();
+                flow.lastSeen = clock.currentTimeMillisUnsafe();
                 if (flow.pinned === null) {
                   flow.pinned = forward;
                   flow.pending = [];
@@ -626,7 +654,7 @@ export const ServiceHostLive: Layer.Layer<
               flow = openFlow(socket, peer);
               entry.flows.set(key, flow);
             }
-            flow.lastSeen = Date.now();
+            flow.lastSeen = clock.currentTimeMillisUnsafe();
             if (flow.pinned !== null) {
               flow.pinned.send(data);
               return;
@@ -643,31 +671,28 @@ export const ServiceHostLive: Layer.Layer<
         }
         // The supervisor follows the record (row exited → close) and reaps
         // idle flows. No probe: UDP offers no handshake to observe.
-        const timer = setInterval(() => {
-          void Effect.runPromise(
-            Effect.gen(function* () {
-              const row = yield* forwards.byId(input.forwardId);
-              if (row === null || (row.state !== "binding" && row.state !== "bound")) {
-                stopSync(input.serviceId);
-                return;
-              }
-              const entry = active.get(input.serviceId);
-              if (entry === undefined) {
-                return;
-              }
-              const now = Date.now();
-              for (const [key, flow] of entry.flows) {
-                if (now - flow.lastSeen > UDP_FLOW_IDLE_MS) {
-                  for (const forward of flow.forwards) {
-                    forward.close();
-                  }
-                  entry.flows.delete(key);
+        const timer = yield* supervise(
+          Effect.gen(function* () {
+            const row = yield* forwards.byId(input.forwardId);
+            if (row === null || (row.state !== "binding" && row.state !== "bound")) {
+              stopSync(input.serviceId);
+              return;
+            }
+            const entry = active.get(input.serviceId);
+            if (entry === undefined) {
+              return;
+            }
+            const now = clock.currentTimeMillisUnsafe();
+            for (const [key, flow] of entry.flows) {
+              if (now - flow.lastSeen > UDP_FLOW_IDLE_MS) {
+                for (const forward of flow.forwards) {
+                  forward.close();
                 }
+                entry.flows.delete(key);
               }
-            }).pipe(Effect.ignore),
-          );
-        }, PROBE_INTERVAL_MS);
-        timer.unref();
+            }
+          }).pipe(Effect.ignore),
+        );
         active.set(input.serviceId, {
           servers: [],
           dgrams: sockets,

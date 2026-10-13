@@ -15,7 +15,7 @@ import {
   sectionFormatOf,
   sha256Hex,
 } from "@mend/store";
-import { Effect, Schema } from "effect";
+import { Clock, Effect, Schema } from "effect";
 
 /**
  * Dependency trees under the capture store (ADR-0002 amended 2026-09-13, decisions 2 and 9).
@@ -155,7 +155,7 @@ export const promoteBulkToCache = (
         format: FORMAT_DIR_PACKS,
         dir_packs: dirPacks,
         capture_id: captureId,
-        promoted_at: new Date().toISOString(),
+        promoted_at: new Date(yield* Clock.currentTimeMillis).toISOString(),
       };
       yield* blobs.put(
         recordKey(prefix),
@@ -185,7 +185,7 @@ export const promoteBulkToCache = (
       packs,
       platform: bulk.platform,
       capture_id: captureId,
-      promoted_at: new Date().toISOString(),
+      promoted_at: new Date(yield* Clock.currentTimeMillis).toISOString(),
     };
     yield* blobs.put(
       recordKey(prefix),

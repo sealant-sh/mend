@@ -53,7 +53,18 @@ import {
   type WorktreeMetaDocument,
   withCaptureReadPass,
 } from "@mend/store";
-import { Cause, Deferred, Duration, Effect, Exit, Layer, Option, Result, Schema } from "effect";
+import {
+  Cause,
+  Clock,
+  Deferred,
+  Duration,
+  Effect,
+  Exit,
+  Layer,
+  Option,
+  Result,
+  Schema,
+} from "effect";
 import * as Context from "effect/Context";
 import * as Semaphore from "effect/Semaphore";
 
@@ -1026,14 +1037,14 @@ const bulkKeysOf = (section: BulkSectionReady): ReadonlyArray<string> => [
 /** Bytes priced in a ledger (key → bytes). */
 /** Run an effect and note how long it took, in milliseconds, under `name` in `into`. */
 const timedInto =
-  (into: Record<string, number>, name: string) =>
+  (clock: Clock.Clock, into: Record<string, number>, name: string) =>
   <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
     Effect.suspend(() => {
-      const started = performance.now();
+      const started = clock.currentTimeNanosUnsafe();
       return effect.pipe(
         Effect.ensuring(
           Effect.sync(() => {
-            into[name] = Math.round(performance.now() - started);
+            into[name] = Math.round(Number(clock.currentTimeNanosUnsafe() - started) / 1_000_000);
           }),
         ),
       );
@@ -1122,6 +1133,8 @@ export const CaptureChannelLive: Layer.Layer<
     const verifier = yield* CaptureGitVerifier;
     const sources = yield* CaptureSources;
     const remotes = yield* CaptureRemotes;
+    const clock = yield* Clock.Clock;
+    const epochMillis = () => clock.currentTimeMillisUnsafe();
     /**
      * A GET URL per source archive, minted like the head's objects. A source whose URL cannot be
      * minted is dropped rather than named without one: sealantd would only skip it anyway.
@@ -1713,7 +1726,7 @@ export const CaptureChannelLive: Layer.Layer<
           const standing =
             recorded === null || recorded.captureId !== head.id
               ? null
-              : yield* sealStandingOf(recorded, Date.now).pipe(
+              : yield* sealStandingOf(recorded, epochMillis).pipe(
                   Effect.provideService(CaptureStoreRepo, repo),
                   Effect.provideService(BlobStore, blobs),
                 );
@@ -1902,7 +1915,7 @@ export const CaptureChannelLive: Layer.Layer<
         if (keys.length > 0 && handed !== undefined && keys.every((key) => handed.has(key))) {
           return true;
         }
-        const now = Date.now();
+        const now = epochMillis();
         const window = (urlLog.get(launchId) ?? []).filter((at) => now - at < 60 * 60 * 1000);
         if (window.length >= policy.callsPerHour) {
           urlLog.set(launchId, window);
@@ -1968,7 +1981,7 @@ export const CaptureChannelLive: Layer.Layer<
             const answersPresent = readsPresent.get(launchId) === true;
             // Before any bucket read: an index binding judged live at this moment stays judged so
             // through the HEADs below, never later than it was.
-            const callStartedAt = Date.now();
+            const callStartedAt = epochMillis();
             // Bytes-bound URLs (`UPLOAD_ANSWER_SHA256`): an executor that sends the checksum, on a
             // store that checks it but cannot refuse an overwrite. Such a URL writes the bytes it was
             // minted for or nothing, so it carries no authority to replace an object.
@@ -2080,7 +2093,7 @@ export const CaptureChannelLive: Layer.Layer<
                 // Reserved in the step that checks it (`reserveBoundIndex`): while a URL of this
                 // index bound to other bytes could live, none is handed out for these, and a seal
                 // never stands over stored bytes a live binding does not name (`sealStandingOf`).
-                const reservedUntil = Date.now() + BOUND_URL_LIFETIME_MS;
+                const reservedUntil = epochMillis() + BOUND_URL_LIFETIME_MS;
                 const reserved = yield* repo.reserveBoundIndex(
                   plan.key,
                   said,
@@ -2184,7 +2197,7 @@ export const CaptureChannelLive: Layer.Layer<
             // for — a newer one is checked anew.
             let checkedSeals: ReadonlyArray<string> = [];
             let sealChecked = false;
-            let recordedAt = Date.now();
+            let recordedAt = epochMillis();
             // Every URL of this call lives as long as the call's bytes need (e2e8): the authority
             // recorded below is that long plus the margin, and every URL is signed for it.
             const ttlSeconds = putUrlTtlSeconds(
@@ -2195,7 +2208,7 @@ export const CaptureChannelLive: Layer.Layer<
             while (plans.length > 0) {
               // A call with nothing unbound records nothing: no URL of it can replace an object.
               if (!unbound) break;
-              recordedAt = Date.now();
+              recordedAt = epochMillis();
               const record: PutAuthorityRecord = yield* repo.recordPutAuthority(
                 worktreeId,
                 input.epoch,
@@ -2296,7 +2309,7 @@ export const CaptureChannelLive: Layer.Layer<
                   .pipe(Effect.catch(storeError("presigning a PUT", plan.key)));
                 // A URL is good from when it was signed: the binding lasts at least that long.
                 if (digest !== undefined && contentDigestOfKey(plan.key) === null) {
-                  const signedAt = Date.now();
+                  const signedAt = epochMillis();
                   const extended = yield* repo.extendBoundIndex(
                     plan.key,
                     digest,
@@ -2340,7 +2353,7 @@ export const CaptureChannelLive: Layer.Layer<
             if (
               plans.length > 0 &&
               unbound &&
-              Date.now() - recordedAt > (PUT_URL_CLOCK_MARGIN_SECONDS * 1000) / 2
+              epochMillis() - recordedAt > (PUT_URL_CLOCK_MARGIN_SECONDS * 1000) / 2
             ) {
               return yield* Effect.die(
                 "capture channel: upload URLs were signed too long after their write authority was recorded · none handed out",
@@ -2634,7 +2647,7 @@ export const CaptureChannelLive: Layer.Layer<
               );
               const payloads = yield* verifyPackPayloads(
                 chunked.flatMap((section) => section.packs),
-              ).pipe(timedInto(took, "payloadsMs"), Effect.result);
+              ).pipe(timedInto(clock, took, "payloadsMs"), Effect.result);
               if (Result.isFailure(payloads)) {
                 const error = payloads.failure;
                 yield* Effect.logWarning(
@@ -2659,7 +2672,7 @@ export const CaptureChannelLive: Layer.Layer<
               }
               if (metaDocument === null) return { problems };
               const crossLinks = yield* crossLinksProblem(manifest, metaDocument).pipe(
-                timedInto(took, "crossLinksMs"),
+                timedInto(clock, took, "crossLinksMs"),
               );
               if (crossLinks !== null) problems.push(`cross-class links: ${crossLinks}`);
               if (
@@ -2670,12 +2683,12 @@ export const CaptureChannelLive: Layer.Layer<
                   restoreTree === null
                     ? "the tree a restore checks out was not listed"
                     : yield* linkTopologyProblem(manifest, metaDocument, restoreTree).pipe(
-                        timedInto(took, "linkTopologyMs"),
+                        timedInto(clock, took, "linkTopologyMs"),
                       );
                 if (trackedLinks !== null) problems.push(`tracked links: ${trackedLinks}`);
               }
               const inodeMeta = yield* inodeMetadataProblem(manifest, metaDocument).pipe(
-                timedInto(took, "inodeMetadataMs"),
+                timedInto(clock, took, "inodeMetadataMs"),
               );
               if (inodeMeta !== null) problems.push(`inode metadata: ${inodeMeta}`);
               return { problems };
@@ -2812,9 +2825,9 @@ export const CaptureChannelLive: Layer.Layer<
       const registerOnce = Effect.fn("SessionCaptureApi.register")(function* (
         input: RegisterRequest,
       ) {
-        const startedAt = Date.now();
+        const startedAt = epochMillis();
         const budget = yield* CaptureRegisterBudget;
-        const remaining = () => Math.max(0, budget - (Date.now() - startedAt));
+        const remaining = () => Math.max(0, budget - (epochMillis() - startedAt));
         yield* requireWorktree(input.worktree_id);
         const lease = yield* requireLease(input.epoch);
         if (
@@ -3215,7 +3228,7 @@ export const CaptureChannelLive: Layer.Layer<
               ? null
               : yield* verifier
                   .verify(scope.projectId, manifest)
-                  .pipe(timedInto(registerTook, "gitVerifyMs"));
+                  .pipe(timedInto(clock, registerTook, "gitVerifyMs"));
           const gitFsck = already?.gitFsck ?? verification?.outcome ?? "unverified";
           if (verification !== null && verification.outcome !== "verified") {
             yield* Effect.logWarning(
@@ -3244,7 +3257,7 @@ export const CaptureChannelLive: Layer.Layer<
             return verification?.outcome === "verified"
               ? yield* verifier
                   .treeObjects(scope.projectId, manifest, tree)
-                  .pipe(timedInto(registerTook, "restoreTreeMs"))
+                  .pipe(timedInto(clock, registerTook, "restoreTreeMs"))
               : null;
           });
           // The worktree metadata document against the namespace it applies to (review
@@ -3261,7 +3274,10 @@ export const CaptureChannelLive: Layer.Layer<
               manifest,
               metaDocument,
               restoreTree,
-            ).pipe(Effect.provideService(BlobStore, blobs), timedInto(registerTook, "namespaceMs"));
+            ).pipe(
+              Effect.provideService(BlobStore, blobs),
+              timedInto(clock, registerTook, "namespaceMs"),
+            );
             if (problem !== null) {
               return yield* new CaptureRouteError({
                 status: 422,
@@ -3312,7 +3328,7 @@ export const CaptureChannelLive: Layer.Layer<
               ? null
               : yield* Deferred.await(job.verdict).pipe(
                   Effect.timeoutOption(remaining()),
-                  timedInto(registerTook, "sealChecksMs"),
+                  timedInto(clock, registerTook, "sealChecksMs"),
                 );
           const pendingSeal = verdict !== null && Option.isNone(verdict);
           // Checks that concluded nothing (the store failed a read, review 2026-09-28 (12) #4):
@@ -3484,7 +3500,7 @@ export const CaptureChannelLive: Layer.Layer<
                           input.epoch,
                           input.capture_id,
                           sealProblem,
-                        ).pipe(timedInto(registerTook, "sealStandingMs"));
+                        ).pipe(timedInto(clock, registerTook, "sealStandingMs"));
                       });
         // A Stop waits on a final capture's register: where its time went.
         if (manifest.kind === "final" && Object.keys(registerTook).length > 0) {
@@ -3558,7 +3574,7 @@ export const CaptureChannelLive: Layer.Layer<
                 gitSectionFailed: problem.split("; ").includes(GIT_SECTION_FAILED),
               };
         }
-        const standing = yield* sealStandingOf(recorded, Date.now).pipe(
+        const standing = yield* sealStandingOf(recorded, epochMillis).pipe(
           Effect.provideService(CaptureStoreRepo, repo),
           Effect.provideService(BlobStore, blobs),
         );

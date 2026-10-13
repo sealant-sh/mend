@@ -27,7 +27,7 @@ import {
   WORKTREE_TREE_REF,
   worktreePathOf,
 } from "@mend/store";
-import { Duration, Effect, Layer } from "effect";
+import { Clock, Duration, Effect, Layer } from "effect";
 
 import { CaptureChannel } from "./capture-channel.ts";
 import { bulkSectionOfCache, readDependencyCache } from "./dependency-cache.ts";
@@ -282,7 +282,7 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
             epoch: claimed.epoch,
             seq: 0,
             kind: "checkpoint",
-            created_at: new Date().toISOString(),
+            created_at: new Date(yield* Clock.currentTimeMillis).toISOString(),
             sections: {
               git: {
                 packs: [basePack.key],
