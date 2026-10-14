@@ -5,8 +5,9 @@ import {
   hashSessionChannelToken,
   mintSessionChannelToken,
 } from "@mend/db";
-import { Effect } from "effect";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { it, TestClock } from "@mend/test-ci/effect-vitest";
+import { Clock, Effect } from "effect";
+import { describe, expect } from "vitest";
 
 describe("session channel tokens", () => {
   it("mints url-safe tokens and hashes them deterministically", () => {
@@ -23,33 +24,32 @@ describe("session channel tokens", () => {
     expect(mintSessionChannelToken()).not.toBe(token);
   });
 
-  it("scopes verification to the session, answers the launch, and revocation is final", async () => {
-    await Effect.runPromise(
-      Effect.gen(function* () {
-        const repo = yield* SessionChannelTokensRepo;
-        const a = yield* repo.issue("sess-a", "launch-a1");
-        const b = yield* repo.issue("sess-b", "launch-b1");
-        expect(yield* repo.verify("sess-a", a)).toBe("launch-a1");
-        expect(yield* repo.verify("sess-a", b)).toBeNull();
-        expect(yield* repo.verify("sess-b", a)).toBeNull();
-        expect(yield* repo.verify("sess-c", a)).toBeNull();
-        expect(yield* repo.resolve(b)).toEqual({
-          sessionId: "sess-b",
-          launchId: "launch-b1",
-          accountId: null,
-          writeOnly: false,
-        });
-        yield* repo.revoke("sess-a");
-        expect(yield* repo.verify("sess-a", a)).toBeNull();
-        const a2 = yield* repo.issue("sess-a", "launch-a2");
-        expect(yield* repo.verify("sess-a", a)).toBeNull();
-        expect(yield* repo.verify("sess-a", a2)).toBe("launch-a2");
-      }).pipe(Effect.provide(SessionChannelTokensRepoMemory)),
-    );
-  });
+  it.effect("scopes verification to the session, answers the launch, and revocation is final", () =>
+    Effect.gen(function* () {
+      const repo = yield* SessionChannelTokensRepo;
+      const a = yield* repo.issue("sess-a", "launch-a1");
+      const b = yield* repo.issue("sess-b", "launch-b1");
+      expect(yield* repo.verify("sess-a", a)).toBe("launch-a1");
+      expect(yield* repo.verify("sess-a", b)).toBeNull();
+      expect(yield* repo.verify("sess-b", a)).toBeNull();
+      expect(yield* repo.verify("sess-c", a)).toBeNull();
+      expect(yield* repo.resolve(b)).toEqual({
+        sessionId: "sess-b",
+        launchId: "launch-b1",
+        accountId: null,
+        writeOnly: false,
+      });
+      yield* repo.revoke("sess-a");
+      expect(yield* repo.verify("sess-a", a)).toBeNull();
+      const a2 = yield* repo.issue("sess-a", "launch-a2");
+      expect(yield* repo.verify("sess-a", a)).toBeNull();
+      expect(yield* repo.verify("sess-a", a2)).toBe("launch-a2");
+    }).pipe(Effect.provide(SessionChannelTokensRepoMemory)),
+  );
 
-  it("a new launch never rotates another's token; each launch's tokens end with it (review 3 #5)", async () => {
-    await Effect.runPromise(
+  it.effect(
+    "a new launch never rotates another's token; each launch's tokens end with it (review 3 #5)",
+    () =>
       Effect.gen(function* () {
         const repo = yield* SessionChannelTokensRepo;
         const first = yield* repo.issue("sess-a", "launch-1");
@@ -84,16 +84,12 @@ describe("session channel tokens", () => {
           writeOnly: false,
         });
       }).pipe(Effect.provide(SessionChannelTokensRepoMemory)),
-    );
-  });
+  );
 
   describe("a one-off write's token (mend#615 review 3)", () => {
-    afterEach(() => {
-      vi.useRealTimers();
-    });
-
-    it("resolves as its person's, write-only, and nothing that revokes their tokens in bulk reaches it", async () => {
-      await Effect.runPromise(
+    it.effect(
+      "resolves as its person's, write-only, and nothing that revokes their tokens in bulk reaches it",
+      () =>
         Effect.gen(function* () {
           const repo = yield* SessionChannelTokensRepo;
           const own = yield* repo.issuePerson("launch-1", "user-maria");
@@ -107,7 +103,11 @@ describe("session channel tokens", () => {
           });
           expect((yield* repo.resolve(own))?.writeOnly).toBe(false);
           // Her last process ended: her tokens go, her pastes' stay.
-          yield* repo.revokePerson("launch-1", "user-maria", new Date(Date.now() + 1000));
+          yield* repo.revokePerson(
+            "launch-1",
+            "user-maria",
+            new Date((yield* Clock.currentTimeMillis) + 1000),
+          );
           expect(yield* repo.resolve(own)).toBeNull();
           expect((yield* repo.resolve(paste))?.accountId).toBe("user-maria");
           // Its own write's end revokes it alone.
@@ -118,24 +118,20 @@ describe("session channel tokens", () => {
           yield* repo.revokeLaunch("launch-1");
           expect(yield* repo.resolve(other)).toBeNull();
         }).pipe(Effect.provide(SessionChannelTokensRepoMemory)),
-      );
-    });
+    );
 
-    it("lapses once its time is up, whatever became of its write", async () => {
-      vi.useFakeTimers();
-      await Effect.runPromise(
-        Effect.gen(function* () {
-          const repo = yield* SessionChannelTokensRepo;
-          const paste = yield* repo.issueWrite("launch-1", "user-maria");
-          const own = yield* repo.issuePerson("launch-1", "user-maria");
-          vi.advanceTimersByTime(WRITE_TOKEN_TTL_MS - 1);
-          expect((yield* repo.resolve(paste))?.writeOnly).toBe(true);
-          vi.advanceTimersByTime(1);
-          expect(yield* repo.resolve(paste)).toBeNull();
-          // A person's own token has no such time.
-          expect((yield* repo.resolve(own))?.accountId).toBe("user-maria");
-        }).pipe(Effect.provide(SessionChannelTokensRepoMemory)),
-      );
-    });
+    it.effect("lapses once its time is up, whatever became of its write", () =>
+      Effect.gen(function* () {
+        const repo = yield* SessionChannelTokensRepo;
+        const paste = yield* repo.issueWrite("launch-1", "user-maria");
+        const own = yield* repo.issuePerson("launch-1", "user-maria");
+        yield* TestClock.adjust(WRITE_TOKEN_TTL_MS - 1);
+        expect((yield* repo.resolve(paste))?.writeOnly).toBe(true);
+        yield* TestClock.adjust(1);
+        expect(yield* repo.resolve(paste)).toBeNull();
+        // A person's own token has no such time.
+        expect((yield* repo.resolve(own))?.accountId).toBe("user-maria");
+      }).pipe(Effect.provide(SessionChannelTokensRepoMemory)),
+    );
   });
 });
