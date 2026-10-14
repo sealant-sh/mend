@@ -22,6 +22,7 @@
     "undici": "catalog:"
   },
   "devDependencies": {
+    "@mend/test-ci": "workspace:*",
     "@mend/typescript": "workspace:*",
     "@types/node": "catalog:",
     "@types/ws": "catalog:",

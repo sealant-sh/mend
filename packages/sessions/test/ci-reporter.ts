@@ -9,8 +9,6 @@ class SessionsCiReporter implements Reporter {
   private vitest: Vitest | undefined;
   private readonly locations = new Map<string, string>();
 
-  constructor(private readonly fileBudgetMs: number | undefined) {}
-
   onInit(vitest: Vitest): void {
     this.vitest = vitest;
   }
@@ -42,23 +40,12 @@ class SessionsCiReporter implements Reporter {
     // immediately so even a late log is included in its exit status and JSON report.
     this.vitest.state.catchError(error, "Sessions Clock warning");
   }
-
-  onTestModuleEnd(module: TestModule): void {
-    const duration = module.diagnostic().duration;
-    if (this.fileBudgetMs !== undefined && duration > this.fileBudgetMs) {
-      const error = new Error(
-        `sessions file execution budget exceeded: ${module.moduleId} took ${duration.toFixed(1)} ms > ${this.fileBudgetMs} ms`,
-      );
-      this.vitest?.logger.error(error.message);
-      throw error;
-    }
-  }
 }
 
 /** Append after CLI resolution so --reporter=json changes output without removing the guard. */
-export const sessionsCiGuard = (options: { readonly fileBudgetMs?: number } = {}): Plugin => ({
+export const sessionsCiGuard = (): Plugin => ({
   name: "mend-sessions-ci-guard",
   configureVitest({ vitest }) {
-    vitest.config.reporters.push(new SessionsCiReporter(options.fileBudgetMs));
+    vitest.config.reporters.push(new SessionsCiReporter());
   },
 });

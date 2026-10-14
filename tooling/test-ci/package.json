@@ -1,0 +1,20 @@
+{
+  "name": "@mend/test-ci",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./vitest": "./src/vitest.ts"
+  },
+  "scripts": {
+    "lint": "oxlint . --no-error-on-unmatched-pattern",
+    "test:integration": "node --experimental-strip-types --test --test-reporter=spec --test-reporter-destination=stdout --test-reporter=../../scripts/ci-node-reporter.mjs --test-reporter-destination=stderr test/*.test.ts",
+    "typecheck": "tsgo -p tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "@mend/typescript": "workspace:*",
+    "@types/node": "catalog:",
+    "vitest": "catalog:",
+    "vitest-v5": "catalog:t3"
+  }
+}

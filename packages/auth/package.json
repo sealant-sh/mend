@@ -21,6 +21,7 @@
   "devDependencies": {
     "@effect/vitest": "catalog:",
     "@mend/db": "workspace:*",
+    "@mend/test-ci": "workspace:*",
     "@mend/typescript": "workspace:*",
     "@types/node": "catalog:",
     "@types/pg": "catalog:",

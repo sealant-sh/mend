@@ -1,6 +1,8 @@
+import { vitestCiGuard } from "@mend/test-ci/vitest";
 import { defineConfig } from "vitest/config";
 
 export default defineConfig({
+  plugins: [vitestCiGuard({ packageName: "@mend/t3-gateway" })],
   test: {
     include: ["test/**/*.test.ts"],
     // The tests run a real gateway and a fake Mend over sockets, several steps each. Every wait

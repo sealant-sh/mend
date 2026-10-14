@@ -327,7 +327,7 @@ test(
 test(
   "a closed root present before CDP attachment withholds its image",
   { skip: noBrowser },
-  async () => {
+  async (t) => {
     const { chromium } = createRequire(join(playwright, "package.json"))("playwright-core");
     const userData = fresh("cdp-browser");
     const context = await chromium.launchPersistentContext(userData, {
@@ -340,7 +340,16 @@ test(
         const root = document.getElementById("host").attachShadow({ mode: "closed" });
         root.textContent = "tok-8b1d2e3f4a5c6b7d8e9f";
       });
-      const port = readFileSync(join(userData, "DevToolsActivePort"), "utf8").split("\n")[0];
+      // Chromium publishes this file asynchronously, even after the context is usable.
+      const port = await t.waitFor(
+        () => {
+          const value = readFileSync(join(userData, "DevToolsActivePort"), "utf8").split("\n")[0];
+          assert.match(value, /^[1-9]\d{0,4}$/);
+          assert.ok(Number(value) <= 65535);
+          return value;
+        },
+        { timeout: 5000, interval: 25 },
+      );
       const privateDir = privateWithAccount();
       const out = fresh("cdp-shadow-evidence");
       const run = drive(

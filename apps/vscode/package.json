@@ -52,6 +52,7 @@
     "@mend/workspace-ssh": "workspace:*"
   },
   "devDependencies": {
+    "@mend/test-ci": "workspace:*",
     "@mend/typescript": "workspace:*",
     "@types/node": "catalog:",
     "@types/vscode": "^1.100.0",

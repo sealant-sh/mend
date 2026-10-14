@@ -545,3 +545,43 @@ command and worker environment are the same as the reliability invocation above.
 | `ci-reporter.test.ts`               |                      7.235 s |
 | `engine-fixture.test.ts`            |                      0.272 s |
 | `capture-store-memory.test.ts`      |                      0.005 s |
+
+## Uniform file guards and runtime timeout evidence
+
+All 24 workspace Vitest test scripts load `@mend/test-ci/vitest` through their existing or new
+configuration. It appends a reporter after CLI reporter resolution, so the default output and
+explicit JSON reports remain available. The shared reporter fails CI when a completed file's
+execution duration exceeds 60,000 ms, including hooks but excluding transform and collection. This
+is a completed-file guard, not an interrupting 60-second process timeout. Existing individual test
+and hook deadlines are unchanged. The sessions Clock warning guard remains independent.
+
+Vitest 3 and 5 emit `CI_TIMING` JSON lines on stderr for every case, file and completed run. These
+include a per-invocation ID, package, file, resolved runtime timeout, duration, state and
+retry/repeat counts. Vitest 3 exposes its resolved timeout through the public collection callback;
+Vitest 5 exposes it on each case. Dynamic and inherited budgets therefore need no source-code
+inference. The reporter uses no runtime Vitest dependency, and its compatibility tests execute both
+installed major versions through real child processes.
+
+Both reporters escape Unicode line separators so pnpm preserves one JSON record per line, including
+test names containing control characters. The decoded names remain unchanged.
+
+The native Node reporter accompanies `spec` output in CI's selection, static, shard and packaging
+test commands, the guard compatibility tests, and the web package's Node integration command. It
+uses public per-file summaries to measure file execution, including hooks. Native process startup is
+excluded. A leaf whose name looks like a file is still a leaf. Missing file summaries remain
+incomplete; interrupted runs never become a zero-duration pass. Its 60-second file budget is
+enforced in CI. Node does not expose the effective case timeout, so those timeout fields remain
+explicitly unknown.
+
+`ci-timings.mjs` keeps this evidence in `runtimeTimings`, separate from its older default-reporter
+and static-source estimates. Each run needs matching file/test counts and a final summary to be
+complete. Cached replays, skips, unavailable/disabled budgets and retry/repeat aggregate durations
+are not assessed for timeout headroom. Current executed cases at or above half their runtime timeout
+are flagged for investigation. The headroom flag does not fail CI or raise a timeout. Invalid
+records are listed; they cannot manufacture a healthy case.
+
+The guards do not cover non-test commands such as docs builds, shell scripts, browser acceptance
+commands or benchmarks with separate opt-in configs. Those keep their existing contracts and job
+deadlines. They are not silently counted as guarded test files. Required PostgreSQL, Garage/MinIO,
+Chromium checks and existing test skips are unchanged. Turbo caching and affected-only selection
+remain held.

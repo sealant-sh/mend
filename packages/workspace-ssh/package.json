@@ -13,6 +13,7 @@
     "typecheck": "tsgo -p tsconfig.json --noEmit"
   },
   "devDependencies": {
+    "@mend/test-ci": "workspace:*",
     "@mend/typescript": "workspace:*",
     "@types/node": "catalog:",
     "typescript": "catalog:",

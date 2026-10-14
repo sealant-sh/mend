@@ -196,13 +196,35 @@ Measure setup-node plus install together so a cold network fill is not mistaken 
 
 | Job            | #976 setup-node | #976 frozen install | Combined baseline | Persistent-store box result |
 | -------------- | --------------: | ------------------: | ----------------: | --------------------------- |
-| static         |            44 s |                 6 s |              50 s | Pending                     |
-| test-engines   |            43 s |                 7 s |              50 s | Pending                     |
-| test-clients-a |            41 s |                 7 s |              48 s | Pending                     |
-| test-clients-b |            48 s |                 7 s |              55 s | Pending                     |
-| packaging      |            47 s |                 7 s |              54 s | Pending                     |
-| mobile-web     |            43 s |                 7 s |              50 s | Pending                     |
+| static         |            44 s |                 6 s |              50 s | 1 + 6 = 7 s                 |
+| test-engines   |            43 s |                 7 s |              50 s | 0 + 6 = 6 s                 |
+| test-clients-a |            41 s |                 7 s |              48 s | 0 + 7 = 7 s                 |
+| test-clients-b |            48 s |                 7 s |              55 s | 0 + 8 = 8 s                 |
+| packaging      |            47 s |                 7 s |              54 s | 1 + 5 = 6 s                 |
+| mobile-web     |            43 s |                 7 s |              50 s | 1 + 6 = 7 s                 |
 
-The six baseline setup-node steps total 266 seconds; setup plus install totals 307 seconds. Report
-the next run's actual totals and which VM jobs were cold, without extrapolating a warm-store result
-from a local install.
+The six baseline setup-node steps total 266 seconds; setup plus install totals 307 seconds. The
+comparison below uses observed runner logs and distinguishes warm stores from cold fills.
+
+PR #977, run 38496512998 on head 2b28f09e1, passed all eight jobs. Setup plus install fell from 307
+to 41 seconds. API step timestamps have one-second resolution. All six frozen installs reused 2,043
+packages and downloaded zero, so this measures warm stores. It does not measure the first cold fill
+after the VM refresh. Box logs show no setup-node pnpm cache restore.
+
+The hosted probe, run 38496879699 on head 7a811fa2, passed on `ubuntu-latest` with the
+mixed-workflow cache expression. It reported `runner.environment=github-hosted` and
+`cache-hit=true`, restored 782,407,567 bytes and passed frozen install. Setup-node took 20 seconds
+and install 10 seconds. This verifies cache selection on hosted runners; it is not a
+packaged-acceptance run on ARM.
+
+| Capacity measure                           |  #976 |  #977 |
+| ------------------------------------------ | ----: | ----: |
+| Slowest execution job                      | 308 s | 262 s |
+| Unlimited-runner dependency path           | 328 s | 283 s |
+| Total runner-minutes                       | 24.07 | 19.55 |
+| Run creation to required checks completion | 866 s | 836 s |
+
+The #977 wall endpoints are 01:35:02 to 01:48:58 UTC. First job start to checks completion is 755
+seconds. Queue and execution overlap; do not sum queue durations to explain the wall time. This is
+one observed run, not p50 or p95. Raw evidence and analyzer reports are archived outside the
+repository under `ci-timing-2026-10-13/reports/headroom-pnpm-store/green-box-run/`.
