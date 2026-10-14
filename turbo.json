@@ -3,7 +3,27 @@
   "tasks": {
     "build": {
       "dependsOn": ["^build"],
-      "outputs": ["dist/**", "build/**"]
+      "outputs": [
+        "dist/**",
+        "build/**",
+        ".output/**",
+        "out/**",
+        "man/**",
+        ".astro/**",
+        "src/routeTree.gen.ts",
+        "src/renderer/src/routeTree.gen.ts",
+        "public/install.sh"
+      ],
+      "inputs": ["$TURBO_DEFAULT$", ".env*", "$TURBO_ROOT$/tooling/scripts/**"],
+      "env": [
+        "BUNDLE_*",
+        "MEND_*",
+        "APP_URL",
+        "ALLOWED_ORIGINS",
+        "VITE_*",
+        "NITRO_*",
+        "NODE_OPTIONS"
+      ]
     },
     "clean": {
       "cache": false
@@ -13,22 +33,44 @@
       "persistent": true
     },
     "lint": {
-      "dependsOn": ["^lint"]
+      "dependsOn": ["^lint"],
+      "inputs": ["$TURBO_DEFAULT$", "$TURBO_ROOT$/.oxlintrc.json"],
+      "outputs": []
     },
     "test": {
       "dependsOn": ["^build"],
       "env": [
         "CI",
-        "MEND_TEST_DATABASE_URL",
-        "MEND_SKIP_POSTGRES_TESTS",
-        "VITEST_MAX_THREADS",
-        "VITEST_MAX_FORKS",
-        "VITEST_MAX_WORKERS"
+        "MEND_*",
+        "SEALANT_*",
+        "DATABASE_URL",
+        "APP_URL",
+        "ALLOWED_ORIGINS",
+        "VITEST_*",
+        "VITE_*",
+        "NODE_OPTIONS",
+        "DOCKER_*",
+        "TEST_*"
       ],
-      "outputs": []
+      "outputs": [],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        ".env*",
+        "$TURBO_ROOT$/scripts/**",
+        "$TURBO_ROOT$/deploy/**",
+        "$TURBO_ROOT$/.claude/skills/verify/**"
+      ]
     },
     "typecheck": {
-      "dependsOn": ["^typecheck"]
+      "dependsOn": ["^typecheck"],
+      "inputs": ["$TURBO_DEFAULT$"],
+      "outputs": []
     }
-  }
+  },
+  "futureFlags": {
+    "affectedUsingTaskInputs": true,
+    "filterUsingTasks": true
+  },
+  "globalDependencies": [".node-version", "pnpm-lock.yaml", "pnpm-workspace.yaml", ".npmrc"],
+  "globalEnv": ["CI", "MEND_CI_RUNTIME", "NODE_ENV", "TZ", "LANG", "LC_ALL"]
 }

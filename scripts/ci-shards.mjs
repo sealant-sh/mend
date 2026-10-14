@@ -5,6 +5,8 @@ import { fileURLToPath } from "node:url";
 
 import { parseDocument } from "yaml";
 
+import { ciTurboOptions } from "./ci-turbo.mjs";
+
 const engineLanePackage = "@mend/sessions";
 const shards = {
   engines: [
@@ -168,16 +170,17 @@ const parsePartition = (inventory) => {
   return problems.length === 0 ? { _tag: "ok" } : failure(problems.join("\n"));
 };
 
-const turboArguments = (packages) => [
+const turboArguments = (packages, options) => [
   "exec",
   "turbo",
+  "run",
   "test",
-  "--force",
+  ...options,
   "--concurrency=1",
   ...packages.map((name) => `--filter=${name}`),
 ];
 
-const runShard = (root, shard) =>
+const runShard = (root, shard, options) =>
   new Promise((settle) => {
     if (process.platform === "win32") {
       settle(failure("The CI shard runner requires POSIX process groups."));
@@ -186,8 +189,11 @@ const runShard = (root, shard) =>
     const member = cliSplit.members.find((entry) => entry.shard === shard);
     const dedicated = shard === "engines" ? engineLanePackage : cliSplit.package;
     const commands = [
-      turboArguments(shards[shard].filter((name) => name !== dedicated)),
-      turboArguments([dedicated]),
+      turboArguments(
+        shards[shard].filter((name) => name !== dedicated),
+        options,
+      ),
+      turboArguments([dedicated], options),
     ];
     if (member !== undefined) commands[1].push("--", `--shard=${member.index}/${cliSplit.total}`);
     const children = new Set(
@@ -288,7 +294,13 @@ const main = async () => {
     );
     return;
   }
-  const result = await runShard(root, args[0]);
+  const options = ciTurboOptions(process.env);
+  if (options._tag === "error") {
+    console.error(options.message);
+    process.exitCode = 1;
+    return;
+  }
+  const result = await runShard(root, args[0], options.args);
   if (result._tag === "error") {
     console.error(result.message);
     process.exitCode = 1;

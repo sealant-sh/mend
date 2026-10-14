@@ -51,6 +51,7 @@ const fixture = (t, script = source) => {
     writeFileSync(join(root, file), contents);
   };
   write("scripts/ci-shards.mjs", script);
+  copyFileSync(join(repository, "scripts/ci-turbo.mjs"), join(root, "scripts/ci-turbo.mjs"));
   write("pnpm-workspace.yaml", workspace);
   copyFileSync(join(repository, "package.json"), join(root, "package.json"));
   symlinkSync(join(repository, "node_modules"), join(root, "node_modules"), "dir");
@@ -95,6 +96,9 @@ process.exit(Number(process.env.RECORD_EXIT_CODE ?? 0));
     ...process.env,
     PATH: `${dirname(binary)}:${process.env.PATH ?? ""}`,
     RECORD_COMMAND: record,
+    GITHUB_EVENT_NAME: "push",
+    GITHUB_REF: "refs/heads/main",
+    RUNNER_ENVIRONMENT: "github-hosted",
     CI: "1",
     VITEST_MAX_WORKERS: "3",
     MEND_TEST_DATABASE_URL: "postgres://fixture.invalid/database",
@@ -132,23 +136,29 @@ test("all modes preserve package scripts, exact filters, native CLI shards, caps
     assert.equal(result.stderr, "child stderr\n".repeat(records.length));
     assert.equal(records.map((recorded) => recorded.stdin).join(""), "inherited input\n");
     for (const recorded of records) {
-      assert.deepEqual(recorded.args.slice(0, 5), [
+      assert.deepEqual(recorded.args.slice(0, 8), [
         "exec",
         "turbo",
+        "run",
         "test",
-        "--force",
+        "--env-mode=strict",
+        "--cache=local:rw",
+        "--summarize",
         "--concurrency=1",
       ]);
       assert.equal(recorded.cwd, f.root);
       assert.equal(recorded.ci, "1");
       assert.equal(recorded.workers, "3");
       assert.equal(recorded.postgres, f.env.MEND_TEST_DATABASE_URL);
-      if (recorded.args[5] === "--filter=@sealant/mend") {
+      if (recorded.args[8] === "--filter=@sealant/mend") {
         assert.deepEqual(recorded.args, [
           "exec",
           "turbo",
+          "run",
           "test",
-          "--force",
+          "--env-mode=strict",
+          "--cache=local:rw",
+          "--summarize",
           "--concurrency=1",
           "--filter=@sealant/mend",
           "--",
@@ -158,25 +168,25 @@ test("all modes preserve package scripts, exact filters, native CLI shards, caps
       } else {
         assert.ok(
           recorded.args
-            .slice(5)
+            .slice(8)
             .every((filter) => filter.startsWith("--filter=") && !filter.includes("...")),
         );
         selected.set(shard, [
           ...(selected.get(shard) ?? []),
-          ...recorded.args.slice(5).map((filter) => filter.slice("--filter=".length)),
+          ...recorded.args.slice(8).map((filter) => filter.slice("--filter=".length)),
         ]);
       }
     }
     if (shard === "engines") {
       assert.equal(
-        records.filter((recorded) => recorded.args.slice(5).includes("--filter=@mend/sessions"))
+        records.filter((recorded) => recorded.args.slice(8).includes("--filter=@mend/sessions"))
           .length,
         1,
       );
       assert.ok(
         records.some(
           (recorded) =>
-            recorded.args.length === 6 && recorded.args[5] === "--filter=@mend/sessions",
+            recorded.args.length === 9 && recorded.args[8] === "--filter=@mend/sessions",
         ),
       );
     }
