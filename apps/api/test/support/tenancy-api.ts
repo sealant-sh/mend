@@ -543,7 +543,14 @@ export const createTenancyApi = async (
     Layer.provide(busLayer),
     Layer.provide(authorization),
   );
-  const eventRoutes = HttpRouter.toWebHandler(eventsLayer, { disableLogger: true });
+  // A streamed body runs on the handler's own services, not the request's context: the stream
+  // reads an Effect clock only when the handler is built with it.
+  const eventRoutes = HttpRouter.toWebHandler(
+    options.effectClock === undefined
+      ? eventsLayer
+      : Layer.merge(eventsLayer, Layer.succeed(Clock.Clock, options.effectClock)),
+    { disableLogger: true },
+  );
 
   return {
     world,
