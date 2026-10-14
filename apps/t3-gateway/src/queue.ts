@@ -20,8 +20,9 @@ import type { PendingRun } from "./shell.ts";
  *   the message fails with Mend's refusal. A relaunch starts that count again: a new agent.
  * - A settled message (taken back, failed) is never rewritten by a late answer.
  *
- * Deadlines and retry times are on a monotonic clock (`performance.now()`), never wall time, so
- * they are not kept across a restart: a restored message waits for nothing but its turn.
+ * Deadlines and retry times are on Effect's monotonic clock (`Clock.monotonicTimeNanos`, in
+ * milliseconds), never wall time, so they are not kept across a restart: a restored message
+ * waits for nothing but its turn.
  *
  * The queue is kept in the gateway's state file (`StoredEntry`, ADR 0012, "State"), so a restart
  * loses no message. A message being sent when the gateway stopped cannot be known to have reached

@@ -5,6 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as TestClock from "effect/testing/TestClock";
 
 import { openGatewayState } from "../src/state.ts";
 
@@ -135,9 +136,10 @@ describe("sequence reservations", () => {
     Effect.scoped(
       Effect.gen(function* () {
         const state = yield* openGatewayState(":memory:");
-        const before = Date.now();
+        const clock = Date.UTC(2026, 9, 14);
+        yield* TestClock.setTime(clock);
         const first = yield* state.reserveSequences(0, 1_000);
-        assert.isAtLeast(first, before);
+        assert.strictEqual(first, clock);
         // One mark for the whole gateway: the next reservation, any person's, starts past it.
         const second = yield* state.reserveSequences(0, 1_000);
         assert.strictEqual(second, first + 1_000);
