@@ -6,6 +6,9 @@ on:
   pull_request:
   merge_group:
     types: [checks_requested]
+  # Version Packages pull requests need an explicit dispatch because their bot-authored
+  # pull_request runs stop for the repository's contributor approval policy before any job starts.
+  workflow_dispatch:
   schedule:
     - cron: "23 2 * * *"
 

@@ -121,10 +121,12 @@ After the long-pole work, step 3b splits static checks and build, test shards, p
 and mobile-web into parallel jobs. This step is approved independently of the merge queue. Preserve
 required PostgreSQL, Garage/MinIO and Chromium evidence and measure push-to-green wall time.
 
-Step 5, the merge queue, is approved after steps 2–3 and 3b establish fast, stable CI on the box.
-Add `merge_group` to required workflows and run the full suite on the proposed merge. Remove the
-duplicate full post-merge main run while preserving main-only Version, next and release jobs. Start
-with batch size one. Prepare that PR after 3b; the runner thread owns branch-rule activation.
+Step 5, the merge queue, is prepared in the workflow and awaits the separately owned ruleset
+activation. `merge_group` runs the full suite on the proposed merge. The full post-merge main run
+remains until queue activation because direct merges are still possible and main must keep
+refreshing the trusted cache. The activation contract and pending administrator-bypass decision are
+recorded in [merge-queue.md](merge-queue.md). The CI orchestrator owns ruleset `20201151` and starts
+with merge groups of one after the owner decides bypass policy.
 
 Step 4, shared Garage-backed Turbo caching and affected-only PR testing, still needs the owner's
 decision. Do not infer cache correctness from the database URL alone: the report must identify

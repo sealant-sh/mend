@@ -10,8 +10,9 @@ shell and CI regression checks remain.
 
 The `checks` job requires all three test lanes and static checks to succeed, including when a lane
 has no affected tasks. Classification failures cannot turn missing evidence into success. The merge
-queue's ruleset is managed separately by the CI orchestrator, with batch size one. Adding
-`merge_group: checks_requested` prepares CI; it does not activate the queue.
+queue's ruleset is managed separately by the CI orchestrator, with merge groups of one. Adding
+`merge_group: checks_requested` prepares CI; it does not activate the queue. The exact activation
+contract and unresolved administrator-bypass policy are in [merge-queue.md](merge-queue.md).
 
 ## Cache boundary
 
