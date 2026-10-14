@@ -30,8 +30,9 @@ import {
   Session,
   type SessionProcess,
 } from "@mend/domain/workbench";
+import { it } from "@mend/test-ci/effect-vitest";
 import { Deferred, Effect, Fiber, Layer, Queue, Redacted, Stream, type Scope } from "effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect } from "vitest";
 
 import { PushSender, PushSendError, type PushMessage } from "../src/push-sender.ts";
 import { SessionNotifierLive } from "../src/session-notifier.ts";
@@ -39,7 +40,8 @@ const PROJECT = ProjectId.make("review-project");
 const WORKTREE = WorktreeId.make("review-worktree");
 const SESSION = SessionId.make("later-member-session");
 const BASE = Sha.make("a".repeat(40));
-const NOW = new Date();
+/** Where the TestClock starts: the notifier's "now" in every case. */
+const NOW = new Date(0);
 const project = new Project({
   id: PROJECT,
   name: "review",
@@ -336,27 +338,25 @@ const runWorld = (
   scenario: (world: World, events: Events) => Effect.Effect<void, unknown, Scope.Scope>,
   options: Parameters<typeof makeWorld>[1] = {},
 ) =>
-  Effect.runPromise(
-    Effect.scoped(
-      Effect.gen(function* () {
-        const events = yield* makeEvents;
-        yield* Effect.addFinalizer(() => events.shutdown);
-        const world = makeWorld(events, options);
-        yield* Effect.scoped(
-          Effect.gen(function* () {
-            yield* Layer.build(world.layer);
-            yield* Deferred.await(events.ready).pipe(Effect.timeout("2 seconds"));
-            expect(events.channels).toEqual(["mend_events"]);
-            yield* scenario(world, events);
-          }),
-        );
-        expect(events.closed()).toBe(true);
-      }),
-    ),
+  Effect.scoped(
+    Effect.gen(function* () {
+      const events = yield* makeEvents;
+      yield* Effect.addFinalizer(() => events.shutdown);
+      const world = makeWorld(events, options);
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          yield* Layer.build(world.layer);
+          yield* Deferred.await(events.ready).pipe(Effect.timeout("2 seconds"));
+          expect(events.channels).toEqual(["mend_events"]);
+          yield* scenario(world, events);
+        }),
+      );
+      expect(events.closed()).toBe(true);
+    }),
   );
 
 describe("SessionNotifierLive event worker", () => {
-  it("records a known terminal baseline silently and closes its listener", () =>
+  it.effect("records a known terminal baseline silently and closes its listener", () =>
     runWorld(
       (world) =>
         Effect.gen(function* () {
@@ -364,69 +364,82 @@ describe("SessionNotifierLive event worker", () => {
           expect(deliveries(world)).toEqual([]);
         }),
       { baseline: "completed" },
-    ));
-  it("ignores unknown settled state, then sends one fresh completion with exact identity and ordered pruning", () =>
-    runWorld(
-      (world) =>
-        Effect.gen(function* () {
-          world.update({
-            status: "completed",
-            settledAt: new Date(),
-            captureNotSavedAt: NOW,
-            captureDrain: "stop",
-            capturePending: 3,
-          });
-          yield* world.sessionEvent();
-          expect(deliveries(world)).toEqual([]);
-          world.update({
-            status: "running",
-            settledAt: null,
-            captureNotSavedAt: null,
-            captureDrain: null,
-            capturePending: null,
-          });
-          yield* world.sessionEvent();
-          world.update({ status: "completed", settledAt: new Date(), summary: "Login fixed" });
-          yield* world.sessionEvent();
-          expect(deliveries(world)).toEqual([
-            expected(["alice-first", "alice-last"], "billing-fix completed: Login fixed"),
-          ]);
-          expect(world.removed).toEqual(["alice-last"]);
-          yield* world.sessionEvent();
-          world.update({ status: "stopped" });
-          yield* world.sessionEvent();
-          expect(world.sent).toHaveLength(1);
-        }),
-      { unknown: true, unavailable: ["alice-last"] },
-    ));
-  it("prunes multiple unavailable tokens in delivery order and preserves other registered phones", () =>
-    runWorld(
-      (world) =>
-        Effect.gen(function* () {
-          world.update({ sharedControlEnabledAt: NOW });
-          world.turns([turnRow("running")]);
-          world.update({ status: "waiting" });
-          yield* world.sessionEvent();
-          expect(deliveries(world)).toEqual([
-            expected(["alice-first", "carol-phone", "alice-last"], "billing-fix is waiting on you"),
-          ]);
-          expect(world.removed).toEqual(["alice-first", "carol-phone"]);
-          world.update({ status: "running" });
-          yield* world.sessionEvent();
-          world.update({ status: "waiting" });
-          yield* world.sessionEvent();
-          expect(deliveries(world)).toEqual([
-            expected(["alice-first", "carol-phone", "alice-last"], "billing-fix is waiting on you"),
-            expected(["alice-last"], "billing-fix is waiting on you"),
-          ]);
-          expect(world.removed).toEqual(["alice-first", "carol-phone"]);
-        }),
-      { unavailable: ["alice-first", "carol-phone"] },
-    ));
-  it("acknowledges an event only after its owned delivery has settled", async () => {
+    ),
+  );
+  it.effect(
+    "ignores unknown settled state, then sends one fresh completion with exact identity and ordered pruning",
+    () =>
+      runWorld(
+        (world) =>
+          Effect.gen(function* () {
+            world.update({
+              status: "completed",
+              settledAt: NOW,
+              captureNotSavedAt: NOW,
+              captureDrain: "stop",
+              capturePending: 3,
+            });
+            yield* world.sessionEvent();
+            expect(deliveries(world)).toEqual([]);
+            world.update({
+              status: "running",
+              settledAt: null,
+              captureNotSavedAt: null,
+              captureDrain: null,
+              capturePending: null,
+            });
+            yield* world.sessionEvent();
+            world.update({ status: "completed", settledAt: NOW, summary: "Login fixed" });
+            yield* world.sessionEvent();
+            expect(deliveries(world)).toEqual([
+              expected(["alice-first", "alice-last"], "billing-fix completed: Login fixed"),
+            ]);
+            expect(world.removed).toEqual(["alice-last"]);
+            yield* world.sessionEvent();
+            world.update({ status: "stopped" });
+            yield* world.sessionEvent();
+            expect(world.sent).toHaveLength(1);
+          }),
+        { unknown: true, unavailable: ["alice-last"] },
+      ),
+  );
+  it.effect(
+    "prunes multiple unavailable tokens in delivery order and preserves other registered phones",
+    () =>
+      runWorld(
+        (world) =>
+          Effect.gen(function* () {
+            world.update({ sharedControlEnabledAt: NOW });
+            world.turns([turnRow("running")]);
+            world.update({ status: "waiting" });
+            yield* world.sessionEvent();
+            expect(deliveries(world)).toEqual([
+              expected(
+                ["alice-first", "carol-phone", "alice-last"],
+                "billing-fix is waiting on you",
+              ),
+            ]);
+            expect(world.removed).toEqual(["alice-first", "carol-phone"]);
+            world.update({ status: "running" });
+            yield* world.sessionEvent();
+            world.update({ status: "waiting" });
+            yield* world.sessionEvent();
+            expect(deliveries(world)).toEqual([
+              expected(
+                ["alice-first", "carol-phone", "alice-last"],
+                "billing-fix is waiting on you",
+              ),
+              expected(["alice-last"], "billing-fix is waiting on you"),
+            ]);
+            expect(world.removed).toEqual(["alice-first", "carol-phone"]);
+          }),
+        { unavailable: ["alice-first", "carol-phone"] },
+      ),
+  );
+  it.effect("acknowledges an event only after its owned delivery has settled", () => {
     const entered = Effect.runSync(Deferred.make<void>());
     const release = Effect.runSync(Deferred.make<void>());
-    await runWorld(
+    return runWorld(
       (world) =>
         Effect.gen(function* () {
           world.update({ status: "waiting" });
@@ -442,111 +455,121 @@ describe("SessionNotifierLive event worker", () => {
       { blocked: { entered, release } },
     );
   });
-  it("suppresses stale completion but sends a subsequent fresh failure", () =>
+  it.effect("suppresses stale completion but sends a subsequent fresh failure", () =>
     runWorld((world) =>
       Effect.gen(function* () {
-        world.update({ status: "completed", settledAt: new Date(Date.now() - 10 * 60_000) });
+        world.update({ status: "completed", settledAt: new Date(NOW.getTime() - 10 * 60_000) });
         yield* world.sessionEvent();
         expect(deliveries(world)).toEqual([]);
         world.update({ status: "running", settledAt: null });
         yield* world.sessionEvent();
-        world.update({ status: "failed", settledAt: new Date(), summary: "check failed" });
+        world.update({ status: "failed", settledAt: NOW, summary: "check failed" });
         yield* world.sessionEvent();
         expect(deliveries(world)).toEqual([
           expected(["alice-first", "alice-last"], "billing-fix failed: check failed"),
         ]);
       }),
-    ));
-  it("rings only the owner for new capture alerts even with a shared-control sender, once until recovery", () =>
-    runWorld((world) =>
-      Effect.gen(function* () {
-        world.update({ sharedControlEnabledAt: NOW });
-        world.turns([turnRow("running")]);
-        world.update({ captureNotSavedAt: NOW, captureDrain: "stop", capturePending: 3 });
-        yield* world.sessionEvent();
-        yield* world.sessionEvent();
-        expect(deliveries(world)).toEqual([
-          expected(
-            ["alice-first", "alice-last"],
-            "billing-fix not saved · 3 pending · workspace kept",
-          ),
-        ]);
-        expect(world.queried).toEqual([["alice"]]);
-        world.update({ captureNotSavedAt: null, captureDrain: null, capturePending: null });
-        yield* world.sessionEvent();
-        world.update({
-          captureFailingSince: new Date("2026-09-27T16:29:51.000Z"),
-          captureFailingError: "EIO: tree/db.sqlite",
-        });
-        yield* world.sessionEvent();
-        yield* world.sessionEvent();
-        expect(deliveries(world)).toEqual([
-          expected(
-            ["alice-first", "alice-last"],
-            "billing-fix not saved · 3 pending · workspace kept",
-          ),
-          expected(
-            ["alice-first", "alice-last"],
-            "billing-fix capture failing since 16:29:51 UTC · EIO: tree/db.sqlite",
-          ),
-        ]);
-      }),
-    ));
-  it("routes attention to the owner and visible shared sender with each recipient's settings", () =>
-    runWorld((world) =>
-      Effect.gen(function* () {
-        world.update({ sharedControlEnabledAt: NOW });
-        world.turns([turnRow("running")]);
-        world.settings.set(
-          "alice",
-          new NotificationSettings({
-            slackSessions: false,
-            turnFinished: true,
-            needsInput: false,
-            failed: true,
-          }),
-        );
-        world.update({ status: "waiting" });
-        yield* world.sessionEvent();
-        yield* world.sessionEvent();
-        expect(deliveries(world)).toEqual([
-          expected(["carol-phone"], "billing-fix is waiting on you"),
-        ]);
-        world.members.delete("carol");
-        world.update({ status: "running" });
-        yield* world.sessionEvent();
-        world.update({ status: "waiting" });
-        yield* world.sessionEvent();
-        expect(world.sent).toHaveLength(1);
-      }),
-    ));
-  it("notifies only a watched fresh protocol turn, suppressing stale, cancelled and replayed ends", () =>
-    runWorld((world) =>
-      Effect.gen(function* () {
-        world.turns([turnRow("completed", "replayed", "alice", new Date())]);
-        yield* world.turnEvent();
-        expect(deliveries(world)).toEqual([]);
-        world.turns([turnRow("running", "fresh", "alice")]);
-        yield* world.turnEvent();
-        world.turns([turnRow("completed", "fresh", "alice", new Date())]);
-        yield* world.turnEvent();
-        yield* world.turnEvent();
-        expect(deliveries(world)).toEqual([
-          expected(["alice-first", "alice-last"], "billing-fix answered · fix the login"),
-        ]);
-        for (const [id, status, endedAt] of [
-          ["stale", "completed", new Date(Date.now() - 10 * 60_000)],
-          ["cancelled", "cancelled", new Date()],
-        ] as const) {
-          world.turns([turnRow("running", id, "alice")]);
+    ),
+  );
+  it.effect(
+    "rings only the owner for new capture alerts even with a shared-control sender, once until recovery",
+    () =>
+      runWorld((world) =>
+        Effect.gen(function* () {
+          world.update({ sharedControlEnabledAt: NOW });
+          world.turns([turnRow("running")]);
+          world.update({ captureNotSavedAt: NOW, captureDrain: "stop", capturePending: 3 });
+          yield* world.sessionEvent();
+          yield* world.sessionEvent();
+          expect(deliveries(world)).toEqual([
+            expected(
+              ["alice-first", "alice-last"],
+              "billing-fix not saved · 3 pending · workspace kept",
+            ),
+          ]);
+          expect(world.queried).toEqual([["alice"]]);
+          world.update({ captureNotSavedAt: null, captureDrain: null, capturePending: null });
+          yield* world.sessionEvent();
+          world.update({
+            captureFailingSince: new Date("2026-09-27T16:29:51.000Z"),
+            captureFailingError: "EIO: tree/db.sqlite",
+          });
+          yield* world.sessionEvent();
+          yield* world.sessionEvent();
+          expect(deliveries(world)).toEqual([
+            expected(
+              ["alice-first", "alice-last"],
+              "billing-fix not saved · 3 pending · workspace kept",
+            ),
+            expected(
+              ["alice-first", "alice-last"],
+              "billing-fix capture failing since 16:29:51 UTC · EIO: tree/db.sqlite",
+            ),
+          ]);
+        }),
+      ),
+  );
+  it.effect(
+    "routes attention to the owner and visible shared sender with each recipient's settings",
+    () =>
+      runWorld((world) =>
+        Effect.gen(function* () {
+          world.update({ sharedControlEnabledAt: NOW });
+          world.turns([turnRow("running")]);
+          world.settings.set(
+            "alice",
+            new NotificationSettings({
+              slackSessions: false,
+              turnFinished: true,
+              needsInput: false,
+              failed: true,
+            }),
+          );
+          world.update({ status: "waiting" });
+          yield* world.sessionEvent();
+          yield* world.sessionEvent();
+          expect(deliveries(world)).toEqual([
+            expected(["carol-phone"], "billing-fix is waiting on you"),
+          ]);
+          world.members.delete("carol");
+          world.update({ status: "running" });
+          yield* world.sessionEvent();
+          world.update({ status: "waiting" });
+          yield* world.sessionEvent();
+          expect(world.sent).toHaveLength(1);
+        }),
+      ),
+  );
+  it.effect(
+    "notifies only a watched fresh protocol turn, suppressing stale, cancelled and replayed ends",
+    () =>
+      runWorld((world) =>
+        Effect.gen(function* () {
+          world.turns([turnRow("completed", "replayed", "alice", NOW)]);
           yield* world.turnEvent();
-          world.turns([turnRow(status, id, "alice", endedAt)]);
+          expect(deliveries(world)).toEqual([]);
+          world.turns([turnRow("running", "fresh", "alice")]);
           yield* world.turnEvent();
-        }
-        expect(world.sent).toHaveLength(1);
-      }),
-    ));
-  it("survives malformed events and delivery failure without retrying the same phase", () =>
+          world.turns([turnRow("completed", "fresh", "alice", NOW)]);
+          yield* world.turnEvent();
+          yield* world.turnEvent();
+          expect(deliveries(world)).toEqual([
+            expected(["alice-first", "alice-last"], "billing-fix answered · fix the login"),
+          ]);
+          for (const [id, status, endedAt] of [
+            ["stale", "completed", new Date(NOW.getTime() - 10 * 60_000)],
+            ["cancelled", "cancelled", NOW],
+          ] as const) {
+            world.turns([turnRow("running", id, "alice")]);
+            yield* world.turnEvent();
+            world.turns([turnRow(status, id, "alice", endedAt)]);
+            yield* world.turnEvent();
+          }
+          expect(world.sent).toHaveLength(1);
+        }),
+      ),
+  );
+  it.effect("survives malformed events and delivery failure without retrying the same phase", () =>
     runWorld(
       (world, events) =>
         Effect.gen(function* () {
@@ -567,17 +590,19 @@ describe("SessionNotifierLive event worker", () => {
           ]);
         }),
       { failure: true },
-    ));
-  it("never delivers for a null owner or idle-stop housekeeping", () =>
+    ),
+  );
+  it.effect("never delivers for a null owner or idle-stop housekeeping", () =>
     runWorld((world) =>
       Effect.gen(function* () {
         world.update({ ownerUserId: null, status: "waiting" });
         yield* world.sessionEvent();
         world.update({ ownerUserId: "alice", status: "running", idleStoppedAt: NOW });
         yield* world.sessionEvent();
-        world.update({ status: "completed", settledAt: new Date() });
+        world.update({ status: "completed", settledAt: NOW });
         yield* world.sessionEvent();
         expect(deliveries(world)).toEqual([]);
       }),
-    ));
+    ),
+  );
 });
