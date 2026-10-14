@@ -223,6 +223,11 @@ jobs:
           # Box runners keep /opt/pnpm-store; hosted arm64 runners need the remote cache.
           cache: ${{ runner.environment == 'github-hosted' && 'pnpm' || '' }}
       - run: pnpm install --frozen-lockfile --ignore-scripts
+      # GitHub's ubuntu-24.04-arm image keeps Ubuntu's default, which refuses unprivileged user
+      # namespaces, so every session fails to launch. Box runners already allow them. Allow them
+      # here the way an operator does on a stock Ubuntu host.
+      - if: runner.environment == 'github-hosted'
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       # Both image stamps are built from the resolved candidate commit. This transition
       # exercises upgrade mechanics, not a previous released server or historical schema.
       - name: Exercise packaged install and same-source version transition
