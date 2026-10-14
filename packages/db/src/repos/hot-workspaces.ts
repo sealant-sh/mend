@@ -15,7 +15,7 @@ import {
   type SessionReferenceMount,
 } from "@mend/domain/workbench";
 import { and, asc, eq, inArray } from "drizzle-orm";
-import { Effect, Layer, Schema } from "effect";
+import { DateTime, Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
 import { MendDB } from "../client.ts";
@@ -134,7 +134,7 @@ export const HotWorkspacesRepoLive: Layer.Layer<HotWorkspacesRepo, never, MendDB
     ) {
       yield* db
         .update(hotWorkspaces)
-        .set({ ...stamps, status: "ready", error: null, updatedAt: new Date() })
+        .set({ ...stamps, status: "ready", error: null, updatedAt: yield* DateTime.nowAsDate })
         .where(eq(hotWorkspaces.id, id))
         .pipe(Effect.orDie);
     });
@@ -145,7 +145,7 @@ export const HotWorkspacesRepoLive: Layer.Layer<HotWorkspacesRepo, never, MendDB
     ) {
       yield* db
         .update(hotWorkspaces)
-        .set({ baseSha, updatedAt: new Date() })
+        .set({ baseSha, updatedAt: yield* DateTime.nowAsDate })
         .where(eq(hotWorkspaces.id, id))
         .pipe(Effect.orDie);
     });
@@ -156,7 +156,7 @@ export const HotWorkspacesRepoLive: Layer.Layer<HotWorkspacesRepo, never, MendDB
     ) {
       yield* db
         .update(hotWorkspaces)
-        .set({ status: "failed", error, updatedAt: new Date() })
+        .set({ status: "failed", error, updatedAt: yield* DateTime.nowAsDate })
         .where(eq(hotWorkspaces.id, id))
         .pipe(Effect.orDie);
     });
@@ -184,7 +184,7 @@ export const HotWorkspacesRepoLive: Layer.Layer<HotWorkspacesRepo, never, MendDB
         .for("update", { skipLocked: true });
       const [row] = yield* db
         .update(hotWorkspaces)
-        .set({ status: "claimed", updatedAt: new Date() })
+        .set({ status: "claimed", updatedAt: yield* DateTime.nowAsDate })
         .where(inArray(hotWorkspaces.id, oldestReady))
         .returning()
         .pipe(Effect.orDie);

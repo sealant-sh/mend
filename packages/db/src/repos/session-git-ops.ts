@@ -1,7 +1,7 @@
 import { SessionGitOpId, type ProjectId, type SessionId } from "@mend/domain";
 import type { GitAuthMode, GitTransportKind } from "@mend/domain/workbench";
 import { desc, eq } from "drizzle-orm";
-import { Effect, Layer } from "effect";
+import { DateTime, Effect, Layer } from "effect";
 import * as Context from "effect/Context";
 
 import { MendDB } from "../client.ts";
@@ -61,7 +61,7 @@ export const SessionGitOpsRepoLive: Layer.Layer<SessionGitOpsRepo, never, MendDB
     ) {
       yield* db
         .update(sessionGitOps)
-        .set({ exitCode, refUpdates, finishedAt: new Date() })
+        .set({ exitCode, refUpdates, finishedAt: yield* DateTime.nowAsDate })
         .where(eq(sessionGitOps.id, id))
         .pipe(Effect.orDie);
     });

@@ -2,7 +2,7 @@ import { PgClient } from "@effect/sql-pg";
 import { NewIssue, QueueMove } from "@mend/api-contracts";
 import { Issue, IssueId, type IssueStage, type RunId } from "@mend/domain";
 import { and, asc, count, desc, eq, ne } from "drizzle-orm";
-import { Effect, Layer, Option } from "effect";
+import { DateTime, Effect, Layer, Option } from "effect";
 import * as Context from "effect/Context";
 
 import { MendDB } from "../client.ts";
@@ -57,7 +57,7 @@ export const IssuesRepoLive: Layer.Layer<IssuesRepo, never, MendDB | PgClient.Pg
           .set({
             stage,
             position: null,
-            updatedAt: new Date(),
+            updatedAt: yield* DateTime.nowAsDate,
             ...(failureRunId === undefined ? {} : { lastFailureRunId: failureRunId }),
           })
           .where(eq(issues.id, id))
@@ -98,7 +98,7 @@ export const IssuesRepoLive: Layer.Layer<IssuesRepo, never, MendDB | PgClient.Pg
               for (const [position, issueId] of ordered.entries()) {
                 yield* tx
                   .update(issues)
-                  .set({ stage: "queued", position, updatedAt: new Date() })
+                  .set({ stage: "queued", position, updatedAt: yield* DateTime.nowAsDate })
                   .where(eq(issues.id, issueId));
               }
 

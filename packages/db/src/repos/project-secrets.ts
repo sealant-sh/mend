@@ -8,7 +8,7 @@ import {
   validateProjectSecretName,
 } from "@mend/domain/workbench";
 import { asc, eq, sql as drizzleSql } from "drizzle-orm";
-import { Effect, Layer, Schema } from "effect";
+import { DateTime, Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
 import { MendDB, type MendDatabase } from "../client.ts";
@@ -155,7 +155,10 @@ const bumpAggregate = (tx: Tx, projectId: ProjectId) =>
   Effect.gen(function* () {
     const [row] = yield* tx
       .update(projects)
-      .set({ secretRevision: drizzleSql`${projects.secretRevision} + 1`, updatedAt: new Date() })
+      .set({
+        secretRevision: drizzleSql`${projects.secretRevision} + 1`,
+        updatedAt: yield* DateTime.nowAsDate,
+      })
       .where(eq(projects.id, projectId))
       .returning({ secretRevision: projects.secretRevision })
       .pipe(Effect.orDie);
@@ -279,7 +282,7 @@ export const ProjectSecretsRepoLive: Layer.Layer<
                 name: input.name,
                 ...(input.sealedValue === null ? {} : { sealedValue: input.sealedValue }),
                 revision: current.revision + 1,
-                updatedAt: new Date(),
+                updatedAt: yield* DateTime.nowAsDate,
               })
               .where(eq(projectSecrets.id, secretId))
               .returning()
@@ -368,7 +371,7 @@ export const ProjectSecretsRepoLive: Layer.Layer<
               .set({
                 sealedValue: input.sealedValue,
                 revision: current.revision + 1,
-                updatedAt: new Date(),
+                updatedAt: yield* DateTime.nowAsDate,
               })
               .where(eq(projectSecrets.id, current.id))
               .returning()

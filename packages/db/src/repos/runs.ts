@@ -12,7 +12,7 @@ import {
   type SealantWorkspaceId,
 } from "@mend/domain";
 import { and, asc, desc, eq, inArray, lt } from "drizzle-orm";
-import { Effect, Layer, Schema } from "effect";
+import { DateTime, Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
 import { MendDB } from "../client.ts";
@@ -132,7 +132,11 @@ export const RunsRepoLive: Layer.Layer<RunsRepo, never, MendDB | PgClient.PgClie
     ) {
       yield* db
         .update(runs)
-        .set({ sealantRunId, sealantWorkspaceId: workspaceId, updatedAt: new Date() })
+        .set({
+          sealantRunId,
+          sealantWorkspaceId: workspaceId,
+          updatedAt: yield* DateTime.nowAsDate,
+        })
         .where(eq(runs.id, id))
         .pipe(Effect.orDie);
     });
@@ -142,8 +146,8 @@ export const RunsRepoLive: Layer.Layer<RunsRepo, never, MendDB | PgClient.PgClie
         .update(runs)
         .set({
           status,
-          updatedAt: new Date(),
-          ...(status === "running" ? { startedAt: new Date() } : {}),
+          updatedAt: yield* DateTime.nowAsDate,
+          ...(status === "running" ? { startedAt: yield* DateTime.nowAsDate } : {}),
         })
         .where(eq(runs.id, id))
         .pipe(Effect.orDie);
@@ -154,7 +158,7 @@ export const RunsRepoLive: Layer.Layer<RunsRepo, never, MendDB | PgClient.PgClie
     const linkChange = Effect.fn("RunsRepo.linkChange")(function* (id: RunId, changeId: ChangeId) {
       yield* db
         .update(runs)
-        .set({ changeId, updatedAt: new Date() })
+        .set({ changeId, updatedAt: yield* DateTime.nowAsDate })
         .where(eq(runs.id, id))
         .pipe(Effect.orDie);
     });
@@ -165,7 +169,7 @@ export const RunsRepoLive: Layer.Layer<RunsRepo, never, MendDB | PgClient.PgClie
     ) {
       yield* db
         .update(runs)
-        .set({ lastSeenSequence: sequence, updatedAt: new Date() })
+        .set({ lastSeenSequence: sequence, updatedAt: yield* DateTime.nowAsDate })
         .where(and(eq(runs.id, id), lt(runs.lastSeenSequence, sequence)))
         .pipe(Effect.orDie);
     });
@@ -175,7 +179,7 @@ export const RunsRepoLive: Layer.Layer<RunsRepo, never, MendDB | PgClient.PgClie
       outcome: RunOutcome,
       summary: string | null,
     ) {
-      const now = new Date();
+      const now = yield* DateTime.nowAsDate;
       yield* db
         .update(runs)
         .set({ status: outcome, outcome, summary, settledAt: now, updatedAt: now })
@@ -192,7 +196,7 @@ export const RunsRepoLive: Layer.Layer<RunsRepo, never, MendDB | PgClient.PgClie
       const encoded = yield* Schema.encodeEffect(FailureBrief)(brief).pipe(Effect.orDie);
       yield* db
         .update(runs)
-        .set({ failureBrief: encoded, updatedAt: new Date() })
+        .set({ failureBrief: encoded, updatedAt: yield* DateTime.nowAsDate })
         .where(eq(runs.id, id))
         .pipe(Effect.orDie);
       const issueId = yield* issueIdOf(id);

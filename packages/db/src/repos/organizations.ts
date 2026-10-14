@@ -11,7 +11,7 @@ import {
   type OrganizationRole,
 } from "@mend/domain/workbench";
 import { and, asc, count, desc, eq, ne, sql as rawSql } from "drizzle-orm";
-import { Effect, Layer, Schema } from "effect";
+import { Clock, DateTime, Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
 import { MendDB, type MendDatabase } from "../client.ts";
@@ -280,9 +280,9 @@ export const deleteMemberWithSshDebt = Effect.fn("OrganizationsRepo.deleteMember
       id: revocation.id,
       organizationId,
       actorUserId: revocation.actorUserId,
-      requestedAt: new Date(),
+      requestedAt: yield* DateTime.nowAsDate,
       attempts: 0,
-      nextAttemptAt: new Date(Date.now() + revocation.leaseMs),
+      nextAttemptAt: new Date((yield* Clock.currentTimeMillis) + revocation.leaseMs),
       outstanding: null,
       lastError: null,
     };
@@ -393,7 +393,7 @@ export const OrganizationsRepoLive: Layer.Layer<
     ) {
       const [row] = yield* db
         .update(organizations)
-        .set({ name: name.trim(), updatedAt: new Date() })
+        .set({ name: name.trim(), updatedAt: yield* DateTime.nowAsDate })
         .where(eq(organizations.id, id))
         .returning()
         .pipe(Effect.catchTag("EffectDrizzleQueryError", nameTaken(name)));
@@ -638,7 +638,7 @@ export const OrganizationsRepoLive: Layer.Layer<
       if (existing.revokedAt !== null) return toInvitation(existing);
       const [row] = yield* db
         .update(organizationInvitations)
-        .set({ revokedAt: new Date() })
+        .set({ revokedAt: yield* DateTime.nowAsDate })
         .where(
           and(
             eq(organizationInvitations.id, invitationId),
@@ -667,7 +667,7 @@ export const OrganizationsRepoLive: Layer.Layer<
       const resolved: ResolvedInvitation = {
         invitation,
         organization: toOrganization(row.organization),
-        state: invitationState(invitation, new Date()),
+        state: invitationState(invitation, yield* DateTime.nowAsDate),
       };
       return resolved;
     });
@@ -687,7 +687,7 @@ export const OrganizationsRepoLive: Layer.Layer<
               .for("update")
               .pipe(Effect.orDie);
             if (row === undefined) return yield* new InvitationUnknownError();
-            const state = invitationState(row, new Date());
+            const state = invitationState(row, yield* DateTime.nowAsDate);
             if (state !== "open") return yield* new InvitationSpentError({ state });
             if (row.email !== null && row.email !== user.email.trim().toLowerCase()) {
               return yield* new InvitationNotForYouError();
@@ -744,7 +744,7 @@ export const OrganizationsRepoLive: Layer.Layer<
             }
             yield* tx
               .update(organizationInvitations)
-              .set({ acceptedByUserId: user.id, acceptedAt: new Date() })
+              .set({ acceptedByUserId: user.id, acceptedAt: yield* DateTime.nowAsDate })
               .where(eq(organizationInvitations.id, row.id))
               .pipe(Effect.orDie);
             return row.organizationId;

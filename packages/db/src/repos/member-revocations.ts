@@ -1,7 +1,7 @@
 import { PgClient } from "@effect/sql-pg";
 import { OrganizationId, ProjectId, SessionId } from "@mend/domain";
 import { and, eq, isNull } from "drizzle-orm";
-import { Cause, Effect, Layer, Schema } from "effect";
+import { Cause, DateTime, Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
 import { MendDB } from "../client.ts";
@@ -76,7 +76,7 @@ export const MemberRevocationsRepoLive: Layer.Layer<
         .transaction((tx) =>
           Effect.gen(function* () {
             const revocationId = crypto.randomUUID();
-            const requestedAt = new Date();
+            const requestedAt = yield* DateTime.nowAsDate;
             const linkedSlackFacts = yield* slackLinks.listForUser(input.userId);
             yield* deleteMemberWithSshDebt(tx, input.organizationId, input.userId, {
               id: revocationId,

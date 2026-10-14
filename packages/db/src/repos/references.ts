@@ -1,7 +1,7 @@
 import { ReferenceId, type OrganizationId, type ProjectId, type Sha } from "@mend/domain";
 import { Reference, redactRepositoryUrl } from "@mend/domain/workbench";
 import { and, asc, eq, inArray } from "drizzle-orm";
-import { Effect, Layer, Schema } from "effect";
+import { DateTime, Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
 import { MendDB } from "../client.ts";
@@ -79,7 +79,7 @@ export const ReferencesRepoLive: Layer.Layer<ReferencesRepo, never, MendDB> = La
         .values({
           ...reference,
           originUrl: redactRepositoryUrl(reference.originUrl),
-          refreshedAt: new Date(),
+          refreshedAt: yield* DateTime.nowAsDate,
         })
         .returning()
         .pipe(Effect.orDie);
@@ -153,7 +153,7 @@ export const ReferencesRepoLive: Layer.Layer<ReferencesRepo, never, MendDB> = La
     });
 
     const setHead = Effect.fn("ReferencesRepo.setHead")(function* (id: ReferenceId, head: Sha) {
-      const now = new Date();
+      const now = yield* DateTime.nowAsDate;
       yield* db
         .update(referenceRepos)
         .set({ headSha: head, refreshedAt: now, updatedAt: now })

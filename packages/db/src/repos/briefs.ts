@@ -8,7 +8,7 @@ import {
   type ChangeId,
 } from "@mend/domain";
 import { desc, eq, sql } from "drizzle-orm";
-import { Effect, Layer, Schema } from "effect";
+import { DateTime, Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
 import { MendDB } from "../client.ts";
@@ -114,7 +114,7 @@ export const BriefsRepoLive: Layer.Layer<BriefsRepo, never, MendDB | PgClient.Pg
                   set: {
                     currentVersion: sql`${briefs.currentVersion} + 1`,
                     document: encoded,
-                    updatedAt: new Date(),
+                    updatedAt: yield* DateTime.nowAsDate,
                   },
                 })
                 .returning({ id: briefs.id, currentVersion: briefs.currentVersion });

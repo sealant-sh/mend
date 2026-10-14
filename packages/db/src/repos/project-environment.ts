@@ -11,7 +11,7 @@ import {
   validateProjectEnvironmentValue,
 } from "@mend/domain/workbench";
 import { asc, eq, sql as drizzleSql } from "drizzle-orm";
-import { Effect, Layer, Schema } from "effect";
+import { DateTime, Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
 import { MendDB, type MendDatabase } from "../client.ts";
@@ -235,7 +235,7 @@ const bumpAggregate = (tx: Tx, projectId: ProjectId) =>
       .update(projects)
       .set({
         environmentRevision: drizzleSql`${projects.environmentRevision} + 1`,
-        updatedAt: new Date(),
+        updatedAt: yield* DateTime.nowAsDate,
       })
       .where(eq(projects.id, projectId))
       .returning({ environmentRevision: projects.environmentRevision })
@@ -346,7 +346,7 @@ export const ProjectEnvironmentRepoLive: Layer.Layer<
                 name: input.name,
                 value: input.value,
                 revision: current.revision + 1,
-                updatedAt: new Date(),
+                updatedAt: yield* DateTime.nowAsDate,
               })
               .where(eq(projectEnvironmentVariables.id, variableId))
               .returning()
@@ -431,7 +431,11 @@ export const ProjectEnvironmentRepoLive: Layer.Layer<
             }
             const [updated] = yield* tx
               .update(projectEnvironmentVariables)
-              .set({ value: input.value, revision: current.revision + 1, updatedAt: new Date() })
+              .set({
+                value: input.value,
+                revision: current.revision + 1,
+                updatedAt: yield* DateTime.nowAsDate,
+              })
               .where(eq(projectEnvironmentVariables.id, current.id))
               .returning()
               .pipe(Effect.orDie);

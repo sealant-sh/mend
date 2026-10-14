@@ -1,7 +1,7 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 
 import { and, eq, isNull, lt } from "drizzle-orm";
-import { Effect, Layer } from "effect";
+import { Clock, DateTime, Effect, Layer } from "effect";
 import * as Context from "effect/Context";
 
 import { MendDB } from "../client.ts";
@@ -141,7 +141,13 @@ export const SessionChannelTokensRepoLive: Layer.Layer<SessionChannelTokensRepo,
         const tokenHash = hashSessionChannelToken(token);
         yield* db
           .insert(sessionChannelTokens)
-          .values({ tokenHash, sessionId, launchId, createdAt: new Date(), revokedAt: null })
+          .values({
+            tokenHash,
+            sessionId,
+            launchId,
+            createdAt: yield* DateTime.nowAsDate,
+            revokedAt: null,
+          })
           .pipe(Effect.orDie);
         return token;
       });
@@ -159,7 +165,7 @@ export const SessionChannelTokensRepoLive: Layer.Layer<SessionChannelTokensRepo,
             sessionId: personTokenSession(accountId),
             launchId,
             accountId,
-            createdAt: new Date(),
+            createdAt: yield* DateTime.nowAsDate,
             revokedAt: null,
           })
           .pipe(Effect.orDie);
@@ -178,7 +184,7 @@ export const SessionChannelTokensRepoLive: Layer.Layer<SessionChannelTokensRepo,
             sessionId: writeTokenSession(accountId),
             launchId,
             accountId,
-            createdAt: new Date(),
+            createdAt: yield* DateTime.nowAsDate,
             revokedAt: null,
           })
           .pipe(Effect.orDie);
@@ -222,7 +228,11 @@ export const SessionChannelTokensRepoLive: Layer.Layer<SessionChannelTokensRepo,
         const row = yield* liveRowOf(token);
         if (row === null) return null;
         const writeOnly = isWriteTokenSession(row.sessionId);
-        if (writeOnly && row.createdAt.getTime() + WRITE_TOKEN_TTL_MS <= Date.now()) return null;
+        if (
+          writeOnly &&
+          row.createdAt.getTime() + WRITE_TOKEN_TTL_MS <= (yield* Clock.currentTimeMillis)
+        )
+          return null;
         return {
           sessionId: row.sessionId,
           launchId: row.launchId,
@@ -234,7 +244,7 @@ export const SessionChannelTokensRepoLive: Layer.Layer<SessionChannelTokensRepo,
       const revoke = Effect.fn("SessionChannelTokensRepo.revoke")(function* (sessionId: string) {
         yield* db
           .update(sessionChannelTokens)
-          .set({ revokedAt: new Date() })
+          .set({ revokedAt: yield* DateTime.nowAsDate })
           .where(
             and(
               eq(sessionChannelTokens.sessionId, sessionId),
@@ -249,7 +259,7 @@ export const SessionChannelTokensRepoLive: Layer.Layer<SessionChannelTokensRepo,
       ) {
         yield* db
           .update(sessionChannelTokens)
-          .set({ revokedAt: new Date() })
+          .set({ revokedAt: yield* DateTime.nowAsDate })
           .where(
             and(
               eq(sessionChannelTokens.launchId, launchId),
@@ -266,7 +276,7 @@ export const SessionChannelTokensRepoLive: Layer.Layer<SessionChannelTokensRepo,
       ) {
         yield* db
           .update(sessionChannelTokens)
-          .set({ revokedAt: new Date() })
+          .set({ revokedAt: yield* DateTime.nowAsDate })
           .where(
             and(
               eq(sessionChannelTokens.launchId, launchId),
@@ -284,7 +294,7 @@ export const SessionChannelTokensRepoLive: Layer.Layer<SessionChannelTokensRepo,
       ) {
         yield* db
           .update(sessionChannelTokens)
-          .set({ revokedAt: new Date() })
+          .set({ revokedAt: yield* DateTime.nowAsDate })
           .where(
             and(
               eq(sessionChannelTokens.tokenHash, hashSessionChannelToken(token)),
@@ -342,37 +352,37 @@ export const SessionChannelTokensRepoMemory: Layer.Layer<SessionChannelTokensRep
       });
     return {
       issue: (sessionId, launchId) =>
-        Effect.sync(() => {
+        Effect.map(Clock.currentTimeMillis, (createdAt) => {
           const token = mintSessionChannelToken();
           rows.set(hashSessionChannelToken(token), {
             sessionId,
             launchId,
             accountId: null,
-            createdAt: Date.now(),
+            createdAt,
             revoked: false,
           });
           return token;
         }),
       issuePerson: (launchId, accountId) =>
-        Effect.sync(() => {
+        Effect.map(Clock.currentTimeMillis, (createdAt) => {
           const token = mintSessionChannelToken();
           rows.set(hashSessionChannelToken(token), {
             sessionId: personTokenSession(accountId),
             launchId,
             accountId,
-            createdAt: Date.now(),
+            createdAt,
             revoked: false,
           });
           return token;
         }),
       issueWrite: (launchId, accountId) =>
-        Effect.sync(() => {
+        Effect.map(Clock.currentTimeMillis, (createdAt) => {
           const token = mintSessionChannelToken();
           rows.set(hashSessionChannelToken(token), {
             sessionId: writeTokenSession(accountId),
             launchId,
             accountId,
-            createdAt: Date.now(),
+            createdAt,
             revoked: false,
           });
           return token;
@@ -385,11 +395,11 @@ export const SessionChannelTokensRepoMemory: Layer.Layer<SessionChannelTokensRep
             : null;
         }),
       resolve: (token) =>
-        Effect.sync(() => {
+        Effect.map(Clock.currentTimeMillis, (now) => {
           const row = liveRowOf(token);
           if (row === null) return null;
           const writeOnly = isWriteTokenSession(row.sessionId);
-          if (writeOnly && row.createdAt + WRITE_TOKEN_TTL_MS <= Date.now()) return null;
+          if (writeOnly && row.createdAt + WRITE_TOKEN_TTL_MS <= now) return null;
           return {
             sessionId: row.sessionId,
             launchId: row.launchId,

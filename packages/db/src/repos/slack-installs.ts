@@ -1,7 +1,7 @@
 import type { OrganizationId } from "@mend/domain";
 import type { SlackInstallSettings } from "@mend/domain/workbench";
 import { asc, eq } from "drizzle-orm";
-import { Effect, Layer, Schema } from "effect";
+import { DateTime, Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
 import { MendDB } from "../client.ts";
@@ -166,7 +166,7 @@ export const SlackInstallsRepoLive: Layer.Layer<SlackInstallsRepo, never, MendDB
                 .where(eq(slackInstalls.organizationId, install.organizationId))
                 .pipe(Effect.orDie);
             }
-            const now = new Date();
+            const now = yield* DateTime.nowAsDate;
             const [row] = yield* tx
               .insert(slackInstalls)
               .values({ ...install, createdAt: now, updatedAt: now })
@@ -207,7 +207,7 @@ export const SlackInstallsRepoLive: Layer.Layer<SlackInstallsRepo, never, MendDB
     ) {
       const [row] = yield* db
         .update(slackInstalls)
-        .set({ ...settings, updatedAt: new Date() })
+        .set({ ...settings, updatedAt: yield* DateTime.nowAsDate })
         .where(eq(slackInstalls.organizationId, organizationId))
         .returning()
         .pipe(Effect.orDie);
