@@ -180,7 +180,7 @@ import {
   pathsBeyondGitWords,
   SourcePolicy,
 } from "@mend/store";
-import { Context, Duration, Effect, Option, Result, Schema } from "effect";
+import { Clock, Context, Duration, Effect, Option, Result, Schema } from "effect";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 
 import { ProjectAccess } from "../access.ts";
@@ -1092,16 +1092,20 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
           });
         }
         return yield* cli.pullRequests(repo).pipe(
-          Effect.map(
-            (pullRequests) =>
-              new ProjectPullRequests({
-                origin: "github",
-                repo,
-                availability: "ok",
-                detail: null,
-                pullRequests,
-                fetchedAt: new Date().toISOString(),
-              }),
+          Effect.flatMap((pullRequests) =>
+            Clock.currentTimeMillis.pipe(
+              Effect.map(
+                (fetchedAt) =>
+                  new ProjectPullRequests({
+                    origin: "github",
+                    repo,
+                    availability: "ok",
+                    detail: null,
+                    pullRequests,
+                    fetchedAt: new Date(fetchedAt).toISOString(),
+                  }),
+              ),
+            ),
           ),
           Effect.catch((error) =>
             Effect.succeed(

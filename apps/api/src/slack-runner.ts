@@ -97,7 +97,7 @@ import {
 import { SlackApi, type SlackApiError } from "@mend/slack/client";
 import type { SlackEnvelope } from "@mend/slack/socket";
 import { SecretCipher, Store } from "@mend/store";
-import { Cause, Config, Effect, FiberSet, Layer, Option, Schema, type Fiber } from "effect";
+import { Cause, Clock, Config, Effect, FiberSet, Layer, Option, Schema, type Fiber } from "effect";
 import * as Context from "effect/Context";
 
 import { ProjectAccess } from "./access.ts";
@@ -674,7 +674,8 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
     const controls = yield* SessionControlEventsRepo;
     const processes = yield* SessionProcessesRepo;
     const ownerLanding = yield* OwnerLanding;
-    const now = options.now ?? Date.now;
+    const clock = yield* Clock.Clock;
+    const now = options.now ?? (() => clock.currentTimeMillisUnsafe());
     const ceiling = makeWindowLimiter();
     const inferenceCeiling = makeWindowLimiter(60 * 60_000);
     const work = yield* FiberSet.make<void>();

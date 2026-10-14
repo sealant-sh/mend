@@ -40,7 +40,7 @@ import {
 import { NetworkConfig } from "@mend/network";
 import { asSealantUser } from "@mend/sealant";
 import { SessionEngine, WorkspaceGitHooks, WorktreeReads } from "@mend/sessions";
-import { Cause, Duration, Effect, Layer, Result, Schema, Stream } from "effect";
+import { Cause, Clock, Duration, Effect, Layer, Result, Schema, Stream } from "effect";
 
 import { OwnerLanding } from "./owner-landing.ts";
 
@@ -159,7 +159,8 @@ export const makeAutomaticLanding = (options: AutomaticLandingOptions = {}) =>
     const network = yield* NetworkConfig;
     const engine = yield* SessionEngine;
     const hooks = yield* WorkspaceGitHooks;
-    const now = options.now ?? Date.now;
+    const clock = yield* Clock.Clock;
+    const now = options.now ?? (() => clock.currentTimeMillisUnsafe());
     const flushAttempts = options.flushAttempts ?? FLUSH_ATTEMPTS;
     const flushPause = options.flushPause ?? FLUSH_PAUSE;
 

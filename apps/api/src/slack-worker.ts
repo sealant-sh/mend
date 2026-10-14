@@ -172,8 +172,10 @@ export const SlackSocketsLive: Layer.Layer<
       Effect.repeat(Schedule.spaced(SLACK_RECONCILE_INTERVAL)),
       Effect.forkScoped,
     );
-    yield* Effect.suspend(() =>
-      claims.sweep(new Date(Date.now() - SLACK_EVENT_CLAIM_RETENTION_MS)),
-    ).pipe(Effect.repeat(Schedule.spaced(SLACK_CLAIM_SWEEP_INTERVAL)), Effect.forkScoped);
+    yield* Clock.currentTimeMillis.pipe(
+      Effect.flatMap((now) => claims.sweep(new Date(now - SLACK_EVENT_CLAIM_RETENTION_MS))),
+      Effect.repeat(Schedule.spaced(SLACK_CLAIM_SWEEP_INTERVAL)),
+      Effect.forkScoped,
+    );
   }),
 );

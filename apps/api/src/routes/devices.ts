@@ -36,7 +36,7 @@ import {
   type PublicNetwork,
   type PublicOrigin,
 } from "@mend/network";
-import { Effect, Layer, Option } from "effect";
+import { Clock, Effect, Layer, Option } from "effect";
 import { HttpServerRequest } from "effect/unstable/http";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 
@@ -180,21 +180,21 @@ const toDeviceView = (device: PairedDevice): DeviceView =>
  * Whole seconds from `now` until `expiresAt`, on the server's clock: what a client counts down
  * from, so its own clock's skew never expires a request early. Never negative.
  */
-export const secondsUntil = (expiresAt: Date, now: number = Date.now()): number =>
+export const secondsUntil = (expiresAt: Date, now: number): number =>
   Math.max(0, Math.floor((expiresAt.getTime() - now) / 1000));
 
 /** A stored client name the contract knows; anything else (or none) reads as null. */
 const knownClient = (client: string | null): CliAuthClient | null =>
   CLI_AUTH_CLIENTS.find((known) => known === client) ?? null;
 
-const toCliAuthView = (request: CliAuthRequest): CliAuthRequestView =>
+const toCliAuthView = (request: CliAuthRequest, now: number): CliAuthRequestView =>
   new CliAuthRequestView({
     code: request.userCode,
     name: request.name,
     client: knownClient(request.client),
     createdAt: request.createdAt.toISOString(),
     expiresAt: request.expiresAt.toISOString(),
-    expiresIn: secondsUntil(request.expiresAt),
+    expiresIn: secondsUntil(request.expiresAt, now),
   });
 
 /** Repo misses as the contract speaks them: unknown is 404, anything spent is 410. */
@@ -250,7 +250,7 @@ const devicePairingGroups = Effect.gen(function* () {
           const pairing = yield* devices.createPairing({
             userId: caller.user.id,
             code: generatePairingCode(),
-            expiresAt: new Date(Date.now() + PAIRING_TTL_MS),
+            expiresAt: new Date((yield* Clock.currentTimeMillis) + PAIRING_TTL_MS),
           });
           return new PairingView({
             code: pairing.code,
@@ -300,7 +300,7 @@ const devicePairingGroups = Effect.gen(function* () {
           const request = yield* mapCliAuthMiss(
             devices.getCliAuth(normalisePairingCode(params.code)),
           );
-          return toCliAuthView(request);
+          return toCliAuthView(request, yield* Clock.currentTimeMillis);
         }),
       )
       .handle("approveCliAuth", ({ params }) =>
@@ -312,7 +312,7 @@ const devicePairingGroups = Effect.gen(function* () {
               userId: caller.user.id,
             }),
           );
-          return toCliAuthView(request);
+          return toCliAuthView(request, yield* Clock.currentTimeMillis);
         }),
       )
       .handle("denyCliAuth", ({ params }) =>
@@ -320,7 +320,7 @@ const devicePairingGroups = Effect.gen(function* () {
           const request = yield* mapCliAuthMiss(
             devices.denyCliAuth(normalisePairingCode(params.code)),
           );
-          return toCliAuthView(request);
+          return toCliAuthView(request, yield* Clock.currentTimeMillis);
         }),
       ),
   );
@@ -336,7 +336,7 @@ const devicePairingGroups = Effect.gen(function* () {
           trusted,
         );
 
-        const retryAfterSeconds = claimLimiter.retryAfter(address, Date.now());
+        const retryAfterSeconds = claimLimiter.retryAfter(address, yield* Clock.currentTimeMillis);
         if (retryAfterSeconds !== null) {
           return yield* Effect.fail(new PairingRateLimited({ retryAfterSeconds }));
         }
@@ -352,7 +352,9 @@ const devicePairingGroups = Effect.gen(function* () {
           })
           .pipe(
             Effect.tapError(() =>
-              Effect.sync(() => claimLimiter.recordFailure(address, Date.now())),
+              Clock.currentTimeMillis.pipe(
+                Effect.map((at) => claimLimiter.recordFailure(address, at)),
+              ),
             ),
             Effect.catchTag("PairingCodeUnknownError", () =>
               Effect.fail(new PairingCodeNotFound()),
@@ -375,12 +377,13 @@ const devicePairingGroups = Effect.gen(function* () {
       .handle("start", ({ payload }) =>
         Effect.gen(function* () {
           const address = yield* requestAddress;
-          const retryAfterSeconds = cliAuthLimiter.retryAfter(address, Date.now());
+          const now = yield* Clock.currentTimeMillis;
+          const retryAfterSeconds = cliAuthLimiter.retryAfter(address, now);
           if (retryAfterSeconds !== null) {
             return yield* Effect.fail(new PairingRateLimited({ retryAfterSeconds }));
           }
           // Every open request spends budget — pending rows are not free.
-          cliAuthLimiter.recordFailure(address, Date.now());
+          cliAuthLimiter.recordFailure(address, now);
 
           const deviceCode = mintCliDeviceCode();
           const name = payload.name.trim();
@@ -390,14 +393,14 @@ const devicePairingGroups = Effect.gen(function* () {
             userCode: generatePairingCode(),
             name: name === "" ? "cli" : name,
             client: client === "" ? null : client,
-            expiresAt: new Date(Date.now() + PAIRING_TTL_MS),
+            expiresAt: new Date(now + PAIRING_TTL_MS),
           });
           return new CliAuthStartView({
             deviceCode,
             code: opened.userCode,
             verifyPath: cliAuthVerifyPath(opened.userCode),
             expiresAt: opened.expiresAt.toISOString(),
-            expiresIn: secondsUntil(opened.expiresAt),
+            expiresIn: secondsUntil(opened.expiresAt, yield* Clock.currentTimeMillis),
             intervalSeconds: CLI_AUTH_POLL_SECONDS,
           });
         }),
@@ -405,7 +408,10 @@ const devicePairingGroups = Effect.gen(function* () {
       .handle("poll", ({ payload }) =>
         Effect.gen(function* () {
           const address = yield* requestAddress;
-          const retryAfterSeconds = cliAuthLimiter.retryAfter(address, Date.now());
+          const retryAfterSeconds = cliAuthLimiter.retryAfter(
+            address,
+            yield* Clock.currentTimeMillis,
+          );
           if (retryAfterSeconds !== null) {
             return yield* Effect.fail(new PairingRateLimited({ retryAfterSeconds }));
           }
@@ -438,10 +444,14 @@ const devicePairingGroups = Effect.gen(function* () {
               ),
               // Only unknown codes count as fishing; a real CLI seeing its own
               // request denied or expired is not an attack.
-              Effect.catchTag("CliAuthUnknownError", () => {
-                cliAuthLimiter.recordFailure(address, Date.now());
-                return Effect.fail(new CliAuthNotFound());
-              }),
+              Effect.catchTag("CliAuthUnknownError", () =>
+                Clock.currentTimeMillis.pipe(
+                  Effect.flatMap((at) => {
+                    cliAuthLimiter.recordFailure(address, at);
+                    return Effect.fail(new CliAuthNotFound());
+                  }),
+                ),
+              ),
               Effect.catchTag("CliAuthDeniedError", () => Effect.fail(new CliAuthDenied())),
               Effect.catchTag("CliAuthSpentError", () => Effect.fail(new CliAuthSpent())),
             );

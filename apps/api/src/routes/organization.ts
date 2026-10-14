@@ -27,7 +27,7 @@ import {
 } from "@mend/domain/workbench";
 import { SessionEngine } from "@mend/sessions";
 import { DeploymentConfig } from "@mend/store";
-import { Effect } from "effect";
+import { Clock, Effect } from "effect";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 
 import { MemberRemoval } from "../member-removal.ts";
@@ -153,7 +153,9 @@ export const OrganizationGroupLive = HttpApiBuilder.group(MendApi, "organization
             role: payload.role,
             email: email.email,
             createdByUserId: caller.user.id,
-            expiresAt: new Date(Date.now() + invitationDays(payload.expiresInDays) * DAY_MS),
+            expiresAt: new Date(
+              (yield* Clock.currentTimeMillis) + invitationDays(payload.expiresInDays) * DAY_MS,
+            ),
           })
           .pipe(
             Effect.catchTag("OrganizationNotFoundError", () => new NotFound({ id: ORGANIZATION })),
