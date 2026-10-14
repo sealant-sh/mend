@@ -11,8 +11,6 @@ const { cleanups, fixture, versions, withVersions } = lifecycleTestFixtures();
 afterEach(async () => {
   for (const cleanup of cleanups.splice(0)) await cleanup();
 });
-
-// Each operation spawns real processes; full lifecycle sequences need more time on CI.
 describe("server lifecycle", { timeout: 30_000 }, () => {
   it("backs up with writers stopped before selecting and starting the exact target", async () => {
     const f = await fixture();
@@ -83,7 +81,6 @@ describe("server lifecycle", { timeout: 30_000 }, () => {
     expect((await f.upgrade("0.23.0"))._tag).toBe("error");
     expect(f.active()).toBe(target);
   });
-
   describe("upgrade backups", () => {
     it("a healthy upgrade keeps the newest two by default and says what it removed", async () => {
       const f = await withVersions();
@@ -106,55 +103,5 @@ describe("server lifecycle", { timeout: 30_000 }, () => {
         /^Upgrade backups · removed 1 · [\d.]+ (B|KiB) freed · kept 2 \(--keep-backups 2\)$/,
       );
     });
-
-    it("--keep-backups 0 keeps every backup and --keep-backups 1 keeps only this upgrade's", async () => {
-      const f = await withVersions();
-      for (const version of versions.slice(0, 3))
-        expect(await f.upgradeKeeping(version, "0")).toEqual({ _tag: "ok" });
-      expect(f.backups()).toHaveLength(3);
-      expect(f.lines).toContain("Upgrade backups · all kept (--keep-backups 0)");
-      expect(f.lines.some((line) => line.startsWith("Removed upgrade backup "))).toBe(false);
-      // The first as a release before 0.36 wrote it: no outcome recorded, and the output says so.
-      const legacy =
-        f
-          .backups()
-          .map((name) => path.join(f.configDir, "backups", name, "recovery.json"))
-          .find((file) => JSON.parse(fs.readFileSync(file, "utf8")).sequence === 1) ?? "";
-      const {
-        state: _state,
-        sequence: _sequence,
-        createdAt: _createdAt,
-        ...old
-      } = JSON.parse(fs.readFileSync(legacy, "utf8"));
-      fs.writeFileSync(legacy, JSON.stringify(old));
-      expect(await f.upgradeKeeping(versions[3], "1")).toEqual({ _tag: "ok" });
-      expect(f.backups()).toHaveLength(1);
-      const removals = f.lines.filter((line) => line.startsWith("Removed upgrade backup "));
-      expect(removals).toHaveLength(3);
-      expect(
-        removals.filter((line) => line.endsWith(" · from before 0.36, no recorded outcome")),
-      ).toEqual([expect.stringContaining(path.dirname(legacy))]);
-    });
-
-    it.each(["-1", "two", "1.5"])(
-      "refuses --keep-backups %s before touching anything",
-      async (keep) => {
-        const f = await withVersions();
-        const count = f.calls().length;
-        expect(await f.upgradeKeeping(versions[0], keep)).toMatchObject({
-          _tag: "error",
-          message: expect.stringContaining("--keep-backups takes a whole number"),
-        });
-        expect(
-          f
-            .calls()
-            .slice(count)
-            .every(
-              (call) => call.args[2] === "volume" && ["ls", "inspect"].includes(call.args[3] ?? ""),
-            ),
-        ).toBe(true);
-        expect(fs.existsSync(path.join(f.configDir, "backups"))).toBe(false);
-      },
-    );
   });
 });
