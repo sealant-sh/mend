@@ -7,6 +7,7 @@ describe("suite", () => {
 });
 
 test("top", async (t) => {
+  console.log("output from a test");
   await t.test("child", () => {});
 });
 

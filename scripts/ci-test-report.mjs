@@ -27,7 +27,13 @@ export default async function* ciTestReport(source) {
   const files = new Map();
   const startTime = Date.now();
   for await (const { type, data } of source) {
-    if (!directory || typeof data?.file !== "string" || type === "test:enqueue") continue;
+    // Output events name the file as it was given on the command line, often relative.
+    if (
+      !directory ||
+      typeof data?.file !== "string" ||
+      ["test:enqueue", "test:stdout", "test:stderr"].includes(type)
+    )
+      continue;
     const now = Date.now();
     let file = files.get(data.file);
     if (file === undefined) {
@@ -35,7 +41,7 @@ export default async function* ciTestReport(source) {
       files.set(data.file, file);
     }
     file.lastEvent = now;
-    if (type === "test:complete" && data.nesting === 0 && data.name === data.file) {
+    if (type === "test:complete" && data.nesting === 0 && resolve(data.name) === data.file) {
       file.completedAt = now;
     } else if (type === "test:start") {
       file.names.length = data.nesting;

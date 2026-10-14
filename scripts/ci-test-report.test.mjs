@@ -20,8 +20,9 @@ const run = async (reportDir) => {
         "--test",
         "--test-reporter=./scripts/ci-test-report.mjs",
         "--test-reporter-destination=stdout",
-        fixture("nested.mjs"),
-        fixture("delayed.mjs"),
+        // Relative, as CI passes them: Node echoes output events with the path as given.
+        "scripts/fixtures/ci-test-report/nested.mjs",
+        "scripts/fixtures/ci-test-report/delayed.mjs",
       ],
       { cwd: root, env, encoding: "utf8", timeout: 20_000 },
     );
