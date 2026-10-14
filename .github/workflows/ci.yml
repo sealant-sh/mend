@@ -20,9 +20,14 @@ permissions:
 env:
   TURBO_SCM_BASE: ${{ github.event.pull_request.base.sha }}
 
+# A pull request and a dispatched branch (the Version PR, re-dispatched on every main merge) keep
+# only their newest run: an older head's result is never what the required check reads.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group:
+    ${{ github.workflow }}-${{ github.event.pull_request.number || (github.event_name ==
+    'workflow_dispatch' && github.ref) || github.run_id }}
+  cancel-in-progress:
+    ${{ github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' }}
 
 jobs:
   changes:

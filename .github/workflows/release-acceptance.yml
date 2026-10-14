@@ -1,8 +1,9 @@
 # Packaged acceptance before a tag exists. release-cli.yml runs the same acceptance when a
 # vVERSION tag is pushed, which is too late to learn a release is broken: the version is spent.
-# version.yml dispatches this on the Version Packages branch, because a pull request opened with
-# GITHUB_TOKEN never triggers pull_request workflows. Any other same-repository pull request runs
-# it by carrying the release-e2e label.
+# Whoever cuts a release dispatches it on the Version Packages branch before merging it
+# (`gh workflow run release-acceptance.yml --ref changeset-release/main`): that bot-authored pull
+# request's own pull_request runs stop at the contributor approval policy. Any other
+# same-repository pull request runs it by carrying the release-e2e label.
 name: Release acceptance
 
 on:

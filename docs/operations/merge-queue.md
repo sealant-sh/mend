@@ -63,9 +63,19 @@ reports `author_association: CONTRIBUTOR`. Run `38607378893` therefore ended wit
 ordinary CI check on head `1e867ddd1c5c9a076f8d00caae80bbea5d580ff0`. The separately dispatched
 release acceptance run `38607378387` succeeded, so packaged acceptance is not the current blocker.
 
-`version.yml` already dispatched packaged release acceptance. It now dispatches ordinary `ci.yml` on
-the same Version branch too. GitHub resolves the named ref to the Version branch's current head and
-attaches the required `checks` result to that SHA. `workflow_dispatch` is not a trusted cache
-writer, so the self-hosted jobs use `remote:r` while running the full graph. This neither approves
-nor reruns the stopped automatic run. A subsequent push to `main` lets Changesets update the
-existing Version PR and issue both dispatches; this change does not touch #455 itself.
+`version.yml` dispatches ordinary `ci.yml` on the Version branch. It no longer dispatches packaged
+release acceptance: that cost ~14 box runner-minutes per main merge for heads that were usually
+replaced, so the release procedure runs it once on the head being released (`next-channel.md`, step
+8). GitHub resolves the named ref to the Version branch's current head and attaches the required
+`checks` result to that SHA. `workflow_dispatch` is not a trusted cache writer, so the self-hosted
+jobs use `remote:r` while running the full graph. This neither approves nor reruns the stopped
+automatic run. A subsequent push to `main` lets Changesets update the existing Version PR and
+dispatch its CI; this change does not touch #455 itself.
+
+## Superseded runs
+
+A pull request and a dispatched branch keep only their newest CI run: `ci.yml`'s concurrency group
+is the pull request number, or the ref for a `workflow_dispatch`, and both cancel in progress. Every
+main merge re-dispatches CI on the Version branch, so without this each merge stacked another full
+run behind the stale ones. Pushes to `main`, merge groups and the nightly run are grouped by run id
+and are never cancelled.

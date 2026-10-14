@@ -360,17 +360,26 @@ test("PRs have exact history and queue, manual and nightly events retain the ful
   }
 });
 
-test("the Version workflow dispatches required CI and packaged acceptance for its bot PR", () => {
+test("a newer pull request or dispatched head cancels its stale run; main, queue and nightly runs never do", () => {
+  const { group, "cancel-in-progress": cancel } = workflow.concurrency;
+  assert.equal(
+    group,
+    "${{ github.workflow }}-${{ github.event.pull_request.number || (github.event_name == 'workflow_dispatch' && github.ref) || github.run_id }}",
+  );
+  assert.equal(
+    cancel,
+    "${{ github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' }}",
+  );
+});
+
+test("the Version workflow dispatches required CI, and leaves packaged acceptance to the release", () => {
   assert.equal(versionWorkflow.jobs.version.permissions.actions, "write");
   const dispatches = versionWorkflow.jobs.version.steps.filter((step) =>
     step.run?.startsWith("gh workflow run "),
   );
   assert.deepEqual(
     dispatches.map((step) => step.run),
-    [
-      "gh workflow run ci.yml --ref changeset-release/main",
-      "gh workflow run release-acceptance.yml --ref changeset-release/main",
-    ],
+    ["gh workflow run ci.yml --ref changeset-release/main"],
   );
   for (const step of dispatches) {
     assert.equal(step.if, "steps.changesets.outputs.pullRequestNumber != ''");
