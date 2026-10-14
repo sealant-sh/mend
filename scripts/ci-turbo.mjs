@@ -20,8 +20,7 @@ export const ciTurboOptions = (env) => {
     };
   }
   const trusted =
-    (["push", "schedule"].includes(env.GITHUB_EVENT_NAME) &&
-      env.GITHUB_REF === "refs/heads/main") ||
+    (env.GITHUB_EVENT_NAME === "schedule" && env.GITHUB_REF === "refs/heads/main") ||
     (env.GITHUB_EVENT_NAME === "merge_group" &&
       env.GITHUB_REF?.startsWith("refs/heads/gh-readonly-queue/main/"));
   const remote = env.RUNNER_ENVIRONMENT === "self-hosted" && measurement !== "cold";

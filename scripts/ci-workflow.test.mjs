@@ -8,6 +8,9 @@ import { parse } from "yaml";
 const workflow = parse(
   readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8"),
 );
+const versionWorkflow = parse(
+  readFileSync(new URL("../.github/workflows/version.yml", import.meta.url), "utf8"),
+);
 const { jobs } = workflow;
 const commands = (job) => jobs[job].steps.flatMap((step) => (step.run ? [step.run] : []));
 const withoutReporterOptions = (command) =>
@@ -239,11 +242,13 @@ test("native commands keep ordinary assertion output beside the CI file guard", 
   }
 });
 
-test("PRs have exact history and queue/nightly events retain the required full CI graph", () => {
-  assert.deepEqual(workflow.on.push.branches, ["main"]);
+test("PRs have exact history and queue, manual and nightly events retain the full CI graph", () => {
+  assert.equal(workflow.on.push, undefined, "the queue replaces duplicate post-merge CI");
   assert.ok(Object.hasOwn(workflow.on, "pull_request"));
   assert.deepEqual(workflow.on.merge_group.types, ["checks_requested"]);
+  assert.ok(Object.hasOwn(workflow.on, "workflow_dispatch"));
   assert.deepEqual(workflow.on.schedule, [{ cron: "23 2 * * *" }]);
+  assert.equal(jobs.checks.name, undefined, "the required check context must remain checks");
   assert.equal(workflow.env.TURBO_SCM_BASE, "${{ github.event.pull_request.base.sha }}");
   for (const name of ["static", "test-engines", "test-clients-a", "test-clients-b"]) {
     assert.equal(
@@ -266,6 +271,25 @@ test("PRs have exact history and queue/nightly events retain the required full C
       config.tasks.typecheck.dependsOn.includes("build"),
       `${name} must restore generated routes before typechecking`,
     );
+  }
+});
+
+test("the Version workflow dispatches required CI and packaged acceptance for its bot PR", () => {
+  assert.equal(versionWorkflow.jobs.version.permissions.actions, "write");
+  const dispatches = versionWorkflow.jobs.version.steps.filter((step) =>
+    step.run?.startsWith("gh workflow run "),
+  );
+  assert.deepEqual(
+    dispatches.map((step) => step.run),
+    [
+      "gh workflow run ci.yml --ref changeset-release/main",
+      "gh workflow run release-acceptance.yml --ref changeset-release/main",
+    ],
+  );
+  for (const step of dispatches) {
+    assert.equal(step.if, "steps.changesets.outputs.pullRequestNumber != ''");
+    assert.equal(step.env.GH_TOKEN, "${{ github.token }}");
+    assert.equal(step.env.GH_REPO, "${{ github.repository }}");
   }
 });
 
