@@ -1,11 +1,10 @@
-import { assert, describe, it } from "@effect/vitest";
 import { AuthSessionId } from "@mend/t3-contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
-import * as TestClock from "effect/testing/TestClock";
 
 import { WEBSOCKET_TICKET_TTL_MS, WebSocketTickets, WebSocketTicketsLive } from "../src/tickets.ts";
+import { assert, describe, it, TestClock } from "./support/effect-vitest.ts";
 import { startFakeMend } from "./support/fake-mend.ts";
 import { bearer, gatewayTestLayer, pairedClient, PERSON } from "./support/gateway.ts";
 

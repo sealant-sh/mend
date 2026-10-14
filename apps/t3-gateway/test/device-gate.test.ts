@@ -1,10 +1,10 @@
-import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Stream from "effect/Stream";
 
 import { gateDeviceCalls, type DeviceCalls } from "../src/device-gate.ts";
 import { makePersonHub } from "../src/hub.ts";
 import { MendDeviceRefused } from "../src/mend-client.ts";
+import { assert, describe, it } from "./support/effect-vitest.ts";
 import { unreachableMend } from "./support/stubs.ts";
 
 /**

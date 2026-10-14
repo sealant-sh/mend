@@ -3,7 +3,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-import { assert, describe, it } from "@effect/vitest";
 import {
   EnvironmentAuthInvalidError,
   ORCHESTRATION_PROTOCOL_HEADER,
@@ -21,6 +20,7 @@ import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 
 import { DEVICE_CONFIRMED_FOR_MS } from "../src/auth.ts";
+import { assert, describe, it } from "./support/effect-vitest.ts";
 import { startFakeMend, type FakeMend } from "./support/fake-mend.ts";
 import { feed } from "./support/feed.ts";
 import { bearer, gatewayTestLayer, PERSON, t3Client, tokenRequest } from "./support/gateway.ts";

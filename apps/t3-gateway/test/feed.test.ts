@@ -1,11 +1,10 @@
-import { assert, describe, it } from "@effect/vitest";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Stream from "effect/Stream";
-import * as TestClock from "effect/testing/TestClock";
 
+import { assert, describe, it, TestClock } from "./support/effect-vitest.ts";
 import { feed } from "./support/feed.ts";
 
 describe("subscription assertions", () => {

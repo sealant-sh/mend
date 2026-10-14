@@ -2,7 +2,6 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { assert, describe, it } from "@effect/vitest";
 import { ExecutionEnvironmentDescriptor, ORCHESTRATION_PROTOCOL_VERSION } from "@mend/t3-contracts";
 import pin from "@mend/t3-contracts/pin" with { type: "json" };
 import * as Effect from "effect/Effect";
@@ -12,6 +11,7 @@ import * as Schema from "effect/Schema";
 import { GatewayState, openGatewayState } from "../src/state.ts";
 import { SERVER_VERSION } from "../src/version.ts";
 import { orchestrationProtocolCompatibilityError } from "./support/compatibility.ts";
+import { assert, describe, it } from "./support/effect-vitest.ts";
 import { startFakeMend } from "./support/fake-mend.ts";
 import { gatewayTestLayer, t3Client } from "./support/gateway.ts";
 
@@ -45,7 +45,7 @@ describe("GET /.well-known/t3/environment", () => {
     }),
   );
 
-  it.live("keeps the environment id across restarts of the same state file", () =>
+  it.effect("keeps the environment id across restarts of the same state file", () =>
     Effect.gen(function* () {
       const directory = mkdtempSync(join(tmpdir(), "t3-gateway-"));
       const path = join(directory, "nested", "state.sqlite");

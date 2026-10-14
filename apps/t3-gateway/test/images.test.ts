@@ -1,4 +1,3 @@
-import { assert, describe, it } from "@effect/vitest";
 import {
   CommandId,
   MessageId,
@@ -14,6 +13,7 @@ import * as HttpClient from "effect/http/HttpClient";
 import * as Option from "effect/Option";
 
 import { detectImageType, IMAGES_NOTE, parseDataUrl, turnInputOf, wordsOf } from "../src/images.ts";
+import { assert, describe, it } from "./support/effect-vitest.ts";
 import { startFakeMend, type FakeMend } from "./support/fake-mend.ts";
 import { gatewayTestLayer } from "./support/gateway.ts";
 import { pairAndConnect } from "./support/rpc.ts";

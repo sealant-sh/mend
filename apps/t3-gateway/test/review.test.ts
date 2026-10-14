@@ -3,7 +3,6 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { assert, describe, it } from "@effect/vitest";
 import { ORCHESTRATION_V2_WS_METHODS, WS_METHODS } from "@mend/t3-contracts";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
@@ -12,6 +11,7 @@ import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 
 import { splitPatch, unquoteGitPath } from "../src/review.ts";
+import { assert, describe, it } from "./support/effect-vitest.ts";
 import { startFakeMend, type FakeMend } from "./support/fake-mend.ts";
 import { gatewayTestLayer } from "./support/gateway.ts";
 import { pairAndConnect } from "./support/rpc.ts";

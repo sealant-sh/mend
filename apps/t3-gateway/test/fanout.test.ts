@@ -1,10 +1,10 @@
-import { assert, describe, it } from "@effect/vitest";
 import * as Chunk from "effect/Chunk";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Stream from "effect/Stream";
 
 import { makeFanout } from "../src/fanout.ts";
+import { assert, describe, it } from "./support/effect-vitest.ts";
 
 /**
  * Review round 1, finding 9: publication channels are bounded per subscriber, and a subscriber

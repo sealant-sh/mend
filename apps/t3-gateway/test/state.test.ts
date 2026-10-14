@@ -3,11 +3,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
-import * as TestClock from "effect/testing/TestClock";
 
 import { openGatewayState } from "../src/state.ts";
+import { assert, describe, it, TestClock } from "./support/effect-vitest.ts";
 
 /**
  * Review round 1, finding 8: a message id comes from the client, so the id map is keyed by the

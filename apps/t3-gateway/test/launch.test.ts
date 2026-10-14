@@ -2,7 +2,6 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { assert, describe, it } from "@effect/vitest";
 import {
   CommandId,
   MessageId,
@@ -24,6 +23,7 @@ import * as Option from "effect/Option";
 import { labelOf, MEND_LABEL_LIMIT, planLaunch, worktreeNameOf } from "../src/launch.ts";
 import { providersFromMend } from "../src/server-config.ts";
 import { openGatewayState } from "../src/state.ts";
+import { assert, describe, it } from "./support/effect-vitest.ts";
 import { startFakeMend, type FakeMend } from "./support/fake-mend.ts";
 import { feed } from "./support/feed.ts";
 import { gatewayTestLayer, PERSON } from "./support/gateway.ts";

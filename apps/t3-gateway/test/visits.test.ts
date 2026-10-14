@@ -2,7 +2,6 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { assert, describe, it } from "@effect/vitest";
 import {
   CommandId,
   ORCHESTRATION_V2_WS_METHODS,
@@ -16,6 +15,7 @@ import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 
+import { assert, describe, it } from "./support/effect-vitest.ts";
 import { startFakeMend, type FakeMend } from "./support/fake-mend.ts";
 import { advanceClock } from "./support/fake-workbench.ts";
 import { gatewayTestLayer, t3Client } from "./support/gateway.ts";
