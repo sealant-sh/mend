@@ -8,7 +8,7 @@
   },
   "scripts": {
     "lint": "oxlint . --no-error-on-unmatched-pattern",
-    "test:integration": "node --experimental-strip-types --test --test-reporter=spec --test-reporter-destination=stdout --test-reporter=../../scripts/ci-node-reporter.mjs --test-reporter-destination=stderr test/*.test.ts",
+    "test:integration": "node --experimental-strip-types --test --test-reporter=spec --test-reporter-destination=stdout --test-reporter=../../scripts/ci-node-reporter.mjs --test-reporter-destination=stderr --test-reporter=../../scripts/ci-test-report.mjs --test-reporter-destination=stdout test/*.test.ts",
     "typecheck": "tsgo -p tsconfig.json --noEmit"
   },
   "devDependencies": {

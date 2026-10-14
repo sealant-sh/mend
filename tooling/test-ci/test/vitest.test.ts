@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -32,16 +32,21 @@ const runFixture = async (options: {
   readonly budgetMs?: number;
   readonly json?: boolean;
   readonly ci?: string;
+  /** Sets CI_TEST_REPORT_DIR. A workspace fixture is packages/fixture under pnpm-workspace.yaml. */
+  readonly report?: { readonly workspace: boolean };
 }) => {
   const root = await mkdtemp(join(tmpdir(), "mend-test-ci-"));
+  const project = options.report?.workspace ? join(root, "packages/fixture") : root;
+  const reportDir = join(root, "reports");
   const runnerRoot = dirname(require.resolve(`${options.runner}/package.json`));
   try {
-    await mkdir(join(root, "node_modules/@mend"), { recursive: true });
-    await symlink(packageRoot, join(root, "node_modules/@mend/test-ci"), "dir");
-    await symlink(runnerRoot, join(root, "node_modules/vitest"), "dir");
-    await writeFile(join(root, "package.json"), '{"type":"module"}\n');
+    if (options.report?.workspace) await writeFile(join(root, "pnpm-workspace.yaml"), "");
+    await mkdir(join(project, "node_modules/@mend"), { recursive: true });
+    await symlink(packageRoot, join(project, "node_modules/@mend/test-ci"), "dir");
+    await symlink(runnerRoot, join(project, "node_modules/vitest"), "dir");
+    await writeFile(join(project, "package.json"), '{"type":"module"}\n');
     await writeFile(
-      join(root, "vitest.config.ts"),
+      join(project, "vitest.config.ts"),
       `
 import { defineConfig } from "vitest/config";
 import { vitestCiGuard } from "@mend/test-ci/vitest";
@@ -50,9 +55,9 @@ export default defineConfig({ plugins: [vitestCiGuard({
 })] });
 `,
     );
-    await writeFile(join(root, "guard.test.ts"), options.source);
+    await writeFile(join(project, "guard.test.ts"), options.source);
     const args = [join(runnerRoot, "vitest.mjs"), "run", "guard.test.ts", "--maxWorkers=1"];
-    const outputFile = join(root, "report.json");
+    const outputFile = join(project, "report.json");
     if (options.json) args.push("--reporter=json", `--outputFile=${outputFile}`);
     const outcome = await new Promise<{
       readonly code: number | null;
@@ -61,8 +66,14 @@ export default defineConfig({ plugins: [vitestCiGuard({
       readonly stderr: string;
     }>((resolve, reject) => {
       const child = spawn(process.execPath, args, {
-        cwd: root,
-        env: { ...process.env, CI: options.ci ?? "true", FORCE_COLOR: "1", NO_COLOR: undefined },
+        cwd: project,
+        env: {
+          ...process.env,
+          CI: options.ci ?? "true",
+          FORCE_COLOR: "1",
+          NO_COLOR: undefined,
+          ...(options.report ? { CI_TEST_REPORT_DIR: reportDir } : {}),
+        },
         stdio: ["ignore", "pipe", "pipe"],
         timeout: 20_000,
       });
@@ -78,7 +89,13 @@ export default defineConfig({ plugins: [vitestCiGuard({
       child.once("close", (code, signal) => resolve({ code, signal, stdout, stderr }));
     });
     const json: unknown = options.json ? JSON.parse(await readFile(outputFile, "utf8")) : undefined;
-    return { ...outcome, json, records: timingRecords(outcome.stderr) };
+    const reports = await readdir(reportDir).catch(() => []);
+    const [reportFile] = reports;
+    const report: unknown =
+      reportFile === undefined
+        ? undefined
+        : JSON.parse(await readFile(join(reportDir, reportFile), "utf8"));
+    return { ...outcome, json, reports, report, records: timingRecords(outcome.stderr) };
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -241,6 +258,50 @@ it("repeat", { repeats: 2 }, () => {});
       assert.ok(typeof record[name === "retry" ? "retryCount" : "repeatCount"] === "number");
       assert.ok(Number(record[name === "retry" ? "retryCount" : "repeatCount"]) > 0);
     }
+  });
+
+  test(`${runner}: CI_TEST_REPORT_DIR receives the package's Jest-compatible report, failures included`, async () => {
+    const result = await runFixture({
+      runner,
+      json: true,
+      report: { workspace: true },
+      source: `
+import { describe, it } from "vitest";
+describe("group", () => { it("passes", () => {}); });
+it("fails", () => { throw new Error("reported failure"); });
+`,
+    });
+    assert.equal(result.code, 1, result.stderr);
+    assert.deepEqual(result.reports, ["vitest-packages-fixture.json"]);
+    assert.ok(isRecord(result.json), "the package's own JSON output is still written");
+    const report = result.report;
+    assert.ok(isRecord(report) && Array.isArray(report["testResults"]));
+    const [file]: ReadonlyArray<unknown> = report["testResults"];
+    assert.ok(isRecord(file) && Array.isArray(file["assertionResults"]));
+    assert.match(String(file["name"]), /^\/.*\/packages\/fixture\/guard\.test\.ts$/);
+    assert.equal(file["status"], "failed");
+    const { startTime, endTime } = file;
+    assert.ok(typeof startTime === "number" && typeof endTime === "number");
+    assert.ok(startTime > 0 && endTime >= startTime);
+    assert.deepEqual(
+      file["assertionResults"].map((entry: unknown) =>
+        isRecord(entry) ? [entry["fullName"], entry["status"], typeof entry["duration"]] : entry,
+      ),
+      [
+        ["group passes", "passed", "number"],
+        ["fails", "failed", "number"],
+      ],
+    );
+  });
+
+  test(`${runner}: runs outside a pnpm workspace never write to an inherited report directory`, async () => {
+    const result = await runFixture({
+      runner,
+      report: { workspace: false },
+      source: 'import { it } from "vitest"; it("nested fixture", () => {});',
+    });
+    assert.equal(result.code, 0, result.stderr);
+    assert.deepEqual(result.reports, []);
   });
 
   test(`${runner}: ordinary local runs retain output without timing evidence`, async () => {

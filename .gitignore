@@ -1,6 +1,7 @@
 node_modules/
 .pnpm-store/
 .turbo/
+.ci-reports/
 .direnv/
 
 dist/
