@@ -17,11 +17,11 @@ import {
   PersonLayoutPlatform,
   SealantPlatformError,
 } from "@mend/sealant";
+import { it as effectIt, TestClock } from "@mend/test-ci/effect-vitest";
 import { claudeCode, type Run, type Workspace } from "@sealant/sdk";
 import { ConfigProvider, Deferred, Duration, Effect, Exit, Fiber, Layer, Scope } from "effect";
 import { describe, expect, it } from "vitest";
 
-import { it as effectIt, TestClock } from "../test/effect-vitest.ts";
 import {
   HarnessLayoutConfig,
   HarnessLayoutConfigLive,

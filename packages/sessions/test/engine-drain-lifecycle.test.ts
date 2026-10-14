@@ -12,12 +12,12 @@ import {
   SealantPlatformError,
 } from "@mend/sealant";
 import { captureHoldWords, SessionEngine } from "@mend/sessions";
+import { it, TestClock } from "@mend/test-ci/effect-vitest";
 import type { CreateOptions, InteractiveSession, InteractiveSessionStatus } from "@sealant/sdk";
 import { Deferred, Duration, Effect, Fiber, Layer, Logger } from "effect";
 import { describe, expect } from "vitest";
 
 import { makeMemoryCaptureStore, type MemoryCaptureStore } from "./capture-store-memory.ts";
-import { it, TestClock } from "./effect-vitest.ts";
 import {
   flushReport,
   launchOnce,

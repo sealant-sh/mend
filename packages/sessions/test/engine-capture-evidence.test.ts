@@ -13,12 +13,12 @@ import {
   SessionSocketHost,
 } from "@mend/sessions";
 import { DeploymentConfig } from "@mend/store";
+import { it } from "@mend/test-ci/effect-vitest";
 import type { CreateOptions, InteractiveSessionStatus } from "@sealant/sdk";
 import { Context, Duration, Effect, Layer } from "effect";
 import { describe, expect } from "vitest";
 
 import { makeMemoryCaptureStore, type MemoryCaptureStore } from "./capture-store-memory.ts";
-import { it } from "./effect-vitest.ts";
 import { SEAL_STAMP } from "./engine-capture-evidence-fixtures.ts";
 import {
   CUSTOM_BASE,

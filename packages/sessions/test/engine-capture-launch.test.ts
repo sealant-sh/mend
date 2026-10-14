@@ -27,12 +27,12 @@ import {
   processStatePathOf,
 } from "@mend/store";
 import { buildManifest, snapshotDirectory, uploadObjects } from "@mend/store/testing";
+import { it } from "@mend/test-ci/effect-vitest";
 import type { CreateOptions, InteractiveSessionStatus, WorkspaceCaptureStatus } from "@sealant/sdk";
 import { Deferred, Duration, Effect, Fiber } from "effect";
 import { describe, expect } from "vitest";
 
 import { makeMemoryCaptureStore, type MemoryCaptureStore } from "./capture-store-memory.ts";
-import { it } from "./effect-vitest.ts";
 import { restoreConfiguredHarnessHome } from "./engine-capture-launch-fixtures.ts";
 import {
   configuredHarnessHomePath,

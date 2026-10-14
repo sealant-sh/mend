@@ -27,6 +27,7 @@ import {
 } from "@mend/sealant";
 import { SessionEngine, WorkspaceGitHooks, WorkspaceGitHooksLive } from "@mend/sessions";
 import { AgentBridge, processStatePathOf } from "@mend/store";
+import { it } from "@mend/test-ci/effect-vitest";
 import type {
   CreateOptions,
   Workspace,
@@ -43,7 +44,6 @@ import {
   REMOTE_SSH_ROOT_WORDS,
 } from "../src/harness-layout-steps.ts";
 import { makeMemoryCaptureStore } from "./capture-store-memory.ts";
-import { it } from "./effect-vitest.ts";
 import {
   eventually,
   failureText,

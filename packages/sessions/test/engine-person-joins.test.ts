@@ -21,12 +21,12 @@ import {
   WorkspaceGitHooksLive,
 } from "@mend/sessions";
 import { Store } from "@mend/store";
+import { it, TestClock } from "@mend/test-ci/effect-vitest";
 import type { CreateOptions, InteractiveSessionStatus } from "@sealant/sdk";
 import { Deferred, Duration, Effect, Fiber, Layer, Logger, type Scope } from "effect";
 import { describe, expect } from "vitest";
 
 import { makeMemoryCaptureStore, type MemoryCaptureStore } from "./capture-store-memory.ts";
-import { it, TestClock } from "./effect-vitest.ts";
 import { launchOnce, until } from "./engine/capture-fixture.ts";
 import {
   makeWorld,

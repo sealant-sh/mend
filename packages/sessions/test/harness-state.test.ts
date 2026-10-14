@@ -8,10 +8,9 @@ import {
   locateHarnessState,
   readHarnessStateManifest,
 } from "@mend/sessions";
+import { it } from "@mend/test-ci/effect-vitest";
 import { Effect } from "effect";
 import { describe, expect } from "vitest";
-
-import { it } from "./effect-vitest.ts";
 
 const withStateDir = async <A>(run: (stateDir: string) => Promise<A>): Promise<A> => {
   const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "mend-harness-state-test-"));

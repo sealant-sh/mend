@@ -1,7 +1,7 @@
+import { it as effectIt, TestClock } from "@mend/test-ci/effect-vitest";
 import { Clock, Duration, Effect, Scope } from "effect";
 import { describe, expect, it } from "vitest";
 
-import { it as effectIt, TestClock } from "../test/effect-vitest.ts";
 import {
   PICKUP_TICKET_TTL_MS,
   makePickupTickets,

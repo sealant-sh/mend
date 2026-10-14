@@ -4,13 +4,13 @@ import * as path from "node:path";
 import { WorktreeId } from "@mend/domain";
 import { SessionEngine } from "@mend/sessions";
 import { processStatePathOf } from "@mend/store";
+import { it } from "@mend/test-ci/effect-vitest";
 import type { CreateOptions, InteractiveSessionStatus, WorkspaceCaptureStatus } from "@sealant/sdk";
 import { Effect } from "effect";
 import { describe, expect } from "vitest";
 
 import { OPENCODE_CAPTURED_SEED } from "../src/harness-seeds.ts";
 import { makeMemoryCaptureStore } from "./capture-store-memory.ts";
-import { it } from "./effect-vitest.ts";
 import { restoreConfiguredHarnessHome } from "./engine-capture-launch-fixtures.ts";
 import { shipCapturedHarnessHome, until } from "./engine/capture-fixture.ts";
 import { sealantLaunchLayer, setup, withEngine } from "./engine/fixture.ts";

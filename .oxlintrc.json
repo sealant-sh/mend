@@ -38,11 +38,11 @@
             "paths": [
               {
                 "name": "effect/testing",
-                "message": "Import TestClock from test/effect-vitest.ts so replacement clocks keep the CI warning guard."
+                "message": "Import TestClock from @mend/test-ci/effect-vitest so replacement clocks keep the CI warning guard."
               },
               {
                 "name": "@effect/vitest",
-                "message": "Use test/effect-vitest.ts so captured TestClock warnings fail the runner; ordinary assertions and hooks come from vitest."
+                "message": "Use @mend/test-ci/effect-vitest so captured TestClock warnings fail the runner; ordinary assertions and hooks come from vitest."
               }
             ],
             "patterns": [
@@ -53,16 +53,12 @@
                   "effect/testing/index",
                   "effect/testing/index.*"
                 ],
-                "message": "Import TestClock from test/effect-vitest.ts so replacement clocks keep the CI warning guard."
+                "message": "Import TestClock from @mend/test-ci/effect-vitest so replacement clocks keep the CI warning guard."
               }
             ]
           }
         ]
       }
-    },
-    {
-      "files": ["packages/sessions/test/effect-vitest.ts"],
-      "rules": { "no-restricted-imports": "off" }
     },
     {
       "files": ["packages/ui/src/components/ui/**"],

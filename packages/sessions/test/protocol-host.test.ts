@@ -12,12 +12,12 @@ import {
   SessionProcessId,
 } from "@mend/domain";
 import { AgentItem, AgentTurn, SessionProcess } from "@mend/domain/workbench";
+import { it } from "@mend/test-ci/effect-vitest";
 import type { InteractiveSession } from "@sealant/sdk";
 import { Deferred, Effect, Layer } from "effect";
 import { describe, expect } from "vitest";
 
 import { ProtocolHost, ProtocolHostLive } from "../src/protocol-host.ts";
-import { it } from "./effect-vitest.ts";
 
 const now = () => new Date();
 const sessionId = SessionId.make("session-1");

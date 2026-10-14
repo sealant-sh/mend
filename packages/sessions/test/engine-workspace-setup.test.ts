@@ -25,12 +25,12 @@ import {
 import { HotWorkspace, Project, ResolvedGitAuthor, Reference } from "@mend/domain/workbench";
 import { SessionEngine, WorkspaceGitHooks } from "@mend/sessions";
 import { DotfilesStore, DotfilesStoreError, harnessHomePathOf } from "@mend/store";
+import { it } from "@mend/test-ci/effect-vitest";
 import type { CreateOptions } from "@sealant/sdk";
 import { Duration, Effect, Exit, Layer } from "effect";
 import { describe, expect } from "vitest";
 
 import { makeMemoryCaptureStore, type MemoryCaptureStore } from "./capture-store-memory.ts";
-import { it } from "./effect-vitest.ts";
 import {
   CUSTOM_BASE,
   NEWER_SNAPSHOT,

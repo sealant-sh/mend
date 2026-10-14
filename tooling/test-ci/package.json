@@ -4,7 +4,8 @@
   "private": true,
   "type": "module",
   "exports": {
-    "./vitest": "./src/vitest.ts"
+    "./vitest": "./src/vitest.ts",
+    "./effect-vitest": "./src/effect-vitest.ts"
   },
   "scripts": {
     "lint": "oxlint . --no-error-on-unmatched-pattern",
@@ -12,8 +13,10 @@
     "typecheck": "tsgo -p tsconfig.json --noEmit"
   },
   "devDependencies": {
+    "@effect/vitest": "catalog:",
     "@mend/typescript": "workspace:*",
     "@types/node": "catalog:",
+    "effect": "catalog:",
     "vitest": "catalog:",
     "vitest-v5": "catalog:t3"
   }

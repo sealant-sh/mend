@@ -35,6 +35,7 @@ import {
 } from "@mend/sessions";
 import { BlobStore, BlobStoreError, BlobStoreFsLive, captureKeys } from "@mend/store";
 import { buildManifest, snapshotDirectory, uploadObjects } from "@mend/store/testing";
+import { it } from "@mend/test-ci/effect-vitest";
 import type {
   CreateOptions,
   InteractiveSessionStatus,
@@ -47,7 +48,6 @@ import { describe, expect } from "vitest";
 
 import { installScript } from "../src/dependency-cache.ts";
 import { makeMemoryCaptureStore, type MemoryCaptureStore } from "./capture-store-memory.ts";
-import { it } from "./effect-vitest.ts";
 import {
   CUSTOM_BASE,
   eventually,

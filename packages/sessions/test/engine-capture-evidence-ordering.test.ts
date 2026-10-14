@@ -1,11 +1,11 @@
 import { SealantPlatformError, type WorkspaceStopOptions } from "@mend/sealant";
 import { type CaptureCompletionSeal } from "@mend/sessions";
+import { it, TestClock } from "@mend/test-ci/effect-vitest";
 import type { CreateOptions, InteractiveSessionStatus } from "@sealant/sdk";
 import { Clock, Deferred, Duration, Effect } from "effect";
 import { describe, expect } from "vitest";
 
 import { makeMemoryCaptureStore } from "./capture-store-memory.ts";
-import { it, TestClock } from "./effect-vitest.ts";
 import { SEAL_STAMP } from "./engine-capture-evidence-fixtures.ts";
 import {
   flushReport,

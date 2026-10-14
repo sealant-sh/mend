@@ -13,12 +13,12 @@ import {
   WorkspaceHostUserNamespaces,
 } from "@mend/sessions";
 import { captureKeys, SHALLOW_REPOSITORY_REASON } from "@mend/store";
+import { it } from "@mend/test-ci/effect-vitest";
 import type { CreateOptions, InteractiveSessionStatus, WorkspaceCaptureStatus } from "@sealant/sdk";
 import { Duration, Effect, Layer } from "effect";
 import { describe, expect } from "vitest";
 
 import { makeMemoryCaptureStore } from "./capture-store-memory.ts";
-import { it } from "./effect-vitest.ts";
 import { SEAL_STAMP } from "./engine-capture-evidence-fixtures.ts";
 import {
   flushReport,

@@ -26,6 +26,7 @@ import {
 } from "@mend/sessions";
 import { BlobStoreFsLive, captureKeys, sha256Hex } from "@mend/store";
 import { buildManifest, snapshotDirectory, uploadObjects } from "@mend/store/testing";
+import { it, TestClock } from "@mend/test-ci/effect-vitest";
 import type {
   CreateOptions,
   InteractiveSessionStatus,
@@ -36,7 +37,6 @@ import { Clock, Deferred, Duration, Effect, Fiber, Layer, Option, Queue, Schedul
 import { describe, expect } from "vitest";
 
 import { makeMemoryCaptureStore, type MemoryCaptureStore } from "./capture-store-memory.ts";
-import { it, TestClock } from "./effect-vitest.ts";
 import {
   CUSTOM_BASE,
   flushReport,

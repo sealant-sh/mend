@@ -48,7 +48,7 @@ it("rejects raw clock imports and allows guarded clocks plus unrelated test serv
     const allowed = path.join(directory, "allowed.ts");
     await writeFile(
       allowed,
-      'import { TestClock } from "../effect-vitest.ts"; import * as FastCheck from "effect/testing/FastCheck"; import * as TestConsole from "effect/testing/TestConsole"; void [TestClock, FastCheck, TestConsole];',
+      'import { TestClock } from "@mend/test-ci/effect-vitest"; import * as FastCheck from "effect/testing/FastCheck"; import * as TestConsole from "effect/testing/TestConsole"; void [TestClock, FastCheck, TestConsole];',
     );
     const result = spawnSync(process.execPath, [lintCli, allowed], {
       cwd: rootDirectory,
