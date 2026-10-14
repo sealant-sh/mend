@@ -8,6 +8,15 @@ export function measurementWorkflow(ci) {
   for (const job of Object.values(jobs)) {
     const checkout = job.steps.find((step) => step.uses?.startsWith("actions/checkout@"));
     checkout.with = { ...checkout.with, ref: "${{ inputs.head_sha }}" };
+    // Fixtures exercise other events. Only the commands being measured receive this policy.
+    for (const step of job.steps) {
+      if (
+        step.run === "node scripts/ci-turbo.mjs build typecheck lint" ||
+        /^node scripts\/ci-shards\.mjs (engines|clients-a|clients-b)$/.test(step.run ?? "")
+      ) {
+        step.env = { ...step.env, CI_MEASUREMENT_CACHE: "${{ inputs.cache }}" };
+      }
+    }
   }
   // A dispatch must never satisfy the production required check on its workflow ref.
   jobs.checks.name = "measurement checks";
@@ -50,7 +59,7 @@ node scripts/ci-scope.mjs "$BASE_SHA" "$HEAD_SHA" >> "$GITHUB_OUTPUT"`;
       },
     },
     permissions: { contents: "read" },
-    env: { TURBO_SCM_BASE: "${{ inputs.base_sha }}", CI_MEASUREMENT_CACHE: "${{ inputs.cache }}" },
+    env: { TURBO_SCM_BASE: "${{ inputs.base_sha }}" },
     // Each dispatch is one independent observation. Never cancel a measured run.
     concurrency: { group: "ci-measurement-${{ github.run_id }}", "cancel-in-progress": false },
     jobs,
