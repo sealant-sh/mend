@@ -600,7 +600,7 @@ seconds on the box and 56.907 seconds in the reviewer's local run. The real publ
 reconciliation grace periods and retry delays remain unchanged. The existing bench glob includes
 both files; the shared helper contains no test registrations.
 
-Next split candidates from the same box run are sessions `capture-launch` at 52.6 seconds and
+The next split candidates from that box run were sessions `capture-launch` at 52.6 seconds and
 `capture-evidence` at 50.9 seconds, and CLI `lifecycle-versions` at 54.5 seconds and
 `backup-retention` at 54.0 seconds. Those packages already enforced the 60-second file cap.
 
@@ -619,3 +619,50 @@ lifecycle plus 54 cleanup assertions. The local file durations were:
 
 These local timings are not box measurements. Raw logs, the AST proof and runtime case inventory are
 archived in `reports/uniform-guards/packaging-split/` under the evidence directory.
+
+## File headroom after the cache rollout
+
+Main's first push after #980, run `38594113403` at `d1b83fc6e`, exceeded the unchanged 60-second cap
+in CLI `server-lifecycle-backup-retention.test.ts`: 62.214 seconds. The other three previously
+identified candidates took 52.222 seconds for CLI versions, 52.708 seconds for sessions capture
+launch and 50.240 seconds for capture evidence in that same attempt.
+
+Each file is now split into three. CLI backup tests separate the default backup/retention sequence,
+explicit keep options and invalid options. Version ordering keeps all six parameter rows across two
+files, with the online-latest case in a third. Capture launch separates OpenCode harvesting and
+joined-executor behavior. Capture evidence separates observation ordering and recovery. The shared
+restore helper and seal stamp retain their original definitions. CLI files each instantiate the
+existing fixture factory and retain the identical afterEach cleanup hook.
+
+The AST proof compares the complete expanded cases, including each parameter row, titles, suite
+context, options and callbacks. All 101 cases and 587 expanded assertion calls are preserved. All 14
+helper declarations are identical after moving them. No deadlines, file budgets, retries, production
+behavior or required-evidence rules changed. Existing Vitest discovery and native CLI sharding
+include every new file; the shard inventory check still covers 25 test packages.
+
+The local run used Node 26.4.0, `CI=true` and three workers per package, with both packages
+executing concurrently. Every case passed, with no skipped tests or unhandled errors:
+
+| Package  | Resulting file                                    | Cases | Local file seconds |
+| -------- | ------------------------------------------------- | ----: | -----------------: |
+| cli      | `server-lifecycle-backup-invalid-options.test.ts` |     3 |              5.410 |
+| cli      | `server-lifecycle-backup-keep-options.test.ts`    |     1 |              6.429 |
+| cli      | `server-lifecycle-backup-retention.test.ts`       |     2 |              8.553 |
+| cli      | `server-lifecycle-version-latest.test.ts`         |     1 |              2.934 |
+| cli      | `server-lifecycle-version-releases.test.ts`       |     3 |              9.205 |
+| cli      | `server-lifecycle-versions.test.ts`               |     3 |              9.223 |
+| sessions | `engine-capture-evidence-ordering.test.ts`        |     8 |             18.017 |
+| sessions | `engine-capture-evidence-recovery.test.ts`        |    18 |             17.725 |
+| sessions | `engine-capture-evidence.test.ts`                 |    10 |             10.705 |
+| sessions | `engine-capture-joining.test.ts`                  |    27 |             15.883 |
+| sessions | `engine-capture-launch.test.ts`                   |    21 |             11.129 |
+| sessions | `engine-capture-opencode.test.ts`                 |     4 |             16.660 |
+
+These are local timings, not box measurements. Box timings for every resulting file remain the
+acceptance check, targeting less than about 35 seconds per file. Raw pre-split box logs, local
+post-split records, original sources and the AST comparison script are archived under
+`reports/file-headroom/` in `~/Developer/OSS/Sealant/ci-timing-2026-10-13/`.
+
+The orchestrator confirmed trusted remote writes from main after #980: 7 writes in 17:53–18:03 CEST
+and 68 in 18:03–18:13, with zero denied and about 30 MB stored. Scenario PRs remain held until this
+split merges and its main push refreshes the CLI and sessions cache entries.
