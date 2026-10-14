@@ -160,7 +160,7 @@ const guardMethods = <R>(
   });
 };
 
-/** Effect tests forward unadvanced TestClock warnings to the sessions CI reporter. */
+/** Unadvanced TestClock warnings reach the console, where vitestCiGuard fails the test. */
 export const it = guardMethods(EffectVitest.it);
 export const effect = it.effect;
 export const layer = it.layer;

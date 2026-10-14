@@ -5,13 +5,13 @@ import * as path from "node:path";
 
 import { piProfileDigest } from "@mend/db";
 import { validatePiProfile, type PiProfileFile } from "@mend/domain/workbench";
+import { it } from "@mend/test-ci/effect-vitest";
 import { Effect, Schema } from "effect";
 import * as FastCheck from "effect/testing/FastCheck";
 import { expect } from "vitest";
 
 import { PERSON_SAVED_STATE } from "../src/harness-layout.ts";
 import { PI_PROFILE_HOME_DIR, materializePiProfile, planPiProfile } from "../src/pi-profile.ts";
-import { it } from "./effect-vitest.ts";
 
 const benchUrl = new URL("../../../scripts/bench/lib.mjs", import.meta.url).href;
 const runBench = (program: string, args: ReadonlyArray<string>, home: string): string =>

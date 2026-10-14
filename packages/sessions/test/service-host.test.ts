@@ -17,11 +17,10 @@ import {
   validateServiceBindAddresses,
   type ServiceStartInput,
 } from "@mend/sessions";
+import { it as effectIt, TestClock } from "@mend/test-ci/effect-vitest";
 import type { Workspace, WorkspaceForward } from "@sealant/sdk";
 import { Clock, Context, Deferred, Duration, Effect, Exit, Layer, Scope, Stream } from "effect";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-
-import { it as effectIt, TestClock } from "./effect-vitest.ts";
 
 /**
  * The host side with real sockets and a fake platform: the forward is an

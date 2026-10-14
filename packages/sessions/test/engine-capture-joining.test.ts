@@ -21,12 +21,12 @@ import {
   secretFilesRecordExec,
 } from "@mend/sessions";
 import { processStatePathOf } from "@mend/store";
+import { it } from "@mend/test-ci/effect-vitest";
 import type { CreateOptions, WorkspaceCaptureStatus } from "@sealant/sdk";
 import { Deferred, Duration, Effect, Fiber, Layer } from "effect";
 import { describe, expect } from "vitest";
 
 import { makeMemoryCaptureStore } from "./capture-store-memory.ts";
-import { it } from "./effect-vitest.ts";
 import { restoreConfiguredHarnessHome } from "./engine-capture-launch-fixtures.ts";
 import {
   configuredHarnessHomePath,

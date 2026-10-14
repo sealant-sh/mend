@@ -28,8 +28,12 @@ interface RuntimeCase {
 }
 
 interface RuntimeModule {
+  readonly id: string;
   readonly moduleId: string;
-  readonly children: { allTests(): Iterable<RuntimeCase> };
+  readonly children: {
+    allTests(): Iterable<RuntimeCase>;
+    allSuites(): Iterable<{ readonly id: string; readonly fullName: string }>;
+  };
   state(): string;
   diagnostic(): { readonly duration: number };
 }
@@ -37,11 +41,20 @@ interface RuntimeModule {
 interface RuntimeContext {
   readonly config: {
     readonly reporters: {
-      push(reporter: TimingReporter | ["json", { readonly outputFile: string }]): number;
+      push(
+        reporter: TimingReporter | ClockWarningReporter | ["json", { readonly outputFile: string }],
+      ): number;
     };
     readonly root: string;
   };
   readonly logger: { error(message: string): void };
+  readonly state: { catchError(error: unknown, type: string): void };
+}
+
+interface RuntimeConsoleLog {
+  readonly content: string;
+  readonly taskId?: string | undefined;
+  readonly origin?: string | undefined;
 }
 
 /** Append-only plugin shape shared by the installed Vitest 3 and Vitest 5 public APIs. */
@@ -55,7 +68,10 @@ export interface VitestCiGuardOptions {
   readonly packageName: string;
   /** Fixtures may reduce this; ordinary package configurations use the 60-second default. */
   readonly fileBudgetMs?: number;
-  /** Defaults to the repository's CI truthiness rule. False preserves ordinary local output. */
+  /**
+   * Gates timing evidence and the file budget; defaults to the repository's CI truthiness rule.
+   * Clock warnings fail every run, local ones included.
+   */
   readonly enabled?: boolean;
 }
 
@@ -214,6 +230,54 @@ class TimingReporter {
   }
 }
 
+const CLOCK_WARNING = /using time, but is not advancing the test clock/i;
+
+/**
+ * Effect prints this warning when a test sleeps on a TestClock nobody advances; such a test waits
+ * on real time or hangs. `@mend/test-ci/effect-vitest` makes sure the warning reaches the console.
+ */
+class ClockWarningReporter {
+  private context: RuntimeContext | undefined;
+  private readonly locations = new Map<string, string>();
+  private readonly packageName: string;
+
+  constructor(packageName: string) {
+    this.packageName = packageName;
+  }
+
+  onInit(context: RuntimeContext): void {
+    this.context = context;
+  }
+
+  onTestRunStart(): void {
+    this.locations.clear();
+  }
+
+  onTestModuleCollected(module: RuntimeModule): void {
+    this.locations.set(module.id, module.moduleId);
+    for (const test of module.children.allTests()) {
+      this.locations.set(test.id, `${module.moduleId} > ${test.fullName}`);
+    }
+    for (const suite of module.children.allSuites()) {
+      this.locations.set(suite.id, `${module.moduleId} > ${suite.fullName}`);
+    }
+  }
+
+  onUserConsoleLog(log: RuntimeConsoleLog): void {
+    if (!CLOCK_WARNING.test(log.content)) return;
+    const location =
+      (log.taskId === undefined ? undefined : this.locations.get(log.taskId)) ??
+      log.origin ??
+      "unattributed test console";
+    const error = new Error(`${this.packageName} Clock warning: ${location}\n${log.content}`);
+    if (this.context === undefined) throw error;
+    this.context.logger.error(error.message);
+    // Console RPCs are separate from task events: register the failure with the runner
+    // immediately so even a late log is included in its exit status and JSON report.
+    this.context.state.catchError(error, "Clock warning");
+  }
+}
+
 /**
  * CI traces read one Jest-compatible JSON report per package run from CI_TEST_REPORT_DIR, named
  * after the package directory. Runs outside a pnpm workspace, such as the temporary fixture
@@ -245,6 +309,7 @@ export const vitestCiGuard = (options: VitestCiGuardOptions): VitestCiPlugin => 
     configureVitest({ vitest }) {
       if (registered.has(vitest)) return;
       registered.add(vitest);
+      vitest.config.reporters.push(new ClockWarningReporter(options.packageName));
       if (enabled) vitest.config.reporters.push(new TimingReporter(options.packageName, budget));
       const outputFile = testReportFile(vitest.config.root);
       if (outputFile !== undefined) vitest.config.reporters.push(["json", { outputFile }]);

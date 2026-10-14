@@ -8,6 +8,7 @@ import {
 } from "@mend/domain";
 import { AgentItem, AgentTurn, SessionProcess, type TurnPayer } from "@mend/domain/workbench";
 import { SealantPlatformError } from "@mend/sealant";
+import { it } from "@mend/test-ci/effect-vitest";
 import type { InteractiveSession } from "@sealant/sdk";
 import { Effect, Fiber, Layer } from "effect";
 import { describe, expect } from "vitest";
@@ -22,7 +23,6 @@ import {
   type SteeringDecision,
   waitedOut,
 } from "../src/protocol-host.ts";
-import { it } from "./effect-vitest.ts";
 
 /**
  * Shared steering's dispatch (docs/adr/0016, decision 6, Delivery 18), through the real protocol

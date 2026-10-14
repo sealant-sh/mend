@@ -48,6 +48,7 @@ import {
   WorkspaceReplaceRefusedError,
 } from "@mend/sessions";
 import { DotfilesStore, Store, processStatePathOf } from "@mend/store";
+import { it } from "@mend/test-ci/effect-vitest";
 import type { CreateOptions, SessionOptions, Workspace } from "@sealant/sdk";
 import { Deferred, Duration, Effect, Fiber, Layer, type Scope } from "effect";
 import { describe, expect } from "vitest";
@@ -62,7 +63,6 @@ import {
   dotfilesRefusalWords,
 } from "../src/person-deliveries.ts";
 import { makeMemoryCaptureStore, type MemoryCaptureStore } from "./capture-store-memory.ts";
-import { it } from "./effect-vitest.ts";
 import {
   SNAPSHOT,
   configuredHarnessHomePath,

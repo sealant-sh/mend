@@ -26,11 +26,11 @@ import {
   SessionEngine,
   SessionNotLiveError,
 } from "@mend/sessions";
+import { it } from "@mend/test-ci/effect-vitest";
 import type { CreateOptions, InteractiveSessionStatus } from "@sealant/sdk";
 import { Duration, Effect, Schedule } from "effect";
 import { describe, expect } from "vitest";
 
-import { it } from "./effect-vitest.ts";
 import { now, sealantLaunchLayer, setup, setupSibling, withEngine } from "./engine/fixture.ts";
 
 describe("SessionEngine", () => {

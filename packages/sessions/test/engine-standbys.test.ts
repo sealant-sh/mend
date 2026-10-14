@@ -31,6 +31,7 @@ import {
 } from "@mend/sessions";
 import { BlobStoreFsLive, captureKeys, DotfilesStore, decodeManifest } from "@mend/store";
 import { buildManifest, snapshotDirectory, uploadObjects } from "@mend/store/testing";
+import { it, TestClock } from "@mend/test-ci/effect-vitest";
 import type {
   CreateOptions,
   Workspace,
@@ -42,7 +43,6 @@ import { describe, expect } from "vitest";
 
 import { REMOTE_SSH_ROOT_WORDS } from "../src/harness-layout-steps.ts";
 import { makeMemoryCaptureStore } from "./capture-store-memory.ts";
-import { it, TestClock } from "./effect-vitest.ts";
 import {
   NEWER_SNAPSHOT,
   SNAPSHOT,

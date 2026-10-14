@@ -36,13 +36,13 @@ import {
   harnessHomePathOf,
   processStatePathOf,
 } from "@mend/store";
+import { it } from "@mend/test-ci/effect-vitest";
 import type { CreateOptions } from "@sealant/sdk";
 import { Deferred, Effect, Layer } from "effect";
 import { describe, expect } from "vitest";
 
 import { HarnessLayoutConfigShared } from "../src/harness-layout-steps.ts";
 import { HARNESS_UPDATES_OFF_ENV, NO_PAGER_ENV } from "../src/harness-seeds.ts";
-import { it } from "./effect-vitest.ts";
 import {
   agentBridgeStubLayer,
   agentConversationStubLayer,

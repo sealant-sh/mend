@@ -20,6 +20,7 @@ import { LAUNCH_BOOTING, LAUNCH_PREPARING } from "@mend/domain/workbench";
 import { SealantClient, SealantPlatformError } from "@mend/sealant";
 import { ProtocolHost, SessionEngine } from "@mend/sessions";
 import { harnessHomePathOf, processStatePathOf } from "@mend/store";
+import { it } from "@mend/test-ci/effect-vitest";
 import type {
   CreateOptions,
   SessionOptions,
@@ -31,7 +32,6 @@ import { describe, expect } from "vitest";
 
 import { OPENCODE_SEED } from "../src/harness-seeds.ts";
 import { makeMemoryCaptureStore } from "./capture-store-memory.ts";
-import { it } from "./effect-vitest.ts";
 import { lifecycleLayer, until } from "./engine/capture-fixture.ts";
 import {
   agentMemoryLayerOf,
