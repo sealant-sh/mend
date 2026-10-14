@@ -5,7 +5,7 @@ import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, onTestFinished } from "vitest";
 
 import { mainTestFixtures, type HttpHandler } from "./main-test-fixtures.ts";
 
@@ -677,27 +677,35 @@ describe("people in a workspace (docs/adr/0016, decisions 13 and 14)", spawning,
   }
 });
 
-/** Reserve distinct owned ephemeral ports, then release them for the child CLI's listeners. */
-const serviceConnectPorts = async (count: number): Promise<number[]> => {
-  const reservations: net.Server[] = [];
-  try {
-    const ports: number[] = [];
-    for (let index = 0; index < count; index += 1) {
-      const reservation = net.createServer();
-      reservations.push(reservation);
-      reservation.listen(0, "127.0.0.1");
-      await once(reservation, "listening");
-      const address = reservation.address();
-      if (address === null || typeof address === "string")
-        throw new Error("Missing reserved port.");
-      ports.push(address.port);
+/** Keep unused ports owned; only hand the selected listener ports to the child CLI. */
+const serviceConnectPorts = async (count: number) => {
+  const reservations = new Map<number, net.Server>();
+  const release = async (ports: ReadonlyArray<number>) => {
+    for (const port of ports) {
+      const server = reservations.get(port);
+      if (server === undefined) throw new Error(`Missing reservation for ${port}.`);
+      await new Promise<void>((resolve, reject) =>
+        server.close((error) => {
+          if (error) {
+            reject(error);
+            return;
+          }
+          resolve();
+        }),
+      );
+      reservations.delete(port);
     }
-    return ports;
-  } finally {
-    await Promise.all(
-      reservations.map((server) => new Promise<void>((resolve) => server.close(() => resolve()))),
-    );
+  };
+  onTestFinished(() => release([...reservations.keys()]));
+  for (let index = 0; index < count; index += 1) {
+    const reservation = net.createServer((socket) => socket.end("reserved test port\n"));
+    reservation.listen(0, "127.0.0.1");
+    await once(reservation, "listening");
+    const address = reservation.address();
+    if (address === null || typeof address === "string") throw new Error("Missing reserved port.");
+    reservations.set(address.port, reservation);
   }
+  return { ports: [...reservations.keys()], release };
 };
 
 const connectServiceView = (name: string, port: number, transport: "tcp" | "udp" = "tcp") => ({
@@ -725,6 +733,7 @@ const connectCases: ReadonlyArray<{
   readonly names: ReadonlyArray<string>;
   readonly selected: ReadonlyArray<string>;
   readonly portPosition: "before" | "after" | null;
+  readonly reclaimUnselected?: boolean;
 }> = [
   { label: "one requested name", names: ["web"], selected: ["web"], portPosition: null },
   {
@@ -738,6 +747,13 @@ const connectCases: ReadonlyArray<{
     names: ["api", "web"],
     selected: ["web", "api"],
     portPosition: null,
+  },
+  {
+    label: "one name while an unrelated listener reclaims an unselected port",
+    names: ["web"],
+    selected: ["web"],
+    portPosition: null,
+    reclaimUnselected: true,
   },
   { label: "an ID prefix", names: ["service-we"], selected: ["web"], portPosition: null },
   { label: "a port before the name", names: ["web"], selected: ["web"], portPosition: "before" },
@@ -753,8 +769,9 @@ const connectCases: ReadonlyArray<{
 describe("mend service connect", spawning, () => {
   it.each(connectCases)(
     "tunnels $label through the public CLI",
-    async ({ names, selected, portPosition }) => {
-      const [webPort, apiPort, foreignPort, override] = await serviceConnectPorts(4);
+    async ({ names, selected, portPosition, reclaimUnselected }) => {
+      const reservation = await serviceConnectPorts(4);
+      const [webPort, apiPort, foreignPort, override] = reservation.ports;
       if (
         webPort === undefined ||
         apiPort === undefined ||
@@ -795,6 +812,34 @@ describe("mend service connect", spawning, () => {
           : portPosition === "before"
             ? ["--port", String(override), ...names]
             : [...names, "--port", String(override)];
+      // The fake API and unselected services retain their ports throughout the test.
+      // Binding an extra service now fails instead of confusing an unrelated listener for a tunnel.
+      await reservation.release(
+        portPosition === null
+          ? views
+              .filter((view) => selected.includes(view.service.name))
+              .map((view) => view.service.workspacePort)
+          : [override],
+      );
+      if (reclaimUnselected) {
+        // Deterministically reproduce another process taking a port after its reservation closes.
+        await reservation.release([apiPort]);
+        const unrelated = net.createServer((socket) => socket.end("unrelated listener\n"));
+        unrelated.listen(apiPort, "127.0.0.1");
+        await once(unrelated, "listening");
+        onTestFinished(
+          () =>
+            new Promise<void>((resolve, reject) =>
+              unrelated.close((error) => {
+                if (error) {
+                  reject(error);
+                  return;
+                }
+                resolve();
+              }),
+            ),
+        );
+      }
       const cli = startCli(fake.url, ["service", "connect", ...args], {
         MEND_TOKEN: "synthetic-service-token",
       });
@@ -809,18 +854,19 @@ describe("mend service connect", spawning, () => {
           (candidate) =>
             candidate.service.transport === "tcp" && !selected.includes(candidate.service.name),
         )) {
-          const accepts = await new Promise<boolean>((resolve) => {
-            const socket = net.createConnection({
-              host: "127.0.0.1",
-              port: view.service.workspacePort,
-            });
-            socket.once("connect", () => {
-              socket.destroy();
-              resolve(true);
-            });
-            socket.once("error", () => resolve(false));
+          const socket = net.createConnection({
+            host: "127.0.0.1",
+            port: view.service.workspacePort,
           });
-          expect(accepts, `${view.service.name} must not have a local tunnel`).toBe(false);
+          sockets.push(socket);
+          socket.setEncoding("utf8");
+          let response = "";
+          for await (const chunk of socket) response += chunk;
+          expect(response, `${view.service.name} must not have a local tunnel`).toBe(
+            reclaimUnselected && view.service.name === "api"
+              ? "unrelated listener\n"
+              : "reserved test port\n",
+          );
         }
         for (const view of views.filter((candidate) => selected.includes(candidate.service.name))) {
           const localPort = portPosition === null ? view.service.workspacePort : override;
@@ -894,7 +940,9 @@ describe("mend service connect errors", spawning, () => {
       tcp: false,
     },
   ])("preserves $message and opens no tunnel", async ({ args, message, listed, tcp }) => {
-    const [webPort, apiPort] = await serviceConnectPorts(2);
+    const {
+      ports: [webPort, apiPort],
+    } = await serviceConnectPorts(2);
     if (webPort === undefined || apiPort === undefined)
       throw new Error("Missing error fixture ports.");
     const calls: string[] = [];
