@@ -97,6 +97,16 @@ jobs:
       # This was unconditional in checks, so it remains independent of packaging scope.
       - run: helm lint deploy/helm/mend -f deploy/helm/mend/ci/obc-values.yaml
 
+      - name: Archive Turbo task hashes and cache outcomes
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: turbo-${{ github.job }}
+          path: .turbo/runs/*.json
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 14
+
   test-engines:
     needs: changes
     if: ${{ !cancelled() }}
@@ -138,6 +148,16 @@ jobs:
       - name: Tests including required PostgreSQL repositories, migrations and jobs
         run: node scripts/ci-shards.mjs engines
 
+      - name: Archive Turbo task hashes and cache outcomes
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: turbo-${{ github.job }}
+          path: .turbo/runs/*.json
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 14
+
   test-clients-a:
     needs: changes
     if: ${{ !cancelled() }}
@@ -176,6 +196,16 @@ jobs:
           --test-reporter=./scripts/ci-node-reporter.mjs --test-reporter-destination=stderr
           scripts/ci-shards.test.mjs
 
+      - name: Archive Turbo task hashes and cache outcomes
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: turbo-${{ github.job }}
+          path: .turbo/runs/*.json
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 14
+
   test-clients-b:
     needs: changes
     if: ${{ !cancelled() }}
@@ -197,6 +227,16 @@ jobs:
         run: node scripts/ci-turbo.mjs configure >> "$GITHUB_ENV"
       - name: CLI, client and shared-library tests
         run: node scripts/ci-shards.mjs clients-b
+
+      - name: Archive Turbo task hashes and cache outcomes
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: turbo-${{ github.job }}
+          path: .turbo/runs/*.json
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 14
 
   packaging:
     needs: changes
