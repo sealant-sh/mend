@@ -26,7 +26,6 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .node-version
-          cache: pnpm
       - run: pnpm install --frozen-lockfile
       # One worker, no concurrent package tests/builds in this job. This is a separate measurement,
       # not a claim made by ordinary CI correctness checks.
