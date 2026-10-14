@@ -20,8 +20,8 @@ const run = async (reportDir) => {
         "--test",
         "--test-reporter=./scripts/ci-test-report.mjs",
         "--test-reporter-destination=stdout",
-        fixture("timed.mjs"),
         fixture("nested.mjs"),
+        fixture("delayed.mjs"),
       ],
       { cwd: root, env, encoding: "utf8", timeout: 20_000 },
     );
@@ -44,14 +44,14 @@ test("a failing run writes one Jest-compatible report with per-file spans and ne
   assert.deepEqual(reports, [
     "nested",
     "nested/dir",
-    "nested/dir/node-scripts-fixtures-ci-test-report-nested.mjs.json",
+    "nested/dir/node-scripts-fixtures-ci-test-report-delayed.mjs.json",
   ]);
   const [report] = contents;
   assert.equal(report.success, false);
   assert.equal(report.numTotalTests, 7);
   assert.equal(report.numFailedTests, 1);
   const byName = new Map(report.testResults.map((file) => [file.name, file]));
-  assert.deepEqual([...byName.keys()].toSorted(), [fixture("nested.mjs"), fixture("timed.mjs")]);
+  assert.deepEqual([...byName.keys()].toSorted(), [fixture("delayed.mjs"), fixture("nested.mjs")]);
   for (const file of report.testResults) {
     assert.ok(Number.isInteger(file.startTime) && file.startTime >= report.startTime, file.name);
     assert.ok(file.endTime >= file.startTime, file.name);
@@ -59,11 +59,13 @@ test("a failing run writes one Jest-compatible report with per-file spans and ne
       assert.ok(typeof assertion.duration === "number" && assertion.duration >= 0);
     }
   }
-  const timed = byName.get(fixture("timed.mjs"));
-  assert.equal(timed.status, "passed");
-  assert.ok(timed.endTime - timed.startTime >= 50, "the file span covers its slow test");
-  assert.ok(timed.assertionResults[0].duration >= 50);
+  const delayed = byName.get(fixture("delayed.mjs"));
+  assert.equal(delayed.status, "passed");
+  assert.ok(delayed.endTime - delayed.startTime >= 1_000, "the file span covers its slow test");
+  assert.ok(delayed.assertionResults[0].duration >= 1_000);
   const nested = byName.get(fixture("nested.mjs"));
+  // Node reports delayed.mjs first and holds nested.mjs's test events until it finishes.
+  assert.ok(nested.endTime < delayed.endTime, "a file ends when it completes, not when reported");
   assert.equal(nested.status, "failed");
   assert.deepEqual(
     nested.assertionResults.map(({ fullName, title, ancestorTitles, status }) => ({
