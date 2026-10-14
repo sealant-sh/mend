@@ -32,7 +32,6 @@ permissions:
   contents: read
 env:
   TURBO_SCM_BASE: ${{ inputs.base_sha }}
-  CI_MEASUREMENT_CACHE: ${{ inputs.cache }}
 concurrency:
   group: ci-measurement-${{ github.run_id }}
   cancel-in-progress: false
@@ -111,6 +110,8 @@ jobs:
             exit 1
           fi
       - run: node scripts/ci-turbo.mjs build typecheck lint
+        env:
+          CI_MEASUREMENT_CACHE: ${{ inputs.cache }}
       - run: pnpm format:check
       - run: helm lint deploy/helm/mend -f deploy/helm/mend/ci/obc-values.yaml
       - name: Archive Turbo task hashes and cache outcomes
@@ -165,6 +166,8 @@ jobs:
           packages/sessions/test/fixtures/shell-profile
       - name: Tests including required PostgreSQL repositories, migrations and jobs
         run: node scripts/ci-shards.mjs engines
+        env:
+          CI_MEASUREMENT_CACHE: ${{ inputs.cache }}
       - name: Archive Turbo task hashes and cache outcomes
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -205,6 +208,8 @@ jobs:
         run: node apps/marketing/scripts/sync-install-script.mjs
       - name: CLI, client and shared-library tests
         run: node scripts/ci-shards.mjs clients-a
+        env:
+          CI_MEASUREMENT_CACHE: ${{ inputs.cache }}
       - name: AWS shell regression tests with local command fixtures
         run: pnpm run test:aws-shell
       - name: Live S3 contracts on disposable Garage and strict MinIO fixtures
@@ -249,6 +254,8 @@ jobs:
         run: node scripts/ci-turbo.mjs configure >> "$GITHUB_ENV"
       - name: CLI, client and shared-library tests
         run: node scripts/ci-shards.mjs clients-b
+        env:
+          CI_MEASUREMENT_CACHE: ${{ inputs.cache }}
       - name: Archive Turbo task hashes and cache outcomes
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

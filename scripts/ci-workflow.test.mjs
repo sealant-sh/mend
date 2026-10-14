@@ -290,7 +290,58 @@ test("dispatch measurements preserve the production jobs and cannot run on PRs o
   assert.deepEqual(measured.permissions, { contents: "read" });
   assert.equal(measured.jobs.checks.name, "measurement checks");
   delete measured.jobs.checks.name;
+  assert.equal(measured.env.CI_MEASUREMENT_CACHE, undefined);
+  const policyCommands = [];
   for (const name of Object.keys(jobs)) {
+    assert.equal(measured.jobs[name].env?.CI_MEASUREMENT_CACHE, undefined);
+    for (const step of measured.jobs[name].steps) {
+      if (step.env?.CI_MEASUREMENT_CACHE !== undefined) {
+        assert.equal(step.env.CI_MEASUREMENT_CACHE, "${{ inputs.cache }}");
+        policyCommands.push(step.run);
+        delete step.env.CI_MEASUREMENT_CACHE;
+        if (Object.keys(step.env).length === 0) delete step.env;
+      }
+    }
     assert.deepEqual(normalize(measured.jobs[name]), normalize(jobs[name]), name);
+  }
+  assert.deepEqual(policyCommands.toSorted(), [
+    "node scripts/ci-shards.mjs clients-a",
+    "node scripts/ci-shards.mjs clients-b",
+    "node scripts/ci-shards.mjs engines",
+    "node scripts/ci-turbo.mjs build typecheck lint",
+  ]);
+});
+
+test("measurement steps do not leak cache policy into the real shard-supervision fixtures", () => {
+  const measured = parse(
+    readFileSync(new URL("../.github/workflows/ci-measure.yml", import.meta.url), "utf8"),
+  );
+  const job = measured.jobs["test-clients-a"];
+  const step = job.steps.find((candidate) => candidate.run?.includes("scripts/ci-shards.test.mjs"));
+  assert.ok(step);
+  for (const cache of ["cold", "warm"]) {
+    const env = { ...process.env, GITHUB_EVENT_NAME: "workflow_dispatch" };
+    delete env.CI_MEASUREMENT_CACHE;
+    delete env.NODE_TEST_CONTEXT;
+    for (const source of [measured.env, job.env, step.env]) {
+      for (const [key, value] of Object.entries(source ?? {})) {
+        env[key] = value
+          .replaceAll("${{ inputs.cache }}", cache)
+          .replaceAll("${{ inputs.base_sha }}", "a".repeat(40));
+      }
+    }
+    const result = spawnSync(
+      process.execPath,
+      ["--test", "--test-name-pattern=all modes preserve", "scripts/ci-shards.test.mjs"],
+      {
+        cwd: new URL("..", import.meta.url),
+        env,
+        encoding: "utf8",
+        timeout: 10_000,
+      },
+    );
+    assert.equal(result.error, undefined);
+    assert.equal(result.status, 0, `${cache}: ${result.stdout}${result.stderr}`);
+    assert.match(result.stdout, /all modes preserve/);
   }
 });
