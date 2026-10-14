@@ -268,3 +268,29 @@ test("PRs have exact history and queue/nightly events retain the required full C
     );
   }
 });
+
+const normalize = (job) => ({
+  ...job,
+  steps: job.steps.filter(
+    (step) => !step.uses?.startsWith("actions/checkout@") && step.id !== "scope",
+  ),
+});
+
+test("dispatch measurements preserve the production jobs and cannot run on PRs or pushes", async () => {
+  const { measurementWorkflow } = await import("./ci-measure-workflow.mjs");
+  const measured = parse(
+    readFileSync(new URL("../.github/workflows/ci-measure.yml", import.meta.url), "utf8"),
+  );
+  assert.deepEqual(
+    measured,
+    measurementWorkflow(workflow),
+    "regenerate with node scripts/ci-measure-workflow.mjs",
+  );
+  assert.deepEqual(Object.keys(measured.on), ["workflow_dispatch"]);
+  assert.deepEqual(measured.permissions, { contents: "read" });
+  assert.equal(measured.jobs.checks.name, "measurement checks");
+  delete measured.jobs.checks.name;
+  for (const name of Object.keys(jobs)) {
+    assert.deepEqual(normalize(measured.jobs[name]), normalize(jobs[name]), name);
+  }
+});

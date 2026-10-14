@@ -231,4 +231,78 @@ test("real Turbo nightly bypasses reads, executes twice and refreshes the remote
     readFileSync(join(root, "packages/probe/.turbo/executions"), "utf8"),
     "run\nrun\nrun\n",
   );
+  // Give affected selection a real Git base, then seed the exact changed task as main.
+  const git = (...args) => {
+    const result = spawnSync("git", args, { cwd: root, encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout.trim();
+  };
+  git("init", "-q");
+  git("add", ".");
+  git(
+    "-c",
+    "user.name=Fixture",
+    "-c",
+    "user.email=fixture@example.invalid",
+    "commit",
+    "-qm",
+    "base",
+  );
+  const base = git("rev-parse", "HEAD");
+  const source = join(root, "packages/probe/run.cjs");
+  writeFileSync(source, readFileSync(source, "utf8") + "// scenario change\n");
+  git("add", ".");
+  git(
+    "-c",
+    "user.name=Fixture",
+    "-c",
+    "user.email=fixture@example.invalid",
+    "commit",
+    "-qm",
+    "scenario",
+  );
+  await run();
+  const clearLocal = () => {
+    rmSync(join(root, ".turbo/cache"), { recursive: true, force: true });
+    rmSync(join(root, "packages/probe/dist"), { recursive: true, force: true });
+  };
+  const measurement = { GITHUB_EVENT_NAME: "workflow_dispatch", TURBO_SCM_BASE: base };
+  const executionCount = () =>
+    readFileSync(join(root, "packages/probe/.turbo/executions"), "utf8").trim().split("\n").length;
+  const beforeCold = executionCount();
+  requests.length = 0;
+  clearLocal();
+  await run({ ...measurement, CI_MEASUREMENT_CACHE: "cold" });
+  assert.deepEqual(requests, [], "cold measurement makes no remote artifact requests");
+  assert.equal(executionCount(), beforeCold + 1, "cold executes the affected task");
+  clearLocal();
+  await run({ ...measurement, CI_MEASUREMENT_CACHE: "warm" });
+  assert.deepEqual(requests, ["GET"], "warm restores main's entry without any writes");
+  assert.equal(executionCount(), beforeCold + 1, "warm replay does not execute the task");
+  assert.equal(readFileSync(join(root, "packages/probe/dist/result"), "utf8"), "artifact");
+});
+
+test("measurement dispatches are affected-only, cold disables remote, warm never writes", (t) => {
+  const run = fixture(t);
+  for (const mode of ["cold", "warm"]) {
+    const env = {
+      CI_MEASUREMENT_CACHE: mode,
+      RUNNER_ENVIRONMENT: "self-hosted",
+      GITHUB_EVENT_NAME: "workflow_dispatch",
+      GITHUB_REF: "refs/heads/main",
+      TURBO_SCM_BASE: "a".repeat(40),
+    };
+    const result = run(["lint"], env);
+    assert.equal(result.status, 0, result.stderr);
+    assert.ok(result.args.includes("--affected"));
+    assert.ok(
+      result.args.includes(mode === "cold" ? "--cache=local:rw" : "--cache=local:rw,remote:r"),
+    );
+    assert.equal(result.args.includes("--force"), false);
+    assert.equal(run(["lint"], { ...env, TURBO_SCM_BASE: "main" }).status, 1);
+    for (const event of ["pull_request", "push", "merge_group", "schedule"]) {
+      assert.equal(run(["lint"], { ...env, GITHUB_EVENT_NAME: event }).status, 1);
+    }
+    assert.equal(run(["lint"], { ...env, CI_MEASUREMENT_CACHE: "other" }).status, 1);
+  }
 });

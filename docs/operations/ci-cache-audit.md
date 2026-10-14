@@ -191,3 +191,48 @@ is post-merge evidence and cannot be claimed from the PR's read-only cache run.
 Turbo reference: [configuration](https://turborepo.dev/docs/reference/configuration),
 [run flags](https://turborepo.dev/docs/reference/run),
 [environment variables](https://turborepo.dev/docs/crafting-your-repository/using-environment-variables).
+
+## Cold and remote-warm scenario measurements
+
+`CI measurement` is a manual-only workflow derived from `ci.yml`. Regenerate it with
+`node scripts/ci-measure-workflow.mjs` after changing production jobs. The workflow regression suite
+rejects drift in setup, commands, services, worker limits, evidence jobs and the aggregate check. It
+checks out an immutable scenario head and compares it with an explicit ancestor base. Both modes
+select affected tasks. `cold` uses only the job's empty local cache; `warm` uses
+`local:rw,remote:r`. Neither mode uploads to the remote cache. The mode is not a hashed task input,
+and the wrapper refuses measurement overrides outside `workflow_dispatch`.
+
+After this workflow lands, wait for a green main push and host-confirmed remote writes before
+measuring. Open four temporary, ready-for-review scenario PRs from that same main commit: one line
+in web source, a docs-only edit, one line in sessions source, and a manifest dependency change with
+its generated lockfile. Keep them open for measurement, then close without merging. Run the required
+forced lint and typecheck before pushing each scenario.
+
+Dispatch once per scenario and mode, using the same base and head for the pair:
+
+```sh
+gh workflow run ci-measure.yml --ref main \
+  -f scenario=web -f cache=cold -f base_sha=<40-character-base> -f head_sha=<40-character-head>
+gh workflow run ci-measure.yml --ref main \
+  -f scenario=web -f cache=warm -f base_sha=<same-base> -f head_sha=<same-head>
+```
+
+Run one observation at a time. Archive the run JSON, all jobs including skipped jobs, job logs, and
+Turbo summary artifacts. Use the jobs API with `filter=all` and pagination; retain run attempts
+separately if anything is rerun. For each executed job report `started_at - created_at` as queue
+wait and `completed_at - started_at` as run time. Preserve the timestamps as evidence. GitHub's
+timestamps have one-second precision. Do not round before summing job seconds into runner-minutes.
+Skipped jobs have no runner occupancy; missing timestamps are unknown, not zero.
+
+Report end-to-end wall time from run creation to the last job completion, the interval from first
+job start to last completion, the slowest executed job, and task hits/misses from Turbo summaries.
+Distinguish uncached tasks from misses, and zero selected tasks from unavailable summary evidence.
+Keep setup costs and unconditional adapter checks in the totals. Record other runs sharing the two
+runners so queue contention remains visible. Cold means cold Turbo artifacts, not empty Docker, pnpm
+or Playwright stores.
+
+Analyze each complete downloaded job log with `scripts/ci-timings.mjs --source-ref <head>`; its
+runtime timing report uses `ci-runtime-timings.mjs` and distinguishes current execution from cached
+replay. Never add parallel file durations to derive job time. This workflow has no pull-request or
+push trigger; its dispatch observations are separate from each scenario PR's ordinary required
+checks.

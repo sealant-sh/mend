@@ -2,11 +2,21 @@ import { spawnSync } from "node:child_process";
 
 /** Shared event policy for static checks and both processes in each test lane. */
 export const ciTurboOptions = (env) => {
-  const affected = env.GITHUB_EVENT_NAME === "pull_request";
+  const measurement = env.CI_MEASUREMENT_CACHE;
+  if (
+    measurement &&
+    (env.GITHUB_EVENT_NAME !== "workflow_dispatch" || !["cold", "warm"].includes(measurement))
+  ) {
+    return {
+      _tag: "error",
+      message: "CI_MEASUREMENT_CACHE requires a cold or warm workflow_dispatch.",
+    };
+  }
+  const affected = env.GITHUB_EVENT_NAME === "pull_request" || Boolean(measurement);
   if (affected && !/^[a-f0-9]{40}$/i.test(env.TURBO_SCM_BASE ?? "")) {
     return {
       _tag: "error",
-      message: "Pull requests require TURBO_SCM_BASE to be the exact base SHA.",
+      message: "Affected runs require TURBO_SCM_BASE to be the exact base SHA.",
     };
   }
   const trusted =
@@ -14,7 +24,7 @@ export const ciTurboOptions = (env) => {
       env.GITHUB_REF === "refs/heads/main") ||
     (env.GITHUB_EVENT_NAME === "merge_group" &&
       env.GITHUB_REF?.startsWith("refs/heads/gh-readonly-queue/main/"));
-  const remote = env.RUNNER_ENVIRONMENT === "self-hosted";
+  const remote = env.RUNNER_ENVIRONMENT === "self-hosted" && measurement !== "cold";
   const force = env.GITHUB_EVENT_NAME === "schedule" && trusted;
   return {
     _tag: "ok",
