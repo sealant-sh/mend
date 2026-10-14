@@ -17,7 +17,10 @@ const reportName = (files) => {
 /**
  * Writes the run as Vitest's Jest-compatible JSON report to CI_TEST_REPORT_DIR for CI traces.
  * Output goes to its own file, so this reporter yields nothing to its destination. A file spans
- * from its first event after being queued to its last; queued files have not started running.
+ * from its first event after being queued (queued files have not started) to its own completion.
+ * Node reports files in order, holding a finished file's test events until every earlier file
+ * finishes, so the last event can arrive long after the file ended. Without process isolation
+ * there is no file completion, and the last event closes the span.
  */
 export default async function* ciTestReport(source) {
   const directory = process.env.CI_TEST_REPORT_DIR;
@@ -28,11 +31,13 @@ export default async function* ciTestReport(source) {
     const now = Date.now();
     let file = files.get(data.file);
     if (file === undefined) {
-      file = { startTime: now, endTime: now, failed: false, names: [], assertionResults: [] };
+      file = { startTime: now, lastEvent: now, failed: false, names: [], assertionResults: [] };
       files.set(data.file, file);
     }
-    file.endTime = now;
-    if (type === "test:start") {
+    file.lastEvent = now;
+    if (type === "test:complete" && data.nesting === 0 && data.name === data.file) {
+      file.completedAt = now;
+    } else if (type === "test:start") {
       file.names.length = data.nesting;
       file.names.push(data.name);
     } else if (type === "test:summary" && data.success === false) {
@@ -56,7 +61,7 @@ export default async function* ciTestReport(source) {
   const testResults = [...files].map(([name, file]) => ({
     name,
     startTime: file.startTime,
-    endTime: file.endTime,
+    endTime: file.completedAt ?? file.lastEvent,
     status: file.failed ? "failed" : "passed",
     message: "",
     assertionResults: file.assertionResults,
