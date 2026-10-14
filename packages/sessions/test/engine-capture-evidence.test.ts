@@ -22,11 +22,10 @@ import {
 import { captureKeys, DeploymentConfig, SHALLOW_REPOSITORY_REASON } from "@mend/store";
 import type { CreateOptions, InteractiveSessionStatus, WorkspaceCaptureStatus } from "@sealant/sdk";
 import { Clock, Context, Deferred, Duration, Effect, Layer } from "effect";
-import { TestClock } from "effect/testing";
 import { describe, expect } from "vitest";
 
 import { makeMemoryCaptureStore, type MemoryCaptureStore } from "./capture-store-memory.ts";
-import { it } from "./effect-vitest.ts";
+import { it, TestClock } from "./effect-vitest.ts";
 import {
   CUSTOM_BASE,
   flushReport,
