@@ -30,6 +30,7 @@
     "effect": "catalog:"
   },
   "devDependencies": {
+    "@effect/vitest": "catalog:",
     "@mend/test-ci": "workspace:*",
     "@mend/typescript": "workspace:*",
     "esbuild": "catalog:",
