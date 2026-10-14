@@ -5,7 +5,7 @@ import { Deferred, Effect } from "effect";
  * starting it again, and the work runs detached from whoever started it — a caller that gives up
  * (sealantd timing a register out, a request whose client went away) leaves it running for the
  * next caller to join, rather than abandoning half of it or running a second copy beside it. The
- * entry leaves the map once the work ends: a later caller starts it afresh.
+ * entry leaves the map once the work ends: the next caller starts it afresh.
  */
 export interface SingleFlight<A, E, T> {
   /**
