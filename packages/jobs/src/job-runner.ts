@@ -1,4 +1,4 @@
-import { Config, Effect, Layer, Redacted, Schema } from "effect";
+import { Clock, Config, Effect, Layer, Redacted, Schema } from "effect";
 import * as Context from "effect/Context";
 import { Pool } from "pg";
 import { PgBoss, type Db } from "pg-boss";
@@ -258,34 +258,40 @@ export const JobRunnerLive: Layer.Layer<JobRunner, Config.ConfigError> = Layer.e
             // retry — but never silently. Without these taps the reason
             // lives only in the jobs table, and the server log shows a
             // clean 200 for the enqueue and then nothing at all.
-            const started = Date.now();
             await Effect.runPromise(
-              Effect.annotateLogs(Effect.logInfo("job started"), {
-                job: name,
-                jobId: job.id,
-              }).pipe(
-                Effect.andThen(handler(job.data)),
-                Effect.tap(() =>
-                  Effect.annotateLogs(Effect.logInfo("job completed"), {
-                    job: name,
-                    jobId: job.id,
-                    durationMs: Date.now() - started,
-                  }),
-                ),
-                Effect.tapDefect((cause) =>
-                  Effect.annotateLogs(
-                    Effect.logError(
-                      "job failed — pg-boss retries until the limit, then dead-letters",
+              Effect.flatMap(Clock.currentTimeMillis, (started) => {
+                const elapsed = Clock.currentTimeMillis.pipe(Effect.map((at) => at - started));
+                return Effect.annotateLogs(Effect.logInfo("job started"), {
+                  job: name,
+                  jobId: job.id,
+                }).pipe(
+                  Effect.andThen(handler(job.data)),
+                  Effect.tap(() =>
+                    Effect.flatMap(elapsed, (durationMs) =>
+                      Effect.annotateLogs(Effect.logInfo("job completed"), {
+                        job: name,
+                        jobId: job.id,
+                        durationMs,
+                      }),
                     ),
-                    {
-                      job: name,
-                      jobId: job.id,
-                      durationMs: Date.now() - started,
-                      cause: String(cause),
-                    },
                   ),
-                ),
-              ),
+                  Effect.tapDefect((cause) =>
+                    Effect.flatMap(elapsed, (durationMs) =>
+                      Effect.annotateLogs(
+                        Effect.logError(
+                          "job failed — pg-boss retries until the limit, then dead-letters",
+                        ),
+                        {
+                          job: name,
+                          jobId: job.id,
+                          durationMs,
+                          cause: String(cause),
+                        },
+                      ),
+                    ),
+                  ),
+                );
+              }),
             );
           }
         }),

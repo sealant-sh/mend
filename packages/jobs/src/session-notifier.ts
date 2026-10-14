@@ -29,7 +29,7 @@ import {
 } from "@mend/domain/workbench";
 import { mayRunIn } from "@mend/sessions";
 import { slackThreadReach } from "@mend/slack";
-import { Effect, Layer, Redacted, Schema, Stream } from "effect";
+import { Clock, Effect, Layer, Redacted, Schema, Stream } from "effect";
 
 import { notificationRecipients } from "./notification-recipients.ts";
 import { PushSender } from "./push-sender.ts";
@@ -320,9 +320,9 @@ export const SessionNotifierLive = Layer.effectDiscard(
       if (previous === undefined) return; // unknown baseline — record, never ring
       if (previous === phase || phase === null) return;
       if (phase !== "attention") {
-        const endedAt =
-          session.settledAt?.getTime() ?? currentAgent?.exitedAt?.getTime() ?? Date.now();
-        if (Date.now() - endedAt > TERMINAL_FRESHNESS_MS) return;
+        const now = yield* Clock.currentTimeMillis;
+        const endedAt = session.settledAt?.getTime() ?? currentAgent?.exitedAt?.getTime() ?? now;
+        if (now - endedAt > TERMINAL_FRESHNESS_MS) return;
       }
       yield* send(session, phaseKind(phase), notificationBody(session, phase));
     });
@@ -334,8 +334,9 @@ export const SessionNotifierLive = Layer.effectDiscard(
       // Interrupted/cancelled is the user's own hand (or the idle stop's); stale ends are history.
       const kind = turnKind(turn.status);
       if (kind === null) return;
-      const endedAt = turn.endedAt?.getTime() ?? Date.now();
-      if (Date.now() - endedAt > TERMINAL_FRESHNESS_MS) return;
+      const now = yield* Clock.currentTimeMillis;
+      const endedAt = turn.endedAt?.getTime() ?? now;
+      if (now - endedAt > TERMINAL_FRESHNESS_MS) return;
       const session = yield* sessions.byId(SessionId.make(sessionId));
       // A settling or waiting session rings through the phase path above.
       if (session.status !== "running" && session.status !== "idle") return;
