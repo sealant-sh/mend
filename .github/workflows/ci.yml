@@ -6,6 +6,7 @@ on:
   pull_request:
 
 # Checks read the repository and write nothing.
+# Box runners provide a persistent pnpm store; setup-node must not restore a remote copy.
 permissions:
   contents: read
 
@@ -50,7 +51,6 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .node-version
-          cache: pnpm
       - run: pnpm install --frozen-lockfile
       - name: Verify CI selection and required results
         run: node --test scripts/ci-scope.test.mjs scripts/ci-workflow.test.mjs
@@ -105,7 +105,6 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .node-version
-          cache: pnpm
       - run: pnpm install --frozen-lockfile
       - name: Build isolated zsh fixture for default shell-profile tests
         run:
@@ -128,7 +127,6 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .node-version
-          cache: pnpm
       - run: pnpm install --frozen-lockfile
       # Desktop's font-browser regression launches Chromium unconditionally in this job.
       - name: Install Chromium for desktop browser tests
@@ -160,7 +158,6 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .node-version
-          cache: pnpm
       - run: pnpm install --frozen-lockfile
       - name: CLI, client and shared-library tests
         run: node scripts/ci-shards.mjs clients-b
@@ -177,7 +174,6 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .node-version
-          cache: pnpm
       - run: pnpm install --frozen-lockfile
       - name: Install OpenTofu for evaluated offline AWS gate tests
         uses: opentofu/setup-opentofu@9d84900f3238fab8cd84ce47d658d25dd008be2f # v1
@@ -230,7 +226,6 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .node-version
-          cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run:
           pnpm --filter @mend/mobile exec playwright-core install --with-deps --only-shell chromium

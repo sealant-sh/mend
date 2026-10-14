@@ -220,7 +220,8 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .node-version
-          cache: pnpm
+          # Box runners keep /opt/pnpm-store; hosted arm64 runners need the remote cache.
+          cache: ${{ runner.environment == 'github-hosted' && 'pnpm' || '' }}
       - run: pnpm install --frozen-lockfile --ignore-scripts
       # Both image stamps are built from the resolved candidate commit. This transition
       # exercises upgrade mechanics, not a previous released server or historical schema.
