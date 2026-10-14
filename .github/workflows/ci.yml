@@ -27,6 +27,8 @@ concurrency:
 jobs:
   changes:
     runs-on: [self-hosted, box, linux, x64]
+    env:
+      CI_TEST_REPORT_DIR: ${{ github.workspace }}/.ci-reports/test
     outputs:
       mobile: ${{ steps.scope.outputs.mobile }}
       packaging: ${{ steps.scope.outputs.packaging }}
@@ -41,6 +43,7 @@ jobs:
         run:
           node --test --test-reporter=spec --test-reporter-destination=stdout
           --test-reporter=./scripts/ci-node-reporter.mjs --test-reporter-destination=stderr
+          --test-reporter=./scripts/ci-test-report.mjs --test-reporter-destination=stdout
           scripts/ci-scope.test.mjs
       - id: scope
         env:
@@ -54,10 +57,22 @@ jobs:
             node scripts/ci-scope.mjs --all >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Archive per-file test timings
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: test-report-${{ github.job }}
+          path: .ci-reports/test/*.json
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 14
+
   static:
     needs: changes
     if: ${{ !cancelled() }}
     runs-on: [self-hosted, box, linux, x64]
+    env:
+      CI_TEST_REPORT_DIR: ${{ github.workspace }}/.ci-reports/test
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -75,14 +90,16 @@ jobs:
         run:
           node --test --test-reporter=spec --test-reporter-destination=stdout
           --test-reporter=./scripts/ci-node-reporter.mjs --test-reporter-destination=stderr
+          --test-reporter=./scripts/ci-test-report.mjs --test-reporter-destination=stdout
           scripts/ci-scope.test.mjs scripts/ci-workflow.test.mjs scripts/ci-turbo.test.mjs
           scripts/ci-cache.test.mjs
       - name: Verify timing analysis against source budgets
         run:
           node --test --test-reporter=spec --test-reporter-destination=stdout
           --test-reporter=./scripts/ci-node-reporter.mjs --test-reporter-destination=stderr
+          --test-reporter=./scripts/ci-test-report.mjs --test-reporter-destination=stdout
           scripts/ci-timings.test.mjs scripts/ci-runtime-timings.test.mjs
-          scripts/ci-node-reporter.test.mjs
+          scripts/ci-node-reporter.test.mjs scripts/ci-test-report.test.mjs
       - run: node scripts/ci-shards.mjs --check
       # Every install reads the committed lockfile, so a package published after the commit (a
       # Sealant prerelease included) never drifts in. The brackets keep this step from matching
@@ -110,6 +127,16 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+      - name: Archive per-file test timings
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: test-report-${{ github.job }}
+          path: .ci-reports/test/*.json
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 14
+
   test-engines:
     needs: changes
     if: ${{ !cancelled() }}
@@ -127,6 +154,7 @@ jobs:
           --health-cmd "pg_isready -U mend -d mend" --health-interval 5s --health-timeout 5s
           --health-retries 10
     env:
+      CI_TEST_REPORT_DIR: ${{ github.workspace }}/.ci-reports/test
       MEND_TEST_DATABASE_URL: postgres://mend:mend@localhost:5432/mend
       # Bound both levels on an 8-vCPU / 7-GiB runner, including its Postgres.
       # The shard runner permits two packages; Vitest 3 and 5 each get three workers.
@@ -161,11 +189,22 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+      - name: Archive per-file test timings
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: test-report-${{ github.job }}
+          path: .ci-reports/test/*.json
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 14
+
   test-clients-a:
     needs: changes
     if: ${{ !cancelled() }}
     runs-on: [self-hosted, box, linux, x64]
     env:
+      CI_TEST_REPORT_DIR: ${{ github.workspace }}/.ci-reports/test
       VITEST_MAX_THREADS: "3"
       VITEST_MAX_FORKS: "3"
       VITEST_MAX_WORKERS: "3"
@@ -197,6 +236,7 @@ jobs:
         run:
           node --test --test-reporter=spec --test-reporter-destination=stdout
           --test-reporter=./scripts/ci-node-reporter.mjs --test-reporter-destination=stderr
+          --test-reporter=./scripts/ci-test-report.mjs --test-reporter-destination=stdout
           scripts/ci-shards.test.mjs
 
       - name: Archive Turbo task hashes and cache outcomes
@@ -209,11 +249,22 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+      - name: Archive per-file test timings
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: test-report-${{ github.job }}
+          path: .ci-reports/test/*.json
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 14
+
   test-clients-b:
     needs: changes
     if: ${{ !cancelled() }}
     runs-on: [self-hosted, box, linux, x64]
     env:
+      CI_TEST_REPORT_DIR: ${{ github.workspace }}/.ci-reports/test
       VITEST_MAX_THREADS: "3"
       VITEST_MAX_FORKS: "3"
       VITEST_MAX_WORKERS: "3"
@@ -241,11 +292,22 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+      - name: Archive per-file test timings
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: test-report-${{ github.job }}
+          path: .ci-reports/test/*.json
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 14
+
   packaging:
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.packaging != 'false' }}
     runs-on: [self-hosted, box, linux, x64]
     env:
+      CI_TEST_REPORT_DIR: ${{ github.workspace }}/.ci-reports/test
       MEND_VERIFY_PLAYWRIGHT: ${{ github.workspace }}/apps/mobile
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -280,6 +342,7 @@ jobs:
         run:
           node --test --test-reporter=spec --test-reporter-destination=stdout
           --test-reporter=./scripts/ci-node-reporter.mjs --test-reporter-destination=stderr
+          --test-reporter=./scripts/ci-test-report.mjs --test-reporter-destination=stdout
           scripts/bundle-packaging.test.mjs scripts/process-supervisor.test.mjs
           scripts/check-packaged-server.test.mjs scripts/release-publication.test.mjs
           scripts/packaged-ssh-acceptance.test.mjs scripts/packaged-git-access-acceptance.test.mjs
@@ -296,6 +359,16 @@ jobs:
           .claude/skills/verify/scripts/slots.test.mjs .claude/skills/verify/scripts/guard.test.mjs
           .claude/skills/verify/scripts/secrets.test.mjs
           .claude/skills/verify/scripts/local-outer.test.mjs
+
+      - name: Archive per-file test timings
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: test-report-${{ github.job }}
+          path: .ci-reports/test/*.json
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 14
 
   # The phone app's web build is what verification runs drive. It must bundle, render statically,
   # and load in a browser from both the export and the dev server (apps/mobile/scripts/check-web.mjs).

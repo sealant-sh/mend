@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { globSync, readFileSync } from "node:fs";
 import test from "node:test";
 
 import { parse } from "yaml";
 
+const root = new URL("../", import.meta.url);
 const workflow = parse(
   readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8"),
 );
@@ -212,34 +213,119 @@ test("packaging retains browser, Docker, OpenTofu and acceptance contracts in it
     assert.ok(suite.split(/\s+/).includes(file), file);
 });
 
-test("native commands keep ordinary assertion output beside the CI file guard", () => {
+// Node pairs each reporter with the destination at the same position.
+const reporterPairs = (command, scripts) => {
+  const values = (prefix) =>
+    command
+      .split(/\s+/)
+      .filter((value) => value.startsWith(prefix))
+      .map((value) => value.slice(prefix.length));
+  const destinations = values("--test-reporter-destination=");
+  const reporters = values("--test-reporter=");
+  assert.equal(reporters.length, destinations.length, command);
+  assert.deepEqual(
+    reporters.map((reporter, index) => [reporter, destinations[index]]),
+    [
+      ["spec", "stdout"],
+      [`${scripts}/ci-node-reporter.mjs`, "stderr"],
+      [`${scripts}/ci-test-report.mjs`, "stdout"],
+    ],
+    command,
+  );
+};
+
+test("native commands keep ordinary assertion output beside the CI file guard and test report", () => {
   for (const name of Object.keys(jobs)) {
     for (const command of commands(name).filter((value) => value.startsWith("node --test "))) {
-      const reporterArguments = command.split(/\s+/);
-      assert.equal(
-        reporterArguments.filter((value) => value === "--test-reporter=spec").length,
-        1,
-        name,
-      );
-      assert.equal(
-        reporterArguments.filter(
-          (value) => value === "--test-reporter=./scripts/ci-node-reporter.mjs",
-        ).length,
-        1,
-        name,
-      );
-      assert.equal(
-        reporterArguments.filter((value) => value === "--test-reporter-destination=stdout").length,
-        1,
-        name,
-      );
-      assert.equal(
-        reporterArguments.filter((value) => value === "--test-reporter-destination=stderr").length,
-        1,
-        name,
-      );
+      reporterPairs(command, "./scripts");
     }
   }
+  const packageScripts = globSync("{apps,packages,tooling}/*/package.json", { cwd: root })
+    .flatMap((manifest) =>
+      Object.values(JSON.parse(readFileSync(new URL(manifest, root), "utf8")).scripts ?? {}),
+    )
+    .filter((script) => script.includes("ci-node-reporter.mjs"));
+  assert.ok(packageScripts.length >= 2, "web and test-ci run native suites");
+  for (const script of packageScripts) {
+    reporterPairs(script.slice(script.indexOf("node --")).split(" && ")[0], "../../scripts");
+  }
+});
+
+const testReportDir = "${{ github.workspace }}/.ci-reports/test";
+const runsTests = (name) =>
+  commands(name).some((command) =>
+    /^node --test |^node scripts\/ci-shards\.mjs (engines|clients-a|clients-b)$|^pnpm --filter \S+ test:integration$/.test(
+      command,
+    ),
+  );
+
+test("every job that runs tests uploads its per-file test timings, even when tests fail", () => {
+  assert.deepEqual(Object.keys(jobs).filter(runsTests), [
+    "changes",
+    "static",
+    "test-engines",
+    "test-clients-a",
+    "test-clients-b",
+    "packaging",
+  ]);
+  const turboUpload = jobs.static.steps.find(
+    (step) => step.with?.name === "turbo-${{ github.job }}",
+  );
+  assert.match(turboUpload.uses, /^actions\/upload-artifact@[a-f0-9]{40}$/);
+  for (const name of Object.keys(jobs)) {
+    const uploads = jobs[name].steps.filter(
+      (step) => step.with?.name === "test-report-${{ github.job }}",
+    );
+    if (!runsTests(name)) {
+      assert.deepEqual(uploads, [], name);
+      assert.equal(jobs[name].env?.CI_TEST_REPORT_DIR, undefined, name);
+      continue;
+    }
+    assert.equal(jobs[name].env?.CI_TEST_REPORT_DIR, testReportDir, name);
+    assert.deepEqual(
+      uploads,
+      [
+        {
+          name: "Archive per-file test timings",
+          if: "${{ !cancelled() }}",
+          uses: turboUpload.uses,
+          with: {
+            name: "test-report-${{ github.job }}",
+            path: ".ci-reports/test/*.json",
+            "include-hidden-files": true,
+            "if-no-files-found": "ignore",
+            "retention-days": 14,
+          },
+        },
+      ],
+      `${name} must upload test-report-\${{ github.job }}`,
+    );
+    assert.equal(jobs[name].steps.at(-1), uploads[0], `${name} uploads after every test step`);
+  }
+});
+
+test("the test report reaches Turbo tasks without entering hashes, outputs or git", () => {
+  const turbo = JSON.parse(readFileSync(new URL("turbo.json", root), "utf8"));
+  assert.deepEqual(turbo.tasks.test.passThroughEnv, ["CI_TEST_REPORT_DIR"]);
+  const tasks = Object.values(turbo.tasks);
+  for (const manifest of globSync("{apps,packages,tooling}/*/turbo.json", { cwd: root })) {
+    const { test: packageTest } = JSON.parse(readFileSync(new URL(manifest, root), "utf8")).tasks;
+    assert.equal(packageTest?.passThroughEnv, undefined, `${manifest} replaces the report dir`);
+    if (packageTest) tasks.push(packageTest);
+  }
+  for (const pattern of [...turbo.globalEnv, ...tasks.flatMap((task) => task.env ?? [])]) {
+    const prefix = pattern.endsWith("*") ? pattern.slice(0, -1) : undefined;
+    assert.ok(
+      prefix === undefined
+        ? pattern !== "CI_TEST_REPORT_DIR"
+        : !"CI_TEST_REPORT_DIR".startsWith(prefix),
+      `${pattern} would hash the report directory`,
+    );
+  }
+  for (const task of tasks) {
+    assert.ok(!(task.outputs ?? []).some((output) => output.includes(".ci-reports")));
+  }
+  assert.ok(readFileSync(new URL(".gitignore", root), "utf8").split("\n").includes(".ci-reports/"));
 });
 
 test("PRs have exact history and queue, manual and nightly events retain the full CI graph", () => {

@@ -52,6 +52,7 @@
         "DOCKER_*",
         "TEST_*"
       ],
+      "passThroughEnv": ["CI_TEST_REPORT_DIR"],
       "outputs": [],
       "inputs": [
         "$TURBO_DEFAULT$",

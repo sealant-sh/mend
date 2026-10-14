@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { relative } from "node:path";
+import { existsSync } from "node:fs";
+import { dirname, join, relative, resolve } from "node:path";
 
 interface RuntimeTask {
   readonly id: string;
@@ -35,7 +36,9 @@ interface RuntimeModule {
 
 interface RuntimeContext {
   readonly config: {
-    readonly reporters: { push(reporter: TimingReporter): number };
+    readonly reporters: {
+      push(reporter: TimingReporter | ["json", { readonly outputFile: string }]): number;
+    };
     readonly root: string;
   };
   readonly logger: { error(message: string): void };
@@ -211,6 +214,23 @@ class TimingReporter {
   }
 }
 
+/**
+ * CI traces read one Jest-compatible JSON report per package run from CI_TEST_REPORT_DIR, named
+ * after the package directory. Runs outside a pnpm workspace, such as the temporary fixture
+ * projects some tests start, write nothing even though they inherit the variable.
+ */
+const testReportFile = (root: string): string | undefined => {
+  const directory = process.env["CI_TEST_REPORT_DIR"];
+  if (!directory) return undefined;
+  let workspace = root;
+  while (!existsSync(join(workspace, "pnpm-workspace.yaml"))) {
+    if (dirname(workspace) === workspace) return undefined;
+    workspace = dirname(workspace);
+  }
+  const name = relative(workspace, root).replaceAll("\\", "/").replaceAll("/", "-");
+  return resolve(directory, `vitest-${name}.json`);
+};
+
 /** Append after CLI reporter resolution, retaining default reporters and explicit JSON output. */
 export const vitestCiGuard = (options: VitestCiGuardOptions): VitestCiPlugin => {
   const budget = options.fileBudgetMs ?? 60_000;
@@ -223,9 +243,11 @@ export const vitestCiGuard = (options: VitestCiGuardOptions): VitestCiPlugin => 
   return {
     name: "mend-test-ci-guard",
     configureVitest({ vitest }) {
-      if (!enabled || registered.has(vitest)) return;
+      if (registered.has(vitest)) return;
       registered.add(vitest);
-      vitest.config.reporters.push(new TimingReporter(options.packageName, budget));
+      if (enabled) vitest.config.reporters.push(new TimingReporter(options.packageName, budget));
+      const outputFile = testReportFile(vitest.config.root);
+      if (outputFile !== undefined) vitest.config.reporters.push(["json", { outputFile }]);
     },
   };
 };
