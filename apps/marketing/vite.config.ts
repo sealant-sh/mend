@@ -1,4 +1,5 @@
 import { cloudflare } from "@cloudflare/vite-plugin";
+import { vitestCiGuard } from "@mend/test-ci/vitest";
 import tailwindcss from "@tailwindcss/vite";
 import { devtools } from "@tanstack/devtools-vite";
 import { tanstackStart } from "@tanstack/react-start/plugin/vite";
@@ -8,6 +9,7 @@ import tsconfigPaths from "vite-tsconfig-paths";
 
 const config = defineConfig({
   plugins: [
+    vitestCiGuard({ packageName: "@mend/marketing" }),
     devtools(),
     tsconfigPaths({ projects: ["./tsconfig.json"] }),
     tailwindcss(),

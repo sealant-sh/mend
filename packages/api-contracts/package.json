@@ -17,6 +17,7 @@
     "effect": "catalog:"
   },
   "devDependencies": {
+    "@mend/test-ci": "workspace:*",
     "@mend/typescript": "workspace:*",
     "vitest": "catalog:"
   }

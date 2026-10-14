@@ -28,8 +28,9 @@ const runFixture = async (options: {
     await writeFile(
       path.join(directory, "vitest.config.ts"),
       `import { defineConfig } from "vitest/config";
+import { vitestCiGuard } from "@mend/test-ci/vitest";
 import { sessionsCiGuard } from ${JSON.stringify(reporterPath)};
-export default defineConfig({ plugins: [sessionsCiGuard({ fileBudgetMs: ${options.budgetMs} })] });
+export default defineConfig({ plugins: [sessionsCiGuard(), vitestCiGuard({ packageName: "@mend/sessions", fileBudgetMs: ${options.budgetMs} })] });
 `,
     );
     await writeFile(
@@ -88,7 +89,7 @@ it(
     });
     expect(result.signal).toBeNull();
     expect(result.code).toBe(1);
-    expect(result.output).toContain("sessions file execution budget exceeded:");
+    expect(result.output).toContain("CI file execution budget exceeded:");
     expect(result.output).toContain("guard.test.ts");
     // Vitest 3's JSON success omits unhandled errors; the runner's exit is the failure oracle.
     expect(result.json).toMatchObject({

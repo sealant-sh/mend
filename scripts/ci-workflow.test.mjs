@@ -10,6 +10,15 @@ const workflow = parse(
 );
 const { jobs } = workflow;
 const commands = (job) => jobs[job].steps.flatMap((step) => (step.run ? [step.run] : []));
+const withoutReporterOptions = (command) =>
+  command
+    ?.split(/\s+/)
+    .filter(
+      (argument) =>
+        !argument.startsWith("--test-reporter=") &&
+        !argument.startsWith("--test-reporter-destination="),
+    )
+    .join(" ");
 const runGate = (results) => {
   const step = jobs.checks.steps.find((candidate) => candidate.env?.CI_JOB_RESULTS);
   assert.ok(step, "the required check must consume actual job results");
@@ -122,7 +131,7 @@ test("required database and live-adapter evidence keeps its preparation and work
     "node --test scripts/ci-shards.test.mjs",
   ]) {
     const owner = command.startsWith("node scripts/ci-shards") ? engines : jobs["test-clients-a"];
-    const step = owner.steps.find((candidate) => candidate.run === command);
+    const step = owner.steps.find((candidate) => withoutReporterOptions(candidate.run) === command);
     assert.ok(step, command);
     assert.equal(step.if, undefined, `${command} must remain independent of packaging scope`);
   }
@@ -178,7 +187,7 @@ test("packaging retains browser, Docker, OpenTofu and acceptance contracts in it
     ),
   );
   const suite = commands("packaging").find((command) =>
-    command.startsWith("node --test scripts/bundle-packaging.test.mjs"),
+    withoutReporterOptions(command).startsWith("node --test scripts/bundle-packaging.test.mjs"),
   );
   assert.ok(suite, "the native packaging test command is required");
   for (const file of [
@@ -192,7 +201,40 @@ test("packaging retains browser, Docker, OpenTofu and acceptance contracts in it
     "scripts/edge-overlay.test.mjs",
     "scripts/mirrors-runtime.test.mjs",
     "scripts/verify-stack/lifecycle.e2e.test.mjs",
+    "scripts/verify-stack/lifecycle.resources.e2e.test.mjs",
+    "scripts/verify-stack/lifecycle.recording.e2e.test.mjs",
+    "scripts/bench/*.test.mjs",
     ".claude/skills/verify/scripts/leaks.test.mjs",
   ])
     assert.ok(suite.split(/\s+/).includes(file), file);
+});
+
+test("native commands keep ordinary assertion output beside the CI file guard", () => {
+  for (const name of Object.keys(jobs)) {
+    for (const command of commands(name).filter((value) => value.startsWith("node --test "))) {
+      const reporterArguments = command.split(/\s+/);
+      assert.equal(
+        reporterArguments.filter((value) => value === "--test-reporter=spec").length,
+        1,
+        name,
+      );
+      assert.equal(
+        reporterArguments.filter(
+          (value) => value === "--test-reporter=./scripts/ci-node-reporter.mjs",
+        ).length,
+        1,
+        name,
+      );
+      assert.equal(
+        reporterArguments.filter((value) => value === "--test-reporter-destination=stdout").length,
+        1,
+        name,
+      );
+      assert.equal(
+        reporterArguments.filter((value) => value === "--test-reporter-destination=stderr").length,
+        1,
+        name,
+      );
+    }
+  }
 });

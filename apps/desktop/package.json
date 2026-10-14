@@ -25,6 +25,7 @@
     "@mend/agent-conversation": "workspace:*",
     "@mend/api-contracts": "workspace:*",
     "@mend/domain": "workspace:*",
+    "@mend/test-ci": "workspace:*",
     "@mend/typescript": "workspace:*",
     "@mend/ui": "workspace:*",
     "@pierre/diffs": "catalog:",

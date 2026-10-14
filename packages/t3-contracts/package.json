@@ -26,6 +26,7 @@
   },
   "devDependencies": {
     "@effect/vitest": "catalog:t3",
+    "@mend/test-ci": "workspace:*",
     "@types/node": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:t3"

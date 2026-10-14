@@ -82,6 +82,7 @@ catalogs:
     "@effect/vitest": 4.0.2
     effect: 4.0.2
     vitest: 5.0.1
+    vitest-v5: npm:vitest@5.0.1
 
 # @effect/platform-node 4.0.2 asks for @effect/platform-node-shared ^4.0.2, which would resolve to
 # the newest 4.0.x and its own effect peer. t3code pins it to 4.0.2 in its catalog; so does this.

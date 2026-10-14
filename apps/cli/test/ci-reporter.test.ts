@@ -80,7 +80,7 @@ for (const jsonReporter of [false, true]) {
     });
     expect(result.signal).toBeNull();
     expect(result.code).toBe(1);
-    expect(result.output).toContain("CLI file execution budget exceeded:");
+    expect(result.output).toContain("CI file execution budget exceeded:");
     expect(result.output).toContain("guard.test.ts");
     if (jsonReporter) {
       // Vitest 3's JSON success omits unhandled errors; the runner's exit is the failure oracle.
@@ -95,7 +95,7 @@ for (const jsonReporter of [false, true]) {
     const result = await runFixture({ budgetMs: 10_000, body: "", jsonReporter });
     expect(result.signal).toBeNull();
     expect(result.code).toBe(0);
-    expect(result.output).not.toContain("CLI file execution budget exceeded:");
+    expect(result.output).not.toContain("CI file execution budget exceeded:");
     if (jsonReporter) {
       expect(result.json).toMatchObject({ success: true, numPassedTests: 1 });
     } else {

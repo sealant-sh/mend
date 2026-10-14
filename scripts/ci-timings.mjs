@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { stripVTControlCharacters } from "node:util";
 
+import { parseRuntimeTiming, summarizeRuntimeTimings } from "./ci-runtime-timings.mjs";
 import { makeSourceResolver, withHeadroom } from "./ci-timeout-headroom.mjs";
 
 // Read a downloaded GitHub job log. Never call GitHub or execute commands from the log.
@@ -38,6 +39,8 @@ try {
   const warnings = [];
   const vitestTests = [];
   const vitestCoverage = [];
+  const runtimeRecords = [];
+  const invalidRuntimeRecords = [];
   let currentFile = null;
   const groups = [];
   let first = null;
@@ -109,6 +112,15 @@ try {
       continue;
     }
     const owner = ungroupedTask ?? groups.findLast((entry) => entry !== null);
+    const runtime = parseRuntimeTiming(text);
+    if (runtime.kind === "record") {
+      runtimeRecords.push({ ...runtime.value, cached: owner?.cached ?? false, line: index + 1 });
+      continue;
+    }
+    if (runtime.kind === "invalid") {
+      invalidRuntimeRecords.push({ line: index + 1, reason: runtime.reason });
+      continue;
+    }
     const vitestCommand = /^\s*>\s+(vitest\b.*)$/.exec(text);
     if (owner && vitestCommand) owner.vitestCommand = vitestCommand[1];
     if (owner && /cache hit/.test(text)) owner.cached = true;
@@ -233,6 +245,7 @@ try {
         nodeTests: nodeTests.toSorted((a, b) => b.reportedDurationMs - a.reportedDurationMs),
         nodeRuns,
         warnings,
+        runtimeTimings: summarizeRuntimeTimings(runtimeRecords, invalidRuntimeRecords),
         vitestTests: headroom,
         timeoutHeadroom: {
           thresholdRatio: 0.5,
@@ -258,6 +271,7 @@ try {
           "Missing summaries remain missing. This timing report neither establishes suite completion nor turns a failed run into a passing run.",
           "Vitest logs often print only slow leaves. Unprinted cases have unknown duration, never zero or inferred healthy headroom. Cached replay is not current-run capacity evidence.",
           "Timeout resolution is conservative static source analysis at the supplied local Git ref. Dynamic registrations/configuration, unsupported table formatting and ambiguous names remain unknown. No source or config is executed.",
+          "runtimeTimings is separate versioned reporter evidence. Missing or mismatched summaries remain incomplete. Node does not expose effective test timeouts; retried/repeated aggregate durations and cached results are not assessed for headroom.",
         ],
       },
       null,

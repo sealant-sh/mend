@@ -545,3 +545,77 @@ command and worker environment are the same as the reliability invocation above.
 | `ci-reporter.test.ts`               |                      7.235 s |
 | `engine-fixture.test.ts`            |                      0.272 s |
 | `capture-store-memory.test.ts`      |                      0.005 s |
+
+## Uniform file guards and runtime timeout evidence
+
+All 24 workspace Vitest test scripts load `@mend/test-ci/vitest` through their existing or new
+configuration. It appends a reporter after CLI reporter resolution, so the default output and
+explicit JSON reports remain available. The shared reporter fails CI when a completed file's
+execution duration exceeds 60,000 ms, including hooks but excluding transform and collection. This
+is a completed-file guard, not an interrupting 60-second process timeout. Existing individual test
+and hook deadlines are unchanged. The sessions Clock warning guard remains independent.
+
+Vitest 3 and 5 emit `CI_TIMING` JSON lines on stderr for every case, file and completed run. These
+include a per-invocation ID, package, file, resolved runtime timeout, duration, state and
+retry/repeat counts. Vitest 3 exposes its resolved timeout through the public collection callback;
+Vitest 5 exposes it on each case. Dynamic and inherited budgets therefore need no source-code
+inference. The reporter uses no runtime Vitest dependency, and its compatibility tests execute both
+installed major versions through real child processes.
+
+Both reporters escape Unicode line separators so pnpm preserves one JSON record per line, including
+test names containing control characters. The decoded names remain unchanged.
+
+The native Node reporter accompanies `spec` output in CI's selection, static, shard and packaging
+test commands, the guard compatibility tests, and the web package's Node integration command. It
+uses public per-file summaries to measure file execution, including hooks. Native process startup is
+excluded. A leaf whose name looks like a file is still a leaf. Missing file summaries remain
+incomplete; interrupted runs never become a zero-duration pass. Its 60-second file budget is
+enforced in CI. Node does not expose the effective case timeout, so those timeout fields remain
+explicitly unknown.
+
+`ci-timings.mjs` keeps this evidence in `runtimeTimings`, separate from its older default-reporter
+and static-source estimates. Each run needs matching file/test counts and a final summary to be
+complete. Cached replays, skips, unavailable/disabled budgets and retry/repeat aggregate durations
+are not assessed for timeout headroom. Current executed cases at or above half their runtime timeout
+are flagged for investigation. The headroom flag does not fail CI or raise a timeout. Invalid
+records are listed; they cannot manufacture a healthy case.
+
+The guards do not cover non-test commands such as docs builds, shell scripts, browser acceptance
+commands or benchmarks with separate opt-in configs. Those keep their existing contracts and job
+deadlines. They are not silently counted as guarded test files. Required PostgreSQL, Garage/MinIO,
+Chromium checks and existing test skips are unchanged. Turbo caching and affected-only selection
+remain held.
+
+## Uniform-guard follow-up on #979
+
+The first box run of #979 at `a5c1542e3` passed all 46 lifecycle integration cases, but
+`scripts/verify-stack/lifecycle.e2e.test.mjs` took 74.067 seconds and the new native file guard
+correctly failed packaging. The cases now run in three files: process lifecycle and locking,
+resource ownership, and ledger recording. Their shared fake-daemon helpers retain per-worker process
+cleanup. Test bodies, assertions and deadlines are preserved. CI explicitly includes all three
+files.
+
+`scripts/bench/live-cleanup.test.mjs` was also split, into cleanup and refusal cases. It took 57.758
+seconds on the box and 56.907 seconds in the reviewer's local run. The real public CLI's 10-second
+reconciliation grace periods and retry delays remain unchanged. The existing bench glob includes
+both files; the shared helper contains no test registrations.
+
+Next split candidates from the same box run are sessions `capture-launch` at 52.6 seconds and
+`capture-evidence` at 50.9 seconds, and CLI `lifecycle-versions` at 54.5 seconds and
+`backup-retention` at 54.0 seconds. Those packages already enforced the 60-second file cap.
+
+The split passed locally on Node 26.4.0 with `CI=true` and the native reporter enabled. All 50
+integration cases match the failed box run's names, and the seven workflow checks pass. An AST
+comparison preserves every non-import/export statement, all test registrations, and all 257
+lifecycle plus 54 cleanup assertions. The local file durations were:
+
+| File                               | Cases | Seconds |
+| ---------------------------------- | ----: | ------: |
+| `lifecycle.e2e.test.mjs`           |    17 |  28.451 |
+| `lifecycle.resources.e2e.test.mjs` |    17 |   7.579 |
+| `lifecycle.recording.e2e.test.mjs` |    12 |  10.112 |
+| `live-cleanup.test.mjs`            |     2 |  25.175 |
+| `live-cleanup-refusals.test.mjs`   |     2 |  31.806 |
+
+These local timings are not box measurements. Raw logs, the AST proof and runtime case inventory are
+archived in `reports/uniform-guards/packaging-split/` under the evidence directory.

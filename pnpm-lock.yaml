@@ -202,6 +202,9 @@ catalogs:
     vitest:
       specifier: 5.0.1
       version: 5.0.1
+    vitest-v5:
+      specifier: npm:vitest@5.0.1
+      version: 5.0.1
 
 overrides:
   '@effect/platform-node@4.0.2>@effect/platform-node-shared': 4.0.2
@@ -296,6 +299,9 @@ importers:
         specifier: 'catalog:'
         version: 4.0.0-beta.93
     devDependencies:
+      '@mend/test-ci':
+        specifier: workspace:*
+        version: link:../../tooling/test-ci
       '@mend/typescript':
         specifier: workspace:*
         version: link:../../tooling/typescript
@@ -339,6 +345,9 @@ importers:
       '@mend/network':
         specifier: workspace:*
         version: link:../../packages/network
+      '@mend/test-ci':
+        specifier: workspace:*
+        version: link:../../tooling/test-ci
       '@mend/typescript':
         specifier: workspace:*
         version: link:../../tooling/typescript
@@ -387,6 +396,9 @@ importers:
       '@mend/domain':
         specifier: workspace:*
         version: link:../../packages/domain
+      '@mend/test-ci':
+        specifier: workspace:*
+        version: link:../../tooling/test-ci
       '@mend/typescript':
         specifier: workspace:*
         version: link:../../tooling/typescript
@@ -542,6 +554,9 @@ importers:
       '@cloudflare/vite-plugin':
         specifier: 'catalog:'
         version: 1.43.0(vite@7.3.6(@types/node@22.20.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.51.2)(tsx@4.23.12)(yaml@2.9.0))(workerd@1.20260701.1)(wrangler@4.107.0)
+      '@mend/test-ci':
+        specifier: workspace:*
+        version: link:../../tooling/test-ci
       '@mend/typescript':
         specifier: workspace:*
         version: link:../../tooling/typescript
@@ -735,6 +750,9 @@ importers:
       '@mend/api-contracts':
         specifier: workspace:*
         version: link:../../packages/api-contracts
+      '@mend/test-ci':
+        specifier: workspace:*
+        version: link:../../tooling/test-ci
       '@types/react':
         specifier: 'catalog:'
         version: 19.2.17
@@ -766,6 +784,9 @@ importers:
       '@effect/vitest':
         specifier: catalog:t3
         version: 4.0.2(effect@4.0.2)(vitest@5.0.1(@types/node@22.20.0)(jsdom@28.1.0(@noble/hashes@2.2.0))(vite@8.2.2(@types/node@22.20.0)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.51.2)(tsx@4.23.12)(yaml@2.9.0)))
+      '@mend/test-ci':
+        specifier: workspace:*
+        version: link:../../tooling/test-ci
       '@mend/typescript':
         specifier: workspace:*
         version: link:../../tooling/typescript
@@ -791,6 +812,9 @@ importers:
         specifier: workspace:*
         version: link:../../packages/workspace-ssh
     devDependencies:
+      '@mend/test-ci':
+        specifier: workspace:*
+        version: link:../../tooling/test-ci
       '@mend/typescript':
         specifier: workspace:*
         version: link:../../tooling/typescript
@@ -918,6 +942,9 @@ importers:
         specifier: 'catalog:'
         version: 4.3.2
     devDependencies:
+      '@mend/test-ci':
+        specifier: workspace:*
+        version: link:../../tooling/test-ci
       '@mend/typescript':
         specifier: workspace:*
         version: link:../../tooling/typescript
@@ -960,6 +987,9 @@ importers:
 
   packages/agent-conversation:
     devDependencies:
+      '@mend/test-ci':
+        specifier: workspace:*
+        version: link:../../tooling/test-ci
       '@mend/typescript':
         specifier: workspace:*
         version: link:../../tooling/typescript
@@ -982,6 +1012,9 @@ importers:
       '@effect/vitest':
         specifier: 'catalog:'
         version: 4.0.0-beta.98(effect@4.0.0-beta.93)(vitest@3.2.7(@types/debug@4.1.13)(@types/node@22.20.0)(jiti@2.7.0)(jsdom@28.1.0(@noble/hashes@2.2.0))(lightningcss@1.33.0)(terser@5.51.2)(tsx@4.23.12)(yaml@2.9.0))
+      '@mend/test-ci':
+        specifier: workspace:*
+        version: link:../../tooling/test-ci
       '@mend/typescript':
         specifier: workspace:*
         version: link:../../tooling/typescript
@@ -1007,6 +1040,9 @@ importers:
         specifier: 'catalog:'
         version: 4.0.0-beta.93
     devDependencies:
+      '@mend/test-ci':
+        specifier: workspace:*
+        version: link:../../tooling/test-ci
       '@mend/typescript':
         specifier: workspace:*
         version: link:../../tooling/typescript
@@ -1035,6 +1071,9 @@ importers:
       '@mend/db':
         specifier: workspace:*
         version: link:../db
+      '@mend/test-ci':
+        specifier: workspace:*
+        version: link:../../tooling/test-ci
       '@mend/typescript':
         specifier: workspace:*
         version: link:../../tooling/typescript
@@ -1075,6 +1114,9 @@ importers:
       '@effect/vitest':
         specifier: 'catalog:'
         version: 4.0.0-beta.98(effect@4.0.0-beta.93)(vitest@3.2.7(@types/debug@4.1.13)(@types/node@22.20.0)(jiti@2.7.0)(jsdom@28.1.0(@noble/hashes@2.2.0))(lightningcss@1.33.0)(terser@5.51.2)(tsx@4.23.12)(yaml@2.9.0))
+      '@mend/test-ci':
+        specifier: workspace:*
+        version: link:../../tooling/test-ci
       '@mend/typescript':
         specifier: workspace:*
         version: link:../../tooling/typescript
@@ -1100,6 +1142,9 @@ importers:
       '@effect/vitest':
         specifier: 'catalog:'
         version: 4.0.0-beta.98(effect@4.0.0-beta.93)(vitest@3.2.7(@types/debug@4.1.13)(@types/node@22.20.0)(jiti@2.7.0)(jsdom@28.1.0(@noble/hashes@2.2.0))(lightningcss@1.33.0)(terser@5.51.2)(tsx@4.23.12)(yaml@2.9.0))
+      '@mend/test-ci':
+        specifier: workspace:*
+        version: link:../../tooling/test-ci
       '@mend/typescript':
         specifier: workspace:*
         version: link:../../tooling/typescript
@@ -1143,6 +1188,9 @@ importers:
       '@effect/vitest':
         specifier: 'catalog:'
         version: 4.0.0-beta.98(effect@4.0.0-beta.93)(vitest@3.2.7(@types/debug@4.1.13)(@types/node@22.20.0)(jiti@2.7.0)(jsdom@28.1.0(@noble/hashes@2.2.0))(lightningcss@1.33.0)(terser@5.51.2)(tsx@4.23.12)(yaml@2.9.0))
+      '@mend/test-ci':
+        specifier: workspace:*
+        version: link:../../tooling/test-ci
       '@mend/typescript':
         specifier: workspace:*
         version: link:../../tooling/typescript
@@ -1198,6 +1246,9 @@ importers:
       '@effect/vitest':
         specifier: 'catalog:'
         version: 4.0.0-beta.98(effect@4.0.0-beta.93)(vitest@3.2.7(@types/debug@4.1.13)(@types/node@22.20.0)(jiti@2.7.0)(jsdom@28.1.0(@noble/hashes@2.2.0))(lightningcss@1.33.0)(terser@5.51.2)(tsx@4.23.12)(yaml@2.9.0))
+      '@mend/test-ci':
+        specifier: workspace:*
+        version: link:../../tooling/test-ci
       '@mend/typescript':
         specifier: workspace:*
         version: link:../../tooling/typescript
@@ -1241,6 +1292,9 @@ importers:
       '@effect/vitest':
         specifier: 'catalog:'
         version: 4.0.0-beta.98(effect@4.0.0-beta.93)(vitest@3.2.7(@types/debug@4.1.13)(@types/node@22.20.0)(jiti@2.7.0)(jsdom@28.1.0(@noble/hashes@2.2.0))(lightningcss@1.33.0)(terser@5.51.2)(tsx@4.23.12)(yaml@2.9.0))
+      '@mend/test-ci':
+        specifier: workspace:*
+        version: link:../../tooling/test-ci
       '@mend/typescript':
         specifier: workspace:*
         version: link:../../tooling/typescript
@@ -1263,6 +1317,9 @@ importers:
       '@effect/vitest':
         specifier: 'catalog:'
         version: 4.0.0-beta.98(effect@4.0.0-beta.93)(vitest@3.2.7(@types/debug@4.1.13)(@types/node@24.13.2)(jiti@2.7.0)(jsdom@28.1.0(@noble/hashes@2.2.0))(lightningcss@1.33.0)(terser@5.51.2)(tsx@4.23.12)(yaml@2.9.0))
+      '@mend/test-ci':
+        specifier: workspace:*
+        version: link:../../tooling/test-ci
       '@mend/typescript':
         specifier: workspace:*
         version: link:../../tooling/typescript
@@ -1291,6 +1348,9 @@ importers:
       '@effect/vitest':
         specifier: 'catalog:'
         version: 4.0.0-beta.98(effect@4.0.0-beta.93)(vitest@3.2.7(@types/debug@4.1.13)(@types/node@22.20.0)(jiti@2.7.0)(jsdom@28.1.0(@noble/hashes@2.2.0))(lightningcss@1.33.0)(terser@5.51.2)(tsx@4.23.12)(yaml@2.9.0))
+      '@mend/test-ci':
+        specifier: workspace:*
+        version: link:../../tooling/test-ci
       '@mend/typescript':
         specifier: workspace:*
         version: link:../../tooling/typescript
@@ -1334,6 +1394,9 @@ importers:
       '@effect/vitest':
         specifier: 'catalog:'
         version: 4.0.0-beta.98(effect@4.0.0-beta.93)(vitest@3.2.7(@types/debug@4.1.13)(@types/node@22.20.0)(jiti@2.7.0)(jsdom@28.1.0(@noble/hashes@2.2.0))(lightningcss@1.33.0)(terser@5.51.2)(tsx@4.23.12)(yaml@2.9.0))
+      '@mend/test-ci':
+        specifier: workspace:*
+        version: link:../../tooling/test-ci
       '@mend/typescript':
         specifier: workspace:*
         version: link:../../tooling/typescript
@@ -1365,6 +1428,9 @@ importers:
         specifier: 'catalog:'
         version: 7.28.0
     devDependencies:
+      '@mend/test-ci':
+        specifier: workspace:*
+        version: link:../../tooling/test-ci
       '@mend/typescript':
         specifier: workspace:*
         version: link:../../tooling/typescript
@@ -1402,6 +1468,9 @@ importers:
       '@effect/vitest':
         specifier: 'catalog:'
         version: 4.0.0-beta.98(effect@4.0.0-beta.93)(vitest@3.2.7(@types/debug@4.1.13)(@types/node@22.20.0)(jiti@2.7.0)(jsdom@28.1.0(@noble/hashes@2.2.0))(lightningcss@1.33.0)(terser@5.51.2)(tsx@4.23.12)(yaml@2.9.0))
+      '@mend/test-ci':
+        specifier: workspace:*
+        version: link:../../tooling/test-ci
       '@mend/typescript':
         specifier: workspace:*
         version: link:../../tooling/typescript
@@ -1427,6 +1496,9 @@ importers:
       '@effect/vitest':
         specifier: catalog:t3
         version: 4.0.2(effect@4.0.2)(vitest@5.0.1(@types/node@22.20.0)(jsdom@28.1.0(@noble/hashes@2.2.0))(vite@8.2.2(@types/node@22.20.0)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.51.2)(tsx@4.23.12)(yaml@2.9.0)))
+      '@mend/test-ci':
+        specifier: workspace:*
+        version: link:../../tooling/test-ci
       '@types/node':
         specifier: 'catalog:'
         version: 22.20.0
@@ -1500,6 +1572,9 @@ importers:
 
   packages/workspace-ssh:
     devDependencies:
+      '@mend/test-ci':
+        specifier: workspace:*
+        version: link:../../tooling/test-ci
       '@mend/typescript':
         specifier: workspace:*
         version: link:../../tooling/typescript
@@ -1512,6 +1587,21 @@ importers:
       vitest:
         specifier: 'catalog:'
         version: 3.2.7(@types/debug@4.1.13)(@types/node@22.20.0)(jiti@2.7.0)(jsdom@28.1.0(@noble/hashes@2.2.0))(lightningcss@1.33.0)(terser@5.51.2)(tsx@4.23.12)(yaml@2.9.0)
+
+  tooling/test-ci:
+    devDependencies:
+      '@mend/typescript':
+        specifier: workspace:*
+        version: link:../typescript
+      '@types/node':
+        specifier: 'catalog:'
+        version: 22.20.0
+      vitest:
+        specifier: 'catalog:'
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.20.0)(jiti@2.7.0)(jsdom@28.1.0(@noble/hashes@2.2.0))(lightningcss@1.33.0)(terser@5.51.2)(tsx@4.23.12)(yaml@2.9.0)
+      vitest-v5:
+        specifier: catalog:t3
+        version: vitest@5.0.1(@types/node@22.20.0)(jsdom@28.1.0(@noble/hashes@2.2.0))(vite@8.2.2(@types/node@22.20.0)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.51.2)(tsx@4.23.12)(yaml@2.9.0))
 
   tooling/typescript: {}
 
