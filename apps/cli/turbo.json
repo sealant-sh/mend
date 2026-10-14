@@ -1,0 +1,15 @@
+{
+  "extends": ["//"],
+  "tasks": {
+    "test": {
+      "cache": false,
+      "inputs": [
+        "$TURBO_EXTENDS$",
+        "$TURBO_ROOT$/install.sh",
+        "$TURBO_ROOT$/Dockerfile",
+        "$TURBO_ROOT$/scripts/mend-migrations.mjs",
+        "$TURBO_ROOT$/packages/db/src/migrations.ts"
+      ]
+    }
+  }
+}

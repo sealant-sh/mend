@@ -164,8 +164,8 @@ test("required database and live-adapter evidence keeps its preparation and work
     ),
   );
   assert.ok(
-    commands("static").includes("pnpm exec turbo build --force"),
-    "fresh typechecks need generated route trees",
+    commands("static").includes("node scripts/ci-turbo.mjs build typecheck lint"),
+    "static tasks use the common affected/cache policy",
   );
 });
 
@@ -236,5 +236,35 @@ test("native commands keep ordinary assertion output beside the CI file guard", 
         name,
       );
     }
+  }
+});
+
+test("PRs have exact history and queue/nightly events retain the required full CI graph", () => {
+  assert.deepEqual(workflow.on.push.branches, ["main"]);
+  assert.ok(Object.hasOwn(workflow.on, "pull_request"));
+  assert.deepEqual(workflow.on.merge_group.types, ["checks_requested"]);
+  assert.deepEqual(workflow.on.schedule, [{ cron: "23 2 * * *" }]);
+  assert.equal(workflow.env.TURBO_SCM_BASE, "${{ github.event.pull_request.base.sha }}");
+  for (const name of ["static", "test-engines", "test-clients-a", "test-clients-b"]) {
+    assert.equal(
+      jobs[name].steps.find((step) => step.uses?.startsWith("actions/checkout@")).with[
+        "fetch-depth"
+      ],
+      0,
+    );
+    assert.ok(commands(name).includes('node scripts/ci-turbo.mjs configure >> "$GITHUB_ENV"'));
+  }
+  assert.match(
+    jobs.changes.steps.find((step) => step.id === "scope").run,
+    /else\s+node scripts\/ci-scope.mjs --all/,
+  );
+  for (const name of ["web", "marketing", "desktop"]) {
+    const config = JSON.parse(
+      readFileSync(new URL(`../apps/${name}/turbo.json`, import.meta.url), "utf8"),
+    );
+    assert.ok(
+      config.tasks.typecheck.dependsOn.includes("build"),
+      `${name} must restore generated routes before typechecking`,
+    );
   }
 });
