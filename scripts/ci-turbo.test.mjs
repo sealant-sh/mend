@@ -1,10 +1,20 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { execFile, spawnSync } from "node:child_process";
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 
 const command = fileURLToPath(new URL("ci-turbo.mjs", import.meta.url));
 const fixture = (t) => {
@@ -84,10 +94,11 @@ for (const runner of ["self-hosted", "github-hosted"]) {
       assert.equal(result.args.includes("--affected"), affected);
       assert.equal(result.args.includes("--force"), force);
       assert.ok(result.args.includes("--env-mode=strict"));
-      assert.ok(
+      assert.equal(
         result.args.includes(
           `--cache=local:rw${runner === "self-hosted" ? (writes ? ",remote:rw" : ",remote:r") : ""}`,
         ),
+        !force,
       );
     });
   }
@@ -113,4 +124,111 @@ test("the static wrapper preserves failure and refuses unknown tasks", (t) => {
     assert.equal(result.status, 1);
     assert.match(result.stderr, /Usage:/);
   }
+});
+
+// Run the wrapper through pnpm and the installed Turbo. An argv recorder cannot detect
+// flag combinations rejected by Turbo, nor prove that forced runs still upload artifacts.
+test("real Turbo nightly bypasses reads, executes twice and refreshes the remote cache", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "mend-nightly-turbo-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  mkdirSync(join(root, "node_modules/.bin"), { recursive: true });
+  symlinkSync(
+    fileURLToPath(new URL("../node_modules/turbo/bin/turbo", import.meta.url)),
+    join(root, "node_modules/.bin/turbo"),
+  );
+  mkdirSync(join(root, "packages/probe"), { recursive: true });
+  writeFileSync(
+    join(root, "package.json"),
+    JSON.stringify({ name: "nightly-proof", private: true, packageManager: "pnpm@10.32.1" }),
+  );
+  writeFileSync(join(root, "pnpm-workspace.yaml"), "packages:\n  - packages/*\n");
+  writeFileSync(
+    join(root, "pnpm-lock.yaml"),
+    "lockfileVersion: '9.0'\nimporters:\n  .: {}\n  packages/probe: {}\n",
+  );
+  writeFileSync(join(root, ".gitignore"), "node_modules/\n.turbo/\ndist/\n");
+  writeFileSync(
+    join(root, "turbo.json"),
+    JSON.stringify({ tasks: { lint: { outputs: ["dist/**"] } } }),
+  );
+  writeFileSync(
+    join(root, "packages/probe/package.json"),
+    JSON.stringify({ name: "probe", scripts: { lint: "node run.cjs" } }),
+  );
+  writeFileSync(
+    join(root, "packages/probe/run.cjs"),
+    "const fs=require('node:fs');fs.mkdirSync('.turbo',{recursive:true});fs.appendFileSync('.turbo/executions','run\\n');fs.mkdirSync('dist',{recursive:true});fs.writeFileSync('dist/result','artifact');\n",
+  );
+  const artifacts = new Map();
+  const requests = [];
+  const server = createServer(async (req, res) => {
+    if (req.url.startsWith("/v8/artifacts/status")) {
+      res
+        .writeHead(200, { "content-type": "application/json" })
+        .end(JSON.stringify({ status: "enabled" }));
+      return;
+    }
+    if (req.url.startsWith("/v8/artifacts/events")) {
+      res.writeHead(200).end();
+      return;
+    }
+    requests.push(req.method);
+    if (req.method === "PUT") {
+      const chunks = [];
+      for await (const chunk of req) chunks.push(chunk);
+      artifacts.set(req.url, Buffer.concat(chunks));
+      res.writeHead(200).end();
+    } else if (req.method === "GET" && artifacts.has(req.url)) {
+      res.writeHead(200).end(artifacts.get(req.url));
+    } else res.writeHead(404).end();
+  });
+  t.after(() => server.close());
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const env = {
+    PATH: process.env.PATH,
+    HOME: root,
+    CI: "true",
+    TURBO_TELEMETRY_DISABLED: "1",
+    RUNNER_ENVIRONMENT: "self-hosted",
+    GITHUB_EVENT_NAME: "schedule",
+    GITHUB_REF: "refs/heads/main",
+    TURBO_API: `http://127.0.0.1:${server.address().port}`,
+    TURBO_TEAM: "fixture",
+    TURBO_TOKEN: "fixture",
+  };
+  const run = (overrides = {}) =>
+    promisify(execFile)(process.execPath, [command, "lint"], {
+      cwd: root,
+      env: { ...env, ...overrides },
+      timeout: 15_000,
+    });
+  await run();
+  await run();
+  assert.deepEqual(
+    requests,
+    ["PUT", "PUT"],
+    "nightly refreshes artifacts without any remote reads",
+  );
+  assert.equal(readFileSync(join(root, "packages/probe/.turbo/executions"), "utf8"), "run\nrun\n");
+  rmSync(join(root, ".turbo/cache"), { recursive: true, force: true });
+  rmSync(join(root, "packages/probe/dist"), { recursive: true });
+  await run({ GITHUB_EVENT_NAME: "push" });
+  assert.deepEqual(requests, ["PUT", "PUT", "GET"]);
+  assert.equal(readFileSync(join(root, "packages/probe/dist/result"), "utf8"), "artifact");
+  assert.equal(
+    readFileSync(join(root, "packages/probe/.turbo/executions"), "utf8"),
+    "run\nrun\n",
+    "trusted push restores nightly artifact",
+  );
+  await run({
+    RUNNER_ENVIRONMENT: "github-hosted",
+    TURBO_API: "",
+    TURBO_TEAM: "",
+    TURBO_TOKEN: "",
+  });
+  assert.equal(requests.length, 3, "hosted nightly does not contact the remote cache");
+  assert.equal(
+    readFileSync(join(root, "packages/probe/.turbo/executions"), "utf8"),
+    "run\nrun\nrun\n",
+  );
 });

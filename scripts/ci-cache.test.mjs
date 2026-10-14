@@ -2,9 +2,11 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, relative } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+
+import { sourceReferences, testInputAudit } from "./ci-test-inputs.mjs";
 
 const repository = fileURLToPath(new URL("../", import.meta.url));
 const turbo = join(repository, "node_modules/turbo/bin/turbo");
@@ -188,6 +190,7 @@ test("real service test tasks cannot replay a cached integration verdict", () =>
     "apps/cli",
     "apps/desktop",
     "apps/t3-gateway",
+    "apps/vscode",
     "packages/auth",
     "packages/db",
     "packages/jobs",
@@ -203,4 +206,122 @@ test("real service test tasks cannot replay a cached integration verdict", () =>
     assert.equal(config.tasks.test.cache, false, path);
     assert.deepEqual(config.extends, ["//"], path);
   }
+});
+
+test("CLI installer, image and migration contracts hash their external inputs", (t) => {
+  const f = fixture(t);
+  f.write("install.sh", "# installer\n");
+  f.write("Dockerfile", "FROM node:26\n");
+  f.write("scripts/mend-migrations.mjs", "// migration reader\n");
+  f.write("packages/db/src/migrations.ts", "// migrations\n");
+  copyFileSync(
+    join(repository, "apps/cli/turbo.json"),
+    join(f.root, "packages/consumer/turbo.json"),
+  );
+  f.git("add", ".");
+  f.git(
+    "-c",
+    "user.name=Cache proof",
+    "-c",
+    "user.email=fixture@example.invalid",
+    "commit",
+    "-qm",
+    "CLI inputs",
+  );
+  const base = f.git("rev-parse", "HEAD");
+  const baseline = f
+    .dry(["test", "--filter=consumer"])
+    .tasks.find((task) => task.taskId === "consumer#test");
+  assert.equal(baseline.resolvedTaskDefinition.cache, false);
+  for (const file of [
+    "install.sh",
+    "Dockerfile",
+    "scripts/mend-migrations.mjs",
+    "packages/db/src/migrations.ts",
+  ]) {
+    const original = readFileSync(join(f.root, file), "utf8");
+    try {
+      f.write(file, original + "// changed input\n");
+      const result = f.dry(["test", "--affected", "--filter=consumer"], { TURBO_SCM_BASE: base });
+      const task = result.tasks.find((candidate) => candidate.taskId === "consumer#test");
+      assert.ok(task, `${file} must select CLI tests`);
+      assert.notEqual(task.hash, baseline.hash, file);
+    } finally {
+      f.write(file, original);
+    }
+  }
+  assert.ok(baseline.inputs["../../scripts/fixture.mjs"], "shared inputs remain inherited");
+});
+
+test("repository test reads are declared in resolved Turbo inputs and native consumers cannot cache", () => {
+  const files = execFileSync("git", ["ls-files", "--cached", "--others", "--exclude-standard"], {
+    cwd: repository,
+    encoding: "utf8",
+  })
+    .trim()
+    .split("\n");
+  const packages = files
+    .filter(
+      (file) =>
+        /^(?:apps|packages)\/[^/]+\/package.json$/.test(file) &&
+        JSON.parse(readFileSync(join(repository, file), "utf8")).scripts?.test,
+    )
+    .map((file) => dirname(file));
+  const resolved = JSON.parse(
+    execFileSync(process.execPath, [turbo, "run", "test", "--cache=local:rw", "--dry=json"], {
+      cwd: repository,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: 20_000,
+      maxBuffer: 20 * 1024 * 1024,
+    }),
+  );
+  const problems = [];
+  for (const entry of testInputAudit(repository, files, packages)) {
+    const task = resolved.tasks.find(
+      (candidate) => candidate.directory === entry.directory && candidate.task === "test",
+    );
+    assert.ok(task, entry.directory);
+    for (const [file, source] of Object.entries(entry.references)) {
+      const key = relative(join(repository, entry.directory), join(repository, file));
+      if (!(key in task.inputs) && !(file in resolved.globalCacheInputs.files))
+        problems.push(`${source} reads ${file}, missing from ${task.taskId} inputs`);
+    }
+    if (Object.keys(entry.binaries).length && task.resolvedTaskDefinition.cache !== false) {
+      problems.push(
+        `${task.taskId} runs native binaries ${JSON.stringify(entry.binaries)} but permits cached results`,
+      );
+    }
+  }
+  assert.deepEqual(problems, []);
+});
+
+test("input audit resolves root paths through URL, dirname, cwd, constants and templates", () => {
+  const result = sourceReferences(
+    `
+    const root = path.join(import.meta.dirname, "..", "..", "..");
+    readFileSync(path.join(root, "install.sh"));
+    readFileSync(new URL("../../../Dockerfile", import.meta.url));
+    readFileSync(path.join(process.cwd(), "../../packages/db/src/migrations.ts"));
+    readFileSync(new URL(\`../../../deploy/docker/\${name}\`, import.meta.url));
+    const here = fileURLToPath(import.meta.url);
+    readFileSync(path.resolve(path.dirname(here), "../../../.oxlintrc.json"));
+    readFileSync("../../.npmrc");
+    spawnSync("ssh", ["-G"]);
+    spawnSync(process.execPath, ["fixture.mjs"]);
+  `,
+    "/repo/apps/cli/src/example.test.ts",
+    "/repo/apps/cli",
+  );
+  for (const file of [
+    "install.sh",
+    "Dockerfile",
+    "packages/db/src/migrations.ts",
+    "deploy/docker/*",
+    ".oxlintrc.json",
+    ".npmrc",
+  ]) {
+    assert.ok(result.paths.includes(`/repo/${file}`), file);
+  }
+  assert.deepEqual(result.binaries, ["ssh"]);
 });

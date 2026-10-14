@@ -15,13 +15,17 @@ export const ciTurboOptions = (env) => {
     (env.GITHUB_EVENT_NAME === "merge_group" &&
       env.GITHUB_REF?.startsWith("refs/heads/gh-readonly-queue/main/"));
   const remote = env.RUNNER_ENVIRONMENT === "self-hosted";
+  const force = env.GITHUB_EVENT_NAME === "schedule" && trusted;
   return {
     _tag: "ok",
     args: [
       "--env-mode=strict",
-      `--cache=local:rw${remote ? (trusted ? ",remote:rw" : ",remote:r") : ""}`,
+      // Turbo rejects --force together with --cache. Forced runs use its default
+      // write-through caches; only box jobs configure a remote endpoint.
+      ...(force
+        ? ["--force"]
+        : [`--cache=local:rw${remote ? (trusted ? ",remote:rw" : ",remote:r") : ""}`]),
       ...(affected ? ["--affected"] : []),
-      ...(env.GITHUB_EVENT_NAME === "schedule" && trusted ? ["--force"] : []),
       "--summarize",
     ],
   };
