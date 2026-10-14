@@ -4,7 +4,7 @@ import * as path from "node:path";
 import { pipeline } from "node:stream/promises";
 
 import { Sha } from "@mend/domain";
-import { Effect, Layer, Schema, Semaphore } from "effect";
+import { Clock, Effect, Layer, Schema, Semaphore } from "effect";
 import * as Context from "effect/Context";
 
 import { type BlobNotFoundError, BlobStore, type BlobStoreError } from "./blob-store.ts";
@@ -411,7 +411,7 @@ export const GitOpsRunnerLive: Layer.Layer<GitOpsRunner, never, Store | StoreCon
           const attempt = Effect.gen(function* () {
             yield* cacheIo(projectId, () => fs.mkdirSync(staging, { recursive: true }));
             // When the read began: what a proof about these bytes is dated from.
-            const readAtMs = Date.now();
+            const readAtMs = yield* Clock.currentTimeMillis;
             const stream = yield* blobs.getStream(key);
             const hash = crypto.createHash("sha256");
             // A download that did not finish — the stream broke, the disk filled — is the

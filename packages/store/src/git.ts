@@ -333,83 +333,90 @@ export const gitCapped = (
   maxBytes: number,
   deadlineMs?: number,
 ): Effect.Effect<CappedOutput, GitError> =>
-  Effect.callback<CappedOutput, GitError>((resume) => {
-    const chunks: Array<Buffer> = [];
-    let kept = 0;
+  Effect.suspend(() => {
     let cut = false;
-    let stderr = Buffer.alloc(0);
-    let settled = false;
-    const settle = (effect: Effect.Effect<CappedOutput, GitError>) => {
-      if (settled) return;
-      settled = true;
-      resume(effect);
-    };
-    const child = spawn("git", [...args], {
-      cwd,
-      env: gitProcessEnv(undefined),
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    const deadline =
-      deadlineMs === undefined
-        ? undefined
-        : setTimeout(() => {
-            cut = true;
-            child.kill();
-          }, deadlineMs);
-    child.stdout.on("data", (chunk: Buffer) => {
-      if (cut) return;
-      const room = maxBytes - kept;
-      if (chunk.length > room) {
-        chunks.push(chunk.subarray(0, room));
-        kept = maxBytes;
+    // Set once git runs: the deadline stops it, and what it printed so far answers, cut.
+    let stop: (() => void) | undefined;
+    const capped = Effect.callback<CappedOutput, GitError>((resume) => {
+      const chunks: Array<Buffer> = [];
+      let kept = 0;
+      let stderr = Buffer.alloc(0);
+      let settled = false;
+      const settle = (effect: Effect.Effect<CappedOutput, GitError>) => {
+        if (settled) return;
+        settled = true;
+        resume(effect);
+      };
+      const child = spawn("git", [...args], {
+        cwd,
+        env: gitProcessEnv(undefined),
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      stop = () => {
         cut = true;
         child.kill();
-        return;
-      }
-      chunks.push(chunk);
-      kept += chunk.length;
-    });
-    child.stderr.on("data", (chunk: Buffer) => {
-      const joined = Buffer.concat([stderr, chunk]);
-      stderr = joined.subarray(Math.max(0, joined.length - QUIET_STDERR_BYTES));
-    });
-    child.on("error", (error: NodeJS.ErrnoException) =>
-      settle(
-        Effect.fail(
-          new GitError({
-            args: [...args],
-            cwd,
-            exitCode: null,
-            stderr: error.message,
-            ...(typeof error.code === "string" ? { code: error.code } : {}),
-          }),
-        ),
-      ),
-    );
-    child.on("close", (exitCode, signal) => {
-      if (deadline !== undefined) clearTimeout(deadline);
-      const stdout = Buffer.concat(chunks).toString("utf8");
-      if (cut) {
-        settle(Effect.succeed({ stdout, cut: true }));
-        return;
-      }
-      if (exitCode === 0) {
-        settle(Effect.succeed({ stdout: stdout.replace(/\n$/, ""), cut: false }));
-        return;
-      }
-      settle(
-        Effect.fail(
-          new GitError({
-            args: [...args],
-            cwd,
-            exitCode,
-            stderr: stderr.toString("utf8").trim(),
-            ...(signal === null ? {} : { signal }),
-          }),
+      };
+      child.stdout.on("data", (chunk: Buffer) => {
+        if (cut) return;
+        const room = maxBytes - kept;
+        if (chunk.length > room) {
+          chunks.push(chunk.subarray(0, room));
+          kept = maxBytes;
+          cut = true;
+          child.kill();
+          return;
+        }
+        chunks.push(chunk);
+        kept += chunk.length;
+      });
+      child.stderr.on("data", (chunk: Buffer) => {
+        const joined = Buffer.concat([stderr, chunk]);
+        stderr = joined.subarray(Math.max(0, joined.length - QUIET_STDERR_BYTES));
+      });
+      child.on("error", (error: NodeJS.ErrnoException) =>
+        settle(
+          Effect.fail(
+            new GitError({
+              args: [...args],
+              cwd,
+              exitCode: null,
+              stderr: error.message,
+              ...(typeof error.code === "string" ? { code: error.code } : {}),
+            }),
+          ),
         ),
       );
+      child.on("close", (exitCode, signal) => {
+        const stdout = Buffer.concat(chunks).toString("utf8");
+        if (cut) {
+          settle(Effect.succeed({ stdout, cut: true }));
+          return;
+        }
+        if (exitCode === 0) {
+          settle(Effect.succeed({ stdout: stdout.replace(/\n$/, ""), cut: false }));
+          return;
+        }
+        settle(
+          Effect.fail(
+            new GitError({
+              args: [...args],
+              cwd,
+              exitCode,
+              stderr: stderr.toString("utf8").trim(),
+              ...(signal === null ? {} : { signal }),
+            }),
+          ),
+        );
+      });
+      return Effect.sync(() => child.kill());
     });
-    return Effect.sync(() => child.kill());
+    if (deadlineMs === undefined) return capped;
+    return Effect.sleep(deadlineMs).pipe(
+      Effect.andThen(Effect.sync(() => stop?.())),
+      Effect.forkScoped,
+      Effect.andThen(capped),
+      Effect.scoped,
+    );
   });
 
 export const gitQuiet = (

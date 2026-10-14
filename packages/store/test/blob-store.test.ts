@@ -775,13 +775,15 @@ const signedHeadersOf = (url: string) =>
   (new URL(url).searchParams.get("X-Amz-SignedHeaders") ?? "").split(";");
 
 describe("upload length binding (docs/adr/0003, multi mode gate)", () => {
-  const store = makeS3BlobStore({
-    bucket: "captures",
-    endpoint: "https://s3.example.invalid",
-    region: "us-east-1",
-    forcePathStyle: true,
-    credentials: { accessKeyId: "AKIDEXAMPLE", secretAccessKey: "secret" },
-  });
+  const store = Effect.runSync(
+    makeS3BlobStore({
+      bucket: "captures",
+      endpoint: "https://s3.example.invalid",
+      region: "us-east-1",
+      forcePathStyle: true,
+      credentials: { accessKeyId: "AKIDEXAMPLE", secretAccessKey: "secret" },
+    }),
+  );
 
   it("signs a declared size into PUT and part URLs, and leaves others unbound", async () => {
     const [bound, unbound, part] = await Effect.runPromise(
