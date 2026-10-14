@@ -3,10 +3,10 @@
 PR test lanes and static checks use Turbo's `--affected`, with the PR base SHA in `TURBO_SCM_BASE`
 and complete Git history. Turbo 2.10.3 is locked in `pnpm-lock.yaml`. `affectedUsingTaskInputs` and
 `filterUsingTasks` include out-of-package inputs in selection and intersect the result with each
-existing lane's filters. Merge groups select the full graph. The nightly run at 02:23 UTC also
-passes `--force`, which disables reads and still refreshes the remote cache. Packaging, image and
-mobile job path filters retain their existing behavior. Required standalone S3, shell and CI
-regression checks remain.
+existing lane's filters. Main pushes and merge groups select the full graph. The nightly run at
+02:23 UTC also passes `--force`, which disables reads and still refreshes the remote cache.
+Packaging, image and mobile job path filters retain their existing behavior. Required standalone S3,
+shell and CI regression checks remain.
 
 The `checks` job requires all three test lanes and static checks to succeed, including when a lane
 has no affected tasks. Classification failures cannot turn missing evidence into success. The merge
@@ -19,8 +19,8 @@ contract and unresolved administrator-bypass policy are in [merge-queue.md](merg
 `scripts/ci-turbo.mjs configure` records the executing Node version, OS and architecture as
 `MEND_CI_RUNTIME`. On self-hosted runners only, it also configures the box proxy at
 `http://10.0.1.1:8941`, team `mend`, token `box`. That token is a non-secret placeholder. PR
-commands use `--cache=local:rw,remote:r`. Scheduled main runs and the main merge queue use
-`local:rw,remote:rw`, except scheduled runs use `--force` alone. Turbo 2.10.3 rejects `--force`
+commands use `--cache=local:rw,remote:r`. Main pushes, scheduled main runs and the main merge queue
+use `local:rw,remote:rw`, except scheduled runs use `--force` alone. Turbo 2.10.3 rejects `--force`
 together with `--cache`; its forced default still writes artifacts. Hosted runners use `local:rw`,
 or `--force` alone on schedule, and receive no remote endpoint. The proxy independently enforces
 write authorization. A write refused before its job poll catches up is handled by Turbo as a cache
@@ -145,10 +145,10 @@ outside these 25 Turbo test tasks.
 the repository's real root configuration. It fills a local cache, restores a deleted build artifact,
 proves misses for shared inputs and environment changes, proves source-only dependency propagation,
 and checks that affected selection intersects lanes. Restoring inputs restores cache hits.
-`scripts/ci-turbo.test.mjs` executes the actual command wrapper across PR, merge-group, nightly and
-untrusted event/ref combinations for both runner types. Its nightly regression uses the real
-pnpm/Turbo binaries and a loopback cache server: two forced runs execute twice and upload twice
-without artifact reads; a subsequent merge-group run restores that remote artifact. A hosted forced
+`scripts/ci-turbo.test.mjs` executes the actual command wrapper across PR, main, nightly,
+merge-group and untrusted event/ref combinations for both runner types. Its nightly regression uses
+the real pnpm/Turbo binaries and a loopback cache server: two forced runs execute twice and upload
+twice without artifact reads; a subsequent main push restores that remote artifact. A hosted forced
 run makes no artifact request.
 
 Scratch-branch proofs against the full repository passed at `1b321cf17`: 16 input/environment

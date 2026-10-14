@@ -67,7 +67,7 @@ for (const runner of ["self-hosted", "github-hosted"]) {
 
   for (const [event, ref, affected, force, writes] of [
     ["pull_request", "refs/pull/979/merge", true, false, false],
-    ["push", "refs/heads/main", false, false, false],
+    ["push", "refs/heads/main", false, false, true],
     ["merge_group", "refs/heads/gh-readonly-queue/main/pr-1-abcd", false, false, true],
     ["schedule", "refs/heads/main", false, true, true],
     ["push", "refs/heads/feature", false, false, false],
@@ -212,10 +212,7 @@ test("real Turbo nightly bypasses reads, executes twice and refreshes the remote
   assert.equal(readFileSync(join(root, "packages/probe/.turbo/executions"), "utf8"), "run\nrun\n");
   rmSync(join(root, ".turbo/cache"), { recursive: true, force: true });
   rmSync(join(root, "packages/probe/dist"), { recursive: true });
-  await run({
-    GITHUB_EVENT_NAME: "merge_group",
-    GITHUB_REF: "refs/heads/gh-readonly-queue/main/pr-1-abcd",
-  });
+  await run({ GITHUB_EVENT_NAME: "push" });
   assert.deepEqual(requests, ["PUT", "PUT", "GET"]);
   assert.equal(readFileSync(join(root, "packages/probe/dist/result"), "utf8"), "artifact");
   assert.equal(

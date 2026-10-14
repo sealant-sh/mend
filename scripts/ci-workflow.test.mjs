@@ -243,7 +243,7 @@ test("native commands keep ordinary assertion output beside the CI file guard", 
 });
 
 test("PRs have exact history and queue, manual and nightly events retain the full CI graph", () => {
-  assert.equal(workflow.on.push, undefined, "the queue replaces duplicate post-merge CI");
+  assert.deepEqual(workflow.on.push.branches, ["main"]);
   assert.ok(Object.hasOwn(workflow.on, "pull_request"));
   assert.deepEqual(workflow.on.merge_group.types, ["checks_requested"]);
   assert.ok(Object.hasOwn(workflow.on, "workflow_dispatch"));

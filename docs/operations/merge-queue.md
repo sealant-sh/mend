@@ -3,7 +3,8 @@
 Mend's required CI workflow supports `pull_request`, `merge_group: checks_requested`, manual
 dispatch and the nightly schedule. Pull requests use affected Turbo tasks. Merge groups run the full
 graph, then the `checks` job rejects any missing, skipped, cancelled or failed required lane. The
-queue run replaces the old duplicate full CI run after a commit reached `main`.
+post-merge main run remains while direct merges are possible, so main changes are still tested and
+continue refreshing the trusted cache.
 
 The workflow change does not activate or edit repository policy. The CI orchestrator owns ruleset
 `20201151` (`protect-main`) and must apply its merge-queue changes after this pull request lands.
@@ -28,6 +29,10 @@ rule for `main`:
   by itself before it reaches `main`.
 - Set bypass actors to the owner's decision. Do not infer a policy from an empty current list.
 - Keep the ruleset active and targeted at `~DEFAULT_BRANCH`.
+
+Keep the `push: main` CI trigger during activation. Remove that duplicate full run only in a later
+change, after a real merge-group run has proved its cache writes and the decided bypass policy no
+longer leaves an untested route into `main`.
 
 Do not enable only the required status check while leaving a direct path to `main`. Apply the pull
 request, queue and required-check rules together. The queue should admit a pull request only after
@@ -59,6 +64,8 @@ ordinary CI check on head `1e867ddd1c5c9a076f8d00caae80bbea5d580ff0`. The separa
 release acceptance run `38607378387` succeeded, so packaged acceptance is not the current blocker.
 
 `version.yml` already dispatched packaged release acceptance. It now dispatches ordinary `ci.yml` on
-the same Version branch too. The default-branch workflow definition runs the full CI graph at that
-branch head and attaches the required `checks` result without approving the stopped automatic run. A
-subsequent push to `main` lets Changesets update the existing Version PR and issue both dispatches.
+the same Version branch too. GitHub resolves the named ref to the Version branch's current head and
+attaches the required `checks` result to that SHA. `workflow_dispatch` is not a trusted cache
+writer, so the self-hosted jobs use `remote:r` while running the full graph. This neither approves
+nor reruns the stopped automatic run. A subsequent push to `main` lets Changesets update the
+existing Version PR and issue both dispatches; this change does not touch #455 itself.
