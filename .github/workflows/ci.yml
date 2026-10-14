@@ -40,9 +40,44 @@ jobs:
             node scripts/ci-scope.mjs --all >> "$GITHUB_OUTPUT"
           fi
 
-  checks:
+  static:
     needs: changes
-    # An unavailable path classification must not suppress required test evidence.
+    if: ${{ !cancelled() }}
+    runs-on: [self-hosted, box, linux, x64]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Verify CI selection and required results
+        run: node --test scripts/ci-scope.test.mjs scripts/ci-workflow.test.mjs
+      - name: Verify timing analysis against source budgets
+        run: node --test scripts/ci-timings.test.mjs
+      - run: node scripts/ci-shards.mjs --check
+      # Every install reads the committed lockfile, so a package published after the commit (a
+      # Sealant prerelease included) never drifts in. The brackets keep this step from matching
+      # itself.
+      - name: Installs stay bound to the lockfile
+        run: |
+          if git grep -nE 'lockfile[=]false|PNPM_CONFIG_LOCKFIL[E]|no-frozen-lockfil[e]' -- \
+            .github Dockerfile 'apps/*/Dockerfile' 'scripts/*.sh' 'tooling/**'; then
+            echo "::error::Install with --frozen-lockfile, not without the lockfile."
+            exit 1
+          fi
+      # The current build cache omits generated route trees. A real build prepares
+      # this job's typecheck inputs; test jobs prepare their own inputs independently.
+      - run: pnpm exec turbo build --force
+      - run: pnpm typecheck
+      - run: pnpm lint
+      - run: pnpm format:check
+      # This was unconditional in checks, so it remains independent of packaging scope.
+      - run: helm lint deploy/helm/mend -f deploy/helm/mend/ci/obc-values.yaml
+
+  test-engines:
+    needs: changes
     if: ${{ !cancelled() }}
     runs-on: [self-hosted, box, linux, x64]
     services:
@@ -59,6 +94,82 @@ jobs:
           --health-retries 10
     env:
       MEND_TEST_DATABASE_URL: postgres://mend:mend@localhost:5432/mend
+      # Bound both levels on an 8-vCPU / 7-GiB runner, including its Postgres.
+      # The shard runner permits two packages; Vitest 3 and 5 each get three workers.
+      VITEST_MAX_THREADS: "3"
+      VITEST_MAX_FORKS: "3"
+      VITEST_MAX_WORKERS: "3"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Build isolated zsh fixture for default shell-profile tests
+        run:
+          docker build -t mend-shell-profile-test:alpine-3.22
+          packages/sessions/test/fixtures/shell-profile
+      - name: Tests including required PostgreSQL repositories, migrations and jobs
+        run: node scripts/ci-shards.mjs engines
+
+  test-clients-a:
+    needs: changes
+    if: ${{ !cancelled() }}
+    runs-on: [self-hosted, box, linux, x64]
+    env:
+      VITEST_MAX_THREADS: "3"
+      VITEST_MAX_FORKS: "3"
+      VITEST_MAX_WORKERS: "3"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # Desktop's font-browser regression launches Chromium unconditionally in this job.
+      - name: Install Chromium for desktop browser tests
+        run:
+          pnpm --filter @mend/mobile exec playwright-core install --with-deps --only-shell chromium
+      # The old checks build copied this tracked installer before marketing tests.
+      - name: Prepare the marketing installer in this checkout
+        run: node apps/marketing/scripts/sync-install-script.mjs
+      - name: CLI, client and shared-library tests
+        run: node scripts/ci-shards.mjs clients-a
+      - name: AWS shell regression tests with local command fixtures
+        run: pnpm run test:aws-shell
+      - name: Live S3 contracts on disposable Garage and strict MinIO fixtures
+        run: pnpm run test:s3-contract
+      - name: CI shard process supervision regressions
+        run: node --test scripts/ci-shards.test.mjs
+
+  test-clients-b:
+    needs: changes
+    if: ${{ !cancelled() }}
+    runs-on: [self-hosted, box, linux, x64]
+    env:
+      VITEST_MAX_THREADS: "3"
+      VITEST_MAX_FORKS: "3"
+      VITEST_MAX_WORKERS: "3"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: CLI, client and shared-library tests
+        run: node scripts/ci-shards.mjs clients-b
+
+  packaging:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.packaging != 'false' }}
+    runs-on: [self-hosted, box, linux, x64]
+    env:
       MEND_VERIFY_PLAYWRIGHT: ${{ github.workspace }}/apps/mobile
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -68,8 +179,6 @@ jobs:
           node-version-file: .node-version
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - name: Verify timing analysis against source budgets
-        run: node --test scripts/ci-timings.test.mjs
       - name: Install OpenTofu for evaluated offline AWS gate tests
         uses: opentofu/setup-opentofu@9d84900f3238fab8cd84ce47d658d25dd008be2f # v1
         with:
@@ -79,50 +188,20 @@ jobs:
         run: |
           image=$(node --input-type=module -e 'import {readFileSync} from "node:fs"; const image = readFileSync("deploy/docker/compose.edge.yaml", "utf8").match(/^\s+image: (caddy:\S+)$/m)?.[1]; if (!image) throw new Error("Missing Caddy image"); console.log(image);')
           docker pull "$image"
-      - name: Build isolated zsh fixture for default shell-profile tests
-        run:
-          docker build -t mend-shell-profile-test:alpine-3.22
-          packages/sessions/test/fixtures/shell-profile
       # Leak-evidence tests must exercise Chromium instead of skipping for a missing browser.
       # Reuse the workspace's locked Playwright version, as the mobile-web job does.
       - name: Install Chromium for verification evidence tests
         run:
           pnpm --filter @mend/mobile exec playwright-core install --with-deps --only-shell chromium
-      # Every install reads the committed lockfile, so a package published after the commit (a
-      # Sealant prerelease included) never drifts in. The brackets keep this step from matching
-      # itself.
-      - name: Installs stay bound to the lockfile
+      - name: Require the packaging tools and Docker daemon
         run: |
-          if git grep -nE 'lockfile[=]false|PNPM_CONFIG_LOCKFIL[E]|no-frozen-lockfil[e]' -- \
-            .github Dockerfile 'apps/*/Dockerfile' 'scripts/*.sh' 'tooling/**'; then
-            echo "::error::Install with --frozen-lockfile, not without the lockfile."
-            exit 1
-          fi
-      # Build first: the vite builds generate the gitignored routeTree.gen.ts
-      # files that typecheck needs — CI was red for weeks on exactly this.
-      - run: pnpm build
-      - run: pnpm typecheck
-      - run: pnpm lint
-      - run: pnpm format:check
-      # PostgreSQL suites create their own databases. Never reuse a cached local skipped run.
-      - name: Tests including required PostgreSQL repositories, migrations and jobs
-        # The 8-vCPU / 7-GiB runner hosts Postgres as well. Bound both levels: two
-        # package tasks with at most three Vitest workers each, rather than each
-        # package allocating a pool from the full machine's CPU count.
-        env:
-          # Vitest 3 uses pool-specific controls; Vitest 5 uses MAX_WORKERS.
-          VITEST_MAX_THREADS: "3"
-          VITEST_MAX_FORKS: "3"
-          VITEST_MAX_WORKERS: "3"
-        run: pnpm exec turbo test --force --concurrency=2
-      - name: AWS shell regression tests with local command fixtures
-        run: pnpm run test:aws-shell
-      - name: Live S3 contracts on disposable Garage and strict MinIO fixtures
-        run: pnpm run test:s3-contract
+          docker info > /dev/null
+          docker compose version
+          helm version --short
+          tofu version
       - name:
           Check packaging contracts, supervision, acceptance helpers, the mirrors, and the Helm
           chart
-        if: ${{ needs.changes.outputs.packaging != 'false' }}
         run:
           node --test scripts/bundle-packaging.test.mjs scripts/process-supervisor.test.mjs
           scripts/check-packaged-server.test.mjs scripts/release-publication.test.mjs
@@ -138,7 +217,6 @@ jobs:
           .claude/skills/verify/scripts/slots.test.mjs .claude/skills/verify/scripts/guard.test.mjs
           .claude/skills/verify/scripts/secrets.test.mjs
           .claude/skills/verify/scripts/local-outer.test.mjs
-      - run: helm lint deploy/helm/mend -f deploy/helm/mend/ci/obc-values.yaml
 
   # The phone app's web build is what verification runs drive. It must bundle, render statically,
   # and load in a browser from both the export and the dev server (apps/mobile/scripts/check-web.mjs).
@@ -157,3 +235,38 @@ jobs:
       - run:
           pnpm --filter @mend/mobile exec playwright-core install --with-deps --only-shell chromium
       - run: pnpm --filter @mend/mobile check:web
+
+  # Retain the required check name. A missing classifier or skipped required job
+  # must fail, even when every job that did run passed.
+  checks:
+    needs: [changes, static, test-engines, test-clients-a, test-clients-b, packaging, mobile-web]
+    if: ${{ !cancelled() }}
+    runs-on: [self-hosted, box, linux, x64]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .node-version
+      - name: Require every selected CI job
+        env:
+          CI_JOB_RESULTS: ${{ toJSON(needs) }}
+        run: |
+          node --input-type=module <<'NODE'
+          const jobs = JSON.parse(process.env.CI_JOB_RESULTS);
+          for (const name of ["changes", "static", "test-engines", "test-clients-a", "test-clients-b"]) {
+            if (jobs[name]?.result !== "success") {
+              throw new Error(`${name} must succeed, observed ${jobs[name]?.result ?? "missing"}`);
+            }
+          }
+          for (const [name, output] of [["packaging", "packaging"], ["mobile-web", "mobile"]]) {
+            const selected = jobs.changes.outputs?.[output];
+            if (selected !== "true" && selected !== "false") {
+              throw new Error(`Missing or invalid ${output} selection: ${selected}`);
+            }
+            const result = jobs[name]?.result;
+            if (result !== "success" && !(selected === "false" && result === "skipped")) {
+              throw new Error(`${name} was selected=${selected}, observed ${result ?? "missing"}`);
+            }
+          }
+          console.log("All required CI jobs passed.");
+          NODE
