@@ -1,12 +1,12 @@
 # CI task selection and cache inputs
 
 PR test lanes and static checks use Turbo's `--affected`, with the PR base SHA in `TURBO_SCM_BASE`
-and complete Git history. Turbo 2.10.3 is locked in `pnpm-lock.yaml`. `affectedUsingTaskInputs` and
-`filterUsingTasks` include out-of-package inputs in selection and intersect the result with each
-existing lane's filters. Main pushes and merge groups select the full graph. The nightly run at
-02:23 UTC also passes `--force`, which disables reads and still refreshes the remote cache.
-Packaging, image and mobile job path filters retain their existing behavior. Required standalone S3,
-shell and CI regression checks remain.
+and complete local Git history. Turbo 2.10.3 is locked in `pnpm-lock.yaml`.
+`affectedUsingTaskInputs` and `filterUsingTasks` include out-of-package inputs in selection and
+intersect the result with each existing lane's filters. Main pushes and merge groups select the full
+graph. The nightly run at 02:23 UTC also passes `--force`, which disables reads and still refreshes
+the remote cache. Packaging, image and mobile job path filters retain their existing behavior.
+Required standalone S3, shell and CI regression checks remain.
 
 The `checks` job requires all three test lanes and static checks to succeed, including when a lane
 has no affected tasks. Classification failures cannot turn missing evidence into success. The merge
