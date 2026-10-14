@@ -3,9 +3,8 @@ import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { describe, expect, it } from "@effect/vitest";
+import { describe, expect, it, TestClock } from "@mend/test-ci/effect-vitest";
 import { Effect, Layer } from "effect";
-import { TestClock } from "effect/testing";
 
 import { AgentBridge, AgentBridgeLive } from "../src/agent-bridge.ts";
 import { MendKeysConfig } from "../src/git-auth.ts";

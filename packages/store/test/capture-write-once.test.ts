@@ -2,9 +2,8 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { it as effectIt } from "@effect/vitest";
+import { it as effectIt, TestClock } from "@mend/test-ci/effect-vitest";
 import { Deferred, Effect, Exit, Fiber, Layer } from "effect";
-import { TestClock } from "effect/testing";
 import { afterAll, describe, expect, it } from "vitest";
 
 import { BlobStore, BlobStoreFsLive } from "../src/blob-store.ts";

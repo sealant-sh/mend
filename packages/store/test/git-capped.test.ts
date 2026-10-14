@@ -3,9 +3,8 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { describe, expect, it } from "@effect/vitest";
+import { describe, expect, it, TestClock } from "@mend/test-ci/effect-vitest";
 import { Effect, Fiber } from "effect";
-import { TestClock } from "effect/testing";
 
 import { gitCapped } from "../src/git.ts";
 

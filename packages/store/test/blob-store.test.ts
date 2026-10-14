@@ -4,9 +4,8 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { Readable } from "node:stream";
 
-import { it as effectIt } from "@effect/vitest";
+import { it as effectIt, TestClock } from "@mend/test-ci/effect-vitest";
 import { Effect, Exit, Layer } from "effect";
-import { TestClock } from "effect/testing";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import {

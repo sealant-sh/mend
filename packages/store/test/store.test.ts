@@ -5,7 +5,7 @@ import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { describe, expect, it } from "@effect/vitest";
+import { describe, expect, it } from "@mend/test-ci/effect-vitest";
 import { SessionId } from "@mend/domain";
 import {
   RepositoryCloneUrl,

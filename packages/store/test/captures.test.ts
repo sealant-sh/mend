@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { it as effectIt } from "@effect/vitest";
+import { it as effectIt } from "@mend/test-ci/effect-vitest";
 import { Effect } from "effect";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
