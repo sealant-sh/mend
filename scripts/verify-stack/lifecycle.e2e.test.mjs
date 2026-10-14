@@ -31,6 +31,7 @@ import { CLAIM_LABEL } from "./lifecycle.mjs";
 
 const stack = fileURLToPath(new URL("stack.mjs", import.meta.url));
 const fake = fileURLToPath(new URL("fixtures/fake-docker.mjs", import.meta.url));
+const watchdogClock = new URL("fixtures/watchdog-clock.mjs", import.meta.url).href;
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
 const pinned = ["--no-check", "--sealant", "pinned", "--sealantd", "pinned"];
 
@@ -85,7 +86,8 @@ function daemon({
   files = {},
   cache = null,
   failLookups = 0,
-  createDelayMs = 0,
+  pauseCreate = false,
+  clock = false,
   build = "fail",
   orchestration = null,
 } = {}) {
@@ -107,6 +109,8 @@ function daemon({
   );
   const file = (name) => join(root, name);
   writeFileSync(file("fail-lookups"), String(failLookups));
+  if (pauseCreate) writeFileSync(file("pause-create"), "1");
+  if (build === "hang") writeFileSync(file("pause-build"), "1");
   const bin = file("bin");
   mkdirSync(bin);
   writeFileSync(
@@ -117,8 +121,9 @@ function daemon({
       "if [ -e /proc/$$/fd/9 ]; then export FAKE_DOCKER_LOCK=1; else export FAKE_DOCKER_LOCK=0; fi",
       `export FAKE_DOCKER_STATE='${state}'`,
       `export FAKE_DOCKER_FAIL_LOOKUPS='${file("fail-lookups")}'`,
-      `export FAKE_DOCKER_CREATE_DELAY_MS='${createDelayMs}'`,
+      `export FAKE_DOCKER_PAUSE_CREATE='${file("pause-create")}'`,
       `export FAKE_DOCKER_CREATING='${file("creating")}'`,
+      `export FAKE_DOCKER_PAUSE_BUILD='${file("pause-build")}'`,
       `export FAKE_DOCKER_PAUSE_LIST='${file("pause-list")}'`,
       `export FAKE_DOCKER_PAUSE_RM='${file("pause-rm")}'`,
       `export FAKE_DOCKER_FAIL_RM='${file("fail-rm")}'`,
@@ -136,6 +141,28 @@ function daemon({
     PATH: `${bin}:${process.env.PATH}`,
     HOME: file("home"),
     MEND_VERIFY_STACK_CACHE: cache ?? file("cache"),
+    ...(clock
+      ? { NODE_OPTIONS: `--import=${watchdogClock}`, MEND_VERIFY_STACK_TEST_CLOCK: root }
+      : {}),
+  };
+  let sequence = 0;
+  let clockTime = 0;
+  const advanceClock = async (elapsedMs) => {
+    assert.equal(clock, true, "this daemon must opt into the watchdog clock");
+    sequence += 1;
+    clockTime += elapsedMs;
+    writeFileSync(file("request.json.next"), JSON.stringify({ sequence, elapsedMs }));
+    renameSync(file("request.json.next"), file("request.json"));
+    const acknowledgment = await until(
+      "the watchdog clock acknowledgment",
+      () => {
+        if (!existsSync(file("acknowledgment.json"))) return false;
+        const value = JSON.parse(readFileSync(file("acknowledgment.json"), "utf8"));
+        return value.sequence === sequence ? value : false;
+      },
+      10_000,
+    );
+    assert.equal(acknowledgment.now, clockTime, "the watchdog crossed the requested time");
   };
   const read = () => JSON.parse(readFileSync(state, "utf8"));
   const run = (args) => {
@@ -164,7 +191,7 @@ function daemon({
     writeFileSync(state, JSON.stringify(current));
   };
   const docker = (args) => spawnSync(join(bin, "docker"), args, { env, encoding: "utf8" });
-  return { root, env, file, read, run, watchdogLog, seed, docker };
+  return { root, env, file, read, run, watchdogLog, seed, docker, advanceClock };
 }
 
 const ownerOf = (state) => state.containers.find((item) => item.Name === `/${OWNER_CONTAINER}`);
@@ -199,10 +226,38 @@ function watchdogsOf(pid) {
     });
 }
 
+/** The kernel has blocked this start's flock child behind the teardown's exclusive lock. */
+async function waitingForDaemonLock(start) {
+  await until(
+    "the start's shared flock to wait behind the teardown",
+    () => {
+      assert.equal(start.child.exitCode, null, start.output());
+      assert.equal(start.child.signalCode, null, start.output());
+      const blocked = [
+        ...readFileSync("/proc/locks", "utf8").matchAll(
+          /^\d+: -> FLOCK\s+ADVISORY\s+READ\s+(\d+)\s+/gm,
+        ),
+      ];
+      return blocked.some(([, pid]) => {
+        try {
+          const status = readFileSync(`/proc/${pid}/status`, "utf8");
+          const parent = /^PPid:\s+(\d+)$/m.exec(status)?.[1];
+          return parent === String(start.child.pid);
+        } catch {
+          // The blocked process may have exited between the two /proc reads.
+          return false;
+        }
+      });
+    },
+    10_000,
+  );
+}
+
 /** A `serve` that claims through its watchdog and then holds (its build hangs). */
 async function servingStart(fakeDaemon) {
   const serve = fakeDaemon.run(["serve", ...pinned]);
   await until("the watchdog's claim", () => /claimed the daemon/.test(fakeDaemon.watchdogLog()));
+  await until("the build to pause", () => existsSync(`${fakeDaemon.file("pause-build")}.paused`));
   return serve;
 }
 
@@ -211,7 +266,10 @@ test("a refused serve leaves the generation that holds the daemon alone, and its
   const serve = fakeDaemon.run(["serve", ...pinned]);
   assert.notEqual(await serve.done, 0);
   assert.match(serve.output(), /already starting or up/);
-  await sleep(3000);
+  await until(
+    "the refused serve's watchdog to exit",
+    () => watchdogsOf(serve.child.pid).length === 0,
+  );
   assert.deepEqual(names(fakeDaemon.read()), [OWNER_CONTAINER, "verify-stack-relay"].toSorted());
   assert.equal(ownerOf(fakeDaemon.read()).Config.Labels[CLAIM_LABEL], "first-start");
   assert.deepEqual(watchdogsOf(serve.child.pid), []);
@@ -222,34 +280,65 @@ test("a serve refused before claiming (a stack already up) leaves it alone too (
   const serve = fakeDaemon.run(["serve", ...pinned]);
   assert.notEqual(await serve.done, 0);
   assert.match(serve.output(), /already up/);
-  await sleep(3000);
+  await until(
+    "the refused serve's watchdog to exit",
+    () => watchdogsOf(serve.child.pid).length === 0,
+  );
   assert.equal(names(fakeDaemon.read()).length, 2);
   assert.deepEqual(volumeNames(fakeDaemon.read()), [STATE_VOLUME]);
   assert.deepEqual(watchdogsOf(serve.child.pid), []);
 });
 
 test("a serve killed while its claim is being created is reaped once the claim lands (N2)", async () => {
-  const fakeDaemon = daemon({ createDelayMs: 3000 });
+  const fakeDaemon = daemon({ pauseCreate: true });
   const serve = fakeDaemon.run(["serve", ...pinned]);
   await until("the create in flight", () => existsSync(fakeDaemon.file("creating")));
   serve.child.kill("SIGKILL");
+  await serve.done;
+  rmSync(fakeDaemon.file("pause-create"));
   await until("the watchdog to take the stack down", () =>
     /the stack is down/.test(fakeDaemon.watchdogLog()),
   );
   assert.equal(ownerOf(fakeDaemon.read()), undefined);
 });
 
-test("a claim that lands 65 s after its serve was killed still gets its watchdog (N5)", async () => {
-  const fakeDaemon = daemon({ createDelayMs: 65_000 });
+test("a claim held past 65 s on its watchdog's clock after serve dies still gets reaped (N5)", async () => {
+  const fakeDaemon = daemon({ pauseCreate: true, clock: true });
   const serve = fakeDaemon.run(["serve", ...pinned]);
   await until("the create in flight", () => existsSync(fakeDaemon.file("creating")));
   serve.child.kill("SIGKILL");
+  await serve.done;
+  await fakeDaemon.advanceClock(2000);
+  // The create stays in flight through the actual supervisor-death observation. No guessed
+  // deadline decides that this start never claimed, and no second slow create delays re-admission.
+  await until("the watchdog to observe its supervisor's death", () =>
+    /the supervisor ended/.test(fakeDaemon.watchdogLog()),
+  );
+  // Cross the historical sixty-second abandonment threshold while create is still held.
+  // The acknowledgment follows timer continuations, so a deadline cannot settle unnoticed.
+  await fakeDaemon.advanceClock(65_000);
+  assert.equal(ownerOf(fakeDaemon.read()), undefined, "the held claim has not landed");
+  assert.equal(watchdogsOf(serve.child.pid).length, 1, "the pending claim still has its watchdog");
+  assert.doesNotMatch(
+    fakeDaemon.watchdogLog(),
+    /this start never held a claim|nothing to take down|the stack is down/,
+    "crossing 65 seconds must not settle a claim whose create is still held",
+  );
+  assert.equal(
+    callsOf(fakeDaemon).some((args) => args[0] === "rm"),
+    false,
+  );
+  rmSync(fakeDaemon.file("pause-create"));
   await until(
     "the watchdog to take the late claim down",
     () => /the stack is down/.test(fakeDaemon.watchdogLog()),
-    150_000,
+    10_000,
   );
   assert.equal(ownerOf(fakeDaemon.read()), undefined);
+  assert.match(
+    fakeDaemon.watchdogLog(),
+    /the supervisor ended[\s\S]*claimed the daemon[\s\S]*the stack is down/,
+  );
   // The daemon is free: the next start is not refused by an orphaned claim.
   const next = fakeDaemon.run(["up", ...pinned]);
   await next.done;
@@ -266,6 +355,8 @@ test("a watchdog retries a daemon that does not answer, and still takes its gene
   );
   assert.equal(fakeDaemon.watchdogLog().match(/teardown failed \(teardown exited 1\)/g)?.length, 3);
   assert.equal(ownerOf(fakeDaemon.read()), undefined);
+  rmSync(fakeDaemon.file("pause-build"));
+  await serve.done;
 });
 
 /** The calls the fake daemon received, in order. */
@@ -287,13 +378,17 @@ test("a teardown paused after its check holds the daemon: down is refused, a sta
   writeFileSync(fakeDaemon.file("pause-list"), "1");
   serve.child.kill("SIGKILL");
   await until("the teardown to pause", () => existsSync(`${fakeDaemon.file("pause-list")}.paused`));
+  // The orphaned build is still stalled when teardown gets its exclusive lock. Once this is
+  // observed, let the build release its pipes; the replacement's fake build can then fail at once.
+  rmSync(fakeDaemon.file("pause-build"));
+  await serve.done;
   const down = fakeDaemon.run(["down"]);
   assert.notEqual(await down.done, 0);
   assert.match(down.output(), /stack is busy/);
   // A new start waits for the lock rather than being admitted beside the teardown.
   const before = claimsMade(fakeDaemon);
   const replacement = fakeDaemon.run(["up", ...pinned]);
-  await sleep(3000);
+  await waitingForDaemonLock(replacement);
   assert.equal(claimsMade(fakeDaemon), before, "no claim while the teardown runs");
   rmSync(fakeDaemon.file("pause-list"));
   await until("the watchdog to take the stack down", () =>
@@ -318,7 +413,7 @@ test("an ownerless sweep holds the daemon: a start waits until it ends (N6)", as
   const sweep = fakeDaemon.run(["down", "--force"]);
   await until("the sweep to pause", () => existsSync(`${fakeDaemon.file("pause-list")}.paused`));
   const serve = fakeDaemon.run(["serve", ...pinned]);
-  await sleep(3000);
+  await waitingForDaemonLock(serve);
   assert.equal(indexOfCall(callsOf(fakeDaemon), ownerCreate), -1, "no claim during the sweep");
   rmSync(fakeDaemon.file("pause-list"));
   assert.equal(await sweep.done, 0, sweep.output());
@@ -343,6 +438,8 @@ test("down while a serve builds is refused, and the serve's watchdog later takes
     /the stack is down/.test(fakeDaemon.watchdogLog()),
   );
   assert.deepEqual(names(fakeDaemon.read()), []);
+  rmSync(fakeDaemon.file("pause-build"));
+  await serve.done;
 });
 
 test("the state file goes before the owner, and nothing is admitted until the owner is gone (N9)", async () => {
@@ -357,7 +454,7 @@ test("the state file goes before the owner, and nothing is admitted until the ow
   );
   assert.equal(existsSync(stateFile), false, "state removed before the owner");
   const replacement = fakeDaemon.run(["up", ...pinned]);
-  await sleep(3000);
+  await waitingForDaemonLock(replacement);
   assert.equal(indexOfCall(callsOf(fakeDaemon), ownerCreate), -1, "no claim before the owner goes");
   rmSync(fakeDaemon.file("pause-rm"));
   assert.equal(await down.done, 0, down.output());
@@ -379,7 +476,7 @@ test("a removal still running after its teardown was killed keeps the daemon unt
   assert.notEqual(await second.done, 0);
   assert.match(second.output(), /stack is busy/);
   const replacement = fakeDaemon.run(["up", ...pinned]);
-  await sleep(3000);
+  await waitingForDaemonLock(replacement);
   assert.equal(indexOfCall(callsOf(fakeDaemon), ownerCreate), -1, "no claim while it runs");
   // The removal ends; only then can anything else hold the daemon.
   rmSync(fakeDaemon.file("pause-rm"));

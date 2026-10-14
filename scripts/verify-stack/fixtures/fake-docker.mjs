@@ -11,8 +11,8 @@
 // Faults and pauses, each named by an environment variable:
 // - FAKE_DOCKER_FAIL_LOOKUPS (a file holding a count): that many `ps` calls fail as an unreachable
 //   daemon would;
-// - FAKE_DOCKER_CREATE_DELAY_MS: the owner container's `create` is held back that long, and
-//   FAKE_DOCKER_CREATING (a file) is written while it waits;
+// - FAKE_DOCKER_PAUSE_CREATE (a file): while it exists, the owner container's `create` writes
+//   FAKE_DOCKER_CREATING (a file) and waits before the claim lands;
 // - FAKE_DOCKER_PAUSE_LIST (a file): while it exists, an unfiltered `ps` (a stack's enumeration)
 //   writes `<file>.paused` and waits;
 // - FAKE_DOCKER_PAUSE_RM (a file holding a container or volume name): while the file exists, an
@@ -27,8 +27,9 @@
 //   of the
 //   inner CLI makes them, as an inner session would; then, while FAKE_DOCKER_PAUSE_RUN (a file)
 //   exists, it writes `<file>.paused` and waits;
-// - FAKE_DOCKER_BUILD: `hang` waits a minute, `success` enables the explicit orchestration
-//   fixture image/setup state, and the default still fails every build.
+// - FAKE_DOCKER_BUILD: `hang` writes `<FAKE_DOCKER_PAUSE_BUILD>.paused` and waits while that
+//   file exists; `success` enables the explicit orchestration fixture image/setup state;
+//   the default still fails every build.
 import { createHash } from "node:crypto";
 import { appendFileSync, mkdirSync, readFileSync, rmdirSync, writeFileSync } from "node:fs";
 
@@ -261,15 +262,19 @@ else if (verb === "build" && orchestration !== null) {
   });
   console.log("synthetic build accepted");
 } else if (verb === "build") {
-  if (process.env.FAKE_DOCKER_BUILD === "hang") await sleep(60_000);
+  const pauseBuild = process.env.FAKE_DOCKER_PAUSE_BUILD;
+  if (process.env.FAKE_DOCKER_BUILD === "hang" && pauseBuild && exists(pauseBuild)) {
+    writeFileSync(`${pauseBuild}.paused`, "1");
+    await waitFor(() => !exists(pauseBuild));
+  }
   fail("ERROR: the fake daemon builds nothing");
 } else if (verb === "buildx") console.log("github.com/docker/buildx v0.20.1");
 else if (verb === "create") {
   const name = args[args.indexOf("--name") + 1];
-  const delay = Number(process.env.FAKE_DOCKER_CREATE_DELAY_MS ?? 0);
-  if (delay > 0 && name === "verify-stack-owner") {
+  const pauseCreate = process.env.FAKE_DOCKER_PAUSE_CREATE;
+  if (pauseCreate && exists(pauseCreate) && name === "verify-stack-owner") {
     if (process.env.FAKE_DOCKER_CREATING) writeFileSync(process.env.FAKE_DOCKER_CREATING, "1");
-    await sleep(delay);
+    await waitFor(() => !exists(pauseCreate));
   }
   const created = await locked((state) => {
     if (state.containers.some((item) => item.Name === `/${name}`)) return null;
