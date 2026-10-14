@@ -585,3 +585,37 @@ commands or benchmarks with separate opt-in configs. Those keep their existing c
 deadlines. They are not silently counted as guarded test files. Required PostgreSQL, Garage/MinIO,
 Chromium checks and existing test skips are unchanged. Turbo caching and affected-only selection
 remain held.
+
+## Uniform-guard follow-up on #979
+
+The first box run of #979 at `a5c1542e3` passed all 46 lifecycle integration cases, but
+`scripts/verify-stack/lifecycle.e2e.test.mjs` took 74.067 seconds and the new native file guard
+correctly failed packaging. The cases now run in three files: process lifecycle and locking,
+resource ownership, and ledger recording. Their shared fake-daemon helpers retain per-worker process
+cleanup. Test bodies, assertions and deadlines are preserved. CI explicitly includes all three
+files.
+
+`scripts/bench/live-cleanup.test.mjs` was also split, into cleanup and refusal cases. It took 57.758
+seconds on the box and 56.907 seconds in the reviewer's local run. The real public CLI's 10-second
+reconciliation grace periods and retry delays remain unchanged. The existing bench glob includes
+both files; the shared helper contains no test registrations.
+
+Next split candidates from the same box run are sessions `capture-launch` at 52.6 seconds and
+`capture-evidence` at 50.9 seconds, and CLI `lifecycle-versions` at 54.5 seconds and
+`backup-retention` at 54.0 seconds. Those packages already enforced the 60-second file cap.
+
+The split passed locally on Node 26.4.0 with `CI=true` and the native reporter enabled. All 50
+integration cases match the failed box run's names, and the seven workflow checks pass. An AST
+comparison preserves every non-import/export statement, all test registrations, and all 257
+lifecycle plus 54 cleanup assertions. The local file durations were:
+
+| File                               | Cases | Seconds |
+| ---------------------------------- | ----: | ------: |
+| `lifecycle.e2e.test.mjs`           |    17 |  28.451 |
+| `lifecycle.resources.e2e.test.mjs` |    17 |   7.579 |
+| `lifecycle.recording.e2e.test.mjs` |    12 |  10.112 |
+| `live-cleanup.test.mjs`            |     2 |  25.175 |
+| `live-cleanup-refusals.test.mjs`   |     2 |  31.806 |
+
+These local timings are not box measurements. Raw logs, the AST proof and runtime case inventory are
+archived in `reports/uniform-guards/packaging-split/` under the evidence directory.

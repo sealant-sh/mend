@@ -201,6 +201,9 @@ test("packaging retains browser, Docker, OpenTofu and acceptance contracts in it
     "scripts/edge-overlay.test.mjs",
     "scripts/mirrors-runtime.test.mjs",
     "scripts/verify-stack/lifecycle.e2e.test.mjs",
+    "scripts/verify-stack/lifecycle.resources.e2e.test.mjs",
+    "scripts/verify-stack/lifecycle.recording.e2e.test.mjs",
+    "scripts/bench/*.test.mjs",
     ".claude/skills/verify/scripts/leaks.test.mjs",
   ])
     assert.ok(suite.split(/\s+/).includes(file), file);
