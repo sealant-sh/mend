@@ -329,7 +329,7 @@ test("the test report reaches Turbo tasks without entering hashes, outputs or gi
 });
 
 test("PRs have exact history and queue, manual and nightly events retain the full CI graph", () => {
-  assert.deepEqual(workflow.on.push.branches, ["main"]);
+  assert.ok(!Object.hasOwn(workflow.on, "push"), "main is reached only through the merge queue");
   assert.ok(Object.hasOwn(workflow.on, "pull_request"));
   assert.deepEqual(workflow.on.merge_group.types, ["checks_requested"]);
   assert.ok(Object.hasOwn(workflow.on, "workflow_dispatch"));
