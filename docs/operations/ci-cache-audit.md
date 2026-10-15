@@ -44,12 +44,18 @@ and web's Tailwind scans every file of the app, tests included, and the VS Code 
 input. The complete lockfile, workspace catalog, `.node-version` and `.npmrc` are explicit global
 inputs, so changes cannot reuse an old result.
 
-`scripts/ci-build-input-probe.mjs` proves the rest. It asks Turbo which files each build task
-hashes, appends a unique import, string, Tailwind class and type error to every test file no build
-hashes, and requires the real builds' outputs, output files and exit codes to match two unchanged
-builds, with no marker anywhere in the outputs. Its builds run with every cache off. It runs nightly
-and on any change to a `turbo.json` (`.github/workflows/build-input-probe.yml`). Deleting test files
-cannot prove this: a deleted file loses the diagnostics and class names a mutation adds.
+`scripts/ci-build-input-probe.mjs` proves every build task hashes each test file it reads. For each
+build task, Turbo names every file that can change its hash: its own inputs and those of every task
+it depends on. Every other test, spec and vitest configuration file, including those another build
+hashes, gets a unique import, string, Tailwind class and type error appended, and the build must
+then produce exactly what it produced unchanged, exit 0, and carry no marker. Two unchanged builds
+come first: each must exit 0, and their outputs must match byte for byte once three named volatile
+fields are normalized (Nitro's build date, its public-asset mtimes and order, and the marketing
+page's router render times). Any other difference between unchanged builds fails the probe rather
+than hiding a change. Its builds run with every cache off. Its own tests mutation-test it in tiny
+real-Turbo workspaces, one per flaw it must catch, and it runs nightly and on any `turbo.json`
+change (`.github/workflows/build-input-probe.yml`). Deleting test files cannot prove this: a deleted
+file loses the diagnostics and class names a mutation adds.
 
 All tasks hash `CI`, `MEND_CI_RUNTIME`, `NODE_ENV`, `TZ`, `LANG` and `LC_ALL`. Behavioral
 configuration is hashed rather than passed through without a hash. Turbo's standard OS passthrough

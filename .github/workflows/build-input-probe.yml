@@ -1,10 +1,10 @@
 name: Build input probe
 
 # Turbo build tasks leave out test files they do not read, so a test-only change selects only its
-# own package's tests. This proves no build reads them anyway: it appends unique markers to every
-# test file no build task hashes and requires the real builds' outputs and exit codes to stay
-# byte-identical (scripts/ci-build-input-probe.mjs). It runs nightly and on any change to the
-# turbo configs or to the probe, and is not a required check.
+# own package's tests. This proves each build hashes every test file it reads: per build task it
+# appends unique markers to every test file outside that task's hash, and requires the real build's
+# outputs and exit code to stay the same (scripts/ci-build-input-probe.mjs). It runs nightly and on
+# any change to the turbo configs or to the probe, and is not a required check.
 on:
   schedule:
     - cron: "47 3 * * *"
@@ -14,6 +14,7 @@ on:
       - turbo.json
       - "**/turbo.json"
       - scripts/ci-build-input-probe.mjs
+      - scripts/ci-build-input-probe.test.mjs
       - .github/workflows/build-input-probe.yml
 
 permissions:
@@ -36,5 +37,7 @@ jobs:
         with:
           node-version-file: .node-version
       - run: pnpm install --frozen-lockfile
+      # The probe's own fixtures first: each flaw it must catch, in a tiny real-Turbo workspace.
+      - run: node --test scripts/ci-build-input-probe.test.mjs
       # Every build runs with Turbo's caches off, so a mutated output is never stored.
       - run: node scripts/ci-build-input-probe.mjs
