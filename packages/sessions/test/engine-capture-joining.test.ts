@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-import { AgentMemoryRepo, type AgentMemoryHomes, HotWorkspacesRepo } from "@mend/db";
+import { AgentMemoryRepo, type AgentMemoryHomes } from "@mend/db";
 import {
   SealantRunId,
   SealantWorkspaceId,
@@ -12,7 +12,6 @@ import {
 } from "@mend/domain";
 import { Project, Session, SessionProcess, SecretFile } from "@mend/domain/workbench";
 import {
-  type CaptureChannel,
   CaptureGitVerifier,
   type GitVerification,
   planBlockedWords,
@@ -37,6 +36,7 @@ import {
   shipCapturedHarnessHome,
   shipHarnessCapture,
 } from "./engine/capture-fixture.ts";
+import { makeEngineClock, signalled, signallingPool } from "./engine/clock-fixture.ts";
 import {
   agentMemoryLayerOf,
   captureAnswer,
@@ -51,7 +51,6 @@ import {
   setup,
   withEngine,
   withPreparedEngineEffect,
-  type World,
 } from "./engine/fixture.ts";
 
 /**
@@ -67,71 +66,12 @@ const LEASE_WAIT = Duration.millis(300);
 const LEASE_WAIT_INTERVAL = Duration.millis(10);
 
 /**
- * What these scenarios wait on, signalled by the fakes that change it so the test drives the
- * TestClock instead of polling: every checkpoint wait the channel registers (`awaitRegister`),
- * every look a waiting launch takes at an unreachable holder, and every pool row a warm writes.
+ * What these scenarios wait on, beyond the shared clock's signals (`world.sessions`, the waiting
+ * line a launch says among them; the channel's checkpoint waits): every look a waiting launch
+ * takes at an unreachable holder, and every pool row a warm writes.
  */
 const makeJoiningClock = Effect.gen(function* () {
-  const registrations = yield* Queue.make<{
-    readonly completed: Deferred.Deferred<void>;
-    readonly timeoutMs: number;
-  }>();
-  const wrapCaptureChannel = (inner: CaptureChannel["Service"]): CaptureChannel["Service"] => ({
-    ...inner,
-    awaitRegister: (worktreeId, accept, timeout) =>
-      Effect.gen(function* () {
-        const completed = yield* Deferred.make<void>();
-        yield* Queue.offer(registrations, { completed, timeoutMs: Duration.toMillis(timeout) });
-        return yield* inner
-          .awaitRegister(worktreeId, accept, timeout)
-          .pipe(Effect.ensuring(Deferred.succeed(completed, undefined)));
-      }),
-  });
-  /**
-   * `operation` waits out `waits` checkpoints' `CHECKPOINT_WAIT` (2 s each) for a capture to
-   * register, one after the other: its own, and any it queues behind on the worktree's writer.
-   */
-  const checkpointWait = <A, E, R>(operation: Effect.Effect<A, E, R>, waits = 1) =>
-    Effect.gen(function* () {
-      const fiber = yield* operation.pipe(Effect.forkChild);
-      for (let wait = 0; wait < waits; wait++) {
-        const registration = yield* Queue.take(registrations);
-        expect(registration.timeoutMs).toBe(2_000);
-        yield* TestClock.adjust(1_999);
-        expect(yield* Deferred.isDone(registration.completed)).toBe(false);
-        expect(fiber.pollUnsafe()).toBeUndefined();
-        yield* TestClock.adjust(1);
-        yield* Deferred.await(registration.completed);
-      }
-      return yield* Fiber.join(fiber);
-    });
-  /**
-   * Something a test reads changed: a session row (`world.sessions`, the waiting line a launch
-   * says among them), or a record a fake keeps (`changed`, from the fake).
-   */
-  const changes = yield* Queue.make<void>();
-  const changed = () => void Queue.offerUnsafe(changes, undefined);
-  const prepareWorld = (world: World) => {
-    const set = world.sessions.set.bind(world.sessions);
-    world.sessions.set = (key, value) => {
-      set(key, value);
-      changed();
-      return world.sessions;
-    };
-  };
-  const untilChanged = (condition: () => boolean, label: string) =>
-    Effect.gen(function* () {
-      while (!condition()) yield* Queue.take(changes);
-    }).pipe(Effect.withSpan(label));
-  /** A list a fake or the engine appends to (its log lines); every append is a change. */
-  const watched = <T>(): Array<T> =>
-    new (class extends Array<T> {
-      override push(...entries: Array<T>) {
-        const length = super.push(...entries);
-        changed();
-        return length;
-      }
-    })();
+  const clock = yield* makeEngineClock(["sessions"]);
   /** The holder looked up: by a waiting launch once per `LEASE_WAIT_INTERVAL`, and before its wait. */
   const probes = yield* Queue.make<void>();
   const probed = () => void Queue.offerUnsafe(probes, undefined);
@@ -145,7 +85,7 @@ const makeJoiningClock = Effect.gen(function* () {
       }
     });
   /** A parked launch's next look at its holder: what it finds there decides it. */
-  const nextLook = Effect.gen(function* () {
+  const nextLeaseLook = Effect.gen(function* () {
     yield* Queue.clear(probes);
     yield* TestClock.adjust(LEASE_WAIT_INTERVAL);
     yield* Queue.take(probes);
@@ -159,7 +99,7 @@ const makeJoiningClock = Effect.gen(function* () {
   const leaseWaitOut = <A, E, R>(launch: Effect.Effect<A, E, R>, waiting: () => boolean) =>
     Effect.gen(function* () {
       const fiber = yield* launch.pipe(Effect.forkChild);
-      yield* untilChanged(waiting, "the launch's waiting line");
+      yield* clock.untilChanged(waiting, "the launch's waiting line");
       yield* Queue.clear(probes);
       yield* leaseLooks(Duration.subtract(LEASE_WAIT, LEASE_WAIT_INTERVAL));
       expect(fiber.pollUnsafe()).toBeUndefined();
@@ -169,37 +109,10 @@ const makeJoiningClock = Effect.gen(function* () {
     });
   /** A pool row changed: ready, failed, or gone. */
   const rows = yield* Queue.make<void>();
-  const signalRow = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-    effect.pipe(Effect.tap(() => Queue.offer(rows, undefined)));
-  const poolLayer = (pool: ReturnType<typeof memoryHotPool>): Layer.Layer<HotWorkspacesRepo> =>
-    Layer.effect(
-      HotWorkspacesRepo,
-      Effect.map(HotWorkspacesRepo, (inner) => ({
-        ...inner,
-        setReady: (id, state) => signalRow(inner.setReady(id, state)),
-        setFailed: (id, error) => signalRow(inner.setFailed(id, error)),
-        remove: (id) => signalRow(inner.remove(id)),
-      })),
-    ).pipe(Layer.provide(pool.layer));
+  const poolLayer = (pool: ReturnType<typeof memoryHotPool>) => signallingPool(pool, rows);
   /** Waits for `condition`, woken by every pool row change. */
-  const untilReady = (condition: () => boolean, label: string) =>
-    Effect.gen(function* () {
-      while (!condition()) yield* Queue.take(rows);
-    }).pipe(Effect.withSpan(label));
-  return {
-    wrapCaptureChannel,
-    checkpointWait,
-    changed,
-    prepareWorld,
-    untilChanged,
-    watched,
-    probed,
-    leaseLooks,
-    nextLook,
-    leaseWaitOut,
-    poolLayer,
-    untilReady,
-  };
+  const untilReady = signalled(rows);
+  return { ...clock, probed, leaseLooks, nextLeaseLook, leaseWaitOut, poolLayer, untilReady };
 });
 
 describe("SessionEngine capture mode", () => {
@@ -877,7 +790,7 @@ describe("SessionEngine capture mode", () => {
               yield* Deferred.succeed(release, undefined);
               yield* Fiber.join(launching);
               // The join's next look finds the hand-over done, and joins.
-              yield* clock.nextLook;
+              yield* clock.nextLeaseLook;
               yield* Fiber.join(joining);
               expect(created).toHaveLength(1);
               expect(world.sessions.get(joined.id)?.sealantWorkspaceId).toBe("workspace-1");

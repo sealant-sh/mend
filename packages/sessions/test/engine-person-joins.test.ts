@@ -1,7 +1,3 @@
-import * as fs from "node:fs";
-import * as os from "node:os";
-import * as path from "node:path";
-
 import { WorktreesRepo } from "@mend/db";
 import { SessionId } from "@mend/domain";
 import { Project, Session, SessionProcess } from "@mend/domain/workbench";
@@ -28,8 +24,8 @@ import { describe, expect } from "vitest";
 
 import { makeMemoryCaptureStore, type MemoryCaptureStore } from "./capture-store-memory.ts";
 import { provisionIn } from "./engine/capture-fixture.ts";
+import { signalled, signalledFixture, watched } from "./engine/clock-fixture.ts";
 import {
-  makeWorld,
   now,
   sealantLaunchLayer,
   setup,
@@ -58,7 +54,7 @@ interface JoinByAnother {
   /** Every engine log line, in order. */
   readonly logs: ReadonlyArray<string>;
   /** Waits for `condition`, woken by every engine log line, workspace exec and workspace stop. */
-  readonly reached: (condition: () => boolean, label: string) => Effect.Effect<void>;
+  readonly untilChanged: (condition: () => boolean, label: string) => Effect.Effect<void>;
   /** Arm the actual post-harvest lease decision, not a predicate over its desired outcome. */
   readonly armTail: (
     phase: "agent" | "sweep",
@@ -66,16 +62,6 @@ interface JoinByAnother {
   ) => Effect.Effect<Effect.Effect<void>>;
   readonly nextRefusedClose: () => Effect.Effect<Deferred.Deferred<void>>;
 }
-
-/** A list the fake appends to; every push wakes whoever waits on `changed`. */
-const signalling = <T>(changed: Queue.Queue<void>) =>
-  new (class extends Array<T> {
-    override push(...entries: Array<T>) {
-      const length = super.push(...entries);
-      Queue.offerUnsafe(changed, undefined);
-      return length;
-    }
-  })();
 
 /** The platform's refused PTY closes, each awaitable before it happens (`nextRefusedClose`). */
 const refusedCloses = (refuses: () => boolean) => {
@@ -126,10 +112,10 @@ const joinByAnotherPersonEffect = (
     const stopped: Array<string> = [];
     const memory = makeMemoryCaptureStore();
     const created: Array<CreateOptions> = [];
-    const execCalls = signalling<ReadonlyArray<string>>(changed);
+    const execCalls = watched<ReadonlyArray<string>>(changed);
     const seen: Array<string> = [];
     const calls: Array<string> = [];
-    const logs = signalling<string>(changed);
+    const logs = watched<string>(changed);
     let failure: string | null = null;
     let holderWorkspace: string | null = null;
     let joinedWorkspace: string | null = null;
@@ -270,10 +256,7 @@ const joinByAnotherPersonEffect = (
               stopped,
               memory,
               logs,
-              reached: (condition, label) =>
-                Effect.gen(function* () {
-                  while (!condition()) yield* Queue.take(changed);
-                }).pipe(Effect.withSpan(label)),
+              untilChanged: signalled(changed),
               armTail: (phase, decisions = 1) =>
                 Effect.gen(function* () {
                   const agentEnded = phase === "agent" ? yield* Deferred.make<void>() : null;
@@ -362,37 +345,6 @@ const LEASE_WAIT = Duration.seconds(1);
 
 /** The PTY watcher's look (`watchProcess`): an exit is read at its next one. */
 const WATCH_POLL = Duration.seconds(2);
-
-/**
- * A world whose session and process rows signal every write, in a directory the case owns: a
- * wait on a row wakes as it lands, never polls, and one world serves a restarted engine too.
- */
-const signalledWorld = (prefix: string) =>
-  Effect.gen(function* () {
-    const changed = yield* Queue.sliding<void>(1);
-    const signallingMap = <V>() =>
-      new (class extends Map<string, V> {
-        override set(key: string, value: V) {
-          super.set(key, value);
-          Queue.offerUnsafe(changed, undefined);
-          return this;
-        }
-      })();
-    const tmp = yield* Effect.acquireRelease(
-      Effect.sync(() => fs.mkdtempSync(path.join(os.tmpdir(), prefix))),
-      (directory) => Effect.sync(() => fs.rmSync(directory, { recursive: true, force: true })),
-    );
-    const world: World = {
-      ...makeWorld(),
-      sessions: signallingMap<Session>(),
-      processes: signallingMap<SessionProcess>(),
-    };
-    const reached = (condition: () => boolean, label: string) =>
-      Effect.gen(function* () {
-        while (!condition()) yield* Queue.take(changed);
-      }).pipe(Effect.withSpan(label));
-    return { fixture: { world, tmp }, reached };
-  });
 
 describe("a join by another person into a live executor (alpha 2026-10-06, 9e486cfc)", () => {
   it("finds the holder's executor as its owner and joins it, never waiting on a lookup only the owner may make", async () => {
@@ -483,12 +435,12 @@ describe("a join by another person into a live executor (alpha 2026-10-06, 9e486
                 name: null,
                 worktree: null,
               });
-              yield* join.reached(
+              yield* join.untilChanged(
                 () => join.execCalls.some((argv) => argv.join("\n").includes("git clone --quiet")),
                 "the clone in the workspace",
               );
               // The add's fiber writes its row `ready` before it says so.
-              yield* join.reached(
+              yield* join.untilChanged(
                 () => join.logs.includes("session engine: repository added"),
                 "the row settled",
               );
@@ -530,7 +482,7 @@ describe("a join by another person into a live executor (alpha 2026-10-06, 9e486
         let lookupsRejected = false;
         const phases: Array<string> = [];
         let refusal: string | null = null;
-        const { fixture, reached } = yield* signalledWorld("mend-lease-404-");
+        const { fixture, untilChanged } = yield* signalledFixture("mend-lease-404-");
         yield* withPreparedEngineEffect(
           (world, tmp) => setup(tmp, world),
           (world, _tmp, project) =>
@@ -555,7 +507,7 @@ describe("a join by another person into a live executor (alpha 2026-10-06, 9e486
               const launch = yield* Effect.forkChild(
                 engine.launch(joined.id, ["claude"]).pipe(Effect.result),
               );
-              yield* reached(() => {
+              yield* untilChanged(() => {
                 const summary = world.sessions.get(joined.id)?.summary ?? "";
                 if (summary.includes("waiting")) phases.push(summary);
                 return phases.length > 0;
@@ -1105,7 +1057,7 @@ describe("a join by another person into a live executor (alpha 2026-10-06, 9e486
               "creator_not_member",
               "not_member",
             ]);
-            yield* join.reached(() => join.stopped.length === 1, "the saved executor ends");
+            yield* join.untilChanged(() => join.stopped.length === 1, "the saved executor ends");
           }),
         );
       }),
@@ -1142,7 +1094,7 @@ describe("a join by another person into a live executor (alpha 2026-10-06, 9e486
     "failed shell Stops survive restart, each on its own words, until that shell is observed ended",
     () =>
       Effect.gen(function* () {
-        const { fixture, reached } = yield* signalledWorld("mend-stop-restart-");
+        const { fixture, untilChanged } = yield* signalledFixture("mend-stop-restart-");
         const memory = makeMemoryCaptureStore();
         const states = new Map<string, InteractiveSessionStatus>();
         const shells: Array<SessionProcess> = [];
@@ -1188,11 +1140,14 @@ describe("a join by another person into a live executor (alpha 2026-10-06, 9e486
               });
               // The restarted engine watches each live shell again; its next look reads the exit.
               yield* TestClock.adjust(WATCH_POLL);
-              yield* reached(
+              yield* untilChanged(
                 () => world.processes.get(first.id)?.exitedAt != null,
                 "first shell observed ended",
               );
-              yield* reached(() => !summary().includes(wordsOf(first)), "the first shell's words");
+              yield* untilChanged(
+                () => !summary().includes(wordsOf(first)),
+                "the first shell's words",
+              );
               // The second shell's refusal is its own, and stays.
               expect(summary()).toContain(wordsOf(second));
               states.set(second.sealantSessionId, {
@@ -1201,11 +1156,11 @@ describe("a join by another person into a live executor (alpha 2026-10-06, 9e486
                 outputHighWater: 0n,
               });
               yield* TestClock.adjust(WATCH_POLL);
-              yield* reached(
+              yield* untilChanged(
                 () => world.processes.get(second.id)?.exitedAt != null,
                 "second shell observed ended",
               );
-              yield* reached(() => !summary().includes("stop again"), "refusal cleared");
+              yield* untilChanged(() => !summary().includes("stop again"), "refusal cleared");
               expect(holderAgentLive(world, first.sessionId)).toBe(true);
             }),
           options,
@@ -1218,7 +1173,7 @@ describe("a join by another person into a live executor (alpha 2026-10-06, 9e486
     "after a restart a healthy shell is never taken for its refused sibling (review 4 of mend#558)",
     () =>
       Effect.gen(function* () {
-        const { fixture, reached } = yield* signalledWorld("mend-stop-sibling-");
+        const { fixture, untilChanged } = yield* signalledFixture("mend-stop-sibling-");
         const memory = makeMemoryCaptureStore();
         const states = new Map<string, InteractiveSessionStatus>();
         const shells: Array<SessionProcess> = [];
@@ -1263,11 +1218,11 @@ describe("a join by another person into a live executor (alpha 2026-10-06, 9e486
               });
               // The restarted engine watches each live shell again; its next look reads the exit.
               yield* TestClock.adjust(WATCH_POLL);
-              yield* reached(
+              yield* untilChanged(
                 () => world.processes.get(refused.id)?.exitedAt != null,
                 "the refused shell observed ended",
               );
-              yield* reached(
+              yield* untilChanged(
                 () =>
                   !(world.sessions.get(refused.sessionId)?.summary ?? "").includes("stop again"),
                 "its words cleared",
@@ -1306,7 +1261,7 @@ describe("a join by another person into a live executor (alpha 2026-10-06, 9e486
                 Effect.match({ onSuccess: () => "opened", onFailure: (error) => error.message }),
               );
             const done = yield* engine.windDownPerson("user-fixture");
-            yield* join.reached(() => join.stopped.length > 0, "the retired executor's stop");
+            yield* join.untilChanged(() => join.stopped.length > 0, "the retired executor's stop");
             const joined = world.sessions.get(join.joined);
             state = {
               refused,

@@ -74,6 +74,7 @@ import {
   seedStoppedBeforeRestart,
   shipCapturedHarnessHome,
 } from "./engine/capture-fixture.ts";
+import { signalWrites, signalled } from "./engine/clock-fixture.ts";
 import {
   agentConversationStub,
   agentMemoryLayerOf,
@@ -167,22 +168,6 @@ const scrubsOf = (run: DeliveryRun) =>
 
 /** A record's text as `personRecordsExec` prints it. */
 const printedRecord = (text: string) => Buffer.from(text, "utf8").toString("base64");
-
-/** Waits for `condition`, woken by every signal on `queue` (a fake the engine reads or writes). */
-const signalled = (queue: Queue.Queue<void>) => (condition: () => boolean, label: string) =>
-  Effect.gen(function* () {
-    while (!condition()) yield* Queue.take(queue);
-  }).pipe(Effect.withSpan(label));
-
-/** Every write to `rows` wakes whoever waits on what it holds. */
-const signalWrites = <K, V>(rows: Map<K, V>, queue: Queue.Queue<void>) => {
-  const set = rows.set.bind(rows);
-  rows.set = (key, value) => {
-    set(key, value);
-    Queue.offerUnsafe(queue, undefined);
-    return rows;
-  };
-};
 
 /** Whether an exec is an opencode scrub (`OPENCODE_SCRUB_PROGRAM`). */
 const isScrub = (argv: ReadonlyArray<string>) => {

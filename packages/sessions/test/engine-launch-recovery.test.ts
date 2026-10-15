@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { CaptureStoreRepo, HotWorkspacesRepo } from "@mend/db";
+import { CaptureStoreRepo } from "@mend/db";
 import {
   ProjectId,
   SealantRunId,
@@ -29,7 +29,6 @@ import {
   type WorkspaceStopOptions,
 } from "@mend/sealant";
 import {
-  type CaptureChannel,
   type CaptureCompletionSeal,
   SessionEngine,
   secretFilesDeliveredExec,
@@ -39,22 +38,11 @@ import { buildManifest, snapshotDirectory, uploadObjects } from "@mend/store/tes
 import { it, TestClock } from "@mend/test-ci/effect-vitest";
 import type {
   CreateOptions,
-  InteractiveSessionStatus,
   TimelineEntry,
   Workspace,
   WorkspaceCaptureReplanned,
 } from "@sealant/sdk";
-import {
-  Clock,
-  ConfigProvider,
-  Deferred,
-  Duration,
-  Effect,
-  Fiber,
-  Layer,
-  Queue,
-  Stream,
-} from "effect";
+import { Clock, ConfigProvider, Deferred, Duration, Effect, Layer, Stream } from "effect";
 import { describe, expect } from "vitest";
 
 import { installScript } from "../src/dependency-cache.ts";
@@ -72,6 +60,7 @@ import {
   shipHarnessCapture,
   until,
 } from "./engine/capture-fixture.ts";
+import { makeEngineClock, signallingPool } from "./engine/clock-fixture.ts";
 import {
   captureAnswer,
   drawnLine,
@@ -130,121 +119,24 @@ const buildFailed = () =>
   );
 
 /**
- * What these scenarios wait on, signalled by the fakes that change it so the test drives the
- * TestClock instead of polling: the rows the engine writes (`world.sessions`, `world.processes`),
- * a list a fake appends to (`watched`), a standby the pool makes ready, every look the PTY
- * watcher takes (`ptyStates` reads), and every checkpoint wait the channel registers
- * (`awaitRegister`).
+ * What these scenarios wait on: the rows the engine writes (`world.sessions`, `world.processes`),
+ * the lists a fake appends to, a standby the pool makes ready (`signallingPool`), every lease the
+ * store releases (`releasing`), every look the PTY watcher takes and every checkpoint wait the
+ * channel registers.
  */
-const makeLaunchClock = Effect.gen(function* () {
-  const changes = yield* Queue.make<void>();
-  const registrations = yield* Queue.make<{
-    readonly completed: Deferred.Deferred<void>;
-    readonly timeoutMs: number;
-  }>();
-  const changed = () => void Queue.offerUnsafe(changes, undefined);
-  const signalled = <K, V>(map: Map<K, V>): Map<K, V> => {
-    const set = map.set.bind(map);
-    map.set = (key, value) => {
-      set(key, value);
-      changed();
-      return map;
-    };
-    return map;
-  };
-  const prepareWorld = (world: World) => {
-    signalled(world.sessions);
-    signalled(world.processes);
-  };
-  /** A list a fake appends to; every append wakes `untilChanged`. */
-  const watched = <T>(): Array<T> => {
-    const list: Array<T> = [];
-    list.push = (...items) => {
-      const length = Array.prototype.push.apply(list, items);
-      changed();
-      return length;
-    };
-    return list;
-  };
-  /** The pool, with every standby it makes ready waking `untilChanged`. */
-  const poolLayer = (pool: ReturnType<typeof memoryHotPool>): Layer.Layer<HotWorkspacesRepo> =>
-    Layer.effect(
-      HotWorkspacesRepo,
-      Effect.map(HotWorkspacesRepo, (inner) => ({
-        ...inner,
-        setReady: (id, state) =>
-          inner.setReady(id, state).pipe(Effect.tap(() => Effect.sync(changed))),
-      })),
-    ).pipe(Layer.provide(pool.layer));
-  /** The store, with every lease release waking `untilChanged` (the lease is mutated in place). */
-  const releasing = (memory: MemoryCaptureStore): MemoryCaptureStore => ({
-    ...memory,
-    layer: Layer.effect(
-      CaptureStoreRepo,
-      Effect.map(CaptureStoreRepo, (inner) => ({
-        ...inner,
-        release: (worktreeId, epoch) =>
-          inner.release(worktreeId, epoch).pipe(Effect.tap(() => Effect.sync(changed))),
-      })),
-    ).pipe(Layer.provide(memory.layer)),
-  });
-  const looks = new Map<string, number>();
-  const ptyStates = new Map<string, InteractiveSessionStatus>();
-  const ptyGet = ptyStates.get.bind(ptyStates);
-  ptyStates.get = (id) => {
-    looks.set(id, (looks.get(id) ?? 0) + 1);
-    changed();
-    return ptyGet(id);
-  };
-  const wrapCaptureChannel = (inner: CaptureChannel["Service"]): CaptureChannel["Service"] => ({
-    ...inner,
-    awaitRegister: (worktreeId, accept, timeout) =>
-      Effect.gen(function* () {
-        const completed = yield* Deferred.make<void>();
-        yield* Queue.offer(registrations, { completed, timeoutMs: Duration.toMillis(timeout) });
-        return yield* inner
-          .awaitRegister(worktreeId, accept, timeout)
-          .pipe(Effect.ensuring(Deferred.succeed(completed, undefined)));
-      }),
-  });
-  const untilChanged = (condition: () => boolean, label: string) =>
-    Effect.gen(function* () {
-      while (!condition()) yield* Queue.take(changes);
-    }).pipe(Effect.withSpan(label));
-  /** `operation` waits out one checkpoint's `CHECKPOINT_WAIT` (2 s) for a capture to register. */
-  const checkpointWait = <A, E, R>(operation: Effect.Effect<A, E, R>) =>
-    Effect.gen(function* () {
-      const fiber = yield* operation.pipe(Effect.forkChild);
-      const registration = yield* Queue.take(registrations);
-      expect(registration.timeoutMs).toBe(2_000);
-      yield* TestClock.adjust(1_999);
-      expect(yield* Deferred.isDone(registration.completed)).toBe(false);
-      expect(fiber.pollUnsafe()).toBeUndefined();
-      yield* TestClock.adjust(1);
-      yield* Deferred.await(registration.completed);
-      return yield* Fiber.join(fiber);
-    });
-  /** The PTY watcher's next 2 s look at `ptyId`; `notYet` holds right up to it. */
-  const nextLook = (ptyId: string, notYet: () => boolean) =>
-    Effect.gen(function* () {
-      const looked = looks.get(ptyId) ?? 0;
-      yield* TestClock.adjust(1_999);
-      expect(looks.get(ptyId) ?? 0).toBe(looked);
-      expect(notYet()).toBe(true);
-      yield* TestClock.adjust(1);
-      yield* untilChanged(() => (looks.get(ptyId) ?? 0) > looked, `the watcher's look at ${ptyId}`);
-    });
-  return {
-    prepareWorld,
-    watched,
-    poolLayer,
-    releasing,
-    ptyStates,
-    wrapCaptureChannel,
-    untilChanged,
-    checkpointWait,
-    nextLook,
-  };
+const makeLaunchClock = makeEngineClock(["sessions", "processes"]);
+
+/** The store, with every lease release waking `untilChanged` (the lease is mutated in place). */
+const releasing = (memory: MemoryCaptureStore, changed: () => void): MemoryCaptureStore => ({
+  ...memory,
+  layer: Layer.effect(
+    CaptureStoreRepo,
+    Effect.map(CaptureStoreRepo, (inner) => ({
+      ...inner,
+      release: (worktreeId, epoch) =>
+        inner.release(worktreeId, epoch).pipe(Effect.tap(() => Effect.sync(changed))),
+    })),
+  ).pipe(Layer.provide(memory.layer)),
 });
 
 describe("SessionEngine against the Docker e2e run 5 (2026-09-28)", () => {
@@ -593,7 +485,7 @@ describe("SessionEngine idempotent executor creates (Core's next SDK, 2026-09-28
               expect(stops).toEqual([]);
             }),
           {
-            captured: clock.releasing(memory),
+            captured: releasing(memory, clock.changed),
             drainPolicy: { terminationWait: Duration.millis(300) },
             sealantLayer: layerWith(
               created,
@@ -1347,7 +1239,7 @@ describe("custom-image setup commands run only on a worktree laid down fresh (re
                   },
                 },
               ),
-              hotWorkspacesLayer: clock.poolLayer(pool),
+              hotWorkspacesLayer: signallingPool(pool, clock.changes),
               wrapCaptureChannel: clock.wrapCaptureChannel,
             },
           );

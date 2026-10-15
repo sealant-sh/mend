@@ -22,20 +22,13 @@ import {
   type DotfilesRepository,
   ReferenceId,
 } from "@mend/domain";
-import {
-  HotWorkspace,
-  Project,
-  ResolvedGitAuthor,
-  Reference,
-  Session,
-  SessionProcess,
-} from "@mend/domain/workbench";
+import { HotWorkspace, Project, ResolvedGitAuthor, Reference } from "@mend/domain/workbench";
 import { SealantClient } from "@mend/sealant";
 import { SessionEngine, WorkspaceGitHooks } from "@mend/sessions";
 import { DotfilesStore, DotfilesStoreError, harnessHomePathOf } from "@mend/store";
 import { it } from "@mend/test-ci/effect-vitest";
 import type { CreateOptions } from "@sealant/sdk";
-import { Deferred, Effect, Exit, Layer, Queue } from "effect";
+import { Deferred, Effect, Exit, Layer } from "effect";
 import { describe, expect } from "vitest";
 
 import { makeMemoryCaptureStore, type MemoryCaptureStore } from "./capture-store-memory.ts";
@@ -49,10 +42,10 @@ import {
   provisionIn,
   type LaunchImage,
 } from "./engine/capture-fixture.ts";
+import { signalledFixture } from "./engine/clock-fixture.ts";
 import {
   dotfilesClonerLayer,
   launchSkill,
-  makeWorld,
   now,
   pickedUpWrites,
   sealantLaunchLayer,
@@ -61,48 +54,7 @@ import {
   skillsForLaunchLayer,
   withEngine,
   withPreparedEngineEffect,
-  type World,
 } from "./engine/fixture.ts";
-
-/** A map whose every write wakes whoever waits on the state it holds. */
-const signalledMap = <V>(signal: () => void) =>
-  new (class extends Map<string, V> {
-    override set(key: string, value: V): this {
-      super.set(key, value);
-      signal();
-      return this;
-    }
-    override delete(key: string): boolean {
-      const removed = super.delete(key);
-      signal();
-      return removed;
-    }
-  })();
-
-/**
- * A world whose session and process rows signal every write: `reached` wakes on those instead of
- * polling in real time, so a case runs on the TestClock and drives every engine timer it waits on
- * with `TestClock.adjust`.
- */
-const signalledWorld = () =>
-  Effect.gen(function* () {
-    const tmp = yield* Effect.acquireRelease(
-      Effect.sync(() => fs.mkdtempSync(path.join(os.tmpdir(), "mend-workspace-test-"))),
-      (directory) => Effect.sync(() => fs.rmSync(directory, { recursive: true, force: true })),
-    );
-    const changed = yield* Queue.sliding<void>(1);
-    const signal = () => void Queue.offerUnsafe(changed, undefined);
-    const world: World = {
-      ...makeWorld(),
-      sessions: signalledMap<Session>(signal),
-      processes: signalledMap<SessionProcess>(signal),
-    };
-    const reached = (condition: () => boolean, label: string) =>
-      Effect.gen(function* () {
-        while (!condition()) yield* Queue.take(changed);
-      }).pipe(Effect.withSpan(label));
-    return { world, tmp, reached };
-  });
 
 /** No machine key and no transport log in these worlds. */
 // Dotfiles resolve per owner; the engine fixtures run without any configured, so launches
@@ -1562,7 +1514,7 @@ describe("SessionEngine dotfiles gate", () => {
     Effect.gen(function* () {
       const created: CreateOptions[] = [];
       const snapshots = new Map([["user-fixture", SNAPSHOT]]);
-      const { world, tmp, reached } = yield* signalledWorld();
+      const { world, tmp, untilChanged } = yield* signalledFixture("mend-workspace-test-");
       yield* withPreparedEngineEffect(
         (_world, dir) => setup(dir, world),
         (_world, _dir, project) =>
@@ -1573,7 +1525,7 @@ describe("SessionEngine dotfiles gate", () => {
             yield* engine.stop(session.id);
             const agentExited = () =>
               [...world.processes.values()].every((process) => process.exitedAt !== null);
-            yield* reached(agentExited, "the agent's end after the stop");
+            yield* untilChanged(agentExited, "the agent's end after the stop");
 
             // The owner synced again while the session was stopped.
             snapshots.set("user-fixture", NEWER_SNAPSHOT);

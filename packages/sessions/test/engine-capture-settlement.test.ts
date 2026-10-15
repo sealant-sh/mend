@@ -1,5 +1,4 @@
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
 
 import { type CaptureRow, CaptureStoreRepo } from "@mend/db";
@@ -48,8 +47,8 @@ import {
   shipHarnessCapture,
   until,
 } from "./engine/capture-fixture.ts";
+import { signalled, signalledFixture, watched } from "./engine/clock-fixture.ts";
 import {
-  makeWorld,
   recordingProtocolHostLayer,
   sealantLaunchLayer,
   servedSocketApis,
@@ -134,59 +133,24 @@ const landingRetries = Effect.gen(function* () {
 
 /** A list the fake appends to, and a wait on it that wakes on each append instead of polling. */
 const watchedList = <T>() =>
-  Effect.gen(function* () {
-    const appended = yield* Queue.unbounded<void>();
-    const items = new (class extends Array<T> {
-      override push(...entries: Array<T>) {
-        const length = super.push(...entries);
-        Queue.offerUnsafe(appended, undefined);
-        return length;
-      }
-    })();
-    const once = (condition: () => boolean, label: string) =>
-      Effect.gen(function* () {
-        while (!condition()) yield* Queue.take(appended);
-      }).pipe(Effect.withSpan(label));
-    return { items, once };
-  });
+  Effect.map(Queue.unbounded<void>(), (appended) => ({
+    items: watched<T>(appended),
+    untilChanged: signalled(appended),
+  }));
 
 /**
- * A world whose session rows and relaunch plans signal every write: a wait on a row, or on a
- * plan's clear, wakes as it lands, never polls.
+ * A world whose session rows and relaunch plans signal every write (`signalledFixture`), with
+ * the session rows in the order they were written: a wait on a row, or on a plan's clear, wakes
+ * as it lands, never polls.
  */
-const observedWorld = Effect.gen(function* () {
-  const written = yield* Queue.unbounded<void>();
+const observedWorld = Effect.map(signalledFixture(), ({ fixture, untilChanged }) => {
   const rows: Array<Session> = [];
-  const sessions = new (class extends Map<string, Session> {
-    override set(id: string, session: Session) {
-      super.set(id, session);
-      rows.push(session);
-      Queue.offerUnsafe(written, undefined);
-      return this;
-    }
-  })();
-  const relaunches = new (class extends Map<string, string> {
-    override set(id: string, plan: string) {
-      super.set(id, plan);
-      Queue.offerUnsafe(written, undefined);
-      return this;
-    }
-    override delete(id: string) {
-      const had = super.delete(id);
-      Queue.offerUnsafe(written, undefined);
-      return had;
-    }
-  })();
-  const tmp = yield* Effect.acquireRelease(
-    Effect.sync(() => fs.mkdtempSync(path.join(os.tmpdir(), "mend-engine-test-"))),
-    (directory) => Effect.sync(() => fs.rmSync(directory, { recursive: true, force: true })),
-  );
-  const fixture = { world: { ...makeWorld(), sessions, relaunches }, tmp };
-  const once = (condition: () => boolean, label: string) =>
-    Effect.gen(function* () {
-      while (!condition()) yield* Queue.take(written);
-    }).pipe(Effect.withSpan(label));
-  return { fixture, rows, once };
+  const set = fixture.world.sessions.set.bind(fixture.world.sessions);
+  fixture.world.sessions.set = (id, session) => {
+    rows.push(session);
+    return set(id, session);
+  };
+  return { fixture, rows, untilChanged };
 });
 
 /** `launchOnce` over a project adopted before the engine was built (`withPreparedEngineEffect`). */
@@ -226,8 +190,11 @@ describe("a Stop the person made in Mend (box, 2026-10-05)", () => {
               yield* Deferred.await(finalAnswered);
               yield* TestClock.adjust(Duration.millis(150));
               yield* TestClock.adjust(Duration.millis(25));
-              yield* events.once(() => events.items.includes("workspace-1"), "the workspace stop");
-              yield* observed.once(
+              yield* events.untilChanged(
+                () => events.items.includes("workspace-1"),
+                "the workspace stop",
+              );
+              yield* observed.untilChanged(
                 () => world.sessions.get(session.id)?.settledAt != null,
                 "the session to settle",
               );
@@ -333,7 +300,7 @@ describe("a review opened while a Stop ends the executor (packaged acceptance, a
               }
               expect(memory.chains.get(session.worktreeId)?.headN ?? null).toBe(head);
               yield* Deferred.succeed(stopHeld, undefined);
-              yield* observed.once(
+              yield* observed.untilChanged(
                 () => world.sessions.get(session.id)?.settledAt != null,
                 "the session to settle",
               );
@@ -376,7 +343,10 @@ describe("a review opened while a Stop ends the executor (packaged acceptance, a
               const { engine, session } = yield* provisionIn(project);
               yield* engine.launch(session.id, ["codex"]);
               yield* engine.stop(session.id);
-              yield* kinds.once(() => kinds.items.includes("final"), "the drain's final flush");
+              yield* kinds.untilChanged(
+                () => kinds.items.includes("final"),
+                "the drain's final flush",
+              );
               const review = yield* Effect.forkChild(
                 engine.checkpointNow(session.id, "review-open"),
               );
@@ -402,7 +372,7 @@ describe("a review opened while a Stop ends the executor (packaged acceptance, a
               ).toBe(true);
               yield* Deferred.await(stopAsked);
               yield* Deferred.succeed(stopHeld, undefined);
-              yield* observed.once(
+              yield* observed.untilChanged(
                 () => world.sessions.get(session.id)?.settledAt != null,
                 "the session to settle",
               );
@@ -466,7 +436,7 @@ describe("a review opened while a Stop ends the executor (packaged acceptance, a
               // The Stop settles: the executor ended, its lease released. The landing reads the
               // chain as the Stop saved it, on its next look at the Stop.
               yield* Deferred.succeed(stopHeld, undefined);
-              yield* observed.once(
+              yield* observed.untilChanged(
                 () => world.sessions.get(session.id)?.settledAt != null,
                 "the Stop to settle",
               );
@@ -547,7 +517,7 @@ describe("a review opened while a Stop ends the executor (packaged acceptance, a
               }
               expect(kinds).toEqual(["final"]);
               yield* Deferred.succeed(stopHeld, undefined);
-              yield* observed.once(
+              yield* observed.untilChanged(
                 () => world.sessions.get(session.id)?.settledAt != null,
                 "the session to settle",
               );
@@ -744,7 +714,7 @@ describe("SessionEngine capture failures shown while they happen (e2e run 3, 202
               yield* engine.launch(session.id, ["codex"]);
               yield* engine.stop(session.id);
               // The default stall window is 600 s: only a reason that cannot complete keeps it now.
-              yield* observed.once(
+              yield* observed.untilChanged(
                 () => world.sessions.get(session.id)?.captureNotSavedAt != null,
                 "the kept workspace",
               );
@@ -768,11 +738,14 @@ describe("SessionEngine capture failures shown while they happen (e2e run 3, 202
               yield* TestClock.adjust(Duration.millis(1));
               yield* engine.reapCaptureLeases();
               const looked = looks.items.length;
-              yield* kinds.once(() => finals() > 1, "the retry after the first wait");
+              yield* kinds.untilChanged(() => finals() > 1, "the retry after the first wait");
               // The round's drain looks at the executor after the harvest's FINAL and reuses its
               // answer: the next reap comes only once this round's sweep is under way, never
               // during its harvest (the reaper would fork a second sweep over it).
-              yield* looks.once(() => looks.items.length > looked, "the drain's look in the retry");
+              yield* looks.untilChanged(
+                () => looks.items.length > looked,
+                "the drain's look in the retry",
+              );
               yield* TestClock.adjust(Duration.millis(60));
               const afterRetry = finals();
               // Kept again at once: nothing more until the doubled wait, however many ticks.
@@ -924,8 +897,8 @@ describe("SessionEngine capture failures shown while they happen (e2e run 3, 202
               finals: () => kinds.items.filter((kind) => kind === "final").length,
               events,
               seal: registered.seal,
-              once: observed.once,
-              flushed: kinds.once,
+              once: observed.untilChanged,
+              flushed: kinds.untilChanged,
             });
           }),
         {
@@ -1035,7 +1008,7 @@ describe("SessionEngine capture failures shown while they happen (e2e run 3, 202
               expect(before === undefined ? "gone" : captureStatusLine(before)).toBeNull();
               // The reaper reads a running executor's status on its own.
               yield* engine.reapCaptureLeases();
-              yield* observed.once(
+              yield* observed.untilChanged(
                 () => world.sessions.get(session.id)?.captureFailingSince != null,
                 "the failing snap on the session",
               );
@@ -1050,7 +1023,7 @@ describe("SessionEngine capture failures shown while they happen (e2e run 3, 202
               // A client's view asks (throttled per session); the snaps succeed again.
               failing = false;
               yield* engine.refreshCaptureStatus(session.id);
-              yield* observed.once(
+              yield* observed.untilChanged(
                 () => world.sessions.get(session.id)?.captureFailingSince === null,
                 "the failure cleared",
               );
@@ -1105,7 +1078,7 @@ describe("SessionEngine capture failures shown while they happen (e2e run 3, 202
               const { engine, session } = yield* provisionIn(project);
               yield* engine.launch(session.id, ["codex"]);
               yield* engine.reapCaptureLeases();
-              yield* observed.once(
+              yield* observed.untilChanged(
                 () => world.sessions.get(session.id)?.captureOverdueStep != null,
                 "the overdue step on the session",
               );
@@ -1117,7 +1090,7 @@ describe("SessionEngine capture failures shown while they happen (e2e run 3, 202
               // The step ended: nothing to say.
               overdue = false;
               yield* engine.refreshCaptureStatus(session.id);
-              yield* observed.once(
+              yield* observed.untilChanged(
                 () => world.sessions.get(session.id)?.captureOverdueStep === null,
                 "the overdue step cleared",
               );
@@ -1285,7 +1258,7 @@ describe("SessionEngine lifecycle after a final flush (e2e run 4, 2026-09-27)", 
             yield* TestClock.adjust(1);
             yield* Deferred.await(firstLook);
             // The harness is gone: the line leaves `running` at once, not after the looks.
-            yield* observed.once(
+            yield* observed.untilChanged(
               () =>
                 world.sessions.get(session.id)?.status !== "running" &&
                 clock.currentTimeMillisUnsafe() - (firstLookAt ?? 0) < 1000,
@@ -1293,7 +1266,7 @@ describe("SessionEngine lifecycle after a final flush (e2e run 4, 2026-09-27)", 
             );
             if (statusAnswers) {
               // The executor's status says its final flush completed: that is the end reading.
-              yield* observed.once(
+              yield* observed.untilChanged(
                 () => world.sessions.get(session.id)?.settledAt != null,
                 "the settle on the executor's word",
               );
@@ -1307,8 +1280,11 @@ describe("SessionEngine lifecycle after a final flush (e2e run 4, 2026-09-27)", 
             }
             // The owner's stop, while the watcher may still be looking.
             yield* engine.stop(session.id);
-            yield* events.once(() => events.items.includes("workspace-1"), "the workspace stop");
-            yield* observed.once(() => {
+            yield* events.untilChanged(
+              () => events.items.includes("workspace-1"),
+              "the workspace stop",
+            );
+            yield* observed.untilChanged(() => {
               const current = world.sessions.get(session.id);
               return current?.settledAt != null && current.captureDrain === null;
             }, "the settle");
@@ -1415,10 +1391,13 @@ describe("SessionEngine lifecycle after a final flush (e2e run 4, 2026-09-27)", 
               yield* engine.stop(session.id);
               // The first FINAL answers `changed`, and the drain, looking at the executor, reads
               // it: not saved. It asks again after its poll interval (10 ms).
-              yield* kinds.once(() => kinds.items.includes("final"), "the first final flush");
-              yield* looks.once(() => looks.items.length > looked, "the drain's look");
+              yield* kinds.untilChanged(
+                () => kinds.items.includes("final"),
+                "the first final flush",
+              );
+              yield* looks.untilChanged(() => looks.items.length > looked, "the drain's look");
               yield* TestClock.adjust(Duration.millis(10));
-              yield* stops.once(() => stops.items.length > 0, "the stop");
+              yield* stops.untilChanged(() => stops.items.length > 0, "the stop");
               expect(answeredAtStop).toBeGreaterThanOrEqual(2);
               expect(world.sessions.get(session.id)?.captureNotSavedAt ?? null).toBeNull();
             }),
@@ -1472,7 +1451,7 @@ describe("SessionEngine lifecycle after a final flush (e2e run 4, 2026-09-27)", 
               const { engine, session } = yield* provisionIn(project);
               yield* engine.launch(session.id, ["codex"]);
               yield* engine.stop(session.id);
-              yield* observed.once(
+              yield* observed.untilChanged(
                 () => world.sessions.get(session.id)?.captureNotSavedAt != null,
                 "the kept workspace",
               );
@@ -1484,7 +1463,7 @@ describe("SessionEngine lifecycle after a final flush (e2e run 4, 2026-09-27)", 
               // Past the kept drain's wait (`keptRetryFirst`, 300 ms).
               yield* TestClock.adjust(Duration.millis(300));
               yield* engine.reapCaptureLeases();
-              yield* kinds.once(() => finals() - before >= 2, "the kept round's FINALs");
+              yield* kinds.untilChanged(() => finals() - before >= 2, "the kept round's FINALs");
               // Every further answer is `changed`, asked every poll interval: nothing stops.
               yield* TestClock.adjust(Duration.millis(200));
               expect(stops).toEqual([]);
@@ -1551,7 +1530,7 @@ describe("SessionEngine lifecycle after a final flush (e2e run 4, 2026-09-27)", 
                 release = resolve;
               });
               yield* engine.stop(session.id);
-              yield* events.once(
+              yield* events.untilChanged(
                 () => events.items.includes("flush:workspace-1"),
                 "the final flush",
               );
@@ -1559,7 +1538,7 @@ describe("SessionEngine lifecycle after a final flush (e2e run 4, 2026-09-27)", 
               yield* TestClock.adjust(Duration.millis(199));
               expect(world.sessions.get(session.id)?.captureNotSavedAt ?? null).toBeNull();
               yield* TestClock.adjust(Duration.millis(1));
-              yield* observed.once(
+              yield* observed.untilChanged(
                 () => world.sessions.get(session.id)?.captureNotSavedAt != null,
                 "the kept workspace",
               );
@@ -1571,7 +1550,10 @@ describe("SessionEngine lifecycle after a final flush (e2e run 4, 2026-09-27)", 
               release?.();
               yield* TestClock.adjust(Duration.millis(300));
               yield* engine.reapCaptureLeases();
-              yield* events.once(() => events.items.includes("workspace-1"), "the workspace stop");
+              yield* events.untilChanged(
+                () => events.items.includes("workspace-1"),
+                "the workspace stop",
+              );
               expect(events.items.at(-1)).toBe("workspace-1");
               expect(marks()).toBe(1);
             }),
@@ -1620,7 +1602,7 @@ describe("SessionEngine lifecycle after a final flush (e2e run 4, 2026-09-27)", 
               const { engine, session } = yield* provisionIn(project);
               yield* engine.launch(session.id, ["codex"]);
               yield* engine.stop(session.id);
-              yield* observed.once(
+              yield* observed.untilChanged(
                 () => world.sessions.get(session.id)?.captureNotSavedAt != null,
                 "the kept workspace",
               );
@@ -1632,11 +1614,11 @@ describe("SessionEngine lifecycle after a final flush (e2e run 4, 2026-09-27)", 
                 yield* TestClock.adjust(Duration.millis(350 * round));
                 const before = finals();
                 yield* engine.reapCaptureLeases();
-                yield* kinds.once(() => finals() > before, `kept round ${round}`);
+                yield* kinds.untilChanged(() => finals() > before, `kept round ${round}`);
                 // The round's drain looks at the executor after the harvest's FINAL and reuses its
                 // answer: the next round's reap comes only once this round's sweep is over.
                 const looked = looks.items.length;
-                yield* looks.once(
+                yield* looks.untilChanged(
                   () => looks.items.length > looked,
                   `the drain's look in kept round ${round}`,
                 );
@@ -1845,7 +1827,7 @@ describe("SessionEngine lifecycle, second review (2026-09-28)", () => {
               });
               // The watcher's next look at the PTY (every 2 s) finds the harness gone.
               yield* TestClock.adjust(Duration.seconds(2));
-              yield* observed.once(
+              yield* observed.untilChanged(
                 () => world.sessions.get(session.id)?.settledAt != null,
                 "the session's settle",
               );
@@ -1945,7 +1927,7 @@ describe("SessionEngine lifecycle, second review (2026-09-28)", () => {
               expect(world.sessions.get(session.id)?.settledAt ?? null).toBeNull();
               yield* TestClock.adjust(Duration.millis(1));
             }
-            yield* rows.once(
+            yield* rows.untilChanged(
               () => world.sessions.get(session.id)?.settledAt != null,
               "the end to be read",
             );
@@ -2053,7 +2035,7 @@ describe("SessionEngine lifecycle, second review (2026-09-28)", () => {
                 sealedAt: new Date(),
               });
               yield* engine.stop(session.id);
-              yield* stopOptions.once(() => stopOptions.items.length > 0, "the stop");
+              yield* stopOptions.untilChanged(() => stopOptions.items.length > 0, "the stop");
               // Core names the executor by its runtime identity, recorded at launch.
               expect(stopOptions.items[0]?.completion).toEqual({
                 captureN: built.manifest.n,
@@ -2112,7 +2094,7 @@ describe("SessionEngine lifecycle, second review (2026-09-28)", () => {
                 sealedAt: new Date(),
               });
               yield* engine.stop(session.id);
-              yield* stopOptions.once(() => stopOptions.items.length > 0, "the stop");
+              yield* stopOptions.untilChanged(() => stopOptions.items.length > 0, "the stop");
               expect(stopOptions.items[0]?.completion).toBeUndefined();
             }),
           {
@@ -2142,7 +2124,7 @@ describe("SessionEngine lifecycle, second review (2026-09-28)", () => {
               const { engine, session } = yield* provisionIn(project);
               yield* engine.launch(session.id, ["codex"]);
               yield* engine.stop(session.id);
-              yield* observed.once(
+              yield* observed.untilChanged(
                 () => world.sessions.get(session.id)?.captureNotSavedAt != null,
                 "the kept drain",
               );
@@ -2185,7 +2167,7 @@ describe("SessionEngine lifecycle, second review (2026-09-28)", () => {
               const { engine, session } = yield* provisionIn(project);
               yield* engine.launch(session.id, ["codex"]);
               yield* engine.stop(session.id);
-              yield* stopOptions.once(() => stopOptions.items.length > 0, "the stop");
+              yield* stopOptions.untilChanged(() => stopOptions.items.length > 0, "the stop");
               expect(stopOptions.items[0]?.completion).toBeUndefined();
             }),
           {
@@ -2414,7 +2396,7 @@ describe("SessionEngine lifecycle, second review (2026-09-28)", () => {
               expect(world.sessions.get(session.id)?.sealantWorkspaceId).toBe("workspace-1");
               expect(memory.leases.get(session.worktreeId)?.executorId).toBe(session.id);
               // Drained (a final flush), never stopped outright; Core keeps it.
-              yield* stops.once(() => stops.items.length > 0, "the drain's stop");
+              yield* stops.untilChanged(() => stops.items.length > 0, "the drain's stop");
               expect(kinds).toContain("final");
               expect(stops.items).toEqual(["drain"]);
               const holds = yield* engine.captureHolds(session.worktreeId);
@@ -2463,7 +2445,7 @@ describe("SessionEngine lifecycle, second review (2026-09-28)", () => {
             Effect.gen(function* () {
               const { engine, session } = yield* provisionIn(project);
               yield* engine.launch(session.id, ["codex"]).pipe(Effect.flip);
-              yield* observed.once(
+              yield* observed.untilChanged(
                 () =>
                   stops.length > 0 &&
                   world.sessions.get(session.id)?.settledAt != null &&
@@ -2512,7 +2494,7 @@ describe("SessionEngine lifecycle, second review (2026-09-28)", () => {
               const failed = yield* engine.launch(session.id, ["codex"]).pipe(Effect.flip);
               expect(failed._tag).toBe("SealantPlatformError");
               expect(world.sessions.get(session.id)?.sealantWorkspaceId).toBe("workspace-1");
-              yield* stops.once(() => stops.items.length > 0, "the drain's stop");
+              yield* stops.untilChanged(() => stops.items.length > 0, "the drain's stop");
               expect(yield* engine.removeWhenStopped(session.id)).toBe("pending");
               expect(memory.leases.get(session.worktreeId)?.executorId).toBe(session.id);
             }),
@@ -2614,7 +2596,7 @@ describe("SessionEngine lifecycle, second review (2026-09-28)", () => {
               yield* engine.launch(second.id, ["claude"]);
               yield* engine.stop(session.id);
               // The owner settles, and its drain, finding the worktree in use, ends.
-              yield* observed.once(() => {
+              yield* observed.untilChanged(() => {
                 const owner = world.sessions.get(session.id);
                 return owner?.settledAt != null && owner.captureDrain === null;
               }, "owner settles");
@@ -2677,8 +2659,11 @@ describe("SessionEngine lifecycle, second review (2026-09-28)", () => {
                 }),
               );
               yield* engine.reapCaptureLeases();
-              yield* submitted.once(() => submitted.items.length > 0, "the opening turn");
-              yield* observed.once(() => !world.relaunches.has(session.id), "the plan's clear");
+              yield* submitted.untilChanged(() => submitted.items.length > 0, "the opening turn");
+              yield* observed.untilChanged(
+                () => !world.relaunches.has(session.id),
+                "the plan's clear",
+              );
               expect(submitted.items).toEqual(["preserve this opening instruction"]);
               expect(created).toHaveLength(2);
               const live = [...world.processes.values()].filter(
@@ -2734,7 +2719,7 @@ describe("SessionEngine lifecycle, second review (2026-09-28)", () => {
                 }),
               );
               yield* engine.reapCaptureLeases();
-              yield* observed.once(
+              yield* observed.untilChanged(
                 () =>
                   world.sessions
                     .get(session.id)
@@ -2799,7 +2784,10 @@ describe("SessionEngine lifecycle, second review (2026-09-28)", () => {
                 }),
               );
               yield* engine.reapCaptureLeases();
-              yield* observed.once(() => !world.relaunches.has(session.id), "the plan's clear");
+              yield* observed.untilChanged(
+                () => !world.relaunches.has(session.id),
+                "the plan's clear",
+              );
               expect(submitted).toEqual(["to the live one"]);
               expect(created).toHaveLength(1);
             }),
@@ -2837,14 +2825,17 @@ describe("SessionEngine lifecycle, second review (2026-09-28)", () => {
               );
               yield* engine.reapCaptureLeases();
               // The deadline is read in the background and kept once known.
-              yield* logs.once(
+              yield* logs.untilChanged(
                 () => logs.items.some((line) => line.includes("the platform's deadline")),
                 "the deadline read",
               );
               expect(asked).toBeGreaterThan(0);
               // The cap is 60 s away, inside the 600 s lead: the replacement is due now.
               yield* engine.reapCaptureLeases();
-              yield* created.once(() => created.items.length === 2, "the replacement launch");
+              yield* created.untilChanged(
+                () => created.items.length === 2,
+                "the replacement launch",
+              );
             }),
           {
             captured: memory,
@@ -2895,7 +2886,7 @@ describe("SessionEngine lifecycle, second review (2026-09-28)", () => {
               yield* TestClock.adjust(49);
               expect(world.sessions.get(session.id)?.settledAt ?? null).toBeNull();
               yield* TestClock.adjust(1);
-              yield* rows.once(
+              yield* rows.untilChanged(
                 () => world.sessions.get(session.id)?.settledAt != null,
                 "the session's settle",
               );

@@ -3,11 +3,11 @@ import * as path from "node:path";
 
 import { WorktreeId } from "@mend/domain";
 import { SealantClient } from "@mend/sealant";
-import { CaptureChannel, SessionEngine } from "@mend/sessions";
+import { SessionEngine } from "@mend/sessions";
 import { processStatePathOf } from "@mend/store";
 import { it, TestClock } from "@mend/test-ci/effect-vitest";
 import type { CreateOptions, InteractiveSessionStatus, WorkspaceCaptureStatus } from "@sealant/sdk";
-import { Deferred, Duration, Effect, Layer, Queue } from "effect";
+import { Effect, Layer, Queue } from "effect";
 import { describe, expect } from "vitest";
 
 import { OPENCODE_CAPTURED_SEED } from "../src/harness-seeds.ts";
@@ -15,17 +15,18 @@ import { makeMemoryCaptureStore } from "./capture-store-memory.ts";
 import { restoreConfiguredHarnessHome } from "./engine-capture-launch-fixtures.ts";
 import { shipCapturedHarnessHome } from "./engine/capture-fixture.ts";
 import {
+  EXECUTOR_END_LOOKS,
+  POLL_INTERVAL,
+  makeEngineClock,
+  statusLooks,
+} from "./engine/clock-fixture.ts";
+import {
   sealantLaunchLayer,
   setup,
   withPreparedEngineEffect,
   type World,
 } from "./engine/fixture.ts";
 import { writeOpencodeDatabase } from "./opencode-db.ts";
-
-/** The drain policy's poll, the pace of the engine's looks at an executor (`testDrainPolicy`). */
-const POLL_INTERVAL = Duration.millis(10);
-/** `EXECUTOR_END_LOOKS`: how many times the engine asks an ended agent's executor before it gives up. */
-const EXECUTOR_END_LOOKS = 6;
 
 /**
  * What the engine does on its own once an agent's PTY exits, driven on the TestClock: the
@@ -37,25 +38,9 @@ const EXECUTOR_END_LOOKS = 6;
  */
 const makeHarvestClock = () =>
   Effect.gen(function* () {
-    const worldWrites = yield* Queue.make<void>();
+    const clock = yield* makeEngineClock(["sessions", "processes"]);
     const ptyHandles = yield* Queue.make<string>();
-    const looks = yield* Queue.make<void>();
-    const registrations = yield* Queue.make<{
-      readonly completed: Deferred.Deferred<void>;
-      readonly timeoutMs: number;
-    }>();
-    const signalWrites = <K, V>(rows: Map<K, V>) => {
-      const set = rows.set.bind(rows);
-      rows.set = (key, value) => {
-        set(key, value);
-        Queue.offerUnsafe(worldWrites, undefined);
-        return rows;
-      };
-    };
-    const prepareWorld = (world: World) => {
-      signalWrites(world.sessions);
-      signalWrites(world.processes);
-    };
+    const { looks, captureStatus } = yield* statusLooks;
     const platform = (inner: Layer.Layer<SealantClient>): Layer.Layer<SealantClient> =>
       Layer.effect(
         SealantClient,
@@ -67,23 +52,6 @@ const makeHarvestClock = () =>
               .pipe(Effect.tap(() => Queue.offer(ptyHandles, sessionId))),
         })),
       ).pipe(Layer.provide(inner));
-    const wrapCaptureChannel = (inner: CaptureChannel["Service"]): CaptureChannel["Service"] => ({
-      ...inner,
-      awaitRegister: (worktreeId, accept, timeout) =>
-        Effect.gen(function* () {
-          const completed = yield* Deferred.make<void>();
-          yield* Queue.offer(registrations, { completed, timeoutMs: Duration.toMillis(timeout) });
-          return yield* inner
-            .awaitRegister(worktreeId, accept, timeout)
-            .pipe(Effect.ensuring(Deferred.succeed(completed, undefined)));
-        }),
-    });
-    /** The platform's capture status, as the fake answers it absent a hook: no answer. */
-    const captureStatus = () => Queue.offer(looks, undefined).pipe(Effect.as(null));
-    const untilWritten = (condition: () => boolean, label: string) =>
-      Effect.gen(function* () {
-        while (!condition()) yield* Queue.take(worldWrites);
-      }).pipe(Effect.withSpan(label));
     /** The watcher holds the exited PTY's handle; its next poll, 2 s on, reads the exit. */
     const pollExit = (world: World, ptyId: string, processId: string) =>
       Effect.gen(function* () {
@@ -92,7 +60,7 @@ const makeHarvestClock = () =>
         yield* TestClock.adjust(1_999);
         expect(world.processes.get(processId)?.exitedAt).toBeNull();
         yield* TestClock.adjust(1);
-        yield* untilWritten(
+        yield* clock.untilChanged(
           () => world.processes.get(processId)?.exitedAt !== null,
           "the exit observed",
         );
@@ -109,30 +77,12 @@ const makeHarvestClock = () =>
           yield* TestClock.adjust(POLL_INTERVAL);
         }
         yield* Queue.take(looks);
-        yield* untilWritten(
+        yield* clock.untilChanged(
           () => world.sessions.get(sessionId)?.settledAt !== null,
           "the executor's end read",
         );
       });
-    /** The checkpoint waits `CHECKPOINT_WAIT` for a capture no executor registers. */
-    const checkpointWait = Effect.gen(function* () {
-      const registration = yield* Queue.take(registrations);
-      expect(registration.timeoutMs).toBe(2_000);
-      yield* TestClock.adjust(1_999);
-      expect(yield* Deferred.isDone(registration.completed)).toBe(false);
-      yield* TestClock.adjust(1);
-      yield* Deferred.await(registration.completed);
-    });
-    return {
-      prepareWorld,
-      platform,
-      wrapCaptureChannel,
-      captureStatus,
-      untilWritten,
-      pollExit,
-      executorLooks,
-      checkpointWait,
-    };
+    return { ...clock, platform, captureStatus, pollExit, executorLooks };
   });
 /**
  * An opencode session in capture mode: its harness home rides the worktree's captures, so the
@@ -209,12 +159,12 @@ const verifyOpencodeHarvest = (kind: "own" | "none" | "unattributed" | "unprompt
           if (kind === "unattributed") {
             // A conversation Mend cannot tell is the session's is no answer, not an absence: the
             // session is never hidden as a dead end, and its resume is refused, not guessed.
-            yield* clock.untilWritten(
+            yield* clock.untilChanged(
               () => world.sessions.get(session.id)?.settledAt !== null,
               "the first process settle",
             );
-            yield* clock.checkpointWait;
-            yield* clock.untilWritten(
+            yield* clock.expireCheckpointWait;
+            yield* clock.untilChanged(
               () => memory.leases.get(session.worktreeId)?.executorId === null,
               "the harvest and the drain",
             );
@@ -237,13 +187,13 @@ const verifyOpencodeHarvest = (kind: "own" | "none" | "unattributed" | "unprompt
           if (kind === "none" || kind === "unprompted") {
             // Nothing in the database is this session's: no saved state, and the resume says so
             // rather than open the other session's conversation.
-            yield* clock.checkpointWait;
-            yield* clock.untilWritten(
+            yield* clock.expireCheckpointWait;
+            yield* clock.untilChanged(
               () => world.sessions.get(session.id)?.hasTranscript === false,
               "the final capture harvest",
             );
             expect(fs.existsSync(path.join(stateDir, "manifest.json"))).toBe(false);
-            yield* clock.untilWritten(
+            yield* clock.untilChanged(
               () => world.sessions.get(session.id)?.settledAt !== null,
               "the first process settle",
             );
@@ -255,8 +205,8 @@ const verifyOpencodeHarvest = (kind: "own" | "none" | "unattributed" | "unprompt
             return;
           }
           // No transcript file, but a conversation of its own: the session is not a dead end.
-          yield* clock.checkpointWait;
-          yield* clock.untilWritten(
+          yield* clock.expireCheckpointWait;
+          yield* clock.untilChanged(
             () => world.sessions.get(session.id)?.hasTranscript === true,
             "the final capture harvest",
           );
@@ -266,7 +216,7 @@ const verifyOpencodeHarvest = (kind: "own" | "none" | "unattributed" | "unprompt
           expect(fs.existsSync(path.join(stateDir, "transcript.native"))).toBe(false);
           expect(world.sessions.get(session.id)?.providerSessionId).toBe("ses_own");
 
-          yield* clock.untilWritten(
+          yield* clock.untilChanged(
             () => world.sessions.get(session.id)?.settledAt !== null,
             "the first process settle",
           );

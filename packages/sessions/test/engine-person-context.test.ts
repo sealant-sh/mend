@@ -2,7 +2,6 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 
 import {
-  HotWorkspacesRepo,
   UserGitAuthorRepo,
   type HarnessLayoutsMemoryState,
   linuxLoginNameOf,
@@ -26,12 +25,7 @@ import {
   SealantPlatformError,
   SealantPrincipal,
 } from "@mend/sealant";
-import {
-  CaptureChannel,
-  SessionEngine,
-  WorkspaceGitHooks,
-  WorkspaceGitHooksLive,
-} from "@mend/sessions";
+import { SessionEngine, WorkspaceGitHooks, WorkspaceGitHooksLive } from "@mend/sessions";
 import { AgentBridge, processStatePathOf } from "@mend/store";
 import { it, TestClock } from "@mend/test-ci/effect-vitest";
 import type {
@@ -40,7 +34,7 @@ import type {
   WorkspaceCaptureOwnerMap,
   WorkspaceCaptureReplanned,
 } from "@sealant/sdk";
-import { Clock, Deferred, Duration, Effect, Exit, Fiber, Layer, Queue } from "effect";
+import { Clock, Duration, Effect, Exit, Fiber, Layer, Queue } from "effect";
 import { describe, expect } from "vitest";
 
 import { LEASE_REAPER_INTERVAL_SECONDS } from "../src/capture-runtime.ts";
@@ -52,6 +46,13 @@ import {
 } from "../src/harness-layout-steps.ts";
 import { makeMemoryCaptureStore } from "./capture-store-memory.ts";
 import { failureText, lifecycleLayer, memoryHotPool } from "./engine/capture-fixture.ts";
+import {
+  makeStandbyClock,
+  signal,
+  signalWrites,
+  signalled,
+  watched,
+} from "./engine/clock-fixture.ts";
 import {
   isPickupExec,
   now,
@@ -77,77 +78,6 @@ import {
 } from "./engine/person-fixture.ts";
 import { recordedBeforeStart } from "./engine/person-layout-fixture.ts";
 import { secretForms } from "./pickup-channel.ts";
-
-/** `effect`, then a wake-up on `queue` for whoever waits on the state it changed. */
-const signal =
-  (queue: Queue.Queue<void>) =>
-  <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-    effect.pipe(Effect.tap(() => Queue.offer(queue, undefined)));
-
-/** Waits for `condition`, woken by every signal on `queue`. */
-const signalled = (queue: Queue.Queue<void>) => (condition: () => boolean, label: string) =>
-  Effect.gen(function* () {
-    while (!condition()) yield* Queue.take(queue);
-  }).pipe(Effect.withSpan(label));
-
-/** Every write to `rows` wakes whoever waits on what it holds. */
-const signalWrites = <K, V>(rows: Map<K, V>, queue: Queue.Queue<void>) => {
-  const set = rows.set.bind(rows);
-  rows.set = (key, value) => {
-    set(key, value);
-    Queue.offerUnsafe(queue, undefined);
-    return rows;
-  };
-};
-
-/**
- * Real standby readiness and registration waits, both services kept (the standbys file's
- * `makeStandbyClock`, the parts a claim needs).
- */
-const makeStandbyClock = (pool: ReturnType<typeof memoryHotPool>) =>
-  Effect.gen(function* () {
-    /** A pool row changed: ready, failed, or gone. */
-    const rows = yield* Queue.make<void>();
-    const registrations = yield* Queue.make<{
-      readonly completed: Deferred.Deferred<void>;
-      readonly timeoutMs: number;
-    }>();
-    const poolLayer: Layer.Layer<HotWorkspacesRepo> = Layer.effect(
-      HotWorkspacesRepo,
-      Effect.map(HotWorkspacesRepo, (inner) => ({
-        ...inner,
-        setReady: (id, state) => signal(rows)(inner.setReady(id, state)),
-        setFailed: (id, error) => signal(rows)(inner.setFailed(id, error)),
-        remove: (id) => signal(rows)(inner.remove(id)),
-      })),
-    ).pipe(Layer.provide(pool.layer));
-    const wrapCaptureChannel = (inner: CaptureChannel["Service"]): CaptureChannel["Service"] => ({
-      ...inner,
-      awaitRegister: (worktreeId, accept, timeout) =>
-        Effect.gen(function* () {
-          const completed = yield* Deferred.make<void>();
-          yield* Queue.offer(registrations, { completed, timeoutMs: Duration.toMillis(timeout) });
-          return yield* inner
-            .awaitRegister(worktreeId, accept, timeout)
-            .pipe(Effect.ensuring(Deferred.succeed(completed, undefined)));
-        }),
-    });
-    const untilReady = signalled(rows);
-    /** A claim's registration wait, driven: nothing completes short of its 2 s, all of it at 2 s. */
-    const claim = <A, E, R>(provision: Effect.Effect<A, E, R>) =>
-      Effect.gen(function* () {
-        const fiber = yield* provision.pipe(Effect.forkChild);
-        const registration = yield* Queue.take(registrations);
-        expect(registration.timeoutMs).toBe(2_000);
-        yield* TestClock.adjust(1_999);
-        expect(yield* Deferred.isDone(registration.completed)).toBe(false);
-        expect(fiber.pollUnsafe()).toBeUndefined();
-        yield* TestClock.adjust(1);
-        yield* Deferred.await(registration.completed);
-        return yield* Fiber.join(fiber);
-      });
-    return { poolLayer, wrapCaptureChannel, untilReady, claim };
-  });
 
 /**
  * The test's clock, telling whoever waits which sleeps the engine has parked on it: a forked
@@ -175,17 +105,6 @@ const parkingClock = Effect.gen(function* () {
     });
   return { clock, untilParked };
 });
-
-/** The engine's log lines, waking whoever waits on `woken` as each lands. */
-const signallingLogs = (woken: Queue.Queue<void>): Array<string> => {
-  const lines: Array<string> = [];
-  lines.push = (...items: Array<string>) => {
-    const length = Array.prototype.push.apply(lines, items);
-    Queue.offerUnsafe(woken, undefined);
-    return length;
-  };
-  return lines;
-};
 
 /**
  * The platform as the dispatching client serves it on an install (`SealantClients.forPrincipal`):
@@ -259,7 +178,7 @@ const coldJoinResume = (options: {
     const memory = makeMemoryCaptureStore();
     /** The engine wrote a log line. */
     const logged = yield* Queue.make<void>();
-    const logs = signallingLogs(logged);
+    const logs = watched<string>(logged);
     /** The engine said one of these (what the work beside a step reports, ran or not). */
     const said =
       (...outcomes: ReadonlyArray<string>) =>
@@ -2732,7 +2651,7 @@ describe("git and Mend identity per process (docs/adr/0016, decision 4)", () => 
         const parking = yield* parkingClock;
         /** The engine wrote a log line. */
         const logged = yield* Queue.make<void>();
-        const logs = signallingLogs(logged);
+        const logs = watched<string>(logged);
         yield* livePersonJoinEffect({
           flag: "person",
           gitAuthorLayer: slow,

@@ -1,7 +1,3 @@
-import * as fs from "node:fs";
-import * as os from "node:os";
-import * as path from "node:path";
-
 import { SessionId } from "@mend/domain";
 import { Session, captureStatusLine } from "@mend/domain/workbench";
 import { LAUNCH_WAITING_PREFIX, LAUNCH_WAITING_SAVING } from "@mend/domain/workbench";
@@ -11,7 +7,7 @@ import {
   type SealantClientShape,
   SealantPlatformError,
 } from "@mend/sealant";
-import { CaptureChannel, captureHoldWords, SessionEngine } from "@mend/sessions";
+import { captureHoldWords, SessionEngine } from "@mend/sessions";
 import { it, TestClock } from "@mend/test-ci/effect-vitest";
 import type { CreateOptions, InteractiveSession, InteractiveSessionStatus } from "@sealant/sdk";
 import { Clock, Deferred, Duration, Effect, Fiber, Layer, Logger, Queue } from "effect";
@@ -28,8 +24,13 @@ import {
   until,
 } from "./engine/capture-fixture.ts";
 import {
+  driveRegistration,
+  drivingUntilChanged,
+  registrationWaits,
+  signalledFixture,
+} from "./engine/clock-fixture.ts";
+import {
   drawnLine,
-  makeWorld,
   sealantLaunchLayer,
   servedSocketApis,
   setup,
@@ -42,12 +43,6 @@ import {
  * `launchOnce` for the TestClock cases: `setup` runs as `withPreparedEngineEffect`'s `before`,
  * over the store alone, and this provisions in the engine built after it.
  */
-/** A checkpoint's wait for the executor's own capture (`CaptureChannel.awaitRegister`). */
-interface CheckpointWait {
-  readonly completed: Deferred.Deferred<void>;
-  readonly timeoutMs: number;
-}
-
 /**
  * The engine's own word on a step that writes no row of its own: `seen` once it logs `message`
  * (the layer goes around the engine, as `withPreparedEngineEffect(...).pipe(Effect.provide(layer))`).
@@ -63,52 +58,24 @@ const logged = (message: string) =>
     return { seen, layer };
   });
 
-/** Nothing registers: the checkpoint waits the whole window (`CHECKPOINT_WAIT`), then goes on. */
-const driveCheckpointWait = (wait: CheckpointWait) =>
-  Effect.gen(function* () {
-    expect(wait.timeoutMs).toBe(2_000);
-    yield* TestClock.adjust(1_999);
-    expect(yield* Deferred.isDone(wait.completed)).toBe(false);
-    yield* TestClock.adjust(1);
-    yield* Deferred.await(wait.completed);
-  });
-
 /**
- * A world whose session rows signal every write, and a client whose stops and flushes signal
- * too: `reached` wakes on those instead of polling in real time, so a case runs on the TestClock
- * and drives every engine timer it waits on with `TestClock.adjust`. A checkpoint taken while
- * an executor holds the worktree waits `CHECKPOINT_WAIT` (2 s) for the executor's own
- * checkpoint capture, which these fakes never register: `reached` drives such a wait when a
- * forked flow opens one, and `drivingCheckpointWaits` runs an operation forked and drives each
- * of its own to its end.
+ * A world whose session rows signal every write (`signalledFixture`), and a client whose stops
+ * and flushes signal too: `untilChanged` wakes on those instead of polling in real time, so a
+ * case runs on the TestClock and drives every engine timer it waits on with `TestClock.adjust`.
+ * A checkpoint taken while an executor holds the worktree waits `CHECKPOINT_WAIT` (2 s) for the
+ * executor's own checkpoint capture, which these fakes never register: `untilChanged` drives
+ * such a wait when a forked flow opens one, and `drivingCheckpointWaits` runs an operation
+ * forked and drives each of its own to its end.
  */
-const signalledWorld = (base: World = makeWorld()) =>
+const signalledWorld = () =>
   Effect.gen(function* () {
     const clock = yield* Clock.Clock;
-    const tmp = yield* Effect.acquireRelease(
-      Effect.sync(() => fs.mkdtempSync(path.join(os.tmpdir(), "mend-drain-test-"))),
-      (directory) => Effect.sync(() => fs.rmSync(directory, { recursive: true, force: true })),
-    );
+    const { world, tmp, changes, changed } = yield* signalledFixture("mend-drain-test-");
     // The store's clock follows the engine's: a lease, a capture and a reading share one time.
     const memory = makeMemoryCaptureStore();
     memory.clock.now = () => clock.currentTimeMillisUnsafe();
-    const changed = yield* Queue.sliding<void>(1);
-    const signal = () => void Queue.offerUnsafe(changed, undefined);
-    const registrations = yield* Queue.make<CheckpointWait>();
-    const wrapCaptureChannel = (inner: CaptureChannel["Service"]): CaptureChannel["Service"] => ({
-      ...inner,
-      awaitRegister: (worktreeId, accept, timeout) =>
-        Effect.gen(function* () {
-          const completed = yield* Deferred.make<void>();
-          yield* Queue.offer(registrations, { completed, timeoutMs: Duration.toMillis(timeout) });
-          return yield* inner
-            .awaitRegister(worktreeId, accept, timeout)
-            .pipe(Effect.ensuring(Deferred.succeed(completed, undefined)));
-        }),
-    });
-    const nextCheckpointWait = Queue.take(registrations).pipe(
-      Effect.map((wait) => ({ kind: "wait" as const, wait })),
-    );
+    const { registrations, wrapCaptureChannel } = yield* registrationWaits;
+    const untilChanged = drivingUntilChanged(changes, registrations);
     const drivingCheckpointWaits = <A, E, R>(
       self: Effect.Effect<A, E, R>,
     ): Effect.Effect<A, E, R> =>
@@ -117,48 +84,12 @@ const signalledWorld = (base: World = makeWorld()) =>
         while (true) {
           const next = yield* Effect.race(
             Fiber.await(fiber).pipe(Effect.map((exit) => ({ kind: "done" as const, exit }))),
-            nextCheckpointWait,
+            Queue.take(registrations).pipe(Effect.map((wait) => ({ kind: "wait" as const, wait }))),
           );
           if (next.kind === "done") return yield* next.exit;
-          yield* driveCheckpointWait(next.wait);
+          yield* driveRegistration(next.wait);
         }
       });
-    const sessions = new (class extends Map<string, Session> {
-      override set(key: string, value: Session): this {
-        super.set(key, value);
-        signal();
-        return this;
-      }
-      override delete(key: string): boolean {
-        const removed = super.delete(key);
-        signal();
-        return removed;
-      }
-    })();
-    // A relaunch plan's end (`clearRelaunch`) is the one write off the row: it signals too.
-    const relaunches = new (class extends Map<string, string> {
-      override set(key: string, value: string): this {
-        super.set(key, value);
-        signal();
-        return this;
-      }
-      override delete(key: string): boolean {
-        const removed = super.delete(key);
-        signal();
-        return removed;
-      }
-    })();
-    const world: World = { ...base, sessions, relaunches };
-    const reached = (condition: () => boolean, label: string) =>
-      Effect.gen(function* () {
-        while (!condition()) {
-          const next = yield* Effect.race(
-            Queue.take(changed).pipe(Effect.as({ kind: "changed" as const })),
-            nextCheckpointWait,
-          );
-          if (next.kind === "wait") yield* driveCheckpointWait(next.wait);
-        }
-      }).pipe(Effect.withSpan(label));
     const signalling = (layer: Layer.Layer<SealantClient>): Layer.Layer<SealantClient> =>
       Layer.effect(
         SealantClient,
@@ -167,9 +98,9 @@ const signalledWorld = (base: World = makeWorld()) =>
           (client): SealantClientShape => ({
             ...client,
             stopWorkspace: (workspace, options) =>
-              client.stopWorkspace(workspace, options).pipe(Effect.tap(() => Effect.sync(signal))),
+              client.stopWorkspace(workspace, options).pipe(Effect.tap(() => Effect.sync(changed))),
             captureFlush: (workspace, kind) =>
-              client.captureFlush(workspace, kind).pipe(Effect.tap(() => Effect.sync(signal))),
+              client.captureFlush(workspace, kind).pipe(Effect.tap(() => Effect.sync(changed))),
           }),
         ),
       ).pipe(Layer.provide(layer));
@@ -177,8 +108,8 @@ const signalledWorld = (base: World = makeWorld()) =>
       world,
       memory,
       tmp,
-      reached,
-      signal,
+      untilChanged,
+      changed,
       signalling,
       wrapCaptureChannel,
       drivingCheckpointWaits,
@@ -190,7 +121,7 @@ describe("SessionEngine capture drain (no loss of work product)", () => {
     "a stop drains before the workspace goes: it answers at once reading `saving`, the drain flushes until nothing is pending, and the lease is released only once the platform reports the workspace gone",
     () =>
       Effect.gen(function* () {
-        const { world, memory, tmp, reached, signal, signalling, wrapCaptureChannel } =
+        const { world, memory, tmp, untilChanged, changed, signalling, wrapCaptureChannel } =
           yield* signalledWorld();
         const created: Array<CreateOptions> = [];
         const events: string[] = [];
@@ -216,10 +147,13 @@ describe("SessionEngine capture drain (no loss of work product)", () => {
               );
               // Four flushes a poll apart: 3, 2 and 1 pending, then nothing.
               for (const left of [3, 2, 1]) {
-                yield* reached(() => answers.length <= left, `the flush with ${left} answers left`);
+                yield* untilChanged(
+                  () => answers.length <= left,
+                  `the flush with ${left} answers left`,
+                );
                 yield* TestClock.adjust(pollInterval);
               }
-              yield* reached(() => events.includes("workspace-1"), "the workspace stop");
+              yield* untilChanged(() => events.includes("workspace-1"), "the workspace stop");
               // Every flush before the stop, the last one answering nothing pending.
               const stopAt = events.indexOf("workspace-1");
               expect(events.slice(0, stopAt).every((event) => event === "flush:workspace-1")).toBe(
@@ -230,7 +164,7 @@ describe("SessionEngine capture drain (no loss of work product)", () => {
               expect(lines).toContain("saving · 2 left");
               expect(lines).toContain("saving · 1 left");
               // Stop asked, termination not yet reported: the executor keeps its lease.
-              yield* reached(
+              yield* untilChanged(
                 () => leaseHeldAtStop !== null,
                 "the platform's first look after the stop",
               );
@@ -239,11 +173,11 @@ describe("SessionEngine capture drain (no loss of work product)", () => {
               expect(leaseHeld(memory, session.worktreeId, session.id)).toBe(true);
               platformReportsStopped = true;
               yield* TestClock.adjust(pollInterval);
-              yield* reached(
+              yield* untilChanged(
                 () => !leaseHeld(memory, session.worktreeId, session.id),
                 "the lease release after the termination",
               );
-              yield* reached(
+              yield* untilChanged(
                 () => world.sessions.get(session.id)?.captureDrain === null,
                 "the drain's end",
               );
@@ -277,7 +211,7 @@ describe("SessionEngine capture drain (no loss of work product)", () => {
                       const session = world.sessions.get(sessionId);
                       leaseHeldAtStop =
                         session !== undefined && leaseHeld(memory, session.worktreeId, session.id);
-                      signal();
+                      changed();
                     }
                     return stopAsked && platformReportsStopped ? "stopped" : "ready";
                   },
@@ -307,7 +241,7 @@ describe("SessionEngine capture drain (no loss of work product)", () => {
           world,
           memory,
           tmp,
-          reached,
+          untilChanged,
           signalling,
           wrapCaptureChannel,
           drivingCheckpointWaits,
@@ -348,7 +282,7 @@ describe("SessionEngine capture drain (no loss of work product)", () => {
               const result = yield* drivingCheckpointWaits(Fiber.join(discarding));
               expect(result.discardedAt).toBeNull();
               expect(events).toContain("workspace-1");
-              yield* reached(
+              yield* untilChanged(
                 () => world.sessions.get(session.id)?.settledAt != null,
                 "the session to settle",
               );
@@ -397,7 +331,7 @@ describe("SessionEngine capture drain (no loss of work product)", () => {
           world,
           memory,
           tmp,
-          reached,
+          untilChanged,
           signalling,
           wrapCaptureChannel,
           drivingCheckpointWaits,
@@ -418,7 +352,7 @@ describe("SessionEngine capture drain (no loss of work product)", () => {
               yield* TestClock.adjust(Duration.millis(999));
               expect(world.sessions.get(session.id)?.captureNotSavedAt).toBeNull();
               yield* TestClock.adjust(Duration.millis(1));
-              yield* reached(
+              yield* untilChanged(
                 () => world.sessions.get(session.id)?.captureNotSavedAt !== null,
                 "the stall",
               );
@@ -438,7 +372,7 @@ describe("SessionEngine capture drain (no loss of work product)", () => {
               const relaunching = yield* engine
                 .resumeSession(session.id, "shell")
                 .pipe(Effect.flip, Effect.forkChild);
-              yield* reached(
+              yield* untilChanged(
                 () => world.sessions.get(session.id)?.captureDrain === "relaunch",
                 "the relaunch's drain",
               );
@@ -491,7 +425,7 @@ describe("SessionEngine capture drain (no loss of work product)", () => {
     "a stopped session reads `stopping` and is not settled until the platform reports its workspace terminated; a kept one stays `stopping`",
     () =>
       Effect.gen(function* () {
-        const { world, memory, tmp, reached, signalling, wrapCaptureChannel } =
+        const { world, memory, tmp, untilChanged, signalling, wrapCaptureChannel } =
           yield* signalledWorld();
         const created: Array<CreateOptions> = [];
         const events: string[] = [];
@@ -511,7 +445,7 @@ describe("SessionEngine capture drain (no loss of work product)", () => {
               yield* TestClock.adjust(Duration.millis(999));
               expect(world.sessions.get(session.id)?.captureNotSavedAt).toBeNull();
               yield* TestClock.adjust(Duration.millis(1));
-              yield* reached(
+              yield* untilChanged(
                 () => world.sessions.get(session.id)?.captureNotSavedAt != null,
                 "the drain kept its workspace",
               );
@@ -527,8 +461,8 @@ describe("SessionEngine capture drain (no loss of work product)", () => {
               // It saves after all; the stop is asked, and only the observed termination settles.
               pending = 0;
               yield* engine.stop(session.id);
-              yield* reached(() => events.includes("workspace-1"), "the workspace stop");
-              yield* reached(
+              yield* untilChanged(() => events.includes("workspace-1"), "the workspace stop");
+              yield* untilChanged(
                 () => world.sessions.get(session.id)?.settledAt != null,
                 "the settle after the termination",
               );
@@ -570,7 +504,7 @@ describe("SessionEngine capture drain (no loss of work product)", () => {
     "saved but its termination not observed: the session stays `stopping` until the platform reports the workspace gone",
     () =>
       Effect.gen(function* () {
-        const { world, memory, tmp, reached, signalling, wrapCaptureChannel } =
+        const { world, memory, tmp, untilChanged, signalling, wrapCaptureChannel } =
           yield* signalledWorld();
         const created: Array<CreateOptions> = [];
         const events: string[] = [];
@@ -582,13 +516,13 @@ describe("SessionEngine capture drain (no loss of work product)", () => {
               const { engine, session } = yield* provisionIn(project);
               yield* engine.launch(session.id, ["codex"]);
               yield* engine.stop(session.id);
-              yield* reached(() => events.includes("workspace-1"), "the workspace stop");
+              yield* untilChanged(() => events.includes("workspace-1"), "the workspace stop");
               // The platform keeps reporting it up: the drain watches for the termination for
               // `terminationWait` (300 ms), then records itself over with the stop unobserved.
               yield* TestClock.adjust(Duration.millis(299));
               expect(world.sessions.get(session.id)?.captureDrain).toBe("stop");
               yield* TestClock.adjust(Duration.millis(1));
-              yield* reached(
+              yield* untilChanged(
                 () => world.sessions.get(session.id)?.captureDrain === null,
                 "the drain's end",
               );
@@ -643,7 +577,7 @@ describe("SessionEngine capture drain (no loss of work product)", () => {
     "a kept drain backs off while nothing changes — 10 s doubling to its cap — and looks again at once when something does",
     () =>
       Effect.gen(function* () {
-        const { world, memory, tmp, reached, signalling, wrapCaptureChannel } =
+        const { world, memory, tmp, untilChanged, signalling, wrapCaptureChannel } =
           yield* signalledWorld();
         const created: Array<CreateOptions> = [];
         const flushed: string[] = [];
@@ -654,7 +588,7 @@ describe("SessionEngine capture drain (no loss of work product)", () => {
               const { engine, session } = yield* provisionIn(project);
               yield* engine.launch(session.id, ["codex"]);
               yield* engine.stop(session.id);
-              yield* reached(
+              yield* untilChanged(
                 () => world.sessions.get(session.id)?.captureNotSavedAt != null,
                 "the drain kept its workspace",
               );
@@ -671,8 +605,8 @@ describe("SessionEngine capture drain (no loss of work product)", () => {
                 Effect.gen(function* () {
                   const before = rounds();
                   yield* engine.reapCaptureLeases();
-                  yield* reached(() => rounds() > before, label);
-                  yield* reached(
+                  yield* untilChanged(() => rounds() > before, label);
+                  yield* untilChanged(
                     () => world.sessions.get(session.id)?.captureNotSavedAt != null,
                     `${label} · kept again`,
                   );
@@ -798,7 +732,7 @@ describe("SessionEngine capture drain (no loss of work product)", () => {
     "removal waits for the workspace: asked mid-drain the row stays until the workspace is saved and stopped; with no workspace it goes at once",
     () =>
       Effect.gen(function* () {
-        const { world, memory, tmp, reached, signalling, wrapCaptureChannel } =
+        const { world, memory, tmp, untilChanged, signalling, wrapCaptureChannel } =
           yield* signalledWorld();
         const created: Array<CreateOptions> = [];
         const events: string[] = [];
@@ -831,7 +765,7 @@ describe("SessionEngine capture drain (no loss of work product)", () => {
               saveNow = true;
               // The drain's next round reads it saved.
               yield* TestClock.adjust(pollInterval);
-              yield* reached(() => !world.sessions.has(session.id), "the removal");
+              yield* untilChanged(() => !world.sessions.has(session.id), "the removal");
               expect(events).toContain("workspace-1");
               expect(removedWhileUp).toBe(false);
             }),
@@ -876,7 +810,7 @@ describe("SessionEngine capture drain (no loss of work product)", () => {
     "plans against the platform's cap: with MEND_EXECUTOR_MAX_SECONDS the drain starts at deadline − (estimate + margin), counted from the executor's own start, then a replacement launches",
     () =>
       Effect.gen(function* () {
-        const { world, memory, tmp, reached, signalling, wrapCaptureChannel } =
+        const { world, memory, tmp, untilChanged, signalling, wrapCaptureChannel } =
           yield* signalledWorld();
         const created: Array<CreateOptions> = [];
         const events: string[] = [];
@@ -898,7 +832,7 @@ describe("SessionEngine capture drain (no loss of work product)", () => {
               );
               // 1000 s cap, 600 s estimate + 400 s margin: due from the executor's start.
               yield* engine.reapCaptureLeases();
-              yield* reached(() => created.length === 2, "the replacement launch");
+              yield* untilChanged(() => created.length === 2, "the replacement launch");
               const stopAt = events.indexOf("workspace-1");
               expect(stopAt).toBeGreaterThan(0);
               expect(events[stopAt - 1]).toBe("flush:workspace-1");
@@ -1006,7 +940,7 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
           world,
           memory,
           tmp,
-          reached,
+          untilChanged,
           signalling,
           wrapCaptureChannel,
           drivingCheckpointWaits,
@@ -1025,7 +959,7 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
               expect(kinds.every((kind) => kind === "suspend")).toBe(true);
               const before = kinds.length;
               yield* engine.stop(session.id);
-              yield* reached(() => events.includes("workspace-1"), "the workspace stop");
+              yield* untilChanged(() => events.includes("workspace-1"), "the workspace stop");
               const stopAt = events.indexOf("workspace-1");
               // The flush right before the stop is final.
               const flushesBeforeStop = events
@@ -1055,7 +989,7 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
     "a replacement is saved only by a completed final flush: an executor that cannot say `complete` keeps its workspace and nothing relaunches",
     () =>
       Effect.gen(function* () {
-        const { world, memory, tmp, reached, signalling, wrapCaptureChannel } =
+        const { world, memory, tmp, untilChanged, signalling, wrapCaptureChannel } =
           yield* signalledWorld();
         const created: Array<CreateOptions> = [];
         const events: string[] = [];
@@ -1077,7 +1011,7 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
               );
               // Due at once: 1000 s cap, 600 s estimate + 400 s margin.
               yield* engine.reapCaptureLeases();
-              yield* reached(
+              yield* untilChanged(
                 () => world.sessions.get(session.id)?.captureNotSavedAt != null,
                 "the kept workspace",
               );
@@ -1118,7 +1052,7 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
     "an executor sent a final flush is never reused: a second session is refused instead of joining it",
     () =>
       Effect.gen(function* () {
-        const { world, memory, tmp, reached, signalling, wrapCaptureChannel } =
+        const { world, memory, tmp, untilChanged, signalling, wrapCaptureChannel } =
           yield* signalledWorld();
         const created: Array<CreateOptions> = [];
         const spawned: ReadonlyArray<string>[] = [];
@@ -1129,7 +1063,7 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
               const { engine, session } = yield* provisionIn(project);
               yield* engine.launch(session.id, ["codex"]);
               yield* engine.stop(session.id);
-              yield* reached(
+              yield* untilChanged(
                 () => world.sessions.get(session.id)?.captureNotSavedAt != null,
                 "the kept workspace",
               );
@@ -1144,7 +1078,7 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
                 .pipe(Effect.flip, Effect.forkChild);
               // The launch waits on the ending executor for `leaseWait` (300 ms here, 30 min
               // live), looking every `leaseWaitInterval`, and says so while it waits.
-              yield* reached(
+              yield* untilChanged(
                 () => world.sessions.get(second.id)?.summary === LAUNCH_WAITING_SAVING,
                 "the waiting line",
               );
@@ -1271,7 +1205,7 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
         // the holder meanwhile, read it live and joined, and the drain then found no process in the
         // executor, sent its final flush, and the join's PTY was refused ("the executor is ending: a
         // final capture flush closed admission"), the second session recorded failed.
-        const { world, memory, tmp, reached, signalling, wrapCaptureChannel } =
+        const { world, memory, tmp, untilChanged, signalling, wrapCaptureChannel } =
           yield* signalledWorld();
         const created: Array<CreateOptions> = [];
         const events: string[] = [];
@@ -1296,7 +1230,7 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
               // The join looked at its holder and is opening its process there.
               yield* Deferred.await(joinOpening);
               yield* engine.stop(session.id);
-              yield* reached(
+              yield* untilChanged(
                 () => world.sessions.get(session.id)?.status === "stopped",
                 "the first session, stopped",
               );
@@ -1344,7 +1278,7 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
         // and each relaunch read the session's own lease as free. And the row's workspace is not
         // that executor: a replacement that overwrote the row and then stopped says nothing of
         // the lease's launch, which may still hold work it has not shipped (review of #516).
-        const { world, memory, tmp, reached, signalling, wrapCaptureChannel } =
+        const { world, memory, tmp, untilChanged, signalling, wrapCaptureChannel } =
           yield* signalledWorld();
         const created: Array<CreateOptions> = [];
         // A settled session's resume writes no waiting line on its row: the engine's log is its word.
@@ -1358,7 +1292,7 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
               const { engine, session } = yield* provisionIn(project);
               yield* engine.launch(session.id, ["codex"]);
               yield* engine.stop(session.id);
-              yield* reached(
+              yield* untilChanged(
                 () => world.sessions.get(session.id)?.status === "stopped",
                 "the row's executor, stopped",
               );
@@ -1414,7 +1348,7 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
         // A/B: session one's lease is bound to launch A, whose end nothing confirms, while its row
         // names a later executor B that has stopped. B's end says nothing of A: a sibling's launch
         // waits and is refused, and a removal is held, with A's lease kept.
-        const { world, memory, tmp, reached, signalling, wrapCaptureChannel } =
+        const { world, memory, tmp, untilChanged, signalling, wrapCaptureChannel } =
           yield* signalledWorld();
         const created: Array<CreateOptions> = [];
         yield* withPreparedEngineEffect(
@@ -1424,7 +1358,7 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
               const { engine, session } = yield* provisionIn(project);
               yield* engine.launch(session.id, ["codex"]);
               yield* engine.stop(session.id);
-              yield* reached(
+              yield* untilChanged(
                 () => world.sessions.get(session.id)?.status === "stopped",
                 "executor B, stopped",
               );
@@ -1445,7 +1379,7 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
                 .pipe(Effect.flip, Effect.forkChild);
               // The launch waits on launch A for `leaseWait` (300 ms here), looking every
               // `leaseWaitInterval`, and says so while it waits.
-              yield* reached(
+              yield* untilChanged(
                 () =>
                   world.sessions.get(sibling.id)?.summary?.startsWith(LAUNCH_WAITING_PREFIX) ===
                   true,
@@ -1506,7 +1440,7 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
     dead: () => boolean = () => false,
   ) =>
     Effect.gen(function* () {
-      const { world, memory, tmp, reached, signalling, wrapCaptureChannel } =
+      const { world, memory, tmp, untilChanged, signalling, wrapCaptureChannel } =
         yield* signalledWorld();
       const created: Array<CreateOptions> = [];
       yield* withPreparedEngineEffect(
@@ -1516,7 +1450,10 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
             const { engine, session } = yield* provisionIn(project);
             yield* engine.launch(session.id, ["codex"]);
             yield* engine.stop(session.id);
-            yield* reached(() => world.sessions.get(session.id)?.status === "stopped", "stopped");
+            yield* untilChanged(
+              () => world.sessions.get(session.id)?.status === "stopped",
+              "stopped",
+            );
             const epoch = (memory.leases.get(session.worktreeId)?.epoch ?? 0) + 1;
             const launchId = `launch:${session.id}:1791000000000:interrupted`;
             memory.leases.set(session.worktreeId, {
@@ -1720,7 +1657,7 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
     "a launch waiting for the worktree's previous executor launches nothing once its owner stops it",
     () =>
       Effect.gen(function* () {
-        const { world, memory, tmp, reached, signalling, wrapCaptureChannel } =
+        const { world, memory, tmp, untilChanged, signalling, wrapCaptureChannel } =
           yield* signalledWorld();
         const created: Array<CreateOptions> = [];
         yield* withPreparedEngineEffect(
@@ -1730,7 +1667,7 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
               const { engine, session } = yield* provisionIn(project);
               yield* engine.launch(session.id, ["codex"]);
               yield* engine.stop(session.id);
-              yield* reached(
+              yield* untilChanged(
                 () => world.sessions.get(session.id)?.captureNotSavedAt != null,
                 "the first executor, saving",
               );
@@ -1742,7 +1679,7 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
               const launching = yield* engine
                 .launch(second.id, ["claude"])
                 .pipe(Effect.forkChild({ startImmediately: true }));
-              yield* reached(
+              yield* untilChanged(
                 () => world.sessions.get(second.id)?.summary === LAUNCH_WAITING_SAVING,
                 "the waiting line",
               );
@@ -1776,7 +1713,7 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
     "the lead grows with what is pending at the observed rate: captures registering slowly start the replacement early, past halfway",
     () =>
       Effect.gen(function* () {
-        const { world, memory, tmp, reached, signalling, wrapCaptureChannel } =
+        const { world, memory, tmp, untilChanged, signalling, wrapCaptureChannel } =
           yield* signalledWorld();
         const created: Array<CreateOptions> = [];
         const kinds: CaptureFlushKind[] = [];
@@ -1806,7 +1743,7 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
                 );
               }
               yield* engine.reapCaptureLeases();
-              yield* reached(() => kinds.includes("final"), "the planned drain's final flush");
+              yield* untilChanged(() => kinds.includes("final"), "the planned drain's final flush");
             }),
           {
             fixture: { world, tmp },
@@ -1892,7 +1829,7 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
     "the session that owns the executor stays while another works in it: its removal waits for the workspace",
     () =>
       Effect.gen(function* () {
-        const { world, memory, tmp, reached, signalling, wrapCaptureChannel } =
+        const { world, memory, tmp, untilChanged, signalling, wrapCaptureChannel } =
           yield* signalledWorld();
         const created: Array<CreateOptions> = [];
         const spawned: ReadonlyArray<string>[] = [];
@@ -1911,7 +1848,7 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
               expect(world.sessions.get(second.id)?.sealantWorkspaceId).toBe("workspace-1");
               yield* engine.stop(session.id);
               // The joined session holds the workspace: no drain, and the stop settles the row.
-              yield* reached(
+              yield* untilChanged(
                 () => world.sessions.get(session.id)?.status === "stopped",
                 "the owner's session, stopped",
               );
@@ -1938,7 +1875,7 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
     "removal holds: a drain under way holds the worktree's identity, and nothing does once the workspace saved and ended",
     () =>
       Effect.gen(function* () {
-        const { world, memory, tmp, reached, signalling, wrapCaptureChannel } =
+        const { world, memory, tmp, untilChanged, signalling, wrapCaptureChannel } =
           yield* signalledWorld();
         const created: Array<CreateOptions> = [];
         const events: string[] = [];
@@ -1953,7 +1890,7 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
               // Up and holding its lease: an executor nobody observed end.
               expect((yield* engine.captureHolds(session.worktreeId)).length).toBeGreaterThan(0);
               yield* engine.stop(session.id);
-              yield* reached(
+              yield* untilChanged(
                 () => world.sessions.get(session.id)?.captureDrain === "stop",
                 "the drain",
               );
@@ -1963,8 +1900,8 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
               saveNow = true;
               // The drain's next round reads it saved.
               yield* TestClock.adjust(pollInterval);
-              yield* reached(() => events.includes("workspace-1"), "the workspace stop");
-              yield* reached(
+              yield* untilChanged(() => events.includes("workspace-1"), "the workspace stop");
+              yield* untilChanged(
                 () => world.sessions.get(session.id)?.captureDrain === null,
                 "the drain's end",
               );
@@ -1994,7 +1931,7 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
     "a removal waits for the workspace's end, not only its save: a stop the platform has not carried out keeps the row",
     () =>
       Effect.gen(function* () {
-        const { world, memory, tmp, reached, signalling, wrapCaptureChannel } =
+        const { world, memory, tmp, untilChanged, signalling, wrapCaptureChannel } =
           yield* signalledWorld();
         const created: Array<CreateOptions> = [];
         const events: string[] = [];
@@ -2006,13 +1943,13 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
               yield* engine.launch(session.id, ["codex"]);
               yield* engine.stop(session.id);
               expect(yield* engine.removeWhenStopped(session.id)).toBe("pending");
-              yield* reached(() => events.includes("workspace-1"), "the stop asked");
+              yield* untilChanged(() => events.includes("workspace-1"), "the stop asked");
               // The platform keeps reporting it up: the drain watches for the termination for
               // `terminationWait` (300 ms), then records itself over with the stop unobserved.
               yield* TestClock.adjust(Duration.millis(299));
               expect(world.sessions.get(session.id)?.captureDrain).toBe("stop");
               yield* TestClock.adjust(Duration.millis(1));
-              yield* reached(
+              yield* untilChanged(
                 () => world.sessions.get(session.id)?.captureDrain === null,
                 "the drain's end",
               );
@@ -2101,7 +2038,7 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
     "a relaunch interrupted by a restart finishes: the old executor drains and ends, then the session launches again",
     () =>
       Effect.gen(function* () {
-        const { world, memory, tmp, reached, signalling, wrapCaptureChannel } =
+        const { world, memory, tmp, untilChanged, signalling, wrapCaptureChannel } =
           yield* signalledWorld();
         const created: Array<CreateOptions> = [];
         const events: string[] = [];
@@ -2132,11 +2069,11 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
                 }),
               );
               yield* engine.reapCaptureLeases();
-              yield* reached(() => created.length === 2, "the relaunch");
+              yield* untilChanged(() => created.length === 2, "the relaunch");
               const stopAt = events.indexOf("workspace-1");
               expect(stopAt).toBeGreaterThan(0);
               expect(events[stopAt - 1]).toBe("flush:workspace-1");
-              yield* reached(() => !world.relaunches.has(session.id), "the plan's end");
+              yield* untilChanged(() => !world.relaunches.has(session.id), "the plan's end");
               expect(world.relaunches.has(session.id)).toBe(false);
             }),
           {
@@ -2164,7 +2101,7 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
           world,
           memory,
           tmp,
-          reached,
+          untilChanged,
           signalling,
           wrapCaptureChannel,
           drivingCheckpointWaits,
@@ -2189,7 +2126,7 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
               );
               // Due at once: 1000 s cap, 600 s estimate + 400 s margin.
               yield* engine.reapCaptureLeases();
-              yield* reached(
+              yield* untilChanged(
                 () => world.sessions.get(session.id)?.captureDrain === "replacement",
                 "the replacement's drain",
               );
@@ -2199,8 +2136,8 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
               saveNow = true;
               // The replacement's next round reads it saved.
               yield* TestClock.adjust(pollInterval);
-              yield* reached(() => events.includes("workspace-1"), "the terminate");
-              yield* reached(
+              yield* untilChanged(() => events.includes("workspace-1"), "the terminate");
+              yield* untilChanged(
                 () => world.sessions.get(session.id)?.captureDrain === null,
                 "the drain's end",
               );
@@ -2245,8 +2182,8 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
           world,
           memory,
           tmp,
-          reached,
-          signal,
+          untilChanged,
+          changed,
           signalling,
           wrapCaptureChannel,
           drivingCheckpointWaits,
@@ -2274,18 +2211,18 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
                 crypto.randomUUID(),
               );
               yield* engine.reapCaptureLeases();
-              yield* reached(
+              yield* untilChanged(
                 () => world.sessions.get(session.id)?.captureDrain === "replacement",
                 "the replacement's drain",
               );
               // The owner presses Stop; the platform takes its time closing the agent.
               const stopping = yield* Effect.forkChild(engine.stop(session.id));
-              yield* reached(() => closeReached, "the stop at the agent's close");
+              yield* untilChanged(() => closeReached, "the stop at the agent's close");
               // Meanwhile the replacement saves and ends the executor, and looks to relaunch.
               saveNow = true;
               yield* TestClock.adjust(pollInterval);
-              yield* reached(() => events.includes("workspace-1"), "the terminate");
-              yield* reached(
+              yield* untilChanged(() => events.includes("workspace-1"), "the terminate");
+              yield* untilChanged(
                 () => world.sessions.get(session.id)?.captureDrain === null,
                 "the replacement's drain end",
               );
@@ -2328,7 +2265,7 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
               ),
               () => {
                 closeReached = true;
-                signal();
+                changed();
                 return closeHeld;
               },
             ),
@@ -2352,8 +2289,8 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
           world,
           memory,
           tmp,
-          reached,
-          signal,
+          untilChanged,
+          changed,
           signalling,
           wrapCaptureChannel,
           drivingCheckpointWaits,
@@ -2381,18 +2318,18 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
                 crypto.randomUUID(),
               );
               yield* engine.reapCaptureLeases();
-              yield* reached(
+              yield* untilChanged(
                 () => world.sessions.get(session.id)?.captureDrain === "replacement",
                 "the replacement's drain",
               );
               // The owner presses Stop; the platform takes its time closing the agent.
               const stopping = yield* Effect.forkChild(engine.stop(session.id));
-              yield* reached(() => closeReached, "the stop at the agent's close");
+              yield* untilChanged(() => closeReached, "the stop at the agent's close");
               // Meanwhile the replacement saves and ends the executor, and looks to relaunch.
               saveNow = true;
               yield* TestClock.adjust(pollInterval);
-              yield* reached(() => events.includes("workspace-1"), "the terminate");
-              yield* reached(
+              yield* untilChanged(() => events.includes("workspace-1"), "the terminate");
+              yield* untilChanged(
                 () => world.sessions.get(session.id)?.captureDrain === null,
                 "the replacement's drain end",
               );
@@ -2440,7 +2377,7 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
               ),
               () => {
                 closeReached = true;
-                signal();
+                changed();
                 return closeHeld;
               },
               () => true,
@@ -2463,7 +2400,7 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
     "a follow-up whose relaunch a restart interrupted is delivered once, with its prompt, after the old executor saved and ended",
     () =>
       Effect.gen(function* () {
-        const { world, memory, tmp, reached, signalling, wrapCaptureChannel } =
+        const { world, memory, tmp, untilChanged, signalling, wrapCaptureChannel } =
           yield* signalledWorld();
         const created: Array<CreateOptions> = [];
         const spawned: ReadonlyArray<string>[] = [];
@@ -2498,14 +2435,14 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
                 crypto.randomUUID(),
               );
               yield* engine.stop(session.id);
-              yield* reached(
+              yield* untilChanged(
                 () => world.sessions.get(session.id)?.captureDrain === "stop",
                 "the stop's drain",
               );
               yield* Effect.forkChild(
                 engine.launchFollowUp(session.id, PROMPT, CORRELATION, "user-fixture"),
               );
-              yield* reached(() => world.relaunches.has(session.id), "the planned relaunch");
+              yield* untilChanged(() => world.relaunches.has(session.id), "the planned relaunch");
               expect(created).toHaveLength(1);
               return session.id;
             }),
@@ -2532,21 +2469,24 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
               // The boot's own sweep takes the relaunch's drain up: its first round's final flush
               // answers complete, and the executor's evidence of it is read by the next round
               // (`pollInterval`, 10 ms), which saves and ends the old executor, then launches again.
-              yield* reached(() => flushes() > flushesBefore, "the relaunch drain's first flush");
+              yield* untilChanged(
+                () => flushes() > flushesBefore,
+                "the relaunch drain's first flush",
+              );
               yield* engine.reapCaptureLeases();
               yield* TestClock.adjust(Duration.millis(10));
-              yield* reached(() => created.length === 2, "the relaunch");
+              yield* untilChanged(() => created.length === 2, "the relaunch");
               const stopAt = events.lastIndexOf("workspace-1");
               expect(stopAt).toBeGreaterThan(0);
               expect(events[stopAt - 1]).toBe("flush:workspace-1");
               // The prompt rides base64-encoded to the harness (`promptArgv`).
               expect(spawned.at(-1)).toContain(Buffer.from(PROMPT).toString("base64"));
-              yield* reached(() => !world.relaunches.has(id), "the plan's end");
+              yield* untilChanged(() => !world.relaunches.has(id), "the plan's end");
               // A restart after the launch but before the plan was cleared: the process already
               // carries the correlation id, so nothing launches a second time.
               if (planned !== undefined) world.relaunches.set(id, planned);
               yield* engine.reapCaptureLeases();
-              yield* reached(() => !world.relaunches.has(id), "the replayed plan's end");
+              yield* untilChanged(() => !world.relaunches.has(id), "the replayed plan's end");
               yield* TestClock.adjust(Duration.millis(300));
               expect(created).toHaveLength(2);
               const correlated = [...world.processes.values()].filter(
@@ -2569,7 +2509,7 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
     "a restart mid-drain gives the draining session its channel back, so its executor can still ship",
     () =>
       Effect.gen(function* () {
-        const { world, memory, tmp, reached, wrapCaptureChannel } = yield* signalledWorld();
+        const { world, memory, tmp, untilChanged, wrapCaptureChannel } = yield* signalledWorld();
         const created: Array<CreateOptions> = [];
         const layer = () =>
           lifecycleLayer(created, {
@@ -2582,7 +2522,7 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
               const { engine, session } = yield* provisionIn(project);
               yield* engine.launch(session.id, ["codex"]);
               yield* engine.stop(session.id);
-              yield* reached(
+              yield* untilChanged(
                 () => world.sessions.get(session.id)?.captureDrain === "stop",
                 "the stop's drain",
               );
@@ -2616,7 +2556,7 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
           world,
           memory,
           tmp,
-          reached,
+          untilChanged,
           signalling,
           wrapCaptureChannel,
           drivingCheckpointWaits,
@@ -2635,7 +2575,7 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
               yield* TestClock.adjust(Duration.millis(999));
               expect(world.sessions.get(session.id)?.captureNotSavedAt).toBeNull();
               yield* TestClock.adjust(Duration.millis(1));
-              yield* reached(
+              yield* untilChanged(
                 () => world.sessions.get(session.id)?.captureNotSavedAt != null,
                 "the kept workspace",
               );
@@ -2644,7 +2584,7 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
               const refusing = yield* engine
                 .discardUnsavedAndStop(session.id)
                 .pipe(Effect.flip, Effect.forkChild);
-              yield* reached(() => stops.length === 1, "the discard's stop");
+              yield* untilChanged(() => stops.length === 1, "the discard's stop");
               yield* TestClock.adjust(Duration.millis(299));
               expect(refusing.pollUnsafe()).toBeUndefined();
               yield* TestClock.adjust(Duration.millis(1));
@@ -2688,7 +2628,7 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
       // timeout (137), Core restarted the executor on its own disk to save it, and that boot
       // answered Mend's look. The session read `completed`, with nothing saying the host ended it.
       Effect.gen(function* () {
-        const { world, memory, tmp, reached, wrapCaptureChannel } = yield* signalledWorld();
+        const { world, memory, tmp, untilChanged, wrapCaptureChannel } = yield* signalledWorld();
         const created: Array<CreateOptions> = [];
         const ptyStates = new Map<string, InteractiveSessionStatus>();
         let killed = false;
@@ -2720,7 +2660,7 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
               });
               // The process watcher looks at the PTY every 2 s.
               yield* TestClock.adjust(Duration.seconds(2));
-              yield* reached(
+              yield* untilChanged(
                 () => world.sessions.get(session.id)?.settledAt != null,
                 "the session's settle",
               );
@@ -2772,7 +2712,7 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
     "an agent whose executor went away without Mend asking reads `executor lost`, never `completed`",
     () =>
       Effect.gen(function* () {
-        const { world, memory, tmp, reached, wrapCaptureChannel } = yield* signalledWorld();
+        const { world, memory, tmp, untilChanged, wrapCaptureChannel } = yield* signalledWorld();
         const created: Array<CreateOptions> = [];
         const ptyStates = new Map<string, InteractiveSessionStatus>();
         let killed = false;
@@ -2804,7 +2744,7 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
               });
               // The process watcher looks at the PTY every 2 s.
               yield* TestClock.adjust(Duration.seconds(2));
-              yield* reached(
+              yield* untilChanged(
                 () => world.sessions.get(session.id)?.settledAt != null,
                 "the session's settle",
               );
@@ -2837,7 +2777,7 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
     "a `docker stop` whose final capture registered last, with no completed word from it and no seal, names that capture as not confirmed — never saved (review 2026-09-28 #13)",
     () =>
       Effect.gen(function* () {
-        const { world, memory, tmp, reached, wrapCaptureChannel } = yield* signalledWorld();
+        const { world, memory, tmp, untilChanged, wrapCaptureChannel } = yield* signalledWorld();
         const created: Array<CreateOptions> = [];
         const ptyStates = new Map<string, InteractiveSessionStatus>();
         let stopped = false;
@@ -2870,7 +2810,7 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
               });
               // The process watcher looks at the PTY every 2 s.
               yield* TestClock.adjust(Duration.seconds(2));
-              yield* reached(
+              yield* untilChanged(
                 () => world.sessions.get(session.id)?.settledAt != null,
                 "the session's settle",
               );
@@ -2903,7 +2843,7 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
     "a kill -9 says when it last saved, that later changes were not saved, and what Mend last read pending — only when it read it after that save",
     () =>
       Effect.gen(function* () {
-        const { world, memory, tmp, reached, wrapCaptureChannel } = yield* signalledWorld();
+        const { world, memory, tmp, untilChanged, wrapCaptureChannel } = yield* signalledWorld();
         const created: Array<CreateOptions> = [];
         const ptyStates = new Map<string, InteractiveSessionStatus>();
         let killed = false;
@@ -2939,7 +2879,7 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
               });
               // The process watcher looks at the PTY every 2 s.
               yield* TestClock.adjust(Duration.seconds(2));
-              yield* reached(
+              yield* untilChanged(
                 () => world.sessions.get(session.id)?.settledAt != null,
                 "the session's settle",
               );

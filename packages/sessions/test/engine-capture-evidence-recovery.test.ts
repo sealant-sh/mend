@@ -8,15 +8,14 @@ import { Project, Session, executorEndOf } from "@mend/domain/workbench";
 import { type HostUserNamespaces, hostUserNamespacesRefusal } from "@mend/domain/workbench";
 import { SealantPlatformError, type WorkspaceStopOptions } from "@mend/sealant";
 import {
-  type CaptureChannel,
   type CaptureCompletionSeal,
   SessionEngine,
   WorkspaceHostUserNamespaces,
 } from "@mend/sessions";
 import { captureKeys, SHALLOW_REPOSITORY_REASON } from "@mend/store";
 import { it, TestClock } from "@mend/test-ci/effect-vitest";
-import type { CreateOptions, InteractiveSessionStatus, WorkspaceCaptureStatus } from "@sealant/sdk";
-import { Deferred, Duration, Effect, Fiber, Layer, Queue } from "effect";
+import type { CreateOptions, WorkspaceCaptureStatus } from "@sealant/sdk";
+import { Deferred, Duration, Effect, Fiber, Layer } from "effect";
 import { describe, expect } from "vitest";
 
 import { makeMemoryCaptureStore } from "./capture-store-memory.ts";
@@ -29,6 +28,7 @@ import {
   provisionIn,
   shipHarnessCapture,
 } from "./engine/capture-fixture.ts";
+import { makeEngineClock } from "./engine/clock-fixture.ts";
 import {
   captureAnswer,
   drawnLine,
@@ -37,101 +37,12 @@ import {
   sealantLaunchLayer,
   servedSocketApis,
   setup,
-  type World,
   withEngine,
   withPreparedEngineEffect,
 } from "./engine/fixture.ts";
 
-/**
- * What these scenarios wait on, signalled by the fakes that change it so the test drives the
- * TestClock instead of polling: every row the engine writes (`world.sessions`), every look the PTY
- * watcher takes (`ptyStates` reads), every stop answered by the platform (`changed`, from the
- * fake's `stopAnswer`), and every checkpoint wait the channel registers (`awaitRegister`).
- */
-const makeRecoveryClock = Effect.gen(function* () {
-  const changes = yield* Queue.make<void>();
-  const registrations = yield* Queue.make<{
-    readonly completed: Deferred.Deferred<void>;
-    readonly timeoutMs: number;
-  }>();
-  const changed = () => void Queue.offerUnsafe(changes, undefined);
-  const prepareWorld = (world: World) => {
-    const set = world.sessions.set.bind(world.sessions);
-    world.sessions.set = (key, value) => {
-      set(key, value);
-      changed();
-      return world.sessions;
-    };
-  };
-  /** An array whose every push signals: the engine's log lines, the stops asked of the platform. */
-  const signalled = <T>(): Array<T> => {
-    const items: Array<T> = [];
-    // Not enumerable: `toEqual([])` reads the items alone.
-    Object.defineProperty(items, "push", {
-      value: (...pushed: Array<T>) => {
-        const length = Array.prototype.push.apply(items, pushed);
-        changed();
-        return length;
-      },
-    });
-    return items;
-  };
-  const logs = () => signalled<string>();
-  const stopOptions = () => signalled<WorkspaceStopOptions | undefined>();
-  const looks = new Map<string, number>();
-  const ptyStates = new Map<string, InteractiveSessionStatus>();
-  const ptyGet = ptyStates.get.bind(ptyStates);
-  ptyStates.get = (id) => {
-    looks.set(id, (looks.get(id) ?? 0) + 1);
-    changed();
-    return ptyGet(id);
-  };
-  const wrapCaptureChannel = (inner: CaptureChannel["Service"]): CaptureChannel["Service"] => ({
-    ...inner,
-    awaitRegister: (worktreeId, accept, timeout) =>
-      Effect.gen(function* () {
-        const completed = yield* Deferred.make<void>();
-        yield* Queue.offer(registrations, { completed, timeoutMs: Duration.toMillis(timeout) });
-        return yield* inner
-          .awaitRegister(worktreeId, accept, timeout)
-          .pipe(Effect.ensuring(Deferred.succeed(completed, undefined)));
-      }),
-  });
-  const untilChanged = (condition: () => boolean, label: string) =>
-    Effect.gen(function* () {
-      while (!condition()) yield* Queue.take(changes);
-    }).pipe(Effect.withSpan(label));
-  /** The next checkpoint wait (`CHECKPOINT_WAIT`, 2 s) runs out: nothing registers under it. */
-  const expireCheckpointWait = Effect.gen(function* () {
-    const registration = yield* Queue.take(registrations);
-    expect(registration.timeoutMs).toBe(2_000);
-    yield* TestClock.adjust(1_999);
-    expect(yield* Deferred.isDone(registration.completed)).toBe(false);
-    yield* TestClock.adjust(1);
-    yield* Deferred.await(registration.completed);
-  });
-  /** The PTY watcher's next 2 s look at `ptyId`; `notYet` holds right up to it. */
-  const nextLook = (ptyId: string, notYet: () => boolean) =>
-    Effect.gen(function* () {
-      const looked = looks.get(ptyId) ?? 0;
-      yield* TestClock.adjust(1_999);
-      expect(looks.get(ptyId) ?? 0).toBe(looked);
-      expect(notYet()).toBe(true);
-      yield* TestClock.adjust(1);
-      yield* untilChanged(() => (looks.get(ptyId) ?? 0) > looked, `the watcher's look at ${ptyId}`);
-    });
-  return {
-    changed,
-    prepareWorld,
-    wrapCaptureChannel,
-    logs,
-    stopOptions,
-    ptyStates,
-    untilChanged,
-    expireCheckpointWait,
-    nextLook,
-  };
-});
+/** What these scenarios wait on: every session row the engine writes, with the shared clock's signals. */
+const makeRecoveryClock = makeEngineClock(["sessions"]);
 
 describe("SessionEngine seventh review (2026-09-28)", () => {
   // Review 2026-09-28 (7) #4 (the reviewer's reproduction): the owner read `pending: 1` at the
@@ -395,7 +306,7 @@ describe("SessionEngine seventh review (2026-09-28)", () => {
         const stopOptions: Array<WorkspaceStopOptions | undefined> = [];
         // The status read's failed publication ends in a warning: every line the engine logs
         // signals, so the test reads the fence it left once that is written.
-        const logs = clock.logs();
+        const logs = clock.watched<string>();
         let sample: WorkspaceCaptureStatus | null = null;
         let dead = false;
         let sealed = false;
@@ -715,7 +626,7 @@ describe("SessionEngine ninth review (2026-09-28)", () => {
         const memory = makeMemoryCaptureStore();
         const records = new Map<string, CaptureCompletionSeal>();
         const clock = yield* makeRecoveryClock;
-        const stopOptions = clock.stopOptions();
+        const stopOptions = clock.watched<WorkspaceStopOptions | undefined>();
         const logs: Array<string> = [];
         let sample: WorkspaceCaptureStatus | null = null;
         let sealed = false;
@@ -953,7 +864,7 @@ describe("review 10 #7 a direct complete answer", () => {
         const memory = makeMemoryCaptureStore();
         const records = new Map<string, CaptureCompletionSeal>();
         const clock = yield* makeRecoveryClock;
-        const stopOptions = clock.stopOptions();
+        const stopOptions = clock.watched<WorkspaceStopOptions | undefined>();
         const logs: Array<string> = [];
         let sample: WorkspaceCaptureStatus | null = null;
         let sealed = false;
@@ -1116,7 +1027,7 @@ describe("review 10 #7 a direct complete answer", () => {
         const memory = makeMemoryCaptureStore();
         const records = new Map<string, CaptureCompletionSeal>();
         const clock = yield* makeRecoveryClock;
-        const stopOptions = clock.stopOptions();
+        const stopOptions = clock.watched<WorkspaceStopOptions | undefined>();
         const logs: Array<string> = [];
         let sample: WorkspaceCaptureStatus | null = null;
         let sealed = false;

@@ -16,12 +16,7 @@ import {
 } from "@mend/domain";
 import { Project, RepositoryCloneUrl, Session, SessionProcess } from "@mend/domain/workbench";
 import { SealantPlatformError } from "@mend/sealant";
-import {
-  type CaptureChannel,
-  HARNESS_HOME_MOUNT_PATH,
-  SessionEngine,
-  WORKSPACE_MEND_TOML,
-} from "@mend/sessions";
+import { HARNESS_HOME_MOUNT_PATH, SessionEngine, WORKSPACE_MEND_TOML } from "@mend/sessions";
 import {
   BlobStoreFsLive,
   captureKeys,
@@ -33,8 +28,8 @@ import {
 } from "@mend/store";
 import { buildManifest, snapshotDirectory, uploadObjects } from "@mend/store/testing";
 import { it, TestClock } from "@mend/test-ci/effect-vitest";
-import type { CreateOptions, InteractiveSessionStatus, WorkspaceCaptureStatus } from "@sealant/sdk";
-import { Deferred, Duration, Effect, Fiber, Queue, Tracer } from "effect";
+import type { CreateOptions, WorkspaceCaptureStatus } from "@sealant/sdk";
+import { Deferred, Duration, Effect, Fiber, Tracer } from "effect";
 import { describe, expect } from "vitest";
 
 import { makeMemoryCaptureStore, type MemoryCaptureStore } from "./capture-store-memory.ts";
@@ -46,6 +41,7 @@ import {
   provisionIn,
   shipCapturedHarnessHome,
 } from "./engine/capture-fixture.ts";
+import { makeEngineClock } from "./engine/clock-fixture.ts";
 import {
   agentMemoryLayerOf,
   captureAnswer,
@@ -55,43 +51,22 @@ import {
   sealantLaunchLayer,
   setup,
   setupSibling,
-  type World,
   withEngine,
   withEngineEffect,
   withPreparedEngineEffect,
 } from "./engine/fixture.ts";
 
-/** A checkpoint's wait for the executor's own capture (`CaptureChannel.awaitRegister`). */
-interface CheckpointWait {
-  readonly completed: Deferred.Deferred<void>;
-  readonly timeoutMs: number;
-}
-
-/** Nothing registers: the checkpoint waits the whole window (`CHECKPOINT_WAIT`), then goes on. */
-const driveCheckpointWait = (wait: CheckpointWait) =>
-  Effect.gen(function* () {
-    expect(wait.timeoutMs).toBe(2_000);
-    yield* TestClock.adjust(1_999);
-    expect(yield* Deferred.isDone(wait.completed)).toBe(false);
-    yield* TestClock.adjust(1);
-    yield* Deferred.await(wait.completed);
-  });
-
 /**
- * What the TestClock cases wait on, signalled by the fakes that change it so a case drives the
- * clock instead of polling: every session row the engine writes (`world.sessions`), every list a
- * fake appends to (`watched`), every look the PTY watcher takes (`ptyStates` reads), every read of
- * an executor's capture status (`captureStatus`), every checkpoint wait the channel registers
- * (`awaitRegister`), and every look the engine takes at a session's saved harness state
- * (`harnessStateFor`, the restart classification's read) as it ends, through `tracer`. A look that
- * finds nothing writes no row and logs nothing, so its span's end is the only sign it happened. A
- * checkpoint wait nobody answers runs its whole window (`CHECKPOINT_WAIT`, 2 s): `untilChanged`
- * drives one as it opens, so a harvest behind one goes on to its end.
+ * What the TestClock cases wait on, beyond the shared clock's signals (`world.sessions`, the
+ * lists a fake appends to, the PTY watcher's looks, the channel's checkpoint waits, each driven
+ * as it opens so a harvest behind one goes on to its end): every read of an executor's capture
+ * status (`captureStatus`), and every look the engine takes at a session's saved harness state
+ * (`harnessStateFor`, the restart classification's read) as it ends, through `tracer`. A look
+ * that finds nothing writes no row and logs nothing, so its span's end is the only sign it
+ * happened.
  */
 const makeLaunchClock = Effect.gen(function* () {
-  const changes = yield* Queue.make<void>();
-  const registrations = yield* Queue.make<CheckpointWait>();
-  const changed = () => void Queue.offerUnsafe(changes, undefined);
+  const clock = yield* makeEngineClock(["sessions"], { drivesCheckpointWaits: true });
   let harnessStateLooks = 0;
   const base = yield* Effect.tracer;
   const tracer = Tracer.make({
@@ -102,72 +77,19 @@ const makeLaunchClock = Effect.gen(function* () {
       span.end = (endTime, exit) => {
         end(endTime, exit);
         harnessStateLooks += 1;
-        changed();
+        clock.changed();
       };
       return span;
     },
   });
-  const signalled = <K, V>(map: Map<K, V>): Map<K, V> => {
-    const set = map.set.bind(map);
-    map.set = (key, value) => {
-      set(key, value);
-      changed();
-      return map;
-    };
-    return map;
-  };
-  const watched = <T>(items: Array<T>): Array<T> => {
-    // Not an own enumerable key: `toEqual` on the list still compares its entries alone.
-    Object.defineProperty(items, "push", {
-      enumerable: false,
-      value: (...entries: Array<T>) => {
-        const length = Array.prototype.push.apply(items, entries);
-        changed();
-        return length;
-      },
-    });
-    return items;
-  };
-  const prepareWorld = (world: World) => {
-    signalled(world.sessions);
-  };
-  const ptyLooks = new Map<string, number>();
-  const ptyStates = new Map<string, InteractiveSessionStatus>();
-  const ptyGet = ptyStates.get.bind(ptyStates);
-  ptyStates.get = (id) => {
-    ptyLooks.set(id, (ptyLooks.get(id) ?? 0) + 1);
-    changed();
-    return ptyGet(id);
-  };
   let statusReads = 0;
   /** The stand-in platform's `captureStatus`: no answer, as without it, and a signal per read. */
   const captureStatus = () =>
     Effect.sync(() => {
       statusReads += 1;
-      changed();
+      clock.changed();
       return null;
     });
-  const wrapCaptureChannel = (inner: CaptureChannel["Service"]): CaptureChannel["Service"] => ({
-    ...inner,
-    awaitRegister: (worktreeId, accept, timeout) =>
-      Effect.gen(function* () {
-        const completed = yield* Deferred.make<void>();
-        yield* Queue.offer(registrations, { completed, timeoutMs: Duration.toMillis(timeout) });
-        return yield* inner
-          .awaitRegister(worktreeId, accept, timeout)
-          .pipe(Effect.ensuring(Deferred.succeed(completed, undefined)));
-      }),
-  });
-  const untilChanged = (condition: () => boolean, label: string) =>
-    Effect.gen(function* () {
-      while (!condition()) {
-        const next = yield* Effect.race(
-          Queue.take(changes).pipe(Effect.as({ kind: "changed" as const })),
-          Queue.take(registrations).pipe(Effect.map((wait) => ({ kind: "wait" as const, wait }))),
-        );
-        if (next.kind === "wait") yield* driveCheckpointWait(next.wait);
-      }
-    }).pipe(Effect.withSpan(label));
   /**
    * The PTY watcher's next 2 s look at `ptyId` finds the harness gone (`notYet` holds right up
    * to it), and Mend looks for the executor's end (`executorLostOnEnd`): `looks` reads of its
@@ -180,30 +102,18 @@ const makeLaunchClock = Effect.gen(function* () {
     pollInterval: Duration.Duration,
   ) =>
     Effect.gen(function* () {
-      const looked = ptyLooks.get(ptyId) ?? 0;
       const read = statusReads;
-      yield* TestClock.adjust(1_999);
-      expect(ptyLooks.get(ptyId) ?? 0).toBe(looked);
-      expect(notYet()).toBe(true);
-      yield* TestClock.adjust(1);
-      yield* untilChanged(
-        () => (ptyLooks.get(ptyId) ?? 0) > looked,
-        `the watcher's look at ${ptyId}`,
-      );
+      yield* clock.nextLook(ptyId, notYet);
       for (let look = 1; look < looks; look++) {
-        yield* untilChanged(() => statusReads >= read + look, `the executor's look ${look}`);
+        yield* clock.untilChanged(() => statusReads >= read + look, `the executor's look ${look}`);
         yield* TestClock.adjust(pollInterval);
       }
     });
   return {
-    prepareWorld,
-    watched,
-    ptyStates,
+    ...clock,
     captureStatus,
-    wrapCaptureChannel,
     tracer,
     harnessStateLooks: () => harnessStateLooks,
-    untilChanged,
     harnessGone,
   };
 });

@@ -1,9 +1,9 @@
 import { Project } from "@mend/domain/workbench";
 import { SealantPlatformError, type WorkspaceStopOptions } from "@mend/sealant";
-import { type CaptureChannel, type CaptureCompletionSeal, SessionEngine } from "@mend/sessions";
+import { type CaptureCompletionSeal } from "@mend/sessions";
 import { it, TestClock } from "@mend/test-ci/effect-vitest";
-import type { CreateOptions, InteractiveSessionStatus } from "@sealant/sdk";
-import { Clock, Deferred, Duration, Effect, Fiber, Queue } from "effect";
+import type { CreateOptions } from "@sealant/sdk";
+import { Clock, Deferred, Duration, Effect } from "effect";
 import { describe, expect } from "vitest";
 
 import { makeMemoryCaptureStore } from "./capture-store-memory.ts";
@@ -13,9 +13,11 @@ import {
   launchOnce,
   lifecycleLayer,
   memorySeals,
+  provisionIn,
   shipHarnessCapture,
   until,
 } from "./engine/capture-fixture.ts";
+import { type EngineClock, makeEngineClock } from "./engine/clock-fixture.ts";
 import {
   sealantLaunchLayer,
   servedSocketApis,
@@ -25,113 +27,11 @@ import {
   withPreparedEngineEffect,
 } from "./engine/fixture.ts";
 /**
- * What these scenarios wait on, signalled by the fakes that change it so the test drives the
- * TestClock instead of polling: every row the engine writes (`world.sessions`,
- * `world.captureUnsaved`), every stop sent to the platform, every look the PTY watcher takes
- * (`ptyStates` reads), and every checkpoint wait the channel registers (`awaitRegister`).
+ * What these scenarios wait on: every row the engine writes (`world.sessions`,
+ * `world.captureUnsaved`), every stop sent to the platform (`watched`), every look the PTY
+ * watcher takes and every checkpoint wait the channel registers.
  */
-const makeEvidenceClock = Effect.gen(function* () {
-  const changes = yield* Queue.make<void>();
-  const registrations = yield* Queue.make<{
-    readonly completed: Deferred.Deferred<void>;
-    readonly timeoutMs: number;
-  }>();
-  const changed = () => void Queue.offerUnsafe(changes, undefined);
-  const signalled = <K, V>(map: Map<K, V>): Map<K, V> => {
-    const set = map.set.bind(map);
-    map.set = (key, value) => {
-      set(key, value);
-      changed();
-      return map;
-    };
-    return map;
-  };
-  const prepareWorld = (world: World) => {
-    signalled(world.sessions);
-    signalled(world.captureUnsaved);
-  };
-  const stopOptions = (): Array<WorkspaceStopOptions | undefined> => {
-    const options: Array<WorkspaceStopOptions | undefined> = [];
-    options.push = (...items) => {
-      const length = Array.prototype.push.apply(options, items);
-      changed();
-      return length;
-    };
-    return options;
-  };
-  const looks = new Map<string, number>();
-  const ptyStates = new Map<string, InteractiveSessionStatus>();
-  const ptyGet = ptyStates.get.bind(ptyStates);
-  ptyStates.get = (id) => {
-    looks.set(id, (looks.get(id) ?? 0) + 1);
-    changed();
-    return ptyGet(id);
-  };
-  const wrapCaptureChannel = (inner: CaptureChannel["Service"]): CaptureChannel["Service"] => ({
-    ...inner,
-    awaitRegister: (worktreeId, accept, timeout) =>
-      Effect.gen(function* () {
-        const completed = yield* Deferred.make<void>();
-        yield* Queue.offer(registrations, { completed, timeoutMs: Duration.toMillis(timeout) });
-        return yield* inner
-          .awaitRegister(worktreeId, accept, timeout)
-          .pipe(Effect.ensuring(Deferred.succeed(completed, undefined)));
-      }),
-  });
-  const untilChanged = (condition: () => boolean, label: string) =>
-    Effect.gen(function* () {
-      while (!condition()) yield* Queue.take(changes);
-    }).pipe(Effect.withSpan(label));
-  /** `operation` waits out one checkpoint's `CHECKPOINT_WAIT` (2 s) for a capture to register. */
-  const checkpointWait = <A, E, R>(operation: Effect.Effect<A, E, R>) =>
-    Effect.gen(function* () {
-      const fiber = yield* operation.pipe(Effect.forkChild);
-      const registration = yield* Queue.take(registrations);
-      expect(registration.timeoutMs).toBe(2_000);
-      yield* TestClock.adjust(1_999);
-      expect(yield* Deferred.isDone(registration.completed)).toBe(false);
-      expect(fiber.pollUnsafe()).toBeUndefined();
-      yield* TestClock.adjust(1);
-      yield* Deferred.await(registration.completed);
-      return yield* Fiber.join(fiber);
-    });
-  /** The PTY watcher's next 2 s look at `ptyId`; `notYet` holds right up to it. */
-  const nextLook = (ptyId: string, notYet: () => boolean) =>
-    Effect.gen(function* () {
-      const looked = looks.get(ptyId) ?? 0;
-      yield* TestClock.adjust(1_999);
-      expect(looks.get(ptyId) ?? 0).toBe(looked);
-      expect(notYet()).toBe(true);
-      yield* TestClock.adjust(1);
-      yield* untilChanged(() => (looks.get(ptyId) ?? 0) > looked, `the watcher's look at ${ptyId}`);
-    });
-  return {
-    prepareWorld,
-    wrapCaptureChannel,
-    stopOptions,
-    ptyStates,
-    untilChanged,
-    checkpointWait,
-    nextLook,
-  };
-});
-
-type EvidenceClock = Effect.Success<typeof makeEvidenceClock>;
-
-/** `launchOnce` over a project adopted before the engine was built (`withPreparedEngineEffect`). */
-const provisionOnce = (project: Project) =>
-  Effect.gen(function* () {
-    const engine = yield* SessionEngine;
-    const session = yield* engine.provision({
-      projectId: project.id,
-      harness: "codex",
-      label: null,
-      name: null,
-      ownerUserId: "user-fixture",
-      base: null,
-    });
-    return { engine, session };
-  });
+const makeEvidenceClock = makeEngineClock(["sessions", "captureUnsaved"]);
 
 /** A sealed executor A with a joined session B on it; B's settling harvest reads unsaved work. */
 const joinedObservesUnsaved = (
@@ -141,12 +41,12 @@ const joinedObservesUnsaved = (
   memory: ReturnType<typeof makeMemoryCaptureStore>,
   records: Map<string, CaptureCompletionSeal>,
   answer: { current: "clean" | "unsaved" | "lost"; stamp?: object },
-  clock: EvidenceClock,
+  clock: EngineClock,
   sealOffsetMs = -5_000,
   unsavedHead: "at-seal" | "before-seal" = "at-seal",
 ) =>
   Effect.gen(function* () {
-    const { engine, session } = yield* provisionOnce(project);
+    const { engine, session } = yield* provisionIn(project);
     yield* engine.launch(session.id, ["codex"]);
     const joined = yield* engine.provisionSessionIn(session.worktreeId, {
       harness: "claude",
@@ -534,7 +434,7 @@ describe("SessionEngine fifth review (2026-09-28)", () => {
         const memory = makeMemoryCaptureStore();
         const records = new Map<string, CaptureCompletionSeal>();
         const clock = yield* makeEvidenceClock;
-        const stopOptions = clock.stopOptions();
+        const stopOptions = clock.watched<WorkspaceStopOptions | undefined>();
         const answer = { current: "clean" as "clean" | "unsaved" | "lost" };
         yield* withPreparedEngineEffect(
           (world, tmp) => setup(tmp, world),
@@ -610,7 +510,7 @@ describe("SessionEngine fifth review (2026-09-28)", () => {
           (world, tmp) => setup(tmp, world),
           (world, tmp, project) =>
             Effect.gen(function* () {
-              const { engine, session } = yield* provisionOnce(project);
+              const { engine, session } = yield* provisionIn(project);
               yield* engine.launch(session.id, ["codex"]);
               const epoch = memory.leases.get(session.worktreeId)?.epoch ?? 0;
               const built = yield* shipHarnessCapture(

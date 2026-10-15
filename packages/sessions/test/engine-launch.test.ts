@@ -15,7 +15,7 @@ import {
   agentMemoryDigest,
 } from "@mend/db";
 import { SealantWorkspaceId, SessionId, SessionProcessId, ReferenceId } from "@mend/domain";
-import { Project, Session, SessionProcess, PiProfile, Reference } from "@mend/domain/workbench";
+import { Project, SessionProcess, PiProfile, Reference } from "@mend/domain/workbench";
 import { LAUNCH_BOOTING, LAUNCH_PREPARING } from "@mend/domain/workbench";
 import { SealantClient, SealantPlatformError } from "@mend/sealant";
 import { ProtocolHost, SessionEngine } from "@mend/sessions";
@@ -27,16 +27,16 @@ import type {
   WorkspacePhase,
   WorkspaceRuntimeInfo,
 } from "@sealant/sdk";
-import { Clock, Deferred, Duration, Effect, Exit, Fiber, Layer, Queue } from "effect";
+import { Clock, Deferred, Duration, Effect, Exit, Fiber, Layer } from "effect";
 import { describe, expect } from "vitest";
 
 import { OPENCODE_SEED } from "../src/harness-seeds.ts";
 import { makeMemoryCaptureStore } from "./capture-store-memory.ts";
 import { lifecycleLayer } from "./engine/capture-fixture.ts";
+import { signalledFixture } from "./engine/clock-fixture.ts";
 import {
   agentMemoryLayerOf,
   launchSkill,
-  makeWorld,
   now,
   piProfilesLayerOf,
   recordingProtocolHostLayer,
@@ -45,7 +45,6 @@ import {
   skillsForLaunchLayer,
   withEngine,
   withPreparedEngineEffect,
-  type World,
 } from "./engine/fixture.ts";
 
 /** The owner's pi profile; none unless a test brings one. */
@@ -89,45 +88,6 @@ const plantForeignPiProfile = (home: string) => {
   fs.writeFileSync(file, "export default () => {};\n");
 };
 
-/** A map whose every write wakes whoever waits on the state it holds. */
-const signalledMap = <V>(signal: () => void) =>
-  new (class extends Map<string, V> {
-    override set(key: string, value: V): this {
-      super.set(key, value);
-      signal();
-      return this;
-    }
-    override delete(key: string): boolean {
-      const removed = super.delete(key);
-      signal();
-      return removed;
-    }
-  })();
-
-/**
- * A world whose session and process rows signal every write: `reached` wakes on those instead of
- * polling in real time, so a case runs on the TestClock and drives every engine timer it waits on
- * with `TestClock.adjust`. `signal` is for a fake of the test's own to wake `reached` the same way.
- */
-const signalledWorld = () =>
-  Effect.gen(function* () {
-    const tmp = yield* Effect.acquireRelease(
-      Effect.sync(() => fs.mkdtempSync(path.join(os.tmpdir(), "mend-launch-test-"))),
-      (directory) => Effect.sync(() => fs.rmSync(directory, { recursive: true, force: true })),
-    );
-    const changed = yield* Queue.sliding<void>(1);
-    const signal = () => void Queue.offerUnsafe(changed, undefined);
-    const world: World = {
-      ...makeWorld(),
-      sessions: signalledMap<Session>(signal),
-      processes: signalledMap<SessionProcess>(signal),
-    };
-    const reached = (condition: () => boolean, label: string) =>
-      Effect.gen(function* () {
-        while (!condition()) yield* Queue.take(changed);
-      }).pipe(Effect.withSpan(label));
-    return { world, tmp, reached, signal };
-  });
 describe("SessionEngine", () => {
   it.each([
     { ownerUserId: null, isOperator: false, transports: false },
@@ -676,7 +636,7 @@ describe("SessionEngine", () => {
     () =>
       Effect.gen(function* () {
         const created: CreateOptions[] = [];
-        const { world, tmp, reached } = yield* signalledWorld();
+        const { world, tmp, untilChanged } = yield* signalledFixture("mend-launch-test-");
         yield* withPreparedEngineEffect(
           (_world, dir) => setup(dir, world),
           (_world, _dir, project) =>
@@ -707,7 +667,7 @@ describe("SessionEngine", () => {
                       process.kind === "agent-pty" &&
                       process.exitedAt === null,
                   );
-                yield* reached(() => !agentLive(), "the agent's end after the stop");
+                yield* untilChanged(() => !agentLive(), "the agent's end after the stop");
                 expect(agentLive()).toBe(false);
               });
               const home = harnessHomePathOf(project.storePath, session.id);
@@ -1356,14 +1316,14 @@ describe("SessionEngine", () => {
       const execCalls: ReadonlyArray<string>[] = [];
       const attached: Array<{ readonly process: SessionProcess; readonly mode: string }> = [];
       const submitted: string[] = [];
-      const { world, tmp, reached, signal } = yield* signalledWorld();
-      // Every exec the engine ran wakes `reached`: the settle-path harvest runs forked.
+      const { world, tmp, untilChanged, changed } = yield* signalledFixture("mend-launch-test-");
+      // Every exec the engine ran wakes `untilChanged`: the settle-path harvest runs forked.
       const signallingExecs = Layer.effect(
         SealantClient,
         Effect.map(SealantClient, (client) => ({
           ...client,
           exec: (workspace, argv, options) =>
-            client.exec(workspace, argv, options).pipe(Effect.ensuring(Effect.sync(signal))),
+            client.exec(workspace, argv, options).pipe(Effect.ensuring(Effect.sync(changed))),
         })),
       ).pipe(
         Layer.provide(
@@ -1410,7 +1370,7 @@ describe("SessionEngine", () => {
             // against the empty exec output; wait for its pack attempt before planting state.
             const packRan = () =>
               execCalls.some((argv) => argv.join(" ").includes("mend-harness-state"));
-            yield* reached(packRan, "the harvest's pack attempt");
+            yield* untilChanged(packRan, "the harvest's pack attempt");
             expect(packRan()).toBe(true);
             const stateDir = processStatePathOf(project.storePath, session.id, agent.id);
             fs.mkdirSync(stateDir, { recursive: true });
@@ -1505,7 +1465,7 @@ describe("SessionEngine", () => {
         const created: CreateOptions[] = [];
         const createAsked = yield* Deferred.make<void>();
         const createAnswered = yield* Deferred.make<void>();
-        const { world, tmp, reached } = yield* signalledWorld();
+        const { world, tmp, untilChanged } = yield* signalledFixture("mend-launch-test-");
         yield* withPreparedEngineEffect(
           (_world, dir) => setup(dir, world),
           (_world, _dir, project) =>
@@ -1525,7 +1485,7 @@ describe("SessionEngine", () => {
               expect(world.sessions.get(session.id)?.status).toBe("starting");
 
               yield* Deferred.succeed(createAnswered, undefined);
-              yield* reached(
+              yield* untilChanged(
                 () => world.sessions.get(session.id)?.status === "running",
                 "the launch the caller left to reach running",
               );
@@ -1725,7 +1685,7 @@ describe("SessionEngine", () => {
         const spawned: ReadonlyArray<string>[] = [];
         const openAsked = yield* Deferred.make<void>();
         const openAnswered = yield* Deferred.make<void>();
-        const { world, tmp, reached } = yield* signalledWorld();
+        const { world, tmp, untilChanged } = yield* signalledFixture("mend-launch-test-");
         const clock = yield* Clock.Clock;
         // The store's clock follows the engine's: a lease and its reading share one time.
         const memory = makeMemoryCaptureStore();
@@ -1749,7 +1709,7 @@ describe("SessionEngine", () => {
               yield* engine.stop(session.id);
               yield* Deferred.succeed(openAnswered, undefined);
               yield* Fiber.await(launching);
-              yield* reached(
+              yield* untilChanged(
                 () => world.sessions.get(session.id)?.status === "stopped",
                 "the stopped launch to settle stopped",
               );
@@ -1872,7 +1832,7 @@ describe("SessionEngine", () => {
           status: "pending",
           deadline: null,
         };
-        const { world, tmp, reached } = yield* signalledWorld();
+        const { world, tmp, untilChanged } = yield* signalledFixture("mend-launch-test-");
         // The watch's pace and the window after which no executor means an image build
         // (`testDrainPolicy`), driven here one look at a time.
         const createPhaseInterval = Duration.millis(10);
@@ -1921,7 +1881,7 @@ describe("SessionEngine", () => {
                 .launch(session.id, ["codex"])
                 .pipe(Effect.forkChild({ startImmediately: true }));
               const summary = () => world.sessions.get(session.id)?.summary;
-              yield* reached(
+              yield* untilChanged(
                 () => summary() === LAUNCH_BOOTING,
                 "booting, as the create is accepted",
               );
@@ -1932,11 +1892,11 @@ describe("SessionEngine", () => {
               for (let look = 1; look < looks; look++) yield* TestClock.adjust(createPhaseInterval);
               expect(summary()).toBe(LAUNCH_BOOTING);
               yield* TestClock.adjust(createPhaseInterval);
-              yield* reached(() => summary() === LAUNCH_PREPARING, "the image build line");
+              yield* untilChanged(() => summary() === LAUNCH_PREPARING, "the image build line");
               expect(world.sessions.get(session.id)?.status).toBe("starting");
               executorUp = true;
               yield* TestClock.adjust(createPhaseInterval);
-              yield* reached(
+              yield* untilChanged(
                 () => summary() === LAUNCH_BOOTING,
                 "booting, once the executor exists",
               );
@@ -1962,7 +1922,7 @@ describe("SessionEngine", () => {
         const answered = yield* Deferred.make<void>();
         let phase: WorkspacePhase | null = { name: "queued" };
         let runtimeReads = 0;
-        const { world, tmp, reached } = yield* signalledWorld();
+        const { world, tmp, untilChanged } = yield* signalledFixture("mend-launch-test-");
         /** The watch's pace (`testDrainPolicy`): each look is one adjust. */
         const createPhaseInterval = Duration.millis(10);
         const watchedCreates = Layer.effect(
@@ -2012,14 +1972,14 @@ describe("SessionEngine", () => {
                 .pipe(Effect.forkChild({ startImmediately: true }));
               const summary = () => world.sessions.get(session.id)?.summary;
               // The watch is up once the create is accepted.
-              yield* reached(
+              yield* untilChanged(
                 () => summary() === LAUNCH_BOOTING,
                 "booting, as the create is accepted",
               );
               const nextLook = (expected: string, label: string) =>
                 Effect.gen(function* () {
                   yield* TestClock.adjust(createPhaseInterval);
-                  yield* reached(() => summary() === expected, label);
+                  yield* untilChanged(() => summary() === expected, label);
                 });
               yield* nextLook("queued · waiting for a worker", "queued");
               phase = {

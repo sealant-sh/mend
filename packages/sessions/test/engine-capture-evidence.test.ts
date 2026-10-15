@@ -5,7 +5,6 @@ import { SessionId } from "@mend/domain";
 import { Session, withUnsavedAnswer } from "@mend/domain/workbench";
 import { SealantPlatformError, type WorkspaceStopOptions } from "@mend/sealant";
 import {
-  type CaptureChannel,
   type CaptureCompletionSeal,
   SessionChannelNetworkHost,
   SessionChannelNetworkHostLive,
@@ -15,8 +14,8 @@ import {
 } from "@mend/sessions";
 import { DeploymentConfig } from "@mend/store";
 import { it, TestClock } from "@mend/test-ci/effect-vitest";
-import type { CreateOptions, InteractiveSessionStatus } from "@sealant/sdk";
-import { Clock, Context, Deferred, Duration, Effect, Layer, Queue } from "effect";
+import type { CreateOptions } from "@sealant/sdk";
+import { Clock, Context, Duration, Effect, Layer, Queue } from "effect";
 import { describe, expect } from "vitest";
 
 import { makeMemoryCaptureStore, type MemoryCaptureStore } from "./capture-store-memory.ts";
@@ -31,6 +30,12 @@ import {
   shipHarnessCapture,
 } from "./engine/capture-fixture.ts";
 import {
+  EXECUTOR_END_LOOKS,
+  POLL_INTERVAL,
+  makeEngineClock,
+  statusLooks,
+} from "./engine/clock-fixture.ts";
+import {
   drawnLine,
   sealantLaunchLayer,
   servedSocketApis,
@@ -39,11 +44,6 @@ import {
   withEngine,
   withPreparedEngineEffect,
 } from "./engine/fixture.ts";
-
-/** `testDrainPolicy`'s `pollInterval`: the gap between an ended agent's looks at its executor. */
-const POLL_INTERVAL = Duration.millis(10);
-/** `EXECUTOR_END_LOOKS`: how many times the engine asks an ended agent's executor before it gives up. */
-const EXECUTOR_END_LOOKS = 6;
 
 /**
  * An answer the executor gave after `seal`, kept as the repository keeps it: the next number in
@@ -151,38 +151,13 @@ const sealCurrent = (
   });
 
 /**
- * What the recovery scenarios wait on, signalled by the fakes that change it so the test drives
- * the TestClock instead of polling: every row the engine writes (`world.sessions`), every look
- * the PTY watcher takes (`ptyStates` reads), every look at the executor's capture status (the last
- * ask of each of `executorLostOnEnd`'s looks), every final flush the executor is asked, and every
- * checkpoint wait the channel registers (`awaitRegister`).
+ * What these scenarios wait on, beyond the shared clock's signals (`world.sessions`, the PTY
+ * watcher's looks, the channel's checkpoint waits): every look at the executor's capture status
+ * (the last ask of each of `executorLostOnEnd`'s looks) and every final flush the executor is asked.
  */
 const makeEvidenceClock = Effect.gen(function* () {
-  const changes = yield* Queue.make<void>();
-  const statusLooks = yield* Queue.make<void>();
-  const registrations = yield* Queue.make<{
-    readonly completed: Deferred.Deferred<void>;
-    readonly timeoutMs: number;
-  }>();
-  const changed = () => void Queue.offerUnsafe(changes, undefined);
-  const prepareWorld = (world: World) => {
-    const set = world.sessions.set.bind(world.sessions);
-    world.sessions.set = (key, value) => {
-      set(key, value);
-      changed();
-      return world.sessions;
-    };
-  };
-  const looks = new Map<string, number>();
-  const ptyStates = new Map<string, InteractiveSessionStatus>();
-  const ptyGet = ptyStates.get.bind(ptyStates);
-  ptyStates.get = (id) => {
-    looks.set(id, (looks.get(id) ?? 0) + 1);
-    changed();
-    return ptyGet(id);
-  };
-  /** The platform's capture status, as the fake answers it absent a hook: no answer. */
-  const captureStatus = () => Queue.offer(statusLooks, undefined).pipe(Effect.as(null));
+  const clock = yield* makeEngineClock(["sessions"]);
+  const { looks, captureStatus } = yield* statusLooks;
   /** When (on the test clock) each final flush was asked, and what `answer` said to it. */
   const flushedAt: Array<number> = [];
   const flush =
@@ -192,31 +167,6 @@ const makeEvidenceClock = Effect.gen(function* () {
         Effect.tap((at) => Effect.sync(() => flushedAt.push(at))),
         Effect.andThen(answer()),
       );
-  const wrapCaptureChannel = (inner: CaptureChannel["Service"]): CaptureChannel["Service"] => ({
-    ...inner,
-    awaitRegister: (worktreeId, accept, timeout) =>
-      Effect.gen(function* () {
-        const completed = yield* Deferred.make<void>();
-        yield* Queue.offer(registrations, { completed, timeoutMs: Duration.toMillis(timeout) });
-        return yield* inner
-          .awaitRegister(worktreeId, accept, timeout)
-          .pipe(Effect.ensuring(Deferred.succeed(completed, undefined)));
-      }),
-  });
-  const untilChanged = (condition: () => boolean, label: string) =>
-    Effect.gen(function* () {
-      while (!condition()) yield* Queue.take(changes);
-    }).pipe(Effect.withSpan(label));
-  /** The PTY watcher's next 2 s look at `ptyId`; `notYet` holds right up to it. */
-  const nextLook = (ptyId: string, notYet: () => boolean) =>
-    Effect.gen(function* () {
-      const looked = looks.get(ptyId) ?? 0;
-      yield* TestClock.adjust(1_999);
-      expect(looks.get(ptyId) ?? 0).toBe(looked);
-      expect(notYet()).toBe(true);
-      yield* TestClock.adjust(1);
-      yield* untilChanged(() => (looks.get(ptyId) ?? 0) > looked, `the watcher's look at ${ptyId}`);
-    });
   /**
    * `EXECUTOR_END_LOOKS` looks at an ended agent's executor, a poll apart: each asks its capture
    * status last and sleeps the poll, and `notYet` holds until the last look's silence.
@@ -224,33 +174,13 @@ const makeEvidenceClock = Effect.gen(function* () {
   const executorLooks = (notYet: () => boolean) =>
     Effect.gen(function* () {
       for (let look = 1; look < EXECUTOR_END_LOOKS; look += 1) {
-        yield* Queue.take(statusLooks);
+        yield* Queue.take(looks);
         expect(notYet()).toBe(true);
         yield* TestClock.adjust(POLL_INTERVAL);
       }
-      yield* Queue.take(statusLooks);
+      yield* Queue.take(looks);
     });
-  /** The settle's checkpoint waits `CHECKPOINT_WAIT` (2 s) for a capture no executor registers. */
-  const checkpointWait = Effect.gen(function* () {
-    const registration = yield* Queue.take(registrations);
-    expect(registration.timeoutMs).toBe(2_000);
-    yield* TestClock.adjust(1_999);
-    expect(yield* Deferred.isDone(registration.completed)).toBe(false);
-    yield* TestClock.adjust(1);
-    yield* Deferred.await(registration.completed);
-  });
-  return {
-    prepareWorld,
-    ptyStates,
-    captureStatus,
-    flush,
-    flushedAt,
-    wrapCaptureChannel,
-    untilChanged,
-    nextLook,
-    executorLooks,
-    checkpointWait,
-  };
+  return { ...clock, captureStatus, flush, flushedAt, executorLooks };
 });
 
 describe("SessionEngine received evidence beats stored evidence (review 2026-09-28 (4))", () => {
@@ -608,7 +538,7 @@ describe("SessionEngine status words from the latest observation (e2e run 6 #7)"
               expect(world.sessions.get(session.id)?.summary).toMatch(/^executor not answering · /);
               // The settle's checkpoint waits for a capture no executor registers; the drain after
               // it is answered nothing and keeps the executor.
-              yield* clock.checkpointWait;
+              yield* clock.expireCheckpointWait;
               yield* clock.untilChanged(
                 () => world.sessions.get(session.id)?.captureNotSavedAt != null,
                 "the drain kept",
@@ -936,7 +866,7 @@ describe("SessionEngine a recovered executor's accepted seal is the session's wo
               ended = true;
               // The settle's checkpoint waits for a capture no executor registers; the drain after
               // it reads the executor ended on the seal, attests it, and the stop ends it.
-              yield* clock.checkpointWait;
+              yield* clock.expireCheckpointWait;
               yield* clock.untilChanged(
                 () => world.sessions.get(session.id)?.summary?.startsWith("saved at ") === true,
                 "the attested seal's save",

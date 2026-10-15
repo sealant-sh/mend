@@ -27,11 +27,12 @@ import {
   SessionNotLiveError,
 } from "@mend/sessions";
 import { it, TestClock } from "@mend/test-ci/effect-vitest";
-import type { CreateOptions, InteractiveSessionStatus } from "@sealant/sdk";
-import { Effect, Layer, Queue } from "effect";
+import type { CreateOptions } from "@sealant/sdk";
+import { Effect, Layer } from "effect";
 import { describe, expect } from "vitest";
 
 import { provisionIn } from "./engine/capture-fixture.ts";
+import { makeEngineClock } from "./engine/clock-fixture.ts";
 import {
   now,
   sealantLaunchLayer,
@@ -44,69 +45,11 @@ import {
 } from "./engine/fixture.ts";
 
 /**
- * What these scenarios wait on, signalled by the fakes that change it so the test drives the
- * TestClock instead of polling: every row the engine writes (`world.processes`, `world.sessions`,
- * `world.checkpoints`), every stop sent to the platform (`stopped`) and every look the PTY
+ * What these scenarios wait on: every row the engine writes (`world.processes`, `world.sessions`,
+ * `world.checkpoints`), every stop sent to the platform (`watched`) and every look the PTY
  * watcher takes (`ptyStates` reads).
  */
-const makeProcessClock = Effect.gen(function* () {
-  const changes = yield* Queue.make<void>();
-  const changed = () => void Queue.offerUnsafe(changes, undefined);
-  const signalled = <K, V>(map: Map<K, V>): Map<K, V> => {
-    const set = map.set.bind(map);
-    map.set = (key, value) => {
-      set(key, value);
-      changed();
-      return map;
-    };
-    return map;
-  };
-  // Not enumerable: the array still deep-equals a plain one in `toEqual`.
-  const signalledArray = <T>(items: Array<T>): Array<T> =>
-    Object.defineProperty(items, "push", {
-      enumerable: false,
-      value: (...entries: Array<T>) => {
-        const length = Array.prototype.push.apply(items, entries);
-        changed();
-        return length;
-      },
-    });
-  const prepareWorld = (world: World) => {
-    signalled(world.processes);
-    signalled(world.sessions);
-    signalledArray(world.checkpoints);
-  };
-  const looks = new Map<string, number>();
-  const ptyStates = new Map<string, InteractiveSessionStatus>();
-  const ptyGet = ptyStates.get.bind(ptyStates);
-  ptyStates.get = (id) => {
-    looks.set(id, (looks.get(id) ?? 0) + 1);
-    changed();
-    return ptyGet(id);
-  };
-  const untilChanged = (condition: () => boolean, label: string) =>
-    Effect.gen(function* () {
-      while (!condition()) yield* Queue.take(changes);
-    }).pipe(Effect.withSpan(label));
-  /** The PTY watcher's next 2 s look at `ptyId`; `notYet` holds right up to it. */
-  const nextLook = (ptyId: string, notYet: () => boolean) =>
-    Effect.gen(function* () {
-      const looked = looks.get(ptyId) ?? 0;
-      yield* TestClock.adjust(1_999);
-      expect(looks.get(ptyId) ?? 0).toBe(looked);
-      expect(notYet()).toBe(true);
-      yield* TestClock.adjust(1);
-      yield* untilChanged(() => (looks.get(ptyId) ?? 0) > looked, `the watcher's look at ${ptyId}`);
-    });
-  return {
-    prepareWorld,
-    changed,
-    array: <T>() => signalledArray<T>([]),
-    ptyStates,
-    untilChanged,
-    nextLook,
-  };
-});
+const makeProcessClock = makeEngineClock(["processes", "sessions", "checkpoints"]);
 
 describe("SessionEngine", () => {
   it("keeps a legacy bench review-only", async () => {
@@ -284,7 +227,7 @@ describe("SessionEngine", () => {
     Effect.gen(function* () {
       const created: CreateOptions[] = [];
       const clock = yield* makeProcessClock;
-      const stopped = clock.array<string>();
+      const stopped = clock.watched<string>();
       yield* withPreparedEngineEffect(
         (world, tmp) => setup(tmp, world),
         (world, _tmp, project) =>
@@ -377,7 +320,7 @@ describe("SessionEngine", () => {
     Effect.gen(function* () {
       const created: CreateOptions[] = [];
       const clock = yield* makeProcessClock;
-      const stopped = clock.array<string>();
+      const stopped = clock.watched<string>();
       yield* withPreparedEngineEffect(
         (world, tmp) => setup(tmp, world),
         (world, _tmp, project) =>
@@ -440,7 +383,7 @@ describe("SessionEngine", () => {
       Effect.gen(function* () {
         const created: CreateOptions[] = [];
         const clock = yield* makeProcessClock;
-        const stopped = clock.array<string>();
+        const stopped = clock.watched<string>();
         yield* withPreparedEngineEffect(
           (world, tmp) => setup(tmp, world),
           (world, _tmp, project) =>
@@ -496,7 +439,7 @@ describe("SessionEngine", () => {
         // `running` after the session's Stop, and held it `idle` until its own stop.
         const created: CreateOptions[] = [];
         const clock = yield* makeProcessClock;
-        const stopped = clock.array<string>();
+        const stopped = clock.watched<string>();
         yield* withPreparedEngineEffect(
           (world, tmp) => setup(tmp, world),
           (world, _tmp, project) =>
@@ -625,7 +568,7 @@ describe("SessionEngine", () => {
       Effect.gen(function* () {
         const created: CreateOptions[] = [];
         const clock = yield* makeProcessClock;
-        const stopped = clock.array<string>();
+        const stopped = clock.watched<string>();
         const { ptyStates } = clock;
         yield* withPreparedEngineEffect(
           (world, tmp) => setup(tmp, world),
@@ -693,7 +636,7 @@ describe("SessionEngine", () => {
     Effect.gen(function* () {
       const created: CreateOptions[] = [];
       const clock = yield* makeProcessClock;
-      const stopped = clock.array<string>();
+      const stopped = clock.watched<string>();
       yield* withPreparedEngineEffect(
         (world, tmp) => setup(tmp, world),
         (world, _tmp, project) =>
@@ -1043,7 +986,7 @@ describe("SessionEngine", () => {
     Effect.gen(function* () {
       const created: CreateOptions[] = [];
       const clock = yield* makeProcessClock;
-      const stopped = clock.array<string>();
+      const stopped = clock.watched<string>();
       yield* withPreparedEngineEffect(
         (world, tmp) => setup(tmp, world),
         (world, _tmp, project) =>
@@ -1102,7 +1045,7 @@ describe("SessionEngine", () => {
       Effect.gen(function* () {
         const created: CreateOptions[] = [];
         const clock = yield* makeProcessClock;
-        const stopped = clock.array<string>();
+        const stopped = clock.watched<string>();
         yield* withPreparedEngineEffect(
           (world, tmp) => setup(tmp, world),
           (world, _tmp, project) =>
@@ -1148,7 +1091,7 @@ describe("SessionEngine", () => {
     Effect.gen(function* () {
       const created: CreateOptions[] = [];
       const clock = yield* makeProcessClock;
-      const stopped = clock.array<string>();
+      const stopped = clock.watched<string>();
       yield* withPreparedEngineEffect(
         (world, tmp) => setup(tmp, world),
         (world, _tmp, project) =>
@@ -1469,7 +1412,7 @@ describe("SessionEngine", () => {
         [...(rows?.values() ?? [])].some(
           (process) => process.kind === "service" && process.sealantSessionId === ptyId,
         );
-      const serviceLookups = clock.array<"refused" | "answered">();
+      const serviceLookups = clock.watched<"refused" | "answered">();
       const wrapSealant = (layer: Layer.Layer<SealantClient>): Layer.Layer<SealantClient> =>
         Layer.effect(
           SealantClient,

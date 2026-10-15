@@ -23,12 +23,7 @@ import {
   SealantPlatformError,
   type WorkspaceStopOptions,
 } from "@mend/sealant";
-import {
-  type CaptureCompletionSeal,
-  HARNESS_HOME_MOUNT_PATH,
-  SessionEngine,
-  CaptureChannel,
-} from "@mend/sessions";
+import { type CaptureCompletionSeal, HARNESS_HOME_MOUNT_PATH, SessionEngine } from "@mend/sessions";
 import { BlobStoreFsLive, captureKeys, DotfilesStore, decodeManifest } from "@mend/store";
 import { buildManifest, snapshotDirectory, uploadObjects } from "@mend/store/testing";
 import { it, TestClock } from "@mend/test-ci/effect-vitest";
@@ -56,6 +51,7 @@ import {
   memorySeals,
   shipHarnessCapture,
 } from "./engine/capture-fixture.ts";
+import { makeStandbyClock, signal, signalled } from "./engine/clock-fixture.ts";
 import {
   captureAnswer,
   drawnLine,
@@ -75,27 +71,14 @@ import {
   personPlatform,
 } from "./engine/person-fixture.ts";
 
-/** `effect`, then a wake-up on `queue` for whoever waits on the state it changed. */
-const signal =
-  (queue: Queue.Queue<void>) =>
-  <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-    effect.pipe(Effect.tap(() => Queue.offer(queue, undefined)));
-
-/** Waits for `condition`, woken by every signal on `queue`. */
-const signalled = (queue: Queue.Queue<void>) => (condition: () => boolean, label: string) =>
+/**
+ * The shared standby clock (pool rows, a claim's registration wait), and what these cases wait on
+ * besides: every reconcile pass (`listForProject`), and every stop the platform answered, where a
+ * drain's termination wait starts.
+ */
+const makePoolClock = (pool: ReturnType<typeof memoryHotPool>) =>
   Effect.gen(function* () {
-    while (!condition()) yield* Queue.take(queue);
-  }).pipe(Effect.withSpan(label));
-
-/** Actual standby readiness and registration waits, retaining both real service implementations. */
-const makeStandbyClock = (pool: ReturnType<typeof memoryHotPool>) =>
-  Effect.gen(function* () {
-    /** A pool row changed: ready, failed, or gone. */
-    const rows = yield* Queue.make<void>();
-    const registrations = yield* Queue.make<{
-      readonly completed: Deferred.Deferred<void>;
-      readonly timeoutMs: number;
-    }>();
+    const standby = yield* makeStandbyClock(pool);
     /** A reconcile pass reads the project's rows first; passes run one at a time per project. */
     const passes = yield* Queue.make<void>();
     const poolLayer: Layer.Layer<HotWorkspacesRepo> = Layer.effect(
@@ -103,11 +86,8 @@ const makeStandbyClock = (pool: ReturnType<typeof memoryHotPool>) =>
       Effect.map(HotWorkspacesRepo, (inner) => ({
         ...inner,
         listForProject: (projectId) => signal(passes)(inner.listForProject(projectId)),
-        setReady: (id, state) => signal(rows)(inner.setReady(id, state)),
-        setFailed: (id, error) => signal(rows)(inner.setFailed(id, error)),
-        remove: (id) => signal(rows)(inner.remove(id)),
       })),
-    ).pipe(Layer.provide(pool.layer));
+    ).pipe(Layer.provide(standby.poolLayer));
     /** The platform answered a stop: a drain's termination wait starts here. */
     const stops = yield* Queue.make<void>();
     const wrapSealant = (layer: Layer.Layer<SealantClient>): Layer.Layer<SealantClient> =>
@@ -119,18 +99,6 @@ const makeStandbyClock = (pool: ReturnType<typeof memoryHotPool>) =>
             signal(stops)(inner.stopWorkspace(workspace, options)),
         })),
       ).pipe(Layer.provide(layer));
-    const wrapCaptureChannel = (inner: CaptureChannel["Service"]): CaptureChannel["Service"] => ({
-      ...inner,
-      awaitRegister: (worktreeId, accept, timeout) =>
-        Effect.gen(function* () {
-          const completed = yield* Deferred.make<void>();
-          yield* Queue.offer(registrations, { completed, timeoutMs: Duration.toMillis(timeout) });
-          return yield* inner
-            .awaitRegister(worktreeId, accept, timeout)
-            .pipe(Effect.ensuring(Deferred.succeed(completed, undefined)));
-        }),
-    });
-    const untilReady = signalled(rows);
     const untilStopped = signalled(stops);
     /**
      * One drain's termination wait, driven: the platform answered the stop, then Mend looks every
@@ -161,31 +129,10 @@ const makeStandbyClock = (pool: ReturnType<typeof memoryHotPool>) =>
         yield* reconcile;
         yield* Queue.take(passes);
       });
-    const claim = <A, E, R>(provision: Effect.Effect<A, E, R>) =>
-      Effect.gen(function* () {
-        const fiber = yield* provision.pipe(Effect.forkChild);
-        const registration = yield* Queue.take(registrations);
-        expect(registration.timeoutMs).toBe(2_000);
-        yield* TestClock.adjust(1_999);
-        expect(yield* Deferred.isDone(registration.completed)).toBe(false);
-        expect(fiber.pollUnsafe()).toBeUndefined();
-        yield* TestClock.adjust(1);
-        yield* Deferred.await(registration.completed);
-        return yield* Fiber.join(fiber);
-      });
-    return {
-      poolLayer,
-      wrapSealant,
-      wrapCaptureChannel,
-      untilReady,
-      untilStopped,
-      afterPasses,
-      terminationWait,
-      claim,
-    };
+    return { ...standby, poolLayer, wrapSealant, untilStopped, afterPasses, terminationWait };
   });
 
-type StandbyClock = Effect.Success<ReturnType<typeof makeStandbyClock>>;
+type PoolClock = Effect.Success<ReturnType<typeof makePoolClock>>;
 
 /** What an owner's dotfiles resolve to right now, as a hot-pool test changes them. */
 interface DotfilesState {
@@ -214,7 +161,7 @@ describe("SessionEngine capture mode", () => {
         const homes: Array<string | undefined> = [];
         const memory = makeMemoryCaptureStore();
         const pool = memoryHotPool();
-        const clock = yield* makeStandbyClock(pool);
+        const clock = yield* makePoolClock(pool);
         const logs: Array<string> = [];
         const state = makeHarnessLayoutsMemoryState();
         // Core's report on the image, as it changes under the test: first a runtime that cannot run
@@ -322,7 +269,7 @@ describe("SessionEngine capture mode", () => {
         const created: Array<CreateOptions> = [];
         const memory = makeMemoryCaptureStore();
         const pool = memoryHotPool();
-        const clock = yield* makeStandbyClock(pool);
+        const clock = yield* makePoolClock(pool);
         let standbyDead = false;
         yield* withPreparedEngineEffect(
           (world, tmp) => setup(tmp, world),
@@ -390,7 +337,7 @@ describe("SessionEngine capture mode", () => {
         const created: Array<CreateOptions> = [];
         const memory = makeMemoryCaptureStore();
         const pool = memoryHotPool();
-        const clock = yield* makeStandbyClock(pool);
+        const clock = yield* makePoolClock(pool);
         yield* withPreparedEngineEffect(
           (world, tmp) => setup(tmp, world),
           (world, tmp, project) =>
@@ -462,7 +409,7 @@ describe("SessionEngine capture mode", () => {
         const created: Array<CreateOptions> = [];
         const memory = makeMemoryCaptureStore();
         const pool = memoryHotPool();
-        const clock = yield* makeStandbyClock(pool);
+        const clock = yield* makePoolClock(pool);
         const repository: DotfilesRepository = {
           url: "git://127.0.0.1:1/dots",
           ref: null,
@@ -587,7 +534,7 @@ describe("SessionEngine capture mode", () => {
       const created: Array<CreateOptions> = [];
       const memory = makeMemoryCaptureStore();
       const pool = memoryHotPool();
-      const clock = yield* makeStandbyClock(pool);
+      const clock = yield* makePoolClock(pool);
       const state: DotfilesState = { repository: warmedRepository, snapshot: SNAPSHOT };
       yield* withPreparedEngineEffect(
         (world, tmp) => setup(tmp, world),
@@ -692,7 +639,7 @@ describe("SessionEngine capture mode", () => {
         const created: Array<CreateOptions> = [];
         const memory = makeMemoryCaptureStore();
         const pool = memoryHotPool();
-        const clock = yield* makeStandbyClock(pool);
+        const clock = yield* makePoolClock(pool);
         yield* withPreparedEngineEffect(
           (world, tmp) => setup(tmp, world),
           (world, tmp, project) =>
@@ -749,7 +696,7 @@ describe("SessionEngine capture mode", () => {
         const created: Array<CreateOptions> = [];
         const memory = makeMemoryCaptureStore();
         const pool = memoryHotPool();
-        const clock = yield* makeStandbyClock(pool);
+        const clock = yield* makePoolClock(pool);
         yield* withPreparedEngineEffect(
           (world, tmp) => setup(tmp, world),
           (world, tmp, project) =>
@@ -983,7 +930,7 @@ describe("SessionEngine capture mode", () => {
       session: Session,
       standbyLaunch: string,
       epoch: number | undefined,
-      clock: StandbyClock,
+      clock: PoolClock,
     ) => Effect.Effect<void, unknown, SessionEngine>,
   ) => {
     const created: Array<CreateOptions> = [];
@@ -1001,7 +948,7 @@ describe("SessionEngine capture mode", () => {
       records,
       run: () =>
         Effect.gen(function* () {
-          const clock = yield* makeStandbyClock(pool);
+          const clock = yield* makePoolClock(pool);
           yield* withPreparedEngineEffect(
             (world, tmp) => setup(tmp, world),
             (world, tmp, project) =>
@@ -1113,7 +1060,7 @@ describe("SessionEngine capture mode", () => {
         const created: Array<CreateOptions> = [];
         const memory = makeMemoryCaptureStore();
         const pool = memoryHotPool();
-        const clock = yield* makeStandbyClock(pool);
+        const clock = yield* makePoolClock(pool);
         const tokenEvents: Array<string> = [];
         const drain = { terminationWait: Duration.millis(50), pollInterval: Duration.millis(10) };
         let answer: "draining" | "stopped" = "draining";
@@ -1180,7 +1127,7 @@ describe("SessionEngine capture mode", () => {
         const created: Array<CreateOptions> = [];
         const memory = makeMemoryCaptureStore();
         const pool = memoryHotPool();
-        const clock = yield* makeStandbyClock(pool);
+        const clock = yield* makePoolClock(pool);
         const answers: Record<string, string> = {};
         yield* withPreparedEngineEffect(
           (world, tmp) => setup(tmp, world),
@@ -1348,7 +1295,7 @@ describe("SessionEngine capture mode", () => {
         const execCalls: ReadonlyArray<string>[] = [];
         const memory = makeMemoryCaptureStore();
         const pool = memoryHotPool();
-        const clock = yield* makeStandbyClock(pool);
+        const clock = yield* makePoolClock(pool);
         /** Every exec reaching the standby, as it lands in `execCalls`. */
         const execs = yield* Queue.make<void>();
         /** How many execs had reached the standby when its replan was asked. */
@@ -1458,7 +1405,7 @@ describe("SessionEngine capture mode", () => {
         const execCalls: ReadonlyArray<string>[] = [];
         const memory = makeMemoryCaptureStore();
         const pool = memoryHotPool();
-        const clock = yield* makeStandbyClock(pool);
+        const clock = yield* makePoolClock(pool);
         /** What sealantd's `capture.replan` does: `plan.get` with no worktree named, as the executor. */
         const replans: Array<{ readonly workspaceId: string; readonly executorId: SessionId }> = [];
         /** The executor's flush leaves captures pending (a stalled daemon). */
@@ -1835,7 +1782,7 @@ describe("SessionEngine capture mode", () => {
         const created: Array<CreateOptions> = [];
         const memory = makeMemoryCaptureStore();
         const pool = memoryHotPool();
-        const clock = yield* makeStandbyClock(pool);
+        const clock = yield* makePoolClock(pool);
         let standbyFinal = false;
         let standbyAlias = "";
         let standbyEpoch = 0;
@@ -2195,7 +2142,7 @@ describe("per-person standbys (docs/adr/0016)", () => {
   const warmPersonStandby = (
     project: Project,
     pool: ReturnType<typeof memoryHotPool>,
-    clock: StandbyClock,
+    clock: PoolClock,
   ) =>
     Effect.gen(function* () {
       const engine = yield* SessionEngine;
@@ -2233,7 +2180,7 @@ describe("per-person standbys (docs/adr/0016)", () => {
     );
     let summary: string | null | undefined;
     return Effect.gen(function* () {
-      const clock = yield* makeStandbyClock(world.pool);
+      const clock = yield* makePoolClock(world.pool);
       yield* withPreparedEngineEffect(
         (testWorld, tmp) => setup(tmp, testWorld),
         (testWorld, tmp, project) =>
@@ -2299,7 +2246,7 @@ describe("per-person standbys (docs/adr/0016)", () => {
           report: { person: true, missing: [] },
           exec: answerLayout(LAYOUT_READY),
         });
-        const clock = yield* makeStandbyClock(world.pool);
+        const clock = yield* makePoolClock(world.pool);
         yield* withPreparedEngineEffect(
           (testWorld, tmp) => setup(tmp, testWorld),
           (testWorld, tmp, project) =>
@@ -2434,7 +2381,7 @@ describe("per-person standbys (docs/adr/0016)", () => {
               ),
           })),
         ).pipe(Layer.provide(personPlatform(world.calls, { person: true })));
-        const clock = yield* makeStandbyClock(world.pool);
+        const clock = yield* makePoolClock(world.pool);
         const result = yield* withPreparedEngineEffect(
           (testWorld, tmp) => setup(tmp, testWorld),
           (testWorld, tmp, project) =>
@@ -2499,7 +2446,7 @@ describe("per-person standbys (docs/adr/0016)", () => {
                 : { person: false, missing: ["sudo-no-new-privileges"] },
               exec: answerLayout(LAYOUT_READY),
             });
-            const clock = yield* makeStandbyClock(world.pool);
+            const clock = yield* makePoolClock(world.pool);
             let execs = -1;
             yield* withPreparedEngineEffect(
               (testWorld, tmp) => setup(tmp, testWorld),
@@ -2554,7 +2501,7 @@ describe("per-person standbys (docs/adr/0016)", () => {
           report: { person: true, missing: [] },
           exec: answerLayout(LAYOUT_READY),
         });
-        const clock = yield* makeStandbyClock(world.pool);
+        const clock = yield* makePoolClock(world.pool);
         yield* withPreparedEngineEffect(
           (testWorld, tmp) => setup(tmp, testWorld),
           (testWorld, tmp, project) =>
@@ -2614,7 +2561,7 @@ describe("per-person standbys (docs/adr/0016)", () => {
           report,
           exec: answerLayout("mend-layout probed\nmend-layout missing no sudo\n"),
         });
-        const clock = yield* makeStandbyClock(world.pool);
+        const clock = yield* makePoolClock(world.pool);
         yield* withPreparedEngineEffect(
           (testWorld, tmp) => setup(tmp, testWorld),
           (testWorld, tmp, project) =>
@@ -2690,7 +2637,7 @@ describe("per-person standbys (docs/adr/0016)", () => {
               ),
           },
         });
-        const clock = yield* makeStandbyClock(world.pool);
+        const clock = yield* makePoolClock(world.pool);
         yield* withPreparedEngineEffect(
           (testWorld, tmp) => setup(tmp, testWorld),
           (testWorld, tmp, project) =>
@@ -2769,7 +2716,7 @@ describe("per-person standbys (docs/adr/0016)", () => {
           exec: answerLayout(LAYOUT_READY),
           captureOps: { stopAnswer: () => "stopped", status: () => "ready" },
         });
-        const clock = yield* makeStandbyClock(world.pool);
+        const clock = yield* makePoolClock(world.pool);
         yield* withPreparedEngineEffect(
           (testWorld, tmp) => setup(tmp, testWorld),
           (testWorld, tmp, project) =>
@@ -2833,7 +2780,7 @@ describe("per-person standbys (docs/adr/0016)", () => {
           exec: answerLayout(LAYOUT_READY),
           controlPlane: () => controlPlane,
         });
-        const clock = yield* makeStandbyClock(world.pool);
+        const clock = yield* makePoolClock(world.pool);
         yield* withPreparedEngineEffect(
           (testWorld, tmp) => setup(tmp, testWorld),
           (testWorld, tmp, project) =>
@@ -2871,7 +2818,7 @@ describe("per-person standbys (docs/adr/0016)", () => {
           exec: answerLayout(LAYOUT_READY),
           controlPlane: () => controlPlane,
         });
-        const clock = yield* makeStandbyClock(world.pool);
+        const clock = yield* makePoolClock(world.pool);
         yield* withPreparedEngineEffect(
           (testWorld, tmp) => setup(tmp, testWorld),
           (testWorld, tmp, project) =>
