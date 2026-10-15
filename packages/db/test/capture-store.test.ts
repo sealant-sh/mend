@@ -3,7 +3,7 @@ import { ProjectId, Sha, WorktreeId } from "@mend/domain";
 import { it } from "@mend/test-ci/effect-vitest";
 import { Cause, Deferred, Effect, Exit, Fiber, Layer, Option, Redacted } from "effect";
 import * as Str from "effect/String";
-import { FastCheck } from "effect/testing";
+import * as FastCheck from "effect/testing/FastCheck";
 import { SqlClient } from "effect/unstable/sql";
 import { afterAll, beforeAll, describe, expect } from "vitest";
 

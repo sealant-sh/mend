@@ -30,7 +30,15 @@
   },
   "overrides": [
     {
-      "files": ["packages/sessions/**/*.ts"],
+      // Every package whose Effect tests run on the shared guard (step 2c). t3-gateway has its own
+      // Effect and Vitest and its own guard copy, below.
+      "files": [
+        "packages/sessions/**/*.ts",
+        "packages/db/**/*.ts",
+        "packages/jobs/**/*.ts",
+        "packages/store/**/*.ts",
+        "apps/api/**/*.ts"
+      ],
       "rules": {
         "no-restricted-imports": [
           "error",
@@ -59,6 +67,42 @@
           }
         ]
       }
+    },
+    {
+      "files": ["apps/t3-gateway/**/*.ts"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "paths": [
+              {
+                "name": "effect/testing",
+                "message": "Import TestClock from test/support/effect-vitest.ts so replacement clocks keep the CI warning guard."
+              },
+              {
+                "name": "@effect/vitest",
+                "message": "Use test/support/effect-vitest.ts so captured TestClock warnings fail the runner; ordinary assertions and hooks come from vitest."
+              }
+            ],
+            "patterns": [
+              {
+                "group": [
+                  "effect/testing/TestClock",
+                  "effect/testing/TestClock.*",
+                  "effect/testing/index",
+                  "effect/testing/index.*"
+                ],
+                "message": "Import TestClock from test/support/effect-vitest.ts so replacement clocks keep the CI warning guard."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      // The guard itself wraps the raw entrypoints.
+      "files": ["apps/t3-gateway/test/support/effect-vitest.ts"],
+      "rules": { "no-restricted-imports": "off" }
     },
     {
       "files": ["packages/ui/src/components/ui/**"],

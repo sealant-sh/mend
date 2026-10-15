@@ -3,7 +3,7 @@ import { promisify } from "node:util";
 
 import { ProjectId, SessionId } from "@mend/domain";
 import { Deferred, Effect, Fiber, Layer, Redacted } from "effect";
-import { FastCheck } from "effect/testing";
+import * as FastCheck from "effect/testing/FastCheck";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http";
 import { describe, expect, it } from "vitest";
 
