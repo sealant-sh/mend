@@ -33,8 +33,12 @@ concurrency:
     ${{ github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' }}
 
 jobs:
+  # `changes` and `checks` are seconds of work on GitHub's arm64 runners, free for this public
+  # repository, so neither waits for a box slot. The box serves Core and sealantd too, and an
+  # aggregate job queues only when its last lane finishes: on the box, merge group 38746126993's
+  # 10-second `checks` waited 13.4 minutes behind their runs (docs/operations/merge-queue.md).
   changes:
-    runs-on: [self-hosted, box, linux, x64]
+    runs-on: ubuntu-24.04-arm
     env:
       CI_TEST_REPORT_DIR: ${{ github.workspace }}/.ci-reports/test
     outputs:
@@ -413,12 +417,9 @@ jobs:
   checks:
     needs: [changes, static, test-engines, test-clients-a, test-clients-b, packaging, mobile-web]
     if: ${{ !cancelled() }}
-    runs-on: [self-hosted, box, linux, x64]
+    runs-on: ubuntu-24.04-arm
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version-file: .node-version
+      # The gate reads only `needs`: no checkout, and the runner image's Node runs it.
       - name: Require every selected CI job
         env:
           CI_JOB_RESULTS: ${{ toJSON(needs) }}
