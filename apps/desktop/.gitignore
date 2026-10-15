@@ -1,2 +1,3 @@
 out/
 release/
+electron.vite.config.*.mjs
