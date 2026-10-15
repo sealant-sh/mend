@@ -289,6 +289,12 @@ export const SNAPSHOT = { sha: "5eed0f5eed0f5eed0f5eed0f5eed0f5eed0f5eed", data:
 export const launchOnce = (world: World, tmp: string) =>
   Effect.gen(function* () {
     const project = yield* setup(tmp, world);
+    return { project, ...(yield* provisionIn(project)) };
+  });
+
+/** `launchOnce` after its `setup`: the half that needs the engine (`withPreparedEngineEffect`). */
+export const provisionIn = (project: Project) =>
+  Effect.gen(function* () {
     const engine = yield* SessionEngine;
     const session = yield* engine.provision({
       projectId: project.id,
@@ -298,7 +304,7 @@ export const launchOnce = (world: World, tmp: string) =>
       ownerUserId: "user-fixture",
       base: null,
     });
-    return { project, engine, session };
+    return { engine, session };
   });
 
 /** A flush answer with `pending` left; the lifetime counters grow with every capture shipped. */

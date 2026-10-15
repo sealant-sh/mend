@@ -23,11 +23,11 @@ import {
 import { Store } from "@mend/store";
 import { it, TestClock } from "@mend/test-ci/effect-vitest";
 import type { CreateOptions, InteractiveSessionStatus } from "@sealant/sdk";
-import { Deferred, Duration, Effect, Fiber, Layer, Logger, type Scope } from "effect";
+import { Deferred, Duration, Effect, Fiber, Layer, Logger, Queue, type Scope } from "effect";
 import { describe, expect } from "vitest";
 
 import { makeMemoryCaptureStore, type MemoryCaptureStore } from "./capture-store-memory.ts";
-import { launchOnce, until } from "./engine/capture-fixture.ts";
+import { provisionIn } from "./engine/capture-fixture.ts";
 import {
   makeWorld,
   now,
@@ -35,8 +35,7 @@ import {
   setup,
   setupSibling,
   type World,
-  withEngine,
-  withEngineEffect,
+  withPreparedEngineEffect,
 } from "./engine/fixture.ts";
 import { MARIA, workspacesPerOwner } from "./engine/person-fixture.ts";
 
@@ -56,6 +55,10 @@ interface JoinByAnother {
   /** Every workspace the platform was asked to stop. */
   readonly stopped: Array<string>;
   readonly memory: MemoryCaptureStore;
+  /** Every engine log line, in order. */
+  readonly logs: ReadonlyArray<string>;
+  /** Waits for `condition`, woken by every engine log line, workspace exec and workspace stop. */
+  readonly reached: (condition: () => boolean, label: string) => Effect.Effect<void>;
   /** Arm the actual post-harvest lease decision, not a predicate over its desired outcome. */
   readonly armTail: (
     phase: "agent" | "sweep",
@@ -63,6 +66,38 @@ interface JoinByAnother {
   ) => Effect.Effect<Effect.Effect<void>>;
   readonly nextRefusedClose: () => Effect.Effect<Deferred.Deferred<void>>;
 }
+
+/** A list the fake appends to; every push wakes whoever waits on `changed`. */
+const signalling = <T>(changed: Queue.Queue<void>) =>
+  new (class extends Array<T> {
+    override push(...entries: Array<T>) {
+      const length = super.push(...entries);
+      Queue.offerUnsafe(changed, undefined);
+      return length;
+    }
+  })();
+
+/** The platform's refused PTY closes, each awaitable before it happens (`nextRefusedClose`). */
+const refusedCloses = (refuses: () => boolean) => {
+  let count = 0;
+  const ready = new Map<number, Deferred.Deferred<void>>();
+  return {
+    closeFails: () => {
+      const refused = refuses();
+      if (refused) {
+        count += 1;
+        const next = ready.get(count);
+        if (next !== undefined) Deferred.doneUnsafe(next, Effect.void);
+      }
+      return refused;
+    },
+    nextRefusedClose: () =>
+      Effect.map(Deferred.make<void>(), (next) => {
+        ready.set(count + 1, next);
+        return next;
+      }),
+  };
+};
 
 /**
  * The owner's session runs; Maria, a member, starts one in its worktree and launches it, on a
@@ -77,17 +112,24 @@ const joinByAnotherPersonEffect = (
   options: {
     readonly closeFails?: () => boolean;
     readonly getSessionDefect?: (ptyId: string) => boolean;
+    /** A case's own git origin and adoption, run over the store before the engine exists. */
+    readonly prepare?: (
+      world: World,
+      tmp: string,
+      project: Project,
+    ) => Effect.Effect<unknown, unknown, Store | WorktreesRepo | Scope.Scope>;
   } = {},
 ) =>
   Effect.gen(function* () {
+    const changed = yield* Queue.sliding<void>(1);
     const closed = new Set<string>();
     const stopped: Array<string> = [];
     const memory = makeMemoryCaptureStore();
     const created: Array<CreateOptions> = [];
-    const execCalls: Array<ReadonlyArray<string>> = [];
+    const execCalls = signalling<ReadonlyArray<string>>(changed);
     const seen: Array<string> = [];
     const calls: Array<string> = [];
-    const logs: Array<string> = [];
+    const logs = signalling<string>(changed);
     let failure: string | null = null;
     let holderWorkspace: string | null = null;
     let joinedWorkspace: string | null = null;
@@ -100,8 +142,7 @@ const joinByAnotherPersonEffect = (
         remaining: number;
       }
     >();
-    let refusedCloses = 0;
-    const refusedReady = new Map<number, Deferred.Deferred<void>>();
+    const refusals = refusedCloses(() => options.closeFails?.() ?? false);
     const noteDecision = (sessionId: string) => {
       const tail = tails.get(sessionId);
       if (
@@ -156,6 +197,7 @@ const joinByAnotherPersonEffect = (
                 // A wrong lease decision must still acknowledge and reach the original state assertions.
                 if (workspace.id === joinedWorkspace)
                   for (const sessionId of tails.keys()) noteDecision(sessionId);
+                Queue.offerUnsafe(changed, undefined);
               }),
             ),
           ),
@@ -179,24 +221,21 @@ const joinByAnotherPersonEffect = (
           calls,
           {
             closed,
-            ...options,
-            closeFails: () => {
-              const refused = options.closeFails?.() ?? false;
-              if (refused) {
-                refusedCloses += 1;
-                const ready = refusedReady.get(refusedCloses);
-                if (ready !== undefined) Deferred.doneUnsafe(ready, Effect.void);
-              }
-              return refused;
-            },
+            ...(options.getSessionDefect === undefined
+              ? {}
+              : { getSessionDefect: options.getSessionDefect }),
+            closeFails: refusals.closeFails,
           },
         ),
       ),
     );
-    yield* withEngineEffect(
+    yield* withPreparedEngineEffect(
       (world, tmp) =>
+        setup(tmp, world).pipe(
+          Effect.tap((project) => options.prepare?.(world, tmp, project) ?? Effect.void),
+        ),
+      (world, tmp, project) =>
         Effect.gen(function* () {
-          const project = yield* setup(tmp, world);
           const engine = yield* SessionEngine;
           const holder = yield* engine.provision({
             projectId: project.id,
@@ -230,6 +269,11 @@ const joinByAnotherPersonEffect = (
               closed,
               stopped,
               memory,
+              logs,
+              reached: (condition, label) =>
+                Effect.gen(function* () {
+                  while (!condition()) yield* Queue.take(changed);
+                }).pipe(Effect.withSpan(label)),
               armTail: (phase, decisions = 1) =>
                 Effect.gen(function* () {
                   const agentEnded = phase === "agent" ? yield* Deferred.make<void>() : null;
@@ -240,12 +284,7 @@ const joinByAnotherPersonEffect = (
                     ? Deferred.await(decision)
                     : Deferred.await(agentEnded).pipe(Effect.andThen(Deferred.await(decision)));
                 }),
-              nextRefusedClose: () =>
-                Effect.gen(function* () {
-                  const ready = yield* Deferred.make<void>();
-                  refusedReady.set(refusedCloses + 1, ready);
-                  return ready;
-                }),
+              nextRefusedClose: refusals.nextRefusedClose,
             });
           }
         }),
@@ -275,7 +314,10 @@ const settleWindow = Effect.gen(function* () {
 });
 
 /** The production close retries remain 250 ms then 500 ms, before the full settle window. */
-const refusingStop = (action: Effect.Effect<void, unknown>, join: JoinByAnother) =>
+const refusingStop = <A>(
+  action: Effect.Effect<A, unknown>,
+  join: Pick<JoinByAnother, "nextRefusedClose">,
+) =>
   Effect.gen(function* () {
     const first = yield* join.nextRefusedClose();
     const stop = yield* action.pipe(Effect.forkChild);
@@ -286,7 +328,7 @@ const refusingStop = (action: Effect.Effect<void, unknown>, join: JoinByAnother)
     const third = yield* join.nextRefusedClose();
     yield* TestClock.adjust("500 millis");
     yield* Deferred.await(third);
-    yield* Fiber.join(stop);
+    return yield* Fiber.join(stop);
   });
 
 /** Whether the holder's agent row still reads live. */
@@ -314,6 +356,43 @@ const joinedAgentOf = (world: World, joined: SessionId) => {
   }
   return { workspaceId: agent.sealantWorkspaceId, ptyId: agent.sealantSessionId };
 };
+
+/** How long these cases let a launch wait for a worktree's previous executor (`leaseWait`). */
+const LEASE_WAIT = Duration.seconds(1);
+
+/** The PTY watcher's look (`watchProcess`): an exit is read at its next one. */
+const WATCH_POLL = Duration.seconds(2);
+
+/**
+ * A world whose session and process rows signal every write, in a directory the case owns: a
+ * wait on a row wakes as it lands, never polls, and one world serves a restarted engine too.
+ */
+const signalledWorld = (prefix: string) =>
+  Effect.gen(function* () {
+    const changed = yield* Queue.sliding<void>(1);
+    const signallingMap = <V>() =>
+      new (class extends Map<string, V> {
+        override set(key: string, value: V) {
+          super.set(key, value);
+          Queue.offerUnsafe(changed, undefined);
+          return this;
+        }
+      })();
+    const tmp = yield* Effect.acquireRelease(
+      Effect.sync(() => fs.mkdtempSync(path.join(os.tmpdir(), prefix))),
+      (directory) => Effect.sync(() => fs.rmSync(directory, { recursive: true, force: true })),
+    );
+    const world: World = {
+      ...makeWorld(),
+      sessions: signallingMap<Session>(),
+      processes: signallingMap<SessionProcess>(),
+    };
+    const reached = (condition: () => boolean, label: string) =>
+      Effect.gen(function* () {
+        while (!condition()) yield* Queue.take(changed);
+      }).pipe(Effect.withSpan(label));
+    return { fixture: { world, tmp }, reached };
+  });
 
 describe("a join by another person into a live executor (alpha 2026-10-06, 9e486cfc)", () => {
   it("finds the holder's executor as its owner and joins it, never waiting on a lookup only the owner may make", async () => {
@@ -391,28 +470,42 @@ describe("a join by another person into a live executor (alpha 2026-10-06, 9e486
     expect(run.seen).not.toContain(`${MARIA}:404`);
   });
 
-  it("a git op through the workspace: a repository the joiner adds is cloned in the executor", async () => {
-    let listed: ReadonlyArray<readonly [string, string, string | null]> = [];
-    const run = await joinByAnotherPerson((engine, world, join) =>
+  it.effect(
+    "a git op through the workspace: a repository the joiner adds is cloned in the executor",
+    () =>
       Effect.gen(function* () {
-        yield* setupSibling(join.tmp, world, "core", join.project.originUrl ?? "");
-        yield* engine.addRepository(join.joined, { project: "core", name: null, worktree: null });
-        yield* until(
-          () => join.execCalls.some((argv) => argv.join("\n").includes("git clone --quiet")),
-          "the clone in the workspace",
+        let listed: ReadonlyArray<readonly [string, string, string | null]> = [];
+        const run = yield* joinByAnotherPersonEffect(
+          (engine, _world, join) =>
+            Effect.gen(function* () {
+              yield* engine.addRepository(join.joined, {
+                project: "core",
+                name: null,
+                worktree: null,
+              });
+              yield* join.reached(
+                () => join.execCalls.some((argv) => argv.join("\n").includes("git clone --quiet")),
+                "the clone in the workspace",
+              );
+              // The add's fiber writes its row `ready` before it says so.
+              yield* join.reached(
+                () => join.logs.includes("session engine: repository added"),
+                "the row settled",
+              );
+              const rows = yield* engine.listRepositories(join.joined);
+              listed = rows.map((row) => [row.name, row.state, row.error] as const);
+            }),
+          {
+            // The sibling's origin and adoption are git I/O: before the engine, as the project's.
+            prepare: (world, tmp, project) =>
+              setupSibling(tmp, world, "core", project.originUrl ?? ""),
+          },
         );
-        let rows = yield* engine.listRepositories(join.joined);
-        for (let i = 0; i < 500 && rows[0]?.state === "adding"; i++) {
-          yield* Effect.sleep(Duration.millis(10));
-          rows = yield* engine.listRepositories(join.joined);
-        }
-        listed = rows.map((row) => [row.name, row.state, row.error] as const);
+        expect(run.failure).toBeNull();
+        expect(listed).toEqual([["core", "ready", null]]);
+        expect(run.seen).not.toContain(`${MARIA}:404`);
       }),
-    );
-    expect(run.failure).toBeNull();
-    expect(listed).toEqual([["core", "ready", null]]);
-    expect(run.seen).not.toContain(`${MARIA}:404`);
-  });
+  );
 
   it("a checkpoint of the joiner's session flushes the executor it runs in, and its files are read there", async () => {
     let checkpoint: string | null = null;
@@ -430,66 +523,77 @@ describe("a join by another person into a live executor (alpha 2026-10-06, 9e486
     expect(run.seen).not.toContain(`${MARIA}:404`);
   });
 
-  it("says what it observed when the platform does not find a live holder's workspace: a 404, never 'not answering'", async () => {
-    let lookupsRejected = false;
-    const phases: Array<string> = [];
-    let refusal: string | null = null;
-    await withEngine(
-      (world, tmp) =>
-        Effect.gen(function* () {
-          const project = yield* setup(tmp, world);
-          const engine = yield* SessionEngine;
-          const holder = yield* engine.provision({
-            projectId: project.id,
-            harness: "claude",
-            label: null,
-            name: "together",
-            ownerUserId: "user-fixture",
-            base: null,
-          });
-          yield* engine.launch(holder.id, ["claude"]);
-          const joined = yield* engine.provisionSessionIn(holder.worktreeId, {
-            harness: "claude",
-            label: null,
-            ownerUserId: MARIA,
-          });
-          // The holder's lease stays live; Core answers 404 for its workspace, whoever asks.
-          lookupsRejected = true;
-          const launch = yield* Effect.forkChild(
-            engine.launch(joined.id, ["claude"]).pipe(Effect.result),
-          );
-          yield* until(() => {
-            const summary = world.sessions.get(joined.id)?.summary ?? "";
-            if (summary.includes("waiting")) phases.push(summary);
-            return phases.length > 0;
-          }, "the waiting line");
-          const result = yield* Fiber.join(launch);
-          if (result._tag === "Failure") refusal = result.failure.message;
-        }),
-      {
-        captured: makeMemoryCaptureStore(),
-        prepareWorld: (world) => world.members.set(MARIA, "member"),
-        drainPolicy: { leaseWait: Duration.seconds(1) },
-        sealantLayer: sealantLaunchLayer(
-          [],
-          undefined,
-          undefined,
-          undefined,
-          () => lookupsRejected,
-          undefined,
-          undefined,
-          undefined,
-          undefined,
-          [],
-        ),
-      },
-    );
-    expect(phases[0]).toContain(
-      "the previous session in this worktree renews its lease, but the platform did not find its workspace (404)",
-    );
-    expect(phases.join("\n")).not.toContain("is not answering");
-    expect(refusal).toContain("worktree leased");
-  });
+  it.effect(
+    "says what it observed when the platform does not find a live holder's workspace: a 404, never 'not answering'",
+    () =>
+      Effect.gen(function* () {
+        let lookupsRejected = false;
+        const phases: Array<string> = [];
+        let refusal: string | null = null;
+        const { fixture, reached } = yield* signalledWorld("mend-lease-404-");
+        yield* withPreparedEngineEffect(
+          (world, tmp) => setup(tmp, world),
+          (world, _tmp, project) =>
+            Effect.gen(function* () {
+              const engine = yield* SessionEngine;
+              const holder = yield* engine.provision({
+                projectId: project.id,
+                harness: "claude",
+                label: null,
+                name: "together",
+                ownerUserId: "user-fixture",
+                base: null,
+              });
+              yield* engine.launch(holder.id, ["claude"]);
+              const joined = yield* engine.provisionSessionIn(holder.worktreeId, {
+                harness: "claude",
+                label: null,
+                ownerUserId: MARIA,
+              });
+              // The holder's lease stays live; Core answers 404 for its workspace, whoever asks.
+              lookupsRejected = true;
+              const launch = yield* Effect.forkChild(
+                engine.launch(joined.id, ["claude"]).pipe(Effect.result),
+              );
+              yield* reached(() => {
+                const summary = world.sessions.get(joined.id)?.summary ?? "";
+                if (summary.includes("waiting")) phases.push(summary);
+                return phases.length > 0;
+              }, "the waiting line");
+              // The launch looks again every `leaseWaitInterval` until `leaseWait` has passed;
+              // only then is the last reading answered, and refused.
+              yield* TestClock.adjust(Duration.subtract(LEASE_WAIT, Duration.millis(1)));
+              expect(launch.pollUnsafe()).toBeUndefined();
+              yield* TestClock.adjust(Duration.millis(1));
+              const result = yield* Fiber.join(launch);
+              if (result._tag === "Failure") refusal = result.failure.message;
+            }),
+          {
+            fixture,
+            captured: makeMemoryCaptureStore(),
+            prepareWorld: (world) => world.members.set(MARIA, "member"),
+            drainPolicy: { leaseWait: LEASE_WAIT },
+            sealantLayer: sealantLaunchLayer(
+              [],
+              undefined,
+              undefined,
+              undefined,
+              () => lookupsRejected,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              [],
+            ),
+          },
+        );
+        expect(phases[0]).toContain(
+          "the previous session in this worktree renews its lease, but the platform did not find its workspace (404)",
+        );
+        expect(phases.join("\n")).not.toContain("is not answering");
+        expect(refusal).toContain("worktree leased");
+      }),
+  );
 
   it("refuses to act for a joiner who lost access, while observing and ending still reach the executor", async () => {
     const outcomes: Record<string, string> = {};
@@ -812,37 +916,46 @@ describe("a join by another person into a live executor (alpha 2026-10-06, 9e486
     30_000,
   );
 
-  it("a refused access stop reports zero ended and writes no stopped audit event", async () => {
-    let refusing = false;
-    await joinByAnotherPerson(
-      (engine, world, join) =>
-        Effect.gen(function* () {
-          world.members.delete(MARIA);
-          refusing = true;
-          for (let round = 0; round < 2; round += 1) {
-            expect(yield* engine.reconcileAccess()).toEqual({
-              stopped: 0,
-              refused: 1,
-              retired: [],
-            });
-            expect(world.audit).toEqual([]);
-            expect(world.sessions.get(join.joined)?.summary).toContain("could not be stopped");
-            expect(holderAgentLive(world, join.holder)).toBe(true);
-          }
-          refusing = false;
-          expect(yield* engine.reconcileAccess()).toEqual({ stopped: 1, refused: 0, retired: [] });
-          expect(world.sessions.get(join.joined)?.summary).toBe(STOPPED_NOT_MEMBER);
-          expect(world.audit).toMatchObject([
-            {
-              subjectId: join.joined,
-              actorUserId: MARIA,
-              data: { reason: "not_member" },
-            },
-          ]);
-        }),
-      { closeFails: () => refusing },
-    );
-  }, 30_000);
+  it.effect(
+    "a refused access stop reports zero ended and writes no stopped audit event",
+    () =>
+      Effect.gen(function* () {
+        let refusing = false;
+        yield* joinByAnotherPersonEffect(
+          (engine, world, join) =>
+            Effect.gen(function* () {
+              world.members.delete(MARIA);
+              refusing = true;
+              for (let round = 0; round < 2; round += 1) {
+                expect(yield* refusingStop(engine.reconcileAccess(), join)).toEqual({
+                  stopped: 0,
+                  refused: 1,
+                  retired: [],
+                });
+                expect(world.audit).toEqual([]);
+                expect(world.sessions.get(join.joined)?.summary).toContain("could not be stopped");
+                expect(holderAgentLive(world, join.holder)).toBe(true);
+              }
+              refusing = false;
+              expect(yield* engine.reconcileAccess()).toEqual({
+                stopped: 1,
+                refused: 0,
+                retired: [],
+              });
+              expect(world.sessions.get(join.joined)?.summary).toBe(STOPPED_NOT_MEMBER);
+              expect(world.audit).toMatchObject([
+                {
+                  subjectId: join.joined,
+                  actorUserId: MARIA,
+                  data: { reason: "not_member" },
+                },
+              ]);
+            }),
+          { closeFails: () => refusing },
+        );
+      }),
+    30_000,
+  );
 
   it.each(["replacement", "relaunch"] as const)(
     "a refused Stop preserves an existing %s drain",
@@ -974,25 +1087,30 @@ describe("a join by another person into a live executor (alpha 2026-10-06, 9e486
     });
   }, 30_000);
 
-  it("reconciliation stops a removed creator's own session with a direct reason and records both people", async () => {
-    await joinByAnotherPerson((engine, world, join) =>
+  it.effect(
+    "reconciliation stops a removed creator's own session with a direct reason and records both people",
+    () =>
       Effect.gen(function* () {
-        world.members.delete("user-fixture");
-        expect(yield* engine.reconcileAccess()).toEqual({
-          stopped: 2,
-          refused: 0,
-          retired: ["workspace-1"],
-        });
-        expect(world.sessions.get(join.holder)?.summary).toBe(STOPPED_NOT_MEMBER);
-        expect(world.sessions.get(join.joined)?.summary).toBe(EXECUTOR_RETIRED);
-        expect(world.audit.map((event) => event.data?.["reason"]).toSorted()).toEqual([
-          "creator_not_member",
-          "not_member",
-        ]);
-        yield* until(() => join.stopped.length === 1, "the saved executor ends");
+        yield* joinByAnotherPersonEffect((engine, world, join) =>
+          Effect.gen(function* () {
+            world.members.delete("user-fixture");
+            expect(yield* engine.reconcileAccess()).toEqual({
+              stopped: 2,
+              refused: 0,
+              retired: ["workspace-1"],
+            });
+            expect(world.sessions.get(join.holder)?.summary).toBe(STOPPED_NOT_MEMBER);
+            expect(world.sessions.get(join.joined)?.summary).toBe(EXECUTOR_RETIRED);
+            expect(world.audit.map((event) => event.data?.["reason"]).toSorted()).toEqual([
+              "creator_not_member",
+              "not_member",
+            ]);
+            yield* join.reached(() => join.stopped.length === 1, "the saved executor ends");
+          }),
+        );
       }),
-    );
-  }, 30_000);
+    30_000,
+  );
 
   it("one defective Stop leaves sibling Stops running", async () => {
     let defectivePty: string | null = null;
@@ -1020,184 +1138,200 @@ describe("a join by another person into a live executor (alpha 2026-10-06, 9e486
     );
   }, 30_000);
 
-  it("failed shell Stops survive restart, each on its own words, until that shell is observed ended", async () => {
-    const fixture = {
-      world: makeWorld(),
-      tmp: fs.mkdtempSync(path.join(os.tmpdir(), "mend-stop-restart-")),
-    };
-    const memory = makeMemoryCaptureStore();
-    const states = new Map<string, InteractiveSessionStatus>();
-    const shells: Array<SessionProcess> = [];
-    let refusing = false;
-    const platform = workspacesPerOwner(
-      sealantLaunchLayer([], undefined, [], undefined, undefined, undefined, states),
-      [],
-      [],
-      { closeFails: () => refusing },
-    );
-    try {
-      await withEngine(
-        (world, tmp) =>
-          Effect.gen(function* () {
-            const { engine, session } = yield* launchOnce(world, tmp);
-            yield* engine.launch(session.id, ["claude"]);
-            shells.push(yield* engine.openShell(session.id), yield* engine.openShell(session.id));
-            refusing = true;
-            for (const shell of shells) yield* engine.stopShell(shell.id);
-            const summary = world.sessions.get(session.id)?.summary ?? "";
-            expect(summary).toContain(wordsOf(shells[0]));
-            expect(summary).toContain(wordsOf(shells[1]));
-          }),
-        { fixture, captured: memory, sealantLayer: platform },
-      );
-      await withEngine(
-        (world) =>
-          Effect.gen(function* () {
-            yield* SessionEngine;
-            const first = shells[0];
-            const second = shells[1];
-            if (first?.sealantSessionId == null || second?.sealantSessionId == null)
-              throw new Error("missing shells");
-            const summary = () => world.sessions.get(first.sessionId)?.summary ?? "";
-            expect(summary()).toContain(wordsOf(first));
-            states.set(first.sealantSessionId, {
-              status: "exited",
-              exitCode: 0,
-              outputHighWater: 0n,
-            });
-            yield* until(
-              () => world.processes.get(first.id)?.exitedAt != null,
-              "first shell observed ended",
-            );
-            yield* until(() => !summary().includes(wordsOf(first)), "the first shell's words");
-            // The second shell's refusal is its own, and stays.
-            expect(summary()).toContain(wordsOf(second));
-            states.set(second.sealantSessionId, {
-              status: "exited",
-              exitCode: 0,
-              outputHighWater: 0n,
-            });
-            yield* until(
-              () => world.processes.get(second.id)?.exitedAt != null,
-              "second shell observed ended",
-            );
-            yield* until(() => !summary().includes("stop again"), "refusal cleared");
-            expect(holderAgentLive(world, first.sessionId)).toBe(true);
-          }),
-        { fixture, captured: memory, sealantLayer: platform },
-      );
-    } finally {
-      fs.rmSync(fixture.tmp, { recursive: true, force: true });
-    }
-  }, 30_000);
-
-  it("after a restart a healthy shell is never taken for its refused sibling (review 4 of mend#558)", async () => {
-    const fixture = {
-      world: makeWorld(),
-      tmp: fs.mkdtempSync(path.join(os.tmpdir(), "mend-stop-sibling-")),
-    };
-    const memory = makeMemoryCaptureStore();
-    const states = new Map<string, InteractiveSessionStatus>();
-    const shells: Array<SessionProcess> = [];
-    const closed = new Set<string>();
-    let refusing = false;
-    const platform = workspacesPerOwner(
-      sealantLaunchLayer([], undefined, [], undefined, undefined, undefined, states),
-      [],
-      [],
-      { closeFails: () => refusing, closed },
-    );
-    try {
-      await withEngine(
-        (world, tmp) =>
-          Effect.gen(function* () {
-            const { engine, session } = yield* launchOnce(world, tmp);
-            yield* engine.launch(session.id, ["claude"]);
-            shells.push(yield* engine.openShell(session.id), yield* engine.openShell(session.id));
-            refusing = true;
-            const refused = shells[0];
-            if (refused === undefined) throw new Error("missing shell");
-            yield* engine.stopShell(refused.id);
-            refusing = false;
-          }),
-        { fixture, captured: memory, sealantLayer: platform },
-      );
-      await withEngine(
-        (world) =>
-          Effect.gen(function* () {
-            yield* SessionEngine;
-            const refused = shells[0];
-            const healthy = shells[1];
-            if (refused?.sealantSessionId == null || healthy?.sealantSessionId == null)
-              throw new Error("missing shells");
-            states.set(refused.sealantSessionId, {
-              status: "exited",
-              exitCode: 0,
-              outputHighWater: 0n,
-            });
-            yield* until(
-              () => world.processes.get(refused.id)?.exitedAt != null,
-              "the refused shell observed ended",
-            );
-            yield* until(
-              () => !(world.sessions.get(refused.sessionId)?.summary ?? "").includes("stop again"),
-              "its words cleared",
-            );
-            // The healthy shell runs on, never marked refused.
-            expect(world.processes.get(healthy.id)).toMatchObject({
-              id: healthy.id,
-              sessionId: healthy.sessionId,
-              sealantRunId: healthy.sealantRunId,
-              sealantSessionId: healthy.sealantSessionId,
-              kind: "shell",
-              status: "running",
-              exitedAt: null,
-            });
-            expect(closed.has(healthy.sealantSessionId)).toBe(false);
-          }),
-        { fixture, captured: memory, sealantLayer: platform },
-      );
-    } finally {
-      fs.rmSync(fixture.tmp, { recursive: true, force: true });
-    }
-  }, 30_000);
-
-  it("removing the person who started the executor retires it: the joiner is stopped and told, and it saves and ends", async () => {
-    let state: Record<string, unknown> = {};
-    await joinByAnotherPerson((engine, world, join) =>
+  it.effect(
+    "failed shell Stops survive restart, each on its own words, until that shell is observed ended",
+    () =>
       Effect.gen(function* () {
-        const agent = joinedAgentOf(world, join.joined);
-        world.members.delete("user-fixture");
-        // Nothing new runs in it for anyone: the creator's identity is no longer lent.
-        const refused = yield* engine
-          .openShell(join.joined)
-          .pipe(Effect.match({ onSuccess: () => "opened", onFailure: (error) => error.message }));
-        const done = yield* engine.windDownPerson("user-fixture");
-        yield* until(() => join.stopped.length > 0, "the retired executor's stop");
-        const joined = world.sessions.get(join.joined);
-        state = {
-          refused,
-          retired: done.retired,
-          joinerClosed: join.closed.has(agent.ptyId),
-          joinerStatus: joined?.status,
-          joinerSummary: joined?.summary,
-          // It saved first: the final flush before the stop, through the normal Stop.
-          flushedBeforeStop: join.calls.some((call) => call.startsWith("captureFlush")),
-          stopped: join.stopped,
-        };
+        const { fixture, reached } = yield* signalledWorld("mend-stop-restart-");
+        const memory = makeMemoryCaptureStore();
+        const states = new Map<string, InteractiveSessionStatus>();
+        const shells: Array<SessionProcess> = [];
+        let refusing = false;
+        const refusals = refusedCloses(() => refusing);
+        const platform = workspacesPerOwner(
+          sealantLaunchLayer([], undefined, [], undefined, undefined, undefined, states),
+          [],
+          [],
+          { closeFails: refusals.closeFails },
+        );
+        const options = { fixture, captured: memory, sealantLayer: platform };
+        yield* withPreparedEngineEffect(
+          (world, tmp) => setup(tmp, world),
+          (world, _tmp, project) =>
+            Effect.gen(function* () {
+              const { engine, session } = yield* provisionIn(project);
+              yield* engine.launch(session.id, ["claude"]);
+              shells.push(yield* engine.openShell(session.id), yield* engine.openShell(session.id));
+              refusing = true;
+              for (const shell of shells) yield* refusingStop(engine.stopShell(shell.id), refusals);
+              const summary = world.sessions.get(session.id)?.summary ?? "";
+              expect(summary).toContain(wordsOf(shells[0]));
+              expect(summary).toContain(wordsOf(shells[1]));
+            }),
+          options,
+        );
+        yield* withPreparedEngineEffect(
+          () => Effect.void,
+          (world) =>
+            Effect.gen(function* () {
+              yield* SessionEngine;
+              const first = shells[0];
+              const second = shells[1];
+              if (first?.sealantSessionId == null || second?.sealantSessionId == null)
+                throw new Error("missing shells");
+              const summary = () => world.sessions.get(first.sessionId)?.summary ?? "";
+              expect(summary()).toContain(wordsOf(first));
+              states.set(first.sealantSessionId, {
+                status: "exited",
+                exitCode: 0,
+                outputHighWater: 0n,
+              });
+              // The restarted engine watches each live shell again; its next look reads the exit.
+              yield* TestClock.adjust(WATCH_POLL);
+              yield* reached(
+                () => world.processes.get(first.id)?.exitedAt != null,
+                "first shell observed ended",
+              );
+              yield* reached(() => !summary().includes(wordsOf(first)), "the first shell's words");
+              // The second shell's refusal is its own, and stays.
+              expect(summary()).toContain(wordsOf(second));
+              states.set(second.sealantSessionId, {
+                status: "exited",
+                exitCode: 0,
+                outputHighWater: 0n,
+              });
+              yield* TestClock.adjust(WATCH_POLL);
+              yield* reached(
+                () => world.processes.get(second.id)?.exitedAt != null,
+                "second shell observed ended",
+              );
+              yield* reached(() => !summary().includes("stop again"), "refusal cleared");
+              expect(holderAgentLive(world, first.sessionId)).toBe(true);
+            }),
+          options,
+        );
       }),
-    );
-    expect(state).toEqual({
-      refused:
-        "the person who started this workspace is no longer a member of this organization, so nothing new runs in it · start a session of your own in this worktree",
-      retired: ["workspace-1"],
-      joinerClosed: true,
-      joinerStatus: "stopped",
-      joinerSummary: EXECUTOR_RETIRED,
-      flushedBeforeStop: true,
-      stopped: ["workspace-1"],
-    });
-  });
+    30_000,
+  );
+
+  it.effect(
+    "after a restart a healthy shell is never taken for its refused sibling (review 4 of mend#558)",
+    () =>
+      Effect.gen(function* () {
+        const { fixture, reached } = yield* signalledWorld("mend-stop-sibling-");
+        const memory = makeMemoryCaptureStore();
+        const states = new Map<string, InteractiveSessionStatus>();
+        const shells: Array<SessionProcess> = [];
+        const closed = new Set<string>();
+        let refusing = false;
+        const refusals = refusedCloses(() => refusing);
+        const platform = workspacesPerOwner(
+          sealantLaunchLayer([], undefined, [], undefined, undefined, undefined, states),
+          [],
+          [],
+          { closeFails: refusals.closeFails, closed },
+        );
+        const options = { fixture, captured: memory, sealantLayer: platform };
+        yield* withPreparedEngineEffect(
+          (world, tmp) => setup(tmp, world),
+          (_world, _tmp, project) =>
+            Effect.gen(function* () {
+              const { engine, session } = yield* provisionIn(project);
+              yield* engine.launch(session.id, ["claude"]);
+              shells.push(yield* engine.openShell(session.id), yield* engine.openShell(session.id));
+              refusing = true;
+              const refused = shells[0];
+              if (refused === undefined) throw new Error("missing shell");
+              yield* refusingStop(engine.stopShell(refused.id), refusals);
+              refusing = false;
+            }),
+          options,
+        );
+        yield* withPreparedEngineEffect(
+          () => Effect.void,
+          (world) =>
+            Effect.gen(function* () {
+              yield* SessionEngine;
+              const refused = shells[0];
+              const healthy = shells[1];
+              if (refused?.sealantSessionId == null || healthy?.sealantSessionId == null)
+                throw new Error("missing shells");
+              states.set(refused.sealantSessionId, {
+                status: "exited",
+                exitCode: 0,
+                outputHighWater: 0n,
+              });
+              // The restarted engine watches each live shell again; its next look reads the exit.
+              yield* TestClock.adjust(WATCH_POLL);
+              yield* reached(
+                () => world.processes.get(refused.id)?.exitedAt != null,
+                "the refused shell observed ended",
+              );
+              yield* reached(
+                () =>
+                  !(world.sessions.get(refused.sessionId)?.summary ?? "").includes("stop again"),
+                "its words cleared",
+              );
+              // The healthy shell runs on, never marked refused.
+              expect(world.processes.get(healthy.id)).toMatchObject({
+                id: healthy.id,
+                sessionId: healthy.sessionId,
+                sealantRunId: healthy.sealantRunId,
+                sealantSessionId: healthy.sealantSessionId,
+                kind: "shell",
+                status: "running",
+                exitedAt: null,
+              });
+              expect(closed.has(healthy.sealantSessionId)).toBe(false);
+            }),
+          options,
+        );
+      }),
+    30_000,
+  );
+
+  it.effect(
+    "removing the person who started the executor retires it: the joiner is stopped and told, and it saves and ends",
+    () =>
+      Effect.gen(function* () {
+        let state: Record<string, unknown> = {};
+        yield* joinByAnotherPersonEffect((engine, world, join) =>
+          Effect.gen(function* () {
+            const agent = joinedAgentOf(world, join.joined);
+            world.members.delete("user-fixture");
+            // Nothing new runs in it for anyone: the creator's identity is no longer lent.
+            const refused = yield* engine
+              .openShell(join.joined)
+              .pipe(
+                Effect.match({ onSuccess: () => "opened", onFailure: (error) => error.message }),
+              );
+            const done = yield* engine.windDownPerson("user-fixture");
+            yield* join.reached(() => join.stopped.length > 0, "the retired executor's stop");
+            const joined = world.sessions.get(join.joined);
+            state = {
+              refused,
+              retired: done.retired,
+              joinerClosed: join.closed.has(agent.ptyId),
+              joinerStatus: joined?.status,
+              joinerSummary: joined?.summary,
+              // It saved first: the final flush before the stop, through the normal Stop.
+              flushedBeforeStop: join.calls.some((call) => call.startsWith("captureFlush")),
+              stopped: join.stopped,
+            };
+          }),
+        );
+        expect(state).toEqual({
+          refused:
+            "the person who started this workspace is no longer a member of this organization, so nothing new runs in it · start a session of your own in this worktree",
+          retired: ["workspace-1"],
+          joinerClosed: true,
+          joinerStatus: "stopped",
+          joinerSummary: EXECUTOR_RETIRED,
+          flushedBeforeStop: true,
+          stopped: ["workspace-1"],
+        });
+      }),
+  );
 
   it("a removed joiner's lookups never read the holder's executor gone: removing the project still waits for it", async () => {
     let holds: ReadonlyArray<CaptureHold> = [];

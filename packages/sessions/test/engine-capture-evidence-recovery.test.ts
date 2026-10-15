@@ -8,14 +8,15 @@ import { Project, Session, executorEndOf } from "@mend/domain/workbench";
 import { type HostUserNamespaces, hostUserNamespacesRefusal } from "@mend/domain/workbench";
 import { SealantPlatformError, type WorkspaceStopOptions } from "@mend/sealant";
 import {
+  type CaptureChannel,
   type CaptureCompletionSeal,
   SessionEngine,
   WorkspaceHostUserNamespaces,
 } from "@mend/sessions";
 import { captureKeys, SHALLOW_REPOSITORY_REASON } from "@mend/store";
-import { it } from "@mend/test-ci/effect-vitest";
+import { it, TestClock } from "@mend/test-ci/effect-vitest";
 import type { CreateOptions, InteractiveSessionStatus, WorkspaceCaptureStatus } from "@sealant/sdk";
-import { Duration, Effect, Layer } from "effect";
+import { Deferred, Duration, Effect, Fiber, Layer, Queue } from "effect";
 import { describe, expect } from "vitest";
 
 import { makeMemoryCaptureStore } from "./capture-store-memory.ts";
@@ -25,8 +26,8 @@ import {
   launchOnce,
   lifecycleLayer,
   memorySeals,
+  provisionIn,
   shipHarnessCapture,
-  until,
 } from "./engine/capture-fixture.ts";
 import {
   captureAnswer,
@@ -36,277 +37,578 @@ import {
   sealantLaunchLayer,
   servedSocketApis,
   setup,
+  type World,
   withEngine,
+  withPreparedEngineEffect,
 } from "./engine/fixture.ts";
+
+/**
+ * What these scenarios wait on, signalled by the fakes that change it so the test drives the
+ * TestClock instead of polling: every row the engine writes (`world.sessions`), every look the PTY
+ * watcher takes (`ptyStates` reads), every stop answered by the platform (`changed`, from the
+ * fake's `stopAnswer`), and every checkpoint wait the channel registers (`awaitRegister`).
+ */
+const makeRecoveryClock = Effect.gen(function* () {
+  const changes = yield* Queue.make<void>();
+  const registrations = yield* Queue.make<{
+    readonly completed: Deferred.Deferred<void>;
+    readonly timeoutMs: number;
+  }>();
+  const changed = () => void Queue.offerUnsafe(changes, undefined);
+  const prepareWorld = (world: World) => {
+    const set = world.sessions.set.bind(world.sessions);
+    world.sessions.set = (key, value) => {
+      set(key, value);
+      changed();
+      return world.sessions;
+    };
+  };
+  /** An array whose every push signals: the engine's log lines, the stops asked of the platform. */
+  const signalled = <T>(): Array<T> => {
+    const items: Array<T> = [];
+    // Not enumerable: `toEqual([])` reads the items alone.
+    Object.defineProperty(items, "push", {
+      value: (...pushed: Array<T>) => {
+        const length = Array.prototype.push.apply(items, pushed);
+        changed();
+        return length;
+      },
+    });
+    return items;
+  };
+  const logs = () => signalled<string>();
+  const stopOptions = () => signalled<WorkspaceStopOptions | undefined>();
+  const looks = new Map<string, number>();
+  const ptyStates = new Map<string, InteractiveSessionStatus>();
+  const ptyGet = ptyStates.get.bind(ptyStates);
+  ptyStates.get = (id) => {
+    looks.set(id, (looks.get(id) ?? 0) + 1);
+    changed();
+    return ptyGet(id);
+  };
+  const wrapCaptureChannel = (inner: CaptureChannel["Service"]): CaptureChannel["Service"] => ({
+    ...inner,
+    awaitRegister: (worktreeId, accept, timeout) =>
+      Effect.gen(function* () {
+        const completed = yield* Deferred.make<void>();
+        yield* Queue.offer(registrations, { completed, timeoutMs: Duration.toMillis(timeout) });
+        return yield* inner
+          .awaitRegister(worktreeId, accept, timeout)
+          .pipe(Effect.ensuring(Deferred.succeed(completed, undefined)));
+      }),
+  });
+  const untilChanged = (condition: () => boolean, label: string) =>
+    Effect.gen(function* () {
+      while (!condition()) yield* Queue.take(changes);
+    }).pipe(Effect.withSpan(label));
+  /** The next checkpoint wait (`CHECKPOINT_WAIT`, 2 s) runs out: nothing registers under it. */
+  const expireCheckpointWait = Effect.gen(function* () {
+    const registration = yield* Queue.take(registrations);
+    expect(registration.timeoutMs).toBe(2_000);
+    yield* TestClock.adjust(1_999);
+    expect(yield* Deferred.isDone(registration.completed)).toBe(false);
+    yield* TestClock.adjust(1);
+    yield* Deferred.await(registration.completed);
+  });
+  /** The PTY watcher's next 2 s look at `ptyId`; `notYet` holds right up to it. */
+  const nextLook = (ptyId: string, notYet: () => boolean) =>
+    Effect.gen(function* () {
+      const looked = looks.get(ptyId) ?? 0;
+      yield* TestClock.adjust(1_999);
+      expect(looks.get(ptyId) ?? 0).toBe(looked);
+      expect(notYet()).toBe(true);
+      yield* TestClock.adjust(1);
+      yield* untilChanged(() => (looks.get(ptyId) ?? 0) > looked, `the watcher's look at ${ptyId}`);
+    });
+  return {
+    changed,
+    prepareWorld,
+    wrapCaptureChannel,
+    logs,
+    stopOptions,
+    ptyStates,
+    untilChanged,
+    expireCheckpointWait,
+    nextLook,
+  };
+});
 
 describe("SessionEngine seventh review (2026-09-28)", () => {
   // Review 2026-09-28 (7) #4 (the reviewer's reproduction): the owner read `pending: 1` at the
   // executor's observation 99; the executor then sealed at observation 100 and ended. The
   // session's own queue reading was added again without the origin the executor gave it, and the
   // seal that covers it read as lost. The reading keeps its origin: the seal stands.
-  it(
+  it.effect(
     "review 7 #4 an old pending reading the seal covers does not make the executor read lost",
-    { timeout: 20_000 },
-    async () => {
-      const created: Array<CreateOptions> = [];
-      const memory = makeMemoryCaptureStore();
-      const records = new Map<string, CaptureCompletionSeal>();
-      const ptyStates = new Map<string, InteractiveSessionStatus>();
-      let dead = false;
-      let sample: WorkspaceCaptureStatus | null = null;
-      let sealed = false;
-      await withEngine(
-        (world, tmp) =>
-          Effect.gen(function* () {
-            const { engine, session } = yield* launchOnce(world, tmp);
-            yield* engine.launch(session.id, ["codex"]);
-            const epoch = memory.leases.get(session.worktreeId)?.epoch ?? 0;
-            const launch = world.executorLaunches.get(session.id)?.launchId ?? "";
-            const built = yield* shipHarnessCapture(
-              tmp,
-              memory,
-              session.worktreeId,
-              epoch,
-              crypto.randomUUID(),
-              "final",
-            );
-            sample = Object.assign(flushReport(1, 0, { epoch }), {
-              origin: {
+    () =>
+      Effect.gen(function* () {
+        const created: Array<CreateOptions> = [];
+        const memory = makeMemoryCaptureStore();
+        const records = new Map<string, CaptureCompletionSeal>();
+        const clock = yield* makeRecoveryClock;
+        const { ptyStates } = clock;
+        let dead = false;
+        let sample: WorkspaceCaptureStatus | null = null;
+        let sealed = false;
+        yield* withPreparedEngineEffect(
+          (world, tmp) => setup(tmp, world),
+          (world, tmp, project) =>
+            Effect.gen(function* () {
+              const { engine, session } = yield* provisionIn(project);
+              yield* engine.launch(session.id, ["codex"]);
+              const epoch = memory.leases.get(session.worktreeId)?.epoch ?? 0;
+              const launch = world.executorLaunches.get(session.id)?.launchId ?? "";
+              const built = yield* shipHarnessCapture(
+                tmp,
+                memory,
+                session.worktreeId,
                 epoch,
-                launch,
-                bootId: "boot-1",
-                bootGeneration: 1,
-                observation: 99,
-                headN: built.manifest.n - 1,
+                crypto.randomUUID(),
+                "final",
+              );
+              sample = Object.assign(flushReport(1, 0, { epoch }), {
+                origin: {
+                  epoch,
+                  launch,
+                  bootId: "boot-1",
+                  bootGeneration: 1,
+                  observation: 99,
+                  headN: built.manifest.n - 1,
+                },
+              });
+              yield* engine.refreshCaptureStatus(session.id);
+              yield* clock.untilChanged(
+                () => world.sessions.get(session.id)?.capturePending === 1,
+                "owner pending status persisted",
+              );
+              expect(
+                world.executorEvidence.get("workspace-1")?.unsaved.at(-1)?.position?.observation,
+              ).toBe(99);
+              sample = null;
+              records.set(`${session.worktreeId}:${epoch}`, {
+                worktreeId: session.worktreeId,
+                epoch,
+                executorId: launch,
+                captureId: built.id,
+                n: built.manifest.n,
+                sealedAt: new Date(),
+                ...SEAL_STAMP,
+              });
+              sealed = true;
+              dead = true;
+              const agent = [...world.processes.values()].find(
+                (process) => process.sessionId === session.id && process.kind === "agent-pty",
+              );
+              if (agent?.sealantSessionId == null) throw new Error("no PTY");
+              ptyStates.set(agent.sealantSessionId, {
+                status: "exited",
+                exitCode: 0,
+                outputHighWater: 0n,
+              });
+              // The exit is read at the PTY watcher's next look; nothing settles before it.
+              yield* clock.nextLook(
+                agent.sealantSessionId,
+                () => world.sessions.get(session.id)?.settledAt == null,
+              );
+              yield* clock.untilChanged(
+                () => world.sessions.get(session.id)?.settledAt != null,
+                "natural end",
+              );
+              const ended = world.sessions.get(session.id);
+              expect(ended?.summary).not.toContain("executor lost");
+              expect(ended?.status).toBe("stopped");
+              expect(ended?.summary).toContain("stopped outside Mend · saved at");
+            }),
+          {
+            captured: memory,
+            seals: memorySeals(records),
+            drainPolicy: { stallSeconds: 0 },
+            sealantLayer: sealantLaunchLayer(
+              created,
+              undefined,
+              undefined,
+              undefined,
+              () => dead,
+              undefined,
+              ptyStates,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              {
+                captureStatus: () => Effect.succeed(sample),
+                flush: () =>
+                  sealed
+                    ? Effect.fail(
+                        new SealantPlatformError({
+                          code: "connection_closed",
+                          status: null,
+                          message: "relay closed",
+                          cause: null,
+                        }),
+                      )
+                    : Effect.succeed(flushReport(0, 0)),
               },
-            });
-            yield* engine.refreshCaptureStatus(session.id);
-            yield* until(
-              () => world.sessions.get(session.id)?.capturePending === 1,
-              "owner pending status persisted",
-            );
-            expect(
-              world.executorEvidence.get("workspace-1")?.unsaved.at(-1)?.position?.observation,
-            ).toBe(99);
-            sample = null;
-            records.set(`${session.worktreeId}:${epoch}`, {
-              worktreeId: session.worktreeId,
-              epoch,
-              executorId: launch,
-              captureId: built.id,
-              n: built.manifest.n,
-              sealedAt: new Date(),
-              ...SEAL_STAMP,
-            });
-            sealed = true;
-            dead = true;
-            const agent = [...world.processes.values()].find(
-              (process) => process.sessionId === session.id && process.kind === "agent-pty",
-            );
-            if (agent?.sealantSessionId == null) throw new Error("no PTY");
-            ptyStates.set(agent.sealantSessionId, {
-              status: "exited",
-              exitCode: 0,
-              outputHighWater: 0n,
-            });
-            yield* until(() => world.sessions.get(session.id)?.settledAt != null, "natural end");
-            const ended = world.sessions.get(session.id);
-            expect(ended?.summary).not.toContain("executor lost");
-            expect(ended?.status).toBe("stopped");
-            expect(ended?.summary).toContain("stopped outside Mend · saved at");
-          }),
-        {
-          captured: memory,
-          seals: memorySeals(records),
-          drainPolicy: { stallSeconds: 0 },
-          sealantLayer: sealantLaunchLayer(
-            created,
-            undefined,
-            undefined,
-            undefined,
-            () => dead,
-            undefined,
-            ptyStates,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            {
-              captureStatus: () => Effect.succeed(sample),
-              flush: () =>
-                sealed
-                  ? Effect.fail(
-                      new SealantPlatformError({
-                        code: "connection_closed",
-                        status: null,
-                        message: "relay closed",
-                        cause: null,
-                      }),
-                    )
-                  : Effect.succeed(flushReport(0, 0)),
-            },
-          ),
-        },
-      );
-    },
+            ),
+            prepareWorld: clock.prepareWorld,
+          },
+        );
+      }),
+    { timeout: 20_000 },
   );
 
   // Review 2026-09-28 (7) #4, the rule under it: evidence nothing orders against a seal (a
   // pending answer the executor gave no origin for) cannot say whether the seal covers it. That
   // is completion unknown — never "changes after that were not saved".
-  it(
+  it.effect(
     "review 7 #4 a pending answer nothing orders against the seal reads completion unknown, never lost",
+    () =>
+      Effect.gen(function* () {
+        const created: Array<CreateOptions> = [];
+        const memory = makeMemoryCaptureStore();
+        const records = new Map<string, CaptureCompletionSeal>();
+        const clock = yield* makeRecoveryClock;
+        const { ptyStates } = clock;
+        let dead = false;
+        let sample: WorkspaceCaptureStatus | null = null;
+        let sealed = false;
+        yield* withPreparedEngineEffect(
+          (world, tmp) => setup(tmp, world),
+          (world, tmp, project) =>
+            Effect.gen(function* () {
+              const { engine, session } = yield* provisionIn(project);
+              yield* engine.launch(session.id, ["codex"]);
+              const epoch = memory.leases.get(session.worktreeId)?.epoch ?? 0;
+              const launch = world.executorLaunches.get(session.id)?.launchId ?? "";
+              const built = yield* shipHarnessCapture(
+                tmp,
+                memory,
+                session.worktreeId,
+                epoch,
+                crypto.randomUUID(),
+                "final",
+              );
+              // No origin: an older daemon's answer.
+              sample = flushReport(1, 0, { epoch });
+              yield* engine.refreshCaptureStatus(session.id);
+              yield* clock.untilChanged(
+                () => world.sessions.get(session.id)?.capturePending === 1,
+                "owner pending status persisted",
+              );
+              sample = null;
+              records.set(`${session.worktreeId}:${epoch}`, {
+                worktreeId: session.worktreeId,
+                epoch,
+                executorId: launch,
+                captureId: built.id,
+                n: built.manifest.n,
+                sealedAt: new Date(),
+                ...SEAL_STAMP,
+              });
+              sealed = true;
+              dead = true;
+              const agent = [...world.processes.values()].find(
+                (process) => process.sessionId === session.id && process.kind === "agent-pty",
+              );
+              if (agent?.sealantSessionId == null) throw new Error("no PTY");
+              ptyStates.set(agent.sealantSessionId, {
+                status: "exited",
+                exitCode: 0,
+                outputHighWater: 0n,
+              });
+              // The exit is read at the PTY watcher's next look; nothing settles before it.
+              yield* clock.nextLook(
+                agent.sealantSessionId,
+                () => world.sessions.get(session.id)?.settledAt == null,
+              );
+              yield* clock.untilChanged(
+                () => world.sessions.get(session.id)?.settledAt != null,
+                "natural end",
+              );
+              const ended = world.sessions.get(session.id);
+              expect(ended?.status).toBe("failed");
+              expect(ended?.summary).not.toContain("executor lost");
+              expect(ended?.summary).not.toContain("were not saved");
+              expect(ended?.summary).toContain("completion unknown");
+            }),
+          {
+            captured: memory,
+            seals: memorySeals(records),
+            drainPolicy: { stallSeconds: 0 },
+            sealantLayer: sealantLaunchLayer(
+              created,
+              undefined,
+              undefined,
+              undefined,
+              () => dead,
+              undefined,
+              ptyStates,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              {
+                captureStatus: () => Effect.succeed(sample),
+                flush: () =>
+                  sealed
+                    ? Effect.fail(
+                        new SealantPlatformError({
+                          code: "connection_closed",
+                          status: null,
+                          message: "relay closed",
+                          cause: null,
+                        }),
+                      )
+                    : Effect.succeed(flushReport(0, 0)),
+              },
+            ),
+            prepareWorld: clock.prepareWorld,
+          },
+        );
+      }),
     { timeout: 20_000 },
-    async () => {
-      const created: Array<CreateOptions> = [];
-      const memory = makeMemoryCaptureStore();
-      const records = new Map<string, CaptureCompletionSeal>();
-      const ptyStates = new Map<string, InteractiveSessionStatus>();
-      let dead = false;
-      let sample: WorkspaceCaptureStatus | null = null;
-      let sealed = false;
-      await withEngine(
-        (world, tmp) =>
-          Effect.gen(function* () {
-            const { engine, session } = yield* launchOnce(world, tmp);
-            yield* engine.launch(session.id, ["codex"]);
-            const epoch = memory.leases.get(session.worktreeId)?.epoch ?? 0;
-            const launch = world.executorLaunches.get(session.id)?.launchId ?? "";
-            const built = yield* shipHarnessCapture(
-              tmp,
-              memory,
-              session.worktreeId,
-              epoch,
-              crypto.randomUUID(),
-              "final",
-            );
-            // No origin: an older daemon's answer.
-            sample = flushReport(1, 0, { epoch });
-            yield* engine.refreshCaptureStatus(session.id);
-            yield* until(
-              () => world.sessions.get(session.id)?.capturePending === 1,
-              "owner pending status persisted",
-            );
-            sample = null;
-            records.set(`${session.worktreeId}:${epoch}`, {
-              worktreeId: session.worktreeId,
-              epoch,
-              executorId: launch,
-              captureId: built.id,
-              n: built.manifest.n,
-              sealedAt: new Date(),
-              ...SEAL_STAMP,
-            });
-            sealed = true;
-            dead = true;
-            const agent = [...world.processes.values()].find(
-              (process) => process.sessionId === session.id && process.kind === "agent-pty",
-            );
-            if (agent?.sealantSessionId == null) throw new Error("no PTY");
-            ptyStates.set(agent.sealantSessionId, {
-              status: "exited",
-              exitCode: 0,
-              outputHighWater: 0n,
-            });
-            yield* until(() => world.sessions.get(session.id)?.settledAt != null, "natural end");
-            const ended = world.sessions.get(session.id);
-            expect(ended?.status).toBe("failed");
-            expect(ended?.summary).not.toContain("executor lost");
-            expect(ended?.summary).not.toContain("were not saved");
-            expect(ended?.summary).toContain("completion unknown");
-          }),
-        {
-          captured: memory,
-          seals: memorySeals(records),
-          drainPolicy: { stallSeconds: 0 },
-          sealantLayer: sealantLaunchLayer(
-            created,
-            undefined,
-            undefined,
-            undefined,
-            () => dead,
-            undefined,
-            ptyStates,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            {
-              captureStatus: () => Effect.succeed(sample),
-              flush: () =>
-                sealed
-                  ? Effect.fail(
-                      new SealantPlatformError({
-                        code: "connection_closed",
-                        status: null,
-                        message: "relay closed",
-                        cause: null,
-                      }),
-                    )
-                  : Effect.succeed(flushReport(0, 0)),
-            },
-          ),
-        },
-      );
-    },
   );
 
   // Review 2026-09-28 (7) #3 (the reviewer's reproduction): an answer that said the executor held
   // unsaved work arrived after its seal and could not be published as the executor's evidence.
   // The fence that said so lived in the engine's memory; a restart dropped it and the old seal
   // read saved. The fence is durable, and the answer is published with it cleared in one write.
-  it(
+  it.effect(
     "review 7 #3 a restart keeps an answer that failed to persist fenced: the old seal does not read saved",
+    () =>
+      Effect.gen(function* () {
+        // The restarted engine's boot pass reads the executor's head capture off the filesystem
+        // and holds its transcript's mtime, which is wall-clock time, against the Effect clock:
+        // left at epoch 0, every transcript reads as written after the agent's exit, an observed
+        // agent is recorded and the session never settles. The clock starts at the wall clock
+        // and moves only as the test drives it.
+        yield* TestClock.setTime(Date.now());
+        const fixture = {
+          world: makeWorld(),
+          tmp: fs.mkdtempSync(path.join(os.tmpdir(), "mend-review7-fence-")),
+        };
+        const created: Array<CreateOptions> = [];
+        const memory = makeMemoryCaptureStore();
+        const records = new Map<string, CaptureCompletionSeal>();
+        const clock = yield* makeRecoveryClock;
+        const { ptyStates } = clock;
+        const stopOptions: Array<WorkspaceStopOptions | undefined> = [];
+        // The status read's failed publication ends in a warning: every line the engine logs
+        // signals, so the test reads the fence it left once that is written.
+        const logs = clock.logs();
+        let sample: WorkspaceCaptureStatus | null = null;
+        let dead = false;
+        let sealed = false;
+        let sessionId: SessionId | undefined;
+        const sealantLayer = sealantLaunchLayer(
+          created,
+          undefined,
+          undefined,
+          undefined,
+          () => dead,
+          undefined,
+          ptyStates,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          {
+            stopOptions,
+            resourceId: () => "container-r7",
+            finalCompletion: "unreported",
+            captureStatus: () => Effect.succeed(sample),
+            flush: () =>
+              sealed
+                ? Effect.fail(
+                    new SealantPlatformError({
+                      code: "connection_closed",
+                      status: null,
+                      message: "relay closed",
+                      cause: null,
+                    }),
+                  )
+                : Effect.succeed(flushReport(0, 0)),
+          },
+        );
+        yield* Effect.gen(function* () {
+          yield* withPreparedEngineEffect(
+            (world, tmp) => setup(tmp, world),
+            (world, tmp, project) =>
+              Effect.gen(function* () {
+                const { engine, session } = yield* provisionIn(project);
+                sessionId = session.id;
+                yield* engine.launch(session.id, ["codex"]);
+                const epoch = memory.leases.get(session.worktreeId)?.epoch ?? 0;
+                const launch = world.executorLaunches.get(session.id)?.launchId ?? "";
+                const built = yield* shipHarnessCapture(
+                  tmp,
+                  memory,
+                  session.worktreeId,
+                  epoch,
+                  crypto.randomUUID(),
+                  "final",
+                );
+                records.set(`${session.worktreeId}:${epoch}`, {
+                  worktreeId: session.worktreeId,
+                  epoch,
+                  executorId: launch,
+                  captureId: built.id,
+                  n: built.manifest.n,
+                  sealedAt: new Date(),
+                  ...SEAL_STAMP,
+                });
+                sealed = true;
+                sample = Object.assign(flushReport(0, 1, { epoch }), {
+                  complete: false,
+                  incompleteReason: "snapshot-failed",
+                  unreadable: 1,
+                  unreadablePaths: ["tree/after-seal.txt"],
+                  origin: {
+                    epoch,
+                    launch,
+                    bootId: "boot-1",
+                    bootGeneration: 1,
+                    observation: 101,
+                    headN: built.manifest.n,
+                  },
+                });
+                unsavedEvidenceWriteFailure.enabled = true;
+                yield* engine.refreshCaptureStatus(session.id);
+                // The answer's publication fails: its fence stays, marked unpublished.
+                yield* clock.untilChanged(
+                  () => [...world.evidenceFences.values()].some((fence) => fence.unpublished),
+                  "the fence of the answer that failed to persist",
+                );
+                sample = null;
+                expect(world.executorEvidence.get("workspace-1")?.unsaved ?? []).toEqual([]);
+              }),
+            {
+              fixture,
+              captured: memory,
+              seals: memorySeals(records),
+              sealantLayer,
+              logs,
+              prepareWorld: clock.prepareWorld,
+            },
+          );
+          unsavedEvidenceWriteFailure.enabled = false;
+          dead = true;
+          const agent = [...fixture.world.processes.values()].find(
+            (process) => process.sessionId === sessionId && process.kind === "agent-pty",
+          );
+          if (agent?.sealantSessionId == null) throw new Error("no PTY");
+          ptyStates.set(agent.sealantSessionId, {
+            status: "exited",
+            exitCode: 0,
+            outputHighWater: 0n,
+          });
+          // A new engine over the same world: the process-local state is gone.
+          yield* withPreparedEngineEffect(
+            () => Effect.void,
+            (world) =>
+              Effect.gen(function* () {
+                yield* SessionEngine;
+                yield* clock.untilChanged(
+                  () => sessionId !== undefined && world.sessions.get(sessionId)?.settledAt != null,
+                  "the restarted engine settles the ended executor",
+                );
+                const ended = sessionId === undefined ? undefined : world.sessions.get(sessionId);
+                expect(ended?.summary).not.toContain("saved at");
+                expect(ended?.status).toBe("failed");
+                expect(ended?.summary).toContain("completion unknown");
+              }),
+            { fixture, captured: memory, seals: memorySeals(records), sealantLayer, logs },
+          );
+        }).pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              unsavedEvidenceWriteFailure.enabled = false;
+            }),
+          ),
+        );
+      }),
     { timeout: 30_000 },
-    async () => {
-      const fixture = {
-        world: makeWorld(),
-        tmp: fs.mkdtempSync(path.join(os.tmpdir(), "mend-review7-fence-")),
-      };
-      const created: Array<CreateOptions> = [];
-      const memory = makeMemoryCaptureStore();
-      const records = new Map<string, CaptureCompletionSeal>();
-      const ptyStates = new Map<string, InteractiveSessionStatus>();
-      const stopOptions: Array<WorkspaceStopOptions | undefined> = [];
-      let sample: WorkspaceCaptureStatus | null = null;
-      let dead = false;
-      let sealed = false;
-      let sessionId: SessionId | undefined;
-      const sealantLayer = sealantLaunchLayer(
-        created,
-        undefined,
-        undefined,
-        undefined,
-        () => dead,
-        undefined,
-        ptyStates,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        {
-          stopOptions,
-          resourceId: () => "container-r7",
-          finalCompletion: "unreported",
-          captureStatus: () => Effect.succeed(sample),
-          flush: () =>
-            sealed
-              ? Effect.fail(
-                  new SealantPlatformError({
-                    code: "connection_closed",
-                    status: null,
-                    message: "relay closed",
-                    cause: null,
-                  }),
-                )
-              : Effect.succeed(flushReport(0, 0)),
-        },
-      );
-      try {
-        await withEngine(
-          (world, tmp) =>
+  );
+
+  // Review 2026-09-28 (8) #4 (the reviewer's reproduction): a flush answered that the executor
+  // held unsaved work, and the log line written before its publication failed. The fence was
+  // marked answered only once publication began, so it closed as `unanswered` and the answer was
+  // forgotten; after a restart the old seal read saved. Receipt is marked the moment the answer
+  // arrives, it is published before anything is logged, and a log that fails changes no evidence.
+  it.effect(
+    "review 8 #4 a log that fails after an unsaved answer arrives does not revive the old seal",
+    () =>
+      Effect.gen(function* () {
+        // As review 7 #3: the restarted engine's boot pass holds the head capture's transcript
+        // mtime against the Effect clock.
+        yield* TestClock.setTime(Date.now());
+        const fixture = {
+          world: makeWorld(),
+          tmp: fs.mkdtempSync(path.join(os.tmpdir(), "mend-review8-log-fence-")),
+        };
+        const created: Array<CreateOptions> = [];
+        const memory = makeMemoryCaptureStore();
+        const records = new Map<string, CaptureCompletionSeal>();
+        const clock = yield* makeRecoveryClock;
+        const { ptyStates } = clock;
+        const stopOptions: Array<WorkspaceStopOptions | undefined> = [];
+        let sample: WorkspaceCaptureStatus | null = null;
+        let failedLog = false;
+        const logs: Array<string> = [];
+        logs.push = (...items: Array<string>) => {
+          if (
+            !failedLog &&
+            sample !== null &&
+            items.some((line) => line.includes("capture flush · partial"))
+          ) {
+            failedLog = true;
+            clock.changed();
+            throw new Error("log sink unavailable after the unsaved answer arrived");
+          }
+          const length = Array.prototype.push.apply(logs, items);
+          clock.changed();
+          return length;
+        };
+        let dead = false;
+        let sealed = false;
+        let sessionId: SessionId | undefined;
+        const sealantLayer = sealantLaunchLayer(
+          created,
+          undefined,
+          undefined,
+          undefined,
+          () => dead,
+          undefined,
+          ptyStates,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          {
+            stopOptions,
+            resourceId: () => "container-r8",
+            finalCompletion: "unreported",
+            captureStatus: () => Effect.succeed(sample),
+            flush: () =>
+              sealed
+                ? sample !== null
+                  ? Effect.succeed(sample)
+                  : Effect.fail(
+                      new SealantPlatformError({
+                        code: "connection_closed",
+                        status: null,
+                        message: "relay closed",
+                        cause: null,
+                      }),
+                    )
+                : Effect.succeed(flushReport(0, 0)),
+          },
+        );
+        yield* withPreparedEngineEffect(
+          (world, tmp) => setup(tmp, world),
+          (world, tmp, project) =>
             Effect.gen(function* () {
-              const { engine, session } = yield* launchOnce(world, tmp);
+              const { engine, session } = yield* provisionIn(project);
               sessionId = session.id;
               yield* engine.launch(session.id, ["codex"]);
               const epoch = memory.leases.get(session.worktreeId)?.epoch ?? 0;
@@ -343,15 +645,28 @@ describe("SessionEngine seventh review (2026-09-28)", () => {
                   headN: built.manifest.n,
                 },
               });
-              unsavedEvidenceWriteFailure.enabled = true;
-              yield* engine.refreshCaptureStatus(session.id);
-              yield* Effect.sleep(Duration.millis(50));
+              yield* engine.flushCaptures(session.id, "review 8 #4").pipe(Effect.exit);
+              // The answer is published, then its log fails: both are signalled.
+              yield* clock.untilChanged(
+                () =>
+                  failedLog &&
+                  (world.executorEvidence.get("workspace-1")?.unsaved ?? []).length > 0,
+                "the published answer and the failed log after it",
+              );
               sample = null;
-              expect(world.executorEvidence.get("workspace-1")?.unsaved ?? []).toEqual([]);
+              expect(failedLog).toBe(true);
+              // The answer is the executor's evidence, however the log after it went.
+              expect(world.executorEvidence.get("workspace-1")?.unsaved ?? []).not.toEqual([]);
             }),
-          { fixture, captured: memory, seals: memorySeals(records), sealantLayer },
+          {
+            fixture,
+            captured: memory,
+            seals: memorySeals(records),
+            sealantLayer,
+            logs,
+            prepareWorld: clock.prepareWorld,
+          },
         );
-        unsavedEvidenceWriteFailure.enabled = false;
         dead = true;
         const agent = [...fixture.world.processes.values()].find(
           (process) => process.sessionId === sessionId && process.kind === "agent-pty",
@@ -363,169 +678,23 @@ describe("SessionEngine seventh review (2026-09-28)", () => {
           outputHighWater: 0n,
         });
         // A new engine over the same world: the process-local state is gone.
-        await withEngine(
+        yield* withPreparedEngineEffect(
+          () => Effect.void,
           (world) =>
             Effect.gen(function* () {
               yield* SessionEngine;
-              yield* until(
+              yield* clock.untilChanged(
                 () => sessionId !== undefined && world.sessions.get(sessionId)?.settledAt != null,
                 "the restarted engine settles the ended executor",
               );
               const ended = sessionId === undefined ? undefined : world.sessions.get(sessionId);
               expect(ended?.summary).not.toContain("saved at");
               expect(ended?.status).toBe("failed");
-              expect(ended?.summary).toContain("completion unknown");
             }),
-          { fixture, captured: memory, seals: memorySeals(records), sealantLayer },
+          { fixture, captured: memory, seals: memorySeals(records), sealantLayer, logs },
         );
-      } finally {
-        unsavedEvidenceWriteFailure.enabled = false;
-      }
-    },
-  );
-
-  // Review 2026-09-28 (8) #4 (the reviewer's reproduction): a flush answered that the executor
-  // held unsaved work, and the log line written before its publication failed. The fence was
-  // marked answered only once publication began, so it closed as `unanswered` and the answer was
-  // forgotten; after a restart the old seal read saved. Receipt is marked the moment the answer
-  // arrives, it is published before anything is logged, and a log that fails changes no evidence.
-  it(
-    "review 8 #4 a log that fails after an unsaved answer arrives does not revive the old seal",
+      }),
     { timeout: 30_000 },
-    async () => {
-      const fixture = {
-        world: makeWorld(),
-        tmp: fs.mkdtempSync(path.join(os.tmpdir(), "mend-review8-log-fence-")),
-      };
-      const created: Array<CreateOptions> = [];
-      const memory = makeMemoryCaptureStore();
-      const records = new Map<string, CaptureCompletionSeal>();
-      const ptyStates = new Map<string, InteractiveSessionStatus>();
-      const stopOptions: Array<WorkspaceStopOptions | undefined> = [];
-      let sample: WorkspaceCaptureStatus | null = null;
-      let failedLog = false;
-      const logs: Array<string> = [];
-      logs.push = (...items: Array<string>) => {
-        if (
-          !failedLog &&
-          sample !== null &&
-          items.some((line) => line.includes("capture flush · partial"))
-        ) {
-          failedLog = true;
-          throw new Error("log sink unavailable after the unsaved answer arrived");
-        }
-        return Array.prototype.push.apply(logs, items);
-      };
-      let dead = false;
-      let sealed = false;
-      let sessionId: SessionId | undefined;
-      const sealantLayer = sealantLaunchLayer(
-        created,
-        undefined,
-        undefined,
-        undefined,
-        () => dead,
-        undefined,
-        ptyStates,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        {
-          stopOptions,
-          resourceId: () => "container-r8",
-          finalCompletion: "unreported",
-          captureStatus: () => Effect.succeed(sample),
-          flush: () =>
-            sealed
-              ? sample !== null
-                ? Effect.succeed(sample)
-                : Effect.fail(
-                    new SealantPlatformError({
-                      code: "connection_closed",
-                      status: null,
-                      message: "relay closed",
-                      cause: null,
-                    }),
-                  )
-              : Effect.succeed(flushReport(0, 0)),
-        },
-      );
-      await withEngine(
-        (world, tmp) =>
-          Effect.gen(function* () {
-            const { engine, session } = yield* launchOnce(world, tmp);
-            sessionId = session.id;
-            yield* engine.launch(session.id, ["codex"]);
-            const epoch = memory.leases.get(session.worktreeId)?.epoch ?? 0;
-            const launch = world.executorLaunches.get(session.id)?.launchId ?? "";
-            const built = yield* shipHarnessCapture(
-              tmp,
-              memory,
-              session.worktreeId,
-              epoch,
-              crypto.randomUUID(),
-              "final",
-            );
-            records.set(`${session.worktreeId}:${epoch}`, {
-              worktreeId: session.worktreeId,
-              epoch,
-              executorId: launch,
-              captureId: built.id,
-              n: built.manifest.n,
-              sealedAt: new Date(),
-              ...SEAL_STAMP,
-            });
-            sealed = true;
-            sample = Object.assign(flushReport(0, 1, { epoch }), {
-              complete: false,
-              incompleteReason: "snapshot-failed",
-              unreadable: 1,
-              unreadablePaths: ["tree/after-seal.txt"],
-              origin: {
-                epoch,
-                launch,
-                bootId: "boot-1",
-                bootGeneration: 1,
-                observation: 101,
-                headN: built.manifest.n,
-              },
-            });
-            yield* engine.flushCaptures(session.id, "review 8 #4").pipe(Effect.exit);
-            yield* Effect.sleep(Duration.millis(50));
-            sample = null;
-            expect(failedLog).toBe(true);
-            // The answer is the executor's evidence, however the log after it went.
-            expect(world.executorEvidence.get("workspace-1")?.unsaved ?? []).not.toEqual([]);
-          }),
-        { fixture, captured: memory, seals: memorySeals(records), sealantLayer, logs },
-      );
-      dead = true;
-      const agent = [...fixture.world.processes.values()].find(
-        (process) => process.sessionId === sessionId && process.kind === "agent-pty",
-      );
-      if (agent?.sealantSessionId == null) throw new Error("no PTY");
-      ptyStates.set(agent.sealantSessionId, {
-        status: "exited",
-        exitCode: 0,
-        outputHighWater: 0n,
-      });
-      // A new engine over the same world: the process-local state is gone.
-      await withEngine(
-        (world) =>
-          Effect.gen(function* () {
-            yield* SessionEngine;
-            yield* until(
-              () => sessionId !== undefined && world.sessions.get(sessionId)?.settledAt != null,
-              "the restarted engine settles the ended executor",
-            );
-            const ended = sessionId === undefined ? undefined : world.sessions.get(sessionId);
-            expect(ended?.summary).not.toContain("saved at");
-            expect(ended?.status).toBe("failed");
-          }),
-        { fixture, captured: memory, seals: memorySeals(records), sealantLayer, logs },
-      );
-    },
   );
 });
 
@@ -538,194 +707,236 @@ describe("SessionEngine ninth review (2026-09-28)", () => {
   // (generation 0, ordered against nothing) answered a failed snapshot; a delayed answer boot A
   // made before its seal replaced B's, the seal covered that one, and a lost FINAL answer then
   // sent Core an attestation for the old seal.
-  it(
+  it.effect(
     "#4 a delayed older answer after a recovery boot's failure never revives the old seal: no attestation",
+    () =>
+      Effect.gen(function* () {
+        const created: Array<CreateOptions> = [];
+        const memory = makeMemoryCaptureStore();
+        const records = new Map<string, CaptureCompletionSeal>();
+        const clock = yield* makeRecoveryClock;
+        const stopOptions = clock.stopOptions();
+        const logs: Array<string> = [];
+        let sample: WorkspaceCaptureStatus | null = null;
+        let sealed = false;
+        yield* withPreparedEngineEffect(
+          (world, tmp) => setup(tmp, world),
+          (world, tmp, project) =>
+            Effect.gen(function* () {
+              const { engine, session } = yield* provisionIn(project);
+              yield* engine.launch(session.id, ["codex"]);
+              const epoch = memory.leases.get(session.worktreeId)?.epoch ?? 0;
+              const launch = world.executorLaunches.get(session.id)?.launchId ?? "";
+              const built = yield* shipHarnessCapture(
+                tmp,
+                memory,
+                session.worktreeId,
+                epoch,
+                crypto.randomUUID(),
+                "final",
+              );
+              records.set(`${session.worktreeId}:${epoch}`, {
+                worktreeId: session.worktreeId,
+                epoch,
+                executorId: launch,
+                captureId: built.id,
+                n: built.manifest.n,
+                sealedAt: new Date(),
+                ...SEAL_STAMP,
+              });
+              sealed = true;
+              // What sealantd answers beyond the SDK's type (`complete`, `origin`, …), as carried.
+              sample = Object.assign(flushReport(0, 1, { epoch }), {
+                complete: false,
+                incompleteReason: "snapshot-failed",
+                unreadable: 1,
+                unreadablePaths: ["tree/recovery-work.txt"],
+                origin: {
+                  epoch,
+                  launch,
+                  bootId: "recovery-boot",
+                  bootGeneration: 0,
+                  observation: 1,
+                  headN: built.manifest.n,
+                },
+              });
+              yield* engine.flushCaptures(session.id, "recovery boot's failure");
+              sample = Object.assign(flushReport(0, 1, { epoch }), {
+                complete: false,
+                incompleteReason: "in-progress",
+                origin: {
+                  epoch,
+                  launch,
+                  bootId: SEAL_STAMP.bootId,
+                  bootGeneration: SEAL_STAMP.bootGeneration,
+                  observation: SEAL_STAMP.observation - 1,
+                  headN: built.manifest.n,
+                },
+              });
+              yield* engine.flushCaptures(session.id, "delayed pre-seal answer");
+              // Every later answer is lost: only what is kept decides.
+              sample = null;
+              yield* engine.stop(session.id);
+              // The drain either reads not saved, or (the defect) attests the old seal and stops.
+              yield* clock.untilChanged(
+                () =>
+                  world.sessions.get(session.id)?.captureNotSavedAt != null ||
+                  stopOptions.length > 0,
+                "the drain's outcome",
+              );
+              expect(stopOptions.filter((options) => options?.completion !== undefined)).toEqual(
+                [],
+              );
+              expect(
+                logs.some((line) => line.includes("capture drain · saved · terminating")),
+              ).toBe(false);
+              // Both answers the seal cannot be ordered after are kept.
+              const kept = world.executorEvidence.get("workspace-1")?.unsaved ?? [];
+              expect(kept.map((answer) => answer.position?.bootId).toSorted()).toEqual([
+                SEAL_STAMP.bootId,
+                "recovery-boot",
+              ]);
+            }),
+          {
+            captured: memory,
+            seals: memorySeals(records),
+            logs,
+            drainPolicy: { stallSeconds: 0 },
+            prepareWorld: clock.prepareWorld,
+            sealantLayer: sealantLaunchLayer(
+              created,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              {
+                stopOptions,
+                resourceId: () => "r9-container",
+                finalCompletion: "unreported",
+                flush: () =>
+                  sealed
+                    ? sample !== null
+                      ? Effect.succeed(sample)
+                      : Effect.fail(
+                          new SealantPlatformError({
+                            code: "connection_closed",
+                            status: null,
+                            message: "relay closed",
+                            cause: null,
+                          }),
+                        )
+                    : Effect.succeed(flushReport(0, 0)),
+              },
+            ),
+          },
+        );
+      }),
     { timeout: 30_000 },
-    async () => {
-      const created: Array<CreateOptions> = [];
-      const memory = makeMemoryCaptureStore();
-      const records = new Map<string, CaptureCompletionSeal>();
-      const stopOptions: Array<WorkspaceStopOptions | undefined> = [];
-      const logs: Array<string> = [];
-      let sample: WorkspaceCaptureStatus | null = null;
-      let sealed = false;
-      await withEngine(
-        (world, tmp) =>
-          Effect.gen(function* () {
-            const { engine, session } = yield* launchOnce(world, tmp);
-            yield* engine.launch(session.id, ["codex"]);
-            const epoch = memory.leases.get(session.worktreeId)?.epoch ?? 0;
-            const launch = world.executorLaunches.get(session.id)?.launchId ?? "";
-            const built = yield* shipHarnessCapture(
-              tmp,
-              memory,
-              session.worktreeId,
-              epoch,
-              crypto.randomUUID(),
-              "final",
-            );
-            records.set(`${session.worktreeId}:${epoch}`, {
-              worktreeId: session.worktreeId,
-              epoch,
-              executorId: launch,
-              captureId: built.id,
-              n: built.manifest.n,
-              sealedAt: new Date(),
-              ...SEAL_STAMP,
-            });
-            sealed = true;
-            // What sealantd answers beyond the SDK's type (`complete`, `origin`, …), as carried.
-            sample = Object.assign(flushReport(0, 1, { epoch }), {
-              complete: false,
-              incompleteReason: "snapshot-failed",
-              unreadable: 1,
-              unreadablePaths: ["tree/recovery-work.txt"],
-              origin: {
-                epoch,
-                launch,
-                bootId: "recovery-boot",
-                bootGeneration: 0,
-                observation: 1,
-                headN: built.manifest.n,
-              },
-            });
-            yield* engine.flushCaptures(session.id, "recovery boot's failure");
-            sample = Object.assign(flushReport(0, 1, { epoch }), {
-              complete: false,
-              incompleteReason: "in-progress",
-              origin: {
-                epoch,
-                launch,
-                bootId: SEAL_STAMP.bootId,
-                bootGeneration: SEAL_STAMP.bootGeneration,
-                observation: SEAL_STAMP.observation - 1,
-                headN: built.manifest.n,
-              },
-            });
-            yield* engine.flushCaptures(session.id, "delayed pre-seal answer");
-            // Every later answer is lost: only what is kept decides.
-            sample = null;
-            yield* engine.stop(session.id);
-            // The drain either reads not saved, or (the defect) attests the old seal and stops.
-            yield* until(
-              () =>
-                world.sessions.get(session.id)?.captureNotSavedAt != null || stopOptions.length > 0,
-              "the drain's outcome",
-            );
-            expect(stopOptions.filter((options) => options?.completion !== undefined)).toEqual([]);
-            expect(logs.some((line) => line.includes("capture drain · saved · terminating"))).toBe(
-              false,
-            );
-            // Both answers the seal cannot be ordered after are kept.
-            const kept = world.executorEvidence.get("workspace-1")?.unsaved ?? [];
-            expect(kept.map((answer) => answer.position?.bootId).toSorted()).toEqual([
-              SEAL_STAMP.bootId,
-              "recovery-boot",
-            ]);
-          }),
-        {
-          captured: memory,
-          seals: memorySeals(records),
-          logs,
-          drainPolicy: { stallSeconds: 0 },
-          sealantLayer: sealantLaunchLayer(
-            created,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            {
-              stopOptions,
-              resourceId: () => "r9-container",
-              finalCompletion: "unreported",
-              flush: () =>
-                sealed
-                  ? sample !== null
-                    ? Effect.succeed(sample)
-                    : Effect.fail(
-                        new SealantPlatformError({
-                          code: "connection_closed",
-                          status: null,
-                          message: "relay closed",
-                          cause: null,
-                        }),
-                      )
-                  : Effect.succeed(flushReport(0, 0)),
-            },
-          ),
-        },
-      );
-    },
   );
 
   // #10 (the reviewer's instrumented regression): `unsaved captures discarded by the owner` was
   // logged before the platform was asked, and stood when the platform kept the workspace (409,
   // `nothing discarded yet`). The request is logged before the stop; the discard only once the
   // platform confirmed the end.
-  it(
+  it.effect(
     "#10 a discard the platform refuses logs the request, never `discarded`; a confirmed one logs it after the end",
+    () =>
+      Effect.gen(function* () {
+        const created: Array<CreateOptions> = [];
+        const stops: Array<"drain" | "discard"> = [];
+        const logs: Array<string> = [];
+        const memory = makeMemoryCaptureStore();
+        const clock = yield* makeRecoveryClock;
+        const flushAsked = yield* Deferred.make<void>();
+        let platformKeeps = true;
+        yield* withPreparedEngineEffect(
+          (world, tmp) => setup(tmp, world),
+          (world, tmp, project) =>
+            Effect.gen(function* () {
+              const { engine, session } = yield* provisionIn(project);
+              yield* engine.launch(session.id, ["codex"]);
+              yield* engine.stop(session.id);
+              // Every flush reads work pending: the drain stalls out `stallSeconds` after it
+              // began and keeps the workspace.
+              yield* Deferred.await(flushAsked);
+              yield* TestClock.adjust(999);
+              expect(world.sessions.get(session.id)?.captureNotSavedAt).toBeNull();
+              yield* TestClock.adjust(1);
+              yield* clock.untilChanged(
+                () => world.sessions.get(session.id)?.captureNotSavedAt != null,
+                "the kept workspace",
+              );
+              // The discard's own Stop marks a checkpoint, and the harvest the Stop put off takes
+              // another: each waits `CHECKPOINT_WAIT` for the executor's capture to register.
+              const refusing = yield* Effect.forkChild(
+                engine.discardUnsavedAndStop(session.id).pipe(Effect.flip),
+              );
+              yield* clock.expireCheckpointWait;
+              yield* clock.expireCheckpointWait;
+              // The platform keeps the workspace: the discard waits `terminationWait` for its end.
+              yield* clock.untilChanged(
+                () => stops.length === 1,
+                "the discard asked of the platform",
+              );
+              yield* TestClock.adjust(299);
+              expect(refusing.pollUnsafe()).toBeUndefined();
+              yield* TestClock.adjust(1);
+              const refused = yield* Fiber.join(refusing);
+              expect(refused._tag === "SealantPlatformError" && refused.code).toBe(
+                "workspace_not_ended",
+              );
+              const discardedLines = () =>
+                logs.filter((line) => line.includes("unsaved captures discarded by the owner"));
+              expect(discardedLines()).toEqual([]);
+              expect(
+                logs.filter((line) => line.includes("discard of unsaved captures requested")),
+              ).toHaveLength(1);
+              expect(
+                logs.some((line) => line.includes("the platform has not ended the workspace")),
+              ).toBe(true);
+              platformKeeps = false;
+              // The second discard's Stop marks its checkpoint too; the platform then ends the
+              // workspace on the first look.
+              const discarding = yield* Effect.forkChild(engine.discardUnsavedAndStop(session.id));
+              yield* clock.expireCheckpointWait;
+              yield* Fiber.join(discarding);
+              expect(stops).toEqual(["discard", "discard"]);
+              expect(discardedLines()).toHaveLength(1);
+              // Logged after the platform's end, never before its stop was asked.
+              const requested = logs.findLastIndex((line) =>
+                line.includes("discard of unsaved captures requested"),
+              );
+              expect(logs.findIndex((line) => discardedLines().includes(line))).toBeGreaterThan(
+                requested,
+              );
+            }),
+          {
+            captured: memory,
+            logs,
+            drainPolicy: { stallSeconds: 1, terminationWait: Duration.millis(300) },
+            sealantLayer: lifecycleLayer(created, {
+              captureOps: {
+                stops,
+                stopAnswer: (discard) => {
+                  clock.changed();
+                  return discard && !platformKeeps ? "stopped" : "kept";
+                },
+                flush: () =>
+                  Deferred.succeed(flushAsked, undefined).pipe(Effect.as(flushReport(2, 1))),
+              },
+            }),
+            prepareWorld: clock.prepareWorld,
+            wrapCaptureChannel: clock.wrapCaptureChannel,
+          },
+        );
+      }),
     { timeout: 20_000 },
-    async () => {
-      const created: Array<CreateOptions> = [];
-      const stops: Array<"drain" | "discard"> = [];
-      const logs: Array<string> = [];
-      const memory = makeMemoryCaptureStore();
-      let platformKeeps = true;
-      await withEngine(
-        (world, tmp) =>
-          Effect.gen(function* () {
-            const { engine, session } = yield* launchOnce(world, tmp);
-            yield* engine.launch(session.id, ["codex"]);
-            yield* engine.stop(session.id);
-            yield* until(
-              () => world.sessions.get(session.id)?.captureNotSavedAt != null,
-              "the kept workspace",
-            );
-            const refused = yield* engine.discardUnsavedAndStop(session.id).pipe(Effect.flip);
-            expect(refused._tag === "SealantPlatformError" && refused.code).toBe(
-              "workspace_not_ended",
-            );
-            const discardedLines = () =>
-              logs.filter((line) => line.includes("unsaved captures discarded by the owner"));
-            expect(discardedLines()).toEqual([]);
-            expect(
-              logs.filter((line) => line.includes("discard of unsaved captures requested")),
-            ).toHaveLength(1);
-            expect(
-              logs.some((line) => line.includes("the platform has not ended the workspace")),
-            ).toBe(true);
-            platformKeeps = false;
-            yield* engine.discardUnsavedAndStop(session.id);
-            expect(stops).toEqual(["discard", "discard"]);
-            expect(discardedLines()).toHaveLength(1);
-            // Logged after the platform's end, never before its stop was asked.
-            const requested = logs.findLastIndex((line) =>
-              line.includes("discard of unsaved captures requested"),
-            );
-            expect(logs.findIndex((line) => discardedLines().includes(line))).toBeGreaterThan(
-              requested,
-            );
-          }),
-        {
-          captured: memory,
-          logs,
-          drainPolicy: { stallSeconds: 1, terminationWait: Duration.millis(300) },
-          sealantLayer: lifecycleLayer(created, {
-            captureOps: {
-              stops,
-              stopAnswer: (discard) => (discard && !platformKeeps ? "stopped" : "kept"),
-              flush: () => Effect.succeed(flushReport(2, 1)),
-            },
-          }),
-        },
-      );
-    },
   );
 });
 
@@ -734,314 +945,328 @@ describe("SessionEngine ninth review (2026-09-28)", () => {
 // after every unsaved answer its evidence keeps, every answer published — never by the reading
 // alone. Both keep the executor, attest nothing and log no `saved`.
 describe("review 10 #7 a direct complete answer", () => {
-  it(
+  it.effect(
     "review 10 #7 a direct complete does not read saved over a retained unsaved answer nothing orders against it",
-    { timeout: 30_000 },
-    async () => {
-      const created: Array<CreateOptions> = [];
-      const memory = makeMemoryCaptureStore();
-      const records = new Map<string, CaptureCompletionSeal>();
-      const stopOptions: Array<WorkspaceStopOptions | undefined> = [];
-      const logs: Array<string> = [];
-      let sample: WorkspaceCaptureStatus | null = null;
-      let sealed = false;
-      await withEngine(
-        (world, tmp) =>
-          Effect.gen(function* () {
-            const { engine, session } = yield* launchOnce(world, tmp);
-            yield* engine.launch(session.id, ["codex"]);
-            const epoch = memory.leases.get(session.worktreeId)?.epoch ?? 0;
-            const launch = world.executorLaunches.get(session.id)?.launchId ?? "";
-            const built = yield* shipHarnessCapture(
-              tmp,
-              memory,
-              session.worktreeId,
-              epoch,
-              crypto.randomUUID(),
-              "final",
-            );
-            records.set(`${session.worktreeId}:${epoch}`, {
-              worktreeId: session.worktreeId,
-              epoch,
-              executorId: launch,
-              captureId: built.id,
-              n: built.manifest.n,
-              sealedAt: new Date(),
-              ...SEAL_STAMP,
-            });
-            sealed = true;
-            // What sealantd answers beyond the SDK's type (`complete`, `origin`, …), as carried.
-            sample = Object.assign(flushReport(0, 1, { epoch }), {
-              complete: false,
-              incompleteReason: "snapshot-failed",
-              unreadable: 1,
-              unreadablePaths: ["tree/recovery-work.txt"],
-              origin: {
+    () =>
+      Effect.gen(function* () {
+        const created: Array<CreateOptions> = [];
+        const memory = makeMemoryCaptureStore();
+        const records = new Map<string, CaptureCompletionSeal>();
+        const clock = yield* makeRecoveryClock;
+        const stopOptions = clock.stopOptions();
+        const logs: Array<string> = [];
+        let sample: WorkspaceCaptureStatus | null = null;
+        let sealed = false;
+        yield* withPreparedEngineEffect(
+          (world, tmp) => setup(tmp, world),
+          (world, tmp, project) =>
+            Effect.gen(function* () {
+              const { engine, session } = yield* provisionIn(project);
+              yield* engine.launch(session.id, ["codex"]);
+              const epoch = memory.leases.get(session.worktreeId)?.epoch ?? 0;
+              const launch = world.executorLaunches.get(session.id)?.launchId ?? "";
+              const built = yield* shipHarnessCapture(
+                tmp,
+                memory,
+                session.worktreeId,
                 epoch,
-                launch,
-                bootId: "recovery-boot",
-                bootGeneration: 0,
-                observation: 1,
-                headN: built.manifest.n,
-              },
-            });
-            yield* engine.flushCaptures(session.id, "recovery boot's failure");
-            sample = Object.assign(flushReport(0, 1, { epoch }), {
-              complete: false,
-              incompleteReason: "in-progress",
-              origin: {
+                crypto.randomUUID(),
+                "final",
+              );
+              records.set(`${session.worktreeId}:${epoch}`, {
+                worktreeId: session.worktreeId,
                 epoch,
-                launch,
-                bootId: SEAL_STAMP.bootId,
-                bootGeneration: SEAL_STAMP.bootGeneration,
-                observation: SEAL_STAMP.observation - 1,
-                headN: built.manifest.n,
-              },
-            });
-            yield* engine.flushCaptures(session.id, "delayed pre-seal answer");
-            // The drain's FINAL is answered by a delayed complete from the old boot.
-            sample = Object.assign(flushReport(0, 1, { epoch }), {
-              complete: true,
-              incompleteReason: null,
-              origin: {
-                epoch,
-                launch,
-                bootId: SEAL_STAMP.bootId,
-                bootGeneration: SEAL_STAMP.bootGeneration,
-                observation: SEAL_STAMP.observation,
-                headN: built.manifest.n,
-              },
-            });
-            yield* engine.stop(session.id);
-            yield* until(
-              () =>
-                world.sessions.get(session.id)?.captureNotSavedAt != null || stopOptions.length > 0,
-              "the drain's outcome",
-            );
-            // The drain reads not saved: no attestation, no stop, no saved line.
-            expect(stopOptions.filter((options) => options?.completion !== undefined)).toEqual([]);
-            expect(logs.some((line) => line.includes("capture drain · saved · terminating"))).toBe(
-              false,
-            );
-            expect(stopOptions).toEqual([]);
-            expect(world.sessions.get(session.id)?.captureNotSavedAt).not.toBeNull();
-            expect(
-              logs.some((line) =>
-                line.includes(
-                  "the final flush answered complete, but the executor's evidence does not read saved",
+                executorId: launch,
+                captureId: built.id,
+                n: built.manifest.n,
+                sealedAt: new Date(),
+                ...SEAL_STAMP,
+              });
+              sealed = true;
+              // What sealantd answers beyond the SDK's type (`complete`, `origin`, …), as carried.
+              sample = Object.assign(flushReport(0, 1, { epoch }), {
+                complete: false,
+                incompleteReason: "snapshot-failed",
+                unreadable: 1,
+                unreadablePaths: ["tree/recovery-work.txt"],
+                origin: {
+                  epoch,
+                  launch,
+                  bootId: "recovery-boot",
+                  bootGeneration: 0,
+                  observation: 1,
+                  headN: built.manifest.n,
+                },
+              });
+              yield* engine.flushCaptures(session.id, "recovery boot's failure");
+              sample = Object.assign(flushReport(0, 1, { epoch }), {
+                complete: false,
+                incompleteReason: "in-progress",
+                origin: {
+                  epoch,
+                  launch,
+                  bootId: SEAL_STAMP.bootId,
+                  bootGeneration: SEAL_STAMP.bootGeneration,
+                  observation: SEAL_STAMP.observation - 1,
+                  headN: built.manifest.n,
+                },
+              });
+              yield* engine.flushCaptures(session.id, "delayed pre-seal answer");
+              // The drain's FINAL is answered by a delayed complete from the old boot.
+              sample = Object.assign(flushReport(0, 1, { epoch }), {
+                complete: true,
+                incompleteReason: null,
+                origin: {
+                  epoch,
+                  launch,
+                  bootId: SEAL_STAMP.bootId,
+                  bootGeneration: SEAL_STAMP.bootGeneration,
+                  observation: SEAL_STAMP.observation,
+                  headN: built.manifest.n,
+                },
+              });
+              yield* engine.stop(session.id);
+              yield* clock.untilChanged(
+                () =>
+                  world.sessions.get(session.id)?.captureNotSavedAt != null ||
+                  stopOptions.length > 0,
+                "the drain's outcome",
+              );
+              // The drain reads not saved: no attestation, no stop, no saved line.
+              expect(stopOptions.filter((options) => options?.completion !== undefined)).toEqual(
+                [],
+              );
+              expect(
+                logs.some((line) => line.includes("capture drain · saved · terminating")),
+              ).toBe(false);
+              expect(stopOptions).toEqual([]);
+              expect(world.sessions.get(session.id)?.captureNotSavedAt).not.toBeNull();
+              expect(
+                logs.some((line) =>
+                  line.includes(
+                    "the final flush answered complete, but the executor's evidence does not read saved",
+                  ),
                 ),
-              ),
-            ).toBe(true);
-            // Both answers the seal cannot be ordered after are kept.
-            const evidence = world.executorEvidence.get("workspace-1");
-            const kept = evidence?.unsaved ?? [];
-            expect(
-              executorEndOf({
-                head: null,
-                executorStartedAt: null,
-                reading: { pending: null, pendingBytes: null, observedAt: null },
-                finalSaved: evidence?.saved ?? null,
-                unsaved: kept,
-              }).kind,
-            ).not.toBe("saved");
-            expect(kept.map((answer) => answer.position?.bootId).toSorted()).toEqual([
-              SEAL_STAMP.bootId,
-              "recovery-boot",
-            ]);
-          }),
-        {
-          captured: memory,
-          seals: memorySeals(records),
-          logs,
-          drainPolicy: { stallSeconds: 0 },
-          sealantLayer: sealantLaunchLayer(
-            created,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            {
-              stopOptions,
-              resourceId: () => "r9-container",
-              finalCompletion: "unreported",
-              flush: () =>
-                sealed
-                  ? sample !== null
-                    ? Effect.succeed(sample)
-                    : Effect.fail(
-                        new SealantPlatformError({
-                          code: "connection_closed",
-                          status: null,
-                          message: "relay closed",
-                          cause: null,
-                        }),
-                      )
-                  : Effect.succeed(flushReport(0, 0)),
-            },
-          ),
-        },
-      );
-    },
+              ).toBe(true);
+              // Both answers the seal cannot be ordered after are kept.
+              const evidence = world.executorEvidence.get("workspace-1");
+              const kept = evidence?.unsaved ?? [];
+              expect(
+                executorEndOf({
+                  head: null,
+                  executorStartedAt: null,
+                  reading: { pending: null, pendingBytes: null, observedAt: null },
+                  finalSaved: evidence?.saved ?? null,
+                  unsaved: kept,
+                }).kind,
+              ).not.toBe("saved");
+              expect(kept.map((answer) => answer.position?.bootId).toSorted()).toEqual([
+                SEAL_STAMP.bootId,
+                "recovery-boot",
+              ]);
+            }),
+          {
+            captured: memory,
+            seals: memorySeals(records),
+            logs,
+            drainPolicy: { stallSeconds: 0 },
+            prepareWorld: clock.prepareWorld,
+            sealantLayer: sealantLaunchLayer(
+              created,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              {
+                stopOptions,
+                resourceId: () => "r9-container",
+                finalCompletion: "unreported",
+                flush: () =>
+                  sealed
+                    ? sample !== null
+                      ? Effect.succeed(sample)
+                      : Effect.fail(
+                          new SealantPlatformError({
+                            code: "connection_closed",
+                            status: null,
+                            message: "relay closed",
+                            cause: null,
+                          }),
+                        )
+                    : Effect.succeed(flushReport(0, 0)),
+              },
+            ),
+          },
+        );
+      }),
+    { timeout: 30_000 },
   );
 
-  it(
+  it.effect(
     "review 10 #7 a direct complete does not read saved over an unsaved answer the executor made after it",
-    { timeout: 30_000 },
-    async () => {
-      const created: Array<CreateOptions> = [];
-      const memory = makeMemoryCaptureStore();
-      const records = new Map<string, CaptureCompletionSeal>();
-      const stopOptions: Array<WorkspaceStopOptions | undefined> = [];
-      const logs: Array<string> = [];
-      let sample: WorkspaceCaptureStatus | null = null;
-      let sealed = false;
-      await withEngine(
-        (world, tmp) =>
-          Effect.gen(function* () {
-            const { engine, session } = yield* launchOnce(world, tmp);
-            yield* engine.launch(session.id, ["codex"]);
-            const epoch = memory.leases.get(session.worktreeId)?.epoch ?? 0;
-            const launch = world.executorLaunches.get(session.id)?.launchId ?? "";
-            const built = yield* shipHarnessCapture(
-              tmp,
-              memory,
-              session.worktreeId,
-              epoch,
-              crypto.randomUUID(),
-              "final",
-            );
-            records.set(`${session.worktreeId}:${epoch}`, {
-              worktreeId: session.worktreeId,
-              epoch,
-              executorId: launch,
-              captureId: built.id,
-              n: built.manifest.n,
-              sealedAt: new Date(),
-              ...SEAL_STAMP,
-            });
-            sealed = true;
-            // What sealantd answers beyond the SDK's type (`complete`, `origin`, …), as carried.
-            sample = Object.assign(flushReport(0, 1, { epoch }), {
-              complete: false,
-              incompleteReason: "snapshot-failed",
-              unreadable: 1,
-              unreadablePaths: ["tree/recovery-work.txt"],
-              origin: {
+    () =>
+      Effect.gen(function* () {
+        const created: Array<CreateOptions> = [];
+        const memory = makeMemoryCaptureStore();
+        const records = new Map<string, CaptureCompletionSeal>();
+        const clock = yield* makeRecoveryClock;
+        const stopOptions = clock.stopOptions();
+        const logs: Array<string> = [];
+        let sample: WorkspaceCaptureStatus | null = null;
+        let sealed = false;
+        yield* withPreparedEngineEffect(
+          (world, tmp) => setup(tmp, world),
+          (world, tmp, project) =>
+            Effect.gen(function* () {
+              const { engine, session } = yield* provisionIn(project);
+              yield* engine.launch(session.id, ["codex"]);
+              const epoch = memory.leases.get(session.worktreeId)?.epoch ?? 0;
+              const launch = world.executorLaunches.get(session.id)?.launchId ?? "";
+              const built = yield* shipHarnessCapture(
+                tmp,
+                memory,
+                session.worktreeId,
                 epoch,
-                launch,
-                bootId: SEAL_STAMP.bootId,
-                bootGeneration: SEAL_STAMP.bootGeneration,
-                observation: SEAL_STAMP.observation + 1,
-                headN: built.manifest.n,
-              },
-            });
-            yield* engine.flushCaptures(session.id, "recovery boot's failure");
-            sample = Object.assign(flushReport(0, 1, { epoch }), {
-              complete: false,
-              incompleteReason: "in-progress",
-              origin: {
+                crypto.randomUUID(),
+                "final",
+              );
+              records.set(`${session.worktreeId}:${epoch}`, {
+                worktreeId: session.worktreeId,
                 epoch,
-                launch,
-                bootId: SEAL_STAMP.bootId,
-                bootGeneration: SEAL_STAMP.bootGeneration,
-                observation: SEAL_STAMP.observation - 1,
-                headN: built.manifest.n,
-              },
-            });
-            yield* engine.flushCaptures(session.id, "delayed pre-seal answer");
-            // The drain's FINAL is answered by a delayed complete from the old boot.
-            sample = Object.assign(flushReport(0, 1, { epoch }), {
-              complete: true,
-              incompleteReason: null,
-              origin: {
-                epoch,
-                launch,
-                bootId: SEAL_STAMP.bootId,
-                bootGeneration: SEAL_STAMP.bootGeneration,
-                observation: SEAL_STAMP.observation,
-                headN: built.manifest.n,
-              },
-            });
-            yield* engine.stop(session.id);
-            yield* until(
-              () =>
-                world.sessions.get(session.id)?.captureNotSavedAt != null || stopOptions.length > 0,
-              "the drain's outcome",
-            );
-            // The drain reads not saved: no attestation, no stop, no saved line.
-            expect(stopOptions.filter((options) => options?.completion !== undefined)).toEqual([]);
-            expect(logs.some((line) => line.includes("capture drain · saved · terminating"))).toBe(
-              false,
-            );
-            expect(stopOptions).toEqual([]);
-            expect(world.sessions.get(session.id)?.captureNotSavedAt).not.toBeNull();
-            expect(
-              logs.some((line) =>
-                line.includes(
-                  "the final flush answered complete, but the executor's evidence does not read saved",
+                executorId: launch,
+                captureId: built.id,
+                n: built.manifest.n,
+                sealedAt: new Date(),
+                ...SEAL_STAMP,
+              });
+              sealed = true;
+              // What sealantd answers beyond the SDK's type (`complete`, `origin`, …), as carried.
+              sample = Object.assign(flushReport(0, 1, { epoch }), {
+                complete: false,
+                incompleteReason: "snapshot-failed",
+                unreadable: 1,
+                unreadablePaths: ["tree/recovery-work.txt"],
+                origin: {
+                  epoch,
+                  launch,
+                  bootId: SEAL_STAMP.bootId,
+                  bootGeneration: SEAL_STAMP.bootGeneration,
+                  observation: SEAL_STAMP.observation + 1,
+                  headN: built.manifest.n,
+                },
+              });
+              yield* engine.flushCaptures(session.id, "recovery boot's failure");
+              sample = Object.assign(flushReport(0, 1, { epoch }), {
+                complete: false,
+                incompleteReason: "in-progress",
+                origin: {
+                  epoch,
+                  launch,
+                  bootId: SEAL_STAMP.bootId,
+                  bootGeneration: SEAL_STAMP.bootGeneration,
+                  observation: SEAL_STAMP.observation - 1,
+                  headN: built.manifest.n,
+                },
+              });
+              yield* engine.flushCaptures(session.id, "delayed pre-seal answer");
+              // The drain's FINAL is answered by a delayed complete from the old boot.
+              sample = Object.assign(flushReport(0, 1, { epoch }), {
+                complete: true,
+                incompleteReason: null,
+                origin: {
+                  epoch,
+                  launch,
+                  bootId: SEAL_STAMP.bootId,
+                  bootGeneration: SEAL_STAMP.bootGeneration,
+                  observation: SEAL_STAMP.observation,
+                  headN: built.manifest.n,
+                },
+              });
+              yield* engine.stop(session.id);
+              yield* clock.untilChanged(
+                () =>
+                  world.sessions.get(session.id)?.captureNotSavedAt != null ||
+                  stopOptions.length > 0,
+                "the drain's outcome",
+              );
+              // The drain reads not saved: no attestation, no stop, no saved line.
+              expect(stopOptions.filter((options) => options?.completion !== undefined)).toEqual(
+                [],
+              );
+              expect(
+                logs.some((line) => line.includes("capture drain · saved · terminating")),
+              ).toBe(false);
+              expect(stopOptions).toEqual([]);
+              expect(world.sessions.get(session.id)?.captureNotSavedAt).not.toBeNull();
+              expect(
+                logs.some((line) =>
+                  line.includes(
+                    "the final flush answered complete, but the executor's evidence does not read saved",
+                  ),
                 ),
-              ),
-            ).toBe(true);
-            // Both answers the seal cannot be ordered after are kept.
-            const evidence = world.executorEvidence.get("workspace-1");
-            const kept = evidence?.unsaved ?? [];
-            expect(
-              executorEndOf({
-                head: null,
-                executorStartedAt: null,
-                reading: { pending: null, pendingBytes: null, observedAt: null },
-                finalSaved: evidence?.saved ?? null,
-                unsaved: kept,
-              }).kind,
-            ).not.toBe("saved");
-            expect(kept).toHaveLength(1);
-            expect(kept[0]?.position?.observation).toBe(SEAL_STAMP.observation + 1);
-          }),
-        {
-          captured: memory,
-          seals: memorySeals(records),
-          logs,
-          drainPolicy: { stallSeconds: 0 },
-          sealantLayer: sealantLaunchLayer(
-            created,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            {
-              stopOptions,
-              resourceId: () => "r9-container",
-              finalCompletion: "unreported",
-              flush: () =>
-                sealed
-                  ? sample !== null
-                    ? Effect.succeed(sample)
-                    : Effect.fail(
-                        new SealantPlatformError({
-                          code: "connection_closed",
-                          status: null,
-                          message: "relay closed",
-                          cause: null,
-                        }),
-                      )
-                  : Effect.succeed(flushReport(0, 0)),
-            },
-          ),
-        },
-      );
-    },
+              ).toBe(true);
+              // Both answers the seal cannot be ordered after are kept.
+              const evidence = world.executorEvidence.get("workspace-1");
+              const kept = evidence?.unsaved ?? [];
+              expect(
+                executorEndOf({
+                  head: null,
+                  executorStartedAt: null,
+                  reading: { pending: null, pendingBytes: null, observedAt: null },
+                  finalSaved: evidence?.saved ?? null,
+                  unsaved: kept,
+                }).kind,
+              ).not.toBe("saved");
+              expect(kept).toHaveLength(1);
+              expect(kept[0]?.position?.observation).toBe(SEAL_STAMP.observation + 1);
+            }),
+          {
+            captured: memory,
+            seals: memorySeals(records),
+            logs,
+            drainPolicy: { stallSeconds: 0 },
+            prepareWorld: clock.prepareWorld,
+            sealantLayer: sealantLaunchLayer(
+              created,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              {
+                stopOptions,
+                resourceId: () => "r9-container",
+                finalCompletion: "unreported",
+                flush: () =>
+                  sealed
+                    ? sample !== null
+                      ? Effect.succeed(sample)
+                      : Effect.fail(
+                          new SealantPlatformError({
+                            code: "connection_closed",
+                            status: null,
+                            message: "relay closed",
+                            cause: null,
+                          }),
+                        )
+                    : Effect.succeed(flushReport(0, 0)),
+              },
+            ),
+          },
+        );
+      }),
+    { timeout: 30_000 },
   );
 });
 
@@ -1181,49 +1406,58 @@ it("refuses to start a session on a shallow project with the reason", async () =
  * `running` beside `retained`. The first word follows the executor: a session whose current
  * executor the platform keeps for recovery reads `stopping · retained`, never `running`.
  */
-it(
+it.effect(
   "a session whose executor the platform keeps for recovery reads stopping, not running",
+  () =>
+    Effect.gen(function* () {
+      const created: Array<CreateOptions> = [];
+      const memory = makeMemoryCaptureStore();
+      const stops: Array<"drain" | "discard"> = [];
+      const clock = yield* makeRecoveryClock;
+      let killed = false;
+      yield* withPreparedEngineEffect(
+        (world, tmp) => setup(tmp, world),
+        (world, tmp, project) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* provisionIn(project);
+            yield* engine.launch(session.id, ["codex"]);
+            expect(world.sessions.get(session.id)?.status).toBe("running");
+            killed = true;
+            const afterExpiry = Date.now() + 1_000_000;
+            memory.clock.now = () => afterExpiry;
+            yield* engine.reapCaptureLeases();
+            // The reaper's stop is answered `kept`: the session reads retained from that answer,
+            // with no wait on the executor's end.
+            yield* clock.untilChanged(
+              () => world.sessions.get(session.id)?.captureNotSavedAt != null,
+              "the kept executor",
+            );
+            const kept = world.sessions.get(session.id);
+            expect(kept?.captureIncompleteReason).toBe("retained");
+            expect(kept?.status).toBe("stopping");
+          }),
+        {
+          captured: memory,
+          drainPolicy: { terminationWait: Duration.millis(200) },
+          sealantLayer: lifecycleLayer(created, {
+            captureOps: {
+              stops,
+              status: () => (killed ? "failed" : "ready"),
+              stopAnswer: () => {
+                clock.changed();
+                return "kept";
+              },
+              retained: () => ({
+                reason: "exited before its final flush completed",
+                recoverable: true,
+              }),
+            },
+          }),
+          prepareWorld: clock.prepareWorld,
+        },
+      );
+    }),
   { timeout: 20_000 },
-  async () => {
-    const created: Array<CreateOptions> = [];
-    const memory = makeMemoryCaptureStore();
-    const stops: Array<"drain" | "discard"> = [];
-    let killed = false;
-    await withEngine(
-      (world, tmp) =>
-        Effect.gen(function* () {
-          const { engine, session } = yield* launchOnce(world, tmp);
-          yield* engine.launch(session.id, ["codex"]);
-          expect(world.sessions.get(session.id)?.status).toBe("running");
-          killed = true;
-          const afterExpiry = Date.now() + 1_000_000;
-          memory.clock.now = () => afterExpiry;
-          yield* engine.reapCaptureLeases();
-          yield* until(
-            () => world.sessions.get(session.id)?.captureNotSavedAt != null,
-            "the kept executor",
-          );
-          const kept = world.sessions.get(session.id);
-          expect(kept?.captureIncompleteReason).toBe("retained");
-          expect(kept?.status).toBe("stopping");
-        }),
-      {
-        captured: memory,
-        drainPolicy: { terminationWait: Duration.millis(200) },
-        sealantLayer: lifecycleLayer(created, {
-          captureOps: {
-            stops,
-            status: () => (killed ? "failed" : "ready"),
-            stopAnswer: () => "kept",
-            retained: () => ({
-              reason: "exited before its final flush completed",
-              recoverable: true,
-            }),
-          },
-        }),
-      },
-    );
-  },
 );
 
 /**
@@ -1300,84 +1534,94 @@ it.each([
   );
 });
 
-it(
+it.effect(
   "review 12 #5: a resume into the retained workspace clears `executor not answering` once that executor answered and started the new process",
-  { timeout: 30_000 },
-  async () => {
-    const created: CreateOptions[] = [];
-    const stopped: string[] = [];
-    const ptyStates = new Map<string, InteractiveSessionStatus>();
-    const memory = makeMemoryCaptureStore();
-    let answering = true;
-    await withEngine(
-      (world, tmp) =>
-        Effect.gen(function* () {
-          const { engine, session } = yield* launchOnce(world, tmp);
-          yield* engine.launch(session.id, ["codex"]);
-          // A Service's open forward retains the workspace across the agent's end.
-          const service = yield* engine.addService(session.id, 5432, "db");
-          const agent = [...world.processes.values()].find(
-            (p) => p.sessionId === session.id && p.kind === "agent-pty",
-          );
-          if (agent?.sealantSessionId == null) throw new Error("no agent");
-          // The agent ends while exec and capture requests fail: the watcher's real verdict.
-          answering = false;
-          ptyStates.set(agent.sealantSessionId, {
-            status: "exited",
-            exitCode: 0,
-            outputHighWater: 0n,
-          });
-          yield* until(
-            () =>
+  () =>
+    Effect.gen(function* () {
+      const created: CreateOptions[] = [];
+      const stopped: string[] = [];
+      const memory = makeMemoryCaptureStore();
+      const clock = yield* makeRecoveryClock;
+      const { ptyStates } = clock;
+      let answering = true;
+      yield* withPreparedEngineEffect(
+        (world, tmp) => setup(tmp, world),
+        (world, tmp, project) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* provisionIn(project);
+            yield* engine.launch(session.id, ["codex"]);
+            // A Service's open forward retains the workspace across the agent's end.
+            const service = yield* engine.addService(session.id, 5432, "db");
+            const agent = [...world.processes.values()].find(
+              (p) => p.sessionId === session.id && p.kind === "agent-pty",
+            );
+            if (agent?.sealantSessionId == null) throw new Error("no agent");
+            // The agent ends while exec and capture requests fail: the watcher's real verdict.
+            answering = false;
+            ptyStates.set(agent.sealantSessionId, {
+              status: "exited",
+              exitCode: 0,
+              outputHighWater: 0n,
+            });
+            const unanswered = () =>
               world.sessions.get(session.id)?.summary?.startsWith("executor not answering") ===
-              true,
-            "the unanswered verdict",
-          );
-          expect(world.sessions.get(session.id)?.status).toBe("failed");
-          expect(world.services.get(service.service.id)?.currentForwardId).not.toBeNull();
-          // The connection recovers and the resume opens a new process in the retained workspace.
-          answering = true;
-          const resumed = yield* engine.resumeSession(session.id, "shell");
-          yield* Effect.sleep(Duration.millis(150));
-          expect(created).toHaveLength(1);
-          expect(stopped).toEqual([]);
-          expect(resumed.status).toBe("running");
-          expect(resumed.summary ?? "").not.toMatch(/executor not answering/);
-          expect(world.sessions.get(session.id)?.summary ?? "").not.toMatch(
-            /executor not answering/,
-          );
-        }),
-      {
-        captured: memory,
-        sealantLayer: sealantLaunchLayer(
-          created,
-          undefined,
-          stopped,
-          undefined,
-          undefined,
-          undefined,
-          ptyStates,
-          undefined,
-          undefined,
-          undefined,
-          undefined,
-          {
-            exec: (argv) =>
-              answering && argv[0] === "true" ? { exitCode: 0, stdout: "", stderr: "" } : undefined,
-            flush: () =>
-              answering
-                ? Effect.succeed(captureAnswer())
-                : Effect.fail(
-                    new SealantPlatformError({
-                      code: "connection_closed",
-                      status: null,
-                      message: "executor briefly unreachable",
-                      cause: null,
-                    }),
-                  ),
-          },
-        ),
-      },
-    );
-  },
+              true;
+            // The exit is read at the PTY watcher's next look; the executor is then asked six
+            // times, a `pollInterval` (10 ms) apart, and the verdict lands on the last look.
+            yield* clock.nextLook(agent.sealantSessionId, () => !unanswered());
+            yield* TestClock.adjust(49);
+            expect(unanswered()).toBe(false);
+            yield* TestClock.adjust(1);
+            yield* clock.untilChanged(unanswered, "the unanswered verdict");
+            expect(world.sessions.get(session.id)?.status).toBe("failed");
+            expect(world.services.get(service.service.id)?.currentForwardId).not.toBeNull();
+            // The connection recovers and the resume opens a new process in the retained workspace.
+            answering = true;
+            const resumed = yield* engine.resumeSession(session.id, "shell");
+            yield* TestClock.adjust(Duration.millis(150));
+            expect(created).toHaveLength(1);
+            expect(stopped).toEqual([]);
+            expect(resumed.status).toBe("running");
+            expect(resumed.summary ?? "").not.toMatch(/executor not answering/);
+            expect(world.sessions.get(session.id)?.summary ?? "").not.toMatch(
+              /executor not answering/,
+            );
+          }),
+        {
+          captured: memory,
+          sealantLayer: sealantLaunchLayer(
+            created,
+            undefined,
+            stopped,
+            undefined,
+            undefined,
+            undefined,
+            ptyStates,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            {
+              exec: (argv) =>
+                answering && argv[0] === "true"
+                  ? { exitCode: 0, stdout: "", stderr: "" }
+                  : undefined,
+              flush: () =>
+                answering
+                  ? Effect.succeed(captureAnswer())
+                  : Effect.fail(
+                      new SealantPlatformError({
+                        code: "connection_closed",
+                        status: null,
+                        message: "executor briefly unreachable",
+                        cause: null,
+                      }),
+                    ),
+            },
+          ),
+          prepareWorld: clock.prepareWorld,
+        },
+      );
+    }),
+  { timeout: 30_000 },
 );

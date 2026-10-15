@@ -91,7 +91,7 @@ import {
   testDrainPolicy,
   userDotfilesStubLayer,
   withEngine,
-  withEngineEffect,
+  withPreparedEngineEffect,
   worktreesLayer,
 } from "./engine/fixture.ts";
 
@@ -312,10 +312,10 @@ describe("SessionEngine", () => {
             inner.agentEnded(event).pipe(Effect.andThen(Deferred.succeed(ended, undefined))),
         })),
       ).pipe(Layer.provide(WorkspaceGitHooksLive));
-      yield* withEngineEffect(
-        (world, tmp) =>
+      yield* withPreparedEngineEffect(
+        (world, tmp) => setup(tmp, world),
+        (world, tmp, project) =>
           Effect.gen(function* () {
-            const project = yield* setup(tmp, world);
             const engine = yield* SessionEngine;
             const session = yield* engine.provision({
               projectId: project.id,

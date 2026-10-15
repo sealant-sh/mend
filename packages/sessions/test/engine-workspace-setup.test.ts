@@ -22,12 +22,20 @@ import {
   type DotfilesRepository,
   ReferenceId,
 } from "@mend/domain";
-import { HotWorkspace, Project, ResolvedGitAuthor, Reference } from "@mend/domain/workbench";
+import {
+  HotWorkspace,
+  Project,
+  ResolvedGitAuthor,
+  Reference,
+  Session,
+  SessionProcess,
+} from "@mend/domain/workbench";
+import { SealantClient } from "@mend/sealant";
 import { SessionEngine, WorkspaceGitHooks } from "@mend/sessions";
 import { DotfilesStore, DotfilesStoreError, harnessHomePathOf } from "@mend/store";
 import { it } from "@mend/test-ci/effect-vitest";
 import type { CreateOptions } from "@sealant/sdk";
-import { Duration, Effect, Exit, Layer } from "effect";
+import { Deferred, Effect, Exit, Layer, Queue } from "effect";
 import { describe, expect } from "vitest";
 
 import { makeMemoryCaptureStore, type MemoryCaptureStore } from "./capture-store-memory.ts";
@@ -38,11 +46,13 @@ import {
   dotfilesStoreLayer,
   isShellProfileExec,
   launchOnce,
+  provisionIn,
   type LaunchImage,
 } from "./engine/capture-fixture.ts";
 import {
   dotfilesClonerLayer,
   launchSkill,
+  makeWorld,
   now,
   pickedUpWrites,
   sealantLaunchLayer,
@@ -50,7 +60,49 @@ import {
   setup,
   skillsForLaunchLayer,
   withEngine,
+  withPreparedEngineEffect,
+  type World,
 } from "./engine/fixture.ts";
+
+/** A map whose every write wakes whoever waits on the state it holds. */
+const signalledMap = <V>(signal: () => void) =>
+  new (class extends Map<string, V> {
+    override set(key: string, value: V): this {
+      super.set(key, value);
+      signal();
+      return this;
+    }
+    override delete(key: string): boolean {
+      const removed = super.delete(key);
+      signal();
+      return removed;
+    }
+  })();
+
+/**
+ * A world whose session and process rows signal every write: `reached` wakes on those instead of
+ * polling in real time, so a case runs on the TestClock and drives every engine timer it waits on
+ * with `TestClock.adjust`.
+ */
+const signalledWorld = () =>
+  Effect.gen(function* () {
+    const tmp = yield* Effect.acquireRelease(
+      Effect.sync(() => fs.mkdtempSync(path.join(os.tmpdir(), "mend-workspace-test-"))),
+      (directory) => Effect.sync(() => fs.rmSync(directory, { recursive: true, force: true })),
+    );
+    const changed = yield* Queue.sliding<void>(1);
+    const signal = () => void Queue.offerUnsafe(changed, undefined);
+    const world: World = {
+      ...makeWorld(),
+      sessions: signalledMap<Session>(signal),
+      processes: signalledMap<SessionProcess>(signal),
+    };
+    const reached = (condition: () => boolean, label: string) =>
+      Effect.gen(function* () {
+        while (!condition()) yield* Queue.take(changed);
+      }).pipe(Effect.withSpan(label));
+    return { world, tmp, reached };
+  });
 
 /** No machine key and no transport log in these worlds. */
 // Dotfiles resolve per owner; the engine fixtures run without any configured, so launches
@@ -208,45 +260,59 @@ const ownedRepositoriesLayer = (
   });
 
 describe("SessionEngine workspace git hooks", () => {
-  it("reports an ended agent while its workspace is still up, before the sweep stops it", async () => {
-    const created: CreateOptions[] = [];
-    const stopped: string[] = [];
-    const heard: Array<{ readonly sessionId: string; readonly stoppedYet: number }> = [];
-    const hooks = Layer.succeed(WorkspaceGitHooks, {
-      branchesPushed: () => Effect.void,
-      agentEnded: (event) =>
-        Effect.sync(
-          () => void heard.push({ sessionId: event.sessionId, stoppedYet: stopped.length }),
-        ),
-      pullRequestOpened: () => Effect.void,
-      register: () => Effect.void,
-      landRequested: () => Effect.succeed({ landed: false, lines: [] }),
-      registerLanding: () => Effect.void,
-    });
-    await withEngine(
-      (world, tmp) =>
-        Effect.gen(function* () {
-          const project = yield* setup(tmp, world);
-          const engine = yield* SessionEngine;
-          const session = yield* engine.provision({
-            projectId: project.id,
-            harness: "codex",
-            label: null,
-            name: null,
-            ownerUserId: "user-fixture",
-            base: null,
-          });
-          yield* engine.launch(session.id, ["codex"]);
-          yield* engine.stop(session.id);
-          for (let i = 0; i < 300 && stopped.length === 0; i++) {
-            yield* Effect.sleep(Duration.millis(10));
-          }
-          expect(heard).toEqual([{ sessionId: session.id, stoppedYet: 0 }]);
-          expect(stopped).toEqual(["workspace-1"]);
-        }),
-      { sealantLayer: sealantLaunchLayer(created, undefined, stopped), gitHooksLayer: hooks },
-    );
-  });
+  it.effect(
+    "reports an ended agent while its workspace is still up, before the sweep stops it",
+    () =>
+      Effect.gen(function* () {
+        const created: CreateOptions[] = [];
+        const stopped: string[] = [];
+        const heard: Array<{ readonly sessionId: string; readonly stoppedYet: number }> = [];
+        const hooks = Layer.succeed(WorkspaceGitHooks, {
+          branchesPushed: () => Effect.void,
+          agentEnded: (event) =>
+            Effect.sync(
+              () => void heard.push({ sessionId: event.sessionId, stoppedYet: stopped.length }),
+            ),
+          pullRequestOpened: () => Effect.void,
+          register: () => Effect.void,
+          landRequested: () => Effect.succeed({ landed: false, lines: [] }),
+          registerLanding: () => Effect.void,
+        });
+        /** The stop's tail asked the platform to stop the workspace. */
+        const workspaceStopped = yield* Deferred.make<void>();
+        const signallingStops = Layer.effect(
+          SealantClient,
+          Effect.map(SealantClient, (client) => ({
+            ...client,
+            stopWorkspace: (workspace, options) =>
+              client
+                .stopWorkspace(workspace, options)
+                .pipe(Effect.ensuring(Deferred.succeed(workspaceStopped, undefined))),
+          })),
+        ).pipe(Layer.provide(sealantLaunchLayer(created, undefined, stopped)));
+        yield* withPreparedEngineEffect(
+          (world, dir) => setup(dir, world),
+          (_world, _dir, project) =>
+            Effect.gen(function* () {
+              const engine = yield* SessionEngine;
+              const session = yield* engine.provision({
+                projectId: project.id,
+                harness: "codex",
+                label: null,
+                name: null,
+                ownerUserId: "user-fixture",
+                base: null,
+              });
+              yield* engine.launch(session.id, ["codex"]);
+              yield* engine.stop(session.id);
+              yield* Deferred.await(workspaceStopped);
+              expect(heard).toEqual([{ sessionId: session.id, stoppedYet: 0 }]);
+              expect(stopped).toEqual(["workspace-1"]);
+            }),
+          { sealantLayer: signallingStops, gitHooksLayer: hooks },
+        );
+      }),
+  );
 });
 
 describe("SessionEngine workspace git hooks: pushes", () => {
@@ -1492,47 +1558,52 @@ describe("SessionEngine dotfiles gate", () => {
     },
   );
 
-  it("a relaunch into a fresh workspace resolves the owner's dotfiles again", async () => {
-    const created: CreateOptions[] = [];
-    const snapshots = new Map([["user-fixture", SNAPSHOT]]);
-    await withEngine(
-      (world, tmp) =>
-        Effect.gen(function* () {
-          const { engine, session } = yield* launchOnce(world, tmp);
-          yield* engine.launch(session.id, ["codex"]);
-          expect(world.sessions.get(session.id)?.dotfiles?.snapshotSha).toBe(SNAPSHOT.sha);
-          yield* engine.stop(session.id);
-          const agentExited = () =>
-            [...world.processes.values()].every((process) => process.exitedAt !== null);
-          for (let i = 0; i < 200 && !agentExited(); i++) {
-            yield* Effect.sleep(Duration.millis(10));
-          }
+  it.effect("a relaunch into a fresh workspace resolves the owner's dotfiles again", () =>
+    Effect.gen(function* () {
+      const created: CreateOptions[] = [];
+      const snapshots = new Map([["user-fixture", SNAPSHOT]]);
+      const { world, tmp, reached } = yield* signalledWorld();
+      yield* withPreparedEngineEffect(
+        (_world, dir) => setup(dir, world),
+        (_world, _dir, project) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* provisionIn(project);
+            yield* engine.launch(session.id, ["codex"]);
+            expect(world.sessions.get(session.id)?.dotfiles?.snapshotSha).toBe(SNAPSHOT.sha);
+            yield* engine.stop(session.id);
+            const agentExited = () =>
+              [...world.processes.values()].every((process) => process.exitedAt !== null);
+            yield* reached(agentExited, "the agent's end after the stop");
 
-          // The owner synced again while the session was stopped.
-          snapshots.set("user-fixture", NEWER_SNAPSHOT);
-          const resumed = yield* engine.resumeSession(session.id, "shell");
-          expect(resumed.status).toBe("running");
-          expect(created).toHaveLength(2);
-          expect(created[1]?.shell).toBe("zsh");
-          expect(created[1]?.dotfiles).toEqual({
-            archives: [{ data: NEWER_SNAPSHOT.data, manager: "copy", bootstrap: false }],
-          });
-          expect(world.sessions.get(session.id)?.dotfiles).toEqual({
-            repository: null,
-            snapshotSha: NEWER_SNAPSHOT.sha,
-            notApplied: [],
-          });
-          // The shell is the image's login shell, the one those dotfiles configure.
-          const live = [...world.processes.values()].filter((process) => process.exitedAt === null);
-          expect(live.map((process) => process.argv)).toEqual([["zsh"]]);
-        }),
-      {
-        sealantLayer: sealantLaunchLayer(created),
-        workspaceImage: ZSH_FAMILY,
-        dotfilesStoreLayer: ownedSnapshotsLayer(snapshots),
-      },
-    );
-  });
+            // The owner synced again while the session was stopped.
+            snapshots.set("user-fixture", NEWER_SNAPSHOT);
+            const resumed = yield* engine.resumeSession(session.id, "shell");
+            expect(resumed.status).toBe("running");
+            expect(created).toHaveLength(2);
+            expect(created[1]?.shell).toBe("zsh");
+            expect(created[1]?.dotfiles).toEqual({
+              archives: [{ data: NEWER_SNAPSHOT.data, manager: "copy", bootstrap: false }],
+            });
+            expect(world.sessions.get(session.id)?.dotfiles).toEqual({
+              repository: null,
+              snapshotSha: NEWER_SNAPSHOT.sha,
+              notApplied: [],
+            });
+            // The shell is the image's login shell, the one those dotfiles configure.
+            const live = [...world.processes.values()].filter(
+              (process) => process.exitedAt === null,
+            );
+            expect(live.map((process) => process.argv)).toEqual([["zsh"]]);
+          }),
+        {
+          fixture: { world, tmp },
+          sealantLayer: sealantLaunchLayer(created),
+          workspaceImage: ZSH_FAMILY,
+          dotfilesStoreLayer: ownedSnapshotsLayer(snapshots),
+        },
+      );
+    }),
+  );
 
   it("each owner's session launches with that owner's dotfiles and nobody else's", async () => {
     const created: CreateOptions[] = [];

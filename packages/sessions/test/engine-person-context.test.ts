@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 
 import {
+  HotWorkspacesRepo,
   UserGitAuthorRepo,
   type HarnessLayoutsMemoryState,
   linuxLoginNameOf,
@@ -25,18 +26,24 @@ import {
   SealantPlatformError,
   SealantPrincipal,
 } from "@mend/sealant";
-import { SessionEngine, WorkspaceGitHooks, WorkspaceGitHooksLive } from "@mend/sessions";
+import {
+  CaptureChannel,
+  SessionEngine,
+  WorkspaceGitHooks,
+  WorkspaceGitHooksLive,
+} from "@mend/sessions";
 import { AgentBridge, processStatePathOf } from "@mend/store";
-import { it } from "@mend/test-ci/effect-vitest";
+import { it, TestClock } from "@mend/test-ci/effect-vitest";
 import type {
   CreateOptions,
   Workspace,
   WorkspaceCaptureOwnerMap,
   WorkspaceCaptureReplanned,
 } from "@sealant/sdk";
-import { Duration, Effect, Exit, Fiber, Layer } from "effect";
+import { Clock, Deferred, Duration, Effect, Exit, Fiber, Layer, Queue } from "effect";
 import { describe, expect } from "vitest";
 
+import { LEASE_REAPER_INTERVAL_SECONDS } from "../src/capture-runtime.ts";
 import { CONTAINER_TOKEN_REFUSED } from "../src/channel-identity.ts";
 import {
   REMOTE_SSH_RESET_PENDING_WORDS,
@@ -44,13 +51,7 @@ import {
   REMOTE_SSH_ROOT_WORDS,
 } from "../src/harness-layout-steps.ts";
 import { makeMemoryCaptureStore } from "./capture-store-memory.ts";
-import {
-  eventually,
-  failureText,
-  lifecycleLayer,
-  memoryHotPool,
-  until,
-} from "./engine/capture-fixture.ts";
+import { failureText, lifecycleLayer, memoryHotPool } from "./engine/capture-fixture.ts";
 import {
   isPickupExec,
   now,
@@ -63,6 +64,7 @@ import {
   setup,
   type World,
   withEngine,
+  withPreparedEngineEffect,
 } from "./engine/fixture.ts";
 import {
   LAYOUT_READY,
@@ -75,6 +77,115 @@ import {
 } from "./engine/person-fixture.ts";
 import { recordedBeforeStart } from "./engine/person-layout-fixture.ts";
 import { secretForms } from "./pickup-channel.ts";
+
+/** `effect`, then a wake-up on `queue` for whoever waits on the state it changed. */
+const signal =
+  (queue: Queue.Queue<void>) =>
+  <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+    effect.pipe(Effect.tap(() => Queue.offer(queue, undefined)));
+
+/** Waits for `condition`, woken by every signal on `queue`. */
+const signalled = (queue: Queue.Queue<void>) => (condition: () => boolean, label: string) =>
+  Effect.gen(function* () {
+    while (!condition()) yield* Queue.take(queue);
+  }).pipe(Effect.withSpan(label));
+
+/** Every write to `rows` wakes whoever waits on what it holds. */
+const signalWrites = <K, V>(rows: Map<K, V>, queue: Queue.Queue<void>) => {
+  const set = rows.set.bind(rows);
+  rows.set = (key, value) => {
+    set(key, value);
+    Queue.offerUnsafe(queue, undefined);
+    return rows;
+  };
+};
+
+/**
+ * Real standby readiness and registration waits, both services kept (the standbys file's
+ * `makeStandbyClock`, the parts a claim needs).
+ */
+const makeStandbyClock = (pool: ReturnType<typeof memoryHotPool>) =>
+  Effect.gen(function* () {
+    /** A pool row changed: ready, failed, or gone. */
+    const rows = yield* Queue.make<void>();
+    const registrations = yield* Queue.make<{
+      readonly completed: Deferred.Deferred<void>;
+      readonly timeoutMs: number;
+    }>();
+    const poolLayer: Layer.Layer<HotWorkspacesRepo> = Layer.effect(
+      HotWorkspacesRepo,
+      Effect.map(HotWorkspacesRepo, (inner) => ({
+        ...inner,
+        setReady: (id, state) => signal(rows)(inner.setReady(id, state)),
+        setFailed: (id, error) => signal(rows)(inner.setFailed(id, error)),
+        remove: (id) => signal(rows)(inner.remove(id)),
+      })),
+    ).pipe(Layer.provide(pool.layer));
+    const wrapCaptureChannel = (inner: CaptureChannel["Service"]): CaptureChannel["Service"] => ({
+      ...inner,
+      awaitRegister: (worktreeId, accept, timeout) =>
+        Effect.gen(function* () {
+          const completed = yield* Deferred.make<void>();
+          yield* Queue.offer(registrations, { completed, timeoutMs: Duration.toMillis(timeout) });
+          return yield* inner
+            .awaitRegister(worktreeId, accept, timeout)
+            .pipe(Effect.ensuring(Deferred.succeed(completed, undefined)));
+        }),
+    });
+    const untilReady = signalled(rows);
+    /** A claim's registration wait, driven: nothing completes short of its 2 s, all of it at 2 s. */
+    const claim = <A, E, R>(provision: Effect.Effect<A, E, R>) =>
+      Effect.gen(function* () {
+        const fiber = yield* provision.pipe(Effect.forkChild);
+        const registration = yield* Queue.take(registrations);
+        expect(registration.timeoutMs).toBe(2_000);
+        yield* TestClock.adjust(1_999);
+        expect(yield* Deferred.isDone(registration.completed)).toBe(false);
+        expect(fiber.pollUnsafe()).toBeUndefined();
+        yield* TestClock.adjust(1);
+        yield* Deferred.await(registration.completed);
+        return yield* Fiber.join(fiber);
+      });
+    return { poolLayer, wrapCaptureChannel, untilReady, claim };
+  });
+
+/**
+ * The test's clock, telling whoever waits which sleeps the engine has parked on it: a forked
+ * fiber reaching its timer is a state change the clock alone sees.
+ */
+const parkingClock = Effect.gen(function* () {
+  const inner = yield* Clock.Clock;
+  const parked = yield* Queue.make<Duration.Duration>();
+  // The test clock's own `adjust` rides along: `TestClock.adjust` reads it off `Clock.Clock`.
+  const clock: Clock.Clock = {
+    ...inner,
+    currentTimeMillisUnsafe: () => inner.currentTimeMillisUnsafe(),
+    currentTimeNanosUnsafe: () => inner.currentTimeNanosUnsafe(),
+    sleep: (duration) => Queue.offer(parked, duration).pipe(Effect.andThen(inner.sleep(duration))),
+  };
+  /** Every one of `durations` has been parked since the last call (one parked sleep per entry). */
+  const untilParked = (...durations: ReadonlyArray<Duration.Duration>) =>
+    Effect.gen(function* () {
+      const waiting = durations.map(Duration.toMillis);
+      while (waiting.length > 0) {
+        const slept = Duration.toMillis(yield* Queue.take(parked));
+        const at = waiting.indexOf(slept);
+        if (at !== -1) waiting.splice(at, 1);
+      }
+    });
+  return { clock, untilParked };
+});
+
+/** The engine's log lines, waking whoever waits on `woken` as each lands. */
+const signallingLogs = (woken: Queue.Queue<void>): Array<string> => {
+  const lines: Array<string> = [];
+  lines.push = (...items: Array<string>) => {
+    const length = Array.prototype.push.apply(lines, items);
+    Queue.offerUnsafe(woken, undefined);
+    return length;
+  };
+  return lines;
+};
 
 /**
  * The platform as the dispatching client serves it on an install (`SealantClients.forPrincipal`):
@@ -122,9 +233,11 @@ interface Scenario {
 
 /**
  * A holder's cold launch, a second session in its executor (owned by `joiner`), then the holder
- * stopped and resumed: the launch, join and resume of the exec budget (Performance).
+ * stopped and resumed: the launch, join and resume of the exec budget (Performance). What runs
+ * beside the join and beside the joiner's stop (the worktree repair, the joiner's logins
+ * released) is waited for through the engine's own log lines, never a clock.
  */
-const coldJoinResume = async (options: {
+const coldJoinResume = (options: {
   readonly flag: HarnessLayout;
   readonly joiner: string;
   readonly state?: HarnessLayoutsMemoryState;
@@ -135,115 +248,139 @@ const coldJoinResume = async (options: {
   readonly before?: (worktreeId: string) => void;
   /** Called as the scenario passes each point: after the cold launch, the join, the joiner's stop. */
   readonly onStage?: (stage: "cold" | "joined" | "joinerStopped") => void;
-}): Promise<Scenario> => {
-  const created: Array<CreateOptions> = [];
-  const execCalls: Array<ReadonlyArray<string>> = [];
-  const opened: Array<PersonSessionOptions> = [];
-  const users: Array<string | null> = [];
-  const homes: Array<string | undefined> = [];
-  const sshUsers: Array<string | undefined> = [];
-  const memory = makeMemoryCaptureStore();
-  let result: Scenario | null = null;
-  await withEngine(
-    (world, tmp) =>
-      Effect.gen(function* () {
-        const project = yield* setup(tmp, world);
-        const engine = yield* SessionEngine;
-        const holder = yield* engine.provision({
-          projectId: project.id,
-          harness: "claude",
-          label: null,
-          name: "shared",
-          ownerUserId: "user-fixture",
-          base: null,
-        });
-        options.before?.(holder.worktreeId);
-        yield* engine.launch(holder.id, ["claude"]);
-        const cold = execCalls.length;
-        options.onStage?.("cold");
-        const joined = yield* engine.provisionSessionIn(holder.worktreeId, {
-          harness: "claude",
-          label: null,
-          ownerUserId: options.joiner,
-        });
-        yield* engine.launch(joined.id, ["claude"]);
-        // The repair runs beside the join, never awaited by it.
-        yield* Effect.sleep("50 millis");
-        options.onStage?.("joined");
-        const joinExecs = execCalls.slice(cold);
-        const joinRepairs = joinExecs.filter(isRepair).length;
-        const joinPersonHomes = joinExecs.filter(isPersonHome).length;
-        const afterJoin = execCalls.length;
-        // A resume after a Stop: the holder's executor ends and a new one starts.
-        const agent = [...world.processes.values()].findLast(
-          (process) => process.sessionId === holder.id && process.kind === "agent-pty",
-        );
-        yield* engine.stop(joined.id);
-        // The joiner's logins are released beside the stop, never awaited by it.
-        yield* Effect.sleep("50 millis");
-        options.onStage?.("joinerStopped");
-        yield* engine.stop(holder.id);
-        if (agent !== undefined) {
-          const stateDir = processStatePathOf(project.storePath, holder.id, agent.id);
-          fs.mkdirSync(stateDir, { recursive: true });
-          fs.writeFileSync(
-            path.join(stateDir, "manifest.json"),
-            JSON.stringify({
-              harness: "claude",
-              providerSessionId: "11111111-2222-3333-4444-555555555555",
-              capturedAt: now().toISOString(),
-            }),
+}): Effect.Effect<Scenario> =>
+  Effect.gen(function* () {
+    const created: Array<CreateOptions> = [];
+    const execCalls: Array<ReadonlyArray<string>> = [];
+    const opened: Array<PersonSessionOptions> = [];
+    const users: Array<string | null> = [];
+    const homes: Array<string | undefined> = [];
+    const sshUsers: Array<string | undefined> = [];
+    const memory = makeMemoryCaptureStore();
+    /** The engine wrote a log line. */
+    const logged = yield* Queue.make<void>();
+    const logs = signallingLogs(logged);
+    /** The engine said one of these (what the work beside a step reports, ran or not). */
+    const said =
+      (...outcomes: ReadonlyArray<string>) =>
+      () =>
+        logs.some((line) => outcomes.some((words) => line.includes(words)));
+    let result: Scenario | null = null;
+    yield* withPreparedEngineEffect(
+      (world, tmp) => setup(tmp, world),
+      (world, _tmp, project) =>
+        Effect.gen(function* () {
+          const engine = yield* SessionEngine;
+          const holder = yield* engine.provision({
+            projectId: project.id,
+            harness: "claude",
+            label: null,
+            name: "shared",
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+          options.before?.(holder.worktreeId);
+          yield* engine.launch(holder.id, ["claude"]);
+          const cold = execCalls.length;
+          options.onStage?.("cold");
+          const joined = yield* engine.provisionSessionIn(holder.worktreeId, {
+            harness: "claude",
+            label: null,
+            ownerUserId: options.joiner,
+          });
+          yield* engine.launch(joined.id, ["claude"]);
+          // Another person's process in a person executor: the worktree repair runs beside the
+          // join, never awaited by it, and their logins are released beside their stop, never
+          // awaited by it. The engine says when each ran. A same-person join starts neither.
+          const another =
+            options.joiner !== "user-fixture" &&
+            opened.some((process) => process.user?.name === linuxLoginNameOf(options.joiner));
+          if (another) {
+            yield* signalled(logged)(
+              said("worktree repair · observed", "worktree repair did not run"),
+              "the join's worktree repair",
+            );
+          }
+          options.onStage?.("joined");
+          const joinExecs = execCalls.slice(cold);
+          const joinRepairs = joinExecs.filter(isRepair).length;
+          const joinPersonHomes = joinExecs.filter(isPersonHome).length;
+          const afterJoin = execCalls.length;
+          // A resume after a Stop: the holder's executor ends and a new one starts.
+          const agent = [...world.processes.values()].findLast(
+            (process) => process.sessionId === holder.id && process.kind === "agent-pty",
           );
-        }
-        const beforeResume = execCalls.length;
-        yield* engine.resumeSession(holder.id, null);
-        result = {
-          cold,
-          join: afterJoin - cold - joinRepairs,
-          joinRepairs,
-          joinPersonHomes,
-          resume: execCalls.length - beforeResume,
-          created: created.length,
-          homes,
-          sshUsers,
+          yield* engine.stop(joined.id);
+          if (another) {
+            yield* signalled(logged)(
+              said("a person's logins released", "a person's logins were not released"),
+              "the joiner's logins released",
+            );
+          }
+          options.onStage?.("joinerStopped");
+          yield* engine.stop(holder.id);
+          if (agent !== undefined) {
+            const stateDir = processStatePathOf(project.storePath, holder.id, agent.id);
+            fs.mkdirSync(stateDir, { recursive: true });
+            fs.writeFileSync(
+              path.join(stateDir, "manifest.json"),
+              JSON.stringify({
+                harness: "claude",
+                providerSessionId: "11111111-2222-3333-4444-555555555555",
+                capturedAt: now().toISOString(),
+              }),
+            );
+          }
+          const beforeResume = execCalls.length;
+          yield* engine.resumeSession(holder.id, null);
+          result = {
+            cold,
+            join: afterJoin - cold - joinRepairs,
+            joinRepairs,
+            joinPersonHomes,
+            resume: execCalls.length - beforeResume,
+            created: created.length,
+            homes,
+            sshUsers,
+            opened,
+            users,
+            execs: execCalls,
+            worktreeId: holder.worktreeId,
+          };
+        }),
+      {
+        captured: memory,
+        logs,
+        prepareWorld: (world) => world.members.set(MARIA, "member"),
+        sealantLayer: sealantLaunchLayer(
+          created,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
           opened,
-          users,
-          execs: execCalls,
-          worktreeId: holder.worktreeId,
-        };
-      }),
-    {
-      captured: memory,
-      prepareWorld: (world) => world.members.set(MARIA, "member"),
-      sealantLayer: sealantLaunchLayer(
-        created,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        opened,
-        undefined,
-        execCalls,
-        undefined,
-        {
-          execUsers: users,
-          createHomes: homes,
-          createSshUsers: sshUsers,
-          ...(options.exec === undefined ? {} : { exec: options.exec }),
+          undefined,
+          execCalls,
+          undefined,
+          {
+            execUsers: users,
+            createHomes: homes,
+            createSshUsers: sshUsers,
+            ...(options.exec === undefined ? {} : { exec: options.exec }),
+          },
+        ),
+        harnessLayout: {
+          flag: options.flag,
+          ...(options.state === undefined ? {} : { state: options.state }),
+          ...(options.platform === undefined ? {} : { platform: options.platform }),
         },
-      ),
-      harnessLayout: {
-        flag: options.flag,
-        ...(options.state === undefined ? {} : { state: options.state }),
-        ...(options.platform === undefined ? {} : { platform: options.platform }),
       },
-    },
-  );
-  if (result === null) throw new Error("the scenario did not run");
-  return result;
-};
+    );
+    if (result === null) throw new Error("the scenario did not run");
+    return result;
+  });
 
 describe("per-person harness homes (docs/adr/0016)", () => {
   // The shared layout's counts (main at 4ccbaa2cd, measured with this same scenario): what the
@@ -258,28 +395,32 @@ describe("per-person harness homes (docs/adr/0016)", () => {
   const JOINER = linuxLoginNameOf(MARIA);
   const IMAGE = "digest:sha256:img\u0000docker";
 
-  it("the shared opt-out costs what it did: its execs, no home, no user, nothing recorded", async () => {
-    const state = makeHarnessLayoutsMemoryState();
-    const same = await coldJoinResume({ flag: "shared", joiner: "user-fixture", state });
-    const other = await coldJoinResume({ flag: "shared", joiner: MARIA, state });
-    expect([same.cold, same.join, same.resume]).toEqual([
-      BUDGET.cold,
-      BUDGET.sameJoin,
-      BUDGET.resume,
-    ]);
-    expect([other.cold, other.join]).toEqual([BUDGET.cold, BUDGET.otherJoin]);
-    for (const run of [same, other]) {
-      expect(run.homes.every((home) => home === undefined)).toBe(true);
-      // A shared executor's SSH sessions run as root, as before: no user is named.
-      expect(run.sshUsers.every((user) => user === undefined)).toBe(true);
-      expect(run.users.every((user) => user === null)).toBe(true);
-      expect(run.opened.some((options) => options.user !== undefined)).toBe(false);
-      expect(run.joinRepairs + run.joinPersonHomes).toBe(0);
-      expect(run.execs.some((argv) => (argv[2] ?? "").includes("mend-layout"))).toBe(false);
-    }
-    expect(state.launches.size).toBe(0);
-    expect(state.identities.size).toBe(0);
-  });
+  it.effect(
+    "the shared opt-out costs what it did: its execs, no home, no user, nothing recorded",
+    () =>
+      Effect.gen(function* () {
+        const state = makeHarnessLayoutsMemoryState();
+        const same = yield* coldJoinResume({ flag: "shared", joiner: "user-fixture", state });
+        const other = yield* coldJoinResume({ flag: "shared", joiner: MARIA, state });
+        expect([same.cold, same.join, same.resume]).toEqual([
+          BUDGET.cold,
+          BUDGET.sameJoin,
+          BUDGET.resume,
+        ]);
+        expect([other.cold, other.join]).toEqual([BUDGET.cold, BUDGET.otherJoin]);
+        for (const run of [same, other]) {
+          expect(run.homes.every((home) => home === undefined)).toBe(true);
+          // A shared executor's SSH sessions run as root, as before: no user is named.
+          expect(run.sshUsers.every((user) => user === undefined)).toBe(true);
+          expect(run.users.every((user) => user === null)).toBe(true);
+          expect(run.opened.some((options) => options.user !== undefined)).toBe(false);
+          expect(run.joinRepairs + run.joinPersonHomes).toBe(0);
+          expect(run.execs.some((argv) => (argv[2] ?? "").includes("mend-layout"))).toBe(false);
+        }
+        expect(state.launches.size).toBe(0);
+        expect(state.identities.size).toBe(0);
+      }),
+  );
 
   it("Remote-SSH is the launcher's: whoever launches the executor, and after it stops, whoever launches the next one", async () => {
     // Alice launches and stops; Maria, a member, then launches the worktree's next executor. Its
@@ -342,135 +483,151 @@ describe("per-person harness homes (docs/adr/0016)", () => {
     expect(principals).toEqual(["user-fixture", MARIA]);
   });
 
-  it("a person launch names no SSH user where Core does not run SSH sessions as one", async () => {
-    // A control plane from before `workspaceSshUser` (sealant#348): its gateway runs every SSH
-    // session as root, so the create names nobody, and nothing is set later.
-    const calls: Array<string> = [];
-    const run = await coldJoinResume({
-      flag: "person",
-      joiner: "user-fixture",
-      platform: personPlatform(
-        calls,
-        { person: true },
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        false,
-      ),
-      exec: answerLayout(LAYOUT_READY),
-    });
-    expect(run.homes[0]).toBe(`/home/${LAUNCHER} 40001:40000`);
-    expect(run.sshUsers.every((user) => user === undefined)).toBe(true);
-    expect(calls.some((call) => call.startsWith("ssh-user:"))).toBe(false);
-  });
+  it.effect("a person launch names no SSH user where Core does not run SSH sessions as one", () =>
+    Effect.gen(function* () {
+      // A control plane from before `workspaceSshUser` (sealant#348): its gateway runs every SSH
+      // session as root, so the create names nobody, and nothing is set later.
+      const calls: Array<string> = [];
+      const run = yield* coldJoinResume({
+        flag: "person",
+        joiner: "user-fixture",
+        platform: personPlatform(
+          calls,
+          { person: true },
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          false,
+        ),
+        exec: answerLayout(LAYOUT_READY),
+      });
+      expect(run.homes[0]).toBe(`/home/${LAUNCHER} 40001:40000`);
+      expect(run.sshUsers.every((user) => user === undefined)).toBe(true);
+      expect(calls.some((call) => call.startsWith("ssh-user:"))).toBe(false);
+    }),
+  );
 
-  it("a person launch runs as the launcher's own user, in no more execs than its budget", async () => {
-    const state = makeHarnessLayoutsMemoryState();
-    const calls: Array<string> = [];
-    const run = await coldJoinResume({
-      flag: "person",
-      joiner: "user-fixture",
-      state,
-      platform: personPlatform(calls, { person: true }),
-      exec: answerLayout(LAYOUT_READY),
-    });
-    expect(run.cold).toBeLessThanOrEqual(PERSON_BUDGET.cold);
-    expect(run.join).toBeLessThanOrEqual(PERSON_BUDGET.sameJoin);
-    expect(run.resume).toBeLessThanOrEqual(PERSON_BUDGET.resume);
-    // The create commits to the layout: the launcher's logins into their own home.
-    expect(run.homes[0]).toBe(`/home/${LAUNCHER} 40001:40000`);
-    // And their Remote-SSH: Core's gateway runs the owner's SSH sessions as their user.
-    expect(run.sshUsers[0]).toBe(`/home/${LAUNCHER}`);
-    // Users and homes are made in the executor's first exec, beside the helper install.
-    const first = run.execs.find((argv) => (argv[2] ?? "").includes("mend-layout"));
-    expect(first?.[2]).toContain(`useradd -u "$p_u" -g mend`);
-    // One word per person in one list, never a copy of the script (review of mend#582).
-    expect(first?.[2]).toContain(`mend_people='${LAUNCHER}:40001:`);
-    expect(first?.[2]).toContain("ln -sf /run/mend/bin/mend /usr/local/bin/mend");
-    // Every agent of the launcher runs as them; a same-person join makes nobody and repairs nothing.
-    const users = run.opened.map((options) => options.user?.name ?? null);
-    expect(users.length).toBeGreaterThan(0);
-    expect(users.every((user) => user === LAUNCHER)).toBe(true);
-    expect(run.joinPersonHomes + run.joinRepairs).toBe(0);
-    expect(state.worktrees.get(run.worktreeId)?.layout).toBe("person");
-    expect([...state.launches.values()].every((launch) => launch.confirmed)).toBe(true);
-    expect(calls).toEqual([]);
-  });
+  it.effect(
+    "a person launch runs as the launcher's own user, in no more execs than its budget",
+    () =>
+      Effect.gen(function* () {
+        const state = makeHarnessLayoutsMemoryState();
+        const calls: Array<string> = [];
+        const run = yield* coldJoinResume({
+          flag: "person",
+          joiner: "user-fixture",
+          state,
+          platform: personPlatform(calls, { person: true }),
+          exec: answerLayout(LAYOUT_READY),
+        });
+        expect(run.cold).toBeLessThanOrEqual(PERSON_BUDGET.cold);
+        expect(run.join).toBeLessThanOrEqual(PERSON_BUDGET.sameJoin);
+        expect(run.resume).toBeLessThanOrEqual(PERSON_BUDGET.resume);
+        // The create commits to the layout: the launcher's logins into their own home.
+        expect(run.homes[0]).toBe(`/home/${LAUNCHER} 40001:40000`);
+        // And their Remote-SSH: Core's gateway runs the owner's SSH sessions as their user.
+        expect(run.sshUsers[0]).toBe(`/home/${LAUNCHER}`);
+        // Users and homes are made in the executor's first exec, beside the helper install.
+        const first = run.execs.find((argv) => (argv[2] ?? "").includes("mend-layout"));
+        expect(first?.[2]).toContain(`useradd -u "$p_u" -g mend`);
+        // One word per person in one list, never a copy of the script (review of mend#582).
+        expect(first?.[2]).toContain(`mend_people='${LAUNCHER}:40001:`);
+        expect(first?.[2]).toContain("ln -sf /run/mend/bin/mend /usr/local/bin/mend");
+        // Every agent of the launcher runs as them; a same-person join makes nobody and repairs nothing.
+        const users = run.opened.map((options) => options.user?.name ?? null);
+        expect(users.length).toBeGreaterThan(0);
+        expect(users.every((user) => user === LAUNCHER)).toBe(true);
+        expect(run.joinPersonHomes + run.joinRepairs).toBe(0);
+        expect(state.worktrees.get(run.worktreeId)?.layout).toBe("person");
+        expect([...state.launches.values()].every((launch) => launch.confirmed)).toBe(true);
+        expect(calls).toEqual([]);
+      }),
+  );
 
-  it("a join by another person runs as them: at most two more execs, and one repair beside it", async () => {
-    const calls: Array<string> = [];
-    const same = await coldJoinResume({
-      flag: "person",
-      joiner: "user-fixture",
-      platform: personPlatform(calls, { person: true }),
-      exec: answerLayout(LAYOUT_READY),
-    });
-    const other = await coldJoinResume({
-      flag: "person",
-      joiner: MARIA,
-      platform: personPlatform(calls, { person: true }),
-      exec: answerLayout(LAYOUT_READY),
-    });
-    expect(other.join - same.join).toBeLessThanOrEqual(2);
-    expect(other.join).toBeLessThanOrEqual(PERSON_BUDGET.otherJoin);
-    expect(other.joinPersonHomes).toBe(1);
-    expect(other.joinRepairs).toBe(1);
-    // Maria's agent runs as Maria; the launcher's as the launcher.
-    expect(other.opened.map((options) => options.user?.name)).toEqual(
-      expect.arrayContaining([LAUNCHER, JOINER]),
-    );
-    const home = other.execs.find(isPersonHome);
-    expect(home?.[2]).toContain(`useradd -u "$p_u" -g mend`);
-    expect(home?.[2]).toContain(`mend_person ${JOINER} 40002 `);
-  });
+  it.effect(
+    "a join by another person runs as them: at most two more execs, and one repair beside it",
+    () =>
+      Effect.gen(function* () {
+        const calls: Array<string> = [];
+        const same = yield* coldJoinResume({
+          flag: "person",
+          joiner: "user-fixture",
+          platform: personPlatform(calls, { person: true }),
+          exec: answerLayout(LAYOUT_READY),
+        });
+        const other = yield* coldJoinResume({
+          flag: "person",
+          joiner: MARIA,
+          platform: personPlatform(calls, { person: true }),
+          exec: answerLayout(LAYOUT_READY),
+        });
+        expect(other.join - same.join).toBeLessThanOrEqual(2);
+        expect(other.join).toBeLessThanOrEqual(PERSON_BUDGET.otherJoin);
+        expect(other.joinPersonHomes).toBe(1);
+        expect(other.joinRepairs).toBe(1);
+        // Maria's agent runs as Maria; the launcher's as the launcher.
+        expect(other.opened.map((options) => options.user?.name)).toEqual(
+          expect.arrayContaining([LAUNCHER, JOINER]),
+        );
+        const home = other.execs.find(isPersonHome);
+        expect(home?.[2]).toContain(`useradd -u "$p_u" -g mend`);
+        expect(home?.[2]).toContain(`mend_person ${JOINER} 40002 `);
+      }),
+  );
 
-  it("Maria's join into Alice's executor runs on Maria's logins alone: one Core call, never Alice's home, released when she stops", async () => {
-    const calls: Array<string> = [];
-    const marks: Record<string, number> = {};
-    const run = await coldJoinResume({
-      flag: "person",
-      joiner: MARIA,
-      platform: personPlatform(calls, { person: true }),
-      exec: answerLayout(LAYOUT_READY),
-      onStage: (stage) => {
-        marks[stage] = calls.length;
-      },
-    });
-    const aliceHome = `/home/${LAUNCHER}`;
-    const mariaHome = `/home/${JOINER}`;
-    // The cold launch wrote Alice's logins at create (`credentialsHome`): no Core call of its own.
-    expect(calls.slice(0, marks["cold"])).toEqual([]);
-    expect(run.homes[0]).toBe(`${aliceHome} 40001:40000`);
-    // The join adds exactly one Core call: Maria's own logins, into Maria's own home.
-    expect(calls.slice(marks["cold"], marks["joined"])).toEqual([`post:${MARIA}:${mariaHome}`]);
-    // Maria's agent runs as Maria, and nothing it is given names Alice's home or her login.
-    const marias = run.opened.filter((options) => options.user?.name === JOINER);
-    expect(marias.length).toBeGreaterThan(0);
-    for (const options of marias) {
-      expect(options.user?.home).toBe(mariaHome);
-      expect(JSON.stringify(options)).not.toContain(aliceHome);
-      expect(options.env?.["CLAUDE_CODE_OAUTH_TOKEN"]).toBe("");
-      expect(options.env?.["GH_TOKEN"]).toBe("");
-      expect(options.env?.["GITHUB_TOKEN"]).toBe("");
-    }
-    // Nothing run for the join, as anyone, reads Alice's home: her logins are never read on
-    // Maria's behalf. Alice's home is hers alone, 0700, made before her first process.
-    const joinExecs = run.execs.slice(run.cold, run.cold + run.join + run.joinRepairs);
-    expect(joinExecs.length).toBeGreaterThan(0);
-    for (const argv of joinExecs) expect(argv.join(" ")).not.toContain(aliceHome);
-    const prepare = run.execs.find(isPrepare)?.[2] ?? "";
-    // Her home is `/home/<name>` from the people list, uid 40001, made 0700 and hers.
-    expect(prepare).toContain(`mend_homes='/home'`);
-    expect(prepare).toContain(`'${aliceHome.slice("/home/".length)}:40001:`);
-    expect(prepare).toContain('chmod 0700 "$p_h"');
-    expect(prepare).toContain('p_o="$2:40000"');
-    expect(prepare).toContain('chown -hR "$p_o" "$p_h"');
-    // Maria's stop releases her logins; Alice's create-time home stays while her executor lives.
-    expect(calls.slice(marks["joined"], marks["joinerStopped"])).toEqual([`delete:${mariaHome}`]);
-    expect(calls.some((call) => call === `delete:${aliceHome}`)).toBe(false);
-    expect(calls.some((call) => call.startsWith(`post:user-fixture`))).toBe(false);
-  });
+  it.effect(
+    "Maria's join into Alice's executor runs on Maria's logins alone: one Core call, never Alice's home, released when she stops",
+    () =>
+      Effect.gen(function* () {
+        const calls: Array<string> = [];
+        const marks: Record<string, number> = {};
+        const run = yield* coldJoinResume({
+          flag: "person",
+          joiner: MARIA,
+          platform: personPlatform(calls, { person: true }),
+          exec: answerLayout(LAYOUT_READY),
+          onStage: (stage) => {
+            marks[stage] = calls.length;
+          },
+        });
+        const aliceHome = `/home/${LAUNCHER}`;
+        const mariaHome = `/home/${JOINER}`;
+        // The cold launch wrote Alice's logins at create (`credentialsHome`): no Core call of its own.
+        expect(calls.slice(0, marks["cold"])).toEqual([]);
+        expect(run.homes[0]).toBe(`${aliceHome} 40001:40000`);
+        // The join adds exactly one Core call: Maria's own logins, into Maria's own home.
+        expect(calls.slice(marks["cold"], marks["joined"])).toEqual([`post:${MARIA}:${mariaHome}`]);
+        // Maria's agent runs as Maria, and nothing it is given names Alice's home or her login.
+        const marias = run.opened.filter((options) => options.user?.name === JOINER);
+        expect(marias.length).toBeGreaterThan(0);
+        for (const options of marias) {
+          expect(options.user?.home).toBe(mariaHome);
+          expect(JSON.stringify(options)).not.toContain(aliceHome);
+          expect(options.env?.["CLAUDE_CODE_OAUTH_TOKEN"]).toBe("");
+          expect(options.env?.["GH_TOKEN"]).toBe("");
+          expect(options.env?.["GITHUB_TOKEN"]).toBe("");
+        }
+        // Nothing run for the join, as anyone, reads Alice's home: her logins are never read on
+        // Maria's behalf. Alice's home is hers alone, 0700, made before her first process.
+        const joinExecs = run.execs.slice(run.cold, run.cold + run.join + run.joinRepairs);
+        expect(joinExecs.length).toBeGreaterThan(0);
+        for (const argv of joinExecs) expect(argv.join(" ")).not.toContain(aliceHome);
+        const prepare = run.execs.find(isPrepare)?.[2] ?? "";
+        // Her home is `/home/<name>` from the people list, uid 40001, made 0700 and hers.
+        expect(prepare).toContain(`mend_homes='/home'`);
+        expect(prepare).toContain(`'${aliceHome.slice("/home/".length)}:40001:`);
+        expect(prepare).toContain('chmod 0700 "$p_h"');
+        expect(prepare).toContain('p_o="$2:40000"');
+        expect(prepare).toContain('chown -hR "$p_o" "$p_h"');
+        // Maria's stop releases her logins; Alice's create-time home stays while her executor lives.
+        expect(calls.slice(marks["joined"], marks["joinerStopped"])).toEqual([
+          `delete:${mariaHome}`,
+        ]);
+        expect(calls.some((call) => call === `delete:${aliceHome}`)).toBe(false);
+        expect(calls.some((call) => call.startsWith(`post:user-fixture`))).toBe(false);
+      }),
+  );
 
   it("refuses Maria's join before her agent starts when she has not connected Claude, and never lends Alice's", async () => {
     const calls: Array<string> = [];
@@ -895,65 +1052,74 @@ describe("per-person harness homes (docs/adr/0016)", () => {
     ]);
   });
 
-  it("with the flag off, the platform's credentials API is never called", async () => {
-    const calls: Array<string> = [];
-    const state = makeHarnessLayoutsMemoryState();
-    for (const joiner of ["user-fixture", MARIA]) {
-      await coldJoinResume({
+  it.effect("with the flag off, the platform's credentials API is never called", () =>
+    Effect.gen(function* () {
+      const calls: Array<string> = [];
+      const state = makeHarnessLayoutsMemoryState();
+      for (const joiner of ["user-fixture", MARIA]) {
+        yield* coldJoinResume({
+          flag: "shared",
+          joiner,
+          state,
+          platform: personPlatform(calls, { person: true }),
+        });
+      }
+      expect(calls).toEqual([]);
+    }),
+  );
+
+  it.effect(
+    "a member with an identity from another worktree and nothing saved here is made at their join",
+    () =>
+      Effect.gen(function* () {
+        // Maria ran a person launch elsewhere on this instance: identities are instance-wide. This
+        // worktree's head holds no people/<maria>, so prepare skips her and says it made only the
+        // launcher; her first process here makes her before it starts as her.
+        const state = makeHarnessLayoutsMemoryState();
+        state.identities.set(
+          MARIA,
+          new LinuxIdentity({ accountId: MARIA, name: JOINER, uid: 40_001 }),
+        );
+        const run = yield* coldJoinResume({
+          flag: "person",
+          joiner: MARIA,
+          state,
+          platform: personPlatform([], { person: true }),
+          exec: answerLayout(LAYOUT_READY),
+        });
+        const prepare = run.execs.find((argv) => (argv[2] ?? "").includes("mend-layout"));
+        // Prepare names her, made only if her saved directory came back.
+        expect(prepare?.[2]).toContain(`:${MARIA}:1:`);
+        expect(run.joinPersonHomes).toBe(1);
+        const home = run.execs.find(isPersonHome);
+        expect(home?.[2]).toContain(`useradd -u "$p_u" -g mend`);
+        expect(home?.[2]).toContain(`mend_person ${JOINER} 40001 `);
+        // Her agent starts only after that exec: no process is opened as a user nobody made.
+        const homeAt = run.execs.indexOf(home ?? []);
+        expect(homeAt).toBeGreaterThan(run.cold - 1);
+        expect(run.opened.map((options) => options.user?.name)).toContain(JOINER);
+      }),
+  );
+
+  it.effect("has no way back: a person worktree launches person with the flag off", () =>
+    Effect.gen(function* () {
+      const state = recordedBeforeStart(makeHarnessLayoutsMemoryState());
+      const run = yield* coldJoinResume({
         flag: "shared",
-        joiner,
+        joiner: "user-fixture",
         state,
-        platform: personPlatform(calls, { person: true }),
+        platform: personPlatform([], { person: true }),
+        exec: answerLayout(LAYOUT_READY),
+        before: (worktreeId) =>
+          state.worktrees.set(worktreeId, { layout: "person", requested: null }),
       });
-    }
-    expect(calls).toEqual([]);
-  });
+      expect(run.homes[0]).toBe(`/home/${LAUNCHER} 40001:40000`);
+      expect(run.opened.every((options) => options.user?.name === LAUNCHER)).toBe(true);
+      expect([...state.launches.values()].map((launch) => launch.source)).toContain("worktree");
+    }),
+  );
 
-  it("a member with an identity from another worktree and nothing saved here is made at their join", async () => {
-    // Maria ran a person launch elsewhere on this instance: identities are instance-wide. This
-    // worktree's head holds no people/<maria>, so prepare skips her and says it made only the
-    // launcher; her first process here makes her before it starts as her.
-    const state = makeHarnessLayoutsMemoryState();
-    state.identities.set(MARIA, new LinuxIdentity({ accountId: MARIA, name: JOINER, uid: 40_001 }));
-    const run = await coldJoinResume({
-      flag: "person",
-      joiner: MARIA,
-      state,
-      platform: personPlatform([], { person: true }),
-      exec: answerLayout(LAYOUT_READY),
-    });
-    const prepare = run.execs.find((argv) => (argv[2] ?? "").includes("mend-layout"));
-    // Prepare names her, made only if her saved directory came back.
-    expect(prepare?.[2]).toContain(`:${MARIA}:1:`);
-    expect(run.joinPersonHomes).toBe(1);
-    const home = run.execs.find(isPersonHome);
-    expect(home?.[2]).toContain(`useradd -u "$p_u" -g mend`);
-    expect(home?.[2]).toContain(`mend_person ${JOINER} 40001 `);
-    // Her agent starts only after that exec: no process is opened as a user nobody made.
-    const homeAt = run.execs.indexOf(home ?? []);
-    expect(homeAt).toBeGreaterThan(run.cold - 1);
-    expect(run.opened.map((options) => options.user?.name)).toContain(JOINER);
-  });
-
-  it("has no way back: a person worktree launches person with the flag off", async () => {
-    const state = recordedBeforeStart(makeHarnessLayoutsMemoryState());
-    const run = await coldJoinResume({
-      flag: "shared",
-      joiner: "user-fixture",
-      state,
-      platform: personPlatform([], { person: true }),
-      exec: answerLayout(LAYOUT_READY),
-      before: (worktreeId) =>
-        state.worktrees.set(worktreeId, { layout: "person", requested: null }),
-    });
-    expect(run.homes[0]).toBe(`/home/${LAUNCHER} 40001:40000`);
-    expect(run.opened.every((options) => options.user?.name === LAUNCHER)).toBe(true);
-    expect([...state.launches.values()].map((launch) => launch.source)).toContain("worktree");
-  });
-
-  /** One cold launch of a new session; its failure, if any, as the error it failed with. */
-  // oxlint-disable-next-line unicorn/consistent-function-scoping -- Keep this scenario helper beside the assertions that use it.
-  const launchPersonOnce = async (options: {
+  interface LaunchPersonOnceOptions {
     readonly flag: HarnessLayout;
     readonly state: HarnessLayoutsMemoryState;
     readonly platform: Layer.Layer<PersonLayoutPlatform>;
@@ -962,69 +1128,85 @@ describe("per-person harness homes (docs/adr/0016)", () => {
     ) => { exitCode: number; stdout: string; stderr: string } | undefined;
     readonly before?: (worktreeId: string) => void;
     readonly harnessLayout?: HarnessLayout;
-    /** Read the session line this long after the launch (what work beside it said). */
-    readonly summaryAfter?: Duration.Input;
-  }) => {
-    let summary: string | null = null;
-    const sshUsers: Array<string | undefined> = [];
-    const created: Array<CreateOptions> = [];
-    const opened: Array<PersonSessionOptions> = [];
-    const execCalls: Array<ReadonlyArray<string>> = [];
-    const stops: Array<"drain" | "discard"> = [];
-    const order: Array<string> = [];
-    let failure: string | null = null;
-    let worktreeId: string | null = null;
-    await withEngine(
-      (world, tmp) =>
-        Effect.gen(function* () {
-          const project = yield* setup(tmp, world);
-          const engine = yield* SessionEngine;
-          const session = yield* engine.provision({
-            projectId: project.id,
-            harness: "claude",
-            label: null,
-            name: "pph",
-            ownerUserId: "user-fixture",
-            base: null,
-            ...(options.harnessLayout === undefined
-              ? {}
-              : { harnessLayout: options.harnessLayout }),
-          });
-          worktreeId = session.worktreeId;
-          options.before?.(session.worktreeId);
-          const launched = yield* engine.launch(session.id, ["claude"]).pipe(Effect.result);
-          if (launched._tag === "Failure") failure = launched.failure.message;
-          if (options.summaryAfter !== undefined) {
-            yield* Effect.sleep(options.summaryAfter);
-            summary = world.sessions.get(session.id)?.summary ?? null;
-          }
-        }),
-      {
-        captured: makeMemoryCaptureStore(),
-        sealantLayer: sealantLaunchLayer(
-          created,
-          undefined,
-          undefined,
-          undefined,
-          undefined,
-          undefined,
-          undefined,
-          opened,
-          undefined,
-          execCalls,
-          undefined,
-          {
-            stops,
-            beforeOpen: () => order.push("open"),
-            createSshUsers: sshUsers,
-            ...(options.exec === undefined ? {} : { exec: options.exec }),
-          },
-        ),
-        harnessLayout: { flag: options.flag, state: options.state, platform: options.platform },
-      },
-    );
-    return { created, opened, execCalls, stops, failure, worktreeId, order, summary, sshUsers };
-  };
+    /** Read the session line once it says this (what work beside the launch said). */
+    readonly summarySaying?: string;
+  }
+
+  /** One cold launch of a new session; its failure, if any, as the error it failed with. */
+  // oxlint-disable-next-line unicorn/consistent-function-scoping -- Keep this scenario helper beside the assertions that use it.
+  const launchPersonOnceEffect = (options: LaunchPersonOnceOptions) =>
+    Effect.gen(function* () {
+      let summary: string | null = null;
+      const sshUsers: Array<string | undefined> = [];
+      const created: Array<CreateOptions> = [];
+      const opened: Array<PersonSessionOptions> = [];
+      const execCalls: Array<ReadonlyArray<string>> = [];
+      const stops: Array<"drain" | "discard"> = [];
+      const order: Array<string> = [];
+      /** A session row was written. */
+      const rows = yield* Queue.make<void>();
+      let failure: string | null = null;
+      let worktreeId: string | null = null;
+      yield* withPreparedEngineEffect(
+        (world, tmp) => setup(tmp, world),
+        (world, _tmp, project) =>
+          Effect.gen(function* () {
+            const engine = yield* SessionEngine;
+            const session = yield* engine.provision({
+              projectId: project.id,
+              harness: "claude",
+              label: null,
+              name: "pph",
+              ownerUserId: "user-fixture",
+              base: null,
+              ...(options.harnessLayout === undefined
+                ? {}
+                : { harnessLayout: options.harnessLayout }),
+            });
+            worktreeId = session.worktreeId;
+            options.before?.(session.worktreeId);
+            const launched = yield* engine.launch(session.id, ["claude"]).pipe(Effect.result);
+            if (launched._tag === "Failure") failure = launched.failure.message;
+            const words = options.summarySaying;
+            if (words !== undefined) {
+              yield* signalled(rows)(
+                () => (world.sessions.get(session.id)?.summary ?? "").includes(words),
+                "the session line's words",
+              );
+              summary = world.sessions.get(session.id)?.summary ?? null;
+            }
+          }),
+        {
+          captured: makeMemoryCaptureStore(),
+          prepareWorld: (world) => signalWrites(world.sessions, rows),
+          sealantLayer: sealantLaunchLayer(
+            created,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            opened,
+            undefined,
+            execCalls,
+            undefined,
+            {
+              stops,
+              beforeOpen: () => order.push("open"),
+              createSshUsers: sshUsers,
+              ...(options.exec === undefined ? {} : { exec: options.exec }),
+            },
+          ),
+          harnessLayout: { flag: options.flag, state: options.state, platform: options.platform },
+        },
+      );
+      return { created, opened, execCalls, stops, failure, worktreeId, order, summary, sshUsers };
+    });
+
+  // oxlint-disable-next-line unicorn/consistent-function-scoping -- Keep this scenario helper beside the assertions that use it.
+  const launchPersonOnce = (options: LaunchPersonOnceOptions) =>
+    Effect.runPromise(launchPersonOnceEffect(options));
 
   it("refuses a person worktree before create when its image is known not to run it", async () => {
     const state = recordedBeforeStart(makeHarnessLayoutsMemoryState());
@@ -1151,135 +1333,155 @@ describe("per-person harness homes (docs/adr/0016)", () => {
     expect(state.worktrees.get(run.worktreeId ?? "")?.layout ?? null).toBeNull();
   });
 
-  it("a launcher whose person Core cannot bind asks for no SSH user: Remote-SSH stays root, and the line says so", async () => {
-    const run = await launchPersonOnce({
-      flag: "person",
-      state: makeHarnessLayoutsMemoryState(),
-      platform: personPlatform(
-        [],
-        { person: true },
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        true,
-        () => true,
-        false,
-      ),
-      exec: answerLayout(LAYOUT_READY),
-      summaryAfter: "100 millis",
-    });
-    expect(run.failure).toBeNull();
-    // Still a person launch (their logins in their own home), but no `sshAsOwner` on the create.
-    expect(run.sshUsers).toEqual([undefined]);
-    expect(run.summary).toContain(REMOTE_SSH_ROOT_WORDS);
-  });
+  it.effect(
+    "a launcher whose person Core cannot bind asks for no SSH user: Remote-SSH stays root, and the line says so",
+    () =>
+      Effect.gen(function* () {
+        const run = yield* launchPersonOnceEffect({
+          flag: "person",
+          state: makeHarnessLayoutsMemoryState(),
+          platform: personPlatform(
+            [],
+            { person: true },
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            true,
+            () => true,
+            false,
+          ),
+          exec: answerLayout(LAYOUT_READY),
+          summarySaying: REMOTE_SSH_ROOT_WORDS,
+        });
+        expect(run.failure).toBeNull();
+        // Still a person launch (their logins in their own home), but no `sshAsOwner` on the create.
+        expect(run.sshUsers).toEqual([undefined]);
+        expect(run.summary).toContain(REMOTE_SSH_ROOT_WORDS);
+      }),
+  );
 
-  it("a person launch on a Sealant that runs no SSH session as a user says Remote-SSH is root (review 3 of mend#641, N4)", async () => {
-    const run = await launchPersonOnce({
-      flag: "person",
-      state: makeHarnessLayoutsMemoryState(),
-      platform: personPlatform(
-        [],
-        { person: true },
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        false,
-      ),
-      exec: answerLayout(LAYOUT_READY),
-      summaryAfter: "100 millis",
-    });
-    expect(run.failure).toBeNull();
-    expect(run.sshUsers).toEqual([undefined]);
-    expect(run.summary).toContain(REMOTE_SSH_ROOT_UNSUPPORTED_WORDS);
-  });
+  it.effect(
+    "a person launch on a Sealant that runs no SSH session as a user says Remote-SSH is root (review 3 of mend#641, N4)",
+    () =>
+      Effect.gen(function* () {
+        const run = yield* launchPersonOnceEffect({
+          flag: "person",
+          state: makeHarnessLayoutsMemoryState(),
+          platform: personPlatform(
+            [],
+            { person: true },
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            false,
+          ),
+          exec: answerLayout(LAYOUT_READY),
+          summarySaying: REMOTE_SSH_ROOT_UNSUPPORTED_WORDS,
+        });
+        expect(run.failure).toBeNull();
+        expect(run.sshUsers).toEqual([undefined]);
+        expect(run.summary).toContain(REMOTE_SSH_ROOT_UNSUPPORTED_WORDS);
+      }),
+  );
 
-  it("a fallback whose SSH reset Core has not taken starts the agent anyway, and says Remote-SSH is down", async () => {
-    const calls: Array<string> = [];
-    const run = await launchPersonOnce({
-      flag: "person",
-      state: makeHarnessLayoutsMemoryState(),
-      platform: personPlatform(
-        calls,
-        { person: true },
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        true,
-        () => false,
-      ),
-      exec: answerLayout("mend-layout missing no setfacl\nmend-layout probed\n"),
-      summaryAfter: "200 millis",
-    });
-    expect(run.failure).toBeNull();
-    expect(run.order).toContain("open");
-    expect(calls).toContain("ssh-user:root");
-    expect(run.summary).toContain(REMOTE_SSH_RESET_PENDING_WORDS);
-  });
+  it.effect(
+    "a fallback whose SSH reset Core has not taken starts the agent anyway, and says Remote-SSH is down",
+    () =>
+      Effect.gen(function* () {
+        const calls: Array<string> = [];
+        const run = yield* launchPersonOnceEffect({
+          flag: "person",
+          state: makeHarnessLayoutsMemoryState(),
+          platform: personPlatform(
+            calls,
+            { person: true },
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            true,
+            () => false,
+          ),
+          exec: answerLayout("mend-layout missing no setfacl\nmend-layout probed\n"),
+          summarySaying: REMOTE_SSH_RESET_PENDING_WORDS,
+        });
+        expect(run.failure).toBeNull();
+        expect(run.order).toContain("open");
+        expect(calls).toContain("ssh-user:root");
+        expect(run.summary).toContain(REMOTE_SSH_RESET_PENDING_WORDS);
+      }),
+  );
 
-  it("with the flag off, a start interrupted once its operator's person request is written still makes the worktree's next launch person", async () => {
-    // The client of the start went away (an HTTP fiber is interrupted on disconnect) after the
-    // request was written and before the start went on: the next start joining the worktree by
-    // name must see the request, not run as before (review of mend#559, P2-1).
-    const state = makeHarnessLayoutsMemoryState();
-    const opened: Array<PersonSessionOptions> = [];
-    await withEngine(
-      (world, tmp) =>
-        Effect.gen(function* () {
-          const project = yield* setup(tmp, world);
-          const engine = yield* SessionEngine;
-          const start = {
-            projectId: project.id,
-            harness: "claude",
-            label: null,
-            name: "op",
-            ownerUserId: "user-fixture",
-            base: null,
-          } as const;
-          const interrupted = yield* engine
-            .provision({ ...start, harnessLayout: "person" })
-            .pipe(Effect.forkChild);
-          yield* eventually("the operator's request written", Duration.seconds(5), () =>
-            [...state.worktrees.values()].some((worktree) => worktree.requested === "person"),
-          );
-          yield* Fiber.interrupt(interrupted);
-          const joined = yield* engine.provision(start);
-          yield* engine.launch(joined.id, ["claude"]);
-        }),
-      {
-        captured: makeMemoryCaptureStore(),
-        sealantLayer: sealantLaunchLayer(
-          [],
-          undefined,
-          undefined,
-          undefined,
-          undefined,
-          undefined,
-          undefined,
-          opened,
-          undefined,
-          [],
-          undefined,
-          { exec: answerLayout(LAYOUT_READY) },
-        ),
-        harnessLayout: {
-          flag: "shared",
-          state,
-          platform: personPlatform([], { person: true }),
-          afterRequest: Effect.never,
-        },
-      },
-    );
-    expect(
-      [...state.launches.values()].map((launch) => `${launch.layout}/${launch.source}`),
-    ).toEqual(["person/operator"]);
-    expect(opened.some((options) => options.user?.name === linuxLoginNameOf("user-fixture"))).toBe(
-      true,
-    );
-  });
+  it.effect(
+    "with the flag off, a start interrupted once its operator's person request is written still makes the worktree's next launch person",
+    () =>
+      Effect.gen(function* () {
+        // The client of the start went away (an HTTP fiber is interrupted on disconnect) after the
+        // request was written and before the start went on: the next start joining the worktree by
+        // name must see the request, not run as before (review of mend#559, P2-1).
+        const state = makeHarnessLayoutsMemoryState();
+        const opened: Array<PersonSessionOptions> = [];
+        /** The operator's layout request is written. */
+        const requests = yield* Queue.make<void>();
+        yield* withPreparedEngineEffect(
+          (world, tmp) => setup(tmp, world),
+          (_world, _tmp, project) =>
+            Effect.gen(function* () {
+              const engine = yield* SessionEngine;
+              const start = {
+                projectId: project.id,
+                harness: "claude",
+                label: null,
+                name: "op",
+                ownerUserId: "user-fixture",
+                base: null,
+              } as const;
+              const interrupted = yield* engine
+                .provision({ ...start, harnessLayout: "person" })
+                .pipe(Effect.forkChild);
+              yield* signalled(requests)(
+                () =>
+                  [...state.worktrees.values()].some((worktree) => worktree.requested === "person"),
+                "the operator's request written",
+              );
+              yield* Fiber.interrupt(interrupted);
+              const joined = yield* engine.provision(start);
+              yield* engine.launch(joined.id, ["claude"]);
+            }),
+          {
+            captured: makeMemoryCaptureStore(),
+            sealantLayer: sealantLaunchLayer(
+              [],
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              opened,
+              undefined,
+              [],
+              undefined,
+              { exec: answerLayout(LAYOUT_READY) },
+            ),
+            harnessLayout: {
+              flag: "shared",
+              state,
+              platform: personPlatform([], { person: true }),
+              afterRequest: signal(requests)(Effect.void).pipe(Effect.andThen(Effect.never)),
+            },
+          },
+        );
+        expect(
+          [...state.launches.values()].map((launch) => `${launch.layout}/${launch.source}`),
+        ).toEqual(["person/operator"]);
+        expect(
+          opened.some((options) => options.user?.name === linuxLoginNameOf("user-fixture")),
+        ).toBe(true);
+      }),
+  );
 
   it("takes the operator's harnessLayout for a worktree it makes, and refuses another on a person worktree", async () => {
     const state = makeHarnessLayoutsMemoryState();
@@ -1436,54 +1638,60 @@ describe("per-person harness homes (docs/adr/0016)", () => {
     expect(submitted).toEqual(["hi", "mine"]);
   });
 
-  it("with the flag off and nothing recorded, a steered turn reads nothing and nothing polls the store", async () => {
-    const authors: Array<string | null> = [];
-    const submitted: Array<string> = [];
-    const sessionReads: Array<string> = [];
-    const anyRecordedQueries: Array<string> = [];
-    const layoutReads: Array<string> = [];
-    const turnReads = await withEngine(
-      (world, tmp) =>
-        Effect.gen(function* () {
-          const project = yield* setup(tmp, world);
-          const engine = yield* SessionEngine;
-          const session = yield* engine.provision({
-            projectId: project.id,
-            harness: "claude",
-            label: null,
-            name: "shared",
-            ownerUserId: "user-fixture",
-            base: null,
-          });
-          yield* engine.launch(session.id, ["claude"]);
-          // The capture reaper's first tick runs as the engine starts: let it.
-          yield* Effect.sleep(Duration.millis(50));
-          // The access reconciliation of the reaper's minute tick (mend#558), over the live
-          // session: it reads sessions and access, never a layout.
-          yield* engine.reconcileAccess();
-          const before = sessionReads.length;
-          for (const author of [MARIA, "user-fixture", MARIA]) {
-            yield* engine.submitTurn(session.id, `from ${author}`, author);
-          }
-          return sessionReads.length - before;
-        }),
-      {
-        captured: makeMemoryCaptureStore(),
-        protocolHostLayer: recordingProtocolHostLayer([], submitted, authors),
-        sealantLayer: sealantLaunchLayer([]),
-        sessionReads,
-        harnessLayout: { flag: "shared", anyRecordedQueries, launchLayoutReads: layoutReads },
-      },
-    );
-    expect(authors).toEqual([MARIA, "user-fixture", MARIA]);
-    // Three steered turns, another person's among them: each reads the session once, to run as
-    // its owner (`owned`), as before mend#551, and no read for the layout on top.
-    expect(turnReads).toBe(3);
-    // The one query at startup, and none on any reaper tick since.
-    expect(anyRecordedQueries).toEqual(["anyRecorded"]);
-    // No layout was read: not by the launch, the turns or the access reconciliation.
-    expect(layoutReads).toEqual([]);
-  });
+  it.effect(
+    "with the flag off and nothing recorded, a steered turn reads nothing and nothing polls the store",
+    () =>
+      Effect.gen(function* () {
+        const authors: Array<string | null> = [];
+        const submitted: Array<string> = [];
+        const sessionReads: Array<string> = [];
+        const anyRecordedQueries: Array<string> = [];
+        const layoutReads: Array<string> = [];
+        const parking = yield* parkingClock;
+        const turnReads = yield* withPreparedEngineEffect(
+          (world, tmp) => setup(tmp, world),
+          (_world, _tmp, project) =>
+            Effect.gen(function* () {
+              const engine = yield* SessionEngine;
+              const session = yield* engine.provision({
+                projectId: project.id,
+                harness: "claude",
+                label: null,
+                name: "shared",
+                ownerUserId: "user-fixture",
+                base: null,
+              });
+              yield* engine.launch(session.id, ["claude"]);
+              // The capture reaper's first tick runs as the engine starts: it has ended once the
+              // reaper parks until its next.
+              yield* parking.untilParked(Duration.seconds(LEASE_REAPER_INTERVAL_SECONDS));
+              // The access reconciliation of the reaper's minute tick (mend#558), over the live
+              // session: it reads sessions and access, never a layout.
+              yield* engine.reconcileAccess();
+              const before = sessionReads.length;
+              for (const author of [MARIA, "user-fixture", MARIA]) {
+                yield* engine.submitTurn(session.id, `from ${author}`, author);
+              }
+              return sessionReads.length - before;
+            }),
+          {
+            captured: makeMemoryCaptureStore(),
+            protocolHostLayer: recordingProtocolHostLayer([], submitted, authors),
+            sealantLayer: sealantLaunchLayer([]),
+            sessionReads,
+            harnessLayout: { flag: "shared", anyRecordedQueries, launchLayoutReads: layoutReads },
+          },
+        ).pipe(Effect.provideService(Clock.Clock, parking.clock));
+        expect(authors).toEqual([MARIA, "user-fixture", MARIA]);
+        // Three steered turns, another person's among them: each reads the session once, to run as
+        // its owner (`owned`), as before mend#551, and no read for the layout on top.
+        expect(turnReads).toBe(3);
+        // The one query at startup, and none on any reaper tick since.
+        expect(anyRecordedQueries).toEqual(["anyRecorded"]);
+        // No layout was read: not by the launch, the turns or the access reconciliation.
+        expect(layoutReads).toEqual([]);
+      }),
+  );
 });
 
 describe("no secret rides an exec's arguments (review of mend#552/#553, P1-1)", () => {
@@ -1820,179 +2028,201 @@ describe("who may redeem a pickup ticket (review of mend#555, P3-10)", () => {
     );
   });
 
-  it("a launch that claimed a standby redeems through the standby's launch, and through no other", async () => {
-    const created: Array<CreateOptions> = [];
-    const memory = makeMemoryCaptureStore();
-    const pool = memoryHotPool();
-    const answers: Array<string> = [];
-    let executor: SessionId | null = null;
-    const replan = (workspace: Workspace) =>
+  it.effect(
+    "a launch that claimed a standby redeems through the standby's launch, and through no other",
+    () =>
       Effect.gen(function* () {
-        if (executor === null) throw new Error("no executor to replan");
-        const api = servedSocketApis.get(executor)?.capture;
-        if (api === undefined) throw new Error("the executor serves no capture api");
-        const plan = yield* api.planGet({ worktree_id: null, epoch: 0 }).pipe(
-          Effect.mapError(
-            (error) =>
-              new SealantPlatformError({
-                code: "replan_refused",
-                status: error.status,
-                message: `${error.reason}: ${error.message}`,
-                cause: error,
-              }),
-          ),
-        );
-        void workspace;
-        return {
-          worktreeId: plan.worktree_id,
-          epoch: plan.epoch,
-          ...(plan.head === null
-            ? {}
-            : { headN: plan.head.n, headCaptureId: plan.head.capture_id }),
-          filesWritten: 0,
-          bytesWritten: 0,
-          filesSkipped: 0,
-          bytesSkipped: 0,
-          removed: 0,
-          unchanged: true,
-        } satisfies WorkspaceCaptureReplanned;
-      });
-    await withEngine(
-      (world, tmp) =>
-        Effect.gen(function* () {
-          const project = yield* setup(tmp, world);
-          world.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
-          const engine = yield* SessionEngine;
-          yield* engine.reconcileHotSessions(project.id);
-          yield* until(() => pool.entries.some((entry) => entry.status === "ready"), "a standby");
-          const session = yield* engine.provision({
-            projectId: project.id,
-            harness: "codex",
-            label: null,
-            name: null,
-            ownerUserId: "user-fixture",
-            base: null,
-          });
-          executor = session.id;
-          yield* engine.launch(session.id, ["codex"]);
-          expect(world.sessions.get(session.id)?.sealantWorkspaceId).toBe("workspace-1");
-          expect(answers).toEqual([
-            "refused: this pickup ticket is another executor's",
-            "refused: this pickup ticket was already redeemed, perhaps through another channel",
-          ]);
-        }),
-      {
-        captured: memory,
-        hotWorkspacesLayer: pool.layer,
-        secretFilesLayer: sealedNpmrc(),
-        sealantLayer: lifecycleLayer(created, {
-          captureOps: {
-            replan,
-            execEffect: (argv) => {
-              if (argv[3] !== "mend-secret-files" || !isPickupExec(argv)) return undefined;
-              const attempt = (launch: string) =>
-                redeemPickupExec(argv, executor, launch).pipe(
-                  Effect.match({
-                    onFailure: (error) => void answers.push(`refused: ${error.message}`),
-                    onSuccess: () => void answers.push("answered"),
+        const created: Array<CreateOptions> = [];
+        const memory = makeMemoryCaptureStore();
+        const pool = memoryHotPool();
+        const clock = yield* makeStandbyClock(pool);
+        const answers: Array<string> = [];
+        let executor: SessionId | null = null;
+        const replan = (workspace: Workspace) =>
+          Effect.gen(function* () {
+            if (executor === null) throw new Error("no executor to replan");
+            const api = servedSocketApis.get(executor)?.capture;
+            if (api === undefined) throw new Error("the executor serves no capture api");
+            const plan = yield* api.planGet({ worktree_id: null, epoch: 0 }).pipe(
+              Effect.mapError(
+                (error) =>
+                  new SealantPlatformError({
+                    code: "replan_refused",
+                    status: error.status,
+                    message: `${error.reason}: ${error.message}`,
+                    cause: error,
                   }),
-                );
-              // The cold launch key the session would have had, then the standby's own: the
-              // first presentation spends the ticket, so this proves the binding refuses a
-              // launch that is not the standby's.
-              return attempt("not-the-standby-launch").pipe(
-                Effect.andThen(attempt(`standby:${executor ?? ""}`)),
-                Effect.as({ exitCode: 0, stdout: "refused\t.npmrc\tspent\n", stderr: "" }),
-              );
-            },
-          },
-        }),
-      },
-    );
-  });
-
-  it("the standby's own launch is the one a claimed launch's ticket is bound to", async () => {
-    const created: Array<CreateOptions> = [];
-    const replanned: Array<
-      { readonly expectedOwnerMap: WorkspaceCaptureOwnerMap | null } | undefined
-    > = [];
-    const pool = memoryHotPool();
-    const answers: Array<string> = [];
-    let executor: SessionId | null = null;
-    await withEngine(
-      (world, tmp) =>
-        Effect.gen(function* () {
-          const project = yield* setup(tmp, world);
-          world.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
-          const engine = yield* SessionEngine;
-          yield* engine.reconcileHotSessions(project.id);
-          yield* until(() => pool.entries.some((entry) => entry.status === "ready"), "a standby");
-          const session = yield* engine.provision({
-            projectId: project.id,
-            harness: "codex",
-            label: null,
-            name: null,
-            ownerUserId: "user-fixture",
-            base: null,
+              ),
+            );
+            void workspace;
+            return {
+              worktreeId: plan.worktree_id,
+              epoch: plan.epoch,
+              ...(plan.head === null
+                ? {}
+                : { headN: plan.head.n, headCaptureId: plan.head.capture_id }),
+              filesWritten: 0,
+              bytesWritten: 0,
+              filesSkipped: 0,
+              bytesSkipped: 0,
+              removed: 0,
+              unchanged: true,
+            } satisfies WorkspaceCaptureReplanned;
           });
-          executor = session.id;
-          yield* engine.launch(session.id, ["codex"]);
-          expect(answers).toEqual(["answered"]);
-        }),
-      {
-        captured: makeMemoryCaptureStore(),
-        hotWorkspacesLayer: pool.layer,
-        secretFilesLayer: sealedNpmrc(),
-        sealantLayer: lifecycleLayer(created, {
-          captureOps: {
-            replan: (workspace, options) =>
-              Effect.gen(function* () {
-                void workspace;
-                replanned.push(options);
-                const api = servedSocketApis.get(executor ?? SessionId.make(""))?.capture;
-                if (api === undefined) throw new Error("the executor serves no capture api");
-                const plan = yield* api.planGet({ worktree_id: null, epoch: 0 }).pipe(Effect.orDie);
-                return {
-                  worktreeId: plan.worktree_id,
-                  epoch: plan.epoch,
-                  ...(plan.head === null
-                    ? {}
-                    : { headN: plan.head.n, headCaptureId: plan.head.capture_id }),
-                  filesWritten: 0,
-                  bytesWritten: 0,
-                  filesSkipped: 0,
-                  bytesSkipped: 0,
-                  removed: 0,
-                  unchanged: true,
-                } satisfies WorkspaceCaptureReplanned;
-              }),
-            execEffect: (argv) => {
-              if (argv[3] !== "mend-secret-files" || !isPickupExec(argv)) return undefined;
-              return redeemPickupExec(argv, executor, `standby:${executor ?? ""}`).pipe(
-                Effect.match({
-                  onFailure: (error) => {
-                    answers.push(`refused: ${error.message}`);
-                    return {
-                      exitCode: 0,
-                      stdout: `refused\t.npmrc\t${error.message}\n`,
-                      stderr: "",
-                    };
-                  },
-                  onSuccess: () => {
-                    answers.push("answered");
-                    return { exitCode: 0, stdout: "written\t.npmrc\n", stderr: "" };
-                  },
+        yield* withPreparedEngineEffect(
+          (world, tmp) => setup(tmp, world),
+          (world, _tmp, project) =>
+            Effect.gen(function* () {
+              world.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
+              const engine = yield* SessionEngine;
+              yield* engine.reconcileHotSessions(project.id);
+              yield* clock.untilReady(
+                () => pool.entries.some((entry) => entry.status === "ready"),
+                "a standby",
+              );
+              const session = yield* clock.claim(
+                engine.provision({
+                  projectId: project.id,
+                  harness: "codex",
+                  label: null,
+                  name: null,
+                  ownerUserId: "user-fixture",
+                  base: null,
                 }),
               );
-            },
+              executor = session.id;
+              yield* engine.launch(session.id, ["codex"]);
+              expect(world.sessions.get(session.id)?.sealantWorkspaceId).toBe("workspace-1");
+              expect(answers).toEqual([
+                "refused: this pickup ticket is another executor's",
+                "refused: this pickup ticket was already redeemed, perhaps through another channel",
+              ]);
+            }),
+          {
+            captured: memory,
+            hotWorkspacesLayer: clock.poolLayer,
+            wrapCaptureChannel: clock.wrapCaptureChannel,
+            secretFilesLayer: sealedNpmrc(),
+            sealantLayer: lifecycleLayer(created, {
+              captureOps: {
+                replan,
+                execEffect: (argv) => {
+                  if (argv[3] !== "mend-secret-files" || !isPickupExec(argv)) return undefined;
+                  const attempt = (launch: string) =>
+                    redeemPickupExec(argv, executor, launch).pipe(
+                      Effect.match({
+                        onFailure: (error) => void answers.push(`refused: ${error.message}`),
+                        onSuccess: () => void answers.push("answered"),
+                      }),
+                    );
+                  // The cold launch key the session would have had, then the standby's own: the
+                  // first presentation spends the ticket, so this proves the binding refuses a
+                  // launch that is not the standby's.
+                  return attempt("not-the-standby-launch").pipe(
+                    Effect.andThen(attempt(`standby:${executor ?? ""}`)),
+                    Effect.as({ exitCode: 0, stdout: "refused\t.npmrc\tspent\n", stderr: "" }),
+                  );
+                },
+              },
+            }),
           },
-        }),
-      },
-    );
-    // A standby boots with no owner map, and a claim says it expects none (sealant#333), so Core
-    // refuses one booted with a map before its daemon is reached.
-    expect(replanned).toEqual([{ expectedOwnerMap: null }]);
-  });
+        );
+      }),
+  );
+
+  it.effect("the standby's own launch is the one a claimed launch's ticket is bound to", () =>
+    Effect.gen(function* () {
+      const created: Array<CreateOptions> = [];
+      const replanned: Array<
+        { readonly expectedOwnerMap: WorkspaceCaptureOwnerMap | null } | undefined
+      > = [];
+      const pool = memoryHotPool();
+      const clock = yield* makeStandbyClock(pool);
+      const answers: Array<string> = [];
+      let executor: SessionId | null = null;
+      yield* withPreparedEngineEffect(
+        (world, tmp) => setup(tmp, world),
+        (world, _tmp, project) =>
+          Effect.gen(function* () {
+            world.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
+            const engine = yield* SessionEngine;
+            yield* engine.reconcileHotSessions(project.id);
+            yield* clock.untilReady(
+              () => pool.entries.some((entry) => entry.status === "ready"),
+              "a standby",
+            );
+            const session = yield* clock.claim(
+              engine.provision({
+                projectId: project.id,
+                harness: "codex",
+                label: null,
+                name: null,
+                ownerUserId: "user-fixture",
+                base: null,
+              }),
+            );
+            executor = session.id;
+            yield* engine.launch(session.id, ["codex"]);
+            expect(answers).toEqual(["answered"]);
+          }),
+        {
+          captured: makeMemoryCaptureStore(),
+          hotWorkspacesLayer: clock.poolLayer,
+          wrapCaptureChannel: clock.wrapCaptureChannel,
+          secretFilesLayer: sealedNpmrc(),
+          sealantLayer: lifecycleLayer(created, {
+            captureOps: {
+              replan: (workspace, options) =>
+                Effect.gen(function* () {
+                  void workspace;
+                  replanned.push(options);
+                  const api = servedSocketApis.get(executor ?? SessionId.make(""))?.capture;
+                  if (api === undefined) throw new Error("the executor serves no capture api");
+                  const plan = yield* api
+                    .planGet({ worktree_id: null, epoch: 0 })
+                    .pipe(Effect.orDie);
+                  return {
+                    worktreeId: plan.worktree_id,
+                    epoch: plan.epoch,
+                    ...(plan.head === null
+                      ? {}
+                      : { headN: plan.head.n, headCaptureId: plan.head.capture_id }),
+                    filesWritten: 0,
+                    bytesWritten: 0,
+                    filesSkipped: 0,
+                    bytesSkipped: 0,
+                    removed: 0,
+                    unchanged: true,
+                  } satisfies WorkspaceCaptureReplanned;
+                }),
+              execEffect: (argv) => {
+                if (argv[3] !== "mend-secret-files" || !isPickupExec(argv)) return undefined;
+                return redeemPickupExec(argv, executor, `standby:${executor ?? ""}`).pipe(
+                  Effect.match({
+                    onFailure: (error) => {
+                      answers.push(`refused: ${error.message}`);
+                      return {
+                        exitCode: 0,
+                        stdout: `refused\t.npmrc\t${error.message}\n`,
+                        stderr: "",
+                      };
+                    },
+                    onSuccess: () => {
+                      answers.push("answered");
+                      return { exitCode: 0, stdout: "written\t.npmrc\n", stderr: "" };
+                    },
+                  }),
+                );
+              },
+            },
+          }),
+        },
+      );
+      // A standby boots with no owner map, and a claim says it expects none (sealant#333), so Core
+      // refuses one booted with a map before its daemon is reached.
+      expect(replanned).toEqual([{ expectedOwnerMap: null }]);
+    }),
+  );
 });
 
 /** Every account's own signer is connected; whose was asked for is recorded. */
@@ -2174,7 +2404,7 @@ interface LiveJoin {
  * A holder's cold launch and a join by Maria into its executor, both live: then `inspect` runs
  * with the engine, the sessions and the launch.
  */
-const livePersonJoin = async <A>(options: {
+interface LivePersonJoinOptions<A> {
   readonly flag: HarnessLayout;
   readonly gitAuthMode?: GitAuthMode;
   readonly keysAsked?: Array<string>;
@@ -2196,137 +2426,159 @@ const livePersonJoin = async <A>(options: {
    * other scenario runs where only a workspace's creator reaches it (`workspacesPerOwner`).
    */
   readonly onePlatformUser?: boolean;
+  /** Every log line the engine writes, when a scenario reads them. */
+  readonly logs?: Array<string>;
+  /**
+   * Runs beside the holder's launch and Maria's join, with the pickups as they land: a
+   * clock-driven scenario. Its failure ends both.
+   */
+  readonly drive?: (pickups: IdentityPickups) => Effect.Effect<void>;
   readonly inspect: (
     engine: SessionEngine["Service"],
     join: LiveJoin,
   ) => Effect.Effect<A, unknown, SessionEngine>;
-}): Promise<A> => {
-  const created: Array<CreateOptions> = [];
-  const execCalls: Array<ReadonlyArray<string>> = [];
-  const opened: Array<PersonSessionOptions> = [];
-  const tokenEvents: Array<string> = [];
-  const person = options.flag === "person";
-  const pickups: IdentityPickups = {
-    written: new Map(),
-    refused: new Map(),
-    again: new Map(),
-    retried: [],
-    tickets: new Map(),
-  };
-  const state = makeHarnessLayoutsMemoryState();
-  if (options.mariaKnown === true) {
-    state.identities.set(
-      MARIA,
-      new LinuxIdentity({ accountId: MARIA, name: linuxLoginNameOf(MARIA), uid: 40_001 }),
-    );
-  }
-  const launchIdOf = () =>
-    tokenEvents.find((event) => event.startsWith("issue:"))?.slice("issue:".length) ?? "";
-  const holderOf = () => {
-    const id = created[0]?.env?.["MEND_SESSION_ID"];
-    return id === undefined ? null : SessionId.make(id);
-  };
-  let result: { readonly value: A } | null = null;
-  await withEngine(
-    (world, tmp) =>
-      Effect.gen(function* () {
-        const project = yield* setup(tmp, world);
-        if (options.gitAuthMode !== undefined) {
-          world.projects.set(
-            project.id,
-            new Project({ ...project, gitAuthMode: options.gitAuthMode }),
-          );
-        }
-        const engine = yield* SessionEngine;
-        const holder = yield* engine.provision({
-          projectId: project.id,
-          harness: "claude",
-          label: null,
-          name: "shared",
-          ownerUserId: "user-fixture",
-          base: null,
-        });
-        yield* engine.launch(holder.id, ["claude"]);
-        const joinedRow = yield* engine.provisionSessionIn(holder.worktreeId, {
-          harness: "claude",
-          label: null,
-          ownerUserId: MARIA,
-        });
-        const joinExit = yield* engine.launch(joinedRow.id, ["claude"]).pipe(Effect.exit);
-        const launchId = launchIdOf();
-        const holderNow = world.sessions.get(holder.id) ?? holder;
-        const joinedNow = world.sessions.get(joinedRow.id) ?? joinedRow;
-        result = {
-          value: yield* options.inspect(engine, {
-            world,
-            holder: holderNow,
-            joined: joinedNow,
-            launchId,
-            origin: new URL(project.originUrl ?? "").hostname,
-            execs: execCalls,
-            opened,
-            tokenEvents,
-            pickups,
-            joinFailure: Exit.isSuccess(joinExit) ? null : failureText(joinExit),
-          }),
-        };
-      }),
-    {
-      captured: makeMemoryCaptureStore(),
-      prepareWorld: (world) => world.members.set(MARIA, "member"),
-      tokenEvents,
-      ...(options.keysAsked === undefined
-        ? {}
-        : { mendKeysLayer: perAccountKeys(options.keysAsked) }),
-      ...(options.bridgeAsked === undefined
-        ? {}
-        : { agentBridgeLayer: perAccountBridge(options.bridgeAsked) }),
-      ...(options.landings === undefined
-        ? {}
-        : { gitHooksLayer: recordingLandings(options.landings) }),
-      ...(options.gitAuthorLayer === undefined ? {} : { gitAuthorLayer: options.gitAuthorLayer }),
-      sealantLayer: perOwnerUnless(
-        options.onePlatformUser,
-        sealantLaunchLayer(
-          created,
-          undefined,
-          undefined,
-          undefined,
-          undefined,
-          undefined,
-          undefined,
-          opened,
-          undefined,
-          execCalls,
-          undefined,
-          person
-            ? {
-                exec: answerLayout(LAYOUT_READY),
-                execEffect: identityExec({
-                  pickups,
-                  holder: holderOf,
-                  launchId: launchIdOf,
-                  ...(options.presentAs === undefined ? {} : { presentAs: options.presentAs }),
-                  ...(options.presentTwice === true ? { twice: true } : {}),
-                  ...(options.presentOverlapping === true ? { overlap: true } : {}),
-                }),
-              }
-            : {},
-        ),
-      ),
-      harnessLayout: {
-        flag: options.flag,
-        state,
-        ...(person ? { platform: personPlatform([], { person: true }) } : {}),
-        ...(options.launchLayoutReads === undefined
+}
+
+const livePersonJoinEffect = <A>(options: LivePersonJoinOptions<A>): Effect.Effect<A> =>
+  Effect.gen(function* () {
+    const created: Array<CreateOptions> = [];
+    const execCalls: Array<ReadonlyArray<string>> = [];
+    const opened: Array<PersonSessionOptions> = [];
+    const tokenEvents: Array<string> = [];
+    const person = options.flag === "person";
+    const pickups: IdentityPickups = {
+      written: new Map(),
+      refused: new Map(),
+      again: new Map(),
+      retried: [],
+      tickets: new Map(),
+    };
+    const state = makeHarnessLayoutsMemoryState();
+    if (options.mariaKnown === true) {
+      state.identities.set(
+        MARIA,
+        new LinuxIdentity({ accountId: MARIA, name: linuxLoginNameOf(MARIA), uid: 40_001 }),
+      );
+    }
+    const launchIdOf = () =>
+      tokenEvents.find((event) => event.startsWith("issue:"))?.slice("issue:".length) ?? "";
+    const holderOf = () => {
+      const id = created[0]?.env?.["MEND_SESSION_ID"];
+      return id === undefined ? null : SessionId.make(id);
+    };
+    let result: { readonly value: A } | null = null;
+    yield* withPreparedEngineEffect(
+      (world, tmp) => setup(tmp, world),
+      (world, _tmp, project) =>
+        Effect.gen(function* () {
+          if (options.gitAuthMode !== undefined) {
+            world.projects.set(
+              project.id,
+              new Project({ ...project, gitAuthMode: options.gitAuthMode }),
+            );
+          }
+          const engine = yield* SessionEngine;
+          const holder = yield* engine.provision({
+            projectId: project.id,
+            harness: "claude",
+            label: null,
+            name: "shared",
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+          const launches = Effect.gen(function* () {
+            yield* engine.launch(holder.id, ["claude"]);
+            const joinedRow = yield* engine.provisionSessionIn(holder.worktreeId, {
+              harness: "claude",
+              label: null,
+              ownerUserId: MARIA,
+            });
+            const joinExit = yield* engine.launch(joinedRow.id, ["claude"]).pipe(Effect.exit);
+            return { joinedRow, joinExit };
+          });
+          const drive = options.drive;
+          const { joinedRow, joinExit } =
+            drive === undefined
+              ? yield* launches
+              : (yield* Effect.all([launches, drive(pickups)], { concurrency: "unbounded" }))[0];
+          const launchId = launchIdOf();
+          const holderNow = world.sessions.get(holder.id) ?? holder;
+          const joinedNow = world.sessions.get(joinedRow.id) ?? joinedRow;
+          result = {
+            value: yield* options.inspect(engine, {
+              world,
+              holder: holderNow,
+              joined: joinedNow,
+              launchId,
+              origin: new URL(project.originUrl ?? "").hostname,
+              execs: execCalls,
+              opened,
+              tokenEvents,
+              pickups,
+              joinFailure: Exit.isSuccess(joinExit) ? null : failureText(joinExit),
+            }),
+          };
+        }),
+      {
+        captured: makeMemoryCaptureStore(),
+        prepareWorld: (world) => world.members.set(MARIA, "member"),
+        tokenEvents,
+        ...(options.logs === undefined ? {} : { logs: options.logs }),
+        ...(options.keysAsked === undefined
           ? {}
-          : { launchLayoutReads: options.launchLayoutReads }),
+          : { mendKeysLayer: perAccountKeys(options.keysAsked) }),
+        ...(options.bridgeAsked === undefined
+          ? {}
+          : { agentBridgeLayer: perAccountBridge(options.bridgeAsked) }),
+        ...(options.landings === undefined
+          ? {}
+          : { gitHooksLayer: recordingLandings(options.landings) }),
+        ...(options.gitAuthorLayer === undefined ? {} : { gitAuthorLayer: options.gitAuthorLayer }),
+        sealantLayer: perOwnerUnless(
+          options.onePlatformUser,
+          sealantLaunchLayer(
+            created,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            opened,
+            undefined,
+            execCalls,
+            undefined,
+            person
+              ? {
+                  exec: answerLayout(LAYOUT_READY),
+                  execEffect: identityExec({
+                    pickups,
+                    holder: holderOf,
+                    launchId: launchIdOf,
+                    ...(options.presentAs === undefined ? {} : { presentAs: options.presentAs }),
+                    ...(options.presentTwice === true ? { twice: true } : {}),
+                    ...(options.presentOverlapping === true ? { overlap: true } : {}),
+                  }),
+                }
+              : {},
+          ),
+        ),
+        harnessLayout: {
+          flag: options.flag,
+          state,
+          ...(person ? { platform: personPlatform([], { person: true }) } : {}),
+          ...(options.launchLayoutReads === undefined
+            ? {}
+            : { launchLayoutReads: options.launchLayoutReads }),
+        },
       },
-    },
-  );
-  if (result === null) throw new Error("the scenario did not run");
-  return (result as { readonly value: A }).value;
-};
+    );
+    if (result === null) throw new Error("the scenario did not run");
+    return (result as { readonly value: A }).value;
+  });
+
+const livePersonJoin = <A>(options: LivePersonJoinOptions<A>): Promise<A> =>
+  Effect.runPromise(livePersonJoinEffect(options));
 
 /** Shared control on for `session` (docs/adr/0003): anyone in its organization may steer. */
 const shareControl = (world: World, session: Session): Session => {
@@ -2457,41 +2709,69 @@ describe("git and Mend identity per process (docs/adr/0016, decision 4)", () => 
     });
   });
 
-  it("lets a retry that arrives while the first answer is made wait for it: one token, no refusal", async () => {
-    // The author's read takes 100 ms for Maria: her first request is still being answered when
-    // its retry arrives.
-    const slow = Layer.succeed(UserGitAuthorRepo, {
-      resolve: (userId) =>
-        Effect.sleep(userId === MARIA ? "100 millis" : "0 millis").pipe(
-          Effect.as(
-            new ResolvedGitAuthor({
-              name: `Account ${userId}`,
-              email: `${userId}@accounts.example`,
-              source: "account",
-            }),
-          ),
-        ),
-      set: () => Effect.void,
-      clear: () => Effect.void,
-    });
-    await livePersonJoin({
-      flag: "person",
-      gitAuthorLayer: slow,
-      presentOverlapping: true,
-      inspect: (_engine, join) =>
-        Effect.sync(() => {
-          expect(join.pickups.refused.size).toBe(0);
-          expect(decoded(join.pickups.again.get(`/home/${JOINER}`))).toEqual(
-            decoded(join.pickups.written.get(`/home/${JOINER}`)),
-          );
-          expect(
-            join.tokenEvents.filter((event) =>
-              event.startsWith(`issuePerson:${join.launchId}:${MARIA}:`),
+  it.effect(
+    "lets a retry that arrives while the first answer is made wait for it: one token, no refusal",
+    () =>
+      Effect.gen(function* () {
+        // The author's read takes 100 ms for Maria: her first request is still being answered when
+        // its retry arrives.
+        const slow = Layer.succeed(UserGitAuthorRepo, {
+          resolve: (userId) =>
+            Effect.sleep(userId === MARIA ? "100 millis" : "0 millis").pipe(
+              Effect.as(
+                new ResolvedGitAuthor({
+                  name: `Account ${userId}`,
+                  email: `${userId}@accounts.example`,
+                  source: "account",
+                }),
+              ),
             ),
-          ).toHaveLength(1);
-        }),
-    });
-  });
+          set: () => Effect.void,
+          clear: () => Effect.void,
+        });
+        const parking = yield* parkingClock;
+        /** The engine wrote a log line. */
+        const logged = yield* Queue.make<void>();
+        const logs = signallingLogs(logged);
+        yield* livePersonJoinEffect({
+          flag: "person",
+          gitAuthorLayer: slow,
+          presentOverlapping: true,
+          logs,
+          drive: (pickups) =>
+            Effect.gen(function* () {
+              // The launcher's own ticket is presented twice as well: the retry's 10 ms, once its
+              // first answer (a 0 ms read) is made.
+              yield* parking.untilParked(Duration.millis(10));
+              yield* TestClock.adjust(Duration.millis(10));
+              // Maria's read is under way (its 100 ms parked) and her retry waits out its 10 ms.
+              yield* parking.untilParked(Duration.millis(100), Duration.millis(10));
+              yield* TestClock.adjust(Duration.millis(10));
+              yield* signalled(logged)(
+                () =>
+                  logs.some((line) => line.includes("pickup asked again while its answer is made")),
+                "the retry's arrival while the answer is made",
+              );
+              // One millisecond short of the read, nothing is answered yet; at it, both are.
+              yield* TestClock.adjust(Duration.millis(89));
+              expect(pickups.written.has(`/home/${JOINER}`)).toBe(false);
+              yield* TestClock.adjust(Duration.millis(1));
+            }),
+          inspect: (_engine, join) =>
+            Effect.sync(() => {
+              expect(join.pickups.refused.size).toBe(0);
+              expect(decoded(join.pickups.again.get(`/home/${JOINER}`))).toEqual(
+                decoded(join.pickups.written.get(`/home/${JOINER}`)),
+              );
+              expect(
+                join.tokenEvents.filter((event) =>
+                  event.startsWith(`issuePerson:${join.launchId}:${MARIA}:`),
+                ),
+              ).toHaveLength(1);
+            }),
+        }).pipe(Effect.provideService(Clock.Clock, parking.clock));
+      }),
+  );
 
   it("forgets an identity answer once its exec has ended: the ticket answers no one after", async () => {
     await livePersonJoin({

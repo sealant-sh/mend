@@ -15,27 +15,28 @@ import {
   agentMemoryDigest,
 } from "@mend/db";
 import { SealantWorkspaceId, SessionId, SessionProcessId, ReferenceId } from "@mend/domain";
-import { Project, SessionProcess, PiProfile, Reference } from "@mend/domain/workbench";
+import { Project, Session, SessionProcess, PiProfile, Reference } from "@mend/domain/workbench";
 import { LAUNCH_BOOTING, LAUNCH_PREPARING } from "@mend/domain/workbench";
 import { SealantClient, SealantPlatformError } from "@mend/sealant";
 import { ProtocolHost, SessionEngine } from "@mend/sessions";
 import { harnessHomePathOf, processStatePathOf } from "@mend/store";
-import { it } from "@mend/test-ci/effect-vitest";
+import { it, TestClock } from "@mend/test-ci/effect-vitest";
 import type {
   CreateOptions,
   SessionOptions,
   WorkspacePhase,
   WorkspaceRuntimeInfo,
 } from "@sealant/sdk";
-import { Deferred, Duration, Effect, Exit, Fiber, Layer } from "effect";
+import { Clock, Deferred, Duration, Effect, Exit, Fiber, Layer, Queue } from "effect";
 import { describe, expect } from "vitest";
 
 import { OPENCODE_SEED } from "../src/harness-seeds.ts";
 import { makeMemoryCaptureStore } from "./capture-store-memory.ts";
-import { lifecycleLayer, until } from "./engine/capture-fixture.ts";
+import { lifecycleLayer } from "./engine/capture-fixture.ts";
 import {
   agentMemoryLayerOf,
   launchSkill,
+  makeWorld,
   now,
   piProfilesLayerOf,
   recordingProtocolHostLayer,
@@ -43,6 +44,8 @@ import {
   setup,
   skillsForLaunchLayer,
   withEngine,
+  withPreparedEngineEffect,
+  type World,
 } from "./engine/fixture.ts";
 
 /** The owner's pi profile; none unless a test brings one. */
@@ -85,6 +88,46 @@ const plantForeignPiProfile = (home: string) => {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, "export default () => {};\n");
 };
+
+/** A map whose every write wakes whoever waits on the state it holds. */
+const signalledMap = <V>(signal: () => void) =>
+  new (class extends Map<string, V> {
+    override set(key: string, value: V): this {
+      super.set(key, value);
+      signal();
+      return this;
+    }
+    override delete(key: string): boolean {
+      const removed = super.delete(key);
+      signal();
+      return removed;
+    }
+  })();
+
+/**
+ * A world whose session and process rows signal every write: `reached` wakes on those instead of
+ * polling in real time, so a case runs on the TestClock and drives every engine timer it waits on
+ * with `TestClock.adjust`. `signal` is for a fake of the test's own to wake `reached` the same way.
+ */
+const signalledWorld = () =>
+  Effect.gen(function* () {
+    const tmp = yield* Effect.acquireRelease(
+      Effect.sync(() => fs.mkdtempSync(path.join(os.tmpdir(), "mend-launch-test-"))),
+      (directory) => Effect.sync(() => fs.rmSync(directory, { recursive: true, force: true })),
+    );
+    const changed = yield* Queue.sliding<void>(1);
+    const signal = () => void Queue.offerUnsafe(changed, undefined);
+    const world: World = {
+      ...makeWorld(),
+      sessions: signalledMap<Session>(signal),
+      processes: signalledMap<SessionProcess>(signal),
+    };
+    const reached = (condition: () => boolean, label: string) =>
+      Effect.gen(function* () {
+        while (!condition()) yield* Queue.take(changed);
+      }).pipe(Effect.withSpan(label));
+    return { world, tmp, reached, signal };
+  });
 describe("SessionEngine", () => {
   it.each([
     { ownerUserId: null, isOperator: false, transports: false },
@@ -628,66 +671,71 @@ describe("SessionEngine", () => {
     );
   });
 
-  it("a pi follow-up in a retained workspace runs on its owner's profile, and on the one there beside a live pi", async () => {
-    const created: CreateOptions[] = [];
-    await withEngine(
-      (world, tmp) =>
-        Effect.gen(function* () {
-          const project = yield* setup(tmp, world);
-          const engine = yield* SessionEngine;
-          const provision = (ownerUserId: string) =>
-            engine.provision({
-              projectId: project.id,
-              harness: "pi",
-              label: null,
-              name: null,
-              ownerUserId,
-              base: null,
-            });
-          const session = yield* provision("owner-a");
-          yield* engine.launch(session.id, ["pi"]);
-          const workspaceId =
-            [...world.processes.values()].find((process) => process.sessionId === session.id)
-              ?.sealantWorkspaceId ?? SealantWorkspaceId.make("workspace-1");
-          const shell = liveProcessRow("shell-a", session.id, workspaceId, "shell", null);
-          world.processes.set(shell.id, shell);
-          const stopAgent = Effect.gen(function* () {
-            yield* engine.stop(session.id);
-            const agentLive = () =>
-              [...world.processes.values()].some(
-                (process) =>
-                  process.sessionId === session.id &&
-                  process.kind === "agent-pty" &&
-                  process.exitedAt === null,
-              );
-            for (let i = 0; i < 200 && agentLive(); i++) yield* Effect.sleep(Duration.millis(10));
-            expect(agentLive()).toBe(false);
-          });
-          const home = harnessHomePathOf(project.storePath, session.id);
-          const profile = path.join(home, ".pi/agent/mend/profile");
+  it.effect(
+    "a pi follow-up in a retained workspace runs on its owner's profile, and on the one there beside a live pi",
+    () =>
+      Effect.gen(function* () {
+        const created: CreateOptions[] = [];
+        const { world, tmp, reached } = yield* signalledWorld();
+        yield* withPreparedEngineEffect(
+          (_world, dir) => setup(dir, world),
+          (_world, _dir, project) =>
+            Effect.gen(function* () {
+              const engine = yield* SessionEngine;
+              const provision = (ownerUserId: string) =>
+                engine.provision({
+                  projectId: project.id,
+                  harness: "pi",
+                  label: null,
+                  name: null,
+                  ownerUserId,
+                  base: null,
+                });
+              const session = yield* provision("owner-a");
+              yield* engine.launch(session.id, ["pi"]);
+              const workspaceId =
+                [...world.processes.values()].find((process) => process.sessionId === session.id)
+                  ?.sealantWorkspaceId ?? SealantWorkspaceId.make("workspace-1");
+              const shell = liveProcessRow("shell-a", session.id, workspaceId, "shell", null);
+              world.processes.set(shell.id, shell);
+              const stopAgent = Effect.gen(function* () {
+                yield* engine.stop(session.id);
+                const agentLive = () =>
+                  [...world.processes.values()].some(
+                    (process) =>
+                      process.sessionId === session.id &&
+                      process.kind === "agent-pty" &&
+                      process.exitedAt === null,
+                  );
+                yield* reached(() => !agentLive(), "the agent's end after the stop");
+                expect(agentLive()).toBe(false);
+              });
+              const home = harnessHomePathOf(project.storePath, session.id);
+              const profile = path.join(home, ".pi/agent/mend/profile");
 
-          // No pi runs there: the profile the harness home holds is moved aside, as at a launch.
-          yield* stopAgent;
-          plantForeignPiProfile(home);
-          yield* engine.launchFollowUp(session.id, "Carry on.", "follow-up:pi-1", "owner-a");
-          expect(fs.existsSync(profile)).toBe(false);
-          expect(fs.readdirSync(path.join(home, ".mend/pi-profile-kept")).length).toBeGreaterThan(
-            0,
-          );
+              // No pi runs there: the profile the harness home holds is moved aside, as at a launch.
+              yield* stopAgent;
+              plantForeignPiProfile(home);
+              yield* engine.launchFollowUp(session.id, "Carry on.", "follow-up:pi-1", "owner-a");
+              expect(fs.existsSync(profile)).toBe(false);
+              expect(
+                fs.readdirSync(path.join(home, ".mend/pi-profile-kept")).length,
+              ).toBeGreaterThan(0);
 
-          // Another person's pi runs in the workspace: the launch runs on the profile already
-          // there, which is left as it is.
-          yield* stopAgent;
-          plantForeignPiProfile(home);
-          const other = yield* provision("owner-b");
-          const theirs = liveProcessRow("pi-b", other.id, workspaceId, "agent-pty", "pi");
-          world.processes.set(theirs.id, theirs);
-          yield* engine.launchFollowUp(session.id, "Carry on.", "follow-up:pi-2", "owner-a");
-          expect(fs.existsSync(profile)).toBe(true);
-        }),
-      { sealantLayer: sealantLaunchLayer(created) },
-    );
-  });
+              // Another person's pi runs in the workspace: the launch runs on the profile already
+              // there, which is left as it is.
+              yield* stopAgent;
+              plantForeignPiProfile(home);
+              const other = yield* provision("owner-b");
+              const theirs = liveProcessRow("pi-b", other.id, workspaceId, "agent-pty", "pi");
+              world.processes.set(theirs.id, theirs);
+              yield* engine.launchFollowUp(session.id, "Carry on.", "follow-up:pi-2", "owner-a");
+              expect(fs.existsSync(profile)).toBe(true);
+            }),
+          { fixture: { world, tmp }, sealantLayer: sealantLaunchLayer(created) },
+        );
+      }),
+  );
 
   it("moves aside a pi profile that is not the owner's, and refuses the launch when it cannot", async () => {
     // A pi launch runs on its owner's freshly delivered profile, on no profile, or not at all.
@@ -729,156 +777,172 @@ describe("SessionEngine", () => {
     );
   });
 
-  it("delivers the owner's agent memory at launch and reads back what the agent learned when it stops", async () => {
-    const created: CreateOptions[] = [];
-    const root = ".claude/projects/-workspace-repo/memory";
-    const index = { path: `${root}/MEMORY.md`, encoding: "utf8", contents: "- one\n" } as const;
-    const readBacks: Array<Parameters<AgentMemoryRepo["Service"]["readBack"]>[0]> = [];
-    const agentMemoryLayer = agentMemoryLayerOf({
-      forLaunch: (userId) =>
-        Effect.succeed(
-          userId === "owner-memory"
-            ? [{ ...index, digest: agentMemoryDigest(index), updatedBySession: null }]
-            : [],
-        ),
-      readBack: (input) =>
-        Effect.sync(() => {
-          readBacks.push(input);
-          return { saved: [], merged: [], deleted: [], skipped: [] };
-        }),
-    });
-    await withEngine(
-      (world, tmp) =>
-        Effect.gen(function* () {
-          const project = yield* setup(tmp, world);
-          const engine = yield* SessionEngine;
-          const session = yield* engine.provision({
-            projectId: project.id,
-            harness: "claude",
-            label: null,
-            name: null,
-            ownerUserId: "owner-memory",
-            base: null,
-          });
-          yield* engine.launch(session.id, ["claude"]);
-          const home = harnessHomePathOf(project.storePath, session.id);
-          expect(fs.readFileSync(path.join(home, index.path), "utf8")).toBe("- one\n");
+  it.effect(
+    "delivers the owner's agent memory at launch and reads back what the agent learned when it stops",
+    () =>
+      Effect.gen(function* () {
+        const created: CreateOptions[] = [];
+        const root = ".claude/projects/-workspace-repo/memory";
+        const index = { path: `${root}/MEMORY.md`, encoding: "utf8", contents: "- one\n" } as const;
+        const readBacks: Array<Parameters<AgentMemoryRepo["Service"]["readBack"]>[0]> = [];
+        /** The stop's tail read the harness home back. */
+        const readBackDone = yield* Deferred.make<void>();
+        const agentMemoryLayer = agentMemoryLayerOf({
+          forLaunch: (userId) =>
+            Effect.succeed(
+              userId === "owner-memory"
+                ? [{ ...index, digest: agentMemoryDigest(index), updatedBySession: null }]
+                : [],
+            ),
+          readBack: (input) =>
+            Effect.sync(() => {
+              readBacks.push(input);
+              return { saved: [], merged: [], deleted: [], skipped: [] };
+            }).pipe(Effect.tap(() => Deferred.succeed(readBackDone, undefined))),
+        });
+        yield* withPreparedEngineEffect(
+          (world, dir) => setup(dir, world),
+          (_world, _dir, project) =>
+            Effect.gen(function* () {
+              const engine = yield* SessionEngine;
+              const session = yield* engine.provision({
+                projectId: project.id,
+                harness: "claude",
+                label: null,
+                name: null,
+                ownerUserId: "owner-memory",
+                base: null,
+              });
+              yield* engine.launch(session.id, ["claude"]);
+              const home = harnessHomePathOf(project.storePath, session.id);
+              expect(fs.readFileSync(path.join(home, index.path), "utf8")).toBe("- one\n");
 
-          // The agent learned something, then the session stopped.
-          fs.writeFileSync(path.join(home, root, "learned.md"), "the API listens on 3101\n");
-          yield* engine.stop(session.id);
-          yield* until(() => readBacks.length > 0, "agent memory read back");
-          const [readBack] = readBacks;
-          expect(readBack?.userId).toBe("owner-memory");
-          expect(readBack?.sessionId).toBe(session.id);
-          expect(readBack?.delivered).toEqual({ [index.path]: agentMemoryDigest(index) });
-          expect(readBack?.session.map((file) => file.path).toSorted()).toEqual([
-            index.path,
-            `${root}/learned.md`,
-          ]);
-        }),
-      { sealantLayer: sealantLaunchLayer(created), agentMemoryLayer },
-    );
-  });
+              // The agent learned something, then the session stopped.
+              fs.writeFileSync(path.join(home, root, "learned.md"), "the API listens on 3101\n");
+              yield* engine.stop(session.id);
+              yield* Deferred.await(readBackDone);
+              const [readBack] = readBacks;
+              expect(readBack?.userId).toBe("owner-memory");
+              expect(readBack?.sessionId).toBe(session.id);
+              expect(readBack?.delivered).toEqual({ [index.path]: agentMemoryDigest(index) });
+              expect(readBack?.session.map((file) => file.path).toSorted()).toEqual([
+                index.path,
+                `${root}/learned.md`,
+              ]);
+            }),
+          { sealantLayer: sealantLaunchLayer(created), agentMemoryLayer },
+        );
+      }),
+  );
 
-  it("carries the owner's earlier Codex conversations into a Codex launch, minus what Codex summarised (docs/adr/0009, Codex)", async () => {
-    const created: CreateOptions[] = [];
-    const summarisedId = "11111111-1111-4111-8111-111111111111";
-    const pendingId = "22222222-2222-4222-8222-222222222222";
-    // The stored summary database lists one of the two conversations as summarised.
-    const dbDir = fs.mkdtempSync(path.join(os.tmpdir(), "mend-codex-db-"));
-    const dbFile = path.join(dbDir, "memories_1.sqlite");
-    const { DatabaseSync } = await import("node:sqlite");
-    const db = new DatabaseSync(dbFile);
-    db.exec(
-      "create table stage1_outputs (thread_id text primary key, source_updated_at integer not null)",
-    );
-    const summarisedAt = Math.floor((Date.now() - 8 * 60 * 60 * 1000) / 1000);
-    db.prepare("insert into stage1_outputs values (?, ?)").run(summarisedId, summarisedAt);
-    db.close();
-    const database = {
-      path: ".codex/memories_1.sqlite",
-      encoding: "base64",
-      contents: fs.readFileSync(dbFile).toString("base64"),
-    } as const;
-    const agentMemoryLayer = agentMemoryLayerOf({
-      forLaunch: () =>
-        Effect.succeed([
-          { ...database, digest: agentMemoryDigest(database), updatedBySession: null },
-        ]),
-    });
-    await withEngine(
-      (world, tmp) =>
-        Effect.gen(function* () {
-          const project = yield* setup(tmp, world);
-          const engine = yield* SessionEngine;
-          const provision = () =>
-            engine.provision({
-              projectId: project.id,
-              harness: "codex",
-              label: null,
-              name: null,
-              ownerUserId: "owner-codex",
-              base: null,
-            });
-          // Two earlier Codex sessions of the owner's, each with a harvested conversation that
-          // ended eight hours ago.
-          for (const providerSessionId of [summarisedId, pendingId]) {
-            const earlier = yield* provision();
-            yield* engine.launch(earlier.id, ["codex"]);
-            const agent = [...world.processes.values()].find(
-              (row) => row.sessionId === earlier.id && row.kind === "agent-pty",
-            );
-            if (agent === undefined) throw new Error("the earlier launch recorded no agent");
-            world.processes.set(
-              agent.id,
-              new SessionProcess({ ...agent, status: "exited", exitCode: 0, exitedAt: now() }),
-            );
-            const stateDir = processStatePathOf(project.storePath, earlier.id, agent.id);
-            fs.mkdirSync(stateDir, { recursive: true });
-            fs.writeFileSync(
-              path.join(stateDir, "manifest.json"),
-              JSON.stringify({
-                harness: "codex",
-                providerSessionId,
-                // The summary's own time: Codex summarised this exact revision.
-                capturedAt: new Date(summarisedAt * 1000).toISOString(),
-              }),
-            );
-            fs.writeFileSync(
-              path.join(stateDir, "transcript.native"),
-              `${JSON.stringify({ type: "session_meta", payload: { id: providerSessionId, timestamp: "2026-09-30T08:00:00Z" } })}\n`,
-            );
-          }
+  // Live clock: the carry ages the harvested conversations against the engine's now and stamps
+  // the stub's mtime with the summary's time, which the filesystem keeps as a real instant (Node
+  // clamps one before 1970 to now), so the engine's clock has to be the wall clock here.
+  it.live(
+    "carries the owner's earlier Codex conversations into a Codex launch, minus what Codex summarised (docs/adr/0009, Codex)",
+    () =>
+      Effect.gen(function* () {
+        const created: CreateOptions[] = [];
+        const summarisedId = "11111111-1111-4111-8111-111111111111";
+        const pendingId = "22222222-2222-4222-8222-222222222222";
+        // The stored summary database lists one of the two conversations as summarised.
+        const dbDir = fs.mkdtempSync(path.join(os.tmpdir(), "mend-codex-db-"));
+        const dbFile = path.join(dbDir, "memories_1.sqlite");
+        const { DatabaseSync } = yield* Effect.promise(() => import("node:sqlite"));
+        const db = new DatabaseSync(dbFile);
+        db.exec(
+          "create table stage1_outputs (thread_id text primary key, source_updated_at integer not null)",
+        );
+        const summarisedAt = Math.floor(
+          ((yield* Clock.currentTimeMillis) - 8 * 60 * 60 * 1000) / 1000,
+        );
+        db.prepare("insert into stage1_outputs values (?, ?)").run(summarisedId, summarisedAt);
+        db.close();
+        const database = {
+          path: ".codex/memories_1.sqlite",
+          encoding: "base64",
+          contents: fs.readFileSync(dbFile).toString("base64"),
+        } as const;
+        const agentMemoryLayer = agentMemoryLayerOf({
+          forLaunch: () =>
+            Effect.succeed([
+              { ...database, digest: agentMemoryDigest(database), updatedBySession: null },
+            ]),
+        });
+        yield* withPreparedEngineEffect(
+          (world, dir) => setup(dir, world),
+          (world, _dir, project) =>
+            Effect.gen(function* () {
+              const engine = yield* SessionEngine;
+              const provision = () =>
+                engine.provision({
+                  projectId: project.id,
+                  harness: "codex",
+                  label: null,
+                  name: null,
+                  ownerUserId: "owner-codex",
+                  base: null,
+                });
+              // Two earlier Codex sessions of the owner's, each with a harvested conversation that
+              // ended eight hours ago.
+              for (const providerSessionId of [summarisedId, pendingId]) {
+                const earlier = yield* provision();
+                yield* engine.launch(earlier.id, ["codex"]);
+                const agent = [...world.processes.values()].find(
+                  (row) => row.sessionId === earlier.id && row.kind === "agent-pty",
+                );
+                if (agent === undefined) throw new Error("the earlier launch recorded no agent");
+                world.processes.set(
+                  agent.id,
+                  new SessionProcess({ ...agent, status: "exited", exitCode: 0, exitedAt: now() }),
+                );
+                const stateDir = processStatePathOf(project.storePath, earlier.id, agent.id);
+                fs.mkdirSync(stateDir, { recursive: true });
+                fs.writeFileSync(
+                  path.join(stateDir, "manifest.json"),
+                  JSON.stringify({
+                    harness: "codex",
+                    providerSessionId,
+                    // The summary's own time: Codex summarised this exact revision.
+                    capturedAt: new Date(summarisedAt * 1000).toISOString(),
+                  }),
+                );
+                fs.writeFileSync(
+                  path.join(stateDir, "transcript.native"),
+                  `${JSON.stringify({ type: "session_meta", payload: { id: providerSessionId, timestamp: "2026-09-30T08:00:00Z" } })}\n`,
+                );
+              }
 
-          const session = yield* provision();
-          yield* engine.launch(session.id, ["codex"]);
-          const home = harnessHomePathOf(project.storePath, session.id);
-          const carried = path.join(
-            home,
-            `.codex/sessions/2026/09/30/rollout-2026-09-30T08-00-00-${pendingId}.jsonl`,
-          );
-          yield* until(() => fs.existsSync(carried), "the pending conversation carried in");
-          expect(
-            fs
-              .readFileSync(path.join(home, ".mend/carried-transcripts"), "utf8")
-              .trim()
-              .split("\n")
-              .toSorted(),
-          ).toEqual([summarisedId, pendingId].toSorted());
-          // The summarised one is there as a stub: its first line, at the summary's time, so Codex
-          // keeps its summary without making it again.
-          const stub = path.join(
-            home,
-            `.codex/sessions/2026/09/30/rollout-2026-09-30T08-00-00-${summarisedId}.jsonl`,
-          );
-          expect(fs.readFileSync(stub, "utf8").trim().split("\n")).toHaveLength(1);
-          expect(Math.floor(fs.statSync(stub).mtimeMs / 1000)).toBe(summarisedAt);
-          expect(fs.readFileSync(carried, "utf8")).toContain(pendingId);
-        }),
-      { sealantLayer: sealantLaunchLayer(created), agentMemoryLayer },
-    );
-  });
+              const session = yield* provision();
+              yield* engine.launch(session.id, ["codex"]);
+              const home = harnessHomePathOf(project.storePath, session.id);
+              const carried = path.join(
+                home,
+                `.codex/sessions/2026/09/30/rollout-2026-09-30T08-00-00-${pendingId}.jsonl`,
+              );
+              // The launch carries the conversations in before it answers.
+              expect(fs.existsSync(carried)).toBe(true);
+              expect(
+                fs
+                  .readFileSync(path.join(home, ".mend/carried-transcripts"), "utf8")
+                  .trim()
+                  .split("\n")
+                  .toSorted(),
+              ).toEqual([summarisedId, pendingId].toSorted());
+              // The summarised one is there as a stub: its first line, at the summary's time, so
+              // Codex keeps its summary without making it again.
+              const stub = path.join(
+                home,
+                `.codex/sessions/2026/09/30/rollout-2026-09-30T08-00-00-${summarisedId}.jsonl`,
+              );
+              expect(fs.readFileSync(stub, "utf8").trim().split("\n")).toHaveLength(1);
+              expect(Math.floor(fs.statSync(stub).mtimeMs / 1000)).toBe(summarisedAt);
+              expect(fs.readFileSync(carried, "utf8")).toContain(pendingId);
+            }),
+          { sealantLayer: sealantLaunchLayer(created), agentMemoryLayer },
+        );
+      }),
+  );
 
   it("launches a protocol agent through a pipe and records an agent-protocol process", async () => {
     const created: CreateOptions[] = [];
@@ -1280,94 +1344,108 @@ describe("SessionEngine", () => {
     );
   });
 
-  it("restores harvested state into the fresh workspace a protocol resume provisions", async () => {
-    // Live failure 2026-08-28 (PoC session 59e473f4): launchProtocol passed an explicit
-    // null state to launchInternal, which skips the restore — while the composed argv
-    // still resumed by provider id. On a fresh workspace claude then exited 1 with
-    // "No conversation found with session ID". The restore must reach the new workspace.
-    const created: CreateOptions[] = [];
-    const stopped: string[] = [];
-    const spawned: ReadonlyArray<string>[] = [];
-    const execCalls: ReadonlyArray<string>[] = [];
-    const attached: Array<{ readonly process: SessionProcess; readonly mode: string }> = [];
-    const submitted: string[] = [];
-    await withEngine(
-      (world, tmp) =>
-        Effect.gen(function* () {
-          const project = yield* setup(tmp, world);
-          const engine = yield* SessionEngine;
-          const session = yield* engine.provision({
-            projectId: project.id,
-            harness: "claude",
-            label: null,
-            name: null,
-            ownerUserId: "user-fixture",
-            base: null,
-          });
-          yield* engine.launchProtocol(
-            session.id,
-            { mode: "protocol", permissionMode: "bypass" },
-            "user-1",
-          );
-          const agent = [...world.processes.values()].find(
-            (process) => process.kind === "agent-protocol",
-          );
-          if (agent === undefined || agent.providerSessionId === null) {
-            throw new Error("the protocol launch recorded no provider session id");
-          }
-          yield* engine.stop(session.id);
-          // The settle-path harvest (forked) clears the manifest before its capture fails
-          // against the empty exec output; wait for its pack attempt before planting state.
-          const packRan = () =>
-            execCalls.some((argv) => argv.join(" ").includes("mend-harness-state"));
-          for (let i = 0; i < 400 && !packRan(); i++) {
-            yield* Effect.sleep(Duration.millis(10));
-          }
-          expect(packRan()).toBe(true);
-          const stateDir = processStatePathOf(project.storePath, session.id, agent.id);
-          fs.mkdirSync(stateDir, { recursive: true });
-          fs.writeFileSync(
-            path.join(stateDir, "manifest.json"),
-            JSON.stringify({
-              harness: "claude",
-              providerSessionId: agent.providerSessionId,
-              capturedAt: new Date().toISOString(),
-            }),
-          );
-          fs.writeFileSync(path.join(stateDir, "harness-state.tar.gz"), "fake-archive");
-
-          const resumed = yield* engine.resumeSession(session.id, null);
-
-          expect(resumed.status).toBe("running");
-          expect(created).toHaveLength(2);
-          // The saved state was staged into the worktree and unpacked in the NEW workspace
-          // before the harness started.
-          const restoreExec = execCalls.find((argv) =>
-            argv.join(" ").includes(".mend-harness-state-"),
-          );
-          expect(restoreExec?.join(" ")).toContain("tar -xzf");
-          // And the relaunch still resumes the native conversation.
-          const resumeArgv = spawned.at(-1) ?? [];
-          expect(resumeArgv).toContain("--resume");
-          expect(resumeArgv).toContain(agent.providerSessionId);
-        }),
-      {
-        sealantLayer: sealantLaunchLayer(
-          created,
-          undefined,
-          stopped,
-          spawned,
-          undefined,
-          undefined,
-          undefined,
-          undefined,
-          undefined,
-          execCalls,
+  it.effect("restores harvested state into the fresh workspace a protocol resume provisions", () =>
+    Effect.gen(function* () {
+      // Live failure 2026-08-28 (PoC session 59e473f4): launchProtocol passed an explicit
+      // null state to launchInternal, which skips the restore — while the composed argv
+      // still resumed by provider id. On a fresh workspace claude then exited 1 with
+      // "No conversation found with session ID". The restore must reach the new workspace.
+      const created: CreateOptions[] = [];
+      const stopped: string[] = [];
+      const spawned: ReadonlyArray<string>[] = [];
+      const execCalls: ReadonlyArray<string>[] = [];
+      const attached: Array<{ readonly process: SessionProcess; readonly mode: string }> = [];
+      const submitted: string[] = [];
+      const { world, tmp, reached, signal } = yield* signalledWorld();
+      // Every exec the engine ran wakes `reached`: the settle-path harvest runs forked.
+      const signallingExecs = Layer.effect(
+        SealantClient,
+        Effect.map(SealantClient, (client) => ({
+          ...client,
+          exec: (workspace, argv, options) =>
+            client.exec(workspace, argv, options).pipe(Effect.ensuring(Effect.sync(signal))),
+        })),
+      ).pipe(
+        Layer.provide(
+          sealantLaunchLayer(
+            created,
+            undefined,
+            stopped,
+            spawned,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            execCalls,
+          ),
         ),
-        protocolHostLayer: recordingProtocolHostLayer(attached, submitted),
-      },
-    );
-  });
+      );
+      yield* withPreparedEngineEffect(
+        (_world, dir) => setup(dir, world),
+        (_world, _dir, project) =>
+          Effect.gen(function* () {
+            const engine = yield* SessionEngine;
+            const session = yield* engine.provision({
+              projectId: project.id,
+              harness: "claude",
+              label: null,
+              name: null,
+              ownerUserId: "user-fixture",
+              base: null,
+            });
+            yield* engine.launchProtocol(
+              session.id,
+              { mode: "protocol", permissionMode: "bypass" },
+              "user-1",
+            );
+            const agent = [...world.processes.values()].find(
+              (process) => process.kind === "agent-protocol",
+            );
+            if (agent === undefined || agent.providerSessionId === null) {
+              throw new Error("the protocol launch recorded no provider session id");
+            }
+            yield* engine.stop(session.id);
+            // The settle-path harvest (forked) clears the manifest before its capture fails
+            // against the empty exec output; wait for its pack attempt before planting state.
+            const packRan = () =>
+              execCalls.some((argv) => argv.join(" ").includes("mend-harness-state"));
+            yield* reached(packRan, "the harvest's pack attempt");
+            expect(packRan()).toBe(true);
+            const stateDir = processStatePathOf(project.storePath, session.id, agent.id);
+            fs.mkdirSync(stateDir, { recursive: true });
+            fs.writeFileSync(
+              path.join(stateDir, "manifest.json"),
+              JSON.stringify({
+                harness: "claude",
+                providerSessionId: agent.providerSessionId,
+                capturedAt: new Date().toISOString(),
+              }),
+            );
+            fs.writeFileSync(path.join(stateDir, "harness-state.tar.gz"), "fake-archive");
+
+            const resumed = yield* engine.resumeSession(session.id, null);
+            expect(resumed.status).toBe("running");
+            expect(created).toHaveLength(2);
+            // The saved state was staged into the worktree and unpacked in the NEW workspace
+            // before the harness started.
+            const restoreExec = execCalls.find((argv) =>
+              argv.join(" ").includes(".mend-harness-state-"),
+            );
+            expect(restoreExec?.join(" ")).toContain("tar -xzf");
+            // And the relaunch still resumes the native conversation.
+            const resumeArgv = spawned.at(-1) ?? [];
+            expect(resumeArgv).toContain("--resume");
+            expect(resumeArgv).toContain(agent.providerSessionId);
+          }),
+        {
+          fixture: { world, tmp },
+          sealantLayer: signallingExecs,
+          protocolHostLayer: recordingProtocolHostLayer(attached, submitted),
+        },
+      );
+    }),
+  );
 
   it("falls back to a fresh protocol launch when the retained workspace disappears", async () => {
     const created: CreateOptions[] = [];
@@ -1417,57 +1495,63 @@ describe("SessionEngine", () => {
     );
   });
 
-  it("a caller that goes away mid-launch leaves the launch running: the agent starts and the session reads running", async () => {
-    // Alpha 2026-09-30 (cc05cb8a, 48763b65): a client that gave up on the launch request
-    // interrupted the launch wherever it stood — a running agent whose session read `starting`
-    // with `started_at` null for good. The caller's interruption now ends only its own wait.
-    const created: CreateOptions[] = [];
-    const createAsked = await Effect.runPromise(Deferred.make<void>());
-    const createAnswered = await Effect.runPromise(Deferred.make<void>());
-    await withEngine(
-      (world, tmp) =>
-        Effect.gen(function* () {
-          const project = yield* setup(tmp, world);
-          const engine = yield* SessionEngine;
-          const session = yield* engine.provision({
-            projectId: project.id,
-            harness: "codex",
-            label: null,
-            name: null,
-            ownerUserId: "user-fixture",
-            base: null,
-          });
-          const caller = yield* engine.launch(session.id, ["codex"]).pipe(Effect.forkChild);
-          yield* Deferred.await(createAsked);
-          yield* Fiber.interrupt(caller);
-          expect(world.sessions.get(session.id)?.status).toBe("starting");
+  it.effect(
+    "a caller that goes away mid-launch leaves the launch running: the agent starts and the session reads running",
+    () =>
+      Effect.gen(function* () {
+        // Alpha 2026-09-30 (cc05cb8a, 48763b65): a client that gave up on the launch request
+        // interrupted the launch wherever it stood — a running agent whose session read `starting`
+        // with `started_at` null for good. The caller's interruption now ends only its own wait.
+        const created: CreateOptions[] = [];
+        const createAsked = yield* Deferred.make<void>();
+        const createAnswered = yield* Deferred.make<void>();
+        const { world, tmp, reached } = yield* signalledWorld();
+        yield* withPreparedEngineEffect(
+          (_world, dir) => setup(dir, world),
+          (_world, _dir, project) =>
+            Effect.gen(function* () {
+              const engine = yield* SessionEngine;
+              const session = yield* engine.provision({
+                projectId: project.id,
+                harness: "codex",
+                label: null,
+                name: null,
+                ownerUserId: "user-fixture",
+                base: null,
+              });
+              const caller = yield* engine.launch(session.id, ["codex"]).pipe(Effect.forkChild);
+              yield* Deferred.await(createAsked);
+              yield* Fiber.interrupt(caller);
+              expect(world.sessions.get(session.id)?.status).toBe("starting");
 
-          yield* Deferred.succeed(createAnswered, undefined);
-          yield* until(
-            () => world.sessions.get(session.id)?.status === "running",
-            "the launch the caller left to reach running",
-          );
-          const running = world.sessions.get(session.id);
-          expect(running?.startedAt).not.toBeNull();
-          expect(running?.sealantRunId).not.toBeNull();
-          expect(
-            [...world.processes.values()].some(
-              (process) => process.sessionId === session.id && process.kind === "agent-pty",
-            ),
-          ).toBe(true);
-        }),
-      {
-        sealantLayer: lifecycleLayer(created, {
-          captureOps: {
-            beforeCreate: () =>
-              Deferred.succeed(createAsked, undefined).pipe(
-                Effect.andThen(Deferred.await(createAnswered)),
-              ),
+              yield* Deferred.succeed(createAnswered, undefined);
+              yield* reached(
+                () => world.sessions.get(session.id)?.status === "running",
+                "the launch the caller left to reach running",
+              );
+              const running = world.sessions.get(session.id);
+              expect(running?.startedAt).not.toBeNull();
+              expect(running?.sealantRunId).not.toBeNull();
+              expect(
+                [...world.processes.values()].some(
+                  (process) => process.sessionId === session.id && process.kind === "agent-pty",
+                ),
+              ).toBe(true);
+            }),
+          {
+            fixture: { world, tmp },
+            sealantLayer: lifecycleLayer(created, {
+              captureOps: {
+                beforeCreate: () =>
+                  Deferred.succeed(createAsked, undefined).pipe(
+                    Effect.andThen(Deferred.await(createAnswered)),
+                  ),
+              },
+            }),
           },
-        }),
-      },
-    );
-  });
+        );
+      }),
+  );
 
   it("a stop while the launch still sets up its machine: the agent never starts and the session reads stopped", async () => {
     // Alpha 2026-10-01 (3c4e991b): a stop during a launch found no agent to end, and the launch
@@ -1633,55 +1717,65 @@ describe("SessionEngine", () => {
     );
   });
 
-  it("the same in capture mode: the stop drains the executor and the agent the launch started ends with it", async () => {
-    const created: CreateOptions[] = [];
-    const spawned: ReadonlyArray<string>[] = [];
-    const openAsked = await Effect.runPromise(Deferred.make<void>());
-    const openAnswered = await Effect.runPromise(Deferred.make<void>());
-    await withEngine(
-      (world, tmp) =>
-        Effect.gen(function* () {
-          const project = yield* setup(tmp, world);
-          const engine = yield* SessionEngine;
-          const session = yield* engine.provision({
-            projectId: project.id,
-            harness: "codex",
-            label: null,
-            name: null,
-            ownerUserId: "user-fixture",
-            base: null,
-          });
-          const launching = yield* engine.launch(session.id, ["codex"]).pipe(Effect.forkChild);
-          yield* Deferred.await(openAsked);
+  it.effect(
+    "the same in capture mode: the stop drains the executor and the agent the launch started ends with it",
+    () =>
+      Effect.gen(function* () {
+        const created: CreateOptions[] = [];
+        const spawned: ReadonlyArray<string>[] = [];
+        const openAsked = yield* Deferred.make<void>();
+        const openAnswered = yield* Deferred.make<void>();
+        const { world, tmp, reached } = yield* signalledWorld();
+        const clock = yield* Clock.Clock;
+        // The store's clock follows the engine's: a lease and its reading share one time.
+        const memory = makeMemoryCaptureStore();
+        memory.clock.now = () => clock.currentTimeMillisUnsafe();
+        yield* withPreparedEngineEffect(
+          (_world, dir) => setup(dir, world),
+          (_world, _dir, project) =>
+            Effect.gen(function* () {
+              const engine = yield* SessionEngine;
+              const session = yield* engine.provision({
+                projectId: project.id,
+                harness: "codex",
+                label: null,
+                name: null,
+                ownerUserId: "user-fixture",
+                base: null,
+              });
+              const launching = yield* engine.launch(session.id, ["codex"]).pipe(Effect.forkChild);
+              yield* Deferred.await(openAsked);
 
-          yield* engine.stop(session.id);
-          yield* Deferred.succeed(openAnswered, undefined);
-          yield* Fiber.await(launching);
-          yield* until(
-            () => world.sessions.get(session.id)?.status === "stopped",
-            "the stopped launch to settle stopped",
-          );
+              yield* engine.stop(session.id);
+              yield* Deferred.succeed(openAnswered, undefined);
+              yield* Fiber.await(launching);
+              yield* reached(
+                () => world.sessions.get(session.id)?.status === "stopped",
+                "the stopped launch to settle stopped",
+              );
 
-          const agents = [...world.processes.values()].filter(
-            (process) => process.sessionId === session.id && process.kind === "agent-pty",
-          );
-          expect(spawned).toHaveLength(1);
-          expect(agents.every((agent) => agent.exitedAt !== null)).toBe(true);
-        }),
-      {
-        captured: makeMemoryCaptureStore(),
-        sealantLayer: lifecycleLayer(created, {
-          spawned,
-          captureOps: {
-            aroundOpen: () =>
-              Deferred.succeed(openAsked, undefined).pipe(
-                Effect.andThen(Deferred.await(openAnswered)),
-              ),
+              const agents = [...world.processes.values()].filter(
+                (process) => process.sessionId === session.id && process.kind === "agent-pty",
+              );
+              expect(spawned).toHaveLength(1);
+              expect(agents.every((agent) => agent.exitedAt !== null)).toBe(true);
+            }),
+          {
+            fixture: { world, tmp },
+            captured: memory,
+            sealantLayer: lifecycleLayer(created, {
+              spawned,
+              captureOps: {
+                aroundOpen: () =>
+                  Deferred.succeed(openAsked, undefined).pipe(
+                    Effect.andThen(Deferred.await(openAnswered)),
+                  ),
+              },
+            }),
           },
-        }),
-      },
-    );
-  });
+        );
+      }),
+  );
 
   it.each([
     [
@@ -1762,158 +1856,198 @@ describe("SessionEngine", () => {
     );
   });
 
-  it("a cold launch says where it stands while the platform builds the image and boots the executor, and answers once it runs", async () => {
-    // Alpha 2026-09-30: the first launch after an image recipe change waited ~8 min for the
-    // MicroVM image build and the session line said nothing but `starting`.
-    const created: CreateOptions[] = [];
-    const answered = await Effect.runPromise(Deferred.make<void>());
-    let executorUp = false;
-    const executor: WorkspaceRuntimeInfo = {
-      kind: "microvm",
-      resourceId: "microvm-1",
-      reference: "microvm-1",
-      status: "pending",
-      deadline: null,
-    };
-    const watchedCreates = Layer.effect(
-      SealantClient,
+  it.effect(
+    "a cold launch says where it stands while the platform builds the image and boots the executor, and answers once it runs",
+    () =>
       Effect.gen(function* () {
-        const client = yield* SealantClient;
-        return {
-          ...client,
-          // The create is accepted, then gets ready only once the test says: the watch runs
-          // beside it with the handle, as `SealantClient.createWorkspace` runs it.
-          createWorkspace: (options, launch, watch) =>
-            client.createWorkspace(options, launch).pipe(
-              Effect.tap((workspace) =>
-                Effect.gen(function* () {
-                  if (watch === undefined) return;
-                  const watcher = yield* Effect.forkChild(
-                    watch({ ...workspace, runtime: async () => (executorUp ? executor : null) }),
-                  );
-                  yield* Deferred.await(answered);
-                  yield* Fiber.interrupt(watcher);
-                }),
-              ),
-            ),
+        // Alpha 2026-09-30: the first launch after an image recipe change waited ~8 min for the
+        // MicroVM image build and the session line said nothing but `starting`.
+        const created: CreateOptions[] = [];
+        const answered = yield* Deferred.make<void>();
+        let executorUp = false;
+        const executor: WorkspaceRuntimeInfo = {
+          kind: "microvm",
+          resourceId: "microvm-1",
+          reference: "microvm-1",
+          status: "pending",
+          deadline: null,
         };
-      }),
-    ).pipe(Layer.provide(lifecycleLayer(created)));
-    await withEngine(
-      (world, tmp) =>
-        Effect.gen(function* () {
-          const project = yield* setup(tmp, world);
-          const engine = yield* SessionEngine;
-          const session = yield* engine.provision({
-            projectId: project.id,
-            harness: "codex",
-            label: null,
-            name: null,
-            ownerUserId: "user-fixture",
-            base: null,
-          });
-          const launching = yield* engine
-            .launch(session.id, ["codex"])
-            .pipe(Effect.forkChild({ startImmediately: true }));
-          yield* until(
-            () => world.sessions.get(session.id)?.summary === LAUNCH_BOOTING,
-            "booting, as the create is accepted",
-          );
-          // No executor on the platform past `imageBuildAfter`: the image is being built.
-          yield* until(
-            () => world.sessions.get(session.id)?.summary === LAUNCH_PREPARING,
-            "the image build line",
-          );
-          expect(world.sessions.get(session.id)?.status).toBe("starting");
-          executorUp = true;
-          yield* until(
-            () => world.sessions.get(session.id)?.summary === LAUNCH_BOOTING,
-            "booting, once the executor exists",
-          );
-          yield* Deferred.succeed(answered, undefined);
-          const launched = yield* Fiber.join(launching);
-          expect(launched.status).toBe("running");
-          expect(world.sessions.get(session.id)?.summary ?? null).toBe(
-            "codex is starting on the new machine",
-          );
-        }),
-      { sealantLayer: watchedCreates },
-    );
-  });
-
-  it("a cold launch says Core's own launch phase: queued, building the image step by step, booting (sealant#342)", async () => {
-    const created: CreateOptions[] = [];
-    const answered = await Effect.runPromise(Deferred.make<void>());
-    let phase: WorkspacePhase | null = { name: "queued" };
-    let runtimeReads = 0;
-    const watchedCreates = Layer.effect(
-      SealantClient,
-      Effect.gen(function* () {
-        const client = yield* SealantClient;
-        return {
-          ...client,
-          createWorkspace: (options, launch, watch) =>
-            client.createWorkspace(options, launch).pipe(
-              Effect.tap((workspace) =>
-                Effect.gen(function* () {
-                  if (watch === undefined) return;
-                  const watcher = yield* Effect.forkChild(
-                    watch({
-                      ...workspace,
-                      phase: async () => phase,
-                      runtime: async () => {
-                        runtimeReads++;
-                        return null;
-                      },
+        const { world, tmp, reached } = yield* signalledWorld();
+        // The watch's pace and the window after which no executor means an image build
+        // (`testDrainPolicy`), driven here one look at a time.
+        const createPhaseInterval = Duration.millis(10);
+        const imageBuildAfter = Duration.millis(40);
+        const watchedCreates = Layer.effect(
+          SealantClient,
+          Effect.gen(function* () {
+            const client = yield* SealantClient;
+            return {
+              ...client,
+              // The create is accepted, then gets ready only once the test says: the watch runs
+              // beside it with the handle, as `SealantClient.createWorkspace` runs it.
+              createWorkspace: (options, launch, watch) =>
+                client.createWorkspace(options, launch).pipe(
+                  Effect.tap((workspace) =>
+                    Effect.gen(function* () {
+                      if (watch === undefined) return;
+                      const watcher = yield* Effect.forkChild(
+                        watch({
+                          ...workspace,
+                          runtime: async () => (executorUp ? executor : null),
+                        }),
+                      );
+                      yield* Deferred.await(answered);
+                      yield* Fiber.interrupt(watcher);
                     }),
-                  );
-                  yield* Deferred.await(answered);
-                  yield* Fiber.interrupt(watcher);
-                }),
-              ),
-            ),
-        };
+                  ),
+                ),
+            };
+          }),
+        ).pipe(Layer.provide(lifecycleLayer(created)));
+        yield* withPreparedEngineEffect(
+          (_world, dir) => setup(dir, world),
+          (_world, _dir, project) =>
+            Effect.gen(function* () {
+              const engine = yield* SessionEngine;
+              const session = yield* engine.provision({
+                projectId: project.id,
+                harness: "codex",
+                label: null,
+                name: null,
+                ownerUserId: "user-fixture",
+                base: null,
+              });
+              const launching = yield* engine
+                .launch(session.id, ["codex"])
+                .pipe(Effect.forkChild({ startImmediately: true }));
+              const summary = () => world.sessions.get(session.id)?.summary;
+              yield* reached(
+                () => summary() === LAUNCH_BOOTING,
+                "booting, as the create is accepted",
+              );
+              // No executor on the platform past `imageBuildAfter`: the image is being built. One
+              // look short of the window the line still reads booting.
+              const looks =
+                Duration.toMillis(imageBuildAfter) / Duration.toMillis(createPhaseInterval);
+              for (let look = 1; look < looks; look++) yield* TestClock.adjust(createPhaseInterval);
+              expect(summary()).toBe(LAUNCH_BOOTING);
+              yield* TestClock.adjust(createPhaseInterval);
+              yield* reached(() => summary() === LAUNCH_PREPARING, "the image build line");
+              expect(world.sessions.get(session.id)?.status).toBe("starting");
+              executorUp = true;
+              yield* TestClock.adjust(createPhaseInterval);
+              yield* reached(
+                () => summary() === LAUNCH_BOOTING,
+                "booting, once the executor exists",
+              );
+              yield* Deferred.succeed(answered, undefined);
+              const launched = yield* Fiber.join(launching);
+              expect(launched.status).toBe("running");
+              expect(summary() ?? null).toBe("codex is starting on the new machine");
+            }),
+          {
+            fixture: { world, tmp },
+            sealantLayer: watchedCreates,
+            drainPolicy: { createPhaseInterval, imageBuildAfter },
+          },
+        );
       }),
-    ).pipe(Layer.provide(lifecycleLayer(created)));
-    await withEngine(
-      (world, tmp) =>
-        Effect.gen(function* () {
-          const project = yield* setup(tmp, world);
-          const engine = yield* SessionEngine;
-          const session = yield* engine.provision({
-            projectId: project.id,
-            harness: "codex",
-            label: null,
-            name: null,
-            ownerUserId: "user-fixture",
-            base: null,
-          });
-          const launching = yield* engine
-            .launch(session.id, ["codex"])
-            .pipe(Effect.forkChild({ startImmediately: true }));
-          const summary = () => world.sessions.get(session.id)?.summary;
-          yield* until(() => summary() === "queued · waiting for a worker", "queued");
-          phase = {
-            name: "image-build",
-            imageBuild: { step: 3, steps: 12, progressAt: new Date(0).toISOString() },
-          };
-          yield* until(
-            () => summary() === "building the workspace image · step 3/12",
-            "the build's step",
-          );
-          phase = { name: "image-build", imageBuild: { progressAt: new Date(0).toISOString() } };
-          yield* until(() => summary() === "building the workspace image", "a build with no step");
-          phase = { name: "boot" };
-          yield* until(() => summary() === LAUNCH_BOOTING, "booting");
-          // Core said where the launch stands: the executor was never read to guess it.
-          expect(runtimeReads).toBe(0);
-          yield* Deferred.succeed(answered, undefined);
-          const launched = yield* Fiber.join(launching);
-          expect(launched.status).toBe("running");
-        }),
-      { sealantLayer: watchedCreates },
-    );
-  });
+  );
+
+  it.effect(
+    "a cold launch says Core's own launch phase: queued, building the image step by step, booting (sealant#342)",
+    () =>
+      Effect.gen(function* () {
+        const created: CreateOptions[] = [];
+        const answered = yield* Deferred.make<void>();
+        let phase: WorkspacePhase | null = { name: "queued" };
+        let runtimeReads = 0;
+        const { world, tmp, reached } = yield* signalledWorld();
+        /** The watch's pace (`testDrainPolicy`): each look is one adjust. */
+        const createPhaseInterval = Duration.millis(10);
+        const watchedCreates = Layer.effect(
+          SealantClient,
+          Effect.gen(function* () {
+            const client = yield* SealantClient;
+            return {
+              ...client,
+              createWorkspace: (options, launch, watch) =>
+                client.createWorkspace(options, launch).pipe(
+                  Effect.tap((workspace) =>
+                    Effect.gen(function* () {
+                      if (watch === undefined) return;
+                      const watcher = yield* Effect.forkChild(
+                        watch({
+                          ...workspace,
+                          phase: async () => phase,
+                          runtime: async () => {
+                            runtimeReads++;
+                            return null;
+                          },
+                        }),
+                      );
+                      yield* Deferred.await(answered);
+                      yield* Fiber.interrupt(watcher);
+                    }),
+                  ),
+                ),
+            };
+          }),
+        ).pipe(Layer.provide(lifecycleLayer(created)));
+        yield* withPreparedEngineEffect(
+          (_world, dir) => setup(dir, world),
+          (_world, _dir, project) =>
+            Effect.gen(function* () {
+              const engine = yield* SessionEngine;
+              const session = yield* engine.provision({
+                projectId: project.id,
+                harness: "codex",
+                label: null,
+                name: null,
+                ownerUserId: "user-fixture",
+                base: null,
+              });
+              const launching = yield* engine
+                .launch(session.id, ["codex"])
+                .pipe(Effect.forkChild({ startImmediately: true }));
+              const summary = () => world.sessions.get(session.id)?.summary;
+              // The watch is up once the create is accepted.
+              yield* reached(
+                () => summary() === LAUNCH_BOOTING,
+                "booting, as the create is accepted",
+              );
+              const nextLook = (expected: string, label: string) =>
+                Effect.gen(function* () {
+                  yield* TestClock.adjust(createPhaseInterval);
+                  yield* reached(() => summary() === expected, label);
+                });
+              yield* nextLook("queued · waiting for a worker", "queued");
+              phase = {
+                name: "image-build",
+                imageBuild: { step: 3, steps: 12, progressAt: new Date(0).toISOString() },
+              };
+              yield* nextLook("building the workspace image · step 3/12", "the build's step");
+              phase = {
+                name: "image-build",
+                imageBuild: { progressAt: new Date(0).toISOString() },
+              };
+              yield* nextLook("building the workspace image", "a build with no step");
+              phase = { name: "boot" };
+              yield* nextLook(LAUNCH_BOOTING, "booting");
+              // Core said where the launch stands: the executor was never read to guess it.
+              expect(runtimeReads).toBe(0);
+              yield* Deferred.succeed(answered, undefined);
+              const launched = yield* Fiber.join(launching);
+              expect(launched.status).toBe("running");
+            }),
+          {
+            fixture: { world, tmp },
+            sealantLayer: watchedCreates,
+            drainPolicy: { createPhaseInterval },
+          },
+        );
+      }),
+  );
 
   it("launches Claude stream-json with one provider session id", async () => {
     const created: CreateOptions[] = [];
