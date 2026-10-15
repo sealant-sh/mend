@@ -1,4 +1,3 @@
-import { assert, describe, it } from "@effect/vitest";
 import { EnvironmentId, WsRpcGroup } from "@mend/t3-contracts";
 import * as Arbitrary from "effect/Arbitrary";
 import * as Effect from "effect/Effect";
@@ -15,6 +14,7 @@ import { GRANTED_SCOPES } from "../src/auth.ts";
 import { makeGatewayEnvironment } from "../src/environment.ts";
 import { RPC_REQUIRED_SCOPES } from "../src/rpc-scopes.ts";
 import { makeGatewayRpcHandlers, SERVED_METHODS, SILENT_STREAMS } from "../src/rpc.ts";
+import { assert, describe, it } from "./support/effect-vitest.ts";
 import { startFakeMend, type FakeMend } from "./support/fake-mend.ts";
 import { bearer, gatewayTestLayer, PERSON, t3Client, tokenRequest } from "./support/gateway.ts";
 import { socketUrl } from "./support/rpc.ts";

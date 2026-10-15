@@ -2,7 +2,6 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { assert, describe, it } from "@effect/vitest";
 import {
   WS_METHODS,
   CommandId,
@@ -26,6 +25,7 @@ import { mendAnswersOf, mendDecisionOf } from "../src/commands.ts";
 import type { MendCommand } from "../src/mend-client.ts";
 import type { QueueTimings } from "../src/queue.ts";
 import { openGatewayState } from "../src/state.ts";
+import { assert, describe, it } from "./support/effect-vitest.ts";
 import { startFakeMend, type FakeMend } from "./support/fake-mend.ts";
 import { feed } from "./support/feed.ts";
 import { gatewayTestLayer, type LaunchObserver } from "./support/gateway.ts";

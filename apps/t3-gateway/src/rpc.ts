@@ -39,6 +39,7 @@ import {
   type ServerProvider,
   type ThreadId,
 } from "@mend/t3-contracts";
+import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -353,7 +354,9 @@ export const makeGatewayRpcHandlers = ({
     );
     // Beside the catalog, never in front of it: a slow or failed read leaves the logins unknown.
     const loginsRead = mend.connectedAccounts(session.deviceToken).pipe(
-      Effect.map((accounts): PersonLogins => loginsOf(accounts, Date.now())),
+      Effect.flatMap((accounts) =>
+        Effect.map(Clock.currentTimeMillis, (now): PersonLogins => loginsOf(accounts, now)),
+      ),
       Effect.timeoutOption(LOGINS_DEADLINE),
       Effect.map(Option.getOrNull),
       Effect.catch((cause) =>
@@ -870,7 +873,7 @@ export const makeGatewayRpcHandlers = ({
     // are in the shell already. t3code's onboarding then offers none.
     [WS_METHODS.agentSessionsScan]: () =>
       Effect.andThen(authorize(session), () =>
-        Effect.succeed({ candidates: [], scannedAt: new Date().toISOString() }),
+        Effect.map(DateTime.now, (now) => ({ candidates: [], scannedAt: DateTime.formatIso(now) })),
       ),
     [WS_METHODS.agentSessionsImport]: (input) =>
       Effect.fail(new AgentSessionImportProjectNotFoundError({ projectId: input.projectId })),

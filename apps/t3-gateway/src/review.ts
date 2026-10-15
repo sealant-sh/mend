@@ -213,7 +213,7 @@ export const makeReviewHandlers = (input: {
               .join("");
       const result: ReviewDiffPreviewResult = {
         cwd: request.cwd,
-        generatedAt: DateTime.makeUnsafe(Date.now()),
+        generatedAt: yield* DateTime.now,
         sources: [
           {
             id: `mend-change:${change.changeId}`,

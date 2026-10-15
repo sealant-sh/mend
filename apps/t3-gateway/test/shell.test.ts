@@ -1,4 +1,3 @@
-import { assert, describe, it } from "@effect/vitest";
 import {
   ORCHESTRATION_PROTOCOL_HEADER,
   ORCHESTRATION_PROTOCOL_VERSION_TEXT,
@@ -10,6 +9,7 @@ import * as Effect from "effect/Effect";
 
 import { refreshKeyOf } from "../src/hub.ts";
 import { pointerOfSseLine } from "../src/mend-client.ts";
+import { assert, describe, it } from "./support/effect-vitest.ts";
 import { startFakeMend, type FakeMend } from "./support/fake-mend.ts";
 import { feed } from "./support/feed.ts";
 import { gatewayTestLayer } from "./support/gateway.ts";

@@ -22,6 +22,7 @@ import {
   type OrchestrationV2ShellStreamItem,
   type OrchestrationV2ThreadProjection,
 } from "@mend/t3-contracts";
+import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
@@ -945,10 +946,12 @@ export const makePersonHub = (input: {
         const waiting = unrecorded.get(sessionId) ?? [];
         const still: typeof waiting = [];
         for (const item of waiting) {
-          const recorded = yield* state.recordTurnIds(item.ids, Date.now()).pipe(
-            Effect.as(true),
-            Effect.orElseSucceed(() => false),
-          );
+          const recorded = yield* state
+            .recordTurnIds(item.ids, yield* Clock.currentTimeMillis)
+            .pipe(
+              Effect.as(true),
+              Effect.orElseSucceed(() => false),
+            );
           if (!recorded) still.push(item);
         }
         if (still.length === 0) unrecorded.delete(sessionId);
@@ -1532,9 +1535,9 @@ export const makePersonHub = (input: {
       archivedThreads: [],
     });
 
-    const eventBase = () => ({
+    const eventBase = (occurredAt: DateTime.Utc) => ({
       id: EventId.make(`event:${nextSequence()}`),
-      occurredAt: DateTime.makeUnsafe(Date.now()),
+      occurredAt,
     });
 
     /**
@@ -1561,7 +1564,7 @@ export const makePersonHub = (input: {
         const source = sourceOf(sessionId);
         if (source === null) {
           if (watch?.prints !== null && watch?.thread !== null && watch !== undefined) {
-            const base = eventBase();
+            const base = eventBase(yield* DateTime.now);
             const thread = watch.thread;
             yield* publish([
               [
@@ -1585,6 +1588,7 @@ export const makePersonHub = (input: {
           return null;
         }
         const built = yield* printProjection(threadProjectionOf(source, itemsOf(sessionId)));
+        const occurredAt = yield* DateTime.now;
         if (watch === undefined) return built.projection;
         const previous = watch.prints;
         const prints = new Map(built.entities.map((entity) => [entity.key, entity.print]));
@@ -1611,7 +1615,7 @@ export const makePersonHub = (input: {
         const changes: Array<readonly [ThreadChange, number]> = [];
         for (const entity of built.entities) {
           if (previous.get(entity.key) === entity.print) continue;
-          const base = eventBase();
+          const base = eventBase(occurredAt);
           changes.push([
             {
               kind: "event",
@@ -1968,14 +1972,13 @@ export const makePersonHub = (input: {
     const readTurnCheckpoints = (sessionId: string): Effect.Effect<void> =>
       Effect.gen(function* () {
         const plan = yield* locked(
-          Effect.sync(() => {
+          Effect.map(Clock.currentTimeMillis, (now) => {
             const watch = watches.get(sessionId);
             const source = sourceOf(sessionId);
             if (watch === undefined || source === null) return null;
             const ended = source.turns.filter((turn) => turn.endedAt !== null).length;
             // Mend tells of a turn's end before it takes the turn's checkpoint: a chain read in
             // between lacks it, so a turn that ended lately with no checkpoint reads it again.
-            const now = Date.now();
             if (ended !== watch.endedTurns) watch.chainRetries = 0;
             const missing =
               watch.chain !== null &&
@@ -2178,7 +2181,7 @@ export const makePersonHub = (input: {
           yield* requestRefresh("all");
           yield* accountSignals.publish(["accounts"]);
         }
-        const startedAt = Date.now();
+        const startedAt = yield* Clock.currentTimeMillis;
         const outcome = yield* asPerson((token) =>
           mend.events(token).pipe(Stream.runForEach(onPointer)),
         ).pipe(Effect.result);
@@ -2187,7 +2190,8 @@ export const makePersonHub = (input: {
             cause: outcome.failure.message,
           });
         }
-        failures = Date.now() - startedAt > HEALTHY_STREAM_MS ? 0 : failures + 1;
+        const endedAt = yield* Clock.currentTimeMillis;
+        failures = endedAt - startedAt > HEALTHY_STREAM_MS ? 0 : failures + 1;
         yield* Effect.sleep(Math.min(RECONNECT_MAX_MS, RECONNECT_BASE_MS * 2 ** failures));
       }
     }).pipe(Effect.forkScoped);
@@ -2260,7 +2264,7 @@ export const makePersonHub = (input: {
         };
         rememberIds(ids);
         // The ids first: until they are kept, the message stays kept as being sent (593-R2-2).
-        const recorded = yield* state.recordTurnIds(ids, Date.now()).pipe(
+        const recorded = yield* state.recordTurnIds(ids, yield* Clock.currentTimeMillis).pipe(
           Effect.as(true),
           Effect.catch((error) =>
             Effect.logError("t3 gateway could not record a turn's ids", {
@@ -2392,7 +2396,7 @@ export const makePersonHub = (input: {
               // Mend says the agent is not live though the row may still read it running: retry
               // only after a backoff and a fresh read, until the send deadline.
               Queueing.notLive(queue, entry, {
-                now: performance.now(),
+                now: yield* queueNow,
                 evidence: evidence.get(sessionId) ?? 0,
                 refusal: sent.failure.message,
                 timings,
@@ -2488,13 +2492,13 @@ export const makePersonHub = (input: {
      * the evidence a retry waits for, and moves a launch past its deadline.
      */
     const scheduleWake = (sessionId: string, queue: Queueing.ThreadQueue) =>
-      Effect.suspend(() => {
+      Effect.flatMap(queueNow, (now) => {
         const at = Queueing.nextWake(queue);
         const scheduled = wakes.get(sessionId);
         if (at === null || (scheduled !== undefined && scheduled <= at)) return Effect.void;
         wakes.set(sessionId, at);
         const projectId = sourceOf(sessionId)?.project.id;
-        return Effect.sleep(Math.max(0, at - performance.now())).pipe(
+        return Effect.sleep(Math.max(0, at - now)).pipe(
           Effect.andThen(
             Effect.sync(() => {
               if (wakes.get(sessionId) === at) wakes.delete(sessionId);
@@ -2517,27 +2521,29 @@ export const makePersonHub = (input: {
           // read has shown yet is not gone either. An archived thread's queue never moves, held or
           // not, by the archive the state file keeps (review 613-R2-1).
           if (!loaded || opening.has(sessionId) || archived.has(sessionId)) return Effect.void;
-          const step = Queueing.nextStep(queue, viewOf(sessionId), performance.now(), timings);
-          const work =
-            step === null
-              ? Effect.void
-              : Effect.gen(function* () {
-                  // The step is kept before it is taken: a message the state file still reads as
-                  // queued would be sent again after a restart. A send it cannot keep never goes.
-                  const kept = yield* keepQueue(sessionId, queue);
-                  if (!kept && step.kind === "send") {
-                    Queueing.fail(queue, step.entry, NOT_KEPT);
-                    yield* keepQueue(sessionId, queue);
-                    return;
-                  }
-                  yield* Effect.forkIn(
-                    step.kind === "send"
-                      ? sendTurn(sessionId, step.entry)
-                      : launchAgain(sessionId, step.entry),
-                    hubScope,
-                  );
-                });
-          return Effect.andThen(work, scheduleWake(sessionId, queue));
+          return Effect.flatMap(queueNow, (now) => {
+            const step = Queueing.nextStep(queue, viewOf(sessionId), now, timings);
+            const work =
+              step === null
+                ? Effect.void
+                : Effect.gen(function* () {
+                    // The step is kept before it is taken: a message the state file still reads as
+                    // queued would be sent again after a restart. A send it cannot keep never goes.
+                    const kept = yield* keepQueue(sessionId, queue);
+                    if (!kept && step.kind === "send") {
+                      Queueing.fail(queue, step.entry, NOT_KEPT);
+                      yield* keepQueue(sessionId, queue);
+                      return;
+                    }
+                    yield* Effect.forkIn(
+                      step.kind === "send"
+                        ? sendTurn(sessionId, step.entry)
+                        : launchAgain(sessionId, step.entry),
+                      hubScope,
+                    );
+                  });
+            return Effect.andThen(work, scheduleWake(sessionId, queue));
+          });
         },
         { discard: true },
       ),
@@ -2630,13 +2636,14 @@ export const makePersonHub = (input: {
               return sequence;
             }
             yield* keepNextEffort(command.threadId, command.modelSelection);
+            const requestedAt = DateTime.formatIso(yield* DateTime.now);
             yield* changeKept(command.threadId, (queue) => {
               queue.entries.push(
                 Queueing.newEntry({
                   runId: `t3-run:${randomUUID()}`,
                   messageId: command.messageId,
                   text: command.text,
-                  requestedAt: new Date().toISOString(),
+                  requestedAt,
                   token: command.session.deviceToken,
                   sender: command.session.sessionId,
                   imageIds: command.imageIds,
@@ -2907,13 +2914,15 @@ export const makePersonHub = (input: {
           commandId: request.commandId,
           options: request.options,
         };
-        yield* state.recordThread(request.session.mendUser.id, thread, Date.now()).pipe(
-          Effect.catch((error) =>
-            Effect.logError("t3 gateway could not record a launched thread", {
-              cause: error.message,
-            }),
-          ),
-        );
+        yield* state
+          .recordThread(request.session.mendUser.id, thread, yield* Clock.currentTimeMillis)
+          .pipe(
+            Effect.catch((error) =>
+              Effect.logError("t3 gateway could not record a launched thread", {
+                cause: error.message,
+              }),
+            ),
+          );
         yield* locked(
           Effect.sync(() => {
             rememberThread(thread);
@@ -2923,7 +2932,7 @@ export const makePersonHub = (input: {
         const { message } = request;
         // The opening message is queued like any other: the queue launches the session on what
         // the launch named and sends the message as an exact turn once the agent runs.
-        const queueOpening = () => {
+        const queueOpening = (requestedAt: string) => {
           if (message === null) return;
           const queue = queueOf(created.id);
           if (queue.entries.some((entry) => entry.messageId === message.messageId)) return;
@@ -2932,7 +2941,7 @@ export const makePersonHub = (input: {
               runId: `t3-run:${randomUUID()}`,
               messageId: message.messageId,
               text: message.text,
-              requestedAt: new Date().toISOString(),
+              requestedAt,
               token,
               sender: request.session.sessionId,
               imageIds: message.imageIds,
@@ -2941,7 +2950,7 @@ export const makePersonHub = (input: {
         };
         // The message is queued at once, whatever the reads below find: it is never dropped.
         // Until a project read shows the session, it stays hidden and its queue waits.
-        yield* locked(Effect.sync(queueOpening));
+        yield* locked(Effect.map(DateTime.now, (now) => queueOpening(DateTime.formatIso(now))));
         // The session as Mend has it now, so the thread is in the shell, with its message, before
         // the launch answers: t3code's client opens a launched thread only once its shell shows it.
         const read = (attempts: number) =>
@@ -3081,7 +3090,7 @@ export const makePersonHub = (input: {
         );
         if (!report.removed && launcher !== null) {
           // Kept before the thread goes, so a restart never brings it back.
-          yield* state.keepRemoval(launcher, sessionId, Date.now()).pipe(
+          yield* state.keepRemoval(launcher, sessionId, yield* Clock.currentTimeMillis).pipe(
             Effect.catch((error) =>
               Effect.logWarning("t3 gateway could not keep a pending removal", {
                 cause: error.message,
@@ -3153,7 +3162,7 @@ export const makePersonHub = (input: {
             bytes: parsed.bytes,
           });
         }
-        yield* state.saveImages(keeper.id, kept, Date.now()).pipe(
+        yield* state.saveImages(keeper.id, kept, yield* Clock.currentTimeMillis).pipe(
           Effect.mapError(
             () =>
               new ThreadCommandRefused({
@@ -3261,7 +3270,7 @@ export const makePersonHub = (input: {
                   : "The thread is not archived.",
               );
             }
-            const at = command.archived ? new Date().toISOString() : null;
+            const at = command.archived ? DateTime.formatIso(yield* DateTime.now) : null;
             // Archived, what is still queued waits held, kept first: nothing is sent while the
             // thread is archived (the archive itself guards that too), and nothing is lost (a
             // message taken back is history, and history is capped). Unarchived, it stays held
@@ -3314,7 +3323,7 @@ export const makePersonHub = (input: {
             if (source.archivedAt !== null) {
               return yield* refused("The thread is archived. Unarchive it first.");
             }
-            const result = changeLifecycle(source, command.change, new Date());
+            const result = changeLifecycle(source, command.change, yield* DateTime.nowAsDate);
             if (result._tag === "Refused") return yield* refused(result.reason);
             const next = result.lifecycle;
             if (!sameLifecycle(next, source.lifecycle)) {
@@ -3563,8 +3572,8 @@ export const makePersonHub = (input: {
     // Images the person attached to a message never sent (a dropped draft) go after a week; the
     // hub looks once it starts and then every hour, and forgets what went.
     if (keeper !== null) {
-      const pruneDrafts = Effect.suspend(() =>
-        state.pruneImages(Date.now() - UNSENT_IMAGE_TTL_MS, keeper.id),
+      const pruneDrafts = Effect.flatMap(Clock.currentTimeMillis, (now) =>
+        state.pruneImages(now - UNSENT_IMAGE_TTL_MS, keeper.id),
       ).pipe(
         Effect.flatMap((gone) =>
           locked(
@@ -3788,6 +3797,9 @@ const isOutage = (error: MendUnavailable): boolean => error.status === null || e
 const QUEUE_NOT_KEPT =
   "The gateway could not write this to its state file, so nothing changed. Try again.";
 
+/** The queue's clock (`queue.ts`): monotonic milliseconds, never wall time. */
+const queueNow = Effect.map(Clock.monotonicTimeNanos, (nanos) => Number(nanos) / 1_000_000);
+
 /** Why a message the state file could not keep was not sent. */
 const NOT_KEPT =
   "The gateway could not write this message to its state file, so it did not send it. Send it again.";
@@ -3910,7 +3922,9 @@ export const ProjectionsLive: Layer.Layer<
             // The bearers standing for the device stop authenticating first. Completing the
             // refusal closes sockets and can tear the hub down, interrupting whoever found it
             // (its event stream or device check): written after, the revocation was lost.
-            return state.revokeSessionsForDevice(token, Date.now()).pipe(
+            return Effect.flatMap(Clock.currentTimeMillis, (now) =>
+              state.revokeSessionsForDevice(token, now),
+            ).pipe(
               Effect.catch((error) =>
                 Effect.logError("t3 gateway could not revoke a refused device's bearers", {
                   cause: error.message,
@@ -4024,7 +4038,7 @@ export const ProjectionsLive: Layer.Layer<
     );
     // Dropped drafts of everyone, before any hub holds its images in memory; a hub then looks
     // after its own person's every hour.
-    yield* state.pruneImages(Date.now() - UNSENT_IMAGE_TTL_MS, null).pipe(
+    yield* state.pruneImages((yield* Clock.currentTimeMillis) - UNSENT_IMAGE_TTL_MS, null).pipe(
       Effect.catch((error) =>
         Effect.logWarning("t3 gateway could not let go of unsent images", {
           cause: error.message,
@@ -4043,7 +4057,7 @@ export const ProjectionsLive: Layer.Layer<
      * ticket.
      */
     const reconcileDevices = Effect.gen(function* () {
-      const sessions = yield* state.liveSessions(Date.now());
+      const sessions = yield* state.liveSessions(yield* Clock.currentTimeMillis);
       const devices = new Map(sessions.map((session) => [session.deviceToken, session] as const));
       yield* Effect.forEach(
         devices.values(),

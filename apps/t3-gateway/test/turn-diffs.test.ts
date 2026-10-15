@@ -1,4 +1,3 @@
-import { assert, describe, it } from "@effect/vitest";
 import {
   ORCHESTRATION_V2_WS_METHODS,
   ThreadId,
@@ -11,6 +10,7 @@ import * as Option from "effect/Option";
 
 import type { MendCheckpoint, MendTurn } from "../src/mend-workbench.ts";
 import { isSharedChain, SHARED_CHAIN_NOTICE, turnSlicesOf } from "../src/turn-checkpoints.ts";
+import { assert, describe, it } from "./support/effect-vitest.ts";
 import { startFakeMend, type FakeMend } from "./support/fake-mend.ts";
 import { feed } from "./support/feed.ts";
 import { gatewayTestLayer } from "./support/gateway.ts";

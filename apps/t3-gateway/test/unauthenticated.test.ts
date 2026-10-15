@@ -1,10 +1,10 @@
-import { assert, describe, it } from "@effect/vitest";
 import { EnvironmentAuthInvalidError, EnvironmentScopeRequiredError } from "@mend/t3-contracts";
 import * as Effect from "effect/Effect";
 import * as HttpClient from "effect/http/HttpClient";
 import * as HttpClientRequest from "effect/http/HttpClientRequest";
 import * as Schema from "effect/Schema";
 
+import { assert, describe, it } from "./support/effect-vitest.ts";
 import { startFakeMend } from "./support/fake-mend.ts";
 import { bearer, gatewayTestLayer, pairedClient, PERSON, t3Client } from "./support/gateway.ts";
 

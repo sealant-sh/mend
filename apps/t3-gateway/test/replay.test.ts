@@ -2,7 +2,6 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { assert, describe, it } from "@effect/vitest";
 import {
   ORCHESTRATION_V2_WS_METHODS,
   ThreadId,
@@ -12,6 +11,7 @@ import {
 import * as Effect from "effect/Effect";
 
 import { makeReplayLog, makeSequencer } from "../src/replay.ts";
+import { assert, describe, it } from "./support/effect-vitest.ts";
 import { startFakeMend, type FakeMend } from "./support/fake-mend.ts";
 import { feed } from "./support/feed.ts";
 import { gatewayTestLayer } from "./support/gateway.ts";

@@ -1,4 +1,3 @@
-import { assert, describe, it } from "@effect/vitest";
 import {
   type ServerProvider,
   EnvironmentAuthInvalidError,
@@ -17,6 +16,7 @@ import * as Stream from "effect/Stream";
 
 import { EMPTY_SHELL_SNAPSHOT } from "../src/shell.ts";
 import { orchestrationProtocolCompatibilityError } from "./support/compatibility.ts";
+import { assert, describe, it } from "./support/effect-vitest.ts";
 import { startFakeMend, type FakeMend } from "./support/fake-mend.ts";
 import { feed } from "./support/feed.ts";
 import { bearer, gatewayTestLayer, PERSON, t3Client, tokenRequest } from "./support/gateway.ts";

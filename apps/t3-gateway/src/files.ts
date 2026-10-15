@@ -13,6 +13,7 @@ import {
   type ProjectSearchEntriesInput,
   type ProjectSearchEntriesResult,
 } from "@mend/t3-contracts";
+import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 
 import type { GatedMend } from "./device-gate.ts";
@@ -168,7 +169,7 @@ export const makeFileHandlers = (input: {
       if (location === null) return null;
       const key = `${location.projectId}:${location.sessionId ?? ""}`;
       const kept = listings.get(key);
-      const now = Date.now();
+      const now = yield* Clock.currentTimeMillis;
       if (kept !== undefined && now - kept.readAt < LISTING_TTL_MS) return kept;
       const listing = yield* mend.projectFiles(
         session.deviceToken,

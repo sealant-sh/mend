@@ -3,7 +3,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-import { assert, describe, it } from "@effect/vitest";
 import {
   AuthStandardClientScopes,
   ORCHESTRATION_V2_WS_METHODS,
@@ -21,6 +20,7 @@ import * as Option from "effect/Option";
 
 import { grantedScopesOf, GRANTED_SCOPES, WITHHELD_SCOPES } from "../src/auth.ts";
 import { requiredScopesFor, RPC_REQUIRED_SCOPES } from "../src/rpc-scopes.ts";
+import { assert, describe, it } from "./support/effect-vitest.ts";
 import { startFakeMend, type FakeMend } from "./support/fake-mend.ts";
 import { feed } from "./support/feed.ts";
 import { bearer, gatewayTestLayer, PERSON, t3Client, tokenRequest } from "./support/gateway.ts";
