@@ -25,7 +25,14 @@ import {
   statCaptureEntry,
   type WorkspaceSection,
 } from "../src/captures.ts";
-import { buildManifest, sectionOf, snapshotDirectory, uploadObjects } from "./capture-fixture.ts";
+import {
+  buildManifest,
+  describeTree,
+  mtimeDriftNs,
+  sectionOf,
+  snapshotDirectory,
+  uploadObjects,
+} from "./capture-fixture.ts";
 
 /**
  * Section formats (sealantd PR #99 "Dir packs"): format 1 keeps one object per directory, named
@@ -60,32 +67,9 @@ const countingStore = (root: string) => {
   return { gets, layer };
 };
 
-const describeTree = (root: string) => {
-  const out: Array<string> = [];
-  const walk = (at: string, rel: string) => {
-    for (const name of fs.readdirSync(at).toSorted()) {
-      const full = path.join(at, name);
-      const relPath = rel === "" ? name : `${rel}/${name}`;
-      const stat = fs.lstatSync(full);
-      if (stat.isDirectory()) {
-        out.push(`dir ${relPath} ${(stat.mode & 0o7777).toString(8)} ${Math.round(stat.mtimeMs)}`);
-        walk(full, relPath);
-      } else if (stat.isSymbolicLink()) {
-        out.push(`symlink ${relPath} -> ${fs.readlinkSync(full)}`);
-      } else {
-        out.push(
-          `file ${relPath} ${(stat.mode & 0o7777).toString(8)} ${Math.round(stat.mtimeMs)} ${sha256Hex(fs.readFileSync(full))}`,
-        );
-      }
-    }
-  };
-  walk(root, "");
-  return out;
-};
-
 const filesUnder = (root: string): Array<string> =>
   describeTree(root)
-    .filter((line) => line.startsWith("file "))
+    .entries.filter((line) => line.startsWith("file "))
     .map((line) => line.split(" ")[1] ?? "")
     .toSorted();
 
@@ -178,7 +162,10 @@ describe.each(COMBINATIONS)("every reader over $name", ({ workspace, bulk }) => 
       const stats = await run(materialize(manifest, cls, target));
       expect(stats.files).toBe(6);
       expect(stats.hardlinks).toBe(1);
-      expect(describeTree(target)).toEqual(describeTree(sources[cls]));
+      const restored = describeTree(target);
+      const source = describeTree(sources[cls]);
+      expect(restored.entries).toEqual(source.entries);
+      expect(mtimeDriftNs(restored, source)).toBeLessThanOrEqual(1_000n);
       const snapshot = snapshotOf(cls);
       const trees = counting.gets.slice(before).filter((key) => key.includes("/trees/"));
       // Format 1 fetches every dir object on its own; format 2 fetches none.
