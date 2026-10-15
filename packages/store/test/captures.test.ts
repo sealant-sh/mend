@@ -24,6 +24,8 @@ import {
 } from "../src/captures.ts";
 import {
   buildManifest,
+  describeTree,
+  mtimeDriftNs,
   snapshotDirectory,
   uploadObjects,
   writeCdcPack,
@@ -214,30 +216,6 @@ describe("manifest codec", () => {
   });
 });
 
-const describeTree = (root: string) => {
-  const out: Array<string> = [];
-  const walk = (at: string, rel: string) => {
-    for (const name of fs.readdirSync(at).toSorted()) {
-      const full = path.join(at, name);
-      const relPath = rel === "" ? name : `${rel}/${name}`;
-      const stat = fs.lstatSync(full);
-      const mtime = Math.round(stat.mtimeMs);
-      if (stat.isDirectory()) {
-        out.push(`dir ${relPath} ${(stat.mode & 0o7777).toString(8)} ${mtime}`);
-        walk(full, relPath);
-      } else if (stat.isSymbolicLink()) {
-        out.push(`symlink ${relPath} -> ${fs.readlinkSync(full)}`);
-      } else {
-        out.push(
-          `file ${relPath} ${(stat.mode & 0o7777).toString(8)} ${mtime} ${sha256Hex(fs.readFileSync(full))}`,
-        );
-      }
-    }
-  };
-  walk(root, "");
-  return out;
-};
-
 describe("materialize", () => {
   let scratch = "";
   let blobs = "";
@@ -298,7 +276,10 @@ describe("materialize", () => {
       hardlinks: 1,
       bytes: 9_000 + 10 + 20 + 18,
     });
-    expect(describeTree(target)).toEqual(describeTree(source));
+    const written = describeTree(target);
+    const described = describeTree(source);
+    expect(written.entries).toEqual(described.entries);
+    expect(mtimeDriftNs(written, described)).toBeLessThanOrEqual(1_000n);
     // The hardlink pair is one inode again.
     expect(fs.statSync(path.join(target, "README.md")).ino).toBe(
       fs.statSync(path.join(target, "src", "README-link.md")).ino,
@@ -456,7 +437,10 @@ describe("materialize", () => {
           hardlinks: 1,
           bytes: 9_061,
         });
-        expect(describeTree(target)).toEqual(describeTree(source));
+        const written = describeTree(target);
+        const described = describeTree(source);
+        expect(written.entries).toEqual(described.entries);
+        expect(mtimeDriftNs(written, described)).toBeLessThanOrEqual(1_000n);
         for (const relative of [
           "README.md",
           "src/index.ts",
