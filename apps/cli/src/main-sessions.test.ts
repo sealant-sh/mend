@@ -677,20 +677,31 @@ describe("people in a workspace (docs/adr/0016, decisions 13 and 14)", spawning,
   }
 });
 
+/** Reserved ports start here, above the well-known and commonly configured fixed ports. */
+const RESERVED_FROM = 10_000;
+
 /**
  * The first port of the kernel's ephemeral range. Every listen on port 0 and every outgoing
  * connection on the machine draws from that range, so a port released there can be taken before
  * the CLI binds it (#1012); below it, only an explicit bind of that number lands.
  */
 const ephemeralFloor = (): number => {
+  let range: string;
   try {
-    const range = fs.readFileSync("/proc/sys/net/ipv4/ip_local_port_range", "utf8");
-    const low = Number(range.trim().split(/\s+/)[0]);
-    if (Number.isInteger(low) && low > 20_000) return low;
+    range = fs
+      .readFileSync("/proc/sys/net/ipv4/ip_local_port_range", "utf8")
+      .trim()
+      .split(/\s+/)
+      .join("–");
   } catch {
     // Not Linux: macOS and Windows start their ephemeral ranges at 49152.
+    return 32_768;
   }
-  return 32_768;
+  const low = Number(range.split("–")[0]);
+  if (!Number.isInteger(low) || low <= RESERVED_FROM) {
+    throw new Error(`The ephemeral range is ${range}: no ports below it from ${RESERVED_FROM}.`);
+  }
+  return low;
 };
 
 /** Whether `server` now listens on `port`; false when something else holds it. */
@@ -710,16 +721,16 @@ const listenOn = (server: net.Server, port: number) =>
     server.listen(port, "127.0.0.1");
   });
 
-/** Listens on the first free port from a random start between 10000 and the ephemeral range. */
+/** Listens on the first free port, from a random start, between `RESERVED_FROM` and the floor. */
 const listenBelowEphemeral = async (server: net.Server): Promise<number> => {
   const floor = ephemeralFloor();
-  const span = floor - 10_000;
+  const span = floor - RESERVED_FROM;
   const start = Math.floor(Math.random() * span);
   for (let offset = 0; offset < span; offset += 1) {
-    const port = 10_000 + ((start + offset) % span);
+    const port = RESERVED_FROM + ((start + offset) % span);
     if (await listenOn(server, port)) return port;
   }
-  throw new Error(`No free port between 10000 and ${floor}.`);
+  throw new Error(`No free port between ${RESERVED_FROM} and ${floor}.`);
 };
 
 /**
