@@ -1,8 +1,8 @@
 name: CI
 
+# No push trigger: every commit reaches main through the merge queue, whose merge_group run is the
+# full graph on exactly that commit and the trusted cache writer (docs/operations/merge-queue.md).
 on:
-  push:
-    branches: [main]
   pull_request:
   merge_group:
     types: [checks_requested]
