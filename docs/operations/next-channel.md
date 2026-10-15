@@ -269,9 +269,12 @@ it; the rest is this checklist.
 7. **Mend: pin Core `vX'.Y'.Z'`** (`node scripts/sealant-pins.mjs pin X'.Y'.Z'`), merge, **cut a
    Mend next build of the release's version, and run it on the box.** This is the proof that counts:
    the whole stable stack, exactly as it will ship.
-8. **Mend: run packaged acceptance on the Version Packages pull request's head**
-   (`gh workflow run release-acceptance.yml --ref changeset-release/main`) and wait for it to pass,
-   then **merge that pull request and tag `vA.B.C` on it.** Nothing dispatches it automatically.
+8. **Mend: run required CI and packaged acceptance on the Version Packages pull request's head**
+   (`gh workflow run ci.yml --ref changeset-release/main` and
+   `gh workflow run release-acceptance.yml --ref changeset-release/main`), wait for `checks` and
+   acceptance to pass on that head, then **merge that pull request and tag `vA.B.C` on it.** Nothing
+   dispatches either automatically, and GitHub's own runs for the bot-authored pull request stop at
+   the contributor approval policy, so without the first command the pull request has no `checks`.
    _Enforced by the pins job:_ the commit is on main; no prerelease is pinned; the CLI package
    carries the version; no next tag of `A.B.C` sits on a commit the release leaves out; the newest
    next build of `A.B.C` it contains reached npm; and since that build only `.changeset/`,

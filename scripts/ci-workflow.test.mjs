@@ -372,20 +372,12 @@ test("a newer pull request or dispatched head cancels its stale run; main, queue
   );
 });
 
-test("the Version workflow dispatches required CI, and leaves packaged acceptance to the release", () => {
-  assert.equal(versionWorkflow.jobs.version.permissions.actions, "write");
-  const dispatches = versionWorkflow.jobs.version.steps.filter((step) =>
-    step.run?.startsWith("gh workflow run "),
-  );
+test("the Version workflow dispatches nothing: the release runs CI and acceptance on its head", () => {
+  assert.equal(versionWorkflow.jobs.version.permissions.actions, undefined);
   assert.deepEqual(
-    dispatches.map((step) => step.run),
-    ["gh workflow run ci.yml --ref changeset-release/main"],
+    versionWorkflow.jobs.version.steps.filter((step) => step.run?.includes("gh workflow run")),
+    [],
   );
-  for (const step of dispatches) {
-    assert.equal(step.if, "steps.changesets.outputs.pullRequestNumber != ''");
-    assert.equal(step.env.GH_TOKEN, "${{ github.token }}");
-    assert.equal(step.env.GH_REPO, "${{ github.repository }}");
-  }
 });
 
 const normalize = (job) => ({

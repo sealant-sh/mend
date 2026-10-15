@@ -8,6 +8,7 @@ on:
     types: [checks_requested]
   # Version Packages pull requests need an explicit dispatch because their bot-authored
   # pull_request runs stop for the repository's contributor approval policy before any job starts.
+  # The release runs it on the head it will merge (docs/operations/next-channel.md, step 8).
   workflow_dispatch:
   schedule:
     - cron: "23 2 * * *"
@@ -20,8 +21,8 @@ permissions:
 env:
   TURBO_SCM_BASE: ${{ github.event.pull_request.base.sha }}
 
-# A pull request and a dispatched branch (the Version PR, re-dispatched on every main merge) keep
-# only their newest run: an older head's result is never what the required check reads.
+# A pull request and a dispatched branch (such as the Version PR) keep only their newest run: an
+# older head's result is never what the required check reads.
 concurrency:
   group:
     ${{ github.workflow }}-${{ github.event.pull_request.number || (github.event_name ==
