@@ -34,25 +34,44 @@ export `MEND_CI_RUNTIME` from the actual Node/platform/architecture just as CI d
 
 Every package keeps `$TURBO_DEFAULT$` inputs, including its tests, source, fixtures, manifest and
 configuration. Workspace dependency hashes flow through the existing `^build`, `^lint` and
-`^typecheck` edges, including source-only packages whose build node is a transit node. The root
-manifest is a built-in Turbo input. The complete lockfile, workspace catalog, `.node-version` and
-`.npmrc` are explicit global inputs, so changes cannot reuse an old result.
+`^typecheck` edges, including source-only packages whose build node is a transit node. The build
+node leaves out the package's own test files (`*.test.*`, `*.spec.*`) and vitest configurations, so
+a test-only change does not select every dependent's tests through `^build`. Everything else under
+`test/` stays in, because db, sessions and store export `./testing` entries from there that other
+packages' tests import. Three builds keep their own test files, because they read them: desktop's
+and web's Tailwind scans every file of the app, tests included, and the VS Code build typechecks
+`src/**`, tests included, as the publish workflow's type gate. The root manifest is a built-in Turbo
+input. The complete lockfile, workspace catalog, `.node-version` and `.npmrc` are explicit global
+inputs, so changes cannot reuse an old result.
+
+`scripts/ci-build-input-probe.mjs` proves every build task hashes each test file it reads. For each
+build task, Turbo names every file that can change its hash: its own inputs and those of every task
+it depends on. Every other test, spec and vitest configuration file, including those another build
+hashes, gets a unique import, string, Tailwind class and type error appended, and the build must
+then produce exactly what it produced unchanged, exit 0, and carry no marker. Two unchanged builds
+come first: each must exit 0, and their outputs must match byte for byte once three named volatile
+fields are normalized (Nitro's build date, its public-asset mtimes and order, and the marketing
+page's router render times). Any other difference between unchanged builds fails the probe rather
+than hiding a change. Its builds run with every cache off. Its own tests mutation-test it in tiny
+real-Turbo workspaces, one per flaw it must catch, and it runs nightly and on any `turbo.json`
+change (`.github/workflows/build-input-probe.yml`). Deleting test files cannot prove this: a deleted
+file loses the diagnostics and class names a mutation adds.
 
 All tasks hash `CI`, `MEND_CI_RUNTIME`, `NODE_ENV`, `TZ`, `LANG` and `LC_ALL`. Behavioral
 configuration is hashed rather than passed through without a hash. Turbo's standard OS passthrough
 variables such as `PATH` and `HOME` remain available. Native-tool and service suites listed below
 are uncached because those paths do not identify their implementations.
 
-| Task                                 | Additional inputs and environment                                                                                                                                                                       | Outputs restored on a hit                                                                                   |
-| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| All 28 lint tasks                    | Root `.oxlintrc.json`; inherited package source and dependencies                                                                                                                                        | None                                                                                                        |
-| All 28 typecheck tasks               | Shared `@mend/typescript` configuration through workspace dependencies; each package's own tsconfig                                                                                                     | None                                                                                                        |
-| All 8 build tasks                    | `tooling/scripts/**`, package `.env*`; `BUNDLE_*`, `MEND_*`, `APP_URL`, `ALLOWED_ORIGINS`, `VITE_*`, `NITRO_*`, `NODE_OPTIONS`                                                                          | `dist`, `build`, `.output`, `out`, CLI `man`, Astro `.astro`, generated route trees and marketing installer |
-| All 25 test tasks                    | `scripts/**`, `deploy/**`, `.claude/skills/verify/**`, package `.env*`; `MEND_*`, `SEALANT_*`, `DATABASE_URL`, `APP_URL`, `ALLOWED_ORIGINS`, `VITEST_*`, `VITE_*`, `NODE_OPTIONS`, `DOCKER_*`, `TEST_*` | None; real-service exceptions below do not cache                                                            |
-| Marketing build and test             | Root `install.sh`; build excludes its generated copy from inputs                                                                                                                                        | Build restores `public/install.sh`; test checks both copies                                                 |
-| CLI test                             | Root `install.sh`, `Dockerfile`, `scripts/mend-migrations.mjs` and `packages/db/src/migrations.ts`; `$TURBO_EXTENDS$` preserves every inherited input                                                   | Uncached                                                                                                    |
-| Sessions test                        | Provider-login documentation under `apps/docs`, plus `.oxlintrc.json` used by its guarded-import checks                                                                                                 | Uncached                                                                                                    |
-| Web, marketing and desktop typecheck | An explicit dependency on their own build, to restore ignored generated route trees before checking                                                                                                     | Their build's outputs                                                                                       |
+| Task                                 | Additional inputs and environment                                                                                                                                                         | Outputs restored on a hit                                                                                   |
+| ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| All 28 lint tasks                    | Root `.oxlintrc.json`; inherited package source and dependencies                                                                                                                          | None                                                                                                        |
+| All 28 typecheck tasks               | Shared `@mend/typescript` configuration through workspace dependencies; each package's own tsconfig                                                                                       | None                                                                                                        |
+| All 8 build tasks                    | `tooling/scripts/**`, package `.env*`; `BUNDLE_*`, `MEND_*`, `APP_URL`, `ALLOWED_ORIGINS`, `VITE_*`, `NITRO_*`, `NODE_OPTIONS`                                                            | `dist`, `build`, `.output`, `out`, CLI `man`, Astro `.astro`, generated route trees and marketing installer |
+| All 25 test tasks                    | `deploy/**`, `.claude/skills/verify/**`, package `.env*`; `MEND_*`, `SEALANT_*`, `DATABASE_URL`, `APP_URL`, `ALLOWED_ORIGINS`, `VITEST_*`, `VITE_*`, `NODE_OPTIONS`, `DOCKER_*`, `TEST_*` | None; real-service exceptions below do not cache                                                            |
+| Marketing build and test             | Root `install.sh`; build excludes its generated copy from inputs                                                                                                                          | Build restores `public/install.sh`; test checks both copies                                                 |
+| CLI test                             | Root `install.sh`, `Dockerfile`, `scripts/mend-migrations.mjs` and `packages/db/src/migrations.ts`; `$TURBO_EXTENDS$` preserves every inherited input                                     | Uncached                                                                                                    |
+| Sessions test                        | Provider-login documentation under `apps/docs`, plus `.oxlintrc.json` used by its guarded-import checks                                                                                   | Uncached                                                                                                    |
+| Web, marketing and desktop typecheck | An explicit dependency on their own build, to restore ignored generated route trees before checking                                                                                       | Their build's outputs                                                                                       |
 
 Shared native scripts and deployment fixtures conservatively invalidate every test task. This
 includes CLI compose/mirror/migration contracts, the web native reporter and sessions benchmark
@@ -121,8 +140,10 @@ The sweep found a third missing CLI input beyond the two review examples: `serve
 reads the root `Dockerfile` to compare the network-guard image. All four CLI external files now
 change the task hash and select it through `--affected`. Existing `deploy/**` declarations cover
 compose, Caddy, mirror and bootstrap fixtures. The sessions benchmark compatibility test reads
-`scripts/bench/lib.mjs`, already covered by `scripts/**`; the benchmark itself is not used for CI
-sizing. Sessions' oxlint subprocess discovers `.oxlintrc.json` implicitly, covered explicitly.
+`scripts/bench/lib.mjs`, declared in its own test inputs; the benchmark itself is not used for CI
+sizing. Root `scripts/` is not a shared test input: a script reaches a test's hash only where that
+test reads it, which the audit below enforces, so a change to CI scripts no longer selects every
+test suite. Sessions' oxlint subprocess discovers `.oxlintrc.json` implicitly, covered explicitly.
 
 `scripts/ci-test-inputs.mjs`, exercised by `ci-cache.test.mjs` in the always-run static checks,
 resolves literals, local constants, `import.meta`, `fileURLToPath`, parent-directory joins,

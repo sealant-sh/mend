@@ -51,6 +51,8 @@ const fixture = (t) => {
       "const fs=require('node:fs');fs.mkdirSync('dist',{recursive:true});fs.writeFileSync('dist/result','artifact');\n",
     );
     write(`packages/${name}/src/input.ts`, "export const value = 1;\n");
+    write(`packages/${name}/test/input.test.ts`, "export const checked = 1;\n");
+    write(`packages/${name}/test/helper.ts`, "export const helper = 1;\n");
   }
   const env = {
     PATH: process.env.PATH,
@@ -105,7 +107,8 @@ test("real Turbo restores build artifacts and misses for shared inputs and hashe
     [".node-version", "26.5.0\n", "consumer#test"],
     [".oxlintrc.json", '{"rules":{}}\n', "consumer#lint"],
     ["tooling/scripts/bundle-app.mjs", "// changed builder\n", "consumer#build"],
-    ["scripts/fixture.mjs", "// changed fixture\n", "consumer#test"],
+    // A dependency's non-test file under test/ (a testing entry other packages import) still flows.
+    ["packages/library/test/helper.ts", "// changed helper\n", "consumer#test"],
     [".claude/skills/verify/scripts/fixture.mjs", "// changed verification\n", "consumer#test"],
     ["deploy/docker/fixture.yaml", "image: postgres:18\n", "consumer#test"],
     [
@@ -128,6 +131,26 @@ test("real Turbo restores build artifacts and misses for shared inputs and hashe
         file,
       );
       assert.equal(task.cache.status, "MISS", file);
+    } finally {
+      f.write(file, original);
+    }
+  }
+  // A dependency's own test file and an undeclared root script do not reach a consumer's test.
+  for (const [file, contents] of [
+    ["packages/library/test/input.test.ts", "export const checked = 2;\n"],
+    ["scripts/fixture.mjs", "// changed fixture\n"],
+  ]) {
+    const original = readFileSync(join(f.root, file));
+    try {
+      f.write(file, contents);
+      const task = f
+        .dry(["test", "--filter=consumer"])
+        .tasks.find((candidate) => candidate.taskId === "consumer#test");
+      assert.equal(
+        task.hash,
+        baseline.tasks.find((candidate) => candidate.taskId === "consumer#test").hash,
+        file,
+      );
     } finally {
       f.write(file, original);
     }
@@ -178,7 +201,13 @@ test("affected selection intersects lanes and follows cross-package inputs witho
     changed("packages/library/src/input.ts", "export const value=2;\n", ["--filter=consumer"]),
     ["consumer"],
   );
-  assert.deepEqual(changed("scripts/fixture.mjs", "// new external fixture\n", []), [
+  // Root scripts select only the tests that declare them; a test file selects its own package.
+  assert.deepEqual(changed("scripts/fixture.mjs", "// new external fixture\n", []), []);
+  assert.deepEqual(
+    changed("packages/library/test/input.test.ts", "export const checked=2;\n", []),
+    ["library"],
+  );
+  assert.deepEqual(changed("packages/library/test/helper.ts", "export const helper=2;\n", []), [
     "consumer",
     "library",
   ]);
@@ -250,7 +279,12 @@ test("CLI installer, image and migration contracts hash their external inputs", 
       f.write(file, original);
     }
   }
-  assert.ok(baseline.inputs["../../scripts/fixture.mjs"], "shared inputs remain inherited");
+  assert.equal(
+    baseline.inputs["../../scripts/fixture.mjs"],
+    undefined,
+    "a root script is a test input only where a test declares it",
+  );
+  assert.ok(baseline.inputs["../../deploy/docker/fixture.yaml"], "shared inputs remain inherited");
 });
 
 test("repository test reads are declared in resolved Turbo inputs and native consumers cannot cache", () => {
@@ -324,4 +358,30 @@ test("input audit resolves root paths through URL, dirname, cwd, constants and t
     assert.ok(result.paths.includes(`/repo/${file}`), file);
   }
   assert.deepEqual(result.binaries, ["ssh"]);
+});
+
+test("input audit counts root files the test command itself loads, and what they import", (t) => {
+  const root = mkdtempSync(join(tmpdir(), "mend-input-audit-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const files = {
+    "packages/web/package.json": JSON.stringify({
+      scripts: {
+        test: "node --test --test-reporter=../../scripts/reporter.mjs --test-reporter-destination=stdout src/a.test.mjs",
+      },
+    }),
+    "packages/web/src/a.test.mjs": "export const checked = 1;\n",
+    "scripts/reporter.mjs": 'import "./reporter-lib.mjs";\n',
+    "scripts/reporter-lib.mjs": "export const format = 1;\n",
+    "scripts/unrelated.mjs": "export const unrelated = 1;\n",
+  };
+  for (const [file, text] of Object.entries(files)) {
+    mkdirSync(dirname(join(root, file)), { recursive: true });
+    writeFileSync(join(root, file), text);
+  }
+  const [audit] = testInputAudit(root, Object.keys(files), ["packages/web"]);
+  assert.deepEqual(Object.keys(audit.references), [
+    "scripts/reporter-lib.mjs",
+    "scripts/reporter.mjs",
+  ]);
+  assert.equal(audit.references["scripts/reporter.mjs"], "packages/web/package.json");
 });

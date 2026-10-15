@@ -1,0 +1,43 @@
+name: Build input probe
+
+# Turbo build tasks leave out test files they do not read, so a test-only change selects only its
+# own package's tests. This proves each build hashes every test file it reads: per build task it
+# appends unique markers to every test file outside that task's hash, and requires the real build's
+# outputs and exit code to stay the same (scripts/ci-build-input-probe.mjs). It runs nightly and on
+# any change to the turbo configs or to the probe, and is not a required check.
+on:
+  schedule:
+    - cron: "47 3 * * *"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - turbo.json
+      - "**/turbo.json"
+      - scripts/ci-build-input-probe.mjs
+      - scripts/ci-build-input-probe.test.mjs
+      - .github/workflows/build-input-probe.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-input-probe-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  probe:
+    runs-on: [self-hosted, box, linux, x64]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .node-version
+      - run: pnpm install --frozen-lockfile
+      # The probe's own fixtures first: each flaw it must catch, in a tiny real-Turbo workspace.
+      - run: node --test scripts/ci-build-input-probe.test.mjs
+      # Every build runs with Turbo's caches off, so a mutated output is never stored.
+      - run: node scripts/ci-build-input-probe.mjs

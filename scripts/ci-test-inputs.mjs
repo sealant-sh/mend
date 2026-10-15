@@ -140,6 +140,13 @@ export const testInputAudit = (repository, files, packages) => {
         references.set(path.relative(repository, file), path.relative(repository, from));
       if (codeFile.test(file) && !visited.has(file)) queue.push(file);
     };
+    // The test command itself can load files outside the package, such as a reporter passed as
+    // `--test-reporter=../../scripts/reporter.mjs`: every relative path in it is a read.
+    const manifestFile = path.join(root, "package.json");
+    for (const [, reference] of scripts.matchAll(/(?:^|[\s=:'"])((?:\.\.?\/)+[^\s'"]+)/g)) {
+      const file = path.resolve(root, reference);
+      if (tracked.has(file)) enqueue(file, manifestFile);
+    }
     while (queue.length) {
       const file = queue.pop();
       if (visited.has(file)) continue;
