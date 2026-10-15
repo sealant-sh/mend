@@ -70,22 +70,21 @@ reports `author_association: CONTRIBUTOR`. Run `38607378893` therefore ended wit
 ordinary CI check on head `1e867ddd1c5c9a076f8d00caae80bbea5d580ff0`. The separately dispatched
 release acceptance run `38607378387` succeeded, so packaged acceptance is not the current blocker.
 
-`version.yml` dispatches ordinary `ci.yml` on the Version branch. It no longer dispatches packaged
-release acceptance: that cost ~14 box runner-minutes per main merge for heads that were usually
-replaced, so the release procedure runs it once on the head being released (`next-channel.md`, step
-8). GitHub resolves the named ref to the Version branch's current head and attaches the required
-`checks` result to that SHA. `workflow_dispatch` is not a trusted cache writer, so the self-hosted
-jobs use `remote:r` while running the full graph. This neither approves nor reruns the stopped
-automatic run. A subsequent push to `main` lets Changesets update the existing Version PR and
-dispatch its CI; this change does not touch #455 itself.
+`version.yml` dispatches nothing. Dispatching ordinary `ci.yml` on the Version branch after every
+main merge cost a full box run for a head that was usually replaced, the same reason packaged
+release acceptance stopped being dispatched there. The release procedure runs both once, on the head
+being released (`next-channel.md`, step 8): `gh workflow run ci.yml --ref changeset-release/main`,
+then `release-acceptance.yml`. GitHub resolves the named ref to the Version branch's current head
+and attaches the required `checks` result to that SHA. `workflow_dispatch` is not a trusted cache
+writer, so the self-hosted jobs use `remote:r` while running the full graph. Without that dispatch
+the Version PR carries no `checks` and cannot enter the queue.
 
 ## Superseded runs
 
 A pull request and a dispatched branch keep only their newest CI run: `ci.yml`'s concurrency group
-is the pull request number, or the ref for a `workflow_dispatch`, and both cancel in progress. Every
-main merge re-dispatches CI on the Version branch, so without this each merge stacked another full
-run behind the stale ones. Merge groups and the nightly run are grouped by run id and are never
-cancelled.
+is the pull request number, or the ref for a `workflow_dispatch`, and both cancel in progress, so
+dispatching CI on the Version branch again replaces the run on the head it superseded. Merge groups
+and the nightly run are grouped by run id and are never cancelled.
 
 ## Enqueuing a pull request
 
