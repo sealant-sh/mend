@@ -1,7 +1,7 @@
 import { execFile, spawn } from "node:child_process";
 
 import { redactRepositoryUrl, redactUrlCredentials } from "@mend/domain/workbench";
-import { Effect, Schema } from "effect";
+import { Context, Effect, Scheduler, Schema } from "effect";
 
 /** A git invocation that exited nonzero (or could not run at all). */
 export class GitError extends Schema.TaggedErrorClass<GitError>()("GitError", {
@@ -333,28 +333,39 @@ export const gitCapped = (
   maxBytes: number,
   deadlineMs?: number,
 ): Effect.Effect<CappedOutput, GitError> =>
-  Effect.suspend(() => {
-    let cut = false;
-    // Set once git runs: the deadline stops it, and what it printed so far answers, cut.
-    let stop: (() => void) | undefined;
-    const capped = Effect.callback<CappedOutput, GitError>((resume) => {
+  Effect.contextWith((context: Context.Context<never>) =>
+    Effect.callback<CappedOutput, GitError>((resume) => {
       const chunks: Array<Buffer> = [];
       let kept = 0;
+      let cut = false;
       let stderr = Buffer.alloc(0);
       let settled = false;
-      const settle = (effect: Effect.Effect<CappedOutput, GitError>) => {
-        if (settled) return;
-        settled = true;
-        resume(effect);
-      };
       const child = spawn("git", [...args], {
         cwd,
         env: gitProcessEnv(undefined),
         stdio: ["ignore", "pipe", "pipe"],
       });
-      stop = () => {
-        cut = true;
-        child.kill();
+      // Armed now, on this fiber's Clock, in a fiber that never yields before its sleep registers.
+      // A forked deadline arms only once the scheduler starts it: git could finish past the bound
+      // and answer whole.
+      const disarm =
+        deadlineMs === undefined
+          ? undefined
+          : Effect.runCallbackWith(Context.add(context, Scheduler.PreventSchedulerYield, true))(
+              Effect.sleep(deadlineMs).pipe(
+                Effect.andThen(
+                  Effect.sync(() => {
+                    cut = true;
+                    child.kill();
+                  }),
+                ),
+              ),
+            );
+      const settle = (effect: Effect.Effect<CappedOutput, GitError>) => {
+        if (settled) return;
+        settled = true;
+        disarm?.();
+        resume(effect);
       };
       child.stdout.on("data", (chunk: Buffer) => {
         if (cut) return;
@@ -408,16 +419,12 @@ export const gitCapped = (
           ),
         );
       });
-      return Effect.sync(() => child.kill());
-    });
-    if (deadlineMs === undefined) return capped;
-    return Effect.sleep(deadlineMs).pipe(
-      Effect.andThen(Effect.sync(() => stop?.())),
-      Effect.forkScoped,
-      Effect.andThen(capped),
-      Effect.scoped,
-    );
-  });
+      return Effect.sync(() => {
+        disarm?.();
+        child.kill();
+      });
+    }),
+  );
 
 export const gitQuiet = (
   args: ReadonlyArray<string>,
