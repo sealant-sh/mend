@@ -18,8 +18,11 @@ Ruleset `20201151` (`protect-main`) now requires a pull request (squash only, no
 and merged at a time, `ALLGREEN`, a 60-minute check timeout. Deletion and non-fast-forward
 protections stay. Yiannis decided there is no administrator bypass: `bypass_actors` is empty, so
 every route into `main`, the Version Packages pull request included, passes `checks` in the queue.
-He has not yet chosen a batch size above one; the capacity model's background-load section shows
-batching is the main lever on runner demand.
+On the same day he chose the batch size: a merge group takes at least one and at most five queued
+pull requests (`min_entries_to_merge` 1, `max_entries_to_merge` 5, no wait), still one group built
+at a time. A lone pull request is tested and merged at once; a burst shares one full-graph run per
+group of up to five, which the capacity model's background-load section shows is the main lever on
+runner demand.
 
 ## Orchestrator activation contract
 
@@ -29,8 +32,8 @@ rule for `main`:
 - Preserve the deletion and non-fast-forward protections.
 - Require a pull request and the merge queue for the default branch.
 - Require the `checks` status from GitHub Actions, app ID `15368`.
-- Set the merge queue's minimum and maximum merge-group size to one. A queued commit must be tested
-  by itself before it reaches `main`.
+- Activate with a merge-group size of one, so the first queued commits are each tested by themselves
+  before they reach `main`; the batch size is Yiannis's decision (above).
 - Set bypass actors to the owner's decision. Do not infer a policy from an empty current list.
 - Keep the ruleset active and targeted at `~DEFAULT_BRANCH`.
 
