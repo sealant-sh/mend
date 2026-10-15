@@ -668,3 +668,40 @@ post-split records, original sources and the AST comparison script are archived 
 The orchestrator confirmed trusted remote writes from main after #980: 7 writes in 17:53–18:03 CEST
 and 68 in 18:03–18:13, with zero denied and about 30 MB stored. Scenario PRs remain held until this
 split merges and its main push refreshes the CLI and sessions cache entries.
+
+## Step 6: Core and sealantd
+
+Step 6 applies the same work to Core (`sealant-sh/sealant`) and sealantd. Both run on the box
+runners beside Mend, so a minute saved there is a runner freed for Mend.
+
+| Change                                                                                 | Outcome                                    |
+| -------------------------------------------------------------------------------------- | ------------------------------------------ |
+| Core: cancel a pull request's previous run; no `cache: pnpm` on box jobs               | Core #367, merged                          |
+| sealantd: cargo-nextest instead of `cargo test`                                        | sealantd #163, merged                      |
+| sealantd: tests that fail when starved of CPU                                          | Filed as sealantd #167; next: paused clock |
+| sealantd: a persistent `CARGO_TARGET_DIR` on the box runners instead of rust-cache     | Rejected, see below                        |
+| Core: the Kubernetes e2e runs the sealantd image Core pins, not one built from `main`  | Core #368                                  |
+| sealantd: documentation-only pull requests skip the Rust and Node jobs (sealantd #158) | sealantd #168                              |
+
+### Rejected: a persistent Cargo target directory
+
+A target directory that survives between jobs on the box runners would save about 15 to 30 seconds
+per sealantd run. Since sealantd #163, `Swatinem/rust-cache` already hits there: its restore takes
+about 15 seconds, its save 0 seconds, and a warm `cargo clippy` about 11 seconds.
+
+It is rejected because sealantd's `next.yml` and `release.yml` also run on the box runners. A target
+directory shared between pull request jobs and those workflows would let a pull request write build
+artifacts that a published binary then links. That is a cache-poisoning path into what ships, and 15
+to 30 seconds does not justify it. A target per trust level (pull requests apart from `main` and
+releases) would close the path, but it costs disk and upkeep for the same small gain. Do not propose
+it again without a new reason.
+
+The caches that remain do not open that path, checked 2026-10-15:
+
+- rust-cache runs only in sealantd's `ci.yml`. `next.yml` and `release.yml` do not use rust-cache or
+  `actions/cache`, so nothing a pull request saves there reaches them. GitHub's cache is also scoped
+  per branch, falling back only to the base branch.
+- Both publishing workflows build `docker/Dockerfile` in a fresh buildx builder that
+  `docker/setup-buildx-action` creates for the job. That builder is where the Dockerfile's Cargo
+  cache mounts live, so a release never builds from a cache another job wrote. The Docker daemon's
+  own build cache, which the box runners keep between jobs, is not read by those builds.
