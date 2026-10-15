@@ -263,6 +263,7 @@ describe("matching", () => {
       const line = `${"a".repeat(27)}!a`;
       const query = { query: "(a+)+$", caseSensitive: true, wholeWord: false, useRegex: true };
       let ticks = 0;
+      // Real time: counts the event loop's real ticks while the 250 ms budget runs out
       const timer = setInterval(() => {
         ticks += 1;
       }, 10);

@@ -10,11 +10,12 @@ import * as Option from "effect/Option";
 
 import type { MendCheckpoint, MendTurn } from "../src/mend-workbench.ts";
 import { isSharedChain, SHARED_CHAIN_NOTICE, turnSlicesOf } from "../src/turn-checkpoints.ts";
-import { assert, describe, it } from "./support/effect-vitest.ts";
+import { assert, describe, it, TestClock } from "./support/effect-vitest.ts";
 import { startFakeMend, type FakeMend } from "./support/fake-mend.ts";
 import { feed } from "./support/feed.ts";
 import { gatewayTestLayer } from "./support/gateway.ts";
 import { pairAndConnect } from "./support/rpc.ts";
+import { GatewayTimers, withGatewayTimers } from "./support/timers.ts";
 
 /**
  * Per-turn diffs (ADR 0012, phase 3): each ended turn's checkpoint, correlated by session and
@@ -40,9 +41,10 @@ const tagOf = (exit: Exit.Exit<unknown, unknown>): string | undefined => {
 };
 
 describe("per-turn diffs", () => {
-  it.live("shows each ended turn's files, and serves its diff and the thread's", () =>
+  it.effect("shows each ended turn's files, and serves its diff and the thread's", () =>
     withGateway((mend) =>
       Effect.gen(function* () {
+        const timers = yield* GatewayTimers;
         mend.workbench.addProject("project-1", "mend");
         mend.workbench.addSession({ id: "session-1", projectId: "project-1" });
         const start = mend.workbench.addCheckpoint("session-1", "session-start");
@@ -59,9 +61,11 @@ describe("per-turn diffs", () => {
           rpc[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({ threadId: THREAD }),
         );
         // The card arrives once the gateway read the turn's files: a checkpoint of run 1.
-        const captured = yield* thread.next(
-          (item): item is Extract<Item, { kind: "event" }> =>
-            item.kind === "event" && item.event.type === "checkpoint.captured",
+        const captured = yield* TestClock.withLive(
+          thread.next(
+            (item): item is Extract<Item, { kind: "event" }> =>
+              item.kind === "event" && item.event.type === "checkpoint.captured",
+          ),
         );
         assert.isTrue(
           captured.event.type === "checkpoint.captured" &&
@@ -90,11 +94,15 @@ describe("per-turn diffs", () => {
           sessionId: "session-1",
           projectId: "project-1",
         });
-        yield* thread.next(
-          (item): item is Extract<Item, { kind: "event" }> =>
-            item.kind === "event" &&
-            item.event.type === "checkpoint.captured" &&
-            item.event.payload.appRunOrdinal === 2,
+        // The chain was read a moment ago: it is read again once that read is two seconds old.
+        yield* timers.runOut("2 seconds", "the turn chain's re-read");
+        yield* TestClock.withLive(
+          thread.next(
+            (item): item is Extract<Item, { kind: "event" }> =>
+              item.kind === "event" &&
+              item.event.type === "checkpoint.captured" &&
+              item.event.payload.appRunOrdinal === 2,
+          ),
         );
         const turn = yield* rpc[ORCHESTRATION_V2_WS_METHODS.getTurnDiff]({
           threadId: THREAD,
@@ -126,14 +134,15 @@ describe("per-turn diffs", () => {
         );
         assert.strictEqual(tagOf(missing), "OrchestrationGetTurnDiffError");
       }),
-    ),
+    ).pipe(withGatewayTimers),
   );
 });
 
 describe("per-turn diffs while Mend catches up", () => {
-  it.live("a checkpoint that lands after the turn ended is read when it lands", () =>
+  it.effect("a checkpoint that lands after the turn ended is read when it lands", () =>
     withGateway((mend) =>
       Effect.gen(function* () {
+        const timers = yield* GatewayTimers;
         mend.workbench.addProject("project-1", "mend");
         mend.workbench.addSession({ id: "session-1", projectId: "project-1" });
         const start = mend.workbench.addCheckpoint("session-1", "session-start");
@@ -143,8 +152,10 @@ describe("per-turn diffs while Mend catches up", () => {
         const thread = yield* feed(
           rpc[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({ threadId: THREAD }),
         );
-        yield* thread.next(
-          (item): item is Extract<Item, { kind: "snapshot" }> => item.kind === "snapshot",
+        yield* TestClock.withLive(
+          thread.next(
+            (item): item is Extract<Item, { kind: "snapshot" }> => item.kind === "snapshot",
+          ),
         );
         // Mend told of the turn's end before it took the checkpoint.
         const early = yield* Effect.exit(
@@ -166,9 +177,13 @@ describe("per-turn diffs while Mend catches up", () => {
           sessionId: "session-1",
           projectId: "project-1",
         });
-        yield* thread.next(
-          (item): item is Extract<Item, { kind: "event" }> =>
-            item.kind === "event" && item.event.type === "checkpoint.captured",
+        // The chain was read a moment ago: it is read again once that read is two seconds old.
+        yield* timers.runOut("2 seconds", "the turn chain's re-read");
+        yield* TestClock.withLive(
+          thread.next(
+            (item): item is Extract<Item, { kind: "event" }> =>
+              item.kind === "event" && item.event.type === "checkpoint.captured",
+          ),
         );
         const turn = yield* rpc[ORCHESTRATION_V2_WS_METHODS.getTurnDiff]({
           threadId: THREAD,
@@ -177,7 +192,7 @@ describe("per-turn diffs while Mend catches up", () => {
         });
         assert.strictEqual(turn.diff, "diff --git a/a.ts b/a.ts\n");
       }),
-    ),
+    ).pipe(withGatewayTimers),
   );
 
   it.live("says the worktree is shared when another session works in it with no checkpoint", () =>

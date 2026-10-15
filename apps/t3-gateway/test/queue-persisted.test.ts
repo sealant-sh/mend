@@ -181,6 +181,7 @@ describe("a queue kept across a restart", () => {
           const held = projection.runs.find((run) => run.userMessageId === "message-held");
           assert.strictEqual(held?.status, "queued");
           assert.isTrue(held?.queueHeld);
+          // Real time: rules out a send of the held queue; no gateway timer runs under it
           yield* Effect.sleep("300 millis");
           assert.strictEqual(turnPosts(mend).length, 0);
 
@@ -247,6 +248,7 @@ describe("a kept message is sent once, by someone who may", () => {
           yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](command);
           mend.workbench.setTurn(open, "completed");
           yield* eventually(() => turnPosts(mend).length === 1, "the kept message's turn");
+          // Real time: rules out a second send over the socket; no gateway timer runs under it
           yield* Effect.sleep("500 millis");
           assert.strictEqual(turnPosts(mend).length, 1);
           const projection = yield* rpc[ORCHESTRATION_V2_WS_METHODS.getThreadProjection]({
@@ -372,6 +374,7 @@ describe("a kept message is sent once, by someone who may", () => {
             database.close();
             yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](command);
             yield* eventually(() => turnPosts(mend).length === 1, "the turn");
+            // Real time: the send's bookkeeping ends before the restart; nothing signals it
             yield* Effect.sleep("100 millis");
           }),
         );
@@ -384,6 +387,7 @@ describe("a kept message is sent once, by someone who may", () => {
           Effect.gen(function* () {
             const { rpc } = yield* pairAndConnect(mend, "UNRECORDED-AFTER");
             yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](command);
+            // Real time: rules out a second send over the socket; no gateway timer runs under it
             yield* Effect.sleep("400 millis");
             assert.strictEqual(turnPosts(mend).length, 1);
           }),

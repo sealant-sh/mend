@@ -16,10 +16,11 @@ import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 
 import { nextModeLineOf } from "../src/thread-projection.ts";
-import { assert, describe, it } from "./support/effect-vitest.ts";
+import { assert, describe, it, TestClock } from "./support/effect-vitest.ts";
 import { startFakeMend, type FakeMend } from "./support/fake-mend.ts";
 import { gatewayTestLayer } from "./support/gateway.ts";
 import { pairAndConnect } from "./support/rpc.ts";
+import { GatewayTimers, withGatewayTimers } from "./support/timers.ts";
 
 /**
  * The runtime-mode switch (ADR 0012, phase 3: "the next launch"): Mend sets a permission mode per
@@ -71,9 +72,10 @@ const notices = (value: { readonly turnItems: ReadonlyArray<{ readonly type: str
   );
 
 describe("the runtime-mode switch", () => {
-  it.live("applies a mode from the agent's next start, saying so until it does", () =>
+  it.effect("applies a mode from the agent's next start, saying so until it does", () =>
     withGateway((mend) =>
       Effect.gen(function* () {
+        const timers = yield* GatewayTimers;
         mend.workbench.addProject("project-1", "mend");
         mend.workbench.addSession({ id: "session-1", projectId: "project-1" });
         const { rpc } = yield* pairAndConnect(mend, "MODE");
@@ -99,25 +101,30 @@ describe("the runtime-mode switch", () => {
           attachments: [],
           dispatchMode: { type: "queue_after_active" },
         });
-        yield* eventually(() => mend.workbench.launches.length === 1, "the launch");
+        // A send that finds the agent gone waits out its backoff, then reads and launches.
+        yield* timers.drive("1 second", () => mend.workbench.launches.length === 1, "the launch");
         assert.deepStrictEqual(mend.workbench.launches[0]?.body, {
           mode: "protocol",
           permissionMode: "ask",
         });
         // Once the agent runs asking, there is nothing left to say.
-        yield* eventually(
-          () => mend.workbench.agents.get("session-1")?.protocolOptions?.permissionMode === "ask",
-          "the asking agent",
+        yield* TestClock.withLive(
+          eventually(
+            () => mend.workbench.agents.get("session-1")?.protocolOptions?.permissionMode === "ask",
+            "the asking agent",
+          ),
         );
-        yield* eventually(
-          () => mend.workbench.turns.get("session-1")?.length === 1,
-          "the message's turn",
+        yield* TestClock.withLive(
+          eventually(
+            () => mend.workbench.turns.get("session-1")?.length === 1,
+            "the message's turn",
+          ),
         );
         const applied = yield* projection();
         assert.strictEqual(applied.thread.runtimeMode, "approval-required");
         assert.notInclude(notices(applied), nextModeLineOf("ask"));
       }),
-    ),
+    ).pipe(withGatewayTimers),
   );
 
   it.live("refuses a mode the state file cannot keep, so a restart never loosens it", () => {

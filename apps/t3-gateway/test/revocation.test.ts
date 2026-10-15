@@ -20,12 +20,13 @@ import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 
 import { DEVICE_CONFIRMED_FOR_MS } from "../src/auth.ts";
-import { assert, describe, it } from "./support/effect-vitest.ts";
+import { assert, describe, it, TestClock } from "./support/effect-vitest.ts";
 import { startFakeMend, type FakeMend } from "./support/fake-mend.ts";
 import { feed } from "./support/feed.ts";
 import { bearer, gatewayTestLayer, PERSON, t3Client, tokenRequest } from "./support/gateway.ts";
 import { startMendProxy } from "./support/mend-proxy.ts";
 import { pairAndConnect, socketUrl } from "./support/rpc.ts";
+import { GatewayTimers, withGatewayTimers } from "./support/timers.ts";
 
 /**
  * A device revoked in Mend ends the gateway bearers that stand for it (the box check, 2026-10-10):
@@ -123,27 +124,39 @@ const shellRead = (accessToken: string) =>
   });
 
 describe("a device revoked in Mend", () => {
-  it.live("ends its bearer when the hub's own reads find it, during an open socket", () => {
+  it.effect("ends its bearer when the hub's own reads find it, during an open socket", () => {
     const statePath = statePathFor();
     return Effect.gen(function* () {
+      const timers = yield* GatewayTimers;
       const mend = yield* startFakeMend;
       yield* Effect.gen(function* () {
         const { access, rpc } = yield* pairAndConnect(mend, "REVOKEOPEN");
         assert.deepStrictEqual(yield* rpc[WS_METHODS.serverProbe]({}), {});
         // The hub reads Mend's event stream while the socket is open.
-        yield* eventually(
-          Effect.sync(() => mend.workbench.eventStreams),
-          (streams) => streams > 0,
+        yield* TestClock.withLive(
+          eventually(
+            Effect.sync(() => mend.workbench.eventStreams),
+            (streams) => streams > 0,
+          ),
         );
 
         // Revoked with no call of the client's in flight: the hub's reconnecting stream finds it.
         mend.revoke(mend.claims[0]?.token ?? "");
         mend.workbench.dropStreams();
+        yield* timers.runOut(
+          "1 second",
+          "the hub's reconnect to Mend's event stream",
+          Effect.sync(() =>
+            assert.deepStrictEqual(revokedAtOf(statePath, deviceIdOf(mend, 0)), [null]),
+          ),
+        );
 
         // The hub's finding alone revokes the bearer: nothing has asked for a ticket yet.
-        yield* eventually(
-          Effect.sync(() => revokedAtOf(statePath, deviceIdOf(mend, 0))),
-          ([revokedAt]) => typeof revokedAt === "number",
+        yield* TestClock.withLive(
+          eventually(
+            Effect.sync(() => revokedAtOf(statePath, deviceIdOf(mend, 0))),
+            ([revokedAt]) => typeof revokedAt === "number",
+          ),
         );
         const refused = yield* ticketRequest(access.access_token);
         assert.strictEqual(refused.status, 401);
@@ -151,11 +164,11 @@ describe("a device revoked in Mend", () => {
 
         // The open socket is closed too.
         const probe = yield* Effect.exit(
-          rpc[WS_METHODS.serverProbe]({}).pipe(Effect.timeout("5 seconds")),
+          TestClock.withLive(rpc[WS_METHODS.serverProbe]({}).pipe(Effect.timeout("5 seconds"))),
         );
         assert.isTrue(Exit.isFailure(probe));
       }).pipe(Effect.scoped, Effect.provide(gatewayTestLayer(mend.url, statePath)));
-    });
+    }).pipe(withGatewayTimers);
   });
 
   it.live("gets no ticket though the gateway has not noticed yet", () =>
@@ -257,7 +270,7 @@ describe("a device revoked in Mend", () => {
       }),
   );
 
-  it.live("gets nothing while Mend cannot say, and is told to retry (review 660, SF2)", () =>
+  it.effect("gets nothing while Mend cannot say, and is told to retry (review 660, SF2)", () =>
     Effect.gen(function* () {
       const mend = yield* startFakeMend;
       const proxy = yield* startMendProxy(mend.url);
@@ -274,7 +287,10 @@ describe("a device revoked in Mend", () => {
         // A device Mend still paired a moment ago is served on that answer for its short window,
         // then told the same: nothing is served on the gateway's word alone.
         assert.strictEqual((yield* shellRead(laptop)).status, 200);
-        yield* Effect.sleep(DEVICE_CONFIRMED_FOR_MS + 100);
+        // Mend confirmed the laptop at the clock's start: it is served until the window ends.
+        yield* TestClock.adjust(DEVICE_CONFIRMED_FOR_MS - 1);
+        assert.strictEqual((yield* shellRead(laptop)).status, 200);
+        yield* TestClock.adjust(1);
         assert.strictEqual((yield* shellRead(laptop)).status, 503);
 
         // Mend back: the revoked device is refused, the other served.
@@ -322,6 +338,7 @@ describe("a device revoked in Mend", () => {
       for (const status of [404, 403]) {
         proxy.setDeviceCheckStatus(status);
         const before = proxy.deviceChecks();
+        // Real time: the start check and its answer cross real sockets; no gateway timer runs
         yield* Effect.sleep("1500 millis").pipe(
           Effect.scoped,
           Effect.provide(gatewayTestLayer(proxy.url, statePath)),

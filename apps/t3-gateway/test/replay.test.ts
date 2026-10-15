@@ -58,6 +58,7 @@ describe("replay after a sequence", () => {
           const session = mend.workbench.sessions.get("session-1");
           if (session !== undefined) session.label = "After";
           mend.workbench.emit({ type: "session", sessionId: "session-1", projectId: "project-1" });
+          // Real time: Mend's rename reaches the gateway over a real socket; nothing signals it
           yield* Effect.sleep("300 millis");
 
           yield* Effect.scoped(
@@ -112,6 +113,7 @@ describe("replay after a sequence", () => {
         );
         // The agent answers while the client is away.
         mend.workbench.addItem(turn, { kind: "assistant-message", text: "It reads tokens." });
+        // Real time: Mend's item reaches the gateway over a real socket; nothing signals it
         yield* Effect.sleep("300 millis");
 
         const resumed = yield* Effect.scoped(
