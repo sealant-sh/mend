@@ -4,7 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import { describe, expect, it, TestClock } from "@mend/test-ci/effect-vitest";
-import { Effect, Fiber } from "effect";
+import { Effect, Fiber, Scheduler } from "effect";
 
 import { gitCapped } from "../src/git.ts";
 
@@ -29,7 +29,38 @@ const writeEnd = (fifo: string) =>
     (handle) => Effect.promise(() => handle.close()),
   );
 
+/** Starts every queued fiber a second late, as a busy dispatcher can. */
+const lateStarts: Scheduler.Scheduler = {
+  executionMode: "async",
+  shouldYield: () => false,
+  makeDispatcher: () => ({
+    scheduleTask: (task) => {
+      setTimeout(task, 1_000);
+    },
+    flush: () => {},
+  }),
+};
+
+/** Ends git's input if git still reads the FIFO, so it finishes; a stopped git has no reader. */
+const endInputIfRead = (fifo: string) =>
+  Effect.try(() =>
+    fs.closeSync(fs.openSync(fifo, fs.constants.O_WRONLY | fs.constants.O_NONBLOCK)),
+  ).pipe(Effect.ignore);
+
 describe("gitCapped deadline", () => {
+  it.live("the deadline counts from spawn, however late the scheduler starts fibers", () =>
+    Effect.gen(function* () {
+      const { dir, fifo } = yield* blockedGit;
+      const run = yield* gitCapped(["hash-object", fifo], dir, 1024, 50).pipe(
+        Effect.provideService(Scheduler.Scheduler, lateStarts),
+        Effect.forkChild,
+      );
+      yield* Effect.sleep(300);
+      yield* endInputIfRead(fifo);
+      expect(yield* Fiber.join(run)).toEqual({ stdout: "", cut: true });
+    }),
+  );
+
   it.effect("git still running at the deadline is stopped, and what it printed answers cut", () =>
     Effect.gen(function* () {
       const { dir, fifo } = yield* blockedGit;
