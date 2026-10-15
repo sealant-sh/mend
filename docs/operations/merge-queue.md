@@ -11,11 +11,15 @@ The workflow change does not activate or edit repository policy. The CI orchestr
 The ruleset currently protects the default branch from deletion and non-fast-forward updates; it
 does not yet require a pull request, a status check or the merge queue.
 
-## Pending owner decision
+## Activated 2026-10-15
 
-Yiannis must decide whether repository administrators may bypass the required `checks` status. The
-orchestrator recommends an administrator bypass for emergencies. Do not change the ruleset or its
-bypass actors until Yiannis decides. Record his answer in this document when the ruleset changes.
+Ruleset `20201151` (`protect-main`) now requires a pull request (squash only, no approvals), the
+`checks` status from GitHub Actions (app ID `15368`), and the merge queue: squash, one entry built
+and merged at a time, `ALLGREEN`, a 60-minute check timeout. Deletion and non-fast-forward
+protections stay. Yiannis decided there is no administrator bypass: `bypass_actors` is empty, so
+every route into `main`, the Version Packages pull request included, passes `checks` in the queue.
+He has not yet chosen a batch size above one; the capacity model's background-load section shows
+batching is the main lever on runner demand.
 
 ## Orchestrator activation contract
 

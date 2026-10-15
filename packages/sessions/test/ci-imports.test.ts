@@ -62,3 +62,55 @@ it("rejects raw clock imports and allows guarded clocks plus unrelated test serv
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+it("rejects raw clock imports in every package whose Effect tests run on a guard", async () => {
+  const guarded: ReadonlyArray<readonly [string, string]> = [
+    ["packages/sessions/test", "@mend/test-ci/effect-vitest"],
+    ["packages/db/test", "@mend/test-ci/effect-vitest"],
+    ["packages/jobs/test", "@mend/test-ci/effect-vitest"],
+    ["packages/store/test", "@mend/test-ci/effect-vitest"],
+    ["apps/api/test", "@mend/test-ci/effect-vitest"],
+    ["apps/t3-gateway/test", "test/support/effect-vitest.ts"],
+  ];
+  for (const [packageTests, guard] of guarded) {
+    // A dot directory: package lint tasks never walk into it, so a parallel lint stays clean.
+    const directory = await mkdtemp(path.join(rootDirectory, packageTests, ".clock-import-probe-"));
+    try {
+      // Every file type a test or helper can be, every way to reach the raw modules.
+      const probes: ReadonlyArray<readonly [string, string]> = [
+        ["clock.ts", 'import { TestClock } from "effect/testing"; void TestClock;'],
+        ["vitest.ts", 'import { it } from "@effect/vitest"; void it;'],
+        ["clock.test.tsx", 'import { TestClock } from "effect/testing"; void TestClock;'],
+        ["vitest.test.tsx", 'import { it } from "@effect/vitest"; void it;'],
+        ["clock.mts", 'import { TestClock } from "effect/testing"; void TestClock;'],
+        ["clock.cts", 'import { TestClock } from "effect/testing"; void TestClock;'],
+        ["clock.mjs", 'import { TestClock } from "effect/testing"; void TestClock;'],
+        ["subpath.ts", 'import { it } from "@effect/vitest/index"; void it;'],
+        ["required.ts", 'const { TestClock } = require("effect/testing"); void TestClock;'],
+        ["required.cjs", 'const vitest = require("@effect/vitest"); void vitest;'],
+      ];
+      const files: string[] = [];
+      for (const [name, source] of probes) {
+        const file = path.join(directory, name);
+        await writeFile(file, source);
+        files.push(file);
+      }
+      const result = spawnSync(process.execPath, [lintCli, "--format=json", ...files], {
+        cwd: rootDirectory,
+        encoding: "utf8",
+        timeout: 10_000,
+      });
+      expect(result.error).toBeUndefined();
+      expect(result.status, `${packageTests}: ${result.stdout}${result.stderr}`).toBe(1);
+      const report: { diagnostics: ReadonlyArray<{ filename: string; message: string }> } =
+        JSON.parse(result.stdout);
+      for (const [name] of probes) {
+        const found = report.diagnostics.filter((entry) => entry.filename.endsWith(name));
+        expect(found.length, `${packageTests}/${name} passed lint`).toBeGreaterThan(0);
+      }
+      expect(result.stdout, packageTests).toContain(guard);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  }
+});
