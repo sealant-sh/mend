@@ -3,7 +3,8 @@
 PR test lanes and static checks use Turbo's `--affected`, with the PR base SHA in `TURBO_SCM_BASE`
 and complete Git history. Turbo 2.10.3 is locked in `pnpm-lock.yaml`. `affectedUsingTaskInputs` and
 `filterUsingTasks` include out-of-package inputs in selection and intersect the result with each
-existing lane's filters. Main pushes and merge groups select the full graph. The nightly run at
+existing lane's filters. Merge groups select affected tasks too, with a full-graph fallback for
+anything Turbo cannot attribute to a package ([merge-queue.md](merge-queue.md)). The nightly run at
 02:23 UTC also passes `--force`, which disables reads and still refreshes the remote cache.
 Packaging, image and mobile job path filters retain their existing behavior. Required standalone S3,
 shell and CI regression checks remain.
