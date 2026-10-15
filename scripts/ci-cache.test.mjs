@@ -359,3 +359,29 @@ test("input audit resolves root paths through URL, dirname, cwd, constants and t
   }
   assert.deepEqual(result.binaries, ["ssh"]);
 });
+
+test("input audit counts root files the test command itself loads, and what they import", (t) => {
+  const root = mkdtempSync(join(tmpdir(), "mend-input-audit-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const files = {
+    "packages/web/package.json": JSON.stringify({
+      scripts: {
+        test: "node --test --test-reporter=../../scripts/reporter.mjs --test-reporter-destination=stdout src/a.test.mjs",
+      },
+    }),
+    "packages/web/src/a.test.mjs": "export const checked = 1;\n",
+    "scripts/reporter.mjs": 'import "./reporter-lib.mjs";\n',
+    "scripts/reporter-lib.mjs": "export const format = 1;\n",
+    "scripts/unrelated.mjs": "export const unrelated = 1;\n",
+  };
+  for (const [file, text] of Object.entries(files)) {
+    mkdirSync(dirname(join(root, file)), { recursive: true });
+    writeFileSync(join(root, file), text);
+  }
+  const [audit] = testInputAudit(root, Object.keys(files), ["packages/web"]);
+  assert.deepEqual(Object.keys(audit.references), [
+    "scripts/reporter-lib.mjs",
+    "scripts/reporter.mjs",
+  ]);
+  assert.equal(audit.references["scripts/reporter.mjs"], "packages/web/package.json");
+});

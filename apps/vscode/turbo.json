@@ -3,6 +3,9 @@
   "tasks": {
     "test": {
       "cache": false
+    },
+    "build": {
+      "inputs": ["$TURBO_DEFAULT$", ".env*", "$TURBO_ROOT$/tooling/scripts/**"]
     }
   }
 }

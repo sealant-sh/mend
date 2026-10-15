@@ -3,6 +3,13 @@
   "tasks": {
     "typecheck": {
       "dependsOn": ["^typecheck", "build"]
+    },
+    "test": {
+      "inputs": [
+        "$TURBO_EXTENDS$",
+        "$TURBO_ROOT$/scripts/ci-node-reporter.mjs",
+        "$TURBO_ROOT$/scripts/ci-test-report.mjs"
+      ]
     }
   }
 }
