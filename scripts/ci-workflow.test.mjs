@@ -111,6 +111,12 @@ test("static checks, all test shards and packaging can start without another exe
     assert.deepEqual(jobs[name]["runs-on"], ["self-hosted", "box", "linux", "x64"]);
   }
   assert.deepEqual(new Set(jobs.checks.needs), new Set(Object.keys(completed())));
+  // Seconds of work each; on the box they queue behind Core and sealantd runs (merge-queue.md).
+  for (const name of ["changes", "checks"]) assert.equal(jobs[name]["runs-on"], "ubuntu-24.04-arm");
+  assert.ok(
+    !jobs.checks.steps.some((step) => step.uses),
+    "the required gate reads only needs: no checkout or setup to wait on",
+  );
   assert.match(
     jobs.checks.if,
     /!cancelled\(\)/,

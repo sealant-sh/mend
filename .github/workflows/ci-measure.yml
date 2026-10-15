@@ -37,11 +37,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   changes:
-    runs-on:
-      - self-hosted
-      - box
-      - linux
-      - x64
+    runs-on: ubuntu-24.04-arm
     env:
       CI_TEST_REPORT_DIR: ${{ github.workspace }}/.ci-reports/test
     outputs:
@@ -430,18 +426,8 @@ jobs:
       - packaging
       - mobile-web
     if: ${{ !cancelled() }}
-    runs-on:
-      - self-hosted
-      - box
-      - linux
-      - x64
+    runs-on: ubuntu-24.04-arm
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          ref: ${{ inputs.head_sha }}
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
-        with:
-          node-version-file: .node-version
       - name: Require every selected CI job
         env:
           CI_JOB_RESULTS: ${{ toJSON(needs) }}

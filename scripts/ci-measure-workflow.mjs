@@ -7,7 +7,8 @@ export function measurementWorkflow(ci) {
   const jobs = structuredClone(ci.jobs);
   for (const job of Object.values(jobs)) {
     const checkout = job.steps.find((step) => step.uses?.startsWith("actions/checkout@"));
-    checkout.with = { ...checkout.with, ref: "${{ inputs.head_sha }}" };
+    // A job without a checkout (the `checks` gate reads only `needs`) has no ref to pin.
+    if (checkout) checkout.with = { ...checkout.with, ref: "${{ inputs.head_sha }}" };
     // Fixtures exercise other events. Only the commands being measured receive this policy.
     for (const step of job.steps) {
       if (

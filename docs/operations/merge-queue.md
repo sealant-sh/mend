@@ -159,3 +159,11 @@ That push run also cost the queue time. With two box runners, the redundant `pus
 Version branch's dispatched CI held both of them while the merge group's `checks` job, queued at
 04:10:00Z, waited 9.5 minutes for a slot. Both were cancelled, and it started at 04:19:33Z, six
 seconds after the second runner came free.
+
+The same wait came back from other repositories. Merge group `38746126993` (#1018, `780c56b38`)
+passed its last lane at 14:02:05Z, then its 10-second `checks` job waited 13.4 minutes, until
+14:15:32Z. The two box runners serve Core and sealantd as well, in queue order, and an aggregate job
+is queued only when its last lane finishes. Everything those repositories queued in the meantime
+went first: sealantd's main-push CI and the CI of sealantd#168 and Core#368. `changes` and `checks`
+now run on GitHub's `ubuntu-24.04-arm` instead, free for this public repository, so neither waits
+for a box slot. The six lanes stay on the box.
