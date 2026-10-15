@@ -14,7 +14,15 @@
         "src/renderer/src/routeTree.gen.ts",
         "public/install.sh"
       ],
-      "inputs": ["$TURBO_DEFAULT$", ".env*", "$TURBO_ROOT$/tooling/scripts/**"],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "!**/*.test.*",
+        "!**/*.spec.*",
+        "!vitest.config.*",
+        "!vitest.*.config.*",
+        ".env*",
+        "$TURBO_ROOT$/tooling/scripts/**"
+      ],
       "env": [
         "BUNDLE_*",
         "MEND_*",
@@ -57,7 +65,6 @@
       "inputs": [
         "$TURBO_DEFAULT$",
         ".env*",
-        "$TURBO_ROOT$/scripts/**",
         "$TURBO_ROOT$/deploy/**",
         "$TURBO_ROOT$/.claude/skills/verify/**"
       ]
