@@ -275,7 +275,7 @@ describe("a device revoked in Mend", () => {
       const mend = yield* startFakeMend;
       const proxy = yield* startMendProxy(mend.url);
       yield* Effect.gen(function* () {
-        const { tablet, laptop } = yield* warmHubWithTablet(mend);
+        const { tablet, laptop } = yield* TestClock.withLive(warmHubWithTablet(mend));
         // Revoked, then Mend unreachable before the gateway noticed.
         mend.revoke(mend.claims[1]?.token ?? "");
         proxy.setDown(true);
