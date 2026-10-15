@@ -6,6 +6,9 @@
     },
     "typecheck": {
       "dependsOn": ["^typecheck", "build"]
+    },
+    "build": {
+      "inputs": ["$TURBO_DEFAULT$", ".env*", "$TURBO_ROOT$/tooling/scripts/**"]
     }
   }
 }

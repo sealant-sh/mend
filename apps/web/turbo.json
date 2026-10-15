@@ -10,6 +10,9 @@
         "$TURBO_ROOT$/scripts/ci-node-reporter.mjs",
         "$TURBO_ROOT$/scripts/ci-test-report.mjs"
       ]
+    },
+    "build": {
+      "inputs": ["$TURBO_DEFAULT$", ".env*", "$TURBO_ROOT$/tooling/scripts/**"]
     }
   }
 }
