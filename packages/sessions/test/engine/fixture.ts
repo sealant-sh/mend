@@ -193,7 +193,7 @@ import type {
   WorkspacePhase,
   WorkspaceStatus,
 } from "@sealant/sdk";
-import { Clock, Duration, Effect, Layer, Logger, Stream, type Scope } from "effect";
+import { Clock, Duration, Effect, Fiber, Layer, Logger, Stream, type Scope } from "effect";
 
 import { HarnessLayoutConfig } from "../../src/harness-layout-steps.ts";
 import { type MemoryCaptureStore } from ".././capture-store-memory.ts";
@@ -3231,8 +3231,34 @@ export const withEngineEffect = <A, E>(
   ) => Effect.Effect<A, E, SessionEngine | Store | WorktreesRepo | Scope.Scope>,
   options: EngineOptions = {},
 ): Effect.Effect<A> =>
+  withPreparedEngineEffect(
+    () => Effect.void,
+    (world, tmp) => work(world, tmp),
+    options,
+  );
+
+/**
+ * `withEngineEffect` whose `before` (a test's git origin and adoption, `setup`) runs over the
+ * store alone, before the engine exists: the git daemon and the adoption are real I/O that has no
+ * business inside the engine's lifetime, and the engine's boot sweeps then see the adopted project.
+ * Under `it.effect` the engine's timers park on the TestClock; see `settledTestClock` for what
+ * that means for Effect's unadvanced-clock warning.
+ */
+export const withPreparedEngineEffect = <B, A, E>(
+  before: (
+    world: World,
+    tmp: string,
+  ) => Effect.Effect<B, unknown, Store | WorktreesRepo | Scope.Scope>,
+  work: (
+    world: World,
+    tmp: string,
+    prepared: B,
+  ) => Effect.Effect<A, E, SessionEngine | Store | WorktreesRepo | Scope.Scope>,
+  options: EngineOptions = {},
+): Effect.Effect<A> =>
   Effect.gen(function* () {
     const ownerClock = yield* Clock.Clock;
+    const caller = yield* Effect.withFiber((fiber) => Effect.succeed(fiber.id));
     const tmp = yield* Effect.acquireRelease(
       Effect.sync(
         () => options.fixture?.tmp ?? fs.mkdtempSync(path.join(os.tmpdir(), "mend-engine-test-")),
@@ -3246,7 +3272,14 @@ export const withEngineEffect = <A, E>(
     world.clock.now = () => new Date(ownerClock.currentTimeMillisUnsafe());
     options.prepareWorld?.(world, tmp);
     const storeConfigLayer = StoreConfig.layerFor(path.join(tmp, "store"));
-    const storeLayer = Store.layer.pipe(Layer.provide(storeConfigLayer));
+    // Built here, once: `before` and the engine share this store instance.
+    const storeLayer: Layer.Layer<Store> = Layer.succeedContext(
+      yield* Layer.build(Store.layer.pipe(Layer.provide(storeConfigLayer))),
+    );
+    const prepared = yield* before(world, tmp).pipe(
+      Effect.provide(Layer.mergeAll(storeLayer, worktreesLayer(world))),
+      Effect.orDie,
+    );
     const baseBlobsLayer = BlobStoreFsLive(path.join(tmp, "blobs"));
     const blobsLayer = options.transformBlobs?.(baseBlobsLayer) ?? baseBlobsLayer;
     const observeCaptureChannel = (
@@ -3429,13 +3462,85 @@ export const withEngineEffect = <A, E>(
               logs.push(Array.isArray(message) ? message.map(String).join(" ") : String(message));
             }),
           ]);
-    return yield* work(world, tmp).pipe(
-      Effect.provide(Layer.mergeAll(engineLayer, storeLayer, worktreesLayer(world))),
-      Effect.provide(loggerLayer),
-      Effect.scoped,
-      Effect.orDie,
-    );
+    // The engine lives in its own scope, closed the moment `work` returns and before anything
+    // `work` scoped (as `Effect.provide(layer)` would have it); `work`'s scope is the outer one.
+    return yield* Effect.scopedWith((engineScope) =>
+      Effect.gen(function* () {
+        const engineContext = yield* Layer.buildWithScope(
+          Layer.mergeAll(engineLayer, storeLayer, worktreesLayer(world)),
+          engineScope,
+        );
+        const workClock = isTestClock(ownerClock)
+          ? yield* settledTestClock(ownerClock, caller)
+          : ownerClock;
+        return yield* work(world, tmp, prepared).pipe(
+          Effect.provide(engineContext),
+          Effect.provideService(Clock.Clock, workClock),
+        );
+      }),
+    ).pipe(Effect.provide(loggerLayer), Effect.scoped, Effect.orDie);
   }).pipe(Effect.scoped);
+
+/** A `Clock` a test drives: Effect's `TestClock`, under `it.effect`. */
+interface DrivenClock extends Clock.Clock {
+  readonly adjust: (duration: Duration.Input) => Effect.Effect<void>;
+  readonly setTime: (timestamp: number) => Effect.Effect<void>;
+}
+
+const isTestClock = (clock: Clock.Clock): clock is DrivenClock =>
+  "adjust" in clock && typeof clock.adjust === "function";
+
+const CLOCK_WARNING =
+  "A test is using time, but is not advancing the test clock, which may result in the test hanging. Use TestClock.adjust to manually advance the time.";
+
+/**
+ * Effect's unadvanced-clock warning is one-shot per `TestClock`: the first sleep arms it, and the
+ * first `adjust` disarms it for good; it fires if a second of real time passes in between. The
+ * engine parks its housekeeping timers on the clock the moment it is built, so with a built engine
+ * the warning measures the real time a correct test spends in git and the filesystem before it
+ * first adjusts, or for a test that drives no deadline at all, the whole case: under a loaded CI
+ * box that crosses a second and a passing test is failed. So once the engine is up the clock is
+ * settled (an adjust of nothing), and the test's own fiber gets the same warning back, with the
+ * same delay and the same words, armed by each sleep it takes itself and cancelled by its next
+ * adjust: a case that sleeps on virtual time without driving it is still named, while the engine's
+ * timers, and the fibers the engine forks, never are.
+ */
+const settledTestClock = (clock: DrivenClock, caller: number) =>
+  Effect.gen(function* () {
+    yield* clock.adjust(Duration.zero);
+    let adjusts = 0;
+    let warned = false;
+    const driven = <A>(drive: Effect.Effect<A>) =>
+      Effect.suspend(() => {
+        adjusts++;
+        return drive;
+      });
+    const live = Clock.Clock.defaultValue();
+    const strict: DrivenClock = {
+      ...clock,
+      adjust: (duration) => driven(clock.adjust(duration)),
+      setTime: (timestamp) => driven(clock.setTime(timestamp)),
+      sleep: (duration) =>
+        Effect.withFiber((fiber) => {
+          if (fiber.id !== caller) return clock.sleep(duration);
+          const armed = adjusts;
+          return Effect.gen(function* () {
+            const watchdog = yield* Effect.sync(() => {
+              if (adjusts === armed && !warned) {
+                warned = true;
+                console.warn(CLOCK_WARNING);
+              }
+            }).pipe(
+              Effect.delay(Duration.seconds(1)),
+              Effect.provideService(Clock.Clock, live),
+              Effect.forkChild,
+            );
+            yield* clock.sleep(duration).pipe(Effect.ensuring(Fiber.interrupt(watchdog)));
+          });
+        }),
+    };
+    return strict;
+  });
 
 /**
  * The stand-in daemon as a current sealantd answers (cross-repo decision 17): every flush answer

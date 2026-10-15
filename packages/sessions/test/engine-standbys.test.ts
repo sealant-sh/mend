@@ -23,12 +23,7 @@ import {
   SealantPlatformError,
   type WorkspaceStopOptions,
 } from "@mend/sealant";
-import {
-  type CaptureCompletionSeal,
-  HARNESS_HOME_MOUNT_PATH,
-  SessionEngine,
-  CaptureChannel,
-} from "@mend/sessions";
+import { type CaptureCompletionSeal, HARNESS_HOME_MOUNT_PATH, SessionEngine } from "@mend/sessions";
 import { BlobStoreFsLive, captureKeys, DotfilesStore, decodeManifest } from "@mend/store";
 import { buildManifest, snapshotDirectory, uploadObjects } from "@mend/store/testing";
 import { it, TestClock } from "@mend/test-ci/effect-vitest";
@@ -55,8 +50,8 @@ import {
   memoryHotPool,
   memorySeals,
   shipHarnessCapture,
-  until,
 } from "./engine/capture-fixture.ts";
+import { makeStandbyClock, signal, signalled } from "./engine/clock-fixture.ts";
 import {
   captureAnswer,
   drawnLine,
@@ -66,7 +61,7 @@ import {
   setup,
   type World,
   withEngine,
-  withEngineEffect,
+  withPreparedEngineEffect,
 } from "./engine/fixture.ts";
 import {
   LAYOUT_READY,
@@ -76,51 +71,68 @@ import {
   personPlatform,
 } from "./engine/person-fixture.ts";
 
-/** Actual standby readiness and registration waits, retaining both real service implementations. */
-const makeStandbyClock = (pool: ReturnType<typeof memoryHotPool>) =>
+/**
+ * The shared standby clock (pool rows, a claim's registration wait), and what these cases wait on
+ * besides: every reconcile pass (`listForProject`), and every stop the platform answered, where a
+ * drain's termination wait starts.
+ */
+const makePoolClock = (pool: ReturnType<typeof memoryHotPool>) =>
   Effect.gen(function* () {
-    const ready = yield* Queue.make<void>();
-    const registrations = yield* Queue.make<{
-      readonly completed: Deferred.Deferred<void>;
-      readonly timeoutMs: number;
-    }>();
+    const standby = yield* makeStandbyClock(pool);
+    /** A reconcile pass reads the project's rows first; passes run one at a time per project. */
+    const passes = yield* Queue.make<void>();
     const poolLayer: Layer.Layer<HotWorkspacesRepo> = Layer.effect(
       HotWorkspacesRepo,
       Effect.map(HotWorkspacesRepo, (inner) => ({
         ...inner,
-        setReady: (id, state) =>
-          inner.setReady(id, state).pipe(Effect.tap(() => Queue.offer(ready, undefined))),
+        listForProject: (projectId) => signal(passes)(inner.listForProject(projectId)),
       })),
-    ).pipe(Layer.provide(pool.layer));
-    const wrapCaptureChannel = (inner: CaptureChannel["Service"]): CaptureChannel["Service"] => ({
-      ...inner,
-      awaitRegister: (worktreeId, accept, timeout) =>
-        Effect.gen(function* () {
-          const completed = yield* Deferred.make<void>();
-          yield* Queue.offer(registrations, { completed, timeoutMs: Duration.toMillis(timeout) });
-          return yield* inner
-            .awaitRegister(worktreeId, accept, timeout)
-            .pipe(Effect.ensuring(Deferred.succeed(completed, undefined)));
-        }),
-    });
-    const untilReady = (condition: () => boolean, label: string) =>
+    ).pipe(Layer.provide(standby.poolLayer));
+    /** The platform answered a stop: a drain's termination wait starts here. */
+    const stops = yield* Queue.make<void>();
+    const wrapSealant = (layer: Layer.Layer<SealantClient>): Layer.Layer<SealantClient> =>
+      Layer.effect(
+        SealantClient,
+        Effect.map(SealantClient, (inner) => ({
+          ...inner,
+          stopWorkspace: (workspace, options) =>
+            signal(stops)(inner.stopWorkspace(workspace, options)),
+        })),
+      ).pipe(Layer.provide(layer));
+    const untilStopped = signalled(stops);
+    /**
+     * One drain's termination wait, driven: the platform answered the stop, then Mend looks every
+     * `pollInterval` until `terminationWait` is out. `before` runs one look short of it.
+     */
+    const terminationWait = (
+      policy: {
+        readonly terminationWait: Duration.Duration;
+        readonly pollInterval: Duration.Duration;
+      },
+      before: () => void,
+    ) =>
       Effect.gen(function* () {
-        while (!condition()) yield* Queue.take(ready);
-      }).pipe(Effect.withSpan(label));
-    const claim = <A, E, R>(provision: Effect.Effect<A, E, R>) =>
-      Effect.gen(function* () {
-        const fiber = yield* provision.pipe(Effect.forkChild);
-        const registration = yield* Queue.take(registrations);
-        expect(registration.timeoutMs).toBe(2_000);
-        yield* TestClock.adjust(1_999);
-        expect(yield* Deferred.isDone(registration.completed)).toBe(false);
-        expect(fiber.pollUnsafe()).toBeUndefined();
-        yield* TestClock.adjust(1);
-        yield* Deferred.await(registration.completed);
-        return yield* Fiber.join(fiber);
+        yield* Queue.take(stops);
+        const looks =
+          Duration.toMillis(policy.terminationWait) / Duration.toMillis(policy.pollInterval);
+        for (let look = 1; look < looks; look++) yield* TestClock.adjust(policy.pollInterval);
+        before();
+        yield* TestClock.adjust(policy.pollInterval);
       });
-    return { poolLayer, wrapCaptureChannel, untilReady, claim };
+    /**
+     * Every pass requested before this one has ended once this one starts: what a settle sleep
+     * after a reconcile waited for, read from the pool instead of the clock.
+     */
+    const afterPasses = (reconcile: Effect.Effect<void>) =>
+      Effect.gen(function* () {
+        yield* Queue.clear(passes);
+        yield* reconcile;
+        yield* Queue.take(passes);
+      });
+    return { ...standby, poolLayer, wrapSealant, untilStopped, afterPasses, terminationWait };
   });
+
+type PoolClock = Effect.Success<ReturnType<typeof makePoolClock>>;
 
 /** What an owner's dotfiles resolve to right now, as a hot-pool test changes them. */
 interface DotfilesState {
@@ -141,281 +153,313 @@ const routeReason = <A>(effect: Effect.Effect<A, { readonly reason: string }>) =
   );
 
 describe("SessionEngine capture mode", () => {
-  it("under the default, keeps standbys in the layout launches run: shared ones where they run shared, person ones booted as their owner once they run per person, never draining a claimed one (docs/adr/0016, per-person standbys)", async () => {
-    const created: Array<CreateOptions> = [];
-    const homes: Array<string | undefined> = [];
-    const memory = makeMemoryCaptureStore();
-    const pool = memoryHotPool();
-    const logs: Array<string> = [];
-    const state = makeHarnessLayoutsMemoryState();
-    // Core's report on the image, as it changes under the test: first a runtime that cannot run
-    // per person (Kubernetes' no-new-privileges), then one that can.
-    const coreSays: { person: boolean | null; missing: ReadonlyArray<string> } = {
-      person: false,
-      missing: ["sudo-no-new-privileges"],
-    };
-    await withEngine(
-      (world, tmp) =>
-        Effect.gen(function* () {
-          const project = yield* setup(tmp, world);
-          const hot = new Project({ ...project, hotSessions: 2 });
-          world.projects.set(project.id, hot);
-          world.recentOwners = ["user-fixture"];
-          const engine = yield* SessionEngine;
-          // Every launch would run shared: shared standbys, booted as before.
-          yield* engine.reconcileHotSessions(project.id);
-          yield* until(
-            () => pool.entries.filter((entry) => entry.status === "ready").length === 2,
-            "two standbys",
-          );
-          expect(pool.entries.map((entry) => entry.harnessLayout)).toEqual(["shared", "shared"]);
-          expect(homes).toEqual([undefined, undefined]);
-          expect(created.every((options) => options.source?.kind === "capture")).toBe(true);
-          expect(
-            created.some(
-              (options) => options.source?.kind === "capture" && "ownerMap" in options.source,
-            ),
-          ).toBe(false);
-          // One is claimed by a launch in flight.
-          const first = pool.entries[0];
-          if (first === undefined) throw new Error("no standby");
-          pool.entries[0] = new HotWorkspace({ ...first, status: "claimed" });
-          // Now a fresh worktree would run per person: the ready shared standby could never be
-          // claimed, and goes; the claimed one is the launch's; person standbys warm in its place.
-          coreSays.person = true;
-          coreSays.missing = [];
-          yield* engine.reconcileHotSessions(project.id);
-          yield* until(
-            () =>
-              pool.entries.filter(
-                (entry) => entry.status === "ready" && entry.harnessLayout === "person",
-              ).length === 2,
-            "two person standbys",
-          );
-          expect(pool.entries.map((entry) => [entry.status, entry.harnessLayout])).toEqual([
-            ["claimed", "shared"],
-            ["ready", "person"],
-            ["ready", "person"],
-          ]);
-          // Booted as their owner: their logins in their own home, their owner map naming them
-          // alone, and no dotfiles at boot.
-          const owner = state.identities.get("user-fixture");
-          if (owner === undefined) throw new Error("no identity made for the standby's owner");
-          expect(homes.slice(2)).toEqual([
-            `/home/${owner.name} ${owner.uid}:40000`,
-            `/home/${owner.name} ${owner.uid}:40000`,
-          ]);
-          for (const options of created.slice(2)) {
-            expect(options.source).toMatchObject({
-              kind: "capture",
-              ownerMap: {
-                gid: 40000,
-                worktreeUid: owner.uid,
-                people: [{ id: "user-fixture", uid: owner.uid }],
-              },
-            });
-            expect(options.dotfiles).toBeUndefined();
-          }
-          expect(logs.some((line) => line.includes("warm skipped"))).toBe(false);
-        }),
-      {
-        captured: memory,
-        sealantLayer: sealantLaunchLayer(
-          created,
-          undefined,
-          undefined,
-          undefined,
-          undefined,
-          undefined,
-          undefined,
-          undefined,
-          undefined,
-          undefined,
-          undefined,
-          { createHomes: homes },
-        ),
-        hotWorkspacesLayer: pool.layer,
-        harnessLayout: { flag: "person", platform: personPlatform([], coreSays), state },
-        logs,
-      },
-    );
-  });
-
-  it("a claimed standby found dead gives up its claim at once: the cold launch does not wait it out (review round 4)", async () => {
-    const created: Array<CreateOptions> = [];
-    const memory = makeMemoryCaptureStore();
-    const pool = memoryHotPool();
-    let standbyDead = false;
-    await withEngine(
-      (world, tmp) =>
-        Effect.gen(function* () {
-          const project = yield* setup(tmp, world);
-          world.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
-          const engine = yield* SessionEngine;
-          yield* engine.reconcileHotSessions(project.id);
-          yield* until(() => pool.entries.some((entry) => entry.status === "ready"), "a standby");
-          const session = yield* engine.provision({
-            projectId: project.id,
-            harness: "codex",
-            label: null,
-            name: null,
-            ownerUserId: "user-fixture",
-            base: null,
-          });
-          expect(memory.leases.get(session.worktreeId)?.launchId).toBe(`standby:${session.id}`);
-          // The standby's container died between the claim and the launch.
-          standbyDead = true;
-          const launched = yield* engine.launch(session.id, ["codex"]);
-          expect(launched.status).toBe("running");
-          const lease = memory.leases.get(session.worktreeId);
-          expect(lease?.executorId).toBe(session.id);
-          expect(lease?.launchId).not.toBe(`standby:${session.id}`);
-        }),
-      {
-        captured: memory,
-        sealantLayer: sealantLaunchLayer(
-          created,
-          undefined,
-          undefined,
-          undefined,
-          undefined,
-          undefined,
-          undefined,
-          undefined,
-          undefined,
-          undefined,
-          undefined,
-          {
-            status: () => (standbyDead ? "stopped" : "ready"),
-            beforeCreate: () =>
-              Effect.sync(() => {
-                if (standbyDead) standbyDead = false;
-              }),
-          },
-        ),
-        hotWorkspacesLayer: pool.layer,
-      },
-    );
-  });
-
-  it("keeps the pool per owner: one standby for each recent owner who may run here, never for anyone else, and another owner's session goes cold", async () => {
-    const created: Array<CreateOptions> = [];
-    const memory = makeMemoryCaptureStore();
-    const pool = memoryHotPool();
-    await withEngine(
-      (world, tmp) =>
-        Effect.gen(function* () {
-          const project = yield* setup(tmp, world);
-          world.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
-          world.members.set("user-teammate", "member");
-          world.members.set("user-late", "member");
-          // user-gone ran sessions here but is no longer a member of the organization.
-          world.recentOwners = ["user-teammate", "user-gone", "user-fixture"];
-          const engine = yield* SessionEngine;
-          yield* engine.reconcileHotSessions(project.id);
-          yield* until(
-            () => pool.entries.filter((entry) => entry.status === "ready").length === 2,
-            "a standby per eligible owner",
-          );
-          expect(pool.entries.map((entry) => entry.ownerUserId).toSorted()).toEqual([
-            "user-fixture",
-            "user-teammate",
-          ]);
-          expect(created).toHaveLength(2);
-
-          // An owner with no standby of their own is served cold; nobody else's is spent.
-          const session = yield* engine.provision({
-            projectId: project.id,
-            harness: "codex",
-            label: null,
-            name: null,
-            ownerUserId: "user-late",
-            base: null,
-          });
-          expect(pool.entries.map((entry) => entry.id)).not.toContain(session.id);
-          expect(
-            pool.entries
-              .filter((entry) => entry.ownerUserId !== "user-late")
-              .every((entry) => entry.status === "ready"),
-          ).toBe(true);
-
-          // Losing access drains that owner's standby on the next pass.
-          world.members.delete("user-teammate");
-          yield* engine.reconcileHotSessions(project.id);
-          yield* until(
-            () =>
-              pool.entries.every((entry) => entry.ownerUserId !== "user-teammate") &&
-              pool.entries.some(
-                (entry) => entry.ownerUserId === "user-late" && entry.status === "ready",
-              ),
-            "the former member's standby to drain and user-late's to warm",
-          );
-          // user-late's cold session made them a recent owner; the pool now serves them too.
-          expect(pool.entries.map((entry) => entry.ownerUserId).toSorted()).toEqual([
-            "user-fixture",
-            "user-late",
-          ]);
-        }),
-      {
-        captured: memory,
-        sealantLayer: sealantLaunchLayer(created),
-        hotWorkspacesLayer: pool.layer,
-      },
-    );
-  });
-
-  it("warms a standby without a dotfiles source that fails, and the row records what was left out", async () => {
-    const created: Array<CreateOptions> = [];
-    const memory = makeMemoryCaptureStore();
-    const pool = memoryHotPool();
-    const repository: DotfilesRepository = {
-      url: "git://127.0.0.1:1/dots",
-      ref: null,
-      subdirectory: null,
-      manager: "auto",
-      bootstrap: true,
-    };
-    await withEngine(
-      (world, tmp) =>
-        Effect.gen(function* () {
-          const project = yield* setup(tmp, world);
-          world.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
-          const engine = yield* SessionEngine;
-          yield* engine.reconcileHotSessions(project.id);
-          yield* until(
-            () => pool.entries.some((entry) => entry.status !== "warming"),
-            "the standby to settle",
-          );
-          const entry = pool.entries[0];
-          expect(entry?.status).toBe("ready");
-          expect(created).toHaveLength(1);
-          expect(created[0]?.dotfiles).toBeUndefined();
-          expect(entry?.dotfiles).toEqual({
-            repository: { url: repository.url, ref: null },
-            snapshotSha: null,
-            notApplied: [
-              {
-                source: "repository",
-                reason: expect.stringMatching(
-                  /^dotfiles clone of git:\/\/127\.0\.0\.1:1\/dots failed: /,
+  it.effect(
+    "under the default, keeps standbys in the layout launches run: shared ones where they run shared, person ones booted as their owner once they run per person, never draining a claimed one (docs/adr/0016, per-person standbys)",
+    () =>
+      Effect.gen(function* () {
+        const created: Array<CreateOptions> = [];
+        const homes: Array<string | undefined> = [];
+        const memory = makeMemoryCaptureStore();
+        const pool = memoryHotPool();
+        const clock = yield* makePoolClock(pool);
+        const logs: Array<string> = [];
+        const state = makeHarnessLayoutsMemoryState();
+        // Core's report on the image, as it changes under the test: first a runtime that cannot run
+        // per person (Kubernetes' no-new-privileges), then one that can.
+        const coreSays: { person: boolean | null; missing: ReadonlyArray<string> } = {
+          person: false,
+          missing: ["sudo-no-new-privileges"],
+        };
+        yield* withPreparedEngineEffect(
+          (world, tmp) => setup(tmp, world),
+          (world, tmp, project) =>
+            Effect.gen(function* () {
+              const hot = new Project({ ...project, hotSessions: 2 });
+              world.projects.set(project.id, hot);
+              world.recentOwners = ["user-fixture"];
+              const engine = yield* SessionEngine;
+              // Every launch would run shared: shared standbys, booted as before.
+              yield* engine.reconcileHotSessions(project.id);
+              yield* clock.untilReady(
+                () => pool.entries.filter((entry) => entry.status === "ready").length === 2,
+                "two standbys",
+              );
+              expect(pool.entries.map((entry) => entry.harnessLayout)).toEqual([
+                "shared",
+                "shared",
+              ]);
+              expect(homes).toEqual([undefined, undefined]);
+              expect(created.every((options) => options.source?.kind === "capture")).toBe(true);
+              expect(
+                created.some(
+                  (options) => options.source?.kind === "capture" && "ownerMap" in options.source,
                 ),
+              ).toBe(false);
+              // One is claimed by a launch in flight.
+              const first = pool.entries[0];
+              if (first === undefined) throw new Error("no standby");
+              pool.entries[0] = new HotWorkspace({ ...first, status: "claimed" });
+              // Now a fresh worktree would run per person: the ready shared standby could never be
+              // claimed, and goes; the claimed one is the launch's; person standbys warm in its place.
+              coreSays.person = true;
+              coreSays.missing = [];
+              yield* engine.reconcileHotSessions(project.id);
+              yield* clock.untilReady(
+                () =>
+                  pool.entries.filter(
+                    (entry) => entry.status === "ready" && entry.harnessLayout === "person",
+                  ).length === 2,
+                "two person standbys",
+              );
+              expect(pool.entries.map((entry) => [entry.status, entry.harnessLayout])).toEqual([
+                ["claimed", "shared"],
+                ["ready", "person"],
+                ["ready", "person"],
+              ]);
+              // Booted as their owner: their logins in their own home, their owner map naming them
+              // alone, and no dotfiles at boot.
+              const owner = state.identities.get("user-fixture");
+              if (owner === undefined) throw new Error("no identity made for the standby's owner");
+              expect(homes.slice(2)).toEqual([
+                `/home/${owner.name} ${owner.uid}:40000`,
+                `/home/${owner.name} ${owner.uid}:40000`,
+              ]);
+              for (const options of created.slice(2)) {
+                expect(options.source).toMatchObject({
+                  kind: "capture",
+                  ownerMap: {
+                    gid: 40000,
+                    worktreeUid: owner.uid,
+                    people: [{ id: "user-fixture", uid: owner.uid }],
+                  },
+                });
+                expect(options.dotfiles).toBeUndefined();
+              }
+              expect(logs.some((line) => line.includes("warm skipped"))).toBe(false);
+            }),
+          {
+            captured: memory,
+            sealantLayer: sealantLaunchLayer(
+              created,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              { createHomes: homes },
+            ),
+            hotWorkspacesLayer: clock.poolLayer,
+            wrapCaptureChannel: clock.wrapCaptureChannel,
+            harnessLayout: { flag: "person", platform: personPlatform([], coreSays), state },
+            logs,
+          },
+        );
+      }),
+  );
+
+  it.effect(
+    "a claimed standby found dead gives up its claim at once: the cold launch does not wait it out (review round 4)",
+    () =>
+      Effect.gen(function* () {
+        const created: Array<CreateOptions> = [];
+        const memory = makeMemoryCaptureStore();
+        const pool = memoryHotPool();
+        const clock = yield* makePoolClock(pool);
+        let standbyDead = false;
+        yield* withPreparedEngineEffect(
+          (world, tmp) => setup(tmp, world),
+          (world, tmp, project) =>
+            Effect.gen(function* () {
+              world.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
+              const engine = yield* SessionEngine;
+              yield* engine.reconcileHotSessions(project.id);
+              yield* clock.untilReady(
+                () => pool.entries.some((entry) => entry.status === "ready"),
+                "a standby",
+              );
+              const session = yield* clock.claim(
+                engine.provision({
+                  projectId: project.id,
+                  harness: "codex",
+                  label: null,
+                  name: null,
+                  ownerUserId: "user-fixture",
+                  base: null,
+                }),
+              );
+              expect(memory.leases.get(session.worktreeId)?.launchId).toBe(`standby:${session.id}`);
+              // The standby's container died between the claim and the launch.
+              standbyDead = true;
+              const launched = yield* engine.launch(session.id, ["codex"]);
+              expect(launched.status).toBe("running");
+              const lease = memory.leases.get(session.worktreeId);
+              expect(lease?.executorId).toBe(session.id);
+              expect(lease?.launchId).not.toBe(`standby:${session.id}`);
+            }),
+          {
+            captured: memory,
+            sealantLayer: sealantLaunchLayer(
+              created,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              {
+                status: () => (standbyDead ? "stopped" : "ready"),
+                beforeCreate: () =>
+                  Effect.sync(() => {
+                    if (standbyDead) standbyDead = false;
+                  }),
               },
-            ],
-          });
-        }),
-      {
-        captured: memory,
-        sealantLayer: sealantLaunchLayer(created),
-        hotWorkspacesLayer: pool.layer,
-        userDotfilesLayer: Layer.succeed(UserDotfilesRepo, {
-          repository: () => Effect.succeed(repository),
-          setRepository: (_userId, value) => Effect.succeed(value),
-          startAgentsAfterInstall: () => Effect.succeed(false),
-          setStartAgentsAfterInstall: (_userId, value) => Effect.succeed(value),
-        }),
-      },
-    );
-  });
+            ),
+            hotWorkspacesLayer: clock.poolLayer,
+            wrapCaptureChannel: clock.wrapCaptureChannel,
+          },
+        );
+      }),
+  );
+
+  it.effect(
+    "keeps the pool per owner: one standby for each recent owner who may run here, never for anyone else, and another owner's session goes cold",
+    () =>
+      Effect.gen(function* () {
+        const created: Array<CreateOptions> = [];
+        const memory = makeMemoryCaptureStore();
+        const pool = memoryHotPool();
+        const clock = yield* makePoolClock(pool);
+        yield* withPreparedEngineEffect(
+          (world, tmp) => setup(tmp, world),
+          (world, tmp, project) =>
+            Effect.gen(function* () {
+              world.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
+              world.members.set("user-teammate", "member");
+              world.members.set("user-late", "member");
+              // user-gone ran sessions here but is no longer a member of the organization.
+              world.recentOwners = ["user-teammate", "user-gone", "user-fixture"];
+              const engine = yield* SessionEngine;
+              yield* engine.reconcileHotSessions(project.id);
+              yield* clock.untilReady(
+                () => pool.entries.filter((entry) => entry.status === "ready").length === 2,
+                "a standby per eligible owner",
+              );
+              expect(pool.entries.map((entry) => entry.ownerUserId).toSorted()).toEqual([
+                "user-fixture",
+                "user-teammate",
+              ]);
+              expect(created).toHaveLength(2);
+
+              // An owner with no standby of their own is served cold; nobody else's is spent.
+              const session = yield* engine.provision({
+                projectId: project.id,
+                harness: "codex",
+                label: null,
+                name: null,
+                ownerUserId: "user-late",
+                base: null,
+              });
+              expect(pool.entries.map((entry) => entry.id)).not.toContain(session.id);
+              expect(
+                pool.entries
+                  .filter((entry) => entry.ownerUserId !== "user-late")
+                  .every((entry) => entry.status === "ready"),
+              ).toBe(true);
+
+              // Losing access drains that owner's standby on the next pass.
+              world.members.delete("user-teammate");
+              yield* engine.reconcileHotSessions(project.id);
+              yield* clock.untilReady(
+                () =>
+                  pool.entries.every((entry) => entry.ownerUserId !== "user-teammate") &&
+                  pool.entries.some(
+                    (entry) => entry.ownerUserId === "user-late" && entry.status === "ready",
+                  ),
+                "the former member's standby to drain and user-late's to warm",
+              );
+              // user-late's cold session made them a recent owner; the pool now serves them too.
+              expect(pool.entries.map((entry) => entry.ownerUserId).toSorted()).toEqual([
+                "user-fixture",
+                "user-late",
+              ]);
+            }),
+          {
+            captured: memory,
+            sealantLayer: sealantLaunchLayer(created),
+            hotWorkspacesLayer: clock.poolLayer,
+            wrapCaptureChannel: clock.wrapCaptureChannel,
+          },
+        );
+      }),
+  );
+
+  it.effect(
+    "warms a standby without a dotfiles source that fails, and the row records what was left out",
+    () =>
+      Effect.gen(function* () {
+        const created: Array<CreateOptions> = [];
+        const memory = makeMemoryCaptureStore();
+        const pool = memoryHotPool();
+        const clock = yield* makePoolClock(pool);
+        const repository: DotfilesRepository = {
+          url: "git://127.0.0.1:1/dots",
+          ref: null,
+          subdirectory: null,
+          manager: "auto",
+          bootstrap: true,
+        };
+        yield* withPreparedEngineEffect(
+          (world, tmp) => setup(tmp, world),
+          (world, tmp, project) =>
+            Effect.gen(function* () {
+              world.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
+              const engine = yield* SessionEngine;
+              yield* engine.reconcileHotSessions(project.id);
+              yield* clock.untilReady(
+                () => pool.entries.some((entry) => entry.status !== "warming"),
+                "the standby to settle",
+              );
+              const entry = pool.entries[0];
+              expect(entry?.status).toBe("ready");
+              expect(created).toHaveLength(1);
+              expect(created[0]?.dotfiles).toBeUndefined();
+              expect(entry?.dotfiles).toEqual({
+                repository: { url: repository.url, ref: null },
+                snapshotSha: null,
+                notApplied: [
+                  {
+                    source: "repository",
+                    reason: expect.stringMatching(
+                      /^dotfiles clone of git:\/\/127\.0\.0\.1:1\/dots failed: /,
+                    ),
+                  },
+                ],
+              });
+            }),
+          {
+            captured: memory,
+            sealantLayer: sealantLaunchLayer(created),
+            hotWorkspacesLayer: clock.poolLayer,
+            wrapCaptureChannel: clock.wrapCaptureChannel,
+            userDotfilesLayer: Layer.succeed(UserDotfilesRepo, {
+              repository: () => Effect.succeed(repository),
+              setRepository: (_userId, value) => Effect.succeed(value),
+              startAgentsAfterInstall: () => Effect.succeed(false),
+              setStartAgentsAfterInstall: (_userId, value) => Effect.succeed(value),
+            }),
+          },
+        );
+      }),
+  );
 
   /**
    * A standby is created with its owner's dotfiles and cannot take new ones, so it is claimable
@@ -490,12 +534,13 @@ describe("SessionEngine capture mode", () => {
       const created: Array<CreateOptions> = [];
       const memory = makeMemoryCaptureStore();
       const pool = memoryHotPool();
-      const clock = yield* makeStandbyClock(pool);
+      const clock = yield* makePoolClock(pool);
       const state: DotfilesState = { repository: warmedRepository, snapshot: SNAPSHOT };
-      yield* withEngineEffect(
-        (world, tmp) =>
+      yield* withPreparedEngineEffect(
+        (world, tmp) => setup(tmp, world),
+        (world, tmp, adopted) =>
           Effect.gen(function* () {
-            const project = new Project({ ...(yield* setup(tmp, world)), hotSessions: 1 });
+            const project = new Project({ ...adopted, hotSessions: 1 });
             world.projects.set(project.id, project);
             const engine = yield* SessionEngine;
             const provision = engine.provision({
@@ -587,89 +632,104 @@ describe("SessionEngine capture mode", () => {
     }),
   );
 
-  it("a person's first session goes cold and starts warming for them; at most four people are warmed for", async () => {
-    const created: Array<CreateOptions> = [];
-    const memory = makeMemoryCaptureStore();
-    const pool = memoryHotPool();
-    await withEngine(
-      (world, tmp) =>
-        Effect.gen(function* () {
-          const project = yield* setup(tmp, world);
-          world.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
-          world.recentOwners = [];
-          const engine = yield* SessionEngine;
-          yield* engine.provision({
-            projectId: project.id,
-            harness: "codex",
-            label: null,
-            name: null,
-            ownerUserId: "user-fixture",
-            base: null,
-          });
-          yield* until(
-            () =>
-              pool.entries.some(
-                (entry) => entry.ownerUserId === "user-fixture" && entry.status === "ready",
-              ),
-            "a standby for the new owner",
-          );
+  it.effect(
+    "a person's first session goes cold and starts warming for them; at most four people are warmed for",
+    () =>
+      Effect.gen(function* () {
+        const created: Array<CreateOptions> = [];
+        const memory = makeMemoryCaptureStore();
+        const pool = memoryHotPool();
+        const clock = yield* makePoolClock(pool);
+        yield* withPreparedEngineEffect(
+          (world, tmp) => setup(tmp, world),
+          (world, tmp, project) =>
+            Effect.gen(function* () {
+              world.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
+              world.recentOwners = [];
+              const engine = yield* SessionEngine;
+              yield* engine.provision({
+                projectId: project.id,
+                harness: "codex",
+                label: null,
+                name: null,
+                ownerUserId: "user-fixture",
+                base: null,
+              });
+              yield* clock.untilReady(
+                () =>
+                  pool.entries.some(
+                    (entry) => entry.ownerUserId === "user-fixture" && entry.status === "ready",
+                  ),
+                "a standby for the new owner",
+              );
 
-          for (const name of ["a", "b", "c", "d"]) world.members.set(`user-${name}`, "member");
-          world.recentOwners = ["user-a", "user-b", "user-c", "user-d"];
-          yield* engine.reconcileHotSessions(project.id);
-          yield* until(
-            () => pool.entries.filter((entry) => entry.status === "ready").length === 4,
-            "four owners warmed",
-          );
-          yield* Effect.sleep("50 millis");
-          // user-fixture's session is the most recent; user-d is fifth and gets nothing.
-          expect(pool.entries.map((entry) => entry.ownerUserId).toSorted()).toEqual([
-            "user-a",
-            "user-b",
-            "user-c",
-            "user-fixture",
-          ]);
-        }),
-      {
-        captured: memory,
-        sealantLayer: sealantLaunchLayer(created),
-        hotWorkspacesLayer: pool.layer,
-      },
-    );
-  });
+              for (const name of ["a", "b", "c", "d"]) world.members.set(`user-${name}`, "member");
+              world.recentOwners = ["user-a", "user-b", "user-c", "user-d"];
+              yield* engine.reconcileHotSessions(project.id);
+              yield* clock.untilReady(
+                () => pool.entries.filter((entry) => entry.status === "ready").length === 4,
+                "four owners warmed",
+              );
+              yield* clock.afterPasses(engine.reconcileHotSessions(project.id));
+              // user-fixture's session is the most recent; user-d is fifth and gets nothing.
+              expect(pool.entries.map((entry) => entry.ownerUserId).toSorted()).toEqual([
+                "user-a",
+                "user-b",
+                "user-c",
+                "user-fixture",
+              ]);
+            }),
+          {
+            captured: memory,
+            sealantLayer: sealantLaunchLayer(created),
+            hotWorkspacesLayer: clock.poolLayer,
+            wrapCaptureChannel: clock.wrapCaptureChannel,
+          },
+        );
+      }),
+  );
 
-  it("a claim rechecks the owner: a standby of someone who lost access is not handed to them", async () => {
-    const created: Array<CreateOptions> = [];
-    const memory = makeMemoryCaptureStore();
-    const pool = memoryHotPool();
-    await withEngine(
-      (world, tmp) =>
-        Effect.gen(function* () {
-          const project = yield* setup(tmp, world);
-          world.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
-          const engine = yield* SessionEngine;
-          yield* engine.reconcileHotSessions(project.id);
-          yield* until(() => pool.entries.some((entry) => entry.status === "ready"), "a standby");
-          const standby = pool.entries[0];
-          if (standby === undefined) throw new Error("no standby");
-          world.members.delete("user-fixture");
-          const session = yield* engine.provision({
-            projectId: project.id,
-            harness: "codex",
-            label: null,
-            name: null,
-            ownerUserId: "user-fixture",
-            base: null,
-          });
-          expect(session.id).not.toBe(standby.id);
-        }),
-      {
-        captured: memory,
-        sealantLayer: sealantLaunchLayer(created),
-        hotWorkspacesLayer: pool.layer,
-      },
-    );
-  });
+  it.effect(
+    "a claim rechecks the owner: a standby of someone who lost access is not handed to them",
+    () =>
+      Effect.gen(function* () {
+        const created: Array<CreateOptions> = [];
+        const memory = makeMemoryCaptureStore();
+        const pool = memoryHotPool();
+        const clock = yield* makePoolClock(pool);
+        yield* withPreparedEngineEffect(
+          (world, tmp) => setup(tmp, world),
+          (world, tmp, project) =>
+            Effect.gen(function* () {
+              world.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
+              const engine = yield* SessionEngine;
+              yield* engine.reconcileHotSessions(project.id);
+              yield* clock.untilReady(
+                () => pool.entries.some((entry) => entry.status === "ready"),
+                "a standby",
+              );
+              const standby = pool.entries[0];
+              if (standby === undefined) throw new Error("no standby");
+              world.members.delete("user-fixture");
+              const session = yield* engine.provision({
+                projectId: project.id,
+                harness: "codex",
+                label: null,
+                name: null,
+                ownerUserId: "user-fixture",
+                base: null,
+              });
+              expect(session.id).not.toBe(standby.id);
+            }),
+          {
+            captured: memory,
+            sealantLayer: sealantLaunchLayer(created),
+            hotWorkspacesLayer: clock.poolLayer,
+            wrapCaptureChannel: clock.wrapCaptureChannel,
+          },
+        );
+      }),
+  );
 
   it("a workspace's git transport reaches only the project's own remote with the owner's signer", async () => {
     const created: Array<CreateOptions> = [];
@@ -870,6 +930,7 @@ describe("SessionEngine capture mode", () => {
       session: Session,
       standbyLaunch: string,
       epoch: number | undefined,
+      clock: PoolClock,
     ) => Effect.Effect<void, unknown, SessionEngine>,
   ) => {
     const created: Array<CreateOptions> = [];
@@ -886,384 +947,453 @@ describe("SessionEngine capture mode", () => {
       memory,
       records,
       run: () =>
-        withEngine(
-          (world, tmp) =>
-            Effect.gen(function* () {
-              root = tmp;
-              const project = yield* setup(tmp, world);
-              world.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
-              const engine = yield* SessionEngine;
-              yield* engine.reconcileHotSessions(project.id);
-              yield* until(() => pool.entries.some((e) => e.status === "ready"), "standby");
-              const standby = pool.entries[0];
-              if (standby === undefined) throw new Error("no standby");
-              const session = yield* engine.provision({
-                projectId: project.id,
-                harness: "codex",
-                label: null,
-                name: null,
-                ownerUserId: "user-fixture",
-                base: null,
-              });
-              expect(session.id).toBe(standby.id);
-              const epoch = memory.leases.get(session.worktreeId)?.epoch;
-              executor = session.id;
-              yield* ran(world, session, `standby:${standby.id}`, epoch);
-            }),
-          {
-            captured: memory,
-            seals: memorySeals(records),
-            hotWorkspacesLayer: pool.layer,
-            sealantLayer: lifecycleLayer(created, {
-              captureOps: {
-                stopOptions,
-                stopAnswer: () => stopAnswer,
-                status: (stopAsked) =>
-                  stopAsked && stopAnswer === "stopped" ? "stopped" : "ready",
-                // Kept: Core keeps the standby for recovery — its disk may hold work.
-                ...(stopAnswer === "kept"
-                  ? {
-                      retained: () => ({
-                        reason: "the platform did not observe its final flush",
-                        recoverable: true,
+        Effect.gen(function* () {
+          const clock = yield* makePoolClock(pool);
+          yield* withPreparedEngineEffect(
+            (world, tmp) => setup(tmp, world),
+            (world, tmp, project) =>
+              Effect.gen(function* () {
+                root = tmp;
+                world.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
+                const engine = yield* SessionEngine;
+                yield* engine.reconcileHotSessions(project.id);
+                yield* clock.untilReady(
+                  () => pool.entries.some((e) => e.status === "ready"),
+                  "standby",
+                );
+                const standby = pool.entries[0];
+                if (standby === undefined) throw new Error("no standby");
+                const session = yield* clock.claim(
+                  engine.provision({
+                    projectId: project.id,
+                    harness: "codex",
+                    label: null,
+                    name: null,
+                    ownerUserId: "user-fixture",
+                    base: null,
+                  }),
+                );
+                expect(session.id).toBe(standby.id);
+                const epoch = memory.leases.get(session.worktreeId)?.epoch;
+                executor = session.id;
+                yield* ran(world, session, `standby:${standby.id}`, epoch, clock);
+              }),
+            {
+              captured: memory,
+              seals: memorySeals(records),
+              hotWorkspacesLayer: clock.poolLayer,
+              wrapCaptureChannel: clock.wrapCaptureChannel,
+              sealantLayer: clock.wrapSealant(
+                lifecycleLayer(created, {
+                  captureOps: {
+                    stopOptions,
+                    stopAnswer: () => stopAnswer,
+                    status: (stopAsked) =>
+                      stopAsked && stopAnswer === "stopped" ? "stopped" : "ready",
+                    // Kept: Core keeps the standby for recovery — its disk may hold work.
+                    ...(stopAnswer === "kept"
+                      ? {
+                          retained: () => ({
+                            reason: "the platform did not observe its final flush",
+                            recoverable: true,
+                          }),
+                        }
+                      : {}),
+                    // Kept: no final flush answer ever says complete (the relay closed). Ended: the
+                    // executors answer as a current sealantd does.
+                    ...(stopAnswer === "kept" ? { finalCompletion: "unreported" as const } : {}),
+                    resourceId: () => resource,
+                    beforeCreate: (options) =>
+                      Effect.sync(() => {
+                        if (
+                          options.source?.kind === "capture" &&
+                          options.source.worktreeId !== undefined
+                        ) {
+                          resource = "cold-container";
+                        }
                       }),
-                    }
-                  : {}),
-                // Kept: no final flush answer ever says complete (the relay closed). Ended: the
-                // executors answer as a current sealantd does.
-                ...(stopAnswer === "kept" ? { finalCompletion: "unreported" as const } : {}),
-                resourceId: () => resource,
-                beforeCreate: (options) =>
-                  Effect.sync(() => {
-                    if (
-                      options.source?.kind === "capture" &&
-                      options.source.worktreeId !== undefined
-                    ) {
-                      resource = "cold-container";
-                    }
-                  }),
-                replan: () =>
-                  Effect.gen(function* () {
-                    if (executor === null) throw new Error("no executor");
-                    const api = servedSocketApis.get(executor)?.capture;
-                    if (api === undefined) throw new Error("no api");
-                    const plan = yield* api
-                      .planGet({ worktree_id: null, epoch: 0 })
-                      .pipe(Effect.orDie);
-                    const built = yield* shipHarnessCapture(
-                      root,
-                      memory,
-                      WorktreeId.make(plan.worktree_id),
-                      plan.epoch,
-                      crypto.randomUUID(),
-                      "final",
-                    ).pipe(Effect.orDie);
-                    // sealantd seals under the executor its plan named, and nothing else.
-                    records.set(`${plan.worktree_id}:${plan.epoch}`, {
-                      worktreeId: WorktreeId.make(plan.worktree_id),
-                      epoch: plan.epoch,
-                      executorId: plan.executor,
-                      captureId: built.id,
-                      n: built.manifest.n,
-                      sealedAt: new Date(),
-                    });
-                    return yield* new SealantPlatformError({
-                      code: "lost_replan_ack",
-                      status: 503,
-                      message: "replan reply lost",
-                      cause: null,
-                    });
-                  }),
-              },
-            }),
-          },
-        ),
+                    replan: () =>
+                      Effect.gen(function* () {
+                        if (executor === null) throw new Error("no executor");
+                        const api = servedSocketApis.get(executor)?.capture;
+                        if (api === undefined) throw new Error("no api");
+                        const plan = yield* api
+                          .planGet({ worktree_id: null, epoch: 0 })
+                          .pipe(Effect.orDie);
+                        const built = yield* shipHarnessCapture(
+                          root,
+                          memory,
+                          WorktreeId.make(plan.worktree_id),
+                          plan.epoch,
+                          crypto.randomUUID(),
+                          "final",
+                        ).pipe(Effect.orDie);
+                        // sealantd seals under the executor its plan named, and nothing else.
+                        records.set(`${plan.worktree_id}:${plan.epoch}`, {
+                          worktreeId: WorktreeId.make(plan.worktree_id),
+                          epoch: plan.epoch,
+                          executorId: plan.executor,
+                          captureId: built.id,
+                          n: built.manifest.n,
+                          sealedAt: new Date(),
+                        });
+                        return yield* new SealantPlatformError({
+                          code: "lost_replan_ack",
+                          status: 503,
+                          message: "replan reply lost",
+                          cause: null,
+                        });
+                      }),
+                  },
+                }),
+              ),
+            },
+          );
+        }),
     };
   };
 
-  it("e2e run 6 #4 shrinking the pool honours Core's stop: a standby still draining keeps its token and its row (failed, never claimed); only a confirmed end takes them", async () => {
-    const created: Array<CreateOptions> = [];
-    const memory = makeMemoryCaptureStore();
-    const pool = memoryHotPool();
-    const tokenEvents: Array<string> = [];
-    let answer: "draining" | "stopped" = "draining";
-    await withEngine(
-      (world, tmp) =>
-        Effect.gen(function* () {
-          const project = yield* setup(tmp, world);
-          world.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
-          const engine = yield* SessionEngine;
-          yield* engine.reconcileHotSessions(project.id);
-          yield* until(() => pool.entries.some((e) => e.status === "ready"), "standby");
-          const standby = pool.entries[0];
-          if (standby === undefined) throw new Error("no standby");
-          // The pool shrinks while Core is still draining the standby.
-          world.projects.set(project.id, new Project({ ...project, hotSessions: 0 }));
-          yield* engine.reconcileHotSessions(project.id);
-          yield* until(
-            () => pool.entries.find((e) => e.id === standby.id)?.status === "failed",
-            "the kept standby's row",
-          );
-          expect(tokenEvents.filter((event) => event.startsWith("revoke"))).toEqual([]);
-          // Core confirms the end: the next pass takes the token and the row.
-          answer = "stopped";
-          yield* engine.reconcileHotSessions(project.id);
-          yield* until(
-            () => !pool.entries.some((e) => e.id === standby.id),
-            "the ended standby's row gone",
-          );
-          expect(tokenEvents).toContain(`revokeLaunch:standby:${standby.id}`);
-        }),
-      {
-        captured: memory,
-        hotWorkspacesLayer: pool.layer,
-        tokenEvents,
-        drainPolicy: { terminationWait: Duration.millis(50) },
-        sealantLayer: lifecycleLayer(created, {
-          captureOps: {
-            stopAnswer: () => answer,
-            status: (stopAsked) => (stopAsked && answer === "stopped" ? "stopped" : "ready"),
-            resourceId: () => "standby-container",
-          },
-        }),
-      },
-    );
-  }, 30_000);
-
-  it("e2e run 6 #3 a claimed standby whose replan failed still ships under its placeholder: its launch's routes stay the standby's there, never `wrong-worktree`; the session's worktree stays the session's", async () => {
-    const created: Array<CreateOptions> = [];
-    const memory = makeMemoryCaptureStore();
-    const pool = memoryHotPool();
-    const answers: Record<string, string> = {};
-    await withEngine(
-      (world, tmp) =>
-        Effect.gen(function* () {
-          const project = yield* setup(tmp, world);
-          world.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
-          const engine = yield* SessionEngine;
-          yield* engine.reconcileHotSessions(project.id);
-          yield* until(() => pool.entries.some((e) => e.status === "ready"), "standby");
-          const standby = pool.entries[0];
-          if (standby === undefined) throw new Error("no standby");
-          const session = yield* engine.provision({
-            projectId: project.id,
-            harness: "codex",
-            label: null,
-            name: null,
-            ownerUserId: "user-fixture",
-            base: null,
-          });
-          const epoch = memory.leases.get(session.worktreeId)?.epoch ?? 0;
-          // The replan failed (the relay paused): the launch drains the standby, which the
-          // platform keeps, and nothing else starts.
-          yield* engine.launch(session.id, ["codex"]).pipe(Effect.flip);
-          const routes = servedSocketApis.get(session.id)?.captureAs?.(`standby:${standby.id}`);
-          if (routes === undefined) throw new Error("no launch-bound routes");
-          const alias = `standby-${standby.id}`;
-          answers["upload.urls · placeholder"] = yield* routeReason(
-            routes.uploadUrls({
-              worktree_id: alias,
-              epoch: standby.createdAt.getTime(),
-              keys: [captureKeys(alias, standby.createdAt.getTime()).pack("a".repeat(64))],
-            }),
-          );
-          answers["heartbeat · placeholder"] = yield* routeReason(
-            routes.heartbeat({ worktree_id: alias, epoch: standby.createdAt.getTime() }),
-          );
-          answers["heartbeat · session"] = yield* routeReason(
-            routes.heartbeat({ worktree_id: session.worktreeId, epoch }),
-          );
-        }),
-      {
-        captured: memory,
-        hotWorkspacesLayer: pool.layer,
-        sealantLayer: lifecycleLayer(created, {
-          captureOps: {
-            stopAnswer: () => "kept",
-            status: () => "ready",
-            retained: () => ({ reason: "kept for recovery", recoverable: true }),
-            finalCompletion: "unreported",
-            resourceId: () => "standby-container",
-            replan: () =>
-              Effect.fail(
-                new SealantPlatformError({
-                  code: "replan_refused",
-                  status: 503,
-                  message: "capture plan.get failed: transport: timeout",
-                  cause: null,
-                }),
-              ),
-          },
-        }),
-      },
-    );
-    // The standby's own answer under its placeholder (nothing to ship until claimed), never the
-    // session's `wrong-worktree`; the session's worktree is still routed as the session's.
-    expect(answers["upload.urls · placeholder"]).toBe("lease-lost");
-    expect(answers["heartbeat · placeholder"]).toBe("ok");
-    expect(answers["heartbeat · session"]).not.toBe("wrong-worktree");
-  }, 30_000);
-
-  it("review 3 #1 a standby whose replan answer was lost is the session's executor: it drains, its seal is attested for it alone, and kept, nothing else starts", async () => {
-    const scenario = standbyWhoseReplanAnswerIsLost(
-      "kept",
-      (world, session, standbyLaunch, epoch) =>
-        Effect.gen(function* () {
-          const engine = yield* SessionEngine;
-          const refused = yield* engine.launch(session.id, ["codex"]).pipe(Effect.flip);
-          expect(refused._tag).toBe("SealantPlatformError");
-          expect("code" in refused ? refused.code : null).toBe("capture_not_saved");
-          // No second executor: nothing was created for the worktree, the epoch is the claim's.
-          expect(
-            scenario.created.some(
-              (o) => o.source?.kind === "capture" && o.source.worktreeId === session.worktreeId,
-            ),
-          ).toBe(false);
-          expect(scenario.memory.leases.get(session.worktreeId)?.epoch).toBe(epoch);
-          // The standby is the session's, under its own launch, and the stop attested its seal
-          // for it — its runtime, its launch.
-          expect(world.executorLaunches.get(session.id)?.launchId).toBe(standbyLaunch);
-          const completions = scenario.stopOptions.flatMap((o) =>
-            o?.completion === undefined ? [] : [o.completion],
-          );
-          expect(completions.length).toBeGreaterThan(0);
-          for (const completion of completions) {
-            expect(completion).toEqual({
-              executorId: "standby-container",
-              epoch,
-              captureN: scenario.records.get(`${session.worktreeId}:${epoch}`)?.n,
-              launchId: standbyLaunch,
-              sealedAt: scenario.records
-                .get(`${session.worktreeId}:${epoch}`)
-                ?.sealedAt.toISOString(),
-            });
-          }
-        }),
-    );
-    await scenario.run();
-  }, 30_000);
-
-  it("review 3 #1 once the standby's end is observed, a cold executor starts under a fresh epoch and its own launch, and the standby's seal is never attested for it", async () => {
-    const scenario = standbyWhoseReplanAnswerIsLost(
-      "stopped",
-      (world, session, standbyLaunch, epoch) =>
-        Effect.gen(function* () {
-          const engine = yield* SessionEngine;
-          yield* engine.launch(session.id, ["codex"]);
-          const cold = world.executorLaunches.get(session.id)?.launchId ?? "";
-          expect(cold).toMatch(new RegExp(`^launch:${session.id}:`));
-          expect(cold).not.toBe(standbyLaunch);
-          expect(scenario.memory.leases.get(session.worktreeId)?.epoch).toBe((epoch ?? 0) + 1);
-          const before = scenario.stopOptions.length;
-          yield* engine.stop(session.id);
-          yield* until(() => scenario.stopOptions.length > before, "the cold executor's stop");
-          // The cold executor sealed nothing under its epoch: its stop, saved on its own word,
-          // attests nothing — least of all the standby's seal.
-          expect(scenario.stopOptions.slice(before).every((o) => o?.completion === undefined)).toBe(
-            true,
-          );
-          expect(scenario.records.get(`${session.worktreeId}:${epoch}`)?.executorId).toBe(
-            standbyLaunch,
-          );
-        }),
-    );
-    await scenario.run();
-  }, 30_000);
-
-  it("e2e9 F-B: nothing executes in a capture-mode standby before its claim; the helper, setup and note run after the replan", async () => {
-    const created: Array<CreateOptions> = [];
-    const spawned: ReadonlyArray<string>[] = [];
-    const flushed: string[] = [];
-    const execCalls: ReadonlyArray<string>[] = [];
-    const memory = makeMemoryCaptureStore();
-    const pool = memoryHotPool();
-    /** How many execs had reached the standby when its replan was asked. */
-    const execsAtReplan: Array<number> = [];
-    let executor: SessionId | null = null;
-    // oxlint-disable-next-line unicorn/consistent-function-scoping -- Keep this scenario helper beside the assertions that use it.
-    const flush = () => Effect.succeed(captureAnswer({ epoch: 2 }));
-    const replan = (_workspace: Workspace) =>
+  it.effect(
+    "e2e run 6 #4 shrinking the pool honours Core's stop: a standby still draining keeps its token and its row (failed, never claimed); only a confirmed end takes them",
+    () =>
       Effect.gen(function* () {
-        execsAtReplan.push(execCalls.length);
-        if (executor === null) throw new Error("no executor to replan");
-        const api = servedSocketApis.get(executor)?.capture;
-        if (api === undefined) throw new Error("the executor serves no capture api");
-        const plan = yield* api.planGet({ worktree_id: null, epoch: 0 }).pipe(
-          Effect.mapError(
-            (error) =>
-              new SealantPlatformError({
-                code: "replan_refused",
-                status: error.status,
-                message: `${error.reason}: ${error.message}`,
-                cause: error,
+        const created: Array<CreateOptions> = [];
+        const memory = makeMemoryCaptureStore();
+        const pool = memoryHotPool();
+        const clock = yield* makePoolClock(pool);
+        const tokenEvents: Array<string> = [];
+        const drain = { terminationWait: Duration.millis(50), pollInterval: Duration.millis(10) };
+        let answer: "draining" | "stopped" = "draining";
+        yield* withPreparedEngineEffect(
+          (world, tmp) => setup(tmp, world),
+          (world, tmp, project) =>
+            Effect.gen(function* () {
+              world.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
+              const engine = yield* SessionEngine;
+              yield* engine.reconcileHotSessions(project.id);
+              yield* clock.untilReady(
+                () => pool.entries.some((e) => e.status === "ready"),
+                "standby",
+              );
+              const standby = pool.entries[0];
+              if (standby === undefined) throw new Error("no standby");
+              // The pool shrinks while Core is still draining the standby.
+              world.projects.set(project.id, new Project({ ...project, hotSessions: 0 }));
+              yield* engine.reconcileHotSessions(project.id);
+              // Mend watches for the termination the whole wait: one look short of it, the row is
+              // still ready.
+              yield* clock.terminationWait(drain, () => {
+                expect(pool.entries.find((e) => e.id === standby.id)?.status).toBe("ready");
+              });
+              yield* clock.untilReady(
+                () => pool.entries.find((e) => e.id === standby.id)?.status === "failed",
+                "the kept standby's row",
+              );
+              expect(tokenEvents.filter((event) => event.startsWith("revoke"))).toEqual([]);
+              // Core confirms the end: the next pass takes the token and the row.
+              answer = "stopped";
+              yield* engine.reconcileHotSessions(project.id);
+              yield* clock.untilReady(
+                () => !pool.entries.some((e) => e.id === standby.id),
+                "the ended standby's row gone",
+              );
+              expect(tokenEvents).toContain(`revokeLaunch:standby:${standby.id}`);
+            }),
+          {
+            captured: memory,
+            hotWorkspacesLayer: clock.poolLayer,
+            wrapCaptureChannel: clock.wrapCaptureChannel,
+            tokenEvents,
+            drainPolicy: drain,
+            sealantLayer: clock.wrapSealant(
+              lifecycleLayer(created, {
+                captureOps: {
+                  stopAnswer: () => answer,
+                  status: (stopAsked) => (stopAsked && answer === "stopped" ? "stopped" : "ready"),
+                  resourceId: () => "standby-container",
+                },
               }),
-          ),
+            ),
+          },
         );
-        return {
-          worktreeId: plan.worktree_id,
-          epoch: plan.epoch,
-          ...(plan.head === null
-            ? {}
-            : { headN: plan.head.n, headCaptureId: plan.head.capture_id }),
-          filesWritten: 0,
-          bytesWritten: 0,
-          filesSkipped: 0,
-          bytesSkipped: 0,
-          removed: 0,
-          unchanged: false,
-        } satisfies WorkspaceCaptureReplanned;
-      });
-    await withEngine(
-      (world, tmp) =>
-        Effect.gen(function* () {
-          const project = yield* setup(tmp, world);
-          world.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
-          const engine = yield* SessionEngine;
-          yield* engine.reconcileHotSessions(project.id);
-          yield* until(() => pool.entries.some((entry) => entry.status === "ready"), "a standby");
-          // Warmed and ready: not one exec reached it (before: the helper install and the
-          // prewarm note, each clearing sealantd's unclaimed marker).
-          expect(execCalls).toEqual([]);
-          const session = yield* engine.provision({
-            projectId: project.id,
-            harness: "codex",
-            label: null,
-            name: null,
-            ownerUserId: "user-fixture",
-            base: null,
+      }),
+    30_000,
+  );
+
+  it.effect(
+    "e2e run 6 #3 a claimed standby whose replan failed still ships under its placeholder: its launch's routes stay the standby's there, never `wrong-worktree`; the session's worktree stays the session's",
+    () =>
+      Effect.gen(function* () {
+        const created: Array<CreateOptions> = [];
+        const memory = makeMemoryCaptureStore();
+        const pool = memoryHotPool();
+        const clock = yield* makePoolClock(pool);
+        const answers: Record<string, string> = {};
+        yield* withPreparedEngineEffect(
+          (world, tmp) => setup(tmp, world),
+          (world, tmp, project) =>
+            Effect.gen(function* () {
+              world.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
+              const engine = yield* SessionEngine;
+              yield* engine.reconcileHotSessions(project.id);
+              yield* clock.untilReady(
+                () => pool.entries.some((e) => e.status === "ready"),
+                "standby",
+              );
+              const standby = pool.entries[0];
+              if (standby === undefined) throw new Error("no standby");
+              const session = yield* clock.claim(
+                engine.provision({
+                  projectId: project.id,
+                  harness: "codex",
+                  label: null,
+                  name: null,
+                  ownerUserId: "user-fixture",
+                  base: null,
+                }),
+              );
+              const epoch = memory.leases.get(session.worktreeId)?.epoch ?? 0;
+              // The replan failed (the relay paused): the launch drains the standby, which the
+              // platform keeps, and nothing else starts.
+              yield* engine.launch(session.id, ["codex"]).pipe(Effect.flip);
+              const routes = servedSocketApis.get(session.id)?.captureAs?.(`standby:${standby.id}`);
+              if (routes === undefined) throw new Error("no launch-bound routes");
+              const alias = `standby-${standby.id}`;
+              answers["upload.urls · placeholder"] = yield* routeReason(
+                routes.uploadUrls({
+                  worktree_id: alias,
+                  epoch: standby.createdAt.getTime(),
+                  keys: [captureKeys(alias, standby.createdAt.getTime()).pack("a".repeat(64))],
+                }),
+              );
+              answers["heartbeat · placeholder"] = yield* routeReason(
+                routes.heartbeat({ worktree_id: alias, epoch: standby.createdAt.getTime() }),
+              );
+              answers["heartbeat · session"] = yield* routeReason(
+                routes.heartbeat({ worktree_id: session.worktreeId, epoch }),
+              );
+            }),
+          {
+            captured: memory,
+            hotWorkspacesLayer: clock.poolLayer,
+            wrapCaptureChannel: clock.wrapCaptureChannel,
+            sealantLayer: lifecycleLayer(created, {
+              captureOps: {
+                stopAnswer: () => "kept",
+                status: () => "ready",
+                retained: () => ({ reason: "kept for recovery", recoverable: true }),
+                finalCompletion: "unreported",
+                resourceId: () => "standby-container",
+                replan: () =>
+                  Effect.fail(
+                    new SealantPlatformError({
+                      code: "replan_refused",
+                      status: 503,
+                      message: "capture plan.get failed: transport: timeout",
+                      cause: null,
+                    }),
+                  ),
+              },
+            }),
+          },
+        );
+        // The standby's own answer under its placeholder (nothing to ship until claimed), never the
+        // session's `wrong-worktree`; the session's worktree is still routed as the session's.
+        expect(answers["upload.urls · placeholder"]).toBe("lease-lost");
+        expect(answers["heartbeat · placeholder"]).toBe("ok");
+        expect(answers["heartbeat · session"]).not.toBe("wrong-worktree");
+      }),
+    30_000,
+  );
+
+  it.effect(
+    "review 3 #1 a standby whose replan answer was lost is the session's executor: it drains, its seal is attested for it alone, and kept, nothing else starts",
+    () =>
+      Effect.gen(function* () {
+        const scenario = standbyWhoseReplanAnswerIsLost(
+          "kept",
+          (world, session, standbyLaunch, epoch) =>
+            Effect.gen(function* () {
+              const engine = yield* SessionEngine;
+              const refused = yield* engine.launch(session.id, ["codex"]).pipe(Effect.flip);
+              expect(refused._tag).toBe("SealantPlatformError");
+              expect("code" in refused ? refused.code : null).toBe("capture_not_saved");
+              // No second executor: nothing was created for the worktree, the epoch is the claim's.
+              expect(
+                scenario.created.some(
+                  (o) => o.source?.kind === "capture" && o.source.worktreeId === session.worktreeId,
+                ),
+              ).toBe(false);
+              expect(scenario.memory.leases.get(session.worktreeId)?.epoch).toBe(epoch);
+              // The standby is the session's, under its own launch, and the stop attested its seal
+              // for it — its runtime, its launch.
+              expect(world.executorLaunches.get(session.id)?.launchId).toBe(standbyLaunch);
+              const completions = scenario.stopOptions.flatMap((o) =>
+                o?.completion === undefined ? [] : [o.completion],
+              );
+              expect(completions.length).toBeGreaterThan(0);
+              for (const completion of completions) {
+                expect(completion).toEqual({
+                  executorId: "standby-container",
+                  epoch,
+                  captureN: scenario.records.get(`${session.worktreeId}:${epoch}`)?.n,
+                  launchId: standbyLaunch,
+                  sealedAt: scenario.records
+                    .get(`${session.worktreeId}:${epoch}`)
+                    ?.sealedAt.toISOString(),
+                });
+              }
+            }),
+        );
+        yield* scenario.run();
+      }),
+    30_000,
+  );
+
+  it.effect(
+    "review 3 #1 once the standby's end is observed, a cold executor starts under a fresh epoch and its own launch, and the standby's seal is never attested for it",
+    () =>
+      Effect.gen(function* () {
+        const scenario = standbyWhoseReplanAnswerIsLost(
+          "stopped",
+          (world, session, standbyLaunch, epoch, clock) =>
+            Effect.gen(function* () {
+              const engine = yield* SessionEngine;
+              yield* engine.launch(session.id, ["codex"]);
+              const cold = world.executorLaunches.get(session.id)?.launchId ?? "";
+              expect(cold).toMatch(new RegExp(`^launch:${session.id}:`));
+              expect(cold).not.toBe(standbyLaunch);
+              expect(scenario.memory.leases.get(session.worktreeId)?.epoch).toBe((epoch ?? 0) + 1);
+              const before = scenario.stopOptions.length;
+              yield* engine.stop(session.id);
+              yield* clock.untilStopped(
+                () => scenario.stopOptions.length > before,
+                "the cold executor's stop",
+              );
+              // The cold executor sealed nothing under its epoch: its stop, saved on its own word,
+              // attests nothing — least of all the standby's seal.
+              expect(
+                scenario.stopOptions.slice(before).every((o) => o?.completion === undefined),
+              ).toBe(true);
+              expect(scenario.records.get(`${session.worktreeId}:${epoch}`)?.executorId).toBe(
+                standbyLaunch,
+              );
+            }),
+        );
+        yield* scenario.run();
+      }),
+    30_000,
+  );
+
+  it.effect(
+    "e2e9 F-B: nothing executes in a capture-mode standby before its claim; the helper, setup and note run after the replan",
+    () =>
+      Effect.gen(function* () {
+        const created: Array<CreateOptions> = [];
+        const spawned: ReadonlyArray<string>[] = [];
+        const flushed: string[] = [];
+        const execCalls: ReadonlyArray<string>[] = [];
+        const memory = makeMemoryCaptureStore();
+        const pool = memoryHotPool();
+        const clock = yield* makePoolClock(pool);
+        /** Every exec reaching the standby, as it lands in `execCalls`. */
+        const execs = yield* Queue.make<void>();
+        /** How many execs had reached the standby when its replan was asked. */
+        const execsAtReplan: Array<number> = [];
+        let executor: SessionId | null = null;
+        // oxlint-disable-next-line unicorn/consistent-function-scoping -- Keep this scenario helper beside the assertions that use it.
+        const flush = () => Effect.succeed(captureAnswer({ epoch: 2 }));
+        const replan = (_workspace: Workspace) =>
+          Effect.gen(function* () {
+            execsAtReplan.push(execCalls.length);
+            if (executor === null) throw new Error("no executor to replan");
+            const api = servedSocketApis.get(executor)?.capture;
+            if (api === undefined) throw new Error("the executor serves no capture api");
+            const plan = yield* api.planGet({ worktree_id: null, epoch: 0 }).pipe(
+              Effect.mapError(
+                (error) =>
+                  new SealantPlatformError({
+                    code: "replan_refused",
+                    status: error.status,
+                    message: `${error.reason}: ${error.message}`,
+                    cause: error,
+                  }),
+              ),
+            );
+            return {
+              worktreeId: plan.worktree_id,
+              epoch: plan.epoch,
+              ...(plan.head === null
+                ? {}
+                : { headN: plan.head.n, headCaptureId: plan.head.capture_id }),
+              filesWritten: 0,
+              bytesWritten: 0,
+              filesSkipped: 0,
+              bytesSkipped: 0,
+              removed: 0,
+              unchanged: false,
+            } satisfies WorkspaceCaptureReplanned;
           });
-          expect(pool.entries.some((entry) => entry.id === session.id)).toBe(true);
-          executor = session.id;
-          yield* engine.launch(session.id, ["codex"]);
-          expect(execsAtReplan).toEqual([0]);
-          // After the replan: the helper and git transport, and the note, as a cold launch has.
-          expect(execCalls.some((argv) => argv.join(" ").includes("core.sshCommand"))).toBe(true);
-          expect(execCalls.length).toBeGreaterThan(1);
-          // The harness warm-up is one of them: warmed at its claim, for the harness it starts.
-          const warmups = () => execCalls.filter(isWarmup).map((argv) => argv.at(-1));
-          yield* until(() => warmups().length > 0, "the claimed standby's warm-up");
-          expect(warmups()).toEqual(["codex"]);
-        }),
-      {
-        captured: memory,
-        sealantLayer: sealantLaunchLayer(
-          created,
-          undefined,
-          undefined,
-          spawned,
-          undefined,
-          undefined,
-          undefined,
-          undefined,
-          undefined,
-          execCalls,
-          undefined,
-          { flushed, replan, flush },
-        ),
-        hotWorkspacesLayer: pool.layer,
-      },
-    );
-  });
+        yield* withPreparedEngineEffect(
+          (world, tmp) => setup(tmp, world),
+          (world, tmp, project) =>
+            Effect.gen(function* () {
+              world.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
+              const engine = yield* SessionEngine;
+              yield* engine.reconcileHotSessions(project.id);
+              yield* clock.untilReady(
+                () => pool.entries.some((entry) => entry.status === "ready"),
+                "a standby",
+              );
+              // Warmed and ready: not one exec reached it (before: the helper install and the
+              // prewarm note, each clearing sealantd's unclaimed marker).
+              expect(execCalls).toEqual([]);
+              const session = yield* clock.claim(
+                engine.provision({
+                  projectId: project.id,
+                  harness: "codex",
+                  label: null,
+                  name: null,
+                  ownerUserId: "user-fixture",
+                  base: null,
+                }),
+              );
+              expect(pool.entries.some((entry) => entry.id === session.id)).toBe(true);
+              executor = session.id;
+              yield* engine.launch(session.id, ["codex"]);
+              expect(execsAtReplan).toEqual([0]);
+              // After the replan: the helper and git transport, and the note, as a cold launch has.
+              expect(execCalls.some((argv) => argv.join(" ").includes("core.sshCommand"))).toBe(
+                true,
+              );
+              expect(execCalls.length).toBeGreaterThan(1);
+              // The harness warm-up is one of them: warmed at its claim, for the harness it starts.
+              const warmups = () => execCalls.filter(isWarmup).map((argv) => argv.at(-1));
+              while (warmups().length === 0) yield* Queue.take(execs);
+              expect(warmups()).toEqual(["codex"]);
+            }),
+          {
+            captured: memory,
+            sealantLayer: sealantLaunchLayer(
+              created,
+              undefined,
+              undefined,
+              spawned,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              execCalls,
+              undefined,
+              { flushed, replan, flush, exec: () => void Queue.offerUnsafe(execs, undefined) },
+            ),
+            hotWorkspacesLayer: clock.poolLayer,
+            wrapCaptureChannel: clock.wrapCaptureChannel,
+          },
+        );
+      }),
+  );
 
   it.effect(
     "a worktree claims the standby: the session adopts its id, the lease is taken at a fresh epoch with the executor as holder, the launch re-plans it onto the worktree, its first register parents on capture 0, a fresh standby warms, a second worktree claims that one, and a join goes cold",
@@ -1275,7 +1405,7 @@ describe("SessionEngine capture mode", () => {
         const execCalls: ReadonlyArray<string>[] = [];
         const memory = makeMemoryCaptureStore();
         const pool = memoryHotPool();
-        const clock = yield* makeStandbyClock(pool);
+        const clock = yield* makePoolClock(pool);
         /** What sealantd's `capture.replan` does: `plan.get` with no worktree named, as the executor. */
         const replans: Array<{ readonly workspaceId: string; readonly executorId: SessionId }> = [];
         /** The executor's flush leaves captures pending (a stalled daemon). */
@@ -1324,10 +1454,10 @@ describe("SessionEngine capture mode", () => {
               unchanged: false,
             } satisfies WorkspaceCaptureReplanned;
           });
-        yield* withEngineEffect(
-          (world, tmp) =>
+        yield* withPreparedEngineEffect(
+          (world, tmp) => setup(tmp, world),
+          (world, tmp, project) =>
             Effect.gen(function* () {
-              const project = yield* setup(tmp, world);
               world.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
               const engine = yield* SessionEngine;
               yield* engine.reconcileHotSessions(project.id);
@@ -1645,134 +1775,162 @@ describe("SessionEngine capture mode", () => {
    * the drain reads the workspace gone and the launch goes on cold at once: no ~12 minute wait for
    * staging that never ships, and no `failed` line needing a discard.
    */
-  it("a claimed standby whose replan failed and which held nothing ends at once, and the launch goes on cold", async () => {
-    const created: Array<CreateOptions> = [];
-    const memory = makeMemoryCaptureStore();
-    const pool = memoryHotPool();
-    let standbyFinal = false;
-    let standbyAlias = "";
-    let standbyEpoch = 0;
-    let standbyLaunch = "";
-    const flushed: Array<string> = [];
-    const flushKinds: Array<CaptureFlushKind> = [];
-    const stopOptions: Array<WorkspaceStopOptions | undefined> = [];
-    await withEngine(
-      (world, tmp) =>
-        Effect.gen(function* () {
-          const project = yield* setup(tmp, world);
-          world.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
-          const engine = yield* SessionEngine;
-          yield* engine.reconcileHotSessions(project.id);
-          yield* until(() => pool.entries.some((e) => e.status === "ready"), "standby");
-          const standby = pool.entries[0];
-          if (standby === undefined) throw new Error("no standby");
-          standbyAlias = `standby-${standby.id}`;
-          standbyEpoch = standby.createdAt.getTime();
-          standbyLaunch = `standby:${standby.id}`;
-          const session = yield* engine.provision({
-            projectId: project.id,
-            harness: "codex",
-            label: null,
-            name: null,
-            ownerUserId: "user-fixture",
-            base: null,
-          });
-          const startedAt = Date.now();
-          yield* engine.launch(session.id, ["codex"]);
-          expect(Date.now() - startedAt).toBeLessThan(10_000);
-          expect(standbyFinal).toBe(true);
-          const incoming = world.executorEvidence.get(standby.sealantWorkspaceId ?? "")?.saved;
-          expect(incoming?.epoch).toBe(standbyEpoch);
-          expect(incoming?.position).toMatchObject({
-            epoch: standbyEpoch,
-            launchId: standbyLaunch,
-            bootId: "placeholder-boot",
-            observation: 1,
-          });
-          expect(memory.leases.get(session.worktreeId)?.epoch).not.toBe(standbyEpoch);
-          // The session row repeats the received answer; it is not a current-save selection.
-          expect(world.captureSaved.get(session.id)).toMatchObject({
-            workspaceId: standby.sealantWorkspaceId,
-            epoch: standbyEpoch,
-            position: { epoch: standbyEpoch, launchId: standbyLaunch },
-          });
-          expect(flushKinds).toContain("final");
-          const after = world.sessions.get(session.id);
-          expect(after?.status).toBe("running");
-          expect(drawnLine(after?.summary)).toBeNull();
-          expect(after?.captureNotSavedAt ?? null).toBeNull();
-          // The standby's complete answer is under its placeholder, not the session's epoch: it
-          // is never attested as the session's save.
-          expect(stopOptions.every((options) => options?.completion === undefined)).toBe(true);
-          // One cold executor after the standby, under the session's own launch.
-          expect(created.length).toBeGreaterThanOrEqual(2);
-          const current = world.sessions.get(session.id);
-          const lease = memory.leases.get(session.worktreeId);
-          const launch = world.executorLaunches.get(session.id);
-          if (current?.sealantWorkspaceId == null || lease === undefined || launch === undefined) {
-            throw new Error("the cold successor has no workspace, lease or launch");
-          }
-          expect(current.sealantWorkspaceId).not.toBe(standby.sealantWorkspaceId);
-          expect(launch.launchId).not.toBe(standbyLaunch);
-          expect(lease.executorId).toBe(session.id);
-          // The public read asks the cold executor, not the saved placeholder answer retained above.
-          const reading = yield* engine.readCaptures(session.id);
-          expect(reading).toMatchObject({
-            pending: 3,
-            epoch: lease.epoch,
-            complete: null,
-            position: { epoch: lease.epoch, launchId: launch.launchId, bootId: "stand-in-boot" },
-          });
-          expect(reading?.epoch).not.toBe(standbyEpoch);
-          expect(flushed.at(-1)).toBe(`flush:${current.sealantWorkspaceId}`);
-          expect(flushKinds.at(-1)).toBe("suspend");
-          expect(stopOptions.every((options) => options?.completion === undefined)).toBe(true);
-        }),
-      {
-        captured: memory,
-        hotWorkspacesLayer: pool.layer,
-        drainPolicy: { terminationWait: Duration.millis(50) },
-        sealantLayer: distinctWorkspaces(
-          lifecycleLayer(created, {
-            captureOps: {
-              flushed,
-              flushKinds,
-              stopOptions,
-              // Exit 76 after its FINAL, released by Core: the workspace reads stopped from then on.
-              stopAnswer: () => "stopped",
-              resourceId: () => "standby-container",
-              flush: (target) =>
-                Effect.sync(() => {
-                  if (target.id !== "workspace-1") return flushReport(3, 0);
-                  standbyFinal = true;
-                  return flushReport(0, 0, {
-                    worktreeId: standbyAlias,
-                    epoch: standbyEpoch,
-                    origin: {
-                      epoch: standbyEpoch,
-                      launch: standbyLaunch,
-                      bootId: "placeholder-boot",
-                      bootGeneration: 1,
-                      observation: 1,
-                    },
-                  });
+  it.effect(
+    "a claimed standby whose replan failed and which held nothing ends at once, and the launch goes on cold",
+    () =>
+      Effect.gen(function* () {
+        const created: Array<CreateOptions> = [];
+        const memory = makeMemoryCaptureStore();
+        const pool = memoryHotPool();
+        const clock = yield* makePoolClock(pool);
+        let standbyFinal = false;
+        let standbyAlias = "";
+        let standbyEpoch = 0;
+        let standbyLaunch = "";
+        const flushed: Array<string> = [];
+        const flushKinds: Array<CaptureFlushKind> = [];
+        const stopOptions: Array<WorkspaceStopOptions | undefined> = [];
+        const drain = { terminationWait: Duration.millis(50), pollInterval: Duration.millis(10) };
+        /** The standby's FINAL, answered complete under its placeholder. */
+        const standbyFlushed = yield* Deferred.make<void>();
+        yield* withPreparedEngineEffect(
+          (world, tmp) => setup(tmp, world),
+          (world, tmp, project) =>
+            Effect.gen(function* () {
+              world.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
+              const engine = yield* SessionEngine;
+              yield* engine.reconcileHotSessions(project.id);
+              yield* clock.untilReady(
+                () => pool.entries.some((e) => e.status === "ready"),
+                "standby",
+              );
+              const standby = pool.entries[0];
+              if (standby === undefined) throw new Error("no standby");
+              standbyAlias = `standby-${standby.id}`;
+              standbyEpoch = standby.createdAt.getTime();
+              standbyLaunch = `standby:${standby.id}`;
+              const session = yield* clock.claim(
+                engine.provision({
+                  projectId: project.id,
+                  harness: "codex",
+                  label: null,
+                  name: null,
+                  ownerUserId: "user-fixture",
+                  base: null,
                 }),
-              replan: () =>
-                Effect.fail(
-                  new SealantPlatformError({
-                    code: "replan_refused",
-                    status: 503,
-                    message: "capture plan.get failed: transport: timeout",
-                    cause: null,
-                  }),
-                ),
-            },
-          }),
-          (id) => id === "workspace-1" && standbyFinal,
-        ),
-      },
-    );
-  }, 30_000);
+              );
+              const startedAt = Date.now();
+              const launching = yield* engine.launch(session.id, ["codex"]).pipe(Effect.forkChild);
+              // The drain's look after the FINAL, one poll on, reads the workspace gone.
+              yield* Deferred.await(standbyFlushed);
+              yield* TestClock.adjust(drain.pollInterval);
+              yield* Fiber.join(launching);
+              expect(Date.now() - startedAt).toBeLessThan(10_000);
+              expect(standbyFinal).toBe(true);
+              const incoming = world.executorEvidence.get(standby.sealantWorkspaceId ?? "")?.saved;
+              expect(incoming?.epoch).toBe(standbyEpoch);
+              expect(incoming?.position).toMatchObject({
+                epoch: standbyEpoch,
+                launchId: standbyLaunch,
+                bootId: "placeholder-boot",
+                observation: 1,
+              });
+              expect(memory.leases.get(session.worktreeId)?.epoch).not.toBe(standbyEpoch);
+              // The session row repeats the received answer; it is not a current-save selection.
+              expect(world.captureSaved.get(session.id)).toMatchObject({
+                workspaceId: standby.sealantWorkspaceId,
+                epoch: standbyEpoch,
+                position: { epoch: standbyEpoch, launchId: standbyLaunch },
+              });
+              expect(flushKinds).toContain("final");
+              const after = world.sessions.get(session.id);
+              expect(after?.status).toBe("running");
+              expect(drawnLine(after?.summary)).toBeNull();
+              expect(after?.captureNotSavedAt ?? null).toBeNull();
+              // The standby's complete answer is under its placeholder, not the session's epoch: it
+              // is never attested as the session's save.
+              expect(stopOptions.every((options) => options?.completion === undefined)).toBe(true);
+              // One cold executor after the standby, under the session's own launch.
+              expect(created.length).toBeGreaterThanOrEqual(2);
+              const current = world.sessions.get(session.id);
+              const lease = memory.leases.get(session.worktreeId);
+              const launch = world.executorLaunches.get(session.id);
+              if (
+                current?.sealantWorkspaceId == null ||
+                lease === undefined ||
+                launch === undefined
+              ) {
+                throw new Error("the cold successor has no workspace, lease or launch");
+              }
+              expect(current.sealantWorkspaceId).not.toBe(standby.sealantWorkspaceId);
+              expect(launch.launchId).not.toBe(standbyLaunch);
+              expect(lease.executorId).toBe(session.id);
+              // The public read asks the cold executor, not the saved placeholder answer retained above.
+              const reading = yield* engine.readCaptures(session.id);
+              expect(reading).toMatchObject({
+                pending: 3,
+                epoch: lease.epoch,
+                complete: null,
+                position: {
+                  epoch: lease.epoch,
+                  launchId: launch.launchId,
+                  bootId: "stand-in-boot",
+                },
+              });
+              expect(reading?.epoch).not.toBe(standbyEpoch);
+              expect(flushed.at(-1)).toBe(`flush:${current.sealantWorkspaceId}`);
+              expect(flushKinds.at(-1)).toBe("suspend");
+              expect(stopOptions.every((options) => options?.completion === undefined)).toBe(true);
+            }),
+          {
+            captured: memory,
+            hotWorkspacesLayer: clock.poolLayer,
+            wrapCaptureChannel: clock.wrapCaptureChannel,
+            drainPolicy: drain,
+            sealantLayer: distinctWorkspaces(
+              lifecycleLayer(created, {
+                captureOps: {
+                  flushed,
+                  flushKinds,
+                  stopOptions,
+                  // Exit 76 after its FINAL, released by Core: the workspace reads stopped from then on.
+                  stopAnswer: () => "stopped",
+                  resourceId: () => "standby-container",
+                  flush: (target) =>
+                    Effect.sync(() => {
+                      if (target.id !== "workspace-1") return flushReport(3, 0);
+                      standbyFinal = true;
+                      Deferred.doneUnsafe(standbyFlushed, Effect.void);
+                      return flushReport(0, 0, {
+                        worktreeId: standbyAlias,
+                        epoch: standbyEpoch,
+                        origin: {
+                          epoch: standbyEpoch,
+                          launch: standbyLaunch,
+                          bootId: "placeholder-boot",
+                          bootGeneration: 1,
+                          observation: 1,
+                        },
+                      });
+                    }),
+                  replan: () =>
+                    Effect.fail(
+                      new SealantPlatformError({
+                        code: "replan_refused",
+                        status: 503,
+                        message: "capture plan.get failed: transport: timeout",
+                        cause: null,
+                      }),
+                    ),
+                },
+              }),
+              (id) => id === "workspace-1" && standbyFinal,
+            ),
+          },
+        );
+      }),
+    30_000,
+  );
 
   it("reads each live executor under its own lease and launch when another worktree was claimed first", async () => {
     const created: Array<CreateOptions> = [];
@@ -1962,7 +2120,7 @@ describe("per-person standbys (docs/adr/0016)", () => {
         ),
         state,
       },
-      drainPolicy: { terminationWait: Duration.millis(50) },
+      drainPolicy: { terminationWait: Duration.millis(50), pollInterval: Duration.millis(10) },
     };
     return {
       created,
@@ -1981,11 +2139,15 @@ describe("per-person standbys (docs/adr/0016)", () => {
 
   /** Warm the project's pool and wait for its one person standby. */
   // oxlint-disable-next-line unicorn/consistent-function-scoping -- Keep this scenario helper beside the assertions that use it.
-  const warmPersonStandby = (project: Project, pool: ReturnType<typeof memoryHotPool>) =>
+  const warmPersonStandby = (
+    project: Project,
+    pool: ReturnType<typeof memoryHotPool>,
+    clock: PoolClock,
+  ) =>
     Effect.gen(function* () {
       const engine = yield* SessionEngine;
       yield* engine.reconcileHotSessions(project.id);
-      yield* until(
+      yield* clock.untilReady(
         () =>
           pool.entries.some(
             (entry) => entry.status === "ready" && entry.harnessLayout === "person",
@@ -2017,216 +2179,260 @@ describe("per-person standbys (docs/adr/0016)", () => {
       bound,
     );
     let summary: string | null | undefined;
-    return withEngine(
-      (testWorld, tmp) =>
-        Effect.gen(function* () {
-          const project = yield* setup(tmp, testWorld);
-          testWorld.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
-          const engine = yield* SessionEngine;
-          const standby = yield* warmPersonStandby(project, world.pool);
-          const session = yield* engine.provision({
-            projectId: project.id,
-            harness: "claude",
-            label: null,
-            name: null,
-            ownerUserId: "user-fixture",
-            base: null,
-          });
-          expect(session.id).toBe(standby.id);
-          world.executor.id = session.id;
-          yield* engine.launch(session.id, ["claude"]);
-          yield* Effect.sleep("200 millis");
-          const launched = testWorld.sessions.get(session.id);
-          expect(launched?.status).not.toBe("failed");
-          expect(launched?.sealantWorkspaceId).toBe(standby.sealantWorkspaceId);
-          summary = launched?.summary;
-        }),
-      { ...world.layers, harnessLayout: { ...world.layers.harnessLayout, platform } },
-    ).then(() => ({ sshUsers, summary }));
+    return Effect.gen(function* () {
+      const clock = yield* makePoolClock(world.pool);
+      yield* withPreparedEngineEffect(
+        (testWorld, tmp) => setup(tmp, testWorld),
+        (testWorld, tmp, project) =>
+          Effect.gen(function* () {
+            testWorld.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
+            const engine = yield* SessionEngine;
+            const standby = yield* warmPersonStandby(project, world.pool, clock);
+            const session = yield* clock.claim(
+              engine.provision({
+                projectId: project.id,
+                harness: "claude",
+                label: null,
+                name: null,
+                ownerUserId: "user-fixture",
+                base: null,
+              }),
+            );
+            expect(session.id).toBe(standby.id);
+            world.executor.id = session.id;
+            yield* engine.launch(session.id, ["claude"]);
+            const launched = testWorld.sessions.get(session.id);
+            expect(launched?.status).not.toBe("failed");
+            expect(launched?.sealantWorkspaceId).toBe(standby.sealantWorkspaceId);
+            summary = launched?.summary;
+          }),
+        {
+          ...world.layers,
+          hotWorkspacesLayer: clock.poolLayer,
+          wrapCaptureChannel: clock.wrapCaptureChannel,
+          harnessLayout: { ...world.layers.harnessLayout, platform },
+        },
+      );
+      return { sshUsers, summary };
+    });
   };
 
-  it("a claimed person standby whose owner's person Core could not bind says Remote-SSH is root (review 3 of mend#641, N4)", async () => {
-    const run = await claimStandby(false);
-    // Its create asked for no SSH user, and the claim says so, as the standby's create decided.
-    expect(run.sshUsers[0]).toBeUndefined();
-    expect(run.summary).toContain(REMOTE_SSH_ROOT_WORDS);
-  });
+  it.effect(
+    "a claimed person standby whose owner's person Core could not bind says Remote-SSH is root (review 3 of mend#641, N4)",
+    () =>
+      Effect.gen(function* () {
+        const run = yield* claimStandby(false);
+        // Its create asked for no SSH user, and the claim says so, as the standby's create decided.
+        expect(run.sshUsers[0]).toBeUndefined();
+        expect(run.summary).toContain(REMOTE_SSH_ROOT_WORDS);
+      }),
+  );
 
-  it("a claimed person standby whose owner's person is bound keeps their SSH user and says nothing of root", async () => {
-    const run = await claimStandby(true);
-    expect(run.sshUsers[0]).toBe(`/home/${STANDBY_OWNER}`);
-    expect(run.summary).not.toContain("Remote-SSH: root");
-  });
+  it.effect(
+    "a claimed person standby whose owner's person is bound keeps their SSH user and says nothing of root",
+    () =>
+      Effect.gen(function* () {
+        const run = yield* claimStandby(true);
+        expect(run.sshUsers[0]).toBe(`/home/${STANDBY_OWNER}`);
+        expect(run.summary).not.toContain("Remote-SSH: root");
+      }),
+  );
 
-  it("a person standby, warmed as its owner, is claimed by their fresh worktree and runs per person: their user, a 0700 home, their own logins, their saved directory under people/", async () => {
-    const world = personStandbyWorld({
-      report: { person: true, missing: [] },
-      exec: answerLayout(LAYOUT_READY),
-    });
-    await withEngine(
-      (testWorld, tmp) =>
-        Effect.gen(function* () {
-          const project = yield* setup(tmp, testWorld);
-          testWorld.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
-          const engine = yield* SessionEngine;
-          const standby = yield* warmPersonStandby(project, world.pool);
-          const owner = world.state.identities.get("user-fixture");
-          if (owner === undefined) throw new Error("no identity for the standby's owner");
-          const session = yield* engine.provision({
-            projectId: project.id,
-            harness: "claude",
-            label: null,
-            name: null,
-            ownerUserId: "user-fixture",
-            base: null,
-          });
-          // The session adopts the standby's id: it was claimed.
-          expect(session.id).toBe(standby.id);
-          world.executor.id = session.id;
-          const execsBefore = world.execCalls.length;
-          const startedAt = performance.now();
-          yield* engine.launch(session.id, ["claude"]);
-          const claimMs = performance.now() - startedAt;
-          const claimExecs = world.execCalls.length - execsBefore;
-          const launched = testWorld.sessions.get(session.id);
-          expect(launched?.status).not.toBe("failed");
-          expect(launched?.sealantWorkspaceId).toBe(standby.sealantWorkspaceId);
-          // Booted as its owner: their logins in their own home, at the standby's create.
-          expect(world.homes[0]).toBe(`/home/${STANDBY_OWNER} ${owner.uid}:40000`);
-          // The claim names the map the standby booted with, which Core compares.
-          expect(world.replanned).toEqual([
-            {
-              gid: 40000,
-              worktreeUid: owner.uid,
-              people: [{ id: "user-fixture", uid: owner.uid }],
-            },
-          ]);
-          // Prepare made the launcher's user, a 0700 home, and their saved directory.
-          const prepare = world.execCalls.find((argv) => (argv[2] ?? "").includes("mend-layout"));
-          expect(prepare?.[2]).toContain(
-            `mend_people='${STANDBY_OWNER}:${owner.uid}:user-fixture:`,
-          );
-          expect(prepare?.[2]).toContain(`chmod 0700 "$p_h"`);
-          expect(prepare?.[2]).toContain(`${HARNESS_HOME_MOUNT_PATH}/people`);
-          // The agent runs as them, on their own logins: nothing posted to `/root`.
-          const users = world.opened.map((opened) => opened.user?.name ?? null);
-          expect(users.length).toBeGreaterThan(0);
-          expect(users.every((user) => user === STANDBY_OWNER)).toBe(true);
-          expect(world.calls.some((call) => call.endsWith(":/root"))).toBe(false);
-          // The worktree is person from this launch on, recorded under the standby's launch.
-          expect(world.state.worktrees.get(session.worktreeId)?.layout).toBe("person");
-          expect(world.state.launches.get(`standby:${standby.id}`)).toMatchObject({
-            layout: "person",
-            confirmed: true,
-          });
-          // The claimed standby is the session's: never stopped under it.
-          expect(world.stopped).not.toContain(standby.sealantWorkspaceId);
-          // The claim path, timed in the engine with fakes: Mend's own work, no platform latency.
-          expect(claimMs).toBeLessThan(5_000);
-          yield* Effect.logInfo(
-            `per-person standby claim · engine time ${claimMs.toFixed(0)} ms · ${claimExecs} execs`,
-          );
-        }),
-      world.layers,
-    );
-  });
+  it.effect(
+    "a person standby, warmed as its owner, is claimed by their fresh worktree and runs per person: their user, a 0700 home, their own logins, their saved directory under people/",
+    () =>
+      Effect.gen(function* () {
+        const world = personStandbyWorld({
+          report: { person: true, missing: [] },
+          exec: answerLayout(LAYOUT_READY),
+        });
+        const clock = yield* makePoolClock(world.pool);
+        yield* withPreparedEngineEffect(
+          (testWorld, tmp) => setup(tmp, testWorld),
+          (testWorld, tmp, project) =>
+            Effect.gen(function* () {
+              testWorld.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
+              const engine = yield* SessionEngine;
+              const standby = yield* warmPersonStandby(project, world.pool, clock);
+              const owner = world.state.identities.get("user-fixture");
+              if (owner === undefined) throw new Error("no identity for the standby's owner");
+              const session = yield* clock.claim(
+                engine.provision({
+                  projectId: project.id,
+                  harness: "claude",
+                  label: null,
+                  name: null,
+                  ownerUserId: "user-fixture",
+                  base: null,
+                }),
+              );
+              // The session adopts the standby's id: it was claimed.
+              expect(session.id).toBe(standby.id);
+              world.executor.id = session.id;
+              const execsBefore = world.execCalls.length;
+              const startedAt = performance.now();
+              yield* engine.launch(session.id, ["claude"]);
+              const claimMs = performance.now() - startedAt;
+              const claimExecs = world.execCalls.length - execsBefore;
+              const launched = testWorld.sessions.get(session.id);
+              expect(launched?.status).not.toBe("failed");
+              expect(launched?.sealantWorkspaceId).toBe(standby.sealantWorkspaceId);
+              // Booted as its owner: their logins in their own home, at the standby's create.
+              expect(world.homes[0]).toBe(`/home/${STANDBY_OWNER} ${owner.uid}:40000`);
+              // The claim names the map the standby booted with, which Core compares.
+              expect(world.replanned).toEqual([
+                {
+                  gid: 40000,
+                  worktreeUid: owner.uid,
+                  people: [{ id: "user-fixture", uid: owner.uid }],
+                },
+              ]);
+              // Prepare made the launcher's user, a 0700 home, and their saved directory.
+              const prepare = world.execCalls.find((argv) =>
+                (argv[2] ?? "").includes("mend-layout"),
+              );
+              expect(prepare?.[2]).toContain(
+                `mend_people='${STANDBY_OWNER}:${owner.uid}:user-fixture:`,
+              );
+              expect(prepare?.[2]).toContain(`chmod 0700 "$p_h"`);
+              expect(prepare?.[2]).toContain(`${HARNESS_HOME_MOUNT_PATH}/people`);
+              // The agent runs as them, on their own logins: nothing posted to `/root`.
+              const users = world.opened.map((opened) => opened.user?.name ?? null);
+              expect(users.length).toBeGreaterThan(0);
+              expect(users.every((user) => user === STANDBY_OWNER)).toBe(true);
+              expect(world.calls.some((call) => call.endsWith(":/root"))).toBe(false);
+              // The worktree is person from this launch on, recorded under the standby's launch.
+              expect(world.state.worktrees.get(session.worktreeId)?.layout).toBe("person");
+              expect(world.state.launches.get(`standby:${standby.id}`)).toMatchObject({
+                layout: "person",
+                confirmed: true,
+              });
+              // The claimed standby is the session's: never stopped under it.
+              expect(world.stopped).not.toContain(standby.sealantWorkspaceId);
+              // The claim path, timed in the engine with fakes: Mend's own work, no platform latency.
+              expect(claimMs).toBeLessThan(5_000);
+              yield* Effect.logInfo(
+                `per-person standby claim · engine time ${claimMs.toFixed(0)} ms · ${claimExecs} execs`,
+              );
+            }),
+          {
+            ...world.layers,
+            hotWorkspacesLayer: clock.poolLayer,
+            wrapCaptureChannel: clock.wrapCaptureChannel,
+          },
+        );
+      }),
+  );
 
-  it("a person standby claimed by a claude session whose owner has no Claude login is refused before the agent starts, in a join's words (review of mend#671)", async () => {
-    const world = personStandbyWorld({
-      report: { person: true, missing: [] },
-      exec: answerLayout(LAYOUT_READY),
-    });
-    // The owner has no Claude: Core refuses every create naming it (the standby's shell ladder
-    // steps past it) and leaves it out of the claim's write into their home.
-    const sealantLayer = Layer.effect(
-      SealantClient,
-      Effect.map(SealantClient, (inner) => ({
-        ...inner,
-        createWorkspace: (
-          options: CreateOptions,
-          ...rest: Parameters<typeof inner.createWorkspace> extends [unknown, ...infer R]
-            ? R
-            : never
-        ) =>
-          options.credentials?.claude === undefined
-            ? inner.createWorkspace(options, ...rest)
-            : Effect.fail(
-                new SealantPlatformError({
-                  code: "connected-account-missing",
-                  status: 404,
-                  provider: "claude",
-                  message: 'No claude connected account matches "default".',
-                  cause: null,
+  it.effect(
+    "a person standby claimed by a claude session whose owner has no Claude login is refused before the agent starts, in a join's words (review of mend#671)",
+    () =>
+      Effect.gen(function* () {
+        const world = personStandbyWorld({
+          report: { person: true, missing: [] },
+          exec: answerLayout(LAYOUT_READY),
+        });
+        // The owner has no Claude: Core refuses every create naming it (the standby's shell ladder
+        // steps past it) and leaves it out of the claim's write into their home.
+        const sealantLayer = Layer.effect(
+          SealantClient,
+          Effect.map(SealantClient, (inner) => ({
+            ...inner,
+            createWorkspace: (
+              options: CreateOptions,
+              ...rest: Parameters<typeof inner.createWorkspace> extends [unknown, ...infer R]
+                ? R
+                : never
+            ) =>
+              options.credentials?.claude === undefined
+                ? inner.createWorkspace(options, ...rest)
+                : Effect.fail(
+                    new SealantPlatformError({
+                      code: "connected-account-missing",
+                      status: 404,
+                      provider: "claude",
+                      message: 'No claude connected account matches "default".',
+                      cause: null,
+                    }),
+                  ),
+          })),
+        ).pipe(Layer.provide(world.layers.sealantLayer));
+        const platform = Layer.effect(
+          PersonLayoutPlatform,
+          Effect.map(PersonLayoutPlatform, (inner) => ({
+            ...inner,
+            postCredentials: (
+              workspace: Workspace,
+              input: Parameters<typeof inner.postCredentials>[1],
+            ) =>
+              inner.postCredentials(workspace, input).pipe(
+                Effect.as({
+                  skipped:
+                    input.logins.claude === undefined
+                      ? []
+                      : [
+                          {
+                            provider: "claude" as const,
+                            reason: "connected-account-missing" as const,
+                            message: 'No claude connected account matches "default".',
+                          },
+                        ],
                 }),
               ),
-      })),
-    ).pipe(Layer.provide(world.layers.sealantLayer));
-    const platform = Layer.effect(
-      PersonLayoutPlatform,
-      Effect.map(PersonLayoutPlatform, (inner) => ({
-        ...inner,
-        postCredentials: (
-          workspace: Workspace,
-          input: Parameters<typeof inner.postCredentials>[1],
-        ) =>
-          inner.postCredentials(workspace, input).pipe(
-            Effect.as({
-              skipped:
-                input.logins.claude === undefined
-                  ? []
-                  : [
-                      {
-                        provider: "claude" as const,
-                        reason: "connected-account-missing" as const,
-                        message: 'No claude connected account matches "default".',
-                      },
-                    ],
+          })),
+        ).pipe(Layer.provide(personPlatform(world.calls, { person: true })));
+        const clock = yield* makePoolClock(world.pool);
+        const result = yield* withPreparedEngineEffect(
+          (testWorld, tmp) => setup(tmp, testWorld),
+          (testWorld, tmp, project) =>
+            Effect.gen(function* () {
+              testWorld.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
+              const engine = yield* SessionEngine;
+              const standby = yield* warmPersonStandby(project, world.pool, clock);
+              const session = yield* clock.claim(
+                engine.provision({
+                  projectId: project.id,
+                  harness: "claude",
+                  label: null,
+                  name: null,
+                  ownerUserId: "user-fixture",
+                  base: null,
+                }),
+              );
+              expect(session.id).toBe(standby.id);
+              world.executor.id = session.id;
+              const refused = yield* engine.launch(session.id, ["claude"]).pipe(Effect.flip);
+              return {
+                message: refused.message,
+                summary: testWorld.sessions.get(session.id)?.summary ?? null,
+              };
             }),
-          ),
-      })),
-    ).pipe(Layer.provide(personPlatform(world.calls, { person: true })));
-    const result = await withEngine(
-      (testWorld, tmp) =>
-        Effect.gen(function* () {
-          const project = yield* setup(tmp, testWorld);
-          testWorld.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
-          const engine = yield* SessionEngine;
-          const standby = yield* warmPersonStandby(project, world.pool);
-          const session = yield* engine.provision({
-            projectId: project.id,
-            harness: "claude",
-            label: null,
-            name: null,
-            ownerUserId: "user-fixture",
-            base: null,
-          });
-          expect(session.id).toBe(standby.id);
-          world.executor.id = session.id;
-          const refused = yield* engine.launch(session.id, ["claude"]).pipe(Effect.flip);
-          return {
-            message: refused.message,
-            summary: testWorld.sessions.get(session.id)?.summary ?? null,
-          };
-        }),
-      {
-        ...world.layers,
-        sealantLayer,
-        harnessLayout: { ...world.layers.harnessLayout, platform },
-      },
-    );
-    // The standby's create wrote no Claude, so the claim asked Core for the owner's own and was
-    // refused, as a join is; the agent never started signed out.
-    expect(result.message).toBe(
-      "Connect Claude to start a session here. Connect it in Settings → Connected accounts, or run mend connect claude.",
-    );
-    expect(result.summary).toContain("launch refused · Connect Claude to start a session here.");
-    // Every standby the pool made (the claimed one, and the one warmed in its place) was made
-    // without Claude, and so says it holds none.
-    expect(world.created[0]?.credentials).toEqual({ codex: true, github: true });
-    expect(world.created.every((options) => options.credentials?.claude === undefined)).toBe(true);
-    expect(world.calls).toContain(`post:user-fixture:/home/${STANDBY_OWNER}`);
-    expect(world.opened.filter((options) => options.user?.name === STANDBY_OWNER)).toEqual([]);
-  });
+          {
+            ...world.layers,
+            hotWorkspacesLayer: clock.poolLayer,
+            wrapCaptureChannel: clock.wrapCaptureChannel,
+            sealantLayer,
+            harnessLayout: { ...world.layers.harnessLayout, platform },
+          },
+        );
+        // The standby's create wrote no Claude, so the claim asked Core for the owner's own and was
+        // refused, as a join is; the agent never started signed out.
+        expect(result.message).toBe(
+          "Connect Claude to start a session here. Connect it in Settings → Connected accounts, or run mend connect claude.",
+        );
+        expect(result.summary).toContain(
+          "launch refused · Connect Claude to start a session here.",
+        );
+        // Every standby the pool made (the claimed one, and the one warmed in its place) was made
+        // without Claude, and so says it holds none.
+        expect(world.created[0]?.credentials).toEqual({ codex: true, github: true });
+        expect(world.created.every((options) => options.credentials?.claude === undefined)).toBe(
+          true,
+        );
+        expect(world.calls).toContain(`post:user-fixture:/home/${STANDBY_OWNER}`);
+        expect(world.opened.filter((options) => options.user?.name === STANDBY_OWNER)).toEqual([]);
+      }),
+  );
 
   it.effect(
     "a person standby's claim costs no more execs than a shared standby's, past the person prepare a cold person launch runs too (Performance)",
@@ -2240,12 +2446,12 @@ describe("per-person standbys (docs/adr/0016)", () => {
                 : { person: false, missing: ["sudo-no-new-privileges"] },
               exec: answerLayout(LAYOUT_READY),
             });
-            const clock = yield* makeStandbyClock(world.pool);
+            const clock = yield* makePoolClock(world.pool);
             let execs = -1;
-            yield* withEngineEffect(
-              (testWorld, tmp) =>
+            yield* withPreparedEngineEffect(
+              (testWorld, tmp) => setup(tmp, testWorld),
+              (testWorld, tmp, project) =>
                 Effect.gen(function* () {
-                  const project = yield* setup(tmp, testWorld);
                   testWorld.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
                   const engine = yield* SessionEngine;
                   yield* engine.reconcileHotSessions(project.id);
@@ -2287,297 +2493,373 @@ describe("per-person standbys (docs/adr/0016)", () => {
       }),
   );
 
-  it("another person's launch, the operator's shared, and a worktree another person owns each go cold: the person standby stays ready", async () => {
-    const world = personStandbyWorld({
-      report: { person: true, missing: [] },
-      exec: answerLayout(LAYOUT_READY),
-    });
-    await withEngine(
-      (testWorld, tmp) =>
-        Effect.gen(function* () {
-          const project = yield* setup(tmp, testWorld);
-          testWorld.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
-          const engine = yield* SessionEngine;
-          const standby = yield* warmPersonStandby(project, world.pool);
-          const provision = (ownerUserId: string, extra: { harnessLayout?: HarnessLayout } = {}) =>
-            engine.provision({
-              projectId: project.id,
-              harness: "claude",
-              label: null,
-              name: null,
-              ownerUserId,
-              base: null,
-              ...extra,
-            });
-          // Maria's fresh worktree: never another person's standby (owner's rule).
-          const maria = yield* provision(MARIA);
-          expect(maria.id).not.toBe(standby.id);
-          // The operator's shared on a fresh worktree of the owner's: a person standby runs per person.
-          const shared = yield* provision("user-fixture", { harnessLayout: "shared" });
-          expect(shared.id).not.toBe(standby.id);
-          // The owner's session in Maria's worktree: its owner map would name the wrong owner.
-          const inMarias = yield* engine.provisionSessionIn(maria.worktreeId, {
-            harness: "claude",
-            label: null,
-            ownerUserId: "user-fixture",
-          });
-          expect(inMarias.id).not.toBe(standby.id);
-          expect(world.pool.entries.find((entry) => entry.id === standby.id)?.status).toBe("ready");
-          expect(world.replanned).toEqual([]);
-        }),
-      world.layers,
-    );
-  });
-
-  it("a claimed person standby's decision stands against a no learnt since: its prepare falls back to shared in it with the logins in /root, and the session runs (review 2 of mend#582, N7)", async () => {
-    const report: { person: boolean | null; missing: ReadonlyArray<string> } = {
-      person: true,
-      missing: [],
-    };
-    const world = personStandbyWorld({
-      report,
-      exec: answerLayout("mend-layout probed\nmend-layout missing no sudo\n"),
-    });
-    await withEngine(
-      (testWorld, tmp) =>
-        Effect.gen(function* () {
-          const project = yield* setup(tmp, testWorld);
-          testWorld.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
-          const engine = yield* SessionEngine;
-          const standby = yield* warmPersonStandby(project, world.pool);
-          const session = yield* engine.provision({
-            projectId: project.id,
-            harness: "claude",
-            label: null,
-            name: null,
-            ownerUserId: "user-fixture",
-            base: null,
-          });
-          expect(session.id).toBe(standby.id);
-          world.executor.id = session.id;
-          // Between the claim and its launch, Core learns the image cannot run per person.
-          report.person = false;
-          report.missing = ["no sudo"];
-          yield* engine.launch(session.id, ["claude"]);
-          const launched = testWorld.sessions.get(session.id);
-          expect(launched?.status).not.toBe("failed");
-          expect(launched?.sealantWorkspaceId).toBe(standby.sealantWorkspaceId);
-          // Decision 1's fallback, in the standby: the home released, the logins in /root.
-          expect(world.calls).toContain(`delete:/home/${STANDBY_OWNER}`);
-          expect(world.calls).toContain("post:user-fixture:/root");
-          expect(world.opened.every((opened) => opened.user === undefined)).toBe(true);
-          expect(world.state.worktrees.get(session.worktreeId)?.layout ?? null).toBeNull();
-        }),
-      world.layers,
-    );
-  });
-
-  it("a person standby whose replan fails ends, and the cold executor that follows decides its own launch: a person record under its own key, the full owner map on its create, and the standby's dotfiles do not hold it up (review of mend#596, S1)", async () => {
-    let standbyFinal = false;
-    let standbyAlias = "";
-    let standbyEpoch = 0;
-    const world = personStandbyWorld({
-      report: { person: true, missing: [] },
-      exec: answerLayout(LAYOUT_READY),
-      captureOps: {
-        // Exit 76 after its FINAL, released by Core: the workspace reads stopped from then on.
-        status: () => (standbyFinal ? "stopped" : "ready"),
-        stopAnswer: () => "stopped",
-        resourceId: () => "standby-container",
-        flush: () =>
-          Effect.sync(() => {
-            standbyFinal = true;
-            return flushReport(0, 0, { worktreeId: standbyAlias, epoch: standbyEpoch });
-          }),
-        replan: () =>
-          Effect.fail(
-            new SealantPlatformError({
-              code: "replan_refused",
-              status: 503,
-              message: "capture plan.get failed: transport: timeout",
-              cause: null,
+  it.effect(
+    "another person's launch, the operator's shared, and a worktree another person owns each go cold: the person standby stays ready",
+    () =>
+      Effect.gen(function* () {
+        const world = personStandbyWorld({
+          report: { person: true, missing: [] },
+          exec: answerLayout(LAYOUT_READY),
+        });
+        const clock = yield* makePoolClock(world.pool);
+        yield* withPreparedEngineEffect(
+          (testWorld, tmp) => setup(tmp, testWorld),
+          (testWorld, tmp, project) =>
+            Effect.gen(function* () {
+              testWorld.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
+              const engine = yield* SessionEngine;
+              const standby = yield* warmPersonStandby(project, world.pool, clock);
+              const provision = (
+                ownerUserId: string,
+                extra: { harnessLayout?: HarnessLayout } = {},
+              ) =>
+                engine.provision({
+                  projectId: project.id,
+                  harness: "claude",
+                  label: null,
+                  name: null,
+                  ownerUserId,
+                  base: null,
+                  ...extra,
+                });
+              // Maria's fresh worktree: never another person's standby (owner's rule).
+              const maria = yield* provision(MARIA);
+              expect(maria.id).not.toBe(standby.id);
+              // The operator's shared on a fresh worktree of the owner's: a person standby runs per person.
+              const shared = yield* provision("user-fixture", { harnessLayout: "shared" });
+              expect(shared.id).not.toBe(standby.id);
+              // The owner's session in Maria's worktree: its owner map would name the wrong owner.
+              const inMarias = yield* engine.provisionSessionIn(maria.worktreeId, {
+                harness: "claude",
+                label: null,
+                ownerUserId: "user-fixture",
+              });
+              expect(inMarias.id).not.toBe(standby.id);
+              expect(world.pool.entries.find((entry) => entry.id === standby.id)?.status).toBe(
+                "ready",
+              );
+              expect(world.replanned).toEqual([]);
             }),
-          ),
-      },
-    });
-    await withEngine(
-      (testWorld, tmp) =>
-        Effect.gen(function* () {
-          const project = yield* setup(tmp, testWorld);
-          testWorld.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
-          const engine = yield* SessionEngine;
-          const standby = yield* warmPersonStandby(project, world.pool);
-          standbyAlias = `standby-${standby.id}`;
-          standbyEpoch = standby.createdAt.getTime();
-          const owner = world.state.identities.get("user-fixture");
-          if (owner === undefined) throw new Error("no identity for the standby's owner");
-          const session = yield* engine.provision({
-            projectId: project.id,
-            harness: "claude",
-            label: null,
-            name: null,
-            ownerUserId: "user-fixture",
-            base: null,
-          });
-          expect(session.id).toBe(standby.id);
-          const createsBefore = world.created.length;
-          yield* engine.launch(session.id, ["claude"]);
-          const launched = testWorld.sessions.get(session.id);
-          expect(launched?.status).toBe("running");
-          expect(standbyFinal).toBe(true);
-          // A cold executor under its own launch, never the standby's.
-          const cold = testWorld.executorLaunches.get(session.id)?.launchId ?? "";
-          expect(cold).not.toBe(`standby:${standby.id}`);
-          expect(cold).not.toBe("");
-          // Its layout is decided for its own launch: until its prepare confirmed it, the
-          // channel read it from this record, never as a shared executor's.
-          expect(world.state.launches.get(cold)).toMatchObject({
-            layout: "person",
-            confirmed: true,
-          });
-          // Its create sends the worktree's whole owner map, as any cold person launch does.
-          const coldCreate = world.created
-            .slice(createsBefore)
-            .find(
-              (options) =>
-                options.source?.kind === "capture" && options.source.worktreeId !== undefined,
-            );
-          expect(coldCreate?.source).toMatchObject({
-            ownerMap: {
-              gid: 40000,
-              worktreeUid: owner.uid,
-              people: expect.arrayContaining([{ id: "user-fixture", uid: owner.uid }]),
-            },
-          });
-          const users = world.opened.map((opened) => opened.user?.name ?? null);
-          expect(users.length).toBeGreaterThan(0);
-          expect(users.every((user) => user === STANDBY_OWNER)).toBe(true);
-        }),
-      world.layers,
-    );
-  }, 30_000);
+          {
+            ...world.layers,
+            hotWorkspacesLayer: clock.poolLayer,
+            wrapCaptureChannel: clock.wrapCaptureChannel,
+          },
+        );
+      }),
+  );
 
-  it("a claimed person standby whose worktree turned person since its claim goes, before anything runs in it, and the launch goes on cold (review of mend#596, N1)", async () => {
-    const world = personStandbyWorld({
-      report: { person: true, missing: [] },
-      exec: answerLayout(LAYOUT_READY),
-      captureOps: { stopAnswer: () => "stopped", status: () => "ready" },
-    });
-    await withEngine(
-      (testWorld, tmp) =>
-        Effect.gen(function* () {
-          const project = yield* setup(tmp, testWorld);
-          testWorld.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
-          const engine = yield* SessionEngine;
-          const standby = yield* warmPersonStandby(project, world.pool);
-          const session = yield* engine.provision({
-            projectId: project.id,
-            harness: "claude",
-            label: null,
-            name: null,
-            ownerUserId: "user-fixture",
-            base: null,
-          });
-          expect(session.id).toBe(standby.id);
-          const createsBefore = world.created.length;
-          // Between the claim and its launch, the worktree is recorded person by another launch:
-          // its saved directories may name people the standby's map does not.
-          world.state.worktrees.set(session.worktreeId, { layout: "person", requested: null });
-          yield* engine.launch(session.id, ["claude"]);
-          const launched = testWorld.sessions.get(session.id);
-          expect(launched?.status).toBe("running");
-          // Never replanned, so nothing was restored under the standby's map; drained instead.
-          expect(world.replanned).toEqual([]);
-          expect(world.stopped).toContain(standby.sealantWorkspaceId);
-          // A cold executor of the worktree's own, with the worktree's owner map.
-          expect(
-            world.created
-              .slice(createsBefore)
-              .some(
-                (options) =>
-                  options.source?.kind === "capture" &&
-                  options.source.worktreeId === session.worktreeId &&
-                  "ownerMap" in options.source,
+  it.effect(
+    "a claimed person standby's decision stands against a no learnt since: its prepare falls back to shared in it with the logins in /root, and the session runs (review 2 of mend#582, N7)",
+    () =>
+      Effect.gen(function* () {
+        const report: { person: boolean | null; missing: ReadonlyArray<string> } = {
+          person: true,
+          missing: [],
+        };
+        const world = personStandbyWorld({
+          report,
+          exec: answerLayout("mend-layout probed\nmend-layout missing no sudo\n"),
+        });
+        const clock = yield* makePoolClock(world.pool);
+        yield* withPreparedEngineEffect(
+          (testWorld, tmp) => setup(tmp, testWorld),
+          (testWorld, tmp, project) =>
+            Effect.gen(function* () {
+              testWorld.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
+              const engine = yield* SessionEngine;
+              const standby = yield* warmPersonStandby(project, world.pool, clock);
+              const session = yield* clock.claim(
+                engine.provision({
+                  projectId: project.id,
+                  harness: "claude",
+                  label: null,
+                  name: null,
+                  ownerUserId: "user-fixture",
+                  base: null,
+                }),
+              );
+              expect(session.id).toBe(standby.id);
+              world.executor.id = session.id;
+              // Between the claim and its launch, Core learns the image cannot run per person.
+              report.person = false;
+              report.missing = ["no sudo"];
+              yield* engine.launch(session.id, ["claude"]);
+              const launched = testWorld.sessions.get(session.id);
+              expect(launched?.status).not.toBe("failed");
+              expect(launched?.sealantWorkspaceId).toBe(standby.sealantWorkspaceId);
+              // Decision 1's fallback, in the standby: the home released, the logins in /root.
+              expect(world.calls).toContain(`delete:/home/${STANDBY_OWNER}`);
+              expect(world.calls).toContain("post:user-fixture:/root");
+              expect(world.opened.every((opened) => opened.user === undefined)).toBe(true);
+              expect(world.state.worktrees.get(session.worktreeId)?.layout ?? null).toBeNull();
+            }),
+          {
+            ...world.layers,
+            hotWorkspacesLayer: clock.poolLayer,
+            wrapCaptureChannel: clock.wrapCaptureChannel,
+          },
+        );
+      }),
+  );
+
+  it.effect(
+    "a person standby whose replan fails ends, and the cold executor that follows decides its own launch: a person record under its own key, the full owner map on its create, and the standby's dotfiles do not hold it up (review of mend#596, S1)",
+    () =>
+      Effect.gen(function* () {
+        let standbyFinal = false;
+        let standbyAlias = "";
+        let standbyEpoch = 0;
+        /** The standby's FINAL, answered complete under its placeholder. */
+        const standbyFlushed = yield* Deferred.make<void>();
+        const world = personStandbyWorld({
+          report: { person: true, missing: [] },
+          exec: answerLayout(LAYOUT_READY),
+          captureOps: {
+            // Exit 76 after its FINAL, released by Core: the workspace reads stopped from then on.
+            status: () => (standbyFinal ? "stopped" : "ready"),
+            stopAnswer: () => "stopped",
+            resourceId: () => "standby-container",
+            flush: () =>
+              Effect.sync(() => {
+                standbyFinal = true;
+                Deferred.doneUnsafe(standbyFlushed, Effect.void);
+                return flushReport(0, 0, { worktreeId: standbyAlias, epoch: standbyEpoch });
+              }),
+            replan: () =>
+              Effect.fail(
+                new SealantPlatformError({
+                  code: "replan_refused",
+                  status: 503,
+                  message: "capture plan.get failed: transport: timeout",
+                  cause: null,
+                }),
               ),
-          ).toBe(true);
-          expect(testWorld.executorLaunches.get(session.id)?.launchId).not.toBe(
-            `standby:${standby.id}`,
-          );
-        }),
-      world.layers,
-    );
-  }, 30_000);
+          },
+        });
+        const clock = yield* makePoolClock(world.pool);
+        yield* withPreparedEngineEffect(
+          (testWorld, tmp) => setup(tmp, testWorld),
+          (testWorld, tmp, project) =>
+            Effect.gen(function* () {
+              testWorld.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
+              const engine = yield* SessionEngine;
+              const standby = yield* warmPersonStandby(project, world.pool, clock);
+              standbyAlias = `standby-${standby.id}`;
+              standbyEpoch = standby.createdAt.getTime();
+              const owner = world.state.identities.get("user-fixture");
+              if (owner === undefined) throw new Error("no identity for the standby's owner");
+              const session = yield* clock.claim(
+                engine.provision({
+                  projectId: project.id,
+                  harness: "claude",
+                  label: null,
+                  name: null,
+                  ownerUserId: "user-fixture",
+                  base: null,
+                }),
+              );
+              expect(session.id).toBe(standby.id);
+              const createsBefore = world.created.length;
+              const launching = yield* engine.launch(session.id, ["claude"]).pipe(Effect.forkChild);
+              // The drain's look after the FINAL, one poll on, reads the workspace gone.
+              yield* Deferred.await(standbyFlushed);
+              yield* TestClock.adjust(world.layers.drainPolicy.pollInterval);
+              yield* Fiber.join(launching);
+              const launched = testWorld.sessions.get(session.id);
+              expect(launched?.status).toBe("running");
+              expect(standbyFinal).toBe(true);
+              // A cold executor under its own launch, never the standby's.
+              const cold = testWorld.executorLaunches.get(session.id)?.launchId ?? "";
+              expect(cold).not.toBe(`standby:${standby.id}`);
+              expect(cold).not.toBe("");
+              // Its layout is decided for its own launch: until its prepare confirmed it, the
+              // channel read it from this record, never as a shared executor's.
+              expect(world.state.launches.get(cold)).toMatchObject({
+                layout: "person",
+                confirmed: true,
+              });
+              // Its create sends the worktree's whole owner map, as any cold person launch does.
+              const coldCreate = world.created
+                .slice(createsBefore)
+                .find(
+                  (options) =>
+                    options.source?.kind === "capture" && options.source.worktreeId !== undefined,
+                );
+              expect(coldCreate?.source).toMatchObject({
+                ownerMap: {
+                  gid: 40000,
+                  worktreeUid: owner.uid,
+                  people: expect.arrayContaining([{ id: "user-fixture", uid: owner.uid }]),
+                },
+              });
+              const users = world.opened.map((opened) => opened.user?.name ?? null);
+              expect(users.length).toBeGreaterThan(0);
+              expect(users.every((user) => user === STANDBY_OWNER)).toBe(true);
+            }),
+          {
+            ...world.layers,
+            hotWorkspacesLayer: clock.poolLayer,
+            wrapCaptureChannel: clock.wrapCaptureChannel,
+          },
+        );
+      }),
+    30_000,
+  );
 
-  it("keeps the pool as it is while the control plane cannot be asked: the person standby stays ready and nothing is warmed in its place (review of mend#596, N4)", async () => {
-    let controlPlane: string | null = null;
-    const world = personStandbyWorld({
-      report: { person: true, missing: [] },
-      exec: answerLayout(LAYOUT_READY),
-      controlPlane: () => controlPlane,
-    });
-    await withEngine(
-      (testWorld, tmp) =>
-        Effect.gen(function* () {
-          const project = yield* setup(tmp, testWorld);
-          testWorld.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
-          const engine = yield* SessionEngine;
-          const standby = yield* warmPersonStandby(project, world.pool);
-          const created = world.created.length;
-          controlPlane = CONTROL_PLANE_UNREADABLE;
-          yield* engine.reconcileHotSessions(project.id);
-          yield* engine.reconcileHotSessions(project.id);
-          yield* Effect.sleep("100 millis");
-          expect(world.pool.entries.map((entry) => [entry.id, entry.status])).toEqual([
-            [standby.id, "ready"],
-          ]);
-          expect(world.created.length).toBe(created);
-          expect(world.stopped).not.toContain(standby.sealantWorkspaceId);
-        }),
-      world.layers,
-    );
-  });
+  it.effect(
+    "a claimed person standby whose worktree turned person since its claim goes, before anything runs in it, and the launch goes on cold (review of mend#596, N1)",
+    () =>
+      Effect.gen(function* () {
+        const world = personStandbyWorld({
+          report: { person: true, missing: [] },
+          exec: answerLayout(LAYOUT_READY),
+          captureOps: { stopAnswer: () => "stopped", status: () => "ready" },
+        });
+        const clock = yield* makePoolClock(world.pool);
+        yield* withPreparedEngineEffect(
+          (testWorld, tmp) => setup(tmp, testWorld),
+          (testWorld, tmp, project) =>
+            Effect.gen(function* () {
+              testWorld.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
+              const engine = yield* SessionEngine;
+              const standby = yield* warmPersonStandby(project, world.pool, clock);
+              const session = yield* clock.claim(
+                engine.provision({
+                  projectId: project.id,
+                  harness: "claude",
+                  label: null,
+                  name: null,
+                  ownerUserId: "user-fixture",
+                  base: null,
+                }),
+              );
+              expect(session.id).toBe(standby.id);
+              const createsBefore = world.created.length;
+              // Between the claim and its launch, the worktree is recorded person by another launch:
+              // its saved directories may name people the standby's map does not.
+              world.state.worktrees.set(session.worktreeId, { layout: "person", requested: null });
+              yield* engine.launch(session.id, ["claude"]);
+              const launched = testWorld.sessions.get(session.id);
+              expect(launched?.status).toBe("running");
+              // Never replanned, so nothing was restored under the standby's map; drained instead.
+              expect(world.replanned).toEqual([]);
+              expect(world.stopped).toContain(standby.sealantWorkspaceId);
+              // A cold executor of the worktree's own, with the worktree's owner map.
+              expect(
+                world.created
+                  .slice(createsBefore)
+                  .some(
+                    (options) =>
+                      options.source?.kind === "capture" &&
+                      options.source.worktreeId === session.worktreeId &&
+                      "ownerMap" in options.source,
+                  ),
+              ).toBe(true);
+              expect(testWorld.executorLaunches.get(session.id)?.launchId).not.toBe(
+                `standby:${standby.id}`,
+              );
+            }),
+          {
+            ...world.layers,
+            hotWorkspacesLayer: clock.poolLayer,
+            wrapCaptureChannel: clock.wrapCaptureChannel,
+          },
+        );
+      }),
+    30_000,
+  );
 
-  it("while the control plane cannot be asked, an image Mend knows runs shared still has its shared standby claimed (review of mend#596, N2)", async () => {
-    let controlPlane: string | null = null;
-    const world = personStandbyWorld({
-      report: { person: null, missing: [] },
-      exec: answerLayout(LAYOUT_READY),
-      controlPlane: () => controlPlane,
-    });
-    await withEngine(
-      (testWorld, tmp) =>
-        Effect.gen(function* () {
-          const project = yield* setup(tmp, testWorld);
-          testWorld.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
-          // Mend's own record: a prepare found this image cannot run per person.
-          world.state.capabilities.set(`digest:sha256:img\u0000docker`, {
-            imageKey: "digest:sha256:img",
-            runtime: "docker",
-            person: false,
-            missing: ["no sudo"],
-            confirmed: true,
-            observedAt: new Date(),
-          });
-          const engine = yield* SessionEngine;
-          yield* engine.reconcileHotSessions(project.id);
-          yield* until(
-            () => world.pool.entries.some((entry) => entry.status === "ready"),
-            "a shared standby",
-          );
-          const standby = world.pool.entries[0];
-          expect(standby?.harnessLayout).toBe("shared");
-          controlPlane = CONTROL_PLANE_UNREADABLE;
-          const session = yield* engine.provision({
-            projectId: project.id,
-            harness: "claude",
-            label: null,
-            name: null,
-            ownerUserId: "user-fixture",
-            base: null,
-          });
-          expect(session.id).toBe(standby?.id);
-        }),
-      world.layers,
-    );
-  });
+  it.effect(
+    "keeps the pool as it is while the control plane cannot be asked: the person standby stays ready and nothing is warmed in its place (review of mend#596, N4)",
+    () =>
+      Effect.gen(function* () {
+        let controlPlane: string | null = null;
+        const world = personStandbyWorld({
+          report: { person: true, missing: [] },
+          exec: answerLayout(LAYOUT_READY),
+          controlPlane: () => controlPlane,
+        });
+        const clock = yield* makePoolClock(world.pool);
+        yield* withPreparedEngineEffect(
+          (testWorld, tmp) => setup(tmp, testWorld),
+          (testWorld, tmp, project) =>
+            Effect.gen(function* () {
+              testWorld.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
+              const engine = yield* SessionEngine;
+              const standby = yield* warmPersonStandby(project, world.pool, clock);
+              const created = world.created.length;
+              controlPlane = CONTROL_PLANE_UNREADABLE;
+              yield* engine.reconcileHotSessions(project.id);
+              yield* engine.reconcileHotSessions(project.id);
+              yield* clock.afterPasses(engine.reconcileHotSessions(project.id));
+              expect(world.pool.entries.map((entry) => [entry.id, entry.status])).toEqual([
+                [standby.id, "ready"],
+              ]);
+              expect(world.created.length).toBe(created);
+              expect(world.stopped).not.toContain(standby.sealantWorkspaceId);
+            }),
+          {
+            ...world.layers,
+            hotWorkspacesLayer: clock.poolLayer,
+            wrapCaptureChannel: clock.wrapCaptureChannel,
+          },
+        );
+      }),
+  );
+
+  it.effect(
+    "while the control plane cannot be asked, an image Mend knows runs shared still has its shared standby claimed (review of mend#596, N2)",
+    () =>
+      Effect.gen(function* () {
+        let controlPlane: string | null = null;
+        const world = personStandbyWorld({
+          report: { person: null, missing: [] },
+          exec: answerLayout(LAYOUT_READY),
+          controlPlane: () => controlPlane,
+        });
+        const clock = yield* makePoolClock(world.pool);
+        yield* withPreparedEngineEffect(
+          (testWorld, tmp) => setup(tmp, testWorld),
+          (testWorld, tmp, project) =>
+            Effect.gen(function* () {
+              testWorld.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
+              // Mend's own record: a prepare found this image cannot run per person.
+              world.state.capabilities.set(`digest:sha256:img\u0000docker`, {
+                imageKey: "digest:sha256:img",
+                runtime: "docker",
+                person: false,
+                missing: ["no sudo"],
+                confirmed: true,
+                observedAt: new Date(),
+              });
+              const engine = yield* SessionEngine;
+              yield* engine.reconcileHotSessions(project.id);
+              yield* clock.untilReady(
+                () => world.pool.entries.some((entry) => entry.status === "ready"),
+                "a shared standby",
+              );
+              const standby = world.pool.entries[0];
+              expect(standby?.harnessLayout).toBe("shared");
+              controlPlane = CONTROL_PLANE_UNREADABLE;
+              const session = yield* clock.claim(
+                engine.provision({
+                  projectId: project.id,
+                  harness: "claude",
+                  label: null,
+                  name: null,
+                  ownerUserId: "user-fixture",
+                  base: null,
+                }),
+              );
+              expect(session.id).toBe(standby?.id);
+            }),
+          {
+            ...world.layers,
+            hotWorkspacesLayer: clock.poolLayer,
+            wrapCaptureChannel: clock.wrapCaptureChannel,
+          },
+        );
+      }),
+  );
 });

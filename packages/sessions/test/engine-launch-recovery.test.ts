@@ -35,32 +35,32 @@ import {
 } from "@mend/sessions";
 import { BlobStore, BlobStoreError, BlobStoreFsLive, captureKeys } from "@mend/store";
 import { buildManifest, snapshotDirectory, uploadObjects } from "@mend/store/testing";
-import { it } from "@mend/test-ci/effect-vitest";
+import { it, TestClock } from "@mend/test-ci/effect-vitest";
 import type {
   CreateOptions,
-  InteractiveSessionStatus,
   TimelineEntry,
   Workspace,
   WorkspaceCaptureReplanned,
 } from "@sealant/sdk";
-import { ConfigProvider, Deferred, Duration, Effect, Layer, Stream } from "effect";
+import { Clock, ConfigProvider, Deferred, Duration, Effect, Layer, Stream } from "effect";
 import { describe, expect } from "vitest";
 
 import { installScript } from "../src/dependency-cache.ts";
 import { makeMemoryCaptureStore, type MemoryCaptureStore } from "./capture-store-memory.ts";
 import {
   CUSTOM_BASE,
-  eventually,
   flushReport,
   isWarmup,
   launchOnce,
   lifecycleLayer,
   memoryHotPool,
   memorySeals,
+  provisionIn,
   seedStoppedBeforeRestart,
   shipHarnessCapture,
   until,
 } from "./engine/capture-fixture.ts";
+import { makeEngineClock, signallingPool } from "./engine/clock-fixture.ts";
 import {
   captureAnswer,
   drawnLine,
@@ -75,6 +75,7 @@ import {
   skillsForLaunchLayer,
   type World,
   withEngine,
+  withPreparedEngineEffect,
 } from "./engine/fixture.ts";
 
 /** What the pickup writer does with what it redeemed: each file 0644, its directory 0755. */
@@ -117,199 +118,240 @@ const buildFailed = () =>
     }),
   );
 
+/**
+ * What these scenarios wait on: the rows the engine writes (`world.sessions`, `world.processes`),
+ * the lists a fake appends to, a standby the pool makes ready (`signallingPool`), every lease the
+ * store releases (`releasing`), every look the PTY watcher takes and every checkpoint wait the
+ * channel registers.
+ */
+const makeLaunchClock = makeEngineClock(["sessions", "processes"]);
+
+/** The store, with every lease release waking `untilChanged` (the lease is mutated in place). */
+const releasing = (memory: MemoryCaptureStore, changed: () => void): MemoryCaptureStore => ({
+  ...memory,
+  layer: Layer.effect(
+    CaptureStoreRepo,
+    Effect.map(CaptureStoreRepo, (inner) => ({
+      ...inner,
+      release: (worktreeId, epoch) =>
+        inner.release(worktreeId, epoch).pipe(Effect.tap(() => Effect.sync(changed))),
+    })),
+  ).pipe(Layer.provide(memory.layer)),
+});
+
 describe("SessionEngine against the Docker e2e run 5 (2026-09-28)", () => {
-  it(
+  it.effect(
     "an executor that ended on its runtime and that the platform keeps is not dead: its lease and its token stay, and it reads `not saved · executor kept for recovery`",
-    { timeout: 20_000 },
-    async () => {
-      const created: Array<CreateOptions> = [];
-      const memory = makeMemoryCaptureStore();
-      const tokenEvents: Array<string> = [];
-      const stops: Array<"drain" | "discard"> = [];
-      let killed = false;
-      await withEngine(
-        (world, tmp) =>
-          Effect.gen(function* () {
-            const { engine, session } = yield* launchOnce(world, tmp);
-            yield* engine.launch(session.id, ["codex"]);
-            const launch = world.executorLaunches.get(session.id)?.launchId ?? "";
-            // `docker kill`: the container is gone, Core marks the workspace failed and keeps
-            // it for recovery; the heartbeat stops and the lease lapses.
-            killed = true;
-            const afterExpiry = Date.now() + 1_000_000;
-            memory.clock.now = () => afterExpiry;
-            yield* engine.reapCaptureLeases();
-            yield* until(
-              () => world.sessions.get(session.id)?.captureNotSavedAt != null,
-              "the kept executor",
-            );
-            const kept = world.sessions.get(session.id);
-            expect(kept === undefined ? null : captureStatusLine(kept)).toBe(
-              "not saved · executor kept for recovery · exited before its final flush completed · 0 pending",
-            );
-            // Nothing released and nothing revoked: Core's recovery boot plans and ships with it.
-            expect(memory.leases.get(session.worktreeId)?.executorId).toBe(session.id);
-            expect(tokenEvents.filter((event) => event.startsWith("revoke"))).toEqual([]);
-            expect(tokenEvents).toContain(`issue:${launch}`);
-            expect(stops.length).toBeGreaterThan(0);
-            // Nothing else was started over it.
-            expect(created).toHaveLength(1);
-          }),
-        {
-          captured: memory,
-          tokenEvents,
-          drainPolicy: { terminationWait: Duration.millis(200) },
-          sealantLayer: lifecycleLayer(created, {
-            captureOps: {
-              stops,
-              status: () => (killed ? "failed" : "ready"),
-              stopAnswer: () => "kept",
-              retained: () => ({
-                reason: "exited before its final flush completed",
-                recoverable: true,
-              }),
-            },
-          }),
-        },
-      );
-    },
-  );
-
-  it(
-    "the owner's discard of a kept executor is asked of the platform, never read from its status",
-    { timeout: 20_000 },
-    async () => {
-      const created: Array<CreateOptions> = [];
-      const memory = makeMemoryCaptureStore();
-      const stops: Array<"drain" | "discard"> = [];
-      const tokenEvents: Array<string> = [];
-      let killed = false;
-      let discarding = false;
-      await withEngine(
-        (world, tmp) =>
-          Effect.gen(function* () {
-            const { engine, session } = yield* launchOnce(world, tmp);
-            yield* engine.launch(session.id, ["codex"]);
-            killed = true;
-            const afterExpiry = Date.now() + 1_000_000;
-            memory.clock.now = () => afterExpiry;
-            yield* engine.reapCaptureLeases();
-            yield* until(
-              () => world.sessions.get(session.id)?.captureNotSavedAt != null,
-              "the kept executor",
-            );
-            expect(tokenEvents.some((event) => event.startsWith("revoke"))).toBe(false);
-            discarding = true;
-            yield* engine.discardUnsavedAndStop(session.id, "owner@example.com");
-            expect(stops).toContain("discard");
-            expect(tokenEvents.some((event) => event.startsWith("revoke"))).toBe(true);
-          }),
-        {
-          captured: memory,
-          tokenEvents,
-          drainPolicy: { terminationWait: Duration.millis(200) },
-          sealantLayer: lifecycleLayer(created, {
-            captureOps: {
-              stops,
-              status: (stopAsked) => (!killed ? "ready" : stopAsked ? "stopped" : "failed"),
-              stopAnswer: (discard) => (discard ? "stopped" : "kept"),
-              // Retained until the owner discards: then the platform ends it.
-              retained: () =>
-                discarding
-                  ? null
-                  : { reason: "exited before its final flush completed", recoverable: true },
-            },
-          }),
-        },
-      );
-    },
-  );
-
-  it(
-    "a final flush the executor runs on its own (a `docker stop`) reads `stopping · saving`, not `running`",
-    { timeout: 20_000 },
-    async () => {
-      const created: Array<CreateOptions> = [];
-      const memory = makeMemoryCaptureStore();
-      let ending = false;
-      await withEngine(
-        (world, tmp) =>
-          Effect.gen(function* () {
-            const { engine, session } = yield* launchOnce(world, tmp);
-            yield* engine.launch(session.id, ["codex"]);
-            ending = true;
-            yield* engine.refreshCaptureStatus(session.id);
-            yield* until(
-              () => world.sessions.get(session.id)?.captureDrain === "stop",
-              "the stop drain",
-            );
-            const stopping = world.sessions.get(session.id);
-            expect(stopping?.status).toBe("stopping");
-            expect(stopping === undefined ? null : captureStatusLine(stopping)).toMatch(/^saving/);
-          }),
-        {
-          captured: memory,
-          sealantLayer: lifecycleLayer(created, {
-            captureOps: {
-              // The executor's own final flush is still running; nothing answers complete yet.
-              finalCompletion: "unreported",
-              flush: () =>
-                Effect.succeed({
-                  ...flushReport(1, 1),
-                  complete: false,
-                  incompleteReason: "in-progress",
+    () =>
+      Effect.gen(function* () {
+        const created: Array<CreateOptions> = [];
+        const memory = makeMemoryCaptureStore();
+        const tokenEvents: Array<string> = [];
+        const stops: Array<"drain" | "discard"> = [];
+        const clock = yield* makeLaunchClock;
+        let killed = false;
+        yield* withPreparedEngineEffect(
+          (world, tmp) => setup(tmp, world),
+          (world, _tmp, project) =>
+            Effect.gen(function* () {
+              const { engine, session } = yield* provisionIn(project);
+              yield* engine.launch(session.id, ["codex"]);
+              const launch = world.executorLaunches.get(session.id)?.launchId ?? "";
+              // `docker kill`: the container is gone, Core marks the workspace failed and keeps
+              // it for recovery; the heartbeat stops and the lease lapses.
+              killed = true;
+              const afterExpiry = Date.now() + 1_000_000;
+              memory.clock.now = () => afterExpiry;
+              yield* engine.reapCaptureLeases();
+              yield* clock.untilChanged(
+                () => world.sessions.get(session.id)?.captureNotSavedAt != null,
+                "the kept executor",
+              );
+              const kept = world.sessions.get(session.id);
+              expect(kept === undefined ? null : captureStatusLine(kept)).toBe(
+                "not saved · executor kept for recovery · exited before its final flush completed · 0 pending",
+              );
+              // Nothing released and nothing revoked: Core's recovery boot plans and ships with it.
+              expect(memory.leases.get(session.worktreeId)?.executorId).toBe(session.id);
+              expect(tokenEvents.filter((event) => event.startsWith("revoke"))).toEqual([]);
+              expect(tokenEvents).toContain(`issue:${launch}`);
+              expect(stops.length).toBeGreaterThan(0);
+              // Nothing else was started over it.
+              expect(created).toHaveLength(1);
+            }),
+          {
+            captured: memory,
+            tokenEvents,
+            drainPolicy: { terminationWait: Duration.millis(200) },
+            sealantLayer: lifecycleLayer(created, {
+              captureOps: {
+                stops,
+                status: () => (killed ? "failed" : "ready"),
+                stopAnswer: () => "kept",
+                retained: () => ({
+                  reason: "exited before its final flush completed",
+                  recoverable: true,
                 }),
-              captureStatus: () =>
-                Effect.succeed(
-                  ending
-                    ? { ...flushReport(1, 1), complete: false, incompleteReason: "in-progress" }
-                    : flushReport(0, 1),
-                ),
-            },
-          }),
-        },
-      );
-    },
+              },
+            }),
+            prepareWorld: clock.prepareWorld,
+          },
+        );
+      }),
+    { timeout: 20_000 },
   );
 
-  it(
-    "a runtime that is not ready (a launch whose worker died after it started) is kept and looked at on the kept backoff, never flushed every poll",
+  it.effect(
+    "the owner's discard of a kept executor is asked of the platform, never read from its status",
+    () =>
+      Effect.gen(function* () {
+        const created: Array<CreateOptions> = [];
+        const memory = makeMemoryCaptureStore();
+        const stops: Array<"drain" | "discard"> = [];
+        const tokenEvents: Array<string> = [];
+        const clock = yield* makeLaunchClock;
+        let killed = false;
+        let discarding = false;
+        yield* withPreparedEngineEffect(
+          (world, tmp) => setup(tmp, world),
+          (world, _tmp, project) =>
+            Effect.gen(function* () {
+              const { engine, session } = yield* provisionIn(project);
+              yield* engine.launch(session.id, ["codex"]);
+              killed = true;
+              const afterExpiry = Date.now() + 1_000_000;
+              memory.clock.now = () => afterExpiry;
+              yield* engine.reapCaptureLeases();
+              yield* clock.untilChanged(
+                () => world.sessions.get(session.id)?.captureNotSavedAt != null,
+                "the kept executor",
+              );
+              expect(tokenEvents.some((event) => event.startsWith("revoke"))).toBe(false);
+              discarding = true;
+              yield* engine.discardUnsavedAndStop(session.id, "owner@example.com");
+              expect(stops).toContain("discard");
+              expect(tokenEvents.some((event) => event.startsWith("revoke"))).toBe(true);
+            }),
+          {
+            captured: memory,
+            tokenEvents,
+            drainPolicy: { terminationWait: Duration.millis(200) },
+            sealantLayer: lifecycleLayer(created, {
+              captureOps: {
+                stops,
+                status: (stopAsked) => (!killed ? "ready" : stopAsked ? "stopped" : "failed"),
+                stopAnswer: (discard) => (discard ? "stopped" : "kept"),
+                // Retained until the owner discards: then the platform ends it.
+                retained: () =>
+                  discarding
+                    ? null
+                    : { reason: "exited before its final flush completed", recoverable: true },
+              },
+            }),
+            prepareWorld: clock.prepareWorld,
+          },
+        );
+      }),
     { timeout: 20_000 },
-    async () => {
-      const created: Array<CreateOptions> = [];
-      const memory = makeMemoryCaptureStore();
-      const kinds: CaptureFlushKind[] = [];
-      let pending = false;
-      await withEngine(
-        (world, tmp) =>
-          Effect.gen(function* () {
-            const { engine, session } = yield* launchOnce(world, tmp);
-            yield* engine.launch(session.id, ["codex"]);
-            pending = true;
-            yield* engine.stop(session.id);
-            yield* until(
-              () => world.sessions.get(session.id)?.captureNotSavedAt != null,
-              "the kept drain",
-            );
-            yield* Effect.sleep(Duration.millis(200));
-            expect(kinds.filter((kind) => kind === "final")).toEqual([]);
-            const kept = world.sessions.get(session.id);
-            expect(kept === undefined ? null : captureStatusLine(kept)).toBe(
-              "not saved · executor not ready · running · 0 pending · workspace kept",
-            );
-            expect(memory.leases.get(session.worktreeId)?.executorId).toBe(session.id);
-          }),
-        {
-          captured: memory,
-          sealantLayer: lifecycleLayer(created, {
-            captureOps: {
-              flushKinds: kinds,
-              status: () => (pending ? "running" : "ready"),
-            },
-          }),
-        },
-      );
-    },
+  );
+
+  it.effect(
+    "a final flush the executor runs on its own (a `docker stop`) reads `stopping · saving`, not `running`",
+    () =>
+      Effect.gen(function* () {
+        const created: Array<CreateOptions> = [];
+        const memory = makeMemoryCaptureStore();
+        const clock = yield* makeLaunchClock;
+        let ending = false;
+        yield* withPreparedEngineEffect(
+          (world, tmp) => setup(tmp, world),
+          (world, _tmp, project) =>
+            Effect.gen(function* () {
+              const { engine, session } = yield* provisionIn(project);
+              yield* engine.launch(session.id, ["codex"]);
+              ending = true;
+              yield* engine.refreshCaptureStatus(session.id);
+              yield* clock.untilChanged(
+                () => world.sessions.get(session.id)?.captureDrain === "stop",
+                "the stop drain",
+              );
+              const stopping = world.sessions.get(session.id);
+              expect(stopping?.status).toBe("stopping");
+              expect(stopping === undefined ? null : captureStatusLine(stopping)).toMatch(
+                /^saving/,
+              );
+            }),
+          {
+            captured: memory,
+            sealantLayer: lifecycleLayer(created, {
+              captureOps: {
+                // The executor's own final flush is still running; nothing answers complete yet.
+                finalCompletion: "unreported",
+                flush: () =>
+                  Effect.succeed({
+                    ...flushReport(1, 1),
+                    complete: false,
+                    incompleteReason: "in-progress",
+                  }),
+                captureStatus: () =>
+                  Effect.succeed(
+                    ending
+                      ? { ...flushReport(1, 1), complete: false, incompleteReason: "in-progress" }
+                      : flushReport(0, 1),
+                  ),
+              },
+            }),
+            prepareWorld: clock.prepareWorld,
+          },
+        );
+      }),
+    { timeout: 20_000 },
+  );
+
+  it.effect(
+    "a runtime that is not ready (a launch whose worker died after it started) is kept and looked at on the kept backoff, never flushed every poll",
+    () =>
+      Effect.gen(function* () {
+        const created: Array<CreateOptions> = [];
+        const memory = makeMemoryCaptureStore();
+        const kinds: CaptureFlushKind[] = [];
+        const clock = yield* makeLaunchClock;
+        let pending = false;
+        yield* withPreparedEngineEffect(
+          (world, tmp) => setup(tmp, world),
+          (world, _tmp, project) =>
+            Effect.gen(function* () {
+              const { engine, session } = yield* provisionIn(project);
+              yield* engine.launch(session.id, ["codex"]);
+              pending = true;
+              yield* engine.stop(session.id);
+              yield* clock.untilChanged(
+                () => world.sessions.get(session.id)?.captureNotSavedAt != null,
+                "the kept drain",
+              );
+              // The kept drain's next look is on its backoff (`keptRetryFirst`, 10 s): 200 ms of
+              // polls pass with no FINAL asked.
+              yield* TestClock.adjust(Duration.millis(200));
+              expect(kinds.filter((kind) => kind === "final")).toEqual([]);
+              const kept = world.sessions.get(session.id);
+              expect(kept === undefined ? null : captureStatusLine(kept)).toBe(
+                "not saved · executor not ready · running · 0 pending · workspace kept",
+              );
+              expect(memory.leases.get(session.worktreeId)?.executorId).toBe(session.id);
+            }),
+          {
+            captured: memory,
+            sealantLayer: lifecycleLayer(created, {
+              captureOps: {
+                flushKinds: kinds,
+                status: () => (pending ? "running" : "ready"),
+              },
+            }),
+            prepareWorld: clock.prepareWorld,
+          },
+        );
+      }),
+    { timeout: 20_000 },
   );
 });
 
@@ -376,116 +418,128 @@ describe("SessionEngine idempotent executor creates (Core's next SDK, 2026-09-28
     },
   );
 
-  it(
+  it.effect(
     "a create whose answer was lost finds the executor it made by its key: on the row, draining, holding the worktree",
+    () =>
+      Effect.gen(function* () {
+        const created: Array<CreateOptions> = [];
+        const memory = makeMemoryCaptureStore();
+        const clock = yield* makeLaunchClock;
+        const stops = clock.watched<"drain" | "discard">();
+        yield* withPreparedEngineEffect(
+          (world, tmp) => setup(tmp, world),
+          (world, _tmp, project) =>
+            Effect.gen(function* () {
+              const { engine, session } = yield* provisionIn(project);
+              const failed = yield* engine.launch(session.id, ["codex"]).pipe(Effect.flip);
+              expect(failed._tag).toBe("SealantPlatformError");
+              expect(world.sessions.get(session.id)?.sealantWorkspaceId).toBe("workspace-1");
+              expect(world.executorCreates.has(session.id)).toBe(false);
+              yield* clock.untilChanged(() => stops.length > 0, "the drain's stop");
+              expect(memory.leases.get(session.worktreeId)?.executorId).toBe(session.id);
+              expect(yield* engine.removeWhenStopped(session.id)).toBe("pending");
+            }),
+          {
+            captured: memory,
+            drainPolicy: { terminationWait: Duration.millis(300) },
+            sealantLayer: layerWith(
+              created,
+              {
+                stops,
+                stopAnswer: () => "kept",
+                status: () => "ready",
+                findByKey: () => ({ kind: "found", workspaceId: "workspace-1" }),
+              },
+              lostAnswer,
+            ),
+            prepareWorld: clock.prepareWorld,
+          },
+        );
+      }),
     { timeout: 20_000 },
-    async () => {
-      const created: Array<CreateOptions> = [];
-      const memory = makeMemoryCaptureStore();
-      const stops: Array<"drain" | "discard"> = [];
-      await withEngine(
-        (world, tmp) =>
-          Effect.gen(function* () {
-            const { engine, session } = yield* launchOnce(world, tmp);
-            const failed = yield* engine.launch(session.id, ["codex"]).pipe(Effect.flip);
-            expect(failed._tag).toBe("SealantPlatformError");
-            expect(world.sessions.get(session.id)?.sealantWorkspaceId).toBe("workspace-1");
-            expect(world.executorCreates.has(session.id)).toBe(false);
-            yield* until(() => stops.length > 0, "the drain's stop");
-            expect(memory.leases.get(session.worktreeId)?.executorId).toBe(session.id);
-            expect(yield* engine.removeWhenStopped(session.id)).toBe("pending");
-          }),
-        {
-          captured: memory,
-          drainPolicy: { terminationWait: Duration.millis(300) },
-          sealantLayer: layerWith(
-            created,
-            {
-              stops,
-              stopAnswer: () => "kept",
-              status: () => "ready",
-              findByKey: () => ({ kind: "found", workspaceId: "workspace-1" }),
-            },
-            lostAnswer,
-          ),
-        },
-      );
-    },
   );
 
-  it(
+  it.effect(
     "a launch whose image build failed ends `failed` with its reason, asks no stop and frees the worktree: no executor ever ran",
+    () =>
+      Effect.gen(function* () {
+        const created: Array<CreateOptions> = [];
+        const memory = makeMemoryCaptureStore();
+        const clock = yield* makeLaunchClock;
+        const stops: Array<"drain" | "discard"> = [];
+        yield* withPreparedEngineEffect(
+          (world, tmp) => setup(tmp, world),
+          (world, _tmp, project) =>
+            Effect.gen(function* () {
+              const { engine, session } = yield* provisionIn(project);
+              yield* engine.launch(session.id, ["codex"]).pipe(Effect.flip);
+              yield* clock.untilChanged(
+                () => memory.leases.get(session.worktreeId)?.executorId === null,
+                "the worktree freed",
+              );
+              const read = world.sessions.get(session.id);
+              expect(read?.status).toBe("failed");
+              expect(read?.settledAt).not.toBeNull();
+              expect(read?.summary ?? "").toContain("reported no progress");
+              expect(read?.captureDrain ?? null).toBeNull();
+              expect(stops).toEqual([]);
+            }),
+          {
+            captured: releasing(memory, clock.changed),
+            drainPolicy: { terminationWait: Duration.millis(300) },
+            sealantLayer: layerWith(
+              created,
+              {
+                stops,
+                status: () => "failed",
+                launchedRuntime: () => "never",
+                findByKey: () => ({ kind: "found", workspaceId: "workspace-1" }),
+              },
+              buildFailed,
+            ),
+            prepareWorld: clock.prepareWorld,
+          },
+        );
+      }),
     { timeout: 20_000 },
-    async () => {
-      const created: Array<CreateOptions> = [];
-      const memory = makeMemoryCaptureStore();
-      const stops: Array<"drain" | "discard"> = [];
-      await withEngine(
-        (world, tmp) =>
-          Effect.gen(function* () {
-            const { engine, session } = yield* launchOnce(world, tmp);
-            yield* engine.launch(session.id, ["codex"]).pipe(Effect.flip);
-            yield* until(
-              () => memory.leases.get(session.worktreeId)?.executorId === null,
-              "the worktree freed",
-            );
-            const read = world.sessions.get(session.id);
-            expect(read?.status).toBe("failed");
-            expect(read?.settledAt).not.toBeNull();
-            expect(read?.summary ?? "").toContain("reported no progress");
-            expect(read?.captureDrain ?? null).toBeNull();
-            expect(stops).toEqual([]);
-          }),
-        {
-          captured: memory,
-          drainPolicy: { terminationWait: Duration.millis(300) },
-          sealantLayer: layerWith(
-            created,
-            {
-              stops,
-              status: () => "failed",
-              launchedRuntime: () => "never",
-              findByKey: () => ({ kind: "found", workspaceId: "workspace-1" }),
-            },
-            buildFailed,
-          ),
-        },
-      );
-    },
   );
 
-  it(
+  it.effect(
     "a failed workspace whose executor ran is still kept for what its disk may hold",
+    () =>
+      Effect.gen(function* () {
+        const created: Array<CreateOptions> = [];
+        const memory = makeMemoryCaptureStore();
+        const clock = yield* makeLaunchClock;
+        const stops = clock.watched<"drain" | "discard">();
+        yield* withPreparedEngineEffect(
+          (world, tmp) => setup(tmp, world),
+          (_world, _tmp, project) =>
+            Effect.gen(function* () {
+              const { engine, session } = yield* provisionIn(project);
+              yield* engine.launch(session.id, ["codex"]).pipe(Effect.flip);
+              yield* clock.untilChanged(() => stops.length > 0, "the drain's stop");
+              expect(memory.leases.get(session.worktreeId)?.executorId).toBe(session.id);
+            }),
+          {
+            captured: memory,
+            drainPolicy: { terminationWait: Duration.millis(300) },
+            sealantLayer: layerWith(
+              created,
+              {
+                stops,
+                stopAnswer: () => "kept",
+                status: () => "failed",
+                launchedRuntime: () => "launched",
+                findByKey: () => ({ kind: "found", workspaceId: "workspace-1" }),
+              },
+              buildFailed,
+            ),
+            prepareWorld: clock.prepareWorld,
+          },
+        );
+      }),
     { timeout: 20_000 },
-    async () => {
-      const created: Array<CreateOptions> = [];
-      const memory = makeMemoryCaptureStore();
-      const stops: Array<"drain" | "discard"> = [];
-      await withEngine(
-        (world, tmp) =>
-          Effect.gen(function* () {
-            const { engine, session } = yield* launchOnce(world, tmp);
-            yield* engine.launch(session.id, ["codex"]).pipe(Effect.flip);
-            yield* until(() => stops.length > 0, "the drain's stop");
-            expect(memory.leases.get(session.worktreeId)?.executorId).toBe(session.id);
-          }),
-        {
-          captured: memory,
-          drainPolicy: { terminationWait: Duration.millis(300) },
-          sealantLayer: layerWith(
-            created,
-            {
-              stops,
-              stopAnswer: () => "kept",
-              status: () => "failed",
-              launchedRuntime: () => "launched",
-              findByKey: () => ({ kind: "found", workspaceId: "workspace-1" }),
-            },
-            buildFailed,
-          ),
-        },
-      );
-    },
   );
 
   it(
@@ -788,51 +842,64 @@ describe("SessionEngine idempotent executor creates (Core's next SDK, 2026-09-28
     },
   );
 
-  it(
+  it.effect(
     "after a restart mid-create, the reaper finds the executor by the key on the row and drains it",
+    () =>
+      Effect.gen(function* () {
+        const created: Array<CreateOptions> = [];
+        const memory = makeMemoryCaptureStore();
+        const clock = yield* makeLaunchClock;
+        const stops = clock.watched<"drain" | "discard">();
+        const looked: string[] = [];
+        /**
+         * When the create was asked, as its key says: the key carries an epoch time the engine
+         * reads back as `executorStartedAt`, which is what this case checks, so the clock is set a
+         * minute after it rather than the key built from a clock at 1970. (`setTime` settles
+         * Effect's one-shot unadvanced-clock warning; the engine fixture settles it for every
+         * engine case anyway and keeps the test's own sleeps guarded: nothing is lost here.)
+         */
+        const createAskedAt = 1790000000000;
+        yield* withPreparedEngineEffect(
+          (world, tmp) =>
+            TestClock.setTime(createAskedAt + 60_000).pipe(Effect.andThen(setup(tmp, world))),
+          (world, _tmp, project) =>
+            Effect.gen(function* () {
+              const { engine, session } = yield* provisionIn(project);
+              // The crash point: the claim and the key are durable; the create's answer is not.
+              yield* Effect.gen(function* () {
+                const repo = yield* CaptureStoreRepo;
+                yield* repo.init(session.worktreeId);
+                yield* repo.claim(session.worktreeId, session.id, 30);
+              }).pipe(Effect.provide(memory.layer));
+              const key = `launch:${session.id}:${createAskedAt}:nonce`;
+              world.executorCreates.set(session.id, key);
+              yield* engine.reapCaptureLeases();
+              expect(looked).toEqual([key]);
+              expect(world.sessions.get(session.id)?.sealantWorkspaceId).toBe("workspace-1");
+              expect(world.sessions.get(session.id)?.executorStartedAt?.getTime()).toBe(
+                1790000000000,
+              );
+              yield* clock.untilChanged(() => stops.length > 0, "the drain's stop");
+              expect(world.executorResources.get(session.id)?.resourceId).toBe("vm-7");
+            }),
+          {
+            captured: memory,
+            drainPolicy: { terminationWait: Duration.millis(300) },
+            sealantLayer: layerWith(created, {
+              stops,
+              stopAnswer: () => "kept",
+              status: () => "ready",
+              resourceId: () => "vm-7",
+              findByKey: (key) => {
+                looked.push(key);
+                return { kind: "found", workspaceId: "workspace-1" };
+              },
+            }),
+            prepareWorld: clock.prepareWorld,
+          },
+        );
+      }),
     { timeout: 20_000 },
-    async () => {
-      const created: Array<CreateOptions> = [];
-      const memory = makeMemoryCaptureStore();
-      const stops: Array<"drain" | "discard"> = [];
-      const looked: string[] = [];
-      await withEngine(
-        (world, tmp) =>
-          Effect.gen(function* () {
-            const { engine, session } = yield* launchOnce(world, tmp);
-            // The crash point: the claim and the key are durable; the create's answer is not.
-            yield* Effect.gen(function* () {
-              const repo = yield* CaptureStoreRepo;
-              yield* repo.init(session.worktreeId);
-              yield* repo.claim(session.worktreeId, session.id, 30);
-            }).pipe(Effect.provide(memory.layer));
-            const key = `launch:${session.id}:1790000000000:nonce`;
-            world.executorCreates.set(session.id, key);
-            yield* engine.reapCaptureLeases();
-            expect(looked).toEqual([key]);
-            expect(world.sessions.get(session.id)?.sealantWorkspaceId).toBe("workspace-1");
-            expect(world.sessions.get(session.id)?.executorStartedAt?.getTime()).toBe(
-              1790000000000,
-            );
-            yield* until(() => stops.length > 0, "the drain's stop");
-            expect(world.executorResources.get(session.id)?.resourceId).toBe("vm-7");
-          }),
-        {
-          captured: memory,
-          drainPolicy: { terminationWait: Duration.millis(300) },
-          sealantLayer: layerWith(created, {
-            stops,
-            stopAnswer: () => "kept",
-            status: () => "ready",
-            resourceId: () => "vm-7",
-            findByKey: (key) => {
-              looked.push(key);
-              return { kind: "found", workspaceId: "workspace-1" };
-            },
-          }),
-        },
-      );
-    },
   );
 });
 
@@ -918,23 +985,25 @@ describe("custom-image setup commands run only on a worktree laid down fresh (re
       return n;
     });
 
-  it(
+  // Live clock: the setup command is a real `npm ci` the fake runs with spawnSync and the saved
+  // tree is copied on disk; no Effect timer is waited on.
+  it.live(
     "a cold resume restored from a saved capture runs no setup command: npm ci never overwrites the restored node_modules patch, the helper still installs, and the session line says why",
-    { timeout: 60_000 },
-    async () => {
-      const created: Array<CreateOptions> = [];
-      const execCalls: ReadonlyArray<string>[] = [];
-      const memory = makeMemoryCaptureStore();
-      const { root, seed } = npmProject();
-      const saved = path.join(root, "saved");
-      let executorRoot = "";
-      let setups = 0;
-      const restoredReads: string[] = [];
-      try {
-        await withEngine(
-          (world, tmp) =>
+    () =>
+      Effect.gen(function* () {
+        const created: Array<CreateOptions> = [];
+        const execCalls: ReadonlyArray<string>[] = [];
+        const memory = makeMemoryCaptureStore();
+        const { root, seed } = npmProject();
+        const saved = path.join(root, "saved");
+        let executorRoot = "";
+        let setups = 0;
+        const restoredReads: string[] = [];
+        yield* withPreparedEngineEffect(
+          (world, tmp) => setup(tmp, world),
+          (world, tmp, project) =>
             Effect.gen(function* () {
-              const { engine, session } = yield* launchOnce(world, tmp);
+              const { engine, session } = yield* provisionIn(project);
               yield* engine.launch(session.id, ["codex"]);
               // A worktree's first launch lays it down fresh (capture 0): its setup runs.
               expect(memory.chains.get(session.worktreeId)?.headN).toBe(0);
@@ -999,342 +1068,363 @@ describe("custom-image setup commands run only on a worktree laid down fresh (re
               },
             }),
           },
+        ).pipe(
+          Effect.ensuring(Effect.sync(() => fs.rmSync(root, { recursive: true, force: true }))),
         );
-      } finally {
-        fs.rmSync(root, { recursive: true, force: true });
-      }
-    },
+      }),
+    { timeout: 60_000 },
   );
 
   for (const head of ["capture 0", "a saved capture"] as const) {
-    it(`a standby claimed onto ${head} ${head === "capture 0" ? "runs its setup commands at claim, after the replan" : "runs no setup command after its replan, still installs the helper, and says why"}`, async () => {
-      const execCalls: ReadonlyArray<string>[] = [];
-      const memory = makeMemoryCaptureStore();
-      const pool = memoryHotPool();
-      const SETUP = "npm ci --offline";
-      /** Every exec, in order, with whether the replan had happened yet. */
-      const order: string[] = [];
-      let executor: SessionId | null = null;
-      // oxlint-disable-next-line unicorn/consistent-function-scoping -- Keep this scenario helper beside the assertions that use it.
-      const flush = () => Effect.succeed(captureAnswer({ epoch: 2 }));
-      const replan = (workspace: Workspace) =>
+    it.effect(
+      `a standby claimed onto ${head} ${head === "capture 0" ? "runs its setup commands at claim, after the replan" : "runs no setup command after its replan, still installs the helper, and says why"}`,
+      () =>
         Effect.gen(function* () {
-          if (executor === null) throw new Error("no executor to replan");
-          order.push("replan");
-          const api = servedSocketApis.get(executor)?.capture;
-          if (api === undefined) throw new Error("the executor serves no capture api");
-          const plan = yield* api.planGet({ worktree_id: null, epoch: 0 }).pipe(
-            Effect.mapError(
-              (error) =>
-                new SealantPlatformError({
-                  code: "replan_refused",
-                  status: error.status,
-                  message: `${error.reason}: ${error.message}`,
-                  cause: error,
-                }),
-            ),
-          );
-          return {
-            worktreeId: plan.worktree_id,
-            epoch: plan.epoch,
-            ...(plan.head === null
-              ? {}
-              : { headN: plan.head.n, headCaptureId: plan.head.capture_id }),
-            filesWritten: 1,
-            bytesWritten: 14,
-            filesSkipped: 0,
-            bytesSkipped: 0,
-            removed: 0,
-            unchanged: workspace.id === "",
-          } satisfies WorkspaceCaptureReplanned;
-        });
-      await withEngine(
-        (world, tmp) =>
-          Effect.gen(function* () {
-            const project = yield* setup(tmp, world);
-            world.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
-            const engine = yield* SessionEngine;
-            yield* engine.reconcileHotSessions(project.id);
-            yield* until(() => pool.entries.some((entry) => entry.status === "ready"), "a standby");
-            const standby = pool.entries[0];
-            if (standby === undefined) throw new Error("no standby");
-            // Nothing executes in a capture-mode standby before its claim (e2e9 F-B).
-            expect(execCalls).toEqual([]);
-            const session = yield* engine.provision({
-              projectId: project.id,
-              harness: "codex",
-              label: null,
-              name: null,
-              ownerUserId: "user-fixture",
-              base: null,
-            });
-            // The session claimed the standby.
-            expect(session.id).toBe(standby.id);
-            executor = session.id;
-            let savedN: number | null = null;
-            if (head === "a saved capture") {
-              // The worktree's head is past capture 0 when the replan lays it down: capture 1,
-              // saved by an earlier executor under an earlier epoch.
-              const tree = path.join(tmp, "standby-saved");
-              fs.mkdirSync(path.join(tree, "tree"), { recursive: true });
-              fs.writeFileSync(path.join(tree, "tree", "edit.txt"), "saved work\n");
-              const cap0 = memory.chains.get(session.worktreeId)?.headCapture ?? null;
-              const snapshot = snapshotDirectory(tree, captureKeys(session.worktreeId, 1), {
-                chunkSize: 64,
-              });
-              const built = buildManifest({
-                worktreeId: session.worktreeId,
-                n: 1,
-                parent: cap0,
-                epoch: 1,
-                seq: 10,
-                kind: "final",
-                git: { packs: [], refs: {}, head: "refs/heads/main", fsck: "verified" },
-                workspace: { root: snapshot.root, packs: snapshot.packs },
-              });
-              yield* uploadObjects(new Map([...snapshot.objects, [built.key, built.bytes]])).pipe(
-                Effect.provide(BlobStoreFsLive(path.join(tmp, "blobs"))),
+          const execCalls: ReadonlyArray<string>[] = [];
+          const memory = makeMemoryCaptureStore();
+          const pool = memoryHotPool();
+          const clock = yield* makeLaunchClock;
+          const SETUP = "npm ci --offline";
+          /** Every exec, in order, with whether the replan had happened yet. */
+          const order: string[] = [];
+          let executor: SessionId | null = null;
+          // oxlint-disable-next-line unicorn/consistent-function-scoping -- Keep this scenario helper beside the assertions that use it.
+          const flush = () => Effect.succeed(captureAnswer({ epoch: 2 }));
+          const replan = (workspace: Workspace) =>
+            Effect.gen(function* () {
+              if (executor === null) throw new Error("no executor to replan");
+              order.push("replan");
+              const api = servedSocketApis.get(executor)?.capture;
+              if (api === undefined) throw new Error("the executor serves no capture api");
+              const plan = yield* api.planGet({ worktree_id: null, epoch: 0 }).pipe(
+                Effect.mapError(
+                  (error) =>
+                    new SealantPlatformError({
+                      code: "replan_refused",
+                      status: error.status,
+                      message: `${error.reason}: ${error.message}`,
+                      cause: error,
+                    }),
+                ),
               );
-              memory.captures.set(built.id, {
-                id: built.id,
-                worktreeId: session.worktreeId,
-                n: 1,
-                parent: cap0,
-                epoch: 1,
-                seq: 10n,
-                kind: "final",
-                manifestKey: built.key,
-                sections: built.manifest.sections,
-                gitFsck: "verified",
-                createdAt: now(),
-              });
-              memory.chains.set(session.worktreeId, {
-                ...(memory.chains.get(session.worktreeId) ?? { headEpoch: 1 }),
-                headCapture: built.id,
-                headN: 1,
-                headEpoch: 1,
-              });
-              savedN = 1;
-            }
-            yield* engine.launch(session.id, ["codex"]);
-            expect(order[0]).toBe("replan");
-            const setups = order.filter((entry) => entry === "setup");
-            const helper = order.indexOf("helper");
-            expect(helper).toBeGreaterThan(0);
-            const summary = drawnLine(world.sessions.get(session.id)?.summary);
-            if (savedN === null) {
-              expect(setups).toHaveLength(1);
-              expect(order.indexOf("setup")).toBeGreaterThan(0);
-              expect(order.indexOf("setup")).toBeLessThan(helper);
-              expect(summary ?? "").not.toMatch(/setup skipped/);
-            } else {
-              expect(setups).toEqual([]);
-              expect(summary).toBe(`setup skipped · restored from capture ${savedN}`);
-            }
-          }),
-        {
-          captured: memory,
-          workspaceImage: { ...CUSTOM_BASE, setupCommands: [SETUP] },
-          sealantLayer: sealantLaunchLayer(
-            [],
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            execCalls,
-            undefined,
-            {
-              replan,
-              flush,
-              exec: (argv) => {
-                if (argv[0] === "sh" && argv[1] === "-lc" && argv[2] === SETUP) {
-                  order.push("setup");
-                } else if ((argv[2] ?? "").includes("/usr/local/bin/mend")) {
-                  order.push("helper");
+              return {
+                worktreeId: plan.worktree_id,
+                epoch: plan.epoch,
+                ...(plan.head === null
+                  ? {}
+                  : { headN: plan.head.n, headCaptureId: plan.head.capture_id }),
+                filesWritten: 1,
+                bytesWritten: 14,
+                filesSkipped: 0,
+                bytesSkipped: 0,
+                removed: 0,
+                unchanged: workspace.id === "",
+              } satisfies WorkspaceCaptureReplanned;
+            });
+          yield* withPreparedEngineEffect(
+            (world, tmp) => setup(tmp, world),
+            (world, tmp, project) =>
+              Effect.gen(function* () {
+                world.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
+                const engine = yield* SessionEngine;
+                yield* engine.reconcileHotSessions(project.id);
+                yield* clock.untilChanged(
+                  () => pool.entries.some((entry) => entry.status === "ready"),
+                  "a standby",
+                );
+                const standby = pool.entries[0];
+                if (standby === undefined) throw new Error("no standby");
+                // Nothing executes in a capture-mode standby before its claim (e2e9 F-B).
+                expect(execCalls).toEqual([]);
+                // The claim waits out one checkpoint for the standby's capture 0 to register.
+                const session = yield* clock.checkpointWait(
+                  engine.provision({
+                    projectId: project.id,
+                    harness: "codex",
+                    label: null,
+                    name: null,
+                    ownerUserId: "user-fixture",
+                    base: null,
+                  }),
+                );
+                // The session claimed the standby.
+                expect(session.id).toBe(standby.id);
+                executor = session.id;
+                let savedN: number | null = null;
+                if (head === "a saved capture") {
+                  // The worktree's head is past capture 0 when the replan lays it down: capture 1,
+                  // saved by an earlier executor under an earlier epoch.
+                  const tree = path.join(tmp, "standby-saved");
+                  fs.mkdirSync(path.join(tree, "tree"), { recursive: true });
+                  fs.writeFileSync(path.join(tree, "tree", "edit.txt"), "saved work\n");
+                  const cap0 = memory.chains.get(session.worktreeId)?.headCapture ?? null;
+                  const snapshot = snapshotDirectory(tree, captureKeys(session.worktreeId, 1), {
+                    chunkSize: 64,
+                  });
+                  const built = buildManifest({
+                    worktreeId: session.worktreeId,
+                    n: 1,
+                    parent: cap0,
+                    epoch: 1,
+                    seq: 10,
+                    kind: "final",
+                    git: { packs: [], refs: {}, head: "refs/heads/main", fsck: "verified" },
+                    workspace: { root: snapshot.root, packs: snapshot.packs },
+                  });
+                  yield* uploadObjects(
+                    new Map([...snapshot.objects, [built.key, built.bytes]]),
+                  ).pipe(Effect.provide(BlobStoreFsLive(path.join(tmp, "blobs"))));
+                  memory.captures.set(built.id, {
+                    id: built.id,
+                    worktreeId: session.worktreeId,
+                    n: 1,
+                    parent: cap0,
+                    epoch: 1,
+                    seq: 10n,
+                    kind: "final",
+                    manifestKey: built.key,
+                    sections: built.manifest.sections,
+                    gitFsck: "verified",
+                    createdAt: now(),
+                  });
+                  memory.chains.set(session.worktreeId, {
+                    ...(memory.chains.get(session.worktreeId) ?? { headEpoch: 1 }),
+                    headCapture: built.id,
+                    headN: 1,
+                    headEpoch: 1,
+                  });
+                  savedN = 1;
                 }
-                return undefined;
-              },
+                yield* engine.launch(session.id, ["codex"]);
+                expect(order[0]).toBe("replan");
+                const setups = order.filter((entry) => entry === "setup");
+                const helper = order.indexOf("helper");
+                expect(helper).toBeGreaterThan(0);
+                const summary = drawnLine(world.sessions.get(session.id)?.summary);
+                if (savedN === null) {
+                  expect(setups).toHaveLength(1);
+                  expect(order.indexOf("setup")).toBeGreaterThan(0);
+                  expect(order.indexOf("setup")).toBeLessThan(helper);
+                  expect(summary ?? "").not.toMatch(/setup skipped/);
+                } else {
+                  expect(setups).toEqual([]);
+                  expect(summary).toBe(`setup skipped · restored from capture ${savedN}`);
+                }
+              }),
+            {
+              captured: memory,
+              workspaceImage: { ...CUSTOM_BASE, setupCommands: [SETUP] },
+              sealantLayer: sealantLaunchLayer(
+                [],
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                execCalls,
+                undefined,
+                {
+                  replan,
+                  flush,
+                  exec: (argv) => {
+                    if (argv[0] === "sh" && argv[1] === "-lc" && argv[2] === SETUP) {
+                      order.push("setup");
+                    } else if ((argv[2] ?? "").includes("/usr/local/bin/mend")) {
+                      order.push("helper");
+                    }
+                    return undefined;
+                  },
+                },
+              ),
+              hotWorkspacesLayer: signallingPool(pool, clock.changes),
+              wrapCaptureChannel: clock.wrapCaptureChannel,
             },
-          ),
-          hotWorkspacesLayer: pool.layer,
-        },
-      );
-    });
+          );
+        }),
+    );
   }
 });
 
 describe("SessionEngine status words after end-to-end run 9", () => {
-  it(
+  it.effect(
     "RD: a failed launch whose kept executor the platform ends after it sealed reads `launch failed: … · saved at … · capture n`, not the launch's words alone",
-    { timeout: 30_000 },
-    async () => {
-      const created: Array<CreateOptions> = [];
-      const memory = makeMemoryCaptureStore();
-      const records = new Map<string, CaptureCompletionSeal>();
-      const stopOptions: Array<WorkspaceStopOptions | undefined> = [];
-      let recovered = false;
-      /** Records the executor's seal: the recovery boot's FINAL, landing while Core ends it. */
-      let sealOnStop: (() => void) | null = null;
-      await withEngine(
-        (world, tmp) =>
-          Effect.gen(function* () {
-            const { engine, session } = yield* launchOnce(world, tmp);
-            yield* engine.launch(session.id, ["codex"]).pipe(Effect.flip);
-            yield* until(
-              () => world.sessions.get(session.id)?.captureNotSavedAt != null,
-              "the drain kept",
-            );
-            expect(world.sessions.get(session.id)?.summary).toMatch(/^launch failed: /);
-            const epoch = memory.leases.get(session.worktreeId)?.epoch ?? 0;
-            const built = yield* shipHarnessCapture(
-              tmp,
-              memory,
-              session.worktreeId,
-              epoch,
-              crypto.randomUUID(),
-              "final",
-            );
-            const sealedAt = new Date(Date.now() + 1_000);
-            sealOnStop = () => {
-              records.set(`${session.worktreeId}:${epoch}`, {
-                worktreeId: session.worktreeId,
-                epoch,
-                executorId: world.executorLaunches.get(session.id)?.launchId ?? "",
-                captureId: built.id,
-                n: built.manifest.n,
-                sealedAt,
-              });
-            };
-            // Core retained it and boots it for recovery; the next stop ends it.
-            recovered = true;
-            for (let round = 0; round < 50; round += 1) {
-              if (world.sessions.get(session.id)?.summary?.includes("saved at ") === true) break;
-              yield* engine.reapCaptureLeases();
-              yield* Effect.sleep(Duration.millis(100));
-            }
-            // The stop that ended it attested nothing: the seal landed after it was sent.
-            expect(records.size).toBe(1);
-            expect(stopOptions.some((o) => o?.completion !== undefined)).toBe(false);
-            const settled = world.sessions.get(session.id);
-            expect(settled?.status).toBe("failed");
-            expect(settled?.summary).toBe(
-              `launch failed: setup command failed (exit 1): exit 1 · saved at ${sealedAt.toISOString().slice(11, 19)} UTC · capture ${built.manifest.n}`,
-            );
-          }),
-        {
-          captured: memory,
-          seals: memorySeals(records),
-          drainPolicy: {
-            stallSeconds: 0,
-            terminationWait: Duration.millis(500),
-            keptRetryFirst: Duration.millis(100),
-            keptRetryMax: Duration.millis(200),
-          },
-          workspaceImage: { ...CUSTOM_BASE, setupCommands: ["exit 1"] },
-          sealantLayer: lifecycleLayer(created, {
-            captureOps: {
-              stopOptions,
-              status: (stopAsked) => (!recovered ? "ready" : stopAsked ? "stopped" : "failed"),
-              stopAnswer: () => {
-                if (!recovered) return "kept";
-                sealOnStop?.();
-                return "requested";
-              },
-              exec: (argv) =>
-                argv.includes("exit 1") ? { exitCode: 1, stdout: "", stderr: "" } : undefined,
-              flush: () =>
-                Effect.fail(
-                  new SealantPlatformError({
-                    code: "connection_closed",
-                    status: null,
-                    message: "the executor did not answer",
-                    cause: null,
-                  }),
-                ),
-            },
-          }),
-        },
-      );
-    },
-  );
-
-  it(
-    "D9: a session Mend stopped because its executor ran a final flush of its own reads `stopped outside Mend · saved at … · capture n` once saved, as its siblings do; the owner's Stop still reads a bare `stopped`",
-    { timeout: 20_000 },
-    async () => {
-      for (const who of ["executor", "owner"] as const) {
+    () =>
+      Effect.gen(function* () {
         const created: Array<CreateOptions> = [];
         const memory = makeMemoryCaptureStore();
-        let ending = false;
-        /** Where the executor answered, in its own order: its FINAL after its status. */
-        let stamp: ((observation: number) => object) | null = null;
-        await withEngine(
-          (world, tmp) =>
+        const records = new Map<string, CaptureCompletionSeal>();
+        const stopOptions: Array<WorkspaceStopOptions | undefined> = [];
+        const clock = yield* makeLaunchClock;
+        let recovered = false;
+        /** Records the executor's seal: the recovery boot's FINAL, landing while Core ends it. */
+        let sealOnStop: (() => void) | null = null;
+        yield* withPreparedEngineEffect(
+          (world, tmp) => setup(tmp, world),
+          (world, tmp, project) =>
             Effect.gen(function* () {
-              const { engine, session } = yield* launchOnce(world, tmp);
-              yield* engine.launch(session.id, ["codex"]);
-              const epoch = memory.leases.get(session.worktreeId)?.epoch ?? 0;
-              const launch = world.executorLaunches.get(session.id)?.launchId ?? "";
-              stamp = (observation) => ({
-                epoch,
-                origin: {
-                  epoch,
-                  launch,
-                  bootId: "boot-1",
-                  bootGeneration: 1,
-                  observation,
-                  headN: 1,
-                },
-              });
-              if (who === "executor") {
-                ending = true;
-                yield* engine.refreshCaptureStatus(session.id);
-              } else {
-                yield* engine.stop(session.id);
-              }
-              yield* until(
-                () =>
-                  world.sessions.get(session.id)?.status === "stopped" &&
-                  world.sessions.get(session.id)?.captureDrain === null,
-                `the saved end (${who}: ${JSON.stringify([world.sessions.get(session.id)?.status, world.sessions.get(session.id)?.captureDrain, world.sessions.get(session.id)?.summary])})`,
+              const { engine, session } = yield* provisionIn(project);
+              yield* engine.launch(session.id, ["codex"]).pipe(Effect.flip);
+              yield* clock.untilChanged(
+                () => world.sessions.get(session.id)?.captureNotSavedAt != null,
+                "the drain kept",
               );
-              const summary = world.sessions.get(session.id)?.summary ?? null;
-              if (who === "executor") {
-                expect(summary).toMatch(
-                  /^stopped outside Mend · saved at \d\d:\d\d:\d\d UTC( · capture \d+)?$/,
-                );
-              } else {
-                expect(summary).toBeNull();
+              expect(world.sessions.get(session.id)?.summary).toMatch(/^launch failed: /);
+              const epoch = memory.leases.get(session.worktreeId)?.epoch ?? 0;
+              const built = yield* shipHarnessCapture(
+                tmp,
+                memory,
+                session.worktreeId,
+                epoch,
+                crypto.randomUUID(),
+                "final",
+              );
+              const sealedAt = new Date((yield* Clock.currentTimeMillis) + 1_000);
+              sealOnStop = () => {
+                records.set(`${session.worktreeId}:${epoch}`, {
+                  worktreeId: session.worktreeId,
+                  epoch,
+                  executorId: world.executorLaunches.get(session.id)?.launchId ?? "",
+                  captureId: built.id,
+                  n: built.manifest.n,
+                  sealedAt,
+                });
+              };
+              // Core retained it and boots it for recovery; the next stop ends it.
+              recovered = true;
+              for (let round = 0; round < 50; round += 1) {
+                if (world.sessions.get(session.id)?.summary?.includes("saved at ") === true) break;
+                yield* engine.reapCaptureLeases();
+                // The kept drain's backoff (`keptRetryFirst`, 100 ms) runs out before the next look.
+                yield* TestClock.adjust(Duration.millis(100));
               }
+              // The stop that ended it attested nothing: the seal landed after it was sent.
+              expect(records.size).toBe(1);
+              expect(stopOptions.some((o) => o?.completion !== undefined)).toBe(false);
+              const settled = world.sessions.get(session.id);
+              expect(settled?.status).toBe("failed");
+              expect(settled?.summary).toBe(
+                `launch failed: setup command failed (exit 1): exit 1 · saved at ${sealedAt.toISOString().slice(11, 19)} UTC · capture ${built.manifest.n}`,
+              );
             }),
           {
             captured: memory,
+            seals: memorySeals(records),
+            drainPolicy: {
+              stallSeconds: 0,
+              terminationWait: Duration.millis(500),
+              keptRetryFirst: Duration.millis(100),
+              keptRetryMax: Duration.millis(200),
+            },
+            workspaceImage: { ...CUSTOM_BASE, setupCommands: ["exit 1"] },
             sealantLayer: lifecycleLayer(created, {
               captureOps: {
-                stopAnswer: () => "stopped",
-                // The executor's own final flush is under way; Mend's FINAL then completes.
-                captureStatus: () =>
-                  Effect.succeed(
-                    ending
-                      ? {
-                          ...flushReport(1, 1),
-                          ...stamp?.(1),
-                          complete: false,
-                          incompleteReason: "in-progress",
-                        }
-                      : { ...flushReport(0, 1), ...stamp?.(1) },
+                stopOptions,
+                status: (stopAsked) => (!recovered ? "ready" : stopAsked ? "stopped" : "failed"),
+                stopAnswer: () => {
+                  if (!recovered) return "kept";
+                  sealOnStop?.();
+                  return "requested";
+                },
+                exec: (argv) =>
+                  argv.includes("exit 1") ? { exitCode: 1, stdout: "", stderr: "" } : undefined,
+                flush: () =>
+                  Effect.fail(
+                    new SealantPlatformError({
+                      code: "connection_closed",
+                      status: null,
+                      message: "the executor did not answer",
+                      cause: null,
+                    }),
                   ),
-                flush: () => Effect.succeed({ ...flushReport(0, 1), ...stamp?.(2) }),
               },
             }),
+            prepareWorld: clock.prepareWorld,
           },
         );
-      }
-    },
+      }),
+    { timeout: 30_000 },
+  );
+
+  it.effect(
+    "D9: a session Mend stopped because its executor ran a final flush of its own reads `stopped outside Mend · saved at … · capture n` once saved, as its siblings do; the owner's Stop still reads a bare `stopped`",
+    () =>
+      Effect.gen(function* () {
+        const clock = yield* makeLaunchClock;
+        for (const who of ["executor", "owner"] as const) {
+          const created: Array<CreateOptions> = [];
+          const memory = makeMemoryCaptureStore();
+          let ending = false;
+          /** Where the executor answered, in its own order: its FINAL after its status. */
+          let stamp: ((observation: number) => object) | null = null;
+          yield* withPreparedEngineEffect(
+            (world, tmp) => setup(tmp, world),
+            (world, _tmp, project) =>
+              Effect.gen(function* () {
+                const { engine, session } = yield* provisionIn(project);
+                yield* engine.launch(session.id, ["codex"]);
+                const epoch = memory.leases.get(session.worktreeId)?.epoch ?? 0;
+                const launch = world.executorLaunches.get(session.id)?.launchId ?? "";
+                stamp = (observation) => ({
+                  epoch,
+                  origin: {
+                    epoch,
+                    launch,
+                    bootId: "boot-1",
+                    bootGeneration: 1,
+                    observation,
+                    headN: 1,
+                  },
+                });
+                if (who === "executor") {
+                  ending = true;
+                  yield* engine.refreshCaptureStatus(session.id);
+                } else {
+                  yield* engine.stop(session.id);
+                }
+                yield* clock.untilChanged(
+                  () =>
+                    world.sessions.get(session.id)?.status === "stopped" &&
+                    world.sessions.get(session.id)?.captureDrain === null,
+                  `the saved end (${who}: ${JSON.stringify([world.sessions.get(session.id)?.status, world.sessions.get(session.id)?.captureDrain, world.sessions.get(session.id)?.summary])})`,
+                );
+                const summary = world.sessions.get(session.id)?.summary ?? null;
+                if (who === "executor") {
+                  expect(summary).toMatch(
+                    /^stopped outside Mend · saved at \d\d:\d\d:\d\d UTC( · capture \d+)?$/,
+                  );
+                } else {
+                  expect(summary).toBeNull();
+                }
+              }),
+            {
+              captured: memory,
+              sealantLayer: lifecycleLayer(created, {
+                captureOps: {
+                  stopAnswer: () => "stopped",
+                  // The executor's own final flush is under way; Mend's FINAL then completes.
+                  captureStatus: () =>
+                    Effect.succeed(
+                      ending
+                        ? {
+                            ...flushReport(1, 1),
+                            ...stamp?.(1),
+                            complete: false,
+                            incompleteReason: "in-progress",
+                          }
+                        : { ...flushReport(0, 1), ...stamp?.(1) },
+                    ),
+                  flush: () => Effect.succeed({ ...flushReport(0, 1), ...stamp?.(2) }),
+                },
+              }),
+              prepareWorld: clock.prepareWorld,
+            },
+          );
+        }
+      }),
+    { timeout: 20_000 },
   );
 });
 
@@ -1342,26 +1432,27 @@ describe("SessionEngine status words after end-to-end run 9", () => {
 // user's patch in `node_modules` whether the manifest read at the install decision succeeds or
 // fails once (HTTP 503). A failed read is unavailable, never "no tree here".
 for (const fault of [false, true]) {
-  it(
+  it.effect(
     `AUDIT R16 same-platform resume preserves dependency patch with manifest GET fault=${fault}`,
-    { timeout: 60000 },
-    async () => {
-      const created: Array<CreateOptions> = [];
-      const memory = makeMemoryCaptureStore();
-      const { root, seed } = npmProject();
-      const saved = path.join(root, "saved");
-      let executorRoot = "";
-      let failedReads = 0;
-      let failRead = false;
-      let manifestKey = "";
-      let installs = 0;
-      const restoredReads: string[] = [];
-      const logs: string[] = [];
-      try {
-        await withEngine(
-          (world, tmp) =>
+    () =>
+      Effect.gen(function* () {
+        const created: Array<CreateOptions> = [];
+        const memory = makeMemoryCaptureStore();
+        const { root, seed } = npmProject();
+        const saved = path.join(root, "saved");
+        let executorRoot = "";
+        let failedReads = 0;
+        let failRead = false;
+        let manifestKey = "";
+        let installs = 0;
+        const restoredReads: string[] = [];
+        const logs: string[] = [];
+        const clock = yield* makeLaunchClock;
+        yield* withPreparedEngineEffect(
+          (world, tmp) => setup(tmp, world),
+          (world, tmp, adopted) =>
             Effect.gen(function* () {
-              const { engine, session } = yield* launchOnce(world, tmp);
+              const { engine, session } = yield* provisionIn(adopted);
               const project = world.projects.get(session.projectId);
               if (project === undefined) throw new Error("project missing");
               world.projects.set(project.id, new Project({ ...project, installCommand: NPM_CI }));
@@ -1415,7 +1506,7 @@ for (const fault of [false, true]) {
               manifestKey = built.key;
               fs.cpSync(executorRoot, saved, { recursive: true, preserveTimestamps: true });
               yield* engine.stop(session.id);
-              yield* until(
+              yield* clock.untilChanged(
                 () =>
                   world.sessions.get(session.id)?.captureDrain === null &&
                   world.sessions.get(session.id)?.status === "stopped",
@@ -1446,6 +1537,7 @@ for (const fault of [false, true]) {
           {
             captured: memory,
             logs,
+            prepareWorld: clock.prepareWorld,
             transformBlobs: (base) =>
               Layer.effect(
                 BlobStore,
@@ -1505,11 +1597,11 @@ for (const fault of [false, true]) {
               },
             }),
           },
+        ).pipe(
+          Effect.ensuring(Effect.sync(() => fs.rmSync(root, { recursive: true, force: true }))),
         );
-      } finally {
-        fs.rmSync(root, { recursive: true, force: true });
-      }
-    },
+      }),
+    { timeout: 60000 },
   );
 }
 
@@ -1759,149 +1851,159 @@ describe("review 17 #1: the workspace note never takes the user's text with it",
   ] as const;
 
   for (const scenario of scenarios) {
-    it(scenario.name, { timeout: 60_000 }, async () => {
-      const created: Array<CreateOptions> = [];
-      const memory = makeMemoryCaptureStore();
-      const root = fs.mkdtempSync(path.join(os.tmpdir(), "mend-r17-notes-"));
-      const saved = path.join(root, "saved");
-      const notes = [".claude/CLAUDE.md", ".codex/AGENTS.md"];
-      const userText = "\n## Appended in the session\nRun the migration check before every push.\n";
-      let executorHome = "";
-      let noteRuns = 0;
-      const beforeResume: string[] = [];
-      try {
-        await withEngine(
-          (world, tmp) =>
-            Effect.gen(function* () {
-              const { engine, session } = yield* launchOnce(world, tmp);
-              yield* engine.launch(session.id, ["codex"]);
-              expect(noteRuns).toBe(1);
-              const firstLaunch: Array<string> = [];
-              for (const note of notes) {
-                const target = path.join(executorHome, note);
-                const written = fs.readFileSync(target, "utf8");
-                for (const text of scenario.kept) expect(written).toContain(text);
-                firstLaunch.push(written);
-                fs.appendFileSync(target, userText);
-              }
-              const epoch = memory.leases.get(session.worktreeId)?.epoch ?? 0;
-              const chain = memory.chains.get(session.worktreeId);
-              const n = (chain?.headN ?? 0) + 1;
-              const snapshotRoot = path.join(root, "snapshot");
-              fs.mkdirSync(snapshotRoot);
-              fs.cpSync(executorHome, path.join(snapshotRoot, "harness"), { recursive: true });
-              const snapshot = snapshotDirectory(
-                snapshotRoot,
-                captureKeys(session.worktreeId, epoch),
-                { chunkSize: 64 },
-              );
-              const built = buildManifest({
-                worktreeId: session.worktreeId,
-                n,
-                parent: chain?.headCapture ?? null,
-                epoch,
-                seq: n * 10,
-                kind: "final",
-                git: { packs: [], refs: {}, head: "refs/heads/main", fsck: "verified" },
-                workspace: { root: snapshot.root, packs: snapshot.packs },
-              });
-              yield* uploadObjects(new Map([...snapshot.objects, [built.key, built.bytes]])).pipe(
-                Effect.provide(BlobStoreFsLive(path.join(tmp, "blobs"))),
-              );
-              const api = servedSocketApis.get(session.id)?.capture;
-              if (api === undefined) throw new Error("capture api missing");
-              const registered = yield* api.register({
-                worktree_id: session.worktreeId,
-                epoch,
-                n,
-                parent: chain?.headCapture ?? null,
-                capture_id: built.id,
-                manifest_key: built.key,
-                manifest: built.manifest,
-              });
-              expect(registered.head_n).toBe(n);
-              fs.cpSync(executorHome, saved, { recursive: true, preserveTimestamps: true });
-              yield* engine.stop(session.id);
-              yield* until(
-                () =>
-                  world.sessions.get(session.id)?.captureDrain === null &&
-                  world.sessions.get(session.id)?.status === "stopped",
-                "saved stop",
-              );
-              const resumed = yield* engine.resumeSession(session.id, "shell");
-              expect(created).toHaveLength(2);
-              expect(noteRuns).toBe(2);
-              expect(beforeResume).toHaveLength(2);
-              for (const text of beforeResume) expect(text).toContain(userText);
-              expect(resumed.status).toBe("running");
-              const afterResume = notes.map((note) =>
-                fs.readFileSync(path.join(executorHome, note), "utf8"),
-              );
-              // What the user and the agent wrote comes through the resume.
-              for (const after of afterResume) {
-                expect(after).toContain(userText);
-                for (const text of scenario.kept) expect(after).toContain(text);
-              }
-              // One bounded block; an old note is gone only where it matched exactly.
-              for (const written of firstLaunch) {
-                expect(noteBlockCount(written)).toBe(1);
-                expect(written.includes("<!-- mend:mounts -->")).toBe(scenario.legacyKept);
-              }
-              // The restored file was already current: the resume wrote nothing, byte for byte.
-              for (const [index, after] of afterResume.entries()) {
-                expect(after).toBe(beforeResume[index]);
-                expect(noteBlockCount(after)).toBe(1);
-              }
-            }),
-          {
-            captured: memory,
-            workspaceImage: { ...CUSTOM_BASE, setupCommands: [] },
-            sealantLayer: lifecycleLayer(created, {
-              captureOps: {
-                stopAnswer: () => "stopped",
-                beforeCreate: () =>
-                  Effect.sync(() => {
-                    executorHome = path.join(root, `home-${created.length}`);
-                    if (created.length === 1) {
-                      for (const note of notes) {
-                        fs.mkdirSync(path.dirname(path.join(executorHome, note)), {
+    it.effect(
+      scenario.name,
+      () =>
+        Effect.gen(function* () {
+          const created: Array<CreateOptions> = [];
+          const memory = makeMemoryCaptureStore();
+          const root = fs.mkdtempSync(path.join(os.tmpdir(), "mend-r17-notes-"));
+          const saved = path.join(root, "saved");
+          const notes = [".claude/CLAUDE.md", ".codex/AGENTS.md"];
+          const userText =
+            "\n## Appended in the session\nRun the migration check before every push.\n";
+          let executorHome = "";
+          let noteRuns = 0;
+          const beforeResume: string[] = [];
+          const clock = yield* makeLaunchClock;
+          yield* withPreparedEngineEffect(
+            (world, tmp) => setup(tmp, world),
+            (world, tmp, project) =>
+              Effect.gen(function* () {
+                const { engine, session } = yield* provisionIn(project);
+                yield* engine.launch(session.id, ["codex"]);
+                expect(noteRuns).toBe(1);
+                const firstLaunch: Array<string> = [];
+                for (const note of notes) {
+                  const target = path.join(executorHome, note);
+                  const written = fs.readFileSync(target, "utf8");
+                  for (const text of scenario.kept) expect(written).toContain(text);
+                  firstLaunch.push(written);
+                  fs.appendFileSync(target, userText);
+                }
+                const epoch = memory.leases.get(session.worktreeId)?.epoch ?? 0;
+                const chain = memory.chains.get(session.worktreeId);
+                const n = (chain?.headN ?? 0) + 1;
+                const snapshotRoot = path.join(root, "snapshot");
+                fs.mkdirSync(snapshotRoot);
+                fs.cpSync(executorHome, path.join(snapshotRoot, "harness"), { recursive: true });
+                const snapshot = snapshotDirectory(
+                  snapshotRoot,
+                  captureKeys(session.worktreeId, epoch),
+                  { chunkSize: 64 },
+                );
+                const built = buildManifest({
+                  worktreeId: session.worktreeId,
+                  n,
+                  parent: chain?.headCapture ?? null,
+                  epoch,
+                  seq: n * 10,
+                  kind: "final",
+                  git: { packs: [], refs: {}, head: "refs/heads/main", fsck: "verified" },
+                  workspace: { root: snapshot.root, packs: snapshot.packs },
+                });
+                yield* uploadObjects(new Map([...snapshot.objects, [built.key, built.bytes]])).pipe(
+                  Effect.provide(BlobStoreFsLive(path.join(tmp, "blobs"))),
+                );
+                const api = servedSocketApis.get(session.id)?.capture;
+                if (api === undefined) throw new Error("capture api missing");
+                const registered = yield* api.register({
+                  worktree_id: session.worktreeId,
+                  epoch,
+                  n,
+                  parent: chain?.headCapture ?? null,
+                  capture_id: built.id,
+                  manifest_key: built.key,
+                  manifest: built.manifest,
+                });
+                expect(registered.head_n).toBe(n);
+                fs.cpSync(executorHome, saved, { recursive: true, preserveTimestamps: true });
+                yield* engine.stop(session.id);
+                yield* clock.untilChanged(
+                  () =>
+                    world.sessions.get(session.id)?.captureDrain === null &&
+                    world.sessions.get(session.id)?.status === "stopped",
+                  "saved stop",
+                );
+                const resumed = yield* engine.resumeSession(session.id, "shell");
+                expect(created).toHaveLength(2);
+                expect(noteRuns).toBe(2);
+                expect(beforeResume).toHaveLength(2);
+                for (const text of beforeResume) expect(text).toContain(userText);
+                expect(resumed.status).toBe("running");
+                const afterResume = notes.map((note) =>
+                  fs.readFileSync(path.join(executorHome, note), "utf8"),
+                );
+                // What the user and the agent wrote comes through the resume.
+                for (const after of afterResume) {
+                  expect(after).toContain(userText);
+                  for (const text of scenario.kept) expect(after).toContain(text);
+                }
+                // One bounded block; an old note is gone only where it matched exactly.
+                for (const written of firstLaunch) {
+                  expect(noteBlockCount(written)).toBe(1);
+                  expect(written.includes("<!-- mend:mounts -->")).toBe(scenario.legacyKept);
+                }
+                // The restored file was already current: the resume wrote nothing, byte for byte.
+                for (const [index, after] of afterResume.entries()) {
+                  expect(after).toBe(beforeResume[index]);
+                  expect(noteBlockCount(after)).toBe(1);
+                }
+              }),
+            {
+              captured: memory,
+              prepareWorld: clock.prepareWorld,
+              workspaceImage: { ...CUSTOM_BASE, setupCommands: [] },
+              sealantLayer: lifecycleLayer(created, {
+                captureOps: {
+                  stopAnswer: () => "stopped",
+                  beforeCreate: () =>
+                    Effect.sync(() => {
+                      executorHome = path.join(root, `home-${created.length}`);
+                      if (created.length === 1) {
+                        for (const note of notes) {
+                          fs.mkdirSync(path.dirname(path.join(executorHome, note)), {
+                            recursive: true,
+                          });
+                          fs.writeFileSync(path.join(executorHome, note), scenario.initial);
+                        }
+                      } else {
+                        fs.cpSync(saved, executorHome, {
                           recursive: true,
+                          preserveTimestamps: true,
                         });
-                        fs.writeFileSync(path.join(executorHome, note), scenario.initial);
+                        beforeResume.push(
+                          ...notes.map((note) =>
+                            fs.readFileSync(path.join(executorHome, note), "utf8"),
+                          ),
+                        );
                       }
-                    } else {
-                      fs.cpSync(saved, executorHome, { recursive: true, preserveTimestamps: true });
-                      beforeResume.push(
-                        ...notes.map((note) =>
-                          fs.readFileSync(path.join(executorHome, note), "utf8"),
-                        ),
-                      );
+                    }),
+                  exec: (argv) => {
+                    if (
+                      argv[0] !== "sh" ||
+                      argv[1] !== "-c" ||
+                      !(argv[2] ?? "").includes("mend:mounts")
+                    ) {
+                      return undefined;
                     }
-                  }),
-                exec: (argv) => {
-                  if (
-                    argv[0] !== "sh" ||
-                    argv[1] !== "-c" ||
-                    !(argv[2] ?? "").includes("mend:mounts")
-                  ) {
-                    return undefined;
-                  }
-                  noteRuns += 1;
-                  const run = spawnSync(argv[0], argv.slice(1), {
-                    cwd: executorHome,
-                    env: { ...process.env, HOME: executorHome },
-                    encoding: "utf8",
-                  });
-                  return { exitCode: run.status ?? 1, stdout: run.stdout, stderr: run.stderr };
+                    noteRuns += 1;
+                    const run = spawnSync(argv[0], argv.slice(1), {
+                      cwd: executorHome,
+                      env: { ...process.env, HOME: executorHome },
+                      encoding: "utf8",
+                    });
+                    return { exitCode: run.status ?? 1, stdout: run.stdout, stderr: run.stderr };
+                  },
                 },
-              },
-            }),
-          },
-        );
-      } finally {
-        fs.rmSync(root, { recursive: true, force: true });
-      }
-    });
+              }),
+            },
+          ).pipe(
+            Effect.ensuring(Effect.sync(() => fs.rmSync(root, { recursive: true, force: true }))),
+          );
+        }),
+      { timeout: 60_000 },
+    );
   }
 });
 
@@ -1914,155 +2016,166 @@ describe("review 17 #1: the workspace note never takes the user's text with it",
  * `mend-write` commands against a `cp -a` copy (the reviewer proved sealantd restores exactly
  * these: mode, nanosecond mtime, empty directory, both link names).
  */
-it("AUDIT R18 cold resume preserves a saved skill's metadata", { timeout: 60_000 }, async () => {
-  const created: Array<CreateOptions> = [];
-  const memory = makeMemoryCaptureStore();
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mend-r18-skills-"));
-  const saved = path.join(root, "saved");
-  let executorHome = "";
-  const base = launchSkill("build-helper", "# Build helper\nRun scripts/check.sh.\n", {
-    scope: "user",
-    userId: "user-fixture",
-  });
-  const delivered = new SkillWithFiles({
-    ...base,
-    files: [...base.files, { path: "scripts/check.sh", contents: "#!/bin/sh\necho checked\n" }],
-  });
-  const skillsLayer = skillsForLaunchLayer(() =>
-    Effect.succeed({ user: [delivered], project: [] }),
-  );
-  const facts = () => {
-    const script = path.join(executorHome, ".claude/skills/build-helper/scripts/check.sh");
-    return {
-      mode: fs.statSync(script).mode & 0o777,
-      empty: fs.existsSync(path.join(executorHome, ".claude/skills/build-helper/scratch/empty")),
-      linked: fs.statSync(script).ino === fs.statSync(path.join(executorHome, "my-check.sh")).ino,
-      mtime: fs.statSync(script, { bigint: true }).mtimeNs.toString(),
-      bytes: fs.readFileSync(script, "utf8"),
-    };
-  };
-  let before: ReturnType<typeof facts> | null = null;
-  const ran: Array<string> = [];
-  try {
-    await withEngine(
-      (world, tmp) =>
-        Effect.gen(function* () {
-          const { engine, session } = yield* launchOnce(world, tmp);
-          yield* engine.launch(session.id, ["codex"]);
-          const dir = path.join(executorHome, ".claude/skills/build-helper");
-          const script = path.join(dir, "scripts/check.sh");
-          fs.chmodSync(script, 0o755);
-          fs.mkdirSync(path.join(dir, "scratch/empty"), { recursive: true });
-          fs.linkSync(script, path.join(executorHome, "my-check.sh"));
-          fs.utimesSync(script, 1700000000.123, 1700000000.123);
-          fs.mkdirSync(saved);
-          expect(spawnSync("cp", ["-a", `${executorHome}/.`, saved]).status).toBe(0);
-          const chain = memory.chains.get(session.worktreeId);
-          const epoch = memory.leases.get(session.worktreeId)?.epoch ?? 0;
-          const n = (chain?.headN ?? 0) + 1;
-          const snapshotRoot = path.join(root, "snapshot");
-          fs.mkdirSync(snapshotRoot);
-          fs.cpSync(saved, path.join(snapshotRoot, "harness"), { recursive: true });
-          const snapshot = snapshotDirectory(snapshotRoot, captureKeys(session.worktreeId, epoch), {
-            chunkSize: 64,
-          });
-          const built = buildManifest({
-            worktreeId: session.worktreeId,
-            n,
-            parent: chain?.headCapture ?? null,
-            epoch,
-            seq: n * 10,
-            kind: "final",
-            git: { packs: [], refs: {}, head: "refs/heads/main", fsck: "verified" },
-            workspace: { root: snapshot.root, packs: snapshot.packs },
-          });
-          yield* uploadObjects(new Map([...snapshot.objects, [built.key, built.bytes]])).pipe(
-            Effect.provide(BlobStoreFsLive(path.join(tmp, "blobs"))),
-          );
-          const api = servedSocketApis.get(session.id)?.capture;
-          if (api === undefined) throw new Error("capture api missing");
-          yield* api.register({
-            worktree_id: session.worktreeId,
-            epoch,
-            n,
-            parent: chain?.headCapture ?? null,
-            capture_id: built.id,
-            manifest_key: built.key,
-            manifest: built.manifest,
-          });
-          yield* engine.stop(session.id);
-          yield* until(
-            () =>
-              world.sessions.get(session.id)?.captureDrain === null &&
-              world.sessions.get(session.id)?.status === "stopped",
-            "saved stop",
-          );
-          const resumed = yield* engine.resumeSession(session.id, "shell");
-          expect(resumed.status).toBe("running");
-          expect(before).toMatchObject({ mode: 0o755, empty: true, linked: true });
-          expect(facts()).toEqual(before);
-          // The resume ran the delivery: it found the skill unchanged and wrote none of its files.
-          expect(ran.filter((op) => op === "mend-skills").length).toBe(2);
-        }),
-      {
-        captured: memory,
-        skillsLayer,
-        workspaceImage: { ...CUSTOM_BASE, setupCommands: [] },
-        sealantLayer: lifecycleLayer(created, {
-          captureOps: {
-            stopAnswer: () => "stopped",
-            beforeCreate: () =>
-              Effect.sync(() => {
-                executorHome = path.join(root, `home-${created.length}`);
-                fs.mkdirSync(executorHome);
-                if (created.length > 1) {
-                  expect(spawnSync("cp", ["-a", `${saved}/.`, executorHome]).status).toBe(0);
-                  before = facts();
-                }
-              }),
-            // The skill files: redeemed over the session's channel and written as the pickup
-            // writer writes them, into this executor's home.
-            execEffect: (argv) => {
-              if (argv[3] !== "mend-write" || !isPickupExec(argv)) return undefined;
-              ran.push("mend-write");
-              const channel = created.at(-1)?.env?.["MEND_SESSION_ID"];
-              return redeemPickupExec(
-                argv,
-                channel === undefined ? null : SessionId.make(channel),
-              ).pipe(
-                Effect.map((answer) => {
-                  writePickedUp(answer.files, (at) =>
-                    at.replaceAll("/workspace/harness-home", executorHome),
-                  );
-                  return { exitCode: 0, stdout: "", stderr: "" };
+it.effect(
+  "AUDIT R18 cold resume preserves a saved skill's metadata",
+  () =>
+    Effect.gen(function* () {
+      const created: Array<CreateOptions> = [];
+      const memory = makeMemoryCaptureStore();
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "mend-r18-skills-"));
+      const saved = path.join(root, "saved");
+      let executorHome = "";
+      const base = launchSkill("build-helper", "# Build helper\nRun scripts/check.sh.\n", {
+        scope: "user",
+        userId: "user-fixture",
+      });
+      const delivered = new SkillWithFiles({
+        ...base,
+        files: [...base.files, { path: "scripts/check.sh", contents: "#!/bin/sh\necho checked\n" }],
+      });
+      const skillsLayer = skillsForLaunchLayer(() =>
+        Effect.succeed({ user: [delivered], project: [] }),
+      );
+      const facts = () => {
+        const script = path.join(executorHome, ".claude/skills/build-helper/scripts/check.sh");
+        return {
+          mode: fs.statSync(script).mode & 0o777,
+          empty: fs.existsSync(
+            path.join(executorHome, ".claude/skills/build-helper/scratch/empty"),
+          ),
+          linked:
+            fs.statSync(script).ino === fs.statSync(path.join(executorHome, "my-check.sh")).ino,
+          mtime: fs.statSync(script, { bigint: true }).mtimeNs.toString(),
+          bytes: fs.readFileSync(script, "utf8"),
+        };
+      };
+      let before: ReturnType<typeof facts> | null = null;
+      const ran: Array<string> = [];
+      const clock = yield* makeLaunchClock;
+      yield* withPreparedEngineEffect(
+        (world, tmp) => setup(tmp, world),
+        (world, tmp, project) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* provisionIn(project);
+            yield* engine.launch(session.id, ["codex"]);
+            const dir = path.join(executorHome, ".claude/skills/build-helper");
+            const script = path.join(dir, "scripts/check.sh");
+            fs.chmodSync(script, 0o755);
+            fs.mkdirSync(path.join(dir, "scratch/empty"), { recursive: true });
+            fs.linkSync(script, path.join(executorHome, "my-check.sh"));
+            fs.utimesSync(script, 1700000000.123, 1700000000.123);
+            fs.mkdirSync(saved);
+            expect(spawnSync("cp", ["-a", `${executorHome}/.`, saved]).status).toBe(0);
+            const chain = memory.chains.get(session.worktreeId);
+            const epoch = memory.leases.get(session.worktreeId)?.epoch ?? 0;
+            const n = (chain?.headN ?? 0) + 1;
+            const snapshotRoot = path.join(root, "snapshot");
+            fs.mkdirSync(snapshotRoot);
+            fs.cpSync(saved, path.join(snapshotRoot, "harness"), { recursive: true });
+            const snapshot = snapshotDirectory(
+              snapshotRoot,
+              captureKeys(session.worktreeId, epoch),
+              {
+                chunkSize: 64,
+              },
+            );
+            const built = buildManifest({
+              worktreeId: session.worktreeId,
+              n,
+              parent: chain?.headCapture ?? null,
+              epoch,
+              seq: n * 10,
+              kind: "final",
+              git: { packs: [], refs: {}, head: "refs/heads/main", fsck: "verified" },
+              workspace: { root: snapshot.root, packs: snapshot.packs },
+            });
+            yield* uploadObjects(new Map([...snapshot.objects, [built.key, built.bytes]])).pipe(
+              Effect.provide(BlobStoreFsLive(path.join(tmp, "blobs"))),
+            );
+            const api = servedSocketApis.get(session.id)?.capture;
+            if (api === undefined) throw new Error("capture api missing");
+            yield* api.register({
+              worktree_id: session.worktreeId,
+              epoch,
+              n,
+              parent: chain?.headCapture ?? null,
+              capture_id: built.id,
+              manifest_key: built.key,
+              manifest: built.manifest,
+            });
+            yield* engine.stop(session.id);
+            yield* clock.untilChanged(
+              () =>
+                world.sessions.get(session.id)?.captureDrain === null &&
+                world.sessions.get(session.id)?.status === "stopped",
+              "saved stop",
+            );
+            const resumed = yield* engine.resumeSession(session.id, "shell");
+            expect(resumed.status).toBe("running");
+            expect(before).toMatchObject({ mode: 0o755, empty: true, linked: true });
+            expect(facts()).toEqual(before);
+            // The resume ran the delivery: it found the skill unchanged and wrote none of its files.
+            expect(ran.filter((op) => op === "mend-skills").length).toBe(2);
+          }),
+        {
+          captured: memory,
+          skillsLayer,
+          prepareWorld: clock.prepareWorld,
+          workspaceImage: { ...CUSTOM_BASE, setupCommands: [] },
+          sealantLayer: lifecycleLayer(created, {
+            captureOps: {
+              stopAnswer: () => "stopped",
+              beforeCreate: () =>
+                Effect.sync(() => {
+                  executorHome = path.join(root, `home-${created.length}`);
+                  fs.mkdirSync(executorHome);
+                  if (created.length > 1) {
+                    expect(spawnSync("cp", ["-a", `${saved}/.`, executorHome]).status).toBe(0);
+                    before = facts();
+                  }
                 }),
-                Effect.orDie,
-              );
+              // The skill files: redeemed over the session's channel and written as the pickup
+              // writer writes them, into this executor's home.
+              execEffect: (argv) => {
+                if (argv[3] !== "mend-write" || !isPickupExec(argv)) return undefined;
+                ran.push("mend-write");
+                const channel = created.at(-1)?.env?.["MEND_SESSION_ID"];
+                return redeemPickupExec(
+                  argv,
+                  channel === undefined ? null : SessionId.make(channel),
+                ).pipe(
+                  Effect.map((answer) => {
+                    writePickedUp(answer.files, (at) =>
+                      at.replaceAll("/workspace/harness-home", executorHome),
+                    );
+                    return { exitCode: 0, stdout: "", stderr: "" };
+                  }),
+                  Effect.orDie,
+                );
+              },
+              exec: (argv) => {
+                const op = argv[3] ?? "";
+                const manifestRead =
+                  argv[0] === "cat" && (argv[1] ?? "").includes(".mend-managed-skills");
+                if (op !== "mend-skills" && !manifestRead) return undefined;
+                ran.push(manifestRead ? "cat" : op);
+                const mapped = argv.map((arg) =>
+                  arg.replaceAll("/workspace/harness-home", executorHome),
+                );
+                const run = spawnSync(mapped[0] ?? "", mapped.slice(1), {
+                  cwd: executorHome,
+                  env: { ...process.env, HOME: executorHome },
+                  encoding: "utf8",
+                });
+                return { exitCode: run.status ?? 1, stdout: run.stdout, stderr: run.stderr };
+              },
             },
-            exec: (argv) => {
-              const op = argv[3] ?? "";
-              const manifestRead =
-                argv[0] === "cat" && (argv[1] ?? "").includes(".mend-managed-skills");
-              if (op !== "mend-skills" && !manifestRead) return undefined;
-              ran.push(manifestRead ? "cat" : op);
-              const mapped = argv.map((arg) =>
-                arg.replaceAll("/workspace/harness-home", executorHome),
-              );
-              const run = spawnSync(mapped[0] ?? "", mapped.slice(1), {
-                cwd: executorHome,
-                env: { ...process.env, HOME: executorHome },
-                encoding: "utf8",
-              });
-              return { exitCode: run.status ?? 1, stdout: run.stdout, stderr: run.stderr };
-            },
-          },
-        }),
-      },
-    );
-  } finally {
-    fs.rmSync(root, { recursive: true, force: true });
-  }
-});
+          }),
+        },
+      ).pipe(Effect.ensuring(Effect.sync(() => fs.rmSync(root, { recursive: true, force: true }))));
+    }),
+  { timeout: 60_000 },
+);
 
 /** Core's credential writer (`credential-files.ts`), as it runs in a fresh executor. */
 const injectCoreCredential = (home: string) =>
@@ -2089,41 +2202,42 @@ const injectCoreCredential = (home: string) =>
  * and the cold resume runs Core's credential write into a fresh home, then the engine's own
  * relocation and skills commands against a `cp -a` copy of what was saved.
  */
-it(
+it.effect(
   "AUDIT R19 cold resume preserves directory metadata through actual relocation",
-  { timeout: 60_000 },
-  async () => {
-    const created: Array<CreateOptions> = [];
-    const memory = makeMemoryCaptureStore();
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mend-r19-relocation-"));
-    const saved = path.join(root, "saved");
-    let executorHome = "";
-    let ephemeralHome = "";
-    const relocations: Array<{
-      readonly before: { readonly mode: number; readonly mtime: string } | null;
-      readonly after: { readonly mode: number; readonly mtime: string };
-      readonly status: number | null;
-    }> = [];
-    const dirFacts = () => {
-      const stat = fs.statSync(path.join(executorHome, ".claude"), { bigint: true });
-      return { mode: Number(stat.mode & 0o777n), mtime: stat.mtimeNs.toString() };
-    };
-    const base = launchSkill("build-helper", "# Build helper\nRun scripts/check.sh.\n", {
-      scope: "user",
-      userId: "user-fixture",
-    });
-    const delivered = new SkillWithFiles({
-      ...base,
-      files: [...base.files, { path: "scripts/check.sh", contents: "#!/bin/sh\necho checked\n" }],
-    });
-    const skillsLayer = skillsForLaunchLayer(() =>
-      Effect.succeed({ user: [delivered], project: [] }),
-    );
-    try {
-      await withEngine(
-        (world, tmp) =>
+  () =>
+    Effect.gen(function* () {
+      const created: Array<CreateOptions> = [];
+      const memory = makeMemoryCaptureStore();
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "mend-r19-relocation-"));
+      const saved = path.join(root, "saved");
+      let executorHome = "";
+      let ephemeralHome = "";
+      const relocations: Array<{
+        readonly before: { readonly mode: number; readonly mtime: string } | null;
+        readonly after: { readonly mode: number; readonly mtime: string };
+        readonly status: number | null;
+      }> = [];
+      const dirFacts = () => {
+        const stat = fs.statSync(path.join(executorHome, ".claude"), { bigint: true });
+        return { mode: Number(stat.mode & 0o777n), mtime: stat.mtimeNs.toString() };
+      };
+      const base = launchSkill("build-helper", "# Build helper\nRun scripts/check.sh.\n", {
+        scope: "user",
+        userId: "user-fixture",
+      });
+      const delivered = new SkillWithFiles({
+        ...base,
+        files: [...base.files, { path: "scripts/check.sh", contents: "#!/bin/sh\necho checked\n" }],
+      });
+      const skillsLayer = skillsForLaunchLayer(() =>
+        Effect.succeed({ user: [delivered], project: [] }),
+      );
+      const clock = yield* makeLaunchClock;
+      yield* withPreparedEngineEffect(
+        (world, tmp) => setup(tmp, world),
+        (world, tmp, project) =>
           Effect.gen(function* () {
-            const { engine, session } = yield* launchOnce(world, tmp);
+            const { engine, session } = yield* provisionIn(project);
             yield* engine.launch(session.id, ["codex"]);
             fs.chmodSync(path.join(executorHome, ".claude"), 0o750);
             fs.utimesSync(path.join(executorHome, ".claude"), 1700000000.125, 1700000000.125);
@@ -2165,7 +2279,7 @@ it(
               manifest: built.manifest,
             });
             yield* engine.stop(session.id);
-            yield* until(
+            yield* clock.untilChanged(
               () =>
                 world.sessions.get(session.id)?.captureDrain === null &&
                 world.sessions.get(session.id)?.status === "stopped",
@@ -2190,6 +2304,7 @@ it(
         {
           captured: memory,
           skillsLayer,
+          prepareWorld: clock.prepareWorld,
           workspaceImage: { ...CUSTOM_BASE, setupCommands: [] },
           sealantLayer: lifecycleLayer(created, {
             captureOps: {
@@ -2231,11 +2346,9 @@ it(
             },
           }),
         },
-      );
-    } finally {
-      fs.rmSync(root, { recursive: true, force: true });
-    }
-  },
+      ).pipe(Effect.ensuring(Effect.sync(() => fs.rmSync(root, { recursive: true, force: true }))));
+    }),
+  { timeout: 60_000 },
 );
 
 /**
@@ -2250,100 +2363,109 @@ it(
  */
 describe("review 19 #2: a lost create's executor reads ended only once its end is observed", () => {
   for (const end of ["never", "at once", "later"] as const) {
-    it(
+    it.effect(
       `AUDIT R19 lost-create recovery only reports observed termination: end ${end}`,
-      { timeout: 20_000 },
-      async () => {
-        const memory = makeMemoryCaptureStore();
-        const created: Array<CreateOptions> = [];
-        const stops: Array<"drain" | "discard"> = [];
-        const logs: Array<string> = [];
-        let endSeen = end === "at once";
-        await withEngine(
-          (world, tmp) =>
-            Effect.gen(function* () {
-              const { engine, session } = yield* launchOnce(world, tmp);
-              const key = `launch:${session.id}:${Date.now()}:audit`;
-              world.executorCreates.set(session.id, key);
-              yield* Effect.gen(function* () {
-                const repo = yield* CaptureStoreRepo;
-                yield* repo.init(session.worktreeId);
-                yield* repo.claim(session.worktreeId, session.id, 30, key);
-              }).pipe(Effect.provide(memory.layer));
-              yield* engine.reapCaptureLeases();
-              yield* until(() => stops.length > 0, "Core stop requested");
-              if (end === "at once") {
-                yield* until(
-                  () => world.sessions.get(session.id)?.settledAt !== null,
-                  "settled once the end was observed",
+      () =>
+        Effect.gen(function* () {
+          const memory = makeMemoryCaptureStore();
+          const created: Array<CreateOptions> = [];
+          const clock = yield* makeLaunchClock;
+          const stops = clock.watched<"drain" | "discard">();
+          const logs: Array<string> = [];
+          let endSeen = end === "at once";
+          yield* withPreparedEngineEffect(
+            (world, tmp) => setup(tmp, world),
+            (world, _tmp, project) =>
+              Effect.gen(function* () {
+                const { engine, session } = yield* provisionIn(project);
+                const key = `launch:${session.id}:${yield* Clock.currentTimeMillis}:audit`;
+                world.executorCreates.set(session.id, key);
+                yield* Effect.gen(function* () {
+                  const repo = yield* CaptureStoreRepo;
+                  yield* repo.init(session.worktreeId);
+                  yield* repo.claim(session.worktreeId, session.id, 30, key);
+                }).pipe(Effect.provide(memory.layer));
+                yield* engine.reapCaptureLeases();
+                yield* clock.untilChanged(() => stops.length > 0, "Core stop requested");
+                if (end === "at once") {
+                  yield* clock.untilChanged(
+                    () => world.sessions.get(session.id)?.settledAt !== null,
+                    "settled once the end was observed",
+                  );
+                  const after = world.sessions.get(session.id);
+                  expect(after?.status).toBe("stopped");
+                  expect(after?.summary).toBe(
+                    "launch interrupted · the create's answer was lost · its executor ended",
+                  );
+                  return;
+                }
+                // Core reports the executor `ready` through Mend's whole wait for its end
+                // (`terminationWait`, 150 ms): nothing is said until that wait runs out.
+                yield* TestClock.adjust(Duration.millis(149));
+                expect(world.sessions.get(session.id)?.status).not.toBe("stopping");
+                yield* TestClock.adjust(Duration.millis(1));
+                yield* clock.untilChanged(
+                  () => world.sessions.get(session.id)?.status === "stopping",
+                  "stopping while the end is not observed",
                 );
+                const pending = world.sessions.get(session.id);
+                expect(pending?.settledAt, "Core still reports ready: no end observed").toBeNull();
+                expect(pending?.summary).toBe(
+                  "launch interrupted · the create's answer was lost · stop requested · end not observed yet",
+                );
+                expect(pending?.captureDrain).toBeNull();
+                expect(memory.leases.get(session.worktreeId)?.executorId).toBe(session.id);
+                expect(logs.some((line) => line.includes("its executor ended"))).toBe(false);
+                if (end === "never") {
+                  // Another pass changes nothing while Core still reports the executor.
+                  yield* engine.reapCaptureLeases();
+                  expect(world.sessions.get(session.id)?.settledAt).toBeNull();
+                  expect(world.sessions.get(session.id)?.summary).toBe(pending?.summary);
+                  expect(yield* engine.removeWhenStopped(session.id)).toBe("pending");
+                  expect(world.sessions.has(session.id)).toBe(true);
+                  return;
+                }
+                endSeen = true;
+                yield* engine.reapCaptureLeases();
                 const after = world.sessions.get(session.id);
                 expect(after?.status).toBe("stopped");
+                expect(after?.settledAt).not.toBeNull();
                 expect(after?.summary).toBe(
                   "launch interrupted · the create's answer was lost · its executor ended",
                 );
-                return;
-              }
-              yield* until(
-                () => world.sessions.get(session.id)?.status === "stopping",
-                "stopping while the end is not observed",
-              );
-              const pending = world.sessions.get(session.id);
-              expect(pending?.settledAt, "Core still reports ready: no end observed").toBeNull();
-              expect(pending?.summary).toBe(
-                "launch interrupted · the create's answer was lost · stop requested · end not observed yet",
-              );
-              expect(pending?.captureDrain).toBeNull();
-              expect(memory.leases.get(session.worktreeId)?.executorId).toBe(session.id);
-              expect(logs.some((line) => line.includes("its executor ended"))).toBe(false);
-              if (end === "never") {
-                // Another pass changes nothing while Core still reports the executor.
-                yield* engine.reapCaptureLeases();
-                expect(world.sessions.get(session.id)?.settledAt).toBeNull();
-                expect(world.sessions.get(session.id)?.summary).toBe(pending?.summary);
-                expect(yield* engine.removeWhenStopped(session.id)).toBe("pending");
-                expect(world.sessions.has(session.id)).toBe(true);
-                return;
-              }
-              endSeen = true;
-              yield* engine.reapCaptureLeases();
-              const after = world.sessions.get(session.id);
-              expect(after?.status).toBe("stopped");
-              expect(after?.settledAt).not.toBeNull();
-              expect(after?.summary).toBe(
-                "launch interrupted · the create's answer was lost · its executor ended",
-              );
-            }),
-          {
-            captured: memory,
-            logs,
-            drainPolicy: {
-              terminationWait: Duration.millis(150),
-              pollInterval: Duration.millis(10),
-            },
-            sealantLayer: sealantLaunchLayer(
-              created,
-              undefined,
-              undefined,
-              undefined,
-              undefined,
-              undefined,
-              undefined,
-              undefined,
-              undefined,
-              undefined,
-              undefined,
-              {
-                findByKey: () => ({ kind: "found", workspaceId: "workspace-1" }),
-                status: (stopAsked) => (endSeen && stopAsked ? "stopped" : "ready"),
-                stopAnswer: () => "requested",
-                stops,
-                flush: () => Effect.succeed(flushReport(0, 1, { headN: 7 })),
+              }),
+            {
+              captured: memory,
+              logs,
+              prepareWorld: clock.prepareWorld,
+              drainPolicy: {
+                terminationWait: Duration.millis(150),
+                pollInterval: Duration.millis(10),
               },
-            ),
-          },
-        );
-      },
+              sealantLayer: sealantLaunchLayer(
+                created,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                {
+                  findByKey: () => ({ kind: "found", workspaceId: "workspace-1" }),
+                  status: (stopAsked) => (endSeen && stopAsked ? "stopped" : "ready"),
+                  stopAnswer: () => "requested",
+                  stops,
+                  flush: () => Effect.succeed(flushReport(0, 1, { headN: 7 })),
+                },
+              ),
+            },
+          );
+        }),
+      { timeout: 20_000 },
     );
   }
 });
@@ -2475,64 +2597,78 @@ describe("an agent's first screen (alpha 2026-09-30)", () => {
     );
   });
 
-  it("a warm-up that fails, or runs past its bound, changes nothing about the launch", async () => {
-    for (const answer of ["fails", "hangs"] as const) {
-      const created: Array<CreateOptions> = [];
-      const logs: string[] = [];
-      const interrupted: string[] = [];
-      await withEngine(
-        (world, tmp) =>
-          Effect.gen(function* () {
-            const project = yield* setup(tmp, world);
-            const engine = yield* SessionEngine;
-            const session = yield* engine.provision({
-              projectId: project.id,
-              harness: "codex",
-              label: null,
-              name: null,
-              ownerUserId: "user-fixture",
-              base: null,
-            });
-            const launched = yield* engine.launch(session.id, ["codex"]);
-            expect(launched.status).toBe("running");
-            yield* until(
-              () => logs.some((line) => line.includes("harness warm-up · not finished")),
-              `the ${answer} warm-up to end`,
-            );
-            const after = world.sessions.get(session.id);
-            expect(after?.status).toBe("running");
-            expect(after?.settledAt ?? null).toBeNull();
-            expect(after?.summary).toBe("codex is starting on the new machine");
-            // A warm-up past its bound is abandoned, not left running.
-            if (answer === "hangs") expect(interrupted).toEqual(["warm-up"]);
-          }),
-        {
-          logs,
-          drainPolicy: { harnessWarmupTimeout: Duration.millis(50) },
-          sealantLayer: lifecycleLayer(created, {
-            execCalls: [],
-            captureOps: {
-              execEffect: (argv) =>
-                !isWarmup(argv)
-                  ? undefined
-                  : answer === "fails"
-                    ? Effect.fail(
-                        new SealantPlatformError({
-                          code: "exec_failed",
-                          status: 502,
-                          message: "the executor did not run the command",
-                          cause: null,
-                        }),
-                      )
-                    : Effect.never.pipe(
-                        Effect.onInterrupt(() => Effect.sync(() => interrupted.push("warm-up"))),
-                      ),
-            },
-          }),
-        },
-      );
-    }
-  });
+  it.effect("a warm-up that fails, or runs past its bound, changes nothing about the launch", () =>
+    Effect.gen(function* () {
+      for (const answer of ["fails", "hangs"] as const) {
+        const created: Array<CreateOptions> = [];
+        const clock = yield* makeLaunchClock;
+        const logs = clock.watched<string>();
+        const interrupted: string[] = [];
+        yield* withPreparedEngineEffect(
+          (world, tmp) => setup(tmp, world),
+          (world, tmp, project) =>
+            Effect.gen(function* () {
+              const engine = yield* SessionEngine;
+              const session = yield* engine.provision({
+                projectId: project.id,
+                harness: "codex",
+                label: null,
+                name: null,
+                ownerUserId: "user-fixture",
+                base: null,
+              });
+              const launched = yield* engine.launch(session.id, ["codex"]);
+              expect(launched.status).toBe("running");
+              const ended = () =>
+                logs.some((line) => line.includes("harness warm-up · not finished"));
+              if (answer === "hangs") {
+                // One millisecond short of its bound the warm-up still runs, uninterrupted.
+                yield* TestClock.adjust(49);
+                expect(ended()).toBe(false);
+                expect(interrupted).toEqual([]);
+                yield* TestClock.adjust(1);
+              }
+              yield* clock.untilChanged(ended, `the ${answer} warm-up to end`);
+              if (answer === "fails") {
+                // Its bound passing after the failure interrupts nothing: the warm-up had ended.
+                yield* TestClock.adjust(50);
+                expect(interrupted).toEqual([]);
+              }
+              const after = world.sessions.get(session.id);
+              expect(after?.status).toBe("running");
+              expect(after?.settledAt ?? null).toBeNull();
+              expect(after?.summary).toBe("codex is starting on the new machine");
+              // A warm-up past its bound is abandoned, not left running.
+              if (answer === "hangs") expect(interrupted).toEqual(["warm-up"]);
+            }),
+          {
+            logs,
+            drainPolicy: { harnessWarmupTimeout: Duration.millis(50) },
+            sealantLayer: lifecycleLayer(created, {
+              execCalls: [],
+              captureOps: {
+                execEffect: (argv) =>
+                  !isWarmup(argv)
+                    ? undefined
+                    : answer === "fails"
+                      ? Effect.fail(
+                          new SealantPlatformError({
+                            code: "exec_failed",
+                            status: 502,
+                            message: "the executor did not run the command",
+                            cause: null,
+                          }),
+                        )
+                      : Effect.never.pipe(
+                          Effect.onInterrupt(() => Effect.sync(() => interrupted.push("warm-up"))),
+                        ),
+              },
+            }),
+          },
+        );
+      }
+    }),
+  );
 
   it("a shell or a command of the owner's own warms nothing and never reads as starting", async () => {
     const created: Array<CreateOptions> = [];
@@ -2589,157 +2725,183 @@ describe("an agent's first screen (alpha 2026-09-30)", () => {
     );
   });
 
-  it("the agent reads as starting until its record carries output, then its row says when it drew and the words go", async () => {
-    const created: Array<CreateOptions> = [];
-    const drew = "2026-09-30T17:15:41.000Z";
-    const drawn = await Effect.runPromise(Deferred.make<void>());
-    await withEngine(
-      (world, tmp) =>
-        Effect.gen(function* () {
-          const project = yield* setup(tmp, world);
-          const engine = yield* SessionEngine;
-          const session = yield* engine.provision({
-            projectId: project.id,
-            harness: "claude",
-            label: null,
-            name: null,
-            ownerUserId: "user-fixture",
-            base: null,
-          });
-          yield* engine.launch(session.id, ["claude"]);
-          const agent = () =>
-            [...world.processes.values()].find(
+  it.effect(
+    "the agent reads as starting until its record carries output, then its row says when it drew and the words go",
+    () =>
+      Effect.gen(function* () {
+        const created: Array<CreateOptions> = [];
+        const drew = "2026-09-30T17:15:41.000Z";
+        const drawn = yield* Deferred.make<void>();
+        const clock = yield* makeLaunchClock;
+        yield* withPreparedEngineEffect(
+          (world, tmp) => setup(tmp, world),
+          (world, tmp, project) =>
+            Effect.gen(function* () {
+              const engine = yield* SessionEngine;
+              const session = yield* engine.provision({
+                projectId: project.id,
+                harness: "claude",
+                label: null,
+                name: null,
+                ownerUserId: "user-fixture",
+                base: null,
+              });
+              yield* engine.launch(session.id, ["claude"]);
+              const agent = () =>
+                [...world.processes.values()].find(
+                  (process) => process.sessionId === session.id && process.kind === "agent-pty",
+                );
+              // Before any output: starting, and the row says nothing drew.
+              expect(world.sessions.get(session.id)?.summary).toBe(
+                "claude is starting on the new machine",
+              );
+              expect(agent()?.firstOutputAt ?? null).toBeNull();
+
+              yield* Deferred.succeed(drawn, undefined);
+              yield* clock.untilChanged(
+                () => agent()?.firstOutputAt != null,
+                "the first output to be stamped",
+              );
+              expect(agent()?.firstOutputAt?.toISOString()).toBe(drew);
+              yield* clock.untilChanged(
+                () => (world.sessions.get(session.id)?.summary ?? null) === null,
+                "the starting words to go",
+              );
+              expect(world.sessions.get(session.id)?.status).toBe("running");
+            }),
+          {
+            sealantLayer: lifecycleLayer(created, {
+              captureOps: {
+                // The record opens with a heartbeat and an empty chunk; the first bytes come
+                // later.
+                record: () =>
+                  Stream.make(outputEntry(1n, "2026-09-30T17:14:56.000Z", "0")).pipe(
+                    Stream.concat(
+                      Stream.fromEffect(Deferred.await(drawn)).pipe(
+                        Stream.map(() => outputEntry(2n, drew, "312")),
+                      ),
+                    ),
+                    Stream.concat(Stream.fromEffect(Effect.never)),
+                  ),
+              },
+            }),
+            prepareWorld: clock.prepareWorld,
+          },
+        );
+      }),
+  );
+
+  it.effect(
+    "a launch whose run settles completed but exited non-zero settles failed, as its PTY end reads",
+    () =>
+      Effect.gen(function* () {
+        // Core settles an interactive session's run `completed` whatever its process exited with.
+        // 2026-10-05: two joins whose `claude` could not start read `failed · exited with code 1`
+        // and `completed`, depending on whether the PTY watcher or the run's supervision saw the
+        // end first.
+        const created: Array<CreateOptions> = [];
+        const clock = yield* makeLaunchClock;
+        yield* withPreparedEngineEffect(
+          (world, tmp) => setup(tmp, world),
+          (world, tmp, project) =>
+            Effect.gen(function* () {
+              const engine = yield* SessionEngine;
+              const session = yield* engine.provision({
+                projectId: project.id,
+                harness: "claude",
+                label: null,
+                name: null,
+                ownerUserId: "user-fixture",
+                base: null,
+              });
+              yield* engine.launch(session.id, ["claude"]);
+              yield* clock.untilChanged(
+                () => world.sessions.get(session.id)?.settledAt != null,
+                "the session to settle from its run",
+              );
+              expect(world.sessions.get(session.id)?.status).toBe("failed");
+              expect(world.sessions.get(session.id)?.summary).toContain("exited with code 1");
+            }),
+          {
+            sealantLayer: lifecycleLayer(created, {
+              captureOps: {
+                record: () => Stream.empty,
+                waitRun: () =>
+                  Effect.succeed({
+                    ...fakeExecRun,
+                    result: { status: "completed", outcome: "completed", exitCode: 1 },
+                  }),
+              },
+            }),
+            prepareWorld: clock.prepareWorld,
+          },
+        );
+      }),
+  );
+
+  it.effect("an agent that ends before it draws takes its starting words with it", () =>
+    Effect.gen(function* () {
+      const created: Array<CreateOptions> = [];
+      const clock = yield* makeLaunchClock;
+      const { ptyStates } = clock;
+      yield* withPreparedEngineEffect(
+        (world, tmp) => setup(tmp, world),
+        (world, tmp, project) =>
+          Effect.gen(function* () {
+            const engine = yield* SessionEngine;
+            const session = yield* engine.provision({
+              projectId: project.id,
+              harness: "claude",
+              label: null,
+              name: null,
+              ownerUserId: "user-fixture",
+              base: null,
+            });
+            yield* engine.launch(session.id, ["claude"]);
+            yield* engine.openShell(session.id);
+            expect(world.sessions.get(session.id)?.summary).toBe(
+              "claude is starting on the new machine",
+            );
+            const agent = [...world.processes.values()].find(
               (process) => process.sessionId === session.id && process.kind === "agent-pty",
             );
-          // Before any output: starting, and the row says nothing drew.
-          expect(world.sessions.get(session.id)?.summary).toBe(
-            "claude is starting on the new machine",
-          );
-          expect(agent()?.firstOutputAt ?? null).toBeNull();
-
-          yield* Deferred.succeed(drawn, undefined);
-          yield* until(() => agent()?.firstOutputAt != null, "the first output to be stamped");
-          expect(agent()?.firstOutputAt?.toISOString()).toBe(drew);
-          yield* until(
-            () => (world.sessions.get(session.id)?.summary ?? null) === null,
-            "the starting words to go",
-          );
-          expect(world.sessions.get(session.id)?.status).toBe("running");
-        }),
-      {
-        sealantLayer: lifecycleLayer(created, {
-          captureOps: {
-            // The record opens with a heartbeat and an empty chunk; the first bytes come later.
-            record: () =>
-              Stream.make(outputEntry(1n, "2026-09-30T17:14:56.000Z", "0")).pipe(
-                Stream.concat(
-                  Stream.fromEffect(Deferred.await(drawn)).pipe(
-                    Stream.map(() => outputEntry(2n, drew, "312")),
-                  ),
-                ),
-                Stream.concat(Stream.fromEffect(Effect.never)),
-              ),
-          },
-        }),
-      },
-    );
-  });
-
-  it("a launch whose run settles completed but exited non-zero settles failed, as its PTY end reads", async () => {
-    // Core settles an interactive session's run `completed` whatever its process exited with.
-    // 2026-10-05: two joins whose `claude` could not start read `failed · exited with code 1` and
-    // `completed`, depending on whether the PTY watcher or the run's supervision saw the end first.
-    const created: Array<CreateOptions> = [];
-    await withEngine(
-      (world, tmp) =>
-        Effect.gen(function* () {
-          const project = yield* setup(tmp, world);
-          const engine = yield* SessionEngine;
-          const session = yield* engine.provision({
-            projectId: project.id,
-            harness: "claude",
-            label: null,
-            name: null,
-            ownerUserId: "user-fixture",
-            base: null,
-          });
-          yield* engine.launch(session.id, ["claude"]);
-          yield* until(
-            () => world.sessions.get(session.id)?.settledAt != null,
-            "the session to settle from its run",
-          );
-          expect(world.sessions.get(session.id)?.status).toBe("failed");
-          expect(world.sessions.get(session.id)?.summary).toContain("exited with code 1");
-        }),
-      {
-        sealantLayer: lifecycleLayer(created, {
-          captureOps: {
-            record: () => Stream.empty,
-            waitRun: () =>
-              Effect.succeed({
-                ...fakeExecRun,
-                result: { status: "completed", outcome: "completed", exitCode: 1 },
-              }),
-          },
-        }),
-      },
-    );
-  });
-
-  it("an agent that ends before it draws takes its starting words with it", async () => {
-    const created: Array<CreateOptions> = [];
-    const ptyStates = new Map<string, InteractiveSessionStatus>();
-    await withEngine(
-      (world, tmp) =>
-        Effect.gen(function* () {
-          const project = yield* setup(tmp, world);
-          const engine = yield* SessionEngine;
-          const session = yield* engine.provision({
-            projectId: project.id,
-            harness: "claude",
-            label: null,
-            name: null,
-            ownerUserId: "user-fixture",
-            base: null,
-          });
-          yield* engine.launch(session.id, ["claude"]);
-          yield* engine.openShell(session.id);
-          expect(world.sessions.get(session.id)?.summary).toBe(
-            "claude is starting on the new machine",
-          );
-          const agent = [...world.processes.values()].find(
-            (process) => process.sessionId === session.id && process.kind === "agent-pty",
-          );
-          if (agent?.sealantSessionId == null) throw new Error("no agent PTY");
-          ptyStates.set(agent.sealantSessionId, {
-            status: "exited",
-            exitCode: 1,
-            outputHighWater: 0n,
-          });
-          yield* until(
-            () => world.processes.get(agent.id)?.exitedAt != null,
-            "the agent's end to be observed",
-          );
-          // A shell still holds the workspace, so nothing settled over the line: the words went
-          // with the agent.
-          yield* until(
-            () => !(world.sessions.get(session.id)?.summary ?? "").includes("claude is starting"),
-            "the starting words to go with the agent",
-          );
-        }),
-      {
-        sealantLayer: sealantLaunchLayer(
-          created,
-          undefined,
-          undefined,
-          undefined,
-          undefined,
-          undefined,
-          ptyStates,
-        ),
-      },
-    );
-  });
+            if (agent?.sealantSessionId == null) throw new Error("no agent PTY");
+            ptyStates.set(agent.sealantSessionId, {
+              status: "exited",
+              exitCode: 1,
+              outputHighWater: 0n,
+            });
+            // The exit is read at the PTY watcher's next look; nothing ends before it.
+            yield* clock.nextLook(
+              agent.sealantSessionId,
+              () => world.processes.get(agent.id)?.exitedAt == null,
+            );
+            yield* clock.untilChanged(
+              () => world.processes.get(agent.id)?.exitedAt != null,
+              "the agent's end to be observed",
+            );
+            // A shell still holds the workspace, so nothing settled over the line: the words
+            // went with the agent.
+            yield* clock.untilChanged(
+              () => !(world.sessions.get(session.id)?.summary ?? "").includes("claude is starting"),
+              "the starting words to go with the agent",
+            );
+          }),
+        {
+          sealantLayer: sealantLaunchLayer(
+            created,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            ptyStates,
+          ),
+          prepareWorld: clock.prepareWorld,
+        },
+      );
+    }),
+  );
 });
 
 /** The session's agent process, ended in the world as if its end was never recorded. */
@@ -3101,127 +3263,134 @@ describe("SessionEngine startup never waits on an executor (2026-10-03)", () => 
   const runId = SealantRunId.make("run-stopped-before-restart");
   const workspaceId = SealantWorkspaceId.make("workspace-1");
 
-  it("finishes while a folded session's executor is still to be drained: the row settles inline, its tail runs forked as the owner", async () => {
-    const created: Array<CreateOptions> = [];
-    const flushed: string[] = [];
-    const flushKinds: CaptureFlushKind[] = [];
-    const seen: Array<string> = [];
-    const logs: Array<string> = [];
-    const startedAt = Date.now();
-    // The bound: a build still running at five seconds is the hang, interrupted here so the
-    // world is cleaned up and nothing polls on behind the verdict.
-    const bound = new AbortController();
-    const timer = setTimeout(() => bound.abort(), 5_000);
-    try {
-      await withEngine(
-        (world) =>
-          Effect.gen(function* () {
-            // The engine stands: the fold ran, and nothing waited on the executor.
-            expect(Date.now() - startedAt).toBeLessThan(5_000);
-            const settled = world.sessions.get(sessionId);
-            expect(settled?.status).toBe("stopped");
-            expect(settled?.settledAt).not.toBeNull();
-            // The tail runs after the boot, as the owner: the executor is asked to flush, then
-            // asked for its final flush by the drain, within moments — which a fiber with no
-            // principal could never do, as it is refused the lookup that comes first.
-            yield* eventually(
-              "the forked tail drained the executor",
-              Duration.seconds(3),
-              () => flushed.includes(`flush:${workspaceId}`) && flushKinds.includes("final"),
-            );
-            expect(seen.length).toBeGreaterThan(0);
-            expect(seen.every((principal) => principal === "user-fixture")).toBe(true);
-            // Nobody else swept it: the boot pass owns this session's tail.
-            expect(logs.some((line) => line.includes("reaping leftover workspace"))).toBe(false);
-          }),
-        {
-          logs,
-          signal: bound.signal,
-          captured: makeMemoryCaptureStore(),
-          prepareWorld: (world, tmp) =>
-            seedStoppedBeforeRestart(world, tmp, {
-              sessionId,
-              runId,
-              workspaceId,
-              processLive: false,
+  it.effect(
+    "finishes while a folded session's executor is still to be drained: the row settles inline, its tail runs forked as the owner",
+    () =>
+      Effect.gen(function* () {
+        const created: Array<CreateOptions> = [];
+        const clock = yield* makeLaunchClock;
+        const flushed = clock.watched<string>();
+        const flushKinds = clock.watched<CaptureFlushKind>();
+        const seen: Array<string> = [];
+        const logs: Array<string> = [];
+        const startedAt = Date.now();
+        // A build that waits on the executor is the hang: its drain parks on the TestClock, which
+        // the clock guard reports before this case's timeout ends it.
+        yield* withPreparedEngineEffect(
+          () => Effect.void,
+          (world) =>
+            Effect.gen(function* () {
+              // The engine stands: the fold ran, and nothing waited on the executor.
+              expect(Date.now() - startedAt).toBeLessThan(5_000);
+              const settled = world.sessions.get(sessionId);
+              expect(settled?.status).toBe("stopped");
+              expect(settled?.settledAt).not.toBeNull();
+              // The tail runs after the boot, as the owner: the executor is asked to flush, then
+              // asked for its final flush by the drain, within moments — which a fiber with no
+              // principal could never do, as it is refused the lookup that comes first.
+              yield* clock.untilChanged(
+                () => flushed.includes(`flush:${workspaceId}`) && flushKinds.includes("final"),
+                "the forked tail drained the executor",
+              );
+              expect(seen.length).toBeGreaterThan(0);
+              expect(seen.every((principal) => principal === "user-fixture")).toBe(true);
+              // Nobody else swept it: the boot pass owns this session's tail.
+              expect(logs.some((line) => line.includes("reaping leftover workspace"))).toBe(false);
             }),
-          sealantLayer: principalRequired(
-            sealantLaunchLayer(
-              created,
-              undefined,
-              undefined,
-              undefined,
-              undefined,
-              undefined,
-              undefined,
-              undefined,
-              undefined,
-              undefined,
-              undefined,
-              { flushed, flushKinds },
+          {
+            logs,
+            captured: makeMemoryCaptureStore(),
+            prepareWorld: (world, tmp) =>
+              seedStoppedBeforeRestart(world, tmp, {
+                sessionId,
+                runId,
+                workspaceId,
+                processLive: false,
+              }),
+            sealantLayer: principalRequired(
+              sealantLaunchLayer(
+                created,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                { flushed, flushKinds },
+              ),
+              seen,
             ),
-            seen,
-          ),
-        },
-      ).catch((error: unknown) => {
-        throw bound.signal.aborted
-          ? new Error(
-              "the engine did not finish construction within 5 s · startup waited on a session's executor",
-            )
-          : error;
-      });
-    } finally {
-      clearTimeout(timer);
-    }
-  }, 10_000);
+          },
+        );
+      }),
+    10_000,
+  );
 
-  it("re-forks the watcher of a live agent process as the session's owner: its exit after the restart settles the session", async () => {
-    const created: Array<CreateOptions> = [];
-    const seen: Array<string> = [];
-    const ptyStates = new Map<string, InteractiveSessionStatus>();
-    await withEngine(
-      (world) =>
-        Effect.gen(function* () {
-          expect(world.sessions.get(sessionId)?.settledAt).toBeNull();
-          // The agent exits after the restart; the boot watcher polls its PTY every two seconds.
-          ptyStates.set("pty-1", { status: "exited", exitCode: 0, outputHighWater: 0n });
-          yield* eventually("the session settled on its agent's exit", Duration.seconds(8), () => {
-            const session = world.sessions.get(sessionId);
-            return session !== undefined && session.settledAt !== null;
-          });
-          const agent = world.processes.get("agent-boot");
-          expect(agent).toBeDefined();
-          expect(agent?.status).toBe("exited");
-          expect(agent?.exitCode).toBe(0);
-          expect(agent?.exitedAt).not.toBeNull();
-          expect(seen.length).toBeGreaterThan(0);
-          expect(seen.every((principal) => principal === "user-fixture")).toBe(true);
-        }),
-      {
-        captured: makeMemoryCaptureStore(),
-        prepareWorld: (world, tmp) =>
-          seedStoppedBeforeRestart(world, tmp, {
-            sessionId,
-            runId,
-            workspaceId,
-            processLive: true,
-          }),
-        sealantLayer: principalRequired(
-          sealantLaunchLayer(
-            created,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            ptyStates,
-            undefined,
-            undefined,
-            [],
-          ),
-          seen,
-        ),
-      },
-    );
-  }, 15_000);
+  it.effect(
+    "re-forks the watcher of a live agent process as the session's owner: its exit after the restart settles the session",
+    () =>
+      Effect.gen(function* () {
+        const created: Array<CreateOptions> = [];
+        const seen: Array<string> = [];
+        const clock = yield* makeLaunchClock;
+        const { ptyStates } = clock;
+        yield* withPreparedEngineEffect(
+          () => Effect.void,
+          (world) =>
+            Effect.gen(function* () {
+              expect(world.sessions.get(sessionId)?.settledAt).toBeNull();
+              // The agent exits after the restart; the boot watcher polls its PTY every two
+              // seconds.
+              ptyStates.set("pty-1", { status: "exited", exitCode: 0, outputHighWater: 0n });
+              yield* clock.nextLook(
+                "pty-1",
+                () => world.sessions.get(sessionId)?.settledAt == null,
+              );
+              yield* clock.untilChanged(() => {
+                const session = world.sessions.get(sessionId);
+                return session !== undefined && session.settledAt !== null;
+              }, "the session settled on its agent's exit");
+              const agent = world.processes.get("agent-boot");
+              expect(agent).toBeDefined();
+              expect(agent?.status).toBe("exited");
+              expect(agent?.exitCode).toBe(0);
+              expect(agent?.exitedAt).not.toBeNull();
+              expect(seen.length).toBeGreaterThan(0);
+              expect(seen.every((principal) => principal === "user-fixture")).toBe(true);
+            }),
+          {
+            captured: makeMemoryCaptureStore(),
+            prepareWorld: (world, tmp) => {
+              clock.prepareWorld(world);
+              seedStoppedBeforeRestart(world, tmp, {
+                sessionId,
+                runId,
+                workspaceId,
+                processLive: true,
+              });
+            },
+            sealantLayer: principalRequired(
+              sealantLaunchLayer(
+                created,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                ptyStates,
+                undefined,
+                undefined,
+                [],
+              ),
+              seen,
+            ),
+          },
+        );
+      }),
+    15_000,
+  );
 });

@@ -1,7 +1,8 @@
+import { Project } from "@mend/domain/workbench";
 import { SealantPlatformError, type WorkspaceStopOptions } from "@mend/sealant";
 import { type CaptureCompletionSeal } from "@mend/sessions";
 import { it, TestClock } from "@mend/test-ci/effect-vitest";
-import type { CreateOptions, InteractiveSessionStatus } from "@sealant/sdk";
+import type { CreateOptions } from "@sealant/sdk";
 import { Clock, Deferred, Duration, Effect } from "effect";
 import { describe, expect } from "vitest";
 
@@ -12,28 +13,40 @@ import {
   launchOnce,
   lifecycleLayer,
   memorySeals,
+  provisionIn,
   shipHarnessCapture,
   until,
 } from "./engine/capture-fixture.ts";
+import { type EngineClock, makeEngineClock } from "./engine/clock-fixture.ts";
 import {
   sealantLaunchLayer,
   servedSocketApis,
+  setup,
   type World,
   withEngine,
-  withEngineEffect,
+  withPreparedEngineEffect,
 } from "./engine/fixture.ts";
+/**
+ * What these scenarios wait on: every row the engine writes (`world.sessions`,
+ * `world.captureUnsaved`), every stop sent to the platform (`watched`), every look the PTY
+ * watcher takes and every checkpoint wait the channel registers.
+ */
+const makeEvidenceClock = makeEngineClock(["sessions", "captureUnsaved"]);
+
 /** A sealed executor A with a joined session B on it; B's settling harvest reads unsaved work. */
 const joinedObservesUnsaved = (
   world: World,
   tmp: string,
+  project: Project,
   memory: ReturnType<typeof makeMemoryCaptureStore>,
   records: Map<string, CaptureCompletionSeal>,
   answer: { current: "clean" | "unsaved" | "lost"; stamp?: object },
+  clock: EngineClock,
   sealOffsetMs = -5_000,
   unsavedHead: "at-seal" | "before-seal" = "at-seal",
 ) =>
   Effect.gen(function* () {
-    const { engine, session } = yield* launchOnce(world, tmp);
+    const { engine, session } = yield* provisionIn(project);
     yield* engine.launch(session.id, ["codex"]);
     const joined = yield* engine.provisionSessionIn(session.worktreeId, {
       harness: "claude",
@@ -56,7 +69,7 @@ const joinedObservesUnsaved = (
       executorId: world.executorLaunches.get(session.id)?.launchId ?? "",
       captureId: built.id,
       n: built.manifest.n,
-      sealedAt: new Date(Date.now() + sealOffsetMs),
+      sealedAt: new Date((yield* Clock.currentTimeMillis) + sealOffsetMs),
       ...SEAL_STAMP,
     };
     records.set(`${session.worktreeId}:${epoch}`, seal);
@@ -74,9 +87,14 @@ const joinedObservesUnsaved = (
       },
     };
     answer.current = "unsaved";
-    yield* engine.stop(joined.id);
-    yield* until(() => world.captureUnsaved.has(joined.id), "the joined session's unsaved answer");
-    yield* until(
+    // The joined session's stop marks a checkpoint while the owner's executor still holds the
+    // worktree: it waits `CHECKPOINT_WAIT` for one to register before it reads the head.
+    yield* clock.checkpointWait(engine.stop(joined.id));
+    yield* clock.untilChanged(
+      () => world.captureUnsaved.has(joined.id),
+      "the joined session's unsaved answer",
+    );
+    yield* clock.untilChanged(
       () => world.sessions.get(joined.id)?.settledAt != null,
       "the joined session's settle",
     );
@@ -120,115 +138,140 @@ describe("SessionEngine fifth review (2026-09-28)", () => {
           );
   };
 
-  it(
+  it.effect(
     "#3 an owner's lost FINAL never attests an older seal once a joined session observed unsaved work on the same executor",
+    () =>
+      Effect.gen(function* () {
+        const created: Array<CreateOptions> = [];
+        const memory = makeMemoryCaptureStore();
+        const records = new Map<string, CaptureCompletionSeal>();
+        const stopOptions: Array<WorkspaceStopOptions | undefined> = [];
+        const logs: Array<string> = [];
+        const answer = { current: "clean" as "clean" | "unsaved" | "lost" };
+        const clock = yield* makeEvidenceClock;
+        yield* withPreparedEngineEffect(
+          (world, tmp) => setup(tmp, world),
+          (world, tmp, project) =>
+            Effect.gen(function* () {
+              const { engine, session } = yield* joinedObservesUnsaved(
+                world,
+                tmp,
+                project,
+                memory,
+                records,
+                answer,
+                clock,
+              );
+              yield* engine.stop(session.id);
+              yield* clock.untilChanged(
+                () => world.sessions.get(session.id)?.captureNotSavedAt != null,
+                "the owner's drain reads not saved",
+              );
+              expect(stopOptions).toEqual([]);
+              expect(
+                logs.some((line) => line.includes("capture drain · saved · terminating")),
+              ).toBe(false);
+            }),
+          {
+            captured: memory,
+            seals: memorySeals(records),
+            logs,
+            drainPolicy: { stallSeconds: 0 },
+            sealantLayer: lifecycleLayer(created, {
+              captureOps: {
+                stopOptions,
+                resourceId: () => "container-7f3a",
+                finalCompletion: "unreported",
+                flush: flushOf(answer),
+              },
+            }),
+            prepareWorld: clock.prepareWorld,
+            wrapCaptureChannel: clock.wrapCaptureChannel,
+          },
+        );
+      }),
     { timeout: 20_000 },
-    async () => {
-      const created: Array<CreateOptions> = [];
-      const memory = makeMemoryCaptureStore();
-      const records = new Map<string, CaptureCompletionSeal>();
-      const stopOptions: Array<WorkspaceStopOptions | undefined> = [];
-      const logs: Array<string> = [];
-      const answer = { current: "clean" as "clean" | "unsaved" | "lost" };
-      await withEngine(
-        (world, tmp) =>
-          Effect.gen(function* () {
-            const { engine, session } = yield* joinedObservesUnsaved(
-              world,
-              tmp,
-              memory,
-              records,
-              answer,
-            );
-            yield* engine.stop(session.id);
-            yield* until(
-              () => world.sessions.get(session.id)?.captureNotSavedAt != null,
-              "the owner's drain reads not saved",
-            );
-            expect(stopOptions).toEqual([]);
-            expect(logs.some((line) => line.includes("capture drain · saved · terminating"))).toBe(
-              false,
-            );
-          }),
-        {
-          captured: memory,
-          seals: memorySeals(records),
-          logs,
-          drainPolicy: { stallSeconds: 0 },
-          sealantLayer: lifecycleLayer(created, {
-            captureOps: {
-              stopOptions,
-              resourceId: () => "container-7f3a",
-              finalCompletion: "unreported",
-              flush: flushOf(answer),
-            },
-          }),
-        },
-      );
-    },
   );
 
-  it(
+  it.effect(
     "#3 an owner's executor ending outside Mend reads the joined session's later unsaved answer, never saved",
+    () =>
+      Effect.gen(function* () {
+        const created: Array<CreateOptions> = [];
+        const memory = makeMemoryCaptureStore();
+        const records = new Map<string, CaptureCompletionSeal>();
+        const stopOptions: Array<WorkspaceStopOptions | undefined> = [];
+        const answer = { current: "clean" as "clean" | "unsaved" | "lost" };
+        const clock = yield* makeEvidenceClock;
+        const { ptyStates } = clock;
+        let dead = false;
+        yield* withPreparedEngineEffect(
+          (world, tmp) => setup(tmp, world),
+          (world, tmp, project) =>
+            Effect.gen(function* () {
+              const { session } = yield* joinedObservesUnsaved(
+                world,
+                tmp,
+                project,
+                memory,
+                records,
+                answer,
+                clock,
+              );
+              dead = true;
+              const agent = [...world.processes.values()].find(
+                (process) => process.sessionId === session.id && process.kind === "agent-pty",
+              );
+              if (agent?.sealantSessionId == null) throw new Error("no agent PTY");
+              ptyStates.set(agent.sealantSessionId, {
+                status: "exited",
+                exitCode: 0,
+                outputHighWater: 0n,
+              });
+              // The exit is read at the PTY watcher's next look; nothing settles before it.
+              yield* clock.nextLook(
+                agent.sealantSessionId,
+                () => world.sessions.get(session.id)?.settledAt == null,
+              );
+              yield* clock.untilChanged(
+                () => world.sessions.get(session.id)?.settledAt != null,
+                "the owner's settle",
+              );
+              const settled = world.sessions.get(session.id);
+              expect(settled?.summary).not.toContain("stopped outside Mend · saved at");
+              expect(settled?.summary).toContain("executor lost · last saved");
+              expect(settled?.summary).toContain("unreadable tree/after-seal.txt");
+              expect(settled?.status).toBe("failed");
+            }),
+          {
+            captured: memory,
+            seals: memorySeals(records),
+            drainPolicy: { stallSeconds: 0 },
+            sealantLayer: sealantLaunchLayer(
+              created,
+              undefined,
+              undefined,
+              undefined,
+              () => dead,
+              undefined,
+              ptyStates,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              {
+                stopOptions,
+                resourceId: () => "container-7f3a",
+                finalCompletion: "unreported",
+                flush: flushOf(answer),
+              },
+            ),
+            prepareWorld: clock.prepareWorld,
+            wrapCaptureChannel: clock.wrapCaptureChannel,
+          },
+        );
+      }),
     { timeout: 20_000 },
-    async () => {
-      const created: Array<CreateOptions> = [];
-      const memory = makeMemoryCaptureStore();
-      const records = new Map<string, CaptureCompletionSeal>();
-      const stopOptions: Array<WorkspaceStopOptions | undefined> = [];
-      const answer = { current: "clean" as "clean" | "unsaved" | "lost" };
-      const ptyStates = new Map<string, InteractiveSessionStatus>();
-      let dead = false;
-      await withEngine(
-        (world, tmp) =>
-          Effect.gen(function* () {
-            const { session } = yield* joinedObservesUnsaved(world, tmp, memory, records, answer);
-            dead = true;
-            const agent = [...world.processes.values()].find(
-              (process) => process.sessionId === session.id && process.kind === "agent-pty",
-            );
-            if (agent?.sealantSessionId == null) throw new Error("no agent PTY");
-            ptyStates.set(agent.sealantSessionId, {
-              status: "exited",
-              exitCode: 0,
-              outputHighWater: 0n,
-            });
-            yield* until(
-              () => world.sessions.get(session.id)?.settledAt != null,
-              "the owner's settle",
-            );
-            const settled = world.sessions.get(session.id);
-            expect(settled?.summary).not.toContain("stopped outside Mend · saved at");
-            expect(settled?.summary).toContain("executor lost · last saved");
-            expect(settled?.summary).toContain("unreadable tree/after-seal.txt");
-            expect(settled?.status).toBe("failed");
-          }),
-        {
-          captured: memory,
-          seals: memorySeals(records),
-          drainPolicy: { stallSeconds: 0 },
-          sealantLayer: sealantLaunchLayer(
-            created,
-            undefined,
-            undefined,
-            undefined,
-            () => dead,
-            undefined,
-            ptyStates,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            {
-              stopOptions,
-              resourceId: () => "container-7f3a",
-              finalCompletion: "unreported",
-              flush: flushOf(answer),
-            },
-          ),
-        },
-      );
-    },
   );
 
   // Review 2026-09-28 (6) #6, cross-repo decision 17 (the reviewer's reproductions): the store
@@ -237,189 +280,215 @@ describe("SessionEngine fifth review (2026-09-28)", () => {
   // sent the completion attestation (`saved · terminating`), and a natural end read
   // `stopped outside Mend · saved`. Ordered by the executor — the answer came at the seal's head,
   // after it registered — neither happens.
-  it(
+  it.effect(
     "review 6 #6 a store clock ahead never revives a seal over a later unsaved answer: no attestation, no saved",
+    () =>
+      Effect.gen(function* () {
+        const created: Array<CreateOptions> = [];
+        const memory = makeMemoryCaptureStore();
+        const records = new Map<string, CaptureCompletionSeal>();
+        const stopOptions: Array<WorkspaceStopOptions | undefined> = [];
+        const logs: Array<string> = [];
+        const answer = { current: "clean" as "clean" | "unsaved" | "lost" };
+        const clock = yield* makeEvidenceClock;
+        yield* withPreparedEngineEffect(
+          (world, tmp) => setup(tmp, world),
+          (world, tmp, project) =>
+            Effect.gen(function* () {
+              const { engine, session, seal } = yield* joinedObservesUnsaved(
+                world,
+                tmp,
+                project,
+                memory,
+                records,
+                answer,
+                clock,
+                60_000,
+              );
+              const evidence = world.executorEvidence.get("workspace-1")?.unsaved.at(-1);
+              expect(evidence?.words).toContain("unreadable");
+              // The wall clocks say the seal came last; the executor says otherwise.
+              expect(evidence?.at.getTime()).toBeLessThan(seal.sealedAt.getTime());
+              expect(evidence?.position?.observation).toBe(SEAL_STAMP.observation + 1);
+              yield* engine.stop(session.id);
+              yield* clock.untilChanged(
+                () => world.sessions.get(session.id)?.captureNotSavedAt != null,
+                "the owner's drain reads not saved",
+              );
+              expect(stopOptions.some((options) => options?.completion !== undefined)).toBe(false);
+              expect(
+                logs.some((line) => line.includes("capture drain · saved · terminating")),
+              ).toBe(false);
+            }),
+          {
+            captured: memory,
+            seals: memorySeals(records),
+            logs,
+            drainPolicy: { stallSeconds: 0 },
+            sealantLayer: lifecycleLayer(created, {
+              captureOps: {
+                stopOptions,
+                resourceId: () => "container-7f3a",
+                finalCompletion: "unreported",
+                flush: flushOf(answer),
+              },
+            }),
+            prepareWorld: clock.prepareWorld,
+            wrapCaptureChannel: clock.wrapCaptureChannel,
+          },
+        );
+      }),
     { timeout: 20_000 },
-    async () => {
-      const created: Array<CreateOptions> = [];
-      const memory = makeMemoryCaptureStore();
-      const records = new Map<string, CaptureCompletionSeal>();
-      const stopOptions: Array<WorkspaceStopOptions | undefined> = [];
-      const logs: Array<string> = [];
-      const answer = { current: "clean" as "clean" | "unsaved" | "lost" };
-      await withEngine(
-        (world, tmp) =>
-          Effect.gen(function* () {
-            const { engine, session, seal } = yield* joinedObservesUnsaved(
-              world,
-              tmp,
-              memory,
-              records,
-              answer,
-              60_000,
-            );
-            const evidence = world.executorEvidence.get("workspace-1")?.unsaved.at(-1);
-            expect(evidence?.words).toContain("unreadable");
-            // The wall clocks say the seal came last; the executor says otherwise.
-            expect(evidence?.at.getTime()).toBeLessThan(seal.sealedAt.getTime());
-            expect(evidence?.position?.observation).toBe(SEAL_STAMP.observation + 1);
-            yield* engine.stop(session.id);
-            yield* until(
-              () => world.sessions.get(session.id)?.captureNotSavedAt != null,
-              "the owner's drain reads not saved",
-            );
-            expect(stopOptions.some((options) => options?.completion !== undefined)).toBe(false);
-            expect(logs.some((line) => line.includes("capture drain · saved · terminating"))).toBe(
-              false,
-            );
-          }),
-        {
-          captured: memory,
-          seals: memorySeals(records),
-          logs,
-          drainPolicy: { stallSeconds: 0 },
-          sealantLayer: lifecycleLayer(created, {
-            captureOps: {
-              stopOptions,
-              resourceId: () => "container-7f3a",
-              finalCompletion: "unreported",
-              flush: flushOf(answer),
-            },
-          }),
-        },
-      );
-    },
   );
 
-  it(
+  it.effect(
     "review 6 #6 a store clock ahead never reads an executor that ended outside Mend saved over a later unsaved answer",
+    () =>
+      Effect.gen(function* () {
+        const created: Array<CreateOptions> = [];
+        const memory = makeMemoryCaptureStore();
+        const records = new Map<string, CaptureCompletionSeal>();
+        const stopOptions: Array<WorkspaceStopOptions | undefined> = [];
+        const answer = { current: "clean" as "clean" | "unsaved" | "lost" };
+        const clock = yield* makeEvidenceClock;
+        const { ptyStates } = clock;
+        let dead = false;
+        yield* withPreparedEngineEffect(
+          (world, tmp) => setup(tmp, world),
+          (world, tmp, project) =>
+            Effect.gen(function* () {
+              const { session } = yield* joinedObservesUnsaved(
+                world,
+                tmp,
+                project,
+                memory,
+                records,
+                answer,
+                clock,
+                60_000,
+              );
+              dead = true;
+              const agent = [...world.processes.values()].find(
+                (process) => process.sessionId === session.id && process.kind === "agent-pty",
+              );
+              if (agent?.sealantSessionId == null) throw new Error("no agent PTY");
+              ptyStates.set(agent.sealantSessionId, {
+                status: "exited",
+                exitCode: 0,
+                outputHighWater: 0n,
+              });
+              // The exit is read at the PTY watcher's next look; nothing settles before it.
+              yield* clock.nextLook(
+                agent.sealantSessionId,
+                () => world.sessions.get(session.id)?.settledAt == null,
+              );
+              yield* clock.untilChanged(
+                () => world.sessions.get(session.id)?.settledAt != null,
+                "the owner's settle",
+              );
+              const settled = world.sessions.get(session.id);
+              expect(settled?.summary).not.toContain("stopped outside Mend · saved at");
+              expect(settled?.summary).toContain("executor lost · last saved");
+              expect(settled?.summary).toContain("unreadable tree/after-seal.txt");
+              expect(settled?.status).toBe("failed");
+            }),
+          {
+            captured: memory,
+            seals: memorySeals(records),
+            drainPolicy: { stallSeconds: 0 },
+            sealantLayer: sealantLaunchLayer(
+              created,
+              undefined,
+              undefined,
+              undefined,
+              () => dead,
+              undefined,
+              ptyStates,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              {
+                stopOptions,
+                resourceId: () => "container-7f3a",
+                finalCompletion: "unreported",
+                flush: flushOf(answer),
+              },
+            ),
+            prepareWorld: clock.prepareWorld,
+            wrapCaptureChannel: clock.wrapCaptureChannel,
+          },
+        );
+      }),
     { timeout: 20_000 },
-    async () => {
-      const created: Array<CreateOptions> = [];
-      const memory = makeMemoryCaptureStore();
-      const records = new Map<string, CaptureCompletionSeal>();
-      const stopOptions: Array<WorkspaceStopOptions | undefined> = [];
-      const answer = { current: "clean" as "clean" | "unsaved" | "lost" };
-      const ptyStates = new Map<string, InteractiveSessionStatus>();
-      let dead = false;
-      await withEngine(
-        (world, tmp) =>
-          Effect.gen(function* () {
-            const { session } = yield* joinedObservesUnsaved(
-              world,
-              tmp,
-              memory,
-              records,
-              answer,
-              60_000,
-            );
-            dead = true;
-            const agent = [...world.processes.values()].find(
-              (process) => process.sessionId === session.id && process.kind === "agent-pty",
-            );
-            if (agent?.sealantSessionId == null) throw new Error("no agent PTY");
-            ptyStates.set(agent.sealantSessionId, {
-              status: "exited",
-              exitCode: 0,
-              outputHighWater: 0n,
-            });
-            yield* until(
-              () => world.sessions.get(session.id)?.settledAt != null,
-              "the owner's settle",
-            );
-            const settled = world.sessions.get(session.id);
-            expect(settled?.summary).not.toContain("stopped outside Mend · saved at");
-            expect(settled?.summary).toContain("executor lost · last saved");
-            expect(settled?.summary).toContain("unreadable tree/after-seal.txt");
-            expect(settled?.status).toBe("failed");
-          }),
-        {
-          captured: memory,
-          seals: memorySeals(records),
-          drainPolicy: { stallSeconds: 0 },
-          sealantLayer: sealantLaunchLayer(
-            created,
-            undefined,
-            undefined,
-            undefined,
-            () => dead,
-            undefined,
-            ptyStates,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            {
-              stopOptions,
-              resourceId: () => "container-7f3a",
-              finalCompletion: "unreported",
-              flush: flushOf(answer),
-            },
-          ),
-        },
-      );
-    },
   );
 
   // The other direction of the same order: an unsaved answer the executor made before its seal
   // (an earlier head) is covered by the seal even when the store's clock runs behind the worker's
   // — the seal stands for the lost FINAL answer and is attested.
-  it(
+  it.effect(
     "review 6 #6 a seal the executor made after an unsaved answer stands for a lost FINAL answer, whatever the clocks say",
+    () =>
+      Effect.gen(function* () {
+        const created: Array<CreateOptions> = [];
+        const memory = makeMemoryCaptureStore();
+        const records = new Map<string, CaptureCompletionSeal>();
+        const clock = yield* makeEvidenceClock;
+        const stopOptions = clock.watched<WorkspaceStopOptions | undefined>();
+        const answer = { current: "clean" as "clean" | "unsaved" | "lost" };
+        yield* withPreparedEngineEffect(
+          (world, tmp) => setup(tmp, world),
+          (world, tmp, project) =>
+            Effect.gen(function* () {
+              const { engine, session, seal } = yield* joinedObservesUnsaved(
+                world,
+                tmp,
+                project,
+                memory,
+                records,
+                answer,
+                clock,
+                -60_000,
+                "before-seal",
+              );
+              const evidence = world.executorEvidence.get("workspace-1")?.unsaved.at(-1);
+              expect(evidence?.at.getTime()).toBeGreaterThan(seal.sealedAt.getTime());
+              expect(evidence?.position?.observation).toBe(SEAL_STAMP.observation - 1);
+              yield* engine.stop(session.id);
+              yield* clock.untilChanged(
+                () => stopOptions.some((options) => options?.completion !== undefined),
+                "the owner attests the seal",
+              );
+              const completion = stopOptions.find((options) => options?.completion)?.completion;
+              expect(completion?.captureN).toBe(seal.n);
+              // Core orders the attestation by the seal's own stamp, never by `sealedAt`.
+              expect(completion?.origin).toEqual({
+                epoch: seal.epoch,
+                launch: seal.executorId,
+                bootId: SEAL_STAMP.bootId,
+                bootGeneration: SEAL_STAMP.bootGeneration,
+                observation: SEAL_STAMP.observation,
+                headN: seal.n,
+              });
+            }),
+          {
+            captured: memory,
+            seals: memorySeals(records),
+            drainPolicy: { stallSeconds: 0 },
+            sealantLayer: lifecycleLayer(created, {
+              captureOps: {
+                stopOptions,
+                resourceId: () => "container-7f3a",
+                finalCompletion: "unreported",
+                flush: flushOf(answer),
+              },
+            }),
+            prepareWorld: clock.prepareWorld,
+            wrapCaptureChannel: clock.wrapCaptureChannel,
+          },
+        );
+      }),
     { timeout: 20_000 },
-    async () => {
-      const created: Array<CreateOptions> = [];
-      const memory = makeMemoryCaptureStore();
-      const records = new Map<string, CaptureCompletionSeal>();
-      const stopOptions: Array<WorkspaceStopOptions | undefined> = [];
-      const answer = { current: "clean" as "clean" | "unsaved" | "lost" };
-      await withEngine(
-        (world, tmp) =>
-          Effect.gen(function* () {
-            const { engine, session, seal } = yield* joinedObservesUnsaved(
-              world,
-              tmp,
-              memory,
-              records,
-              answer,
-              -60_000,
-              "before-seal",
-            );
-            const evidence = world.executorEvidence.get("workspace-1")?.unsaved.at(-1);
-            expect(evidence?.at.getTime()).toBeGreaterThan(seal.sealedAt.getTime());
-            expect(evidence?.position?.observation).toBe(SEAL_STAMP.observation - 1);
-            yield* engine.stop(session.id);
-            yield* until(
-              () => stopOptions.some((options) => options?.completion !== undefined),
-              "the owner attests the seal",
-            );
-            const completion = stopOptions.find((options) => options?.completion)?.completion;
-            expect(completion?.captureN).toBe(seal.n);
-            // Core orders the attestation by the seal's own stamp, never by `sealedAt`.
-            expect(completion?.origin).toEqual({
-              epoch: seal.epoch,
-              launch: seal.executorId,
-              bootId: SEAL_STAMP.bootId,
-              bootGeneration: SEAL_STAMP.bootGeneration,
-              observation: SEAL_STAMP.observation,
-              headN: seal.n,
-            });
-          }),
-        {
-          captured: memory,
-          seals: memorySeals(records),
-          drainPolicy: { stallSeconds: 0 },
-          sealantLayer: lifecycleLayer(created, {
-            captureOps: {
-              stopOptions,
-              resourceId: () => "container-7f3a",
-              finalCompletion: "unreported",
-              flush: flushOf(answer),
-            },
-          }),
-        },
-      );
-    },
   );
 
   // Review 2026-09-28 (6) #6, cross-repo decision 18: an answer asked of the executor and not yet
@@ -437,10 +506,11 @@ describe("SessionEngine fifth review (2026-09-28)", () => {
         const gate = yield* Deferred.make<void>();
         const asked = yield* Deferred.make<void>();
         let sealed = false;
-        yield* withEngineEffect(
-          (world, tmp) =>
+        yield* withPreparedEngineEffect(
+          (world, tmp) => setup(tmp, world),
+          (world, tmp, project) =>
             Effect.gen(function* () {
-              const { engine, session } = yield* launchOnce(world, tmp);
+              const { engine, session } = yield* provisionIn(project);
               yield* engine.launch(session.id, ["codex"]);
               const epoch = memory.leases.get(session.worktreeId)?.epoch ?? 0;
               const built = yield* shipHarnessCapture(
@@ -549,49 +619,56 @@ describe("SessionEngine fifth review (2026-09-28)", () => {
     { timeout: 45_000 },
   );
 
-  it(
+  it.effect(
     "#3 the executor's evidence outlives the session that took it: removing the joined session leaves the owner's seal revoked",
+    () =>
+      Effect.gen(function* () {
+        const created: Array<CreateOptions> = [];
+        const memory = makeMemoryCaptureStore();
+        const records = new Map<string, CaptureCompletionSeal>();
+        const stopOptions: Array<WorkspaceStopOptions | undefined> = [];
+        const answer = { current: "clean" as "clean" | "unsaved" | "lost" };
+        const clock = yield* makeEvidenceClock;
+        yield* withPreparedEngineEffect(
+          (world, tmp) => setup(tmp, world),
+          (world, tmp, project) =>
+            Effect.gen(function* () {
+              const { engine, session, joined } = yield* joinedObservesUnsaved(
+                world,
+                tmp,
+                project,
+                memory,
+                records,
+                answer,
+                clock,
+              );
+              // The per-session row goes with the session; the executor's evidence does not.
+              world.captureUnsaved.delete(joined.id);
+              yield* engine.stop(session.id);
+              yield* clock.untilChanged(
+                () => world.sessions.get(session.id)?.captureNotSavedAt != null,
+                "the owner's drain reads not saved",
+              );
+              expect(stopOptions).toEqual([]);
+            }),
+          {
+            captured: memory,
+            seals: memorySeals(records),
+            drainPolicy: { stallSeconds: 0 },
+            sealantLayer: lifecycleLayer(created, {
+              captureOps: {
+                stopOptions,
+                resourceId: () => "container-7f3a",
+                finalCompletion: "unreported",
+                flush: flushOf(answer),
+              },
+            }),
+            prepareWorld: clock.prepareWorld,
+            wrapCaptureChannel: clock.wrapCaptureChannel,
+          },
+        );
+      }),
     { timeout: 20_000 },
-    async () => {
-      const created: Array<CreateOptions> = [];
-      const memory = makeMemoryCaptureStore();
-      const records = new Map<string, CaptureCompletionSeal>();
-      const stopOptions: Array<WorkspaceStopOptions | undefined> = [];
-      const answer = { current: "clean" as "clean" | "unsaved" | "lost" };
-      await withEngine(
-        (world, tmp) =>
-          Effect.gen(function* () {
-            const { engine, session, joined } = yield* joinedObservesUnsaved(
-              world,
-              tmp,
-              memory,
-              records,
-              answer,
-            );
-            // The per-session row goes with the session; the executor's evidence does not.
-            world.captureUnsaved.delete(joined.id);
-            yield* engine.stop(session.id);
-            yield* until(
-              () => world.sessions.get(session.id)?.captureNotSavedAt != null,
-              "the owner's drain reads not saved",
-            );
-            expect(stopOptions).toEqual([]);
-          }),
-        {
-          captured: memory,
-          seals: memorySeals(records),
-          drainPolicy: { stallSeconds: 0 },
-          sealantLayer: lifecycleLayer(created, {
-            captureOps: {
-              stopOptions,
-              resourceId: () => "container-7f3a",
-              finalCompletion: "unreported",
-              flush: flushOf(answer),
-            },
-          }),
-        },
-      );
-    },
   );
 
   it(

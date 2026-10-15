@@ -2716,11 +2716,19 @@ describeSeals(
       ).pipe(Layer.provide(BlobStoreFsLive(root))),
   },
   ({ world, run, claimed }) => {
-    const standing = (at: { readonly worktreeId: WorktreeId; readonly epoch: number }) =>
+    /** Where the seal stands, as of the seals' clock (`now`), else as of now. */
+    const standing = (
+      at: { readonly worktreeId: WorktreeId; readonly epoch: number },
+      now?: () => number,
+    ) =>
       run(
         Effect.flatMap(CaptureSeals, (service) =>
           service.sealedCompletion(at.worktreeId, "executor-1", at.epoch),
-        ).pipe(Effect.provide(CaptureSealsStoreLive)),
+        ).pipe(
+          Effect.provide(
+            now === undefined ? CaptureSealsStoreLive : makeCaptureSealsStore({ now }),
+          ),
+        ),
       );
     const planned = (at: {
       readonly worktreeId: WorktreeId;
@@ -2742,9 +2750,10 @@ describeSeals(
       const at = await claimed();
       const file = sealedFile(at, "saved bytes\n");
       await run(uploadObjects(new Map([...file.snapshot.objects, [file.cap.key, file.cap.bytes]])));
-      // A URL of the epoch lives briefly past the register: the seal registers withheld, and its
-      // first read-back comes once that URL has expired.
-      const expires = Date.now() + 150;
+      // A URL of the epoch lives a minute past the register: the seal registers withheld, and its
+      // first read-back is asked as of a moment after that URL has expired (the seals' clock; the
+      // channel that mints below stays on the wall clock).
+      const expires = Date.now() + 60_000;
       await run(
         Effect.flatMap(CaptureStoreRepo, (repo) =>
           repo.recordPutAuthority(at.worktreeId, at.epoch, new Date(expires)),
@@ -2752,7 +2761,7 @@ describeSeals(
       );
       await run(registerOn(at.worktreeId, at.epoch, at.api)(file.cap));
       expect(await standing(at)).toBeNull();
-      await new Promise((resolve) => setTimeout(resolve, Math.max(0, expires - Date.now()) + 20));
+      const afterExpiry = () => expires + 1;
       // A URL for an object the seal does not name (one it names is never handed out once the
       // seal is recorded, review 2026-09-28 (9) #6).
       const other = sealedFile(at, "other saved bytes\n");
@@ -2768,7 +2777,7 @@ describeSeals(
         );
         minted = typeof answer.urls[other.key] === "string";
       };
-      const accepted = await standing(at);
+      const accepted = await standing(at, afterExpiry);
       expect(minted).toBe(true);
       expect(
         world.memory.putAuthority.get(`${at.worktreeId}:${at.epoch}`)?.getTime() ?? 0,
@@ -3207,20 +3216,22 @@ describeSeals(
         const bytes = fs.readFileSync(path.join(world.blobRoot, key));
         return { key, sha256: createHash("sha256").update(bytes).digest("hex") };
       };
-      const reserve = (sha256: string) =>
+      // A bound URL's reservation, as a channel call at `now` makes it: it lives 300 ms.
+      const reserve = (sha256: string, now: number) =>
         run(
           Effect.flatMap(CaptureStoreRepo, (repo) =>
-            repo.reserveBoundIndex(index.key, sha256, new Date(), new Date(Date.now() + 300)),
+            repo.reserveBoundIndex(index.key, sha256, new Date(now), new Date(now + 300)),
           ),
         );
       // A bound URL for other bytes of it, still live: not standing.
       const index = indexOf(at.git);
-      expect((await reserve("0".repeat(64))).outcome).toBe("reserved");
-      expect((await reserve(index.sha256)).outcome).toBe("conflict");
+      const reservedAt = Date.now();
+      expect((await reserve("0".repeat(64), reservedAt)).outcome).toBe("reserved");
+      expect((await reserve(index.sha256, reservedAt)).outcome).toBe("conflict");
       expect(await sealOf(at)).toBeNull();
+      expect((await reserve(index.sha256, reservedAt + 299)).outcome).toBe("conflict");
       // Once that URL is dead, a URL bound to the bytes stored there: nothing could replace them.
-      await settle(350);
-      expect((await reserve(index.sha256)).outcome).toBe("reserved");
+      expect((await reserve(index.sha256, reservedAt + 300)).outcome).toBe("reserved");
       expect((await sealOf(at))?.captureId).toBe(file.cap.id);
     });
 
@@ -4509,24 +4520,24 @@ describeSeals(
       const repo = await run(CaptureStoreRepo);
       const original = repo.recordSeal;
       let attempts = 0;
-      // The first record dies (the database connection reset, as `.orDie` surfaces it).
+      // The first record dies (the database connection reset, as `.orDie` surfaces it). The
+      // recorder it kills ends once its exit has settled and dropped the job: `recorderEnded`.
+      const recorderEnded = Promise.withResolvers<void>();
       Object.assign(repo, {
         recordSeal: (...args: Parameters<typeof original>) =>
-          Effect.suspend(() => {
+          Effect.withFiber((recorder) => {
             attempts++;
-            return attempts === 1 ? Effect.die("PostgreSQL connection reset") : original(...args);
+            if (attempts !== 1) return original(...args);
+            recorder.addObserver(() => recorderEnded.resolve());
+            return Effect.die("PostgreSQL connection reset");
           }),
       });
       try {
         const register = registerOn(at.worktreeId, at.epoch, at.api)(capture.built);
         const first = await run(register.pipe(Effect.provideService(CaptureRegisterBudget, 0)));
         expect(first.seal).toEqual({ state: "withheld", reason: "verifying" });
-        const recordRan = () => attempts > 0;
-        for (let i = 0; i < 500 && !recordRan(); i++) {
-          await new Promise((resolve) => setTimeout(resolve, 10));
-        }
+        await recorderEnded.promise;
         expect(attempts).toBe(1);
-        await new Promise((resolve) => setTimeout(resolve, 50));
         // The recorder died: its job is settled and dropped, so the re-ask checks and records.
         const again = await run(register);
         expect(again.seal).toEqual({ state: "recorded" });
@@ -4546,7 +4557,9 @@ describeSeals(
       await run(uploadObjects(capture.objects));
       // The first process answers `verifying` and is gone before its checks record the seal: its
       // successor holds no verdict.
+      const parked = Promise.withResolvers<void>();
       world.memory.holdRecordSeal.held = true;
+      world.memory.holdRecordSeal.parked = parked.resolve;
       const quiet = await run(
         registerOn(
           at.worktreeId,
@@ -4555,7 +4568,8 @@ describeSeals(
         )(capture.built).pipe(Effect.provideService(CaptureRegisterBudget, 0)),
       );
       expect(quiet.seal).toEqual({ state: "withheld", reason: "verifying" });
-      await new Promise((resolve) => setTimeout(resolve, 200));
+      // Its checks passed and its record is held there, for good: the process stopped.
+      await parked.promise;
       expect(
         await run(
           Effect.flatMap(CaptureStoreRepo, (repo) =>
@@ -4564,6 +4578,7 @@ describeSeals(
         ),
       ).toBeNull();
       world.memory.holdRecordSeal.held = false;
+      world.memory.holdRecordSeal.parked = () => {};
       // A fresh channel over the same store and bucket: the executor's re-ask.
       const restarted = await Effect.runPromise(
         Effect.scoped(

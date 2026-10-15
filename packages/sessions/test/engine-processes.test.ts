@@ -19,19 +19,37 @@ import {
   SessionRun,
   serviceStartCorrelation,
 } from "@mend/domain/workbench";
-import { SealantPlatformError } from "@mend/sealant";
+import { SealantClient, SealantPlatformError } from "@mend/sealant";
 import {
   HarnessStateNotFoundError,
   LegacyBenchReadOnlyError,
   SessionEngine,
   SessionNotLiveError,
 } from "@mend/sessions";
-import { it } from "@mend/test-ci/effect-vitest";
-import type { CreateOptions, InteractiveSessionStatus } from "@sealant/sdk";
-import { Duration, Effect, Schedule } from "effect";
+import { it, TestClock } from "@mend/test-ci/effect-vitest";
+import type { CreateOptions } from "@sealant/sdk";
+import { Effect, Layer } from "effect";
 import { describe, expect } from "vitest";
 
-import { now, sealantLaunchLayer, setup, setupSibling, withEngine } from "./engine/fixture.ts";
+import { provisionIn } from "./engine/capture-fixture.ts";
+import { makeEngineClock } from "./engine/clock-fixture.ts";
+import {
+  now,
+  sealantLaunchLayer,
+  setup,
+  setupSibling,
+  withEngine,
+  withEngineEffect,
+  withPreparedEngineEffect,
+  type World,
+} from "./engine/fixture.ts";
+
+/**
+ * What these scenarios wait on: every row the engine writes (`world.processes`, `world.sessions`,
+ * `world.checkpoints`), every stop sent to the platform (`watched`) and every look the PTY
+ * watcher takes (`ptyStates` reads).
+ */
+const makeProcessClock = makeEngineClock(["processes", "sessions", "checkpoints"]);
 
 describe("SessionEngine", () => {
   it("keeps a legacy bench review-only", async () => {
@@ -205,266 +223,278 @@ describe("SessionEngine", () => {
     );
   });
 
-  it("delivers the exact follow-up in a workspace retained by a shell lease", async () => {
-    const created: CreateOptions[] = [];
-    const stopped: string[] = [];
-    await withEngine(
-      (world, tmp) =>
-        Effect.gen(function* () {
-          const project = yield* setup(tmp, world);
-          const engine = yield* SessionEngine;
-          const session = yield* engine.provision({
-            projectId: project.id,
-            harness: "codex",
-            label: null,
-            name: null,
-            ownerUserId: "user-fixture",
-            base: null,
-          });
-          yield* engine.launch(session.id, ["codex"]);
+  it.effect("delivers the exact follow-up in a workspace retained by a shell lease", () =>
+    Effect.gen(function* () {
+      const created: CreateOptions[] = [];
+      const clock = yield* makeProcessClock;
+      const stopped = clock.watched<string>();
+      yield* withPreparedEngineEffect(
+        (world, tmp) => setup(tmp, world),
+        (world, _tmp, project) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* provisionIn(project);
+            yield* engine.launch(session.id, ["codex"]);
 
-          // A live shell in the same workspace holds a lease (docs/SESSION-SERVICES.md).
-          const shell = new SessionProcess({
-            id: SessionProcessId.make("shell-1"),
-            sessionId: session.id,
-            sealantWorkspaceId: SealantWorkspaceId.make("workspace-1"),
-            sealantSessionId: "pty-2",
-            sealantRunId: null,
-            launchCorrelationId: null,
-            serviceId: null,
-            attemptOrdinal: null,
-            kind: "shell",
-            harness: null,
-            providerSessionId: null,
-            protocolOptions: null,
-            label: "shell",
-            argv: ["bash", "-i"],
-            status: "running",
-            exitCode: null,
-            workspacePort: null,
-            protocol: "tcp",
-            hostPort: null,
-            createdAt: now(),
-            exitedAt: null,
-            updatedAt: now(),
-          });
-          world.processes.set(shell.id, shell);
+            // A live shell in the same workspace holds a lease (docs/SESSION-SERVICES.md).
+            const shell = new SessionProcess({
+              id: SessionProcessId.make("shell-1"),
+              sessionId: session.id,
+              sealantWorkspaceId: SealantWorkspaceId.make("workspace-1"),
+              sealantSessionId: "pty-2",
+              sealantRunId: null,
+              launchCorrelationId: null,
+              serviceId: null,
+              attemptOrdinal: null,
+              kind: "shell",
+              harness: null,
+              providerSessionId: null,
+              protocolOptions: null,
+              label: "shell",
+              argv: ["bash", "-i"],
+              status: "running",
+              exitCode: null,
+              workspacePort: null,
+              protocol: "tcp",
+              hostPort: null,
+              createdAt: now(),
+              exitedAt: null,
+              updatedAt: now(),
+            });
+            world.processes.set(shell.id, shell);
 
-          yield* engine.stop(session.id);
-          // The sweep is a forked fiber; wait for it to end the agent's record.
-          const agentExited = () =>
-            [...world.processes.values()].some(
-              (process) => process.kind === "agent-pty" && process.exitedAt !== null,
+            yield* engine.stop(session.id);
+            // The sweep is a forked fiber; wait for it to end the agent's record.
+            const agentExited = () =>
+              [...world.processes.values()].some(
+                (process) => process.kind === "agent-pty" && process.exitedAt !== null,
+              );
+            yield* clock.untilChanged(agentExited, "the stop's sweep ends the agent's record");
+
+            expect(agentExited()).toBe(true);
+            expect(stopped).toEqual([]);
+            const retained = [...world.processes.values()].filter(
+              (process) => process.exitedAt === null,
             );
-          for (let i = 0; i < 200 && !agentExited(); i++) {
-            yield* Effect.sleep(Duration.millis(10));
-          }
+            expect(retained.map((process) => process.kind)).toEqual(["shell"]);
 
-          expect(agentExited()).toBe(true);
-          expect(stopped).toEqual([]);
-          const retained = [...world.processes.values()].filter(
-            (process) => process.exitedAt === null,
-          );
-          expect(retained.map((process) => process.kind)).toEqual(["shell"]);
-
-          const instruction =
-            "  Address exactly the selected Review comments.\nKeep trailing bytes.  ";
-          const resumed = yield* engine.launchFollowUp(
-            session.id,
-            instruction,
-            "follow-up:delivery-1",
-            "user-fixture",
-          );
-          expect(resumed.status).toBe("running");
-          expect(created).toHaveLength(1);
-          expect(stopped).toEqual([]);
-          const afterResume = [...world.processes.values()].filter(
-            (process) => process.exitedAt === null,
-          );
-          expect(afterResume.map((process) => process.kind).toSorted()).toEqual([
-            "agent-pty",
-            "shell",
-          ]);
-          const deliveryProcess = afterResume.find(
-            (process) => process.launchCorrelationId === "follow-up:delivery-1",
-          );
-          const transportArgv = deliveryProcess?.argv ?? [];
-          expect(transportArgv.slice(0, 2)).toEqual(["sh", "-c"]);
-          expect(transportArgv[2]).toContain(
-            "exec codex -c features.shell_snapshot=false -c features.daemon_auto_start=false -c features.memories=true --dangerously-bypass-approvals-and-sandbox",
-          );
-          expect(Buffer.from(transportArgv.slice(4).join(""), "base64").toString("utf8")).toBe(
-            instruction,
-          );
-          expect(deliveryProcess?.sealantRunId).not.toBeNull();
-        }),
-      { sealantLayer: sealantLaunchLayer(created, undefined, stopped) },
-    );
-  });
-
-  it("stops the workspace when no lease outlives the agent", async () => {
-    const created: CreateOptions[] = [];
-    const stopped: string[] = [];
-    await withEngine(
-      (world, tmp) =>
-        Effect.gen(function* () {
-          const project = yield* setup(tmp, world);
-          const engine = yield* SessionEngine;
-          const session = yield* engine.provision({
-            projectId: project.id,
-            harness: "codex",
-            label: null,
-            name: null,
-            ownerUserId: "user-fixture",
-            base: null,
-          });
-          yield* engine.launch(session.id, ["codex"]);
-
-          yield* engine.stop(session.id);
-          for (let i = 0; i < 200 && stopped.length === 0; i++) {
-            yield* Effect.sleep(Duration.millis(10));
-          }
-
-          expect(stopped).toEqual(["workspace-1"]);
-          const live = [...world.processes.values()].filter((process) => process.exitedAt === null);
-          expect(live).toEqual([]);
-
-          const settledBeforeRetry = world.sessions.get(session.id);
-          // Someone else's follow-up never starts the terminal: only the owner types there
-          // (docs/adr/0013).
-          const teammate = yield* engine
-            .launchFollowUp(session.id, "Carol's words.", "follow-up:teammate", "user-2")
-            .pipe(Effect.flip);
-          expect(teammate).toMatchObject({
-            _tag: "SealantPlatformError",
-            code: "terminal_owner_only",
-          });
-          const failure = yield* engine
-            .launchFollowUp(
+            const instruction =
+              "  Address exactly the selected Review comments.\nKeep trailing bytes.  ";
+            const resumed = yield* engine.launchFollowUp(
               session.id,
-              "This launch cannot restore missing native state.",
-              "follow-up:missing-state",
+              instruction,
+              "follow-up:delivery-1",
               "user-fixture",
-            )
-            .pipe(Effect.flip);
-          expect(failure).toBeInstanceOf(HarnessStateNotFoundError);
-          const settledAfterRetry = world.sessions.get(session.id);
-          expect(settledAfterRetry?.status).toBe(settledBeforeRetry?.status);
-          expect(settledAfterRetry?.settledAt).toEqual(settledBeforeRetry?.settledAt);
-          expect(created).toHaveLength(1);
-          expect(
-            [...world.processes.values()].some(
-              (process) => process.launchCorrelationId === "follow-up:missing-state",
-            ),
-          ).toBe(false);
-        }),
-      { sealantLayer: sealantLaunchLayer(created, undefined, stopped) },
-    );
-  });
+            );
+            expect(resumed.status).toBe("running");
+            expect(created).toHaveLength(1);
+            expect(stopped).toEqual([]);
+            const afterResume = [...world.processes.values()].filter(
+              (process) => process.exitedAt === null,
+            );
+            expect(afterResume.map((process) => process.kind).toSorted()).toEqual([
+              "agent-pty",
+              "shell",
+            ]);
+            const deliveryProcess = afterResume.find(
+              (process) => process.launchCorrelationId === "follow-up:delivery-1",
+            );
+            const transportArgv = deliveryProcess?.argv ?? [];
+            expect(transportArgv.slice(0, 2)).toEqual(["sh", "-c"]);
+            expect(transportArgv[2]).toContain(
+              "exec codex -c features.shell_snapshot=false -c features.daemon_auto_start=false -c features.memories=true --dangerously-bypass-approvals-and-sandbox",
+            );
+            expect(Buffer.from(transportArgv.slice(4).join(""), "base64").toString("utf8")).toBe(
+              instruction,
+            );
+            expect(deliveryProcess?.sealantRunId).not.toBeNull();
+          }),
+        {
+          prepareWorld: clock.prepareWorld,
+          sealantLayer: sealantLaunchLayer(created, undefined, stopped),
+        },
+      );
+    }),
+  );
 
-  it("folds status over processes: a shell keeps the session idle after its agent stops", async () => {
-    const created: CreateOptions[] = [];
-    const stopped: string[] = [];
-    await withEngine(
-      (world, tmp) =>
-        Effect.gen(function* () {
-          const project = yield* setup(tmp, world);
-          const engine = yield* SessionEngine;
-          const session = yield* engine.provision({
-            projectId: project.id,
-            harness: "codex",
-            label: null,
-            name: null,
-            ownerUserId: "user-fixture",
-            base: null,
-          });
-          yield* engine.launch(session.id, ["codex"]);
-          const shell = yield* engine.openShell(session.id);
-          expect(world.sessions.get(session.id)?.status).toBe("running");
+  it.effect("stops the workspace when no lease outlives the agent", () =>
+    Effect.gen(function* () {
+      const created: CreateOptions[] = [];
+      const clock = yield* makeProcessClock;
+      const stopped = clock.watched<string>();
+      yield* withPreparedEngineEffect(
+        (world, tmp) => setup(tmp, world),
+        (world, _tmp, project) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* provisionIn(project);
+            yield* engine.launch(session.id, ["codex"]);
 
-          // Stop ends the AGENT; the shell's lease keeps the worktree's workspace — and the
-          // session reads idle, not settled: nothing here is a judgment about the work.
-          yield* engine.stop(session.id);
-          const afterStop = world.sessions.get(session.id);
-          expect(afterStop?.status).toBe("idle");
-          expect(afterStop?.settledAt).toBeNull();
-          const agent = [...world.processes.values()].find(
-            (process) => process.kind === "agent-pty",
-          );
-          expect(agent?.status).toBe("stopped");
-          expect(agent?.harness).toBe("codex");
-          const agentRunId = agent?.sealantRunId ?? null;
-          expect(agentRunId === null ? null : world.sessionRuns.get(agentRunId)?.status).toBe(
-            "stopped",
-          );
-          // Let the forked tail (harvest, fold) run; the workspace must survive it.
-          yield* Effect.sleep(Duration.millis(100));
-          expect(stopped).toEqual([]);
+            yield* engine.stop(session.id);
+            yield* clock.untilChanged(
+              () => stopped.length > 0,
+              "the stop's sweep stops the unleased workspace",
+            );
 
-          // The last lease ends: the fold settles the session from the last agent outcome.
-          yield* engine.stopShell(shell.id);
-          const settled = world.sessions.get(session.id);
-          expect(settled?.status).toBe("stopped");
-          expect(settled?.settledAt).not.toBeNull();
-          expect(stopped).toEqual(["workspace-1"]);
-        }),
-      { sealantLayer: sealantLaunchLayer(created, undefined, stopped) },
-    );
-  });
+            expect(stopped).toEqual(["workspace-1"]);
+            const live = [...world.processes.values()].filter(
+              (process) => process.exitedAt === null,
+            );
+            expect(live).toEqual([]);
 
-  it("stop of a shell session closes its other shells too: its own shell is no agent to watch", async () => {
-    // Box, next.786, 2026-10-11: a `mend shell` beside a shell session's own shell stayed
-    // `running` after the session's Stop, and held it `idle` until its own stop.
-    const created: CreateOptions[] = [];
-    const stopped: string[] = [];
-    await withEngine(
-      (world, tmp) =>
-        Effect.gen(function* () {
-          const project = yield* setup(tmp, world);
-          const engine = yield* SessionEngine;
-          const session = yield* engine.provision({
-            projectId: project.id,
-            harness: "shell",
-            label: null,
-            name: null,
-            ownerUserId: "user-fixture",
-            base: null,
-          });
-          yield* engine.launch(session.id, ["bash"]);
-          const shell = yield* engine.openShell(session.id);
-          // What the observer records for a `claude` typed into it: an agent Mend did not start.
-          const sessionShell = [...world.processes.values()].find(
-            (process) => process.kind === "agent-pty",
-          );
-          expect(sessionShell?.harness).toBe("shell");
-          const observed = new SessionProcess({
-            ...(sessionShell ?? shell),
-            id: SessionProcessId.make("observed-claude"),
-            kind: "agent-external",
-            harness: "claude",
-            label: "claude (observed)",
-            sealantSessionId: null,
-            sealantRunId: null,
-            createdAt: now(),
-            updatedAt: now(),
-          });
-          world.processes.set(observed.id, observed);
+            const settledBeforeRetry = world.sessions.get(session.id);
+            // Someone else's follow-up never starts the terminal: only the owner types there
+            // (docs/adr/0013).
+            const teammate = yield* engine
+              .launchFollowUp(session.id, "Carol's words.", "follow-up:teammate", "user-2")
+              .pipe(Effect.flip);
+            expect(teammate).toMatchObject({
+              _tag: "SealantPlatformError",
+              code: "terminal_owner_only",
+            });
+            const failure = yield* engine
+              .launchFollowUp(
+                session.id,
+                "This launch cannot restore missing native state.",
+                "follow-up:missing-state",
+                "user-fixture",
+              )
+              .pipe(Effect.flip);
+            expect(failure).toBeInstanceOf(HarnessStateNotFoundError);
+            const settledAfterRetry = world.sessions.get(session.id);
+            expect(settledAfterRetry?.status).toBe(settledBeforeRetry?.status);
+            expect(settledAfterRetry?.settledAt).toEqual(settledBeforeRetry?.settledAt);
+            expect(created).toHaveLength(1);
+            expect(
+              [...world.processes.values()].some(
+                (process) => process.launchCorrelationId === "follow-up:missing-state",
+              ),
+            ).toBe(false);
+          }),
+        {
+          prepareWorld: clock.prepareWorld,
+          sealantLayer: sealantLaunchLayer(created, undefined, stopped),
+        },
+      );
+    }),
+  );
 
-          yield* engine.stop(session.id);
-          for (const id of [sessionShell?.id, shell.id, observed.id]) {
-            const row = id === undefined ? undefined : world.processes.get(id);
-            expect(row?.status, id).toBe("stopped");
-            expect(row?.exitedAt, id).not.toBeNull();
-          }
-          const after = world.sessions.get(session.id);
-          expect(after?.status).toBe("stopped");
-          expect(after?.settledAt).not.toBeNull();
-          yield* Effect.sleep(Duration.millis(100));
-          expect(stopped).toEqual(["workspace-1"]);
-        }),
-      { sealantLayer: sealantLaunchLayer(created, undefined, stopped) },
-    );
-  });
+  it.effect(
+    "folds status over processes: a shell keeps the session idle after its agent stops",
+    () =>
+      Effect.gen(function* () {
+        const created: CreateOptions[] = [];
+        const clock = yield* makeProcessClock;
+        const stopped = clock.watched<string>();
+        yield* withPreparedEngineEffect(
+          (world, tmp) => setup(tmp, world),
+          (world, _tmp, project) =>
+            Effect.gen(function* () {
+              const { engine, session } = yield* provisionIn(project);
+              yield* engine.launch(session.id, ["codex"]);
+              const shell = yield* engine.openShell(session.id);
+              expect(world.sessions.get(session.id)?.status).toBe("running");
+
+              // Stop ends the AGENT; the shell's lease keeps the worktree's workspace — and the
+              // session reads idle, not settled: nothing here is a judgment about the work.
+              yield* engine.stop(session.id);
+              const afterStop = world.sessions.get(session.id);
+              expect(afterStop?.status).toBe("idle");
+              expect(afterStop?.settledAt).toBeNull();
+              const agent = [...world.processes.values()].find(
+                (process) => process.kind === "agent-pty",
+              );
+              expect(agent?.status).toBe("stopped");
+              expect(agent?.harness).toBe("codex");
+              const agentRunId = agent?.sealantRunId ?? null;
+              expect(agentRunId === null ? null : world.sessionRuns.get(agentRunId)?.status).toBe(
+                "stopped",
+              );
+              // Let the forked tail (harvest, fold) run; the workspace must survive it. The
+              // transcript classification is the tail's last write before the fold.
+              yield* clock.untilChanged(
+                () => world.sessions.get(session.id)?.hasTranscript !== null,
+                "the stop's tail classifies the transcript",
+              );
+              expect(stopped).toEqual([]);
+
+              // The last lease ends: the fold settles the session from the last agent outcome.
+              yield* engine.stopShell(shell.id);
+              const settled = world.sessions.get(session.id);
+              expect(settled?.status).toBe("stopped");
+              expect(settled?.settledAt).not.toBeNull();
+              expect(stopped).toEqual(["workspace-1"]);
+            }),
+          {
+            prepareWorld: clock.prepareWorld,
+            sealantLayer: sealantLaunchLayer(created, undefined, stopped),
+          },
+        );
+      }),
+  );
+
+  it.effect(
+    "stop of a shell session closes its other shells too: its own shell is no agent to watch",
+    () =>
+      Effect.gen(function* () {
+        // Box, next.786, 2026-10-11: a `mend shell` beside a shell session's own shell stayed
+        // `running` after the session's Stop, and held it `idle` until its own stop.
+        const created: CreateOptions[] = [];
+        const clock = yield* makeProcessClock;
+        const stopped = clock.watched<string>();
+        yield* withPreparedEngineEffect(
+          (world, tmp) => setup(tmp, world),
+          (world, _tmp, project) =>
+            Effect.gen(function* () {
+              const engine = yield* SessionEngine;
+              const session = yield* engine.provision({
+                projectId: project.id,
+                harness: "shell",
+                label: null,
+                name: null,
+                ownerUserId: "user-fixture",
+                base: null,
+              });
+              yield* engine.launch(session.id, ["bash"]);
+              const shell = yield* engine.openShell(session.id);
+              // What the observer records for a `claude` typed into it: an agent Mend did not start.
+              const sessionShell = [...world.processes.values()].find(
+                (process) => process.kind === "agent-pty",
+              );
+              expect(sessionShell?.harness).toBe("shell");
+              const observed = new SessionProcess({
+                ...(sessionShell ?? shell),
+                id: SessionProcessId.make("observed-claude"),
+                kind: "agent-external",
+                harness: "claude",
+                label: "claude (observed)",
+                sealantSessionId: null,
+                sealantRunId: null,
+                createdAt: now(),
+                updatedAt: now(),
+              });
+              world.processes.set(observed.id, observed);
+
+              yield* engine.stop(session.id);
+              for (const id of [sessionShell?.id, shell.id, observed.id]) {
+                const row = id === undefined ? undefined : world.processes.get(id);
+                expect(row?.status, id).toBe("stopped");
+                expect(row?.exitedAt, id).not.toBeNull();
+              }
+              const after = world.sessions.get(session.id);
+              expect(after?.status).toBe("stopped");
+              expect(after?.settledAt).not.toBeNull();
+              yield* clock.untilChanged(
+                () => stopped.length > 0,
+                "the stop's sweep stops the workspace nothing holds",
+              );
+              expect(stopped).toEqual(["workspace-1"]);
+            }),
+          {
+            prepareWorld: clock.prepareWorld,
+            sealantLayer: sealantLaunchLayer(created, undefined, stopped),
+          },
+        );
+      }),
+  );
 
   it("stop kills a session held open only by an orphan shell (the refuses-to-die case)", async () => {
     const created: CreateOptions[] = [];
@@ -532,116 +562,119 @@ describe("SessionEngine", () => {
     );
   });
 
-  it("folds an agent exit the watcher observes: idle while a shell holds on, completed after", async () => {
-    const created: CreateOptions[] = [];
-    const stopped: string[] = [];
-    const ptyStates = new Map<string, InteractiveSessionStatus>();
-    await withEngine(
-      (world, tmp) =>
-        Effect.gen(function* () {
-          const project = yield* setup(tmp, world);
-          const engine = yield* SessionEngine;
-          const session = yield* engine.provision({
-            projectId: project.id,
-            harness: "codex",
-            label: null,
-            name: null,
-            ownerUserId: "user-fixture",
-            base: null,
-          });
-          yield* engine.launch(session.id, ["codex"]);
-          const shell = yield* engine.openShell(session.id);
-          const agent = [...world.processes.values()].find(
-            (process) => process.kind === "agent-pty",
-          );
-          if (agent === undefined || agent.sealantSessionId === null) {
-            throw new Error("the launch recorded no agent PTY");
-          }
-          ptyStates.set(agent.sealantSessionId, {
-            status: "exited",
-            exitCode: 0,
-            outputHighWater: 0n,
-          });
-          // The watcher records the end, then the tail harvests and snapshots; wait for the
-          // snapshot — it is the last observable step before the fold.
-          const snapshotted = () =>
-            world.checkpoints.some((checkpoint) => checkpoint.trigger === "turn-boundary");
-          for (let i = 0; i < 400 && !snapshotted(); i++) {
-            yield* Effect.sleep(Duration.millis(10));
-          }
-          expect(world.processes.get(agent.id)?.exitedAt).not.toBeNull();
-          expect(world.processes.get(agent.id)?.status).toBe("exited");
-          expect(world.sessions.get(session.id)?.status).toBe("idle");
-          expect(world.sessions.get(session.id)?.settledAt).toBeNull();
-          expect(stopped).toEqual([]);
-          // The end of an agent process is a turn boundary. Ordinal 0 is the
-          // worktree-start snapshot (no session attached), then the session's own start.
-          expect(world.checkpoints.map((checkpoint) => checkpoint.trigger)).toEqual([
-            "session-start",
-            "session-start",
-            "turn-boundary",
-          ]);
-          expect(world.checkpoints[0]?.sessionId).toBeNull();
+  it.effect(
+    "folds an agent exit the watcher observes: idle while a shell holds on, completed after",
+    () =>
+      Effect.gen(function* () {
+        const created: CreateOptions[] = [];
+        const clock = yield* makeProcessClock;
+        const stopped = clock.watched<string>();
+        const { ptyStates } = clock;
+        yield* withPreparedEngineEffect(
+          (world, tmp) => setup(tmp, world),
+          (world, _tmp, project) =>
+            Effect.gen(function* () {
+              const { engine, session } = yield* provisionIn(project);
+              yield* engine.launch(session.id, ["codex"]);
+              const shell = yield* engine.openShell(session.id);
+              const agent = [...world.processes.values()].find(
+                (process) => process.kind === "agent-pty",
+              );
+              if (agent === undefined || agent.sealantSessionId === null) {
+                throw new Error("the launch recorded no agent PTY");
+              }
+              ptyStates.set(agent.sealantSessionId, {
+                status: "exited",
+                exitCode: 0,
+                outputHighWater: 0n,
+              });
+              // The watcher records the end, then the tail harvests and snapshots; wait for the
+              // snapshot — it is the last observable step before the fold.
+              const snapshotted = () =>
+                world.checkpoints.some((checkpoint) => checkpoint.trigger === "turn-boundary");
+              yield* clock.nextLook(
+                agent.sealantSessionId,
+                () => world.processes.get(agent.id)?.exitedAt === null,
+              );
+              yield* clock.untilChanged(snapshotted, "the tail snapshots the observed exit");
+              expect(world.processes.get(agent.id)?.exitedAt).not.toBeNull();
+              expect(world.processes.get(agent.id)?.status).toBe("exited");
+              expect(world.sessions.get(session.id)?.status).toBe("idle");
+              expect(world.sessions.get(session.id)?.settledAt).toBeNull();
+              expect(stopped).toEqual([]);
+              // The end of an agent process is a turn boundary. Ordinal 0 is the
+              // worktree-start snapshot (no session attached), then the session's own start.
+              expect(world.checkpoints.map((checkpoint) => checkpoint.trigger)).toEqual([
+                "session-start",
+                "session-start",
+                "turn-boundary",
+              ]);
+              expect(world.checkpoints[0]?.sessionId).toBeNull();
 
-          yield* engine.stopShell(shell.id);
-          expect(world.sessions.get(session.id)?.status).toBe("completed");
-          expect(world.sessions.get(session.id)?.settledAt).not.toBeNull();
-          expect(stopped).toEqual(["workspace-1"]);
-        }),
-      {
-        sealantLayer: sealantLaunchLayer(
-          created,
-          undefined,
-          stopped,
-          undefined,
-          undefined,
-          undefined,
-          ptyStates,
-        ),
-      },
-    );
-  });
+              yield* engine.stopShell(shell.id);
+              expect(world.sessions.get(session.id)?.status).toBe("completed");
+              expect(world.sessions.get(session.id)?.settledAt).not.toBeNull();
+              expect(stopped).toEqual(["workspace-1"]);
+            }),
+          {
+            prepareWorld: clock.prepareWorld,
+            sealantLayer: sealantLaunchLayer(
+              created,
+              undefined,
+              stopped,
+              undefined,
+              undefined,
+              undefined,
+              ptyStates,
+            ),
+          },
+        );
+      }),
+  );
 
-  it("a second agent process joins a session its shell keeps idle", async () => {
-    const created: CreateOptions[] = [];
-    const stopped: string[] = [];
-    await withEngine(
-      (world, tmp) =>
-        Effect.gen(function* () {
-          const project = yield* setup(tmp, world);
-          const engine = yield* SessionEngine;
-          const session = yield* engine.provision({
-            projectId: project.id,
-            harness: "codex",
-            label: null,
-            name: null,
-            ownerUserId: "user-fixture",
-            base: null,
-          });
-          yield* engine.launch(session.id, ["codex"]);
-          yield* engine.openShell(session.id);
-          yield* engine.stop(session.id);
-          yield* Effect.sleep(Duration.millis(100));
-          expect(world.sessions.get(session.id)?.status).toBe("idle");
+  it.effect("a second agent process joins a session its shell keeps idle", () =>
+    Effect.gen(function* () {
+      const created: CreateOptions[] = [];
+      const clock = yield* makeProcessClock;
+      const stopped = clock.watched<string>();
+      yield* withPreparedEngineEffect(
+        (world, tmp) => setup(tmp, world),
+        (world, _tmp, project) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* provisionIn(project);
+            yield* engine.launch(session.id, ["codex"]);
+            yield* engine.openShell(session.id);
+            yield* engine.stop(session.id);
+            // The stop's forked tail ends with the fold; its transcript classification is its
+            // last write before it.
+            yield* clock.untilChanged(
+              () => world.sessions.get(session.id)?.hasTranscript !== null,
+              "the stop's tail classifies the transcript",
+            );
+            expect(world.sessions.get(session.id)?.status).toBe("idle");
 
-          // Resume as a shell: no saved state needed, and the retained workspace is reused.
-          const resumed = yield* engine.resumeSession(session.id, "shell");
-          expect(resumed.status).toBe("running");
-          expect(created).toHaveLength(1);
-          expect(stopped).toEqual([]);
-          const agents = [...world.processes.values()]
-            .filter((process) => process.kind === "agent-pty")
-            .toSorted((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
-          expect(agents.map((process) => [process.harness, process.status])).toEqual([
-            ["codex", "stopped"],
-            ["shell", "running"],
-          ]);
-          // The session keeps its identity; only the launch ran a shell.
-          expect(world.sessions.get(session.id)?.harness).toBe("codex");
-        }),
-      { sealantLayer: sealantLaunchLayer(created, undefined, stopped) },
-    );
-  });
+            // Resume as a shell: no saved state needed, and the retained workspace is reused.
+            const resumed = yield* engine.resumeSession(session.id, "shell");
+            expect(resumed.status).toBe("running");
+            expect(created).toHaveLength(1);
+            expect(stopped).toEqual([]);
+            const agents = [...world.processes.values()]
+              .filter((process) => process.kind === "agent-pty")
+              .toSorted((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+            expect(agents.map((process) => [process.harness, process.status])).toEqual([
+              ["codex", "stopped"],
+              ["shell", "running"],
+            ]);
+            // The session keeps its identity; only the launch ran a shell.
+            expect(world.sessions.get(session.id)?.harness).toBe("codex");
+          }),
+        {
+          prepareWorld: clock.prepareWorld,
+          sealantLayer: sealantLaunchLayer(created, undefined, stopped),
+        },
+      );
+    }),
+  );
 
   it("refuses a follow-up while any agent process is live", async () => {
     const created: CreateOptions[] = [];
@@ -840,259 +873,259 @@ describe("SessionEngine", () => {
     );
   });
 
-  it("renews a retained shell workspace during boot recovery", async () => {
-    const created: CreateOptions[] = [];
-    const renewals: string[] = [];
-    const sessionId = SessionId.make("session-retained-at-boot");
-    const workspaceId = SealantWorkspaceId.make("workspace-1");
-    const exactExpiry = new Date("2032-01-01T00:00:00.000Z");
-    await withEngine(
-      (world) =>
-        Effect.gen(function* () {
-          yield* Effect.suspend(() => {
-            const session = world.sessions.get(sessionId);
-            return session?.workspaceExpiresAt?.getTime() === exactExpiry.getTime()
-              ? Effect.void
-              : Effect.fail(new Error("retained workspace has not renewed yet"));
-          }).pipe(Effect.retry({ times: 20, schedule: Schedule.spaced(Duration.millis(10)) }));
-          expect(renewals).toContain(workspaceId);
-          const renewed = world.sessions.get(sessionId);
-          expect(renewed?.workspaceTtlRenewedAt).not.toBeNull();
-          expect(renewed?.workspaceTtlRenewalError).toBeNull();
-        }),
-      {
-        prepareWorld: (world) => {
-          const timestamp = now();
-          world.sessions.set(
-            sessionId,
-            new Session({
-              id: sessionId,
-              projectId: ProjectId.make("project-retained-at-boot"),
-              worktreeId: WorktreeId.make("wt-retained-at-boot"),
-              harness: "codex",
-              providerSessionId: null,
-              label: null,
-              worktree: "session-retained-at-boot",
-              branch: "mend/session-retained-at-boot",
-              baseSha: Sha.make("base-sha"),
-              baseRef: "main",
-              contextSnapshotId: null,
-              referenceMounts: [],
-              extraMounts: [],
-              sealantRunId: null,
-              sealantWorkspaceId: workspaceId,
-              sealantSessionId: null,
-              workspaceExpiresAt: new Date("2030-01-01T00:00:00.000Z"),
-              workspaceTtlRenewedAt: new Date("2029-12-31T12:00:00.000Z"),
-              workspaceTtlRenewalFailedAt: null,
-              workspaceTtlRenewalError: null,
-              workspaceImage: null,
-              dotfiles: null,
-              ownerUserId: "user-fixture",
-              hasTranscript: null,
-              status: "completed",
-              summary: null,
-              lastSeenSequence: 0n,
-              recordHistoryComplete: true,
-              startedAt: timestamp,
-              settledAt: timestamp,
-              createdAt: timestamp,
-              updatedAt: timestamp,
-            }),
-          );
-          world.processes.set(
-            "shell-retained-at-boot",
-            new SessionProcess({
-              id: SessionProcessId.make("shell-retained-at-boot"),
+  it.effect("renews a retained shell workspace during boot recovery", () =>
+    Effect.gen(function* () {
+      const created: CreateOptions[] = [];
+      const renewals: string[] = [];
+      const sessionId = SessionId.make("session-retained-at-boot");
+      const workspaceId = SealantWorkspaceId.make("workspace-1");
+      const exactExpiry = new Date("2032-01-01T00:00:00.000Z");
+      const clock = yield* makeProcessClock;
+      // No origin to adopt: the engine's boot sweep is the whole scenario.
+      yield* withEngineEffect(
+        (world) =>
+          Effect.gen(function* () {
+            yield* clock.untilChanged(
+              () =>
+                world.sessions.get(sessionId)?.workspaceExpiresAt?.getTime() ===
+                exactExpiry.getTime(),
+              "the boot sweep renews the retained workspace",
+            );
+            expect(renewals).toContain(workspaceId);
+            const renewed = world.sessions.get(sessionId);
+            expect(renewed?.workspaceTtlRenewedAt).not.toBeNull();
+            expect(renewed?.workspaceTtlRenewalError).toBeNull();
+          }),
+        {
+          prepareWorld: (world) => {
+            clock.prepareWorld(world);
+            const timestamp = now();
+            world.sessions.set(
               sessionId,
-              sealantWorkspaceId: workspaceId,
-              sealantSessionId: "pty-1",
-              sealantRunId: SealantRunId.make("run-shell-retained-at-boot"),
-              launchCorrelationId: null,
-              serviceId: null,
-              attemptOrdinal: null,
-              kind: "shell",
-              harness: null,
-              providerSessionId: null,
-              protocolOptions: null,
-              label: "shell 1",
-              argv: ["sh"],
-              status: "running",
-              exitCode: null,
-              workspacePort: null,
-              protocol: "tcp",
-              hostPort: null,
-              createdAt: timestamp,
-              exitedAt: null,
-              updatedAt: timestamp,
-            }),
-          );
+              new Session({
+                id: sessionId,
+                projectId: ProjectId.make("project-retained-at-boot"),
+                worktreeId: WorktreeId.make("wt-retained-at-boot"),
+                harness: "codex",
+                providerSessionId: null,
+                label: null,
+                worktree: "session-retained-at-boot",
+                branch: "mend/session-retained-at-boot",
+                baseSha: Sha.make("base-sha"),
+                baseRef: "main",
+                contextSnapshotId: null,
+                referenceMounts: [],
+                extraMounts: [],
+                sealantRunId: null,
+                sealantWorkspaceId: workspaceId,
+                sealantSessionId: null,
+                workspaceExpiresAt: new Date("2030-01-01T00:00:00.000Z"),
+                workspaceTtlRenewedAt: new Date("2029-12-31T12:00:00.000Z"),
+                workspaceTtlRenewalFailedAt: null,
+                workspaceTtlRenewalError: null,
+                workspaceImage: null,
+                dotfiles: null,
+                ownerUserId: "user-fixture",
+                hasTranscript: null,
+                status: "completed",
+                summary: null,
+                lastSeenSequence: 0n,
+                recordHistoryComplete: true,
+                startedAt: timestamp,
+                settledAt: timestamp,
+                createdAt: timestamp,
+                updatedAt: timestamp,
+              }),
+            );
+            world.processes.set(
+              "shell-retained-at-boot",
+              new SessionProcess({
+                id: SessionProcessId.make("shell-retained-at-boot"),
+                sessionId,
+                sealantWorkspaceId: workspaceId,
+                sealantSessionId: "pty-1",
+                sealantRunId: SealantRunId.make("run-shell-retained-at-boot"),
+                launchCorrelationId: null,
+                serviceId: null,
+                attemptOrdinal: null,
+                kind: "shell",
+                harness: null,
+                providerSessionId: null,
+                protocolOptions: null,
+                label: "shell 1",
+                argv: ["sh"],
+                status: "running",
+                exitCode: null,
+                workspacePort: null,
+                protocol: "tcp",
+                hostPort: null,
+                createdAt: timestamp,
+                exitedAt: null,
+                updatedAt: timestamp,
+              }),
+            );
+          },
+          sealantLayer: sealantLaunchLayer(
+            created,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            (candidateWorkspaceId) =>
+              Effect.sync(() => {
+                renewals.push(candidateWorkspaceId);
+                return exactExpiry;
+              }),
+          ),
         },
-        sealantLayer: sealantLaunchLayer(
-          created,
-          undefined,
-          undefined,
-          undefined,
-          undefined,
-          (candidateWorkspaceId) =>
-            Effect.sync(() => {
-              renewals.push(candidateWorkspaceId);
-              return exactExpiry;
+      );
+    }),
+  );
+
+  it.effect("addService adopts a port; its lease outlives the agent until stopService", () =>
+    Effect.gen(function* () {
+      const created: CreateOptions[] = [];
+      const clock = yield* makeProcessClock;
+      const stopped = clock.watched<string>();
+      yield* withPreparedEngineEffect(
+        (world, tmp) => setup(tmp, world),
+        (world, _tmp, project) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* provisionIn(project);
+            yield* engine.launch(session.id, ["codex"]);
+
+            const service = yield* engine.addService(session.id, 5432, "db");
+            expect(service.service.name).toBe("db");
+            expect(service.service.workspacePort).toBe(5432);
+            expect(service.attempts).toHaveLength(0);
+            expect(service.currentForward?.hostPort).toBe(43127);
+            expect(service.latestObservation?.state).toBe("reachable");
+            const adoptedRestart = yield* engine
+              .restartService(service.service.id)
+              .pipe(Effect.flip);
+            expect(adoptedRestart.message).toContain("no recorded command");
+
+            // A live name is taken — a second "db" is refused, not duplicated.
+            const duplicate = yield* engine.addService(session.id, 5433, "db").pipe(Effect.flip);
+            expect(String(duplicate.message)).toContain('named "db" already exists');
+
+            // The agent settles; the Service lease keeps the workspace up.
+            yield* engine.stop(session.id);
+            const agentExited = () =>
+              [...world.processes.values()].some(
+                (process) => process.kind === "agent-pty" && process.exitedAt !== null,
+              );
+            yield* clock.untilChanged(agentExited, "the stop ends the agent's record");
+            expect(agentExited()).toBe(true);
+            expect(stopped).toEqual([]);
+
+            // A completed coding-agent run may open another supporting process
+            // while the Service retains the reachable workspace.
+            const shell = yield* engine.openShell(session.id);
+            expect(shell.label).toBe("shell 1");
+
+            const ended = yield* engine.stopService(service.service.id);
+            expect(ended.service.currentAttemptId).toBeNull();
+            expect(ended.service.currentForwardId).toBeNull();
+            expect(stopped).toEqual([]);
+            yield* engine.stopShell(shell.id);
+            expect(stopped).toEqual(["workspace-1"]);
+          }),
+        {
+          prepareWorld: clock.prepareWorld,
+          sealantLayer: sealantLaunchLayer(created, undefined, stopped),
+        },
+      );
+    }),
+  );
+
+  it.effect(
+    "stopServices stops every live Service a stopped agent left behind, then the workspace",
+    () =>
+      Effect.gen(function* () {
+        const created: CreateOptions[] = [];
+        const clock = yield* makeProcessClock;
+        const stopped = clock.watched<string>();
+        yield* withPreparedEngineEffect(
+          (world, tmp) => setup(tmp, world),
+          (world, _tmp, project) =>
+            Effect.gen(function* () {
+              const { engine, session } = yield* provisionIn(project);
+              yield* engine.launch(session.id, ["codex"]);
+              const web = yield* engine.runService(session.id, ["pnpm", "dev"], 3000, "web");
+              const db = yield* engine.addService(session.id, 5432, "db");
+              const ended = yield* engine.runService(
+                session.id,
+                ["pnpm", "worker"],
+                4000,
+                "worker",
+              );
+              yield* engine.stopService(ended.service.id);
+
+              yield* engine.stop(session.id);
+              const agentExited = () =>
+                [...world.processes.values()].some(
+                  (process) => process.kind === "agent-pty" && process.exitedAt !== null,
+                );
+              yield* clock.untilChanged(agentExited, "the stop ends the agent's record");
+              // The stop ended the agent; two Services still hold the workspace.
+              expect(stopped).toEqual([]);
+
+              expect(yield* engine.stopServices(session.id)).toBe(2);
+              expect(world.services.get(web.service.id)?.currentAttemptId).toBeNull();
+              expect(world.services.get(db.service.id)?.currentForwardId).toBeNull();
+              expect(stopped).toEqual(["workspace-1"]);
+              expect(world.sessions.get(session.id)?.status).toBe("stopped");
+              // Nothing left: a second press stops nothing and says so.
+              expect(yield* engine.stopServices(session.id)).toBe(0);
             }),
-        ),
-      },
-    );
-  });
+          {
+            prepareWorld: clock.prepareWorld,
+            sealantLayer: sealantLaunchLayer(created, undefined, stopped),
+          },
+        );
+      }),
+  );
 
-  it("addService adopts a port; its lease outlives the agent until stopService", async () => {
-    const created: CreateOptions[] = [];
-    const stopped: string[] = [];
-    await withEngine(
-      (world, tmp) =>
-        Effect.gen(function* () {
-          const project = yield* setup(tmp, world);
-          const engine = yield* SessionEngine;
-          const session = yield* engine.provision({
-            projectId: project.id,
-            harness: "codex",
-            label: null,
-            name: null,
-            ownerUserId: "user-fixture",
-            base: null,
-          });
-          yield* engine.launch(session.id, ["codex"]);
+  it.effect("reuses a workspace retained only by an adopted Service; fresh resume closes it", () =>
+    Effect.gen(function* () {
+      const created: CreateOptions[] = [];
+      const clock = yield* makeProcessClock;
+      const stopped = clock.watched<string>();
+      yield* withPreparedEngineEffect(
+        (world, tmp) => setup(tmp, world),
+        (world, _tmp, project) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* provisionIn(project);
+            yield* engine.launch(session.id, ["codex"]);
+            const view = yield* engine.addService(session.id, 5432, "db");
+            yield* engine.stop(session.id);
 
-          const service = yield* engine.addService(session.id, 5432, "db");
-          expect(service.service.name).toBe("db");
-          expect(service.service.workspacePort).toBe(5432);
-          expect(service.attempts).toHaveLength(0);
-          expect(service.currentForward?.hostPort).toBe(43127);
-          expect(service.latestObservation?.state).toBe("reachable");
-          const adoptedRestart = yield* engine.restartService(service.service.id).pipe(Effect.flip);
-          expect(adoptedRestart.message).toContain("no recorded command");
+            const agentsSettled = () =>
+              [...world.processes.values()]
+                .filter((process) => process.kind === "agent-pty")
+                .every((process) => process.exitedAt !== null);
+            yield* clock.untilChanged(agentsSettled, "the first stop ends the agent's record");
 
-          // A live name is taken — a second "db" is refused, not duplicated.
-          const duplicate = yield* engine.addService(session.id, 5433, "db").pipe(Effect.flip);
-          expect(String(duplicate.message)).toContain('named "db" already exists');
+            yield* engine.resumeSession(session.id, "shell");
+            expect(created).toHaveLength(1);
+            expect(stopped).toEqual([]);
+            expect(world.services.get(view.service.id)?.currentForwardId).not.toBeNull();
 
-          // The agent settles; the Service lease keeps the workspace up.
-          yield* engine.stop(session.id);
-          const agentExited = () =>
-            [...world.processes.values()].some(
-              (process) => process.kind === "agent-pty" && process.exitedAt !== null,
-            );
-          for (let i = 0; i < 200 && !agentExited(); i++) {
-            yield* Effect.sleep(Duration.millis(10));
-          }
-          expect(agentExited()).toBe(true);
-          expect(stopped).toEqual([]);
-
-          // A completed coding-agent run may open another supporting process
-          // while the Service retains the reachable workspace.
-          const shell = yield* engine.openShell(session.id);
-          expect(shell.label).toBe("shell 1");
-
-          const ended = yield* engine.stopService(service.service.id);
-          expect(ended.service.currentAttemptId).toBeNull();
-          expect(ended.service.currentForwardId).toBeNull();
-          expect(stopped).toEqual([]);
-          yield* engine.stopShell(shell.id);
-          expect(stopped).toEqual(["workspace-1"]);
-        }),
-      { sealantLayer: sealantLaunchLayer(created, undefined, stopped) },
-    );
-  });
-
-  it("stopServices stops every live Service a stopped agent left behind, then the workspace", async () => {
-    const created: CreateOptions[] = [];
-    const stopped: string[] = [];
-    await withEngine(
-      (world, tmp) =>
-        Effect.gen(function* () {
-          const project = yield* setup(tmp, world);
-          const engine = yield* SessionEngine;
-          const session = yield* engine.provision({
-            projectId: project.id,
-            harness: "codex",
-            label: null,
-            name: null,
-            ownerUserId: "user-fixture",
-            base: null,
-          });
-          yield* engine.launch(session.id, ["codex"]);
-          const web = yield* engine.runService(session.id, ["pnpm", "dev"], 3000, "web");
-          const db = yield* engine.addService(session.id, 5432, "db");
-          const ended = yield* engine.runService(session.id, ["pnpm", "worker"], 4000, "worker");
-          yield* engine.stopService(ended.service.id);
-
-          yield* engine.stop(session.id);
-          const agentExited = () =>
-            [...world.processes.values()].some(
-              (process) => process.kind === "agent-pty" && process.exitedAt !== null,
-            );
-          for (let i = 0; i < 200 && !agentExited(); i++) {
-            yield* Effect.sleep(Duration.millis(10));
-          }
-          // The stop ended the agent; two Services still hold the workspace.
-          expect(stopped).toEqual([]);
-
-          expect(yield* engine.stopServices(session.id)).toBe(2);
-          expect(world.services.get(web.service.id)?.currentAttemptId).toBeNull();
-          expect(world.services.get(db.service.id)?.currentForwardId).toBeNull();
-          expect(stopped).toEqual(["workspace-1"]);
-          expect(world.sessions.get(session.id)?.status).toBe("stopped");
-          // Nothing left: a second press stops nothing and says so.
-          expect(yield* engine.stopServices(session.id)).toBe(0);
-        }),
-      { sealantLayer: sealantLaunchLayer(created, undefined, stopped) },
-    );
-  });
-
-  it("reuses a workspace retained only by an adopted Service; fresh resume closes it", async () => {
-    const created: CreateOptions[] = [];
-    const stopped: string[] = [];
-    await withEngine(
-      (world, tmp) =>
-        Effect.gen(function* () {
-          const project = yield* setup(tmp, world);
-          const engine = yield* SessionEngine;
-          const session = yield* engine.provision({
-            projectId: project.id,
-            harness: "codex",
-            label: null,
-            name: null,
-            ownerUserId: "user-fixture",
-            base: null,
-          });
-          yield* engine.launch(session.id, ["codex"]);
-          const view = yield* engine.addService(session.id, 5432, "db");
-          yield* engine.stop(session.id);
-
-          const agentsSettled = () =>
-            [...world.processes.values()]
-              .filter((process) => process.kind === "agent-pty")
-              .every((process) => process.exitedAt !== null);
-          for (let i = 0; i < 200 && !agentsSettled(); i++) {
-            yield* Effect.sleep(Duration.millis(10));
-          }
-
-          yield* engine.resumeSession(session.id, "shell");
-          expect(created).toHaveLength(1);
-          expect(stopped).toEqual([]);
-          expect(world.services.get(view.service.id)?.currentForwardId).not.toBeNull();
-
-          yield* engine.stop(session.id);
-          for (let i = 0; i < 200 && !agentsSettled(); i++) {
-            yield* Effect.sleep(Duration.millis(10));
-          }
-          yield* engine.resumeSession(session.id, "shell", true);
-          expect(created).toHaveLength(2);
-          expect(stopped).toEqual(["workspace-1"]);
-          expect(world.services.get(view.service.id)?.currentForwardId).toBeNull();
-        }),
-      { sealantLayer: sealantLaunchLayer(created, undefined, stopped) },
-    );
-  });
+            yield* engine.stop(session.id);
+            yield* clock.untilChanged(agentsSettled, "the second stop ends the shell's record");
+            yield* engine.resumeSession(session.id, "shell", true);
+            expect(created).toHaveLength(2);
+            expect(stopped).toEqual(["workspace-1"]);
+            expect(world.services.get(view.service.id)?.currentForwardId).toBeNull();
+          }),
+        {
+          prepareWorld: clock.prepareWorld,
+          sealantLayer: sealantLaunchLayer(created, undefined, stopped),
+        },
+      );
+    }),
+  );
 
   it("runService restart appends attempts and preserves prior run pointers", async () => {
     const created: CreateOptions[] = [];
@@ -1367,38 +1400,96 @@ describe("SessionEngine", () => {
     );
   });
 
-  it("keeps a Service live across a transient watcher lookup failure", async () => {
-    const created: CreateOptions[] = [];
-    let workspaceLookups = 0;
-    await withEngine(
-      (world, tmp) =>
-        Effect.gen(function* () {
-          const project = yield* setup(tmp, world);
-          const engine = yield* SessionEngine;
-          const session = yield* engine.provision({
-            projectId: project.id,
-            harness: "codex",
-            label: null,
-            name: null,
-            ownerUserId: "user-fixture",
-            base: null,
-          });
-          yield* engine.launch(session.id, ["codex"]);
-          const service = yield* engine.runService(session.id, ["pnpm", "dev"], 3000, "web");
-          yield* Effect.sleep(Duration.millis(1_200));
+  it.effect("keeps a Service live across a transient watcher lookup failure", () =>
+    Effect.gen(function* () {
+      const created: CreateOptions[] = [];
+      const clock = yield* makeProcessClock;
+      const { ptyStates } = clock;
+      // The Service attempt's watcher looks its PTY up by id; the first such lookup is refused
+      // the way a control plane that does not answer refuses it (503, not a 404 that says gone).
+      let rows: World["processes"] | undefined;
+      const servicePty = (ptyId: string) =>
+        [...(rows?.values() ?? [])].some(
+          (process) => process.kind === "service" && process.sealantSessionId === ptyId,
+        );
+      const serviceLookups = clock.watched<"refused" | "answered">();
+      const wrapSealant = (layer: Layer.Layer<SealantClient>): Layer.Layer<SealantClient> =>
+        Layer.effect(
+          SealantClient,
+          Effect.map(SealantClient, (inner) => ({
+            ...inner,
+            getSession: (workspace, ptyId) =>
+              Effect.suspend(() => {
+                if (!servicePty(ptyId)) return inner.getSession(workspace, ptyId);
+                const refused = serviceLookups.length === 0;
+                serviceLookups.push(refused ? "refused" : "answered");
+                return refused
+                  ? Effect.fail(
+                      new SealantPlatformError({
+                        code: "control_plane_unavailable",
+                        status: 503,
+                        message: "the control plane did not answer",
+                        cause: null,
+                      }),
+                    )
+                  : inner.getSession(workspace, ptyId);
+              }),
+          })),
+        ).pipe(Layer.provide(layer));
+      yield* withPreparedEngineEffect(
+        (world, tmp) => setup(tmp, world),
+        (world, _tmp, project) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* provisionIn(project);
+            yield* engine.launch(session.id, ["codex"]);
+            const service = yield* engine.runService(session.id, ["pnpm", "dev"], 3000, "web");
+            const attemptId = service.service.currentAttemptId ?? "";
+            const attemptPty = world.processes.get(attemptId)?.sealantSessionId ?? "";
+            yield* clock.untilChanged(
+              () => serviceLookups.length >= 1,
+              "the attempt's watcher looks its PTY up and is refused",
+            );
+            expect(serviceLookups).toEqual(["refused"]);
+            // Blindness is retried, never read as an exit: SUPERVISE_RETRY asks again after 1 s
+            // (its first exponential delay), and nothing is asked before that.
+            yield* TestClock.adjust(999);
+            expect(serviceLookups).toEqual(["refused"]);
+            yield* TestClock.adjust(1);
+            yield* clock.untilChanged(
+              () => serviceLookups.length >= 2,
+              "the watcher's retry looks the PTY up again",
+            );
+            expect(serviceLookups).toEqual(["refused", "answered"]);
+            // Back on its 2 s looks, the watcher finds the attempt running and keeps it.
+            yield* clock.nextLook(
+              attemptPty,
+              () => world.processes.get(attemptId)?.exitedAt === null,
+            );
 
-          const attempt = world.processes.get(service.service.currentAttemptId ?? "");
-          expect(attempt?.exitedAt).toBeNull();
-          expect(world.services.get(service.service.id)?.currentForwardId).not.toBeNull();
-        }),
-      {
-        sealantLayer: sealantLaunchLayer(created, undefined, undefined, undefined, () => {
-          workspaceLookups += 1;
-          return workspaceLookups === 2;
-        }),
-      },
-    );
-  });
+            const attempt = world.processes.get(service.service.currentAttemptId ?? "");
+            expect(attempt?.exitedAt).toBeNull();
+            expect(world.services.get(service.service.id)?.currentForwardId).not.toBeNull();
+          }),
+        {
+          prepareWorld: (world) => {
+            clock.prepareWorld(world);
+            rows = world.processes;
+          },
+          sealantLayer: wrapSealant(
+            sealantLaunchLayer(
+              created,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              ptyStates,
+            ),
+          ),
+        },
+      );
+    }),
+  );
 
   it("does not append a restart attempt when the workspace lookup fails", async () => {
     const created: CreateOptions[] = [];
@@ -1467,38 +1558,36 @@ describe("SessionEngine", () => {
     );
   });
 
-  it("resumes a settled session with shell — no saved state required", async () => {
-    const created: CreateOptions[] = [];
-    await withEngine(
-      (world, tmp) =>
-        Effect.gen(function* () {
-          const project = yield* setup(tmp, world);
-          const engine = yield* SessionEngine;
-          const session = yield* engine.provision({
-            projectId: project.id,
-            harness: "codex",
-            label: null,
-            name: null,
-            ownerUserId: "user-fixture",
-            base: null,
-          });
-          yield* engine.launch(session.id, ["codex"]);
-          yield* engine.stop(session.id);
-          const agentExited = () =>
-            [...world.processes.values()].every((process) => process.exitedAt !== null);
-          for (let i = 0; i < 200 && !agentExited(); i++) {
-            yield* Effect.sleep(Duration.millis(10));
-          }
+  it.effect("resumes a settled session with shell — no saved state required", () =>
+    Effect.gen(function* () {
+      const created: CreateOptions[] = [];
+      const clock = yield* makeProcessClock;
+      yield* withPreparedEngineEffect(
+        (world, tmp) => setup(tmp, world),
+        (world, _tmp, project) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* provisionIn(project);
+            yield* engine.launch(session.id, ["codex"]);
+            yield* engine.stop(session.id);
+            const agentExited = () =>
+              [...world.processes.values()].every((process) => process.exitedAt !== null);
+            yield* clock.untilChanged(agentExited, "the stop ends the agent's record");
 
-          const resumed = yield* engine.resumeSession(session.id, "shell");
-          expect(resumed.status).toBe("running");
-          // The session keeps its harness identity — only this launch is a shell.
-          expect(resumed.harness).toBe("codex");
-          const live = [...world.processes.values()].filter((process) => process.exitedAt === null);
-          // The default image's login shell (zsh), not the `bash` request sentinel.
-          expect(live.map((process) => process.argv)).toEqual([["zsh"]]);
-        }),
-      { sealantLayer: sealantLaunchLayer(created) },
-    );
-  });
+            const resumed = yield* engine.resumeSession(session.id, "shell");
+            expect(resumed.status).toBe("running");
+            // The session keeps its harness identity — only this launch is a shell.
+            expect(resumed.harness).toBe("codex");
+            const live = [...world.processes.values()].filter(
+              (process) => process.exitedAt === null,
+            );
+            // The default image's login shell (zsh), not the `bash` request sentinel.
+            expect(live.map((process) => process.argv)).toEqual([["zsh"]]);
+          }),
+        {
+          prepareWorld: clock.prepareWorld,
+          sealantLayer: sealantLaunchLayer(created),
+        },
+      );
+    }),
+  );
 });
