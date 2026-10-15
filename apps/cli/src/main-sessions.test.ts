@@ -677,7 +677,56 @@ describe("people in a workspace (docs/adr/0016, decisions 13 and 14)", spawning,
   }
 });
 
-/** Keep unused ports owned; only hand the selected listener ports to the child CLI. */
+/**
+ * The first port of the kernel's ephemeral range. Every listen on port 0 and every outgoing
+ * connection on the machine draws from that range, so a port released there can be taken before
+ * the CLI binds it (#1012); below it, only an explicit bind of that number lands.
+ */
+const ephemeralFloor = (): number => {
+  try {
+    const range = fs.readFileSync("/proc/sys/net/ipv4/ip_local_port_range", "utf8");
+    const low = Number(range.trim().split(/\s+/)[0]);
+    if (Number.isInteger(low) && low > 20_000) return low;
+  } catch {
+    // Not Linux: macOS and Windows start their ephemeral ranges at 49152.
+  }
+  return 32_768;
+};
+
+/** Whether `server` now listens on `port`; false when something else holds it. */
+const listenOn = (server: net.Server, port: number) =>
+  new Promise<boolean>((resolve, reject) => {
+    const onListening = () => {
+      server.off("error", onError);
+      resolve(true);
+    };
+    const onError = (error: NodeJS.ErrnoException) => {
+      server.off("listening", onListening);
+      if (error.code === "EADDRINUSE") resolve(false);
+      else reject(error);
+    };
+    server.once("listening", onListening);
+    server.once("error", onError);
+    server.listen(port, "127.0.0.1");
+  });
+
+/** Listens on the first free port from a random start between 10000 and the ephemeral range. */
+const listenBelowEphemeral = async (server: net.Server): Promise<number> => {
+  const floor = ephemeralFloor();
+  const span = floor - 10_000;
+  const start = Math.floor(Math.random() * span);
+  for (let offset = 0; offset < span; offset += 1) {
+    const port = 10_000 + ((start + offset) % span);
+    if (await listenOn(server, port)) return port;
+  }
+  throw new Error(`No free port between 10000 and ${floor}.`);
+};
+
+/**
+ * Keep unused ports owned; only hand the selected listener ports to the child CLI. They come from
+ * below the ephemeral range, so nothing else on the machine is handed one in the moment between
+ * its release and the CLI's bind.
+ */
 const serviceConnectPorts = async (count: number) => {
   const reservations = new Map<number, net.Server>();
   const release = async (ports: ReadonlyArray<number>) => {
@@ -699,11 +748,7 @@ const serviceConnectPorts = async (count: number) => {
   onTestFinished(() => release([...reservations.keys()]));
   for (let index = 0; index < count; index += 1) {
     const reservation = net.createServer((socket) => socket.end("reserved test port\n"));
-    reservation.listen(0, "127.0.0.1");
-    await once(reservation, "listening");
-    const address = reservation.address();
-    if (address === null || typeof address === "string") throw new Error("Missing reserved port.");
-    reservations.set(address.port, reservation);
+    reservations.set(await listenBelowEphemeral(reservation), reservation);
   }
   return { ports: [...reservations.keys()], release };
 };
