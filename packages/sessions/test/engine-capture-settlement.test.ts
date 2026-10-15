@@ -550,6 +550,7 @@ describe("a review opened while a Stop ends the executor (packaged acceptance, a
       Effect.gen(function* () {
         const created: Array<CreateOptions> = [];
         const memory = makeMemoryCaptureStore();
+        const logs: string[] = [];
         const first = yield* Deferred.make<void>();
         const second = yield* Deferred.make<void>();
         /** Every final flush the drain asked, as it is asked. */
@@ -557,7 +558,14 @@ describe("a review opened while a Stop ends the executor (packaged acceptance, a
         const stopAsked = yield* Deferred.make<void>();
         const stopHeld = yield* Deferred.make<void>();
         let asks = 0;
-        const wallClock = Date.now;
+        yield* TestClock.setTime(Date.parse("2026-10-15T00:00:00Z"));
+        const baseClock = yield* Clock.Clock;
+        let wallOffset = 0;
+        const wallClock: Clock.Clock = {
+          ...baseClock,
+          currentTimeMillisUnsafe: () => baseClock.currentTimeMillisUnsafe() + wallOffset,
+          currentTimeMillis: Effect.sync(() => baseClock.currentTimeMillisUnsafe() + wallOffset),
+        };
         yield* withPreparedEngineEffect(
           (world, tmp) => setup(tmp, world),
           (world, tmp, project) =>
@@ -566,7 +574,11 @@ describe("a review opened while a Stop ends the executor (packaged acceptance, a
               yield* engine.launch(session.id, ["codex"]);
               yield* engine.stop(session.id);
               expect(yield* Queue.take(asked)).toBe(1);
-              Date.now = () => wallClock() - 60_000;
+              wallOffset = -60_000;
+              expect(wallClock.currentTimeMillisUnsafe()).toBe(
+                baseClock.currentTimeMillisUnsafe() - 60_000,
+              );
+              expect(wallClock.currentTimeNanosUnsafe()).toBe(baseClock.currentTimeNanosUnsafe());
               const review = yield* Effect.forkChild(
                 engine.checkpointNow(session.id, "review-open"),
               );
@@ -580,6 +592,7 @@ describe("a review opened while a Stop ends the executor (packaged acceptance, a
               // Ten more looks: an answer asked before the review is never taken.
               yield* TestClock.adjust(Duration.millis(500));
               expect(review.pollUnsafe()).toBeUndefined();
+              expect(logs.some((line) => line.includes("checkpoint · review-open ·"))).toBe(false);
               // The final asked after the review saves: that is what the review takes, on its
               // next look, while the platform's stop is still held.
               yield* Deferred.succeed(second, undefined);
@@ -589,11 +602,15 @@ describe("a review opened while a Stop ends the executor (packaged acceptance, a
               );
               expect(Option.isSome(taken)).toBe(true);
               if (Option.isSome(taken)) expect(taken.value.source?.kind).toBe("stop-final");
+              // The review oracle is complete. Restore the wall clock before driving the
+              // drain's remaining cleanup, whose saved-evidence dates also use wall time.
+              wallOffset = 0;
+              yield* TestClock.adjust(Duration.millis(10));
               yield* Deferred.await(stopAsked);
             }).pipe(
               Effect.ensuring(
                 Effect.sync(() => {
-                  Date.now = wallClock;
+                  wallOffset = 0;
                 }).pipe(
                   Effect.andThen(Deferred.succeed(second, undefined)),
                   Effect.andThen(Deferred.succeed(stopHeld, undefined)),
@@ -602,6 +619,7 @@ describe("a review opened while a Stop ends the executor (packaged acceptance, a
             ),
           {
             captured: memory,
+            logs,
             drainPolicy: { keptRetryFirst: Duration.millis(50), stallSeconds: 600 },
             sealantLayer: lifecycleLayer(created, {
               captureOps: {
@@ -629,7 +647,7 @@ describe("a review opened while a Stop ends the executor (packaged acceptance, a
               },
             }),
           },
-        );
+        ).pipe(Effect.provideService(Clock.Clock, wallClock));
       }),
     { timeout: 20_000 },
   );
@@ -642,7 +660,14 @@ describe("a review opened while a Stop ends the executor (packaged acceptance, a
         const memory = makeMemoryCaptureStore();
         const stopAsked = yield* Deferred.make<void>();
         const stopHeld = yield* Deferred.make<void>();
-        const wallClock = Date.now;
+        yield* TestClock.setTime(Date.parse("2026-10-15T00:00:00Z"));
+        const baseClock = yield* Clock.Clock;
+        let wallOffset = 0;
+        const wallClock: Clock.Clock = {
+          ...baseClock,
+          currentTimeMillisUnsafe: () => baseClock.currentTimeMillisUnsafe() + wallOffset,
+          currentTimeMillis: Effect.sync(() => baseClock.currentTimeMillisUnsafe() + wallOffset),
+        };
         yield* withPreparedEngineEffect(
           (world, tmp) => setup(tmp, world),
           (world, tmp, project) =>
@@ -655,11 +680,16 @@ describe("a review opened while a Stop ends the executor (packaged acceptance, a
                 engine.landingCheckpoint(session.id, "user-mark").pipe(Effect.flip),
               );
               yield* TestClock.adjust(Duration.millis(100));
-              Date.now = () => wallClock() - 60_000;
+              wallOffset = -60_000;
+              expect(wallClock.currentTimeMillisUnsafe()).toBe(
+                baseClock.currentTimeMillisUnsafe() - 60_000,
+              );
+              expect(wallClock.currentTimeNanosUnsafe()).toBe(baseClock.currentTimeNanosUnsafe());
               // The wait (1 s) is over 900 ms later, whatever the wall clock was set back to.
               yield* TestClock.adjust(899);
               expect(landing.pollUnsafe()).toBeUndefined();
               yield* TestClock.adjust(1);
+              expect(landing.pollUnsafe()).toBeDefined();
               const refused = yield* Fiber.join(landing).pipe(
                 Effect.timeoutOption(Duration.seconds(3)),
               );
@@ -670,7 +700,7 @@ describe("a review opened while a Stop ends the executor (packaged acceptance, a
             }).pipe(
               Effect.ensuring(
                 Effect.sync(() => {
-                  Date.now = wallClock;
+                  wallOffset = 0;
                 }).pipe(Effect.andThen(Deferred.succeed(stopHeld, undefined))),
               ),
             ),
@@ -687,7 +717,7 @@ describe("a review opened while a Stop ends the executor (packaged acceptance, a
               },
             }),
           },
-        );
+        ).pipe(Effect.provideService(Clock.Clock, wallClock));
       }),
     { timeout: 20_000 },
   );
