@@ -28,10 +28,11 @@ import { Invitation, Organization, OrganizationMember, Project } from "@mend/dom
 import { SealantClient } from "@mend/sealant";
 import { SessionEngine } from "@mend/sessions";
 import { DeploymentConfig } from "@mend/store";
-import { Effect, Layer, ManagedRuntime, Option } from "effect";
+import { it, TestClock } from "@mend/test-ci/effect-vitest";
+import { Clock, Context, Effect, Layer, ManagedRuntime, Option } from "effect";
 import { HttpRouter, HttpServer } from "effect/unstable/http";
 import { HttpApi, HttpApiBuilder } from "effect/unstable/httpapi";
-import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeEach, describe, expect } from "vitest";
 
 import { makeProject } from "../../test/support/tenancy-harness.ts";
 import { MemberRemoval, type RemoveMemberInput } from "../member-removal.ts";
@@ -311,19 +312,20 @@ const runtime = ManagedRuntime.make(dependencies);
 const context = await runtime.runPromise(Effect.context<Layer.Success<typeof dependencies>>());
 const { handler, dispose } = HttpRouter.toWebHandler(apiLayer, { disableLogger: true });
 
-const call = (user: string | null, path: string, init: RequestInit = {}) => {
+const call = (user: string | null, path: string, init: RequestInit = {}, clock?: Clock.Clock) => {
   const headers = new Headers(init.headers);
   if (user !== null) headers.set("authorization", `Bearer ${user}`);
   if (init.body !== undefined) headers.set("content-type", "application/json");
-  return handler(new Request(`http://api.internal${path}`, { ...init, headers }), context);
+  return handler(
+    new Request(`http://api.internal${path}`, { ...init, headers }),
+    clock === undefined ? context : Context.add(context, Clock.Clock, clock),
+  );
 };
 
 afterAll(async () => {
   await dispose();
   await runtime.dispose();
 });
-
-afterEach(() => vi.useRealTimers());
 
 beforeEach(() => {
   roleChanges.length = 0;
@@ -370,72 +372,96 @@ describe("organization routes (docs/adr/0003)", () => {
     expect(writes).toEqual([]);
   });
 
-  it("lets an owner mint a link, returning the token once with its join path", async () => {
-    vi.useFakeTimers({ toFake: ["Date"] });
-    vi.setSystemTime(NOW);
-    const response = await call("alice", "/api/organization/invitations", {
-      method: "POST",
-      body: JSON.stringify({ role: "member", email: " Carol@Example.invalid ", expiresInDays: 90 }),
-    });
-    expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toMatchObject({
-      token: "tok-secret",
-      path: "/join/tok-secret",
-    });
-    expect(minted).toEqual([
-      {
-        organizationId: acme.id,
-        role: "member",
-        email: "carol@example.invalid",
-        createdByUserId: "alice",
-        expiresAt: new Date("2026-10-17T10:00:00.000Z"),
-      },
-    ]);
-    expect(audited).toEqual([
-      {
-        organizationId: acme.id,
-        actorUserId: "alice",
-        action: "invitation.created",
-        subjectType: "invitation",
-        subjectId: "inv-1",
-        data: { role: "member", emailBound: true },
-      },
-    ]);
-  });
+  it.effect("lets an owner mint a link, returning the token once with its join path", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(NOW.getTime());
+      const clock = yield* Clock.clockWith(Effect.succeed);
+      const response = yield* Effect.promise(() =>
+        call(
+          "alice",
+          "/api/organization/invitations",
+          {
+            method: "POST",
+            body: JSON.stringify({
+              role: "member",
+              email: " Carol@Example.invalid ",
+              expiresInDays: 90,
+            }),
+          },
+          clock,
+        ),
+      );
+      expect(response.status).toBe(200);
+      yield* Effect.promise(() =>
+        expect(response.json()).resolves.toMatchObject({
+          token: "tok-secret",
+          path: "/join/tok-secret",
+        }),
+      );
+      expect(minted).toEqual([
+        {
+          organizationId: acme.id,
+          role: "member",
+          email: "carol@example.invalid",
+          createdByUserId: "alice",
+          expiresAt: new Date("2026-10-17T10:00:00.000Z"),
+        },
+      ]);
+      expect(audited).toEqual([
+        {
+          organizationId: acme.id,
+          actorUserId: "alice",
+          action: "invitation.created",
+          subjectType: "invitation",
+          subjectId: "inv-1",
+          data: { role: "member", emailBound: true },
+        },
+      ]);
+    }),
+  );
 
-  it("mints in the other owner's organization and records that actor", async () => {
-    vi.useFakeTimers({ toFake: ["Date"] });
-    vi.setSystemTime(NOW);
-    const response = await call("gina", "/api/organization/invitations", {
-      method: "POST",
-      body: JSON.stringify({ role: "owner", expiresInDays: 2 }),
-    });
-    expect(response.status).toBe(200);
-    expect(await response.json()).toMatchObject({
-      invitation: { organizationId: globex.id, role: "owner", createdByUserId: "gina" },
-      token: "tok-secret",
-      path: "/join/tok-secret",
-    });
-    expect(minted).toEqual([
-      {
-        organizationId: globex.id,
-        role: "owner",
-        email: null,
-        createdByUserId: "gina",
-        expiresAt: new Date("2026-09-19T10:00:00.000Z"),
-      },
-    ]);
-    expect(audited).toEqual([
-      {
-        organizationId: globex.id,
-        actorUserId: "gina",
-        action: "invitation.created",
-        subjectType: "invitation",
-        subjectId: "inv-1",
-        data: { role: "owner", emailBound: false },
-      },
-    ]);
-  });
+  it.effect("mints in the other owner's organization and records that actor", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(NOW.getTime());
+      const clock = yield* Clock.clockWith(Effect.succeed);
+      const response = yield* Effect.promise(() =>
+        call(
+          "gina",
+          "/api/organization/invitations",
+          {
+            method: "POST",
+            body: JSON.stringify({ role: "owner", expiresInDays: 2 }),
+          },
+          clock,
+        ),
+      );
+      expect(response.status).toBe(200);
+      expect(yield* Effect.promise(() => response.json())).toMatchObject({
+        invitation: { organizationId: globex.id, role: "owner", createdByUserId: "gina" },
+        token: "tok-secret",
+        path: "/join/tok-secret",
+      });
+      expect(minted).toEqual([
+        {
+          organizationId: globex.id,
+          role: "owner",
+          email: null,
+          createdByUserId: "gina",
+          expiresAt: new Date("2026-09-19T10:00:00.000Z"),
+        },
+      ]);
+      expect(audited).toEqual([
+        {
+          organizationId: globex.id,
+          actorUserId: "gina",
+          action: "invitation.created",
+          subjectType: "invitation",
+          subjectId: "inv-1",
+          data: { role: "owner", emailBound: false },
+        },
+      ]);
+    }),
+  );
 
   it("rejects a malformed email without minting", async () => {
     const response = await call("alice", "/api/organization/invitations", {

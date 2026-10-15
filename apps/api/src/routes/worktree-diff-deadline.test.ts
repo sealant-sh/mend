@@ -3,8 +3,8 @@ import { CheckpointId, SequenceNumber, Sha, WorktreeId } from "@mend/domain";
 import { Checkpoint } from "@mend/domain/workbench";
 import { WORKTREE_STAMP } from "@mend/sessions";
 import type { DiffFileFact } from "@mend/store";
+import { TestClock } from "@mend/test-ci/effect-vitest";
 import { Clock, Deferred, Effect, Fiber, Ref, Schema } from "effect";
-import { TestClock } from "effect/testing";
 import { describe, expect, it } from "vitest";
 
 import { createTenancyApi } from "../../test/support/tenancy-api.ts";
