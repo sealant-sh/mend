@@ -59,7 +59,7 @@ import {
 } from "@mend/slack";
 import { SlackApi, type SlackApiError } from "@mend/slack/client";
 import { SecretCipher } from "@mend/store";
-import { Cause, Effect, Layer, Queue, Schema, Stream } from "effect";
+import { Cause, Clock, Effect, Layer, Queue, Schema, Stream } from "effect";
 
 /**
  * The Slack thread reporter (docs/adr/0006-slack.md, "What Mend posts, and where"): the sibling of
@@ -267,7 +267,8 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
     const reads = yield* WorktreeReads;
     const cipher = yield* SecretCipher;
     const slack = yield* SlackApi;
-    const now = options.now ?? Date.now;
+    const clock = yield* Clock.Clock;
+    const now = options.now ?? (() => clock.currentTimeMillisUnsafe());
 
     const seen = new Map<string, Seen>();
     let sweptAt = 0;
