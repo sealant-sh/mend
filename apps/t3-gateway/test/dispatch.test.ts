@@ -824,7 +824,7 @@ describe("review round 3", () => {
             ).pipe(Effect.forkChild);
             // Each 409 waits out its backoff, until the send deadline.
             yield* timers.drive(
-              "1500 millis",
+              { within: "1500 millis", deadline: "10 seconds" },
               () => failed.pollUnsafe() !== undefined,
               "the send deadline",
             );

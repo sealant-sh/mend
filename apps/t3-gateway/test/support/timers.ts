@@ -37,10 +37,12 @@ export class GatewayTimers extends Context.Service<
     /**
      * Until `done` holds, moves the clock to the end of the earliest timer of at most `within`
      * that a fiber is parked on, one timer at a time, and otherwise waits in real time for the
-     * gateway to park. Fails naming `what` after about five seconds of real time without `done`.
+     * gateway to park. The clock never moves past `deadline` from the call: `done` must hold by
+     * then, as it had to within the poll this replaced. Fails naming `what` after about five
+     * seconds of real time without `done`.
      */
     readonly drive: (
-      within: Duration.Input,
+      timers: { readonly within: Duration.Input; readonly deadline: Duration.Input },
       done: () => boolean,
       what: string,
     ) => Effect.Effect<void>;
@@ -115,16 +117,24 @@ export const withGatewayTimers = <A, E, R>(
           if (before !== undefined) yield* before;
           yield* TestClock.adjust(1);
         }),
-      drive: (within, done, what) =>
+      drive: ({ within, deadline }, done, what) =>
         Effect.gen(function* () {
           const bound = millisOf(within);
+          const by = clock.currentTimeMillisUnsafe() + millisOf(deadline);
           for (let looks = 0; looks < LOOKS; looks++) {
             if (done()) return;
-            const next = pending((sleep) => sleep.millis <= bound);
+            const next = pending((sleep) => sleep.millis <= bound && sleep.endsAt <= by);
             if (next === undefined) yield* look;
             else yield* TestClock.adjust(next.endsAt - clock.currentTimeMillisUnsafe());
           }
-          return yield* Effect.die(new Error(`Timed out driving the clock to ${what}.`));
+          const late = pending((sleep) => sleep.millis <= bound) !== undefined;
+          return yield* Effect.die(
+            new Error(
+              late
+                ? `${what} did not happen within ${millisOf(deadline)} ms of the clock.`
+                : `Timed out driving the clock to ${what}.`,
+            ),
+          );
         }),
     });
     return test.pipe(

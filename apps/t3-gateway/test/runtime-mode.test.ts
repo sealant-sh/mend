@@ -102,7 +102,11 @@ describe("the runtime-mode switch", () => {
           dispatchMode: { type: "queue_after_active" },
         });
         // A send that finds the agent gone waits out its backoff, then reads and launches.
-        yield* timers.drive("1 second", () => mend.workbench.launches.length === 1, "the launch");
+        yield* timers.drive(
+          { within: "1 second", deadline: "5 seconds" },
+          () => mend.workbench.launches.length === 1,
+          "the launch",
+        );
         assert.deepStrictEqual(mend.workbench.launches[0]?.body, {
           mode: "protocol",
           permissionMode: "ask",

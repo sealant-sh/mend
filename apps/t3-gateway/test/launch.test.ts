@@ -239,14 +239,14 @@ describe("orchestration.launchThread", () => {
         ).pipe(Effect.forkChild);
         // Each failed read of the new session's project is tried again after its wait.
         yield* timers.drive(
-          "500 millis",
+          { within: "500 millis", deadline: "5 seconds" },
           () => launching.pollUnsafe() !== undefined,
           "the launch's answer",
         );
         const launched = yield* Fiber.join(launching);
         assert.strictEqual(launched.projection.runs[0]?.userMessageId, "message-first");
         yield* timers.drive(
-          "500 millis",
+          { within: "500 millis", deadline: "5 seconds" },
           () => calls(mend, "POST", "/turns").length === 1,
           "the first turn",
         );

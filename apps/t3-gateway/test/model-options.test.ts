@@ -144,7 +144,11 @@ describe("reasoning effort on a started thread", () => {
         mend.workbench.stopAgent("session-1");
         yield* send(rpc, "Carry on", selection([{ id: "reasoningEffort", value: "high" }]));
         // A send that finds the agent gone waits out its backoff, then reads and launches.
-        yield* timers.drive("1 second", () => mend.workbench.launches.length === 1, "the launch");
+        yield* timers.drive(
+          { within: "1 second", deadline: "5 seconds" },
+          () => mend.workbench.launches.length === 1,
+          "the launch",
+        );
         assert.deepStrictEqual(mend.workbench.launches[0]?.body, {
           mode: "protocol",
           effort: "high",
@@ -256,7 +260,11 @@ describe("service tier on a started thread", () => {
         mend.workbench.stopAgent(sessionId);
         yield* send(rpc, "Again", selection([{ id: "serviceTier", value: "fast" }]), threadId);
         // A send that finds the agent gone waits out its backoff, then reads and launches.
-        yield* timers.drive("1 second", () => mend.workbench.launches.length === 2, "the relaunch");
+        yield* timers.drive(
+          { within: "1 second", deadline: "5 seconds" },
+          () => mend.workbench.launches.length === 2,
+          "the relaunch",
+        );
         assert.deepStrictEqual(mend.workbench.launches[1]?.body, {
           mode: "protocol",
           speed: "fast",

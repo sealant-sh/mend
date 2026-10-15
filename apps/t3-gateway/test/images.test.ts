@@ -293,7 +293,7 @@ describe("what a message may carry", () => {
         );
         // A send that finds the agent gone waits out its backoff, then reads and launches.
         yield* timers.drive(
-          "1 second",
+          { within: "1 second", deadline: "5 seconds" },
           () => (mend.workbench.turns.get("session-1") ?? []).length === 3,
           "the third turn",
         );
