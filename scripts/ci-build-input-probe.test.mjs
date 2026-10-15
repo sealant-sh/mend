@@ -11,7 +11,7 @@ import { probe, VOLATILE } from "./ci-build-input-probe.mjs";
 const repository = fileURLToPath(new URL("../", import.meta.url));
 
 /** A two-package workspace with the repository's own turbo.json, so its build-input rule is the one probed. */
-const workspace = (t, packages) => {
+const workspace = (t, packages, options = () => ({})) => {
   const root = mkdtempSync(join(tmpdir(), "mend-build-probe-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const write = (file, text) => {
@@ -56,7 +56,7 @@ const workspace = (t, packages) => {
   git("init", "-q", "-b", "main");
   git("add", ".");
   git("commit", "-qm", "workspace");
-  return probe(root);
+  return probe(root, options(root));
 };
 
 const writes = (text) =>
@@ -116,6 +116,36 @@ test("a build that fails on its own is a failed probe, not a pass", (t) => {
   assert.deepEqual(result.violations, [
     "broken#build: the first unchanged build exited 3",
     "broken#build: the second unchanged build exited 3",
+  ]);
+});
+
+test("a build invocation that fails before writing its run summary fails the probe", (t) => {
+  // Real Turbo throughout, except that the third build invocation (the mutated one) dies first.
+  const result = workspace(
+    t,
+    { reader: { build: writes('fs.readFileSync("src/a.test.mjs","utf8")') } },
+    (root) => {
+      const wrapper = join(root, ".turbo-fault.cjs");
+      writeFileSync(
+        wrapper,
+        `const { spawnSync } = require("node:child_process");
+const fs = require("node:fs");
+const args = process.argv.slice(2);
+if (args[0] === "run" && args[1] === "build" && !args.some((arg) => arg.startsWith("--dry"))) {
+  const counter = ${JSON.stringify(join(root, ".turbo-fault-count"))};
+  const count = Number(fs.existsSync(counter) ? fs.readFileSync(counter, "utf8") : 0) + 1;
+  fs.writeFileSync(counter, String(count));
+  if (count === 3) process.exit(2);
+}
+const run = spawnSync(process.execPath, [${JSON.stringify(join(repository, "node_modules/turbo/bin/turbo"))}, ...args], { stdio: "inherit" });
+process.exit(run.status ?? 1);
+`,
+      );
+      return { turbo: wrapper };
+    },
+  );
+  assert.deepEqual(result.violations, [
+    "reader#build: the build with test files changed: Turbo exited 2 and wrote 0 run summaries, not one",
   ]);
 });
 

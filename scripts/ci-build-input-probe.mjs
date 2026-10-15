@@ -10,7 +10,7 @@
 // Usage: node scripts/ci-build-input-probe.mjs [repository]
 import { execFileSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -121,8 +121,19 @@ export const probe = (
     const content = rule ? rule.normalize(bytes.toString("utf8")) : bytes;
     return createHash("sha256").update(content).digest("hex");
   };
+  // A run is read only from the one summary its own invocation wrote: a summary is never chosen by
+  // time, and a run that failed or wrote none fails the probe instead of reusing an earlier run's.
+  const runs = path.join(repository, ".turbo/runs");
+  const summaries = () => {
+    try {
+      return new Set(readdirSync(runs));
+    } catch {
+      return new Set();
+    }
+  };
   const build = (selected) => {
-    const started = Date.now();
+    const before = summaries();
+    let status = 0;
     try {
       runTurbo([
         "run",
@@ -132,29 +143,32 @@ export const probe = (
         "--cache=local:,remote:",
         ...selected.map((task) => `--filter=${task.package}`),
       ]);
-    } catch {
-      // Each task's exit code is read from the run summary.
+    } catch (error) {
+      status = typeof error.status === "number" ? error.status : 1;
     }
-    const runs = path.join(repository, ".turbo/runs");
-    const latest = readdirSync(runs)
-      .map((name) => path.join(runs, name))
-      .filter((file) => statSync(file).mtimeMs >= started - 1000)
-      .toSorted((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs)[0];
+    const fresh = [...summaries()].filter((name) => !before.has(name));
+    if (fresh.length !== 1)
+      return { failure: `Turbo exited ${status} and wrote ${fresh.length} run summaries, not one` };
     const exits = Object.fromEntries(
-      JSON.parse(readFileSync(latest, "utf8")).tasks.map((task) => [
+      JSON.parse(readFileSync(path.join(runs, fresh[0]), "utf8")).tasks.map((task) => [
         task.taskId,
         task.execution?.exitCode ?? null,
       ]),
     );
-    return Object.fromEntries(
-      selected.map((task) => [
-        task.taskId,
-        {
-          exit: exits[task.taskId] ?? null,
-          outputs: Object.fromEntries(outputFiles(task).map((file) => [file, digest(file)])),
-        },
-      ]),
-    );
+    if (status !== 0 && selected.every((task) => exits[task.taskId] === 0))
+      return { failure: `Turbo exited ${status} though every selected build reported success` };
+    return {
+      failure: null,
+      tasks: Object.fromEntries(
+        selected.map((task) => [
+          task.taskId,
+          {
+            exit: exits[task.taskId] ?? null,
+            outputs: Object.fromEntries(outputFiles(task).map((file) => [file, digest(file)])),
+          },
+        ]),
+      ),
+    };
   };
   const differences = (expected, actual) => {
     const found = [];
@@ -165,8 +179,17 @@ export const probe = (
 
   const violations = [];
   log(`controls: ${builds.length} build tasks, twice`);
-  const first = build(builds);
-  const second = build(builds);
+  const firstRun = build(builds);
+  const secondRun = build(builds);
+  for (const [label, run] of [
+    ["first", firstRun],
+    ["second", secondRun],
+  ])
+    if (run.failure) violations.push(`the ${label} unchanged build: ${run.failure}`);
+  if (violations.length)
+    return { builds: builds.map((task) => task.taskId), probed: {}, violations };
+  const first = firstRun.tasks;
+  const second = secondRun.tasks;
   for (const task of builds) {
     const id = task.taskId;
     for (const [label, run] of [
@@ -206,13 +229,18 @@ export const probe = (
           Buffer.concat([originals.get(file), Buffer.from(markerBlock(file, token, color))]),
         );
       hashAfter = dry().find((candidate) => candidate.taskId === id)?.hash;
-      mutated = build([task])[id];
+      mutated = build([task]);
     } finally {
       for (const [file, contents] of originals)
         writeFileSync(path.join(repository, file), contents);
     }
     if (hashAfter !== task.hash)
       violations.push(`${id}: its hash changed, so the files outside it were computed wrong`);
+    if (mutated.failure) {
+      violations.push(`${id}: the build with test files changed: ${mutated.failure}`);
+      continue;
+    }
+    mutated = mutated.tasks[id];
     if (mutated.exit !== 0)
       violations.push(`${id}: exited ${mutated.exit} once test files outside its hash changed`);
     for (const file of differences(second[id].outputs, mutated.outputs))
