@@ -217,6 +217,14 @@ export class FakeWorkbench {
     this.nextLaunchAnswer = { entered: () => entered.resolve(), answer: answer.promise };
     return { entered: entered.promise, release: answer.resolve };
   }
+  private nextAgent: Promise<void> | null = null;
+
+  /** The next launch's agent comes up on `release`, instead of `launchLiveDelayMs` after it. */
+  holdNextAgent(): { readonly release: () => void } {
+    const up = Promise.withResolvers<void>();
+    this.nextAgent = up.promise;
+    return { release: () => up.resolve() };
+  }
   /** `DELETE /api/sessions/:id` keeps the row until the workspace stops (`removed: false`). */
   removalLeavesWorkspace = false;
 
@@ -1033,7 +1041,7 @@ export class FakeWorkbench {
     const prompt =
       "prompt" in payload && typeof payload.prompt === "string" ? payload.prompt : null;
     if (this.launchBringsAgentUp) {
-      setTimeout(() => {
+      const bringUp = () => {
         const previous = this.agents.get(session.id);
         if (previous === undefined) return;
         const recorded = previous.protocolOptions;
@@ -1058,7 +1066,11 @@ export class FakeWorkbench {
         session.updatedAt = tick();
         this.emit({ type: "session-process", sessionId: session.id, projectId: session.projectId });
         if (prompt !== null && prompt !== "") this.addTurn(session.id, prompt, "running");
-      }, this.launchLiveDelayMs);
+      };
+      const held = this.nextAgent;
+      this.nextAgent = null;
+      if (held === null) setTimeout(bringUp, this.launchLiveDelayMs);
+      else void held.then(bringUp);
     }
     return json(200, { ...session });
   }

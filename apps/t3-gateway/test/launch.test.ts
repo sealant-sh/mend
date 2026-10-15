@@ -18,16 +18,18 @@ import {
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as Option from "effect/Option";
 
 import { labelOf, MEND_LABEL_LIMIT, planLaunch, worktreeNameOf } from "../src/launch.ts";
 import { providersFromMend } from "../src/server-config.ts";
 import { openGatewayState } from "../src/state.ts";
-import { assert, describe, it } from "./support/effect-vitest.ts";
+import { assert, describe, it, TestClock } from "./support/effect-vitest.ts";
 import { startFakeMend, type FakeMend } from "./support/fake-mend.ts";
 import { feed } from "./support/feed.ts";
 import { gatewayTestLayer, PERSON } from "./support/gateway.ts";
 import { pairAndConnect } from "./support/rpc.ts";
+import { GatewayTimers, withGatewayTimers } from "./support/timers.ts";
 
 /**
  * Phase 2's thread lifecycle (ADR 0012, "The surface"): `orchestration.launchThread` creates a
@@ -218,27 +220,41 @@ describe("orchestration.launchThread", () => {
     ),
   );
 
-  it.live("never drops the opening message when Mend does not answer the first reads", () =>
+  it.effect("never drops the opening message when Mend does not answer the first reads", () =>
     withGateway((mend) =>
       Effect.gen(function* () {
+        const timers = yield* GatewayTimers;
         mend.workbench.addProject("project-1", "mend");
         const { rpc } = yield* pairAndConnect(mend, "FLAKY");
         // The hub has read Mend once; the reads after the create fail twice.
         const shell = yield* feed(rpc[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({}));
-        yield* shell.next(
-          (item): item is Extract<ShellItem, { kind: "snapshot" }> => item.kind === "snapshot",
+        yield* TestClock.withLive(
+          shell.next(
+            (item): item is Extract<ShellItem, { kind: "snapshot" }> => item.kind === "snapshot",
+          ),
         );
         mend.workbench.projectDetailFailures = 2;
-        const launched = yield* rpc[ORCHESTRATION_V2_WS_METHODS.launchThread](
+        const launching = yield* rpc[ORCHESTRATION_V2_WS_METHODS.launchThread](
           launchInput({ threadId: ThreadId.make("draft-flaky") }),
+        ).pipe(Effect.forkChild);
+        // Each failed read of the new session's project is tried again after its wait.
+        yield* timers.drive(
+          { within: "500 millis", deadline: "5 seconds" },
+          () => launching.pollUnsafe() !== undefined,
+          "the launch's answer",
         );
+        const launched = yield* Fiber.join(launching);
         assert.strictEqual(launched.projection.runs[0]?.userMessageId, "message-first");
-        yield* eventually(() => calls(mend, "POST", "/turns").length === 1, "the first turn");
+        yield* timers.drive(
+          { within: "500 millis", deadline: "5 seconds" },
+          () => calls(mend, "POST", "/turns").length === 1,
+          "the first turn",
+        );
         assert.deepStrictEqual(calls(mend, "POST", "/turns")[0]?.body, {
           input: "Add a health check",
         });
       }),
-    ),
+    ).pipe(withGatewayTimers),
   );
 
   it.live("never joins an existing worktree by name, even when launched at once (590-R2-1)", () =>
@@ -612,6 +628,7 @@ describe("rename, stop and delete", () => {
           );
           // Mend still lists it; the gateway does not bring it back.
           mend.workbench.emit({ type: "session", sessionId: "session-1", projectId: "project-1" });
+          // Real time: rules out the thread coming back over the socket; no gateway timer runs
           assert.isTrue(yield* shell.quiet((item) => item.kind === "thread.updated"));
         }),
       ).pipe(Effect.provide(gatewayTestLayer(mend.url, statePath)));
@@ -719,6 +736,7 @@ describe("rename, stop and delete", () => {
         yield* thread.next(
           runEvent((run) => run.userMessageId === "message-behind" && run.queueHeld === true),
         );
+        // Real time: rules out a relaunch over the socket; no gateway timer runs under it
         assert.isTrue(
           yield* thread.quiet(
             (item) =>

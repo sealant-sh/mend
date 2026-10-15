@@ -9,11 +9,12 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 
-import { assert, describe, it } from "./support/effect-vitest.ts";
+import { assert, describe, it, TestClock } from "./support/effect-vitest.ts";
 import { startFakeMend, type FakeMend } from "./support/fake-mend.ts";
 import { feed } from "./support/feed.ts";
 import { gatewayTestLayer } from "./support/gateway.ts";
 import { pairAndConnect } from "./support/rpc.ts";
+import { GatewayTimers, withGatewayTimers } from "./support/timers.ts";
 
 /**
  * VCS status (ADR 0012, phase 2): the thread's branch and its change's totals, from Mend's
@@ -31,9 +32,10 @@ const STORE = "/var/lib/mend/store/project-1/repo.git";
 type Event = VcsStatusStreamEvent;
 
 describe("VCS status", () => {
-  it.live("reports the thread's branch and change, and follows it as turns change it", () =>
+  it.effect("reports the thread's branch and change, and follows it as turns change it", () =>
     withGateway((mend) =>
       Effect.gen(function* () {
+        const timers = yield* GatewayTimers;
         mend.workbench.addProject("project-1", "mend");
         mend.workbench.addSession({ id: "session-1", projectId: "project-1" });
         mend.workbench.stats.set("change-session-1", { files: 2, additions: 10, deletions: 3 });
@@ -58,8 +60,10 @@ describe("VCS status", () => {
         assert.isNull(status.pr);
 
         const stream = yield* feed(rpc[WS_METHODS.subscribeVcsStatus]({ cwd: WORKTREE }));
-        const snapshot = yield* stream.next(
-          (event): event is Extract<Event, { _tag: "snapshot" }> => event._tag === "snapshot",
+        const snapshot = yield* TestClock.withLive(
+          stream.next(
+            (event): event is Extract<Event, { _tag: "snapshot" }> => event._tag === "snapshot",
+          ),
         );
         assert.isNull(snapshot.remote);
         assert.strictEqual(snapshot.local.branchChanges?.insertions, 10);
@@ -67,9 +71,13 @@ describe("VCS status", () => {
         // A turn changes the worktree; the status follows.
         mend.workbench.stats.set("change-session-1", { files: 3, additions: 25, deletions: 3 });
         mend.workbench.addTurn("session-1", "Add a parser");
-        const updated = yield* stream.next(
-          (event): event is Extract<Event, { _tag: "localUpdated" }> =>
-            event._tag === "localUpdated",
+        // Changes within a second are read once, a second after the first of them.
+        yield* timers.runOut("1 second", "the status refresh window");
+        const updated = yield* TestClock.withLive(
+          stream.next(
+            (event): event is Extract<Event, { _tag: "localUpdated" }> =>
+              event._tag === "localUpdated",
+          ),
         );
         assert.strictEqual(updated.local.branchChanges?.insertions, 25);
 
@@ -87,7 +95,7 @@ describe("VCS status", () => {
           assert.strictEqual(error?._tag, "GitManagerError");
         }
       }),
-    ),
+    ).pipe(withGatewayTimers),
   );
 
   it.live("lists the project's branches as Mend reports them, and the thread's own", () =>
@@ -198,28 +206,34 @@ describe("VCS status", () => {
     ),
   );
 
-  it.live("follows every session in the worktree, as each adds to its one change", () =>
+  it.effect("follows every session in the worktree, as each adds to its one change", () =>
     withGateway((mend) =>
       Effect.gen(function* () {
+        const timers = yield* GatewayTimers;
         mend.workbench.addProject("project-1", "mend");
         mend.workbench.addSession({ id: "session-1", projectId: "project-1" });
         mend.workbench.addSession({ id: "session-2", projectId: "project-1", joins: "session-1" });
         mend.workbench.stats.set("change-session-1", { files: 1, additions: 10, deletions: 0 });
         const { rpc } = yield* pairAndConnect(mend, "SHARED-VCS");
         const stream = yield* feed(rpc[WS_METHODS.subscribeVcsStatus]({ cwd: WORKTREE }));
-        yield* stream.next(
-          (event): event is Extract<Event, { _tag: "snapshot" }> => event._tag === "snapshot",
+        yield* TestClock.withLive(
+          stream.next(
+            (event): event is Extract<Event, { _tag: "snapshot" }> => event._tag === "snapshot",
+          ),
         );
         // The other session's turn moves the change.
         mend.workbench.stats.set("change-session-1", { files: 2, additions: 25, deletions: 0 });
         mend.workbench.addTurn("session-2", "Add a lexer");
-        const updated = yield* stream.next(
-          (event): event is Extract<Event, { _tag: "localUpdated" }> =>
-            event._tag === "localUpdated",
+        yield* timers.runOut("1 second", "the status refresh window");
+        const updated = yield* TestClock.withLive(
+          stream.next(
+            (event): event is Extract<Event, { _tag: "localUpdated" }> =>
+              event._tag === "localUpdated",
+          ),
         );
         assert.strictEqual(updated.local.branchChanges?.insertions, 25);
       }),
-    ),
+    ).pipe(withGatewayTimers),
   );
 
   it.live(

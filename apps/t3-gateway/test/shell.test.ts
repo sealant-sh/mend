@@ -9,11 +9,12 @@ import * as Effect from "effect/Effect";
 
 import { refreshKeyOf } from "../src/hub.ts";
 import { pointerOfSseLine } from "../src/mend-client.ts";
-import { assert, describe, it } from "./support/effect-vitest.ts";
+import { assert, describe, it, TestClock } from "./support/effect-vitest.ts";
 import { startFakeMend, type FakeMend } from "./support/fake-mend.ts";
 import { feed } from "./support/feed.ts";
 import { gatewayTestLayer } from "./support/gateway.ts";
 import { pairAndConnect } from "./support/rpc.ts";
+import { GatewayTimers, withGatewayTimers } from "./support/timers.ts";
 
 /**
  * Phase 1's shell (ADR 0012, "The surface"): Mend's projects and protocol sessions, kept live from
@@ -162,30 +163,35 @@ describe("the shell", () => {
     ),
   );
 
-  it.live("reads everything again after Mend's stream drops", () =>
+  it.effect("reads everything again after Mend's stream drops", () =>
     withGateway((mend) =>
       Effect.gen(function* () {
+        const timers = yield* GatewayTimers;
         const { workbench } = mend;
         workbench.addProject("project-1", "mend");
         const { rpc } = yield* pairAndConnect(mend, "RECONNECT");
         const shell = yield* feed(rpc[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({}));
-        yield* shell.next(isKind("snapshot"));
+        yield* TestClock.withLive(shell.next(isKind("snapshot")));
 
         // Mend restarts; a session is started while the gateway is not listening, and Mend's
         // reads fail for a while after its event stream is back.
         workbench.projectsDown = true;
         workbench.dropStreams();
         workbench.addSession({ id: "session-missed", projectId: "project-1" });
-        yield* Effect.sleep("1500 millis");
+        yield* timers.runOut("1 second", "the reconnect to Mend's event stream");
+        yield* timers.parked("3 seconds", "the full read's retry after Mend failed it");
         workbench.projectsDown = false;
-        const caught = yield* shell.next(
-          (item): item is Extract<Item, { kind: "thread.updated" }> =>
-            item.kind === "thread.updated" && item.thread.id === "session-missed",
-          "10 seconds",
+        yield* timers.runOut("3 seconds", "the full read's retry after Mend failed it");
+        const caught = yield* TestClock.withLive(
+          shell.next(
+            (item): item is Extract<Item, { kind: "thread.updated" }> =>
+              item.kind === "thread.updated" && item.thread.id === "session-missed",
+            "10 seconds",
+          ),
         );
         assert.strictEqual(caught.thread.status, "idle");
       }),
-    ),
+    ).pipe(withGatewayTimers),
   );
 });
 
@@ -213,6 +219,7 @@ describe("devices and late pointers", () => {
           workbench.emit({ type: "user", userId: "user-1", facet: "devices" });
 
           // Its socket closes: nothing more answers on it.
+          // Real time: polls until the real socket closes
           yield* Effect.gen(function* () {
             for (;;) {
               const probe = yield* Effect.exit(
@@ -256,6 +263,7 @@ describe("devices and late pointers", () => {
           headers: { authorization: `Bearer ${access.access_token}` },
         });
         assert.isFalse(state.authenticated);
+        // Real time: polls until the real socket closes
         yield* Effect.gen(function* () {
           for (;;) {
             const probe = yield* Effect.exit(
@@ -287,6 +295,7 @@ describe("devices and late pointers", () => {
           while (workbench.eventStreams > 0) yield* Effect.sleep("100 millis");
         }).pipe(Effect.timeout("5 seconds"));
         const reads = workbench.calls.length;
+        // Real time: rules out reads after the hub closed its stream; no gateway timer is left
         yield* Effect.sleep("1500 millis");
         assert.strictEqual(workbench.eventStreams, 0);
         assert.strictEqual(workbench.calls.length, reads);

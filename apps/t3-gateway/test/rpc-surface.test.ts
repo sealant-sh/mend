@@ -167,6 +167,7 @@ describe("every method not served", () => {
           // first of 168 requests at all (500 ms read every one as silent there, 2026-10-03).
           const answered = new Map<string, unknown>();
           const others: Array<unknown> = [];
+          // Real time: the quiet window waits on the real socket; no gateway timer runs under it
           while (true) {
             const next = yield* Queue.take(socket.inbox).pipe(Effect.timeoutOption("4 seconds"));
             if (Option.isNone(next)) break;

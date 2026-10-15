@@ -13,10 +13,11 @@ import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 
 import { nextEffortLineOf } from "../src/model-options.ts";
-import { assert, describe, it } from "./support/effect-vitest.ts";
+import { assert, describe, it, TestClock } from "./support/effect-vitest.ts";
 import { startFakeMend, type FakeMend } from "./support/fake-mend.ts";
 import { gatewayTestLayer } from "./support/gateway.ts";
 import { pairAndConnect } from "./support/rpc.ts";
+import { GatewayTimers, withGatewayTimers } from "./support/timers.ts";
 
 /**
  * The traits picker on a started thread (ADR 0012, phase 3): Mend sets the reasoning effort and the
@@ -115,9 +116,10 @@ describe("reasoning effort on a started thread", () => {
     ),
   );
 
-  it.live("applies a changed effort from the agent's next start, saying so until it does", () =>
+  it.effect("applies a changed effort from the agent's next start, saying so until it does", () =>
     withGateway((mend) =>
       Effect.gen(function* () {
+        const timers = yield* GatewayTimers;
         sessionRunningOn(mend, "medium");
         const { rpc } = yield* pairAndConnect(mend, "EFFORT-NEXT");
         const projection = () =>
@@ -125,7 +127,9 @@ describe("reasoning effort on a started thread", () => {
 
         // The picker moved to High: the message goes, and the effort waits for the next start.
         yield* send(rpc, "Think harder", selection([{ id: "reasoningEffort", value: "high" }]));
-        yield* eventually(() => mend.workbench.turns.get("session-1")?.length === 1, "the turn");
+        yield* TestClock.withLive(
+          eventually(() => mend.workbench.turns.get("session-1")?.length === 1, "the turn"),
+        );
         const chosen = yield* projection();
         assert.deepStrictEqual(chosen.thread.modelSelection.options, [
           { id: "reasoningEffort", value: "high" },
@@ -139,23 +143,32 @@ describe("reasoning effort on a started thread", () => {
         if (first !== undefined) mend.workbench.setTurn(first, "completed");
         mend.workbench.stopAgent("session-1");
         yield* send(rpc, "Carry on", selection([{ id: "reasoningEffort", value: "high" }]));
-        yield* eventually(() => mend.workbench.launches.length === 1, "the launch");
+        // A send that finds the agent gone waits out its backoff, then reads and launches.
+        yield* timers.drive(
+          { within: "1 second", deadline: "5 seconds" },
+          () => mend.workbench.launches.length === 1,
+          "the launch",
+        );
         assert.deepStrictEqual(mend.workbench.launches[0]?.body, {
           mode: "protocol",
           effort: "high",
         });
-        yield* eventually(
-          () => mend.workbench.agents.get("session-1")?.protocolOptions?.effort === "high",
-          "the agent on High",
+        yield* TestClock.withLive(
+          eventually(
+            () => mend.workbench.agents.get("session-1")?.protocolOptions?.effort === "high",
+            "the agent on High",
+          ),
         );
-        yield* eventually(() => mend.workbench.turns.get("session-1")?.length === 2, "its turn");
+        yield* TestClock.withLive(
+          eventually(() => mend.workbench.turns.get("session-1")?.length === 2, "its turn"),
+        );
         const applied = yield* projection();
         assert.deepStrictEqual(applied.thread.modelSelection.options, [
           { id: "reasoningEffort", value: "high" },
         ]);
         assert.notInclude(notices(applied), nextEffortLineOf("high", "medium"));
       }),
-    ),
+    ).pipe(withGatewayTimers),
   );
 
   it.live("lets go of a chosen effort set back to the running one", () =>
@@ -200,9 +213,10 @@ describe("service tier on a started thread", () => {
     ),
   );
 
-  it.live("keeps a launched thread on the tier it asked for, naming it on every relaunch", () =>
+  it.effect("keeps a launched thread on the tier it asked for, naming it on every relaunch", () =>
     withGateway((mend) =>
       Effect.gen(function* () {
+        const timers = yield* GatewayTimers;
         mend.workbench.addProject("project-1", "mend");
         const { rpc } = yield* pairAndConnect(mend, "TIER-LAUNCH");
         const threadId = ThreadId.make("draft-fast");
@@ -221,9 +235,13 @@ describe("service tier on a started thread", () => {
             attachments: [],
           },
         });
-        yield* eventually(() => mend.workbench.launches.length === 1, "the launch");
+        yield* TestClock.withLive(
+          eventually(() => mend.workbench.launches.length === 1, "the launch"),
+        );
         const sessionId = mend.workbench.launches[0]?.sessionId ?? "";
-        yield* eventually(() => mend.workbench.turns.get(sessionId)?.length === 1, "the turn");
+        yield* TestClock.withLive(
+          eventually(() => mend.workbench.turns.get(sessionId)?.length === 1, "the turn"),
+        );
         const projection = yield* rpc[ORCHESTRATION_V2_WS_METHODS.getThreadProjection]({
           threadId,
         });
@@ -241,12 +259,17 @@ describe("service tier on a started thread", () => {
         if (first !== undefined) mend.workbench.setTurn(first, "completed");
         mend.workbench.stopAgent(sessionId);
         yield* send(rpc, "Again", selection([{ id: "serviceTier", value: "fast" }]), threadId);
-        yield* eventually(() => mend.workbench.launches.length === 2, "the relaunch");
+        // A send that finds the agent gone waits out its backoff, then reads and launches.
+        yield* timers.drive(
+          { within: "1 second", deadline: "5 seconds" },
+          () => mend.workbench.launches.length === 2,
+          "the relaunch",
+        );
         assert.deepStrictEqual(mend.workbench.launches[1]?.body, {
           mode: "protocol",
           speed: "fast",
         });
       }),
-    ),
+    ).pipe(withGatewayTimers),
   );
 });

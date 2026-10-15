@@ -9,6 +9,7 @@ import {
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as HttpClient from "effect/http/HttpClient";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -16,11 +17,12 @@ import * as Stream from "effect/Stream";
 
 import { EMPTY_SHELL_SNAPSHOT } from "../src/shell.ts";
 import { orchestrationProtocolCompatibilityError } from "./support/compatibility.ts";
-import { assert, describe, it } from "./support/effect-vitest.ts";
+import { assert, describe, it, TestClock } from "./support/effect-vitest.ts";
 import { startFakeMend, type FakeMend } from "./support/fake-mend.ts";
 import { feed } from "./support/feed.ts";
 import { bearer, gatewayTestLayer, PERSON, t3Client, tokenRequest } from "./support/gateway.ts";
 import { connectWsRpc, socketUrl } from "./support/rpc.ts";
+import { GatewayTimers, withGatewayTimers } from "./support/timers.ts";
 
 /**
  * The done-when test for `/ws` (ADR 0012, phase 0): a client pairs and connects exactly as
@@ -169,6 +171,7 @@ describe("GET /ws", () => {
         ]);
 
         // And the shell stays open: nothing more arrives, and the subscription has not ended.
+        // Real time: the quiet window waits on the real socket; no gateway timer runs under it
         const quiet = yield* rpc[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({}).pipe(
           Stream.take(2),
           Stream.runCollect,
@@ -188,9 +191,12 @@ describe("GET /ws", () => {
     ),
   );
 
-  it.live("says which providers Mend holds a login of the person's for, never more", () =>
+  it.effect("says which providers Mend holds a login of the person's for, never more", () =>
     withGateway((mend) =>
       Effect.gen(function* () {
+        const timers = yield* GatewayTimers;
+        // The gateway reads a login's expiry against its clock: it starts at the real time.
+        yield* TestClock.setTime(Date.now());
         const paired = yield* pairAndTicket(mend, "LOGINS");
         const rpc = yield* connectWsRpc(paired.url);
         // Both connected and active.
@@ -288,13 +294,15 @@ describe("GET /ws", () => {
         // A slow answer never holds the config back past its deadline.
         mend.setAccounts([{ provider: "claude", status: "active" }], 10_000);
         const started = Date.now();
-        assert.deepStrictEqual(loginOf(yield* rpc[WS_METHODS.serverGetConfig]({})), [
+        const config = yield* rpc[WS_METHODS.serverGetConfig]({}).pipe(Effect.forkChild);
+        yield* timers.runOut("2 seconds", "the deadline on Mend's logins");
+        assert.deepStrictEqual(loginOf(yield* Fiber.join(config)), [
           ["claudeAgent", "ready", "unknown", null],
           ["codex", "ready", "unknown", null],
         ]);
         assert.isBelow(Date.now() - started, 5_000);
       }),
-    ),
+    ).pipe(withGatewayTimers),
   );
 
   it.live("tells a subscribed client when its logins change, and answers a refresh (R650-3)", () =>
