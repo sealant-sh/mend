@@ -1,7 +1,10 @@
 import { spawnSync } from "node:child_process";
 
+const commitResolves = (sha) =>
+  spawnSync("git", ["cat-file", "-e", `${sha}^{commit}`], { stdio: "ignore" }).status === 0;
+
 /** Shared event policy for static checks and both processes in each test lane. */
-export const ciTurboOptions = (env) => {
+export const ciTurboOptions = (env, { commitExists = commitResolves } = {}) => {
   const measurement = env.CI_MEASUREMENT_CACHE;
   if (
     measurement &&
@@ -12,8 +15,17 @@ export const ciTurboOptions = (env) => {
       message: "CI_MEASUREMENT_CACHE requires a cold or warm workflow_dispatch.",
     };
   }
+  const exactBase = /^[a-f0-9]{40}$/i.test(env.TURBO_SCM_BASE ?? "");
+  // A merge group runs what its pull requests affect only when the changes job found nothing on
+  // the full-graph list (CI_GRAPH, scripts/ci-scope.mjs) and its base commit resolves here. Any
+  // doubt runs the full graph instead of refusing: the queue must not stop on a missing base.
+  const queueAffected =
+    env.GITHUB_EVENT_NAME === "merge_group" &&
+    env.CI_GRAPH === "affected" &&
+    exactBase &&
+    commitExists(env.TURBO_SCM_BASE);
   const affected = env.GITHUB_EVENT_NAME === "pull_request" || Boolean(measurement);
-  if (affected && !/^[a-f0-9]{40}$/i.test(env.TURBO_SCM_BASE ?? "")) {
+  if (affected && !exactBase) {
     return {
       _tag: "error",
       message: "Affected runs require TURBO_SCM_BASE to be the exact base SHA.",
@@ -35,7 +47,7 @@ export const ciTurboOptions = (env) => {
       ...(force
         ? ["--force"]
         : [`--cache=local:rw${remote ? (trusted ? ",remote:rw" : ",remote:r") : ""}`]),
-      ...(affected ? ["--affected"] : []),
+      ...(affected || queueAffected ? ["--affected"] : []),
       "--summarize",
     ],
   };

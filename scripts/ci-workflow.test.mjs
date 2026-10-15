@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { globSync, readFileSync } from "node:fs";
+import { existsSync, globSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 import { parse } from "yaml";
@@ -328,14 +330,18 @@ test("the test report reaches Turbo tasks without entering hashes, outputs or gi
   assert.ok(readFileSync(new URL(".gitignore", root), "utf8").split("\n").includes(".ci-reports/"));
 });
 
-test("PRs have exact history and queue, manual and nightly events retain the full CI graph", () => {
+test("PRs and merge groups have exact history; manual and nightly events retain the full CI graph", () => {
   assert.ok(!Object.hasOwn(workflow.on, "push"), "main is reached only through the merge queue");
   assert.ok(Object.hasOwn(workflow.on, "pull_request"));
   assert.deepEqual(workflow.on.merge_group.types, ["checks_requested"]);
   assert.ok(Object.hasOwn(workflow.on, "workflow_dispatch"));
   assert.deepEqual(workflow.on.schedule, [{ cron: "23 2 * * *" }]);
   assert.equal(jobs.checks.name, undefined, "the required check context must remain checks");
-  assert.equal(workflow.env.TURBO_SCM_BASE, "${{ github.event.pull_request.base.sha }}");
+  assert.equal(
+    workflow.env.TURBO_SCM_BASE,
+    "${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}",
+  );
+  assert.equal(jobs.changes.outputs.graph, "${{ steps.scope.outputs.graph }}");
   for (const name of ["static", "test-engines", "test-clients-a", "test-clients-b"]) {
     assert.equal(
       jobs[name].steps.find((step) => step.uses?.startsWith("actions/checkout@")).with[
@@ -344,11 +350,16 @@ test("PRs have exact history and queue, manual and nightly events retain the ful
       0,
     );
     assert.ok(commands(name).includes('node scripts/ci-turbo.mjs configure >> "$GITHUB_ENV"'));
+    assert.equal(jobs[name].env.CI_GRAPH, "${{ needs.changes.outputs.graph }}", name);
   }
+  const scope = jobs.changes.steps.find((step) => step.id === "scope");
   assert.match(
-    jobs.changes.steps.find((step) => step.id === "scope").run,
-    /else\s+node scripts\/ci-scope.mjs --all/,
+    scope.run,
+    /merge_group \]; then\s+node scripts\/ci-scope.mjs --merge-group "\$QUEUE_BASE_SHA" "\$QUEUE_HEAD_SHA"/,
   );
+  assert.equal(scope.env.QUEUE_BASE_SHA, "${{ github.event.merge_group.base_sha }}");
+  assert.equal(scope.env.QUEUE_HEAD_SHA, "${{ github.event.merge_group.head_sha }}");
+  assert.match(scope.run, /else\s+node scripts\/ci-scope.mjs --all/);
   for (const name of ["web", "marketing", "desktop"]) {
     const config = JSON.parse(
       readFileSync(new URL(`../apps/${name}/turbo.json`, import.meta.url), "utf8"),
@@ -454,5 +465,88 @@ test("measurement steps do not leak cache policy into the real shard-supervision
     assert.equal(result.error, undefined);
     assert.equal(result.status, 0, `${cache}: ${result.stdout}${result.stderr}`);
     assert.match(result.stdout, /all modes preserve/);
+  }
+});
+
+test("a failed or missing nightly opens or updates one issue, with nothing but issue writes", () => {
+  const watch = parse(
+    readFileSync(new URL("../.github/workflows/nightly-watch.yml", import.meta.url), "utf8"),
+  );
+  assert.deepEqual(watch.on.workflow_run, {
+    workflows: ["CI"],
+    types: ["completed"],
+    branches: ["main"],
+  });
+  assert.equal(watch.on.schedule.length, 1);
+  assert.deepEqual(watch.permissions, { actions: "read", issues: "write" });
+  const job = watch.jobs.alert;
+  assert.deepEqual(job["runs-on"], ["self-hosted", "box", "linux", "x64"]);
+  assert.equal(job.permissions, undefined, "the job inherits the workflow's two permissions");
+  assert.ok(
+    !job.steps.some((step) => step.uses?.startsWith("actions/checkout@")),
+    "the job that can write issues never checks out repository code",
+  );
+  assert.match(job.if, /github\.event\.workflow_run\.event == 'schedule'/);
+  assert.match(job.if, /github\.event\.workflow_run\.conclusion != 'success'/);
+  const run = job.steps.map((step) => step.run ?? "").join("\n");
+  assert.match(run, /--workflow ci\.yml --event schedule --branch main --status success/);
+  assert.match(run, /30 \* 3600/);
+  assert.match(run, /gh issue list --label nightly-failure --state open/);
+  assert.match(run, /gh issue comment "\$open"/);
+});
+
+test("the nightly watch comments on its open issue, opens one when none is open, and stays quiet within 30 hours", () => {
+  const watch = parse(
+    readFileSync(new URL("../.github/workflows/nightly-watch.yml", import.meta.url), "utf8"),
+  );
+  const script = watch.jobs.alert.steps[0].run;
+  const tmp = mkdtempSync(join(tmpdir(), "mend-nightly-watch-"));
+  try {
+    const log = join(tmp, "gh.log");
+    // A fake gh: answers the reads from the environment and records every call.
+    writeFileSync(
+      join(tmp, "gh"),
+      `#!/usr/bin/env bash
+printf '%s\\n' "$*" >> "${log}"
+case "$1 $2" in
+  "api repos/"*) echo "test-engines (failure)" ;;
+  "run list") echo "$FAKE_LAST_SUCCESS" ;;
+  "issue list") echo "$FAKE_OPEN_ISSUE" ;;
+esac
+`,
+      { mode: 0o755 },
+    );
+    const run = (env) => {
+      rmSync(log, { force: true });
+      const result = spawnSync("bash", ["-c", script], {
+        env: { PATH: `${tmp}:${process.env.PATH}`, GH_REPO: "sealant-sh/mend", ...env },
+        encoding: "utf8",
+      });
+      assert.equal(result.status, 0, result.stderr);
+      return existsSync(log) ? readFileSync(log, "utf8") : "";
+    };
+    const failed = {
+      EVENT_NAME: "workflow_run",
+      RUN_ID: "1",
+      RUN_URL: "u",
+      RUN_CONCLUSION: "failure",
+      RUN_SHA: "s",
+    };
+    assert.match(run({ ...failed, FAKE_OPEN_ISSUE: "" }), /^issue create --label nightly-failure/m);
+    const comment = run({ ...failed, FAKE_OPEN_ISSUE: "42" });
+    assert.match(comment, /^issue comment 42 --body .*test-engines \(failure\)/m);
+    assert.doesNotMatch(comment, /issue create/);
+    const hoursAgo = (hours) => new Date(Date.now() - hours * 3600_000).toISOString();
+    assert.doesNotMatch(run({ EVENT_NAME: "schedule", FAKE_LAST_SUCCESS: hoursAgo(1) }), /issue/);
+    assert.match(
+      run({ EVENT_NAME: "schedule", FAKE_LAST_SUCCESS: hoursAgo(31), FAKE_OPEN_ISSUE: "" }),
+      /^issue create --label nightly-failure .*No scheduled CI run on main has succeeded in 30 hours/m,
+    );
+    assert.match(
+      run({ EVENT_NAME: "schedule", FAKE_LAST_SUCCESS: "", FAKE_OPEN_ISSUE: "" }),
+      /last success: none/,
+    );
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
   }
 });

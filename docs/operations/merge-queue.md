@@ -1,10 +1,40 @@
 # Merge queue activation
 
 Mend's required CI workflow supports `pull_request`, `merge_group: checks_requested`, manual
-dispatch and the nightly schedule. Pull requests use affected Turbo tasks. Merge groups run the full
-graph, then the `checks` job rejects any missing, skipped, cancelled or failed required lane. There
-is no post-merge `push: main` run: every commit reaches `main` through the queue, and the
-merge-group run is the full graph on exactly that commit and the trusted cache writer.
+dispatch and the nightly schedule. Pull requests use affected Turbo tasks, and so do merge groups,
+with a full-graph fallback (below); the `checks` job rejects any missing, skipped, cancelled or
+failed required lane. There is no post-merge `push: main` run: every commit reaches `main` through
+the queue, and the merge-group run tests exactly that commit and is the trusted cache writer.
+
+## Affected merge groups
+
+Yiannis approved this on 2026-10-15, for the speed and because a release still runs everything:
+`next-channel.md` step 8 dispatches `ci.yml` on the Version pull request, which runs the full graph,
+then packaged acceptance.
+
+- The `changes` job diffs the whole group, `merge_group.base_sha...head_sha`, so a batch of five
+  pull requests is scoped by all five (`scripts/ci-scope.mjs --merge-group`). Its `graph` output is
+  `affected` only when every changed path lies in an `apps/`, `packages/` or `tooling/` workspace
+  package and none is a `turbo.json`; a changeset (`.changeset/**`) is allowed, since only
+  versioning reads it. A root file, the lockfile, the workflows, `scripts/`, `deploy/`, root `docs/`
+  or any `turbo.json` makes it `full`.
+- It fails closed. An invalid or missing SHA, a failed or empty diff, or a base commit that does not
+  resolve on the runner (`scripts/ci-turbo.mjs`) runs the full graph rather than failing the queue.
+- Turbo's `--affected` follows the package graph, so a changed package also runs every package that
+  depends on it. What it cannot see is what the fallback list and the nightly cover: files a test
+  reads without declaring them (the input audit and the build input probe guard those), the runner's
+  own git, Postgres, Docker and SSH versions that the 14 uncached suites exercise, and links that
+  are not package dependencies.
+- The merge group stays the trusted cache writer whichever graph it runs.
+- The nightly full run (02:23 UTC, `--force`) is the backstop. `nightly-watch.yml` keeps one open
+  `nightly-failure` issue: it comments on it, or opens it, when a scheduled run does not succeed,
+  and when no scheduled run on main has succeeded for 30 hours. GitHub started the 2026-10-15
+  nightly five hours late.
+
+Replayed over the 30 commits on `main` before this change, 13 would have run affected and 17 the
+full graph: the CI pull requests touched `.github/`, `scripts/` or root docs, and #1006 and #991
+touched `.oxlintrc.json` or the lockfile. Package-only changes, the usual feature and fix work, run
+affected.
 
 The workflow change does not activate or edit repository policy. The CI orchestrator owns ruleset
 `20201151` (`protect-main`) and must apply its merge-queue changes after this pull request lands.

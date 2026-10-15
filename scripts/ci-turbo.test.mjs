@@ -16,6 +16,8 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
+import { ciTurboOptions } from "./ci-turbo.mjs";
+
 const command = fileURLToPath(new URL("ci-turbo.mjs", import.meta.url));
 const fixture = (t) => {
   const root = mkdtempSync(join(tmpdir(), "mend-ci-turbo-"));
@@ -305,4 +307,53 @@ test("measurement dispatches are affected-only, cold disables remote, warm never
     }
     assert.equal(run(["lint"], { ...env, CI_MEASUREMENT_CACHE: "other" }).status, 1);
   }
+});
+
+test("a merge group runs only what it affects when the changes job says so and its base resolves", () => {
+  const queue = {
+    RUNNER_ENVIRONMENT: "self-hosted",
+    GITHUB_EVENT_NAME: "merge_group",
+    GITHUB_REF: "refs/heads/gh-readonly-queue/main/pr-1-abcd",
+    TURBO_SCM_BASE: "b".repeat(40),
+  };
+  const resolves = () => true;
+  for (const [env, commitExists, affected] of [
+    [{ ...queue, CI_GRAPH: "affected" }, resolves, true],
+    [{ ...queue, CI_GRAPH: "affected" }, () => false, false],
+    [{ ...queue, CI_GRAPH: "full" }, resolves, false],
+    [queue, resolves, false],
+    [{ ...queue, CI_GRAPH: "affected", TURBO_SCM_BASE: "" }, resolves, false],
+    [{ ...queue, CI_GRAPH: "affected", TURBO_SCM_BASE: "main" }, resolves, false],
+    [
+      {
+        ...queue,
+        CI_GRAPH: "affected",
+        GITHUB_EVENT_NAME: "schedule",
+        GITHUB_REF: "refs/heads/main",
+      },
+      resolves,
+      false,
+    ],
+  ]) {
+    const options = ciTurboOptions(env, { commitExists });
+    assert.equal(options._tag, "ok", JSON.stringify(env));
+    assert.equal(options.args.includes("--affected"), affected, JSON.stringify(env));
+    // The queue stays the trusted cache writer whichever graph it runs.
+    if (env.GITHUB_EVENT_NAME === "merge_group")
+      assert.ok(options.args.includes("--cache=local:rw,remote:rw"), JSON.stringify(env));
+  }
+});
+
+test("a merge group whose base cannot be resolved runs the full graph rather than failing", (t) => {
+  const run = fixture(t);
+  const result = run(["build", "typecheck", "lint"], {
+    RUNNER_ENVIRONMENT: "self-hosted",
+    GITHUB_EVENT_NAME: "merge_group",
+    GITHUB_REF: "refs/heads/gh-readonly-queue/main/pr-1-abcd",
+    TURBO_SCM_BASE: "c".repeat(40),
+    CI_GRAPH: "affected",
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.args.includes("--affected"), false);
+  assert.ok(result.args.includes("--cache=local:rw,remote:rw"));
 });
