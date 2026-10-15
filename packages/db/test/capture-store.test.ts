@@ -2139,24 +2139,34 @@ describe.skipIf(postgres.skip)(
       );
     });
 
-    it("a database with worktrees waits out the old server's longest URL once; one without waits for nothing", async () => {
-      const used = await on(databases.used)(
-        upTo0099(
-          Effect.gen(function* () {
-            const sql = yield* SqlClient.SqlClient;
-            yield* sql`
+    // Two full migration chains against real Postgres, one per database: about 3 s on an idle box
+    // runner, 5 s on a loaded one (#999). They share nothing, so they run side by side, and the
+    // case has a deadline of its own rather than the default's 5 s.
+    it(
+      "a database with worktrees waits out the old server's longest URL once; one without waits for nothing",
+      { timeout: 20_000 },
+      async () => {
+        const [used, fresh] = await Promise.all([
+          on(databases.used)(
+            upTo0099(
+              Effect.gen(function* () {
+                const sql = yield* SqlClient.SqlClient;
+                yield* sql`
             INSERT INTO projects (id, name, store_path, default_branch, organization_id)
             VALUES ('p-used', 'web', '/store/p/repo.git', 'main',
                     (SELECT id FROM organizations LIMIT 1))`;
-            yield* sql`
+                yield* sql`
             INSERT INTO worktrees (id, project_id, name, directory, branch, base_sha)
             VALUES ('wt-used', 'p-used', 'wt-used', 'wt-used', 'mend/wt/wt-used', 'abc')`;
-          }),
-        ),
-      );
-      expect(used).toBe(20);
-      expect(await on(databases.fresh)(upTo0099(Effect.void))).toBeNull();
-    });
+              }),
+            ),
+          ),
+          on(databases.fresh)(upTo0099(Effect.void)),
+        ]);
+        expect(used).toBe(20);
+        expect(fresh).toBeNull();
+      },
+    );
   },
 );
 
