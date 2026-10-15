@@ -5,12 +5,12 @@ import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { describe, expect, it } from "@effect/vitest";
 import { SessionId } from "@mend/domain";
 import {
   RepositoryCloneUrl,
   type RepositoryCloneUrl as RepositoryCloneUrlValue,
 } from "@mend/domain/workbench";
+import { describe, expect, it } from "@mend/test-ci/effect-vitest";
 import { Effect, Layer, Result } from "effect";
 
 import { remoteCredentialFindings } from "../src/remote-credentials.ts";

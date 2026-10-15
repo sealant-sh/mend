@@ -4,7 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { Readable } from "node:stream";
 
-import { it as effectIt } from "@effect/vitest";
+import { it as effectIt, TestClock } from "@mend/test-ci/effect-vitest";
 import { Effect, Exit, Layer } from "effect";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -15,6 +15,7 @@ import {
   BlobStoreS3Live,
   isValidBlobKey,
   makeS3BlobStore,
+  PUT_URL_TTL_MAX_SECONDS,
   resolveBlobStoreConfig,
 } from "../src/blob-store.ts";
 
@@ -775,13 +776,15 @@ const signedHeadersOf = (url: string) =>
   (new URL(url).searchParams.get("X-Amz-SignedHeaders") ?? "").split(";");
 
 describe("upload length binding (docs/adr/0003, multi mode gate)", () => {
-  const store = makeS3BlobStore({
-    bucket: "captures",
-    endpoint: "https://s3.example.invalid",
-    region: "us-east-1",
-    forcePathStyle: true,
-    credentials: { accessKeyId: "AKIDEXAMPLE", secretAccessKey: "secret" },
-  });
+  const store = Effect.runSync(
+    makeS3BlobStore({
+      bucket: "captures",
+      endpoint: "https://s3.example.invalid",
+      region: "us-east-1",
+      forcePathStyle: true,
+      credentials: { accessKeyId: "AKIDEXAMPLE", secretAccessKey: "secret" },
+    }),
+  );
 
   it("signs a declared size into PUT and part URLs, and leaves others unbound", async () => {
     const [bound, unbound, part] = await Effect.runPromise(
@@ -811,4 +814,43 @@ describe("upload length binding (docs/adr/0003, multi mode gate)", () => {
     expect(signedHeadersOf(unbound)).toContain("if-none-match");
     expect(new URL(long).searchParams.get("X-Amz-Expires")).toBe("900");
   });
+});
+
+// A bucket that does not answer the overwrite probe is treated as one that replaces objects, so
+// both windows count here: the one after this store started, and each minted PUT URL's life.
+describe("replacement windows on the Effect clock", () => {
+  const startupWindowMs = (PUT_URL_TTL_MAX_SECONDS + 5 * 60) * 1000;
+  const unreachable = makeS3BlobStore({
+    bucket: "captures",
+    endpoint: "https://s3.example.invalid",
+    region: "us-east-1",
+    forcePathStyle: true,
+    credentials: { accessKeyId: "AKIDEXAMPLE", secretAccessKey: "secret" },
+  });
+
+  effectIt.effect("the startup window runs from when the store was made", () =>
+    Effect.gen(function* () {
+      yield* TestClock.adjust(1_000);
+      const store = yield* unreachable;
+      yield* TestClock.adjust(60_000);
+      expect(yield* store.startupUntil).toBe(1_000 + startupWindowMs);
+      expect(yield* store.replaceableUntil("captures/w/1/packs/never-minted")).toBe(
+        1_000 + startupWindowMs,
+      );
+    }),
+  );
+
+  effectIt.effect("a minted PUT URL keeps its key replaceable until it expires", () =>
+    Effect.gen(function* () {
+      const store = yield* unreachable;
+      yield* TestClock.adjust(startupWindowMs + 7_000);
+      yield* store.presign("captures/w/1/packs/minted", "PUT", 60);
+      expect(yield* store.replaceableUntil("captures/w/1/packs/minted")).toBe(
+        startupWindowMs + 7_000 + 60_000,
+      );
+      expect(yield* store.replaceableUntil("captures/w/1/packs/never-minted")).toBe(
+        startupWindowMs,
+      );
+    }),
+  );
 });

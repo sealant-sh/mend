@@ -20,7 +20,7 @@ import {
   UploadPartCommand,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
-import { Cause, Effect, Exit, Layer, Schema, Semaphore } from "effect";
+import { Cause, Clock, Effect, Exit, Layer, Schema, Semaphore } from "effect";
 import * as Context from "effect/Context";
 
 import { mendHome } from "./paths.ts";
@@ -643,11 +643,12 @@ export const makeFsBlobStore = (root: string): typeof BlobStore.Service => {
 
   const createMultipart = Effect.fn("BlobStore.createMultipart")(function* (key: string) {
     yield* checkKey("createMultipart", key);
+    const initiatedAt = new Date(yield* Clock.currentTimeMillis).toISOString();
     return yield* attempt("createMultipart", key, (): MultipartCreated => {
       if (fs.existsSync(objectPath(key))) return { kind: "exists" };
       const uploadId = crypto.randomUUID();
       fs.mkdirSync(uploadDir(uploadId), { recursive: true });
-      const meta: UploadMeta = { key, initiatedAt: new Date().toISOString() };
+      const meta: UploadMeta = { key, initiatedAt };
       fs.writeFileSync(path.join(uploadDir(uploadId), "meta.json"), JSON.stringify(meta));
       return { kind: "created", uploadId };
     });
@@ -823,7 +824,7 @@ const MINTED_KEYS_REMEMBERED = 200_000;
 
 /** Build the S3-backed service value over any S3-compatible endpoint. */
 
-export const makeS3BlobStore = (options: S3BlobStoreOptions): typeof BlobStore.Service => {
+export const makeS3BlobStore = Effect.fnUntraced(function* (options: S3BlobStoreOptions) {
   const clientOptions = {
     region: options.region,
     forcePathStyle: options.forcePathStyle,
@@ -852,7 +853,7 @@ export const makeS3BlobStore = (options: S3BlobStoreOptions): typeof BlobStore.S
   // assumed: S3, R2 and MinIO answer `If-None-Match: *` over an existing key with 412; Garage
   // (v2.4.1, measured 2026-09-28) accepts the header and replaces the bytes. Asked once, on a
   // probe key of its own, and remembered once answered; a probe that fails is asked again.
-  const startedAtMs = Date.now();
+  const startedAtMs = yield* Clock.currentTimeMillis;
   let refuses: boolean | null = null;
   const probeRefusesOverwrite = Effect.gen(function* () {
     if (refuses !== null) return refuses;
@@ -951,9 +952,8 @@ export const makeS3BlobStore = (options: S3BlobStoreOptions): typeof BlobStore.S
   const minted = new Map<string, number>();
   // Key → the lock its multipart completes take, and how many wait on it (`completeOnce`).
   const completing = new Map<string, { readonly lock: Semaphore.Semaphore; users: number }>();
-  const noteMinted = (key: string, untilMs: number) => {
+  const noteMinted = (key: string, untilMs: number, now: number) => {
     if (minted.size >= MINTED_KEYS_REMEMBERED) {
-      const now = Date.now();
       for (const [known, until] of minted) if (until <= now) minted.delete(known);
       if (minted.size >= MINTED_KEYS_REMEMBERED) minted.clear();
     }
@@ -1162,7 +1162,10 @@ export const makeS3BlobStore = (options: S3BlobStoreOptions): typeof BlobStore.S
       ),
     );
     // A URL bound to its bytes can only write those bytes again: no authority to replace.
-    if (checksum === null) noteMinted(key, Date.now() + expiresIn * 1000);
+    if (checksum === null) {
+      const now = yield* Clock.currentTimeMillis;
+      noteMinted(key, now + expiresIn * 1000, now);
+    }
     return url;
   });
 
@@ -1388,11 +1391,11 @@ export const makeS3BlobStore = (options: S3BlobStoreOptions): typeof BlobStore.S
     completeMultipart,
     abortMultipart,
     listMultipart,
-  };
-};
+  } satisfies typeof BlobStore.Service;
+});
 
 export const BlobStoreS3Live = (options: S3BlobStoreOptions): Layer.Layer<BlobStore> =>
-  Layer.succeed(BlobStore, makeS3BlobStore(options));
+  Layer.effect(BlobStore, makeS3BlobStore(options));
 
 /** The configured store: `dir://` → the directory implementation, `s3://` → the bucket. */
 export const BlobStoreLive: Layer.Layer<BlobStore, never, BlobStoreConfig> = Layer.unwrap(

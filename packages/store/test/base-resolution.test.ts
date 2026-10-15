@@ -4,7 +4,7 @@ import { createServer } from "node:http";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { expect, it } from "@effect/vitest";
+import { expect, it } from "@mend/test-ci/effect-vitest";
 import { Effect, Layer } from "effect";
 
 import { AgentBridgeLive } from "../src/agent-bridge.ts";

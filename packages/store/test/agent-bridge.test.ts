@@ -3,7 +3,7 @@ import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { describe, expect, it } from "@effect/vitest";
+import { describe, expect, it, TestClock } from "@mend/test-ci/effect-vitest";
 import { Effect, Layer } from "effect";
 
 import { AgentBridge, AgentBridgeLive } from "../src/agent-bridge.ts";
@@ -210,4 +210,25 @@ describe("AgentBridge", () => {
       }),
     );
   });
+
+  it.effect("dates a share from when it attached, on the Effect clock", () =>
+    Effect.gen(function* () {
+      const tmp = yield* Effect.acquireRelease(
+        Effect.sync(() => fs.mkdtempSync(path.join(os.tmpdir(), "mend-bridge-"))),
+        (dir) => Effect.sync(() => fs.rmSync(dir, { recursive: true, force: true })),
+      );
+      yield* Effect.gen(function* () {
+        const bridge = yield* AgentBridge;
+        yield* TestClock.adjust(42_000);
+        const first = yield* bridge.attach("u1", { name: "first", send: () => {} });
+        expect((yield* bridge.status("u1")).since).toEqual(new Date(42_000));
+        yield* TestClock.adjust(3_000);
+        const second = yield* bridge.attach("u1", { name: "second", send: () => {} });
+        expect((yield* bridge.status("u1")).since).toEqual(new Date(45_000));
+        first.detach();
+        second.detach();
+        expect((yield* bridge.status("u1")).since).toBeNull();
+      }).pipe(Effect.provide(AgentBridgeLive.pipe(Layer.provide(MendKeysConfig.layerFor(tmp)))));
+    }),
+  );
 });
