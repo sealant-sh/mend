@@ -1,5 +1,5 @@
 import { and, eq, inArray } from "drizzle-orm";
-import { Effect, Layer, Schema } from "effect";
+import { DateTime, Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
 import { MendDB } from "../client.ts";
@@ -64,7 +64,7 @@ export const PushDevicesRepoLive: Layer.Layer<PushDevicesRepo, never, MendDB> = 
         .values({ token, platform, userId })
         .onConflictDoUpdate({
           target: pushDevices.token,
-          set: { platform, userId, lastSeenAt: new Date() },
+          set: { platform, userId, lastSeenAt: yield* DateTime.nowAsDate },
         })
         .returning(selectedDevice)
         .pipe(Effect.orDie);

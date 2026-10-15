@@ -2,7 +2,7 @@ import { PgClient } from "@effect/sql-pg";
 import { type ChangeId } from "@mend/domain";
 import { ChangePass, type PassKind } from "@mend/domain/workbench";
 import { and, asc, eq, inArray } from "drizzle-orm";
-import { Effect, Layer, Schema } from "effect";
+import { DateTime, Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
 import { MendDB } from "../client.ts";
@@ -89,7 +89,7 @@ export const ChangePassesRepoLive: Layer.Layer<
             status: "queued",
             detail: null,
             findings: null,
-            startedAt: new Date(),
+            startedAt: yield* DateTime.nowAsDate,
             finishedAt: null,
           },
           setWhere: inArray(changePasses.status, ["completed", "failed"]),
@@ -111,7 +111,7 @@ export const ChangePassesRepoLive: Layer.Layer<
             status: "running",
             detail: null,
             findings: null,
-            startedAt: new Date(),
+            startedAt: yield* DateTime.nowAsDate,
             finishedAt: null,
           },
         })
@@ -126,7 +126,7 @@ export const ChangePassesRepoLive: Layer.Layer<
     ) {
       yield* db
         .update(changePasses)
-        .set({ status: "completed", findings, detail: null, finishedAt: new Date() })
+        .set({ status: "completed", findings, detail: null, finishedAt: yield* DateTime.nowAsDate })
         .where(and(eq(changePasses.changeId, changeId), eq(changePasses.kind, kind)))
         .pipe(Effect.orDie);
       yield* notify(changeId);
@@ -139,7 +139,11 @@ export const ChangePassesRepoLive: Layer.Layer<
     ) {
       yield* db
         .update(changePasses)
-        .set({ status: "failed", detail: detail.slice(0, 1000), finishedAt: new Date() })
+        .set({
+          status: "failed",
+          detail: detail.slice(0, 1000),
+          finishedAt: yield* DateTime.nowAsDate,
+        })
         .where(and(eq(changePasses.changeId, changeId), eq(changePasses.kind, kind)))
         .pipe(Effect.orDie);
       yield* notify(changeId);

@@ -1,6 +1,6 @@
 import type { ProjectId } from "@mend/domain";
 import { and, eq } from "drizzle-orm";
-import { Effect, Layer } from "effect";
+import { DateTime, Effect, Layer } from "effect";
 import * as Context from "effect/Context";
 
 import { MendDB } from "../client.ts";
@@ -72,7 +72,7 @@ export const SlackDefaultsRepoLive: Layer.Layer<SlackDefaultsRepo, never, MendDB
       readonly projectId: ProjectId;
       readonly setByUserId: string;
     }) {
-      const now = new Date();
+      const now = yield* DateTime.nowAsDate;
       const [row] = yield* db
         .insert(slackChannelDefaults)
         .values({ ...input, updatedAt: now })
@@ -121,7 +121,7 @@ export const SlackDefaultsRepoLive: Layer.Layer<SlackDefaultsRepo, never, MendDB
           .pipe(Effect.orDie);
         return;
       }
-      const now = new Date();
+      const now = yield* DateTime.nowAsDate;
       yield* db
         .insert(slackUserDefaults)
         .values({ userId, projectId, updatedAt: now })

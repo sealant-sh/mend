@@ -1,10 +1,11 @@
 import { PgClient } from "@effect/sql-pg";
 import { ProjectId, Sha, WorktreeId } from "@mend/domain";
+import { it } from "@mend/test-ci/effect-vitest";
 import { Cause, Deferred, Effect, Exit, Fiber, Layer, Option, Redacted } from "effect";
 import * as Str from "effect/String";
 import { FastCheck } from "effect/testing";
 import { SqlClient } from "effect/unstable/sql";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect } from "vitest";
 
 import { MendDBLive } from "../src/client.ts";
 import { migrations } from "../src/migrations.ts";
@@ -59,9 +60,12 @@ const publish = (input: Parameters<CaptureStoreRepo["Service"]["publishObservedS
 
 const withAdmin = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
   Effect.runPromise(effect.pipe(Effect.provide(adminLayer), Effect.scoped));
+const provided = <A, E>(
+  effect: Effect.Effect<A, E, CaptureStoreRepo | StoreRefsRepo | SqlClient.SqlClient>,
+) => effect.pipe(Effect.provide(reposLayer));
 const run = <A, E>(
   effect: Effect.Effect<A, E, CaptureStoreRepo | StoreRefsRepo | SqlClient.SqlClient>,
-) => Effect.runPromise(effect.pipe(Effect.provide(reposLayer), Effect.scoped));
+) => Effect.runPromise(provided(effect).pipe(Effect.scoped));
 
 const PROJECT = ProjectId.make("proj-cap");
 let worktreeSeq = 0;
@@ -241,72 +245,82 @@ describe.skipIf(postgres.skip)("capture store (0053)", () => {
   });
 
   for (const end of ["commit", "interruption"]) {
-    it(`publication guard shares the transaction connection and releases its lock on ${end}`, async () => {
-      const result = await run(
+    // Observes a real Postgres lock wait, so the polling sleeps run on the live clock.
+    it.live(
+      `publication guard shares the transaction connection and releases its lock on ${end}`,
+      () =>
         Effect.gen(function* () {
-          const sql = yield* SqlClient.SqlClient;
-          const repo = yield* CaptureStoreRepo;
-          const worktreeId = yield* freshWorktree;
-          const holder = { executorId: "guard-lock", launchId: "guard-lock-launch" };
-          const { epoch } = yield* repo.claim(worktreeId, holder.executorId, 3600, holder.launchId);
-          const locked = yield* Deferred.make<void>();
-          const finish = yield* Deferred.make<void>();
-          const waiterPid = yield* Deferred.make<number>();
-          const holding = yield* Effect.forkChild(
-            sql.withTransaction(
-              Effect.gen(function* () {
-                const guarded = yield* repo.withCurrentLease(
-                  worktreeId,
-                  epoch,
-                  holder,
-                  () => "prepared",
-                );
-                expect(guarded).toEqual(Option.some("prepared"));
-                yield* Deferred.succeed(locked, undefined);
-                // Test-only hold after the callback: production never waits here or does bucket I/O.
-                yield* Deferred.await(finish);
-              }),
-            ),
-          );
-          yield* Deferred.await(locked);
-          const releasing = yield* Effect.forkChild(
-            sql.withTransaction(
-              Effect.gen(function* () {
-                const [row] = yield* sql<{ pid: number }>`SELECT pg_backend_pid() AS pid`;
-                if (row === undefined) return yield* Effect.die("missing test backend PID");
-                yield* Deferred.succeed(waiterPid, row.pid);
-                return yield* repo.release(worktreeId, epoch);
-              }),
-            ),
-          );
-          const pid = yield* Deferred.await(waiterPid);
-          const waited = yield* Effect.gen(function* () {
-            for (;;) {
-              const [state] = yield* sql<{
-                waiting: boolean;
-              }>`SELECT wait_event_type = 'Lock' AS waiting
+          const result = yield* provided(
+            Effect.gen(function* () {
+              const sql = yield* SqlClient.SqlClient;
+              const repo = yield* CaptureStoreRepo;
+              const worktreeId = yield* freshWorktree;
+              const holder = { executorId: "guard-lock", launchId: "guard-lock-launch" };
+              const { epoch } = yield* repo.claim(
+                worktreeId,
+                holder.executorId,
+                3600,
+                holder.launchId,
+              );
+              const locked = yield* Deferred.make<void>();
+              const finish = yield* Deferred.make<void>();
+              const waiterPid = yield* Deferred.make<number>();
+              const holding = yield* Effect.forkChild(
+                sql.withTransaction(
+                  Effect.gen(function* () {
+                    const guarded = yield* repo.withCurrentLease(
+                      worktreeId,
+                      epoch,
+                      holder,
+                      () => "prepared",
+                    );
+                    expect(guarded).toEqual(Option.some("prepared"));
+                    yield* Deferred.succeed(locked, undefined);
+                    // Test-only hold after the callback: production never waits here or does bucket I/O.
+                    yield* Deferred.await(finish);
+                  }),
+                ),
+              );
+              yield* Deferred.await(locked);
+              const releasing = yield* Effect.forkChild(
+                sql.withTransaction(
+                  Effect.gen(function* () {
+                    const [row] = yield* sql<{ pid: number }>`SELECT pg_backend_pid() AS pid`;
+                    if (row === undefined) return yield* Effect.die("missing test backend PID");
+                    yield* Deferred.succeed(waiterPid, row.pid);
+                    return yield* repo.release(worktreeId, epoch);
+                  }),
+                ),
+              );
+              const pid = yield* Deferred.await(waiterPid);
+              const waited = yield* Effect.gen(function* () {
+                for (;;) {
+                  const [state] = yield* sql<{
+                    waiting: boolean;
+                  }>`SELECT wait_event_type = 'Lock' AS waiting
               FROM pg_stat_activity WHERE pid = ${pid}`;
-              if (state?.waiting === true) return true;
-              yield* Effect.sleep("10 millis");
-            }
-          }).pipe(
-            Effect.timeout("4 seconds"),
-            Effect.onExit(() =>
-              end === "interruption"
-                ? Fiber.interrupt(holding)
-                : Deferred.succeed(finish, undefined),
-            ),
+                  if (state?.waiting === true) return true;
+                  yield* Effect.sleep("10 millis");
+                }
+              }).pipe(
+                Effect.timeout("4 seconds"),
+                Effect.onExit(() =>
+                  end === "interruption"
+                    ? Fiber.interrupt(holding)
+                    : Deferred.succeed(finish, undefined),
+                ),
+              );
+              const holderExit = yield* Fiber.await(holding);
+              return { waited, holderExit, released: yield* Fiber.join(releasing) };
+            }),
           );
-          const holderExit = yield* Fiber.await(holding);
-          return { waited, holderExit, released: yield* Fiber.join(releasing) };
+          expect(result.waited).toBe(true);
+          expect(result.released).toBe(true);
+          expect(
+            Exit.isFailure(result.holderExit) && Cause.hasInterrupts(result.holderExit.cause),
+          ).toBe(end === "interruption");
         }),
-      );
-      expect(result.waited).toBe(true);
-      expect(result.released).toBe(true);
-      expect(
-        Exit.isFailure(result.holderExit) && Cause.hasInterrupts(result.holderExit.cause),
-      ).toBe(end === "interruption");
-    });
+    );
   }
 
   it("heartbeat renews only under the holder's epoch; release lets the next claimer in", async () => {
@@ -494,69 +508,72 @@ describe.skipIf(postgres.skip)("capture store (0053)", () => {
   });
 
   for (const changed of ["base", "head", "fsck", "summary"]) {
-    it(`publication rechecks ${changed} after actually waiting on its row`, async () => {
-      const result = await run(
-        Effect.gen(function* () {
-          const repo = yield* CaptureStoreRepo;
-          const sql = yield* SqlClient.SqlClient;
-          const worktreeId = yield* freshWorktree;
-          const { epoch } = yield* repo.claim(worktreeId, "publisher-holder");
-          const zero = captureInput(worktreeId, 0, null, epoch);
-          yield* repo.register(zero);
-          yield* repo.acceptSummary(worktreeId, zero.id, "claimed-original");
-          const locked = yield* Deferred.make<void>();
-          const release = yield* Deferred.make<void>();
-          const holder = yield* Effect.forkChild(
-            sql.withTransaction(
-              Effect.gen(function* () {
-                if (changed === "base")
-                  yield* sql`UPDATE worktrees SET base_sha = ${"b".repeat(40)} WHERE id = ${worktreeId}`;
-                if (changed === "head")
-                  yield* repo.register(captureInput(worktreeId, 1, zero.id, epoch));
-                if (changed === "fsck") yield* repo.setGitFsck(zero.id, "failed");
-                if (changed === "summary")
-                  yield* sql`UPDATE capture_summaries SET state = 'observed', key = 'other-winner' WHERE capture_id = ${zero.id}`;
-                yield* Deferred.succeed(locked, undefined);
-                yield* Deferred.await(release);
-              }),
-            ),
-          );
-          yield* Deferred.await(locked);
-          const publication = yield* Effect.forkChild(
-            publish({ worktreeId, captureId: zero.id, baseSha: sha("a"), key: "stale-observed" }),
-          );
-          // Observe the database wait itself; starting a fiber alone proves no lock ordering.
-          const waited = yield* Effect.gen(function* () {
-            for (;;) {
-              const waiting = yield* sql<{ count: number }>`SELECT count(*)::int AS count
+    // Observes a real Postgres lock wait, so the polling sleeps run on the live clock.
+    it.live(`publication rechecks ${changed} after actually waiting on its row`, () =>
+      Effect.gen(function* () {
+        const result = yield* provided(
+          Effect.gen(function* () {
+            const repo = yield* CaptureStoreRepo;
+            const sql = yield* SqlClient.SqlClient;
+            const worktreeId = yield* freshWorktree;
+            const { epoch } = yield* repo.claim(worktreeId, "publisher-holder");
+            const zero = captureInput(worktreeId, 0, null, epoch);
+            yield* repo.register(zero);
+            yield* repo.acceptSummary(worktreeId, zero.id, "claimed-original");
+            const locked = yield* Deferred.make<void>();
+            const release = yield* Deferred.make<void>();
+            const holder = yield* Effect.forkChild(
+              sql.withTransaction(
+                Effect.gen(function* () {
+                  if (changed === "base")
+                    yield* sql`UPDATE worktrees SET base_sha = ${"b".repeat(40)} WHERE id = ${worktreeId}`;
+                  if (changed === "head")
+                    yield* repo.register(captureInput(worktreeId, 1, zero.id, epoch));
+                  if (changed === "fsck") yield* repo.setGitFsck(zero.id, "failed");
+                  if (changed === "summary")
+                    yield* sql`UPDATE capture_summaries SET state = 'observed', key = 'other-winner' WHERE capture_id = ${zero.id}`;
+                  yield* Deferred.succeed(locked, undefined);
+                  yield* Deferred.await(release);
+                }),
+              ),
+            );
+            yield* Deferred.await(locked);
+            const publication = yield* Effect.forkChild(
+              publish({ worktreeId, captureId: zero.id, baseSha: sha("a"), key: "stale-observed" }),
+            );
+            // Observe the database wait itself; starting a fiber alone proves no lock ordering.
+            const waited = yield* Effect.gen(function* () {
+              for (;;) {
+                const waiting = yield* sql<{ count: number }>`SELECT count(*)::int AS count
               FROM pg_stat_activity WHERE datname = ${SCRATCH_DB}
                 AND application_name = 'summary-publication-test' AND wait_event_type = 'Lock'`;
-              if ((waiting[0]?.count ?? 0) > 0) return true;
-              yield* Effect.sleep("10 millis");
-            }
-          }).pipe(
-            Effect.timeout("4 seconds"),
-            Effect.ensuring(Deferred.succeed(release, undefined)),
-          );
-          yield* Fiber.join(holder);
-          const accepted = yield* Fiber.join(publication);
-          return {
-            waited,
-            accepted,
-            summary: yield* repo.summaryOf(zero.id),
-            head: yield* repo.headOf(worktreeId),
-          };
-        }),
-      );
-      expect(result.waited).toBe(true);
-      expect(result.accepted).toBe(false);
-      expect(result.summary).toMatchObject({
-        key: changed === "summary" ? "other-winner" : "claimed-original",
-        state: changed === "summary" ? "observed" : "claimed",
-      });
-      if (changed === "head") expect(result.head?.headN).toBe(1);
-      if (changed === "fsck") expect(result.head?.head?.gitFsck).toBe("failed");
-    });
+                if ((waiting[0]?.count ?? 0) > 0) return true;
+                yield* Effect.sleep("10 millis");
+              }
+            }).pipe(
+              Effect.timeout("4 seconds"),
+              Effect.ensuring(Deferred.succeed(release, undefined)),
+            );
+            yield* Fiber.join(holder);
+            const accepted = yield* Fiber.join(publication);
+            return {
+              waited,
+              accepted,
+              summary: yield* repo.summaryOf(zero.id),
+              head: yield* repo.headOf(worktreeId),
+            };
+          }),
+        );
+        expect(result.waited).toBe(true);
+        expect(result.accepted).toBe(false);
+        expect(result.summary).toMatchObject({
+          key: changed === "summary" ? "other-winner" : "claimed-original",
+          state: changed === "summary" ? "observed" : "claimed",
+        });
+        if (changed === "head") expect(result.head?.headN).toBe(1);
+        if (changed === "fsck") expect(result.head?.head?.gitFsck).toBe("failed");
+      }),
+    );
   }
 
   it("one independent publisher wins and its key/state commit together", async () => {
@@ -629,117 +646,127 @@ describe.skipIf(postgres.skip)("capture store (0053)", () => {
     expect(rows).toEqual([{ id: "b".repeat(64), bytes: 10, state: "uploaded" }]);
   });
 
-  it("guard (0076): a register and a condemnation of the same chain never both land, whichever holds the row first", async () => {
-    const result = await run(
+  // Waits out real Postgres row locks, so its sleeps run on the live clock.
+  it.live(
+    "guard (0076): a register and a condemnation of the same chain never both land, whichever holds the row first",
+    () =>
       Effect.gen(function* () {
-        const repo = yield* CaptureStoreRepo;
-        const sql = yield* SqlClient.SqlClient;
-        const worktreeId = yield* freshWorktree;
-        const key = `captures/${worktreeId}/1/packs/${"c".repeat(64)}`;
-        const { epoch } = yield* repo.claim(worktreeId, "exec", 3600);
-        const guardOf = Effect.map(
-          repo.referenceState([worktreeId], [key]),
-          (state) => state.guards.get(worktreeId) ?? -1,
-        );
-        const zero = captureInput(worktreeId, 0, null, epoch);
-        yield* repo.register({ ...zero, guards: [{ worktreeId, guard: yield* guardOf }] });
-
-        /** Hold the chain row in an open transaction until released, as a statement in flight. */
-        const holdRow = (statement: Effect.Effect<unknown, unknown>) =>
+        const result = yield* provided(
           Effect.gen(function* () {
-            const locked = yield* Deferred.make<void>();
-            const release = yield* Deferred.make<void>();
-            const holder = yield* Effect.forkChild(
-              sql.withTransaction(
-                statement.pipe(
-                  Effect.andThen(Deferred.succeed(locked, undefined)),
-                  Effect.andThen(Deferred.await(release)),
-                ),
+            const repo = yield* CaptureStoreRepo;
+            const sql = yield* SqlClient.SqlClient;
+            const worktreeId = yield* freshWorktree;
+            const key = `captures/${worktreeId}/1/packs/${"c".repeat(64)}`;
+            const { epoch } = yield* repo.claim(worktreeId, "exec", 3600);
+            const guardOf = Effect.map(
+              repo.referenceState([worktreeId], [key]),
+              (state) => state.guards.get(worktreeId) ?? -1,
+            );
+            const zero = captureInput(worktreeId, 0, null, epoch);
+            yield* repo.register({ ...zero, guards: [{ worktreeId, guard: yield* guardOf }] });
+
+            /** Hold the chain row in an open transaction until released, as a statement in flight. */
+            const holdRow = (statement: Effect.Effect<unknown, unknown>) =>
+              Effect.gen(function* () {
+                const locked = yield* Deferred.make<void>();
+                const release = yield* Deferred.make<void>();
+                const holder = yield* Effect.forkChild(
+                  sql.withTransaction(
+                    statement.pipe(
+                      Effect.andThen(Deferred.succeed(locked, undefined)),
+                      Effect.andThen(Deferred.await(release)),
+                    ),
+                  ),
+                );
+                yield* Deferred.await(locked);
+                return Deferred.succeed(release, undefined).pipe(
+                  Effect.andThen(Fiber.join(holder)),
+                );
+              });
+
+            // 1. A condemnation holds the row (it bumped the guard, uncommitted); a register that
+            //    read the guard before it waits, then re-reads the row and misses.
+            const readBeforeCondemn = yield* guardOf;
+            const releaseCondemn = yield* holdRow(
+              sql`UPDATE worktree_chain SET guard = guard + 1 WHERE worktree_id = ${worktreeId}`,
+            );
+            const one = captureInput(worktreeId, 1, zero.id, epoch);
+            const blockedRegister = yield* Effect.forkChild(
+              reasonOf(
+                repo.register({ ...one, guards: [{ worktreeId, guard: readBeforeCondemn }] }),
               ),
             );
-            yield* Deferred.await(locked);
-            return Deferred.succeed(release, undefined).pipe(Effect.andThen(Fiber.join(holder)));
-          });
+            yield* Effect.sleep("300 millis");
+            const registerWaited = blockedRegister.pollUnsafe() === undefined;
+            yield* releaseCondemn;
+            const registerOutcome = yield* Fiber.join(blockedRegister);
+            const headAfterCondemn = (yield* repo.headOf(worktreeId))?.headN;
 
-        // 1. A condemnation holds the row (it bumped the guard, uncommitted); a register that
-        //    read the guard before it waits, then re-reads the row and misses.
-        const readBeforeCondemn = yield* guardOf;
-        const releaseCondemn = yield* holdRow(
-          sql`UPDATE worktree_chain SET guard = guard + 1 WHERE worktree_id = ${worktreeId}`,
-        );
-        const one = captureInput(worktreeId, 1, zero.id, epoch);
-        const blockedRegister = yield* Effect.forkChild(
-          reasonOf(repo.register({ ...one, guards: [{ worktreeId, guard: readBeforeCondemn }] })),
-        );
-        yield* Effect.sleep("300 millis");
-        const registerWaited = blockedRegister.pollUnsafe() === undefined;
-        yield* releaseCondemn;
-        const registerOutcome = yield* Fiber.join(blockedRegister);
-        const headAfterCondemn = (yield* repo.headOf(worktreeId))?.headN;
+            // 2. A register holds the row (it moved the head and bumped the guard, uncommitted); a
+            //    condemnation that read the guard before it waits, then re-reads the row and misses.
+            const readBeforeRegister = yield* guardOf;
+            const releaseRegister = yield* holdRow(
+              sql`UPDATE worktree_chain SET guard = guard + 1 WHERE worktree_id = ${worktreeId}`,
+            );
+            const blockedCondemn = yield* Effect.forkChild(
+              repo.condemn(worktreeId, readBeforeRegister, [key], claimOf("race")),
+            );
+            yield* Effect.sleep("300 millis");
+            const condemnWaited = blockedCondemn.pollUnsafe() === undefined;
+            yield* releaseRegister;
+            const condemnOutcome = yield* Fiber.join(blockedCondemn);
+            const tombstonesAfterRace = (yield* repo.referenceState([worktreeId], [key]))
+              .tombstones;
 
-        // 2. A register holds the row (it moved the head and bumped the guard, uncommitted); a
-        //    condemnation that read the guard before it waits, then re-reads the row and misses.
-        const readBeforeRegister = yield* guardOf;
-        const releaseRegister = yield* holdRow(
-          sql`UPDATE worktree_chain SET guard = guard + 1 WHERE worktree_id = ${worktreeId}`,
-        );
-        const blockedCondemn = yield* Effect.forkChild(
-          repo.condemn(worktreeId, readBeforeRegister, [key], claimOf("race")),
-        );
-        yield* Effect.sleep("300 millis");
-        const condemnWaited = blockedCondemn.pollUnsafe() === undefined;
-        yield* releaseRegister;
-        const condemnOutcome = yield* Fiber.join(blockedCondemn);
-        const tombstonesAfterRace = (yield* repo.referenceState([worktreeId], [key])).tombstones;
-
-        // 3. In order: a condemnation lands, a register that read before it misses, one that
-        //    reads after it sees the tombstone; once the bytes are gone, a register naming the
-        //    key still misses — a condemned key never comes back (cross-repo decision 6).
-        const before = yield* guardOf;
-        const condemned = yield* repo.condemn(worktreeId, before, [key], claimOf("order"));
-        const staleRegister = yield* reasonOf(
-          repo.register({ ...one, guards: [{ worktreeId, guard: before }] }),
-        );
-        const seen = yield* repo.referenceState([worktreeId], [key]);
-        yield* repo.finishDeletion("order", [key]);
-        const gone = yield* repo.referenceState([worktreeId], [key]);
-        const revived = yield* reasonOf(
-          repo.register({
-            ...one,
-            guards: [{ worktreeId, guard: gone.guards.get(worktreeId) ?? -1 }],
-            names: [key],
+            // 3. In order: a condemnation lands, a register that read before it misses, one that
+            //    reads after it sees the tombstone; once the bytes are gone, a register naming the
+            //    key still misses — a condemned key never comes back (cross-repo decision 6).
+            const before = yield* guardOf;
+            const condemned = yield* repo.condemn(worktreeId, before, [key], claimOf("order"));
+            const staleRegister = yield* reasonOf(
+              repo.register({ ...one, guards: [{ worktreeId, guard: before }] }),
+            );
+            const seen = yield* repo.referenceState([worktreeId], [key]);
+            yield* repo.finishDeletion("order", [key]);
+            const gone = yield* repo.referenceState([worktreeId], [key]);
+            const revived = yield* reasonOf(
+              repo.register({
+                ...one,
+                guards: [{ worktreeId, guard: gone.guards.get(worktreeId) ?? -1 }],
+                names: [key],
+              }),
+            );
+            const after = yield* repo.referenceState([worktreeId], [key]);
+            return {
+              registerWaited,
+              registerOutcome,
+              headAfterCondemn,
+              condemnWaited,
+              condemnOutcome,
+              tombstonesAfterRace,
+              condemned,
+              staleRegister,
+              seen: seen.tombstones,
+              gone: gone.tombstones,
+              revived,
+              after: after.tombstones,
+            };
           }),
         );
-        const after = yield* repo.referenceState([worktreeId], [key]);
-        return {
-          registerWaited,
-          registerOutcome,
-          headAfterCondemn,
-          condemnWaited,
-          condemnOutcome,
-          tombstonesAfterRace,
-          condemned,
-          staleRegister,
-          seen: seen.tombstones,
-          gone: gone.tombstones,
-          revived,
-          after: after.tombstones,
-        };
+        expect(result.registerWaited).toBe(true);
+        expect(result.registerOutcome).toBe("guard_moved");
+        expect(result.headAfterCondemn).toBe(0);
+        expect(result.condemnWaited).toBe(true);
+        expect(result.condemnOutcome).toBe(false);
+        expect(result.tombstonesAfterRace).toEqual([]);
+        expect(result.condemned).toBe(true);
+        expect(result.staleRegister).toBe("guard_moved");
+        expect(result.seen).toEqual([{ key: expect.any(String), deleted: false }]);
+        expect(result.gone).toEqual([{ key: expect.any(String), deleted: true }]);
+        expect(result.revived).toBe("guard_moved");
+        expect(result.after).toEqual([{ key: expect.any(String), deleted: true }]);
       }),
-    );
-    expect(result.registerWaited).toBe(true);
-    expect(result.registerOutcome).toBe("guard_moved");
-    expect(result.headAfterCondemn).toBe(0);
-    expect(result.condemnWaited).toBe(true);
-    expect(result.condemnOutcome).toBe(false);
-    expect(result.tombstonesAfterRace).toEqual([]);
-    expect(result.condemned).toBe(true);
-    expect(result.staleRegister).toBe("guard_moved");
-    expect(result.seen).toEqual([{ key: expect.any(String), deleted: false }]);
-    expect(result.gone).toEqual([{ key: expect.any(String), deleted: true }]);
-    expect(result.revived).toBe("guard_moved");
-    expect(result.after).toEqual([{ key: expect.any(String), deleted: true }]);
-  });
+  );
 
   it("deletion claims (0080): a condemned key never comes back — not while a claim holds, not once every pass finished, not once a claim lapsed (review 3 #2)", async () => {
     const result = await run(
@@ -1043,83 +1070,95 @@ describe.skipIf(postgres.skip)("capture store (0053)", () => {
   // committed while it waited was never seen, and the seal was marked with that URL live.
   // Issuance and the mark now serialize on the epoch's authority row, locked before a fresh read,
   // and issuance refuses a seal it has not checked.
-  it("review 9 #6 a seal's mark and write authority committed while it waits on the seal row never both stand", async () => {
-    const result = await run(
+  // Observes a real Postgres lock wait, so the polling sleeps run on the live clock.
+  it.live(
+    "review 9 #6 a seal's mark and write authority committed while it waits on the seal row never both stand",
+    () =>
       Effect.gen(function* () {
-        const repo = yield* CaptureStoreRepo;
-        const sql = yield* SqlClient.SqlClient;
-        const worktreeId = yield* freshWorktree;
-        const { epoch } = yield* repo.claim(worktreeId, "session-1", 3600);
-        const zero = captureInput(worktreeId, 0, null, epoch);
-        yield* repo.register({ ...zero, seal: { executorId: "launch-1", holder: "session-1" } });
-        const waiters = sql<{ readonly waiting: number }>`
+        const result = yield* provided(
+          Effect.gen(function* () {
+            const repo = yield* CaptureStoreRepo;
+            const sql = yield* SqlClient.SqlClient;
+            const worktreeId = yield* freshWorktree;
+            const { epoch } = yield* repo.claim(worktreeId, "session-1", 3600);
+            const zero = captureInput(worktreeId, 0, null, epoch);
+            yield* repo.register({
+              ...zero,
+              seal: { executorId: "launch-1", holder: "session-1" },
+            });
+            const waiters = sql<{ readonly waiting: number }>`
           SELECT count(*)::int AS waiting FROM pg_stat_activity
            WHERE datname = current_database() AND wait_event_type = 'Lock'`.pipe(
-          Effect.map((rows) => rows[0]?.waiting ?? 0),
-        );
-        const locked = yield* Deferred.make<void>();
-        const unlock = yield* Deferred.make<void>();
-        // Another verification holds the seal row, changing nothing.
-        const holder = yield* Effect.forkChild(
-          sql.withTransaction(
-            Effect.gen(function* () {
-              yield* sql`
+              Effect.map((rows) => rows[0]?.waiting ?? 0),
+            );
+            const locked = yield* Deferred.make<void>();
+            const unlock = yield* Deferred.make<void>();
+            // Another verification holds the seal row, changing nothing.
+            const holder = yield* Effect.forkChild(
+              sql.withTransaction(
+                Effect.gen(function* () {
+                  yield* sql`
                 SELECT worktree_id FROM capture_seals
                  WHERE worktree_id = ${worktreeId} FOR UPDATE`;
-              yield* Deferred.succeed(locked, undefined);
-              yield* Deferred.await(unlock);
-            }),
-          ),
+                  yield* Deferred.succeed(locked, undefined);
+                  yield* Deferred.await(unlock);
+                }),
+              ),
+            );
+            yield* Deferred.await(locked);
+            const readBegan = new Date();
+            const marker = yield* Effect.forkChild(
+              repo.markSealReverified(worktreeId, epoch, zero.id, readBegan),
+            );
+            let markWaiting = false;
+            for (let i = 0; i < 200 && !markWaiting; i++) {
+              markWaiting = (yield* waiters) > 0;
+              if (!markWaiting) yield* Effect.sleep("20 millis");
+            }
+            // A URL of the epoch handed out while the mark waits: its authority outlives the read.
+            const issuer = yield* Effect.forkChild(
+              repo.recordPutAuthority(
+                worktreeId,
+                epoch,
+                new Date(readBegan.getTime() + 20 * 60_000),
+              ),
+            );
+            for (let i = 0; i < 100; i++) {
+              if (issuer.pollUnsafe() !== undefined || (yield* waiters) > 1) break;
+              yield* Effect.sleep("20 millis");
+            }
+            yield* Deferred.succeed(unlock, undefined);
+            yield* Fiber.join(holder);
+            const marked = yield* Fiber.join(marker);
+            const issued = yield* Fiber.join(issuer);
+            return {
+              markWaiting,
+              marked,
+              issued,
+              sealed: zero.id,
+              seal: yield* repo.sealedCompletion(worktreeId, "launch-1", epoch),
+              authority: yield* repo.putAuthorityUntil(worktreeId, epoch),
+            };
+          }),
         );
-        yield* Deferred.await(locked);
-        const readBegan = new Date();
-        const marker = yield* Effect.forkChild(
-          repo.markSealReverified(worktreeId, epoch, zero.id, readBegan),
-        );
-        let markWaiting = false;
-        for (let i = 0; i < 200 && !markWaiting; i++) {
-          markWaiting = (yield* waiters) > 0;
-          if (!markWaiting) yield* Effect.sleep("20 millis");
-        }
-        // A URL of the epoch handed out while the mark waits: its authority outlives the read.
-        const issuer = yield* Effect.forkChild(
-          repo.recordPutAuthority(worktreeId, epoch, new Date(readBegan.getTime() + 20 * 60_000)),
-        );
-        for (let i = 0; i < 100; i++) {
-          if (issuer.pollUnsafe() !== undefined || (yield* waiters) > 1) break;
-          yield* Effect.sleep("20 millis");
-        }
-        yield* Deferred.succeed(unlock, undefined);
-        yield* Fiber.join(holder);
-        const marked = yield* Fiber.join(marker);
-        const issued = yield* Fiber.join(issuer);
-        return {
-          markWaiting,
-          marked,
-          issued,
-          sealed: zero.id,
-          seal: yield* repo.sealedCompletion(worktreeId, "launch-1", epoch),
-          authority: yield* repo.putAuthorityUntil(worktreeId, epoch),
-        };
+        expect(result.markWaiting).toBe(true);
+        const reverifiedAt = result.seal?.reverifiedAt?.getTime() ?? null;
+        const authority = result.authority?.getTime() ?? null;
+        // Never both: a mark recorded and write authority recorded after the read it marks.
+        expect(
+          result.marked && reverifiedAt !== null && authority !== null && authority > reverifiedAt,
+        ).toBe(false);
+        // Here the mark went first: the issuer found the seal it had not checked, and recorded
+        // nothing — overwrite-capable authority is never issued for a sealed epoch unchecked.
+        expect(result.marked).toBe(true);
+        expect(result.issued).toEqual({
+          recorded: false,
+          reason: "sealed",
+          sealedCaptures: [result.sealed],
+        });
+        expect(result.authority).toBeNull();
       }),
-    );
-    expect(result.markWaiting).toBe(true);
-    const reverifiedAt = result.seal?.reverifiedAt?.getTime() ?? null;
-    const authority = result.authority?.getTime() ?? null;
-    // Never both: a mark recorded and write authority recorded after the read it marks.
-    expect(
-      result.marked && reverifiedAt !== null && authority !== null && authority > reverifiedAt,
-    ).toBe(false);
-    // Here the mark went first: the issuer found the seal it had not checked, and recorded
-    // nothing — overwrite-capable authority is never issued for a sealed epoch unchecked.
-    expect(result.marked).toBe(true);
-    expect(result.issued).toEqual({
-      recorded: false,
-      reason: "sealed",
-      sealedCaptures: [result.sealed],
-    });
-    expect(result.authority).toBeNull();
-  });
+  );
 
   // Review 2026-09-28 (10) #5, cross-repo decision 31: a seal carrying a pack of an earlier
   // epoch stands over that epoch's write authority too; no epoch is handed authority under a
@@ -1289,106 +1328,108 @@ describe.skipIf(postgres.skip)("capture store (0053)", () => {
     expect(result.head?.headN).toBe(1);
   });
 
-  it(
+  // Observes a real Postgres lock wait, so the polling sleeps run on the live clock.
+  it.live(
     "a register in flight never crosses a launch handoff: the handoff waits for it, and the chain's epoch never goes back (review 2026-09-28 (5) #8)",
-    { timeout: 30_000 },
-    async () => {
-      const result = await run(
-        Effect.gen(function* () {
-          const repo = yield* CaptureStoreRepo;
-          const sql = yield* SqlClient.SqlClient;
-          const worktreeId = yield* freshWorktree;
-          const foreign = yield* freshWorktree;
-          const first = yield* repo.claim(worktreeId, "session-1", 3600, "launch-old");
-          const zero = captureInput(worktreeId, 0, null, first.epoch);
-          yield* repo.register(zero);
-          const state = yield* repo.referenceState([worktreeId, foreign], []);
-          const guards = [worktreeId, foreign].map((id) => ({
-            worktreeId: id,
-            guard: Number(state.guards.get(id) ?? -1),
-          }));
-          // Another transaction holds the foreign chain row the old launch's register names.
-          const locked = yield* Deferred.make<void>();
-          const unlock = yield* Deferred.make<void>();
-          const holder = yield* Effect.forkChild(
-            sql.withTransaction(
-              Effect.gen(function* () {
-                yield* sql`SELECT worktree_id FROM worktree_chain
+    () =>
+      Effect.gen(function* () {
+        const result = yield* provided(
+          Effect.gen(function* () {
+            const repo = yield* CaptureStoreRepo;
+            const sql = yield* SqlClient.SqlClient;
+            const worktreeId = yield* freshWorktree;
+            const foreign = yield* freshWorktree;
+            const first = yield* repo.claim(worktreeId, "session-1", 3600, "launch-old");
+            const zero = captureInput(worktreeId, 0, null, first.epoch);
+            yield* repo.register(zero);
+            const state = yield* repo.referenceState([worktreeId, foreign], []);
+            const guards = [worktreeId, foreign].map((id) => ({
+              worktreeId: id,
+              guard: Number(state.guards.get(id) ?? -1),
+            }));
+            // Another transaction holds the foreign chain row the old launch's register names.
+            const locked = yield* Deferred.make<void>();
+            const unlock = yield* Deferred.make<void>();
+            const holder = yield* Effect.forkChild(
+              sql.withTransaction(
+                Effect.gen(function* () {
+                  yield* sql`SELECT worktree_id FROM worktree_chain
                             WHERE worktree_id = ${foreign} FOR UPDATE`;
-                yield* Deferred.succeed(locked, undefined);
-                yield* Deferred.await(unlock);
-              }),
-            ),
-          );
-          yield* Deferred.await(locked);
-          const order: Array<string> = [];
-          const one = {
-            ...captureInput(worktreeId, 1, zero.id, first.epoch),
-            kind: "final" as const,
-          };
-          const stale = yield* Effect.forkChild(
-            reasonOf(
-              repo.register({
-                ...one,
-                guards,
-                holder: { executorId: "session-1", launchId: "launch-old" },
-                seal: { executorId: "launch-old", holder: "session-1" },
-              }),
-            ).pipe(Effect.tap(() => Effect.sync(() => order.push("register")))),
-          );
-          const lockWaiters = sql<{ readonly waiting: number }>`
+                  yield* Deferred.succeed(locked, undefined);
+                  yield* Deferred.await(unlock);
+                }),
+              ),
+            );
+            yield* Deferred.await(locked);
+            const order: Array<string> = [];
+            const one = {
+              ...captureInput(worktreeId, 1, zero.id, first.epoch),
+              kind: "final" as const,
+            };
+            const stale = yield* Effect.forkChild(
+              reasonOf(
+                repo.register({
+                  ...one,
+                  guards,
+                  holder: { executorId: "session-1", launchId: "launch-old" },
+                  seal: { executorId: "launch-old", holder: "session-1" },
+                }),
+              ).pipe(Effect.tap(() => Effect.sync(() => order.push("register")))),
+            );
+            const lockWaiters = sql<{ readonly waiting: number }>`
             SELECT count(*)::int AS waiting FROM pg_stat_activity
              WHERE datname = current_database() AND wait_event_type = 'Lock'`;
-          let registerWaited = false;
-          for (let tries = 0; tries < 200 && !registerWaited; tries++) {
-            registerWaited = ((yield* lockWaiters)[0]?.waiting ?? 0) >= 1;
-            if (!registerWaited) yield* Effect.sleep("20 millis");
-          }
-          // The launch handoff: the old launch released, a new launch of the session claims.
-          const handoff = yield* Effect.forkChild(
-            Effect.gen(function* () {
-              yield* repo.release(worktreeId, first.epoch);
-              const next = yield* repo.claim(worktreeId, "session-1", 3600, "launch-new");
-              order.push("handoff");
-              return next;
-            }),
-          );
-          // Give the handoff every chance to commit while the register still waits.
-          for (let tries = 0; tries < 50 && !order.includes("handoff"); tries++) {
-            if (((yield* lockWaiters)[0]?.waiting ?? 0) >= 2) break;
-            yield* Effect.sleep("20 millis");
-          }
-          yield* Deferred.succeed(unlock, undefined);
-          yield* Fiber.join(holder);
-          const said = yield* Fiber.join(stale);
-          const next = yield* Fiber.join(handoff);
-          return {
-            registerWaited,
-            said,
-            order,
-            next,
-            lease: yield* repo.leaseOf(worktreeId),
-            head: yield* repo.headOf(worktreeId),
-            oldSeal: yield* repo.sealedCompletion(worktreeId, "launch-old", first.epoch),
-          };
-        }),
-      );
-      expect(result.registerWaited).toBe(true);
-      expect(result.next.epoch).toBe(2);
-      expect(result.lease?.epoch).toBe(2);
-      expect(result.lease?.launchId).toBe("launch-new");
-      // Whatever landed, the chain names the live epoch: a replacement planning from it is never
-      // followed by an older launch's capture.
-      expect(result.head?.headEpoch).toBe(2);
-      if (result.said === "ok") {
-        // It landed while the old launch still held the lease, before the handoff took.
-        expect(result.order).toEqual(["register", "handoff"]);
-        expect(result.oldSeal?.n).toBe(1);
-      } else {
-        expect(result.said).toBe("stale_epoch");
-        expect(result.oldSeal).toBeNull();
-      }
-    },
+            let registerWaited = false;
+            for (let tries = 0; tries < 200 && !registerWaited; tries++) {
+              registerWaited = ((yield* lockWaiters)[0]?.waiting ?? 0) >= 1;
+              if (!registerWaited) yield* Effect.sleep("20 millis");
+            }
+            // The launch handoff: the old launch released, a new launch of the session claims.
+            const handoff = yield* Effect.forkChild(
+              Effect.gen(function* () {
+                yield* repo.release(worktreeId, first.epoch);
+                const next = yield* repo.claim(worktreeId, "session-1", 3600, "launch-new");
+                order.push("handoff");
+                return next;
+              }),
+            );
+            // Give the handoff every chance to commit while the register still waits.
+            for (let tries = 0; tries < 50 && !order.includes("handoff"); tries++) {
+              if (((yield* lockWaiters)[0]?.waiting ?? 0) >= 2) break;
+              yield* Effect.sleep("20 millis");
+            }
+            yield* Deferred.succeed(unlock, undefined);
+            yield* Fiber.join(holder);
+            const said = yield* Fiber.join(stale);
+            const next = yield* Fiber.join(handoff);
+            return {
+              registerWaited,
+              said,
+              order,
+              next,
+              lease: yield* repo.leaseOf(worktreeId),
+              head: yield* repo.headOf(worktreeId),
+              oldSeal: yield* repo.sealedCompletion(worktreeId, "launch-old", first.epoch),
+            };
+          }),
+        );
+        expect(result.registerWaited).toBe(true);
+        expect(result.next.epoch).toBe(2);
+        expect(result.lease?.epoch).toBe(2);
+        expect(result.lease?.launchId).toBe("launch-new");
+        // Whatever landed, the chain names the live epoch: a replacement planning from it is never
+        // followed by an older launch's capture.
+        expect(result.head?.headEpoch).toBe(2);
+        if (result.said === "ok") {
+          // It landed while the old launch still held the lease, before the handoff took.
+          expect(result.order).toEqual(["register", "handoff"]);
+          expect(result.oldSeal?.n).toBe(1);
+        } else {
+          expect(result.said).toBe("stale_epoch");
+          expect(result.oldSeal).toBeNull();
+        }
+      }),
+    { timeout: 30_000 },
   );
 
   it("seals (0080): the register CAS records a seal only when it lands and the lease names its executor; the newest epoch reads first", async () => {

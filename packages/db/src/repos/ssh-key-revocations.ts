@@ -1,6 +1,6 @@
 import type { OrganizationId } from "@mend/domain";
 import { asc, eq, inArray, lte, sql } from "drizzle-orm";
-import { Effect, Layer } from "effect";
+import { Clock, Effect, Layer } from "effect";
 import * as Context from "effect/Context";
 
 import { MendDB } from "../client.ts";
@@ -96,7 +96,7 @@ export const SshKeyRevocationsRepoLive: Layer.Layer<SshKeyRevocationsRepo, never
           .for("update", { skipLocked: true });
         const rows = yield* db
           .update(sshKeyRevocations)
-          .set({ nextAttemptAt: new Date(Date.now() + leaseMs) })
+          .set({ nextAttemptAt: new Date((yield* Clock.currentTimeMillis) + leaseMs) })
           .where(inArray(sshKeyRevocations.userId, due))
           .returning()
           .pipe(Effect.orDie);
@@ -121,7 +121,7 @@ export const SshKeyRevocationsRepoLive: Layer.Layer<SshKeyRevocationsRepo, never
             attempts: sql`${sshKeyRevocations.attempts} + 1`,
             outstanding: input.outstanding,
             lastError: input.lastError,
-            nextAttemptAt: new Date(Date.now() + input.retryInMs),
+            nextAttemptAt: new Date((yield* Clock.currentTimeMillis) + input.retryInMs),
           })
           .where(eq(sshKeyRevocations.id, id))
           .pipe(Effect.orDie);

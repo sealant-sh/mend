@@ -1,6 +1,6 @@
 import { DEFAULT_NOTIFICATION_SETTINGS, NotificationSettings } from "@mend/domain/workbench";
 import { inArray } from "drizzle-orm";
-import { Effect, Layer } from "effect";
+import { DateTime, Effect, Layer } from "effect";
 import * as Context from "effect/Context";
 
 import { MendDB } from "../client.ts";
@@ -90,7 +90,7 @@ export const NotificationSettingsRepoLive: Layer.Layer<NotificationSettingsRepo,
           .values({ userId, ...values })
           .onConflictDoUpdate({
             target: userNotificationSettings.userId,
-            set: { ...values, updatedAt: new Date() },
+            set: { ...values, updatedAt: yield* DateTime.nowAsDate },
           })
           .returning(selected)
           .pipe(Effect.orDie);

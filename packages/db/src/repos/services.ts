@@ -18,7 +18,7 @@ import {
   type ServiceTransport,
 } from "@mend/domain/workbench";
 import { and, asc, count, desc, eq, inArray, isNotNull, isNull, or } from "drizzle-orm";
-import { Effect, Layer } from "effect";
+import { DateTime, Effect, Layer } from "effect";
 import * as Context from "effect/Context";
 
 import { MendDB } from "../client.ts";
@@ -313,7 +313,7 @@ export const ServicesRepoLive: Layer.Layer<ServicesRepo, never, MendDB | PgClien
       ) {
         const rows = yield* db
           .update(services)
-          .set({ currentAttemptId: attemptId, updatedAt: new Date() })
+          .set({ currentAttemptId: attemptId, updatedAt: yield* DateTime.nowAsDate })
           .where(eq(services.id, id))
           .returning({ sessionId: services.sessionId })
           .pipe(Effect.orDie);
@@ -327,7 +327,7 @@ export const ServicesRepoLive: Layer.Layer<ServicesRepo, never, MendDB | PgClien
       ) {
         const rows = yield* db
           .update(services)
-          .set({ currentForwardId: forwardId, updatedAt: new Date() })
+          .set({ currentForwardId: forwardId, updatedAt: yield* DateTime.nowAsDate })
           .where(eq(services.id, id))
           .returning({ sessionId: services.sessionId })
           .pipe(Effect.orDie);
@@ -343,7 +343,7 @@ export const ServicesRepoLive: Layer.Layer<ServicesRepo, never, MendDB | PgClien
         ) {
           const rows = yield* db
             .update(services)
-            .set({ currentAttemptId: next, updatedAt: new Date() })
+            .set({ currentAttemptId: next, updatedAt: yield* DateTime.nowAsDate })
             .where(
               and(
                 eq(services.id, id),
@@ -369,7 +369,7 @@ export const ServicesRepoLive: Layer.Layer<ServicesRepo, never, MendDB | PgClien
         ) {
           const rows = yield* db
             .update(services)
-            .set({ currentForwardId: next, updatedAt: new Date() })
+            .set({ currentForwardId: next, updatedAt: yield* DateTime.nowAsDate })
             .where(
               and(
                 eq(services.id, id),
@@ -481,7 +481,7 @@ export const ServiceForwardsRepoLive: Layer.Layer<
             }
             yield* tx
               .update(services)
-              .set({ currentForwardId: created.id, updatedAt: new Date() })
+              .set({ currentForwardId: created.id, updatedAt: yield* DateTime.nowAsDate })
               .where(eq(services.id, input.serviceId));
             return created;
           }),
@@ -535,8 +535,8 @@ export const ServiceForwardsRepoLive: Layer.Layer<
           boundAddresses,
           state: "bound",
           error: null,
-          boundAt: new Date(),
-          updatedAt: new Date(),
+          boundAt: yield* DateTime.nowAsDate,
+          updatedAt: yield* DateTime.nowAsDate,
         })
         .where(and(eq(serviceForwards.id, id), eq(serviceForwards.state, "binding")))
         .returning({ serviceId: serviceForwards.serviceId })
@@ -549,7 +549,7 @@ export const ServiceForwardsRepoLive: Layer.Layer<
       id: ServiceForwardId,
       error: string,
     ) {
-      const now = new Date();
+      const now = yield* DateTime.nowAsDate;
       const rows = yield* db
         .update(serviceForwards)
         .set({ state: "failed", error, closedAt: now, updatedAt: now })
@@ -563,7 +563,7 @@ export const ServiceForwardsRepoLive: Layer.Layer<
     const markClosed = Effect.fn("ServiceForwardsRepo.markClosed")(function* (
       id: ServiceForwardId,
     ) {
-      const now = new Date();
+      const now = yield* DateTime.nowAsDate;
       const rows = yield* db
         .update(serviceForwards)
         .set({ state: "closed", closedAt: now, updatedAt: now })
@@ -632,7 +632,7 @@ export const ServiceObservationsRepoLive: Layer.Layer<
       ) {
         const [extended] = yield* db
           .update(serviceObservations)
-          .set({ lastObservedAt: new Date() })
+          .set({ lastObservedAt: yield* DateTime.nowAsDate })
           .where(eq(serviceObservations.id, latest.id))
           .returning()
           .pipe(Effect.orDie);

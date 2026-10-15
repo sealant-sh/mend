@@ -1,6 +1,6 @@
 import { DotfilesRepository } from "@mend/domain";
 import { eq } from "drizzle-orm";
-import { Effect, Layer, Schema } from "effect";
+import { DateTime, Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
 import { MendDB } from "../client.ts";
@@ -54,10 +54,10 @@ export const UserDotfilesRepoLive: Layer.Layer<UserDotfilesRepo, never, MendDB> 
     ) {
       yield* db
         .insert(userDotfiles)
-        .values({ userId, repository: value, updatedAt: new Date() })
+        .values({ userId, repository: value, updatedAt: yield* DateTime.nowAsDate })
         .onConflictDoUpdate({
           target: userDotfiles.userId,
-          set: { repository: value, updatedAt: new Date() },
+          set: { repository: value, updatedAt: yield* DateTime.nowAsDate },
         })
         .pipe(Effect.orDie);
       return value;
@@ -83,11 +83,11 @@ export const UserDotfilesRepoLive: Layer.Layer<UserDotfilesRepo, never, MendDB> 
             userId,
             repository: null,
             startAgentsAfterInstall: value,
-            updatedAt: new Date(),
+            updatedAt: yield* DateTime.nowAsDate,
           })
           .onConflictDoUpdate({
             target: userDotfiles.userId,
-            set: { startAgentsAfterInstall: value, updatedAt: new Date() },
+            set: { startAgentsAfterInstall: value, updatedAt: yield* DateTime.nowAsDate },
           })
           .pipe(Effect.orDie);
         return value;

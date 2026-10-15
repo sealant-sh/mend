@@ -9,7 +9,7 @@ import {
   type ClusterBindingKind,
 } from "@mend/domain/workbench";
 import { asc, eq, sql as drizzleSql } from "drizzle-orm";
-import { Effect, Layer, Schema } from "effect";
+import { DateTime, Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
 import { MendDB, type MendDatabase } from "../client.ts";
@@ -130,7 +130,7 @@ const bumpAggregate = (tx: Tx, projectId: ProjectId) =>
       .update(projects)
       .set({
         clusterBindingRevision: drizzleSql`${projects.clusterBindingRevision} + 1`,
-        updatedAt: new Date(),
+        updatedAt: yield* DateTime.nowAsDate,
       })
       .where(eq(projects.id, projectId))
       .returning({ clusterBindingRevision: projects.clusterBindingRevision })
@@ -260,7 +260,10 @@ export const ProjectClusterBindingsRepoLive: Layer.Layer<
             yield* lockProject(tx, projectId);
             yield* tx
               .update(projects)
-              .set({ workspaceServiceAccount: serviceAccount, updatedAt: new Date() })
+              .set({
+                workspaceServiceAccount: serviceAccount,
+                updatedAt: yield* DateTime.nowAsDate,
+              })
               .where(eq(projects.id, projectId))
               .pipe(Effect.orDie);
             const revision = yield* bumpAggregate(tx, projectId);

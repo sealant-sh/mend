@@ -1,5 +1,5 @@
 import { eq } from "drizzle-orm";
-import { Effect, Layer } from "effect";
+import { DateTime, Effect, Layer } from "effect";
 import * as Context from "effect/Context";
 
 import { MendDB } from "../client.ts";
@@ -46,7 +46,7 @@ export const UserGitAccessRepoLive: Layer.Layer<UserGitAccessRepo, never, MendDB
         .values({ userId, mode: value })
         .onConflictDoUpdate({
           target: userGitAccess.userId,
-          set: { mode: value, updatedAt: new Date() },
+          set: { mode: value, updatedAt: yield* DateTime.nowAsDate },
         })
         .pipe(Effect.orDie);
       return value;

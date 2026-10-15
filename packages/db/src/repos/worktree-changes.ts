@@ -2,7 +2,7 @@ import { PgClient } from "@effect/sql-pg";
 import { ChangeId, type ProjectId, type SessionId, type Sha, type WorktreeId } from "@mend/domain";
 import { Change, type ChangePullRequest } from "@mend/domain/workbench";
 import { and, asc, count, desc, eq, isNotNull, isNull, ne, or } from "drizzle-orm";
-import { Effect, Layer, Schema } from "effect";
+import { DateTime, Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
 import { MendDB } from "../client.ts";
@@ -99,7 +99,7 @@ export const WorktreeChangesRepoLive: Layer.Layer<
         })
         .onConflictDoUpdate({
           target: worktreeChanges.worktreeId,
-          set: { updatedAt: new Date() },
+          set: { updatedAt: yield* DateTime.nowAsDate },
         })
         .returning()
         .pipe(Effect.orDie);
@@ -150,7 +150,7 @@ export const WorktreeChangesRepoLive: Layer.Layer<
         .update(worktreeChanges)
         .set({
           headSha,
-          updatedAt: new Date(),
+          updatedAt: yield* DateTime.nowAsDate,
           ...(viaSessionId === null ? {} : { sessionId: viaSessionId }),
         })
         .where(

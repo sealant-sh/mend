@@ -1,7 +1,7 @@
 import { defaultSettings, MendSettings, organizationDefaults } from "@mend/domain";
 import type { OrganizationId } from "@mend/domain";
 import { eq, sql } from "drizzle-orm";
-import { Effect, Layer, Schema } from "effect";
+import { DateTime, Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
 import { MendDB } from "../client.ts";
@@ -75,7 +75,7 @@ export const SettingsRepoLive: Layer.Layer<SettingsRepo, never, MendDB> = Layer.
               .values({ key: "mend", value: encoded })
               .onConflictDoUpdate({
                 target: settingsTable.key,
-                set: { value: encoded, updatedAt: new Date() },
+                set: { value: encoded, updatedAt: yield* DateTime.nowAsDate },
               });
             return next;
           }),

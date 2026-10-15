@@ -42,7 +42,7 @@ import {
   or,
   sql,
 } from "drizzle-orm";
-import { Effect, Layer, Schema } from "effect";
+import { DateTime, Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
 import { MendDB, type MendDatabase } from "../client.ts";
@@ -759,7 +759,7 @@ export const disableOwnerSharedControl = Effect.fn("SessionsRepo.disableOwnerSha
       .set({
         sharedControlEnabledByUserId: null,
         sharedControlEnabledAt: null,
-        updatedAt: new Date(),
+        updatedAt: yield* DateTime.nowAsDate,
       })
       .where(
         and(eq(agentSessions.ownerUserId, userId), isNotNull(agentSessions.sharedControlEnabledAt)),
@@ -1014,7 +1014,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
             workspaceTtlRenewalFailedAt: null,
             workspaceTtlRenewalError: null,
             lastSeenSequence: 0n,
-            updatedAt: new Date(),
+            updatedAt: yield* DateTime.nowAsDate,
           })
           .where(eq(agentSessions.id, id))
           .pipe(Effect.orDie);
@@ -1065,7 +1065,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
       ) {
         yield* db
           .update(agentSessions)
-          .set({ sealantSessionId, updatedAt: new Date() })
+          .set({ sealantSessionId, updatedAt: yield* DateTime.nowAsDate })
           .where(eq(agentSessions.id, id))
           .pipe(Effect.orDie);
       });
@@ -1076,7 +1076,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
       ) {
         yield* db
           .update(agentSessions)
-          .set({ workspaceImage: image, updatedAt: new Date() })
+          .set({ workspaceImage: image, updatedAt: yield* DateTime.nowAsDate })
           .where(eq(agentSessions.id, id))
           .pipe(Effect.orDie);
       });
@@ -1087,7 +1087,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
       ) {
         yield* db
           .update(agentSessions)
-          .set({ dotfiles, updatedAt: new Date() })
+          .set({ dotfiles, updatedAt: yield* DateTime.nowAsDate })
           .where(eq(agentSessions.id, id))
           .pipe(Effect.orDie);
       });
@@ -1098,7 +1098,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
       ) {
         yield* db
           .update(agentSessions)
-          .set({ hasTranscript, updatedAt: new Date() })
+          .set({ hasTranscript, updatedAt: yield* DateTime.nowAsDate })
           .where(eq(agentSessions.id, id))
           .pipe(Effect.orDie);
       });
@@ -1122,7 +1122,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
       ) {
         yield* db
           .update(agentSessions)
-          .set({ providerSessionId: providerId, updatedAt: new Date() })
+          .set({ providerSessionId: providerId, updatedAt: yield* DateTime.nowAsDate })
           .where(eq(agentSessions.id, id))
           .pipe(Effect.orDie);
       });
@@ -1145,7 +1145,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
       ) {
         yield* db
           .update(agentSessions)
-          .set({ nativeIngestCursor: cursor, updatedAt: new Date() })
+          .set({ nativeIngestCursor: cursor, updatedAt: yield* DateTime.nowAsDate })
           .where(eq(agentSessions.id, id))
           .pipe(Effect.orDie);
       });
@@ -1156,7 +1156,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
       ) {
         yield* db
           .update(agentSessions)
-          .set({ referenceMounts: mounts, updatedAt: new Date() })
+          .set({ referenceMounts: mounts, updatedAt: yield* DateTime.nowAsDate })
           .where(eq(agentSessions.id, id))
           .pipe(Effect.orDie);
       });
@@ -1167,7 +1167,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
       ) {
         yield* db
           .update(agentSessions)
-          .set({ extraMounts: mounts, updatedAt: new Date() })
+          .set({ extraMounts: mounts, updatedAt: yield* DateTime.nowAsDate })
           .where(eq(agentSessions.id, id))
           .pipe(Effect.orDie);
       });
@@ -1180,7 +1180,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
           .update(agentSessions)
           .set({
             status,
-            updatedAt: new Date(),
+            updatedAt: yield* DateTime.nowAsDate,
             ...(status === "running"
               ? { startedAt: sql`COALESCE(${agentSessions.startedAt}, now())` }
               : {}),
@@ -1196,7 +1196,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
       ) {
         yield* db
           .update(agentSessions)
-          .set({ lastSeenSequence: sequence, updatedAt: new Date() })
+          .set({ lastSeenSequence: sequence, updatedAt: yield* DateTime.nowAsDate })
           .where(and(eq(agentSessions.id, id), lt(agentSessions.lastSeenSequence, sequence)))
           .pipe(Effect.orDie);
       });
@@ -1226,7 +1226,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         // "stopped" with "failed · harness exited with code -1" — every user
         // stop read as a crash. `reopen` clears settled_at, so a resumed
         // session settles again normally.
-        const now = new Date();
+        const now = yield* DateTime.nowAsDate;
         // A stop drain holds the workspace: `stopping`, not settled, until the drain ends.
         const holding = sql`${agentSessions.captureDrain} = 'stop'`;
         yield* db
@@ -1248,7 +1248,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
       ) {
         yield* db
           .update(agentSessions)
-          .set({ summary, updatedAt: new Date() })
+          .set({ summary, updatedAt: yield* DateTime.nowAsDate })
           .where(eq(agentSessions.id, id))
           .pipe(Effect.orDie);
         yield* notify(id);
@@ -1261,7 +1261,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
       ) {
         yield* db
           .update(agentSessions)
-          .set({ status: outcome, summary, updatedAt: new Date() })
+          .set({ status: outcome, summary, updatedAt: yield* DateTime.nowAsDate })
           .where(and(eq(agentSessions.id, id), isNotNull(agentSessions.settledAt)))
           .pipe(Effect.orDie);
         yield* notify(id);
@@ -1274,7 +1274,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
       ) {
         yield* db
           .update(agentSessions)
-          .set({ label, updatedAt: new Date() })
+          .set({ label, updatedAt: yield* DateTime.nowAsDate })
           .where(eq(agentSessions.id, id))
           .pipe(Effect.orDie);
         yield* notify(id);
@@ -1288,14 +1288,14 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
           .update(agentSessions)
           .set({
             sharedControlEnabledByUserId: enabledByUserId,
-            sharedControlEnabledAt: enabledByUserId === null ? null : new Date(),
+            sharedControlEnabledAt: enabledByUserId === null ? null : yield* DateTime.nowAsDate,
             // Once shared, always so for this session: turning it off keeps when it was first on.
             ...(enabledByUserId === null
               ? {}
               : {
                   sharedControlEverAt: sql`COALESCE(${agentSessions.sharedControlEverAt}, now())`,
                 }),
-            updatedAt: new Date(),
+            updatedAt: yield* DateTime.nowAsDate,
           })
           .where(eq(agentSessions.id, id))
           .returning()
@@ -1346,7 +1346,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
       ) {
         const rows = yield* db
           .update(agentSessions)
-          .set({ label, updatedAt: new Date() })
+          .set({ label, updatedAt: yield* DateTime.nowAsDate })
           .where(and(eq(agentSessions.id, id), isNull(agentSessions.label)))
           .returning({ id: agentSessions.id })
           .pipe(Effect.orDie);
@@ -1372,7 +1372,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
       ) {
         yield* db
           .update(agentSessions)
-          .set({ harness, updatedAt: new Date() })
+          .set({ harness, updatedAt: yield* DateTime.nowAsDate })
           .where(eq(agentSessions.id, id))
           .pipe(Effect.orDie);
         yield* notify(id);
@@ -1384,7 +1384,11 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
       ) {
         yield* db
           .update(agentSessions)
-          .set({ model: options.model, effort: options.effort, updatedAt: new Date() })
+          .set({
+            model: options.model,
+            effort: options.effort,
+            updatedAt: yield* DateTime.nowAsDate,
+          })
           .where(eq(agentSessions.id, id))
           .pipe(Effect.orDie);
         yield* notify(id);
@@ -1409,7 +1413,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
             // Running again: a discard of an earlier executor's work is history (the audit log).
             captureDiscardedAt: null,
             captureDiscardedBy: null,
-            updatedAt: new Date(),
+            updatedAt: yield* DateTime.nowAsDate,
           })
           .where(eq(agentSessions.id, id))
           .pipe(Effect.orDie);
@@ -1431,7 +1435,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
               );
               return yield* tx
                 .update(agentSessions)
-                .set({ idleStoppedAt: new Date() })
+                .set({ idleStoppedAt: yield* DateTime.nowAsDate })
                 .where(
                   and(
                     eq(agentSessions.id, id),
@@ -1557,7 +1561,11 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
       ) {
         const rows = yield* db
           .update(agentSessions)
-          .set({ captureDrain: "stop", captureDrainResume: null, updatedAt: new Date() })
+          .set({
+            captureDrain: "stop",
+            captureDrainResume: null,
+            updatedAt: yield* DateTime.nowAsDate,
+          })
           .where(and(eq(agentSessions.id, id), isNotNull(agentSessions.captureDrain)))
           .returning({ id: agentSessions.id })
           .pipe(Effect.orDie);
@@ -1682,7 +1690,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
             savedEpoch: saved?.epoch ?? null,
             savedPosition: saved?.position ?? null,
             ...unsavedColumns(unsaved),
-            updatedAt: new Date(),
+            updatedAt: yield* DateTime.nowAsDate,
           };
           if (kept === null) {
             const inserted = yield* db
@@ -1831,7 +1839,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
                   savedEpoch: saved?.epoch ?? null,
                   savedPosition: saved?.position ?? null,
                   ...unsavedColumns(unsaved),
-                  updatedAt: new Date(),
+                  updatedAt: yield* DateTime.nowAsDate,
                   version: sql`${t.version} + 1`,
                 })
                 .where(eq(t.workspaceId, workspaceId))
@@ -1957,7 +1965,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
             ...(discarded === undefined
               ? {}
               : { captureDiscardedAt: discarded.at, captureDiscardedBy: discarded.by }),
-            updatedAt: new Date(),
+            updatedAt: yield* DateTime.nowAsDate,
           })
           .where(eq(agentSessions.id, id))
           .pipe(Effect.orDie);
@@ -2005,7 +2013,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
             workspaceTtlRenewedAt: null,
             workspaceTtlRenewalFailedAt: null,
             workspaceTtlRenewalError: null,
-            updatedAt: new Date(),
+            updatedAt: yield* DateTime.nowAsDate,
           })
           .where(eq(agentSessions.id, id))
           .pipe(Effect.orDie);

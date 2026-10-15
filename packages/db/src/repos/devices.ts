@@ -1,7 +1,7 @@
 import { PgClient } from "@effect/sql-pg";
 import { Timestamp } from "@mend/domain";
 import { and, desc, eq, gt, isNotNull, isNull, lt } from "drizzle-orm";
-import { Effect, Layer, Schema } from "effect";
+import { Clock, DateTime, Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
 import { MendDB } from "../client.ts";
@@ -186,7 +186,12 @@ export const DevicesRepoLive: Layer.Layer<DevicesRepo, never, MendDB | PgClient.
       }) {
         yield* db
           .delete(pairingCodes)
-          .where(lt(pairingCodes.expiresAt, new Date(Date.now() - PAIRING_SWEEP_GRACE_MS)))
+          .where(
+            lt(
+              pairingCodes.expiresAt,
+              new Date((yield* Clock.currentTimeMillis) - PAIRING_SWEEP_GRACE_MS),
+            ),
+          )
           .pipe(Effect.orDie);
         const [row] = yield* db
           .insert(pairingCodes)
@@ -245,7 +250,7 @@ export const DevicesRepoLive: Layer.Layer<DevicesRepo, never, MendDB | PgClient.
         readonly platform: string;
         readonly tokenHash: string;
       }) {
-        const now = new Date();
+        const now = yield* DateTime.nowAsDate;
         const [claimedCode] = yield* db
           .update(pairingCodes)
           .set({ claimedAt: now })
@@ -294,7 +299,7 @@ export const DevicesRepoLive: Layer.Layer<DevicesRepo, never, MendDB | PgClient.
       const revoke = Effect.fn("DevicesRepo.revoke")(function* (userId: string, id: string) {
         const [row] = yield* db
           .update(deviceTokens)
-          .set({ revokedAt: new Date() })
+          .set({ revokedAt: yield* DateTime.nowAsDate })
           .where(and(eq(deviceTokens.id, id), eq(deviceTokens.userId, userId)))
           .returning(selectedDevice)
           .pipe(Effect.orDie);
@@ -308,7 +313,7 @@ export const DevicesRepoLive: Layer.Layer<DevicesRepo, never, MendDB | PgClient.
       ) {
         const rows = yield* db
           .update(deviceTokens)
-          .set({ revokedAt: new Date() })
+          .set({ revokedAt: yield* DateTime.nowAsDate })
           .where(and(eq(deviceTokens.userId, userId), isNull(deviceTokens.revokedAt)))
           .returning({ id: deviceTokens.id })
           .pipe(Effect.orDie);
@@ -345,7 +350,12 @@ export const DevicesRepoLive: Layer.Layer<DevicesRepo, never, MendDB | PgClient.
       }) {
         yield* db
           .delete(cliAuthRequests)
-          .where(lt(cliAuthRequests.expiresAt, new Date(Date.now() - PAIRING_SWEEP_GRACE_MS)))
+          .where(
+            lt(
+              cliAuthRequests.expiresAt,
+              new Date((yield* Clock.currentTimeMillis) - PAIRING_SWEEP_GRACE_MS),
+            ),
+          )
           .pipe(Effect.orDie);
         const [row] = yield* db
           .insert(cliAuthRequests)
@@ -374,7 +384,7 @@ export const DevicesRepoLive: Layer.Layer<DevicesRepo, never, MendDB | PgClient.
               eq(cliAuthRequests.userCode, userCode),
               isNull(cliAuthRequests.approvedBy),
               isNull(cliAuthRequests.deniedAt),
-              gt(cliAuthRequests.expiresAt, new Date()),
+              gt(cliAuthRequests.expiresAt, yield* DateTime.nowAsDate),
             ),
           )
           .pipe(Effect.orDie);
@@ -394,7 +404,7 @@ export const DevicesRepoLive: Layer.Layer<DevicesRepo, never, MendDB | PgClient.
               eq(cliAuthRequests.userCode, input.userCode),
               isNull(cliAuthRequests.approvedBy),
               isNull(cliAuthRequests.deniedAt),
-              gt(cliAuthRequests.expiresAt, new Date()),
+              gt(cliAuthRequests.expiresAt, yield* DateTime.nowAsDate),
             ),
           )
           .returning(selectedCliAuth)
@@ -406,13 +416,13 @@ export const DevicesRepoLive: Layer.Layer<DevicesRepo, never, MendDB | PgClient.
       const denyCliAuth = Effect.fn("DevicesRepo.denyCliAuth")(function* (userCode: string) {
         const [row] = yield* db
           .update(cliAuthRequests)
-          .set({ deniedAt: new Date() })
+          .set({ deniedAt: yield* DateTime.nowAsDate })
           .where(
             and(
               eq(cliAuthRequests.userCode, userCode),
               isNull(cliAuthRequests.approvedBy),
               isNull(cliAuthRequests.deniedAt),
-              gt(cliAuthRequests.expiresAt, new Date()),
+              gt(cliAuthRequests.expiresAt, yield* DateTime.nowAsDate),
             ),
           )
           .returning(selectedCliAuth)
@@ -429,7 +439,7 @@ export const DevicesRepoLive: Layer.Layer<DevicesRepo, never, MendDB | PgClient.
         readonly platform: string;
         readonly tokenHash: string;
       }) {
-        const now = new Date();
+        const now = yield* DateTime.nowAsDate;
         const [request] = yield* db
           .update(cliAuthRequests)
           .set({ collectedAt: now })

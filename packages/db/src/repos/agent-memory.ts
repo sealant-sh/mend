@@ -20,7 +20,7 @@ import {
   validateAgentMemoryPath,
 } from "@mend/domain/workbench";
 import { and, asc, desc, eq, isNull, sql } from "drizzle-orm";
-import { Effect, Layer } from "effect";
+import { DateTime, Effect, Layer } from "effect";
 import * as Context from "effect/Context";
 
 import { MendDB, type MendDatabase } from "../client.ts";
@@ -537,7 +537,10 @@ export const AgentMemoryRepoLive: Layer.Layer<AgentMemoryRepo, never, MendDB> = 
               agentMemoryVersions.path,
               agentMemoryVersions.digest,
             ],
-            set: { savedAt: new Date(), pinned: sql`agent_memory_versions.pinned or ${pinned}` },
+            set: {
+              savedAt: yield* DateTime.nowAsDate,
+              pinned: sql`agent_memory_versions.pinned or ${pinned}`,
+            },
           })
           .pipe(Effect.orDie);
         yield* tx
@@ -551,22 +554,22 @@ export const AgentMemoryRepoLive: Layer.Layer<AgentMemoryRepo, never, MendDB> = 
           .pipe(Effect.orDie);
       });
 
-    const write = (
+    const write = Effect.fn(function* (
       tx: Tx,
       userId: string,
       projectId: ProjectId,
       file: MemoryFile,
       sessionId: string | null,
-    ) => {
+    ) {
       const values = {
         encoding: file.encoding,
         contents: file.contents,
         digest: agentMemoryDigest(file),
         bytes: piProfileFileBytes(file)?.byteLength ?? 0,
-        updatedAt: new Date(),
+        updatedAt: yield* DateTime.nowAsDate,
         updatedBySession: sessionId,
       };
-      return tx
+      yield* tx
         .insert(agentMemoryFiles)
         .values({ userId, projectId, path: file.path, ...values })
         .onConflictDoUpdate({
@@ -574,7 +577,7 @@ export const AgentMemoryRepoLive: Layer.Layer<AgentMemoryRepo, never, MendDB> = 
           set: values,
         })
         .pipe(Effect.orDie);
-    };
+    });
 
     const forLaunch = Effect.fn("AgentMemoryRepo.forLaunch")(function* (
       userId: string,
@@ -720,7 +723,7 @@ export const AgentMemoryRepoLive: Layer.Layer<AgentMemoryRepo, never, MendDB> = 
                 ours: step.stored.contents,
                 theirs: step.file.contents,
                 base: base?.contents ?? null,
-                note: mergeNote(`session ${sessionId.slice(0, 8)}`, new Date()),
+                note: mergeNote(`session ${sessionId.slice(0, 8)}`, yield* DateTime.nowAsDate),
                 merge: input.merge,
               });
               if (outcome.kind === "unmergeable") {
@@ -774,7 +777,7 @@ export const AgentMemoryRepoLive: Layer.Layer<AgentMemoryRepo, never, MendDB> = 
       const kept = withinLimits(input.files);
       const keptPaths = new Set(kept.map((file) => file.path));
       const files = kept.map((file) => ({ ...file, digest: agentMemoryDigest(file) }));
-      const note = mergeNote(source?.label ?? "an import", new Date());
+      const note = mergeNote(source?.label ?? "an import", yield* DateTime.nowAsDate);
       return yield* db
         .transaction((tx) =>
           Effect.gen(function* () {
@@ -827,32 +830,34 @@ export const AgentMemoryRepoLive: Layer.Layer<AgentMemoryRepo, never, MendDB> = 
               source === null || bases.get(file.path)?.digest === file.digest
                 ? Effect.void
                 : apply(
-                    tx
-                      .insert(agentMemoryImportBases)
-                      .values({
-                        userId,
-                        projectId,
-                        source: source.id,
-                        path: file.path,
-                        digest: file.digest,
-                        encoding: file.encoding,
-                        contents: file.encoding === "utf8" ? file.contents : null,
-                      })
-                      .onConflictDoUpdate({
-                        target: [
-                          agentMemoryImportBases.userId,
-                          agentMemoryImportBases.projectId,
-                          agentMemoryImportBases.source,
-                          agentMemoryImportBases.path,
-                        ],
-                        set: {
+                    Effect.flatMap(DateTime.nowAsDate, (importedAt) =>
+                      tx
+                        .insert(agentMemoryImportBases)
+                        .values({
+                          userId,
+                          projectId,
+                          source: source.id,
+                          path: file.path,
                           digest: file.digest,
                           encoding: file.encoding,
                           contents: file.encoding === "utf8" ? file.contents : null,
-                          importedAt: new Date(),
-                        },
-                      })
-                      .pipe(Effect.orDie),
+                        })
+                        .onConflictDoUpdate({
+                          target: [
+                            agentMemoryImportBases.userId,
+                            agentMemoryImportBases.projectId,
+                            agentMemoryImportBases.source,
+                            agentMemoryImportBases.path,
+                          ],
+                          set: {
+                            digest: file.digest,
+                            encoding: file.encoding,
+                            contents: file.encoding === "utf8" ? file.contents : null,
+                            importedAt,
+                          },
+                        })
+                        .pipe(Effect.orDie),
+                    ),
                   );
             /** This machine's file, kept as a version beside `current`. */
             const keepIncoming = (file: DigestedFile, current: MemoryFile) =>
@@ -1024,7 +1029,7 @@ export const AgentMemoryRepoLive: Layer.Layer<AgentMemoryRepo, never, MendDB> = 
         pendingWorkspaceId: home.workspaceId,
         pendingEpoch: epoch,
         pendingN: null,
-        updatedAt: new Date(),
+        updatedAt: yield* DateTime.nowAsDate,
       };
       yield* db
         .insert(agentMemoryHomes)
@@ -1041,7 +1046,7 @@ export const AgentMemoryRepoLive: Layer.Layer<AgentMemoryRepo, never, MendDB> = 
     ) {
       yield* db
         .update(agentMemoryHomes)
-        .set({ pendingN: n, updatedAt: new Date() })
+        .set({ pendingN: n, updatedAt: yield* DateTime.nowAsDate })
         .where(
           and(
             eq(agentMemoryHomes.worktreeId, worktreeId),
@@ -1068,7 +1073,7 @@ export const AgentMemoryRepoLive: Layer.Layer<AgentMemoryRepo, never, MendDB> = 
           pendingWorkspaceId: null,
           pendingEpoch: null,
           pendingN: null,
-          updatedAt: new Date(),
+          updatedAt: yield* DateTime.nowAsDate,
         })
         .where(
           and(

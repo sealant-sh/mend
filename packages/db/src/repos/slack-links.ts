@@ -3,7 +3,7 @@ import { createHash, randomBytes } from "node:crypto";
 import type { OrganizationId } from "@mend/domain";
 import type { SlackPendingMention } from "@mend/domain/workbench";
 import { and, asc, eq, gt, isNull, lt, or } from "drizzle-orm";
-import { Effect, Layer, Schema } from "effect";
+import { DateTime, Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
 import { MendDB } from "../client.ts";
@@ -173,7 +173,7 @@ export const SlackLinksRepoLive: Layer.Layer<SlackLinksRepo, never, MendDB> = La
       readonly request: SlackPendingMention;
       readonly now?: Date;
     }) {
-      const now = input.now ?? new Date();
+      const now = input.now ?? (yield* DateTime.nowAsDate);
       // Expired codes are dead weight, and minting is the only thing that grows the table.
       yield* db.delete(slackLinkCodes).where(lt(slackLinkCodes.expiresAt, now)).pipe(Effect.orDie);
       const code = mintSlackLinkCode();
@@ -204,7 +204,7 @@ export const SlackLinksRepoLive: Layer.Layer<SlackLinksRepo, never, MendDB> = La
         })
         .from(slackLinkCodes)
         .innerJoin(slackInstalls, eq(slackInstalls.teamId, slackLinkCodes.teamId))
-        .where(open(code, now ?? new Date()))
+        .where(open(code, now ?? (yield* DateTime.nowAsDate)))
         .limit(1)
         .pipe(Effect.orDie);
       return row ?? null;
@@ -215,7 +215,7 @@ export const SlackLinksRepoLive: Layer.Layer<SlackLinksRepo, never, MendDB> = La
       readonly userId: string;
       readonly now?: Date;
     }) {
-      const now = input.now ?? new Date();
+      const now = input.now ?? (yield* DateTime.nowAsDate);
       return yield* db
         .transaction((tx) =>
           Effect.gen(function* () {

@@ -8,7 +8,7 @@ import {
   validateSecretFilePath,
 } from "@mend/domain/workbench";
 import { and, asc, eq, sql } from "drizzle-orm";
-import { Effect, Layer, Schema } from "effect";
+import { DateTime, Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
 import { MendDB, type MendDatabase } from "../client.ts";
@@ -153,7 +153,7 @@ export const SecretFilesRepoLive: Layer.Layer<SecretFilesRepo, never, MendDB> = 
                 sealedContents: input.sealedContents,
                 bytes: input.bytes,
                 revision: current.revision + 1,
-                updatedAt: new Date(),
+                updatedAt: yield* DateTime.nowAsDate,
               })
               .where(eq(userSecretFiles.id, current.id))
               .returning()

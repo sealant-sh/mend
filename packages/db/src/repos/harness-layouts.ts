@@ -11,7 +11,7 @@ import {
   WorkspaceRetirementState,
   WorkspaceRetirementStopKind,
 } from "@mend/domain/workbench";
-import { Effect, Layer, Schema } from "effect";
+import { Clock, DateTime, Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
 import { uniqueViolationConstraint } from "./unique-violation.ts";
@@ -1018,7 +1018,7 @@ export const harnessLayoutsRepoMemory = (
     capabilityOf: (imageKey, runtime) =>
       Effect.sync(() => state.capabilities.get(`${imageKey}\u0000${runtime}`) ?? null),
     recordCapability: (record) =>
-      Effect.sync(() => {
+      Effect.map(DateTime.nowAsDate, (observedAt) => {
         const key = `${record.imageKey}\u0000${record.runtime}`;
         const current = state.capabilities.get(key);
         if (!record.confirmed && current !== undefined) {
@@ -1029,23 +1029,23 @@ export const harnessLayoutsRepoMemory = (
           if (!replaces) return;
         }
         const { replacing: _replacing, ...kept } = record;
-        state.capabilities.set(key, { ...kept, observedAt: new Date() });
+        state.capabilities.set(key, { ...kept, observedAt });
       }),
     markConversationShared: (sessionId, owner) =>
-      Effect.sync(() => {
+      Effect.map(DateTime.nowAsDate, (movedAt) => {
         if (!state.sharedConversations.has(sessionId)) {
-          state.sharedConversations.set(sessionId, { owner, movedAt: new Date() });
+          state.sharedConversations.set(sessionId, { owner, movedAt });
         }
       }),
     sharedConversationOf: (sessionId) =>
       Effect.sync(() => state.sharedConversations.get(sessionId) ?? null),
     takeConversation: (sessionId, launchId, replacing = null) =>
-      Effect.sync(() => {
+      Effect.map(Clock.currentTimeMillis, (now) => {
         const held = state.conversationHolders.get(sessionId);
         const free =
           held === undefined ||
           held.launchId === null ||
-          (held.processId === null && Date.now() - held.takenAt > CONVERSATION_TAKE_STALE_MS) ||
+          (held.processId === null && now - held.takenAt > CONVERSATION_TAKE_STALE_MS) ||
           (held.processId !== null && state.exitedProcesses.has(held.processId)) ||
           (replacing !== null && held.processId === replacing);
         if (!free) {
@@ -1056,7 +1056,7 @@ export const harnessLayoutsRepoMemory = (
           launchId,
           processId: null,
           fence,
-          takenAt: Date.now(),
+          takenAt: now,
         });
         return { taken: true, fence } as const;
       }),
@@ -1104,28 +1104,24 @@ export const harnessLayoutsRepoMemory = (
     retirementOf: (workspaceId) => Effect.sync(() => state.retirements.get(workspaceId) ?? null),
     listRetirements: () => Effect.sync(() => [...state.retirements.values()]),
     markRetirement: (record) =>
-      Effect.sync(() => {
+      Effect.map(DateTime.nowAsDate, (updatedAt) => {
         const existing = state.retirements.get(record.workspaceId);
         const next: ExecutorRetirementRecord =
           existing?.state === "retiring"
             ? existing
-            : { ...record, state: "marked", restart: [], updatedAt: new Date() };
+            : { ...record, state: "marked", restart: [], updatedAt };
         state.retirements.set(record.workspaceId, next);
         return next;
       }),
     beginRetiring: (workspaceId) =>
-      Effect.sync(() => {
+      Effect.map(DateTime.nowAsDate, (updatedAt) => {
         const existing = state.retirements.get(workspaceId);
         if (existing === undefined || existing.state !== "marked") return false;
-        state.retirements.set(workspaceId, {
-          ...existing,
-          state: "retiring",
-          updatedAt: new Date(),
-        });
+        state.retirements.set(workspaceId, { ...existing, state: "retiring", updatedAt });
         return true;
       }),
     unmarkRetiring: (workspaceId, found) =>
-      Effect.sync(() => {
+      Effect.map(DateTime.nowAsDate, (updatedAt) => {
         const existing = state.retirements.get(workspaceId);
         if (existing === undefined) return;
         state.retirements.set(workspaceId, {
@@ -1135,18 +1131,18 @@ export const harnessLayoutsRepoMemory = (
           reason: found.reason,
           checkedAt: found.checkedAt,
           restart: [],
-          updatedAt: new Date(),
+          updatedAt,
         });
       }),
     noteRetiring: (workspaceId, note) =>
-      Effect.sync(() => {
+      Effect.map(DateTime.nowAsDate, (updatedAt) => {
         const existing = state.retirements.get(workspaceId);
         if (existing === undefined || existing.state !== "retiring") return;
         state.retirements.set(workspaceId, {
           ...existing,
           reason: note.reason ?? existing.reason,
           restart: note.restart ?? existing.restart,
-          updatedAt: new Date(),
+          updatedAt,
         });
       }),
     clearRetirement: (workspaceId) =>

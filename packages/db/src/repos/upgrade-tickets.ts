@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 
 import { and, eq, gt, lt, sql, type SQLWrapper } from "drizzle-orm";
-import { Effect, Layer } from "effect";
+import { Clock, DateTime, Effect, Layer } from "effect";
 import * as Context from "effect/Context";
 
 import { MendDB } from "../client.ts";
@@ -137,7 +137,7 @@ export const UpgradeTicketsRepoLive: Layer.Layer<UpgradeTicketsRepo, never, Mend
     const db = yield* MendDB;
 
     const mint = Effect.fn("UpgradeTicketsRepo.mint")(function* (input: UpgradeTicketMintInput) {
-      const now = input.now ?? new Date();
+      const now = input.now ?? (yield* DateTime.nowAsDate);
       // Expired rows are dead weight, and minting is the only thing that grows the table.
       yield* db.delete(upgradeTickets).where(lt(upgradeTickets.expiresAt, now)).pipe(Effect.orDie);
       const ticket = mintUpgradeTicket();
@@ -165,7 +165,7 @@ export const UpgradeTicketsRepoLive: Layer.Layer<UpgradeTicketsRepo, never, Mend
       readonly keep?: boolean;
       readonly now?: Date;
     }) {
-      const now = input.now ?? new Date();
+      const now = input.now ?? (yield* DateTime.nowAsDate);
       const live = and(
         eq(upgradeTickets.tokenHash, hashUpgradeTicket(input.ticket)),
         eq(upgradeTickets.target, input.target),
@@ -197,7 +197,7 @@ export const UpgradeTicketsRepoLive: Layer.Layer<UpgradeTicketsRepo, never, Mend
       if (credential === null) return true;
       const rows = yield* db
         .execute<{ readonly stands: boolean }>(
-          sql`SELECT ${stands(sql`${credential}::text`, new Date())} AS stands`,
+          sql`SELECT ${stands(sql`${credential}::text`, yield* DateTime.nowAsDate)} AS stands`,
         )
         .pipe(Effect.orDie);
       return rows[0]?.stands === true;
@@ -209,8 +209,9 @@ export const UpgradeTicketsRepoLive: Layer.Layer<UpgradeTicketsRepo, never, Mend
 
 /**
  * Ticket expiry and use held in memory, for route tests. Explicit `now` takes precedence over
- * `clock` for mint and consume. `clock` supplies the time when omitted. Credential validity is
- * supplied by `revoked`: credentials stand unless that test registry marks them revoked.
+ * `clock` for mint and consume. `clock` supplies the time when omitted: standalone callers get host
+ * time, and `UpgradeTicketsRepoMemory` injects the Effect Clock it was built under. Credential
+ * validity is supplied by `revoked`: credentials stand unless that test registry marks them revoked.
  */
 export const makeUpgradeTicketsMemory = (
   clock: () => number = Date.now,
@@ -268,7 +269,9 @@ export const makeUpgradeTicketsMemory = (
   };
 };
 
-export const UpgradeTicketsRepoMemory: Layer.Layer<UpgradeTicketsRepo> = Layer.sync(
+export const UpgradeTicketsRepoMemory: Layer.Layer<UpgradeTicketsRepo> = Layer.effect(
   UpgradeTicketsRepo,
-  () => makeUpgradeTicketsMemory(),
+  Clock.clockWith((clock) =>
+    Effect.succeed(makeUpgradeTicketsMemory(() => clock.currentTimeMillisUnsafe())),
+  ),
 );

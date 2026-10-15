@@ -8,7 +8,7 @@ import {
   validateSkillBundle,
 } from "@mend/domain/workbench";
 import { asc, eq } from "drizzle-orm";
-import { Effect, Layer, Schema } from "effect";
+import { DateTime, Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
 import { MendDB, type MendDatabase } from "../client.ts";
@@ -303,7 +303,7 @@ export const SkillsRepoLive: Layer.Layer<SkillsRepo, never, MendDB | PgClient.Pg
                   description: input.description,
                   files: sortFiles(input.files),
                   revision: current.revision + 1,
-                  updatedAt: new Date(),
+                  updatedAt: yield* DateTime.nowAsDate,
                 })
                 .where(eq(skills.id, skillId))
                 .returning()
@@ -384,7 +384,7 @@ export const SkillsRepoLive: Layer.Layer<SkillsRepo, never, MendDB | PgClient.Pg
                     description: bundle.description,
                     files: sortFiles(bundle.files),
                     revision: current.revision + 1,
-                    updatedAt: new Date(),
+                    updatedAt: yield* DateTime.nowAsDate,
                   })
                   .where(eq(skills.id, current.id))
                   .pipe(Effect.orDie);

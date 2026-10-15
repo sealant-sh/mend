@@ -9,7 +9,7 @@ import {
   validatePiProfile,
 } from "@mend/domain/workbench";
 import { eq, sql } from "drizzle-orm";
-import { Effect, Layer, Schema } from "effect";
+import { DateTime, Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
 import { MendDB } from "../client.ts";
@@ -127,7 +127,7 @@ export const PiProfilesRepoLive: Layer.Layer<PiProfilesRepo, never, MendDB> = La
           set: {
             ...values,
             revision: sql`${userPiProfiles.revision} + 1`,
-            updatedAt: new Date(),
+            updatedAt: yield* DateTime.nowAsDate,
           },
         })
         .returning()

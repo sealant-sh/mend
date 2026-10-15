@@ -1,5 +1,5 @@
 import { lt } from "drizzle-orm";
-import { Effect, Layer } from "effect";
+import { DateTime, Effect, Layer } from "effect";
 import * as Context from "effect/Context";
 
 import { MendDB } from "../client.ts";
@@ -47,7 +47,7 @@ export const SlackEventClaimsRepoLive: Layer.Layer<SlackEventClaimsRepo, never, 
           .values({
             eventId: input.eventId,
             teamId: input.teamId,
-            claimedAt: input.now ?? new Date(),
+            claimedAt: input.now ?? (yield* DateTime.nowAsDate),
           })
           .onConflictDoNothing({ target: slackEventClaims.eventId })
           .returning({ eventId: slackEventClaims.eventId })
