@@ -2521,6 +2521,7 @@ describe("SessionEngine lifecycle, second review (2026-09-28)", () => {
       Effect.gen(function* () {
         const clock = yield* Clock.Clock;
         const memory = makeMemoryCaptureStore();
+        const observed = yield* observedWorld;
         yield* withPreparedEngineEffect(
           (world, tmp) => setup(tmp, world),
           (world, tmp, project) =>
@@ -2550,11 +2551,18 @@ describe("SessionEngine lifecycle, second review (2026-09-28)", () => {
                 ownerUserId: "user-fixture",
               });
               // The launch looks at the lease every `leaseWaitInterval` (10 ms) and is refused
-              // only once `leaseWait` (300 ms) has run out.
-              const began = clock.currentTimeMillisUnsafe();
+              // only once `leaseWait` (300 ms) has run out. Its deadline is fixed just before its
+              // first look, which writes the session's waiting line: the clock moves only from
+              // there (adjusted earlier, while the launch is still in its native preparation, the
+              // looks would count for nothing and the wait would park on a clock nobody moves).
               const launching = yield* Effect.forkChild(
                 engine.launch(second.id, ["claude"]).pipe(Effect.flip),
               );
+              yield* observed.untilChanged(
+                () => (world.sessions.get(second.id)?.summary ?? "").includes("waiting"),
+                "the launch's waiting line",
+              );
+              const began = clock.currentTimeMillisUnsafe();
               for (let look = 0; look < 40 && launching.pollUnsafe() === undefined; look += 1) {
                 yield* TestClock.adjust(Duration.millis(10));
               }
@@ -2566,7 +2574,7 @@ describe("SessionEngine lifecycle, second review (2026-09-28)", () => {
               yield* TestClock.adjust(Duration.millis(100));
               expect(world.sessions.has(session.id)).toBe(true);
             }),
-          { captured: memory, sealantLayer: lifecycleLayer([]) },
+          { fixture: observed.fixture, captured: memory, sealantLayer: lifecycleLayer([]) },
         );
       }),
     { timeout: 30_000 },
