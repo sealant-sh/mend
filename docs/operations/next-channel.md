@@ -90,11 +90,18 @@ In Core and sealantd:
   before publishing, from the uncached dist-tags endpoint, so re-running an old failed job cannot
   move it back.
 
-Mend's npm job is the same republish, after the owner's approval in `release`, for `@sealant/mend`.
-`@sealant/mend` keeps its `next` dist-tag on its own name rather than a `@sealant/mend-next`
-package: people install `npm install --global @sealant/mend@next`, `mend server setup` runs the
-CLI's own version, and each Mend next build is tagged by an admin and approved by the owner, so the
-stable package's credential is never in an unattended job.
+Mend's npm job holds the same credential, after the owner's approval in `release`, for
+`@sealant/mend`, with the same refusals and the same check of `next`, but it repacks nothing. It
+publishes the tarball its own run's acceptance installed, byte for byte: image.yml's `mend-cli`
+artifact, refused unless its sha512 is the one the run's release manifest records and unless it is
+already normalized for its channel (the check of `scripts/normalize-npm-tarball.mjs --check`,
+written out in the job, which runs no repository file). After `npm publish <file>`, the integrity
+npm serves (`npm view @sealant/mend@<version> dist.integrity`) must be the manifest's. It runs only
+after the run's `acceptance` job, which passes only when image.yml reports that packaged acceptance
+against ghcr passed. `@sealant/mend` keeps its `next` dist-tag on its own name rather than a
+`@sealant/mend-next` package: people install `npm install --global @sealant/mend@next`,
+`mend server setup` runs the CLI's own version, and each Mend next build is tagged by an admin and
+approved by the owner, so the stable package's credential is never in an unattended job.
 
 ### What acceptance accepts
 
@@ -109,9 +116,10 @@ normalizes it with `scripts/normalize-npm-tarball.mjs`, the manifest rewrite the
 Packaged acceptance reads the manifest from its own run, never another run's. It pulls each image by
 its platform digest for its own arch, tags only the pulled image ID with the name
 `mend server setup` expects, and fails unless the running server is that ID, after setup and after
-the upgrade. It installs the tarball named in the manifest after checking its sha512. The tarball
-the publisher repacks is still built by release-cli.yml's `npm-pack`; moving the publisher onto this
-one is the next change.
+the upgrade. It installs the tarball named in the manifest after checking its sha512, the file the
+npm job then publishes. A stable release's `promote-images` reads the manifest too: each
+`:<version>` tag must still resolve to the manifest's index digest, and `latest` is created from
+that digest, never from the tag.
 
 `target: archive` (an image.yml or release-acceptance.yml dispatch input; `ghcr` is the default)
 builds the same images without a push or a ghcr login. Each image is exported to a one-day run
@@ -143,6 +151,68 @@ Before merging that change in each repository:
 2. Cancel every one that has not started. Let an in-progress run finish, and watch what it
    publishes.
 3. Record the run IDs, or that there were none, in the pull request.
+
+## Dry-run a release
+
+A dry run builds, accepts and checks a release from any branch and publishes nothing:
+
+```sh
+gh workflow run release-cli.yml --ref <branch> -f dry_run=true
+```
+
+A dispatch without `dry_run` fails in its first job: only a `vX.Y.Z` tag push publishes. The run's
+version is always `0.0.0-dryrun.<run id>.<attempt>`, never an input, so no branch can build a real
+version. The pins job checks the Core pins, their digests on GHCR and the setup assets (not the
+release-only checks: main, the next order, the promotion). image.yml runs with `target: archive`,
+its `cli` job packs and normalizes the CLI tarball, and packaged acceptance runs offline from the
+archives, gated by the same `acceptance` job a release waits for. `npm`, `github-release` and
+`promote-images` run on a tag push only, so a dry run asks for no `release` environment and mints no
+id-token, and none of its jobs holds `contents: write` or `packages: write`.
+
+It does not prove: the ghcr login and push, and the multi-arch index on ghcr; setup pulling from
+ghcr; npm's OIDC and the `release` environment; the GitHub release and its asset upload; the
+`latest` promotion. A tag push is the only run that does.
+
+Proven once, and stale when GitHub's runner images change: a ghcr login with `packages: write`, a
+push by digest, and the multi-arch index on ghcr, on 14 October 2026 in run 38607378387, before the
+pause. That run built amd64 on the box, not on a hosted runner: the first proof on GitHub's hosted
+runners is still pending. **The first real release after the dry run is a `-next` tag, watched
+live**, job by job.
+
+### When npm serves other bytes
+
+If the npm job fails with `INCIDENT`, the version on npm is not the tarball the run accepted.
+
+What has moved: `npm publish` already pointed the channel's npm dist-tag at the incident version,
+`latest` for a stable release, `next` for a next build. Installs pick it up until you move it back.
+The GitHub release and its assets are up. What has not moved: GHCR's `:latest` and GitHub's latest
+release, because `promote-images` runs after the npm job and did not run.
+
+With an npm login that has 2FA, from an empty directory:
+
+1. Check that the dist-tag still names the incident version, so you do not move it off a newer good
+   release published since:
+
+   ```sh
+   npm view @sealant/mend dist-tags --json
+   ```
+
+   If `latest` (stable) or `next` (next build) names another version, leave it and go to step 3.
+
+2. Point it back at the last release whose integrity checked:
+
+   ```sh
+   npm dist-tag add @sealant/mend@<verified prior version> <latest or next>
+   ```
+
+3. Deprecate the incident version, and cut a new one:
+
+   ```sh
+   npm deprecate @sealant/mend@<version> "Withdrawn: published bytes differ from the accepted tarball. Use <new version>."
+   ```
+
+Never republish over the incident version, and never unpublish it. Edit its GitHub release notes to
+name the version that replaces it.
 
 ## Cut a Mend next build
 

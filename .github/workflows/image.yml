@@ -18,6 +18,13 @@ on:
         required: false
         type: string
         default: ghcr
+    # Which acceptance passed, `ghcr` or `archive`, and nothing when none did. A caller's `needs`
+    # also passes when every job here was skipped (a fork: `version` never runs), so a publisher
+    # reads this instead of trusting the call's result alone.
+    outputs:
+      accepted:
+        value:
+          ${{ jobs.packaged-smoke.outputs.accepted || jobs.archive-acceptance.outputs.accepted }}
   workflow_dispatch:
     inputs:
       version:
@@ -632,6 +639,8 @@ jobs:
     permissions:
       contents: read
       packages: read
+    outputs:
+      accepted: ${{ steps.accepted.outputs.target }}
     steps:
       # Disk use on / and /mnt every 5 s, so the step summary shows this job's peak on a hosted runner.
       - name: Start the disk sampler
@@ -713,6 +722,10 @@ jobs:
           MEND_TEST_IMAGE_IDENTITY: digest
           MEND_TEST_CLI_TARBALL: ${{ steps.cli.outputs.tarball }}
         run: node scripts/check-packaged-server.mjs
+      # Reached only when acceptance passed on this arch; a failed arch fails the job.
+      - name: Record the acceptance
+        id: accepted
+        run: echo "target=ghcr" >>"$GITHUB_OUTPUT"
       # Telemetry only: it never turns the job's result red, and says so when it has nothing.
       - name: Report peak disk use
         if: always()
@@ -747,6 +760,8 @@ jobs:
     timeout-minutes: 45
     permissions:
       contents: read
+    outputs:
+      accepted: ${{ steps.accepted.outputs.target }}
     steps:
       # Disk use on / and /mnt every 5 s, so the step summary shows this job's peak on a hosted runner.
       - name: Start the disk sampler
@@ -863,6 +878,10 @@ jobs:
           MEND_TEST_CLI_TARBALL: ${{ steps.cli.outputs.tarball }}
           MEND_TEST_OFFLINE: "1"
         run: node scripts/check-packaged-server.mjs
+      # Reached only when acceptance passed on this arch; a failed arch fails the job.
+      - name: Record the acceptance
+        id: accepted
+        run: echo "target=archive" >>"$GITHUB_OUTPUT"
       # Telemetry only: it never turns the job's result red, and says so when it has nothing.
       - name: Report peak disk use
         if: always()

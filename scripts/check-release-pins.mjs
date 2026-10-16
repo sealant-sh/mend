@@ -13,7 +13,12 @@
 //   Version Packages pull request, notes and docs may change, with renames counted as a deletion
 //   and an addition.
 //
+// - A dry run, `--dry-run v0.0.0-dryrun.<run id>.<attempt>` (release-cli.yml dispatched with
+//   dry_run): the every-release pin checks only. It publishes nothing, so it may run from any
+//   branch. Without the flag a dry-run-shaped version is a release tag like any other, and fails.
+//
 //   node scripts/check-release-pins.mjs v0.36.0-next.56
+//   node scripts/check-release-pins.mjs --dry-run v0.0.0-dryrun.38700000001.1
 import { execFileSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
@@ -33,6 +38,9 @@ import {
   readRepositoryPinFiles,
   readRepositoryPins,
 } from "./sealant-pins.mjs";
+
+/** The version a dispatched dry run of release-cli.yml carries: never a real release's. */
+export const isDryRunVersion = (version) => /^0\.0\.0-dryrun\.\d+\.\d+$/.test(version);
 
 /** The package whose version the tags carry. */
 export const RELEASED_PACKAGE = "apps/cli";
@@ -136,7 +144,7 @@ const onMain = () => {
   }
 };
 
-const check = async (tag) => {
+const check = async (tag, { dryRun = false } = {}) => {
   const version = tag.replace(/^v/, "");
   if (!SEMVER.test(version)) return [`"${tag}" is not a vX.Y.Z release tag.`];
   const stable = !version.includes("-");
@@ -146,6 +154,14 @@ const check = async (tag) => {
     ...assetProblems(await readRepositoryPinFiles(), pins.sealantVersion),
     ...(await digestProblems(pins)),
   ];
+  // Only an explicit dry run (release-cli.yml passes --dry-run on a dispatch, never on a tag push)
+  // skips the release-only checks; a dry-run-shaped tag is checked like any other release, and
+  // fails them.
+  if (dryRun) {
+    if (!isDryRunVersion(version))
+      problems.push(`--dry-run checks a 0.0.0-dryrun.<run>.<attempt> version, not "${tag}".`);
+    return problems;
+  }
   if (!onMain()) problems.push("A release is cut from main; this commit is not on origin/main.");
   const allNextTags = git(["tag", "--list", "v*-next.*"]).split("\n");
   if (!stable) {
@@ -212,12 +228,14 @@ const check = async (tag) => {
 };
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
-  const tag = process.argv[2];
-  if (tag === undefined) {
-    console.error("usage: node scripts/check-release-pins.mjs <vX.Y.Z tag>");
+  const args = process.argv.slice(2);
+  const dryRun = args[0] === "--dry-run";
+  const [tag, ...extra] = dryRun ? args.slice(1) : args;
+  if (tag === undefined || extra.length > 0 || tag.startsWith("-")) {
+    console.error("usage: node scripts/check-release-pins.mjs [--dry-run] <vX.Y.Z tag>");
     process.exit(2);
   }
-  const problems = await check(tag);
+  const problems = await check(tag, { dryRun });
   if (problems.length > 0) {
     for (const problem of problems) console.error(`::error::${problem}`);
     process.exit(1);
