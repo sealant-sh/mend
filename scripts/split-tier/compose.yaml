@@ -1,0 +1,101 @@
+# Mend's split tiers as the Helm chart runs them (deploy/helm/mend: _helpers.tpl, api.yaml, web.yaml,
+# postgres.yaml), under Compose, for image.yml's split-tier smoke (scripts/check-split-tier.mjs).
+# Every value below is the one the chart renders with its defaults, plus
+#   web.allowedOrigins={http://127.0.0.1:3105}, sessionChannel.advertisedUrl=http://mend-api:3106,
+#   exposure.executorNetwork=private
+# except where Compose differs from a cluster, each named where it is (scripts/check-split-tier.test.mjs
+# compares this file with `helm template`):
+# - a Secret's value is generated per run and passed in the environment;
+# - a Service name is the Compose service name (mend-postgres → postgres, mend-api.mend.svc →
+#   mend-api);
+# - no capture-store bucket: MEND_BLOB_STORE is unset, so the API keeps captures in a directory
+#   beside its store (<MEND_STORE_ROOT>/_blobs). Sessions are not started here;
+# - the machine key directory is its own volume, not a subPath of the store's.
+# The network takes the chart's default pod CIDR, so MEND_TRUSTED_PROXIES is the chart's too.
+name: mend-split-tier
+
+services:
+  postgres:
+    # The chart's postgres:17-alpine, pinned by the digest that tag named on 2026-10-16.
+    image: docker.io/library/postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
+    environment:
+      POSTGRES_USER: mend
+      POSTGRES_DB: mend
+      POSTGRES_PASSWORD: ${MEND_DB_PASSWORD:?}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD, pg_isready, -U, mend, -d, mend]
+      interval: 2s
+      timeout: 3s
+      retries: 60
+
+  # The chart's fsGroup 1000: the API runs as 1000:1000 and must own its volumes.
+  volume-owner:
+    image: ${MEND_SPLIT_API_IMAGE:?}
+    pull_policy: never
+    user: "0:0"
+    entrypoint: [chown, "1000:1000", /var/lib/mend/store, /var/lib/mend/keys]
+    volumes:
+      - store:/var/lib/mend/store
+      - keys:/var/lib/mend/keys
+
+  mend-api:
+    image: ${MEND_SPLIT_API_IMAGE:?}
+    pull_policy: never
+    user: "1000:1000"
+    depends_on:
+      postgres: { condition: service_healthy }
+      volume-owner: { condition: service_completed_successfully }
+    environment:
+      NODE_ENV: production
+      MEND_DEPLOYMENT_MODE: kubernetes
+      MEND_STORE_ROOT: /var/lib/mend/store
+      SEALANT_BASE_URL: http://sealant-api.sealant.svc:4000
+      APP_URL: http://localhost:3105
+      MEND_ALLOWED_ORIGINS: '["http://127.0.0.1:3105"]'
+      MEND_VERSION: ${MEND_SPLIT_VERSION:?}
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?}
+      SEALANT_SERVICE_KEY: ${SEALANT_SERVICE_KEY:?}
+      MEND_DB_PASSWORD: ${MEND_DB_PASSWORD:?}
+      DATABASE_URL: postgres://mend:${MEND_DB_PASSWORD:?}@postgres:5432/mend
+      MEND_MODE: all
+      PORT: "3101"
+      MEND_WEB_PORT: "3105"
+      MEND_TRUSTED_PROXIES: 10.244.0.0/16
+      MEND_EXPOSURE: private
+      MEND_EXECUTOR_NETWORK: private
+      MEND_KEYS_ROOT: /var/lib/mend/keys
+      MEND_SERVICE_PORT_MIN: "43100"
+      MEND_SERVICE_PORT_MAX: "43999"
+      MEND_SESSION_ENDPOINT_LISTEN: 0.0.0.0:3106
+      MEND_SESSION_ENDPOINT_URL: http://mend-api:3106
+      MEND_SESSION_STORE: captured
+    volumes:
+      - store:/var/lib/mend/store
+      - keys:/var/lib/mend/keys
+
+  mend-web:
+    image: ${MEND_SPLIT_WEB_IMAGE:?}
+    pull_policy: never
+    depends_on:
+      mend-api: { condition: service_healthy }
+    environment:
+      APP_URL: http://localhost:3105
+      MEND_ALLOWED_ORIGINS: '["http://127.0.0.1:3105"]'
+      PORT: "3105"
+      MEND_API_URL: http://mend-api:3101
+    ports:
+      - 127.0.0.1:3105:3105
+
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 10.244.0.0/16
+
+volumes:
+  postgres:
+  store:
+  keys:
