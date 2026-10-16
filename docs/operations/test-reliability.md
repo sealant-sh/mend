@@ -366,27 +366,28 @@ and repeat it on the release candidate. The previous 0.35.1 upgrade VM test was 
 there were no external Mend installations to support. The VM and client runs remain distinct from
 CI; this audit follow-up has not executed them.
 
-A CI lane for that 0.35.1 gap is implemented, unproven: image.yml's `previous-upgrade` and
-`archive-previous-upgrade` jobs ([the upgrade window](next-channel.md#the-upgrade-window); the
-scenario is `scripts/check-previous-upgrade.mjs`) have not yet run inside a release workflow. The
-scenario itself has run once outside them: run 38946598409 (2026-10-16), a scratch probe on GitHub's
-hosted amd64 and arm64 runners, upgraded a seeded 0.35.1 to the published 0.36.0-next.792 and passed
-every check. That run did not exercise a live-pinned previous next, a dry-run candidate, the archive
-path or the release gate. Each release a candidate may be upgraded from is installed from its actual
-artifacts: its npm CLI, its ghcr image by digest, its GitHub release setup assets, pinned in
-`release/upgrade-from.json` for a stable release and read live for a next build. A project, a
-session with its checkpoints and a Review comment are seeded on it; the candidate's CLI upgrades it
-to the exact candidate image; old data, authentication, a new session, a restart and the migration
-level are then checked. It counts as coverage once a dry run has passed it end to end on both
-architectures.
+A CI lane closes that 0.35.1 gap: image.yml's `previous-upgrade` and `archive-previous-upgrade` jobs
+([the upgrade window](next-channel.md#the-upgrade-window); the scenario is
+`scripts/check-previous-upgrade.mjs`). Dry run 4, run 38965446723 on `a5809999e` (2026-10-16),
+passed it end to end inside the release workflow on both architectures: from 0.35.1 (committed pins)
+and from 0.36.0-next.792 (pins read live) to the archived candidate
+`0.36.0-next.993.dryrun.38965446723.1`, through the release gate. A scratch probe before it, run
+38946598409, upgraded a seeded 0.35.1 to the published 0.36.0-next.792 on the same two
+architectures. The ghcr-mode `previous-upgrade` job, which pulls the candidate by digest instead of
+loading archives, has not run yet; the first watched `-next` tag runs it. Each release a candidate
+may be upgraded from is installed from its actual artifacts: its npm CLI, its ghcr image by digest,
+its GitHub release setup assets, pinned in `release/upgrade-from.json` for a stable release and read
+live for a next build. A project, a session with its checkpoints and a Review comment are seeded on
+it; the candidate's CLI upgrades it to the exact candidate image; old data, authentication, a new
+session, a restart and the migration level are then checked.
 
 `REL-01` is partially addressed: the existing packaged smoke already labels its same-source
 version-transition evidence in its script header and final output. The CI step now uses the same
 wording. Both images come from the candidate revision; a successful smoke run establishes upgrade
 mechanics and retention, not compatibility with an earlier server implementation or schema. Its
 additional previous-CLI generation check tests configuration compatibility, not an older
-server/database. Coverage of an upgrade from an earlier server is the lane above: implemented, not
-yet proven by a passing run.
+server/database. Coverage of an upgrade from an earlier server is the lane above, proven by dry
+run 4.
 
 ## Provider adapter contracts and compatibility
 
