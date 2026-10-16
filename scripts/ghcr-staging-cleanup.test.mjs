@@ -171,8 +171,8 @@ test("the workflow lists only, unless dispatched with dry_run false, and its sch
   assert.deepEqual(Object.keys(workflow.on), ["workflow_dispatch"]);
   assert.equal(workflow.on.workflow_dispatch.inputs.dry_run.default, true);
   assert.equal(workflow.on.workflow_dispatch.inputs.dry_run.type, "boolean");
-  assert.deepEqual(workflow.permissions, { packages: "write" });
-  assert.deepEqual(workflow.jobs.cleanup.permissions, { packages: "write" });
+  assert.deepEqual(workflow.permissions, { contents: "read", packages: "write" });
+  assert.deepEqual(workflow.jobs.cleanup.permissions, { contents: "read", packages: "write" });
   assert.equal(workflow.jobs.cleanup["runs-on"], "ubuntu-24.04");
   const step = workflow.jobs.cleanup.steps.at(-1);
   const directory = mkdtempSync(path.join(tmpdir(), "cleanup-step-"));

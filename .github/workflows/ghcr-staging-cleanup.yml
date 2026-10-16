@@ -18,6 +18,7 @@ on:
   #   - cron: "17 4 * * 1"
 
 permissions:
+  contents: read
   packages: write
 
 jobs:
@@ -26,7 +27,9 @@ jobs:
     # Hosted, as every job holding a write token: the box's runner VMs keep state between jobs.
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    # contents: read for the sparse checkout of the selection script only.
     permissions:
+      contents: read
       packages: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
