@@ -6,7 +6,15 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import http from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -229,6 +237,7 @@ const publish = async (
       RELEASE: release,
       REPUBLISH_TEST_PACOTE: PACOTE,
       REPUBLISH_TEST_WAIT: "0",
+      RELEASE_TEST_RETRY_MS: "1",
       NPM_CONFIG_REGISTRY: stub.url,
       NPM_CONFIG_USERCONFIG: npmrc,
     },
@@ -723,7 +732,11 @@ const latestLabels = (version) =>
  * OIDC), over this run's artifacts, against the stub npm registry, a stub GitHub API for the latest
  * release, and a stand-in docker for each ghcr :latest.
  */
-const publishStep = async (t, stub, { version, github = {}, labels = {}, unreadable = [] }) => {
+const publishStep = async (
+  t,
+  stub,
+  { version, github = {}, labels = {}, unreadable = [], environment = {} },
+) => {
   const directory = mkdtempSync(path.join(tmpdir(), "republish-step-"));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   for (const dir of ["cli", "release"]) mkdirSync(path.join(directory, dir));
@@ -767,8 +780,10 @@ const publishStep = async (t, stub, { version, github = {}, labels = {}, unreada
       GITHUB_API_URL: githubStub.url,
       REPUBLISH_TEST_PACOTE: PACOTE,
       REPUBLISH_TEST_WAIT: "0",
+      RELEASE_TEST_RETRY_MS: "1",
       NPM_CONFIG_REGISTRY: stub.url,
       NPM_CONFIG_USERCONFIG: npmrc,
+      ...environment,
     },
   });
   let output = "";
@@ -958,4 +973,126 @@ test("a dry-run version is refused by the publisher on either channel", async (t
     assert.match(result.output, new RegExp(`is not a ${channel} version`), `${version} ${channel}`);
     assert.equal(stub.log.length, 0);
   }
+});
+
+// --- retry delays ---
+// The publish steps wait between retried reads: 1500 ms × attempt for a registry or GitHub read, and
+// 5 s × attempt for npm's integrity read-back. These were the delays before they became overridable,
+// and stay the production ones; only these tests shorten them, through RELEASE_TEST_RETRY_MS and
+// REPUBLISH_TEST_WAIT, and each step logs which delays it ran with.
+const RETRY_MS = 1500;
+const INTEGRITY_WAIT_S = 5;
+const releaseWorkflow = () =>
+  parse(readFileSync(path.join(root, ".github/workflows/release-cli.yml"), "utf8")).jobs;
+const releaseSteps = () => {
+  const jobs = releaseWorkflow();
+  return {
+    npm: jobs.npm.steps.find((entry) => entry.name === "Publish to npm").run,
+    "promote-images": jobs["promote-images"].steps.find(
+      (entry) => entry.name === "Update latest after release publication",
+    ).run,
+  };
+};
+const occurrences = (text, pattern) => text.match(new RegExp(pattern, "g"))?.length ?? 0;
+const literal = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+test("no workflow sets a test delay, and the defaults are the production delays", () => {
+  const directory = path.join(root, ".github/workflows");
+  const variables = ["RELEASE_TEST_RETRY_MS", "REPUBLISH_TEST_WAIT"];
+  for (const file of readdirSync(directory).filter((name) => /\.ya?ml$/.test(name))) {
+    const text = readFileSync(path.join(directory, file), "utf8");
+    const workflow = parse(text) ?? {};
+    const envs = [workflow.env];
+    for (const job of Object.values(workflow.jobs ?? {})) {
+      envs.push(job.env, job.with);
+      for (const step of job.steps ?? []) envs.push(step.env, step.with);
+    }
+    for (const env of envs)
+      for (const variable of variables)
+        assert.ok(!Object.hasOwn(env ?? {}, variable), `${file} sets ${variable}`);
+    for (const variable of variables)
+      assert.doesNotMatch(text, new RegExp(`(export\\s+${variable}\\b|\\b${variable}=)`), file);
+  }
+  const workflow = readFileSync(path.join(root, ".github/workflows/release-cli.yml"), "utf8");
+  // Every retry wait in the release workflow reads the override with today's delay as its default.
+  const retry = `setTimeout(resolve, attempt * Number(process.env.RELEASE_TEST_RETRY_MS || ${RETRY_MS}))`;
+  assert.equal(occurrences(workflow, literal(retry)), 4);
+  assert.equal(occurrences(workflow, "setTimeout\\("), 4);
+  const wait = `sleep $((attempt * \${REPUBLISH_TEST_WAIT:-${INTEGRITY_WAIT_S}}))`;
+  assert.equal(occurrences(workflow, "\\bsleep\\b"), 1);
+  assert.ok(workflow.includes(wait));
+  // And each step's log names those same defaults.
+  for (const run of Object.values(releaseSteps()))
+    assert.ok(run.includes(`echo "retry backoff: production (${RETRY_MS} ms × attempt)"`));
+  assert.ok(
+    releaseSteps().npm.includes(
+      `echo "integrity read-back wait: production (${INTEGRITY_WAIT_S} s × attempt)"`,
+    ),
+  );
+});
+
+// The lines before a step's floor block: where it states its delays, before anything else runs.
+const preambleOf = (run) => run.slice(0, run.indexOf("# --- floor ---"));
+const runPreamble = (run, environment) =>
+  spawnSync("bash", ["--noprofile", "--norc", "-e", "-c", preambleOf(run)], {
+    encoding: "utf8",
+    env: { PATH: process.env.PATH, ...environment },
+  });
+
+test("each publish step logs the delays it runs with, once, before anything else", () => {
+  for (const [name, run] of Object.entries(releaseSteps())) {
+    const production = runPreamble(run, {});
+    assert.equal(production.status, 0, `${name}: ${production.stderr}`);
+    assert.match(production.stdout, /^retry backoff: production \(1500 ms × attempt\)$/m, name);
+    assert.equal(occurrences(production.stdout, "retry backoff"), 1, name);
+    assert.doesNotMatch(production.stdout, /overridden/, name);
+    const overridden = runPreamble(run, { RELEASE_TEST_RETRY_MS: "7", REPUBLISH_TEST_WAIT: "0" });
+    assert.equal(overridden.status, 0, `${name}: ${overridden.stderr}`);
+    assert.match(overridden.stdout, /^retry backoff: overridden to 7 ms × attempt$/m, name);
+    assert.doesNotMatch(overridden.stdout, /production \(1500/, name);
+    // A value that is not a number of milliseconds fails the step, and is not echoed.
+    const garbage = runPreamble(run, { RELEASE_TEST_RETRY_MS: "1500; secret-token" });
+    assert.notEqual(garbage.status, 0, name);
+    assert.match(
+      garbage.stdout,
+      /RELEASE_TEST_RETRY_MS is not a whole number of milliseconds/,
+      name,
+    );
+    assert.doesNotMatch(garbage.stdout + garbage.stderr, /secret-token/, name);
+  }
+  const npm = releaseSteps().npm;
+  assert.match(
+    runPreamble(npm, {}).stdout,
+    /^integrity read-back wait: production \(5 s × attempt\)$/m,
+  );
+  assert.match(
+    runPreamble(npm, { REPUBLISH_TEST_WAIT: "0" }).stdout,
+    /^integrity read-back wait: overridden to 0 s × attempt$/m,
+  );
+  const garbage = runPreamble(npm, { REPUBLISH_TEST_WAIT: "5s secret-token" });
+  assert.notEqual(garbage.status, 0);
+  assert.doesNotMatch(garbage.stdout + garbage.stderr, /secret-token/);
+});
+
+test("the npm step, run whole, logs production delays when no test overrides them", async (t) => {
+  const stub = await registry(t, mendSeed({}, { latest: "0.39.0", next: "0.40.0-next.3" }));
+  const unset = await publishStep(t, stub, {
+    version: "0.40.0-next.4",
+    environment: { RELEASE_TEST_RETRY_MS: undefined, REPUBLISH_TEST_WAIT: undefined },
+  });
+  assert.equal(unset.status, 0, unset.output);
+  assert.equal(occurrences(unset.output, "retry backoff: production \\(1500 ms × attempt\\)"), 1);
+  assert.equal(
+    occurrences(unset.output, "integrity read-back wait: production \\(5 s × attempt\\)"),
+    1,
+  );
+  assert.doesNotMatch(unset.output, /overridden/);
+  const again = await registry(t, mendSeed({}, { latest: "0.39.0", next: "0.40.0-next.3" }));
+  const overridden = await publishStep(t, again, { version: "0.40.0-next.4" });
+  assert.equal(overridden.status, 0, overridden.output);
+  assert.equal(occurrences(overridden.output, "retry backoff: overridden to 1 ms × attempt"), 1);
+  assert.equal(
+    occurrences(overridden.output, "integrity read-back wait: overridden to 0 s × attempt"),
+    1,
+  );
 });
