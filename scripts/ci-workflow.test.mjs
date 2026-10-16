@@ -248,7 +248,9 @@ test("native commands keep ordinary assertion output beside the CI file guard an
       reporterPairs(command, "./scripts");
     }
   }
-  const packageScripts = globSync("{apps,packages,tooling}/*/package.json", { cwd: root })
+  const packageScripts = globSync("{apps,packages,tooling}/*/package.json", {
+    cwd: root,
+  })
     .flatMap((manifest) =>
       Object.values(JSON.parse(readFileSync(new URL(manifest, root), "utf8")).scripts ?? {}),
     )
@@ -316,7 +318,9 @@ test("the test report reaches Turbo tasks without entering hashes, outputs or gi
   const turbo = JSON.parse(readFileSync(new URL("turbo.json", root), "utf8"));
   assert.deepEqual(turbo.tasks.test.passThroughEnv, ["CI_TEST_REPORT_DIR"]);
   const tasks = Object.values(turbo.tasks);
-  for (const manifest of globSync("{apps,packages,tooling}/*/turbo.json", { cwd: root })) {
+  for (const manifest of globSync("{apps,packages,tooling}/*/turbo.json", {
+    cwd: root,
+  })) {
     const { test: packageTest } = JSON.parse(readFileSync(new URL(manifest, root), "utf8")).tasks;
     assert.equal(packageTest?.passThroughEnv, undefined, `${manifest} replaces the report dir`);
     if (packageTest) tasks.push(packageTest);
@@ -529,7 +533,11 @@ esac
     const run = (env) => {
       rmSync(log, { force: true });
       const result = spawnSync("bash", ["-c", script], {
-        env: { PATH: `${tmp}:${process.env.PATH}`, GH_REPO: "sealant-sh/mend", ...env },
+        env: {
+          PATH: `${tmp}:${process.env.PATH}`,
+          GH_REPO: "sealant-sh/mend",
+          ...env,
+        },
         encoding: "utf8",
       });
       assert.equal(result.status, 0, result.stderr);
@@ -553,7 +561,11 @@ esac
     const hoursAgo = (hours) => new Date(Date.now() - hours * 3600_000).toISOString();
     assert.doesNotMatch(run({ EVENT_NAME: "schedule", FAKE_LAST_SUCCESS: hoursAgo(1) }), /issue/);
     assert.match(
-      run({ EVENT_NAME: "schedule", FAKE_LAST_SUCCESS: hoursAgo(31), FAKE_OPEN_ISSUE: "" }),
+      run({
+        EVENT_NAME: "schedule",
+        FAKE_LAST_SUCCESS: hoursAgo(31),
+        FAKE_OPEN_ISSUE: "",
+      }),
       /^issue create --label nightly-failure .*No scheduled ci\.yml run on main has succeeded in 30 hours/m,
     );
     const probeStale = run({
@@ -568,7 +580,11 @@ esac
     );
     assert.doesNotMatch(probeStale, /No scheduled ci\.yml run/);
     assert.match(
-      run({ EVENT_NAME: "schedule", FAKE_LAST_SUCCESS: "", FAKE_OPEN_ISSUE: "" }),
+      run({
+        EVENT_NAME: "schedule",
+        FAKE_LAST_SUCCESS: "",
+        FAKE_OPEN_ISSUE: "",
+      }),
       /last success: none/,
     );
   } finally {
@@ -577,7 +593,36 @@ esac
 });
 
 // Box runner VMs keep state between jobs, so a job that publishes, or holds a token that writes to
-// the repository, its packages or a registry, runs on a GitHub-hosted runner: a fresh VM.
+// the repository, its packages or a registry, runs on a GitHub-hosted runner: a fresh VM. A runner
+// is named in runs-on, in a matrix row, or in a matrix a step builds as JSON (preview.yml's plan).
+const hosted = (runner) =>
+  (Array.isArray(runner) ? runner : [runner]).every(
+    (label) => typeof label === "string" && /^ubuntu-(latest|[0-9.]+(-arm)?)$/.test(label),
+  );
+const runnersIn = (value) => {
+  if (typeof value === "string") {
+    // Runner selectors written as JSON inside a script: "runner": "…" or "runner": […].
+    return [...value.matchAll(/"runner"\s*:\s*(\[[^\]]*\]|"[^"]*")/g)].map((m) => JSON.parse(m[1]));
+  }
+  if (Array.isArray(value)) return value.flatMap(runnersIn);
+  if (value && typeof value === "object") {
+    return Object.entries(value).flatMap(([key, entry]) =>
+      key === "runner" ? [entry, ...runnersIn(entry)] : runnersIn(entry),
+    );
+  }
+  return [];
+};
+const publishingRunners = (jobs) =>
+  Object.entries(jobs).flatMap(([name, job]) => {
+    if (job.uses) return [];
+    const runsOn = job["runs-on"];
+    const named = /^\$\{\{ matrix\.[a-z.]+ \}\}$/.test(runsOn) ? [] : [runsOn];
+    return [...named, ...runnersIn(job.strategy), ...runnersIn(job.steps)].map((runner) => ({
+      name,
+      runner,
+    }));
+  });
+
 test("jobs that publish or hold a write token never ask for a box runner", () => {
   for (const file of [
     "image.yml",
@@ -592,12 +637,37 @@ test("jobs that publish or hold a write token never ask for a box runner", () =>
     const { jobs } = parse(
       readFileSync(new URL(`../.github/workflows/${file}`, import.meta.url), "utf8"),
     );
-    for (const [name, job] of Object.entries(jobs)) {
-      // runs-on, matrix rows and the scripts that build matrices, without the YAML comments.
-      const text = JSON.stringify(job);
-      assert.doesNotMatch(text, /self-hosted|"box"/, `${file} ${name} asks for a box runner`);
-      if (job.uses) continue;
-      assert.ok(job["runs-on"], `${file} ${name} names its runner`);
+    for (const { name, runner } of publishingRunners(jobs)) {
+      assert.ok(hosted(runner), `${file} ${name} asks for ${JSON.stringify(runner)}`);
     }
   }
+});
+
+test("the runner guard catches a box label wherever a runner is named", () => {
+  const job = (fields) => ({ publish: { steps: [], ...fields } });
+  const box = ["self-hosted", "box", "linux", "x64"];
+  const caught = (jobs) => publishingRunners(jobs).some(({ runner }) => !hosted(runner));
+  assert.ok(caught(job({ "runs-on": box })), "runs-on");
+  assert.ok(caught(job({ "runs-on": "box" })), "a scalar label");
+  assert.ok(
+    caught(
+      job({
+        "runs-on": "${{ matrix.platform.runner }}",
+        strategy: { matrix: { platform: [{ arch: "amd64", runner: box }] } },
+      }),
+    ),
+    "a matrix row",
+  );
+  // Astra's mutation: preview.yml's plan builds the matrix as JSON, and a selector needs no
+  // self-hosted label to land on the box.
+  assert.ok(
+    caught(
+      job({
+        "runs-on": "ubuntu-24.04",
+        steps: [{ run: `amd64='{"arch":"amd64","runner":["box","linux","x64"]}'` }],
+      }),
+    ),
+    "a matrix a step builds",
+  );
+  assert.ok(!caught(job({ "runs-on": "ubuntu-24.04-arm" })), "a hosted runner passes");
 });
