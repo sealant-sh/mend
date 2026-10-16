@@ -96,6 +96,21 @@ package: people install `npm install --global @sealant/mend@next`, `mend server 
 CLI's own version, and each Mend next build is tagged by an admin and approved by the owner, so the
 stable package's credential is never in an unattended job.
 
+### Where publishing runs
+
+Every job in a workflow that publishes, or holds a token that writes to a repository, its packages
+or a registry, runs on a GitHub-hosted runner: a fresh VM per job. The box's runner VMs keep state
+between jobs (Docker images, the setup-node tool cache, the pnpm store), so code from an earlier
+pull request could change what a job there builds, accepts or pushes. A test in each repository
+refuses any other runner in those workflows. This holds for runs created from the workflow files
+since that change, in all three repositories: Mend (this change), Core and sealantd (their own pull
+requests).
+
+**Never re-run a publishing run created before that change.** A re-run uses the workflow file of the
+run's own commit, so it runs on the box again. Start a new run instead: a new tag, a new merge, or a
+new dispatch. Before each repository's change merged, its queued and waiting publishing runs were
+cancelled, so none starts from the old files.
+
 ## Cut a Mend next build
 
 On an up-to-date, full (not shallow) checkout, as an admin (only admins create `v*` tags):
