@@ -27,6 +27,13 @@ jobs:
     # Hosted, as every job holding a write token: the box's runner VMs keep state between jobs.
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    # The release channel's queue, as finalize-images, npm and promote-images: a finalize that adds
+    # :<version> to a staging index never runs between this job's listing and its deletes. Job-level
+    # `queue: max` holds every pending job (runs 38897026470, 38897041709 and 38897056028).
+    concurrency:
+      group: mend-release-channel
+      cancel-in-progress: false
+      queue: max
     # contents: read for the sparse checkout of the selection script only.
     permissions:
       contents: read

@@ -70,8 +70,9 @@ jobs:
               exit 1
               ;;
           esac
-      # A dispatch of image.yml itself pushes ghcr.io/sealant-sh/mend:<version>, the tag
-      # `mend server setup` pulls: from main only, and only for a version that has its git tag (built
+      # A dispatch of image.yml itself pushes to ghcr.io/sealant-sh/mend (a real version only under
+      # its staging tag; release-cli.yml's finalize-images alone writes :<version>, the tag
+      # `mend server setup` pulls): from main only, and only for a version that has its git tag (built
       # from that tag's commit, not main's head), or a dev or acceptance build. A call from
       # release-acceptance.yml or release-cli.yml carries its caller's event and ref, so the check
       # reads github.workflow_ref, the top-level workflow, and builds the caller's commit.

@@ -919,9 +919,13 @@ test("pins gets --dry-run only on a dispatch building to archives", (t) => {
  * `tags` maps a reference to its digest, `unreadable` lists references whose read fails for a
  * reason other than not found, and `onCreate` says what a create does: `land` (the tag gets the
  * source's digest), `other` (another digest lands), `vanish` (the tag becomes unreadable), with an
- * optional exit code.
+ * optional exit code. `answers` replaces a reference's read with exact stdout, stderr and exit
+ * (only its first read, with `once`).
  */
-const finalize = (t, { tags = {}, unreadable = [], onCreate = {}, manifest = {} } = {}) => {
+const finalize = (
+  t,
+  { tags = {}, unreadable = [], onCreate = {}, manifest = {}, answers = {} } = {},
+) => {
   const directory = mkdtempSync(path.join(tmpdir(), "mend-finalize-"));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const bin = path.join(directory, "bin");
@@ -929,7 +933,7 @@ const finalize = (t, { tags = {}, unreadable = [], onCreate = {}, manifest = {} 
   const calls = path.join(directory, "calls.jsonl");
   const state = path.join(directory, "registry.json");
   writeFileSync(calls, "");
-  writeFileSync(state, JSON.stringify({ tags, unreadable, onCreate }));
+  writeFileSync(state, JSON.stringify({ tags, unreadable, onCreate, answers }));
   writeFileSync(
     path.join(bin, "docker"),
     `#!${process.execPath}
@@ -940,6 +944,16 @@ const registry = JSON.parse(readFileSync(${JSON.stringify(state)}, "utf8"));
 const save = () => writeFileSync(${JSON.stringify(state)}, JSON.stringify(registry));
 if (args.slice(0, 3).join(" ") === "buildx imagetools inspect" && args[4] === "--format") {
   const ref = args[3];
+  const answer = registry.answers[ref];
+  if (answer !== undefined) {
+    if (answer.once) {
+      delete registry.answers[ref];
+      save();
+    }
+    process.stdout.write(answer.stdout ?? "");
+    process.stderr.write(answer.stderr ?? "");
+    process.exit(answer.exit ?? 1);
+  }
   if (registry.unreadable.includes(ref)) {
     console.error("ERROR: failed to do request: Head \\"https://ghcr.io/v2/x\\": unauthorized");
     process.exit(1);
@@ -1048,6 +1062,34 @@ test("finalize fails without writing on a read that is not a not-found", (t) => 
   assert.equal(result.status, 1);
   assert.match(result.output, /::error::Could not read .*mend-api:1\.2\.3; nothing was written/);
   assert.deepEqual(creates(result), []);
+});
+
+test("finalize reads absent only from buildx's sole not-found line, and fails on anything else", (t) => {
+  const ref = finalRef("mend");
+  // The audit's case: not found plus another error is a failed read, not an absent tag.
+  for (const [label, answer] of [
+    [
+      "mixed lines",
+      { stderr: `ERROR: ${ref}: not found\nERROR: unauthorized: authentication required\n` },
+    ],
+    ["an error before it", { stderr: `WARNING: retrying\nERROR: ${ref}: not found\n` }],
+    ["a changed format", { stderr: `error: ${ref}: not found\n` }],
+    ["another reference", { stderr: `ERROR: ${ref}-other: not found\n` }],
+    ["output beside it", { stdout: "{}\n", stderr: `ERROR: ${ref}: not found\n` }],
+  ]) {
+    const result = finalize(t, { answers: { [ref]: answer } });
+    assert.equal(result.status, 1, label);
+    assert.match(result.output, /Could not read .*mend:1\.2\.3; nothing was written/, label);
+    assert.deepEqual(creates(result), [], label);
+  }
+  // The exact sole line, however many trailing newlines, is absent: the tag is created. Its
+  // re-read after the create is the ordinary one.
+  const result = finalize(t, {
+    answers: { [ref]: { stderr: `ERROR: ${ref}: not found\n\n`, once: true } },
+  });
+  assert.equal(result.status, 0, result.output);
+  assert.equal(creates(result).length, 1 + 2);
+  assert.deepEqual(creates(result)[0].slice(4), [ref, `${promoted("mend")}@${indexOf("mend")}`]);
 });
 
 test("finalize: a create that reported an error but left this run's digest is a success", (t) => {

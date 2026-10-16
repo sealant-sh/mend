@@ -9,8 +9,10 @@
  * Without --delete it only lists. A version is kept when it has no tag (a platform manifest or an
  * attestation an index points at), when any tag is not a staging tag (a final version, dev,
  * acceptance or `latest` beside a staging tag), or when it is younger than 14 days by `updated_at`,
- * which GitHub moves forward whenever the version's tags change. Any API error, a 403 included,
- * fails the run: nothing is guessed.
+ * which GitHub moves forward whenever the version's tags change. Each candidate is read again right
+ * before its delete and kept if it no longer qualifies; the workflow also queues on the release
+ * channel, so finalize-images never tags a staging index between the two. Any API error, a 403
+ * included, fails the run: nothing is guessed.
  */
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -93,13 +95,20 @@ export async function cleanup({
         log(`CANDIDATE ${label}: ${reason}`);
         continue;
       }
-      await request(
-        api,
-        token,
-        "DELETE",
-        `/orgs/${org}/packages/container/${name}/versions/${version.id}`,
-        204,
-      );
+      // The listing is a snapshot: read the version again right before deleting it, and keep it if
+      // it no longer qualifies (a release that finalized it added its version's tag).
+      const where = `/orgs/${org}/packages/container/${name}/versions/${version.id}`;
+      const current = await (await request(api, token, "GET", where, 200)).json();
+      if (current?.id !== version.id) throw new Error(`GET ${where} answered another version`);
+      const again = classify(current, now);
+      if (!again.candidate) {
+        const currentTags = current.metadata?.container?.tags ?? [];
+        log(
+          `SKIP ${name} ${version.id} [${currentTags.join(", ")}]: no longer a candidate, ${again.reason}`,
+        );
+        continue;
+      }
+      await request(api, token, "DELETE", where, 204);
       deleted.push(`${name}/${version.id}`);
       log(`DELETED ${label}: ${reason}`);
     }

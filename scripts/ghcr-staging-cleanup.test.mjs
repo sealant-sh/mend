@@ -32,8 +32,11 @@ const MEND = [
   version(106, ["0.0.0-dev.sha0123456789ab"], 30),
 ];
 
-/** The packages API for sealant-sh: mend's versions over two pages; `fail` answers an error. */
-const packagesApi = async (t, { fail = {} } = {}) => {
+/**
+ * The packages API for sealant-sh: mend's versions over two pages; `fail` answers an error, and
+ * `retag` gives a version other tags from the listing on, as a finalize would.
+ */
+const packagesApi = async (t, { fail = {}, retag = {} } = {}) => {
   const requests = [];
   const server = http.createServer((request, response) => {
     const url = new URL(request.url, "http://stub");
@@ -57,6 +60,22 @@ const packagesApi = async (t, { fail = {} } = {}) => {
         headers.link = `<http://${request.headers.host}${url.pathname}?per_page=100&page=2>; rel="next"`;
       response.writeHead(200, headers);
       response.end(JSON.stringify(list[1] === "mend" ? all.slice((page - 1) * 3, page * 3) : all));
+      return;
+    }
+    const one = /^\/orgs\/sealant-sh\/packages\/container\/mend\/versions\/(\d+)$/.exec(
+      url.pathname,
+    );
+    if (request.method === "GET" && one !== null) {
+      const found = MEND.find((entry) => entry.id === Number(one[1]));
+      const tags = retag[found.id];
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(
+        JSON.stringify(
+          tags === undefined
+            ? found
+            : { ...found, updated_at: new Date().toISOString(), metadata: { container: { tags } } },
+        ),
+      );
       return;
     }
     if (
@@ -122,7 +141,9 @@ test("a dry run lists candidates and what it keeps, with reasons, and deletes no
   for (const id of [101, 103, 104, 105, 106])
     assert.match(result.output, new RegExp(`^KEEP mend ${id} `, "m"));
   // Every package is read, mend over both pages, with the workflow token.
-  const lists = api.requests.filter(({ method }) => method === "GET");
+  const lists = api.requests.filter(
+    ({ method, path: where }) => method === "GET" && where.endsWith("/versions"),
+  );
   assert.deepEqual(
     lists.map(({ path: where }) => where.split("/")[5]),
     ["mend", "mend", "mend-api", "mend-web"],
@@ -139,6 +160,29 @@ test("with --delete, exactly the candidate is deleted", async (t) => {
     ["/orgs/sealant-sh/packages/container/mend/versions/102"],
   );
   assert.match(result.output, /^DELETED mend 102 /m);
+});
+
+test("a candidate finalized between the listing and its delete is kept", async (t) => {
+  // The audit's race: finalize-images adds 1.2.3 to a staging index the listing saw as staging only.
+  const api = await packagesApi(t, { retag: { 102: ["staging-38900000000-1", "1.2.3"] } });
+  const result = await cleanup(api, ["--delete"]);
+  assert.equal(result.status, 0, result.output);
+  assert.deepEqual(result.deletes, []);
+  assert.match(
+    result.output,
+    /^SKIP mend 102 \[staging-38900000000-1, 1\.2\.3\]: no longer a candidate, carries /m,
+  );
+  // The read before the delete is of that version.
+  assert.ok(
+    api.requests.some(
+      ({ method, path: where }) =>
+        method === "GET" && where === "/orgs/sealant-sh/packages/container/mend/versions/102",
+    ),
+  );
+  // A dry run never reads it again: it deletes nothing to protect.
+  const listed = await packagesApi(t);
+  await cleanup(listed);
+  assert.ok(listed.requests.every(({ path: where }) => where.endsWith("/versions")));
 });
 
 test("a 403 on a delete, or any list error, fails loudly", async (t) => {
@@ -174,6 +218,14 @@ test("the workflow lists only, unless dispatched with dry_run false, and its sch
   assert.deepEqual(workflow.permissions, { contents: "read", packages: "write" });
   assert.deepEqual(workflow.jobs.cleanup.permissions, { contents: "read", packages: "write" });
   assert.equal(workflow.jobs.cleanup["runs-on"], "ubuntu-24.04");
+  // Serialized with finalize-images, npm and promote-images for the whole list-and-delete.
+  const release = parse(
+    readFileSync(new URL("../.github/workflows/release-cli.yml", import.meta.url), "utf8"),
+  );
+  const channel = { group: "mend-release-channel", "cancel-in-progress": false, queue: "max" };
+  assert.deepEqual(workflow.jobs.cleanup.concurrency, channel);
+  for (const name of ["finalize-images", "npm", "promote-images"])
+    assert.deepEqual(release.jobs[name].concurrency, channel, name);
   const step = workflow.jobs.cleanup.steps.at(-1);
   const directory = mkdtempSync(path.join(tmpdir(), "cleanup-step-"));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
