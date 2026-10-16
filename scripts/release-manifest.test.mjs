@@ -885,6 +885,12 @@ process.stdout.write(readFileSync(${JSON.stringify(documents)} + "/" + args[3].s
   assert.equal(readFileSync(path.join(work, "digest"), "utf8"), "");
 });
 
+// A status-function call in a job's `if`, ignoring quoted strings: `'always()' != ''` names none.
+const callsStatusFunction = (condition) =>
+  /\b(always|cancelled|success|failure)\s*\(\s*\)/.test(
+    String(condition ?? "").replace(/'(?:[^']|'')*'/g, "''"),
+  );
+
 // GitHub's rule, which the static checks above do not see: a job whose `if` names no status
 // function (always, cancelled, success, failure) runs only if every job above it, however far up,
 // succeeded, and a skipped job counts as not succeeded. Run 38917070036, the first dry run, skipped
@@ -902,7 +908,7 @@ const simulateRun = (target) => {
     assert.ok(ready.length > 0, "image.yml's needs form a cycle");
     for (const name of ready) {
       let expression = (jobs[name].if ?? "").replace(/^\$\{\{\s*|\s*\}\}$/g, "").trim();
-      if (!/\b(always|cancelled|success|failure)\(\)/.test(expression))
+      if (!callsStatusFunction(expression))
         expression = expression === "" ? "success()" : `success() && (${expression})`;
       const allAbove = [...ancestors(name)].every((job) => result[job] === "success");
       const script = expression
@@ -970,11 +976,19 @@ test("no workflow job is skipped behind a job its own path expected to skip, unl
       return seen;
     };
     for (const [name, job] of Object.entries(all)) {
-      if (/\b(always|cancelled|success|failure)\(\)/.test(String(job.if ?? ""))) continue;
+      if (callsStatusFunction(job.if)) continue;
       if ([...ancestors(name)].some((above) => all[above]?.if !== undefined)) {
         exposed.push(`${file} ${name}`);
       }
     }
   }
   assert.deepEqual(exposed.toSorted(), [...SKIPPED_TOGETHER.keys()].toSorted());
+});
+
+test("a status function inside a quoted string is not a status function", () => {
+  assert.equal(callsStatusFunction("inputs.target == 'archive' && 'always()' != ''"), false);
+  assert.equal(callsStatusFunction("${{ !cancelled() && inputs.target == 'ghcr' }}"), true);
+  assert.equal(callsStatusFunction("always( )"), true);
+  assert.equal(callsStatusFunction("github.event_name == 'push'"), false);
+  assert.equal(callsStatusFunction(undefined), false);
 });
