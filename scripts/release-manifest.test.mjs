@@ -933,3 +933,48 @@ test("on each target, GitHub runs that target's acceptance though the other targ
   for (const name of ["archive-build", "archive-merge"]) assert.equal(ghcr[name], "skipped", name);
   for (const run of [archive, ghcr]) assert.equal(run["release-manifest"], "success");
 });
+
+// The same rule across every workflow. A job whose `if` names no status function is skipped when
+// any job above it was. Each such job below a job that can be skipped is listed here with why that
+// skip is also this job's; a new one fails until someone has looked.
+const SKIPPED_TOGETHER = new Map([
+  // Only a fork skips version; everything below it should skip there too.
+  ["image.yml build", "same target as its ancestors; version skips only on a fork"],
+  ["image.yml merge", "same target as its ancestors; version skips only on a fork"],
+  ["image.yml archive-build", "same target as its ancestors; version skips only on a fork"],
+  ["image.yml archive-merge", "same target as its ancestors; version skips only on a fork"],
+  ["image.yml cli", "version skips only on a fork"],
+  // Every publishing job runs on a tag push, and none on a dispatch.
+  ["release-cli.yml npm", "its ancestors carry the same push condition"],
+  ["release-cli.yml promote-images", "its ancestors carry the same push condition"],
+  // Nothing publishes on a pull request.
+  [
+    "publish-vscode.yml github-release",
+    "publish is skipped only on a pull request, where this is too",
+  ],
+  // A preview without a sealantd or Core ref builds neither the image nor its source.
+  ["preview.yml sealantd", "plan skips only on a fork"],
+  ["preview.yml sealantd-image", "skipped exactly when there is no sealantd ref to preview"],
+  ["preview.yml core", "plan skips only on a fork"],
+  ["preview.yml core-images", "skipped exactly when there is no Core ref to preview"],
+]);
+
+test("no workflow job is skipped behind a job its own path expected to skip, unless reviewed", () => {
+  const directory = fileURLToPath(new URL("../.github/workflows/", import.meta.url));
+  const exposed = [];
+  for (const file of readdirSync(directory).filter((name) => /\.ya?ml$/.test(name))) {
+    const { jobs: all = {} } = parse(readFileSync(path.join(directory, file), "utf8")) ?? {};
+    const needsOf = (name) => [all[name]?.needs ?? []].flat();
+    const ancestors = (name, seen = new Set()) => {
+      for (const need of needsOf(name)) if (!seen.has(need)) ancestors(need, seen.add(need));
+      return seen;
+    };
+    for (const [name, job] of Object.entries(all)) {
+      if (/\b(always|cancelled|success|failure)\(\)/.test(String(job.if ?? ""))) continue;
+      if ([...ancestors(name)].some((above) => all[above]?.if !== undefined)) {
+        exposed.push(`${file} ${name}`);
+      }
+    }
+  }
+  assert.deepEqual(exposed.toSorted(), [...SKIPPED_TOGETHER.keys()].toSorted());
+});
