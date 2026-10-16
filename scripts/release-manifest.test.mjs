@@ -884,3 +884,111 @@ process.stdout.write(readFileSync(${JSON.stringify(documents)} + "/" + args[3].s
   assert.match(lone.stderr, /lacks/);
   assert.equal(readFileSync(path.join(work, "digest"), "utf8"), "");
 });
+
+// A status-function call in a job's `if`, ignoring quoted strings: `'always()' != ''` names none.
+const callsStatusFunction = (condition) =>
+  /\b(always|cancelled|success|failure)\s*\(\s*\)/.test(
+    String(condition ?? "").replace(/'(?:[^']|'')*'/g, "''"),
+  );
+
+// GitHub's rule, which the static checks above do not see: a job whose `if` names no status
+// function (always, cancelled, success, failure) runs only if every job above it, however far up,
+// succeeded, and a skipped job counts as not succeeded. Run 38917070036, the first dry run, skipped
+// archive acceptance this way: merge, skipped on an archive run, sits above release-manifest.
+const simulateRun = (target) => {
+  const needsOf = (name) => [jobs[name].needs ?? []].flat();
+  const ancestors = (name, seen = new Set()) => {
+    for (const need of needsOf(name)) if (!seen.has(need)) ancestors(need, seen.add(need));
+    return seen;
+  };
+  const result = {};
+  const pending = new Set(Object.keys(jobs));
+  while (pending.size > 0) {
+    const ready = [...pending].filter((name) => needsOf(name).every((need) => need in result));
+    assert.ok(ready.length > 0, "image.yml's needs form a cycle");
+    for (const name of ready) {
+      let expression = (jobs[name].if ?? "").replace(/^\$\{\{\s*|\s*\}\}$/g, "").trim();
+      if (!callsStatusFunction(expression))
+        expression = expression === "" ? "success()" : `success() && (${expression})`;
+      const allAbove = [...ancestors(name)].every((job) => result[job] === "success");
+      const script = expression
+        .replace(/!cancelled\(\)/g, "true")
+        .replace(/always\(\)/g, "true")
+        .replace(/success\(\)/g, String(allAbove))
+        .replace(/failure\(\)/g, "false")
+        .replace(/inputs\.target/g, JSON.stringify(target))
+        .replace(/github\.repository/g, JSON.stringify("sealant-sh/mend"))
+        .replace(/needs\.([\w-]+)\.result/g, (_, need) => JSON.stringify(result[need]))
+        .replace(/!=/g, "!==")
+        .replace(/(?<![!=])==/g, "===");
+      result[name] = Function(`"use strict"; return (${script});`)() ? "success" : "skipped";
+      pending.delete(name);
+    }
+  }
+  return result;
+};
+
+test("on each target, GitHub runs that target's acceptance though the other target's jobs were skipped", () => {
+  const archive = simulateRun("archive");
+  assert.equal(archive["archive-acceptance"], "success");
+  assert.equal(archive["packaged-smoke"], "skipped");
+  for (const name of ["build", "merge"]) assert.equal(archive[name], "skipped", name);
+  const ghcr = simulateRun("ghcr");
+  assert.equal(ghcr["packaged-smoke"], "success");
+  assert.equal(ghcr["archive-acceptance"], "skipped");
+  for (const name of ["archive-build", "archive-merge"]) assert.equal(ghcr[name], "skipped", name);
+  for (const run of [archive, ghcr]) assert.equal(run["release-manifest"], "success");
+});
+
+// The same rule across every workflow. A job whose `if` names no status function is skipped when
+// any job above it was. Each such job below a job that can be skipped is listed here with why that
+// skip is also this job's; a new one fails until someone has looked.
+const SKIPPED_TOGETHER = new Map([
+  // Only a fork skips version; everything below it should skip there too.
+  ["image.yml build", "same target as its ancestors; version skips only on a fork"],
+  ["image.yml merge", "same target as its ancestors; version skips only on a fork"],
+  ["image.yml archive-build", "same target as its ancestors; version skips only on a fork"],
+  ["image.yml archive-merge", "same target as its ancestors; version skips only on a fork"],
+  ["image.yml cli", "version skips only on a fork"],
+  // Every publishing job runs on a tag push, and none on a dispatch.
+  ["release-cli.yml npm", "its ancestors carry the same push condition"],
+  ["release-cli.yml promote-images", "its ancestors carry the same push condition"],
+  // Nothing publishes on a pull request.
+  [
+    "publish-vscode.yml github-release",
+    "publish is skipped only on a pull request, where this is too",
+  ],
+  // A preview without a sealantd or Core ref builds neither the image nor its source.
+  ["preview.yml sealantd", "plan skips only on a fork"],
+  ["preview.yml sealantd-image", "skipped exactly when there is no sealantd ref to preview"],
+  ["preview.yml core", "plan skips only on a fork"],
+  ["preview.yml core-images", "skipped exactly when there is no Core ref to preview"],
+]);
+
+test("no workflow job is skipped behind a job its own path expected to skip, unless reviewed", () => {
+  const directory = fileURLToPath(new URL("../.github/workflows/", import.meta.url));
+  const exposed = [];
+  for (const file of readdirSync(directory).filter((name) => /\.ya?ml$/.test(name))) {
+    const { jobs: all = {} } = parse(readFileSync(path.join(directory, file), "utf8")) ?? {};
+    const needsOf = (name) => [all[name]?.needs ?? []].flat();
+    const ancestors = (name, seen = new Set()) => {
+      for (const need of needsOf(name)) if (!seen.has(need)) ancestors(need, seen.add(need));
+      return seen;
+    };
+    for (const [name, job] of Object.entries(all)) {
+      if (callsStatusFunction(job.if)) continue;
+      if ([...ancestors(name)].some((above) => all[above]?.if !== undefined)) {
+        exposed.push(`${file} ${name}`);
+      }
+    }
+  }
+  assert.deepEqual(exposed.toSorted(), [...SKIPPED_TOGETHER.keys()].toSorted());
+});
+
+test("a status function inside a quoted string is not a status function", () => {
+  assert.equal(callsStatusFunction("inputs.target == 'archive' && 'always()' != ''"), false);
+  assert.equal(callsStatusFunction("${{ !cancelled() && inputs.target == 'ghcr' }}"), true);
+  assert.equal(callsStatusFunction("always( )"), true);
+  assert.equal(callsStatusFunction("github.event_name == 'push'"), false);
+  assert.equal(callsStatusFunction(undefined), false);
+});
