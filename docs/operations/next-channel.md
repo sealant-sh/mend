@@ -106,10 +106,19 @@ refuses any other runner in those workflows. This holds for runs created from th
 since that change, in all three repositories: Mend (this change), Core and sealantd (their own pull
 requests).
 
-**Never re-run a publishing run created before that change.** A re-run uses the workflow file of the
-run's own commit, so it runs on the box again. Start a new run instead: a new tag, a new merge, or a
-new dispatch. Before each repository's change merged, its queued and waiting publishing runs were
-cancelled, so none starts from the old files.
+**Never re-run a publishing run created before that change.** A re-run uses the workflow files of
+the run's own commit, so it runs on the box again. A new run is only safe if it targets a commit
+whose workflow files contain the change: a tag on an older commit, or a dispatch on an older branch,
+runs that commit's files. Mend's `release-cli.yml` before the change still has the `v*` trigger and
+its box `pins` job, so a release tag on such a commit runs on the box.
+
+Before merging that change in each repository:
+
+1. List the repository's unfinished runs of every publishing workflow: queued, waiting, requested,
+   pending and in progress.
+2. Cancel every one that has not started. Let an in-progress run finish, and watch what it
+   publishes.
+3. Record the run IDs, or that there were none, in the pull request.
 
 ## Cut a Mend next build
 
