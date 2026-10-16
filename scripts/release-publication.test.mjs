@@ -16,6 +16,7 @@ import test from "node:test";
 
 import { parse } from "yaml";
 
+import { isDryRunVersion } from "./check-release-pins.mjs";
 import { githubApi, npmDistTags, registryStandIn, writesIn } from "./fixtures/release-markers.mjs";
 
 const releaseWorkflow = readFileSync(
@@ -451,7 +452,7 @@ test("image.yml pushes a version once, and only its own dispatch is held to main
   // Run the commit step as written, with a stand-in `gh` that knows one tag.
   const step = image.slice(image.indexOf("- name: Choose the commit to build"));
   const script = step
-    .slice(step.indexOf("run: |") + "run: |".length, step.indexOf("- name: Resolve one version"))
+    .slice(step.indexOf("run: |") + "run: |".length, step.indexOf("\n  build:\n"))
     .split("\n")
     .map((line) => line.replace(/^ {10}/, ""))
     .join("\n");
@@ -571,14 +572,67 @@ const imageDocument = parse(
   readFileSync(new URL("../.github/workflows/image.yml", import.meta.url), "utf8"),
 );
 const resolveStep = releaseJobs.release.steps.find((step) => step.id === "resolve");
-const resolve = (environment) => {
+
+/**
+ * A repository scripts/next-version.mjs allocates in, as the dispatched commit's checkout: apps/cli
+ * released as 0.35.1 (its tag), then one commit with a minor changeset, so main's next is
+ * 0.36.0-next.2. `broken` leaves apps/cli/package.json out, so the allocator fails.
+ */
+const allocatorRepository = (broken = false) => {
+  const directory = mkdtempSync(path.join(tmpdir(), "release-allocator-"));
+  const environment = {
+    ...process.env,
+    GIT_CONFIG_GLOBAL: "/dev/null",
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_AUTHOR_NAME: "t",
+    GIT_AUTHOR_EMAIL: "t@example.invalid",
+    GIT_COMMITTER_NAME: "t",
+    GIT_COMMITTER_EMAIL: "t@example.invalid",
+  };
+  const git = (...args) => spawnSync("git", args, { cwd: directory, env: environment });
+  git("init", "-q", "-b", "main");
+  for (const dir of ["apps/cli", ".changeset", "scripts"])
+    mkdirSync(path.join(directory, dir), { recursive: true });
+  writeFileSync(
+    path.join(directory, "scripts/next-version.mjs"),
+    readFileSync(new URL("./next-version.mjs", import.meta.url)),
+  );
+  writeFileSync(path.join(directory, ".changeset/config.json"), "{}");
+  if (!broken)
+    writeFileSync(
+      path.join(directory, "apps/cli/package.json"),
+      '{"name":"@sealant/mend","version":"0.35.1"}',
+    );
+  writeFileSync(path.join(directory, "README.md"), "fixture");
+  git("add", "-A");
+  git("commit", "-qm", "base");
+  git("tag", "v0.35.1");
+  writeFileSync(
+    path.join(directory, ".changeset/change.md"),
+    '---\n"@sealant/mend": minor\n---\n\nA change.\n',
+  );
+  git("add", "-A");
+  git("commit", "-qm", "change");
+  return directory;
+};
+const allocator = allocatorRepository();
+const brokenAllocator = allocatorRepository(true);
+process.on("exit", () => {
+  for (const directory of [allocator, brokenAllocator])
+    rmSync(directory, { recursive: true, force: true });
+});
+
+const resolve = (environment, cwd = allocator) => {
   const directory = mkdtempSync(path.join(tmpdir(), "release-resolve-"));
   const output = path.join(directory, "output");
   writeFileSync(output, "");
   const result = spawnSync("bash", ["--noprofile", "--norc", "-e", "-c", resolveStep.run], {
+    cwd,
     encoding: "utf8",
     env: {
-      PATH: "/usr/bin:/bin",
+      // node and git for scripts/next-version.mjs; nothing else of this machine's.
+      PATH: `${path.dirname(process.execPath)}:${path.dirname(spawnSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).stdout.trim())}:/usr/bin:/bin`,
+      GIT_CONFIG_GLOBAL: "/dev/null",
       GITHUB_RUN_ID: "38700000001",
       GITHUB_RUN_ATTEMPT: "2",
       GITHUB_OUTPUT: output,
@@ -607,8 +661,15 @@ test("a dispatch is a dry run or nothing, and its version is always derived from
   const dispatch = { GITHUB_EVENT_NAME: "workflow_dispatch", GITHUB_REF: "refs/heads/feature" };
   const dry = resolve({ ...dispatch, DRY_RUN: "true" });
   assert.equal(dry.status, 0, dry.stderr);
-  assert.equal(dry.version, "0.0.0-dryrun.38700000001.2");
+  // scripts/next-version.mjs on the dispatched commit gives 0.36.0-next.2.
+  assert.equal(dry.version, "0.36.0-next.2.dryrun.38700000001.2");
+  assert.ok(isDryRunVersion(dry.version));
   assert.equal(dry.target, "archive");
+  // When the allocator cannot give the commit a next version, the dry run has no version.
+  const unallocated = resolve({ ...dispatch, DRY_RUN: "true" }, brokenAllocator);
+  assert.equal(unallocated.status, 1);
+  assert.match(unallocated.stderr, /next-version\.mjs could not give this commit a next version/);
+  assert.equal(unallocated.version, undefined);
   // Nothing the dispatcher controls names the version: not the ref, not a tag-shaped ref name.
   assert.equal(
     resolve({
@@ -618,7 +679,7 @@ test("a dispatch is a dry run or nothing, and its version is always derived from
       GITHUB_REF_NAME: "v0.37.0",
       VERSION: "0.37.0",
     }).version,
-    "0.0.0-dryrun.38700000001.2",
+    "0.36.0-next.2.dryrun.38700000001.2",
   );
   for (const value of ["false", "", "1"]) {
     const refused = resolve({ ...dispatch, DRY_RUN: value });
@@ -1017,7 +1078,12 @@ test("a :<version> that moved since acceptance, or another release's manifest, m
 
 test("a dry-run-shaped tag is refused before any build; a push only ever builds to ghcr", () => {
   // The audit's bypass: a pushed v0.0.0-dryrun tag built for ghcr, and pins relaxed by its shape.
-  for (const name of ["v0.0.0-dryrun.9.1", "v0.37.0-dryrun.1", "v1.0.0-next.1-dryrun"]) {
+  for (const name of [
+    "v0.0.0-dryrun.9.1",
+    "v0.36.0-next.988.dryrun.38931186422.1",
+    "v0.37.0-dryrun.1",
+    "v1.0.0-next.1-dryrun",
+  ]) {
     const pushed = resolve({
       GITHUB_EVENT_NAME: "push",
       GITHUB_REF: `refs/tags/${name}`,

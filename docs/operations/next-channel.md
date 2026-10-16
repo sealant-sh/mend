@@ -161,14 +161,31 @@ gh workflow run release-cli.yml --ref <branch> -f dry_run=true
 ```
 
 A dispatch without `dry_run` fails in its first job: only a `vX.Y.Z` tag push publishes. The run's
-version is always `0.0.0-dryrun.<run id>.<attempt>`, never an input, so no branch can build a real
-version. The pins job checks the Core pins, their digests on GHCR and the setup assets (not the
-release-only checks: main, the next order, the promotion). image.yml runs with `target: archive`,
-its `cli` job packs and normalizes the CLI tarball, and packaged acceptance runs offline from the
-archives, gated by the same `acceptance` job a release waits for. `finalize-images`, `npm`,
-`github-release` and `promote-images` run on a tag push only, so a dry run asks for no `release`
-environment and mints no id-token, and none of its jobs holds `contents: write` or
-`packages: write`.
+version is always derived, never an input: `<next>.dryrun.<run id>.<attempt>`, where `<next>` is the
+`X.Y.Z-next.N` that `scripts/next-version.mjs` gives the dispatched commit, for example
+`0.36.0-next.988.dryrun.38931186422.1`. If the allocator cannot give the commit a version (a missing
+package, no stable tag in its history, a shallow clone), the first job fails and says so.
+
+The stamp sorts as a release would: above `X.Y.Z-next.N` (it has more prerelease fields with the
+same start), below `X.Y.Z-next.(N+1)` (`N` is compared first, as a number), and below `X.Y.Z` itself
+(any prerelease is). Dispatched from current main, or a branch on top of it, `X.Y.Z-next.N` is at
+least the newest published next build, so the stamp sorts above every published release, its window
+is the newest next build and the stable release before it, and nothing it builds could replace
+either. Dispatched from an older commit, it is stamped with that commit's `N` and can sort below a
+published next build: commit 2, with `next.3` already tagged, is
+`0.36.0-next.2.dryrun.<run>.<attempt>`, below `next.3`, and upgrades from `next.2`'s window. So
+dispatch a dry run from current main. It never equals a version the allocator hands out, which are
+only `X.Y.Z-next.N`, `X.Y.Z-next.N.preview.R` and `X.Y.Z`. A tag carrying `dryrun` is refused by the
+release job, a dry-run version builds to `target: archive` only (image.yml refuses it for ghcr,
+whether it comes from the version input or from the tag a run is dispatched on), and the publisher
+refuses it on either npm channel. Runs before this stamp used `0.0.0-dryrun.<run id>.<attempt>`;
+`scripts/check-release-pins.mjs` reads both forms as a dry run. The pins job checks the Core pins,
+their digests on GHCR and the setup assets (not the release-only checks: main, the next order, the
+promotion). image.yml runs with `target: archive`, its `cli` job packs and normalizes the CLI
+tarball, and packaged acceptance runs offline from the archives, gated by the same `acceptance` job
+a release waits for. `finalize-images`, `npm`, `github-release` and `promote-images` run on a tag
+push only, so a dry run asks for no `release` environment and mints no id-token, and none of its
+jobs holds `contents: write` or `packages: write`.
 
 Dry run 2, run 38923041738 on `475d88ca9`, passed end to end and published nothing.
 

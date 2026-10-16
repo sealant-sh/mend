@@ -280,21 +280,96 @@ test("image.yml takes a target, ghcr by default, from a call and from a dispatch
   assert.equal(image.on.workflow_dispatch.inputs.target.default, "ghcr");
   assert.deepEqual(image.on.workflow_dispatch.inputs.target.options, ["ghcr", "archive"]);
   const check = step("version", "Check the target").run;
-  for (const [target, status] of [
-    ["ghcr", 0],
-    ["archive", 0],
-    ["registry", 1],
-    ["", 1],
+  for (const [target, version, status] of [
+    ["ghcr", "", 0],
+    ["archive", "", 0],
+    ["registry", "", 1],
+    ["", "", 1],
+    // A dry-run version builds to archives only, in either form.
+    ["archive", "0.36.0-next.988.dryrun.38931186422.1", 0],
+    ["ghcr", "0.36.0-next.988.dryrun.38931186422.1", 1],
+    ["ghcr", "0.0.0-dryrun.38931186422.1", 1],
+    ["ghcr", "0.36.0-next.988", 0],
   ])
     assert.equal(
-      spawnSync("bash", ["--noprofile", "--norc", "-e", "-c", check], { env: { TARGET: target } })
-        .status,
+      spawnSync("bash", ["--noprofile", "--norc", "-e", "-c", check], {
+        env: { TARGET: target, VERSION: version },
+      }).status,
       status,
-      target,
+      `${target} ${version}`,
     );
+  assert.equal(step("version", "Check the target").env.VERSION, "${{ inputs.version }}");
   const acceptance = parse(workflowText("release-acceptance.yml"));
   assert.equal(acceptance.on.workflow_dispatch.inputs.target.default, "ghcr");
   assert.equal(acceptance.jobs.acceptance.with.target, "${{ inputs.target || 'ghcr' }}");
+});
+
+// release-acceptance.yml dispatched on a hand-made dry-run tag, default target, no version input: the
+// version comes from the tag alone, so the input check cannot see it. The version job, run as written,
+// must fail before it writes any output, and so nothing that pushes runs.
+test("a dry-run tag dispatched through release-acceptance never reaches ghcr", (t) => {
+  const acceptance = parse(workflowText("release-acceptance.yml"));
+  assert.equal(acceptance.jobs.acceptance.with.version, undefined);
+  const versionJob = (version, target) => {
+    const directory = scratch(t);
+    const output = path.join(directory, "output");
+    writeFileSync(output, "");
+    const env = {
+      PATH: process.env.PATH,
+      TARGET: target,
+      VERSION: "",
+      OVERRIDE_VERSION: "",
+      GITHUB_EVENT_NAME: "workflow_dispatch",
+      GITHUB_REF: `refs/tags/v${version}`,
+      GITHUB_REF_NAME: `v${version}`,
+      GITHUB_SHA: "f".repeat(40),
+      GITHUB_REPOSITORY: "sealant-sh/Mend",
+      GITHUB_WORKFLOW_REF: `sealant-sh/Mend/.github/workflows/release-acceptance.yml@refs/tags/v${version}`,
+      GITHUB_RUN_ID: "38931186422",
+      GITHUB_RUN_ATTEMPT: "1",
+      GITHUB_OUTPUT: output,
+    };
+    for (const entry of jobs.version.steps) {
+      const result = spawnSync(
+        "bash",
+        ["--noprofile", "--norc", "-eo", "pipefail", "-c", entry.run],
+        {
+          env,
+          encoding: "utf8",
+        },
+      );
+      if (result.status !== 0)
+        return { failed: entry.name, stderr: result.stderr, output: readFileSync(output, "utf8") };
+    }
+    return { failed: undefined, output: readFileSync(output, "utf8") };
+  };
+  for (const version of ["0.36.0-next.988.dryrun.38931186422.1", "0.0.0-dryrun.38931186422.1"]) {
+    const toGhcr = versionJob(version, "ghcr");
+    assert.equal(toGhcr.failed, "Resolve one version for image labels and tags", version);
+    assert.match(
+      toGhcr.stderr,
+      new RegExp(`${version.replaceAll(".", "\\.")} is a dry-run version`),
+    );
+    assert.equal(toGhcr.output, "", `${version}: the version job wrote no output`);
+    // The same tag to archives resolves as before.
+    const toArchive = versionJob(version, "archive");
+    assert.equal(toArchive.failed, undefined, toArchive.stderr);
+    assert.match(toArchive.output, new RegExp(`^version=${version.replaceAll(".", "\\.")}$`, "m"));
+  }
+  // A real tag still resolves for ghcr.
+  const real = versionJob("0.36.0-next.988", "ghcr");
+  assert.equal(real.failed, undefined, real.stderr);
+  assert.match(real.output, /^version=0\.36\.0-next\.988$/m);
+  // Only build and merge push, and a failed version job skips both: they need it and carry no
+  // status function that would run them anyway.
+  const pushing = Object.entries(jobs)
+    .filter(([, job]) => job.permissions?.packages === "write")
+    .map(([name]) => name);
+  assert.deepEqual(pushing, ["build", "merge"]);
+  for (const name of pushing) {
+    assert.ok([jobs[name].needs].flat().includes("version"), `${name} needs version`);
+    assert.doesNotMatch(jobs[name].if, /always\(\)|cancelled\(\)|failure\(\)/, name);
+  }
 });
 
 test("with ghcr, the jobs are today's plus the CLI and the manifest; archive jobs never run", () => {

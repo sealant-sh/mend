@@ -59,9 +59,12 @@ jobs:
       commit: ${{ steps.commit.outputs.commit }}
     steps:
       # A workflow_call input is any string; a target nothing handles would build and accept nothing.
+      # A dry-run version (release-cli.yml's dispatch) builds to archives only: it never reaches ghcr.
+      # This fails early on the version input; the resolve step checks the version it resolves.
       - name: Check the target
         env:
           TARGET: ${{ inputs.target }}
+          VERSION: ${{ inputs.version }}
         run: |
           case $TARGET in
             ghcr | archive) ;;
@@ -70,6 +73,38 @@ jobs:
               exit 1
               ;;
           esac
+          if [[ $TARGET != archive && $VERSION == *dryrun* ]]; then
+            echo "::error::$VERSION is a dry-run version; it builds to archives only, never to $TARGET."
+            exit 1
+          fi
+      # The target is checked again against the version this step resolves: the input is optional,
+      # and release-acceptance.yml dispatched on a tag passes none, so the version can come from the
+      # tag alone. It runs before any step writes an output.
+      - name: Resolve one version for image labels and tags
+        id: resolve
+        env:
+          OVERRIDE_VERSION: ${{ inputs.version }}
+          TARGET: ${{ inputs.target }}
+        run: |
+          node --input-type=module <<'NODE'
+          import { appendFileSync } from 'node:fs';
+          const { GITHUB_REF, GITHUB_REF_NAME, GITHUB_SHA, GITHUB_OUTPUT, OVERRIDE_VERSION, TARGET } = process.env;
+          const tagged = GITHUB_REF.startsWith('refs/tags/');
+          const tagVersion = tagged ? GITHUB_REF_NAME.replace(/^v/, '') : undefined;
+          if (tagged && OVERRIDE_VERSION && OVERRIDE_VERSION !== tagVersion) {
+            throw new Error('A release tag cannot be overridden with another version.');
+          }
+          const version = OVERRIDE_VERSION || tagVersion || `0.0.0-dev.sha${GITHUB_SHA.slice(0, 12)}`;
+          const match = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z.-]+))?$/.exec(version);
+          if (!match || (match[4]?.split('.') ?? []).some(p => !/^[0-9A-Za-z-]+$/.test(p) || /^0\d+$/.test(p))) {
+            throw new Error('Expected an exact Docker-compatible Mend semantic version.');
+          }
+          if (TARGET !== 'archive' && version.includes('dryrun')) {
+            throw new Error(`${version} is a dry-run version; it builds to archives only, never to ${TARGET}.`);
+          }
+          const before = `0.0.0-acceptance.${process.env.GITHUB_RUN_ID}.${process.env.GITHUB_RUN_ATTEMPT}`;
+          appendFileSync(GITHUB_OUTPUT, `version=${version}\nbefore=${before}\n`);
+          NODE
       # A dispatch of image.yml itself pushes to ghcr.io/sealant-sh/mend (a real version only under
       # its staging tag; release-cli.yml's finalize-images alone writes :<version>, the tag
       # `mend server setup` pulls): from main only, and only for a version that has its git tag (built
@@ -112,27 +147,6 @@ jobs:
             esac
           fi
           echo "commit=$commit" >> "$GITHUB_OUTPUT"
-      - name: Resolve one version for image labels and tags
-        id: resolve
-        env:
-          OVERRIDE_VERSION: ${{ inputs.version }}
-        run: |
-          node --input-type=module <<'NODE'
-          import { appendFileSync } from 'node:fs';
-          const { GITHUB_REF, GITHUB_REF_NAME, GITHUB_SHA, GITHUB_OUTPUT, OVERRIDE_VERSION } = process.env;
-          const tagged = GITHUB_REF.startsWith('refs/tags/');
-          const tagVersion = tagged ? GITHUB_REF_NAME.replace(/^v/, '') : undefined;
-          if (tagged && OVERRIDE_VERSION && OVERRIDE_VERSION !== tagVersion) {
-            throw new Error('A release tag cannot be overridden with another version.');
-          }
-          const version = OVERRIDE_VERSION || tagVersion || `0.0.0-dev.sha${GITHUB_SHA.slice(0, 12)}`;
-          const match = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z.-]+))?$/.exec(version);
-          if (!match || (match[4]?.split('.') ?? []).some(p => !/^[0-9A-Za-z-]+$/.test(p) || /^0\d+$/.test(p))) {
-            throw new Error('Expected an exact Docker-compatible Mend semantic version.');
-          }
-          const before = `0.0.0-acceptance.${process.env.GITHUB_RUN_ID}.${process.env.GITHUB_RUN_ATTEMPT}`;
-          appendFileSync(GITHUB_OUTPUT, `version=${version}\nbefore=${before}\n`);
-          NODE
 
   build:
     if: inputs.target == 'ghcr'
