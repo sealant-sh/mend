@@ -346,9 +346,12 @@ jobs:
           # API and a stand-in docker; npm and promote-images carry it byte for byte. A stable release's floor is
           # the highest of three markers, compared as numbers X.Y.Z: npm's `latest` for the package, the tag of
           # GitHub's latest release, and the org.opencontainers.image.version label on each ghcr :latest. A
-          # marker that does not exist adds nothing; one that cannot be read, or is not a plain X.Y.Z, fails the
-          # job: never read as no floor.
+          # marker that does not exist adds nothing; one that cannot be read, or is present but not a plain X.Y.Z,
+          # fails the job: never read as no floor. Each reader validates the whole value it read before it is
+          # compared or joined to its source. A part of X.Y.Z has at most 9 digits, so Bash's 64-bit arithmetic
+          # compares every version this accepts; a longer part fails as not plain.
           shopt -s inherit_errexit
+          PLAIN_VERSION='^(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})$'
 
           # GET <path> from the registry, retried; a failure or a 404 stops the job: never guessed.
           registry_get() {
@@ -383,12 +386,38 @@ jobs:
               "$2" <<<"$tags"
           }
 
-          # <value> is a plain X.Y.Z, or the job fails naming <marker>.
+          # <value> is a plain X.Y.Z (each part at most 9 digits), or the job fails naming <marker>.
           plain_version() {
-            if [[ ! $1 =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            if [[ ! $1 =~ $PLAIN_VERSION ]]; then
               echo "::error::$2 is '$1', not a plain X.Y.Z release; the floor cannot be read." >&2
               return 1
             fi
+          }
+
+          # npm's `latest` for <package>, validated, or nothing when the package has no `latest` dist-tag. The
+          # answer must be a JSON object; a `latest` that is null, empty, not a string or not a plain X.Y.Z fails.
+          npm_latest() {
+            local tags
+            tags=$(registry_get "-/package/${1/\//%2f}/dist-tags")
+            # shellcheck disable=SC2016 # JavaScript template literals, not shell expansions
+            node -e '
+              const [plain, what] = process.argv.slice(1);
+              const fail = (why) => {
+                console.error(`::error::${what} ${why}; the floor cannot be read.`);
+                process.exit(1);
+              };
+              let tags;
+              try {
+                tags = JSON.parse(require("node:fs").readFileSync(0, "utf8"));
+              } catch {
+                fail("is not JSON");
+              }
+              if (tags === null || typeof tags !== "object" || Array.isArray(tags)) fail("is not a JSON object");
+              if (!Object.hasOwn(tags, "latest")) process.exit(0);
+              if (typeof tags.latest !== "string" || !new RegExp(plain).test(tags.latest))
+                fail(`latest is ${JSON.stringify(tags.latest)}, not a plain X.Y.Z release`);
+              process.stdout.write(tags.latest);
+            ' "$PLAIN_VERSION" "npm:$1 dist-tags" <<<"$tags"
           }
 
           # -1, 0 or 1 as plain X.Y.Z <a> is below, equal to or above <b>.
@@ -403,12 +432,12 @@ jobs:
             echo 0
           }
 
-          # The tag of the repository's latest GitHub release, without its v, or nothing when it has none (a
-          # 404). Retried; anything else fails.
+          # The tag of the repository's latest GitHub release, without its v, or nothing when it has none: only
+          # a 404 is none. A tag that is not exactly vX.Y.Z fails; other answers are retried, then fail.
           github_latest_release() {
             # shellcheck disable=SC2016 # JavaScript template literals, not shell expansions
             node -e '
-              const [api, repository, token] = process.argv.slice(1);
+              const [api, repository, token, plain] = process.argv.slice(1);
               const url = `${api}/repos/${repository}/releases/latest`;
               const headers = { accept: "application/vnd.github+json", "x-github-api-version": "2022-11-28" };
               if (token) headers.authorization = `Bearer ${token}`;
@@ -418,8 +447,9 @@ jobs:
                     const response = await fetch(url, { headers });
                     if (response.status === 404) return;
                     if (response.ok) {
-                      const tag = (await response.json()).tag_name;
-                      if (typeof tag !== "string" || !tag.startsWith("v")) throw new Error(`the latest release is tagged ${tag}`);
+                      const tag = (await response.json())?.tag_name;
+                      if (typeof tag !== "string" || !tag.startsWith("v") || !new RegExp(plain).test(tag.slice(1)))
+                        throw new Error(`the latest release is tagged ${JSON.stringify(tag)}, not vX.Y.Z`);
                       return process.stdout.write(tag.slice(1));
                     }
                     if (attempt === 4) throw new Error(`GitHub answered ${response.status} for ${url}`);
@@ -433,7 +463,7 @@ jobs:
                 }
               };
               run();
-            ' -- "${GITHUB_API_URL:-https://api.github.com}" "$GITHUB_REPOSITORY" "${GH_TOKEN:-}"
+            ' -- "${GITHUB_API_URL:-https://api.github.com}" "$GITHUB_REPOSITORY" "${GH_TOKEN:-}" "$PLAIN_VERSION"
           }
 
           # Reads <ref> with `imagetools inspect --format <format>` into stdout, prints nothing for a tag that
@@ -469,47 +499,55 @@ jobs:
           }
 
           # The org.opencontainers.image.version every platform of <ref> carries, or nothing when <ref> does
-          # not exist. Platforms that disagree, or a missing label, fail.
+          # not exist. Each platform's label must be the whole string X.Y.Z, and all must be the same.
           image_version() {
-            local out versions
+            local out
             out=$(inspect_ref "$1" '{{json .Image}}')
             [[ -n $out ]] || return 0
             # One platform answers its config; an index answers each platform's config by platform.
-            if ! versions=$(jq -r 'if has("config") then [.] else [.[]] end
-              | map(.config.Labels["org.opencontainers.image.version"] // "") | unique | .[]' <<<"$out"); then
-              echo "::error::$1 answered an image config jq cannot read." >&2
-              return 1
-            fi
-            if [[ -z $versions || $versions == *$'\n'* ]]; then
-              echo "::error::$1 carries no single org.opencontainers.image.version (${versions//$'\n'/, })." >&2
-              return 1
-            fi
-            printf '%s\n' "$versions"
+            # shellcheck disable=SC2016 # JavaScript template literals, not shell expansions
+            node -e '
+              const [plain, ref] = process.argv.slice(1);
+              const fail = (why) => {
+                console.error(`::error::${ref} ${why}; the floor cannot be read.`);
+                process.exit(1);
+              };
+              let image;
+              try {
+                image = JSON.parse(require("node:fs").readFileSync(0, "utf8"));
+              } catch {
+                fail("answered an image config that is not JSON");
+              }
+              if (image === null || typeof image !== "object" || Array.isArray(image)) fail("answered no image config");
+              const configs = Object.hasOwn(image, "config") ? [image] : Object.values(image);
+              if (configs.length === 0) fail("answered no platform");
+              const labels = configs.map((config) => config?.config?.Labels?.["org.opencontainers.image.version"]);
+              const bad = labels.some((label) => typeof label !== "string" || !new RegExp(plain).test(label));
+              if (bad || labels.some((label) => label !== labels[0]))
+                fail(`carries no single plain X.Y.Z org.opencontainers.image.version (${labels.map((label) => JSON.stringify(label ?? null)).join(", ")})`);
+              process.stdout.write(labels[0]);
+            ' "$PLAIN_VERSION" "$1" <<<"$out"
           }
 
           # The floor of a stable release of <package> whose images are ghcr.io/<owner>/{mend,mend-api,mend-web}:
-          # `<version> <marker>` of the highest marker, or nothing when none exists.
+          # `<version> <marker>` of the highest marker, or nothing when none exists. Every version here was
+          # validated by its reader; versions and markers are kept apart until the result is printed.
           stable_floor() {
-            local package=$1 owner=$2 value marker line best="" best_marker="" image
-            local -a markers=()
-            value=$(dist_tag "$package" latest)
-            [[ -z $value ]] || markers+=("$value npm:$package@latest")
+            local package=$1 owner=$2 value image i best=-1
+            local -a versions=() sources=()
+            value=$(npm_latest "$package")
+            if [[ -n $value ]]; then versions+=("$value") && sources+=("npm:$package@latest"); fi
             value=$(github_latest_release)
-            [[ -z $value ]] || markers+=("$value github:$GITHUB_REPOSITORY/releases/latest")
+            if [[ -n $value ]]; then versions+=("$value") && sources+=("github:$GITHUB_REPOSITORY/releases/latest"); fi
             for image in mend mend-api mend-web; do
               value=$(image_version "ghcr.io/$owner/$image:latest")
-              [[ -z $value ]] || markers+=("$value ghcr.io/$owner/$image:latest")
+              if [[ -n $value ]]; then versions+=("$value") && sources+=("ghcr.io/$owner/$image:latest"); fi
             done
-            for line in "${markers[@]}"; do
-              value=${line%% *}
-              marker=${line#* }
-              plain_version "$value" "$marker"
-              if [[ -z $best || $(version_order "$value" "$best") == 1 ]]; then
-                best=$value
-                best_marker=$marker
-              fi
+            for i in "${!versions[@]}"; do
+              plain_version "${versions[i]}" "${sources[i]}"
+              if ((best < 0)) || [[ $(version_order "${versions[i]}" "${versions[best]}") == 1 ]]; then best=$i; fi
             done
-            [[ -z $best ]] || printf '%s %s\n' "$best" "$best_marker"
+            if ((best >= 0)); then printf '%s %s\n' "${versions[best]}" "${sources[best]}"; fi
           }
 
           # What a stable <version> may do against the floor line `<floor> <marker>` (empty: no floor):
@@ -521,6 +559,7 @@ jobs:
               echo publish
               return
             fi
+            plain_version "$floor" "$marker"
             case $(version_order "$version" "$floor") in
               1) echo publish ;;
               0) echo retry ;;
@@ -933,9 +972,12 @@ jobs:
           # API and a stand-in docker; npm and promote-images carry it byte for byte. A stable release's floor is
           # the highest of three markers, compared as numbers X.Y.Z: npm's `latest` for the package, the tag of
           # GitHub's latest release, and the org.opencontainers.image.version label on each ghcr :latest. A
-          # marker that does not exist adds nothing; one that cannot be read, or is not a plain X.Y.Z, fails the
-          # job: never read as no floor.
+          # marker that does not exist adds nothing; one that cannot be read, or is present but not a plain X.Y.Z,
+          # fails the job: never read as no floor. Each reader validates the whole value it read before it is
+          # compared or joined to its source. A part of X.Y.Z has at most 9 digits, so Bash's 64-bit arithmetic
+          # compares every version this accepts; a longer part fails as not plain.
           shopt -s inherit_errexit
+          PLAIN_VERSION='^(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})$'
 
           # GET <path> from the registry, retried; a failure or a 404 stops the job: never guessed.
           registry_get() {
@@ -970,12 +1012,38 @@ jobs:
               "$2" <<<"$tags"
           }
 
-          # <value> is a plain X.Y.Z, or the job fails naming <marker>.
+          # <value> is a plain X.Y.Z (each part at most 9 digits), or the job fails naming <marker>.
           plain_version() {
-            if [[ ! $1 =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            if [[ ! $1 =~ $PLAIN_VERSION ]]; then
               echo "::error::$2 is '$1', not a plain X.Y.Z release; the floor cannot be read." >&2
               return 1
             fi
+          }
+
+          # npm's `latest` for <package>, validated, or nothing when the package has no `latest` dist-tag. The
+          # answer must be a JSON object; a `latest` that is null, empty, not a string or not a plain X.Y.Z fails.
+          npm_latest() {
+            local tags
+            tags=$(registry_get "-/package/${1/\//%2f}/dist-tags")
+            # shellcheck disable=SC2016 # JavaScript template literals, not shell expansions
+            node -e '
+              const [plain, what] = process.argv.slice(1);
+              const fail = (why) => {
+                console.error(`::error::${what} ${why}; the floor cannot be read.`);
+                process.exit(1);
+              };
+              let tags;
+              try {
+                tags = JSON.parse(require("node:fs").readFileSync(0, "utf8"));
+              } catch {
+                fail("is not JSON");
+              }
+              if (tags === null || typeof tags !== "object" || Array.isArray(tags)) fail("is not a JSON object");
+              if (!Object.hasOwn(tags, "latest")) process.exit(0);
+              if (typeof tags.latest !== "string" || !new RegExp(plain).test(tags.latest))
+                fail(`latest is ${JSON.stringify(tags.latest)}, not a plain X.Y.Z release`);
+              process.stdout.write(tags.latest);
+            ' "$PLAIN_VERSION" "npm:$1 dist-tags" <<<"$tags"
           }
 
           # -1, 0 or 1 as plain X.Y.Z <a> is below, equal to or above <b>.
@@ -990,12 +1058,12 @@ jobs:
             echo 0
           }
 
-          # The tag of the repository's latest GitHub release, without its v, or nothing when it has none (a
-          # 404). Retried; anything else fails.
+          # The tag of the repository's latest GitHub release, without its v, or nothing when it has none: only
+          # a 404 is none. A tag that is not exactly vX.Y.Z fails; other answers are retried, then fail.
           github_latest_release() {
             # shellcheck disable=SC2016 # JavaScript template literals, not shell expansions
             node -e '
-              const [api, repository, token] = process.argv.slice(1);
+              const [api, repository, token, plain] = process.argv.slice(1);
               const url = `${api}/repos/${repository}/releases/latest`;
               const headers = { accept: "application/vnd.github+json", "x-github-api-version": "2022-11-28" };
               if (token) headers.authorization = `Bearer ${token}`;
@@ -1005,8 +1073,9 @@ jobs:
                     const response = await fetch(url, { headers });
                     if (response.status === 404) return;
                     if (response.ok) {
-                      const tag = (await response.json()).tag_name;
-                      if (typeof tag !== "string" || !tag.startsWith("v")) throw new Error(`the latest release is tagged ${tag}`);
+                      const tag = (await response.json())?.tag_name;
+                      if (typeof tag !== "string" || !tag.startsWith("v") || !new RegExp(plain).test(tag.slice(1)))
+                        throw new Error(`the latest release is tagged ${JSON.stringify(tag)}, not vX.Y.Z`);
                       return process.stdout.write(tag.slice(1));
                     }
                     if (attempt === 4) throw new Error(`GitHub answered ${response.status} for ${url}`);
@@ -1020,7 +1089,7 @@ jobs:
                 }
               };
               run();
-            ' -- "${GITHUB_API_URL:-https://api.github.com}" "$GITHUB_REPOSITORY" "${GH_TOKEN:-}"
+            ' -- "${GITHUB_API_URL:-https://api.github.com}" "$GITHUB_REPOSITORY" "${GH_TOKEN:-}" "$PLAIN_VERSION"
           }
 
           # Reads <ref> with `imagetools inspect --format <format>` into stdout, prints nothing for a tag that
@@ -1056,47 +1125,55 @@ jobs:
           }
 
           # The org.opencontainers.image.version every platform of <ref> carries, or nothing when <ref> does
-          # not exist. Platforms that disagree, or a missing label, fail.
+          # not exist. Each platform's label must be the whole string X.Y.Z, and all must be the same.
           image_version() {
-            local out versions
+            local out
             out=$(inspect_ref "$1" '{{json .Image}}')
             [[ -n $out ]] || return 0
             # One platform answers its config; an index answers each platform's config by platform.
-            if ! versions=$(jq -r 'if has("config") then [.] else [.[]] end
-              | map(.config.Labels["org.opencontainers.image.version"] // "") | unique | .[]' <<<"$out"); then
-              echo "::error::$1 answered an image config jq cannot read." >&2
-              return 1
-            fi
-            if [[ -z $versions || $versions == *$'\n'* ]]; then
-              echo "::error::$1 carries no single org.opencontainers.image.version (${versions//$'\n'/, })." >&2
-              return 1
-            fi
-            printf '%s\n' "$versions"
+            # shellcheck disable=SC2016 # JavaScript template literals, not shell expansions
+            node -e '
+              const [plain, ref] = process.argv.slice(1);
+              const fail = (why) => {
+                console.error(`::error::${ref} ${why}; the floor cannot be read.`);
+                process.exit(1);
+              };
+              let image;
+              try {
+                image = JSON.parse(require("node:fs").readFileSync(0, "utf8"));
+              } catch {
+                fail("answered an image config that is not JSON");
+              }
+              if (image === null || typeof image !== "object" || Array.isArray(image)) fail("answered no image config");
+              const configs = Object.hasOwn(image, "config") ? [image] : Object.values(image);
+              if (configs.length === 0) fail("answered no platform");
+              const labels = configs.map((config) => config?.config?.Labels?.["org.opencontainers.image.version"]);
+              const bad = labels.some((label) => typeof label !== "string" || !new RegExp(plain).test(label));
+              if (bad || labels.some((label) => label !== labels[0]))
+                fail(`carries no single plain X.Y.Z org.opencontainers.image.version (${labels.map((label) => JSON.stringify(label ?? null)).join(", ")})`);
+              process.stdout.write(labels[0]);
+            ' "$PLAIN_VERSION" "$1" <<<"$out"
           }
 
           # The floor of a stable release of <package> whose images are ghcr.io/<owner>/{mend,mend-api,mend-web}:
-          # `<version> <marker>` of the highest marker, or nothing when none exists.
+          # `<version> <marker>` of the highest marker, or nothing when none exists. Every version here was
+          # validated by its reader; versions and markers are kept apart until the result is printed.
           stable_floor() {
-            local package=$1 owner=$2 value marker line best="" best_marker="" image
-            local -a markers=()
-            value=$(dist_tag "$package" latest)
-            [[ -z $value ]] || markers+=("$value npm:$package@latest")
+            local package=$1 owner=$2 value image i best=-1
+            local -a versions=() sources=()
+            value=$(npm_latest "$package")
+            if [[ -n $value ]]; then versions+=("$value") && sources+=("npm:$package@latest"); fi
             value=$(github_latest_release)
-            [[ -z $value ]] || markers+=("$value github:$GITHUB_REPOSITORY/releases/latest")
+            if [[ -n $value ]]; then versions+=("$value") && sources+=("github:$GITHUB_REPOSITORY/releases/latest"); fi
             for image in mend mend-api mend-web; do
               value=$(image_version "ghcr.io/$owner/$image:latest")
-              [[ -z $value ]] || markers+=("$value ghcr.io/$owner/$image:latest")
+              if [[ -n $value ]]; then versions+=("$value") && sources+=("ghcr.io/$owner/$image:latest"); fi
             done
-            for line in "${markers[@]}"; do
-              value=${line%% *}
-              marker=${line#* }
-              plain_version "$value" "$marker"
-              if [[ -z $best || $(version_order "$value" "$best") == 1 ]]; then
-                best=$value
-                best_marker=$marker
-              fi
+            for i in "${!versions[@]}"; do
+              plain_version "${versions[i]}" "${sources[i]}"
+              if ((best < 0)) || [[ $(version_order "${versions[i]}" "${versions[best]}") == 1 ]]; then best=$i; fi
             done
-            [[ -z $best ]] || printf '%s %s\n' "$best" "$best_marker"
+            if ((best >= 0)); then printf '%s %s\n' "${versions[best]}" "${sources[best]}"; fi
           }
 
           # What a stable <version> may do against the floor line `<floor> <marker>` (empty: no floor):
@@ -1108,6 +1185,7 @@ jobs:
               echo publish
               return
             fi
+            plain_version "$floor" "$marker"
             case $(version_order "$version" "$floor") in
               1) echo publish ;;
               0) echo retry ;;

@@ -865,7 +865,7 @@ test("stable npm fails, publishing nothing, on an unreadable or malformed marker
       { labels: latestLabels("0.39.0"), unreadable: ["ghcr.io/sealant-ci/mend-web:latest"] },
       /Could not read ghcr\.io\/sealant-ci\/mend-web:latest/,
     ],
-    ["a label not X.Y.Z", { labels: latestLabels("0.40") }, /not a plain X\.Y\.Z/],
+    ["a label not X.Y.Z", { labels: latestLabels("0.40") }, /carries no single plain X\.Y\.Z/],
   ]) {
     const stub = await registry(t, mendSeed());
     const result = await publishStep(t, stub, { version: "0.40.0", ...markers });
@@ -886,4 +886,49 @@ test("a next build reads no floor and publishes under next as before", async (t)
   assert.deepEqual(result.github, []);
   assert.deepEqual(result.docker, []);
   assert.deepEqual(stub.log[0].distTags, { next: "0.40.0-next.4" });
+});
+
+test("stable npm fails, publishing nothing, on a present marker that is malformed", async (t) => {
+  for (const [label, { image, github, distTags }, problem] of [
+    [
+      "a label with trailing text",
+      { image: "0.39.0 invalid" },
+      /mend:latest carries no single plain/,
+    ],
+    ["a GitHub tag of only v", { github: "v" }, /tagged "v", not vX\.Y\.Z/],
+    ["a GitHub tag that is not a string", { github: 5 }, /tagged 5, not vX\.Y\.Z/],
+    ["npm latest null", { distTags: { latest: null } }, /latest is null, not a plain/],
+    ["npm latest empty", { distTags: { latest: "" } }, /latest is "", not a plain/],
+    ["npm latest not a string", { distTags: { latest: 39 } }, /latest is 39, not a plain/],
+    ["npm dist-tags a list", { distTags: [] }, /dist-tags is not a JSON object/],
+    ["npm dist-tags not an object", { distTags: "0.39.0" }, /dist-tags is not a JSON object/],
+    // Past 9 digits a part could overflow Bash's 64-bit arithmetic: refused as not plain.
+    [
+      "a part past 64 bits",
+      { image: "9223372036854775808.0.0" },
+      /mend:latest carries no single plain/,
+    ],
+  ]) {
+    const stub = await registry(t, mendSeed({}, distTags ?? { latest: "0.39.0" }));
+    const labels = latestLabels("0.39.0");
+    if (image !== undefined) labels[`ghcr.io/${OWNER}/mend:latest`] = image;
+    const result = await publishStep(t, stub, {
+      version: "0.40.0",
+      github: { latest: github ?? "v0.39.0" },
+      labels,
+    });
+    assert.equal(result.status, 1, label);
+    assert.match(result.output, problem, label);
+    assert.equal(stub.log.length, 0, label);
+  }
+  // The largest part accepted compares as a number, above the release.
+  const stub = await registry(t, mendSeed());
+  const top = await publishStep(t, stub, {
+    version: "0.40.0",
+    github: { latest: "v999999999.0.0" },
+    labels: latestLabels("0.39.0"),
+  });
+  assert.equal(top.status, 1);
+  assert.match(top.output, /below the stable floor 999999999\.0\.0/);
+  assert.equal(stub.log.length, 0);
 });

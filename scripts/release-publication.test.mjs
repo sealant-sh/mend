@@ -917,26 +917,26 @@ test("an unreadable or malformed marker fails the promotion, writing nothing", a
       { npm: { tags: { latest: "1.3.0-next.2" } } },
       /not a plain X\.Y\.Z/,
     ],
-    ["a latest release tag not vX.Y.Z", { github: { latest: "v1.2" } }, /not a plain X\.Y\.Z/],
     [
-      "a release tag without v",
-      { github: { latest: "1.2.2" } },
-      /the latest release is tagged 1\.2\.2/,
+      "a latest release tag not vX.Y.Z",
+      { github: { latest: "v1.2" } },
+      /tagged "v1\.2", not vX\.Y\.Z/,
     ],
+    ["a release tag without v", { github: { latest: "1.2.2" } }, /tagged "1\.2\.2", not vX\.Y\.Z/],
     [
       "a label not X.Y.Z",
       { labels: { ...old.labels, [`${promoted("mend")}:latest`]: "latest" } },
-      /not a plain X\.Y\.Z/,
+      /carries no single plain X\.Y\.Z/,
     ],
     [
       "platforms that disagree",
       { labels: { ...old.labels, [`${promoted("mend")}:latest`]: ["1.2.2", "1.2.1"] } },
-      /carries no single org\.opencontainers\.image\.version/,
+      /carries no single plain X\.Y\.Z org\.opencontainers\.image\.version/,
     ],
     [
       "a missing label",
       { labels: { ...old.labels, [`${promoted("mend")}:latest`]: null } },
-      /carries no single org\.opencontainers\.image\.version/,
+      /carries no single plain X\.Y\.Z org\.opencontainers\.image\.version/,
     ],
   ]) {
     const result = await promote(t, { ...base, ...change });
@@ -944,6 +944,57 @@ test("an unreadable or malformed marker fails the promotion, writing nothing", a
     assert.match(result.output, problem, label);
     assert.deepEqual(result.writes, [], label);
   }
+});
+
+/**
+ * Markers that are present but malformed, the audit's cases among them: each fails the floor, never
+ * reads as absent or as the version it starts with. `labels` is the label to give mend's :latest.
+ */
+const MALFORMED = [
+  ["a label with trailing text", { label: "1.2.2 invalid" }, /mend:latest carries no single plain/],
+  ["a label with a trailing newline", { label: "1.2.2\n" }, /mend:latest carries no single plain/],
+  ["a GitHub tag of only v", { github: "v" }, /tagged "v", not vX\.Y\.Z/],
+  ["a GitHub tag that is not a string", { github: 5 }, /tagged 5, not vX\.Y\.Z/],
+  ["npm latest null", { npm: { latest: null } }, /latest is null, not a plain/],
+  ["npm latest empty", { npm: { latest: "" } }, /latest is "", not a plain/],
+  ["npm latest not a string", { npm: { latest: 122 } }, /latest is 122, not a plain/],
+  ["npm dist-tags a list", { npm: [] }, /dist-tags is not a JSON object/],
+  ["npm dist-tags not an object", { npm: "1.2.2" }, /dist-tags is not a JSON object/],
+  // Past 9 digits a part could overflow Bash's 64-bit arithmetic: refused as not plain.
+  [
+    "a part past 64 bits",
+    { label: "9223372036854775808.0.0" },
+    /mend:latest carries no single plain/,
+  ],
+  ["a part of 10 digits", { github: "v1234567890.0.0" }, /not vX\.Y\.Z/],
+];
+
+test("a present marker that is malformed fails the promotion, writing nothing", async (t) => {
+  const old = latestAt("1.2.2");
+  for (const [label, { label: imageLabel, github, npm }, problem] of MALFORMED) {
+    const result = await promote(t, {
+      tags: { ...atVersion("1.2.3"), ...old.tags },
+      labels:
+        imageLabel === undefined
+          ? old.labels
+          : { ...old.labels, [`${promoted("mend")}:latest`]: imageLabel },
+      npm: { tags: npm ?? { latest: "1.2.2" } },
+      github: { latest: github ?? "v1.2.2" },
+    });
+    assert.equal(result.status, 1, label);
+    assert.match(result.output, problem, label);
+    assert.deepEqual(result.writes, [], label);
+  }
+  // The largest part accepted still compares as a number, above the release.
+  const top = await promote(t, {
+    tags: { ...atVersion("1.2.3"), ...old.tags },
+    labels: { ...old.labels, [`${promoted("mend-web")}:latest`]: "999999999.0.0" },
+    npm: { tags: { latest: "1.2.2" } },
+    github: { latest: "v1.2.2" },
+  });
+  assert.equal(top.status, 1);
+  assert.match(top.output, /below the stable floor 999999999\.0\.0/);
+  assert.deepEqual(top.writes, []);
 });
 
 test("a :<version> that moved since acceptance, or another release's manifest, moves nothing", async (t) => {
@@ -1351,6 +1402,15 @@ test("the release job refuses, early, a stable tag below the highest stable tag"
     assert.equal(run(version).status, 0, version);
   // A next build is not this check's: the next order is the pins job's.
   assert.equal(run("0.30.0-next.1").status, 0);
+  // sort -n compares parts of any length: a 64-bit-overflowing tag is still the highest.
+  writeFileSync(
+    path.join(directory, "gh"),
+    `#!/bin/sh\nprintf '%s\\n' refs/tags/v0.36.0 refs/tags/v9223372036854775808.0.0\n`,
+    { mode: 0o755 },
+  );
+  const overflow = run("1.0.0");
+  assert.equal(overflow.status, 1);
+  assert.match(overflow.stdout, /below v9223372036854775808\.0\.0/);
 });
 
 /** The `# --- floor ---` block a step carries. */

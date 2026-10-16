@@ -257,8 +257,12 @@ A stable release's floor is the highest of three markers, compared as numbers `X
 `latest` for `@sealant/mend` (the uncached dist-tags endpoint), the tag of GitHub's latest release,
 and the `org.opencontainers.image.version` label every platform of `mend`, `mend-api` and
 `mend-web`'s ghcr `:latest` carries. A marker that does not exist (no `latest` dist-tag, no latest
-release, a `:latest` the registry does not have) adds nothing. One that cannot be read, or is not a
-plain `X.Y.Z`, fails the job: it is never read as no floor.
+release, a `:latest` the registry does not have) adds nothing. One that cannot be read, or is
+present but not a plain `X.Y.Z`, fails the job: it is never read as no floor. Each value is checked
+whole: npm's dist-tags must be a JSON object whose `latest`, when there is one, is a string `X.Y.Z`;
+GitHub's latest release tag must be exactly `vX.Y.Z`; every platform's label must be the same string
+`X.Y.Z`, with nothing after it. Each part of `X.Y.Z` has at most 9 digits, so the comparison never
+overflows; a longer part fails as not plain.
 
 The `npm` and `promote-images` jobs each read the floor inside the `mend-release-channel` lock,
 before any write, and compare the release with it:
@@ -284,7 +288,11 @@ the next release's floor follows wherever it was moved.
 
 If the markers disagree after a manual write or an incident, put all three back on the last stable
 version that was released whole (`<version>`, its commit's run and manifest known), from an empty
-directory, with an npm login that has 2FA and a `gh` login that may write packages and releases:
+directory. You need three logins, and should check all three **before** you start, or the image
+write can fail after npm and GitHub were already moved: an npm login that has 2FA; a `gh` login that
+may edit releases; and Docker's own login to GHCR, which `gh auth` does not give buildx:
+`docker login ghcr.io` with a token that has `write:packages`. Read a `:latest` with
+`docker buildx imagetools inspect` to check that login reaches GHCR.
 
 1. Check each marker, so you do not move one off a newer good release:
 
