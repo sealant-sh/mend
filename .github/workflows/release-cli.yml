@@ -154,16 +154,136 @@ jobs:
           fi
           echo "Packaged acceptance passed on $ACCEPTED."
 
+  # Writes each image's :<version>, once, from the index digest this run accepted. image.yml staged
+  # the index under staging-<run>-<attempt>; nothing else writes a real version's tag. A version is
+  # spent once its tag exists: re-running failed jobs finds it at this run's digest and is done,
+  # re-running all jobs builds another index and is refused.
+  finalize-images:
+    name: Publish the accepted images under their version
+    needs: [release, acceptance]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+    # One release at a time on the channel: finalize, npm and promotion queue behind another run's,
+    # never cancelled. Job-level `queue: max` holds every pending job instead of only the newest
+    # (proven live in runs 38897026470, 38897041709 and 38897056028).
+    concurrency:
+      group: mend-release-channel
+      cancel-in-progress: false
+      queue: max
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-manifest
+          path: release
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      # Every tag is read before any is written, and the read after the write decides: a create
+      # that reports an error but left this run's digest is done, any other digest is refused, and
+      # a tag still unreadable fails.
+      - name: Publish each accepted index as its version
+        env:
+          MANIFEST: ${{ github.workspace }}/release/release-manifest.json
+          VERSION: ${{ needs.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          if ! jq -e --arg version "$VERSION" --arg commit "$GITHUB_SHA" \
+            '.version == $version and .commit == $commit' "$MANIFEST" >/dev/null; then
+            echo "::error::The release manifest is not this release's ($VERSION from $GITHUB_SHA)."
+            exit 1
+          fi
+          # The digest <ref> names, `absent` when the registry says it does not exist, and a
+          # failure for anything else: a read that failed is never taken for an absent tag. Absent
+          # is buildx's not-found line and nothing else: all of stderr, its trailing newlines aside,
+          # is exactly `ERROR: <ref>: not found`, and stdout is empty.
+          read_tag() {
+            local out err status=0 digest
+            out=$(docker buildx imagetools inspect "$1" --format '{{json .Manifest}}' \
+              2>"$RUNNER_TEMP/inspect.err") || status=$?
+            if ((status == 0)); then
+              digest=$(jq -r '.digest // ""' <<<"$out")
+              if [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]]; then
+                printf '%s\n' "$digest"
+                return 0
+              fi
+              echo "::error::$1 answered without a digest." >&2
+              return 1
+            fi
+            err=$(<"$RUNNER_TEMP/inspect.err")
+            if [[ -z $out && $err == "ERROR: $1: not found" ]]; then
+              echo absent
+              return 0
+            fi
+            cat "$RUNNER_TEMP/inspect.err" >&2
+            echo "::error::Could not read $1; nothing was written." >&2
+            return 1
+          }
+          images=(mend mend-api mend-web)
+          declare -A index create
+          for image in "${images[@]}"; do
+            repository="ghcr.io/$GITHUB_REPOSITORY_OWNER/$image"
+            index[$image]=$(jq -r --arg image "$image" '.images[$image].index // ""' "$MANIFEST")
+            if [[ ! ${index[$image]} =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              echo "::error::The release manifest records no index digest for $image."
+              exit 1
+            fi
+            current=$(read_tag "$repository:$VERSION")
+            if [[ $current == absent ]]; then
+              create[$image]=1
+            elif [[ $current == "${index[$image]}" ]]; then
+              echo "$repository:$VERSION is already this run's ${index[$image]}."
+            else
+              echo "::error::$repository:$VERSION exists at $current, not ${index[$image]}, the index this run accepted. Version $VERSION is spent: cut a new one."
+              exit 1
+            fi
+          done
+          for image in "${images[@]}"; do
+            [[ -n ${create[$image]:-} ]] || continue
+            repository="ghcr.io/$GITHUB_REPOSITORY_OWNER/$image"
+            status=0
+            docker buildx imagetools create --tag "$repository:$VERSION" \
+              "$repository@${index[$image]}" || status=$?
+            if ! after=$(read_tag "$repository:$VERSION"); then
+              echo "::error::$repository:$VERSION is unreadable after the create (exit $status)."
+              exit 1
+            fi
+            if [[ $after == "${index[$image]}" ]]; then
+              if ((status != 0)); then
+                echo "::warning::The create reported exit $status, but $repository:$VERSION resolves to ${index[$image]}, the index this run accepted."
+              fi
+              echo "$repository:$VERSION is ${index[$image]}."
+            elif [[ $after == absent ]]; then
+              echo "::error::$repository:$VERSION does not exist after the create (exit $status)."
+              exit 1
+            else
+              echo "::error::$repository:$VERSION resolves to $after after the create, not ${index[$image]}. Version $VERSION is spent: cut a new one."
+              exit 1
+            fi
+          done
+
   # Holds the npm credential and runs nothing from the repository: no checkout, no install. It
   # publishes exactly the tarball this run's acceptance installed: image.yml's mend-cli artifact,
   # checked against this run's release manifest, never repacked. @sealant/mend's `next` stays on
   # this approval-gated path (docs/adr/0015-next-channel.md): people install `@sealant/mend@next`.
   npm:
     name: Publish @sealant/mend
-    needs: [images, acceptance, github-release]
+    needs: [images, acceptance, finalize-images, github-release]
     # A tag push only: on a dry run this job is skipped, so it asks for no release environment and
     # no id-token.
     if: github.event_name == 'push'
+    # One release at a time on the channel: finalize, npm and promotion queue behind another run's,
+    # never cancelled. Job-level `queue: max` holds every pending job instead of only the newest
+    # (proven live in runs 38897026470, 38897041709 and 38897056028).
+    concurrency:
+      group: mend-release-channel
+      cancel-in-progress: false
+      queue: max
     # Github-hosted runner on purpose: the OIDC id-token should be minted on
     # infrastructure GitHub controls.
     # npm trusted publishing (OIDC) needs a GitHub-hosted runner.
@@ -553,8 +673,15 @@ jobs:
   # this runs: each tag must still resolve to the manifest's index, all checked before any moves.
   promote-images:
     name: Promote the complete stable release
-    needs: [npm, github-release]
+    needs: [finalize-images, npm, github-release]
     if: github.event_name == 'push'
+    # One release at a time on the channel: finalize, npm and promotion queue behind another run's,
+    # never cancelled. Job-level `queue: max` holds every pending job instead of only the newest
+    # (proven live in runs 38897026470, 38897041709 and 38897056028).
+    concurrency:
+      group: mend-release-channel
+      cancel-in-progress: false
+      queue: max
     runs-on: ubuntu-24.04
     permissions:
       contents: write

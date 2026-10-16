@@ -143,7 +143,7 @@ node --test scripts/bundle-packaging.test.mjs scripts/process-supervisor.test.mj
   scripts/packaged-ssh-acceptance.test.mjs scripts/packaged-git-access-acceptance.test.mjs \
   scripts/packaged-dotfiles-acceptance.test.mjs scripts/helm-chart.test.mjs \
   scripts/edge-overlay.test.mjs scripts/aws-compose.test.mjs scripts/aws-tofu.test.mjs \
-  scripts/release-manifest.test.mjs
+  scripts/release-manifest.test.mjs scripts/ghcr-staging-cleanup.test.mjs
 ```
 
 The publisher's inline tarball check and `normalize-npm-tarball.mjs --check` must agree; CI's static

@@ -70,8 +70,9 @@ jobs:
               exit 1
               ;;
           esac
-      # A dispatch of image.yml itself pushes ghcr.io/sealant-sh/mend:<version>, the tag
-      # `mend server setup` pulls: from main only, and only for a version that has its git tag (built
+      # A dispatch of image.yml itself pushes to ghcr.io/sealant-sh/mend (a real version only under
+      # its staging tag; release-cli.yml's finalize-images alone writes :<version>, the tag
+      # `mend server setup` pulls): from main only, and only for a version that has its git tag (built
       # from that tag's commit, not main's head), or a dev or acceptance build. A call from
       # release-acceptance.yml or release-cli.yml carries its caller's event and ref, so the check
       # reads github.workflow_ref, the top-level workflow, and builds the caller's commit.
@@ -261,19 +262,21 @@ jobs:
             }}
         run: |
           set -euo pipefail
-          # A version is pushed once. Overwriting ghcr.io/sealant-sh/mend:<version> would change
-          # what every server pinned to it pulls. Only a commit's own dev build may be rebuilt.
-          if [[ $VERSION != 0.0.0-dev.* && $VERSION != 0.0.0-acceptance.* ]] &&
-            docker buildx imagetools inspect "$REPOSITORY:$VERSION" >/dev/null 2>&1; then
-            echo "::error::$REPOSITORY:$VERSION already exists; a version is pushed once."
-            exit 1
-          fi
+          # A real version's index is staged under this run's own tag: :<version> is what every
+          # server pinned to it pulls, so only release-cli.yml's finalize-images writes it, once,
+          # after this run's acceptance passed (it also refuses a version that exists). A dev or
+          # acceptance build keeps its own mutable tag: release acceptance, the box's previews and
+          # mend-before name it, and a commit's own dev build may be rebuilt.
+          case $VERSION in
+            0.0.0-dev.* | 0.0.0-acceptance.*) tag=$VERSION ;;
+            *) tag=staging-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT ;;
+          esac
           sources=()
           for digest in *; do sources+=("$REPOSITORY@sha256:$digest"); done
           mkdir -p "$RUNNER_TEMP/index"
           docker buildx imagetools create --metadata-file "$RUNNER_TEMP/index/create.json" \
-            --tag "$REPOSITORY:$VERSION" "${sources[@]}"
-          docker buildx imagetools inspect "$REPOSITORY:$VERSION"
+            --tag "$REPOSITORY:$tag" "${sources[@]}"
+          docker buildx imagetools inspect "$REPOSITORY:$tag"
       # The index digest goes in the release manifest: the one create reported, never the tag's,
       # which another publisher can move (a dev tag is rebuilt). That index and each source are read
       # by digest, and the index must hold exactly the sources, for amd64 and arm64.

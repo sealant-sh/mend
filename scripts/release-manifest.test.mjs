@@ -808,17 +808,15 @@ test("the audit's case: a single arm64 manifest in place of the created index is
 });
 
 test("no step learns the index digest from the tag; both merges check what create reported", (t) => {
-  const tagInspect = /imagetools inspect "\$REPOSITORY:\$VERSION"(.*)$/;
+  const tagInspect = /imagetools inspect "\$REPOSITORY:\$(?:VERSION|tag)"(.*)$/;
   for (const [name, job] of Object.entries(jobs))
     for (const entry of job.steps ?? [])
       for (const line of (entry.run ?? "").split("\n")) {
         const found = tagInspect.exec(line);
         if (found === null) continue;
-        // Only the version-exists guard and the log of what was pushed name the tag.
-        assert.ok(
-          found[1] === "" || found[1] === " >/dev/null 2>&1; then",
-          `${name} "${entry.name}" reads the tag: ${line.trim()}`,
-        );
+        // Only the log of what was pushed names the tag (finalize-images, in release-cli.yml,
+        // reads :<version> on purpose, to refuse a spent version).
+        assert.ok(found[1] === "", `${name} "${entry.name}" reads the tag: ${line.trim()}`);
       }
   for (const job of ["merge", "archive-merge"]) {
     const create = jobs[job].steps.find((entry) => /imagetools create/.test(entry.run ?? ""));
@@ -895,19 +893,19 @@ const callsStatusFunction = (condition) =>
 // function (always, cancelled, success, failure) runs only if every job above it, however far up,
 // succeeded, and a skipped job counts as not succeeded. Run 38917070036, the first dry run, skipped
 // archive acceptance this way: merge, skipped on an archive run, sits above release-manifest.
-const simulateRun = (target) => {
-  const needsOf = (name) => [jobs[name].needs ?? []].flat();
+const simulateRun = (target, { graph = jobs, event = "push" } = {}) => {
+  const needsOf = (name) => [graph[name].needs ?? []].flat();
   const ancestors = (name, seen = new Set()) => {
     for (const need of needsOf(name)) if (!seen.has(need)) ancestors(need, seen.add(need));
     return seen;
   };
   const result = {};
-  const pending = new Set(Object.keys(jobs));
+  const pending = new Set(Object.keys(graph));
   while (pending.size > 0) {
     const ready = [...pending].filter((name) => needsOf(name).every((need) => need in result));
-    assert.ok(ready.length > 0, "image.yml's needs form a cycle");
+    assert.ok(ready.length > 0, "the workflow's needs form a cycle");
     for (const name of ready) {
-      let expression = (jobs[name].if ?? "").replace(/^\$\{\{\s*|\s*\}\}$/g, "").trim();
+      let expression = (graph[name].if ?? "").replace(/^\$\{\{\s*|\s*\}\}$/g, "").trim();
       if (!callsStatusFunction(expression))
         expression = expression === "" ? "success()" : `success() && (${expression})`;
       const allAbove = [...ancestors(name)].every((job) => result[job] === "success");
@@ -917,6 +915,7 @@ const simulateRun = (target) => {
         .replace(/success\(\)/g, String(allAbove))
         .replace(/failure\(\)/g, "false")
         .replace(/inputs\.target/g, JSON.stringify(target))
+        .replace(/github\.event_name/g, JSON.stringify(event))
         .replace(/github\.repository/g, JSON.stringify("sealant-sh/mend"))
         .replace(/needs\.([\w-]+)\.result/g, (_, need) => JSON.stringify(result[need]))
         .replace(/!=/g, "!==")
@@ -938,6 +937,19 @@ test("on each target, GitHub runs that target's acceptance though the other targ
   assert.equal(ghcr["archive-acceptance"], "skipped");
   for (const name of ["archive-build", "archive-merge"]) assert.equal(ghcr[name], "skipped", name);
   for (const run of [archive, ghcr]) assert.equal(run["release-manifest"], "success");
+});
+
+test("a tag push runs finalize, npm and promotion; a dry-run dispatch runs acceptance and none of them", () => {
+  const graph = parse(
+    readFileSync(new URL("../.github/workflows/release-cli.yml", import.meta.url), "utf8"),
+  ).jobs;
+  const push = simulateRun("ghcr", { graph, event: "push" });
+  for (const name of ["acceptance", "finalize-images", "github-release", "npm", "promote-images"])
+    assert.equal(push[name], "success", name);
+  const dispatch = simulateRun("archive", { graph, event: "workflow_dispatch" });
+  assert.equal(dispatch.acceptance, "success");
+  for (const name of ["finalize-images", "github-release", "npm", "promote-images"])
+    assert.equal(dispatch[name], "skipped", name);
 });
 
 // The same rule across every workflow. A job whose `if` names no status function is skipped when

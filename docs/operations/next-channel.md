@@ -165,13 +165,24 @@ version is always `0.0.0-dryrun.<run id>.<attempt>`, never an input, so no branc
 version. The pins job checks the Core pins, their digests on GHCR and the setup assets (not the
 release-only checks: main, the next order, the promotion). image.yml runs with `target: archive`,
 its `cli` job packs and normalizes the CLI tarball, and packaged acceptance runs offline from the
-archives, gated by the same `acceptance` job a release waits for. `npm`, `github-release` and
-`promote-images` run on a tag push only, so a dry run asks for no `release` environment and mints no
-id-token, and none of its jobs holds `contents: write` or `packages: write`.
+archives, gated by the same `acceptance` job a release waits for. `finalize-images`, `npm`,
+`github-release` and `promote-images` run on a tag push only, so a dry run asks for no `release`
+environment and mints no id-token, and none of its jobs holds `contents: write` or
+`packages: write`.
 
-It does not prove: the ghcr login and push, and the multi-arch index on ghcr; setup pulling from
-ghcr; npm's OIDC and the `release` environment; the GitHub release and its asset upload; the
-`latest` promotion. A tag push is the only run that does.
+Dry run 2, run 38923041738 on `475d88ca9`, passed end to end and published nothing.
+
+Unproven until the watched `-next` tag below: the ghcr login and push from GitHub's hosted runners;
+the multi-arch index on ghcr; `finalize-images` itself; online setup pulling from ghcr; npm's OIDC
+and the `release` environment; the GitHub release and its assets; and what offline acceptance skips
+(the dotfiles scenario, git access, fetching through the mirrors). A tag push is the only run that
+proves them.
+
+The stable `latest` promotion stays unproven until the first stable release: on a `-next` tag,
+`promote-images` returns before it reads anything, so the watched `-next` tag proves nothing about
+it. **No stable tag until plan (b) is merged.** Plan (b), the next pull request after this one, adds
+the guards against moving backwards: stable npm `latest`, the stable image promotion, and GitHub's
+latest release.
 
 Proven once, and stale when GitHub's runner images change: a ghcr login with `packages: write`, a
 push by digest, and the multi-arch index on ghcr, on 14 October 2026 in run 38607378387, before the
@@ -213,6 +224,57 @@ With an npm login that has 2FA, from an empty directory:
 
 Never republish over the incident version, and never unpublish it. Edit its GitHub release notes to
 name the version that replaces it.
+
+## Staging, then the version
+
+A release's images reach `:<version>` only after its own acceptance passed. image.yml's `merge`
+creates each multi-arch index under `staging-<run id>-<run attempt>` and records its digest in the
+release manifest. Packaged acceptance pulls by digest, never by tag. Then release-cli.yml's
+`finalize-images` reads each image's `:<version>` and:
+
+- absent (the registry answered not found): creates it from the manifest's index digest;
+- already this run's digest: done;
+- another digest: refuses. The version is spent; cut a new one;
+- unreadable for any other reason: fails without writing.
+
+Every tag is read before any is written. After each create, the tag is read again, and that read
+decides: this run's digest is a success even when the create reported an error, another digest is
+refused, and an unreadable or absent tag fails. `npm` and `promote-images` need `finalize-images`,
+and the three share the `mend-release-channel` queue. Each of those jobs is serialized on its own:
+two runs' `finalize-images` never overlap, nor their `npm`, nor their `promote-images`. The queue is
+not held across a whole release, so two releases' jobs can interleave, and an older stable run can
+still move `latest` back after a newer one. **No stable tag until plan (b) is merged:** it adds the
+backward-move guards for stable npm `latest`, the stable image promotion and GitHub's latest
+release.
+
+So a version is spent once its tag exists. **Re-run failed jobs** of a release run: the images keep
+their digests, `finalize-images` finds them and is done. **Re-run all jobs**: the images are built
+again, under new digests, and `finalize-images` refuses the version; cut a new one. A dev
+(`0.0.0-dev.*`) or acceptance (`0.0.0-acceptance.*`) build keeps its own mutable tag at `merge`:
+release acceptance, previews and the baseline image of every acceptance run name it. An image.yml
+dispatch of a real version stages only; nothing finalizes it outside a release.
+
+### Clean up staging tags
+
+A staging tag no release finalized stays on GHCR. `ghcr-staging-cleanup.yml` deletes package
+versions whose every tag is a staging tag and whose `updated_at` is 14 days old or more. It never
+deletes an untagged version (a platform manifest an index points at) or one with any other tag: a
+final version, a dev or acceptance build, `latest`. Its first run lists only:
+
+```sh
+gh workflow run ghcr-staging-cleanup.yml
+```
+
+The cleanup queues on the same `mend-release-channel` group as `finalize-images`, so a release's
+finalize never tags a staging index between the cleanup's listing and its deletes. That lock covers
+this repository's workflows only: a manual push or any registry writer outside them is not
+serialized with it. Right before each delete the cleanup reads the version again and reclassifies
+it, keeping it if it gained another tag; that narrows the window against those outside writers, but
+does not close it.
+
+The log names each candidate and each version it keeps, with why. A 403 means the workflow token
+cannot administer the packages (each package's Manage Actions access). After that run has been read,
+`-f dry_run=false` deletes the candidates, and a reviewed follow-up turns its weekly schedule on.
 
 ## Cut a Mend next build
 
