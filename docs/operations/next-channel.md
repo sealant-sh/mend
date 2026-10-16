@@ -133,8 +133,8 @@ in every caller of image.yml, a release's included.
 Packaged acceptance also upgrades from the releases a server may really be on: image.yml's
 `previous-upgrade` (ghcr) and `archive-previous-upgrade` (archive) jobs, one per release in the
 window and per arch, beside the same-source acceptance (`scripts/check-previous-upgrade.mjs`).
-release-cli.yml's `acceptance` gate requires them: image.yml reports a target accepted only when
-both acceptances passed.
+release-cli.yml's `acceptance` gate requires them: image.yml reports a target accepted only when the
+same-source acceptance, the upgrade and the split-tier smoke (below) all passed.
 
 The window (`scripts/upgrade-window.mjs`, the `upgrade-window` job):
 
@@ -205,6 +205,35 @@ published release is refused once immutable releases are on. A broken published 
 cutting a new version, never by editing it. A draft for the tag, left by a runner killed mid-upload
 (`gh release create` uploads to a draft, then publishes it), is deleted and the release created
 afresh; a draft's assets may be partial or from another attempt, so it is never reused.
+
+### The split tiers
+
+`mend-api` and `mend-web`, the images the Helm chart runs, are smoked as the chart runs them:
+image.yml's `split-tier-smoke` (ghcr, pulled by the manifest's platform digests) and
+`archive-split-tier-smoke` (loaded from the run's archives after their digests match the manifest),
+on amd64 and arm64. `scripts/split-tier/compose.yaml` starts Postgres (the chart's
+`postgres:17-alpine`, pinned by the digest it named on 2026-10-16), the API on 3101 and the web tier
+on 3105, with the environment the chart renders: `MEND_DEPLOYMENT_MODE=kubernetes`, the capture
+store and its network session channel (`MEND_SESSION_ENDPOINT_URL` is the chart's
+`sessionChannel.advertisedUrl`, set to the Compose service), the API as uid 1000 and the web tier as
+`node`. `scripts/check-split-tier.test.mjs` compares the file with `helm template`; what Compose
+cannot copy is named there: generated secrets, Compose service names for the cluster's, and no
+bucket, so the API keeps captures in a directory beside its store.
+
+`scripts/check-split-tier.mjs` then goes through the web tier's port only: health reports ok and the
+exact version; `/api/instance` has no users; the first sign-up gets a bearer token; `/api/projects`
+answers 200 with it and 401 without it; an upgrade ticket opens `/api/keys/bridge/ws` through the
+web tier, and an ssh-agent request from inside the API and its answer each cross it; after both
+tiers restart, health, the version and the same account's sign-in work again. The running containers
+must be the images the job pulled or loaded. A failure is named a HARNESS or a PRODUCT FAILURE, and
+the job keeps every container's logs as `split-tier-<target>--<arch>`. It cleans up nothing, so it
+runs on fresh hosted runners only.
+
+What it does not test:
+
+- **Sessions on split tiers.** They would need Sealant Core in the Compose file, and the bundle's
+  acceptance covers sessions through the same API code.
+- **Ingress, NetworkPolicy and the Kubernetes workspace backend.** Nothing here runs a cluster.
 
 ### Where publishing runs
 

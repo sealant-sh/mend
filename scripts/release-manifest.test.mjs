@@ -382,6 +382,7 @@ test("with ghcr, the jobs are today's plus the CLI and the manifest; archive job
     "packaged-smoke",
     "upgrade-window",
     "previous-upgrade",
+    "split-tier-smoke",
   ]);
   assert.deepEqual(jobsFor("archive"), [
     "version",
@@ -392,6 +393,7 @@ test("with ghcr, the jobs are today's plus the CLI and the manifest; archive job
     "archive-acceptance",
     "upgrade-window",
     "archive-previous-upgrade",
+    "archive-split-tier-smoke",
   ]);
   // Today's steps, in today's order, with additions only after them or between them.
   const keeps = (job, before) => {
@@ -1022,6 +1024,11 @@ test("on each target, GitHub runs that target's acceptance though the other targ
   assert.equal(ghcr["previous-upgrade"], "success");
   assert.equal(ghcr["archive-previous-upgrade"], "skipped");
   for (const run of [archive, ghcr]) assert.equal(run["upgrade-window"], "success");
+  // And each target's split-tier smoke.
+  assert.equal(archive["archive-split-tier-smoke"], "success");
+  assert.equal(archive["split-tier-smoke"], "skipped");
+  assert.equal(ghcr["split-tier-smoke"], "success");
+  assert.equal(ghcr["archive-split-tier-smoke"], "skipped");
 });
 
 test("a tag push runs finalize, npm and promotion; a dry-run dispatch runs acceptance and none of them", () => {

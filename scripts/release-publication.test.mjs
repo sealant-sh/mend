@@ -809,8 +809,9 @@ test("the acceptance gate passes only on the acceptance this run's target ran", 
   assert.equal(run("", "ghcr"), 1);
   assert.equal(run("archive", "ghcr"), 1);
   assert.equal(run("", ""), 1);
-  // image.yml reports a target's acceptance only when both of its acceptances passed: the
-  // same-source packaged acceptance and the upgrade from every release in the window.
+  // image.yml reports a target's acceptance only when all three of its acceptances passed: the
+  // same-source packaged acceptance, the upgrade from every release in the window, and the
+  // split-tier smoke.
   const accepted = (outputs) =>
     Function(
       `"use strict"; return (${imageDocument.on.workflow_call.outputs.accepted.value
@@ -820,21 +821,38 @@ test("the acceptance gate passes only on the acceptance this run's target ran", 
         )
         .replace(/==/g, "===")});`,
     )();
-  assert.equal(accepted({ "packaged-smoke": "ghcr", "previous-upgrade": "ghcr" }), "ghcr");
-  assert.equal(accepted({ "packaged-smoke": "ghcr" }), "");
-  assert.equal(accepted({ "previous-upgrade": "ghcr" }), "");
+  const ghcrAll = {
+    "packaged-smoke": "ghcr",
+    "previous-upgrade": "ghcr",
+    "split-tier-smoke": "ghcr",
+  };
+  const archiveAll = {
+    "archive-acceptance": "archive",
+    "archive-previous-upgrade": "archive",
+    "archive-split-tier-smoke": "archive",
+  };
+  assert.equal(accepted(ghcrAll), "ghcr");
+  assert.equal(accepted(archiveAll), "archive");
+  // Any one missing, and the target is not accepted.
+  for (const all of [ghcrAll, archiveAll])
+    for (const name of Object.keys(all))
+      assert.equal(accepted({ ...all, [name]: "" }), "", `without ${name}`);
+  // Nor is a mix of the two targets.
   assert.equal(
-    accepted({ "archive-acceptance": "archive", "archive-previous-upgrade": "archive" }),
-    "archive",
+    accepted({
+      "packaged-smoke": "ghcr",
+      "previous-upgrade": "ghcr",
+      "archive-split-tier-smoke": "archive",
+    }),
+    "",
   );
-  assert.equal(accepted({ "archive-acceptance": "archive" }), "");
-  assert.equal(accepted({ "archive-previous-upgrade": "archive" }), "");
-  assert.equal(accepted({ "packaged-smoke": "ghcr", "archive-previous-upgrade": "archive" }), "");
   for (const [name, target, script] of [
     ["packaged-smoke", "ghcr", "node scripts/check-packaged-server.mjs"],
     ["archive-acceptance", "archive", "node scripts/check-packaged-server.mjs"],
     ["previous-upgrade", "ghcr", "node scripts/check-previous-upgrade.mjs"],
     ["archive-previous-upgrade", "archive", "node scripts/check-previous-upgrade.mjs"],
+    ["split-tier-smoke", "ghcr", "node scripts/check-split-tier.mjs"],
+    ["archive-split-tier-smoke", "archive", "node scripts/check-split-tier.mjs"],
   ]) {
     const { steps } = imageDocument.jobs[name];
     const recorded = steps.findIndex((entry) => entry.id === "accepted");

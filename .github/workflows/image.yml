@@ -21,15 +21,16 @@ on:
     # Which acceptance passed, `ghcr` or `archive`, and nothing when none did. A caller's `needs`
     # also passes when every job here was skipped (a fork: `version` never runs), so a publisher
     # reads this instead of trusting the call's result alone.
-    # Both of a target's acceptances must pass: the same-source packaged acceptance and the upgrade
-    # from every release in the upgrade window.
+    # All three of a target's acceptances must pass: the same-source packaged acceptance, the
+    # upgrade from every release in the upgrade window, and the split-tier smoke.
     outputs:
       accepted:
         value: >-
           ${{ (jobs.packaged-smoke.outputs.accepted == 'ghcr' &&
-          jobs.previous-upgrade.outputs.accepted == 'ghcr') && 'ghcr' ||
-          ((jobs.archive-acceptance.outputs.accepted == 'archive' &&
-          jobs.archive-previous-upgrade.outputs.accepted == 'archive') && 'archive' || '') }}
+          jobs.previous-upgrade.outputs.accepted == 'ghcr' && jobs.split-tier-smoke.outputs.accepted
+          == 'ghcr') && 'ghcr' || ((jobs.archive-acceptance.outputs.accepted == 'archive' &&
+          jobs.archive-previous-upgrade.outputs.accepted == 'archive' &&
+          jobs.archive-split-tier-smoke.outputs.accepted == 'archive') && 'archive' || '') }}
   workflow_dispatch:
     inputs:
       version:
@@ -1270,3 +1271,189 @@ jobs:
           echo "$report"
           echo "$report" >>"$GITHUB_STEP_SUMMARY" ||
             echo "::warning::Could not write the disk report to the step summary"
+
+  # mend-api and mend-web, the images the Helm chart runs, started as the chart starts them
+  # (scripts/split-tier/compose.yaml: Postgres, the API, the web tier) and checked through the web
+  # tier's port (scripts/check-split-tier.mjs): health and version, the first account, bearer auth,
+  # a ticketed WebSocket, and a restart. Each arch runs the images the manifest names for it.
+  split-tier-smoke:
+    name: Split-tier smoke
+    if: >-
+      ${{ !cancelled() && inputs.target == 'ghcr' && needs.version.result == 'success' &&
+      needs.merge.result == 'success' && needs.release-manifest.result == 'success' }}
+    needs: [version, merge, release-manifest]
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: read
+    outputs:
+      accepted: ${{ steps.accepted.outputs.target }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.version.outputs.commit }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .node-version
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-manifest
+          path: ${{ runner.temp }}/release
+      # As packaged-smoke: this arch's platform digest from the manifest, the ID it pulled as,
+      # tagged with the name the Compose file runs.
+      - name: Pull the tiers by digest
+        id: images
+        env:
+          REGISTRY: ghcr.io/${{ github.repository_owner }}
+          MANIFEST: ${{ runner.temp }}/release/release-manifest.json
+          VERSION: ${{ needs.version.outputs.value }}
+        run: |
+          set -euo pipefail
+          case $RUNNER_ARCH in
+            X64) arch=amd64 ;;
+            ARM64) arch=arm64 ;;
+            *) echo "::error::No candidate is built for $RUNNER_ARCH."; exit 1 ;;
+          esac
+          for entry in "mend-api api" "mend-web web"; do
+            read -r image output <<<"$entry"
+            digest=$(node scripts/release-manifest.mjs digest "$MANIFEST" "$image" "$arch")
+            docker pull "$REGISTRY/$image@$digest"
+            id=$(docker image inspect "$REGISTRY/$image@$digest" --format '{{.Id}}')
+            docker tag "$id" "$REGISTRY/$image:$VERSION"
+            echo "$output=$id" >>"$GITHUB_OUTPUT"
+          done
+      - name: Run the split tiers and check them through the web tier
+        env:
+          MEND_SPLIT_VERSION: ${{ needs.version.outputs.value }}
+          MEND_SPLIT_API_IMAGE:
+            ghcr.io/${{ github.repository_owner }}/mend-api:${{ needs.version.outputs.value }}
+          MEND_SPLIT_API_IMAGE_ID: ${{ steps.images.outputs.api }}
+          MEND_SPLIT_WEB_IMAGE:
+            ghcr.io/${{ github.repository_owner }}/mend-web:${{ needs.version.outputs.value }}
+          MEND_SPLIT_WEB_IMAGE_ID: ${{ steps.images.outputs.web }}
+          MEND_SPLIT_ARTIFACTS: ${{ runner.temp }}/split-tier-artifacts
+        run: node scripts/check-split-tier.mjs
+      # Both containers' logs and the Compose state from a failed smoke: whose failure it was
+      # (harness or product) is in the step's own output.
+      - name: Keep the logs of a failed smoke
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: split-tier-ghcr--${{ runner.arch }}
+          path: ${{ runner.temp }}/split-tier-artifacts
+          if-no-files-found: warn
+          retention-days: 7
+      # Reached only when the smoke passed on this arch.
+      - name: Record the acceptance
+        id: accepted
+        run: echo "target=ghcr" >>"$GITHUB_OUTPUT"
+
+  # The same smoke on the archives: each arch loads its own mend-api and mend-web archives, after
+  # their platform manifest digests match the manifest. Only Postgres is pulled, by digest.
+  archive-split-tier-smoke:
+    name: Split-tier smoke from the archives
+    if: >-
+      ${{ !cancelled() && inputs.target == 'archive' && needs.version.result == 'success' &&
+      needs.release-manifest.result == 'success' }}
+    needs: [version, release-manifest]
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    outputs:
+      accepted: ${{ steps.accepted.outputs.target }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.version.outputs.commit }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .node-version
+      - name: Name this runner's arch
+        id: platform
+        run: |
+          case $RUNNER_ARCH in
+            X64) echo "arch=amd64" >>"$GITHUB_OUTPUT" ;;
+            ARM64) echo "arch=arm64" >>"$GITHUB_OUTPUT" ;;
+            *) echo "::error::No candidate is built for $RUNNER_ARCH."; exit 1 ;;
+          esac
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-manifest
+          path: ${{ runner.temp }}/release
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: archive-mend-api--${{ steps.platform.outputs.arch }}
+          path: ${{ runner.temp }}/archives/mend-api
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: archive-mend-web--${{ steps.platform.outputs.arch }}
+          path: ${{ runner.temp }}/archives/mend-web
+      # As archive-acceptance: the archive is checked against the manifest before Docker sees it,
+      # and the loaded image must be its config or manifest digest.
+      - name: Load the tiers from their archives
+        id: images
+        env:
+          REGISTRY: ghcr.io/${{ github.repository_owner }}
+          MANIFEST: ${{ runner.temp }}/release/release-manifest.json
+          ARCH: ${{ steps.platform.outputs.arch }}
+          VERSION: ${{ needs.version.outputs.value }}
+        run: |
+          set -euo pipefail
+          for entry in "mend-api api" "mend-web web"; do
+            read -r image output <<<"$entry"
+            archive=$RUNNER_TEMP/archives/$image/$image.tar
+            ids=$(node scripts/release-manifest.mjs check-archive "$MANIFEST" "$image" "$ARCH" "$archive")
+            docker load --input "$archive"
+            id=
+            for candidate in $ids; do
+              if [[ $(docker image inspect "$candidate" --format '{{.Id}}' 2>/dev/null) == "$candidate" ]]; then
+                id=$candidate
+                break
+              fi
+            done
+            if [[ -z $id ]]; then
+              echo "::error::$image did not load as its config digest or its manifest digest ($ids)."
+              exit 1
+            fi
+            docker tag "$id" "$REGISTRY/$image:$VERSION"
+            echo "$output=$id" >>"$GITHUB_OUTPUT"
+          done
+      - name: Run the split tiers and check them through the web tier
+        env:
+          MEND_SPLIT_VERSION: ${{ needs.version.outputs.value }}
+          MEND_SPLIT_API_IMAGE:
+            ghcr.io/${{ github.repository_owner }}/mend-api:${{ needs.version.outputs.value }}
+          MEND_SPLIT_API_IMAGE_ID: ${{ steps.images.outputs.api }}
+          MEND_SPLIT_WEB_IMAGE:
+            ghcr.io/${{ github.repository_owner }}/mend-web:${{ needs.version.outputs.value }}
+          MEND_SPLIT_WEB_IMAGE_ID: ${{ steps.images.outputs.web }}
+          MEND_SPLIT_ARTIFACTS: ${{ runner.temp }}/split-tier-artifacts
+        run: node scripts/check-split-tier.mjs
+      - name: Keep the logs of a failed smoke
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: split-tier-archive--${{ runner.arch }}
+          path: ${{ runner.temp }}/split-tier-artifacts
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Record the acceptance
+        id: accepted
+        run: echo "target=archive" >>"$GITHUB_OUTPUT"
