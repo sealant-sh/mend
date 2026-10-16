@@ -368,13 +368,17 @@ CI; this audit follow-up has not executed them.
 
 A CI lane for that 0.35.1 gap is implemented, unproven: image.yml's `previous-upgrade` and
 `archive-previous-upgrade` jobs ([the upgrade window](next-channel.md#the-upgrade-window); the
-scenario is `scripts/check-previous-upgrade.mjs`) have not yet run a full transition. Each release a
-candidate may be upgraded from is installed from its actual artifacts: its npm CLI, its ghcr image
-by digest, its GitHub release setup assets, pinned in `release/upgrade-from.json` for a stable
-release and read live for a next build. A project, a session with its checkpoints and a Review
-comment are seeded on it; the candidate's CLI upgrades it to the exact candidate image; old data,
-authentication, a new session, a restart and the migration level are then checked. It counts as
-coverage once a dry run has passed it end to end on both architectures.
+scenario is `scripts/check-previous-upgrade.mjs`) have not yet run inside a release workflow. The
+scenario itself has run once outside them: run 38946598409 (2026-10-16), a scratch probe on GitHub's
+hosted amd64 and arm64 runners, upgraded a seeded 0.35.1 to the published 0.36.0-next.792 and passed
+every check. That run did not exercise a live-pinned previous next, a dry-run candidate, the archive
+path or the release gate. Each release a candidate may be upgraded from is installed from its actual
+artifacts: its npm CLI, its ghcr image by digest, its GitHub release setup assets, pinned in
+`release/upgrade-from.json` for a stable release and read live for a next build. A project, a
+session with its checkpoints and a Review comment are seeded on it; the candidate's CLI upgrades it
+to the exact candidate image; old data, authentication, a new session, a restart and the migration
+level are then checked. It counts as coverage once a dry run has passed it end to end on both
+architectures.
 
 `REL-01` is partially addressed: the existing packaged smoke already labels its same-source
 version-transition evidence in its script header and final output. The CI step now uses the same
