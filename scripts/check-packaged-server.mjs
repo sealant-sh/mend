@@ -14,6 +14,9 @@
  *
  * Optional paired MEND_TEST_UPGRADE_IMAGE / MEND_TEST_UPGRADE_VERSION enable the real
  * public two-image upgrade. MEND_TEST_UPGRADE_ASSETS defaults to deploy/docker.
+ * MEND_TEST_IMAGE_ID / MEND_TEST_UPGRADE_IMAGE_ID name the image IDs the running server must be
+ * (CI pulls or loads them by digest); MEND_TEST_IMAGE_IDENTITY=digest makes them required.
+ * MEND_TEST_CLI_TARBALL installs that CLI tarball (the release's own) instead of packing one.
  * CI must build both canonical images from Dockerfile with genuine version stamps, not
  * retag one image or override health ENV. Same-source fixtures prove upgrade mechanics
  * and retention only, not historical schema migration or backup restore compatibility.
@@ -71,6 +74,7 @@ import {
   reviewDiffEvidence,
   ownsWorkspaceContainer,
   runningCaptureExecutors,
+  readImageIdentity,
   readPreviousCli,
   readPrivateIdentity,
   readUpgradeInputs,
@@ -89,6 +93,7 @@ const assets = join(repo, "deploy/docker");
 const version = process.env.MEND_TEST_VERSION;
 const image = process.env.MEND_TEST_IMAGE;
 const offline = process.env.MEND_TEST_OFFLINE === "1";
+const cliTarball = process.env.MEND_TEST_CLI_TARBALL || undefined;
 const originalHome = homedir();
 const runId = randomUUID();
 const fixtureName = `mend-acceptance-${runId}`;
@@ -116,6 +121,8 @@ const containers = new Set();
 const networks = new Map();
 let volumes;
 let upgrade;
+// The image IDs CI verified by digest, when it gives them (readImageIdentity).
+let imageIdentity;
 // The proof session, once there is one: what a failure in any later stage (capture, dotfiles,
 // lifecycle, upgrade) classifies in the CI log (`printDiagnosis`).
 let diagnosis;
@@ -807,6 +814,35 @@ for (const signal of ["SIGINT", "SIGTERM"])
     }
   });
 
+/**
+ * Packs the CLI from this checkout, for a run without MEND_TEST_CLI_TARBALL. pnpm materializes
+ * catalog/workspace specifiers; npm packs the resulting release directory itself. No manifest
+ * editing, source imports, or dependency substitutions.
+ */
+async function packCli() {
+  const prepared = join(scratch, "prepared");
+  await mkdir(prepared);
+  await run("pnpm", ["pack", "--pack-destination", prepared], {
+    cwd: join(repo, "apps/cli"),
+    timeout: 300_000,
+  });
+  const tarballs = (await readdir(prepared)).filter((name) => name.endsWith(".tgz"));
+  check(tarballs.length === 1, "pnpm must prepare exactly one release tarball");
+  await run("tar", ["-xzf", join(prepared, tarballs[0]), "-C", prepared]);
+  // prepack was already exercised by pnpm in the source package; published consumers
+  // do not receive its build scripts. npm pack must not rerun that source-only hook.
+  const npmPack = JSON.parse(
+    await run("npm", ["pack", "--ignore-scripts", "--json", "--pack-destination", scratch], {
+      cwd: join(prepared, "package"),
+    }),
+  );
+  check(
+    npmPack.length === 1 && /^[a-zA-Z0-9._-]+\.tgz$/.test(npmPack[0].filename),
+    "npm pack must produce one local tarball",
+  );
+  return join(scratch, npmPack[0].filename);
+}
+
 async function main() {
   check(process.platform === "linux", "This acceptance script currently validates Linux only");
   check(
@@ -827,6 +863,13 @@ async function main() {
     "Unset DOCKER_HOST/DOCKER_CONTEXT; select the intended local daemon with docker context use first",
   );
   upgrade = readUpgradeInputs(process.env, assets, version);
+  imageIdentity = readImageIdentity(process.env, upgrade);
+  check(
+    cliTarball === undefined ||
+      (/^\/.+\.tgz$/.test(cliTarball) &&
+        (await stat(cliTarball).catch(() => undefined))?.isFile() === true),
+    "MEND_TEST_CLI_TARBALL must be an absolute path to a .tgz file",
+  );
   context = (await docker(["context", "show"])).trim();
   check(context.length > 0, "Docker context is missing");
   const endpoints = JSON.parse(await docker(["context", "inspect", context]));
@@ -875,34 +918,11 @@ async function main() {
   const beforeInstall = dockerFingerprint(await snapshot());
   const installStarted = new Date().toISOString();
   const captureStarted = new Date(Date.parse(installStarted) - 60_000).toISOString();
-  // pnpm materializes catalog/workspace specifiers; npm packs the resulting release
-  // directory itself. No manifest editing, source imports, or dependency substitutions.
-  const prepared = join(scratch, "prepared");
-  await mkdir(prepared);
-  await run("pnpm", ["pack", "--pack-destination", prepared], {
-    cwd: join(repo, "apps/cli"),
+  const tarball = cliTarball ?? (await packCli());
+  await writeFile(join(scratch, "package.json"), JSON.stringify({ private: true }));
+  await run("npm", ["install", "--omit=dev", "--no-audit", "--no-fund", tarball], {
     timeout: 300_000,
   });
-  const tarballs = (await readdir(prepared)).filter((name) => name.endsWith(".tgz"));
-  check(tarballs.length === 1, "pnpm must prepare exactly one release tarball");
-  await run("tar", ["-xzf", join(prepared, tarballs[0]), "-C", prepared]);
-  // prepack was already exercised by pnpm in the source package; published consumers
-  // do not receive its build scripts. npm pack must not rerun that source-only hook.
-  const npmPack = JSON.parse(
-    await run("npm", ["pack", "--ignore-scripts", "--json", "--pack-destination", scratch], {
-      cwd: join(prepared, "package"),
-    }),
-  );
-  check(
-    npmPack.length === 1 && /^[a-zA-Z0-9._-]+\.tgz$/.test(npmPack[0].filename),
-    "npm pack must produce one local tarball",
-  );
-  await writeFile(join(scratch, "package.json"), JSON.stringify({ private: true }));
-  await run(
-    "npm",
-    ["install", "--omit=dev", "--no-audit", "--no-fund", join(scratch, npmPack[0].filename)],
-    { timeout: 300_000 },
-  );
   const installed = join(scratch, "node_modules/@sealant/mend");
   const manifest = JSON.parse(await readFile(join(installed, "package.json"), "utf8"));
   check(manifest.name === "@sealant/mend", "Installed package must be the public CLI");
@@ -1047,7 +1067,7 @@ async function main() {
     (item) => item.Config.Labels["com.docker.compose.service"] === "postgres",
   );
   const imageInfo = JSON.parse(await docker(["image", "inspect", image]))[0];
-  assertImagePin(mend, imageInfo, image, version);
+  assertImagePin(mend, imageInfo, image, version, imageIdentity.image);
   // The cloud metadata guard: the worker runs the image the label names, and setup preloaded it.
   const guardImage = imageInfo.Config.Labels["dev.sealant.mend.network-guard-image"];
   check(
@@ -1803,7 +1823,13 @@ async function main() {
       (item) => item.Config.Labels["com.docker.compose.service"] === "mend",
     );
     const targetImage = JSON.parse(await docker(["image", "inspect", upgrade.image]))[0];
-    assertImagePin(upgradedMend, targetImage, upgrade.image, upgrade.version);
+    assertImagePin(
+      upgradedMend,
+      targetImage,
+      upgrade.image,
+      upgrade.version,
+      imageIdentity.upgrade,
+    );
     check(targetImage.Id !== imageInfo.Id, "Upgrade requires two distinct version-stamped images");
     await verifyUpgradeBackup(configRoot, saved.directory, target.directory);
     check(

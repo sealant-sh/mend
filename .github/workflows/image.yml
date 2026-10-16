@@ -2,22 +2,39 @@ name: Image
 
 # Publish immutable candidate tags first. The caller promotes stable latest tags
 # only after native packaged acceptance, npm publication, and release assets.
+#
+# `target` says where the images go. `ghcr` pushes them by digest and merges the candidate tags on
+# ghcr. `archive` pushes nothing: each image is exported as an archive, assembled into its multi-arch
+# index in a registry inside the merge job, and accepted from the archive, so a run proves its
+# images without writing to ghcr. Either way the run writes release-manifest.json: every image by
+# digest and the one CLI tarball, which acceptance installs and checks by sha512.
 on:
   workflow_call:
     inputs:
       version:
         required: false
         type: string
+      target:
+        required: false
+        type: string
+        default: ghcr
   workflow_dispatch:
     inputs:
       version:
         description: "Exact candidate version; otherwise use a dev version from this commit"
         required: false
         type: string
+      target:
+        description: "ghcr pushes the candidates; archive builds and accepts them without a push"
+        required: false
+        type: choice
+        options: [ghcr, archive]
+        default: ghcr
 
-# Only the jobs that push hold packages: write. Every job runs on a GitHub-hosted runner, a fresh
-# VM: the box's runner VMs keep state between jobs, so code from an earlier pull request could
-# change what these jobs build, accept or push.
+# Only the jobs that push hold packages: write; the archive jobs never do. Every job runs on a
+# GitHub-hosted runner, a fresh VM: the box's runner VMs keep state between jobs, so code from an
+# earlier pull request could change what these jobs build, accept or push. Every artifact a job
+# downloads comes from its own run: an artifact of another run is not what this one built.
 permissions:
   contents: read
 
@@ -25,11 +42,27 @@ jobs:
   version:
     if: github.repository == 'sealant-sh/mend'
     runs-on: ubuntu-24.04
+    # Reads the repository's tags (gh api); every job here names its own permissions, so none
+    # inherits whatever its caller grants.
+    permissions:
+      contents: read
     outputs:
       value: ${{ steps.resolve.outputs.version }}
       before: ${{ steps.resolve.outputs.before }}
       commit: ${{ steps.commit.outputs.commit }}
     steps:
+      # A workflow_call input is any string; a target nothing handles would build and accept nothing.
+      - name: Check the target
+        env:
+          TARGET: ${{ inputs.target }}
+        run: |
+          case $TARGET in
+            ghcr | archive) ;;
+            *)
+              echo "::error::target is ghcr or archive, not '$TARGET'."
+              exit 1
+              ;;
+          esac
       # A dispatch of image.yml itself pushes ghcr.io/sealant-sh/mend:<version>, the tag
       # `mend server setup` pulls: from main only, and only for a version that has its git tag (built
       # from that tag's commit, not main's head), or a dev or acceptance build. A call from
@@ -94,6 +127,7 @@ jobs:
           NODE
 
   build:
+    if: inputs.target == 'ghcr'
     permissions:
       contents: read
       packages: write
@@ -175,6 +209,7 @@ jobs:
             echo "::warning::Could not write the disk report to the step summary"
 
   merge:
+    if: inputs.target == 'ghcr'
     permissions:
       contents: read
       packages: write
@@ -188,6 +223,18 @@ jobs:
           - { id: mend-api, name: mend-api, baseline: false }
           - { id: mend-web, name: mend-web, baseline: false }
     steps:
+      # Only the index check (scripts/release-manifest.mjs) and the Node version it runs on.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.version.outputs.commit }}
+          persist-credentials: false
+          sparse-checkout: |
+            .node-version
+            scripts/release-manifest.mjs
+          sparse-checkout-cone-mode: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .node-version
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           path: /tmp/digests
@@ -216,12 +263,364 @@ jobs:
           fi
           sources=()
           for digest in *; do sources+=("$REPOSITORY@sha256:$digest"); done
-          docker buildx imagetools create --tag "$REPOSITORY:$VERSION" "${sources[@]}"
+          mkdir -p "$RUNNER_TEMP/index"
+          docker buildx imagetools create --metadata-file "$RUNNER_TEMP/index/create.json" \
+            --tag "$REPOSITORY:$VERSION" "${sources[@]}"
           docker buildx imagetools inspect "$REPOSITORY:$VERSION"
+      # The index digest goes in the release manifest: the one create reported, never the tag's,
+      # which another publisher can move (a dev tag is rebuilt). That index and each source are read
+      # by digest, and the index must hold exactly the sources, for amd64 and arm64.
+      - name: Check and record the index digest
+        working-directory: ${{ runner.temp }}/index
+        env:
+          REPOSITORY: ghcr.io/${{ github.repository_owner }}/${{ matrix.image.name }}
+        run: |
+          set -euo pipefail
+          digest=$(jq -r '."containerimage.digest" // ."containerimage.descriptor".digest // ""' create.json)
+          if [[ ! $digest =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::imagetools create reported no index digest."
+            exit 1
+          fi
+          docker buildx imagetools inspect "$REPOSITORY@$digest" --raw >index.json
+          sources=()
+          for file in /tmp/digests/*; do
+            source=${file##*/}
+            docker buildx imagetools inspect "$REPOSITORY@sha256:$source" --raw >"source-$source.json"
+            sources+=("sha256:$source=source-$source.json")
+          done
+          node "$GITHUB_WORKSPACE/scripts/release-manifest.mjs" check-index create.json index.json \
+            "${sources[@]}" >digest
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: index-${{ matrix.image.id }}
+          path: ${{ runner.temp }}/index/digest
+          if-no-files-found: error
+          retention-days: 1
+
+  # Every image of an archive run, built as build does but exported to a file, not pushed. The
+  # docker exporter, not oci: it writes the same OCI index.json and blobs and adds the manifest.json
+  # that Docker's classic image store needs to load an archive. No attestations, so index.json names
+  # the platform manifest itself, the digest acceptance checks.
+  archive-build:
+    if: inputs.target == 'archive'
+    permissions:
+      contents: read
+    needs: version
+    strategy:
+      matrix:
+        image:
+          - { id: mend, name: mend, dockerfile: Dockerfile, baseline: false }
+          - { id: mend-before, name: mend, dockerfile: Dockerfile, baseline: true }
+          - { id: mend-api, name: mend-api, dockerfile: apps/api/Dockerfile, baseline: false }
+          - { id: mend-web, name: mend-web, dockerfile: apps/web/Dockerfile, baseline: false }
+        platform:
+          - { arch: amd64, runner: ubuntu-24.04 }
+          - { arch: arm64, runner: ubuntu-24.04-arm }
+    runs-on: ${{ matrix.platform.runner }}
+    steps:
+      # Disk use on / and /mnt every 5 s, so the step summary shows this job's peak on a hosted runner.
+      - name: Start the disk sampler
+        run: >-
+          nohup bash -c 'while :; do df -B1 --output=used / /mnt 2>/dev/null | tail -n +2 | paste
+          -sd" "; sleep 5; done' >"$RUNNER_TEMP/disk-used.log" 2>&1 &
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.version.outputs.commit }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .node-version
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+        with:
+          driver-opts: image=moby/buildkit:v0.33.1@sha256:cec9f139f45e93c5c69c60f8b07cfad9f43f4ef6b6a6cd917527fea5ff2e3dea
+      - run: mkdir -p "$RUNNER_TEMP/archive"
+      - id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: .
+          file: ${{ matrix.image.dockerfile }}
+          platforms: linux/${{ matrix.platform.arch }}
+          build-args:
+            MEND_VERSION=${{ matrix.image.baseline && needs.version.outputs.before ||
+            needs.version.outputs.value }}
+          labels: org.opencontainers.image.revision=${{ needs.version.outputs.commit }}
+          provenance: false
+          sbom: false
+          outputs: type=docker,dest=${{ runner.temp }}/archive/${{ matrix.image.id }}.tar
+      # The digest is computed from the archive itself and must be the one BuildKit reports, so the
+      # manifest records what the file holds.
+      - name: Record the platform digest from the archive
+        env:
+          ARCHIVE: ${{ runner.temp }}/archive/${{ matrix.image.id }}.tar
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          platform=$(node scripts/release-manifest.mjs archive-digest "$ARCHIVE")
+          if [[ $platform != "$DIGEST" ]]; then
+            echo "::error::The archive holds $platform; BuildKit reported '$DIGEST'."
+            exit 1
+          fi
+          mkdir -p /tmp/digests
+          touch "/tmp/digests/${platform#sha256:}"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: digests-${{ matrix.image.id }}--${{ matrix.platform.arch }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+      # Layers are compressed already. They expire after a day; nothing deletes them sooner, which
+      # would need actions: write in every caller (next-channel.md).
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: archive-${{ matrix.image.id }}--${{ matrix.platform.arch }}
+          path: ${{ runner.temp }}/archive/${{ matrix.image.id }}.tar
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+      # Telemetry only: it never turns the job's result red, and says so when it has nothing.
+      - name: Report peak disk use
+        if: always()
+        continue-on-error: true
+        run: |
+          df -h / /mnt 2>/dev/null || df -h / || true
+          log=$RUNNER_TEMP/disk-used.log
+          if [ -s "$log" ]; then
+            report=$(awk '$1 ~ /^[0-9]+$/ { n++; if ($1 > r) r = $1; if ($2 ~ /^[0-9]+$/) { two = 1; if ($2 > m) m = $2 } }
+              END { if (!n) { print "Disk use unavailable: no samples"; exit }
+                printf "Sampled peak disk used (every 5 s, %d samples): / %d MiB", n, r / 1048576
+                if (two) printf ", /mnt %d MiB\n", m / 1048576; else print ", /mnt not present" }' \
+              "$log") || report="Disk use unavailable: the samples could not be read"
+          else
+            report="Disk use unavailable: the sampler wrote no samples"
+          fi
+          echo "$report"
+          echo "$report" >>"$GITHUB_STEP_SUMMARY" ||
+            echo "::warning::Could not write the disk report to the step summary"
+
+  # The same multi-arch index merge makes, assembled in a registry that lives and dies with this job:
+  # it proves both arches' archives make one index, and gives the manifest that index's digest.
+  archive-merge:
+    if: inputs.target == 'archive'
+    permissions:
+      contents: read
+    runs-on: ubuntu-24.04
+    needs: [version, archive-build]
+    strategy:
+      matrix:
+        image:
+          - { id: mend, name: mend, baseline: false }
+          - { id: mend-before, name: mend, baseline: true }
+          - { id: mend-api, name: mend-api, baseline: false }
+          - { id: mend-web, name: mend-web, baseline: false }
+    steps:
+      # Only the index check (scripts/release-manifest.mjs) and the Node version it runs on.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.version.outputs.commit }}
+          persist-credentials: false
+          sparse-checkout: |
+            .node-version
+            scripts/release-manifest.mjs
+          sparse-checkout-cone-mode: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .node-version
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: /tmp/archives
+          pattern: archive-${{ matrix.image.id }}--*
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: /tmp/digests
+          pattern: digests-${{ matrix.image.id }}--*
+      - name: Start a registry on loopback inside this job
+        run: docker run --detach --name registry --publish 127.0.0.1:5000:5000 registry:2
+      # The registry speaks plain HTTP on loopback; imagetools reads the builder's registry config.
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+        with:
+          driver-opts: image=moby/buildkit:v0.33.1@sha256:cec9f139f45e93c5c69c60f8b07cfad9f43f4ef6b6a6cd917527fea5ff2e3dea
+          buildkitd-config-inline: |
+            [registry."127.0.0.1:5000"]
+              http = true
+      # skopeo keeps each manifest's bytes (--preserve-digests), so the registry holds the digest the
+      # archive was recorded under; the inspect proves it.
+      - name: Push both arches' archives to it
+        env:
+          ID: ${{ matrix.image.id }}
+          REPOSITORY: 127.0.0.1:5000/${{ matrix.image.name }}
+        run: |
+          set -euo pipefail
+          command -v skopeo >/dev/null || {
+            echo "::error::skopeo is missing from this runner image."
+            exit 1
+          }
+          for arch in amd64 arm64; do
+            digest=$(cd "/tmp/digests/digests-$ID--$arch" && ls)
+            skopeo copy --preserve-digests --dest-tls-verify=false \
+              "oci-archive:/tmp/archives/archive-$ID--$arch/$ID.tar" "docker://$REPOSITORY:$arch"
+            docker buildx imagetools inspect "$REPOSITORY@sha256:$digest" >/dev/null
+          done
+      - name: Create and inspect the multi-arch candidate in the job's registry
+        env:
+          ID: ${{ matrix.image.id }}
+          REPOSITORY: 127.0.0.1:5000/${{ matrix.image.name }}
+          VERSION:
+            ${{ matrix.image.baseline && needs.version.outputs.before || needs.version.outputs.value
+            }}
+        run: |
+          set -euo pipefail
+          sources=()
+          for arch in amd64 arm64; do
+            sources+=("$REPOSITORY@sha256:$(cd "/tmp/digests/digests-$ID--$arch" && ls)")
+          done
+          mkdir -p "$RUNNER_TEMP/index"
+          docker buildx imagetools create --metadata-file "$RUNNER_TEMP/index/create.json" \
+            --tag "$REPOSITORY:$VERSION" "${sources[@]}"
+          docker buildx imagetools inspect "$REPOSITORY:$VERSION"
+      # As merge records it: the digest create reported, checked against the sources by digest.
+      - name: Check and record the index digest
+        working-directory: ${{ runner.temp }}/index
+        env:
+          ID: ${{ matrix.image.id }}
+          REPOSITORY: 127.0.0.1:5000/${{ matrix.image.name }}
+        run: |
+          set -euo pipefail
+          digest=$(jq -r '."containerimage.digest" // ."containerimage.descriptor".digest // ""' create.json)
+          if [[ ! $digest =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::imagetools create reported no index digest."
+            exit 1
+          fi
+          docker buildx imagetools inspect "$REPOSITORY@$digest" --raw >index.json
+          sources=()
+          for arch in amd64 arm64; do
+            source=$(cd "/tmp/digests/digests-$ID--$arch" && ls)
+            docker buildx imagetools inspect "$REPOSITORY@sha256:$source" --raw >"source-$source.json"
+            sources+=("sha256:$source=source-$source.json")
+          done
+          node "$GITHUB_WORKSPACE/scripts/release-manifest.mjs" check-index create.json index.json \
+            "${sources[@]}" >digest
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: index-${{ matrix.image.id }}
+          path: ${{ runner.temp }}/index/digest
+          if-no-files-found: error
+          retention-days: 1
+
+  # The one @sealant/mend tarball of this run, stamped with its version and commit, normalized the
+  # way the publisher rewrites a manifest. Acceptance installs this file and checks its sha512. No
+  # caches and no id-token: other jobs, running unowned code, write those caches, and nothing this
+  # job runs, the dependencies' build tools included, may reach a credential.
+  cli:
+    name: Pack @sealant/mend
+    needs: version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    outputs:
+      record: ${{ steps.pack.outputs.record }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.version.outputs.commit }}
+          persist-credentials: false
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .node-version
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Set the version and commit
+        working-directory: apps/cli
+        env:
+          VERSION: ${{ needs.version.outputs.value }}
+          COMMIT: ${{ needs.version.outputs.commit }}
+        run: |
+          npm version "$VERSION" --no-git-tag-version --allow-same-version
+          npm pkg set "gitHead=$COMMIT"
+      # pnpm pack builds (prepack) and materializes catalog and workspace specifiers. The normalized
+      # tarball is checked again as the publisher will check it: already normalized, never repacked.
+      - name: Build, pack and normalize
+        id: pack
+        env:
+          VERSION: ${{ needs.version.outputs.value }}
+          COMMIT: ${{ needs.version.outputs.commit }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/packed" "$RUNNER_TEMP/cli"
+          (cd apps/cli && pnpm pack --pack-destination "$RUNNER_TEMP/packed")
+          packed=("$RUNNER_TEMP"/packed/*.tgz)
+          if [[ ${#packed[@]} -ne 1 || ! -f ${packed[0]} ]]; then
+            echo "::error::pnpm pack must make exactly one tarball."
+            exit 1
+          fi
+          expected=(--name @sealant/mend --version "$VERSION" --commit "$COMMIT")
+          record=$(node scripts/normalize-npm-tarball.mjs "${packed[0]}" --out "$RUNNER_TEMP/cli" "${expected[@]}")
+          file=$(jq -r .file <<<"$record")
+          checked=$(node scripts/normalize-npm-tarball.mjs --check "$RUNNER_TEMP/cli/$file" "${expected[@]}")
+          if [[ $checked != "$record" ]]; then
+            echo "::error::The normalized tarball does not check as it was recorded."
+            exit 1
+          fi
+          echo "record=$record" >>"$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: mend-cli
+          path: ${{ runner.temp }}/cli/*.tgz
+          if-no-files-found: error
+          retention-days: 90
+
+  # One record of what this run built: every image by its index and platform digests, and the CLI
+  # tarball by file name, sha512 and integrity. Acceptance reads it from this run and nowhere else.
+  release-manifest:
+    name: Write the release manifest
+    needs: [version, merge, archive-merge, cli]
+    # merge or archive-merge, by target; the other one is skipped.
+    if: >-
+      !cancelled() && needs.version.result == 'success' && needs.cli.result == 'success' &&
+      ((inputs.target == 'ghcr' && needs.merge.result == 'success') || (inputs.target == 'archive'
+      && needs.archive-merge.result == 'success'))
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.version.outputs.commit }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .node-version
+      # One directory per artifact, named for its image and arch.
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: ${{ runner.temp }}/records/digests
+          pattern: digests-*
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: ${{ runner.temp }}/records/indexes
+          pattern: index-*
+      - name: Write release-manifest.json
+        env:
+          VERSION: ${{ needs.version.outputs.value }}
+          BEFORE: ${{ needs.version.outputs.before }}
+          COMMIT: ${{ needs.version.outputs.commit }}
+          DIGESTS: ${{ runner.temp }}/records/digests
+          INDEXES: ${{ runner.temp }}/records/indexes
+          CLI: ${{ needs.cli.outputs.record }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/manifest"
+          node scripts/release-manifest.mjs write "$RUNNER_TEMP/manifest/release-manifest.json"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-manifest
+          path: ${{ runner.temp }}/manifest/release-manifest.json
+          if-no-files-found: error
+          retention-days: 90
 
   packaged-smoke:
     name: Packaged Mend acceptance
-    needs: [version, merge]
+    if: inputs.target == 'ghcr'
+    needs: [version, merge, release-manifest]
     strategy:
       matrix:
         runner: [ubuntu-24.04, ubuntu-24.04-arm]
@@ -247,6 +646,14 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-manifest
+          path: ${{ runner.temp }}/release
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: mend-cli
+          path: ${{ runner.temp }}/cli
       - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
@@ -258,19 +665,204 @@ jobs:
       # stock Ubuntu host.
       - if: runner.environment == 'github-hosted'
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      # Setup runs any local image that carries the version's tag, and a tag on ghcr can move. Pull
+      # this arch's platform digest from the manifest, record the ID it pulled as, and tag only that
+      # ID with the name setup expects; acceptance then requires the running server to be it.
+      - name: Pull the candidates by digest
+        id: images
+        env:
+          REPOSITORY: ghcr.io/${{ github.repository_owner }}/mend
+          MANIFEST: ${{ runner.temp }}/release/release-manifest.json
+          BEFORE: ${{ needs.version.outputs.before }}
+          VERSION: ${{ needs.version.outputs.value }}
+        run: |
+          set -euo pipefail
+          case $RUNNER_ARCH in
+            X64) arch=amd64 ;;
+            ARM64) arch=arm64 ;;
+            *) echo "::error::No candidate is built for $RUNNER_ARCH."; exit 1 ;;
+          esac
+          for entry in "mend-before $BEFORE before" "mend $VERSION target"; do
+            read -r image version output <<<"$entry"
+            digest=$(node scripts/release-manifest.mjs digest "$MANIFEST" "$image" "$arch")
+            docker pull "$REPOSITORY@$digest"
+            id=$(docker image inspect "$REPOSITORY@$digest" --format '{{.Id}}')
+            docker tag "$id" "$REPOSITORY:$version"
+            echo "$output=$id" >>"$GITHUB_OUTPUT"
+          done
+      - name: Check the CLI tarball against the manifest
+        id: cli
+        env:
+          MANIFEST: ${{ runner.temp }}/release/release-manifest.json
+        run: |
+          set -euo pipefail
+          tarball=$(node scripts/release-manifest.mjs check-cli "$MANIFEST" "$RUNNER_TEMP/cli")
+          echo "tarball=$tarball" >>"$GITHUB_OUTPUT"
       # Both image stamps are built from the resolved candidate commit. This transition
       # exercises upgrade mechanics, not a previous released server or historical schema.
       - name: Exercise packaged install and same-source version transition
         env:
           MEND_TEST_IMAGE:
             ghcr.io/${{ github.repository_owner }}/mend:${{ needs.version.outputs.before }}
+          MEND_TEST_IMAGE_ID: ${{ steps.images.outputs.before }}
           MEND_TEST_VERSION: ${{ needs.version.outputs.before }}
           MEND_TEST_UPGRADE_IMAGE:
             ghcr.io/${{ github.repository_owner }}/mend:${{ needs.version.outputs.value }}
+          MEND_TEST_UPGRADE_IMAGE_ID: ${{ steps.images.outputs.target }}
           MEND_TEST_UPGRADE_VERSION: ${{ needs.version.outputs.value }}
+          MEND_TEST_IMAGE_IDENTITY: digest
+          MEND_TEST_CLI_TARBALL: ${{ steps.cli.outputs.tarball }}
+        run: node scripts/check-packaged-server.mjs
+      # Telemetry only: it never turns the job's result red, and says so when it has nothing.
+      - name: Report peak disk use
+        if: always()
+        continue-on-error: true
         run: |
-          pnpm --filter @sealant/mend exec npm version "$MEND_TEST_UPGRADE_VERSION" --no-git-tag-version --allow-same-version
-          node scripts/check-packaged-server.mjs
+          df -h / /mnt 2>/dev/null || df -h / || true
+          log=$RUNNER_TEMP/disk-used.log
+          if [ -s "$log" ]; then
+            report=$(awk '$1 ~ /^[0-9]+$/ { n++; if ($1 > r) r = $1; if ($2 ~ /^[0-9]+$/) { two = 1; if ($2 > m) m = $2 } }
+              END { if (!n) { print "Disk use unavailable: no samples"; exit }
+                printf "Sampled peak disk used (every 5 s, %d samples): / %d MiB", n, r / 1048576
+                if (two) printf ", /mnt %d MiB\n", m / 1048576; else print ", /mnt not present" }' \
+              "$log") || report="Disk use unavailable: the samples could not be read"
+          else
+            report="Disk use unavailable: the sampler wrote no samples"
+          fi
+          echo "$report"
+          echo "$report" >>"$GITHUB_STEP_SUMMARY" ||
+            echo "::warning::Could not write the disk report to the step summary"
+
+  # The same acceptance on the archives: each arch loads only its own two Mend archives, after their
+  # platform manifest digests match the manifest, and setup runs offline, so nothing it starts comes
+  # from ghcr.
+  archive-acceptance:
+    name: Packaged Mend acceptance from the archives
+    if: inputs.target == 'archive'
+    needs: [version, release-manifest]
+    strategy:
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      # Disk use on / and /mnt every 5 s, so the step summary shows this job's peak on a hosted runner.
+      - name: Start the disk sampler
+        run: >-
+          nohup bash -c 'while :; do df -B1 --output=used / /mnt 2>/dev/null | tail -n +2 | paste
+          -sd" "; sleep 5; done' >"$RUNNER_TEMP/disk-used.log" 2>&1 &
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.version.outputs.commit }}
+          persist-credentials: false
+      - name: Name this runner's arch
+        id: platform
+        run: |
+          case $RUNNER_ARCH in
+            X64) echo "arch=amd64" >>"$GITHUB_OUTPUT" ;;
+            ARM64) echo "arch=arm64" >>"$GITHUB_OUTPUT" ;;
+            *) echo "::error::No candidate is built for $RUNNER_ARCH."; exit 1 ;;
+          esac
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-manifest
+          path: ${{ runner.temp }}/release
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: archive-mend--${{ steps.platform.outputs.arch }}
+          path: ${{ runner.temp }}/archives/mend
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: archive-mend-before--${{ steps.platform.outputs.arch }}
+          path: ${{ runner.temp }}/archives/mend-before
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: mend-cli
+          path: ${{ runner.temp }}/cli
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .node-version
+          # No pnpm store cache: other jobs, running unowned code, write that cache.
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      # GitHub's Ubuntu 24.04 images keep Ubuntu's default, which refuses unprivileged user
+      # namespaces, so every session fails to launch. Allow them here the way an operator does on a
+      # stock Ubuntu host.
+      - if: runner.environment == 'github-hosted'
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      # The archive's platform manifest is checked against the manifest before Docker sees it. The
+      # image ID is then the config digest of that manifest (the manifest digest itself on Docker's
+      # containerd image store); the loaded image must be one of them, and only that ID is tagged
+      # with the name setup expects.
+      - name: Load the candidates from their archives
+        id: images
+        env:
+          REPOSITORY: ghcr.io/${{ github.repository_owner }}/mend
+          MANIFEST: ${{ runner.temp }}/release/release-manifest.json
+          ARCH: ${{ steps.platform.outputs.arch }}
+          BEFORE: ${{ needs.version.outputs.before }}
+          VERSION: ${{ needs.version.outputs.value }}
+        run: |
+          set -euo pipefail
+          for entry in "mend-before $BEFORE before" "mend $VERSION target"; do
+            read -r image version output <<<"$entry"
+            archive=$RUNNER_TEMP/archives/$image/$image.tar
+            ids=$(node scripts/release-manifest.mjs check-archive "$MANIFEST" "$image" "$ARCH" "$archive")
+            docker load --input "$archive"
+            id=
+            for candidate in $ids; do
+              if [[ $(docker image inspect "$candidate" --format '{{.Id}}' 2>/dev/null) == "$candidate" ]]; then
+                id=$candidate
+                break
+              fi
+            done
+            if [[ -z $id ]]; then
+              echo "::error::$image did not load as its config digest or its manifest digest ($ids)."
+              exit 1
+            fi
+            docker tag "$id" "$REPOSITORY:$version"
+            echo "$output=$id" >>"$GITHUB_OUTPUT"
+          done
+      # Offline setup pulls nothing, so the images it starts beside Mend are pulled here, by the tags
+      # setup names (server-setup.ts, server-mirrors.ts), with the guard image the Mend image's label
+      # names. Setup refuses with "Preload <image>" if this list falls behind it.
+      - name: Preload the images setup runs beside Mend
+        env:
+          REPOSITORY: ghcr.io/${{ github.repository_owner }}/mend
+          BEFORE: ${{ needs.version.outputs.before }}
+          VERSION: ${{ needs.version.outputs.value }}
+        run: |
+          set -euo pipefail
+          images=(postgres:17-alpine dxflrs/garage:v2.4.1 nginx:1.29-alpine registry:3.1)
+          for version in "$BEFORE" "$VERSION"; do
+            images+=("$(docker image inspect "$REPOSITORY:$version" \
+              --format '{{index .Config.Labels "dev.sealant.mend.network-guard-image"}}')")
+          done
+          for image in "${images[@]}"; do docker pull "$image"; done
+      - name: Check the CLI tarball against the manifest
+        id: cli
+        env:
+          MANIFEST: ${{ runner.temp }}/release/release-manifest.json
+        run: |
+          set -euo pipefail
+          tarball=$(node scripts/release-manifest.mjs check-cli "$MANIFEST" "$RUNNER_TEMP/cli")
+          echo "tarball=$tarball" >>"$GITHUB_OUTPUT"
+      - name: Exercise packaged install and same-source version transition offline
+        env:
+          MEND_TEST_IMAGE:
+            ghcr.io/${{ github.repository_owner }}/mend:${{ needs.version.outputs.before }}
+          MEND_TEST_IMAGE_ID: ${{ steps.images.outputs.before }}
+          MEND_TEST_VERSION: ${{ needs.version.outputs.before }}
+          MEND_TEST_UPGRADE_IMAGE:
+            ghcr.io/${{ github.repository_owner }}/mend:${{ needs.version.outputs.value }}
+          MEND_TEST_UPGRADE_IMAGE_ID: ${{ steps.images.outputs.target }}
+          MEND_TEST_UPGRADE_VERSION: ${{ needs.version.outputs.value }}
+          MEND_TEST_IMAGE_IDENTITY: digest
+          MEND_TEST_CLI_TARBALL: ${{ steps.cli.outputs.tarball }}
+          MEND_TEST_OFFLINE: "1"
+        run: node scripts/check-packaged-server.mjs
       # Telemetry only: it never turns the job's result red, and says so when it has nothing.
       - name: Report peak disk use
         if: always()

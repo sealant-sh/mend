@@ -951,8 +951,41 @@ export function readPreviousCli(source) {
   return { spec: value };
 }
 
-/** The image itself must be stamped, not only its tag or the container's health environment. */
-export function assertImagePin(container, inspectedImage, image, version) {
+/**
+ * The image IDs acceptance must find running (MEND_TEST_IMAGE_ID, and MEND_TEST_UPGRADE_IMAGE_ID
+ * with an upgrade): the IDs of the images CI pulled or loaded by digest. Setup runs any local image
+ * that carries the version's tag, so without them a stamped local image of the same tag passes.
+ * MEND_TEST_IMAGE_IDENTITY=digest (the CI path) makes them required; unset, a local run checks
+ * whichever it is given.
+ */
+export function readImageIdentity(source, upgrade) {
+  const mode = source.MEND_TEST_IMAGE_IDENTITY;
+  assert.ok(
+    mode === undefined || mode === "" || mode === "digest",
+    "MEND_TEST_IMAGE_IDENTITY must be digest or unset",
+  );
+  const read = (name, applies) => {
+    const value = source[name];
+    if (value === undefined || value === "") {
+      assert.ok(mode !== "digest" || !applies, `Digest identity is set: ${name} is required`);
+      return undefined;
+    }
+    assert.ok(applies, `${name} needs paired MEND_TEST_UPGRADE_IMAGE/VERSION`);
+    assert.ok(/^sha256:[0-9a-f]{64}$/.test(value), `${name} must be a sha256 image ID`);
+    return value;
+  };
+  return {
+    image: read("MEND_TEST_IMAGE_ID", true),
+    upgrade: read("MEND_TEST_UPGRADE_IMAGE_ID", upgrade !== undefined),
+  };
+}
+
+/**
+ * The image itself must be stamped, not only its tag or the container's health environment. With
+ * `expectedId`, the running container must be that exact image: matching stamps on another image
+ * under the same tag do not pass.
+ */
+export function assertImagePin(container, inspectedImage, image, version, expectedId) {
   assert.ok(
     container?.Config?.Image === image &&
       container.Image === inspectedImage?.Id &&
@@ -962,6 +995,10 @@ export function assertImagePin(container, inspectedImage, image, version) {
       container.Config.Env?.filter((value) => value.startsWith("MEND_VERSION=")).join() ===
         `MEND_VERSION=${version}`,
     "Canonical tag, image ID, OCI label and baked/runtime version must agree with the pin",
+  );
+  assert.ok(
+    expectedId === undefined || container.Image === expectedId,
+    "The running Mend container must be the image acceptance pulled or loaded by digest",
   );
 }
 
