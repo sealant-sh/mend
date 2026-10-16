@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   chmodSync,
@@ -15,6 +15,8 @@ import * as path from "node:path";
 import test from "node:test";
 
 import { parse } from "yaml";
+
+import { githubApi, npmDistTags, registryStandIn, writesIn } from "./fixtures/release-markers.mjs";
 
 const releaseWorkflow = readFileSync(
   new URL("../.github/workflows/release-cli.yml", import.meta.url),
@@ -547,7 +549,7 @@ test("npm publishes this run's accepted tarball as it is, with no repository cod
   assert.match(npm, /# --- republish ---/);
   assert.match(
     npm,
-    /publish_release "\$GITHUB_WORKSPACE\/cli" "\$GITHUB_WORKSPACE\/release" "@sealant\/mend" \\\n\s+"\$version" "\$GITHUB_SHA" "\$channel" --provenance/,
+    /publish_release "\$\{flags\[@\]\}" "\$GITHUB_WORKSPACE\/cli" "\$GITHUB_WORKSPACE\/release" \\\n\s+"@sealant\/mend" "\$version" "\$GITHUB_SHA" "\$channel" --provenance/,
   );
   assert.match(
     npm,
@@ -715,32 +717,29 @@ test("the acceptance gate passes only on the acceptance this run's target ran", 
 const indexOf = (image) => `sha256:${createHash("sha256").update(image).digest("hex")}`;
 const promoted = (image) => `ghcr.io/sealant-ci/${image}`;
 
-/** A recorded call's imagetools verb (`docker buildx imagetools <verb>`). */
-const verb = ([, , , action]) => action;
-
-/** promote-images' step as written, against stand-in docker and gh, and the real jq. */
-const promote = (t, { version = "1.2.3", tags = {}, manifest = {} } = {}) => {
+/**
+ * promote-images' step as written, against a stand-in docker and gh over a fixture registry, a stub
+ * npm dist-tags endpoint, a stub GitHub API, and the real jq. `markers` are the floor's three: npm's
+ * latest, GitHub's latest release tag, and each image's :latest version label; `tags` and `labels`
+ * add registry state.
+ */
+const promote = async (
+  t,
+  {
+    version = "1.2.3",
+    tags = {},
+    manifest = {},
+    npm = { tags: {} },
+    github = {},
+    labels = {},
+    unreadable = [],
+  } = {},
+) => {
   const directory = mkdtempSync(path.join(tmpdir(), "mend-promote-"));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
-  const bin = path.join(directory, "bin");
-  mkdirSync(bin);
-  const calls = path.join(directory, "calls.jsonl");
-  writeFileSync(calls, "");
-  const command = `#!${process.execPath}
-const { appendFileSync } = require("node:fs");
-const args = process.argv.slice(2);
-const name = require("node:path").basename(process.argv[1]);
-appendFileSync(${JSON.stringify(calls)}, JSON.stringify([name, ...args]) + "\\n");
-const tags = ${JSON.stringify(tags)};
-if (name === "docker" && args[2] === "inspect") {
-  if (!(args[3] in tags)) process.exit(1);
-  console.log(JSON.stringify({ mediaType: "application/vnd.oci.image.index.v1+json", digest: tags[args[3]] }));
-}
-`;
-  for (const name of ["docker", "gh"]) {
-    writeFileSync(path.join(bin, name), command);
-    chmodSync(path.join(bin, name), 0o755);
-  }
+  const registry = registryStandIn(directory, { tags, versions: labels, unreadable });
+  const npmStub = await npmDistTags(t, npm);
+  const githubStub = await githubApi(t, github);
   const file = path.join(directory, "release-manifest.json");
   writeFileSync(
     file,
@@ -759,80 +758,259 @@ if (name === "docker" && args[2] === "inspect") {
   const step = releaseJobs["promote-images"].steps.find(
     (entry) => entry.name === "Update latest after release publication",
   );
-  const result = spawnSync("bash", ["--noprofile", "--norc", "-e", "-c", step.run], {
-    encoding: "utf8",
+  const child = spawn("bash", ["--noprofile", "--norc", "-e", "-c", step.run], {
     env: {
-      PATH: `${bin}:${process.env.PATH}`,
+      PATH: `${registry.bin}:${process.env.PATH}`,
+      HOME: directory,
       GITHUB_REF_NAME: `v${version}`,
       GITHUB_SHA: "f".repeat(40),
       GITHUB_REPOSITORY: "sealant-sh/Mend",
       GITHUB_REPOSITORY_OWNER: "sealant-ci",
+      GITHUB_API_URL: githubStub.url,
+      NPM_CONFIG_REGISTRY: npmStub.url,
       MANIFEST: file,
     },
   });
+  let output = "";
+  child.stdout.on("data", (chunk) => (output += chunk));
+  child.stderr.on("data", (chunk) => (output += chunk));
+  const status = await new Promise((done) => child.on("close", done));
   return {
-    ...result,
-    calls: readFileSync(calls, "utf8")
-      .split("\n")
-      .filter(Boolean)
-      .map((line) => JSON.parse(line)),
+    status,
+    output,
+    calls: registry.calls(),
+    writes: writesIn(registry.calls()),
+    registry: registry.registry(),
   };
 };
 
-test("latest moves only to the index digests this run's manifest records, all checked first", (t) => {
+const IMAGES = ["mend", "mend-api", "mend-web"];
+const atVersion = (version) =>
+  Object.fromEntries(IMAGES.map((image) => [`${promoted(image)}:${version}`, indexOf(image)]));
+const latestAt = (
+  version,
+  digest = (image) => `sha256:${createHash("sha256").update(`old ${image}`).digest("hex")}`,
+) => ({
+  tags: Object.fromEntries(IMAGES.map((image) => [`${promoted(image)}:latest`, digest(image)])),
+  labels: Object.fromEntries(IMAGES.map((image) => [`${promoted(image)}:latest`, version])),
+});
+const promotion = (image) => [
+  "docker",
+  "buildx",
+  "imagetools",
+  "create",
+  "--tag",
+  `${promoted(image)}:latest`,
+  `${promoted(image)}@${indexOf(image)}`,
+];
+const releaseEdit = ["gh", "release", "edit", "v1.2.3", "--repo", "sealant-sh/Mend", "--latest"];
+
+test("below a lower floor, latest moves to the manifest's index digests, every read first", async (t) => {
   assert.deepEqual(
     releaseJobs["promote-images"].steps.find((step) =>
       step.uses?.startsWith("actions/download-artifact@"),
     ).with,
     { name: "release-manifest", path: "release" },
   );
-  const images = ["mend", "mend-api", "mend-web"];
-  const current = Object.fromEntries(
-    images.map((image) => [`${promoted(image)}:1.2.3`, indexOf(image)]),
-  );
-  const result = promote(t, { tags: current });
-  assert.equal(result.status, 0, result.stderr);
-  assert.deepEqual(
-    result.calls.filter((call) => verb(call) === "create"),
-    images.map((image) => [
-      "docker",
-      "buildx",
-      "imagetools",
-      "create",
-      "--tag",
-      `${promoted(image)}:latest`,
-      `${promoted(image)}@${indexOf(image)}`,
-    ]),
-  );
-  // Every tag is checked before latest moves at all.
+  const old = latestAt("1.2.2");
+  const result = await promote(t, {
+    tags: { ...atVersion("1.2.3"), ...old.tags },
+    labels: old.labels,
+    npm: { tags: { latest: "1.2.2", next: "1.3.0-next.4" } },
+    github: { latest: "v1.2.2" },
+  });
+  assert.equal(result.status, 0, result.output);
+  assert.deepEqual(result.writes, [...IMAGES.map(promotion), releaseEdit]);
+  const firstWrite = result.calls.findIndex((call) => writesIn([call]).length > 0);
   assert.ok(
-    result.calls.findLastIndex((call) => verb(call) === "inspect") <
-      result.calls.findIndex((call) => verb(call) === "create"),
+    result.calls.slice(firstWrite).every((call) => writesIn([call]).length > 0),
+    "no read after the first write",
   );
-  assert.deepEqual(result.calls.at(-1), [
-    "gh",
-    "release",
-    "edit",
-    "v1.2.3",
-    "--repo",
-    "sealant-sh/Mend",
-    "--latest",
-  ]);
-  // A version tag that moved since acceptance: latest stays, for every image.
-  const moved = promote(t, {
-    tags: { ...current, [`${promoted("mend-web")}:1.2.3`]: `sha256:${"e".repeat(64)}` },
+  assert.match(result.output, /Stable floor: 1\.2\.2 /);
+  // No marker at all is no floor.
+  const fresh = await promote(t, { tags: atVersion("1.2.3"), github: {} });
+  assert.equal(fresh.status, 0, fresh.output);
+  assert.deepEqual(fresh.writes, [...IMAGES.map(promotion), releaseEdit]);
+});
+
+test("a higher floor from any one marker refuses the promotion and moves nothing", async (t) => {
+  const old = latestAt("1.2.2");
+  const base = {
+    tags: { ...atVersion("1.2.3"), ...old.tags },
+    labels: old.labels,
+    npm: { tags: { latest: "1.2.2" } },
+    github: { latest: "v1.2.2" },
+  };
+  for (const [marker, change, named] of [
+    ["npm latest", { npm: { tags: { latest: "1.3.0" } } }, /npm:@sealant\/mend@latest/],
+    ["GitHub's latest release", { github: { latest: "v1.10.0" } }, /github:sealant-sh\/Mend/],
+    [
+      "one image's :latest",
+      { labels: { ...old.labels, [`${promoted("mend-web")}:latest`]: "2.0.0" } },
+      /ghcr\.io\/sealant-ci\/mend-web:latest/,
+    ],
+  ]) {
+    const result = await promote(t, { ...base, ...change });
+    assert.equal(result.status, 1, marker);
+    assert.match(result.output, /is below the stable floor/, marker);
+    assert.match(result.output, named, marker);
+    assert.match(result.output, /backport such as 0\.35\.2 after 0\.36\.0 is refused on purpose/);
+    assert.deepEqual(result.writes, [], marker);
+  }
+});
+
+test("mixed markers: the highest one is the floor, compared as numbers", async (t) => {
+  const old = latestAt("1.2.2");
+  const result = await promote(t, {
+    tags: { ...atVersion("1.2.3"), ...old.tags },
+    labels: { ...old.labels, [`${promoted("mend-api")}:latest`]: "1.10.0" },
+    npm: { tags: { latest: "1.9.0" } },
+    github: { latest: "v1.2.10" },
+  });
+  assert.equal(result.status, 1);
+  assert.match(
+    result.output,
+    /below the stable floor 1\.10\.0 \(ghcr\.io\/sealant-ci\/mend-api:latest\)/,
+  );
+  assert.deepEqual(result.writes, []);
+});
+
+test("at the floor, a retry moves only the :latest not yet this run's index", async (t) => {
+  // mend's :latest already moved in an earlier attempt; mend-api's and mend-web's did not.
+  const result = await promote(t, {
+    tags: {
+      ...atVersion("1.2.3"),
+      [`${promoted("mend")}:latest`]: indexOf("mend"),
+      [`${promoted("mend-api")}:latest`]: `sha256:${"a".repeat(64)}`,
+    },
+    labels: {
+      [`${promoted("mend")}:latest`]: "1.2.3",
+      [`${promoted("mend-api")}:latest`]: "1.2.2",
+    },
+    npm: { tags: { latest: "1.2.3" } },
+    github: { latest: "v1.2.2" },
+  });
+  assert.equal(result.status, 0, result.output);
+  assert.match(result.output, /1\.2\.3 may retry/);
+  assert.deepEqual(result.writes, [promotion("mend-api"), promotion("mend-web"), releaseEdit]);
+});
+
+test("an unreadable or malformed marker fails the promotion, writing nothing", async (t) => {
+  const old = latestAt("1.2.2");
+  const base = {
+    tags: { ...atVersion("1.2.3"), ...old.tags },
+    labels: old.labels,
+    npm: { tags: { latest: "1.2.2" } },
+    github: { latest: "v1.2.2" },
+  };
+  for (const [label, change, problem] of [
+    ["npm answers 500", { npm: { status: 500 } }, /the registry answered 500/],
+    ["GitHub answers 500", { github: { status: 500 } }, /GitHub answered 500/],
+    ["GitHub answers 403", { github: { status: 403 } }, /GitHub answered 403/],
+    [
+      "a :latest unreadable",
+      { unreadable: [`${promoted("mend-api")}:latest`] },
+      /Could not read ghcr\.io\/sealant-ci\/mend-api:latest/,
+    ],
+    [
+      "npm latest a prerelease",
+      { npm: { tags: { latest: "1.3.0-next.2" } } },
+      /not a plain X\.Y\.Z/,
+    ],
+    [
+      "a latest release tag not vX.Y.Z",
+      { github: { latest: "v1.2" } },
+      /tagged "v1\.2", not vX\.Y\.Z/,
+    ],
+    ["a release tag without v", { github: { latest: "1.2.2" } }, /tagged "1\.2\.2", not vX\.Y\.Z/],
+    [
+      "a label not X.Y.Z",
+      { labels: { ...old.labels, [`${promoted("mend")}:latest`]: "latest" } },
+      /carries no single plain X\.Y\.Z/,
+    ],
+    [
+      "platforms that disagree",
+      { labels: { ...old.labels, [`${promoted("mend")}:latest`]: ["1.2.2", "1.2.1"] } },
+      /carries no single plain X\.Y\.Z org\.opencontainers\.image\.version/,
+    ],
+    [
+      "a missing label",
+      { labels: { ...old.labels, [`${promoted("mend")}:latest`]: null } },
+      /carries no single plain X\.Y\.Z org\.opencontainers\.image\.version/,
+    ],
+  ]) {
+    const result = await promote(t, { ...base, ...change });
+    assert.equal(result.status, 1, label);
+    assert.match(result.output, problem, label);
+    assert.deepEqual(result.writes, [], label);
+  }
+});
+
+/**
+ * Markers that are present but malformed, the audit's cases among them: each fails the floor, never
+ * reads as absent or as the version it starts with. `labels` is the label to give mend's :latest.
+ */
+const MALFORMED = [
+  ["a label with trailing text", { label: "1.2.2 invalid" }, /mend:latest carries no single plain/],
+  ["a label with a trailing newline", { label: "1.2.2\n" }, /mend:latest carries no single plain/],
+  ["a GitHub tag of only v", { github: "v" }, /tagged "v", not vX\.Y\.Z/],
+  ["a GitHub tag that is not a string", { github: 5 }, /tagged 5, not vX\.Y\.Z/],
+  ["npm latest null", { npm: { latest: null } }, /latest is null, not a plain/],
+  ["npm latest empty", { npm: { latest: "" } }, /latest is "", not a plain/],
+  ["npm latest not a string", { npm: { latest: 122 } }, /latest is 122, not a plain/],
+  ["npm dist-tags a list", { npm: [] }, /dist-tags is not a JSON object/],
+  ["npm dist-tags not an object", { npm: "1.2.2" }, /dist-tags is not a JSON object/],
+  // Past 9 digits a part could overflow Bash's 64-bit arithmetic: refused as not plain.
+  [
+    "a part past 64 bits",
+    { label: "9223372036854775808.0.0" },
+    /mend:latest carries no single plain/,
+  ],
+  ["a part of 10 digits", { github: "v1234567890.0.0" }, /not vX\.Y\.Z/],
+];
+
+test("a present marker that is malformed fails the promotion, writing nothing", async (t) => {
+  const old = latestAt("1.2.2");
+  for (const [label, { label: imageLabel, github, npm }, problem] of MALFORMED) {
+    const result = await promote(t, {
+      tags: { ...atVersion("1.2.3"), ...old.tags },
+      labels:
+        imageLabel === undefined
+          ? old.labels
+          : { ...old.labels, [`${promoted("mend")}:latest`]: imageLabel },
+      npm: { tags: npm ?? { latest: "1.2.2" } },
+      github: { latest: github ?? "v1.2.2" },
+    });
+    assert.equal(result.status, 1, label);
+    assert.match(result.output, problem, label);
+    assert.deepEqual(result.writes, [], label);
+  }
+  // The largest part accepted still compares as a number, above the release.
+  const top = await promote(t, {
+    tags: { ...atVersion("1.2.3"), ...old.tags },
+    labels: { ...old.labels, [`${promoted("mend-web")}:latest`]: "999999999.0.0" },
+    npm: { tags: { latest: "1.2.2" } },
+    github: { latest: "v1.2.2" },
+  });
+  assert.equal(top.status, 1);
+  assert.match(top.output, /below the stable floor 999999999\.0\.0/);
+  assert.deepEqual(top.writes, []);
+});
+
+test("a :<version> that moved since acceptance, or another release's manifest, moves nothing", async (t) => {
+  const moved = await promote(t, {
+    tags: { ...atVersion("1.2.3"), [`${promoted("mend-web")}:1.2.3`]: `sha256:${"e".repeat(64)}` },
   });
   assert.equal(moved.status, 1);
-  assert.match(moved.stdout + moved.stderr, /resolves to sha256:e{64}, not .*latest stays/);
-  assert.ok(moved.calls.every((call) => call[0] === "docker" && verb(call) === "inspect"));
-  // Another release's manifest, or one without an index, moves nothing.
+  assert.match(moved.output, /resolves to sha256:e{64}, not .*latest stays/);
+  assert.deepEqual(moved.writes, []);
   for (const manifest of [{ version: "1.2.2" }, { commit: "a".repeat(40) }, { images: {} }]) {
-    const refused = promote(t, { tags: current, manifest });
+    const refused = await promote(t, { tags: atVersion("1.2.3"), manifest });
     assert.equal(refused.status, 1, JSON.stringify(manifest));
-    assert.ok(refused.calls.every((call) => verb(call) !== "create"));
+    assert.deepEqual(refused.writes, []);
   }
-  // A next build moves nothing at all.
-  const next = promote(t, { version: "1.2.4-next.3", tags: current });
+  // A next build moves nothing at all, and reads nothing.
+  const next = await promote(t, { version: "1.2.4-next.3", tags: atVersion("1.2.4-next.3") });
   assert.equal(next.status, 0);
   assert.deepEqual(next.calls, []);
 });
@@ -1188,4 +1366,79 @@ test("on a real version, only finalize-images writes :<version>", () => {
     "release-cli.yml finalize-images",
     "release-cli.yml promote-images",
   ]);
+});
+
+test("the release job refuses, early, a stable tag below the highest stable tag", (t) => {
+  const step = releaseJobs.release.steps.find(
+    (entry) => entry.name === "Refuse a stable tag below the highest stable tag",
+  );
+  assert.equal(step.if, "github.event_name == 'push'");
+  assert.deepEqual(releaseJobs.release.permissions, { contents: "read" });
+  const directory = mkdtempSync(path.join(tmpdir(), "release-tags-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const refs = [
+    "refs/tags/v0.9.0",
+    "refs/tags/v0.36.0",
+    "refs/tags/v0.37.0-next.9",
+    "refs/tags/v1.0.0-rc.1",
+    "refs/tags/vscode-v9.0.0",
+    "refs/tags/v0.35.1",
+  ];
+  // A stand-in gh: the repository's v* tags, as `gh api --jq '.[].ref'` prints them.
+  writeFileSync(path.join(directory, "gh"), `#!/bin/sh\nprintf '%s\\n' ${refs.join(" ")}\n`, {
+    mode: 0o755,
+  });
+  const run = (VERSION) =>
+    spawnSync("bash", ["--noprofile", "--norc", "-e", "-c", step.run], {
+      encoding: "utf8",
+      env: { PATH: `${directory}:/usr/bin:/bin`, VERSION, GITHUB_REPOSITORY: "sealant-sh/Mend" },
+    });
+  // Compared as numbers: 0.36.0 is the highest stable tag, above 0.9.0 and 0.35.1.
+  const backport = run("0.35.2");
+  assert.equal(backport.status, 1);
+  assert.match(backport.stdout, /v0\.35\.2 is below v0\.36\.0, the highest stable tag/);
+  assert.equal(run("0.10.0").status, 1);
+  for (const version of ["0.36.0", "0.36.1", "0.37.0", "1.0.0"])
+    assert.equal(run(version).status, 0, version);
+  // A next build is not this check's: the next order is the pins job's.
+  assert.equal(run("0.30.0-next.1").status, 0);
+  // sort -n compares parts of any length: a 64-bit-overflowing tag is still the highest.
+  writeFileSync(
+    path.join(directory, "gh"),
+    `#!/bin/sh\nprintf '%s\\n' refs/tags/v0.36.0 refs/tags/v9223372036854775808.0.0\n`,
+    { mode: 0o755 },
+  );
+  const overflow = run("1.0.0");
+  assert.equal(overflow.status, 1);
+  assert.match(overflow.stdout, /below v9223372036854775808\.0\.0/);
+});
+
+/** The `# --- floor ---` block a step carries. */
+const floorOf = (run) =>
+  run.slice(run.indexOf("# --- floor ---"), run.indexOf("# --- end floor ---"));
+
+test("each stable guard reads the floor inside the release channel's lock, before any write", () => {
+  const channel = { group: "mend-release-channel", "cancel-in-progress": false, queue: "max" };
+  const npmStep = releaseJobs.npm.steps.find((entry) => entry.name === "Publish to npm").run;
+  const promoteStep = releaseJobs["promote-images"].steps.find(
+    (entry) => entry.name === "Update latest after release publication",
+  ).run;
+  // One floor, carried byte for byte by both jobs.
+  assert.ok(floorOf(npmStep).length > 1000);
+  assert.equal(floorOf(npmStep), floorOf(promoteStep));
+  for (const [name, run, writeCommands] of [
+    ["npm", npmStep, [/publish_release "\$\{flags\[@\]\}"/]],
+    ["promote-images", promoteStep, [/docker buildx imagetools create/, /gh release edit/]],
+  ]) {
+    assert.deepEqual(releaseJobs[name].concurrency, channel, name);
+    const body = run.slice(run.indexOf("# --- end floor ---"));
+    const floor = body.indexOf('floor=$(stable_floor "@sealant/mend" "$GITHUB_REPOSITORY_OWNER")');
+    const guard = body.indexOf('guard=$(stable_guard "$version" "$floor")');
+    assert.ok(floor > 0 && guard > floor, name);
+    for (const write of writeCommands) assert.ok(body.search(write) > guard, `${name}: ${write}`);
+  }
+  // promote-images reads every tag before it writes any.
+  const body = promoteStep.slice(promoteStep.indexOf("# --- end floor ---"));
+  const lastRead = body.lastIndexOf("tag_digest ");
+  assert.ok(lastRead > 0 && lastRead < body.indexOf("docker buildx imagetools create"));
 });

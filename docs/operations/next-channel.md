@@ -172,6 +172,10 @@ environment and mints no id-token, and none of its jobs holds `contents: write` 
 
 Dry run 2, run 38923041738 on `475d88ca9`, passed end to end and published nothing.
 
+Dry run 3, run 38931186422 on `79e6edd0e` (staging and finalize), passed end to end and published
+nothing: `finalize-images`, `npm`, `github-release` and `promote-images` were skipped, and every
+job's token was read-only.
+
 Unproven until the watched `-next` tag below: the ghcr login and push from GitHub's hosted runners;
 the multi-arch index on ghcr; `finalize-images` itself; online setup pulling from ghcr; npm's OIDC
 and the `release` environment; the GitHub release and its assets; and what offline acceptance skips
@@ -180,9 +184,9 @@ proves them.
 
 The stable `latest` promotion stays unproven until the first stable release: on a `-next` tag,
 `promote-images` returns before it reads anything, so the watched `-next` tag proves nothing about
-it. **No stable tag until plan (b) is merged.** Plan (b), the next pull request after this one, adds
-the guards against moving backwards: stable npm `latest`, the stable image promotion, and GitHub's
-latest release.
+it. The stable floor guards
+([A stable release never moves backwards](#a-stable-release-never-moves-backwards)) are tested only
+against stub registries and APIs until then.
 
 Proven once, and stale when GitHub's runner images change: a ghcr login with `packages: write`, a
 push by digest, and the multi-arch index on ghcr, on 14 October 2026 in run 38607378387, before the
@@ -242,10 +246,77 @@ decides: this run's digest is a success even when the create reported an error, 
 refused, and an unreadable or absent tag fails. `npm` and `promote-images` need `finalize-images`,
 and the three share the `mend-release-channel` queue. Each of those jobs is serialized on its own:
 two runs' `finalize-images` never overlap, nor their `npm`, nor their `promote-images`. The queue is
-not held across a whole release, so two releases' jobs can interleave, and an older stable run can
-still move `latest` back after a newer one. **No stable tag until plan (b) is merged:** it adds the
-backward-move guards for stable npm `latest`, the stable image promotion and GitHub's latest
-release.
+not held across a whole release, so two releases' jobs can interleave. An older stable run that
+reaches `npm` or `promote-images` after a newer one is refused there by the stable floor, read again
+inside each job's lock
+([A stable release never moves backwards](#a-stable-release-never-moves-backwards)).
+
+### A stable release never moves backwards
+
+A stable release's floor is the highest of three markers, compared as numbers `X.Y.Z`: npm's
+`latest` for `@sealant/mend` (the uncached dist-tags endpoint), the tag of GitHub's latest release,
+and the `org.opencontainers.image.version` label every platform of `mend`, `mend-api` and
+`mend-web`'s ghcr `:latest` carries. A marker that does not exist (no `latest` dist-tag, no latest
+release, a `:latest` the registry does not have) adds nothing. One that cannot be read, or is
+present but not a plain `X.Y.Z`, fails the job: it is never read as no floor. Each value is checked
+whole: npm's dist-tags must be a JSON object whose `latest`, when there is one, is a string `X.Y.Z`;
+GitHub's latest release tag must be exactly `vX.Y.Z`; every platform's label must be the same string
+`X.Y.Z`, with nothing after it. Each part of `X.Y.Z` has at most 9 digits, so the comparison never
+overflows; a longer part fails as not plain.
+
+The `npm` and `promote-images` jobs each read the floor inside the `mend-release-channel` lock,
+before any write, and compare the release with it:
+
+- **Above the floor:** publish and promote as usual.
+- **At the floor:** a retry of the same version. `npm` publishes nothing and moves no dist-tag; it
+  checks that npm holds this version from this commit with the accepted tarball's integrity, and
+  fails if npm does not hold it at all (a marker was moved by hand). `promote-images` retags only
+  the `:latest` that is not already this run's index, then marks the GitHub release latest.
+- **Below the floor:** refused, naming the marker and its version. Nothing is published and nothing
+  moves: not npm's `latest`, not ghcr's `:latest`, not GitHub's latest release.
+
+**A backport is refused on purpose**, for example `0.35.2` after `0.36.0`: it would move every
+`latest` back. Publishing backports under a dist-tag of their own is a decision not yet made. The
+`release` job also refuses, before anything builds, a stable tag below the highest stable `vX.Y.Z`
+tag in the repository. That is an early exit only; the checks inside the lock are the guard.
+
+The guards see only what the release workflows write. A hand-run `npm dist-tag add`, an image pushed
+to `:latest` by hand, or a release marked latest in GitHub's UI moves a marker outside the lock, and
+the next release's floor follows wherever it was moved.
+
+#### Restore the three markers to one version
+
+If the markers disagree after a manual write or an incident, put all three back on the last stable
+version that was released whole (`<version>`, its commit's run and manifest known), from an empty
+directory. You need three logins, and should check all three **before** you start, or the image
+write can fail after npm and GitHub were already moved: an npm login that has 2FA; a `gh` login that
+may edit releases; and Docker's own login to GHCR, which `gh auth` does not give buildx:
+`docker login ghcr.io` with a token that has `write:packages`. Read a `:latest` with
+`docker buildx imagetools inspect` to check that login reaches GHCR.
+
+1. Check each marker, so you do not move one off a newer good release:
+
+   ```sh
+   npm view @sealant/mend dist-tags --json
+   gh api repos/sealant-sh/Mend/releases/latest --jq .tag_name
+   for image in mend mend-api mend-web; do
+     docker buildx imagetools inspect "ghcr.io/sealant-sh/$image:latest" --format '{{json .Image}}' |
+       jq -r '[.[].config.Labels["org.opencontainers.image.version"]] | unique | join(",")'
+   done
+   ```
+
+2. Point each at `<version>`. Take the index digests from that release run's
+   `release-manifest.json`, never from a tag:
+
+   ```sh
+   npm dist-tag add "@sealant/mend@<version>" latest
+   gh release edit "v<version>" --repo sealant-sh/Mend --latest
+   docker buildx imagetools create --tag ghcr.io/sealant-sh/<image>:latest \
+     "ghcr.io/sealant-sh/<image>@<index digest from the manifest>"
+   ```
+
+3. Read all three again and check they name `<version>`. Deprecate any version that should not be
+   installed, and never republish one.
 
 So a version is spent once its tag exists. **Re-run failed jobs** of a release run: the images keep
 their digests, `finalize-images` finds them and is done. **Re-run all jobs**: the images are built
