@@ -35,9 +35,30 @@ if (process.argv[1] === stack && process.argv[2] === "watchdog") {
       renameSync(`${acknowledgmentFile}.next`, acknowledgmentFile);
     });
   }, 25);
-  // The initial virtual supervisor poll has no native handle. Keep the controller alive
-  // until the claim request creates a real child handle, then let normal completion exit.
-  process.on("message", (message) => {
-    if (message?.claim === true) acknowledge(() => controller.unref());
-  });
+  // A native timer keeps its process alive until it fires or is cleared; a virtual one has no
+  // handle. The controller stands in for every pending virtual timer, and only for those.
+  const pending = new Set();
+  const virtualTimeout = globalThis.setTimeout;
+  const virtualClear = globalThis.clearTimeout;
+  const holdWhilePending = () => (pending.size > 0 ? controller.ref() : controller.unref());
+  globalThis.setTimeout = (callback, delay, ...args) => {
+    const timer = virtualTimeout(
+      (...values) => {
+        pending.delete(timer);
+        holdWhilePending();
+        callback(...values);
+      },
+      delay,
+      ...args,
+    );
+    pending.add(timer);
+    holdWhilePending();
+    return timer;
+  };
+  globalThis.clearTimeout = (timer) => {
+    pending.delete(timer);
+    holdWhilePending();
+    virtualClear(timer);
+  };
+  holdWhilePending();
 }

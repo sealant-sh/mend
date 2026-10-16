@@ -669,6 +669,67 @@ The orchestrator confirmed trusted remote writes from main after #980: 7 writes 
 and 68 in 18:03–18:13, with zero denied and about 30 MB stored. Scenario PRs remain held until this
 split merges and its main push refreshes the CLI and sessions cache entries.
 
+## Merge-group headroom on the box runners
+
+Merge group `38972508081` for #1036 failed the unchanged 60-second cap. CLI
+`server-lifecycle-uninstall-discovery.test.ts` took 60.024 seconds, and all 850 tests in its lane
+passed. Twelve files took more than 45 seconds in merge groups `38972508081`, `38967699849`,
+`38963654971` and `38961259120`.
+
+The CLI lifecycle files spend their time starting the Docker stand-in,
+`apps/cli/test-fixtures/lifecycle-docker.mjs`. One case makes about 97 calls, and each call is a new
+Node process. Stripping the types of `docker-protocol.ts` took half of each start's wall time and
+60% of its CPU: 103 ms of CPU per call before, 41 ms after. The stand-in now enables Node's compile
+cache in its fixture directory, so only a fixture's first call strips types. Every lifecycle file
+now takes about 48% of its former time. Files that do not use the stand-in did not change.
+
+The root files:
+
+- `scripts/verify-stack/lifecycle.e2e.test.mjs`: N2 waited out the watchdog's real supervisor poll
+  and retry delays, 2 + 1 + 2 + 5 seconds. N2 now runs on the watchdog clock that N5 uses. The clock
+  fixture holds the watchdog process alive while a virtual timer is pending, as a native timer does.
+  Before, it held the process only until the claim. The lock and admission cases moved to
+  `lifecycle.locking.e2e.test.mjs`.
+- `.claude/skills/verify/scripts/leaks.test.mjs`: the closed-root and rasterization cases moved to
+  `leaks.closed-roots.test.mjs`, and the frame cases to `leaks.frames.test.mjs`. The shared prelude
+  is in `leaks.helpers.mjs`.
+- `scripts/next-version.test.mjs`: the generated-history property moved to
+  `next-version.histories.test.mjs`. Its fixtures are in `next-version.helpers.mjs`.
+- `scripts/aws-tofu.test.mjs` did not change. Its one slow case runs `tofu init`, which downloads
+  the 816 MB AWS provider again on every runner because the runners are ephemeral. A provider cache
+  on the runner image would remove that download; a test change cannot.
+
+Each split moves its code line for line, in the original order. Test names and counts are the same.
+The local times were measured on Node 26.1 with `CI=true`. The CLI times come from both native
+shards running at once, three workers each, pinned to eight cores, averaged over two runs. The root
+times come from each file run alone. These are local timings, not box measurements. The CI estimate
+scales each file's slowest merge-group time by its local after/before ratio.
+
+| File                                            | CI max (s) | Local before | Local after | CI estimate |
+| ----------------------------------------------- | ---------: | -----------: | ----------: | ----------: |
+| CLI `server-lifecycle-uninstall-discovery`      |       60.0 |         20.5 |         9.6 |          28 |
+| CLI `server-lifecycle-controls`                 |       55.5 |         20.4 |         9.5 |          26 |
+| CLI `server-lifecycle-uninstall-plans`          |       54.8 |         20.0 |         9.7 |          27 |
+| CLI `server-lifecycle-upgrade-recovery`         |       53.2 |         17.9 |         8.9 |          27 |
+| CLI `server-lifecycle-ownership`                |       53.0 |         19.6 |         9.0 |          24 |
+| CLI `server-lifecycle-backup-failures`          |       49.8 |         17.2 |         8.5 |          25 |
+| CLI `server-lifecycle-edge-overlays`            |       45.9 |         16.0 |         8.0 |          23 |
+| CLI `server-lifecycle-versions`                 |       45.0 |         20.5 |        10.0 |          22 |
+| `leaks.test.mjs`                                |       58.3 |         17.7 |         7.2 |          24 |
+| `leaks.closed-roots.test.mjs`                   |          — |            — |         6.6 |          22 |
+| `leaks.frames.test.mjs`                         |          — |            — |         3.0 |          10 |
+| `lifecycle.e2e.test.mjs`                        |       49.3 |         26.9 |         8.6 |          16 |
+| `lifecycle.locking.e2e.test.mjs`                |          — |            — |         8.7 |          16 |
+| `next-version.test.mjs`                         |       45.5 |          8.3 |         4.0 |          22 |
+| `next-version.histories.test.mjs`               |          — |            — |         4.3 |          24 |
+| `aws-tofu.test.mjs` (with OpenTofu 1.13.1 here) |       45.4 |          9.7 |         8.5 |          45 |
+
+The new files' CI estimates use the CI/local ratio of the file they came from. The box ran 2.2 to
+3.0 times slower than this machine for the CLI lifecycle files, not the 1.9 times measured for
+#1033. For the packaging files the ratio was 1.8 to 5.5. The next CLI candidate is
+`server-runtime.test.ts`, at 40.2 seconds on the box. Its default-deadline case waits out the real
+30-second process deadline.
+
 ## Step 6: Core and sealantd
 
 Step 6 applies the same work to Core (`sealant-sh/sealant`) and sealantd. Both run on the box
