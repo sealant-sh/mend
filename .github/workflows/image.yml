@@ -626,7 +626,10 @@ jobs:
 
   packaged-smoke:
     name: Packaged Mend acceptance
-    if: inputs.target == 'ghcr'
+    # As archive-acceptance: the archive jobs above release-manifest are skipped on a ghcr run.
+    if: >-
+      ${{ !cancelled() && inputs.target == 'ghcr' && needs.version.result == 'success' &&
+      needs.merge.result == 'success' && needs.release-manifest.result == 'success' }}
     needs: [version, merge, release-manifest]
     strategy:
       matrix:
@@ -751,7 +754,11 @@ jobs:
   # from ghcr.
   archive-acceptance:
     name: Packaged Mend acceptance from the archives
-    if: inputs.target == 'archive'
+    # A job whose if names no status function also needs every job above it to have succeeded, and
+    # the ghcr jobs above release-manifest are skipped here: so the needs are checked by hand.
+    if: >-
+      ${{ !cancelled() && inputs.target == 'archive' && needs.version.result == 'success' &&
+      needs.release-manifest.result == 'success' }}
     needs: [version, release-manifest]
     strategy:
       matrix:

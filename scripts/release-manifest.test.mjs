@@ -884,3 +884,52 @@ process.stdout.write(readFileSync(${JSON.stringify(documents)} + "/" + args[3].s
   assert.match(lone.stderr, /lacks/);
   assert.equal(readFileSync(path.join(work, "digest"), "utf8"), "");
 });
+
+// GitHub's rule, which the static checks above do not see: a job whose `if` names no status
+// function (always, cancelled, success, failure) runs only if every job above it, however far up,
+// succeeded, and a skipped job counts as not succeeded. Run 38917070036, the first dry run, skipped
+// archive acceptance this way: merge, skipped on an archive run, sits above release-manifest.
+const simulateRun = (target) => {
+  const needsOf = (name) => [jobs[name].needs ?? []].flat();
+  const ancestors = (name, seen = new Set()) => {
+    for (const need of needsOf(name)) if (!seen.has(need)) ancestors(need, seen.add(need));
+    return seen;
+  };
+  const result = {};
+  const pending = new Set(Object.keys(jobs));
+  while (pending.size > 0) {
+    const ready = [...pending].filter((name) => needsOf(name).every((need) => need in result));
+    assert.ok(ready.length > 0, "image.yml's needs form a cycle");
+    for (const name of ready) {
+      let expression = (jobs[name].if ?? "").replace(/^\$\{\{\s*|\s*\}\}$/g, "").trim();
+      if (!/\b(always|cancelled|success|failure)\(\)/.test(expression))
+        expression = expression === "" ? "success()" : `success() && (${expression})`;
+      const allAbove = [...ancestors(name)].every((job) => result[job] === "success");
+      const script = expression
+        .replace(/!cancelled\(\)/g, "true")
+        .replace(/always\(\)/g, "true")
+        .replace(/success\(\)/g, String(allAbove))
+        .replace(/failure\(\)/g, "false")
+        .replace(/inputs\.target/g, JSON.stringify(target))
+        .replace(/github\.repository/g, JSON.stringify("sealant-sh/mend"))
+        .replace(/needs\.([\w-]+)\.result/g, (_, need) => JSON.stringify(result[need]))
+        .replace(/!=/g, "!==")
+        .replace(/(?<![!=])==/g, "===");
+      result[name] = Function(`"use strict"; return (${script});`)() ? "success" : "skipped";
+      pending.delete(name);
+    }
+  }
+  return result;
+};
+
+test("on each target, GitHub runs that target's acceptance though the other target's jobs were skipped", () => {
+  const archive = simulateRun("archive");
+  assert.equal(archive["archive-acceptance"], "success");
+  assert.equal(archive["packaged-smoke"], "skipped");
+  for (const name of ["build", "merge"]) assert.equal(archive[name], "skipped", name);
+  const ghcr = simulateRun("ghcr");
+  assert.equal(ghcr["packaged-smoke"], "success");
+  assert.equal(ghcr["archive-acceptance"], "skipped");
+  for (const name of ["archive-build", "archive-merge"]) assert.equal(ghcr[name], "skipped", name);
+  for (const run of [archive, ghcr]) assert.equal(run["release-manifest"], "success");
+});
