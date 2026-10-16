@@ -362,6 +362,26 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          # Retried reads wait 1500 ms × attempt (registry_get, github_latest_release). Only a test sets
+          # RELEASE_TEST_RETRY_MS, never a workflow; the log says which delays this run used.
+          if [[ -z ${RELEASE_TEST_RETRY_MS:-} ]]; then
+            echo "retry backoff: production (1500 ms × attempt)"
+          elif [[ $RELEASE_TEST_RETRY_MS =~ ^(0|[1-9][0-9]{0,5})$ ]]; then
+            echo "retry backoff: overridden to $RELEASE_TEST_RETRY_MS ms × attempt"
+          else
+            echo "::error::RELEASE_TEST_RETRY_MS is not a whole number of milliseconds."
+            exit 1
+          fi
+          # The integrity read-back waits 5 s × attempt (published_integrity). Only a test sets
+          # REPUBLISH_TEST_WAIT, never a workflow.
+          if [[ -z ${REPUBLISH_TEST_WAIT:-} ]]; then
+            echo "integrity read-back wait: production (5 s × attempt)"
+          elif [[ $REPUBLISH_TEST_WAIT =~ ^(0|[1-9][0-9]{0,3})$ ]]; then
+            echo "integrity read-back wait: overridden to $REPUBLISH_TEST_WAIT s × attempt"
+          else
+            echo "::error::REPUBLISH_TEST_WAIT is not a whole number of seconds."
+            exit 1
+          fi
           # --- floor ---
           # release-publication.test.mjs runs this block as written, against a stub npm registry, a stub GitHub
           # API and a stand-in docker; npm and promote-images carry it byte for byte. A stable release's floor is
@@ -392,7 +412,7 @@ jobs:
                       process.exit(1);
                     }
                   }
-                  await new Promise((resolve) => setTimeout(resolve, attempt * 1500));
+                  await new Promise((resolve) => setTimeout(resolve, attempt * Number(process.env.RELEASE_TEST_RETRY_MS || 1500)));
                 }
               };
               run();
@@ -480,7 +500,7 @@ jobs:
                       process.exit(1);
                     }
                   }
-                  await new Promise((resolve) => setTimeout(resolve, attempt * 1500));
+                  await new Promise((resolve) => setTimeout(resolve, attempt * Number(process.env.RELEASE_TEST_RETRY_MS || 1500)));
                 }
               };
               run();
@@ -988,6 +1008,16 @@ jobs:
           MANIFEST: ${{ github.workspace }}/release/release-manifest.json
         run: |
           set -euo pipefail
+          # Retried reads wait 1500 ms × attempt (registry_get, github_latest_release). Only a test sets
+          # RELEASE_TEST_RETRY_MS, never a workflow; the log says which delays this run used.
+          if [[ -z ${RELEASE_TEST_RETRY_MS:-} ]]; then
+            echo "retry backoff: production (1500 ms × attempt)"
+          elif [[ $RELEASE_TEST_RETRY_MS =~ ^(0|[1-9][0-9]{0,5})$ ]]; then
+            echo "retry backoff: overridden to $RELEASE_TEST_RETRY_MS ms × attempt"
+          else
+            echo "::error::RELEASE_TEST_RETRY_MS is not a whole number of milliseconds."
+            exit 1
+          fi
           # --- floor ---
           # release-publication.test.mjs runs this block as written, against a stub npm registry, a stub GitHub
           # API and a stand-in docker; npm and promote-images carry it byte for byte. A stable release's floor is
@@ -1018,7 +1048,7 @@ jobs:
                       process.exit(1);
                     }
                   }
-                  await new Promise((resolve) => setTimeout(resolve, attempt * 1500));
+                  await new Promise((resolve) => setTimeout(resolve, attempt * Number(process.env.RELEASE_TEST_RETRY_MS || 1500)));
                 }
               };
               run();
@@ -1106,7 +1136,7 @@ jobs:
                       process.exit(1);
                     }
                   }
-                  await new Promise((resolve) => setTimeout(resolve, attempt * 1500));
+                  await new Promise((resolve) => setTimeout(resolve, attempt * Number(process.env.RELEASE_TEST_RETRY_MS || 1500)));
                 }
               };
               run();
