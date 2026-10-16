@@ -37,7 +37,9 @@ jobs:
     name: Choose what this run releases
     runs-on: ubuntu-24.04
     timeout-minutes: 5
-    permissions: {}
+    # Reads the repository's tags, for the early exit below.
+    permissions:
+      contents: read
     outputs:
       version: ${{ steps.resolve.outputs.version }}
       target: ${{ steps.resolve.outputs.target }}
@@ -86,6 +88,25 @@ jobs:
           echo "version=$version" >>"$GITHUB_OUTPUT"
           echo "target=$target" >>"$GITHUB_OUTPUT"
           echo "Release $version, images to $target."
+      # An early exit only, before anything builds: the floor checks in npm and promote-images, inside
+      # the release channel's lock, are the guard.
+      - name: Refuse a stable tag below the highest stable tag
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.resolve.outputs.version }}
+        run: |
+          set -euo pipefail
+          if [[ $VERSION == *-* ]]; then exit 0; fi
+          stable='^refs/tags/v((0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*))$'
+          highest=$(gh api --paginate "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/v" --jq '.[].ref' |
+            sed -nE "s#$stable#\\1#p" | sort -t. -k1,1n -k2,2n -k3,3n | tail -n 1)
+          top=$(printf '%s\n' "$highest" "$VERSION" | sort -t. -k1,1n -k2,2n -k3,3n | tail -n 1)
+          if [[ -n $highest && $top != "$VERSION" ]]; then
+            echo "::error::v$VERSION is below v$highest, the highest stable tag. A stable release never moves backwards, so a backport is refused on purpose."
+            exit 1
+          fi
+          echo "v$VERSION is not below the highest stable tag (${highest:+v}${highest:-none})."
 
   pins:
     name: Check what the release pins
@@ -167,9 +188,11 @@ jobs:
     permissions:
       contents: read
       packages: write
-    # One release at a time on the channel: finalize, npm and promotion queue behind another run's,
-    # never cancelled. Job-level `queue: max` holds every pending job instead of only the newest
-    # (proven live in runs 38897026470, 38897041709 and 38897056028).
+    # The release channel's lock: this job queues behind any other run's finalize, npm, promotion
+    # or staging cleanup, never cancelled. Each job is serialized on its own; the lock is not held
+    # across a whole release, so the stable guards re-read the floor inside it. Job-level
+    # `queue: max` holds every pending job instead of only the newest (proven live in runs
+    # 38897026470, 38897041709 and 38897056028).
     concurrency:
       group: mend-release-channel
       cancel-in-progress: false
@@ -277,9 +300,11 @@ jobs:
     # A tag push only: on a dry run this job is skipped, so it asks for no release environment and
     # no id-token.
     if: github.event_name == 'push'
-    # One release at a time on the channel: finalize, npm and promotion queue behind another run's,
-    # never cancelled. Job-level `queue: max` holds every pending job instead of only the newest
-    # (proven live in runs 38897026470, 38897041709 and 38897056028).
+    # The release channel's lock: this job queues behind any other run's finalize, npm, promotion
+    # or staging cleanup, never cancelled. Each job is serialized on its own; the lock is not held
+    # across a whole release, so the stable guards re-read the floor inside it. Job-level
+    # `queue: max` holds every pending job instead of only the newest (proven live in runs
+    # 38897026470, 38897041709 and 38897056028).
     concurrency:
       group: mend-release-channel
       cancel-in-progress: false
@@ -310,9 +335,203 @@ jobs:
 
       # Under next, checked here, after the approval: two next tags approved in the wrong order
       # must not move `next` back. The pins job only saw the tags as they were when the run started.
+      # A stable release is checked against the floor here, inside the release channel's lock.
       - name: Publish to npm
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          # --- floor ---
+          # release-publication.test.mjs runs this block as written, against a stub npm registry, a stub GitHub
+          # API and a stand-in docker; npm and promote-images carry it byte for byte. A stable release's floor is
+          # the highest of three markers, compared as numbers X.Y.Z: npm's `latest` for the package, the tag of
+          # GitHub's latest release, and the org.opencontainers.image.version label on each ghcr :latest. A
+          # marker that does not exist adds nothing; one that cannot be read, or is not a plain X.Y.Z, fails the
+          # job: never read as no floor.
+          shopt -s inherit_errexit
+
+          # GET <path> from the registry, retried; a failure or a 404 stops the job: never guessed.
+          registry_get() {
+            # shellcheck disable=SC2016 # JavaScript template literals, not shell expansions
+            node -e '
+              const [where, registry] = process.argv.slice(1);
+              const url = new URL(where, registry.endsWith("/") ? registry : `${registry}/`);
+              const run = async () => {
+                for (let attempt = 1; attempt <= 4; attempt += 1) {
+                  try {
+                    const response = await fetch(url, { headers: { accept: "application/json" } });
+                    if (response.ok) return process.stdout.write(JSON.stringify(await response.json()));
+                    if (attempt === 4) throw new Error(`the registry answered ${response.status} for ${where}`);
+                  } catch (error) {
+                    if (attempt === 4) {
+                      console.error(`::error::${error.message}`);
+                      process.exit(1);
+                    }
+                  }
+                  await new Promise((resolve) => setTimeout(resolve, attempt * 1500));
+                }
+              };
+              run();
+            ' -- "$1" "$(npm config get registry)"
+          }
+
+          # A dist-tag's version, or nothing, from the uncached dist-tags endpoint.
+          dist_tag() {
+            local tags
+            tags=$(registry_get "-/package/${1/\//%2f}/dist-tags")
+            node -e 'process.stdout.write(String(JSON.parse(require("node:fs").readFileSync(0, "utf8"))[process.argv[1]] ?? ""))' \
+              "$2" <<<"$tags"
+          }
+
+          # <value> is a plain X.Y.Z, or the job fails naming <marker>.
+          plain_version() {
+            if [[ ! $1 =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+              echo "::error::$2 is '$1', not a plain X.Y.Z release; the floor cannot be read." >&2
+              return 1
+            fi
+          }
+
+          # -1, 0 or 1 as plain X.Y.Z <a> is below, equal to or above <b>.
+          version_order() {
+            local a b i
+            IFS=. read -r -a a <<<"$1"
+            IFS=. read -r -a b <<<"$2"
+            for i in 0 1 2; do
+              if ((10#${a[i]} < 10#${b[i]})); then echo -1 && return; fi
+              if ((10#${a[i]} > 10#${b[i]})); then echo 1 && return; fi
+            done
+            echo 0
+          }
+
+          # The tag of the repository's latest GitHub release, without its v, or nothing when it has none (a
+          # 404). Retried; anything else fails.
+          github_latest_release() {
+            # shellcheck disable=SC2016 # JavaScript template literals, not shell expansions
+            node -e '
+              const [api, repository, token] = process.argv.slice(1);
+              const url = `${api}/repos/${repository}/releases/latest`;
+              const headers = { accept: "application/vnd.github+json", "x-github-api-version": "2022-11-28" };
+              if (token) headers.authorization = `Bearer ${token}`;
+              const run = async () => {
+                for (let attempt = 1; attempt <= 4; attempt += 1) {
+                  try {
+                    const response = await fetch(url, { headers });
+                    if (response.status === 404) return;
+                    if (response.ok) {
+                      const tag = (await response.json()).tag_name;
+                      if (typeof tag !== "string" || !tag.startsWith("v")) throw new Error(`the latest release is tagged ${tag}`);
+                      return process.stdout.write(tag.slice(1));
+                    }
+                    if (attempt === 4) throw new Error(`GitHub answered ${response.status} for ${url}`);
+                  } catch (error) {
+                    if (attempt === 4 || error.message.startsWith("the latest release")) {
+                      console.error(`::error::${error.message}`);
+                      process.exit(1);
+                    }
+                  }
+                  await new Promise((resolve) => setTimeout(resolve, attempt * 1500));
+                }
+              };
+              run();
+            ' -- "${GITHUB_API_URL:-https://api.github.com}" "$GITHUB_REPOSITORY" "${GH_TOKEN:-}"
+          }
+
+          # Reads <ref> with `imagetools inspect --format <format>` into stdout, prints nothing for a tag that
+          # does not exist, and fails on anything else. Absent is buildx's not-found line and nothing else:
+          # all of stderr, trailing newlines aside, is exactly `ERROR: <ref>: not found`, and stdout is empty.
+          inspect_ref() {
+            local out err status=0 errors
+            errors=$(mktemp)
+            out=$(docker buildx imagetools inspect "$1" --format "$2" 2>"$errors") || status=$?
+            err=$(<"$errors")
+            rm -f "$errors"
+            if ((status == 0)) && [[ -n $out ]]; then
+              printf '%s\n' "$out"
+              return 0
+            fi
+            if ((status != 0)) && [[ -z $out && $err == "ERROR: $1: not found" ]]; then return 0; fi
+            printf '%s\n' "$err" >&2
+            echo "::error::Could not read $1; nothing was written." >&2
+            return 1
+          }
+
+          # The digest <ref> names, or nothing when it does not exist.
+          tag_digest() {
+            local out digest
+            out=$(inspect_ref "$1" '{{json .Manifest}}')
+            [[ -n $out ]] || return 0
+            digest=$(jq -r '.digest // ""' <<<"$out")
+            if [[ ! $digest =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              echo "::error::$1 answered without a digest." >&2
+              return 1
+            fi
+            printf '%s\n' "$digest"
+          }
+
+          # The org.opencontainers.image.version every platform of <ref> carries, or nothing when <ref> does
+          # not exist. Platforms that disagree, or a missing label, fail.
+          image_version() {
+            local out versions
+            out=$(inspect_ref "$1" '{{json .Image}}')
+            [[ -n $out ]] || return 0
+            # One platform answers its config; an index answers each platform's config by platform.
+            if ! versions=$(jq -r 'if has("config") then [.] else [.[]] end
+              | map(.config.Labels["org.opencontainers.image.version"] // "") | unique | .[]' <<<"$out"); then
+              echo "::error::$1 answered an image config jq cannot read." >&2
+              return 1
+            fi
+            if [[ -z $versions || $versions == *$'\n'* ]]; then
+              echo "::error::$1 carries no single org.opencontainers.image.version (${versions//$'\n'/, })." >&2
+              return 1
+            fi
+            printf '%s\n' "$versions"
+          }
+
+          # The floor of a stable release of <package> whose images are ghcr.io/<owner>/{mend,mend-api,mend-web}:
+          # `<version> <marker>` of the highest marker, or nothing when none exists.
+          stable_floor() {
+            local package=$1 owner=$2 value marker line best="" best_marker="" image
+            local -a markers=()
+            value=$(dist_tag "$package" latest)
+            [[ -z $value ]] || markers+=("$value npm:$package@latest")
+            value=$(github_latest_release)
+            [[ -z $value ]] || markers+=("$value github:$GITHUB_REPOSITORY/releases/latest")
+            for image in mend mend-api mend-web; do
+              value=$(image_version "ghcr.io/$owner/$image:latest")
+              [[ -z $value ]] || markers+=("$value ghcr.io/$owner/$image:latest")
+            done
+            for line in "${markers[@]}"; do
+              value=${line%% *}
+              marker=${line#* }
+              plain_version "$value" "$marker"
+              if [[ -z $best || $(version_order "$value" "$best") == 1 ]]; then
+                best=$value
+                best_marker=$marker
+              fi
+            done
+            [[ -z $best ]] || printf '%s %s\n' "$best" "$best_marker"
+          }
+
+          # What a stable <version> may do against the floor line `<floor> <marker>` (empty: no floor):
+          # `publish` above it, `retry` at it, and a refusal below it.
+          stable_guard() {
+            local version=$1 floor=${2%% *} marker=${2#* }
+            plain_version "$version" "the release"
+            if [[ -z $2 ]]; then
+              echo publish
+              return
+            fi
+            case $(version_order "$version" "$floor") in
+              1) echo publish ;;
+              0) echo retry ;;
+              *)
+                echo "::error::$version is below the stable floor $floor ($marker). A stable release never moves npm latest, ghcr :latest or GitHub's latest release backwards, so a backport such as 0.35.2 after 0.36.0 is refused on purpose: publishing one under its own dist-tag is a decision not yet made. Nothing was published or moved." >&2
+                return 1
+                ;;
+            esac
+          }
+          # --- end floor ---
+
           # --- republish ---
           # republish.test.mjs runs this block as written, against a stub registry. publish_release checks the
           # downloaded artifact directories first (check_artifacts), then runs every npm command from a fresh
@@ -349,38 +568,7 @@ jobs:
             done
           }
 
-          # GET <path> from the registry, retried; a failure or a 404 stops the job: never guessed.
-          registry_get() {
-            # shellcheck disable=SC2016 # JavaScript template literals, not shell expansions
-            node -e '
-              const [where, registry] = process.argv.slice(1);
-              const url = new URL(where, registry.endsWith("/") ? registry : `${registry}/`);
-              const run = async () => {
-                for (let attempt = 1; attempt <= 4; attempt += 1) {
-                  try {
-                    const response = await fetch(url, { headers: { accept: "application/json" } });
-                    if (response.ok) return process.stdout.write(JSON.stringify(await response.json()));
-                    if (attempt === 4) throw new Error(`the registry answered ${response.status} for ${where}`);
-                  } catch (error) {
-                    if (attempt === 4) {
-                      console.error(`::error::${error.message}`);
-                      process.exit(1);
-                    }
-                  }
-                  await new Promise((resolve) => setTimeout(resolve, attempt * 1500));
-                }
-              };
-              run();
-            ' -- "$1" "$(npm config get registry)"
-          }
-
-          # A dist-tag's version, or nothing, from the uncached dist-tags endpoint.
-          dist_tag() {
-            local tags
-            tags=$(registry_get "-/package/${1/\//%2f}/dist-tags")
-            node -e 'process.stdout.write(String(JSON.parse(require("node:fs").readFileSync(0, "utf8"))[process.argv[1]] ?? ""))' \
-              "$2" <<<"$tags"
-          }
+          # registry_get and dist_tag come from the floor block above.
 
           # The commit a published version came from ("unknown" without gitHead), or nothing if unpublished.
           published_from() {
@@ -556,10 +744,33 @@ jobs:
             verify_integrity "$name" "$version" "$integrity"
           }
 
+          # A same-version retry: <name>@<version> must already be published from <commit> with
+          # <integrity>. Nothing is published, and no dist-tag moves.
+          verify_published() {
+            local from
+            from=$(published_from "$1" "$2")
+            if [[ -z $from ]]; then
+              echo "::error::$1@$2 is the stable floor, but npm does not hold it: a marker was moved by hand. Nothing was published."
+              return 1
+            fi
+            if [[ $from != "$3" ]]; then
+              echo "::error::$1@$2 was published from $from, not $3."
+              return 1
+            fi
+            echo "$1@$2 is already published from this commit; a same-version retry publishes nothing."
+            verify_integrity "$1" "$2" "$4"
+          }
+
           # The release: <cli> holds exactly the run's tarball of <name>@<version>, <release> exactly its
           # release-manifest.json. Checks both, moves to an empty directory, and publishes the tarball as it
-          # is from <commit> under <channel>; extra npm flags follow.
+          # is from <commit> under <channel>; extra npm flags follow. With --verify-only first, it checks
+          # the same and publishes nothing: npm must already hold exactly that tarball.
           publish_release() {
+            local mode=publish
+            if [[ $1 == --verify-only ]]; then
+              mode=verify
+              shift
+            fi
             local cli=$1 release=$2 name=$3 version=$4 commit=$5 channel=$6 file integrity
             shift 6
             file=${name#@}
@@ -570,7 +781,11 @@ jobs:
             cd "$(mktemp -d)"
             integrity=$(recorded_integrity "$cli/$file" "$release/release-manifest.json" "$version" "$commit")
             check_tarball "$cli/$file" "$name" "$version" "$commit" "$channel"
-            publish_exact "$cli/$file" "$name" "$version" "$commit" "$channel" "$integrity" "$@"
+            if [[ $mode == verify ]]; then
+              verify_published "$name" "$version" "$commit" "$integrity"
+            else
+              publish_exact "$cli/$file" "$name" "$version" "$commit" "$channel" "$integrity" "$@"
+            fi
           }
           # --- end republish ---
 
@@ -578,8 +793,16 @@ jobs:
           version="${version#v}"
           channel=latest
           if [[ "$version" == *-* ]]; then channel=next; fi
-          publish_release "$GITHUB_WORKSPACE/cli" "$GITHUB_WORKSPACE/release" "@sealant/mend" \
-            "$version" "$GITHUB_SHA" "$channel" --provenance
+          flags=()
+          if [[ $channel == latest ]]; then
+            # Every marker is read before anything is published.
+            floor=$(stable_floor "@sealant/mend" "$GITHUB_REPOSITORY_OWNER")
+            guard=$(stable_guard "$version" "$floor")
+            echo "Stable floor: ${floor:-none}; $version may $guard."
+            if [[ $guard == retry ]]; then flags+=(--verify-only); fi
+          fi
+          publish_release "${flags[@]}" "$GITHUB_WORKSPACE/cli" "$GITHUB_WORKSPACE/release" \
+            "@sealant/mend" "$version" "$GITHUB_SHA" "$channel" --provenance
 
   # Attach setup assets at the canonical /releases/download/vVERSION URLs.
   github-release:
@@ -675,9 +898,11 @@ jobs:
     name: Promote the complete stable release
     needs: [finalize-images, npm, github-release]
     if: github.event_name == 'push'
-    # One release at a time on the channel: finalize, npm and promotion queue behind another run's,
-    # never cancelled. Job-level `queue: max` holds every pending job instead of only the newest
-    # (proven live in runs 38897026470, 38897041709 and 38897056028).
+    # The release channel's lock: this job queues behind any other run's finalize, npm, promotion
+    # or staging cleanup, never cancelled. Each job is serialized on its own; the lock is not held
+    # across a whole release, so the stable guards re-read the floor inside it. Job-level
+    # `queue: max` holds every pending job instead of only the newest (proven live in runs
+    # 38897026470, 38897041709 and 38897056028).
     concurrency:
       group: mend-release-channel
       cancel-in-progress: false
@@ -696,12 +921,204 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      # The floor is read again here, inside the lock: it may have moved while this run waited.
       - name: Update latest after release publication
         env:
           GH_TOKEN: ${{ github.token }}
           MANIFEST: ${{ github.workspace }}/release/release-manifest.json
         run: |
           set -euo pipefail
+          # --- floor ---
+          # release-publication.test.mjs runs this block as written, against a stub npm registry, a stub GitHub
+          # API and a stand-in docker; npm and promote-images carry it byte for byte. A stable release's floor is
+          # the highest of three markers, compared as numbers X.Y.Z: npm's `latest` for the package, the tag of
+          # GitHub's latest release, and the org.opencontainers.image.version label on each ghcr :latest. A
+          # marker that does not exist adds nothing; one that cannot be read, or is not a plain X.Y.Z, fails the
+          # job: never read as no floor.
+          shopt -s inherit_errexit
+
+          # GET <path> from the registry, retried; a failure or a 404 stops the job: never guessed.
+          registry_get() {
+            # shellcheck disable=SC2016 # JavaScript template literals, not shell expansions
+            node -e '
+              const [where, registry] = process.argv.slice(1);
+              const url = new URL(where, registry.endsWith("/") ? registry : `${registry}/`);
+              const run = async () => {
+                for (let attempt = 1; attempt <= 4; attempt += 1) {
+                  try {
+                    const response = await fetch(url, { headers: { accept: "application/json" } });
+                    if (response.ok) return process.stdout.write(JSON.stringify(await response.json()));
+                    if (attempt === 4) throw new Error(`the registry answered ${response.status} for ${where}`);
+                  } catch (error) {
+                    if (attempt === 4) {
+                      console.error(`::error::${error.message}`);
+                      process.exit(1);
+                    }
+                  }
+                  await new Promise((resolve) => setTimeout(resolve, attempt * 1500));
+                }
+              };
+              run();
+            ' -- "$1" "$(npm config get registry)"
+          }
+
+          # A dist-tag's version, or nothing, from the uncached dist-tags endpoint.
+          dist_tag() {
+            local tags
+            tags=$(registry_get "-/package/${1/\//%2f}/dist-tags")
+            node -e 'process.stdout.write(String(JSON.parse(require("node:fs").readFileSync(0, "utf8"))[process.argv[1]] ?? ""))' \
+              "$2" <<<"$tags"
+          }
+
+          # <value> is a plain X.Y.Z, or the job fails naming <marker>.
+          plain_version() {
+            if [[ ! $1 =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+              echo "::error::$2 is '$1', not a plain X.Y.Z release; the floor cannot be read." >&2
+              return 1
+            fi
+          }
+
+          # -1, 0 or 1 as plain X.Y.Z <a> is below, equal to or above <b>.
+          version_order() {
+            local a b i
+            IFS=. read -r -a a <<<"$1"
+            IFS=. read -r -a b <<<"$2"
+            for i in 0 1 2; do
+              if ((10#${a[i]} < 10#${b[i]})); then echo -1 && return; fi
+              if ((10#${a[i]} > 10#${b[i]})); then echo 1 && return; fi
+            done
+            echo 0
+          }
+
+          # The tag of the repository's latest GitHub release, without its v, or nothing when it has none (a
+          # 404). Retried; anything else fails.
+          github_latest_release() {
+            # shellcheck disable=SC2016 # JavaScript template literals, not shell expansions
+            node -e '
+              const [api, repository, token] = process.argv.slice(1);
+              const url = `${api}/repos/${repository}/releases/latest`;
+              const headers = { accept: "application/vnd.github+json", "x-github-api-version": "2022-11-28" };
+              if (token) headers.authorization = `Bearer ${token}`;
+              const run = async () => {
+                for (let attempt = 1; attempt <= 4; attempt += 1) {
+                  try {
+                    const response = await fetch(url, { headers });
+                    if (response.status === 404) return;
+                    if (response.ok) {
+                      const tag = (await response.json()).tag_name;
+                      if (typeof tag !== "string" || !tag.startsWith("v")) throw new Error(`the latest release is tagged ${tag}`);
+                      return process.stdout.write(tag.slice(1));
+                    }
+                    if (attempt === 4) throw new Error(`GitHub answered ${response.status} for ${url}`);
+                  } catch (error) {
+                    if (attempt === 4 || error.message.startsWith("the latest release")) {
+                      console.error(`::error::${error.message}`);
+                      process.exit(1);
+                    }
+                  }
+                  await new Promise((resolve) => setTimeout(resolve, attempt * 1500));
+                }
+              };
+              run();
+            ' -- "${GITHUB_API_URL:-https://api.github.com}" "$GITHUB_REPOSITORY" "${GH_TOKEN:-}"
+          }
+
+          # Reads <ref> with `imagetools inspect --format <format>` into stdout, prints nothing for a tag that
+          # does not exist, and fails on anything else. Absent is buildx's not-found line and nothing else:
+          # all of stderr, trailing newlines aside, is exactly `ERROR: <ref>: not found`, and stdout is empty.
+          inspect_ref() {
+            local out err status=0 errors
+            errors=$(mktemp)
+            out=$(docker buildx imagetools inspect "$1" --format "$2" 2>"$errors") || status=$?
+            err=$(<"$errors")
+            rm -f "$errors"
+            if ((status == 0)) && [[ -n $out ]]; then
+              printf '%s\n' "$out"
+              return 0
+            fi
+            if ((status != 0)) && [[ -z $out && $err == "ERROR: $1: not found" ]]; then return 0; fi
+            printf '%s\n' "$err" >&2
+            echo "::error::Could not read $1; nothing was written." >&2
+            return 1
+          }
+
+          # The digest <ref> names, or nothing when it does not exist.
+          tag_digest() {
+            local out digest
+            out=$(inspect_ref "$1" '{{json .Manifest}}')
+            [[ -n $out ]] || return 0
+            digest=$(jq -r '.digest // ""' <<<"$out")
+            if [[ ! $digest =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              echo "::error::$1 answered without a digest." >&2
+              return 1
+            fi
+            printf '%s\n' "$digest"
+          }
+
+          # The org.opencontainers.image.version every platform of <ref> carries, or nothing when <ref> does
+          # not exist. Platforms that disagree, or a missing label, fail.
+          image_version() {
+            local out versions
+            out=$(inspect_ref "$1" '{{json .Image}}')
+            [[ -n $out ]] || return 0
+            # One platform answers its config; an index answers each platform's config by platform.
+            if ! versions=$(jq -r 'if has("config") then [.] else [.[]] end
+              | map(.config.Labels["org.opencontainers.image.version"] // "") | unique | .[]' <<<"$out"); then
+              echo "::error::$1 answered an image config jq cannot read." >&2
+              return 1
+            fi
+            if [[ -z $versions || $versions == *$'\n'* ]]; then
+              echo "::error::$1 carries no single org.opencontainers.image.version (${versions//$'\n'/, })." >&2
+              return 1
+            fi
+            printf '%s\n' "$versions"
+          }
+
+          # The floor of a stable release of <package> whose images are ghcr.io/<owner>/{mend,mend-api,mend-web}:
+          # `<version> <marker>` of the highest marker, or nothing when none exists.
+          stable_floor() {
+            local package=$1 owner=$2 value marker line best="" best_marker="" image
+            local -a markers=()
+            value=$(dist_tag "$package" latest)
+            [[ -z $value ]] || markers+=("$value npm:$package@latest")
+            value=$(github_latest_release)
+            [[ -z $value ]] || markers+=("$value github:$GITHUB_REPOSITORY/releases/latest")
+            for image in mend mend-api mend-web; do
+              value=$(image_version "ghcr.io/$owner/$image:latest")
+              [[ -z $value ]] || markers+=("$value ghcr.io/$owner/$image:latest")
+            done
+            for line in "${markers[@]}"; do
+              value=${line%% *}
+              marker=${line#* }
+              plain_version "$value" "$marker"
+              if [[ -z $best || $(version_order "$value" "$best") == 1 ]]; then
+                best=$value
+                best_marker=$marker
+              fi
+            done
+            [[ -z $best ]] || printf '%s %s\n' "$best" "$best_marker"
+          }
+
+          # What a stable <version> may do against the floor line `<floor> <marker>` (empty: no floor):
+          # `publish` above it, `retry` at it, and a refusal below it.
+          stable_guard() {
+            local version=$1 floor=${2%% *} marker=${2#* }
+            plain_version "$version" "the release"
+            if [[ -z $2 ]]; then
+              echo publish
+              return
+            fi
+            case $(version_order "$version" "$floor") in
+              1) echo publish ;;
+              0) echo retry ;;
+              *)
+                echo "::error::$version is below the stable floor $floor ($marker). A stable release never moves npm latest, ghcr :latest or GitHub's latest release backwards, so a backport such as 0.35.2 after 0.36.0 is refused on purpose: publishing one under its own dist-tag is a decision not yet made. Nothing was published or moved." >&2
+                return 1
+                ;;
+            esac
+          }
+          # --- end floor ---
+
           version="${GITHUB_REF_NAME#cli-}"
           version="${version#v}"
           if [[ "$version" == *-* ]]; then exit 0; fi
@@ -710,8 +1127,12 @@ jobs:
             echo "::error::The release manifest is not this release's ($version from $GITHUB_SHA)."
             exit 1
           fi
+          # Every read before any write: the floor, each :<version>, each :latest.
+          floor=$(stable_floor "@sealant/mend" "$GITHUB_REPOSITORY_OWNER")
+          guard=$(stable_guard "$version" "$floor")
+          echo "Stable floor: ${floor:-none}; $version may $guard."
           images=(mend mend-api mend-web)
-          declare -A index
+          declare -A index latest
           for image in "${images[@]}"; do
             repository="ghcr.io/$GITHUB_REPOSITORY_OWNER/$image"
             index[$image]=$(jq -r --arg image "$image" '.images[$image].index // ""' "$MANIFEST")
@@ -719,15 +1140,20 @@ jobs:
               echo "::error::The release manifest records no index digest for $image."
               exit 1
             fi
-            current=$(docker buildx imagetools inspect "$repository:$version" --format '{{json .Manifest}}' |
-              jq -r .digest)
+            current=$(tag_digest "$repository:$version")
             if [[ $current != "${index[$image]}" ]]; then
-              echo "::error::$repository:$version resolves to $current, not ${index[$image]}, the index this run accepted. latest stays."
+              echo "::error::$repository:$version resolves to ${current:-nothing}, not ${index[$image]}, the index this run accepted. latest stays."
               exit 1
             fi
+            latest[$image]=$(tag_digest "$repository:latest")
           done
+          # At the floor (a same-version retry), only a :latest not yet this run's index moves.
           for image in "${images[@]}"; do
             repository="ghcr.io/$GITHUB_REPOSITORY_OWNER/$image"
+            if [[ $guard == retry && ${latest[$image]} == "${index[$image]}" ]]; then
+              echo "$repository:latest is already ${index[$image]}."
+              continue
+            fi
             docker buildx imagetools create --tag "$repository:latest" "$repository@${index[$image]}"
           done
           gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --latest
