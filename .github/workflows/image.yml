@@ -110,6 +110,11 @@ jobs:
           - { arch: arm64, runner: ubuntu-24.04-arm }
     runs-on: ${{ matrix.platform.runner }}
     steps:
+      # Disk use on / and /mnt every 5 s, so the step summary shows this job's peak on a hosted runner.
+      - name: Start the disk sampler
+        run: >-
+          nohup bash -c 'while :; do df -B1 --output=used / /mnt 2>/dev/null | tail -n +2 | paste
+          -sd" "; sleep 5; done' >"$RUNNER_TEMP/disk-used.log" 2>&1 &
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: ${{ needs.version.outputs.commit }}
@@ -149,6 +154,13 @@ jobs:
           path: /tmp/digests/*
           if-no-files-found: error
           retention-days: 1
+      - name: Report peak disk use
+        if: always()
+        run: |
+          df -h / /mnt 2>/dev/null || df -h /
+          awk '{ if ($1 > r) r = $1; if ($2 > m) m = $2 } END {
+            printf "Peak disk used: / %d MiB, /mnt %d MiB\n", r / 1048576, m / 1048576 }' \
+            "$RUNNER_TEMP/disk-used.log" | tee -a "$GITHUB_STEP_SUMMARY"
 
   merge:
     permissions:
@@ -210,6 +222,11 @@ jobs:
       contents: read
       packages: read
     steps:
+      # Disk use on / and /mnt every 5 s, so the step summary shows this job's peak on a hosted runner.
+      - name: Start the disk sampler
+        run: >-
+          nohup bash -c 'while :; do df -B1 --output=used / /mnt 2>/dev/null | tail -n +2 | paste
+          -sd" "; sleep 5; done' >"$RUNNER_TEMP/disk-used.log" 2>&1 &
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: ${{ needs.version.outputs.commit }}
@@ -242,3 +259,10 @@ jobs:
         run: |
           pnpm --filter @sealant/mend exec npm version "$MEND_TEST_UPGRADE_VERSION" --no-git-tag-version --allow-same-version
           node scripts/check-packaged-server.mjs
+      - name: Report peak disk use
+        if: always()
+        run: |
+          df -h / /mnt 2>/dev/null || df -h /
+          awk '{ if ($1 > r) r = $1; if ($2 > m) m = $2 } END {
+            printf "Peak disk used: / %d MiB, /mnt %d MiB\n", r / 1048576, m / 1048576 }' \
+            "$RUNNER_TEMP/disk-used.log" | tee -a "$GITHUB_STEP_SUMMARY"
