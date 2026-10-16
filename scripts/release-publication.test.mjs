@@ -452,7 +452,7 @@ test("image.yml pushes a version once, and only its own dispatch is held to main
   // Run the commit step as written, with a stand-in `gh` that knows one tag.
   const step = image.slice(image.indexOf("- name: Choose the commit to build"));
   const script = step
-    .slice(step.indexOf("run: |") + "run: |".length, step.indexOf("- name: Resolve one version"))
+    .slice(step.indexOf("run: |") + "run: |".length, step.indexOf("\n  build:\n"))
     .split("\n")
     .map((line) => line.replace(/^ {10}/, ""))
     .join("\n");
