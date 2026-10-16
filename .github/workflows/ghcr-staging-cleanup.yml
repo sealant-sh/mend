@@ -1,0 +1,52 @@
+# Deletes the staging tags image.yml leaves on GHCR for releases that never finalized: package
+# versions whose every tag is staging-<run>-<attempt>, unchanged for 14 days
+# (scripts/ghcr-staging-cleanup.mjs, docs/operations/next-channel.md). It never deletes an untagged
+# version (a platform manifest an index points at) or one carrying any other tag.
+name: GHCR staging cleanup
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "List the candidates and what is kept, and delete nothing"
+        required: false
+        type: boolean
+        default: true
+  # Off until a reviewed follow-up turns it on, after the first list-only dispatch has shown what it
+  # would delete and that the workflow token can administer these packages.
+  # schedule:
+  #   - cron: "17 4 * * 1"
+
+permissions:
+  packages: write
+
+jobs:
+  cleanup:
+    name: Delete unfinalized staging tags
+    # Hosted, as every job holding a write token: the box's runner VMs keep state between jobs.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      packages: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            .node-version
+            scripts/ghcr-staging-cleanup.mjs
+          sparse-checkout-cone-mode: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .node-version
+      # A 403 or any other API error fails the run; the first one also says whether this token may
+      # administer the packages at all.
+      - name: List, and unless a dry run delete, the unfinalized staging tags
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          flags=()
+          if [[ $DRY_RUN == false ]]; then flags+=(--delete); fi
+          node scripts/ghcr-staging-cleanup.mjs "${flags[@]}"
