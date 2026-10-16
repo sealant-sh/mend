@@ -61,6 +61,26 @@ import {
 /** A capture's place on its chain, as a test's fake git verifier keys its answers. */
 const keyOf = (manifest: { readonly n: number }) => `n=${manifest.n}`;
 
+/**
+ * What the platform answers a workspace lookup once a test has killed the executor: gone (404)
+ * for the dead one, found for the replacement its pickup creates. The fixture serves every create
+ * under the one workspace id, so the replacement's create is the line. A platform that refused the
+ * replacement's lookups too had the replacement's process watcher judge it lost in turn, and
+ * `executor lost · last capture 1 at … · changes after it were not saved` written over the
+ * reaper's `executor lost · lease expired at …` whenever that watcher ran before the test's next
+ * read of the session (mend#1037).
+ */
+const goneUntilReplaced = (dead: () => boolean, created: ReadonlyArray<CreateOptions>) => () =>
+  dead() && created.length < 2;
+
+/**
+ * The fibers a launch forks start on the scheduler's next task, the replacement's process watcher
+ * among them, and its first look at the platform is the one mend#1037 raced: a loaded CI box ran
+ * it before the test read the session again. Taken on purpose after every pickup here, so the
+ * reads that follow come after that look, never before it.
+ */
+const afterTheWatcherLooks = Effect.yieldNow;
+
 /** How long a launch waits for a worktree's previous executor, and between its looks (`testDrainPolicy`). */
 const LEASE_WAIT = Duration.millis(300);
 const LEASE_WAIT_INTERVAL = Duration.millis(10);
@@ -1627,6 +1647,7 @@ describe("SessionEngine capture mode", () => {
           memory.clock.now = () => realNow() + 10 * 60 * 1000;
           executorDead = true;
           const resumed = yield* engine.resumeSession(session.id, null);
+          yield* afterTheWatcherLooks;
           expect(resumed.status).toBe("running");
           // Pickup: a fresh capture-sourced workspace, launched as a NATIVE resume of the
           // rollout harvested from the head capture — streamed, never through exec.
@@ -1660,7 +1681,7 @@ describe("SessionEngine capture mode", () => {
           undefined,
           undefined,
           spawned,
-          () => executorDead,
+          goneUntilReplaced(() => executorDead, created),
           undefined,
           undefined,
           undefined,
@@ -1749,7 +1770,7 @@ describe("SessionEngine capture mode", () => {
           undefined,
           undefined,
           undefined,
-          () => executorDead,
+          goneUntilReplaced(() => executorDead, created),
           undefined,
           undefined,
           undefined,
@@ -1765,6 +1786,7 @@ describe("SessionEngine capture mode", () => {
       Effect.gen(function* () {
         const engine = yield* SessionEngine;
         yield* engine.resumeSession(session.id, null);
+        yield* afterTheWatcherLooks;
         expect(drawnLine(world.sessions.get(session.id)?.summary)).toBe(lost);
         const epoch = 0;
         const api = servedSocketApis.get(session.id)?.capture;
@@ -1883,6 +1905,7 @@ describe("SessionEngine capture mode", () => {
           // Pickup: the replacement launches and claims epoch + 1. Until it answers, the
           // summary still reads the loss — that is what was last observed.
           yield* engine.resumeSession(session.id, null);
+          yield* afterTheWatcherLooks;
           const pickedUp = world.sessions.get(session.id);
           expect(pickedUp?.status).toBe("running");
           expect(pickedUp?.settledAt).toBeNull();
@@ -1909,7 +1932,7 @@ describe("SessionEngine capture mode", () => {
           undefined,
           undefined,
           undefined,
-          () => executorDead,
+          goneUntilReplaced(() => executorDead, created),
           undefined,
           undefined,
           undefined,
