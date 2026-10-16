@@ -7,8 +7,9 @@
 # - vX.Y.Z, a stable release: a promotion of a next build, with no prerelease pinned anywhere.
 # The pins job refuses anything else before an image is built.
 # A dispatch with dry_run is a dry run (docs/operations/next-channel.md): version
-# 0.0.0-dryrun.<run id>.<attempt>, image.yml with target archive (built, merged and accepted with no
-# push), and no job that publishes or writes runs. Only a tag push publishes.
+# <next>.dryrun.<run id>.<attempt>, where <next> is the X.Y.Z-next.N scripts/next-version.mjs gives
+# the dispatched commit; image.yml with target archive (built, merged and accepted with no push);
+# and no job that publishes or writes runs. Only a tag push publishes.
 # Every job runs on a GitHub-hosted runner, a fresh VM, as image.yml's do: the box's runner VMs keep
 # state between jobs.
 name: Release Mend
@@ -44,6 +45,15 @@ jobs:
       version: ${{ steps.resolve.outputs.version }}
       target: ${{ steps.resolve.outputs.target }}
     steps:
+      # Full history and every tag: a dry run's version starts with the next build
+      # scripts/next-version.mjs gives this commit.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .node-version
       - name: Refuse anything but a tag push or a dry run, and choose the version
         id: resolve
         env:
@@ -70,7 +80,18 @@ jobs:
                 echo "::error::A dispatch only dry-runs a release: set dry_run. A release publishes from a tag push."
                 exit 1
               fi
-              version=0.0.0-dryrun.$GITHUB_RUN_ID.$GITHUB_RUN_ATTEMPT
+              # Above the newest next build and below the next one and the stable release, so a dry
+              # run upgrades from them as a release would; never a version next-version.mjs hands
+              # out, which has no `dryrun`. Derived here, never an input.
+              if ! next=$(node scripts/next-version.mjs --package apps/cli HEAD); then
+                echo "::error::scripts/next-version.mjs could not give this commit a next version, so a dry run has no version. Its error is above."
+                exit 1
+              fi
+              if [[ ! $next =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-next\.(0|[1-9][0-9]*)$ ]]; then
+                echo "::error::scripts/next-version.mjs gave '$next', not X.Y.Z-next.N; a dry run has no version."
+                exit 1
+              fi
+              version=$next.dryrun.$GITHUB_RUN_ID.$GITHUB_RUN_ATTEMPT
               target=archive
               ;;
             *)

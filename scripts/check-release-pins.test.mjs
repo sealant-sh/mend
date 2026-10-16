@@ -15,6 +15,7 @@ import {
   published,
 } from "./check-release-pins.mjs";
 import { recordingRegistry } from "./fixtures/recording-registry.mjs";
+import { nextVersion, planNext, previewVersion } from "./next-version.mjs";
 
 const versionOnly = `diff --git a/apps/cli/package.json b/apps/cli/package.json
 --- a/apps/cli/package.json
@@ -224,6 +225,8 @@ test("a stable release reads prerelease packages from the lockfile, wherever the
 });
 
 test("only release-cli.yml's derived dry-run version skips the release-only checks", () => {
+  // Today's stamp, <main's next>.dryrun.<run>.<attempt>, and the form before it.
+  assert.ok(isDryRunVersion("0.36.0-next.988.dryrun.38931186422.1"));
   assert.ok(isDryRunVersion("0.0.0-dryrun.38700000001.2"));
   for (const version of [
     "0.37.0",
@@ -233,8 +236,100 @@ test("only release-cli.yml's derived dry-run version skips the release-only chec
     "0.37.0-dryrun.1.2",
     "0.0.0-dryrun.1.2-next.3",
     "0.0.0-acceptance.1.2",
+    "0.36.0-next.988.dryrun.1",
+    "0.36.0-next.988.dryrun.0.1",
+    "0.36.0-next.988.preview.4",
+    "0.36.0-next.988.dryrun.1.2.3",
+    "0.36.0-next.01.dryrun.1.2",
+    "0.36.0.dryrun.1.2",
   ])
     assert.ok(!isDryRunVersion(version), version);
+});
+
+test("a dry-run stamp is never a version scripts/next-version.mjs allocates", (t) => {
+  // Every allocation goes through planNext's base and nextVersion or previewVersion. The base is
+  // rebuilt from numbers whatever the inputs carry: a dry-run-shaped package version or handed-out
+  // version cannot leak into it.
+  const stamps = [];
+  const allocated = [];
+  for (const packageVersion of [
+    undefined,
+    "0.40.0",
+    "0.41.0-dryrun.1.1",
+    "0.36.0-next.9.dryrun.1.1",
+  ])
+    for (const handedOut of [
+      [],
+      ["0.36.0-next.9"],
+      ["0.38.0-next.3.dryrun.38931186422.1", "0.39.0-next.1"],
+    ]) {
+      const { base } = planNext({
+        tags: ["v0.35.1", "v0.36.0-next.9.dryrun.1.1", "v0.37.0-dryrun.1.1"],
+        names: ["@sealant/mend"],
+        changesets: ['---\n"@sealant/mend": minor\n---\n'],
+        packageVersion,
+        handedOut,
+      });
+      assert.match(base, /^\d+\.\d+\.\d+$/, JSON.stringify({ packageVersion, handedOut }));
+      for (const count of [0, 1, 988, 2 ** 31]) {
+        allocated.push(nextVersion(base, count), previewVersion(base, count, 38931186422));
+        stamps.push(`${nextVersion(base, count)}.dryrun.38931186422.1`);
+      }
+    }
+  // And the allocator itself, as release-cli.yml's release job runs it, in a real repository.
+  const directory = mkdtempSync(path.join(tmpdir(), "allocator-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const environment = {
+    ...process.env,
+    GIT_CONFIG_GLOBAL: "/dev/null",
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_AUTHOR_NAME: "t",
+    GIT_AUTHOR_EMAIL: "t@example.invalid",
+    GIT_COMMITTER_NAME: "t",
+    GIT_COMMITTER_EMAIL: "t@example.invalid",
+  };
+  const git = (...args) => execFileSync("git", args, { cwd: directory, env: environment });
+  git("init", "-q", "-b", "main");
+  for (const dir of ["apps/cli", ".changeset"])
+    mkdirSync(path.join(directory, dir), { recursive: true });
+  writeFileSync(path.join(directory, ".changeset/config.json"), "{}");
+  writeFileSync(
+    path.join(directory, "apps/cli/package.json"),
+    '{"name":"@sealant/mend","version":"0.35.1"}',
+  );
+  git("add", "-A");
+  git("commit", "-qm", "base");
+  git("tag", "v0.35.1");
+  writeFileSync(path.join(directory, ".changeset/a.md"), '---\n"@sealant/mend": minor\n---\n');
+  git("add", "-A");
+  git("commit", "-qm", "change");
+  // A dry-run-shaped tag in the repository is not a handed-out next build.
+  git("tag", "v0.36.0-next.2.dryrun.38931186422.1");
+  const allocate = (...args) =>
+    execFileSync(
+      process.execPath,
+      [
+        fileURLToPath(new URL("./next-version.mjs", import.meta.url)),
+        "--package",
+        "apps/cli",
+        ...args,
+      ],
+      {
+        cwd: directory,
+        env: environment,
+        encoding: "utf8",
+      },
+    ).trim();
+  const next = allocate("HEAD");
+  assert.equal(next, "0.36.0-next.2");
+  allocated.push(next, allocate("--preview", "7", "--main", "main", "HEAD"));
+  stamps.push(`${next}.dryrun.38931186422.1`);
+  for (const version of allocated) {
+    assert.ok(!isDryRunVersion(version), version);
+    assert.ok(!version.includes("dryrun"), version);
+  }
+  for (const stamp of stamps) assert.ok(isDryRunVersion(stamp), stamp);
+  assert.ok(allocated.every((version) => !stamps.includes(version)));
 });
 
 /**
@@ -306,21 +401,23 @@ export const digestProblems = async () => [];
 
 test("a dry-run-shaped tag gets every release check; only --dry-run relaxes them", (t) => {
   const pins = offMain(t);
-  // The audit's bypass: a v0.0.0-dryrun tag on an off-main commit.
-  const tagged = pins("v0.0.0-dryrun.9.1");
-  assert.equal(tagged.status, 1, tagged.stdout);
-  assert.match(tagged.stderr, /this commit is not on origin\/main/);
-  assert.match(tagged.stderr, /A prerelease is a next build/);
-  assert.ok(tagged.git.includes("merge-base --is-ancestor HEAD origin/main"));
-  // The dispatch's own dry run: the every-release pin checks only, nothing that reads history.
-  const dry = pins("--dry-run", "v0.0.0-dryrun.9.1");
-  assert.equal(dry.status, 0, dry.stderr);
-  assert.match(dry.stdout, /pins Sealant 1\.0\.0 everywhere/);
-  assert.deepEqual(dry.git, []);
+  // The audit's bypass: a dry-run tag on an off-main commit, in either form.
+  for (const tag of ["v0.0.0-dryrun.9.1", "v0.36.0-next.988.dryrun.9.1"]) {
+    const tagged = pins(tag);
+    assert.equal(tagged.status, 1, tagged.stdout);
+    assert.match(tagged.stderr, /this commit is not on origin\/main/);
+    assert.match(tagged.stderr, /A prerelease is a next build/);
+    assert.ok(tagged.git.includes("merge-base --is-ancestor HEAD origin/main"));
+    // The dispatch's own dry run: the every-release pin checks only, nothing that reads history.
+    const dry = pins("--dry-run", tag);
+    assert.equal(dry.status, 0, dry.stderr);
+    assert.match(dry.stdout, /pins Sealant 1\.0\.0 everywhere/);
+    assert.deepEqual(dry.git, []);
+  }
   // --dry-run checks a dry-run version only.
   const flagged = pins("--dry-run", "v0.37.0");
   assert.equal(flagged.status, 1);
-  assert.match(flagged.stderr, /--dry-run checks a 0\.0\.0-dryrun/);
+  assert.match(flagged.stderr, /--dry-run checks a dry-run version/);
   for (const args of [["--dry-run"], ["v0.37.0", "--dry-run"], ["--dry-run", "--dry-run", "v1"]])
     assert.equal(pins(...args).status, 2, args.join(" "));
 });

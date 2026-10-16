@@ -280,18 +280,25 @@ test("image.yml takes a target, ghcr by default, from a call and from a dispatch
   assert.equal(image.on.workflow_dispatch.inputs.target.default, "ghcr");
   assert.deepEqual(image.on.workflow_dispatch.inputs.target.options, ["ghcr", "archive"]);
   const check = step("version", "Check the target").run;
-  for (const [target, status] of [
-    ["ghcr", 0],
-    ["archive", 0],
-    ["registry", 1],
-    ["", 1],
+  for (const [target, version, status] of [
+    ["ghcr", "", 0],
+    ["archive", "", 0],
+    ["registry", "", 1],
+    ["", "", 1],
+    // A dry-run version builds to archives only, in either form.
+    ["archive", "0.36.0-next.988.dryrun.38931186422.1", 0],
+    ["ghcr", "0.36.0-next.988.dryrun.38931186422.1", 1],
+    ["ghcr", "0.0.0-dryrun.38931186422.1", 1],
+    ["ghcr", "0.36.0-next.988", 0],
   ])
     assert.equal(
-      spawnSync("bash", ["--noprofile", "--norc", "-e", "-c", check], { env: { TARGET: target } })
-        .status,
+      spawnSync("bash", ["--noprofile", "--norc", "-e", "-c", check], {
+        env: { TARGET: target, VERSION: version },
+      }).status,
       status,
-      target,
+      `${target} ${version}`,
     );
+  assert.equal(step("version", "Check the target").env.VERSION, "${{ inputs.version }}");
   const acceptance = parse(workflowText("release-acceptance.yml"));
   assert.equal(acceptance.on.workflow_dispatch.inputs.target.default, "ghcr");
   assert.equal(acceptance.jobs.acceptance.with.target, "${{ inputs.target || 'ghcr' }}");

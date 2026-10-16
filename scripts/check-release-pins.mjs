@@ -13,12 +13,13 @@
 //   Version Packages pull request, notes and docs may change, with renames counted as a deletion
 //   and an addition.
 //
-// - A dry run, `--dry-run v0.0.0-dryrun.<run id>.<attempt>` (release-cli.yml dispatched with
-//   dry_run): the every-release pin checks only. It publishes nothing, so it may run from any
+// - A dry run, `--dry-run v<X.Y.Z-next.N>.dryrun.<run id>.<attempt>` (release-cli.yml dispatched
+//   with dry_run; the older form was v0.0.0-dryrun.<run id>.<attempt>): the every-release pin checks
+//   only. It publishes nothing, so it may run from any
 //   branch. Without the flag a dry-run-shaped version is a release tag like any other, and fails.
 //
 //   node scripts/check-release-pins.mjs v0.36.0-next.56
-//   node scripts/check-release-pins.mjs --dry-run v0.0.0-dryrun.38700000001.1
+//   node scripts/check-release-pins.mjs --dry-run v0.36.0-next.988.dryrun.38700000001.1
 import { execFileSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
@@ -40,7 +41,10 @@ import {
 } from "./sealant-pins.mjs";
 
 /** The version a dispatched dry run of release-cli.yml carries: never a real release's. */
-export const isDryRunVersion = (version) => /^0\.0\.0-dryrun\.\d+\.\d+$/.test(version);
+export const isDryRunVersion = (version) =>
+  /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)-next\.(0|[1-9]\d*)\.dryrun\.[1-9]\d*\.[1-9]\d*$/.test(
+    version,
+  ) || /^0\.0\.0-dryrun\.\d+\.\d+$/.test(version);
 
 /** The package whose version the tags carry. */
 export const RELEASED_PACKAGE = "apps/cli";
@@ -159,7 +163,9 @@ const check = async (tag, { dryRun = false } = {}) => {
   // fails them.
   if (dryRun) {
     if (!isDryRunVersion(version))
-      problems.push(`--dry-run checks a 0.0.0-dryrun.<run>.<attempt> version, not "${tag}".`);
+      problems.push(
+        `--dry-run checks a dry-run version (X.Y.Z-next.N.dryrun.<run>.<attempt>), not "${tag}".`,
+      );
     return problems;
   }
   if (!onMain()) problems.push("A release is cut from main; this commit is not on origin/main.");

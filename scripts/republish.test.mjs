@@ -932,3 +932,30 @@ test("stable npm fails, publishing nothing, on a present marker that is malforme
   assert.match(top.output, /below the stable floor 999999999\.0\.0/);
   assert.equal(stub.log.length, 0);
 });
+
+test("a dry-run version is refused by the publisher on either channel", async (t) => {
+  // A dry run never reaches the npm job (a tag push only); were it to, its version is no release.
+  for (const [version, channel] of [
+    ["0.36.0-next.988.dryrun.38931186422.1", "next"],
+    ["0.36.0-next.988.dryrun.38931186422.1", "latest"],
+    ["0.0.0-dryrun.38931186422.1", "next"],
+  ]) {
+    const stub = await registry(t, {
+      "@sealant/mend": { name: "@sealant/mend", versions: {}, "dist-tags": { latest: "0.35.1" } },
+    });
+    const result = await publish(
+      t,
+      stub,
+      [
+        ["package/package.json", manifest(version, {}, "@sealant/mend")],
+        ["package/dist/index.js", ""],
+      ],
+      version,
+      channel,
+      { name: "@sealant/mend" },
+    );
+    assert.notEqual(result.status, 0, `${version} ${channel}`);
+    assert.match(result.output, new RegExp(`is not a ${channel} version`), `${version} ${channel}`);
+    assert.equal(stub.log.length, 0);
+  }
+});

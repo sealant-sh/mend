@@ -59,9 +59,11 @@ jobs:
       commit: ${{ steps.commit.outputs.commit }}
     steps:
       # A workflow_call input is any string; a target nothing handles would build and accept nothing.
+      # A dry-run version (release-cli.yml's dispatch) builds to archives only: it never reaches ghcr.
       - name: Check the target
         env:
           TARGET: ${{ inputs.target }}
+          VERSION: ${{ inputs.version }}
         run: |
           case $TARGET in
             ghcr | archive) ;;
@@ -70,6 +72,10 @@ jobs:
               exit 1
               ;;
           esac
+          if [[ $TARGET != archive && $VERSION == *dryrun* ]]; then
+            echo "::error::$VERSION is a dry-run version; it builds to archives only, never to $TARGET."
+            exit 1
+          fi
       # A dispatch of image.yml itself pushes to ghcr.io/sealant-sh/mend (a real version only under
       # its staging tag; release-cli.yml's finalize-images alone writes :<version>, the tag
       # `mend server setup` pulls): from main only, and only for a version that has its git tag (built
