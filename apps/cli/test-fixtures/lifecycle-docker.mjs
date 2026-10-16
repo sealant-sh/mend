@@ -2,12 +2,15 @@
 // A local Docker protocol fixture. The CLI still uses its real process and filesystem runtime.
 import { spawn } from "node:child_process";
 import * as fs from "node:fs";
+import { enableCompileCache } from "node:module";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { DockerProtocol } from "./docker-protocol.ts";
-
 const root = path.dirname(fileURLToPath(import.meta.url));
+// Every Docker call starts this script afresh, and stripping docker-protocol.ts's types was half of
+// each start. The fixture's own directory holds the compiled modules for the calls after its first.
+enableCompileCache(path.join(root, "node-compile-cache"));
+const { DockerProtocol } = await import("./docker-protocol.ts");
 const stateFile = path.join(root, "daemon.json");
 const state = JSON.parse(fs.readFileSync(stateFile, "utf8"));
 const args = process.argv.slice(2);
