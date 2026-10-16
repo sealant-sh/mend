@@ -134,6 +134,12 @@ gh api graphql -f query='mutation($id: ID!, $head: GitObjectID!) {
 }' -f id="$id" -f head=<full head sha>
 ```
 
+A pull request that is part of a `gh stack` stack can't be enqueued this way: the mutation refuses
+it as part of a stack and points to the asynchronous merge REST API. Enqueue it with
+`gh stack merge <n> --yes --squash`, or through that REST API. Neither pins the head, so read the
+pull request's head SHA immediately before and check it is the head that was reviewed. #1028 (head
+`784b7b345`, the bottom of stack #1030) was the first enqueued this way, on 2026-10-16.
+
 ## Activation observations
 
 First queued pull request, #1006, head `2cff934f07f0a441a9ce49884cd686034960e84b`, enqueued
