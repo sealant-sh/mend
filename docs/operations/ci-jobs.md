@@ -190,7 +190,8 @@ Fixed box jobs no longer request setup-node's GitHub pnpm cache. Packaged accept
 that publishes or holds a write token, runs on GitHub-hosted runners since 2026-10-16 and requests
 no pnpm cache: other jobs, running unowned code, write that cache. Box VMs keep state between jobs,
 so code from an earlier pull request could change what a later job on the same VM builds, accepts or
-pushes.
+pushes. It accepts the images and the CLI tarball its own run recorded in `release-manifest.json`,
+by digest and by sha512 (`docs/operations/next-channel.md`, "What acceptance accepts").
 
 This changes dependency-store restoration only. Turbo caching and affected-only test selection
 remain held for the owner's decision. Existing integrity checking and frozen lockfiles remain.

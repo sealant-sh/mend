@@ -375,7 +375,8 @@ jobs:
           scripts/edge-overlay.test.mjs scripts/aws-compose.test.mjs scripts/aws-tofu.test.mjs
           scripts/next-version.test.mjs scripts/sealant-pins.test.mjs
           scripts/check-release-pins.test.mjs scripts/mend-migrations.test.mjs
-          scripts/republish.test.mjs scripts/preview-deploy.test.mjs scripts/bench/*.test.mjs
+          scripts/republish.test.mjs scripts/normalize-npm-tarball.test.mjs
+          scripts/release-manifest.test.mjs scripts/preview-deploy.test.mjs scripts/bench/*.test.mjs
           scripts/mirrors-runtime.test.mjs scripts/verify-stack/lib.test.mjs
           scripts/verify-stack/lifecycle.test.mjs scripts/verify-stack/lifecycle.e2e.test.mjs
           scripts/verify-stack/lifecycle.resources.e2e.test.mjs

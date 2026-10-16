@@ -40,7 +40,10 @@ jobs:
     name: Build and verify server images
     needs: pins
     uses: ./.github/workflows/image.yml
+    # GitHub refuses a called workflow whose jobs ask for more than this, even jobs that do not run:
+    # actions: write is image.yml's archive-cleanup's, which a release (target ghcr) never runs.
     permissions:
+      actions: write
       contents: read
       packages: write
     secrets: inherit
