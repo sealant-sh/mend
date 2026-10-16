@@ -757,21 +757,39 @@ test("the acceptance gate passes only on the acceptance this run's target ran", 
   assert.equal(run("", "ghcr"), 1);
   assert.equal(run("archive", "ghcr"), 1);
   assert.equal(run("", ""), 1);
-  // image.yml reports an acceptance only from the step after the acceptance itself.
+  // image.yml reports a target's acceptance only when both of its acceptances passed: the
+  // same-source packaged acceptance and the upgrade from every release in the window.
+  const accepted = (outputs) =>
+    Function(
+      `"use strict"; return (${imageDocument.on.workflow_call.outputs.accepted.value
+        .replace(/^\$\{\{\s*|\s*\}\}$/g, "")
+        .replace(/jobs\.([\w-]+)\.outputs\.accepted/g, (_, name) =>
+          JSON.stringify(outputs[name] ?? ""),
+        )
+        .replace(/==/g, "===")});`,
+    )();
+  assert.equal(accepted({ "packaged-smoke": "ghcr", "previous-upgrade": "ghcr" }), "ghcr");
+  assert.equal(accepted({ "packaged-smoke": "ghcr" }), "");
+  assert.equal(accepted({ "previous-upgrade": "ghcr" }), "");
   assert.equal(
-    imageDocument.on.workflow_call.outputs.accepted.value,
-    "${{ jobs.packaged-smoke.outputs.accepted || jobs.archive-acceptance.outputs.accepted }}",
+    accepted({ "archive-acceptance": "archive", "archive-previous-upgrade": "archive" }),
+    "archive",
   );
-  for (const [name, target] of [
-    ["packaged-smoke", "ghcr"],
-    ["archive-acceptance", "archive"],
+  assert.equal(accepted({ "archive-acceptance": "archive" }), "");
+  assert.equal(accepted({ "archive-previous-upgrade": "archive" }), "");
+  assert.equal(accepted({ "packaged-smoke": "ghcr", "archive-previous-upgrade": "archive" }), "");
+  for (const [name, target, script] of [
+    ["packaged-smoke", "ghcr", "node scripts/check-packaged-server.mjs"],
+    ["archive-acceptance", "archive", "node scripts/check-packaged-server.mjs"],
+    ["previous-upgrade", "ghcr", "node scripts/check-previous-upgrade.mjs"],
+    ["archive-previous-upgrade", "archive", "node scripts/check-previous-upgrade.mjs"],
   ]) {
     const { steps } = imageDocument.jobs[name];
-    const accepted = steps.findIndex((entry) => entry.id === "accepted");
+    const recorded = steps.findIndex((entry) => entry.id === "accepted");
     assert.equal(imageDocument.jobs[name].outputs.accepted, "${{ steps.accepted.outputs.target }}");
-    assert.equal(steps[accepted - 1].run, "node scripts/check-packaged-server.mjs");
-    assert.equal(steps[accepted].run, `echo "target=${target}" >>"$GITHUB_OUTPUT"`);
-    assert.equal(steps[accepted].if, undefined);
+    assert.equal(steps[recorded - 1].run, script);
+    assert.equal(steps[recorded].run, `echo "target=${target}" >>"$GITHUB_OUTPUT"`);
+    assert.equal(steps[recorded].if, undefined);
   }
 });
 

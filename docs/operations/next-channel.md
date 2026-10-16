@@ -128,6 +128,52 @@ offline from the archive once its platform manifest digest matches the manifest.
 after one day, as run artifacts; nothing deletes them sooner, since that would need `actions: write`
 in every caller of image.yml, a release's included.
 
+### The upgrade window
+
+Packaged acceptance also upgrades from the releases a server may really be on: image.yml's
+`previous-upgrade` (ghcr) and `archive-previous-upgrade` (archive) jobs, one per release in the
+window and per arch, beside the same-source acceptance (`scripts/check-previous-upgrade.mjs`).
+release-cli.yml's `acceptance` gate requires them: image.yml reports a target accepted only when
+both acceptances passed.
+
+The window (`scripts/upgrade-window.mjs`, the `upgrade-window` job):
+
+- **A stable candidate** `X.Y.Z` upgrades from the highest stable release below it.
+- **A next candidate** `X.Y.Z-next.N` upgrades from the newest next build below it, and from the
+  highest stable release below it. A next build older than that stable release is left out: a server
+  on it moves to the stable release first.
+- **A dry run, a dev or an acceptance build** (`0.0.0-*`) takes the window of the next build main
+  would release now, `node scripts/next-version.mjs --package apps/cli origin/main`; the version in
+  `apps/cli/package.json` is the last stable release until the Version Packages pull request merges,
+  so it names no candidate. Such a candidate is stamped `0.0.0-*`, which orders below every release,
+  and the CLI refuses that as a downgrade: a dry run installs and seeds each release and reports the
+  upgrade itself as NOT TESTED. Only a release candidate proves the upgrade step.
+
+The releases come from npm's list for `@sealant/mend`, and must agree with the live markers the
+stable guards read (npm's `latest` and `next`, GitHub's latest release, ghcr's `mend:latest`). A
+release in the window without pins fails the run, by name.
+
+**Pins.** `release/upgrade-from.json` holds, for each release, its npm integrity, its `mend`,
+`mend-api` and `mend-web` index digests, the sha256 of its four setup assets, and the digest of each
+image its setup starts beside Mend (Postgres, Garage, and from 0.36 the mirrors and the network
+guard). `release/upgrade-from/<version>/` holds a `package.json` and a lockfile for that release's
+CLI, installed with `npm ci`: the CLI ships no lockfile and depends on version ranges, so without
+one its dependencies would drift. **Each release's pull request adds the release before it** (for a
+next build, the next build before it): read every value anonymously from npm, the GitHub release and
+ghcr, write the lockfile once with
+`npm install --package-lock-only --ignore-scripts --before=<that release's npm publish time>`, and
+check the entry against the artifacts with
+`MEND_UPGRADE_FROM=<version> node scripts/check-previous-upgrade.mjs --prepare-only`.
+
+**Waivers.** When a release cannot be installed or upgraded from (a deleted asset, a release from
+before the pins could exist), the run fails with the reason; it never skips. Yiannis may approve a
+waiver instead: an entry in `release/upgrade-waivers.json`, `{version, from, reason, approvedBy}`,
+merged in a pull request he approves. `version` must equal the candidate exactly, so a waiver never
+carries forward to the next release. The transition is then reported as waived, with the reason, in
+the run summary; it is never counted as passed. A stable release's waived upgrade from a stable
+release is written into its GitHub release notes too, by the `github-release` job from the same
+file. release-acceptance.yml reads the file at the commit under test, as image.yml does.
+
 ### Where publishing runs
 
 Every job in a workflow that publishes, or holds a token that writes to a repository, its packages

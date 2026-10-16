@@ -21,10 +21,15 @@ on:
     # Which acceptance passed, `ghcr` or `archive`, and nothing when none did. A caller's `needs`
     # also passes when every job here was skipped (a fork: `version` never runs), so a publisher
     # reads this instead of trusting the call's result alone.
+    # Both of a target's acceptances must pass: the same-source packaged acceptance and the upgrade
+    # from every release in the upgrade window.
     outputs:
       accepted:
-        value:
-          ${{ jobs.packaged-smoke.outputs.accepted || jobs.archive-acceptance.outputs.accepted }}
+        value: >-
+          ${{ (jobs.packaged-smoke.outputs.accepted == 'ghcr' &&
+          jobs.previous-upgrade.outputs.accepted == 'ghcr') && 'ghcr' ||
+          ((jobs.archive-acceptance.outputs.accepted == 'archive' &&
+          jobs.archive-previous-upgrade.outputs.accepted == 'archive') && 'archive' || '') }}
   workflow_dispatch:
     inputs:
       version:
@@ -903,6 +908,320 @@ jobs:
           MEND_TEST_OFFLINE: "1"
         run: node scripts/check-packaged-server.mjs
       # Reached only when acceptance passed on this arch; a failed arch fails the job.
+      - name: Record the acceptance
+        id: accepted
+        run: echo "target=archive" >>"$GITHUB_OUTPUT"
+      # Telemetry only: it never turns the job's result red, and says so when it has nothing.
+      - name: Report peak disk use
+        if: always()
+        continue-on-error: true
+        run: |
+          df -h / /mnt 2>/dev/null || df -h / || true
+          log=$RUNNER_TEMP/disk-used.log
+          if [ -s "$log" ]; then
+            report=$(awk '$1 ~ /^[0-9]+$/ { n++; if ($1 > r) r = $1; if ($2 ~ /^[0-9]+$/) { two = 1; if ($2 > m) m = $2 } }
+              END { if (!n) { print "Disk use unavailable: no samples"; exit }
+                printf "Sampled peak disk used (every 5 s, %d samples): / %d MiB", n, r / 1048576
+                if (two) printf ", /mnt %d MiB\n", m / 1048576; else print ", /mnt not present" }' \
+              "$log") || report="Disk use unavailable: the samples could not be read"
+          else
+            report="Disk use unavailable: the sampler wrote no samples"
+          fi
+          echo "$report"
+          echo "$report" >>"$GITHUB_STEP_SUMMARY" ||
+            echo "::warning::Could not write the disk report to the step summary"
+
+  # The candidate's upgrade window (scripts/upgrade-window.mjs): each published release a server may
+  # be on when it upgrades to this candidate, read from npm and checked against the live markers,
+  # each pinned in release/upgrade-from.json, and any waiver for exactly this candidate. A dry run
+  # or dev build takes the window of the next build main would release.
+  upgrade-window:
+    name: Choose the releases to upgrade from
+    needs: version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      transitions: ${{ steps.plan.outputs.transitions }}
+      release: ${{ steps.plan.outputs.release }}
+      derived: ${{ steps.plan.outputs.derived }}
+    steps:
+      # Full history and tags: a dry run's window is that of scripts/next-version.mjs on main.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.version.outputs.commit }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .node-version
+      - name: Plan the transitions
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.version.outputs.value }}
+        run: node scripts/upgrade-window.mjs plan "$VERSION"
+
+  # An upgrade from each release in the window to this run's candidate, on a fresh runner of its
+  # own, beside the same-source packaged acceptance (scripts/check-previous-upgrade.mjs).
+  previous-upgrade:
+    name: Upgrade from a published release
+    if: >-
+      ${{ !cancelled() && inputs.target == 'ghcr' && needs.version.result == 'success' &&
+      needs.merge.result == 'success' && needs.release-manifest.result == 'success' &&
+      needs.upgrade-window.result == 'success' }}
+    needs: [version, merge, release-manifest, upgrade-window]
+    strategy:
+      fail-fast: false
+      matrix:
+        transition: ${{ fromJSON(needs.upgrade-window.outputs.transitions) }}
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    # The old release's setup, a seeded session, the upgrade and the checks after it: about the
+    # same work as packaged acceptance, on its own fresh runner.
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: read
+    outputs:
+      accepted: ${{ steps.accepted.outputs.target }}
+    steps:
+      # Disk use on / and /mnt every 5 s, so the step summary shows this job's peak on a hosted runner.
+      - name: Start the disk sampler
+        run: >-
+          nohup bash -c 'while :; do df -B1 --output=used / /mnt 2>/dev/null | tail -n +2 | paste
+          -sd" "; sleep 5; done' >"$RUNNER_TEMP/disk-used.log" 2>&1 &
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.version.outputs.commit }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .node-version
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-manifest
+          path: ${{ runner.temp }}/release
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: mend-cli
+          path: ${{ runner.temp }}/cli
+      # GitHub's Ubuntu 24.04 images refuse unprivileged user namespaces; as packaged-smoke.
+      - if: runner.environment == 'github-hosted'
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      # As packaged-smoke: this arch's platform digest from the manifest, the ID it pulled as,
+      # tagged with the name the upgrade expects.
+      - name: Pull the candidate by digest
+        if: matrix.transition.waived == ''
+        id: images
+        env:
+          REPOSITORY: ghcr.io/${{ github.repository_owner }}/mend
+          MANIFEST: ${{ runner.temp }}/release/release-manifest.json
+          VERSION: ${{ needs.version.outputs.value }}
+        run: |
+          set -euo pipefail
+          case $RUNNER_ARCH in
+            X64) arch=amd64 ;;
+            ARM64) arch=arm64 ;;
+            *) echo "::error::No candidate is built for $RUNNER_ARCH."; exit 1 ;;
+          esac
+          digest=$(node scripts/release-manifest.mjs digest "$MANIFEST" mend "$arch")
+          docker pull "$REPOSITORY@$digest"
+          id=$(docker image inspect "$REPOSITORY@$digest" --format '{{.Id}}')
+          docker tag "$id" "$REPOSITORY:$VERSION"
+          echo "target=$id" >>"$GITHUB_OUTPUT"
+      # A transition the waiver file waives for exactly this candidate is recorded, never run, and
+      # never counted as passed.
+      - name: Record a waived transition
+        if: matrix.transition.waived != ''
+        env:
+          FROM: ${{ matrix.transition.from }}
+          WAIVED: ${{ matrix.transition.waived }}
+          VERSION: ${{ needs.version.outputs.value }}
+        run: |
+          echo "::warning::The upgrade from $FROM to $VERSION is waived: $WAIVED"
+          echo "- $VERSION from $FROM: **waived**: $WAIVED" >>"$GITHUB_STEP_SUMMARY"
+      - name: Check the CLI tarball against the manifest
+        if: matrix.transition.waived == ''
+        id: cli
+        env:
+          MANIFEST: ${{ runner.temp }}/release/release-manifest.json
+        run: |
+          set -euo pipefail
+          tarball=$(node scripts/release-manifest.mjs check-cli "$MANIFEST" "$RUNNER_TEMP/cli")
+          echo "tarball=$tarball" >>"$GITHUB_OUTPUT"
+      - name: Upgrade from the release to the candidate
+        if: matrix.transition.waived == ''
+        env:
+          MEND_UPGRADE_FROM: ${{ matrix.transition.from }}
+          MEND_UPGRADE_DERIVED: ${{ needs.upgrade-window.outputs.derived == 'true' && '1' || '' }}
+          MEND_TEST_UPGRADE_IMAGE:
+            ghcr.io/${{ github.repository_owner }}/mend:${{ needs.version.outputs.value }}
+          MEND_TEST_UPGRADE_IMAGE_ID: ${{ steps.images.outputs.target }}
+          MEND_TEST_UPGRADE_VERSION: ${{ needs.version.outputs.value }}
+          MEND_TEST_CLI_TARBALL: ${{ steps.cli.outputs.tarball }}
+        run: node scripts/check-previous-upgrade.mjs
+      # Reached only when the transition passed, or was waived, on this arch.
+      - name: Record the acceptance
+        id: accepted
+        run: echo "target=ghcr" >>"$GITHUB_OUTPUT"
+      # Telemetry only: it never turns the job's result red, and says so when it has nothing.
+      - name: Report peak disk use
+        if: always()
+        continue-on-error: true
+        run: |
+          df -h / /mnt 2>/dev/null || df -h / || true
+          log=$RUNNER_TEMP/disk-used.log
+          if [ -s "$log" ]; then
+            report=$(awk '$1 ~ /^[0-9]+$/ { n++; if ($1 > r) r = $1; if ($2 ~ /^[0-9]+$/) { two = 1; if ($2 > m) m = $2 } }
+              END { if (!n) { print "Disk use unavailable: no samples"; exit }
+                printf "Sampled peak disk used (every 5 s, %d samples): / %d MiB", n, r / 1048576
+                if (two) printf ", /mnt %d MiB\n", m / 1048576; else print ", /mnt not present" }' \
+              "$log") || report="Disk use unavailable: the samples could not be read"
+          else
+            report="Disk use unavailable: the sampler wrote no samples"
+          fi
+          echo "$report"
+          echo "$report" >>"$GITHUB_STEP_SUMMARY" ||
+            echo "::warning::Could not write the disk report to the step summary"
+
+  # The same upgrade from each release in the window, to the candidate loaded from its archive; the
+  # candidate's upgrade pulls nothing.
+  archive-previous-upgrade:
+    name: Upgrade from a published release to the archives
+    if: >-
+      ${{ !cancelled() && inputs.target == 'archive' && needs.version.result == 'success' &&
+      needs.release-manifest.result == 'success' && needs.upgrade-window.result == 'success' }}
+    needs: [version, release-manifest, upgrade-window]
+    strategy:
+      fail-fast: false
+      matrix:
+        transition: ${{ fromJSON(needs.upgrade-window.outputs.transitions) }}
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    # The old release's setup, a seeded session, the upgrade and the checks after it: about the
+    # same work as packaged acceptance, on its own fresh runner.
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    outputs:
+      accepted: ${{ steps.accepted.outputs.target }}
+    steps:
+      # Disk use on / and /mnt every 5 s, so the step summary shows this job's peak on a hosted runner.
+      - name: Start the disk sampler
+        run: >-
+          nohup bash -c 'while :; do df -B1 --output=used / /mnt 2>/dev/null | tail -n +2 | paste
+          -sd" "; sleep 5; done' >"$RUNNER_TEMP/disk-used.log" 2>&1 &
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.version.outputs.commit }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .node-version
+      - name: Name this runner's arch
+        id: platform
+        run: |
+          case $RUNNER_ARCH in
+            X64) echo "arch=amd64" >>"$GITHUB_OUTPUT" ;;
+            ARM64) echo "arch=arm64" >>"$GITHUB_OUTPUT" ;;
+            *) echo "::error::No candidate is built for $RUNNER_ARCH."; exit 1 ;;
+          esac
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-manifest
+          path: ${{ runner.temp }}/release
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: archive-mend--${{ steps.platform.outputs.arch }}
+          path: ${{ runner.temp }}/archives/mend
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: mend-cli
+          path: ${{ runner.temp }}/cli
+      - if: runner.environment == 'github-hosted'
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      # As archive-acceptance: checked against the manifest before Docker sees it, loaded, and only
+      # the loaded ID tagged with the name the upgrade expects.
+      - name: Load the candidate from its archive
+        if: matrix.transition.waived == ''
+        id: images
+        env:
+          REPOSITORY: ghcr.io/${{ github.repository_owner }}/mend
+          MANIFEST: ${{ runner.temp }}/release/release-manifest.json
+          ARCH: ${{ steps.platform.outputs.arch }}
+          VERSION: ${{ needs.version.outputs.value }}
+        run: |
+          set -euo pipefail
+          archive=$RUNNER_TEMP/archives/mend/mend.tar
+          ids=$(node scripts/release-manifest.mjs check-archive "$MANIFEST" mend "$ARCH" "$archive")
+          docker load --input "$archive"
+          id=
+          for candidate in $ids; do
+            if [[ $(docker image inspect "$candidate" --format '{{.Id}}' 2>/dev/null) == "$candidate" ]]; then
+              id=$candidate
+              break
+            fi
+          done
+          if [[ -z $id ]]; then
+            echo "::error::mend did not load as its config digest or its manifest digest ($ids)."
+            exit 1
+          fi
+          docker tag "$id" "$REPOSITORY:$VERSION"
+          echo "target=$id" >>"$GITHUB_OUTPUT"
+      # The candidate's offline upgrade pulls nothing: the images it starts beside Mend, by the tags
+      # it names, as archive-acceptance preloads them. The old release's own are pulled by digest
+      # in the scenario and tagged over these.
+      - name: Preload the images the candidate runs beside Mend
+        if: matrix.transition.waived == ''
+        env:
+          REPOSITORY: ghcr.io/${{ github.repository_owner }}/mend
+          VERSION: ${{ needs.version.outputs.value }}
+        run: |
+          set -euo pipefail
+          images=(postgres:17-alpine dxflrs/garage:v2.4.1 nginx:1.29-alpine registry:3.1)
+          images+=("$(docker image inspect "$REPOSITORY:$VERSION" \
+            --format '{{index .Config.Labels "dev.sealant.mend.network-guard-image"}}')")
+          for image in "${images[@]}"; do docker pull "$image"; done
+      # A transition the waiver file waives for exactly this candidate is recorded, never run, and
+      # never counted as passed.
+      - name: Record a waived transition
+        if: matrix.transition.waived != ''
+        env:
+          FROM: ${{ matrix.transition.from }}
+          WAIVED: ${{ matrix.transition.waived }}
+          VERSION: ${{ needs.version.outputs.value }}
+        run: |
+          echo "::warning::The upgrade from $FROM to $VERSION is waived: $WAIVED"
+          echo "- $VERSION from $FROM: **waived**: $WAIVED" >>"$GITHUB_STEP_SUMMARY"
+      - name: Check the CLI tarball against the manifest
+        if: matrix.transition.waived == ''
+        id: cli
+        env:
+          MANIFEST: ${{ runner.temp }}/release/release-manifest.json
+        run: |
+          set -euo pipefail
+          tarball=$(node scripts/release-manifest.mjs check-cli "$MANIFEST" "$RUNNER_TEMP/cli")
+          echo "tarball=$tarball" >>"$GITHUB_OUTPUT"
+      - name: Upgrade from the release to the candidate
+        if: matrix.transition.waived == ''
+        env:
+          MEND_UPGRADE_FROM: ${{ matrix.transition.from }}
+          MEND_UPGRADE_DERIVED: ${{ needs.upgrade-window.outputs.derived == 'true' && '1' || '' }}
+          MEND_TEST_UPGRADE_IMAGE:
+            ghcr.io/${{ github.repository_owner }}/mend:${{ needs.version.outputs.value }}
+          MEND_TEST_UPGRADE_IMAGE_ID: ${{ steps.images.outputs.target }}
+          MEND_TEST_UPGRADE_VERSION: ${{ needs.version.outputs.value }}
+          MEND_TEST_CLI_TARBALL: ${{ steps.cli.outputs.tarball }}
+          MEND_TEST_OFFLINE: "1"
+        run: node scripts/check-previous-upgrade.mjs
+      # Reached only when the transition passed, or was waived, on this arch.
       - name: Record the acceptance
         id: accepted
         run: echo "target=archive" >>"$GITHUB_OUTPUT"

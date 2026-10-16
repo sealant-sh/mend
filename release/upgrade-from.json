@@ -1,0 +1,52 @@
+{
+  "$comment": "The releases a candidate is upgraded from in image.yml's previous-upgrade jobs (docs/operations/next-channel.md, 'The upgrade window'). Every value was read once from the public artifacts and is checked again on every run; nothing here is fetched by tag alone. Each release's PR adds the release before it.",
+  "releases": {
+    "0.35.1": {
+      "publishedAt": "2026-10-01T16:50:13.151Z",
+      "npm": {
+        "integrity": "sha512-DzMC3umzTGThcel7eZZJtjTk3o2GlnGOtG9LtZsqF7fE1ll3zQ5SQE3CVEVhPzGdlewlW0LVjD1C056VKmCUdg==",
+        "lockfile": "release/upgrade-from/0.35.1/package-lock.json"
+      },
+      "images": {
+        "mend": "sha256:c3688c780c937236a22d6981a244bd948c56f9ee5ed488c1d7a23cfa4e8a544d",
+        "mend-api": "sha256:43bce0714aba5434cff608038db4278c931ac852baa83de757f767806f6b2b91",
+        "mend-web": "sha256:0803c679e78a27ce65f7884341f505b32845bfb862cf467f35eb54763b52c977"
+      },
+      "assets": {
+        "compose.v2.yaml": "7955a3598ea3a37b089c348e06ba503a579015ca25b42618f6cad424eebc62a3",
+        "setup-contract.v2.json": "3d63d9c072214ce50a86a2c3187c1cf0942c6c816516814e9fd0a8372384f636",
+        "install.sh": "23b993bdc763db1fdefe6253d42620e02dfc4d44403beba7798f67bb53a8a3e3",
+        "postgres-init.sh": "a590267307a0c07f652641f6e7f788237e1132d40c95770150391945c00178c4"
+      },
+      "support": {
+        "postgres:17-alpine": "docker.io/library/postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24",
+        "dxflrs/garage:v2.4.1": "docker.io/dxflrs/garage@sha256:9c96caa2612d3411acc5b0e6701fb238dbfba33e533a6d7d3d811a4b12d0d020"
+      }
+    },
+    "0.36.0-next.792": {
+      "publishedAt": "2026-10-12T00:06:34.137Z",
+      "npm": {
+        "integrity": "sha512-usA90zwKBdtfIZ69vm755GJBHuAt0ImzHsxfr49rMFRXJUpBDk6v/6SyBOpx4rwca+3IFd0swA0bJS9YkBvmLw==",
+        "lockfile": "release/upgrade-from/0.36.0-next.792/package-lock.json"
+      },
+      "images": {
+        "mend": "sha256:fead527e7cc9d2a4d1cdcb968518b303e76b8e806100a0adcf235fd335c68c64",
+        "mend-api": "sha256:b8291d547b27aa2d2f6674328f51d87ce3ea113119103047fad89d4f7407d225",
+        "mend-web": "sha256:703276ec805c1dc459a4a83215692d67f767f5ff5fb85e00e1217b8cfd752201"
+      },
+      "assets": {
+        "compose.v2.yaml": "1ec49876f96b374d816634fbc3ff2b0cc35e887baa88d3385b6eacb2f2b48093",
+        "setup-contract.v2.json": "239b721e31a047d1422753fc0cb52a327202cc8a3bfc737cfc2bdd596f1e4585",
+        "install.sh": "88d7418484480eff986ccc78e76dab714fd09b956e1d51feb60f0c442f04de60",
+        "postgres-init.sh": "a590267307a0c07f652641f6e7f788237e1132d40c95770150391945c00178c4"
+      },
+      "support": {
+        "postgres:17-alpine": "docker.io/library/postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24",
+        "dxflrs/garage:v2.4.1": "docker.io/dxflrs/garage@sha256:9c96caa2612d3411acc5b0e6701fb238dbfba33e533a6d7d3d811a4b12d0d020",
+        "nginx:1.29-alpine": "docker.io/library/nginx@sha256:5616878291a2eed594aee8db4dade5878cf7edcb475e59193904b198d9b830de",
+        "registry:3.1": "docker.io/library/registry@sha256:ddf754342cfc8acc51a56d5d0ab6af06826461864460636d8bd5c546dab2a7b8",
+        "busybox:1.37@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e": "docker.io/library/busybox@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e"
+      }
+    }
+  }
+}

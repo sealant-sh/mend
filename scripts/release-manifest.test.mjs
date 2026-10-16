@@ -380,6 +380,8 @@ test("with ghcr, the jobs are today's plus the CLI and the manifest; archive job
     "cli",
     "release-manifest",
     "packaged-smoke",
+    "upgrade-window",
+    "previous-upgrade",
   ]);
   assert.deepEqual(jobsFor("archive"), [
     "version",
@@ -388,6 +390,8 @@ test("with ghcr, the jobs are today's plus the CLI and the manifest; archive job
     "cli",
     "release-manifest",
     "archive-acceptance",
+    "upgrade-window",
+    "archive-previous-upgrade",
   ]);
   // Today's steps, in today's order, with additions only after them or between them.
   const keeps = (job, before) => {
@@ -1012,6 +1016,12 @@ test("on each target, GitHub runs that target's acceptance though the other targ
   assert.equal(ghcr["archive-acceptance"], "skipped");
   for (const name of ["archive-build", "archive-merge"]) assert.equal(ghcr[name], "skipped", name);
   for (const run of [archive, ghcr]) assert.equal(run["release-manifest"], "success");
+  // Each target's upgrade from a published release runs too, past the other target's skips.
+  assert.equal(archive["archive-previous-upgrade"], "success");
+  assert.equal(archive["previous-upgrade"], "skipped");
+  assert.equal(ghcr["previous-upgrade"], "success");
+  assert.equal(ghcr["archive-previous-upgrade"], "skipped");
+  for (const run of [archive, ghcr]) assert.equal(run["upgrade-window"], "success");
 });
 
 test("a tag push runs finalize, npm and promotion; a dry-run dispatch runs acceptance and none of them", () => {
@@ -1037,6 +1047,7 @@ const SKIPPED_TOGETHER = new Map([
   ["image.yml archive-build", "same target as its ancestors; version skips only on a fork"],
   ["image.yml archive-merge", "same target as its ancestors; version skips only on a fork"],
   ["image.yml cli", "version skips only on a fork"],
+  ["image.yml upgrade-window", "version skips only on a fork"],
   // Every publishing job runs on a tag push, and none on a dispatch.
   ["release-cli.yml npm", "its ancestors carry the same push condition"],
   ["release-cli.yml promote-images", "its ancestors carry the same push condition"],

@@ -875,6 +875,9 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .node-version
       - name: Extract this version's changelog section
         run: |
           VERSION="${GITHUB_REF_NAME#cli-}"
@@ -914,6 +917,10 @@ jobs:
           - \`ghcr.io/sealant-sh/mend:$VERSION\` — complete application bundle; Postgres runs separately
           - Versioned Docker setup assets attached below; \`mend server setup\` manages them
           NOTES
+          # A stable release says which upgrade from a stable release a reviewed waiver
+          # (release/upgrade-waivers.json at this commit) stood in for; image.yml read the same file.
+          waived=$(node scripts/upgrade-window.mjs notes "$VERSION")
+          if [[ -n $waived ]]; then printf '\n%s\n' "$waived" >> release-notes.md; fi
       - name: Create the release
         env:
           GH_TOKEN: ${{ github.token }}

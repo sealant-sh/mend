@@ -363,15 +363,18 @@ The verify toolkit can capture evidence without making an LLM verdict a prerequi
 
 For 0.36, the owner's 2026-10-10 decision is to run the fresh-install check on stock Ubuntu 24.04
 and repeat it on the release candidate. The previous 0.35.1 upgrade VM test was dropped because
-there were no external Mend installations to support. That is an accepted coverage gap for this
-release, not evidence that historical upgrades work. The VM and client runs remain distinct from CI;
-this audit follow-up has not executed them.
+there were no external Mend installations to support. The VM and client runs remain distinct from
+CI; this audit follow-up has not executed them.
 
-When compatibility with an earlier supported release becomes a release requirement, add a separate
-lane using that release's actual artifacts. Seed durable projects, sessions and checkpoints, upgrade
-to the exact candidate artifacts, then check old data, authentication, a new session, review and
-restart recovery. Rebuilding the candidate with an older version stamp does not supply this
-evidence.
+That 0.35.1 gap is closed in CI by image.yml's `previous-upgrade` and `archive-previous-upgrade`
+jobs ([the upgrade window](next-channel.md#the-upgrade-window); the job is
+`scripts/check-previous-upgrade.mjs`). Each release a candidate may be upgraded from is installed
+from its actual artifacts, pinned in `release/upgrade-from.json`: its npm CLI, its ghcr image by
+digest, its GitHub release setup assets. A project, a session with its checkpoints and a Review
+comment are seeded on it; the candidate's CLI upgrades it to the exact candidate image; then old
+data, authentication, a new session, a restart and the migration level are checked. A dry run's
+candidate is stamped `0.0.0-*` and cannot be upgraded to from a release, so only a release candidate
+proves the upgrade step itself.
 
 `REL-01` is partially addressed: the existing packaged smoke already labels its same-source
 version-transition evidence in its script header and final output. The CI step now uses the same
