@@ -25,11 +25,14 @@ then packaged acceptance.
   reads without declaring them (the input audit and the build input probe guard those), the runner's
   own git, Postgres, Docker and SSH versions that the 14 uncached suites exercise, and links that
   are not package dependencies.
-- The merge group stays the trusted cache writer whichever graph it runs.
-- The nightly full run (02:23 UTC, `--force`) is the backstop. `nightly-watch.yml` keeps one open
-  `nightly-failure` issue: it comments on it, or opens it, when a scheduled run does not succeed,
-  and when no scheduled run on main has succeeded for 30 hours. GitHub started the 2026-10-15
-  nightly five hours late.
+- The merge group was the trusted cache writer whichever graph it ran. Since 2026-10-16 the box's
+  turbo cache refuses every write: a merge-group job on a box VM that ran a pull request's code
+  can't vouch for what it writes. Reads stay on.
+- The nightly full run (02:23 UTC, `--force`) is the backstop, with the nightly build input probe.
+  `nightly-watch.yml`, on a GitHub-hosted runner so that a box outage can't silence it, keeps one
+  open `nightly-failure` issue: it comments on it, or opens it, when a scheduled run of either does
+  not succeed, and when either has had no successful scheduled run on main for 30 hours. GitHub
+  started the 2026-10-15 nightly five hours late, and the 2026-10-16 probe 4.7 hours late.
 
 Replayed over the 30 commits on `main` before this change, 13 would have run affected and 17 the
 full graph: the CI pull requests touched `.github/`, `scripts/` or root docs, and #1006 and #991

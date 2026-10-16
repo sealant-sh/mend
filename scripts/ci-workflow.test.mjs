@@ -479,14 +479,14 @@ test("a failed or missing nightly opens or updates one issue, with nothing but i
     readFileSync(new URL("../.github/workflows/nightly-watch.yml", import.meta.url), "utf8"),
   );
   assert.deepEqual(watch.on.workflow_run, {
-    workflows: ["CI"],
+    workflows: ["CI", "Build input probe"],
     types: ["completed"],
     branches: ["main"],
   });
   assert.equal(watch.on.schedule.length, 1);
   assert.deepEqual(watch.permissions, { actions: "read", issues: "write" });
   const job = watch.jobs.alert;
-  assert.deepEqual(job["runs-on"], ["self-hosted", "box", "linux", "x64"]);
+  assert.equal(job["runs-on"], "ubuntu-24.04", "a box outage must not silence the watch");
   assert.equal(job.permissions, undefined, "the job inherits the workflow's two permissions");
   assert.ok(
     !job.steps.some((step) => step.uses?.startsWith("actions/checkout@")),
@@ -495,7 +495,8 @@ test("a failed or missing nightly opens or updates one issue, with nothing but i
   assert.match(job.if, /github\.event\.workflow_run\.event == 'schedule'/);
   assert.match(job.if, /github\.event\.workflow_run\.conclusion != 'success'/);
   const run = job.steps.map((step) => step.run ?? "").join("\n");
-  assert.match(run, /--workflow ci\.yml --event schedule --branch main --status success/);
+  assert.match(run, /for workflow in ci\.yml build-input-probe\.yml; do/);
+  assert.match(run, /--workflow "\$workflow" --event schedule --branch main --status success/);
   assert.match(run, /30 \* 3600/);
   assert.match(run, /gh issue list --label nightly-failure --state open/);
   assert.match(run, /gh issue comment "\$open"/);
@@ -516,7 +517,10 @@ test("the nightly watch comments on its open issue, opens one when none is open,
 printf '%s\\n' "$*" >> "${log}"
 case "$1 $2" in
   "api repos/"*) echo "test-engines (failure)" ;;
-  "run list") echo "$FAKE_LAST_SUCCESS" ;;
+  "run list") case "$*" in
+    *ci.yml*) echo "$FAKE_LAST_SUCCESS" ;;
+    *build-input-probe.yml*) echo "\${FAKE_PROBE_LAST_SUCCESS-$FAKE_LAST_SUCCESS}" ;;
+  esac ;;
   "issue list") echo "$FAKE_OPEN_ISSUE" ;;
 esac
 `,
@@ -534,25 +538,66 @@ esac
     const failed = {
       EVENT_NAME: "workflow_run",
       RUN_ID: "1",
+      RUN_NAME: "Build input probe",
       RUN_URL: "u",
       RUN_CONCLUSION: "failure",
       RUN_SHA: "s",
     };
     assert.match(run({ ...failed, FAKE_OPEN_ISSUE: "" }), /^issue create --label nightly-failure/m);
     const comment = run({ ...failed, FAKE_OPEN_ISSUE: "42" });
-    assert.match(comment, /^issue comment 42 --body .*test-engines \(failure\)/m);
+    assert.match(
+      comment,
+      /^issue comment 42 --body The nightly Build input probe run .*test-engines \(failure\)/m,
+    );
     assert.doesNotMatch(comment, /issue create/);
     const hoursAgo = (hours) => new Date(Date.now() - hours * 3600_000).toISOString();
     assert.doesNotMatch(run({ EVENT_NAME: "schedule", FAKE_LAST_SUCCESS: hoursAgo(1) }), /issue/);
     assert.match(
       run({ EVENT_NAME: "schedule", FAKE_LAST_SUCCESS: hoursAgo(31), FAKE_OPEN_ISSUE: "" }),
-      /^issue create --label nightly-failure .*No scheduled CI run on main has succeeded in 30 hours/m,
+      /^issue create --label nightly-failure .*No scheduled ci\.yml run on main has succeeded in 30 hours/m,
     );
+    const probeStale = run({
+      EVENT_NAME: "schedule",
+      FAKE_LAST_SUCCESS: hoursAgo(1),
+      FAKE_PROBE_LAST_SUCCESS: hoursAgo(31),
+      FAKE_OPEN_ISSUE: "",
+    });
+    assert.match(
+      probeStale,
+      /No scheduled build-input-probe\.yml run on main has succeeded in 30 hours/,
+    );
+    assert.doesNotMatch(probeStale, /No scheduled ci\.yml run/);
     assert.match(
       run({ EVENT_NAME: "schedule", FAKE_LAST_SUCCESS: "", FAKE_OPEN_ISSUE: "" }),
       /last success: none/,
     );
   } finally {
     rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+// Box runner VMs keep state between jobs, so a job that publishes, or holds a token that writes to
+// the repository, its packages or a registry, runs on a GitHub-hosted runner: a fresh VM.
+test("jobs that publish or hold a write token never ask for a box runner", () => {
+  for (const file of [
+    "image.yml",
+    "release-cli.yml",
+    "release-acceptance.yml",
+    "version.yml",
+    "preview.yml",
+    "publish-vscode.yml",
+    "t3code-drift.yml",
+    "nightly-watch.yml",
+  ]) {
+    const { jobs } = parse(
+      readFileSync(new URL(`../.github/workflows/${file}`, import.meta.url), "utf8"),
+    );
+    for (const [name, job] of Object.entries(jobs)) {
+      // runs-on, matrix rows and the scripts that build matrices, without the YAML comments.
+      const text = JSON.stringify(job);
+      assert.doesNotMatch(text, /self-hosted|"box"/, `${file} ${name} asks for a box runner`);
+      if (job.uses) continue;
+      assert.ok(job["runs-on"], `${file} ${name} names its runner`);
+    }
   }
 });

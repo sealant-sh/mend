@@ -186,9 +186,11 @@ uniform file-cap enforcement, with no cache or affected-selection change in that
 Box runner administrators provide `npm_config_store_dir=/opt/pnpm-store`. The workflow leaves that
 setting intact and uses `pnpm install --frozen-lockfile`. The store survives jobs and is cleared by
 the weekly VM snapshot reset. The first job after a reset fills it; later jobs link from local disk.
-Fixed box jobs no longer request setup-node's GitHub pnpm cache. The mixed packaged-acceptance
-matrix enables that cache only when `runner.environment` is `github-hosted`, preserving it for
-`ubuntu-24.04-arm`. Other GitHub-hosted jobs are unchanged.
+Fixed box jobs no longer request setup-node's GitHub pnpm cache. Packaged acceptance, like every job
+that publishes or holds a write token, runs on GitHub-hosted runners since 2026-10-16 and requests
+no pnpm cache: other jobs, running unowned code, write that cache. Box VMs keep state between jobs,
+so code from an earlier pull request could change what a later job on the same VM builds, accepts or
+pushes.
 
 This changes dependency-store restoration only. Turbo caching and affected-only test selection
 remain held for the owner's decision. Existing integrity checking and frozen lockfiles remain.

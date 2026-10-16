@@ -15,14 +15,16 @@ on:
         required: false
         type: string
 
-# Only the jobs that push hold packages: write.
+# Only the jobs that push hold packages: write. Every job runs on a GitHub-hosted runner, a fresh
+# VM: the box's runner VMs keep state between jobs, so code from an earlier pull request could
+# change what these jobs build, accept or push.
 permissions:
   contents: read
 
 jobs:
   version:
     if: github.repository == 'sealant-sh/mend'
-    runs-on: [self-hosted, box, linux, x64]
+    runs-on: ubuntu-24.04
     outputs:
       value: ${{ steps.resolve.outputs.version }}
       before: ${{ steps.resolve.outputs.before }}
@@ -104,7 +106,7 @@ jobs:
           - { id: mend-api, name: mend-api, dockerfile: apps/api/Dockerfile, baseline: false }
           - { id: mend-web, name: mend-web, dockerfile: apps/web/Dockerfile, baseline: false }
         platform:
-          - { arch: amd64, runner: [self-hosted, box, linux, x64] }
+          - { arch: amd64, runner: ubuntu-24.04 }
           - { arch: arm64, runner: ubuntu-24.04-arm }
     runs-on: ${{ matrix.platform.runner }}
     steps:
@@ -152,7 +154,7 @@ jobs:
     permissions:
       contents: read
       packages: write
-    runs-on: [self-hosted, box, linux, x64]
+    runs-on: ubuntu-24.04
     needs: [version, build]
     strategy:
       matrix:
@@ -198,7 +200,7 @@ jobs:
     needs: [version, merge]
     strategy:
       matrix:
-        runner: [[self-hosted, box, linux, x64], ubuntu-24.04-arm]
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
     runs-on: ${{ matrix.runner }}
     # Usually ~18 min; v0.35.0's amd64 run took 27.6 (its Ubuntu dotfiles scenario 760 s against
     # 67 s on arm64), 2.4 min inside the old 30. A cold workspace image build on a slow mirror is
@@ -220,12 +222,11 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .node-version
-          # Box runners keep /opt/pnpm-store; hosted arm64 runners need the remote cache.
-          cache: ${{ runner.environment == 'github-hosted' && 'pnpm' || '' }}
+          # No pnpm store cache: other jobs, running unowned code, write that cache.
       - run: pnpm install --frozen-lockfile --ignore-scripts
-      # GitHub's ubuntu-24.04-arm image keeps Ubuntu's default, which refuses unprivileged user
-      # namespaces, so every session fails to launch. Box runners already allow them. Allow them
-      # here the way an operator does on a stock Ubuntu host.
+      # GitHub's Ubuntu 24.04 images keep Ubuntu's default, which refuses unprivileged user
+      # namespaces, so every session fails to launch. Allow them here the way an operator does on a
+      # stock Ubuntu host.
       - if: runner.environment == 'github-hosted'
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       # Both image stamps are built from the resolved candidate commit. This transition
