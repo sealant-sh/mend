@@ -181,12 +181,38 @@ live**, job by job.
 
 ### When npm serves other bytes
 
-If the npm job fails with `INCIDENT`, the version on npm is not the tarball the run accepted. Do not
-republish over it, and do not unpublish: deprecate the version
-(`npm deprecate @sealant/mend@<version> "Withdrawn: published bytes differ from the accepted tarball. Use <next version>."`),
-for a next build move `next` back as in [Withdraw a bad prerelease](#withdraw-a-bad-prerelease), and
-cut a new version. Nothing after the npm job runs: the GitHub release is already up, `latest` has
-not moved.
+If the npm job fails with `INCIDENT`, the version on npm is not the tarball the run accepted.
+
+What has moved: `npm publish` already pointed the channel's npm dist-tag at the incident version,
+`latest` for a stable release, `next` for a next build. Installs pick it up until you move it back.
+The GitHub release and its assets are up. What has not moved: GHCR's `:latest` and GitHub's latest
+release, because `promote-images` runs after the npm job and did not run.
+
+With an npm login that has 2FA, from an empty directory:
+
+1. Check that the dist-tag still names the incident version, so you do not move it off a newer good
+   release published since:
+
+   ```sh
+   npm view @sealant/mend dist-tags --json
+   ```
+
+   If `latest` (stable) or `next` (next build) names another version, leave it and go to step 3.
+
+2. Point it back at the last release whose integrity checked:
+
+   ```sh
+   npm dist-tag add @sealant/mend@<verified prior version> <latest or next>
+   ```
+
+3. Deprecate the incident version, and cut a new one:
+
+   ```sh
+   npm deprecate @sealant/mend@<version> "Withdrawn: published bytes differ from the accepted tarball. Use <new version>."
+   ```
+
+Never republish over the incident version, and never unpublish it. Edit its GitHub release notes to
+name the version that replaces it.
 
 ## Cut a Mend next build
 

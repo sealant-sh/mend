@@ -55,6 +55,12 @@ jobs:
                 exit 1
               fi
               version=${GITHUB_REF_NAME#v}
+              # The dry-run version is a dispatch's alone: as a tag it would build and push to ghcr
+              # from any commit the tag names.
+              if [[ $version == *dryrun* ]]; then
+                echo "::error::$GITHUB_REF_NAME is a dry-run version; a dry run is a dispatch, never a tag."
+                exit 1
+              fi
               target=ghcr
               ;;
             workflow_dispatch)
@@ -67,6 +73,13 @@ jobs:
               ;;
             *)
               echo "::error::$GITHUB_EVENT_NAME does not run a release."
+              exit 1
+              ;;
+          esac
+          case $GITHUB_EVENT_NAME/$target in
+            push/ghcr | workflow_dispatch/archive) ;;
+            *)
+              echo "::error::A $GITHUB_EVENT_NAME never builds for $target."
               exit 1
               ;;
           esac
@@ -88,9 +101,22 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .node-version
-      - run: node scripts/check-release-pins.mjs "v$VERSION"
+      # Only a dispatched dry run, building to archives, skips the release-only checks.
+      - name: Check the pins
         env:
           VERSION: ${{ needs.release.outputs.version }}
+          TARGET: ${{ needs.release.outputs.target }}
+        run: |
+          set -euo pipefail
+          flags=()
+          if [[ $GITHUB_EVENT_NAME == workflow_dispatch ]]; then
+            if [[ $TARGET != archive ]]; then
+              echo "::error::A dispatch builds to archives only, not $TARGET."
+              exit 1
+            fi
+            flags+=(--dry-run)
+          fi
+          node scripts/check-release-pins.mjs "${flags[@]}" "v$VERSION"
 
   # Images, the one CLI tarball, the release manifest and packaged acceptance, all in image.yml. A
   # dry run builds with target archive: only image.yml's archive jobs run, and none of them holds

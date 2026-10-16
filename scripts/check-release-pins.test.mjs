@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 import {
   isDryRunVersion,
@@ -234,4 +235,101 @@ test("only release-cli.yml's derived dry-run version skips the release-only chec
     "0.0.0-acceptance.1.2",
   ])
     assert.ok(!isDryRunVersion(version), version);
+});
+
+/**
+ * The real script, copied beside a stand-in sealant-pins.mjs (good pins, no network) into a git
+ * repository whose HEAD is not on origin/main. `git` is logged, then run for real.
+ */
+const offMain = (t) => {
+  const directory = mkdtempSync(path.join(tmpdir(), "release-pins-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  for (const file of ["check-release-pins.mjs", "next-version.mjs"])
+    copyFileSync(path.join(here, file), path.join(directory, file));
+  const semver = readFileSync(path.join(here, "sealant-pins.mjs"), "utf8").match(
+    /export const SEMVER =\s*[^;]+;/,
+  )[0];
+  writeFileSync(
+    path.join(directory, "sealant-pins.mjs"),
+    `${semver}
+export const readRepositoryPins = async () => ({ sealantVersion: "1.0.0" });
+export const readRepositoryPinFiles = async () => ({});
+export const pinProblems = () => [];
+export const assetProblems = () => [];
+export const digestProblems = async () => [];
+`,
+  );
+  mkdirSync(path.join(directory, "apps/cli"), { recursive: true });
+  writeFileSync(path.join(directory, "apps/cli/package.json"), '{"version":"0.37.0"}');
+  writeFileSync(path.join(directory, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
+  mkdirSync(path.join(directory, "deploy/helm/mend"), { recursive: true });
+  writeFileSync(
+    path.join(directory, "deploy/helm/mend/Chart.yaml"),
+    "version: 0.37.0\nappVersion: 0.37.0\n",
+  );
+  const real = execFileSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).trim();
+  const gitEnv = {
+    GIT_AUTHOR_NAME: "t",
+    GIT_AUTHOR_EMAIL: "t@example.invalid",
+    GIT_COMMITTER_NAME: "t",
+    GIT_COMMITTER_EMAIL: "t@example.invalid",
+    GIT_CONFIG_GLOBAL: "/dev/null",
+    GIT_CONFIG_NOSYSTEM: "1",
+  };
+  const git = (...args) =>
+    execFileSync(real, args, { cwd: directory, env: { ...process.env, ...gitEnv } });
+  git("init", "-q", "-b", "main");
+  git("commit", "-q", "--allow-empty", "-m", "main");
+  git("update-ref", "refs/remotes/origin/main", "HEAD");
+  git("checkout", "-q", "--orphan", "elsewhere");
+  git("commit", "-q", "--allow-empty", "-m", "off main");
+  const bin = path.join(directory, ".bin");
+  mkdirSync(bin);
+  const log = path.join(directory, ".git-calls");
+  writeFileSync(log, "");
+  writeFileSync(
+    path.join(bin, "git"),
+    `#!/bin/sh\necho "$*" >>${JSON.stringify(log)}\nexec ${JSON.stringify(real)} "$@"\n`,
+    { mode: 0o755 },
+  );
+  return (...args) => {
+    writeFileSync(log, "");
+    const result = spawnSync(process.execPath, ["check-release-pins.mjs", ...args], {
+      cwd: directory,
+      encoding: "utf8",
+      env: { ...process.env, ...gitEnv, PATH: `${bin}:${process.env.PATH}` },
+    });
+    return { ...result, git: readFileSync(log, "utf8").split("\n").filter(Boolean) };
+  };
+};
+
+test("a dry-run-shaped tag gets every release check; only --dry-run relaxes them", (t) => {
+  const pins = offMain(t);
+  // The audit's bypass: a v0.0.0-dryrun tag on an off-main commit.
+  const tagged = pins("v0.0.0-dryrun.9.1");
+  assert.equal(tagged.status, 1, tagged.stdout);
+  assert.match(tagged.stderr, /this commit is not on origin\/main/);
+  assert.match(tagged.stderr, /A prerelease is a next build/);
+  assert.ok(tagged.git.includes("merge-base --is-ancestor HEAD origin/main"));
+  // The dispatch's own dry run: the every-release pin checks only, nothing that reads history.
+  const dry = pins("--dry-run", "v0.0.0-dryrun.9.1");
+  assert.equal(dry.status, 0, dry.stderr);
+  assert.match(dry.stdout, /pins Sealant 1\.0\.0 everywhere/);
+  assert.deepEqual(dry.git, []);
+  // --dry-run checks a dry-run version only.
+  const flagged = pins("--dry-run", "v0.37.0");
+  assert.equal(flagged.status, 1);
+  assert.match(flagged.stderr, /--dry-run checks a 0\.0\.0-dryrun/);
+  for (const args of [["--dry-run"], ["v0.37.0", "--dry-run"], ["--dry-run", "--dry-run", "v1"]])
+    assert.equal(pins(...args).status, 2, args.join(" "));
+});
+
+test("an ordinary release on an off-main commit is refused", (t) => {
+  const pins = offMain(t);
+  for (const tag of ["v0.37.0", "v0.0.0-other.9.1"]) {
+    const result = pins(tag);
+    assert.equal(result.status, 1, tag);
+    assert.match(result.stderr, /this commit is not on origin\/main/, tag);
+  }
 });

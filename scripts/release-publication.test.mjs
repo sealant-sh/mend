@@ -419,7 +419,7 @@ test("stable latest promotion waits for npm and the GitHub release", () => {
 test("nothing builds or publishes before the pins are checked", () => {
   const pins = job("pins");
   assert.match(pins, /fetch-depth: 0/);
-  assert.match(pins, /node scripts\/check-release-pins\.mjs "v\$VERSION"/);
+  assert.match(pins, /node scripts\/check-release-pins\.mjs "\$\{flags\[@\]\}" "v\$VERSION"/);
   assert.match(pins, /VERSION: \$\{\{ needs\.release\.outputs\.version \}\}/);
   // The only build is image.yml's, the CLI tarball included (its cli job): it needs the gate.
   assert.ok(dependencies("images").includes("pins"), "images must wait for checked pins");
@@ -832,4 +832,79 @@ test("latest moves only to the index digests this run's manifest records, all ch
   const next = promote(t, { version: "1.2.4-next.3", tags: current });
   assert.equal(next.status, 0);
   assert.deepEqual(next.calls, []);
+});
+
+test("a dry-run-shaped tag is refused before any build; a push only ever builds to ghcr", () => {
+  // The audit's bypass: a pushed v0.0.0-dryrun tag built for ghcr, and pins relaxed by its shape.
+  for (const name of ["v0.0.0-dryrun.9.1", "v0.37.0-dryrun.1", "v1.0.0-next.1-dryrun"]) {
+    const pushed = resolve({
+      GITHUB_EVENT_NAME: "push",
+      GITHUB_REF: `refs/tags/${name}`,
+      GITHUB_REF_NAME: name,
+    });
+    assert.equal(pushed.status, 1, name);
+    assert.match(pushed.stderr, /is a dry-run version; a dry run is a dispatch, never a tag/);
+    assert.equal(pushed.version, undefined);
+    assert.equal(pushed.target, undefined);
+  }
+  // Every accepted resolution pairs a push with ghcr and a dispatch with archive, nothing else.
+  for (const [environment, target] of [
+    [
+      { GITHUB_EVENT_NAME: "push", GITHUB_REF: "refs/tags/v0.37.0", GITHUB_REF_NAME: "v0.37.0" },
+      "ghcr",
+    ],
+    [
+      {
+        GITHUB_EVENT_NAME: "push",
+        GITHUB_REF: "refs/tags/v0.37.0-next.4",
+        GITHUB_REF_NAME: "v0.37.0-next.4",
+      },
+      "ghcr",
+    ],
+    [
+      { GITHUB_EVENT_NAME: "workflow_dispatch", GITHUB_REF: "refs/tags/v0.37.0", DRY_RUN: "true" },
+      "archive",
+    ],
+    [
+      { GITHUB_EVENT_NAME: "workflow_dispatch", GITHUB_REF: "refs/heads/x", DRY_RUN: "true" },
+      "archive",
+    ],
+  ])
+    assert.equal(resolve(environment).target, target, JSON.stringify(environment));
+  assert.match(resolveStep.run, /push\/ghcr \| workflow_dispatch\/archive\) ;;/);
+});
+
+test("pins gets --dry-run only on a dispatch building to archives", (t) => {
+  const step = releaseJobs.pins.steps.find((entry) => entry.name === "Check the pins");
+  assert.deepEqual(step.env, {
+    VERSION: "${{ needs.release.outputs.version }}",
+    TARGET: "${{ needs.release.outputs.target }}",
+  });
+  const directory = mkdtempSync(path.join(tmpdir(), "release-pins-step-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const calls = path.join(directory, "calls");
+  // A stand-in node: the step's argv is what matters; the script itself has its own tests.
+  writeFileSync(
+    path.join(directory, "node"),
+    `#!/bin/sh\nprintf '%s\\n' "$*" >>${JSON.stringify(calls)}\n`,
+    { mode: 0o755 },
+  );
+  const run = (GITHUB_EVENT_NAME, TARGET) => {
+    writeFileSync(calls, "");
+    const status = spawnSync("bash", ["--noprofile", "--norc", "-e", "-c", step.run], {
+      env: { PATH: `${directory}:/usr/bin:/bin`, GITHUB_EVENT_NAME, TARGET, VERSION: "1.2.3" },
+    }).status;
+    return { status, argv: readFileSync(calls, "utf8").trim() };
+  };
+  assert.deepEqual(run("push", "ghcr"), {
+    status: 0,
+    argv: "scripts/check-release-pins.mjs v1.2.3",
+  });
+  assert.deepEqual(run("workflow_dispatch", "archive"), {
+    status: 0,
+    argv: "scripts/check-release-pins.mjs --dry-run v1.2.3",
+  });
+  assert.deepEqual(run("workflow_dispatch", "ghcr"), { status: 1, argv: "" });
+  // A push never relaxes the pins, whatever the target says.
+  assert.equal(run("push", "archive").argv, "scripts/check-release-pins.mjs v1.2.3");
 });

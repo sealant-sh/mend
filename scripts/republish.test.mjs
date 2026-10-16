@@ -279,12 +279,31 @@ test("a release manifest of another version, commit or file is refused before np
   }
 });
 
-test("a registry serving another integrity after the publish is an incident, not a pass", async (t) => {
+test("a registry serving another integrity after the publish is an incident, and the channel's dist-tag has moved", async (t) => {
+  // What next-channel.md's incident steps undo: the job fails, but npm publish --tag already moved
+  // the channel's dist-tag to the incident version.
   const stub = await registry(t, seeded(), { forgeIntegrity: true });
   const result = await publish(t, stub, goodEntries("0.39.0-next.9"), "0.39.0-next.9");
   assert.notEqual(result.status, 0, result.output);
   assert.match(result.output, /::error::INCIDENT: .*Do not republish: deprecate/);
   assert.equal(stub.log.length, 1);
+  assert.equal(stub.packages.get(NAME)["dist-tags"].next, "0.39.0-next.9");
+  assert.equal(stub.packages.get(NAME)["dist-tags"].latest, "0.38.1");
+  // A stable release: latest itself now names the incident version.
+  const mend = "@sealant/mend";
+  const stable = await registry(
+    t,
+    { [mend]: { name: mend, versions: { "0.38.1": {} }, "dist-tags": { latest: "0.38.1" } } },
+    { forgeIntegrity: true },
+  );
+  const entries = [
+    ["package/package.json", manifest("0.39.0", {}, mend)],
+    ["package/dist/index.js", ""],
+  ];
+  const released = await publish(t, stable, entries, "0.39.0", "latest", { name: mend });
+  assert.notEqual(released.status, 0, released.output);
+  assert.match(released.output, /::error::INCIDENT/);
+  assert.equal(stable.packages.get(mend)["dist-tags"].latest, "0.39.0");
 });
 
 test("a tarball that is not normalized is refused, never rewritten: `tag`, scripts, publishConfig, .npmrc", async (t) => {
