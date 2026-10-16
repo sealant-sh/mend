@@ -35,7 +35,7 @@ jobs:
   # Builds and packages with no credential in reach: nothing the dependencies run can see a token.
   package:
     name: Package the extension
-    runs-on: [self-hosted, box, linux, x64]
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
       contents: read
@@ -162,7 +162,7 @@ jobs:
     name: Publish to the registries that have a token
     needs: package
     if: github.event_name != 'pull_request'
-    runs-on: [self-hosted, box, linux, x64]
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     environment: vscode-marketplace
     permissions:
@@ -237,7 +237,7 @@ jobs:
   github-release:
     name: Attach the .vsix to the GitHub release
     needs: [package, publish]
-    runs-on: [self-hosted, box, linux, x64]
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       contents: write

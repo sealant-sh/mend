@@ -49,7 +49,7 @@ permissions:
 jobs:
   plan:
     if: github.repository == 'sealant-sh/mend'
-    runs-on: [self-hosted, box, linux, x64]
+    runs-on: ubuntu-24.04
     outputs:
       version: ${{ steps.resolve.outputs.version }}
       sealant_sha: ${{ steps.resolve.outputs.sealant_sha }}
@@ -94,7 +94,7 @@ jobs:
           # moves between next builds and previews in order (docs/adr/0015-next-channel.md).
           version=$(node scripts/next-version.mjs --package apps/cli --preview "$RUN_NUMBER" --main origin/main HEAD)
 
-          amd64='{"arch":"amd64","runner":["self-hosted","box","linux","x64"]}'
+          amd64='{"arch":"amd64","runner":"ubuntu-24.04"}'
           arm64='{"arch":"arm64","runner":"ubuntu-24.04-arm"}'
           case $PLATFORMS in
             linux/amd64) platforms="[$amd64]" ;;
@@ -175,7 +175,7 @@ jobs:
       contents: read
       packages: write
     needs: [plan, sealantd]
-    runs-on: [self-hosted, box, linux, x64]
+    runs-on: ubuntu-24.04
     outputs:
       ref: ${{ steps.merge.outputs.ref }}
     steps:
@@ -264,7 +264,7 @@ jobs:
       contents: read
       packages: write
     needs: [plan, core]
-    runs-on: [self-hosted, box, linux, x64]
+    runs-on: ubuntu-24.04
     outputs:
       api: ${{ steps.merge.outputs.api }}
       worker: ${{ steps.merge.outputs.worker }}
@@ -387,7 +387,7 @@ jobs:
       packages: write
     needs: [plan, sealantd-image, core-images, mend]
     if: ${{ !cancelled() && needs.mend.result == 'success' }}
-    runs-on: [self-hosted, box, linux, x64]
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:

@@ -6,6 +6,8 @@
 # - vX.Y.Z-next.N, a `next` build: a GitHub prerelease and npm's `next` dist-tag. `latest` stays.
 # - vX.Y.Z, a stable release: a promotion of a next build, with no prerelease pinned anywhere.
 # The pins job refuses anything else before an image is built.
+# Every job runs on a GitHub-hosted runner, a fresh VM, as image.yml's do: the box's runner VMs keep
+# state between jobs.
 name: Release Mend
 
 on:
@@ -21,7 +23,7 @@ permissions:
 jobs:
   pins:
     name: Check what the release pins
-    runs-on: [self-hosted, box, linux, x64]
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       # Full history and every tag: N counts the whole history, B reads the next tags handed out,
@@ -48,7 +50,7 @@ jobs:
   npm-pack:
     name: Pack @sealant/mend
     needs: pins
-    runs-on: [self-hosted, box, linux, x64]
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
       contents: read
@@ -99,7 +101,7 @@ jobs:
     needs: [images, github-release, npm-pack]
     # Github-hosted runner on purpose: the OIDC id-token should be minted on
     # infrastructure GitHub controls.
-    # npm trusted publishing (OIDC) needs a GitHub-hosted runner: this job stays off the self-hosted runners.
+    # npm trusted publishing (OIDC) needs a GitHub-hosted runner.
     runs-on: ubuntu-latest
     environment: release
     permissions:
@@ -311,7 +313,7 @@ jobs:
   github-release:
     name: Publish and verify setup assets
     needs: images
-    runs-on: [self-hosted, box, linux, x64]
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
       contents: write
@@ -397,7 +399,7 @@ jobs:
   promote-images:
     name: Promote the complete stable release
     needs: [npm, github-release]
-    runs-on: [self-hosted, box, linux, x64]
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
       packages: write

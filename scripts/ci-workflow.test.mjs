@@ -248,7 +248,9 @@ test("native commands keep ordinary assertion output beside the CI file guard an
       reporterPairs(command, "./scripts");
     }
   }
-  const packageScripts = globSync("{apps,packages,tooling}/*/package.json", { cwd: root })
+  const packageScripts = globSync("{apps,packages,tooling}/*/package.json", {
+    cwd: root,
+  })
     .flatMap((manifest) =>
       Object.values(JSON.parse(readFileSync(new URL(manifest, root), "utf8")).scripts ?? {}),
     )
@@ -316,7 +318,9 @@ test("the test report reaches Turbo tasks without entering hashes, outputs or gi
   const turbo = JSON.parse(readFileSync(new URL("turbo.json", root), "utf8"));
   assert.deepEqual(turbo.tasks.test.passThroughEnv, ["CI_TEST_REPORT_DIR"]);
   const tasks = Object.values(turbo.tasks);
-  for (const manifest of globSync("{apps,packages,tooling}/*/turbo.json", { cwd: root })) {
+  for (const manifest of globSync("{apps,packages,tooling}/*/turbo.json", {
+    cwd: root,
+  })) {
     const { test: packageTest } = JSON.parse(readFileSync(new URL(manifest, root), "utf8")).tasks;
     assert.equal(packageTest?.passThroughEnv, undefined, `${manifest} replaces the report dir`);
     if (packageTest) tasks.push(packageTest);
@@ -479,14 +483,14 @@ test("a failed or missing nightly opens or updates one issue, with nothing but i
     readFileSync(new URL("../.github/workflows/nightly-watch.yml", import.meta.url), "utf8"),
   );
   assert.deepEqual(watch.on.workflow_run, {
-    workflows: ["CI"],
+    workflows: ["CI", "Build input probe"],
     types: ["completed"],
     branches: ["main"],
   });
   assert.equal(watch.on.schedule.length, 1);
   assert.deepEqual(watch.permissions, { actions: "read", issues: "write" });
   const job = watch.jobs.alert;
-  assert.deepEqual(job["runs-on"], ["self-hosted", "box", "linux", "x64"]);
+  assert.equal(job["runs-on"], "ubuntu-24.04", "a box outage must not silence the watch");
   assert.equal(job.permissions, undefined, "the job inherits the workflow's two permissions");
   assert.ok(
     !job.steps.some((step) => step.uses?.startsWith("actions/checkout@")),
@@ -495,7 +499,8 @@ test("a failed or missing nightly opens or updates one issue, with nothing but i
   assert.match(job.if, /github\.event\.workflow_run\.event == 'schedule'/);
   assert.match(job.if, /github\.event\.workflow_run\.conclusion != 'success'/);
   const run = job.steps.map((step) => step.run ?? "").join("\n");
-  assert.match(run, /--workflow ci\.yml --event schedule --branch main --status success/);
+  assert.match(run, /for workflow in ci\.yml build-input-probe\.yml; do/);
+  assert.match(run, /--workflow "\$workflow" --event schedule --branch main --status success/);
   assert.match(run, /30 \* 3600/);
   assert.match(run, /gh issue list --label nightly-failure --state open/);
   assert.match(run, /gh issue comment "\$open"/);
@@ -516,7 +521,10 @@ test("the nightly watch comments on its open issue, opens one when none is open,
 printf '%s\\n' "$*" >> "${log}"
 case "$1 $2" in
   "api repos/"*) echo "test-engines (failure)" ;;
-  "run list") echo "$FAKE_LAST_SUCCESS" ;;
+  "run list") case "$*" in
+    *ci.yml*) echo "$FAKE_LAST_SUCCESS" ;;
+    *build-input-probe.yml*) echo "\${FAKE_PROBE_LAST_SUCCESS-$FAKE_LAST_SUCCESS}" ;;
+  esac ;;
   "issue list") echo "$FAKE_OPEN_ISSUE" ;;
 esac
 `,
@@ -525,7 +533,11 @@ esac
     const run = (env) => {
       rmSync(log, { force: true });
       const result = spawnSync("bash", ["-c", script], {
-        env: { PATH: `${tmp}:${process.env.PATH}`, GH_REPO: "sealant-sh/mend", ...env },
+        env: {
+          PATH: `${tmp}:${process.env.PATH}`,
+          GH_REPO: "sealant-sh/mend",
+          ...env,
+        },
         encoding: "utf8",
       });
       assert.equal(result.status, 0, result.stderr);
@@ -534,25 +546,128 @@ esac
     const failed = {
       EVENT_NAME: "workflow_run",
       RUN_ID: "1",
+      RUN_NAME: "Build input probe",
       RUN_URL: "u",
       RUN_CONCLUSION: "failure",
       RUN_SHA: "s",
     };
     assert.match(run({ ...failed, FAKE_OPEN_ISSUE: "" }), /^issue create --label nightly-failure/m);
     const comment = run({ ...failed, FAKE_OPEN_ISSUE: "42" });
-    assert.match(comment, /^issue comment 42 --body .*test-engines \(failure\)/m);
+    assert.match(
+      comment,
+      /^issue comment 42 --body The nightly Build input probe run .*test-engines \(failure\)/m,
+    );
     assert.doesNotMatch(comment, /issue create/);
     const hoursAgo = (hours) => new Date(Date.now() - hours * 3600_000).toISOString();
     assert.doesNotMatch(run({ EVENT_NAME: "schedule", FAKE_LAST_SUCCESS: hoursAgo(1) }), /issue/);
     assert.match(
-      run({ EVENT_NAME: "schedule", FAKE_LAST_SUCCESS: hoursAgo(31), FAKE_OPEN_ISSUE: "" }),
-      /^issue create --label nightly-failure .*No scheduled CI run on main has succeeded in 30 hours/m,
+      run({
+        EVENT_NAME: "schedule",
+        FAKE_LAST_SUCCESS: hoursAgo(31),
+        FAKE_OPEN_ISSUE: "",
+      }),
+      /^issue create --label nightly-failure .*No scheduled ci\.yml run on main has succeeded in 30 hours/m,
     );
+    const probeStale = run({
+      EVENT_NAME: "schedule",
+      FAKE_LAST_SUCCESS: hoursAgo(1),
+      FAKE_PROBE_LAST_SUCCESS: hoursAgo(31),
+      FAKE_OPEN_ISSUE: "",
+    });
     assert.match(
-      run({ EVENT_NAME: "schedule", FAKE_LAST_SUCCESS: "", FAKE_OPEN_ISSUE: "" }),
+      probeStale,
+      /No scheduled build-input-probe\.yml run on main has succeeded in 30 hours/,
+    );
+    assert.doesNotMatch(probeStale, /No scheduled ci\.yml run/);
+    assert.match(
+      run({
+        EVENT_NAME: "schedule",
+        FAKE_LAST_SUCCESS: "",
+        FAKE_OPEN_ISSUE: "",
+      }),
       /last success: none/,
     );
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
+});
+
+// Box runner VMs keep state between jobs, so a job that publishes, or holds a token that writes to
+// the repository, its packages or a registry, runs on a GitHub-hosted runner: a fresh VM. A runner
+// is named in runs-on, in a matrix row, or in a matrix a step builds as JSON (preview.yml's plan).
+const hosted = (runner) =>
+  (Array.isArray(runner) ? runner : [runner]).every(
+    (label) => typeof label === "string" && /^ubuntu-(latest|[0-9.]+(-arm)?)$/.test(label),
+  );
+const runnersIn = (value) => {
+  if (typeof value === "string") {
+    // Runner selectors written as JSON inside a script: "runner": "…" or "runner": […].
+    return [...value.matchAll(/"runner"\s*:\s*(\[[^\]]*\]|"[^"]*")/g)].map((m) => JSON.parse(m[1]));
+  }
+  if (Array.isArray(value)) return value.flatMap(runnersIn);
+  if (value && typeof value === "object") {
+    return Object.entries(value).flatMap(([key, entry]) =>
+      key === "runner" ? [entry, ...runnersIn(entry)] : runnersIn(entry),
+    );
+  }
+  return [];
+};
+const publishingRunners = (jobs) =>
+  Object.entries(jobs).flatMap(([name, job]) => {
+    if (job.uses) return [];
+    const runsOn = job["runs-on"];
+    const named = /^\$\{\{ matrix\.[a-z.]+ \}\}$/.test(runsOn) ? [] : [runsOn];
+    return [...named, ...runnersIn(job.strategy), ...runnersIn(job.steps)].map((runner) => ({
+      name,
+      runner,
+    }));
+  });
+
+test("jobs that publish or hold a write token never ask for a box runner", () => {
+  for (const file of [
+    "image.yml",
+    "release-cli.yml",
+    "release-acceptance.yml",
+    "version.yml",
+    "preview.yml",
+    "publish-vscode.yml",
+    "t3code-drift.yml",
+    "nightly-watch.yml",
+  ]) {
+    const { jobs } = parse(
+      readFileSync(new URL(`../.github/workflows/${file}`, import.meta.url), "utf8"),
+    );
+    for (const { name, runner } of publishingRunners(jobs)) {
+      assert.ok(hosted(runner), `${file} ${name} asks for ${JSON.stringify(runner)}`);
+    }
+  }
+});
+
+test("the runner guard catches a box label wherever a runner is named", () => {
+  const job = (fields) => ({ publish: { steps: [], ...fields } });
+  const box = ["self-hosted", "box", "linux", "x64"];
+  const caught = (jobs) => publishingRunners(jobs).some(({ runner }) => !hosted(runner));
+  assert.ok(caught(job({ "runs-on": box })), "runs-on");
+  assert.ok(caught(job({ "runs-on": "box" })), "a scalar label");
+  assert.ok(
+    caught(
+      job({
+        "runs-on": "${{ matrix.platform.runner }}",
+        strategy: { matrix: { platform: [{ arch: "amd64", runner: box }] } },
+      }),
+    ),
+    "a matrix row",
+  );
+  // Astra's mutation: preview.yml's plan builds the matrix as JSON, and a selector needs no
+  // self-hosted label to land on the box.
+  assert.ok(
+    caught(
+      job({
+        "runs-on": "ubuntu-24.04",
+        steps: [{ run: `amd64='{"arch":"amd64","runner":["box","linux","x64"]}'` }],
+      }),
+    ),
+    "a matrix a step builds",
+  );
+  assert.ok(!caught(job({ "runs-on": "ubuntu-24.04-arm" })), "a hosted runner passes");
 });
