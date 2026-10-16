@@ -36,10 +36,7 @@ jobs:
     with:
       # A labeled pull request's run has no inputs.
       target: ${{ inputs.target || 'ghcr' }}
-    # A called workflow's jobs get at most these. actions: write is for image.yml's archive-cleanup,
-    # which deletes its run's image archives; no other job there asks for it.
     permissions:
-      actions: write
       contents: read
       packages: write
     secrets: inherit

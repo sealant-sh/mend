@@ -112,8 +112,9 @@ release-cli.yml's `npm-pack`; moving the publisher onto this one is the next cha
 `target: archive` (an image.yml or release-acceptance.yml dispatch input; `ghcr` is the default)
 builds the same images without a push or a ghcr login. Each image is exported to a one-day run
 artifact, assembled into its multi-arch index in a registry inside the merge job, and accepted
-offline from the archive once its platform manifest digest matches the manifest. A final job deletes
-the archives.
+offline from the archive once its platform manifest digest matches the manifest. The archives expire
+after one day, as run artifacts; nothing deletes them sooner, since that would need `actions: write`
+in every caller of image.yml, a release's included.
 
 ### Where publishing runs
 

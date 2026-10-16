@@ -42,6 +42,10 @@ jobs:
   version:
     if: github.repository == 'sealant-sh/mend'
     runs-on: ubuntu-24.04
+    # Reads the repository's tags (gh api); every job here names its own permissions, so none
+    # inherits whatever its caller grants.
+    permissions:
+      contents: read
     outputs:
       value: ${{ steps.resolve.outputs.version }}
       before: ${{ steps.resolve.outputs.before }}
@@ -340,7 +344,8 @@ jobs:
           path: /tmp/digests/*
           if-no-files-found: error
           retention-days: 1
-      # Layers are compressed already. archive-cleanup deletes these once acceptance is done.
+      # Layers are compressed already. They expire after a day; nothing deletes them sooner, which
+      # would need actions: write in every caller (next-channel.md).
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: archive-${{ matrix.image.id }}--${{ matrix.platform.arch }}
@@ -829,24 +834,3 @@ jobs:
           echo "$report"
           echo "$report" >>"$GITHUB_STEP_SUMMARY" ||
             echo "::warning::Could not write the disk report to the step summary"
-
-  # Image archives are large and useful to nothing after acceptance: delete them whatever happened,
-  # rather than keep them a day. The digests, the manifest and the CLI tarball stay.
-  archive-cleanup:
-    name: Delete the run's image archives
-    needs: [archive-build, archive-merge, archive-acceptance]
-    if: always() && inputs.target == 'archive'
-    runs-on: ubuntu-24.04
-    permissions:
-      actions: write
-    steps:
-      - name: Delete this run's archive artifacts
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          ids=$(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts?per_page=100" \
-            --jq '.artifacts[] | select(.name | startswith("archive-")) | .id')
-          for id in $ids; do
-            gh api --method DELETE "repos/$GITHUB_REPOSITORY/actions/artifacts/$id"
-          done

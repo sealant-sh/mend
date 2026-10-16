@@ -312,7 +312,6 @@ test("with ghcr, the jobs are today's plus the CLI and the manifest; archive job
     "cli",
     "release-manifest",
     "archive-acceptance",
-    "archive-cleanup",
   ]);
   // Today's steps, in today's order, with additions only after them or between them.
   const keeps = (job, before) => {
@@ -353,18 +352,17 @@ test("with ghcr, the jobs are today's plus the CLI and the manifest; archive job
 });
 
 test("archive jobs hold no packages: write, log in nowhere and push to no registry but their own", () => {
-  for (const name of ["archive-build", "archive-merge", "archive-acceptance", "archive-cleanup"]) {
+  for (const name of ["archive-build", "archive-merge", "archive-acceptance"]) {
     const job = jobs[name];
     assert.ok(job.permissions, `${name} declares its permissions`);
     assert.equal(job.permissions.packages, undefined, name);
-    assert.ok(!Object.values(job.permissions).includes("write") || name === "archive-cleanup");
+    assert.ok(!Object.values(job.permissions).includes("write"), name);
     for (const entry of job.steps) {
       assert.ok(!entry.uses?.startsWith("docker/login-action@"), `${name} logs in`);
       assert.doesNotMatch(entry.with?.outputs ?? "", /push=true|type=image|type=registry/);
       assert.doesNotMatch(entry.run ?? "", /docker push|ghcr\.io[^\s]*@|docker:\/\/ghcr/);
     }
   }
-  assert.deepEqual(jobs["archive-cleanup"].permissions, { actions: "write" });
   const build = jobs["archive-build"].steps.find((entry) => entry.id === "build");
   assert.match(build.with.outputs, /^type=docker,dest=/);
   assert.equal(build.with.provenance, false);
@@ -401,11 +399,28 @@ test("the manifest, the CLI tarball and the archives are kept as long as they ar
   assert.equal(retention("release-manifest"), 90);
   assert.equal(retention("mend-cli"), 90);
   assert.equal(retention("archive-${{ matrix.image.id }}--${{ matrix.platform.arch }}"), 1);
-  const cleanup = jobs["archive-cleanup"];
-  assert.match(cleanup.if, /^always\(\) && /);
-  assert.ok(cleanup.needs.includes("archive-acceptance"));
-  assert.match(cleanup.steps[0].run, /startswith\("archive-"\)/);
-  assert.match(cleanup.steps[0].run, /--method DELETE/);
+});
+
+// A caller's grant is the ceiling for every job in image.yml, and a job that names no permissions
+// inherits all of it: so each job names its own, and none of these release workflows can cancel or
+// re-run workflows or delete artifacts.
+test("every image.yml job names its permissions, and no release workflow holds actions: write", () => {
+  for (const [name, job] of Object.entries(jobs)) {
+    assert.ok(job.permissions && typeof job.permissions === "object", `image.yml ${name}`);
+  }
+  for (const file of ["image.yml", "release-cli.yml", "release-acceptance.yml"]) {
+    const workflow = parse(
+      readFileSync(fileURLToPath(new URL(`../.github/workflows/${file}`, import.meta.url)), "utf8"),
+    );
+    const grants = [
+      workflow.permissions,
+      ...Object.values(workflow.jobs).map((job) => job.permissions),
+    ];
+    for (const grant of grants) {
+      assert.notEqual(grant, "write-all", file);
+      assert.notEqual(grant?.actions, "write", `${file} grants actions: write`);
+    }
+  }
 });
 
 test("the cli job packs once, normalizes, checks the result, and holds no credential or cache", () => {
