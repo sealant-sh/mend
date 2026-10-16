@@ -114,6 +114,12 @@ jobs:
           --test-reporter=./scripts/ci-node-reporter.mjs --test-reporter-destination=stderr
           --test-reporter=./scripts/ci-test-report.mjs --test-reporter-destination=stdout
           scripts/ci-timings.test.mjs scripts/ci-runtime-timings.test.mjs
+      - name: Verify the publisher's inline tarball check against the normalizer
+        run:
+          node --test --test-reporter=spec --test-reporter-destination=stdout
+          --test-reporter=./scripts/ci-node-reporter.mjs --test-reporter-destination=stderr
+          --test-reporter=./scripts/ci-test-report.mjs --test-reporter-destination=stdout
+          scripts/republish.test.mjs scripts/normalize-npm-tarball.test.mjs
           scripts/ci-node-reporter.test.mjs scripts/ci-test-report.test.mjs
       - run: node scripts/ci-shards.mjs --check
       - name: Installs stay bound to the lockfile
@@ -378,7 +384,6 @@ jobs:
           scripts/edge-overlay.test.mjs scripts/aws-compose.test.mjs scripts/aws-tofu.test.mjs
           scripts/next-version.test.mjs scripts/sealant-pins.test.mjs
           scripts/check-release-pins.test.mjs scripts/mend-migrations.test.mjs
-          scripts/republish.test.mjs scripts/normalize-npm-tarball.test.mjs
           scripts/release-manifest.test.mjs scripts/preview-deploy.test.mjs scripts/bench/*.test.mjs
           scripts/mirrors-runtime.test.mjs scripts/verify-stack/lib.test.mjs
           scripts/verify-stack/lifecycle.test.mjs scripts/verify-stack/lifecycle.e2e.test.mjs

@@ -69,8 +69,12 @@ Each has a recommendation. The pull requests implement the recommendation; the o
    the name is the product's; and the boundary the `-next` packages buy is already there: each Mend
    next build is tagged by an admin and approved by you before its npm job runs, so the stable
    package's credential is never in an unattended job. The npm job is split like Core's: a
-   credential-free `npm-pack` job builds; the `npm` job checks nothing out and publishes the tarball
-   rebuilt from npm's reading. Recommended.
+   credential-free job builds; the `npm` job checks nothing out. _(Updated 2026-10-16, a factual
+   change, not a new decision: the build is image.yml's `cli` job, which packs and normalizes
+   `@sealant/mend` once; packaged acceptance installs that tarball on both architectures; and the
+   `npm` job publishes those exact bytes, checked against the run's release manifest, instead of
+   rebuilding a tarball from npm's reading. Formerly a separate `npm-pack` job built it.)_
+   Recommended.
 6. **A stable Mend release must be a promotion,** enforced. The release refuses a `vX.Y.Z` tag
    unless the newest next build of `X.Y.Z` it contains reached npm and, since that build, only the
    Version Packages pull request, release notes and docs changed. It also refuses while any next tag

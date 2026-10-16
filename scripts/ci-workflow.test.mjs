@@ -181,6 +181,26 @@ test("required database and live-adapter evidence keeps its preparation and work
   );
 });
 
+// The publisher's inline copy of normalize-npm-tarball.mjs --check and the script can drift from
+// either side, so their parity test runs in the job every pull request runs, never only with
+// packaging scope.
+test("the publisher's tarball check is compared with the normalizer on every pull request", () => {
+  const run = commands("static").map(withoutReporterOptions);
+  assert.ok(
+    run.some(
+      (command) =>
+        command.includes("scripts/republish.test.mjs") &&
+        command.includes("scripts/normalize-npm-tarball.test.mjs"),
+    ),
+    "static runs the parity test",
+  );
+  assert.equal(jobs.static.if, "${{ !cancelled() }}");
+  assert.ok(
+    !commands("packaging").some((command) => command.includes("scripts/republish.test.mjs")),
+    "the parity test runs once, in static",
+  );
+});
+
 test("packaging retains browser, Docker, OpenTofu and acceptance contracts in its own job", () => {
   const steps = jobs.packaging.steps;
   assert.equal(jobs.packaging.env.MEND_VERIFY_PLAYWRIGHT, "${{ github.workspace }}/apps/mobile");
@@ -205,7 +225,6 @@ test("packaging retains browser, Docker, OpenTofu and acceptance contracts in it
   for (const file of [
     "scripts/check-packaged-server.test.mjs",
     "scripts/release-publication.test.mjs",
-    "scripts/normalize-npm-tarball.test.mjs",
     "scripts/release-manifest.test.mjs",
     "scripts/packaged-ssh-acceptance.test.mjs",
     "scripts/packaged-git-access-acceptance.test.mjs",
