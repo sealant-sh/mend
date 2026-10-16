@@ -27,6 +27,7 @@ import {
   buildManifest,
   checkArchive,
   checkCli,
+  checkIndex,
   validateManifest,
 } from "./release-manifest.mjs";
 
@@ -676,4 +677,210 @@ test("the manifest job writes from this run's records, whichever merge ran", (t)
   );
   assert.deepEqual(written.cli, record);
   assert.equal(written.images["mend-api"].index, `sha256:${hex("mend-api")}`);
+});
+
+// --- the index imagetools create pushed ---
+
+const OCI_MANIFEST = "application/vnd.oci.image.manifest.v1+json";
+const OCI_INDEX = "application/vnd.oci.image.index.v1+json";
+/** A registry document: its bytes and the digest it is read by. */
+const doc = (value) => {
+  const bytes = Buffer.from(JSON.stringify(value));
+  return { bytes, digest: sha256(bytes), value };
+};
+const imageManifest = (arch) =>
+  doc({
+    schemaVersion: 2,
+    mediaType: OCI_MANIFEST,
+    config: {
+      mediaType: "application/vnd.oci.image.config.v1+json",
+      digest: `sha256:${hex(arch)}`,
+      size: 1,
+    },
+    layers: [],
+  });
+const childOf = (manifest, os, architecture, variant) => ({
+  mediaType: OCI_MANIFEST,
+  digest: manifest.digest,
+  size: manifest.bytes.length,
+  platform: { os, architecture, ...(variant ? { variant } : {}) },
+});
+/** BuildKit's attestation entry for `manifest`. */
+const attestationOf = (manifest) => ({
+  mediaType: OCI_MANIFEST,
+  digest: `sha256:${hex(`attestation of ${manifest.digest}`)}`,
+  size: 1,
+  platform: { os: "unknown", architecture: "unknown" },
+  annotations: {
+    "vnd.docker.reference.digest": manifest.digest,
+    "vnd.docker.reference.type": "attestation-manifest",
+  },
+});
+const indexOf = (manifests) => doc({ schemaVersion: 2, mediaType: OCI_INDEX, manifests });
+const created = (index) => ({
+  "containerimage.descriptor": { mediaType: OCI_INDEX, digest: index.digest },
+});
+const amd64 = imageManifest("amd64");
+const arm64 = imageManifest("arm64");
+const plainChildren = [childOf(amd64, "linux", "amd64"), childOf(arm64, "linux", "arm64")];
+
+test("an index made from two plain image manifests is the one create reported", () => {
+  const index = indexOf(plainChildren);
+  assert.equal(checkIndex(created(index), index.bytes, [amd64, arm64]), index.digest);
+  // containerimage.digest, where buildx writes it, must agree with the descriptor.
+  assert.equal(
+    checkIndex({ ...created(index), "containerimage.digest": index.digest }, index.bytes, [
+      amd64,
+      arm64,
+    ]),
+    index.digest,
+  );
+  assert.throws(
+    () =>
+      checkIndex({ ...created(index), "containerimage.digest": amd64.digest }, index.bytes, [
+        amd64,
+        arm64,
+      ]),
+    /two different ones/,
+  );
+  assert.throws(() => checkIndex({}, index.bytes, [amd64, arm64]), /no index digest/);
+});
+
+test("an index made from attested single-platform indexes holds each source's children", () => {
+  const sources = [amd64, arm64].map((manifest, at) =>
+    indexOf([plainChildren[at], attestationOf(manifest)]),
+  );
+  const index = indexOf(sources.flatMap((source) => source.value.manifests));
+  assert.equal(checkIndex(created(index), index.bytes, sources), index.digest);
+  // An attestation of a source left out is a source's manifest missing.
+  const partial = indexOf([...plainChildren, attestationOf(amd64)]);
+  assert.throws(() => checkIndex(created(partial), partial.bytes, sources), /lacks sha256:/);
+  // A source index of two platforms is not one arch's build.
+  const both = indexOf(plainChildren);
+  assert.throws(() => checkIndex(created(both), both.bytes, [both]), /more than one platform/);
+});
+
+test("an index missing one source's manifest is refused", () => {
+  const other = imageManifest("someone else's arm64");
+  const index = indexOf([plainChildren[0], childOf(other, "linux", "arm64")]);
+  assert.throws(
+    () => checkIndex(created(index), index.bytes, [amd64, arm64]),
+    new RegExp(`lacks ${arm64.digest}`),
+  );
+});
+
+test("an index whose platforms are not exactly linux/amd64 and linux/arm64 is refused", () => {
+  const arm = imageManifest("arm/v7");
+  for (const [children, sources] of [
+    [
+      [plainChildren[0], childOf(arm, "linux", "arm", "v7")],
+      [amd64, arm],
+    ],
+    [
+      [plainChildren[0], childOf(arm64, "linux", "amd64")],
+      [amd64, arm64],
+    ],
+    [[plainChildren[0]], [amd64]],
+  ]) {
+    const index = indexOf(children);
+    assert.throws(
+      () => checkIndex(created(index), index.bytes, sources),
+      /not linux\/amd64 and linux\/arm64/,
+    );
+  }
+  // Nor may it hold a manifest no source gave it.
+  const extra = indexOf([...plainChildren, childOf(imageManifest("extra"), "linux", "riscv64")]);
+  assert.throws(() => checkIndex(created(extra), extra.bytes, [amd64, arm64]), /from no source/);
+});
+
+test("the audit's case: a single arm64 manifest in place of the created index is refused", () => {
+  // Reported as created, the lone manifest is not a multi-arch index.
+  assert.throws(
+    () => checkIndex(created(arm64), arm64.bytes, [amd64, arm64]),
+    /single image manifest, not a multi-arch index/,
+  );
+  // Create reported its own index; bytes read for any other digest (the moved tag's) do not hash to it.
+  const index = indexOf(plainChildren);
+  assert.throws(() => checkIndex(created(index), arm64.bytes, [amd64, arm64]), /does not hash to/);
+  // The index the moved tag names, a lone arm64 child, fails on its own terms too.
+  const moved = indexOf([plainChildren[1]]);
+  assert.throws(() => checkIndex(created(moved), moved.bytes, [amd64, arm64]), /lacks/);
+});
+
+test("no step learns the index digest from the tag; both merges check what create reported", (t) => {
+  const tagInspect = /imagetools inspect "\$REPOSITORY:\$VERSION"(.*)$/;
+  for (const [name, job] of Object.entries(jobs))
+    for (const entry of job.steps ?? [])
+      for (const line of (entry.run ?? "").split("\n")) {
+        const found = tagInspect.exec(line);
+        if (found === null) continue;
+        // Only the version-exists guard and the log of what was pushed name the tag.
+        assert.ok(
+          found[1] === "" || found[1] === " >/dev/null 2>&1; then",
+          `${name} "${entry.name}" reads the tag: ${line.trim()}`,
+        );
+      }
+  for (const job of ["merge", "archive-merge"]) {
+    const create = jobs[job].steps.find((entry) => /imagetools create/.test(entry.run ?? ""));
+    assert.match(
+      create.run,
+      /imagetools create --metadata-file "\$RUNNER_TEMP\/index\/create\.json"/,
+    );
+    const record = step(job, "Check and record the index digest");
+    assert.match(record.run, /check-index create\.json index\.json/);
+    assert.match(record.run, /inspect "\$REPOSITORY@\$digest" --raw >index\.json/);
+    const steps = jobs[job].steps;
+    const upload = steps.findIndex((entry) => entry.with?.name === "index-${{ matrix.image.id }}");
+    assert.ok(upload > steps.indexOf(record), `${job} uploads the digest after checking it`);
+  }
+
+  // merge's step as written, its /tmp/digests moved to a fixture, against a registry stand-in
+  // whose tag has moved to a lone arm64 index: it records the index create reported.
+  const directory = scratch(t);
+  const digests = path.join(directory, "digests");
+  const documents = path.join(directory, "documents");
+  const work = path.join(directory, "index");
+  for (const dir of [digests, documents, work, path.join(directory, "bin")]) mkdirSync(dir);
+  const index = indexOf(plainChildren);
+  for (const entry of [amd64, arm64, index, indexOf([plainChildren[1]])])
+    writeFileSync(path.join(documents, entry.digest), entry.bytes);
+  for (const entry of [amd64, arm64]) writeFileSync(path.join(digests, entry.digest.slice(7)), "");
+  writeFileSync(path.join(work, "create.json"), JSON.stringify(created(index)));
+  writeFileSync(
+    path.join(directory, "bin", "docker"),
+    `#!${process.execPath}
+const { readFileSync } = require("node:fs");
+const args = process.argv.slice(2);
+const at = args[3]?.indexOf("@") ?? -1;
+if (args.slice(0, 3).join(" ") !== "buildx imagetools inspect" || args[4] !== "--raw" || at < 0) process.exit(79);
+process.stdout.write(readFileSync(${JSON.stringify(documents)} + "/" + args[3].slice(at + 1)));
+`,
+  );
+  chmodSync(path.join(directory, "bin", "docker"), 0o755);
+  const record = step("merge", "Check and record the index digest");
+  const run = (create) => {
+    writeFileSync(path.join(work, "create.json"), JSON.stringify(create));
+    return spawnSync(
+      "bash",
+      ["--noprofile", "--norc", "-e", "-c", record.run.replaceAll("/tmp/digests", digests)],
+      {
+        cwd: work,
+        encoding: "utf8",
+        env: {
+          PATH: `${path.join(directory, "bin")}:${process.env.PATH}`,
+          REPOSITORY: "ghcr.invalid/fixture/mend",
+          GITHUB_WORKSPACE: fileURLToPath(new URL("../", import.meta.url)),
+        },
+      },
+    );
+  };
+  const recorded = run(created(index));
+  assert.equal(recorded.status, 0, recorded.stderr);
+  assert.equal(readFileSync(path.join(work, "digest"), "utf8"), `${index.digest}\n`);
+  // Had create reported the lone index the tag now names, nothing would be recorded.
+  rmSync(path.join(work, "digest"));
+  const lone = run(created(indexOf([plainChildren[1]])));
+  assert.equal(lone.status, 1);
+  assert.match(lone.stderr, /lacks/);
+  assert.equal(readFileSync(path.join(work, "digest"), "utf8"), "");
 });

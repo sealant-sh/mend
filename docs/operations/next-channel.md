@@ -101,13 +101,17 @@ stable package's credential is never in an unattended job.
 image.yml writes `release-manifest.json` (kept 90 days) for each run: the version, the baseline
 version and the commit; for each image (`mend`, `mend-before`, `mend-api`, `mend-web`), its index
 digest and its amd64 and arm64 platform digests; and the CLI tarball by file name, sha512 and npm
-integrity. Its `cli` job packs `@sealant/mend` once and normalizes it with
-`scripts/normalize-npm-tarball.mjs`, the manifest rewrite the publisher makes. Packaged acceptance
-reads the manifest from its own run, never another run's. It pulls each image by its platform digest
-for its own arch, tags only the pulled image ID with the name `mend server setup` expects, and fails
-unless the running server is that ID, after setup and after the upgrade. It installs the tarball
-named in the manifest after checking its sha512. The tarball the publisher repacks is still built by
-release-cli.yml's `npm-pack`; moving the publisher onto this one is the next change.
+integrity. The index digest is the one `imagetools create` reported for what it pushed, never a
+later read of the tag, which another run can move; it is recorded only once that index, read by its
+digest, holds exactly the build's manifests for linux/amd64 and linux/arm64
+(`scripts/release-manifest.mjs check-index`). Its `cli` job packs `@sealant/mend` once and
+normalizes it with `scripts/normalize-npm-tarball.mjs`, the manifest rewrite the publisher makes.
+Packaged acceptance reads the manifest from its own run, never another run's. It pulls each image by
+its platform digest for its own arch, tags only the pulled image ID with the name
+`mend server setup` expects, and fails unless the running server is that ID, after setup and after
+the upgrade. It installs the tarball named in the manifest after checking its sha512. The tarball
+the publisher repacks is still built by release-cli.yml's `npm-pack`; moving the publisher onto this
+one is the next change.
 
 `target: archive` (an image.yml or release-acceptance.yml dispatch input; `ghcr` is the default)
 builds the same images without a push or a ghcr login. Each image is exported to a one-day run

@@ -79,9 +79,11 @@ if (process.env.FIXTURE_COMMAND === "gh" && args[0] === "release") {
     if (state.created && state.failInspect) process.exit(74);
     process.exit(state.imageExists ? 0 : 1);
   }
-  if (args[2] === "create" && args[3] === "--tag") {
+  if (args[2] === "create" && args[3] === "--metadata-file" && args[5] === "--tag") {
     if (state.failCreate) process.exit(73);
-    state.imageExists = true; state.created = true; state.sources = args.slice(5);
+    state.imageExists = true; state.created = true; state.sources = args.slice(7);
+    // What buildx writes: the pushed index's descriptor.
+    writeFileSync(args[4], JSON.stringify({ "containerimage.descriptor": { digest: "sha256:" + "d".repeat(64) } }));
     save(); process.exit(0);
   }
 }
@@ -118,6 +120,7 @@ function withPublicationFixture(command, initial, files, check) {
           FIXTURE_COMMAND: command,
           FIXTURE_STATE: stateFile,
           FIXTURE_CALLS: callsFile,
+          RUNNER_TEMP: path.join(directory, "tmp"),
           ...environment,
         },
         encoding: "utf8",
@@ -254,6 +257,16 @@ test("the actual release shell propagates an upload refusal without uploading la
   );
 });
 
+/** The calls, with the metadata file create was given (under $RUNNER_TEMP/index) named generically. */
+const metadataNamed = (calls) =>
+  calls.map((args) =>
+    args.map((arg, at) => {
+      if (args[at - 1] !== "--metadata-file") return arg;
+      assert.match(arg, /\/tmp\/index\/create\.json$/);
+      return "<metadata>";
+    }),
+  );
+
 test("the actual image merge shell refuses existing immutable versions before any create", () => {
   const script = shellStep(
     "../.github/workflows/image.yml",
@@ -298,9 +311,18 @@ test("the actual image merge shell creates exact digest sources for new and rebu
         assert.equal(result.status, 0, result.stderr);
         const target = `ghcr.invalid/fixture/mend:${version}`;
         const sources = digests.map((digest) => `ghcr.invalid/fixture/mend@sha256:${digest}`);
-        assert.deepEqual(result.calls, [
+        assert.deepEqual(metadataNamed(result.calls), [
           ...(exists ? [] : [["buildx", "imagetools", "inspect", target]]),
-          ["buildx", "imagetools", "create", "--tag", target, ...sources],
+          [
+            "buildx",
+            "imagetools",
+            "create",
+            "--metadata-file",
+            "<metadata>",
+            "--tag",
+            target,
+            ...sources,
+          ],
           ["buildx", "imagetools", "inspect", target],
         ]);
         assert.deepEqual(result.state.sources, sources);
@@ -326,12 +348,14 @@ test("the actual image merge shell propagates create and final-inspection failur
       (run) => {
         const result = run(script, { REPOSITORY: "ghcr.invalid/fixture/mend", VERSION: "1.2.3" });
         assert.equal(result.status, status);
-        assert.deepEqual(result.calls, [
+        assert.deepEqual(metadataNamed(result.calls), [
           ["buildx", "imagetools", "inspect", "ghcr.invalid/fixture/mend:1.2.3"],
           [
             "buildx",
             "imagetools",
             "create",
+            "--metadata-file",
+            "<metadata>",
             "--tag",
             "ghcr.invalid/fixture/mend:1.2.3",
             `ghcr.invalid/fixture/mend@sha256:${"a".repeat(64)}`,

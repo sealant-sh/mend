@@ -223,6 +223,18 @@ jobs:
           - { id: mend-api, name: mend-api, baseline: false }
           - { id: mend-web, name: mend-web, baseline: false }
     steps:
+      # Only the index check (scripts/release-manifest.mjs) and the Node version it runs on.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.version.outputs.commit }}
+          persist-credentials: false
+          sparse-checkout: |
+            .node-version
+            scripts/release-manifest.mjs
+          sparse-checkout-cone-mode: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .node-version
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           path: /tmp/digests
@@ -251,25 +263,37 @@ jobs:
           fi
           sources=()
           for digest in *; do sources+=("$REPOSITORY@sha256:$digest"); done
-          docker buildx imagetools create --tag "$REPOSITORY:$VERSION" "${sources[@]}"
+          mkdir -p "$RUNNER_TEMP/index"
+          docker buildx imagetools create --metadata-file "$RUNNER_TEMP/index/create.json" \
+            --tag "$REPOSITORY:$VERSION" "${sources[@]}"
           docker buildx imagetools inspect "$REPOSITORY:$VERSION"
-      # The index digest goes in the release manifest beside the platform digests the build pushed.
-      - name: Record the index digest
+      # The index digest goes in the release manifest: the one create reported, never the tag's,
+      # which another publisher can move (a dev tag is rebuilt). That index and each source are read
+      # by digest, and the index must hold exactly the sources, for amd64 and arm64.
+      - name: Check and record the index digest
+        working-directory: ${{ runner.temp }}/index
         env:
           REPOSITORY: ghcr.io/${{ github.repository_owner }}/${{ matrix.image.name }}
-          VERSION:
-            ${{ matrix.image.baseline && needs.version.outputs.before || needs.version.outputs.value
-            }}
         run: |
           set -euo pipefail
-          mkdir -p /tmp/index
-          docker buildx imagetools inspect "$REPOSITORY:$VERSION" --format '{{json .Manifest}}' |
-            jq -r .digest >/tmp/index/digest
-          grep -Eqx 'sha256:[0-9a-f]{64}' /tmp/index/digest
+          digest=$(jq -r '."containerimage.digest" // ."containerimage.descriptor".digest // ""' create.json)
+          if [[ ! $digest =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::imagetools create reported no index digest."
+            exit 1
+          fi
+          docker buildx imagetools inspect "$REPOSITORY@$digest" --raw >index.json
+          sources=()
+          for file in /tmp/digests/*; do
+            source=${file##*/}
+            docker buildx imagetools inspect "$REPOSITORY@sha256:$source" --raw >"source-$source.json"
+            sources+=("sha256:$source=source-$source.json")
+          done
+          node "$GITHUB_WORKSPACE/scripts/release-manifest.mjs" check-index create.json index.json \
+            "${sources[@]}" >digest
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: index-${{ matrix.image.id }}
-          path: /tmp/index/digest
+          path: ${{ runner.temp }}/index/digest
           if-no-files-found: error
           retention-days: 1
 
@@ -389,6 +413,18 @@ jobs:
           - { id: mend-api, name: mend-api, baseline: false }
           - { id: mend-web, name: mend-web, baseline: false }
     steps:
+      # Only the index check (scripts/release-manifest.mjs) and the Node version it runs on.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.version.outputs.commit }}
+          persist-credentials: false
+          sparse-checkout: |
+            .node-version
+            scripts/release-manifest.mjs
+          sparse-checkout-cone-mode: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .node-version
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           path: /tmp/archives
@@ -437,24 +473,36 @@ jobs:
           for arch in amd64 arm64; do
             sources+=("$REPOSITORY@sha256:$(cd "/tmp/digests/digests-$ID--$arch" && ls)")
           done
-          docker buildx imagetools create --tag "$REPOSITORY:$VERSION" "${sources[@]}"
+          mkdir -p "$RUNNER_TEMP/index"
+          docker buildx imagetools create --metadata-file "$RUNNER_TEMP/index/create.json" \
+            --tag "$REPOSITORY:$VERSION" "${sources[@]}"
           docker buildx imagetools inspect "$REPOSITORY:$VERSION"
-      - name: Record the index digest
+      # As merge records it: the digest create reported, checked against the sources by digest.
+      - name: Check and record the index digest
+        working-directory: ${{ runner.temp }}/index
         env:
+          ID: ${{ matrix.image.id }}
           REPOSITORY: 127.0.0.1:5000/${{ matrix.image.name }}
-          VERSION:
-            ${{ matrix.image.baseline && needs.version.outputs.before || needs.version.outputs.value
-            }}
         run: |
           set -euo pipefail
-          mkdir -p /tmp/index
-          docker buildx imagetools inspect "$REPOSITORY:$VERSION" --format '{{json .Manifest}}' |
-            jq -r .digest >/tmp/index/digest
-          grep -Eqx 'sha256:[0-9a-f]{64}' /tmp/index/digest
+          digest=$(jq -r '."containerimage.digest" // ."containerimage.descriptor".digest // ""' create.json)
+          if [[ ! $digest =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::imagetools create reported no index digest."
+            exit 1
+          fi
+          docker buildx imagetools inspect "$REPOSITORY@$digest" --raw >index.json
+          sources=()
+          for arch in amd64 arm64; do
+            source=$(cd "/tmp/digests/digests-$ID--$arch" && ls)
+            docker buildx imagetools inspect "$REPOSITORY@sha256:$source" --raw >"source-$source.json"
+            sources+=("sha256:$source=source-$source.json")
+          done
+          node "$GITHUB_WORKSPACE/scripts/release-manifest.mjs" check-index create.json index.json \
+            "${sources[@]}" >digest
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: index-${{ matrix.image.id }}
-          path: /tmp/index/digest
+          path: ${{ runner.temp }}/index/digest
           if-no-files-found: error
           retention-days: 1
 
