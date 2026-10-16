@@ -300,11 +300,17 @@ Dry run 3, run 38931186422 on `79e6edd0e` (staging and finalize), passed end to 
 nothing: `finalize-images`, `npm`, `github-release` and `promote-images` were skipped, and every
 job's token was read-only.
 
-Unproven until the watched `-next` tag below: the ghcr login and push from GitHub's hosted runners;
-the multi-arch index on ghcr; `finalize-images` itself; online setup pulling from ghcr; npm's OIDC
-and the `release` environment; the GitHub release and its assets; and what offline acceptance skips
-(the dotfiles scenario, git access, fetching through the mirrors). A tag push is the only run that
-proves them.
+Dry run 4, run 38965446723 on `a5809999e` (plan (d)), passed end to end and published nothing in
+11.0 min, stamped `0.36.0-next.993.dryrun.38965446723.1`. On both architectures it upgraded from
+0.35.1 and from 0.36.0-next.792 to the archived candidate and ran the split-tier smoke, all through
+the release gate; the new jobs ran in parallel inside packaged acceptance's time and added no wall
+time.
+
+Unproven until the watched `-next` tag below: the ghcr-mode `previous-upgrade` and
+`split-tier-smoke` jobs; the ghcr login and push from GitHub's hosted runners; the multi-arch index
+on ghcr; `finalize-images` itself; online setup pulling from ghcr; npm's OIDC and the `release`
+environment; the GitHub release and its assets; and what offline acceptance skips (the dotfiles
+scenario, git access, fetching through the mirrors). A tag push is the only run that proves them.
 
 The stable `latest` promotion stays unproven until the first stable release: on a `-next` tag,
 `promote-images` returns before it reads anything, so the watched `-next` tag proves nothing about
