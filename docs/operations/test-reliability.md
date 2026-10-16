@@ -366,22 +366,23 @@ and repeat it on the release candidate. The previous 0.35.1 upgrade VM test was 
 there were no external Mend installations to support. The VM and client runs remain distinct from
 CI; this audit follow-up has not executed them.
 
-That 0.35.1 gap is closed in CI by image.yml's `previous-upgrade` and `archive-previous-upgrade`
-jobs ([the upgrade window](next-channel.md#the-upgrade-window); the job is
-`scripts/check-previous-upgrade.mjs`). Each release a candidate may be upgraded from is installed
-from its actual artifacts, pinned in `release/upgrade-from.json`: its npm CLI, its ghcr image by
-digest, its GitHub release setup assets. A project, a session with its checkpoints and a Review
-comment are seeded on it; the candidate's CLI upgrades it to the exact candidate image; then old
-data, authentication, a new session, a restart and the migration level are checked. A dry run's
-candidate is stamped `0.0.0-*` and cannot be upgraded to from a release, so only a release candidate
-proves the upgrade step itself.
+A CI lane for that 0.35.1 gap is implemented, unproven: image.yml's `previous-upgrade` and
+`archive-previous-upgrade` jobs ([the upgrade window](next-channel.md#the-upgrade-window); the
+scenario is `scripts/check-previous-upgrade.mjs`) have not yet run a full transition. Each release a
+candidate may be upgraded from is installed from its actual artifacts: its npm CLI, its ghcr image
+by digest, its GitHub release setup assets, pinned in `release/upgrade-from.json` for a stable
+release and read live for a next build. A project, a session with its checkpoints and a Review
+comment are seeded on it; the candidate's CLI upgrades it to the exact candidate image; old data,
+authentication, a new session, a restart and the migration level are then checked. It counts as
+coverage once a dry run has passed it end to end on both architectures.
 
 `REL-01` is partially addressed: the existing packaged smoke already labels its same-source
 version-transition evidence in its script header and final output. The CI step now uses the same
 wording. Both images come from the candidate revision; a successful smoke run establishes upgrade
 mechanics and retention, not compatibility with an earlier server implementation or schema. Its
 additional previous-CLI generation check tests configuration compatibility, not an older
-server/database. Historical server-upgrade coverage remains absent under the 0.36 decision above.
+server/database. Coverage of an upgrade from an earlier server is the lane above: implemented, not
+yet proven by a passing run.
 
 ## Provider adapter contracts and compatibility
 

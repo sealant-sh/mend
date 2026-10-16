@@ -1066,7 +1066,20 @@ jobs:
           MEND_TEST_UPGRADE_IMAGE_ID: ${{ steps.images.outputs.target }}
           MEND_TEST_UPGRADE_VERSION: ${{ needs.version.outputs.value }}
           MEND_TEST_CLI_TARBALL: ${{ steps.cli.outputs.tarball }}
+          MEND_UPGRADE_ARTIFACTS: ${{ runner.temp }}/upgrade-artifacts
+          # A next build's pins are read live, its assets' sha256 from the GitHub API.
+          GH_TOKEN: ${{ github.token }}
         run: node scripts/check-previous-upgrade.mjs
+      # The server's logs and `mend server status` from a failed transition: whose failure it was
+      # (harness or product) is in the step's own output.
+      - name: Keep the server logs of a failed upgrade
+        if: failure() && matrix.transition.waived == ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: previous-upgrade-ghcr-${{ matrix.transition.from }}--${{ runner.arch }}
+          path: ${{ runner.temp }}/upgrade-artifacts
+          if-no-files-found: warn
+          retention-days: 7
       # Reached only when the transition passed, or was waived, on this arch.
       - name: Record the acceptance
         id: accepted
@@ -1219,8 +1232,21 @@ jobs:
           MEND_TEST_UPGRADE_IMAGE_ID: ${{ steps.images.outputs.target }}
           MEND_TEST_UPGRADE_VERSION: ${{ needs.version.outputs.value }}
           MEND_TEST_CLI_TARBALL: ${{ steps.cli.outputs.tarball }}
+          MEND_UPGRADE_ARTIFACTS: ${{ runner.temp }}/upgrade-artifacts
+          # A next build's pins are read live, its assets' sha256 from the GitHub API.
+          GH_TOKEN: ${{ github.token }}
           MEND_TEST_OFFLINE: "1"
         run: node scripts/check-previous-upgrade.mjs
+      # The server's logs and `mend server status` from a failed transition: whose failure it was
+      # (harness or product) is in the step's own output.
+      - name: Keep the server logs of a failed upgrade
+        if: failure() && matrix.transition.waived == ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: previous-upgrade-archive-${{ matrix.transition.from }}--${{ runner.arch }}
+          path: ${{ runner.temp }}/upgrade-artifacts
+          if-no-files-found: warn
+          retention-days: 7
       # Reached only when the transition passed, or was waived, on this arch.
       - name: Record the acceptance
         id: accepted
