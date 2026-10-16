@@ -13,6 +13,9 @@
 //   Version Packages pull request, notes and docs may change, with renames counted as a deletion
 //   and an addition.
 //
+// - A dry run (v0.0.0-dryrun.<run id>.<attempt>, release-cli.yml dispatched with dry_run): the
+//   every-release pin checks only. It publishes nothing, so it may run from any branch.
+//
 //   node scripts/check-release-pins.mjs v0.36.0-next.56
 import { execFileSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
@@ -33,6 +36,9 @@ import {
   readRepositoryPinFiles,
   readRepositoryPins,
 } from "./sealant-pins.mjs";
+
+/** The version a dispatched dry run of release-cli.yml carries: never a real release's. */
+export const isDryRunVersion = (version) => /^0\.0\.0-dryrun\.\d+\.\d+$/.test(version);
 
 /** The package whose version the tags carry. */
 export const RELEASED_PACKAGE = "apps/cli";
@@ -146,6 +152,7 @@ const check = async (tag) => {
     ...assetProblems(await readRepositoryPinFiles(), pins.sealantVersion),
     ...(await digestProblems(pins)),
   ];
+  if (isDryRunVersion(version)) return problems;
   if (!onMain()) problems.push("A release is cut from main; this commit is not on origin/main.");
   const allNextTags = git(["tag", "--list", "v*-next.*"]).split("\n");
   if (!stable) {

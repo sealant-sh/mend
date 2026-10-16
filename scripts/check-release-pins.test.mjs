@@ -6,6 +6,7 @@ import path from "node:path";
 import test from "node:test";
 
 import {
+  isDryRunVersion,
   lockfilePrereleases,
   newestNextTag,
   promotionAllows,
@@ -219,4 +220,18 @@ test("a stable release reads prerelease packages from the lockfile, wherever the
     "@sealant/api-contracts-next@0.39.0-next.12",
   ]);
   assert.deepEqual(lockfilePrereleases("  '@sealant/sdk@0.38.1':\n"), []);
+});
+
+test("only release-cli.yml's derived dry-run version skips the release-only checks", () => {
+  assert.ok(isDryRunVersion("0.0.0-dryrun.38700000001.2"));
+  for (const version of [
+    "0.37.0",
+    "0.37.0-next.4",
+    "0.0.0-dryrun.1",
+    "0.0.0-dryrun.1.2.3",
+    "0.37.0-dryrun.1.2",
+    "0.0.0-dryrun.1.2-next.3",
+    "0.0.0-acceptance.1.2",
+  ])
+    assert.ok(!isDryRunVersion(version), version);
 });

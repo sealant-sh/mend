@@ -1,14 +1,17 @@
 // The publish job's republish block, run as written in this repository's workflow, against a stub
 // npm registry on 127.0.0.1, with tarballs crafted the ways three reviews found to fool a check of
-// the tarball as built. The same file lives in sealant-sh/mend, sealant-sh/sealant and
-// sealant-sh/sealantd. Keep them identical.
+// the tarball as built. Mend's block publishes the run's own normalized tarball byte for byte and
+// checks the registry's integrity after; sealant-sh/sealant and sealant-sh/sealantd still rebuild
+// the tarball they publish, so their copies of this file differ from this one.
 import assert from "node:assert/strict";
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { gzipSync } from "node:zlib";
 
 const root = execFileSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim();
@@ -62,14 +65,14 @@ const tarGz = (entries) => {
 
 const NAME = "@sealant/sdk-next";
 const COMMIT = "c0ffee";
+/** A normalized manifest, as normalize-npm-tarball.mjs writes one; `extra` adds what it would drop. */
 const manifest = (version, extra = {}, name = NAME) =>
   JSON.stringify({
     name,
     version,
-    gitHead: COMMIT,
     main: "./dist/index.js",
     files: ["dist"],
-    scripts: { prepack: "echo never", postpack: "echo never" },
+    gitHead: COMMIT,
     ...extra,
   });
 const goodEntries = (version) => [
@@ -77,8 +80,12 @@ const goodEntries = (version) => [
   ["package/dist/index.js", "export {};\n"],
 ];
 
-/** A stub registry: GET packument and dist-tags, PUT publish, PUT dist-tag. */
-const registry = async (t, seed = {}) => {
+/**
+ * A stub registry: GET packument and dist-tags, PUT publish, PUT dist-tag. It keeps each published
+ * tarball's bytes; `forgeIntegrity` serves another dist.integrity than the one npm sent, as a
+ * registry that changed the bytes would.
+ */
+const registry = async (t, seed = {}, { forgeIntegrity = false } = {}) => {
   const packages = new Map(Object.entries(seed));
   const log = [];
   const server = http.createServer((request, response) => {
@@ -117,6 +124,9 @@ const registry = async (t, seed = {}) => {
       if (request.method === "PUT") {
         const published = JSON.parse(body);
         const record = packages.get(name) ?? { name, versions: {}, "dist-tags": {} };
+        if (forgeIntegrity)
+          for (const entry of Object.values(published.versions))
+            entry.dist.integrity = `sha512-${Buffer.alloc(64).toString("base64")}`;
         Object.assign(record.versions, published.versions);
         Object.assign(record["dist-tags"], published["dist-tags"]);
         const [version] = Object.keys(published.versions);
@@ -125,6 +135,7 @@ const registry = async (t, seed = {}) => {
           publish: version,
           distTags: published["dist-tags"],
           manifest: published.versions[version],
+          bytes: Buffer.from(Object.values(published["_attachments"])[0].data, "base64"),
         });
         response.writeHead(201).end("{}");
         return;
@@ -138,11 +149,16 @@ const registry = async (t, seed = {}) => {
   return { url: `http://127.0.0.1:${port}/`, log, packages };
 };
 
+const sha512 = (bytes) => createHash("sha512").update(bytes).digest();
+const tarballName = (name, version) => `${name.slice(1).replace("/", "-")}-${version}.tgz`;
+
 /**
- * Runs the caller's sequence on a crafted tarball against the stub, as the workflows do: check the
- * artifact directory, then publish_rebuilt from a fresh empty directory. `artifact` adds files to
- * the artifact directory; `skipCheck` leaves check_artifacts out, to show the empty directory alone
- * keeps a planted .npmrc from configuring npm.
+ * Runs the job's sequence on a crafted tarball against the stub: image.yml's mend-cli artifact
+ * holding it, its release-manifest artifact recording it, then publish_release. `artifact` adds
+ * files to the tarball's artifact directory; `record` overrides the manifest's fields; `tamper`
+ * replaces the tarball's bytes after the manifest recorded them. `skipCheck` runs the checks and
+ * the publish without check_artifacts, to show the empty directory alone keeps a planted .npmrc
+ * from configuring npm.
  */
 const publish = async (
   t,
@@ -150,30 +166,55 @@ const publish = async (
   entries,
   version,
   channel = "next",
-  { artifact = {}, skipCheck = false, name = NAME } = {},
+  { artifact = {}, skipCheck = false, name = NAME, record = {}, tamper } = {},
 ) => {
   const directory = mkdtempSync(path.join(tmpdir(), "republish-"));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
-  const artifacts = path.join(directory, "artifacts");
-  mkdirSync(artifacts);
-  writeFileSync(path.join(artifacts, "in.tgz"), tarGz(entries));
-  for (const [file, text] of Object.entries(artifact))
-    writeFileSync(path.join(artifacts, file), text);
+  const cli = path.join(directory, "cli");
+  const release = path.join(directory, "release");
+  mkdirSync(cli);
+  mkdirSync(release);
+  const file = tarballName(name, version);
+  const bytes = tarGz(entries);
+  const digest = sha512(bytes);
+  writeFileSync(path.join(cli, file), tamper === undefined ? bytes : tarGz(tamper));
+  for (const [extra, text] of Object.entries(artifact)) writeFileSync(path.join(cli, extra), text);
+  writeFileSync(
+    path.join(release, "release-manifest.json"),
+    JSON.stringify({
+      version,
+      commit: COMMIT,
+      cli: {
+        file,
+        sha512: digest.toString("hex"),
+        integrity: `sha512-${digest.toString("base64")}`,
+      },
+      ...record,
+    }),
+  );
   const npmrc = path.join(directory, "npmrc");
   writeFileSync(npmrc, `${stub.url.replace("http:", "")}:_authToken=test\n`);
   const script = [
     "set -euo pipefail",
     block,
-    skipCheck ? "" : 'check_artifacts "$ARTIFACTS" in.tgz',
-    'cd "$(mktemp -d)"',
-    'publish_rebuilt "$ARTIFACTS/in.tgz" "$@"',
+    skipCheck
+      ? [
+          'cd "$(mktemp -d)"',
+          'tarball="$CLI/$(cd "$CLI" && ls *.tgz)"',
+          'integrity=$(recorded_integrity "$tarball" "$RELEASE/release-manifest.json" "$2" "$3")',
+          'check_tarball "$tarball" "$1" "$2" "$3" "$4"',
+          'publish_exact "$tarball" "$1" "$2" "$3" "$4" "$integrity"',
+        ].join("\n")
+      : 'publish_release "$CLI" "$RELEASE" "$@"',
   ].join("\n");
   const child = spawn("bash", ["-c", script, "republish", name, version, COMMIT, channel], {
-    cwd: artifacts,
+    cwd: cli,
     env: {
       ...process.env,
-      ARTIFACTS: artifacts,
+      CLI: cli,
+      RELEASE: release,
       REPUBLISH_TEST_PACOTE: PACOTE,
+      REPUBLISH_TEST_WAIT: "0",
       NPM_CONFIG_REGISTRY: stub.url,
       NPM_CONFIG_USERCONFIG: npmrc,
     },
@@ -182,7 +223,7 @@ const publish = async (
   child.stdout.on("data", (chunk) => (output += chunk));
   child.stderr.on("data", (chunk) => (output += chunk));
   const status = await new Promise((resolve) => child.on("close", resolve));
-  return { status, output };
+  return { status, output, bytes };
 };
 
 const seeded = (versions = {}, distTags = { latest: "0.38.1" }) => ({
@@ -193,34 +234,88 @@ const seeded = (versions = {}, distTags = { latest: "0.38.1" }) => ({
   },
 });
 
-test("a good tarball is rebuilt and published under next, without its scripts", async (t) => {
+test("the run's normalized tarball is published under next as it is, and its integrity read back", async (t) => {
   const stub = await registry(t, seeded());
-  const { status, output } = await publish(t, stub, goodEntries("0.39.0-next.9"), "0.39.0-next.9");
+  const { status, output, bytes } = await publish(
+    t,
+    stub,
+    goodEntries("0.39.0-next.9"),
+    "0.39.0-next.9",
+  );
   assert.equal(status, 0, output);
   assert.equal(stub.log.length, 1);
   assert.deepEqual(stub.log[0].distTags, { next: "0.39.0-next.9" });
-  assert.equal(stub.log[0].manifest.scripts, undefined);
+  // Not repacked: the registry received the bytes the manifest recorded.
+  assert.deepEqual(stub.log[0].bytes, bytes);
+  assert.equal(stub.log[0].manifest.dist.integrity, `sha512-${sha512(bytes).toString("base64")}`);
+  assert.match(output, /published with the integrity this run accepted/);
   assert.equal(stub.packages.get(NAME)["dist-tags"].latest, "0.38.1");
 });
 
-test("a `tag` field in the manifest is dropped, so it cannot publish as latest", async (t) => {
+test("a tarball whose sha512 is not the manifest's is refused before npm runs", async (t) => {
   const stub = await registry(t, seeded());
-  const entries = [
+  const tampered = [...goodEntries("0.39.0-next.9"), ["package/dist/extra.js", "evil();\n"]];
+  const result = await publish(t, stub, goodEntries("0.39.0-next.9"), "0.39.0-next.9", "next", {
+    tamper: tampered,
+  });
+  assert.notEqual(result.status, 0, result.output);
+  assert.match(result.output, /has another sha512 than the release manifest records/);
+  assert.equal(stub.log.length, 0);
+});
+
+test("a release manifest of another version, commit or file is refused before npm runs", async (t) => {
+  for (const [record, problem] of [
+    [{ version: "0.39.0-next.8" }, /is for 0\.39\.0-next\.8, not 0\.39\.0-next\.9/],
+    [{ commit: "beef" }, /is from beef, not c0ffee/],
+    [{ cli: { file: "other.tgz", sha512: "0", integrity: "sha512-x" } }, /names other\.tgz/],
+  ]) {
+    const stub = await registry(t, seeded());
+    const result = await publish(t, stub, goodEntries("0.39.0-next.9"), "0.39.0-next.9", "next", {
+      record,
+    });
+    assert.notEqual(result.status, 0, result.output);
+    assert.match(result.output, problem);
+    assert.equal(stub.log.length, 0);
+  }
+});
+
+test("a registry serving another integrity after the publish is an incident, not a pass", async (t) => {
+  const stub = await registry(t, seeded(), { forgeIntegrity: true });
+  const result = await publish(t, stub, goodEntries("0.39.0-next.9"), "0.39.0-next.9");
+  assert.notEqual(result.status, 0, result.output);
+  assert.match(result.output, /::error::INCIDENT: .*Do not republish: deprecate/);
+  assert.equal(stub.log.length, 1);
+});
+
+test("a tarball that is not normalized is refused, never rewritten: `tag`, scripts, publishConfig, .npmrc", async (t) => {
+  for (const [entries, problem] of [
+    [[["package/package.json", manifest("0.39.0-next.9", { tag: "latest" })]], /it keeps tag/],
     [
-      "package/package.json",
-      manifest("0.39.0-next.9", {
-        tag: "latest",
-        publishConfig: { tag: "latest", registry: "https://evil.example/", access: "public" },
-      }),
+      [["package/package.json", manifest("0.39.0-next.9", { scripts: { postinstall: "x" } })]],
+      /it keeps scripts/,
     ],
-    ["package/dist/index.js", ""],
-  ];
-  const { status, output } = await publish(t, stub, entries, "0.39.0-next.9");
-  assert.equal(status, 0, output);
-  assert.deepEqual(stub.log[0].distTags, { next: "0.39.0-next.9" });
-  assert.equal(stub.log[0].manifest.tag, undefined);
-  assert.deepEqual(stub.log[0].manifest.publishConfig, { access: "public" });
-  assert.equal(stub.packages.get(NAME)["dist-tags"].latest, "0.38.1");
+    [
+      [
+        [
+          "package/package.json",
+          manifest("0.39.0-next.9", {
+            publishConfig: { tag: "latest", registry: "https://evil.example/", access: "public" },
+          }),
+        ],
+      ],
+      /publishConfig holds more than access/,
+    ],
+    [
+      [...goodEntries("0.39.0-next.9"), ["package/.npmrc", "registry=https://evil.example/\n"]],
+      /it holds \.npmrc/,
+    ],
+  ]) {
+    const stub = await registry(t, seeded());
+    const result = await publish(t, stub, entries, "0.39.0-next.9");
+    assert.notEqual(result.status, 0, result.output);
+    assert.match(result.output, problem);
+    assert.equal(stub.log.length, 0);
+  }
 });
 
 /**
@@ -306,10 +401,22 @@ test("next never moves back: an older version than the current next is refused",
   assert.match(output, /next is already 0\.39\.0-next\.12/);
 });
 
-test("a version already published from this commit is done; from another, refused", async (t) => {
-  const stub = await registry(t, seeded({ "0.39.0-next.9": { gitHead: COMMIT } }));
+test("a version already published from this commit is done once its integrity checks; from another, refused", async (t) => {
+  const integrity = `sha512-${sha512(tarGz(goodEntries("0.39.0-next.9"))).toString("base64")}`;
+  const stub = await registry(
+    t,
+    seeded({ "0.39.0-next.9": { gitHead: COMMIT, dist: { integrity } } }),
+  );
   assert.equal((await publish(t, stub, goodEntries("0.39.0-next.9"), "0.39.0-next.9")).status, 0);
   assert.equal(stub.log.length, 0);
+  // A re-run over a version the registry serves with other bytes is the incident, not "done".
+  const forged = await registry(
+    t,
+    seeded({ "0.39.0-next.9": { gitHead: COMMIT, dist: { integrity: "sha512-other" } } }),
+  );
+  const incident = await publish(t, forged, goodEntries("0.39.0-next.9"), "0.39.0-next.9");
+  assert.notEqual(incident.status, 0);
+  assert.match(incident.output, /::error::INCIDENT/);
   const other = await registry(t, seeded({ "0.39.0-next.9": { gitHead: "elsewhere" } }));
   const refused = await publish(t, other, goodEntries("0.39.0-next.9"), "0.39.0-next.9");
   assert.notEqual(refused.status, 0);
@@ -351,7 +458,7 @@ test("a package document over 256 KB is read, not passed as an argument", async 
   assert.match(older.output, /next is already 0\.39\.0-next\.8/);
 });
 
-test("an artifact holding anything but the expected tarball is refused before npm runs", async (t) => {
+test("an artifact holding anything but the expected tarball or manifest is refused before npm runs", async (t) => {
   for (const [file, text] of [
     [".npmrc", "https-proxy=http://127.0.0.1:9/\nstrict-ssl=false\n"],
     ["extra.tgz", "x"],
@@ -395,7 +502,7 @@ test("a registry failure stops the job instead of being read as nothing publishe
   assert.equal(stub.log.length, 0);
 });
 
-test("a stable release publishes under latest with the same rewrite", async (t) => {
+test("a stable release publishes under latest with the same checks", async (t) => {
   const mend = "@sealant/mend";
   const seed = {
     [mend]: { name: mend, versions: { "0.38.1": {} }, "dist-tags": { latest: "0.38.1" } },
@@ -481,4 +588,85 @@ test("a -next package's sibling dependency must be its exact -next alias", async
     "0.39.0-next.9",
   );
   assert.notEqual(aliased.status, 0);
+});
+
+test("the block's check and normalize-npm-tarball.mjs --check give the same answers", async (t) => {
+  // The publisher runs no repository file, so it carries the check written out; this holds the
+  // copy to the script image.yml's cli job ran.
+  const normalizer = fileURLToPath(new URL("./normalize-npm-tarball.mjs", import.meta.url));
+  const directory = mkdtempSync(path.join(tmpdir(), "republish-parity-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const version = "0.39.0-next.9";
+  const cases = {
+    normalized: goodEntries(version),
+    "a tag": [["package/package.json", manifest(version, { tag: "latest" })]],
+    scripts: [["package/package.json", manifest(version, { scripts: { prepare: "x" } })]],
+    "publishConfig beyond access": [
+      [
+        "package/package.json",
+        manifest(version, { publishConfig: { access: "public", tag: "x" } }),
+      ],
+    ],
+    "publishConfig without access": [
+      ["package/package.json", manifest(version, { publishConfig: {} })],
+    ],
+    "only access": [
+      ["package/package.json", manifest(version, { publishConfig: { access: "public" } })],
+    ],
+    "an .npmrc": [...goodEntries(version), ["package/lib/.npmrc", "x=1\n"]],
+    "a binding.gyp": [...goodEntries(version), ["package/binding.gyp", "{}"]],
+    "a forged commit": [["package/package.json", manifest(version, { gitHead: "forged" })]],
+    "another version": [["package/package.json", manifest("0.39.0-next.8")]],
+    "a stable version": [["package/package.json", manifest("0.39.0")]],
+    "a plain name under next": [["package/package.json", manifest(version, {}, "@sealant/sdk")]],
+    "an alias": [["package/package.json", manifest(version, { dependencies: { a: "npm:b@1" } })]],
+    "a sibling alias": [
+      [
+        "package/package.json",
+        manifest(version, {
+          dependencies: { "@sealant/api-contracts": `npm:@sealant/api-contracts-next@${version}` },
+        }),
+      ],
+    ],
+  };
+  const answers = {};
+  for (const [label, entries] of Object.entries(cases)) {
+    const tarball = path.join(directory, `${Object.keys(answers).length}.tgz`);
+    writeFileSync(tarball, tarGz(entries));
+    const args = [NAME, version, COMMIT, "next"];
+    const fromBlock = await new Promise((resolve) => {
+      const child = spawn(
+        "bash",
+        ["-c", `set -euo pipefail\n${block}\ncheck_tarball "$@"`, "check", tarball, ...args],
+        { env: { ...process.env, REPUBLISH_TEST_PACOTE: PACOTE }, stdio: "ignore" },
+      );
+      child.on("close", resolve);
+    });
+    const script = spawnSync(
+      process.execPath,
+      [
+        normalizer,
+        "--check",
+        tarball,
+        "--name",
+        NAME,
+        "--version",
+        version,
+        "--commit",
+        COMMIT,
+        "--channel",
+        "next",
+      ],
+      { env: { ...process.env, NORMALIZE_PACOTE: PACOTE }, encoding: "utf8" },
+    ).status;
+    answers[label] = [fromBlock === 0, script === 0];
+  }
+  for (const [label, [byBlock, byScript]] of Object.entries(answers))
+    assert.equal(byBlock, byScript, `${label}: block ${byBlock}, script ${byScript}`);
+  assert.deepEqual(
+    Object.entries(answers)
+      .filter(([, [accepted]]) => accepted)
+      .map(([label]) => label),
+    ["normalized", "only access", "a sibling alias"],
+  );
 });

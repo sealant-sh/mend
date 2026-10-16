@@ -6,6 +6,9 @@
 # - vX.Y.Z-next.N, a `next` build: a GitHub prerelease and npm's `next` dist-tag. `latest` stays.
 # - vX.Y.Z, a stable release: a promotion of a next build, with no prerelease pinned anywhere.
 # The pins job refuses anything else before an image is built.
+# A dispatch with dry_run is a dry run (docs/operations/next-channel.md): version
+# 0.0.0-dryrun.<run id>.<attempt>, image.yml with target archive (built, merged and accepted with no
+# push), and no job that publishes or writes runs. Only a tag push publishes.
 # Every job runs on a GitHub-hosted runner, a fresh VM, as image.yml's do: the box's runner VMs keep
 # state between jobs.
 name: Release Mend
@@ -16,13 +19,64 @@ on:
       - "v*.*.*"
       # vscode-vX.Y.Z matches the pattern above; publish-vscode.yml releases the extension.
       - "!vscode-v*"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build, accept and check a release without publishing anything"
+        required: true
+        type: boolean
 
 permissions:
   contents: read
 
 jobs:
+  # The run's one version. A tag push releases its tag; a dispatch is refused unless it is a dry
+  # run, whose version is derived from the run and never given: no branch can dispatch a real
+  # version's build.
+  release:
+    name: Choose what this run releases
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      target: ${{ steps.resolve.outputs.target }}
+    steps:
+      - name: Refuse anything but a tag push or a dry run, and choose the version
+        id: resolve
+        env:
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          case $GITHUB_EVENT_NAME in
+            push)
+              if [[ $GITHUB_REF != refs/tags/v* ]]; then
+                echo "::error::A release publishes from a vX.Y.Z tag push, not $GITHUB_REF."
+                exit 1
+              fi
+              version=${GITHUB_REF_NAME#v}
+              target=ghcr
+              ;;
+            workflow_dispatch)
+              if [[ $DRY_RUN != true ]]; then
+                echo "::error::A dispatch only dry-runs a release: set dry_run. A release publishes from a tag push."
+                exit 1
+              fi
+              version=0.0.0-dryrun.$GITHUB_RUN_ID.$GITHUB_RUN_ATTEMPT
+              target=archive
+              ;;
+            *)
+              echo "::error::$GITHUB_EVENT_NAME does not run a release."
+              exit 1
+              ;;
+          esac
+          echo "version=$version" >>"$GITHUB_OUTPUT"
+          echo "target=$target" >>"$GITHUB_OUTPUT"
+          echo "Release $version, images to $target."
+
   pins:
     name: Check what the release pins
+    needs: release
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -34,71 +88,56 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .node-version
-      - run: node scripts/check-release-pins.mjs "$GITHUB_REF_NAME"
+      - run: node scripts/check-release-pins.mjs "v$VERSION"
+        env:
+          VERSION: ${{ needs.release.outputs.version }}
 
+  # Images, the one CLI tarball, the release manifest and packaged acceptance, all in image.yml. A
+  # dry run builds with target archive: only image.yml's archive jobs run, and none of them holds
+  # packages: write. The grant below stays on a dry run because GitHub refuses, at startup, a called
+  # workflow whose jobs ask for more than the caller grants, even jobs that will not run.
   images:
     name: Build and verify server images
-    needs: pins
+    needs: [release, pins]
     uses: ./.github/workflows/image.yml
+    with:
+      version: ${{ needs.release.outputs.version }}
+      target: ${{ needs.release.outputs.target }}
     permissions:
       contents: read
       packages: write
     secrets: inherit
 
-  # Builds and packs the CLI. No id-token here: nothing this job runs, the dependencies' build tools
-  # included, can reach the npm credential.
-  npm-pack:
-    name: Pack @sealant/mend
-    needs: pins
+  # The call above succeeds when every job in it was skipped, so this reads which acceptance
+  # passed: ghcr for a tag push, archive for a dry run. Everything that publishes waits for it.
+  acceptance:
+    name: Check this run's acceptance passed
+    needs: [release, images]
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    permissions:
-      contents: read
+    timeout-minutes: 5
+    permissions: {}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-        with:
-          persist-credentials: false
-      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
-      # No pnpm store cache: other jobs, running unowned code, write that cache.
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version-file: .node-version
-      - run: pnpm install --frozen-lockfile --ignore-scripts
-
-      # The git tag is the single version authority: overwrite the package version from it so the
-      # published version always matches the release. The commit goes in as gitHead, which the
-      # publish job checks and the release guards read.
-      - name: Set the version and commit from the tag
+      - name: Refuse unless this run's packaged acceptance passed
+        env:
+          ACCEPTED: ${{ needs.images.outputs.accepted }}
+          EXPECTED: ${{ needs.release.outputs.target }}
         run: |
-          VERSION="${GITHUB_REF_NAME#cli-}"
-          VERSION="${VERSION#v}"
-          cd apps/cli
-          npm version "$VERSION" --no-git-tag-version --allow-same-version
-          npm pkg set "gitHead=$GITHUB_SHA"
+          if [[ -z $EXPECTED || $ACCEPTED != "$EXPECTED" ]]; then
+            echo "::error::This run's $EXPECTED acceptance did not pass (image.yml reports '$ACCEPTED'). Nothing publishes."
+            exit 1
+          fi
+          echo "Packaged acceptance passed on $ACCEPTED."
 
-      - name: Build and pack
-        run: |
-          set -euo pipefail
-          pnpm --filter "@sealant/mend" run build
-          mkdir -p "$RUNNER_TEMP/tarballs"
-          (cd apps/cli && pnpm pack --pack-destination "$RUNNER_TEMP/tarballs")
-          ls -l "$RUNNER_TEMP/tarballs"
-
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: mend-tarball
-          path: ${{ runner.temp }}/tarballs/*.tgz
-          if-no-files-found: error
-          retention-days: 1
-
-  # Holds the npm credential and runs nothing from the repository: no checkout, no install. The
-  # artifact must be exactly the expected tarball; npm runs from an empty directory; the tarball is
-  # rebuilt from npm's own reading of it (npm's bundled pacote), with an allowlisted manifest, and
-  # that is what publishes. @sealant/mend's `next` stays on this approval-gated path
-  # (docs/adr/0015-next-channel.md): people install `@sealant/mend@next`.
+  # Holds the npm credential and runs nothing from the repository: no checkout, no install. It
+  # publishes exactly the tarball this run's acceptance installed: image.yml's mend-cli artifact,
+  # checked against this run's release manifest, never repacked. @sealant/mend's `next` stays on
+  # this approval-gated path (docs/adr/0015-next-channel.md): people install `@sealant/mend@next`.
   npm:
     name: Publish @sealant/mend
-    needs: [images, github-release, npm-pack]
+    needs: [images, acceptance, github-release]
+    # A tag push only: on a dry run this job is skipped, so it asks for no release environment and
+    # no id-token.
+    if: github.event_name == 'push'
     # Github-hosted runner on purpose: the OIDC id-token should be minted on
     # infrastructure GitHub controls.
     # npm trusted publishing (OIDC) needs a GitHub-hosted runner.
@@ -113,10 +152,15 @@ jobs:
           node-version: 24
           registry-url: https://registry.npmjs.org
 
+      # Both from this run: the tarball acceptance installed, and the manifest that records it.
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: mend-tarball
-          path: tarballs
+          name: mend-cli
+          path: cli
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-manifest
+          path: release
 
       # Under next, checked here, after the approval: two next tags approved in the wrong order
       # must not move `next` back. The pins job only saw the tags as they were when the run started.
@@ -124,13 +168,19 @@ jobs:
         run: |
           set -euo pipefail
           # --- republish ---
-          # republish.test.mjs runs this block as written, against a stub registry. The callers check the
-          # downloaded artifact directory first (check_artifacts), then run every npm command from a fresh
-          # empty directory, so no .npmrc in or near the artifact can configure npm. The tarball pack built is
-          # never published as it is: npm's own copy of pacote (no install, nothing unpinned loads) extracts
-          # it, package.json is rewritten from an allowlist (no `tag`, no scripts, no publishConfig but
-          # `access`), a root binding.gyp is refused (npm would add an install script for it), the rewritten
-          # manifest is checked, and `npm pack` builds the tarball that is published.
+          # republish.test.mjs runs this block as written, against a stub registry. publish_release checks the
+          # downloaded artifact directories first (check_artifacts), then runs every npm command from a fresh
+          # empty directory, so no .npmrc in or near an artifact can configure npm. What publishes is the
+          # run's own tarball, byte for byte: image.yml's cli job packed and normalized it once, acceptance
+          # installed it, and the run's release manifest records its sha512 and integrity. Nothing repacks it.
+          # It is refused unless the manifest is this release's and its sha512 is the file's, and unless npm's
+          # own copy of pacote (no install, nothing unpinned loads), extracting it, finds it already
+          # normalized: only allowlisted manifest fields (no `tag`, no scripts, no publishConfig but
+          # `access`), the expected name, version, channel and commit, no alias dependency, no root
+          # binding.gyp (npm would add an install script for it) and no .npmrc. That is
+          # scripts/normalize-npm-tarball.mjs --check, written out here because this job runs no repository
+          # file; republish.test.mjs holds the two to the same answers. The registry's dist.integrity must then
+          # be the manifest's.
           # Failures inside $(...) stop the job too. Registry and npm JSON reaches node on stdin, never as an
           # argument: Linux refuses one argument over 128 KB, and a package document outgrows that.
           shopt -s inherit_errexit
@@ -210,30 +260,59 @@ jobs:
             ' "$1" "$2"
           }
 
-          # Extracts <tarball> with pacote, rewrites and checks its manifest, repacks it; prints the new path.
-          rebuild_tarball() {
-            local tarball=$1 name=$2 version=$3 commit=$4 channel=$5 work packed pacote
+          # The integrity the release manifest <manifest> records for <tarball>, once the manifest is this
+          # release's (<version>, <commit>), names the tarball's file, and records its sha512 and integrity.
+          recorded_integrity() {
+            # shellcheck disable=SC2016 # JavaScript template literals, not shell expansions
+            node -e '
+              const fs = require("node:fs");
+              const path = require("node:path");
+              const [tarball, file, version, commit] = process.argv.slice(1);
+              const manifest = JSON.parse(fs.readFileSync(file, "utf8"));
+              const cli = manifest.cli ?? {};
+              const digest = require("node:crypto").createHash("sha512").update(fs.readFileSync(tarball)).digest();
+              const integrity = `sha512-${digest.toString("base64")}`;
+              const problems = [
+                manifest.version !== version && `the release manifest is for ${manifest.version}, not ${version}`,
+                manifest.commit !== commit && `the release manifest is from ${manifest.commit}, not ${commit}`,
+                cli.file !== path.basename(tarball) && `the release manifest names ${cli.file}, not ${path.basename(tarball)}`,
+                cli.sha512 !== digest.toString("hex") && `${path.basename(tarball)} has another sha512 than the release manifest records`,
+                cli.integrity !== integrity && `the release manifest records integrity ${cli.integrity}, not ${integrity}`,
+              ].filter(Boolean);
+              if (problems.length > 0) {
+                console.error(`::error::${problems.join("; ")}. Nothing was published.`);
+                process.exit(1);
+              }
+              process.stdout.write(integrity);
+            ' "$1" "$2" "$3" "$4"
+          }
+
+          # Refuses <tarball> unless pacote, extracting it, finds it already published-ready as <name>@<version>
+          # from <commit> under <channel>. It never rewrites or repacks it.
+          check_tarball() {
+            local tarball=$1 name=$2 version=$3 commit=$4 channel=$5 work pacote status=0
             pacote=${REPUBLISH_TEST_PACOTE:-$(npm root -g)/npm/node_modules/pacote}
             work=$(mktemp -d)
             # shellcheck disable=SC2016 # JavaScript template literals, not shell expansions
             node -e '
               const fs = require("node:fs");
               const path = require("node:path");
+              const { isDeepStrictEqual } = require("node:util");
               const [pacotePath, tarball, dir, name, version, commit, channel, keepText] = process.argv.slice(1);
               const pacote = require(pacotePath);
               const run = async () => {
                 await pacote.extract(`file:${path.resolve(tarball)}`, dir);
                 const read = JSON.parse(fs.readFileSync(path.join(dir, "package.json"), "utf8"));
-                const manifest = {};
-                for (const field of JSON.parse(keepText)) if (field in read) manifest[field] = read[field];
-                if (read.publishConfig?.access !== undefined) manifest.publishConfig = { access: read.publishConfig.access };
+                const normalized = {};
+                for (const field of JSON.parse(keepText)) if (field in read) normalized[field] = read[field];
+                if (read.publishConfig?.access !== undefined) normalized.publishConfig = { access: read.publishConfig.access };
                 const shape = channel === "next" ? /^\d+\.\d+\.\d+-next\.\d+$/ : /^\d+\.\d+\.\d+$/;
                 // A -next package depends on its siblings only as `npm:@sealant/<sibling>-next@<this version>`;
                 // anything else (and any alias at all outside the -next packages) is refused.
-                const isNextPackage = /^@sealant\/[a-z0-9-]+-next$/.test(String(manifest.name));
+                const isNextPackage = /^@sealant\/[a-z0-9-]+-next$/.test(String(read.name));
                 const dependencyProblems = ["dependencies", "peerDependencies", "optionalDependencies"].flatMap(
                   (field) =>
-                    Object.entries(manifest[field] ?? {}).flatMap(([dependency, spec]) => {
+                    Object.entries(read[field] ?? {}).flatMap(([dependency, spec]) => {
                       const alias = String(spec).startsWith("npm:");
                       if (!dependency.startsWith("@sealant/")) {
                         return alias ? [`${dependency} is an alias (${spec})`] : [];
@@ -243,40 +322,73 @@ jobs:
                       return alias ? [`${dependency} is an alias (${spec})`] : [];
                     }),
                 );
+                const extra = Object.keys(read).filter((field) => !(field in normalized));
+                const npmrc = fs
+                  .readdirSync(dir, { recursive: true, withFileTypes: true })
+                  .filter((entry) => entry.name === ".npmrc")
+                  .map((entry) => path.relative(dir, path.join(entry.parentPath, entry.name)));
                 const problems = [
-                  channel === "next" && name !== "@sealant/mend" && !isNextPackage &&
-                    `${manifest.name} is not a -next package`,
+                  channel === "next" && name !== "@sealant/mend" && !isNextPackage && `${read.name} is not a -next package`,
                   ...dependencyProblems,
-                  manifest.name !== name && `name ${manifest.name}, not ${name}`,
-                  manifest.version !== version && `version ${manifest.version}, not ${version}`,
-                  !shape.test(String(manifest.version)) && `${manifest.version} is not a ${channel} version`,
-                  manifest.gitHead !== commit && `gitHead ${manifest.gitHead}, not ${commit}`,
+                  read.name !== name && `name ${read.name}, not ${name}`,
+                  read.version !== version && `version ${read.version}, not ${version}`,
+                  !shape.test(String(read.version)) && `${read.version} is not a ${channel} version`,
+                  read.gitHead !== commit && `gitHead ${read.gitHead}, not ${commit}`,
                   fs.existsSync(path.join(dir, "binding.gyp")) && "a binding.gyp, which npm turns into an install script",
+                  extra.length > 0 && `not normalized: it keeps ${extra.join(", ")}`,
+                  extra.length === 0 && !isDeepStrictEqual(read.publishConfig, normalized.publishConfig) &&
+                    "not normalized: publishConfig holds more than access",
+                  npmrc.length > 0 && `not normalized: it holds ${npmrc.join(", ")}`,
                 ].filter(Boolean);
                 if (problems.length > 0) {
                   console.error(`::error::${name}: ${problems.join("; ")}`);
                   process.exit(1);
                 }
-                fs.writeFileSync(path.join(dir, "package.json"), `${JSON.stringify(manifest, null, 2)}\n`);
               };
               run().catch((error) => {
                 console.error(`::error::${name}: ${error.message}`);
                 process.exit(1);
               });
-            ' "$pacote" "$tarball" "$work/package" "$name" "$version" "$commit" "$channel" "$KEEP_FIELDS" >&2
-            # A packed .npmrc would configure the pack below; nothing else in the tree runs.
-            find "$work/package" -name .npmrc -delete
-            packed=$(cd "$work/package" && npm pack --ignore-scripts --json --pack-destination "$work")
-            printf '%s/%s\n' "$work" "$(node -e 'process.stdout.write(JSON.parse(require("node:fs").readFileSync(0, "utf8"))[0].filename)' <<<"$packed")"
+            ' "$pacote" "$tarball" "$work/package" "$name" "$version" "$commit" "$channel" "$KEEP_FIELDS" >&2 || status=$?
+            rm -rf "$work"
+            return "$status"
           }
 
-          # Publishes <tarball> as <name>@<version> from <commit> under <channel>; extra npm flags follow.
-          # A version already published from this commit is done; from another commit, refused. Under next,
-          # refused unless newer than the current next, read right before publishing, so a re-run of an old
-          # job cannot move next back.
-          publish_rebuilt() {
-            local tarball=$1 name=$2 version=$3 commit=$4 channel=$5 from current rebuilt
-            shift 5
+          # The dist.integrity the registry serves for <name>@<version>, retried: a version just published can
+          # take a moment to read back. Nothing after the last try fails, never passes.
+          published_integrity() {
+            local attempt integrity
+            for attempt in 1 2 3 4 5 6; do
+              integrity=$(npm view "$1@$2" dist.integrity 2>/dev/null || true)
+              if [[ -n $integrity ]]; then
+                printf '%s\n' "$integrity"
+                return 0
+              fi
+              sleep $((attempt * ${REPUBLISH_TEST_WAIT:-5}))
+            done
+            echo "::error::The registry serves no dist.integrity for $1@$2." >&2
+            return 1
+          }
+
+          # <name>@<version> must be published with <integrity>, the tarball acceptance installed. Anything
+          # else is an incident: never republish over it.
+          verify_integrity() {
+            local served
+            served=$(published_integrity "$1" "$2")
+            if [[ $served != "$3" ]]; then
+              echo "::error::INCIDENT: $1@$2 is published with integrity $served, not $3, the tarball this run accepted. Do not republish: deprecate $1@$2 and cut a new version (docs/operations/next-channel.md)."
+              return 1
+            fi
+            echo "$1@$2 is published with the integrity this run accepted."
+          }
+
+          # Publishes <tarball> as it is, as <name>@<version> from <commit> under <channel> with <integrity>;
+          # extra npm flags follow. A version already published from this commit is done once its integrity
+          # is checked; from another commit, refused. Under next, refused unless newer than the current next,
+          # read right before publishing, so a re-run of an old job cannot move next back.
+          publish_exact() {
+            local tarball=$1 name=$2 version=$3 commit=$4 channel=$5 integrity=$6 from current
+            shift 6
             from=$(published_from "$name" "$version")
             if [[ -n $from ]]; then
               if [[ $from != "$commit" ]]; then
@@ -284,7 +396,8 @@ jobs:
                 return 1
               fi
               echo "$name@$version is already published from this commit."
-              return 0
+              verify_integrity "$name" "$version" "$integrity"
+              return
             fi
             if [[ $channel == next ]]; then
               current=$(dist_tag "$name" next)
@@ -293,8 +406,25 @@ jobs:
                 return 1
               fi
             fi
-            rebuilt=$(rebuild_tarball "$tarball" "$name" "$version" "$commit" "$channel")
-            npm publish "$rebuilt" --tag "$channel" --access public --ignore-scripts "$@"
+            npm publish "$tarball" --tag "$channel" --access public --ignore-scripts "$@"
+            verify_integrity "$name" "$version" "$integrity"
+          }
+
+          # The release: <cli> holds exactly the run's tarball of <name>@<version>, <release> exactly its
+          # release-manifest.json. Checks both, moves to an empty directory, and publishes the tarball as it
+          # is from <commit> under <channel>; extra npm flags follow.
+          publish_release() {
+            local cli=$1 release=$2 name=$3 version=$4 commit=$5 channel=$6 file integrity
+            shift 6
+            file=${name#@}
+            file="${file//\//-}-$version.tgz"
+            check_artifacts "$cli" "$file"
+            check_artifacts "$release" release-manifest.json
+            # Every npm command runs from an empty directory: no project .npmrc can reach it.
+            cd "$(mktemp -d)"
+            integrity=$(recorded_integrity "$cli/$file" "$release/release-manifest.json" "$version" "$commit")
+            check_tarball "$cli/$file" "$name" "$version" "$commit" "$channel"
+            publish_exact "$cli/$file" "$name" "$version" "$commit" "$channel" "$integrity" "$@"
           }
           # --- end republish ---
 
@@ -302,17 +432,14 @@ jobs:
           version="${version#v}"
           channel=latest
           if [[ "$version" == *-* ]]; then channel=next; fi
-          artifacts="$GITHUB_WORKSPACE/tarballs"
-          tarball="sealant-mend-$version.tgz"
-          check_artifacts "$artifacts" "$tarball"
-          # Every npm command runs from an empty directory: no project .npmrc can reach it.
-          cd "$(mktemp -d)"
-          publish_rebuilt "$artifacts/$tarball" "@sealant/mend" "$version" "$GITHUB_SHA" "$channel" --provenance
+          publish_release "$GITHUB_WORKSPACE/cli" "$GITHUB_WORKSPACE/release" "@sealant/mend" \
+            "$version" "$GITHUB_SHA" "$channel" --provenance
 
   # Attach setup assets at the canonical /releases/download/vVERSION URLs.
   github-release:
     name: Publish and verify setup assets
-    needs: images
+    needs: [images, acceptance]
+    if: github.event_name == 'push'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -396,14 +523,21 @@ jobs:
             cmp "$source" "$downloads/$asset"
           done
 
+  # `latest` moves to the index digest this run accepted, never to whatever `:<version>` names when
+  # this runs: each tag must still resolve to the manifest's index, all checked before any moves.
   promote-images:
     name: Promote the complete stable release
     needs: [npm, github-release]
+    if: github.event_name == 'push'
     runs-on: ubuntu-24.04
     permissions:
       contents: write
       packages: write
     steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-manifest
+          path: release
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ghcr.io
@@ -412,12 +546,35 @@ jobs:
       - name: Update latest after release publication
         env:
           GH_TOKEN: ${{ github.token }}
+          MANIFEST: ${{ github.workspace }}/release/release-manifest.json
         run: |
+          set -euo pipefail
           version="${GITHUB_REF_NAME#cli-}"
           version="${version#v}"
           if [[ "$version" == *-* ]]; then exit 0; fi
-          for image in mend mend-api mend-web; do
+          if ! jq -e --arg version "$version" --arg commit "$GITHUB_SHA" \
+            '.version == $version and .commit == $commit' "$MANIFEST" >/dev/null; then
+            echo "::error::The release manifest is not this release's ($version from $GITHUB_SHA)."
+            exit 1
+          fi
+          images=(mend mend-api mend-web)
+          declare -A index
+          for image in "${images[@]}"; do
             repository="ghcr.io/$GITHUB_REPOSITORY_OWNER/$image"
-            docker buildx imagetools create --tag "$repository:latest" "$repository:$version"
+            index[$image]=$(jq -r --arg image "$image" '.images[$image].index // ""' "$MANIFEST")
+            if [[ ! ${index[$image]} =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              echo "::error::The release manifest records no index digest for $image."
+              exit 1
+            fi
+            current=$(docker buildx imagetools inspect "$repository:$version" --format '{{json .Manifest}}' |
+              jq -r .digest)
+            if [[ $current != "${index[$image]}" ]]; then
+              echo "::error::$repository:$version resolves to $current, not ${index[$image]}, the index this run accepted. latest stays."
+              exit 1
+            fi
+          done
+          for image in "${images[@]}"; do
+            repository="ghcr.io/$GITHUB_REPOSITORY_OWNER/$image"
+            docker buildx imagetools create --tag "$repository:latest" "$repository@${index[$image]}"
           done
           gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --latest

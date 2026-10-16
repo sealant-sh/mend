@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   chmodSync,
   existsSync,
@@ -369,11 +370,14 @@ test("the actual image merge shell propagates create and final-inspection failur
   }
 });
 
-test("npm waits for verified images and public setup assets", () => {
+test("npm waits for verified images, this run's passed acceptance and public setup assets", () => {
   assert.ok(dependencies("npm").includes("images"));
+  assert.ok(dependencies("npm").includes("acceptance"));
   assert.ok(dependencies("npm").includes("github-release"));
   assert.ok(dependencies("github-release").includes("images"));
+  assert.ok(dependencies("github-release").includes("acceptance"));
   assert.ok(!dependencies("github-release").includes("npm"));
+  assert.ok(dependencies("acceptance").includes("images"));
 });
 
 test("asset verification uses anonymous exact-version downloads and byte comparison", () => {
@@ -415,11 +419,11 @@ test("stable latest promotion waits for npm and the GitHub release", () => {
 test("nothing builds or publishes before the pins are checked", () => {
   const pins = job("pins");
   assert.match(pins, /fetch-depth: 0/);
-  assert.match(pins, /node scripts\/check-release-pins\.mjs "\$GITHUB_REF_NAME"/);
-  // Both actual build jobs need the gate: images calls image.yml; npm-pack builds and packs the CLI.
-  for (const name of ["images", "npm-pack"]) {
-    assert.ok(dependencies(name).includes("pins"), `${name} must wait for checked pins`);
-  }
+  assert.match(pins, /node scripts\/check-release-pins\.mjs "v\$VERSION"/);
+  assert.match(pins, /VERSION: \$\{\{ needs\.release\.outputs\.version \}\}/);
+  // The only build is image.yml's, the CLI tarball included (its cli job): it needs the gate.
+  assert.ok(dependencies("images").includes("pins"), "images must wait for checked pins");
+  assert.equal(releaseJobs["npm-pack"], undefined);
   // npm, the GitHub release and the latest promotion all wait on images, so on the pins too.
   assert.ok(dependencies("github-release").includes("images"));
 });
@@ -520,23 +524,312 @@ test("image.yml pushes a version once, and only its own dispatch is held to main
   assert.match(image, /ref: \$\{\{ needs\.version\.outputs\.commit \}\}/);
 });
 
-test("npm publishes a tarball rebuilt from npm's own reading, with no repository code", () => {
+test("npm publishes this run's accepted tarball as it is, with no repository code", () => {
   const npm = job("npm");
-  // The credential job checks out nothing; building happens in npm-pack, which holds no token.
+  // The credential job checks out nothing and installs nothing; image.yml's cli job, which holds no
+  // token, packed the tarball.
   assert.doesNotMatch(npm, /actions\/checkout/);
   assert.match(npm, /id-token: write/);
-  assert.doesNotMatch(job("npm-pack"), /id-token/);
-  assert.ok(dependencies("npm").includes("npm-pack"));
-  // The republish block (run against a stub registry by republish.test.mjs) does the publishing,
-  // under next re-checking the current next after the approval.
+  const downloads = releaseJobs.npm.steps.filter((step) =>
+    step.uses?.startsWith("actions/download-artifact@"),
+  );
+  assert.deepEqual(
+    downloads.map((step) => step.with),
+    [
+      { name: "mend-cli", path: "cli" },
+      { name: "release-manifest", path: "release" },
+    ],
+  );
+  // The republish block (run against a stub registry by republish.test.mjs) does the publishing:
+  // the manifest's sha512, the already-normalized check, the file itself, then the integrity.
   assert.match(npm, /# --- republish ---/);
-  assert.match(npm, /check_artifacts "\$artifacts" "\$tarball"/);
-  assert.match(npm, /cd "\$\(mktemp -d\)"/);
   assert.match(
     npm,
-    /publish_rebuilt "\$artifacts\/\$tarball" "@sealant\/mend" "\$version" "\$GITHUB_SHA" "\$channel" --provenance/,
+    /publish_release "\$GITHUB_WORKSPACE\/cli" "\$GITHUB_WORKSPACE\/release" "@sealant\/mend" \\\n\s+"\$version" "\$GITHUB_SHA" "\$channel" --provenance/,
   );
+  assert.match(
+    npm,
+    /npm publish "\$tarball" --tag "\$channel" --access public --ignore-scripts "\$@"/,
+  );
+  assert.match(npm, /npm view "\$1@\$2" dist\.integrity/);
+  assert.match(npm, /::error::INCIDENT/);
+  // Nothing repacks: no npm pack, no rewritten package.json.
+  assert.doesNotMatch(npm, /npm pack|writeFileSync|rebuild_tarball|publish_rebuilt/);
   // npm's own pacote, nothing installed: no unpinned code loads beside the credential.
   assert.doesNotMatch(npm, /npm install|pacote@/);
-  assert.doesNotMatch(job("npm-pack"), /cache: pnpm/);
+});
+
+// --- the dry run ---
+
+const releaseDocument = parse(releaseWorkflow);
+const releaseJobs = releaseDocument.jobs;
+const imageDocument = parse(
+  readFileSync(new URL("../.github/workflows/image.yml", import.meta.url), "utf8"),
+);
+const resolveStep = releaseJobs.release.steps.find((step) => step.id === "resolve");
+const resolve = (environment) => {
+  const directory = mkdtempSync(path.join(tmpdir(), "release-resolve-"));
+  const output = path.join(directory, "output");
+  writeFileSync(output, "");
+  const result = spawnSync("bash", ["--noprofile", "--norc", "-e", "-c", resolveStep.run], {
+    encoding: "utf8",
+    env: {
+      PATH: "/usr/bin:/bin",
+      GITHUB_RUN_ID: "38700000001",
+      GITHUB_RUN_ATTEMPT: "2",
+      GITHUB_OUTPUT: output,
+      ...environment,
+    },
+  });
+  const values = Object.fromEntries(
+    readFileSync(output, "utf8")
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => line.split("=")),
+  );
+  rmSync(directory, { recursive: true, force: true });
+  return { status: result.status, stderr: result.stdout + result.stderr, ...values };
+};
+
+test("a dispatch is a dry run or nothing, and its version is always derived from the run", () => {
+  assert.deepEqual(releaseDocument.on.workflow_dispatch.inputs, {
+    dry_run: {
+      description: "Build, accept and check a release without publishing anything",
+      required: true,
+      type: "boolean",
+    },
+  });
+  assert.equal(resolveStep.env.DRY_RUN, "${{ inputs.dry_run }}");
+  const dispatch = { GITHUB_EVENT_NAME: "workflow_dispatch", GITHUB_REF: "refs/heads/feature" };
+  const dry = resolve({ ...dispatch, DRY_RUN: "true" });
+  assert.equal(dry.status, 0, dry.stderr);
+  assert.equal(dry.version, "0.0.0-dryrun.38700000001.2");
+  assert.equal(dry.target, "archive");
+  // Nothing the dispatcher controls names the version: not the ref, not a tag-shaped ref name.
+  assert.equal(
+    resolve({
+      ...dispatch,
+      DRY_RUN: "true",
+      GITHUB_REF: "refs/tags/v0.37.0",
+      GITHUB_REF_NAME: "v0.37.0",
+      VERSION: "0.37.0",
+    }).version,
+    "0.0.0-dryrun.38700000001.2",
+  );
+  for (const value of ["false", "", "1"]) {
+    const refused = resolve({ ...dispatch, DRY_RUN: value });
+    assert.equal(refused.status, 1, value);
+    assert.match(refused.stderr, /only dry-runs a release/);
+    assert.equal(refused.version, undefined);
+  }
+  // A tag push releases its tag, to ghcr.
+  const tag = resolve({
+    GITHUB_EVENT_NAME: "push",
+    GITHUB_REF: "refs/tags/v0.37.0-next.4",
+    GITHUB_REF_NAME: "v0.37.0-next.4",
+    DRY_RUN: "",
+  });
+  assert.deepEqual([tag.status, tag.version, tag.target], [0, "0.37.0-next.4", "ghcr"]);
+  assert.equal(
+    resolve({ GITHUB_EVENT_NAME: "push", GITHUB_REF: "refs/heads/main", GITHUB_REF_NAME: "main" })
+      .status,
+    1,
+  );
+  assert.equal(resolve({ GITHUB_EVENT_NAME: "schedule" }).status, 1);
+  // Pins and image.yml take that version, and image.yml the target that goes with it.
+  assert.deepEqual(releaseJobs.images.with, {
+    version: "${{ needs.release.outputs.version }}",
+    target: "${{ needs.release.outputs.target }}",
+  });
+  assert.ok(releaseJobs.pins.needs.includes("release"));
+});
+
+/** A job that publishes or writes: an environment, or any write permission. */
+const writes = (definition) =>
+  definition.environment !== undefined ||
+  Object.values(definition.permissions ?? {}).some((level) => level === "write");
+
+test("on a dispatch, no job that publishes, writes, holds an environment or mints an id-token runs", () => {
+  const publishing = Object.entries(releaseJobs).filter(
+    ([, definition]) => !definition.uses && writes(definition),
+  );
+  assert.deepEqual(publishing.map(([name]) => name).toSorted(), [
+    "github-release",
+    "npm",
+    "promote-images",
+  ]);
+  for (const [name, definition] of publishing)
+    assert.equal(
+      definition.if,
+      "github.event_name == 'push'",
+      `${name} must run on a tag push only`,
+    );
+  // image.yml's call keeps the packages: write ceiling (GitHub checks it at startup), but on a dry
+  // run its target is archive, and every image.yml job holding packages: write runs for ghcr only.
+  for (const [name, definition] of Object.entries(imageDocument.jobs))
+    if (Object.values(definition.permissions ?? {}).includes("write"))
+      assert.equal(definition.if, "inputs.target == 'ghcr'", `image.yml ${name}`);
+  // Nothing in this workflow can delete or rewrite artifacts or runs.
+  for (const [name, definition] of Object.entries(releaseJobs))
+    assert.notEqual(definition.permissions?.actions, "write", name);
+  assert.deepEqual(releaseDocument.permissions, { contents: "read" });
+});
+
+test("the acceptance gate passes only on the acceptance this run's target ran", () => {
+  const gate = releaseJobs.acceptance;
+  assert.deepEqual(gate.permissions, {});
+  const [step] = gate.steps;
+  assert.equal(step.env.ACCEPTED, "${{ needs.images.outputs.accepted }}");
+  assert.equal(step.env.EXPECTED, "${{ needs.release.outputs.target }}");
+  const run = (ACCEPTED, EXPECTED) =>
+    spawnSync("bash", ["--noprofile", "--norc", "-e", "-c", step.run], {
+      env: { PATH: "/usr/bin:/bin", ACCEPTED, EXPECTED },
+    }).status;
+  assert.equal(run("ghcr", "ghcr"), 0);
+  assert.equal(run("archive", "archive"), 0);
+  // A call whose jobs all skipped reports nothing; an archive acceptance never gates a publish.
+  assert.equal(run("", "ghcr"), 1);
+  assert.equal(run("archive", "ghcr"), 1);
+  assert.equal(run("", ""), 1);
+  // image.yml reports an acceptance only from the step after the acceptance itself.
+  assert.equal(
+    imageDocument.on.workflow_call.outputs.accepted.value,
+    "${{ jobs.packaged-smoke.outputs.accepted || jobs.archive-acceptance.outputs.accepted }}",
+  );
+  for (const [name, target] of [
+    ["packaged-smoke", "ghcr"],
+    ["archive-acceptance", "archive"],
+  ]) {
+    const { steps } = imageDocument.jobs[name];
+    const accepted = steps.findIndex((entry) => entry.id === "accepted");
+    assert.equal(imageDocument.jobs[name].outputs.accepted, "${{ steps.accepted.outputs.target }}");
+    assert.equal(steps[accepted - 1].run, "node scripts/check-packaged-server.mjs");
+    assert.equal(steps[accepted].run, `echo "target=${target}" >>"$GITHUB_OUTPUT"`);
+    assert.equal(steps[accepted].if, undefined);
+  }
+});
+
+const indexOf = (image) => `sha256:${createHash("sha256").update(image).digest("hex")}`;
+const promoted = (image) => `ghcr.io/sealant-ci/${image}`;
+
+/** A recorded call's imagetools verb (`docker buildx imagetools <verb>`). */
+const verb = ([, , , action]) => action;
+
+/** promote-images' step as written, against stand-in docker and gh, and the real jq. */
+const promote = (t, { version = "1.2.3", tags = {}, manifest = {} } = {}) => {
+  const directory = mkdtempSync(path.join(tmpdir(), "mend-promote-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const bin = path.join(directory, "bin");
+  mkdirSync(bin);
+  const calls = path.join(directory, "calls.jsonl");
+  writeFileSync(calls, "");
+  const command = `#!${process.execPath}
+const { appendFileSync } = require("node:fs");
+const args = process.argv.slice(2);
+const name = require("node:path").basename(process.argv[1]);
+appendFileSync(${JSON.stringify(calls)}, JSON.stringify([name, ...args]) + "\\n");
+const tags = ${JSON.stringify(tags)};
+if (name === "docker" && args[2] === "inspect") {
+  if (!(args[3] in tags)) process.exit(1);
+  console.log(JSON.stringify({ mediaType: "application/vnd.oci.image.index.v1+json", digest: tags[args[3]] }));
+}
+`;
+  for (const name of ["docker", "gh"]) {
+    writeFileSync(path.join(bin, name), command);
+    chmodSync(path.join(bin, name), 0o755);
+  }
+  const file = path.join(directory, "release-manifest.json");
+  writeFileSync(
+    file,
+    JSON.stringify({
+      version,
+      commit: "f".repeat(40),
+      images: Object.fromEntries(
+        ["mend", "mend-before", "mend-api", "mend-web"].map((image) => [
+          image,
+          { index: indexOf(image) },
+        ]),
+      ),
+      ...manifest,
+    }),
+  );
+  const step = releaseJobs["promote-images"].steps.find(
+    (entry) => entry.name === "Update latest after release publication",
+  );
+  const result = spawnSync("bash", ["--noprofile", "--norc", "-e", "-c", step.run], {
+    encoding: "utf8",
+    env: {
+      PATH: `${bin}:${process.env.PATH}`,
+      GITHUB_REF_NAME: `v${version}`,
+      GITHUB_SHA: "f".repeat(40),
+      GITHUB_REPOSITORY: "sealant-sh/Mend",
+      GITHUB_REPOSITORY_OWNER: "sealant-ci",
+      MANIFEST: file,
+    },
+  });
+  return {
+    ...result,
+    calls: readFileSync(calls, "utf8")
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line)),
+  };
+};
+
+test("latest moves only to the index digests this run's manifest records, all checked first", (t) => {
+  assert.deepEqual(
+    releaseJobs["promote-images"].steps.find((step) =>
+      step.uses?.startsWith("actions/download-artifact@"),
+    ).with,
+    { name: "release-manifest", path: "release" },
+  );
+  const images = ["mend", "mend-api", "mend-web"];
+  const current = Object.fromEntries(
+    images.map((image) => [`${promoted(image)}:1.2.3`, indexOf(image)]),
+  );
+  const result = promote(t, { tags: current });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(
+    result.calls.filter((call) => verb(call) === "create"),
+    images.map((image) => [
+      "docker",
+      "buildx",
+      "imagetools",
+      "create",
+      "--tag",
+      `${promoted(image)}:latest`,
+      `${promoted(image)}@${indexOf(image)}`,
+    ]),
+  );
+  // Every tag is checked before latest moves at all.
+  assert.ok(
+    result.calls.findLastIndex((call) => verb(call) === "inspect") <
+      result.calls.findIndex((call) => verb(call) === "create"),
+  );
+  assert.deepEqual(result.calls.at(-1), [
+    "gh",
+    "release",
+    "edit",
+    "v1.2.3",
+    "--repo",
+    "sealant-sh/Mend",
+    "--latest",
+  ]);
+  // A version tag that moved since acceptance: latest stays, for every image.
+  const moved = promote(t, {
+    tags: { ...current, [`${promoted("mend-web")}:1.2.3`]: `sha256:${"e".repeat(64)}` },
+  });
+  assert.equal(moved.status, 1);
+  assert.match(moved.stdout + moved.stderr, /resolves to sha256:e{64}, not .*latest stays/);
+  assert.ok(moved.calls.every((call) => call[0] === "docker" && verb(call) === "inspect"));
+  // Another release's manifest, or one without an index, moves nothing.
+  for (const manifest of [{ version: "1.2.2" }, { commit: "a".repeat(40) }, { images: {} }]) {
+    const refused = promote(t, { tags: current, manifest });
+    assert.equal(refused.status, 1, JSON.stringify(manifest));
+    assert.ok(refused.calls.every((call) => verb(call) !== "create"));
+  }
+  // A next build moves nothing at all.
+  const next = promote(t, { version: "1.2.4-next.3", tags: current });
+  assert.equal(next.status, 0);
+  assert.deepEqual(next.calls, []);
 });
