@@ -1072,10 +1072,22 @@ function* keysOf(node, seen = new Set()) {
   }
 }
 
+/** Every string value in a parsed YAML document, decoded, with the path to it. */
+function* stringsOf(node, at = "", seen = new Set()) {
+  if (typeof node === "string") yield [at, node];
+  if (node === null || typeof node !== "object" || seen.has(node)) return;
+  seen.add(node);
+  for (const [key, value] of Object.entries(node))
+    yield* stringsOf(value, at === "" ? key : `${at}.${key}`, seen);
+}
+
 /**
  * The problems in <workflows> (file name → text), and the release graph it read: release-cli.yml
  * and every workflow it calls through `uses: ./.github/workflows/…`, transitively.
  *
+ * Rules 1 and 2 read each line of a workflow twice: as written, comments included, and in every
+ * string value YAML decodes from it, which is what the runner hands Bash or sets in the environment
+ * (`run: "… \"$GITHUB_\x45NV\""` is written without GITHUB_ENV and decodes to it).
  * 1. No file in the release graph contains any text of REFUSED_IN_RELEASE.
  * 2. A line naming an override is one of OVERRIDE_LINES in release-cli.yml (and does not continue
  *    the line before it); in any other workflow, no line names one.
@@ -1089,6 +1101,8 @@ function* keysOf(node, seen = new Set()) {
  * does not call.
  *
  * What a text scan of the workflows cannot see:
+ * - a workflow the graph does not follow: a remote reusable workflow (`owner/repo/…@ref`) or a
+ *   local composite action (`./.github/actions/…`); none is in the release graph today;
  * - an action a release job uses, or a repository script it runs, writing $GITHUB_ENV or setting
  *   either variable when it runs (the git grep in the test below keeps the names out of every
  *   other tracked file, which covers only scripts that spell them);
@@ -1115,19 +1129,23 @@ function overrideProblems(workflows) {
     }
   }
   for (const [file, text] of Object.entries(workflows)) {
-    const lines = text.split("\n");
-    for (const [index, line] of lines.entries()) {
-      const where = `${file}:${index + 1}`;
-      if (graph.has(file))
-        for (const [pattern, what] of REFUSED_IN_RELEASE)
-          if (pattern.test(line)) problems.push(`${where} names ${what}: ${line.trim()}`);
-      if (!NAMED.test(line)) continue;
-      const allowed =
-        file === "release-cli.yml" &&
-        OVERRIDE_LINES.has(line.trim()) &&
-        !(lines[index - 1] ?? "").trimEnd().endsWith("\\");
-      if (!allowed)
-        problems.push(`${where} names an override other than as allowed: ${line.trim()}`);
+    const sources = [[file, text]];
+    for (const [at, value] of stringsOf(parsed[file])) sources.push([`${file} ${at}`, value]);
+    for (const [source, body] of sources) {
+      const lines = body.split("\n");
+      for (const [index, line] of lines.entries()) {
+        const where = `${source}:${index + 1}`;
+        if (graph.has(file))
+          for (const [pattern, what] of REFUSED_IN_RELEASE)
+            if (pattern.test(line)) problems.push(`${where} names ${what}: ${line.trim()}`);
+        if (!NAMED.test(line)) continue;
+        const allowed =
+          file === "release-cli.yml" &&
+          OVERRIDE_LINES.has(line.trim()) &&
+          !(lines[index - 1] ?? "").trimEnd().endsWith("\\");
+        if (!allowed)
+          problems.push(`${where} names an override other than as allowed: ${line.trim()}`);
+      }
     }
     for (const key of keysOf(parsed[file]))
       if (OVERRIDES.some((name) => name.toLowerCase() === key.toLowerCase()))
@@ -1194,6 +1212,9 @@ test("the guard refuses each way a mutation sets an override in a release workfl
   const GITHUB_ENV = /names GITHUB_ENV/;
   const LINE = /names an override other than as allowed/;
   const KEY = /as a key/;
+  // The same rules, caught only in a string YAML decoded: the path after the file name says so.
+  const DECODED_GITHUB_ENV = /^[\w.-]+ \S+:\d+ names GITHUB_ENV/;
+  const DECODED_LINE = /^[\w.-]+ \S+:\d+ names an override other than as allowed/;
   for (const [form, mutated, ...expected] of [
     // #1034: a multiline write.
     [
@@ -1327,6 +1348,38 @@ test("the guard refuses each way a mutation sets an override in a release workfl
       ]),
       LINE,
       KEY,
+    ],
+    // Escapes YAML decodes: the source names neither GITHUB_ENV nor an override, the decoded value
+    // does, and Bash runs the decoded value.
+    [
+      "GITHUB_ENV escaped in a double-quoted run",
+      withStep(workflows, "release-cli.yml", "npm", [
+        String.raw`  run: "printf '%s%s=0\\n' RELEASE_TEST_ RETRY_MS >> \"$GITHUB_\x45NV\""`,
+      ]),
+      DECODED_GITHUB_ENV,
+    ],
+    [
+      "an export escaped in a double-quoted run",
+      withStep(workflows, "release-cli.yml", "npm", [
+        String.raw`  run: "export REPUBLISH_TEST_\x57AIT=0"`,
+      ]),
+      DECODED_LINE,
+    ],
+    [
+      "an assignment escaped in a double-quoted run",
+      withStep(workflows, "image.yml", "build", [
+        String.raw`  run: "RELEASE_TEST_RETRY_\x4dS=0 node publish.mjs"`,
+      ]),
+      DECODED_LINE,
+    ],
+    [
+      "GITHUB_ENV escaped in a step env value",
+      withStep(workflows, "release-cli.yml", "npm", [
+        "  env:",
+        String.raw`    TARGET: "GITHUB_\x45NV"`,
+        "  run: printf '%s%s=0\\n' RELEASE_TEST_ RETRY_MS >> \"${!TARGET}\"",
+      ]),
+      DECODED_GITHUB_ENV,
     ],
     // The names belong to release-cli.yml alone: even an allowed read fails anywhere else.
     [
