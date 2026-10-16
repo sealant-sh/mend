@@ -895,6 +895,9 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .node-version
       - name: Extract this version's changelog section
         run: |
           VERSION="${GITHUB_REF_NAME#cli-}"
@@ -934,30 +937,64 @@ jobs:
           - \`ghcr.io/sealant-sh/mend:$VERSION\` — complete application bundle; Postgres runs separately
           - Versioned Docker setup assets attached below; \`mend server setup\` manages them
           NOTES
+          # A stable release says which upgrade from a stable release a reviewed waiver
+          # (release/upgrade-waivers.json at this commit) stood in for; image.yml read the same file.
+          waived=$(node scripts/upgrade-window.mjs notes "$VERSION")
+          if [[ -n $waived ]]; then printf '\n%s\n' "$waived" >> release-notes.md; fi
+      # A published release is never patched: with immutable releases on, an upload to one is
+      # refused, and gh release create already uploads every asset to a draft before it publishes
+      # (deleting the draft when that fails). So a published release with every asset is a retry,
+      # one missing an asset is broken, fixed only by a new version. A draft for the tag is what a
+      # runner killed mid-upload leaves: deleted, never reused, since its assets may be partial.
+      # gh release view finds such a draft too (cli/cli pkg/cmd/release/shared/fetch.go,
+      # fetchDraftRelease), so the releases are listed and told apart here, every read before any
+      # write.
       - name: Create the release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
           VERSION="${GITHUB_REF_NAME#cli-}"
           VERSION="${VERSION#v}"
           flags=()
           if [[ "$VERSION" == *-* ]]; then flags+=(--prerelease); fi
           assets=(deploy/docker/compose.v2.yaml deploy/docker/postgres-init.sh deploy/docker/setup-contract.v2.json install.sh)
-          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            # Retry partial uploads without replacing an already published asset.
-            existing="$(gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name')"
-            for source in "${assets[@]}"; do
-              if ! grep -Fqx "${source##*/}" <<< "$existing"; then
-                gh release upload "$GITHUB_REF_NAME" "$source"
+          listed=$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100")
+          releases=$(jq -cs --arg tag "$GITHUB_REF_NAME" \
+            '[.[][] | select(.tag_name == $tag) | {id, draft, assets: [.assets[].name]}]' <<<"$listed")
+          published=$(jq -c '[.[] | select(.draft == false)]' <<<"$releases")
+          drafts=$(jq -r '.[] | select(.draft == true) | .id' <<<"$releases")
+          case $(jq length <<<"$published") in
+            0) ;;
+            1)
+              missing=()
+              for source in "${assets[@]}"; do
+                if ! jq -e --arg name "${source##*/}" '.[0].assets | index($name) != null' \
+                  <<<"$published" >/dev/null; then
+                  missing+=("${source##*/}")
+                fi
+              done
+              if ((${#missing[@]} > 0)); then
+                echo "::error::published release is missing an asset; cut a new version (missing: ${missing[*]})"
+                exit 1
               fi
-            done
-          else
-            gh release create "$GITHUB_REF_NAME" "${flags[@]}" "${assets[@]}" \
-              --title "Mend ${VERSION}" \
-              --notes-file release-notes.md \
-              --latest=false \
-              --verify-tag
-          fi
+              echo "$GITHUB_REF_NAME is published with every asset: a retry changes nothing."
+              exit 0
+              ;;
+            *)
+              echo "::error::More than one published release is tagged $GITHUB_REF_NAME."
+              exit 1
+              ;;
+          esac
+          for id in $drafts; do
+            echo "Deleting draft release $id for $GITHUB_REF_NAME, left by an earlier attempt."
+            gh api --method DELETE "repos/$GITHUB_REPOSITORY/releases/$id"
+          done
+          gh release create "$GITHUB_REF_NAME" "${flags[@]}" "${assets[@]}" \
+            --title "Mend ${VERSION}" \
+            --notes-file release-notes.md \
+            --latest=false \
+            --verify-tag
       - name: Verify anonymous setup downloads before npm publication
         run: |
           set -euo pipefail

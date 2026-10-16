@@ -226,6 +226,7 @@ test("packaging retains browser, Docker, OpenTofu and acceptance contracts in it
     "scripts/check-packaged-server.test.mjs",
     "scripts/release-publication.test.mjs",
     "scripts/ghcr-staging-cleanup.test.mjs",
+    "scripts/upgrade-window.test.mjs",
     "scripts/release-manifest.test.mjs",
     "scripts/packaged-ssh-acceptance.test.mjs",
     "scripts/packaged-git-access-acceptance.test.mjs",

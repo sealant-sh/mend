@@ -128,6 +128,84 @@ offline from the archive once its platform manifest digest matches the manifest.
 after one day, as run artifacts; nothing deletes them sooner, since that would need `actions: write`
 in every caller of image.yml, a release's included.
 
+### The upgrade window
+
+Packaged acceptance also upgrades from the releases a server may really be on: image.yml's
+`previous-upgrade` (ghcr) and `archive-previous-upgrade` (archive) jobs, one per release in the
+window and per arch, beside the same-source acceptance (`scripts/check-previous-upgrade.mjs`).
+release-cli.yml's `acceptance` gate requires them: image.yml reports a target accepted only when
+both acceptances passed.
+
+The window (`scripts/upgrade-window.mjs`, the `upgrade-window` job):
+
+- **A stable candidate** `X.Y.Z` upgrades from the highest stable release below it.
+- **A next candidate** `X.Y.Z-next.N` upgrades from the newest next build below it, and from the
+  highest stable release below it. A next build older than that stable release is left out: a server
+  on it moves to the stable release first.
+- **A dry run**, `X.Y.Z-next.N.dryrun.<run>.<attempt>`, takes the window of `X.Y.Z-next.N`, with
+  `X.Y.Z-next.N` itself when it is published, since the stamp sorts above it. It runs the whole
+  scenario, the upgrade included.
+- **A dev or acceptance build** (`0.0.0-dev.*`, `0.0.0-acceptance.*`, and dry runs from before the
+  current stamp) takes the window of the next build main would release now,
+  `node scripts/next-version.mjs --package apps/cli origin/main`. It is stamped `0.0.0-*`, which
+  orders below every release, and the CLI refuses that as a downgrade: such a run installs and seeds
+  each release and reports the upgrade itself as NOT TESTED.
+
+The releases come from npm's list for `@sealant/mend` and must agree with the live markers, read as
+the stable guards read them: npm's `latest` and `next`, GitHub's latest release, and the version
+label of ghcr's `mend`, `mend-api` and `mend-web` `:latest`. Only a real absence is absent (a 404, a
+dist-tag npm does not have, buildx's not-found); a marker in the wrong shape fails the run, as does
+npm's `next` inside the window when npm's list lacks it.
+
+**Stable pins are committed.** `release/upgrade-from.json` holds, for each stable release, its npm
+integrity and publish time, its `mend` index digest, the sha256 of its four setup assets, and the
+digests of the images its setup starts beside Mend (Postgres and Garage for 0.35.1). Those
+support-image digests are the ones their tags named on 2026-10-16, when the file was written, not
+necessarily the ones the release first ran with. `mend-api` and `mend-web` are not pinned: the
+scenario runs the bundle image only. `release/upgrade-from/<version>/` holds a `package.json` and a
+lockfile for that release's CLI, installed with `npm ci`: the CLI ships no lockfile and depends on
+version ranges, so without one its dependencies would drift. **Each stable release's pull request
+adds the stable release before it**: read every value anonymously from npm, the GitHub release and
+ghcr, write the lockfile once with
+`npm install --package-lock-only --ignore-scripts --before=<that release's npm publish time + 1 s>`,
+and check the entry against the artifacts with
+`MEND_UPGRADE_FROM=<version> node scripts/check-previous-upgrade.mjs --prepare-only`.
+
+**A next build's pins are read live**, never committed, and none needs a pull request: the integrity
+and publish time npm records for it; the index digest ghcr serves for `mend:<version>`, whose
+version label must be the version; and the sha256 GitHub records for each release asset on upload
+(the `digest` field of the release API; releases carry no checksum file), each asset then downloaded
+and checked against it. Its CLI is installed as npm resolved it when it was published,
+`npm install --before=<publish time + 1 s>`, and the resulting lock must bind npm's integrity. Its
+setup pulls the images it starts beside Mend as it would for a user; their digests are not pinned.
+Every resolved pin is written to the run summary. The limits of those sources: a release asset can
+be replaced by anyone who can write the repository, unless immutable releases are on, and the API's
+digest then follows the replacement; and a ghcr `:<version>` tag written before staging and
+`finalize-images` (#1025) was never protected against an overwrite.
+
+**Failures, and what the job leaves.** The scenario says whose a failure is: HARNESS FAILURE when
+the script or an artifact it fetched went wrong, PRODUCT FAILURE when Mend's own setup, upgrade or
+data did. On a failure the job keeps the server's logs and `mend server status` as an artifact,
+`previous-upgrade-<target>-<from>--<arch>`. The scenario cleans up nothing, on success or failure:
+it runs on a fresh hosted runner, and is not safe to run on a workstation's Docker daemon.
+
+**Waivers.** When a release cannot be installed or upgraded from (a deleted asset, a release from
+before the pins could exist), the run fails with the reason; it never skips. Yiannis may approve a
+waiver instead: an entry in `release/upgrade-waivers.json`, `{version, from, reason, approvedBy}`,
+merged in a pull request he approves. `version` must equal the candidate exactly, so a waiver never
+carries forward to the next release. The transition is then reported as waived, with the reason, in
+the run summary; it is never counted as passed. A stable release's waived upgrade from a stable
+release is written into its GitHub release notes too, by the `github-release` job from the same
+file. release-acceptance.yml reads the file at the commit under test, as image.yml does.
+
+**The GitHub release is never patched.** `github-release` lists the repository's releases first. A
+published release for the tag with all four assets is a retry and changes nothing; one missing an
+asset fails ("published release is missing an asset; cut a new version"), since an upload to a
+published release is refused once immutable releases are on. A broken published release is fixed by
+cutting a new version, never by editing it. A draft for the tag, left by a runner killed mid-upload
+(`gh release create` uploads to a draft, then publishes it), is deleted and the release created
+afresh; a draft's assets may be partial or from another attempt, so it is never reused.
+
 ### Where publishing runs
 
 Every job in a workflow that publishes, or holds a token that writes to a repository, its packages

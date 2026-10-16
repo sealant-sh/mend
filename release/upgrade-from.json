@@ -1,0 +1,25 @@
+{
+  "$comment": "The stable releases a candidate is upgraded from in image.yml's previous-upgrade jobs (docs/operations/next-channel.md, 'The upgrade window'). A next build's pins are read live, not kept here. The npm integrity, the mend image digest and the asset sha256s were read from the published artifacts and are checked against them on every run; the support-image digests are those their tags named on 2026-10-16, not necessarily the ones the release first ran with. Each stable release's pull request adds the stable release before it.",
+  "releases": {
+    "0.35.1": {
+      "publishedAt": "2026-10-01T16:50:13.151Z",
+      "npm": {
+        "integrity": "sha512-DzMC3umzTGThcel7eZZJtjTk3o2GlnGOtG9LtZsqF7fE1ll3zQ5SQE3CVEVhPzGdlewlW0LVjD1C056VKmCUdg==",
+        "lockfile": "release/upgrade-from/0.35.1/package-lock.json"
+      },
+      "images": {
+        "mend": "sha256:c3688c780c937236a22d6981a244bd948c56f9ee5ed488c1d7a23cfa4e8a544d"
+      },
+      "assets": {
+        "compose.v2.yaml": "7955a3598ea3a37b089c348e06ba503a579015ca25b42618f6cad424eebc62a3",
+        "setup-contract.v2.json": "3d63d9c072214ce50a86a2c3187c1cf0942c6c816516814e9fd0a8372384f636",
+        "install.sh": "23b993bdc763db1fdefe6253d42620e02dfc4d44403beba7798f67bb53a8a3e3",
+        "postgres-init.sh": "a590267307a0c07f652641f6e7f788237e1132d40c95770150391945c00178c4"
+      },
+      "support": {
+        "postgres:17-alpine": "docker.io/library/postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24",
+        "dxflrs/garage:v2.4.1": "docker.io/dxflrs/garage@sha256:9c96caa2612d3411acc5b0e6701fb238dbfba33e533a6d7d3d811a4b12d0d020"
+      }
+    }
+  }
+}

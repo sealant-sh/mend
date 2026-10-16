@@ -50,6 +50,10 @@ function shellStep(file, jobName, name) {
   return step.run;
 }
 
+const jqDirectory = path.dirname(
+  spawnSync("sh", ["-c", "command -v jq"], { encoding: "utf8" }).stdout.trim(),
+);
+
 // These commands only read/write the owned fixture. Unsupported operations fail without a real
 // publication interface. JSON records preserve individual argv elements.
 const recordingCommand = `#!${process.execPath}
@@ -59,24 +63,30 @@ appendFileSync(process.env.FIXTURE_CALLS, JSON.stringify(args) + "\\n");
 const state = JSON.parse(readFileSync(process.env.FIXTURE_STATE, "utf8"));
 const save = () => writeFileSync(process.env.FIXTURE_STATE, JSON.stringify(state));
 const refuse = () => { console.error("Unknown owned fixture argv", args); process.exit(79); };
-if (process.env.FIXTURE_COMMAND === "gh" && args[0] === "release") {
-  if (args[1] === "view") {
-    if (!state.releaseExists) process.exit(1);
-    if (args.length > 3) console.log(Object.keys(state.assets).join("\\n"));
+if (process.env.FIXTURE_COMMAND === "gh" && args[0] === "api") {
+  // The repository's releases, two to a page as --paginate prints them: one array after another.
+  if (args[1] === "--paginate" && args[2] === "repos/sealant-sh/Mend/releases?per_page=100") {
+    if (state.failList) { console.error("HTTP 502"); process.exit(1); }
+    for (let at = 0; at < state.releases.length || at === 0; at += 2)
+      process.stdout.write(JSON.stringify(state.releases.slice(at, at + 2)));
     process.exit(0);
   }
-  if (args[1] === "upload" && args.length === 4) {
-    const name = args[3].split("/").at(-1);
-    if (state.failAsset === name) process.exit(73);
-    if (state.assets[name] !== undefined) process.exit(79);
-    state.assets[name] = readFileSync(args[3], "utf8"); save(); process.exit(0);
+  const target = args[3] ?? "";
+  const prefix = "repos/sealant-sh/Mend/releases/";
+  if (args[1] === "--method" && args[2] === "DELETE" && target.startsWith(prefix) && args.length === 4) {
+    state.releases = state.releases.filter((release) => release.id !== Number(target.slice(prefix.length)));
+    save(); process.exit(0);
   }
-  if (args[1] === "create" && !state.releaseExists) {
-    for (const source of state.sources) {
-      if (args.includes(source)) state.assets[source.split("/").at(-1)] = readFileSync(source, "utf8");
-    }
-    state.releaseExists = true; save(); process.exit(0);
+} else if (process.env.FIXTURE_COMMAND === "gh" && args[0] === "release" && args[1] === "create") {
+  if (state.releases.some((release) => release.tag_name === args[2])) process.exit(79);
+  const assets = [];
+  for (const source of state.sources) {
+    if (!args.includes(source)) continue;
+    state.assets[source.split("/").at(-1)] = readFileSync(source, "utf8");
+    assets.push({ name: source.split("/").at(-1) });
   }
+  state.releases.push({ id: 999, tag_name: args[2], draft: false, assets });
+  save(); process.exit(0);
 } else if (process.env.FIXTURE_COMMAND === "docker" &&
            args[0] === "buildx" && args[1] === "imagetools") {
   if (args[2] === "inspect" && args.length === 4) {
@@ -118,7 +128,8 @@ function withPublicationFixture(command, initial, files, check) {
       const result = spawnSync("bash", ["--noprofile", "--norc", "-e", "-c", script], {
         cwd: path.join(directory, "work"),
         env: {
-          PATH: `${path.join(directory, "bin")}:/usr/bin:/bin`,
+          // jq, as on GitHub's runners, beside the owned stand-ins.
+          PATH: `${path.join(directory, "bin")}:${jqDirectory}:/usr/bin:/bin`,
           HOME: path.join(directory, "home"),
           TMPDIR: path.join(directory, "tmp"),
           FIXTURE_COMMAND: command,
@@ -159,104 +170,145 @@ const setupFiles = {
   "release-notes.md": "owned release notes\n",
 };
 
-test("the actual release shell retries only missing assets and preserves published bytes", () => {
-  const script = shellStep(
-    "../.github/workflows/release-cli.yml",
-    "github-release",
-    "Create the release",
-  );
-  const published = {
-    "compose.v2.yaml": "already published compose\n",
-    "setup-contract.v2.json": "already published contract\n",
-  };
-  withPublicationFixture("gh", { releaseExists: true, assets: published }, setupFiles, (run) => {
-    const first = run(script, { GITHUB_REF_NAME: "v1.2.3" });
-    assert.equal(first.status, 0, first.stderr);
-    assert.deepEqual(first.calls, [
-      ["release", "view", "v1.2.3"],
-      ["release", "view", "v1.2.3", "--json", "assets", "--jq", ".assets[].name"],
-      ["release", "upload", "v1.2.3", "deploy/docker/postgres-init.sh"],
-      ["release", "upload", "v1.2.3", "install.sh"],
-    ]);
-    assert.deepEqual(first.state.assets, {
-      ...published,
-      "postgres-init.sh": "new postgres bytes\n",
-      "install.sh": "new install bytes\n",
-    });
-    const retry = run(script, { GITHUB_REF_NAME: "v1.2.3" });
-    assert.equal(retry.status, 0, retry.stderr);
-    assert.deepEqual(retry.calls.slice(first.calls.length), [
-      ["release", "view", "v1.2.3"],
-      ["release", "view", "v1.2.3", "--json", "assets", "--jq", ".assets[].name"],
-    ]);
-    assert.deepEqual(retry.state.assets, first.state.assets);
+const releaseScript = () =>
+  shellStep("../.github/workflows/release-cli.yml", "github-release", "Create the release");
+const releaseRun = (run, tag) =>
+  run(releaseScript(), {
+    GITHUB_REF_NAME: tag,
+    GITHUB_REPOSITORY: "sealant-sh/Mend",
   });
+const listCall = ["api", "--paginate", "repos/sealant-sh/Mend/releases?per_page=100"];
+const listedRelease = (id, tag, draft, names) => ({
+  id,
+  tag_name: tag,
+  draft,
+  assets: names.map((name) => ({ name })),
 });
+const allAssets = ["compose.v2.yaml", "postgres-init.sh", "setup-contract.v2.json", "install.sh"];
+const releaseCreateCall = (tag, version, flags) => [
+  "release",
+  "create",
+  tag,
+  ...flags,
+  ...setupSources,
+  "--title",
+  `Mend ${version}`,
+  "--notes-file",
+  "release-notes.md",
+  "--latest=false",
+  "--verify-tag",
+];
 
-test("the actual release shell creates stable and prerelease assets with exact publication flags", () => {
-  const script = shellStep(
-    "../.github/workflows/release-cli.yml",
-    "github-release",
-    "Create the release",
-  );
+test("the actual release shell creates stable and prerelease releases with exact publication flags", () => {
   for (const [tag, version, flags] of [
     ["v1.2.3", "1.2.3", []],
     ["cli-v1.2.4-next.1", "1.2.4-next.1", ["--prerelease"]],
   ]) {
+    // Other tags' releases, a page apart, are none of this release's business.
+    const others = [
+      listedRelease(1, "v1.2.2", false, allAssets),
+      listedRelease(2, "v1.2.1", true, []),
+    ];
     withPublicationFixture(
       "gh",
-      { releaseExists: false, assets: {}, sources: setupSources },
+      { releases: others, assets: {}, sources: setupSources },
       setupFiles,
       (run) => {
-        const result = run(script, { GITHUB_REF_NAME: tag });
+        const result = releaseRun(run, tag);
         assert.equal(result.status, 0, result.stderr);
-        assert.deepEqual(result.calls, [
-          ["release", "view", tag],
-          [
-            "release",
-            "create",
-            tag,
-            ...flags,
-            ...setupSources,
-            "--title",
-            `Mend ${version}`,
-            "--notes-file",
-            "release-notes.md",
-            "--latest=false",
-            "--verify-tag",
-          ],
-        ]);
+        assert.deepEqual(result.calls, [listCall, releaseCreateCall(tag, version, flags)]);
         assert.deepEqual(result.state.assets, {
           "compose.v2.yaml": "new compose bytes\n",
           "postgres-init.sh": "new postgres bytes\n",
           "setup-contract.v2.json": "new setup contract bytes\n",
           "install.sh": "new install bytes\n",
         });
+        assert.deepEqual(result.state.releases.slice(0, 2), others);
       },
     );
   }
 });
 
-test("the actual release shell propagates an upload refusal without uploading later assets", () => {
-  const script = shellStep(
-    "../.github/workflows/release-cli.yml",
-    "github-release",
-    "Create the release",
-  );
-  const assets = { "compose.v2.yaml": "published compose\n" };
+test("a published release with every asset is a retry that writes nothing", () => {
+  const releases = [
+    listedRelease(5, "v1.2.3", false, allAssets),
+    listedRelease(6, "v1.2.2", false, allAssets),
+  ];
   withPublicationFixture(
     "gh",
-    { releaseExists: true, assets, failAsset: "postgres-init.sh" },
+    { releases, assets: {}, sources: setupSources },
     setupFiles,
     (run) => {
-      const result = run(script, { GITHUB_REF_NAME: "v1.2.3" });
-      assert.equal(result.status, 73);
+      const result = releaseRun(run, "v1.2.3");
+      assert.equal(result.status, 0, result.stderr);
+      assert.match(result.stdout, /published with every asset: a retry changes nothing/);
+      assert.deepEqual(result.calls, [listCall]);
+      assert.deepEqual(result.state.releases, releases);
+    },
+  );
+});
+
+test("a published release missing an asset fails, naming it, and is never patched", () => {
+  const releases = [
+    listedRelease(5, "v1.2.3", false, ["compose.v2.yaml", "setup-contract.v2.json"]),
+  ];
+  withPublicationFixture(
+    "gh",
+    { releases, assets: {}, sources: setupSources },
+    setupFiles,
+    (run) => {
+      const result = releaseRun(run, "v1.2.3");
+      assert.equal(result.status, 1);
+      assert.match(
+        result.stdout,
+        /::error::published release is missing an asset; cut a new version \(missing: postgres-init\.sh install\.sh\)/,
+      );
+      assert.deepEqual(result.calls, [listCall]);
+      assert.deepEqual(result.state.releases, releases);
+    },
+  );
+});
+
+test("an orphan draft for the tag is deleted, never reused, before the release is created", () => {
+  // Two drafts a killed runner left, one on each page, beside another tag's draft.
+  const releases = [
+    listedRelease(7, "v1.2.3", true, ["compose.v2.yaml"]),
+    listedRelease(8, "v1.2.2", true, []),
+    listedRelease(9, "v1.2.3", true, []),
+  ];
+  withPublicationFixture(
+    "gh",
+    { releases, assets: {}, sources: setupSources },
+    setupFiles,
+    (run) => {
+      const result = releaseRun(run, "v1.2.3");
+      assert.equal(result.status, 0, result.stderr);
       assert.deepEqual(result.calls, [
-        ["release", "view", "v1.2.3"],
-        ["release", "view", "v1.2.3", "--json", "assets", "--jq", ".assets[].name"],
-        ["release", "upload", "v1.2.3", "deploy/docker/postgres-init.sh"],
+        listCall,
+        ["api", "--method", "DELETE", "repos/sealant-sh/Mend/releases/7"],
+        ["api", "--method", "DELETE", "repos/sealant-sh/Mend/releases/9"],
+        releaseCreateCall("v1.2.3", "1.2.3", []),
       ]);
-      assert.deepEqual(result.state.assets, assets);
+      assert.deepEqual(
+        result.state.releases.map(({ id, draft }) => [id, draft]),
+        [
+          [8, true],
+          [999, false],
+        ],
+      );
+    },
+  );
+});
+
+test("a failed release listing writes nothing", () => {
+  withPublicationFixture(
+    "gh",
+    { releases: [], failList: true, assets: {}, sources: setupSources },
+    setupFiles,
+    (run) => {
+      const result = releaseRun(run, "v1.2.3");
+      assert.notEqual(result.status, 0);
+      assert.deepEqual(result.calls, [listCall]);
     },
   );
 });
@@ -403,12 +455,12 @@ test("asset verification uses anonymous exact-version downloads and byte compari
   }
 });
 
-test("release retries preserve already published assets", () => {
+test("a published release is never patched, replaced or deleted", () => {
   const release = job("github-release");
-  assert.match(release, /gh release view/);
-  assert.match(release, /gh release upload/);
   assert.match(release, /--latest=false/);
-  assert.doesNotMatch(release, /--clobber|gh release delete|--draft/);
+  // Only a draft is ever deleted, by id, from the listing; nothing uploads to a release.
+  assert.doesNotMatch(release, /gh release upload|--clobber|gh release delete|--draft/);
+  assert.match(release, /gh api --method DELETE "repos\/\$GITHUB_REPOSITORY\/releases\/\$id"/);
 });
 
 test("stable latest promotion waits for npm and the GitHub release", () => {
@@ -757,21 +809,43 @@ test("the acceptance gate passes only on the acceptance this run's target ran", 
   assert.equal(run("", "ghcr"), 1);
   assert.equal(run("archive", "ghcr"), 1);
   assert.equal(run("", ""), 1);
-  // image.yml reports an acceptance only from the step after the acceptance itself.
+  // image.yml reports a target's acceptance only when both of its acceptances passed: the
+  // same-source packaged acceptance and the upgrade from every release in the window.
+  const accepted = (outputs) =>
+    Function(
+      `"use strict"; return (${imageDocument.on.workflow_call.outputs.accepted.value
+        .replace(/^\$\{\{\s*|\s*\}\}$/g, "")
+        .replace(/jobs\.([\w-]+)\.outputs\.accepted/g, (_, name) =>
+          JSON.stringify(outputs[name] ?? ""),
+        )
+        .replace(/==/g, "===")});`,
+    )();
+  assert.equal(accepted({ "packaged-smoke": "ghcr", "previous-upgrade": "ghcr" }), "ghcr");
+  assert.equal(accepted({ "packaged-smoke": "ghcr" }), "");
+  assert.equal(accepted({ "previous-upgrade": "ghcr" }), "");
   assert.equal(
-    imageDocument.on.workflow_call.outputs.accepted.value,
-    "${{ jobs.packaged-smoke.outputs.accepted || jobs.archive-acceptance.outputs.accepted }}",
+    accepted({ "archive-acceptance": "archive", "archive-previous-upgrade": "archive" }),
+    "archive",
   );
-  for (const [name, target] of [
-    ["packaged-smoke", "ghcr"],
-    ["archive-acceptance", "archive"],
+  assert.equal(accepted({ "archive-acceptance": "archive" }), "");
+  assert.equal(accepted({ "archive-previous-upgrade": "archive" }), "");
+  assert.equal(accepted({ "packaged-smoke": "ghcr", "archive-previous-upgrade": "archive" }), "");
+  for (const [name, target, script] of [
+    ["packaged-smoke", "ghcr", "node scripts/check-packaged-server.mjs"],
+    ["archive-acceptance", "archive", "node scripts/check-packaged-server.mjs"],
+    ["previous-upgrade", "ghcr", "node scripts/check-previous-upgrade.mjs"],
+    ["archive-previous-upgrade", "archive", "node scripts/check-previous-upgrade.mjs"],
   ]) {
     const { steps } = imageDocument.jobs[name];
-    const accepted = steps.findIndex((entry) => entry.id === "accepted");
+    const recorded = steps.findIndex((entry) => entry.id === "accepted");
     assert.equal(imageDocument.jobs[name].outputs.accepted, "${{ steps.accepted.outputs.target }}");
-    assert.equal(steps[accepted - 1].run, "node scripts/check-packaged-server.mjs");
-    assert.equal(steps[accepted].run, `echo "target=${target}" >>"$GITHUB_OUTPUT"`);
-    assert.equal(steps[accepted].if, undefined);
+    // The acceptance is recorded right after its script; only a failure-only upload may sit between.
+    const ran = steps.findIndex((entry) => entry.run === script);
+    assert.ok(ran >= 0 && ran < recorded, name);
+    for (const between of steps.slice(ran + 1, recorded))
+      assert.match(String(between.if), /^failure\(\)/, `${name}: ${between.name}`);
+    assert.equal(steps[recorded].run, `echo "target=${target}" >>"$GITHUB_OUTPUT"`);
+    assert.equal(steps[recorded].if, undefined);
   }
 });
 
