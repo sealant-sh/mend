@@ -496,19 +496,23 @@ export async function run(): Promise<void> {
     record("sessionSeesEdit", { terminal: "edited in VS Code over Remote-SSH", files: edited });
   }
 
-  // 9. Stop what this run started.
+  // 9. Stop what this run started. The workbench session goes last: the Remote-SSH window runs in
+  // its workspace, and VS Code in CLI test mode exits when that window's extension host exits, so
+  // the harness confirms this stop.
   modals.set("Stop ", "Stop session");
-  for (const sessionId of [workbenchId, liveId]) {
+  const stop = async (sessionId: string) => {
     await vscode.commands.executeCommand("mend.stopSession", sessionId);
     await until(`session ${sessionId} to stop`, async () => {
       const status = field(await api(`/sessions/${sessionId}`), "session", "status");
       return status === "stopped" || status === "completed";
     });
-  }
-  record("stopped", { sessions: [workbenchId, liveId] });
+  };
+  await stop(liveId);
+  record("stopped", { sessions: [liveId] });
   const errors = evidence["errorsShown"];
   if (Array.isArray(errors) && errors.length > 0) {
     throw new Error("the editor displayed unexpected errors; inspect its recorded steps");
   }
   record("completed", { runId, remoteSsh: process.env["MEND_E2E_REMOTE_SSH"] !== "0" });
+  await stop(workbenchId);
 }
