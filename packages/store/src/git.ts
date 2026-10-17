@@ -321,30 +321,51 @@ export interface CappedOutput {
   readonly cut: boolean;
 }
 
+/** `CappedOutput` as git wrote it, for output that carries file names: bytes, not text. */
+export interface CappedBytes {
+  readonly stdout: Buffer;
+  readonly cut: boolean;
+}
+
+const NUL = Buffer.from([0]);
+
 /**
- * Run git and keep at most `maxBytes` of its stdout: past them, or past `deadlineMs` when given,
- * git is stopped and the output so far answers, marked `cut`. For output whose size the caller
- * cannot know beforehand (a diff, a search), so a large or slow one is a bounded answer rather
- * than Node's output-buffer failure or a request left running.
+ * `gitCapped`, as bytes. `pathspecs`, when given, are the paths git lists, as bytes: an argument
+ * string carries only UTF-8, so a name with other bytes reaches git through `xargs -0`, which
+ * starts git with the NUL-ended paths it reads from its input, after `--`. Stopped on
+ * interruption, so a run no one waits for does not keep walking.
  */
-export const gitCapped = (
+export const gitCappedBytes = (
   args: ReadonlyArray<string>,
   cwd: string,
   maxBytes: number,
   deadlineMs?: number,
-): Effect.Effect<CappedOutput, GitError> =>
+  pathspecs?: ReadonlyArray<Buffer>,
+): Effect.Effect<CappedBytes, GitError> =>
   Effect.contextWith((context: Context.Context<never>) =>
-    Effect.callback<CappedOutput, GitError>((resume) => {
+    Effect.callback<CappedBytes, GitError>((resume) => {
       const chunks: Array<Buffer> = [];
       let kept = 0;
       let cut = false;
       let stderr = Buffer.alloc(0);
       let settled = false;
-      const child = spawn("git", [...args], {
-        cwd,
-        env: gitProcessEnv(undefined),
-        stdio: ["ignore", "pipe", "pipe"],
-      });
+      const child =
+        pathspecs === undefined
+          ? spawn("git", [...args], {
+              cwd,
+              env: gitProcessEnv(undefined),
+              stdio: ["ignore", "pipe", "pipe"],
+            })
+          : spawn("xargs", ["-0", "git", ...args, "--"], {
+              cwd,
+              env: gitProcessEnv(undefined),
+              stdio: ["pipe", "pipe", "pipe"],
+            });
+      if (pathspecs !== undefined && child.stdin !== null) {
+        // A run stopped before it read its input ends the pipe first: nothing to report.
+        child.stdin.on("error", () => {});
+        child.stdin.end(Buffer.concat(pathspecs.flatMap((pathspec) => [pathspec, NUL])));
+      }
       // Armed now, on this fiber's Clock, in a fiber that never yields before its sleep registers.
       // A forked deadline arms only once the scheduler starts it: git could finish past the bound
       // and answer whole.
@@ -361,7 +382,7 @@ export const gitCapped = (
                 ),
               ),
             );
-      const settle = (effect: Effect.Effect<CappedOutput, GitError>) => {
+      const settle = (effect: Effect.Effect<CappedBytes, GitError>) => {
         if (settled) return;
         settled = true;
         disarm?.();
@@ -398,13 +419,13 @@ export const gitCapped = (
         ),
       );
       child.on("close", (exitCode, signal) => {
-        const stdout = Buffer.concat(chunks).toString("utf8");
+        const stdout = Buffer.concat(chunks);
         if (cut) {
           settle(Effect.succeed({ stdout, cut: true }));
           return;
         }
         if (exitCode === 0) {
-          settle(Effect.succeed({ stdout: stdout.replace(/\n$/, ""), cut: false }));
+          settle(Effect.succeed({ stdout, cut: false }));
           return;
         }
         settle(
@@ -424,6 +445,25 @@ export const gitCapped = (
         child.kill();
       });
     }),
+  );
+
+/**
+ * Run git and keep at most `maxBytes` of its stdout: past them, or past `deadlineMs` when given,
+ * git is stopped and the output so far answers, marked `cut`. For output whose size the caller
+ * cannot know beforehand (a diff, a search), so a large or slow one is a bounded answer rather
+ * than Node's output-buffer failure or a request left running.
+ */
+export const gitCapped = (
+  args: ReadonlyArray<string>,
+  cwd: string,
+  maxBytes: number,
+  deadlineMs?: number,
+): Effect.Effect<CappedOutput, GitError> =>
+  gitCappedBytes(args, cwd, maxBytes, deadlineMs).pipe(
+    Effect.map(({ stdout, cut }) => ({
+      stdout: cut ? stdout.toString("utf8") : stdout.toString("utf8").replace(/\n$/, ""),
+      cut,
+    })),
   );
 
 export const gitQuiet = (
