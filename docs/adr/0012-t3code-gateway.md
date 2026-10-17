@@ -183,14 +183,14 @@ and keeps the device token it gets back.
 
 ### Protocol churn
 
-- The pin is a nightly tag, never `main`; clients ship per tag.
+- The pin is a nightly or preview tag, never `main`; clients ship per tag.
 - Every outbound frame is encoded through the vendored schemas, so a mapping bug fails in the
   gateway, not as a defect in a client.
 - Golden frames recorded from a real t3code server at the pinned tag.
 - In CI, t3code's own `client-runtime` (test-only) drives the gateway headless; a Playwright smoke
   pairs the t3code web build at the tag.
-- A scheduled job diffs `packages/contracts/src` at the newest nightly against the pin and opens an
-  issue. Bumps are deliberate.
+- A scheduled job diffs `packages/contracts/src` at the newest nightly or preview against the pin
+  and opens an issue. Bumps are deliberate.
 - The descriptor reports `serverVersion` as `<t3code tag>+mend.<n>`. A protocol bump on the client
   side is refused cleanly by t3code as an unsupported server until the gateway follows.
 
@@ -258,6 +258,11 @@ its own pull request.
   `effect/http-api`). t3code split its scopes into granular permissions and put an
   `RpcScopeAuthorization` middleware on every RPC; the gateway serves it from a copy of t3code's own
   scope map, and reads a grant from before the split as the standard grant it stood for.
+- 2026-10-17: the pin moves to the preview `v0.1.1-preview.20261017.3254`, and the `t3` catalog with
+  it to Effect `4.0.5`. The orchestration protocol is still 2 and pairing is unchanged. t3code
+  folded its administrative scopes into the standard client grant; the gateway's grant does not
+  change. Its 11 new RPCs and the thread transcript route are registered, and the vendored client
+  state now brings the `@t3tools/shared` files it imports, under `t3-shared/`.
 - 2026-10-11: the gateway follows the web port's exposure instead of loopback only, which needed a
   tunnel per client (owner's call). Private installs publish it on the web port's address; behind
   the edge it is served on a host of its own, since t3code forces a server's base path to `/`.

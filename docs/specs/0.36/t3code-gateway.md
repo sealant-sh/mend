@@ -159,13 +159,14 @@ account. It is off unless someone runs the gateway, and nothing in Mend starts i
 
 **Process and wiring.**
 
-- `apps/t3-gateway` (`@mend/t3-gateway`, private) runs on Effect `4.0.2` (rc.115 until the
-  2026-10-10 pin) from the `t3` pnpm catalog.
+- `apps/t3-gateway` (`@mend/t3-gateway`, private) runs on Effect `4.0.5` (rc.115 until the
+  2026-10-10 pin, `4.0.2` until the 2026-10-17 pin) from the `t3` pnpm catalog.
 - It does not import `@mend/api-contracts`. It decodes only the Mend fields it reads
   (`src/mend-workbench.ts`).
 - t3code's contracts are vendored verbatim in `packages/t3-contracts`, pinned at
-  `v0.0.46-nightly.20261010.2922` / `bd2346eda` (`packages/t3-contracts/t3code.pin.json`; the first
-  pin was `v0.0.46-nightly.20261003.2623` / `fed41fa88`).
+  `v0.1.1-preview.20261017.3254` / `b2bab46ec` (`packages/t3-contracts/t3code.pin.json`; the first
+  pin was `v0.0.46-nightly.20261003.2623` / `fed41fa88`, the second `v0.0.46-nightly.20261010.2922`
+  / `bd2346eda`).
 - `src/server.ts:24-42` composes the layers: state, environment, Mend client (its own
   `FetchHttpClient`), tickets, projections, auth and routes. `HttpRouter.serve` then listens on
   `host:port`.
