@@ -139,8 +139,10 @@ vendored group.
   the mode its last protocol agent recorded (the resume fix below), so an `ask` session stays `ask`.
   Neither the Slack runner nor the gateway carries the mode itself.
 - **State.** Thread and message id maps, the persisted queue, each person's archive, settle and
-  snooze flags and read state, and the mode and effort chosen for an agent's next start live in a
-  `node:sqlite` file the gateway owns. No Mend migration.
+  snooze flags, read state and model preferences (favorites, hidden models, model order), and the
+  mode and effort chosen for an agent's next start live in a `node:sqlite` file the gateway owns. No
+  Mend migration. A settings patch of model preferences alone needs `orchestration:operate`, not
+  t3code's `settings:write`: t3code keeps them for the machine, the gateway for one person.
 - **Scopes.** A paired client is granted the scopes of t3code's standard grant the gateway backs:
   `orchestration:*`, `terminal:*` and `filesystem:read`. t3code renders a control whose scope is
   withheld as inert, so a refused feature never looks live. A grant stored before is narrowed when

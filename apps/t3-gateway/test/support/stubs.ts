@@ -6,6 +6,7 @@ import { BEARER_TTL_MS, GRANTED_SCOPES } from "../../src/auth.ts";
 import { gateDeviceCalls } from "../../src/device-gate.ts";
 import { ThreadCommandRefused, type PersonHub } from "../../src/hub.ts";
 import { MendUnavailable, type MendClient } from "../../src/mend-client.ts";
+import { NO_MODEL_PREFERENCES, settingsWith } from "../../src/model-preferences.ts";
 import { EMPTY_SHELL_SNAPSHOT } from "../../src/shell.ts";
 import type { BearerSession } from "../../src/state.ts";
 import { makeTerminals } from "../../src/terminals.ts";
@@ -76,6 +77,10 @@ export const emptyHub: PersonHub = {
     threads: [],
   }),
   accountChanges: Effect.succeed(Stream.never),
+  settings: () => Effect.succeed(settingsWith(NO_MODEL_PREFERENCES)),
+  updateModelPreferences: () => Effect.succeed(settingsWith(NO_MODEL_PREFERENCES)),
+  subscribeSettings: () =>
+    Effect.succeed({ settings: settingsWith(NO_MODEL_PREFERENCES), changes: Stream.never }),
   subscribeArchivedShell: Effect.succeed({
     snapshot: {
       schemaVersion: EMPTY_SHELL_SNAPSHOT.schemaVersion,

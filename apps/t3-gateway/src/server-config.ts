@@ -1,5 +1,4 @@
 import {
-  DEFAULT_SERVER_SETTINGS,
   ProviderDriverKind,
   ProviderInstanceId,
   type ExecutionEnvironmentDescriptor,
@@ -11,6 +10,7 @@ import {
   type ServerLifecycleWelcomePayload,
   type ServerProvider,
   type ServerProviderModel,
+  type ServerSettings,
 } from "@mend/t3-contracts";
 import { DEFAULT_RESOLVED_KEYBINDINGS } from "@mend/t3-contracts/keybindings";
 
@@ -346,6 +346,7 @@ export const makeServerConfig = (input: {
   readonly auth: ServerAuthDescriptor;
   readonly paths: GatewayPaths;
   readonly providers: ReadonlyArray<ServerProvider>;
+  readonly settings: ServerSettings;
 }): ServerConfig => ({
   environment: input.environment,
   auth: input.auth,
@@ -364,7 +365,7 @@ export const makeServerConfig = (input: {
     otlpMetricsEnabled: false,
     otlpLogsEnabled: false,
   },
-  settings: DEFAULT_SERVER_SETTINGS,
+  settings: input.settings,
   // The shell and thread subscriptions send `synchronized` after their catch-up when asked
   // (`rpc.ts`), as t3code's own server does, so a resuming client knows when it has caught up.
   shellResumeCompletionMarker: true,
