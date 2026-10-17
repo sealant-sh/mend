@@ -8,6 +8,7 @@ import {
   AuthEnvironmentScope,
   AuthSessionId,
   EnvironmentId,
+  OrchestrationV2ThreadLaunchWorkspaceStrategy,
 } from "@mend/t3-contracts";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -362,7 +363,9 @@ export class GatewayState extends Context.Service<
  * `thread_lifecycles` keeps the threads a person settled or snoozed in t3code (migration 10), the
  * same way. `thread_visits` keeps when a person last saw each thread (migration 11), what t3code's
  * unread marker reads, and `next_efforts` the reasoning effort a person chose for a session's next
- * launch (migration 12), as `next_modes` keeps the mode.
+ * launch (migration 12), as `next_modes` keeps the mode. A kept launch's opening message names the
+ * new worktree it waits for and whether preparing that worktree failed (migration 13), so a restart
+ * keeps t3code's retry.
  */
 const MIGRATIONS: ReadonlyArray<string> = [
   `
@@ -540,6 +543,10 @@ const MIGRATIONS: ReadonlyArray<string> = [
     PRIMARY KEY (mend_user_id, mend_session_id)
   );
   `,
+  `
+  ALTER TABLE queued_messages ADD COLUMN workspace_preparation TEXT;
+  ALTER TABLE queued_messages ADD COLUMN preparation_failed INTEGER NOT NULL DEFAULT 0;
+  `,
 ];
 
 /** The gateway's sequence high-water mark in `meta` (`reserveSequences`). */
@@ -591,10 +598,14 @@ const QueuedRow = Schema.Struct({
   text: Schema.String,
   requested_at: Schema.String,
   sender_session_id: Schema.String,
-  state: Schema.Literals(["queued", "launching", "sending", "failed", "cancelled"]),
+  state: Schema.Literals(["preparing", "queued", "launching", "sending", "failed", "cancelled"]),
   error: Schema.NullOr(Schema.String),
   launches: Schema.Number,
   image_ids: Schema.fromJsonString(Schema.Array(Schema.String)),
+  workspace_preparation: Schema.NullOr(
+    Schema.fromJsonString(OrchestrationV2ThreadLaunchWorkspaceStrategy),
+  ),
+  preparation_failed: Schema.Number,
   /** The sender's device token while their bearer is live; null once revoked or gone. */
   device_token: Schema.NullOr(Schema.String),
 });
@@ -603,6 +614,9 @@ const HoldRow = Schema.Struct({ mend_session_id: Schema.String });
 const decodeHoldRows = Schema.decodeUnknownEffect(Schema.Array(HoldRow));
 const decodeSessionRows = Schema.decodeUnknownEffect(Schema.Array(SessionRow));
 const encodeImageIds = Schema.encodeSync(Schema.fromJsonString(Schema.Array(Schema.String)));
+const encodeWorkspacePreparation = Schema.encodeSync(
+  Schema.fromJsonString(OrchestrationV2ThreadLaunchWorkspaceStrategy),
+);
 const ImageRow = Schema.Struct({
   image_id: Schema.String,
   thread_id: Schema.String,
@@ -974,8 +988,9 @@ export const openGatewayState = (
         const insert = database.prepare(
           `INSERT INTO queued_messages (
              mend_user_id, mend_session_id, position, run_id, message_id, text, requested_at,
-             sender_session_id, state, error, launches, image_ids
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             sender_session_id, state, error, launches, image_ids, workspace_preparation,
+             preparation_failed
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         );
         queue.entries.forEach((entry, position) => {
           insert.run(
@@ -991,6 +1006,10 @@ export const openGatewayState = (
             entry.error,
             entry.launches,
             encodeImageIds(entry.imageIds),
+            entry.workspacePreparation === null
+              ? null
+              : encodeWorkspacePreparation(entry.workspacePreparation),
+            entry.preparationFailed ? 1 : 0,
           );
         });
         if (queue.held) {
@@ -1012,6 +1031,7 @@ export const openGatewayState = (
             .prepare(
               `SELECT q.mend_session_id, q.run_id, q.message_id, q.text, q.requested_at,
                       q.sender_session_id, q.state, q.error, q.launches, q.image_ids,
+                      q.workspace_preparation, q.preparation_failed,
                       CASE WHEN b.revoked_at IS NULL THEN b.device_token END AS device_token
                  FROM queued_messages q
                  LEFT JOIN bearer_sessions b ON b.session_id = q.sender_session_id
@@ -1047,6 +1067,9 @@ export const openGatewayState = (
             error: row.error,
             launches: row.launches,
             imageIds: row.image_ids,
+            workspacePreparation:
+              row.workspace_preparation?.type === "worktree" ? row.workspace_preparation : null,
+            preparationFailed: row.preparation_failed !== 0,
           });
           if (row.device_token !== null) kept.senders.set(row.sender_session_id, row.device_token);
           bySession.set(row.mend_session_id, kept);

@@ -35,6 +35,7 @@ import type {
 } from "./mend-workbench.ts";
 import { modelOptionsOf, type ThreadModelOptions } from "./model-options.ts";
 import type { ThreadNotices } from "./notices.ts";
+import type { WorkspacePreparation } from "./queue.ts";
 import { harnessOwnModelOf, harnessProvider } from "./server-config.ts";
 import type { StoredImage, ThreadLifecycle } from "./state.ts";
 
@@ -162,6 +163,10 @@ export interface PendingRun {
   readonly requestedAt: string;
   readonly state: "queued" | "starting" | "preparing" | "failed" | "cancelled";
   readonly error: string | null;
+  /** A launch's opening message: the new worktree it waits for, as t3code's run names it. */
+  readonly workspacePreparation: WorkspacePreparation | null;
+  /** It failed while its worktree was prepared: t3code offers to retry the preparation. */
+  readonly preparationFailed: boolean;
 }
 
 /**
@@ -449,6 +454,9 @@ export const runsOf = (source: ThreadSource): ReadonlyArray<OrchestrationV2Run> 
       ...(entry.state === "queued"
         ? { queuePosition: ++queuePosition, queueHeld: source.queueHeld }
         : {}),
+      ...(entry.workspacePreparation === null
+        ? {}
+        : { workspacePreparation: entry.workspacePreparation }),
       requestedAt,
       startedAt: null,
       completedAt: settled ? requestedAt : null,

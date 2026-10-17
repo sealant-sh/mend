@@ -86,6 +86,35 @@ export class FakeTty {
 
   constructor(private readonly workbench: FakeWorkbench) {}
 
+  /**
+   * What a wrapped setup script prints and how it exits, by a piece of its command: the shell
+   * prints each line, `delayMs` apart, then the line the wrapper asks for with the exit code. A
+   * wrapped command no entry names exits 0 with no output; `hang` never exits.
+   */
+  readonly scripts = new Map<
+    string,
+    { readonly lines: ReadonlyArray<string>; readonly exitCode: number | "hang"; delayMs?: number }
+  >();
+  /** The processes a setup script was typed into, in order. */
+  readonly scriptRuns: Array<string> = [];
+
+  private runScript(process: string, typed: string, socket: Duplex): void {
+    const sentinel = /__T3_SETUP_DONE__[A-Za-z0-9]+:/.exec(typed)?.[0];
+    if (sentinel === undefined) return;
+    this.scriptRuns.push(process);
+    const script = Array.from(this.scripts).find(([piece]) => typed.includes(piece))?.[1];
+    const lines = script?.lines ?? [];
+    const delay = script?.delayMs ?? 50;
+    lines.forEach((line, index) => {
+      setTimeout(() => socket.write(frame(2, Buffer.from(`${line}\r\n`))), delay * (index + 1));
+    });
+    if (script?.exitCode === "hang") return;
+    setTimeout(
+      () => socket.write(frame(2, Buffer.from(`\r\n${sentinel}${script?.exitCode ?? 0}\r\n$ `))),
+      delay * (lines.length + 1),
+    );
+  }
+
   /** Ends a shell from Mend's side: its socket gets `{"t":"end"}` and closes. */
   end(processId: string): void {
     const socket = this.sockets.get(processId);
@@ -213,6 +242,7 @@ export class FakeTty {
           const text = payload.toString("utf8");
           this.typed.push(text);
           socket.write(frame(2, Buffer.from(text)));
+          this.runScript(process, text, socket);
         }
       }
     });
