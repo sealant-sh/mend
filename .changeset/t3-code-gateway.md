@@ -12,8 +12,9 @@ projects and threads: start a thread in a new or an existing worktree, from a ba
 messages and images, @-mention project files, queue, edit and reorder what waits, answer approvals,
 choose the permission mode for the agent's next start, rename, stop, archive and delete, read each
 turn's diff, the thread's files and its change, and open a terminal, each as the person who paired
-and under Mend's own rules. t3code shows a provider as connected only when Mend holds that person's
-login for it.
+and under Mend's own rules. From the git panel, the change's owner pushes the thread's change and
+opens its pull request through Mend's landing. t3code shows a provider as connected only when Mend
+holds that person's login for it.
 
 It runs in the Mend container on a listener of its own (port 3120, or `--t3-gateway-port`), and
 setup and `mend server status` say whether it answered. `--no-t3-gateway` turns it off. Off, nothing
