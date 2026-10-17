@@ -44,7 +44,10 @@
 # pulls a missing image once for all its sessions. Run it after an outer session starts and before
 # its stack does (SKILL.md, Launch). It loads only a tag the daemon lacks, and only a copy whose
 # digest Docker Hub still names for the tag: a stale copy is left to be pulled. When Docker Hub
-# refuses to say (its limit spent), the copy is loaded and its digest printed as unchecked.
+# refuses to say (its limit spent), the copy is loaded and its digest printed as unchecked. A copy a
+# daemon already holds is reused and reported (`held <ref> <digest> · Hub has <digest>`) unless
+# Docker Hub names it; MEND_VERIFY_REFRESH_IMAGES=1 pulls one that is provably stale instead. Every
+# line also goes to the outer's /st-verify/seed.log, which `seed` prints first.
 #
 # `images` prints, as JSON, the image each container ran: the outer itself on this machine, and
 # every container in it (the server's, its sessions' workspaces and Docker services). Each entry
@@ -102,31 +105,70 @@ hub_digest() {
     | tr -d '\r' | sed -n 's/^[Dd]ocker-[Cc]ontent-[Dd]igest: *//p' || true
 }
 
+# One line of seeding, said and kept in the outer's /st-verify/seed.log, which `seed` prints first:
+# a run's seed.txt then holds what `up` loaded unchecked too.
+note() {
+  echo "local-outer · seed · $1"
+  printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" \
+    | docker exec -i "$name" sh -c 'mkdir -p /st-verify && cat >> /st-verify/seed.log' || true
+}
+
+# A copy a daemon (reached by the command in "$@") already holds is reused, never refused: refusing
+# would spend the pull limit again. It is reported unless one of its repo digests is the one Docker
+# Hub names for the tag now. With MEND_VERIFY_REFRESH_IMAGES=1, a copy whose repo digest is
+# provably another is pulled instead (through the daemon's mirror when it has one).
+held_check() {
+  hc_target=$1 hc_image=$2
+  shift 2
+  hc_digests=$("$@" image inspect -f '{{join .RepoDigests " "}}' "$hc_image" 2> /dev/null) || return 0
+  hc_repo=${hc_image%:*}
+  hc_mine=$(for hc_d in $hc_digests; do
+    case $hc_d in "$hc_repo"@* | docker.io/"$hc_repo"@*) echo "${hc_d#*@}" ;; esac
+  done | paste -sd, -)
+  hc_current=$(hub_digest "$hc_image")
+  if [ -n "$hc_current" ]; then
+    case ",$hc_mine," in *",$hc_current,"*) return 0 ;; esac
+  fi
+  hc_what=${hc_mine:-"$("$@" image inspect -f '{{.Id}}' "$hc_image") (loaded, no repo digest)"}
+  hc_line="held $hc_image $hc_what · ${hc_current:+Hub has $hc_current}"
+  [ -n "$hc_current" ] || hc_line="held $hc_image $hc_what · Docker Hub did not answer"
+  if [ -n "$hc_current" ] && [ -n "$hc_mine" ] && [ "${MEND_VERIFY_REFRESH_IMAGES:-}" = 1 ]; then
+    if "$@" pull -q "$hc_image" > /dev/null; then
+      note "$hc_target · $hc_line · pulled (MEND_VERIFY_REFRESH_IMAGES=1)"
+      return 0
+    fi
+  fi
+  note "$hc_target · $hc_line"
+}
+
 # Load each image this machine holds into one daemon, reached by the command in "$@" (`docker`
-# with its arguments). Leaves a tag the daemon has, and one this machine lacks or holds stale: the
-# daemon pulls those, through its mirror when it has one.
+# with its arguments). A tag the daemon has goes to `held_check`; one this machine lacks or holds
+# stale is left for the daemon to pull, through its mirror when it has one.
 seed_into() {
   target=$1 images=$2
   shift 2
   platform=linux/$(uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/')
   for image in $images; do
-    "$@" image inspect "$image" > /dev/null 2>&1 && continue
+    if "$@" image inspect "$image" > /dev/null 2>&1; then
+      held_check "$target" "$image" "$@"
+      continue
+    fi
     held=$(docker image inspect -f '{{join .RepoDigests " "}}' "$image" 2> /dev/null) || {
-      echo "local-outer · seed · $target · $image · not on this machine"
+      note "$target · $image · not on this machine"
       continue
     }
     repo=${image%:*}
     digest=$(echo " $held " | sed -n "s|.* $repo@\(sha256:[0-9a-f]*\) .*|\1|p")
     current=$(hub_digest "$image")
     if [ -n "$current" ] && [ "$current" != "$digest" ]; then
-      echo "local-outer · seed · $target · $image · stale here ($digest; Docker Hub names $current)"
+      note "$target · $image · stale here ($digest; Docker Hub names $current)"
       continue
     fi
     docker save --platform "$platform" "$image" | "$@" load -q > /dev/null
     if [ -n "$current" ]; then
-      echo "local-outer · seed · $target · $image · loaded $digest (current)"
+      note "$target · $image · loaded $digest (current)"
     else
-      echo "local-outer · seed · $target · $image · loaded $digest (unchecked: Docker Hub did not answer)"
+      note "$target · $image · loaded $digest (unchecked: Docker Hub did not answer)"
     fi
   done
 }
@@ -134,24 +176,32 @@ seed_into() {
 # A session's Docker service is the rootless daemon in its `sealant-<workspace>-docker` container,
 # and Mend 0.36.0-next.658 starts it with no registry mirror. It gets each image from the outer's
 # daemon, which takes it from this machine or pulls it once for all its sessions (through the
-# hub-cache, when the outer runs with MEND_VERIFY_REGISTRY_MIRROR).
+# hub-cache, when the outer runs with MEND_VERIFY_REGISTRY_MIRROR). The outer's copy is checked
+# (`held_check`) before it is copied in.
 in_service() { docker exec -i "$name" docker exec -i -e DOCKER_HOST=tcp://127.0.0.1:2375 "$service" docker "$@"; }
 
 seed() {
+  earlier=$(inner cat /st-verify/seed.log 2> /dev/null || true)
+  [ -z "$earlier" ] || printf 'local-outer · seed log of %s before this seed:\n%s\n' "$name" "$earlier"
   seed_into "$name" "$OUTER_IMAGES" docker exec -i "$name" docker
   mirrors=$(inner docker info -f '{{join .RegistryConfig.Mirrors " "}}')
   for service in $(inner docker ps --filter label=sealant.workspace --format '{{.Names}}'); do
     for image in $SESSION_IMAGES; do
-      in_service image inspect "$image" > /dev/null 2>&1 && continue
-      if ! inner docker image inspect "$image" > /dev/null 2>&1; then
+      if in_service image inspect "$image" > /dev/null 2>&1; then
+        held_check "$service" "$image" in_service
+        continue
+      fi
+      if inner docker image inspect "$image" > /dev/null 2>&1; then
+        held_check "$name" "$image" docker exec -i "$name" docker
+      else
         seed_into "$name" "$image" docker exec -i "$name" docker
         inner docker image inspect "$image" > /dev/null 2>&1 || {
-          inner docker pull -q "$image" > /dev/null || { echo "local-outer · seed · $service · $image · $name could not pull it"; continue; }
-          echo "local-outer · seed · $name · $image · pulled (mirrors: ${mirrors:-none})"
+          inner docker pull -q "$image" > /dev/null || { note "$service · $image · $name could not pull it"; continue; }
+          note "$name · $image · pulled (mirrors: ${mirrors:-none})"
         }
       fi
       inner docker save "$image" | in_service load -q > /dev/null
-      echo "local-outer · seed · $service · $image · loaded from $name"
+      note "$service · $image · loaded from $name"
     done
   done
 }
@@ -178,8 +228,19 @@ images() {
     # shellcheck disable=SC2046 # one argument per image id
     pulled=$(inner docker image inspect $(echo "$containers" | jq -r '.[].Image' | sort -u))
   fi
-  jq -n --argjson outer "$(ran "$outer" "$outer_image")" --argjson inner "$(ran "$containers" "$pulled")" \
-    '[($outer[] | .service = "outer")] + $inner'
+  list=$(jq -n --argjson outer "$(ran "$outer" "$outer_image")" \
+    --argjson inner "$(ran "$containers" "$pulled")" '[($outer[] | .service = "outer")] + $inner')
+  # Beside each Docker Hub tag, the digest Docker Hub names for it now (null: it did not answer),
+  # so a container that ran an older copy shows.
+  hubs='{}'
+  for ref in $(echo "$list" | jq -r '.[].image' | sort -u); do
+    case $ref in *@* | sha256:* | *.*/* | *:*/* | localhost/*) continue ;; esac
+    case ${ref##*/} in *:*) ;; *) continue ;; esac
+    hubs=$(echo "$hubs" | jq --arg ref "$ref" --arg digest "$(hub_digest "$ref")" \
+      '.[$ref] = (if $digest == "" then null else $digest end)')
+  done
+  echo "$list" | jq --argjson hubs "$hubs" \
+    'map((.image // "") as $ref | if $hubs | has($ref) then .hub = $hubs[$ref] else . end)'
 }
 
 hub_cache() {
@@ -207,7 +268,8 @@ hub_cache() {
     ;;
   status)
     state=$(docker inspect -f '{{.State.Status}}' "$cache" 2> /dev/null || echo absent)
-    echo "local-outer · $cache · $state · http://$cache:5000 on network $cache"
+    address=$(docker inspect -f "{{(index .NetworkSettings.Networks \"$cache\").IPAddress}}" "$cache" 2> /dev/null || true)
+    echo "local-outer · $cache · $state · http://$cache:5000 on network $cache (from this machine: http://${address:-?}:5000)"
     [ "$state" = running ] \
       && echo "  holds: $(docker exec "$cache" wget -q -O - http://127.0.0.1:5000/v2/_catalog)"
     token=$(curl -fsS "https://auth.docker.io/token?service=registry.docker.io&scope=repository:ratelimitpreview/test:pull" | jq -r .token)

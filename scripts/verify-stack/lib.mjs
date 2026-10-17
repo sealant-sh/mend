@@ -309,6 +309,42 @@ export function isolationFindings(containers, secrets) {
 }
 
 /**
+ * Where Docker Hub keeps a tagged reference: `{ repository, tag }` (`library/` for an official
+ * image), or null for another registry or a reference pinned by digest, which cannot go stale.
+ */
+export function dockerHubTag(ref) {
+  const match = /^(?:docker\.io\/)?([^@]+):([\w][\w.-]*)$/.exec(ref);
+  if (!match) return null;
+  const [, path, tag] = match;
+  const first = path.split("/")[0];
+  if (path.includes("/") && (first.includes(".") || first.includes(":") || first === "localhost"))
+    return null;
+  return { repository: path.includes("/") ? path : `library/${path}`, tag };
+}
+
+/**
+ * Whether a held image is the one Docker Hub names for its tag now. `held` is the daemon's
+ * `{ Id, RepoDigests }`, `hub` the digest Docker Hub answered, or null when it did not. Returns
+ * null when a repo digest matches, else the line that reports the reuse; `stale` when the held
+ * copy's repo digest is provably another (a pull would change it). An image loaded rather than
+ * pulled carries no repo digest, so only its id can be named.
+ */
+export function heldVerdict(ref, held, hub) {
+  const repository = ref.replace(/:[^:/]*$/, "");
+  const digests = (held.RepoDigests ?? [])
+    .filter(
+      (item) => item.startsWith(`${repository}@`) || item.startsWith(`docker.io/${repository}@`),
+    )
+    .map((item) => item.slice(item.indexOf("@") + 1));
+  if (hub !== null && digests.includes(hub)) return null;
+  const what = digests.length > 0 ? digests.join(",") : `${held.Id} (loaded, no repo digest)`;
+  return {
+    stale: hub !== null && digests.length > 0,
+    line: `held ${ref} ${what} · ${hub === null ? "Docker Hub did not answer" : `Hub has ${hub}`}`,
+  };
+}
+
+/**
  * What each service ran, so a stale tag can be caught after the run: one entry per container
  * (named by its Compose service, else by its container name), then one per image the stack named
  * that no container shows (Core's and sealantd's builds, which the bundle and the workspace images
@@ -477,12 +513,19 @@ export function mergeLedgers(ledgers) {
   const containers = new Set();
   const networks = new Set();
   const volumes = new Map();
+  const ran = new Map();
   for (const ledger of ledgers) {
     for (const id of ledger.containers ?? []) containers.add(id);
     for (const id of ledger.networks ?? []) networks.add(id);
     for (const volume of ledger.volumes ?? []) volumes.set(volumeIdentity(volume), volume);
+    for (const item of ledger.ran ?? []) ran.set(item.container, item);
   }
-  return { containers: [...containers], networks: [...networks], volumes: [...volumes.values()] };
+  return {
+    containers: [...containers],
+    networks: [...networks],
+    volumes: [...volumes.values()],
+    ran: [...ran.values()],
+  };
 }
 
 const nameOf = (item) => String(item.Name ?? "").replace(/^\//, "");

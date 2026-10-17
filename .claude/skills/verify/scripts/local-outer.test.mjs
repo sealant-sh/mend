@@ -174,7 +174,8 @@ test("budgets falls back to server.env, and refuses a container Compose did not 
 /**
  * A `docker` and a `curl` for seeding and `up`. FAKE_HOST maps an image to the digest this machine
  * holds it by, FAKE_HUB an image to the digest Docker Hub names (absent: Docker Hub refuses),
- * FAKE_TARGET lists what the outer's daemon holds, FAKE_NETWORK says whether the cache's network
+ * FAKE_TARGET maps what the outer's daemon holds to its repo digests (none: loaded), FAKE_KEPT is
+ * the file the outer's seed log is appended to, FAKE_NETWORK says whether the cache's network
  * exists. `docker run -d` fails once recorded, which ends `up` there.
  */
 const SEED_DOCKER = `const { appendFileSync, readFileSync } = require("node:fs");
@@ -191,7 +192,16 @@ if (world) {
   if (verb[0] === "inspect") { process.stdout.write(JSON.stringify(where.containers.filter((c) => verb.includes(c.Id) || verb.includes(c.Name.slice(1))))); process.exit(0); }
   if (verb[0] === "image" && verb[1] === "inspect") { process.stdout.write(JSON.stringify(where.images.filter((i) => verb.includes(i.Id)))); process.exit(0); }
 }
-if (inner && inner[0] === "image" && inner[1] === "inspect") process.exit(target.includes(inner.at(-1)) ? 0 : 1);
+if (args[0] === "exec" && args.includes("sh")) { appendFileSync(process.env.FAKE_KEPT, readFileSync(0)); process.exit(0); }
+if (args[0] === "exec" && args.includes("cat")) process.exit(1);
+if (inner && inner[0] === "image" && inner[1] === "inspect") {
+  const image = inner.at(-1);
+  if (!(image in target)) process.exit(1);
+  if (inner.includes("{{.Id}}")) process.stdout.write("sha256:id-" + image + "\\n");
+  else if (inner.includes("-f")) process.stdout.write(target[image].join(" ") + "\\n");
+  process.exit(0);
+}
+if (inner && inner[0] === "pull") process.exit(0);
 if (inner && inner[0] === "load") { readFileSync(0); process.exit(0); }
 if (inner && inner[0] === "info") process.exit(0);
 if (inner && inner[0] === "ps") process.exit(0);
@@ -244,7 +254,8 @@ const seeding = async (env, args) => {
           FAKE_LOG: log,
           FAKE_HOST: "{}",
           FAKE_HUB: "{}",
-          FAKE_TARGET: "[]",
+          FAKE_TARGET: "{}",
+          FAKE_KEPT: join(dir, "seed.log"),
           ...env,
         },
       });
@@ -257,7 +268,14 @@ const seeding = async (env, args) => {
       .split("\n")
       .filter(Boolean)
       .map((line) => JSON.parse(line));
-    return { ...result, calls };
+    const kept = (() => {
+      try {
+        return readFileSync(join(dir, "seed.log"), "utf8");
+      } catch {
+        return "";
+      }
+    })();
+    return { ...result, calls, kept };
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -268,7 +286,7 @@ const loaded = (calls) => calls.filter((args) => args[0] === "save").map((args) 
 test("seed loads this machine's copy only when Docker Hub names its digest, or cannot say", async () => {
   const current = "sha256:" + "a".repeat(64);
   const stale = "sha256:" + "b".repeat(64);
-  const { status, out, calls } = await seeding(
+  const { status, out, calls, kept } = await seeding(
     {
       FAKE_HOST: JSON.stringify({
         "postgres:17-alpine": current,
@@ -281,7 +299,7 @@ test("seed loads this machine's copy only when Docker Hub names its digest, or c
         "node:26-bookworm": current,
         "dxflrs/garage:v2.4.1": current,
       }),
-      FAKE_TARGET: JSON.stringify(["dxflrs/garage:v2.4.1"]),
+      FAKE_TARGET: JSON.stringify({ "dxflrs/garage:v2.4.1": [`dxflrs/garage@${current}`] }),
     },
     ["seed"],
   );
@@ -297,7 +315,45 @@ test("seed loads this machine's copy only when Docker Hub names its digest, or c
     new RegExp(`registry:3.1 · loaded ${current} \\(unchecked: Docker Hub did not answer\\)`),
   );
   assert.match(out, /docker:27\.5\.1-dind-rootless · not on this machine/);
-  assert.doesNotMatch(out, /garage/, "a tag the outer holds is left as it is");
+  assert.doesNotMatch(out, /garage/, "a held copy Docker Hub names is reused quietly");
+  // The evidence keeps what was said, the unchecked load included.
+  assert.match(
+    kept,
+    new RegExp(`registry:3.1 · loaded ${current} \\(unchecked: Docker Hub did not answer\\)`),
+  );
+  assert.match(kept, /node:26-bookworm · stale here/);
+});
+
+test("seed reports a held copy Docker Hub no longer names, and pulls it only when asked", async () => {
+  const current = "sha256:" + "a".repeat(64);
+  const old = "sha256:" + "c".repeat(64);
+  const env = {
+    FAKE_HUB: JSON.stringify({ "nginx:1.29-alpine": current, "postgres:17-alpine": current }),
+    FAKE_TARGET: JSON.stringify({
+      "nginx:1.29-alpine": [`nginx@${old}`],
+      "postgres:17-alpine": [],
+      "dxflrs/garage:v2.4.1": [],
+    }),
+  };
+  const pulls = (calls) => calls.filter((args) => args.includes("pull")).map((args) => args.at(-1));
+  const kept = await seeding(env, ["seed"]);
+  assert.equal(kept.status, 0, kept.out);
+  const stale = `held nginx:1.29-alpine ${old} · Hub has ${current}`;
+  assert.match(kept.out, new RegExp(`st-verify-outer-test · ${stale}\\n`));
+  assert.match(kept.kept, new RegExp(stale));
+  assert.match(
+    kept.out,
+    new RegExp(
+      `held postgres:17-alpine sha256:id-postgres:17-alpine \\(loaded, no repo digest\\) · Hub has ${current}`,
+    ),
+  );
+  assert.match(kept.out, /held dxflrs\/garage:v2\.4\.1 .* · Docker Hub did not answer/);
+  assert.deepEqual(pulls(kept.calls), []);
+
+  const refreshed = await seeding({ ...env, MEND_VERIFY_REFRESH_IMAGES: "1" }, ["seed"]);
+  assert.match(refreshed.out, new RegExp(`${stale} · pulled \\(MEND_VERIFY_REFRESH_IMAGES=1\\)`));
+  // Only the copy provably another: a loaded one has no repo digest to compare.
+  assert.deepEqual(pulls(refreshed.calls), ["nginx:1.29-alpine"]);
 });
 
 test("up asks the hub-cache first only when told to, on the cache's network", async () => {
@@ -366,8 +422,25 @@ test("images names the image each container ran: the outer, and every container 
       ],
     },
   };
-  const { status, out } = await seeding({ FAKE_INSPECT: JSON.stringify(world) }, ["images"]);
+  const { status, out } = await seeding(
+    {
+      FAKE_INSPECT: JSON.stringify(world),
+      FAKE_HUB: JSON.stringify({ "postgres:17-alpine": "sha256:new" }),
+    },
+    ["images"],
+  );
   assert.equal(status, 0, out);
+  // Beside each Docker Hub tag, what Docker Hub names now; nothing for another registry.
+  assert.deepEqual(
+    JSON.parse(out).map((item) => [item.service, "hub" in item ? item.hub : "absent"]),
+    [
+      ["outer", null],
+      ["mend", "absent"],
+      ["postgres", "sha256:new"],
+      ["garage", null],
+      ["outer-fixture", "absent"],
+    ],
+  );
   assert.deepEqual(
     JSON.parse(out).map((item) => [item.service, item.image, item.id, item.repoDigests]),
     [

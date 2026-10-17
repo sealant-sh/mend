@@ -58,16 +58,30 @@ verdicts. They never appear in a report.
     outer (Launch, step 2): from this machine, or from the outer's daemon, which pulls an image once
     for all its sessions. A copy is loaded only while Docker Hub still names its digest for the tag;
     a stale one is reported and pulled instead. When Docker Hub refuses to say (its limit spent),
-    the copy is loaded and its digest printed `unchecked`: keep that line with the evidence.
-    `stack.mjs` pulls only what its daemon lacks. The network guard's image stays one pull per
-    stack: it is named by digest, and a loaded image carries none.
+    the copy is loaded anyway and the line says `unchecked`. Every seeding line also goes to the
+    outer's `/st-verify/seed.log`, which `seed` prints first, so a run's `seed.txt` holds what `up`
+    loaded too. The network guard's image stays one pull per stack: it is named by digest, and a
+    loaded image carries none.
+  - **Held images are reused, and reported.** `stack.mjs` pulls only what its daemon lacks, and
+    `seed` reuses what a daemon already holds: pulling a held tag would spend the limit again.
+    Whenever Docker Hub does not confirm a held copy (a HEAD on the manifest, which it does not
+    count), the run says `held <ref> <digest> · Hub has <digest>` (or `· Docker Hub did not answer`;
+    a loaded copy is named by its image id). `stack.mjs` prints it in its log and keeps it in its
+    state's `held`, which the doctor prints; `seed` keeps it in the seed log. With
+    `MEND_VERIFY_REFRESH_IMAGES=1`, a held copy whose repo digest is provably another is pulled
+    instead.
   - **One pull-through cache.** `local-outer.sh hub-cache up` starts `st-verify-hub-cache`
-    (registry:2) on a Docker network of its own, published on no address. An outer brought up with
+    (registry:2) on a Docker network of its own, `st-verify-hub-cache`, and publishes no port: this
+    machine's firewall drops what containers send to the Docker bridge's address, and no LAN address
+    ever reaches it. An outer brought up with
     `MEND_VERIFY_REGISTRY_MIRROR=http://st-verify-hub-cache:5000` joins that network and asks the
     cache first, so the cache pulls each image from Docker Hub once for every outer on this machine,
-    and serves its copy while Docker Hub refuses. `hub-cache status` prints what it holds and Docker
-    Hub's remaining pulls. A session's Docker service under Mend 0.36.0-next.658 takes no mirror,
-    which is why `seed` fills it from the outer's daemon.
+    and serves its copy while Docker Hub refuses. This machine reaches it by its container address,
+    which `hub-cache status` prints with what it holds and Docker Hub's remaining pulls.
+    `hub-cache down` removes the container and keeps its volume and network on purpose: the cache is
+    shared by every outer on this machine, and the network may still hold running outers. A
+    session's Docker service under Mend 0.36.0-next.658 takes no mirror, which is why `seed` fills
+    it from the outer's daemon.
 
   ```sh
   .claude/skills/verify/scripts/local-outer.sh hub-cache up   # once per machine; it restarts with Docker
@@ -350,10 +364,13 @@ when every `ok`/`NOT` line holds:
 - **What each service ran.** `report` names the image every stack container ran (inner Mend,
   Postgres, Garage, the mirrors, the inner sessions' workspaces) and every image the stack named
   that no container shows (Core's and sealantd's builds, the fixture's base, the network guard): its
-  reference, image id and repo digests. The doctor writes them to `images.json` and prints one
-  `image · <service> · <reference> · <id> · …` line each. A digest says where a pulled image came
-  from; `no repo digest (loaded)` marks one `stack.mjs` built, or `local-outer.sh seed` loaded after
-  checking its digest (`$E/launch/seed.txt`). This lets a stale tag be caught after the run.
+  reference, image id, repo digests and, for a Docker Hub tag, the digest Docker Hub names now
+  (`hub`). The doctor writes them to `images.json` and prints one
+  `image · <service> · <reference> · <id> · …` line each, ending `Hub's current`, `Hub has <digest>`
+  or `Docker Hub did not answer`; then each `held` line from `up`. A digest says where a pulled
+  image came from; `no repo digest (loaded)` marks one `stack.mjs` built, or `local-outer.sh seed`
+  loaded after checking its digest (`$E/launch/seed.txt`). The ledger keeps the same record for each
+  container a recording window made (`ran`), so it survives the stack.
 
 `doctor.txt`, `report.json`, `images.json` and `health.json` land in `--out`. On a `NOT` line, read
 `$E/launch/stack.log`, then go to Cleanup and launch again. Run the doctor after `health answers`:

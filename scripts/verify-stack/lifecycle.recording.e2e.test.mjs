@@ -35,7 +35,11 @@ test("a `mend` window records an inner session, and nothing another client makes
   writeFileSync(
     fakeDaemon.file("run"),
     JSON.stringify({
-      containers: [EXECUTOR, SIDECAR, ["mend-dev-postgres-1", { [COMPOSE]: "mend-dev" }]],
+      containers: [
+        [...EXECUTOR, "node:26-bookworm"],
+        [...SIDECAR, [], "docker:27.5.1-dind-rootless"],
+        ["mend-dev-postgres-1", { [COMPOSE]: "mend-dev" }],
+      ],
       volumes: ["mend-dev_mend-dev-pgdata"],
       networks: ["sealant-5e55-network", "mend-dev_default"],
     }),
@@ -45,6 +49,14 @@ test("a `mend` window records an inner session, and nothing another client makes
   const [window] = ledgerWindows(fakeDaemon);
   assert.equal(window.closed, true);
   assert.equal(window.containers.length, 2);
+  // What each recorded container ran, by image id; nothing for what the window did not record.
+  assert.deepEqual(
+    window.ran.map((item) => [item.container, item.image, item.id.slice(0, 7)]).toSorted(),
+    [
+      ["sealant-5e55", "node:26-bookworm", "sha256:"],
+      ["sealant-5e55-docker", "docker:27.5.1-dind-rootless", "sha256:"],
+    ],
+  );
   assert.deepEqual(window.volumes, []);
   assert.equal(window.networks.length, 1);
   const down = fakeDaemon.run(["down"]);
