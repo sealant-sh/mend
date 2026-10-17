@@ -86,8 +86,36 @@ const packageIndex = (manifests) =>
     }),
   );
 
+// A string literal: double- or single-quoted on one line, or a template.
+const literal = /"((?:[^"\\\n]|\\.)*)"|'((?:[^'\\\n]|\\.)*)'|`((?:[^`\\]|\\.)*)`/g;
+
 /**
- * Every package test path that `text` names, relative paths resolved against `base`. Only this
+ * Every run of adjacent string literals in `text`, joined as a path: `"a", "b"` (path pieces)
+ * joins with a slash and `"a" + "b"` with nothing. A run ends at anything else, so a variable
+ * between pieces ends it.
+ */
+const literalRuns = (text) => {
+  const runs = [];
+  let current;
+  let end = -1;
+  for (const match of text.matchAll(literal)) {
+    const value = match[1] ?? match[2] ?? match[3];
+    const gap = current === undefined ? "" : text.slice(end, match.index);
+    if (current !== undefined && /^\s*,\s*$/.test(gap)) current += `/${value}`;
+    else if (current !== undefined && /^\s*\+\s*$/.test(gap)) current += value;
+    else {
+      if (current !== undefined) runs.push(current);
+      current = value;
+    }
+    end = match.index + match[0].length;
+  }
+  if (current !== undefined) runs.push(current);
+  return runs;
+};
+
+/**
+ * Every package test path that `text` names, relative paths resolved against `base`. Every
+ * candidate is normalised first, so `packages/x/src/../test/a` is `packages/x/test/a`. Only this
  * repository's packages count (a pin file may name another repository's `packages/…`), and so
  * does a templated package name, as in `packages/${name}/test`.
  */
@@ -95,26 +123,33 @@ const mentions = (text, packages, base) => {
   const dirs = new Set([...packages.values()].map(({ dir }) => dir));
   const found = new Set();
   const check = (candidate) => {
-    const path = candidate.replace(/[/*.:]+$/, "");
-    const dir = /^packages\/[^/]+/.exec(path)?.[0];
-    if (dir && (dirs.has(dir) || dir.includes("$")) && packageTest(path)) found.add(path);
-  };
-  // A path written whole, absolute or embedded anywhere: in a string, a template, a comment.
-  for (const [match] of text.matchAll(/packages\/[\w.${}-]+\/[^\s"'`),;\]}<>|&\\]*/g)) {
-    check(match);
-  }
-  // A relative path, resolved against the file.
-  for (const token of text.split(/[\s"'`,()[\]{}=;<>|&]+/)) {
-    if (token.startsWith("./") || token.startsWith("../")) {
-      check(posix.normalize(posix.join(base, token)));
+    const normal = posix.normalize(candidate);
+    for (const match of normal.matchAll(/(?:^|\/)(packages\/[^/]+(?:\/.*)?)/g)) {
+      const path = match[1].replace(/[/*.:]+$/, "");
+      const dir = /^packages\/[^/]+/.exec(path)?.[0];
+      if (dir && (dirs.has(dir) || dir.includes("$")) && packageTest(path)) found.add(path);
     }
+  };
+  // Relative paths and literal runs resolve against the file; anything else stands as written.
+  const place = (path) =>
+    path.startsWith("./") || path.startsWith("../") || path === ".."
+      ? posix.join(base, path)
+      : path;
+  // A path written whole, absolute or embedded anywhere: in a string, a template, a comment.
+  // The path reaches back to its token's start, so `/repo/packages/x/src/../test` normalises.
+  const boundary = /[\s"'`(),;[\]{}<>|&=\\]/;
+  for (const match of text.matchAll(/packages\/[\w.${}-]+\/[^\s"'`),;\]}<>|&\\]*/g)) {
+    let start = match.index;
+    while (start > 0 && !boundary.test(text[start - 1])) start -= 1;
+    check(text.slice(start, match.index) + match[0]);
   }
-  // Adjacent literal pieces: join("packages", "db", "test") or ["packages/db", "test"].
-  for (const match of text.matchAll(
-    /["'`]packages(?:["'`]\s*,\s*["'`]|\/)([\w.-]+)\/?["'`]\s*,\s*["'`]([^"'`]+)["'`]/g,
-  )) {
-    check(`packages/${match[1]}/${match[2]}`);
+  // A relative path outside any literal, as a Dockerfile or a shell command writes one.
+  for (const token of text.split(/[\s"'`,()[\]{}=;<>|&]+/)) {
+    if (token.startsWith("./") || token.startsWith("../")) check(place(token));
   }
+  // Adjacent literal pieces of any length: join(root, "packages", "db", "src", "a.test.ts"),
+  // join(import.meta.dirname, "..", "test") or "packages/" + "db/test".
+  for (const run of literalRuns(text)) check(place(run));
   // A package specifier, whatever syntax or comment surrounds it.
   for (const match of text.matchAll(/@mend\/([\w.-]+)((?:\/[\w.*-]+)*)/g)) {
     const known = packages.get(`@mend/${match[1]}`);
@@ -166,11 +201,18 @@ const manifestText = (manifest) => {
   return [...targets(kept), ...targets(rest), ...bare].join("\n");
 };
 
-/** The jobs gated on the mobile or packaging scope, by name, with their steps' text. */
+/**
+ * The jobs gated on the mobile or packaging scope, by name, with every string in the job at any
+ * depth (env, with, container, services, defaults, strategy.matrix, steps) and in the
+ * workflow-level env and defaults the job inherits.
+ */
 const gatedJobs = (workflow) =>
   Object.entries(workflow?.jobs ?? {})
     .filter(([, job]) => /needs\.changes\.outputs\.(mobile|packaging)\b/.test(String(job.if ?? "")))
-    .map(([name, job]) => [name, targets(job.steps ?? []).join("\n")]);
+    .map(([name, job]) => [
+      name,
+      targets([job, workflow.env ?? {}, workflow.defaults ?? {}]).join("\n"),
+    ]);
 
 /**
  * Every place a file the mobile or packaging lane may reach names a package's tests. `files`
@@ -331,6 +373,15 @@ test("the guard catches every way of naming a package's tests, and exempts tests
     ["scripts/packaging.mjs", "const dir = `${root}/packages/sessions/test/fixtures`;"],
     ["scripts/packaging.mjs", 'join(root, "packages", "sessions", "test", "fixtures")'],
     ["scripts/packaging.mjs", 'resolve(root, "packages/db", "test")'],
+    [
+      "scripts/packaging.mjs",
+      'join(root, "packages", "domain", "src", "workbench", "worktree-removal.test.ts")',
+    ],
+    ["packages/domain/src/index.ts", 'join(import.meta.dirname, "..", "test", "data.json")'],
+    ["scripts/packaging.mjs", 'readFile("/repo/packages/domain/src/../test/data.json")'],
+    ["scripts/packaging.mjs", 'readFile("../packages/domain/src/../test/data.json")'],
+    ["scripts/packaging.mjs", "COPY packages/domain/src/../test/data.json /app/"],
+    ["scripts/packaging.mjs", 'const fixture = "packages/" + "db/test/postgres.ts";'],
     ["scripts/packaging.mjs", "// copies packages/db/test/postgres.ts beside the bundle"],
     ["tooling/scripts/bundle-app.mjs", 'require.resolve("@mend/sessions/testing")'],
     ["apps/web/vite.config.ts", 'alias: { x: "../../packages/db/test/postgres.ts" }'],
@@ -361,6 +412,10 @@ test("the guard catches every way of naming a package's tests, and exempts tests
     ["apps/web/src/a.ts", 'import { a } from "./testing/view.ts"; import "./latest.ts";'],
     ["apps/web/src/a.ts", 'const note = "packages/db/src/testing.ts packages/db/tests.ts";'],
     ["packages/store/src/a.ts", "if (/^url\\./iu.test(entry.key)) return;"],
+    ["scripts/packaging.mjs", 'join(root, "packages", "domain", "src", "index.ts")'],
+    ["scripts/packaging.mjs", 'readFile("packages/db/test/../src/a.ts", "utf8")'],
+    ["packages/domain/src/a.ts", 'const name = "worktree-removal.test.ts";'],
+    ["packages/domain/src/a.ts", 'join(root, "packages", name, "test")'],
     [
       "packages/t3-contracts/t3code.pin.json",
       '{ "upstream": "packages/contracts/src/rpc.test.ts" }',
@@ -377,28 +432,35 @@ test("the guard catches every way of naming a package's tests, and exempts tests
   ]) {
     assert.deepEqual(reaches(path, text), [], `${path}: ${text}`);
   }
-  const gated = (job) =>
-    findTestReaches({
-      files: new Map(),
-      manifests,
-      workflow: {
-        jobs: {
-          [job.name]: {
-            if: job.if,
-            steps: [{ run: "docker build packages/sessions/test/fixtures/x" }],
-          },
-        },
-      },
-    });
+  // A gated job's every string counts, at any depth, and so does the workflow-level env and
+  // defaults it inherits.
+  const fixture = "packages/sessions/test/fixtures/shell-profile/Dockerfile";
+  const scan = (workflow) => findTestReaches({ files: new Map(), manifests, workflow });
+  const packaging = "needs.changes.outputs.packaging != 'false'";
+  for (const job of [
+    { if: packaging, steps: [{ run: `docker build ${fixture}` }] },
+    { if: packaging, env: { CI_PACKAGE_FIXTURE: fixture }, steps: [{ run: "node a.mjs" }] },
+    { if: packaging, strategy: { matrix: { fixture: ["x", fixture] } }, steps: [] },
+    { if: packaging, steps: [{ uses: "a/b@v1", with: { path: fixture } }] },
+    { if: packaging, container: { volumes: [`${fixture}:/f`] }, steps: [] },
+    {
+      if: "needs.changes.outputs.mobile != 'false'",
+      defaults: { run: { "working-directory": fixture } },
+      steps: [],
+    },
+  ]) {
+    assert.equal(scan({ jobs: { gated: job } }).length, 1, JSON.stringify(job));
+  }
+  const plain = { if: packaging, steps: [{ run: "node a.mjs" }] };
+  assert.equal(scan({ env: { FIXTURE: fixture }, jobs: { packaging: plain } }).length, 1);
   assert.equal(
-    gated({ name: "packaging", if: "needs.changes.outputs.packaging != 'false'" }).length,
+    scan({ defaults: { run: { "working-directory": fixture } }, jobs: { packaging: plain } })
+      .length,
     1,
   );
-  assert.equal(
-    gated({ name: "mobile-web", if: "needs.changes.outputs.mobile != 'false'" }).length,
-    1,
-  );
-  assert.deepEqual(gated({ name: "test-engines", if: "!cancelled()" }), []);
+  const ungated = { if: "!cancelled()", env: { FIXTURE: fixture }, steps: [{ run: fixture }] };
+  assert.deepEqual(scan({ jobs: { "test-engines": ungated } }), []);
+  assert.deepEqual(scan({ env: { FIXTURE: fixture }, jobs: { "test-engines": ungated } }), []);
 });
 
 test("the scan reads the packaging lane's own test files and skips other tests", () => {
