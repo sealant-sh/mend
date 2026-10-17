@@ -38,6 +38,8 @@ class GatedMendClient {
   readonly listSkills: DeviceCalls["listSkills"];
   readonly projectSkills: DeviceCalls["projectSkills"];
   readonly changeStats: DeviceCalls["changeStats"];
+  readonly changeLandings: DeviceCalls["changeLandings"];
+  readonly land: DeviceCalls["land"];
   readonly worktreeCheckpoints: DeviceCalls["worktreeCheckpoints"];
   readonly worktreeDiff: DeviceCalls["worktreeDiff"];
   readonly worktreeContents: DeviceCalls["worktreeContents"];
@@ -76,6 +78,8 @@ class GatedMendClient {
     this.listSkills = calls.listSkills;
     this.projectSkills = calls.projectSkills;
     this.changeStats = calls.changeStats;
+    this.changeLandings = calls.changeLandings;
+    this.land = calls.land;
     this.worktreeCheckpoints = calls.worktreeCheckpoints;
     this.worktreeDiff = calls.worktreeDiff;
     this.worktreeContents = calls.worktreeContents;
@@ -137,6 +141,8 @@ export const gateDeviceCalls = (
     projectBranches: (token, projectId) => guard(token, mend.projectBranches(token, projectId)),
     worktreeNames: (token, projectId) => guard(token, mend.worktreeNames(token, projectId)),
     changeStats: (token, changeId) => guard(token, mend.changeStats(token, changeId)),
+    changeLandings: (token, changeId) => guard(token, mend.changeLandings(token, changeId)),
+    land: (token, sessionId, input) => guard(token, mend.land(token, sessionId, input)),
     worktreeCheckpoints: (token, worktreeId) =>
       guard(token, mend.worktreeCheckpoints(token, worktreeId)),
     worktreeDiff: (token, worktreeId, range) =>
