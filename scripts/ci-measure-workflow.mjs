@@ -3,20 +3,17 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { parse, stringify } from "yaml";
 
 const BOX = ["self-hosted", "box", "linux", "x64"];
-export const MEASUREMENT_RUNNERS = [
-  "box",
-  "blacksmith-2vcpu-ubuntu-2404",
-  "blacksmith-4vcpu-ubuntu-2404",
-  "ubuntu-latest",
-];
+/** Production CI's x86 lanes: GitHub's ubuntu-24.04, or the box when a dispatch asks for it. */
+export const CI_RUNNER = `\${{ inputs.runner == 'box' && fromJSON('${JSON.stringify(BOX)}') || 'ubuntu-24.04' }}`;
+export const MEASUREMENT_RUNNERS = ["box", "ubuntu-latest"];
 
 /** Derive measurement jobs from production CI so setup, evidence and worker limits stay identical. */
 export function measurementWorkflow(ci) {
   const jobs = structuredClone(ci.jobs);
   for (const job of Object.values(jobs)) {
-    // Only box lanes move. Off the box there is no persistent pnpm store, so setup-node restores
-    // GitHub's pnpm cache the way a fresh hosted VM would.
-    if (JSON.stringify(job["runs-on"]) === JSON.stringify(BOX)) {
+    // Only the x86 lanes move. Off the box there is no persistent pnpm store, so setup-node
+    // restores GitHub's pnpm cache the way a fresh hosted VM would.
+    if (job["runs-on"] === CI_RUNNER) {
       job["runs-on"] =
         `\${{ inputs.runner == 'box' && fromJSON('${JSON.stringify(BOX)}') || inputs.runner }}`;
       for (const step of job.steps) {

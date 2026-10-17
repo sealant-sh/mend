@@ -5,7 +5,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
+import { Evaluator, Lexer, Parser, data } from "@actions/expressions";
 import { parse } from "yaml";
+
+import { CI_RUNNER } from "./ci-measure-workflow.mjs";
 
 const root = new URL("../", import.meta.url);
 const workflow = parse(
@@ -108,10 +111,10 @@ test("static checks, all test shards and packaging can start without another exe
       `${name} must not wait for static or another shard`,
     );
     assert.match(jobs[name].if, /!cancelled\(\)/, `${name} must run when classification failed`);
-    assert.deepEqual(jobs[name]["runs-on"], ["self-hosted", "box", "linux", "x64"]);
+    assert.equal(jobs[name]["runs-on"], CI_RUNNER);
   }
   assert.deepEqual(new Set(jobs.checks.needs), new Set(Object.keys(completed())));
-  // Seconds of work each; on the box they queue behind Core and sealantd runs (merge-queue.md).
+  // Seconds of work each, on GitHub's free arm64 runners (merge-queue.md).
   for (const name of ["changes", "checks"]) assert.equal(jobs[name]["runs-on"], "ubuntu-24.04-arm");
   assert.ok(
     !jobs.checks.steps.some((step) => step.uses),
@@ -465,29 +468,23 @@ test("dispatch measurements preserve the production jobs and cannot run on PRs o
   assert.equal(measured.jobs.checks.name, "measurement checks");
   delete measured.jobs.checks.name;
   assert.equal(measured.env.CI_MEASUREMENT_CACHE, undefined);
-  assert.deepEqual(measured.on.workflow_dispatch.inputs.runner.options, [
-    "box",
-    "blacksmith-2vcpu-ubuntu-2404",
-    "blacksmith-4vcpu-ubuntu-2404",
-    "ubuntu-latest",
-  ]);
+  assert.deepEqual(measured.on.workflow_dispatch.inputs.runner.options, ["box", "ubuntu-latest"]);
   const box = ["self-hosted", "box", "linux", "x64"];
   const movable = [];
   const policyCommands = [];
   for (const name of Object.keys(jobs)) {
     assert.equal(measured.jobs[name].env?.CI_MEASUREMENT_CACHE, undefined);
-    if (JSON.stringify(jobs[name]["runs-on"]) === JSON.stringify(box)) {
+    if (jobs[name]["runs-on"] === CI_RUNNER) {
       movable.push(name);
       assert.equal(
         measured.jobs[name]["runs-on"],
         `\${{ inputs.runner == 'box' && fromJSON('${JSON.stringify(box)}') || inputs.runner }}`,
       );
-      measured.jobs[name]["runs-on"] = box;
+      measured.jobs[name]["runs-on"] = CI_RUNNER;
       const setup = measured.jobs[name].steps.find((step) =>
         step.uses?.startsWith("actions/setup-node@"),
       );
       assert.equal(setup.with.cache, "${{ inputs.runner != 'box' && 'pnpm' || '' }}");
-      delete setup.with.cache;
     }
     for (const step of measured.jobs[name].steps) {
       if (step.env?.CI_MEASUREMENT_CACHE !== undefined) {
@@ -512,8 +509,8 @@ test("dispatch measurements preserve the production jobs and cannot run on PRs o
   ]);
   assert.doesNotMatch(
     readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8"),
-    /blacksmith|inputs\.runner/,
-    "production CI never selects a vendor runner",
+    /blacksmith/i,
+    "production CI never names a vendor runner",
   );
   assert.deepEqual(policyCommands.toSorted(), [
     "node scripts/ci-shards.mjs clients-a",
@@ -824,4 +821,170 @@ test("both scoped lanes delete package tests before any lane step and write no T
       assert.notDeepEqual(mutated(job, change), [], `${job}: ${description}`);
     }
   }
+});
+
+// x86 CI runs on GitHub-hosted runners. The box's runners stay a fallback a person picks by
+// dispatching with `runner: box`: no other event may resolve a job's runs-on to the box, and no
+// event at all to a Blacksmith runner. runs-on is evaluated per event, dispatch input and matrix
+// row with GitHub's own expression library.
+const BOX = ["self-hosted", "box", "linux", "x64"];
+const toData = (v) => {
+  if (typeof v === "string") return new data.StringData(v);
+  if (typeof v === "boolean") return new data.BooleanData(v);
+  if (typeof v === "number") return new data.NumberData(v);
+  if (v === null || v === undefined) return new data.Null();
+  if (Array.isArray(v)) return new data.Array(...v.map(toData));
+  const dictionary = new data.Dictionary();
+  for (const [key, entry] of Object.entries(v)) dictionary.add(key, toData(entry));
+  return dictionary;
+};
+const evaluate = (expression, context) => {
+  const tree = new Parser(new Lexer(expression).lex().tokens, Object.keys(context), []).parse();
+  return JSON.parse(JSON.stringify(new Evaluator(tree, toData(context)).evaluate(), data.replacer));
+};
+const expressionOf = (value) =>
+  typeof value === "string" ? value.match(/^\$\{\{(.+)\}\}$/s)?.[1] : undefined;
+/** The labels a runs-on value resolves to in a context. */
+const resolveRunner = (runsOn, context) => {
+  const whole = expressionOf(runsOn);
+  const value = whole ? evaluate(whole, context) : runsOn;
+  const labels = typeof value === "string" ? [value] : Array.isArray(value) ? value : value?.labels;
+  return [labels].flat().map((label) => {
+    const inner = expressionOf(label);
+    return inner ? evaluate(inner, context) : label;
+  });
+};
+/** Every matrix row a job runs, or one empty row. A list a step builds at run time is one {} row. */
+const matrixRows = (strategy) => {
+  const matrix = strategy?.matrix;
+  if (matrix === undefined) return [{}];
+  const keys = Object.keys(matrix).filter((key) => key !== "include" && key !== "exclude");
+  let rows = [{}];
+  for (const key of keys) {
+    const values = expressionOf(matrix[key]) ? [{}] : matrix[key];
+    rows = rows.flatMap((row) => values.map((entry) => ({ ...row, [key]: entry })));
+  }
+  const include = matrix.include ?? [];
+  return keys.length > 0 ? [...rows, ...include] : include;
+};
+/** Every (event, inputs) a workflow can run with: each dispatch choice, every other trigger with none. */
+const runsOf = (on) => {
+  const events = typeof on === "string" ? [on] : Array.isArray(on) ? on : Object.keys(on);
+  return events.flatMap((event) => {
+    if (event !== "workflow_dispatch") return [{ event, inputs: {} }];
+    let choices = [{}];
+    for (const [name, input] of Object.entries(on.workflow_dispatch?.inputs ?? {})) {
+      const options = input.type === "choice" ? input.options : [input.default ?? ""];
+      choices = choices.flatMap((chosen) =>
+        options.map((option) => ({ ...chosen, [name]: option })),
+      );
+    }
+    return choices.map((inputs) => ({ event, inputs }));
+  });
+};
+const resolutions = (files = globSync(".github/workflows/*.yml", { cwd: root })) =>
+  files.flatMap((file) => {
+    const { on, jobs: fileJobs } = parse(readFileSync(new URL(file, root), "utf8"));
+    return runsOf(on).flatMap(({ event, inputs }) =>
+      Object.entries(fileJobs).flatMap(([job, { "runs-on": runsOn, strategy }]) =>
+        runsOn === undefined
+          ? []
+          : matrixRows(strategy).map((matrix) => ({
+              file,
+              event,
+              inputs,
+              job,
+              labels: resolveRunner(runsOn, { inputs, matrix, github: { event_name: event } }),
+            })),
+      ),
+    );
+  });
+const isBox = (labels) => JSON.stringify(labels) === JSON.stringify(BOX);
+// A runner read from a matrix a step builds (preview.yml's plan) resolves to null here; the JSON
+// that step writes is checked instead.
+const builtAtRunTime = ({ labels }) => labels.some((label) => label == null);
+const runnerProblems = (all) =>
+  all
+    .filter((run) => !builtAtRunTime(run))
+    .flatMap(({ file, event, inputs, job, labels }) => {
+      const where = `${file} ${job} on ${event} ${JSON.stringify(inputs)} -> ${JSON.stringify(labels)}`;
+      if (labels.some((label) => /blacksmith/i.test(String(label))))
+        return [`Blacksmith: ${where}`];
+      if (event === "workflow_dispatch" && inputs.runner === "box" && isBox(labels)) return [];
+      return hosted(labels) ? [] : [`not hosted: ${where}`];
+    });
+
+test("only a dispatch with runner: box selects the box, and nothing selects Blacksmith", () => {
+  const all = resolutions();
+  for (const event of ["pull_request", "merge_group", "schedule", "workflow_dispatch"]) {
+    assert.ok(
+      all.some((run) => run.event === event && run.file.endsWith("/ci.yml")),
+      event,
+    );
+  }
+  assert.deepEqual(runnerProblems(all), []);
+  // Only preview.yml reads its runners from a matrix a step builds: every runner it writes is hosted.
+  const built = all.filter(builtAtRunTime);
+  assert.deepEqual([...new Set(built.map((run) => run.file))], [".github/workflows/preview.yml"]);
+  const preview = parse(readFileSync(new URL(".github/workflows/preview.yml", root), "utf8")).jobs;
+  for (const { job } of built)
+    assert.equal(preview[job]["runs-on"], "${{ matrix.platform.runner }}");
+  const written = Object.values(preview).flatMap((job) => runnersIn(job.steps ?? []));
+  assert.ok(written.length > 0, "preview.yml writes the runners its matrix reads");
+  for (const runner of written) assert.ok(hosted(runner), `preview.yml writes ${runner}`);
+});
+
+test("CI's x86 lanes run on ubuntu-24.04 and return to the box only when dispatched to it", () => {
+  const ci = resolutions([".github/workflows/ci.yml"]);
+  const lanes = [
+    "static",
+    "test-engines",
+    "test-clients-a",
+    "test-clients-b",
+    "packaging",
+    "mobile-web",
+  ];
+  const on = (event, job, inputs = {}) =>
+    ci.find(
+      (run) =>
+        run.event === event &&
+        run.job === job &&
+        JSON.stringify(run.inputs) === JSON.stringify(inputs),
+    )?.labels;
+  for (const job of lanes) {
+    for (const event of ["pull_request", "merge_group", "schedule"]) {
+      assert.deepEqual(on(event, job), ["ubuntu-24.04"], `${job} on ${event}`);
+    }
+    assert.deepEqual(on("workflow_dispatch", job, { runner: "ubuntu-24.04" }), ["ubuntu-24.04"]);
+    assert.deepEqual(on("workflow_dispatch", job, { runner: "box" }), BOX);
+  }
+  for (const job of ["changes", "checks"]) {
+    assert.deepEqual(on("pull_request", job), ["ubuntu-24.04-arm"]);
+  }
+  // The evaluation itself refuses a default that lands on the box or a Blacksmith label.
+  const mutated = (runsOn) =>
+    runnerProblems(
+      runsOf(workflow.on).map(({ event, inputs }) => ({
+        file: "ci.yml",
+        event,
+        inputs,
+        job: "static",
+        labels: resolveRunner(runsOn, { inputs, matrix: {}, github: { event_name: event } }),
+      })),
+    );
+  assert.notDeepEqual(mutated(BOX), [], "a literal box lane");
+  assert.notDeepEqual(
+    mutated(
+      '${{ inputs.runner != \'ubuntu-24.04\' && fromJSON(\'["self-hosted","box","linux","x64"]\') || \'ubuntu-24.04\' }}',
+    ),
+    [],
+    "events without inputs defaulting to the box",
+  );
+  assert.notDeepEqual(
+    mutated(
+      '${{ inputs.runner == \'box\' && fromJSON(\'["self-hosted","box","linux","x64"]\') || \'blacksmith-4vcpu-ubuntu-2404\' }}',
+    ),
+    [],
+    "a Blacksmith default",
+  );
 });

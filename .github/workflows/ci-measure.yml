@@ -28,8 +28,6 @@ on:
         type: choice
         options:
           - box
-          - blacksmith-2vcpu-ubuntu-2404
-          - blacksmith-4vcpu-ubuntu-2404
           - ubuntu-latest
       base_sha:
         description: Exact 40-character PR base SHA
