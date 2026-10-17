@@ -66,6 +66,7 @@ import { makeReviewHandlers } from "./review.ts";
 import { RPC_REQUIRED_SCOPES } from "./rpc-scopes.ts";
 import {
   loginsOf,
+  findsInThread,
   makeServerConfig,
   makeWelcome,
   providersFromMend,
@@ -270,6 +271,7 @@ export interface GatewayRpcInput {
   readonly session: BearerSession;
   /** The person's projection of Mend, shared with their other sockets. */
   readonly hub: PersonHub;
+  readonly clientAppVersion: string | undefined;
 }
 
 const MODELS_SOURCE = "Mend GET /api/harnesses/models";
@@ -325,6 +327,7 @@ export const makeGatewayRpcHandlers = ({
   assetUrls,
   session,
   hub,
+  clientAppVersion,
 }: GatewayRpcInput) => {
   // Mend only through the person's gate: a 401 on any call refuses this socket's token.
   const { mend } = hub;
@@ -472,6 +475,7 @@ export const makeGatewayRpcHandlers = ({
       paths,
       providers,
       settings,
+      findInThread: findsInThread(clientAppVersion),
     });
     return readable(encodeServerConfig(config), config);
   };
@@ -1203,11 +1207,12 @@ export type GatewayRpcHandlers = ReturnType<typeof makeGatewayRpcHandlers>;
 export const gatewayRpcHandlersLayer = (
   session: BearerSession,
   hub: PersonHub,
+  clientAppVersion: string | undefined,
 ): Layer.Layer<Rpc.ToHandler<WsRpc>, never, GatewayEnvironment | AssetUrls> =>
   WsRpcGroup.toLayer(
     Effect.gen(function* () {
       const environment = yield* GatewayEnvironment;
       const assetUrls = yield* AssetUrls;
-      return makeGatewayRpcHandlers({ environment, assetUrls, session, hub });
+      return makeGatewayRpcHandlers({ environment, assetUrls, session, hub, clientAppVersion });
     }),
   );

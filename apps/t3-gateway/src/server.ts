@@ -10,6 +10,7 @@ import { AssetTracingDisabledLive, AssetUrlsLive } from "./assets.ts";
 import { GatewayAuthLive } from "./auth.ts";
 import { GatewayConfig } from "./config.ts";
 import { GatewayEnvironmentLive } from "./environment.ts";
+import { findParserLayer } from "./find-parser.ts";
 import { GatewayRoutesLive } from "./http.ts";
 import { ProjectionsLive } from "./hub.ts";
 import { MendClientLive } from "./mend-client.ts";
@@ -26,6 +27,7 @@ export const MendClientFetchLive = MendClientLive.pipe(Layer.provide(FetchHttpCl
 export const GatewayAppLive = GatewayRoutesLive.pipe(
   Layer.provide(GatewayAuthLive),
   Layer.provide(ProjectionsLive),
+  Layer.provide(findParserLayer()),
   Layer.provideMerge(WebSocketTicketsLive),
   Layer.provideMerge(AssetUrlsLive),
   Layer.provideMerge(AssetTracingDisabledLive),

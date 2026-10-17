@@ -2,6 +2,7 @@ import { setFlagsFromString } from "node:v8";
 import { runInNewContext } from "node:vm";
 
 import {
+  AuthSessionId,
   EnvironmentId,
   ORCHESTRATION_V2_WS_METHODS,
   ThreadId,
@@ -23,14 +24,17 @@ import { AssetUrls } from "../src/assets.ts";
 import { GRANTED_SCOPES } from "../src/auth.ts";
 import { GatewayConfig } from "../src/config.ts";
 import { GatewayEnvironment, makeGatewayEnvironment } from "../src/environment.ts";
+import { FindParser, findParserLayer, PARSED_TEXT_LIMIT } from "../src/find-parser.ts";
 import { Projections, ProjectionsLive, type PersonHub, type ThreadSnapshot } from "../src/hub.ts";
 import { rpcScopeAuthorizationLayer } from "../src/rpc-scopes.ts";
 import { gatewayRpcHandlersLayer } from "../src/rpc.ts";
+import { findsInThread } from "../src/server-config.ts";
 import { MendClientFetchLive } from "../src/server.ts";
 import { GatewayStateLive, type BearerSession } from "../src/state.ts";
 import { FIND_CACHE_LIMITS, makeThreadFinder } from "../src/thread-find.ts";
 import { assert, describe, it } from "./support/effect-vitest.ts";
 import { startFakeMend, type FakeMend } from "./support/fake-mend.ts";
+import { inlineFindParser, recordingFindParser } from "./support/find-parser.ts";
 import { gatewayTestLayer, PERSON } from "./support/gateway.ts";
 import { pairAndConnect } from "./support/rpc.ts";
 import { testBearerSession } from "./support/stubs.ts";
@@ -71,17 +75,46 @@ const connect = (mend: FakeMend, code: string) =>
   });
 
 describe("find in a thread", () => {
-  it.live("is advertised in the config, progressive included", () =>
+  it.live("is advertised to clients from v0.1.1 on, progressive included, and to no other", () =>
     withGateway((mend) =>
       Effect.gen(function* () {
         seed(mend, []);
-        const { rpc } = yield* pairAndConnect(mend, "FINDCONF");
-        const config = yield* rpc[WS_METHODS.serverGetConfig]({});
-        assert.isTrue(config.threadFind);
-        assert.isTrue(config.threadFindProgressive);
+        const advertised = [];
+        for (const [code, version] of [
+          ["FINDV011", "0.1.0"],
+          ["FINDPIN", "0.0.45"],
+          ["FINDNOVER", null],
+          ["FINDJUNK", "nightly"],
+        ] as const) {
+          const { rpc } = yield* pairAndConnect(mend, code, PERSON, undefined, version);
+          const config = yield* rpc[WS_METHODS.serverGetConfig]({});
+          advertised.push([version, config.threadFind, config.threadFindProgressive]);
+        }
+        assert.deepStrictEqual(advertised, [
+          ["0.1.0", true, true],
+          ["0.0.45", false, false],
+          [null, false, false],
+          ["nightly", false, false],
+        ]);
       }),
     ),
   );
+
+  it("reads the client's version as a release that renders Codex follow-ups as v0.1.1 does", () => {
+    const finding = ["0.1.0", "0.1.3", "0.2.0", "1.0.0", "0.1.0+build.7"];
+    const older = [
+      undefined,
+      "",
+      "0.0.45",
+      "0.0.99",
+      "0.1.0-nightly.1",
+      "0.1",
+      "v0.1.0",
+      "0.1.0.1",
+    ];
+    assert.deepStrictEqual(finding.filter(findsInThread), finding);
+    assert.deepStrictEqual(older.filter(findsInThread), []);
+  });
 
   it.live("counts the text a message renders, in thread order", () =>
     withGateway((mend) =>
@@ -291,6 +324,53 @@ const retainedHeap = (() => {
   };
 })();
 
+const besideATicker = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+  Effect.gen(function* () {
+    const gaps: Array<number> = [];
+    const ticker = yield* Effect.gen(function* () {
+      let last = performance.now();
+      for (;;) {
+        yield* Effect.sleep("2 millis");
+        const now = performance.now();
+        gaps.push(now - last);
+        last = now;
+      }
+    }).pipe(Effect.forkChild);
+    const started = performance.now();
+    const result = yield* effect;
+    const took = performance.now() - started;
+    yield* Fiber.interrupt(ticker);
+    return { result, took, longestGap: Math.max(0, ...gaps) };
+  });
+
+const withAnswer = (snapshot: ThreadSnapshot, text: string): ThreadSnapshot => ({
+  ...snapshot,
+  projection: {
+    ...snapshot.projection,
+    visibleTurnItems: snapshot.projection.visibleTurnItems.map((entry) =>
+      entry.item.type === "assistant_message" ? { ...entry, item: { ...entry.item, text } } : entry,
+    ),
+  },
+});
+
+const withQuestion = (snapshot: ThreadSnapshot, text: string): ThreadSnapshot => ({
+  ...snapshot,
+  projection: {
+    ...snapshot.projection,
+    visibleTurnItems: snapshot.projection.visibleTurnItems.map((entry) =>
+      entry.item.type === "user_message" ? { ...entry, item: { ...entry.item, text } } : entry,
+    ),
+  },
+});
+
+const SLOW_TO_PARSE = `${"[".repeat(PARSED_TEXT_LIMIT / 2)}${"]".repeat(PARSED_TEXT_LIMIT / 2)}`;
+
+const needleLinks = (length: number) => {
+  const link = "[needle](https://example.com/needle) ";
+  const links = Math.floor(length / link.length);
+  return { text: link.repeat(links), links };
+};
+
 describe("find in a thread, as a shared gateway runs it", () => {
   it.live("answers a query asked again of an unchanged thread with the count alone", () =>
     withGateway((mend) =>
@@ -326,28 +406,19 @@ describe("find in a thread, as a shared gateway runs it", () => {
           Array.from({ length: 750 }, (_, i) => [longMessage(2 * i), longMessage(2 * i + 1)]),
         );
         const snapshot = yield* snapshotOf(mend, "FINDLONG");
+        const parser = yield* FindParser;
         const search = { threadId: THREAD, query: "absent" };
 
-        const gaps: Array<number> = [];
-        const ticker = yield* Effect.gen(function* () {
-          let last = performance.now();
-          for (;;) {
-            yield* Effect.sleep("2 millis");
-            const now = performance.now();
-            gaps.push(now - last);
-            last = now;
-          }
-        }).pipe(Effect.forkChild);
-        const started = performance.now();
-        const counted = yield* makeThreadFinder().searchThread(snapshot, search);
-        const scanned = performance.now() - started;
-        yield* Fiber.interrupt(ticker);
+        const {
+          result: counted,
+          took: scanned,
+          longestGap,
+        } = yield* besideATicker(makeThreadFinder(parser).searchThread(snapshot, search));
         assert.strictEqual(counted.totalMatches, 0);
-        const longestGap = Math.max(...gaps);
         assert.isAbove(scanned, 4 * longestGap, `scan ${scanned} ms, longest gap ${longestGap} ms`);
         assert.isBelow(longestGap, 150);
 
-        const interrupted = yield* makeThreadFinder()
+        const interrupted = yield* makeThreadFinder(parser)
           .searchThreadStream(snapshot, search)
           .pipe(Stream.runCollect, Effect.forkChild);
         yield* Effect.sleep("10 millis");
@@ -359,6 +430,137 @@ describe("find in a thread, as a shared gateway runs it", () => {
         assert.isTrue(Exit.hasInterrupts(exit));
         assert.isBelow(stopped, 150);
         assert.isAbove(scanned, 4 * stopped, `scan ${scanned} ms, interrupt ${stopped} ms`);
+      }).pipe(Effect.provide(findParserLayer())),
+    ),
+  );
+
+  it.live("parses a message off the event loop, and counts what it renders", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        seed(mend, [["Where is the needle?", "here"]]);
+        const { text, links } = needleLinks(PARSED_TEXT_LIMIT);
+        const snapshot = withQuestion(
+          withAnswer(yield* snapshotOf(mend, "FINDLARGE"), text),
+          SLOW_TO_PARSE,
+        );
+        const parser = yield* FindParser;
+        const { result, took, longestGap } = yield* besideATicker(
+          makeThreadFinder(parser).searchThread(snapshot, { threadId: THREAD, query: "needle" }),
+        );
+        assert.strictEqual(result.totalMatches, links);
+        assert.isBelow(longestGap, 50, `find ${took} ms, longest gap ${longestGap} ms`);
+        assert.isAbove(took, 4 * longestGap, `find ${took} ms, longest gap ${longestGap} ms`);
+      }).pipe(Effect.provide(findParserLayer())),
+    ),
+  );
+
+  it.live("counts a message longer than it parses over its text as written", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        seed(mend, [["Where is the needle?", "here"]]);
+        const { text, links } = needleLinks(4 * 1024 * 1024);
+        const snapshot = withQuestion(withAnswer(yield* snapshotOf(mend, "FINDHUGE"), text), text);
+        const parser = yield* FindParser;
+        const { result, took, longestGap } = yield* besideATicker(
+          makeThreadFinder(parser).searchThread(snapshot, { threadId: THREAD, query: "needle" }),
+        );
+        assert.strictEqual(result.totalMatches, 4 * links);
+        assert.isBelow(took, 1_000, `find ${took} ms, longest gap ${longestGap} ms`);
+        assert.isBelow(longestGap, 100, `find ${took} ms, longest gap ${longestGap} ms`);
+      }).pipe(Effect.provide(findParserLayer())),
+    ),
+  );
+
+  it.live("stops the parse of a find it no longer runs", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        seed(mend, [["Where is the needle?", "needle"]]);
+        const small = yield* snapshotOf(mend, "FINDSTOP");
+        const slow = withQuestion(small, SLOW_TO_PARSE);
+        const parser = yield* FindParser;
+        const search = { threadId: THREAD, query: "needle" };
+        const abandoned = yield* makeThreadFinder(parser)
+          .searchThread(slow, search)
+          .pipe(Effect.forkChild);
+        yield* Effect.sleep("500 millis");
+        const asked = performance.now();
+        const exit = yield* Fiber.interrupt(abandoned).pipe(Effect.andThen(Fiber.await(abandoned)));
+        const stopped = performance.now() - asked;
+        assert.isTrue(Exit.hasInterrupts(exit));
+        assert.isBelow(stopped, 50);
+
+        const cpu = process.cpuUsage();
+        yield* Effect.sleep("1 second");
+        const { user, system } = process.cpuUsage(cpu);
+        assert.isBelow((user + system) / 1_000, 200, "CPU spent in the second after the interrupt");
+
+        const next = yield* makeThreadFinder(parser).searchThread(small, search);
+        assert.strictEqual(next.totalMatches, 2);
+      }).pipe(Effect.provide(findParserLayer())),
+    ),
+  );
+
+  it.live("hashes a very large message in slices, letting other work run", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        seed(mend, [["Where is the needle?", "here"]]);
+        // Flat, as a message read from JSON is: a rope would be flattened in one go.
+        const huge = Buffer.alloc(128 * 1024 * 1024, "x").toString("latin1");
+        const snapshot = withAnswer(yield* snapshotOf(mend, "FINDHASH"), huge);
+        const finder = makeThreadFinder({ segments: () => Effect.succeed([]) });
+        const { took, longestGap } = yield* besideATicker(
+          finder.searchThread(snapshot, { threadId: THREAD, query: "needle" }),
+        );
+        assert.isBelow(longestGap, 30, `find ${took} ms, longest gap ${longestGap} ms`);
+        assert.isAbove(took, 3 * longestGap, `find ${took} ms, longest gap ${longestGap} ms`);
+      }),
+    ),
+  );
+
+  it.live("tells apart messages that differ only in an unpaired surrogate", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        seed(mend, [["prefix \uD800", "answer"]]);
+        const before = yield* snapshotOf(mend, "FINDSURROGATE");
+        const after = withQuestion(before, "prefix \uD801");
+        const finder = makeThreadFinder(inlineFindParser);
+        const search = { threadId: THREAD, query: "\uD801" };
+        assert.strictEqual((yield* finder.searchThread(before, search)).totalMatches, 0);
+        assert.strictEqual((yield* finder.searchThread(after, search)).totalMatches, 1);
+      }),
+    ),
+  );
+
+  it.live("parses each message once per find, even with nothing cached", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        seed(mend, [
+          ["needle one", "needle two"],
+          ["needle three", "needle four"],
+          ["needle five", "needle six"],
+        ]);
+        const { entries } = yield* connect(mend, "FINDONCE");
+        const snapshot = yield* snapshotOf(mend, "FINDONCE2");
+        const reading = entries[2];
+        if (reading === undefined) return assert.fail("the thread has six messages");
+        const { parser, asked } = recordingFindParser();
+        const finder = makeThreadFinder(parser, {
+          parses: { entries: 512, bytes: 0 },
+          scans: { entries: 8, bytes: 0 },
+        });
+        const streamed = yield* finder
+          .searchThreadStream(snapshot, {
+            threadId: THREAD,
+            query: "needle",
+            start: { entryId: reading, occurrence: 0 },
+          })
+          .pipe(Stream.runCollect);
+        assert.deepStrictEqual(completeFlags(streamed), [false, undefined]);
+        assert.strictEqual(streamed.at(-1)?.totalMatches, 6);
+        assert.deepStrictEqual(
+          asked.map(({ text }) => text),
+          ["needle three", "needle one", "needle two", "needle four", "needle five", "needle six"],
+        );
       }),
     ),
   );
@@ -378,7 +580,7 @@ describe("find in a thread, as a shared gateway runs it", () => {
             name: `${request}-${i}-${longest}`.slice(0, 200),
             displayName: longest,
           }));
-        const finder = makeThreadFinder();
+        const finder = makeThreadFinder(inlineFindParser);
         const before = retainedHeap();
         for (let request = 0; request < 520; request++) {
           const found = yield* finder.searchThread(snapshot, {
@@ -411,7 +613,7 @@ describe("find in a thread, as a shared gateway runs it", () => {
           parses: { entries: 512, bytes: 96 * 1024 },
           scans: { entries: 8, bytes: 16 * 1024 },
         };
-        const finder = makeThreadFinder(limits);
+        const finder = makeThreadFinder(inlineFindParser, limits);
         for (const query of ["needle", "needle 1", "needle"]) {
           const found = yield* finder.searchThread(snapshot, { threadId: THREAD, query });
           assert.strictEqual(found.totalMatches, query === "needle" ? 16_000 : 800 * 11);
@@ -437,7 +639,7 @@ const assetUrls: AssetUrls["Service"] = {
 
 const projectionsOver = (mendUrl: URL) =>
   ProjectionsLive.pipe(
-    Layer.provideMerge(Layer.mergeAll(MendClientFetchLive, GatewayStateLive)),
+    Layer.provideMerge(Layer.mergeAll(MendClientFetchLive, GatewayStateLive, findParserLayer())),
     Layer.provideMerge(
       Layer.succeed(GatewayConfig)({
         mendUrl,
@@ -453,7 +655,7 @@ const deviceClient = (session: BearerSession, hub: PersonHub) =>
   RpcTest.makeClient(WsRpcGroup).pipe(
     Effect.provide(
       Layer.mergeAll(
-        gatewayRpcHandlersLayer(session, hub),
+        gatewayRpcHandlersLayer(session, hub, "0.1.0"),
         rpcScopeAuthorizationLayer(GRANTED_SCOPES),
       ).pipe(
         Layer.provide(
@@ -477,6 +679,38 @@ const sessionOf = (claim: FakeMend["claims"][number]): BearerSession => ({
   ...testBearerSession,
   deviceToken: claim.token,
   mendDeviceId: claim.deviceId,
+});
+
+describe("find in a thread, across people", () => {
+  it.live("keeps each person's caches to their own hub", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        seed(mend, [["the needle", "needle, needle"]]);
+        const snapshot = yield* snapshotOf(mend, "FINDADA");
+        const [claim] = mend.claims;
+        if (claim === undefined) return assert.fail("Ada paired");
+        const ada = sessionOf(claim);
+        const bea: BearerSession = {
+          ...ada,
+          sessionId: AuthSessionId.make("session-bea"),
+          deviceToken: "mdt_bea",
+          mendUser: { id: "user-bea", name: "Bea", email: "bea@example.com" },
+        };
+        yield* Effect.gen(function* () {
+          const projections = yield* Projections;
+          const adaHub = yield* projections.hub(ada);
+          const beaHub = yield* projections.hub(bea);
+          const search = { threadId: THREAD, query: "needle" };
+          const framesOf = (hub: PersonHub) =>
+            hub.threadFinder.searchThreadStream(snapshot, search).pipe(Stream.runCollect);
+          assert.deepStrictEqual(completeFlags(yield* framesOf(adaHub)), [false, undefined]);
+          assert.deepStrictEqual(completeFlags(yield* framesOf(adaHub)), [undefined]);
+          assert.strictEqual(beaHub.threadFinder.retainedBytes(), 0);
+          assert.deepStrictEqual(completeFlags(yield* framesOf(beaHub)), [false, undefined]);
+        }).pipe(Effect.provide(projectionsOver(mend.url)));
+      }),
+    ),
+  );
 });
 
 describe("find in a thread, for a device Mend revoked", () => {

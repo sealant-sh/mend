@@ -33,6 +33,8 @@ import { WebSocketTickets } from "./tickets.ts";
 
 /** The query parameter t3code's client puts the ticket in (`t3:apps/server/src/auth/EnvironmentAuth.ts`). */
 export const WEBSOCKET_TICKET_QUERY_PARAM = "wsTicket";
+/** What t3code's clients say they are on the socket URL (`t3:packages/client-runtime/src/authorization/remote.ts`). */
+export const CLIENT_APP_VERSION_QUERY_PARAM = "clientAppVersion";
 
 /**
  * How long, at most, a socket whose device was revoked stays open for the calls in flight to be
@@ -164,7 +166,13 @@ export const WebSocketRouteLive: Layer.Layer<
         const { tracked, answered } = trackInFlight(protocol);
         yield* RpcServer.make(WsRpcGroup, { disableTracing: true }).pipe(
           Effect.provideService(RpcServer.Protocol, tracked),
-          Effect.provide(gatewayRpcHandlersLayer(bearer.session, hub)),
+          Effect.provide(
+            gatewayRpcHandlersLayer(
+              bearer.session,
+              hub,
+              url.value.searchParams.get(CLIENT_APP_VERSION_QUERY_PARAM)?.trim() || undefined,
+            ),
+          ),
           // Every call's scope, checked against this bearer's before its handler runs.
           Effect.provide(rpcScopeAuthorizationLayer(bearer.session.scopes)),
           Effect.provideService(GatewayEnvironment, environment),

@@ -145,7 +145,7 @@ by an older gateway no longer reads files, which now need a permission of their 
 | Automatic settlement               | A thread with no activity for three days settles on its own, as on t3code's own server with its default settings. A background agent or task still running keeps it in Active, and so does a snooze ended by hand or by a pin, for three days from then. The settings page shows the defaults; the gateway does not let you change them. Turn it off for one thread with Auto-settle behavior in its menu. A pinned thread never settles on its own |
 | Diffs                              | Each turn's slice of the worktree's checkpoints, matched to the turn by session and time, and the whole thread's. The changes panel shows the thread's change, the worktree against its base, and a file opened there whole                                                                                                                                                                                                                         |
 | Files and `@`-mentions             | The session's worktree as it stands: the file tree, reading a file, searching contents, and a file chip's size. The Files tab is read-only                                                                                                                                                                                                                                                                                                          |
-| Find in a thread (Ctrl/⌘+F)        | Every message and plan of the thread, read as t3code renders it: each match is highlighted, and next and previous move between them                                                                                                                                                                                                                                                   |
+| Find in a thread (Ctrl/⌘+F)        | From T3 Code v0.1.1: every message and plan of the thread, read as t3code renders it. Each match is highlighted, and next and previous move between them                                                                                                                                                                                                                                                                                            |
 | Skills                             | `$`, and `/` unless t3code's setting hides them, lists the skills Mend gives the session: the project's, and your own where the project inherits them. A picked skill goes to Codex as `$name` and to Claude as `/name` at the start of the message, the rest of the message its arguments (Claude takes one skill a message)                                                                                                                       |
 | Branch status                      | The session's branch and its change against its base. The branch picker lists the project's branches, any of them a new worktree's base, and the thread's own                                                                                                                                                                                                                                                                                       |
 | Terminal                           | Mend's own shell beside the agent, opened with a single-use ticket                                                                                                                                                                                                                                                                                                                                                                                  |
@@ -186,11 +186,15 @@ t3code shows those controls inert with its own wording, or it refuses them with 
 - **Searching threads by their text.** The command palette finds a thread by its title, not by what
   was said in it: Mend has no search over sessions' messages yet. Find in a thread searches all of
   one thread.
-- **Find in a thread on T3 Code older than v0.1.1.** The gateway counts matches as T3 Code v0.1.1
-  renders a message. Older clients show a Codex follow-up suggestion
-  (`:codex-followup[label]{prompt="…"}`) as literal text, so in a message with one the bar's count
-  and the highlights can differ: such a client highlights matches in the directive's syntax and
-  prompt that the gateway does not count. No other construct reads differently between the two.
+- **Find in a thread needs T3 Code v0.1.1 or later.** The gateway counts matches as T3 Code v0.1.1
+  renders a message, and older clients show a Codex follow-up suggestion
+  (`:codex-followup[label]{prompt="…"}`) as literal text. The gateway therefore offers its find only
+  to a client that says it is v0.1.1 or later (web app 0.1.0). Ctrl/⌘+F in an older client, or in
+  one that does not say its version, opens the browser's own find.
+- **Find in very long messages.** The gateway reads a message as T3 Code renders it when it is at
+  most 32 KiB (32,768 characters). A longer message is counted over its text as written, so in one
+  with Markdown a link's address or a code fence's syntax can count where the client highlights
+  nothing. Prose counts the same either way.
 - **Uncommitted changes.** Mend reports a branch's change against its base, committed or not, and
   has no read of what is uncommitted. t3code's branch toolbar shows the branch's changes, and
   "Uncommitted" in the diff panel shows no patch. While the change has files, the git menu takes the
