@@ -28,8 +28,6 @@ on:
         type: choice
         options:
           - box
-          - blacksmith-2vcpu-ubuntu-2404
-          - blacksmith-4vcpu-ubuntu-2404
           - ubuntu-latest
       base_sha:
         description: Exact 40-character PR base SHA
@@ -414,6 +412,7 @@ jobs:
           .claude/skills/verify/scripts/leaks.frames.test.mjs
           .claude/skills/verify/scripts/slots.test.mjs .claude/skills/verify/scripts/guard.test.mjs
           .claude/skills/verify/scripts/secrets.test.mjs
+          .claude/skills/verify/scripts/steps.test.mjs
           .claude/skills/verify/scripts/local-outer.test.mjs
       - name: Archive per-file test timings
         if: ${{ !cancelled() }}

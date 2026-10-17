@@ -32,8 +32,12 @@ import {
   RELAY_CONTAINER,
   STACK_LABEL,
   STATE_VOLUME,
+  doneFrame,
   packageOverrides,
+  parseSteps,
+  readStepFrames,
   runtimeConsumers,
+  stepFrames,
   tarballPackage,
   withOverrides,
   verifyVersion,
@@ -637,4 +641,98 @@ test("stack.mjs preloads the guard image after the Mend image is built and befor
   const built = source.indexOf("await Promise.all([cliBuild, bundleBuild]);");
   const setup = source.indexOf('"--offline",');
   assert.ok(built !== -1 && preload > built && setup > preload, "build → preload → offline setup");
+});
+
+test("steps are checked before anything runs: file-safe unique names, an argv, a cwd under the home", () => {
+  const steps = (value) => parseSteps(JSON.stringify(value));
+  assert.deepEqual(
+    steps([
+      { name: "01-clone", run: ["git", "clone", "x", "work"] },
+      { name: "02-push", cwd: "./work/", run: ["mend", "skills", "push", "--project"] },
+      { name: "03-config", cwd: ".config/mend", run: ["ls"] },
+    ]),
+    [
+      { name: "01-clone", cwd: "", run: ["git", "clone", "x", "work"] },
+      { name: "02-push", cwd: "work", run: ["mend", "skills", "push", "--project"] },
+      { name: "03-config", cwd: ".config/mend", run: ["ls"] },
+    ],
+  );
+  assert.throws(() => parseSteps("not json"), /not JSON/);
+  assert.throws(() => steps([]), /non-empty/);
+  assert.throws(() => steps([{ name: "../x", run: ["true"] }]), /name must match/);
+  assert.throws(
+    () =>
+      steps([
+        { name: "a", run: ["true"] },
+        { name: "a", run: ["true"] },
+      ]),
+    /used twice/,
+  );
+  assert.throws(() => steps([{ name: "a", run: [] }]), /names a program/);
+  assert.throws(() => steps([{ name: "a", run: ["mend", 1] }]), /names a program/);
+  assert.throws(() => steps([{ name: "a", cwd: "/etc", run: ["true"] }]), /under the inner home/);
+  assert.throws(
+    () => steps([{ name: "a", cwd: "w/../..", run: ["true"] }]),
+    /under the inner home/,
+  );
+  assert.throws(() => steps([{ name: "a", stdin: "x", run: ["true"] }]), /unknown keys: stdin/);
+});
+
+test("a step's stdout, stderr and exit come back through a terminal byte for byte, and apart", () => {
+  const out = `${"é".repeat(5000)}\n\x1b[31mred\r\n`;
+  const terminal = [
+    "✓ recording · node · workspace mounts the worktree",
+    ...stepFrames(0, { stdout: out, stderr: "warning\n", exit: 3 }),
+    "verify stack · step a · exit 3",
+    ...stepFrames(1, { stdout: "", stderr: "", exit: 0 }),
+    doneFrame(2),
+  ].join("\r\n");
+  assert.ok(
+    terminal.split("\r\n").every((line) => line.length < 4200),
+    "a frame line is short",
+  );
+  const read = readStepFrames(`${terminal}\r\n`, 2);
+  assert.deepEqual(read.steps, [
+    { stdout: out, stderr: "warning\n", exit: 3 },
+    { stdout: "", stderr: "", exit: 0 },
+  ]);
+  assert.equal(read.done, true);
+  assert.equal(read.stray, 0);
+  assert.equal(
+    read.rest,
+    "✓ recording · node · workspace mounts the worktree\nverify stack · step a · exit 3\n",
+  );
+});
+
+test("a step whose exit never arrived has no result, and the run did not reach its end", () => {
+  const cut = [...stepFrames(0, { stdout: "ok", stderr: "", exit: 0 }), "verify-step 1 out b2s="];
+  const read = readStepFrames(cut.join("\n"), 2);
+  assert.deepEqual(read.steps, [{ stdout: "ok", stderr: "", exit: 0 }, null]);
+  assert.equal(read.done, false);
+  assert.equal(readStepFrames(doneFrame(3), 2).done, false, "another count is not this run's end");
+});
+
+test("a lost or cut frame line leaves its step without a result", () => {
+  const frames = stepFrames(0, { stdout: "x".repeat(7000), stderr: "", exit: 0 });
+  const lost = [frames[0], ...frames.slice(2), doneFrame(1)].join("\n");
+  assert.deepEqual(readStepFrames(lost, 1).steps, [null]);
+  const cut = [frames[0].slice(0, -8), ...frames.slice(1), doneFrame(1)].join("\n");
+  assert.deepEqual(readStepFrames(cut, 1).steps, [null]);
+});
+
+test("a frame line that fits no step is counted, and never kept as the session's own words", () => {
+  const secret = Buffer.from("registered-secret-value").toString("base64");
+  const read = readStepFrames(
+    [
+      ...stepFrames(0, { stdout: "ok", stderr: "", exit: 0 }),
+      `verify-step 0 out ${secret}`,
+      `verify-step 7 out ${secret}`,
+      "verify-step garbled",
+      doneFrame(1),
+    ].join("\n"),
+    1,
+  );
+  assert.deepEqual(read.steps, [{ stdout: "ok", stderr: "", exit: 0 }]);
+  assert.equal(read.stray, 3);
+  assert.equal(read.rest, "");
 });

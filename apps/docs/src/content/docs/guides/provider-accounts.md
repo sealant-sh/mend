@@ -117,7 +117,8 @@ reason. Read [Land a change](/guides/land-a-change/).
 
 Settings on the web has a Connected accounts panel that takes a pasted credential: for Claude, a
 setup token from `claude setup-token` or the contents of `~/.claude/.credentials.json`; for Codex,
-the contents of `~/.codex/auth.json`; for GitHub, the output of `gh auth token`.
+the contents of `~/.codex/auth.json`; for GitHub, the output of `gh auth token`. The same panel
+holds **Give my sessions only the selected agent's login**.
 
 ## Replace or remove an account
 
@@ -131,6 +132,12 @@ mend connect codex --remove
 
 Use `claude`, `codex`, or `github` as the provider. The command fails rather than pretending to
 remove an account that is not connected.
+
+Removing an account stops Mend refreshing it and giving it to new workspaces. A copy already in a
+running workspace (your own session's, or your other agent's login in it) works until its access
+token expires, its home there is released, or the workspace ends. In a workspace you started, your
+copies stay until the workspace ends: stopping your own sessions there may leave them in place while
+someone else's session keeps it running.
 
 ## Where the account is used
 
@@ -150,7 +157,8 @@ own logins, written into their own home in the workspace:
   runs gets your logins, in your home, never theirs.
 - **Your steered turns.** Under shared control each turn runs on its sender's login: when you send a
   turn to someone else's conversation session, Mend runs it in an agent process of your user, on
-  your login. A terminal session stays its owner's: only they type in it.
+  your login. When that agent runs the other CLI, it reads your own Codex or Claude login, in your
+  home. A terminal session stays its owner's: only they type in it.
 - **Refused, not borrowed.** When a Claude or Codex session's provider is not connected, the start
   is refused before anything runs, a worktree's first launch as much as a join:
   `Connect Claude to start a session here. Connect it in Settings → Connected accounts, or run mend connect claude.`
@@ -169,14 +177,27 @@ A running workspace gets each refreshed copy of your login as it is made, withou
 reconnect applies to new sessions at once; a session already running picks the new login up at its
 next scheduled refresh, so restart it if it is failing on the old one.
 
+## Your other agent's login
+
+A Claude session also gets your Codex login, and a Codex session your Claude login, when you have
+connected it, so the agent can run `codex` or `claude` on your own login. In a per-person workspace
+only your own logins are ever given: a session never gets anyone else's. In a workspace that shares
+one home, a join or a steered turn runs on the logins of whoever started it, these included. To give
+each session its own agent's login only, turn on **Give my sessions only the selected agent's
+login** in Settings → Connected accounts, or run `mend agent-logins selected`. Read
+[Only the selected agent's login](../../concepts/provider-logins/#only-the-selected-agents-login).
+
 ## When an account is missing
 
-A missing GitHub account does not block a launch: Mend requests the harness account and GitHub
-together, then without the account the platform reports missing. A missing Claude or Codex account
-does, in a [per-person workspace](/operate/per-person-workspaces/) (the default): `mend claude` or
-`mend codex` is refused before anything starts, as above. In a workspace that shares one home, Mend
-steps down to what is connected, and the harness may open its own login flow when no connected
-provider credential is available. A shell, pi or opencode session starts with whatever is connected.
+A missing GitHub account does not block a launch: Mend requests the harness account, your other
+agent's account and GitHub together, then without an account the platform reports missing. Your
+other agent's account is left out the same way when it is missing or needs reconnecting, so a Codex
+login that needs reconnecting never stops a Claude session. A missing Claude or Codex account for
+the session's own agent does block, in a [per-person workspace](/operate/per-person-workspaces/)
+(the default): `mend claude` or `mend codex` is refused before anything starts, as above. In a
+workspace that shares one home, Mend steps down to what is connected, and the harness may open its
+own login flow when no connected provider credential is available. A shell, pi or opencode session
+starts with whatever is connected.
 
 `mend doctor` reports missing provider accounts as setup tasks rather than machine failures. Connect
 the account explicitly when sessions must start non-interactively.

@@ -184,7 +184,8 @@ describe("SessionEngine", () => {
           expect(created[0]?.os).toBe("nix");
           expect(created[0]?.packages).toEqual(["bat", "lazygit"]);
           expect(created[0]?.services).toEqual({ docker: true });
-          expect(created[0]?.credentials).toEqual({ codex: true, github: true });
+          // The owner's own Claude login rides along, so the agent can run `claude` on it.
+          expect(created[0]?.credentials).toEqual({ codex: true, claude: true, github: true });
         }),
       {
         sealantLayer: sealantLaunchLayer(created),

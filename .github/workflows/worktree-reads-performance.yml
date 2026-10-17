@@ -1,7 +1,16 @@
 name: Worktree reads performance
 
 on:
+  # Runs on GitHub's ubuntu-24.04; a dispatch with `runner: box` runs it on the box instead.
   workflow_dispatch:
+    inputs:
+      runner:
+        description: Runner for the x86 jobs (box is the fallback; other events use ubuntu-24.04)
+        type: choice
+        default: ubuntu-24.04
+        options:
+          - ubuntu-24.04
+          - box
 
 permissions:
   contents: read
@@ -12,7 +21,9 @@ concurrency:
 
 jobs:
   measure:
-    runs-on: [self-hosted, box, linux, x64]
+    runs-on:
+      ${{ inputs.runner == 'box' && fromJSON('["self-hosted","box","linux","x64"]') ||
+      'ubuntu-24.04' }}
     timeout-minutes: 10
     env:
       GIT_CONFIG_NOSYSTEM: "1"
@@ -26,6 +37,7 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .node-version
+          cache: ${{ inputs.runner != 'box' && 'pnpm' || '' }}
       - run: pnpm install --frozen-lockfile
       # One worker, no concurrent package tests/builds in this job. This is a separate measurement,
       # not a claim made by ordinary CI correctness checks.

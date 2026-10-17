@@ -44,6 +44,7 @@ import {
   SecretFilesRepo,
   SkillsRepo,
   UserDotfilesRepo,
+  UserAgentLoginsRepo,
   UserGitAuthorRepo,
   type GitAccessMode,
   type CaptureObservation,
@@ -98,6 +99,7 @@ import {
   ProjectSecretsSnapshot,
   RepositoryCloneUrl,
   ResolvedGitAuthor,
+  AgentLogins,
   Service,
   ServiceForward,
   ServiceObservation,
@@ -320,7 +322,10 @@ export const fakeExecRun: Run = {
 /** Shared sealantLaunchLayer fixture for engine scenarios. */
 export const sealantLaunchLayer = (
   created: Array<CreateOptions>,
-  rejectCredentials: (credentials: CreateOptions["credentials"]) => boolean = () => false,
+  /** A create refused for its accounts: `true` with the old words, or Core's own refusal. */
+  rejectCredentials: (
+    credentials: CreateOptions["credentials"],
+  ) => boolean | SealantPlatformError = () => false,
   stopped?: string[],
   spawned?: ReadonlyArray<string>[],
   rejectWorkspaceLookup: () => boolean = () => false,
@@ -596,16 +601,20 @@ export const sealantLaunchLayer = (
         return beforeCreate.pipe(
           Effect.andThen(
             createWorkspaceOverride === undefined
-              ? rejectCredentials(options.credentials)
-                ? Effect.fail(
-                    new SealantPlatformError({
-                      code: "connected-account-not-found",
-                      status: 400,
-                      message: "connected account was not found",
-                      cause: null,
-                    }),
-                  )
-                : Effect.succeed(workspace)
+              ? Effect.suspend(() => {
+                  const rejected = rejectCredentials(options.credentials);
+                  if (rejected === false) return Effect.succeed(workspace);
+                  return Effect.fail(
+                    rejected === true
+                      ? new SealantPlatformError({
+                          code: "connected-account-not-found",
+                          status: 400,
+                          message: "connected account was not found",
+                          cause: null,
+                        })
+                      : rejected,
+                  );
+                })
               : createWorkspaceOverride(options),
           ),
         );
@@ -996,6 +1005,24 @@ export const redeemPickupExec = (
     ? Effect.die(new Error("no pickup on this channel"))
     : redeem(argv[4] ?? "");
 };
+
+/** Which of their own logins each person's sessions get: every one, unless a test says. */
+export const agentLoginsLayerOf = (selectedOnly: ReadonlySet<string> = new Set()) =>
+  Layer.succeed(UserAgentLoginsRepo, {
+    forUser: (userId) =>
+      Effect.succeed(new AgentLogins({ selectedOnly: selectedOnly.has(userId) })),
+    set: (_userId, setting) => Effect.succeed(setting),
+  });
+
+/** Core's refusal of a named account that needs reconnecting (`connected-account-invalid`). */
+export const invalidAccount = (provider: "claude" | "codex") =>
+  new SealantPlatformError({
+    code: "connected-account-invalid",
+    status: 409,
+    message: `Connected ${provider} account "default" is invalid — reconnect it.`,
+    provider,
+    cause: null,
+  });
 
 /** Every account's git author is its registration name and email unless a test says. */
 export const gitAuthorStubLayer = Layer.succeed(UserGitAuthorRepo, {
@@ -3130,6 +3157,8 @@ interface EngineOptions {
   readonly userDotfilesLayer?: Layer.Layer<UserDotfilesRepo>;
   /** The owner's git author; `Account <id>` <`<id>@accounts.example`> unless a test says. */
   readonly gitAuthorLayer?: Layer.Layer<UserGitAuthorRepo>;
+  /** The people who chose their selected agent's login only; nobody unless a test says. */
+  readonly selectedOnly?: ReadonlySet<string>;
   /** Who hears about pushes and ended agents; nobody unless a test says. */
   readonly gitHooksLayer?: Layer.Layer<WorkspaceGitHooks>;
   readonly dotfilesStoreLayer?: Layer.Layer<DotfilesStore>;
@@ -3416,6 +3445,7 @@ export const withPreparedEngineEffect = <B, A, E>(
           secretCipherStubLayer,
           options.userDotfilesLayer ?? userDotfilesStubLayer,
           options.gitAuthorLayer ?? gitAuthorStubLayer,
+          agentLoginsLayerOf(options.selectedOnly),
           options.gitHooksLayer ?? WorkspaceGitHooksLive,
           options.dotfilesStoreLayer ?? dotfilesStoreStubLayer,
           options.dotfilesClonerLayer ?? dotfilesClonerLayer(),
