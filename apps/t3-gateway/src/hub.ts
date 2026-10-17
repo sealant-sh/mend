@@ -52,6 +52,7 @@ import {
   turnInputOf,
 } from "./images.ts";
 import {
+  autoSettledAt,
   changeLifecycle,
   isLifecycleEmpty,
   lifecycleOf,
@@ -472,9 +473,10 @@ export interface ThreadCommands {
     readonly archived: boolean;
   }) => Effect.Effect<number, ThreadCommandFailure>;
   /**
-   * Settles or unsettles the thread in the person's view, or snoozes it until a time or wakes it
-   * (`thread.settle`, `thread.unsettle`, `thread.snooze`, `thread.unsnooze`; `lifecycle.ts`). Mend
-   * has neither: the session is not touched.
+   * Settles, snoozes, pins or orders the thread in the person's view, or undoes one
+   * (`thread.settle`, `thread.snooze`, `thread.pin`, `thread.active.reorder`,
+   * `thread.auto-settle.set` and their kin; `lifecycle.ts`). Mend has none of them: the session is
+   * not touched.
    */
   readonly setLifecycle: (input: {
     readonly threadId: string;
@@ -1097,7 +1099,7 @@ export const makePersonHub = (input: {
         ? []
         : yield* state.listLifecycles(keeper.id).pipe(
             Effect.catch((error) =>
-              Effect.logError("t3 gateway could not read its settled and snoozed threads", {
+              Effect.logError("t3 gateway could not read its settled, snoozed and pinned threads", {
                 cause: error.message,
               }).pipe(Effect.as(new Map<string, ThreadLifecycle>())),
             ),
@@ -1707,6 +1709,43 @@ export const makePersonHub = (input: {
       Effect.forEach(Array.from(watches.keys()), publishThread, { discard: true }),
     );
 
+    const autoSettle = Effect.gen(function* () {
+      if (keeper === null) return false;
+      const now = yield* DateTime.nowAsDate;
+      let settled = false;
+      for (const source of threadSources()) {
+        const { lifecycle } = source;
+        // Passed over before its shell is built: most threads are settled, and this runs on every read.
+        if (
+          source.archivedAt !== null ||
+          lifecycle.settledOverride !== null ||
+          lifecycle.pinnedAt !== null ||
+          lifecycle.autoSettleDisabledAt !== null
+        ) {
+          continue;
+        }
+        const settledAt = autoSettledAt(
+          threadShellOf(source, { itemCount: 0, visibleItemCount: 0 }),
+          now.getTime(),
+        );
+        if (settledAt === null) continue;
+        const result = changeLifecycle(source, { kind: "auto-settle", settledAt }, now);
+        if (result._tag === "Refused") continue;
+        const kept = yield* state.setLifecycle(keeper.id, source.session.id, result.lifecycle).pipe(
+          Effect.as(true),
+          Effect.catch((error) =>
+            Effect.logWarning("t3 gateway could not keep a thread it settled on its own", {
+              cause: error.message,
+            }).pipe(Effect.as(false)),
+          ),
+        );
+        if (!kept) continue;
+        lifecycles.set(source.session.id, result.lifecycle);
+        settled = true;
+      }
+      return settled;
+    });
+
     /** Moves every queue on after a read (set below, once the queue's machinery exists). */
     let settleQueues: Effect.Effect<void> = Effect.void;
     /** Whether a message the gateway accepted can still reach Mend: what holds the hub alive. */
@@ -1722,6 +1761,7 @@ export const makePersonHub = (input: {
       Effect.andThen(settleNextEfforts),
       Effect.andThen(settleNextModels),
       Effect.andThen(settleLifecycles),
+      Effect.andThen(autoSettle),
       Effect.andThen(keepQueues),
       Effect.andThen(publishShell),
       Effect.andThen(publishThreads),
@@ -3436,7 +3476,9 @@ export const makePersonHub = (input: {
       Effect.gen(function* () {
         yield* ensureLoaded;
         if (keeper === null) {
-          return yield* refused("A settle or a snooze needs a paired person to keep it for.");
+          return yield* refused(
+            "A settle, snooze, pin or order needs a paired person to keep it for.",
+          );
         }
         const sessionId = sessionIdOf(command.threadId);
         return yield* locked(
@@ -3456,7 +3498,7 @@ export const makePersonHub = (input: {
                 .setLifecycle(keeper.id, sessionId, isLifecycleEmpty(next) ? null : next)
                 .pipe(
                   Effect.tapError((error) =>
-                    Effect.logError("t3 gateway could not keep a settle or a snooze", {
+                    Effect.logError("t3 gateway could not keep a settle, snooze, pin or order", {
                       cause: error.message,
                     }),
                   ),
@@ -3716,6 +3758,12 @@ export const makePersonHub = (input: {
       );
       yield* Effect.forkIn(
         pruneDrafts.pipe(Effect.repeat(Schedule.spaced(IMAGE_PRUNE_INTERVAL))),
+        hubScope,
+      );
+      yield* Effect.forkIn(
+        locked(
+          autoSettle.pipe(Effect.flatMap((settled) => (settled ? publishAll : Effect.void))),
+        ).pipe(Effect.repeat(Schedule.spaced(AUTO_SETTLE_SWEEP_INTERVAL))),
         hubScope,
       );
     }
@@ -3984,6 +4032,7 @@ const messageImageOf = (image: StoredImage): MessageImage => ({
 
 /** How often a hub looks for images attached to a message never sent. */
 const IMAGE_PRUNE_INTERVAL = "1 hour";
+const AUTO_SETTLE_SWEEP_INTERVAL = "1 minute";
 
 /** How long an image attached to a message that was never sent is kept. */
 const UNSENT_IMAGE_TTL_MS = 7 * 24 * 60 * 60_000;

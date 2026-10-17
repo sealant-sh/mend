@@ -125,9 +125,8 @@ export interface ImagePlacement {
 }
 
 /**
- * A person's settle and snooze of a thread (`thread.settle`, `thread.snooze`), as t3code keeps
- * them on its own threads: ISO times, null where unset. Mend has neither, so it is the person's
- * view alone.
+ * A person's settle, snooze, pin and order of a thread, as t3code keeps them on its own threads:
+ * ISO times, null where unset. Mend has none of them, so it is the person's view alone.
  */
 export interface ThreadLifecycle {
   /** `settled` after a settle, `active` after an unsettle; null for neither. */
@@ -137,6 +136,10 @@ export interface ThreadLifecycle {
   /** When the snooze ends; null while the thread is not snoozed. */
   readonly snoozedUntil: string | null;
   readonly snoozedAt: string | null;
+  readonly pinnedAt: string | null;
+  readonly pinOrderKey: string | null;
+  readonly activeOrderKey: string | null;
+  readonly autoSettleDisabledAt: string | null;
 }
 
 /** An image as a sent message carried it: the selection and the path its turn named. */
@@ -313,13 +316,13 @@ export class GatewayState extends Context.Service<
     readonly listArchived: (
       mendUserId: string,
     ) => Effect.Effect<ReadonlyMap<string, string>, GatewayStateError>;
-    /** Keeps a person's settle and snooze of a thread, or, for null, lets go of both. */
+    /** Keeps a person's settle, snooze, pin and order of a thread, or, for null, lets go of all. */
     readonly setLifecycle: (
       mendUserId: string,
       sessionId: string,
       lifecycle: ThreadLifecycle | null,
     ) => Effect.Effect<void, GatewayStateError>;
-    /** Session id → the person's settle and snooze of its thread. */
+    /** Session id → the person's settle, snooze, pin and order of its thread. */
     readonly listLifecycles: (
       mendUserId: string,
     ) => Effect.Effect<ReadonlyMap<string, ThreadLifecycle>, GatewayStateError>;
@@ -590,6 +593,12 @@ const MIGRATIONS: ReadonlyArray<string> = [
     PRIMARY KEY (mend_user_id, mend_session_id)
   );
   `,
+  `
+  ALTER TABLE thread_lifecycles ADD COLUMN pinned_at TEXT;
+  ALTER TABLE thread_lifecycles ADD COLUMN pin_order_key TEXT;
+  ALTER TABLE thread_lifecycles ADD COLUMN active_order_key TEXT;
+  ALTER TABLE thread_lifecycles ADD COLUMN auto_settle_disabled_at TEXT;
+  `,
 ];
 
 /** The gateway's sequence high-water mark in `meta` (`reserveSequences`). */
@@ -689,6 +698,10 @@ const LifecycleRow = Schema.Struct({
   unsettled_at: Schema.NullOr(Schema.String),
   snoozed_until: Schema.NullOr(Schema.String),
   snoozed_at: Schema.NullOr(Schema.String),
+  pinned_at: Schema.NullOr(Schema.String),
+  pin_order_key: Schema.NullOr(Schema.String),
+  active_order_key: Schema.NullOr(Schema.String),
+  auto_settle_disabled_at: Schema.NullOr(Schema.String),
 });
 const decodeLifecycleRows = Schema.decodeUnknownEffect(Schema.Array(LifecycleRow));
 const ModelPreferencesRow = Schema.Struct({
@@ -1369,8 +1382,9 @@ export const openGatewayState = (
         database
           .prepare(
             `INSERT OR REPLACE INTO thread_lifecycles
-              (mend_user_id, mend_session_id, settled_override, settled_at, unsettled_at, snoozed_until, snoozed_at)
-              VALUES (?, ?, ?, ?, ?, ?, ?)`,
+              (mend_user_id, mend_session_id, settled_override, settled_at, unsettled_at, snoozed_until,
+                snoozed_at, pinned_at, pin_order_key, active_order_key, auto_settle_disabled_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           )
           .run(
             mendUserId,
@@ -1380,6 +1394,10 @@ export const openGatewayState = (
             lifecycle.unsettledAt,
             lifecycle.snoozedUntil,
             lifecycle.snoozedAt,
+            lifecycle.pinnedAt,
+            lifecycle.pinOrderKey,
+            lifecycle.activeOrderKey,
+            lifecycle.autoSettleDisabledAt,
           );
       });
 
@@ -1387,7 +1405,8 @@ export const openGatewayState = (
       run("listLifecycles", () =>
         database
           .prepare(
-            `SELECT mend_session_id, settled_override, settled_at, unsettled_at, snoozed_until, snoozed_at
+            `SELECT mend_session_id, settled_override, settled_at, unsettled_at, snoozed_until, snoozed_at,
+                pinned_at, pin_order_key, active_order_key, auto_settle_disabled_at
               FROM thread_lifecycles WHERE mend_user_id = ?`,
           )
           .all(mendUserId),
@@ -1406,6 +1425,10 @@ export const openGatewayState = (
                       unsettledAt: row.unsettled_at,
                       snoozedUntil: row.snoozed_until,
                       snoozedAt: row.snoozed_at,
+                      pinnedAt: row.pinned_at,
+                      pinOrderKey: row.pin_order_key,
+                      activeOrderKey: row.active_order_key,
+                      autoSettleDisabledAt: row.auto_settle_disabled_at,
                     },
                   ] as const,
               ),
