@@ -15,7 +15,7 @@ import { GatewayTimers, withGatewayTimers } from "./support/timers.ts";
 
 /**
  * VCS status (ADR 0012, phase 2): the thread's branch and its change's totals, from Mend's
- * `GET /api/changes/:id/stats`, kept current while the client watches.
+ * `GET /api/changes/:id/stats`, and its landing record, kept current while the client watches.
  */
 
 const withGateway = <A, E, R>(test: (mend: FakeMend) => Effect.Effect<A, E, R>) =>
@@ -54,9 +54,11 @@ describe("VCS status", () => {
           insertions: 10,
           deletions: 3,
         });
-        // Mend tracks no upstream for a session's branch: nothing is claimed about one.
+        // Never landed. Nothing is on origin yet, and a landing has something to push.
         assert.isFalse(status.hasUpstream);
-        assert.strictEqual(status.aheadCount, 0);
+        assert.strictEqual(status.aheadCount, 1);
+        assert.strictEqual(status.aheadOfDefaultCount, 1);
+        assert.strictEqual(status.behindCount, 0);
         assert.isNull(status.pr);
 
         const stream = yield* feed(rpc[WS_METHODS.subscribeVcsStatus]({ cwd: WORKTREE }));
@@ -65,7 +67,13 @@ describe("VCS status", () => {
             (event): event is Extract<Event, { _tag: "snapshot" }> => event._tag === "snapshot",
           ),
         );
-        assert.isNull(snapshot.remote);
+        assert.deepStrictEqual(snapshot.remote, {
+          hasUpstream: false,
+          aheadCount: 1,
+          behindCount: 0,
+          aheadOfDefaultCount: 1,
+          pr: null,
+        });
         assert.strictEqual(snapshot.local.branchChanges?.insertions, 10);
 
         // A turn changes the worktree; the status follows.

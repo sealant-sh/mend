@@ -6,41 +6,45 @@ import {
   type VcsRef,
   type VcsStatusInput,
   type VcsStatusLocalResult,
+  type VcsStatusRemoteResult,
   type VcsStatusResult,
   type VcsStatusStreamEvent,
 } from "@mend/t3-contracts";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as PubSub from "effect/PubSub";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
 import type { GatedMend } from "./device-gate.ts";
 import { makeFanout } from "./fanout.ts";
 import type { CwdLocation, PersonHub } from "./hub.ts";
+import { remoteStatusOf, standingOf } from "./landing.ts";
 import { MEND_RESPONSE_DEADLINE, type MendBranch } from "./mend-client.ts";
 import type { BearerSession } from "./state.ts";
 
 /**
- * A thread's VCS status for t3code's branch toolbar and git menu (ADR 0012, phase 2: VCS status),
- * from the change Mend keeps for the thread's worktree (`GET /api/changes/:id/stats`), read as the
- * person.
+ * A thread's VCS status for t3code's branch toolbar and git panel (ADR 0012, phase 2: VCS status),
+ * from the change Mend keeps for the thread's worktree, read as the person.
  *
  * - The ref is the session's branch; the project's root is its default branch.
  * - Mend's change is the worktree against its base, committed or not, which is t3code's
- *   `branchChanges`: those totals.
+ *   `branchChanges`: those totals (`GET /api/changes/:id/stats`).
  * - Mend has no read of the worktree's HEAD, index or uncommitted files, and t3code says "Worktree
  *   is clean" when `hasWorkingTreeChanges` is false: it is true whenever the change has files, and
  *   `workingTree` stays empty.
- * - Mend tracks no upstream for a session's branch (landing is its own step, ADR 0007), so the
- *   remote half is null: nothing ahead, behind or in review is claimed.
+ * - The remote half comes from the change's landing record (`GET /api/changes/:id/landings`,
+ *   `landing.ts`): the branch a landing pushed, whether anything is new since, and the pull request
+ *   as GitHub last reported it. The project's root has none.
  *
- * The stream sends a snapshot, then the local half again whenever any thread in the worktree
- * changes in the shell (every session there adds to its one change), or a thread goes, and every
- * fifteen seconds besides, as a change can move without its threads changing. Reads come at most
- * once a second, however busy the worktree: a burst is one read at the end of its second, never
- * put off while the burst lasts. `vcs.refreshStatus` sends what it read down the socket's streams
- * of that `cwd` at once: t3code drops the call's answer and waits for the stream.
+ * The stream sends a snapshot, then each half again when it moved: whenever any thread in the
+ * worktree changes in the shell (every session there adds to its one change), a thread goes, a git
+ * action here ends, and every fifteen seconds besides, as a change can move without its threads
+ * changing. Reads come at most once a second, however busy the worktree: a burst is one read at
+ * the end of its second, never put off while the burst lasts. `vcs.refreshStatus` sends what it
+ * read down the socket's streams of that `cwd` at once: t3code drops the call's answer and waits
+ * for the stream.
  *
  * A socket reads one `cwd`'s status one read at a time, and every ask joins the next read to start
  * after it: a burst of refreshes is at most two reads, and a stream never shows an older read after
@@ -142,6 +146,8 @@ interface StatusRead {
   readonly seq: number;
   readonly location: CwdLocation;
   readonly local: VcsStatusLocalResult;
+  /** Null at the project's root, which has no landing record. */
+  readonly remote: VcsStatusRemoteResult | null;
 }
 
 interface Reader {
@@ -151,6 +157,16 @@ interface Reader {
   last: { readonly seq: number; readonly outcome: Exit.Exit<StatusRead, GitManagerError> } | null;
 }
 
+/** The remote half for a thread whose worktree holds no change yet. */
+const NO_REMOTE: VcsStatusRemoteResult = {
+  hasUpstream: false,
+  aheadCount: 0,
+  behindCount: 0,
+  pr: null,
+};
+
+const NOWHERE = "No Mend thread or project of yours works there.";
+
 export const makeVcsHandlers = (input: {
   readonly hub: PersonHub;
   readonly mend: GatedMend;
@@ -159,23 +175,38 @@ export const makeVcsHandlers = (input: {
   const { hub, mend, session } = input;
   const reads = makeFanout<StatusRead>();
   const readers = new Map<string, Reader>();
+  // A git action that ended at a cwd: its status streams read again now.
+  const nudges = Effect.runSync(PubSub.unbounded<string>());
+  const nudge = (cwd: string) => PubSub.publish(nudges, cwd).pipe(Effect.asVoid);
 
-  /** Where `cwd` is, and its status now. */
+  /** Where `cwd` is, and its status now: the local half, and the remote half (null at the root). */
   const readStatus = (operation: string, cwd: string) =>
     Effect.gen(function* () {
+      const fail = failed(operation, cwd);
       const location = yield* hub
         .locationOf(cwd)
-        .pipe(Effect.mapError((error) => failed(operation, cwd)(error.message)));
-      if (location === null) {
-        return yield* failed(operation, cwd)("No Mend thread or project of yours works there.");
+        .pipe(Effect.mapError((error) => fail(error.message)));
+      if (location === null) return yield* fail(NOWHERE);
+      const { changeId } = location;
+      if (changeId === null) {
+        return {
+          location,
+          local: localStatusOf(location, null),
+          remote: location.sessionId === null ? null : NO_REMOTE,
+        };
       }
-      const stats =
-        location.changeId === null
-          ? null
-          : yield* mend
-              .changeStats(session.deviceToken, location.changeId)
-              .pipe(Effect.mapError((error) => failed(operation, cwd)(error.message)));
-      return { location, local: localStatusOf(location, stats) };
+      const [stats, landings] = yield* Effect.all(
+        [
+          mend.changeStats(session.deviceToken, changeId),
+          mend.changeLandings(session.deviceToken, changeId),
+        ],
+        { concurrency: 2 },
+      ).pipe(Effect.mapError((error) => fail(error.message)));
+      return {
+        location,
+        local: localStatusOf(location, stats),
+        remote: remoteStatusOf(standingOf(landings, stats.files), location),
+      };
     });
 
   /** `cwd`'s status from a read that started after this ask, shared with every ask meanwhile. */
@@ -218,15 +249,7 @@ export const makeVcsHandlers = (input: {
 
   const refreshStatus = (request: VcsStatusInput) =>
     statusAt("vcs.refreshStatus", request.cwd).pipe(
-      Effect.map(
-        ({ local }): VcsStatusResult => ({
-          ...local,
-          hasUpstream: false,
-          aheadCount: 0,
-          behindCount: 0,
-          pr: null,
-        }),
-      ),
+      Effect.map(({ local, remote }): VcsStatusResult => ({ ...local, ...(remote ?? NO_REMOTE) })),
     );
 
   const subscribeStatus = (
@@ -240,17 +263,19 @@ export const makeVcsHandlers = (input: {
           .subscribeShell(undefined)
           .pipe(Effect.mapError((error) => failed(operation, request.cwd)(error.message)));
         const read = yield* reads.subscribe((entry) => entry.cwd === request.cwd);
+        const nudged = yield* PubSub.subscribe(nudges);
         const first = yield* statusAt(operation, request.cwd);
         const snapshot: VcsStatusStreamEvent = {
           _tag: "snapshot",
           local: first.local,
-          remote: null,
+          remote: first.remote,
         };
         if (first.location.sessionId === null) {
           return Stream.make(snapshot).pipe(Stream.concat(Stream.never));
         }
         let seq = first.seq;
-        let last = JSON.stringify(first.local);
+        let lastLocal = JSON.stringify(first.local);
+        let lastRemote = JSON.stringify(first.remote);
         // Any session of the worktree moving its one change, or a thread going (the one the
         // first read found may be gone, and another in the worktree read instead).
         const moved = shell.changes.pipe(
@@ -260,6 +285,12 @@ export const makeVcsHandlers = (input: {
               delta.kind === "thread.removed",
           ),
           Stream.map(() => undefined),
+          Stream.merge(
+            Stream.fromSubscription(nudged).pipe(
+              Stream.filter((cwd) => cwd === request.cwd),
+              Stream.map(() => undefined),
+            ),
+          ),
         );
         const asks = Stream.merge(moved, Stream.tick(VCS_POLL).pipe(Stream.drop(1))).pipe(
           Stream.groupedWithin(Number.MAX_SAFE_INTEGER, VCS_REFRESH_MS),
@@ -271,12 +302,22 @@ export const makeVcsHandlers = (input: {
           Stream.filter((entry) => {
             if (entry.seq <= seq) return false;
             seq = entry.seq;
-            const print = JSON.stringify(entry.local);
-            if (print === last) return false;
-            last = print;
             return true;
           }),
-          Stream.map(({ local }): VcsStatusStreamEvent => ({ _tag: "localUpdated", local })),
+          Stream.flatMap((status) => {
+            const events: Array<VcsStatusStreamEvent> = [];
+            const local = JSON.stringify(status.local);
+            if (local !== lastLocal) {
+              lastLocal = local;
+              events.push({ _tag: "localUpdated", local: status.local });
+            }
+            const remote = JSON.stringify(status.remote);
+            if (remote !== lastRemote) {
+              lastRemote = remote;
+              events.push({ _tag: "remoteUpdated", remote: status.remote });
+            }
+            return Stream.fromIterable(events);
+          }),
           Stream.mapError((error) => failed(operation, request.cwd)(error.message)),
         );
         return Stream.make(snapshot).pipe(Stream.concat(updates));
@@ -289,7 +330,7 @@ export const makeVcsHandlers = (input: {
         .locationOf(request.cwd)
         .pipe(Effect.mapError((error) => refsFailed(request.cwd)(error.message)));
       if (location === null) {
-        return yield* refsFailed(request.cwd)("No Mend thread or project of yours works there.");
+        return yield* refsFailed(request.cwd)(NOWHERE);
       }
       const branches = yield* mend
         .projectBranches(session.deviceToken, location.projectId)
