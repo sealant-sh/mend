@@ -66,15 +66,17 @@ export const BEARER_TTL_MS = 30 * 24 * 60 * 60 * 1000;
  * rather than let a control look live and then fail: settings and keybinding edits
  * (`settings:write`), provider setup (`providers:manage`), self-update and process signals
  * (`environment:maintain`), diagnostics and usage (`diagnostics:read`), the in-app browser
- * (`preview:operate`), branch, worktree and pull request writes (`source-control:write`), file
- * edits (`filesystem:write`, whose loss made a Files-tab edit vanish), and T3 Connect
- * (`relay:read`).
+ * (`preview:operate`), file edits (`filesystem:write`, whose loss made a Files-tab edit vanish),
+ * and T3 Connect (`relay:read`). `source-control:write` is granted. The git panel pushes a
+ * thread's change and opens its pull request through Mend's landing, and the branch and worktree
+ * writes it also covers are refused in Mend's words.
  */
 export const GRANTED_SCOPES: ReadonlyArray<AuthEnvironmentScope> = [
   AuthOrchestrationReadScope,
   AuthOrchestrationOperateScope,
   AuthTerminalReadScope,
   AuthTerminalOperateScope,
+  AuthSourceControlWriteScope,
   AuthFilesystemReadScope,
 ];
 
@@ -92,6 +94,8 @@ const isEnvironmentScope = Schema.is(AuthEnvironmentScope);
  * it into (its `legacyParents`), so a client paired before the split keeps what it could do. Every
  * grant is then narrowed to what the gateway grants today (and the mark), so a pairing made while
  * the gateway still granted the whole standard set loses what it withholds now, on its next read.
+ * Narrowing never widens. A pairing stored while `source-control:write` was withheld gets it back
+ * once, from migration 16 (state.ts).
  */
 const LEGACY_CHILDREN: ReadonlyMap<
   AuthEnvironmentScope,

@@ -404,6 +404,11 @@ export class GatewayState extends Context.Service<
  * chose for a session's next launch, as `next_efforts` keeps the effort (migration 14).
  * `thread_lifecycles` gains a person's pin, pin order, Active order, auto-settle opt-out and last
  * snooze wake (migration 15).
+ * Migration 16 adds `source-control:write` to every stored grant that holds the five scopes the
+ * gateway granted while it withheld that one. Those pairings asked for t3code's standard set or
+ * for the default grant, and lost the scope only because the gateway did not back it yet. A
+ * pairing made after migration 16 that asks for exactly those five keeps them as asked, which a
+ * rule applied on every read could not tell apart.
  */
 const MIGRATIONS: ReadonlyArray<string> = [
   `
@@ -603,6 +608,18 @@ const MIGRATIONS: ReadonlyArray<string> = [
   ALTER TABLE thread_lifecycles ADD COLUMN active_order_key TEXT;
   ALTER TABLE thread_lifecycles ADD COLUMN auto_settle_disabled_at TEXT;
   ALTER TABLE thread_lifecycles ADD COLUMN last_snooze_wake_at TEXT;
+  `,
+  `
+  UPDATE bearer_sessions
+  SET scopes = json_insert(scopes, '$[#]', 'source-control:write')
+  WHERE NOT EXISTS (
+      SELECT 1 FROM json_each(bearer_sessions.scopes) WHERE value = 'source-control:write'
+    )
+    AND (
+      SELECT count(DISTINCT value) FROM json_each(bearer_sessions.scopes)
+      WHERE value IN ('orchestration:read', 'orchestration:operate', 'terminal:read',
+                      'terminal:operate', 'filesystem:read')
+    ) = 5;
   `,
 ];
 
