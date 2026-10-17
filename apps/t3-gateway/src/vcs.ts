@@ -1,6 +1,10 @@
 import {
   GitCommandError,
   GitManagerError,
+  WS_METHODS,
+  type EnvironmentAuthorizationError,
+  type GitActionProgressEvent,
+  type GitRunStackedActionInput,
   type VcsListRefsInput,
   type VcsListRefsResult,
   type VcsRef,
@@ -16,8 +20,9 @@ import * as Stream from "effect/Stream";
 
 import type { GatedMend } from "./device-gate.ts";
 import type { CwdLocation, PersonHub } from "./hub.ts";
-import { remoteStatusOf, standingOf } from "./landing.ts";
+import { landingResultOf, ONLY_THE_OWNER, planOf, remoteStatusOf, standingOf } from "./landing.ts";
 import type { MendBranch } from "./mend-client.ts";
+import { refusalOf } from "./rpc-scopes.ts";
 import type { BearerSession } from "./state.ts";
 
 /**
@@ -31,14 +36,16 @@ import type { BearerSession } from "./state.ts";
  *   about them: `hasWorkingTreeChanges` is false and `workingTree` empty, rather than base-diff
  *   totals presented as uncommitted work.
  * - The remote half comes from the change's landing record (`GET /api/changes/:id/landings`,
- *   `landing.ts`): the branch a landing pushed, whether anything is new since, and the pull request
- *   as GitHub last reported it. The project's root has none.
+ *   `landing.ts`). It says the branch a landing pushed, whether anything is new since, and the
+ *   pull request as GitHub last reported it. The project's root has none.
  *
- * The stream sends a snapshot, then each half again when it moved: whenever any thread in the
- * worktree changes in the shell (every session there adds to its one change), a thread goes, a
- * status refresh here ends, and every fifteen seconds besides, as a change can
- * move without its threads changing. Reads come at most once a second, however busy the
+ * The stream sends a snapshot, then each half again when it moved. It reads again whenever any
+ * thread in the worktree changes in the shell (every session there adds to its one change), a
+ * thread goes, a status refresh or a git action here ends, and every fifteen seconds besides, as
+ * a change can move without its threads changing. Reads come at most once a second, however busy the
  * worktree: a burst is one read at the end of its second, never put off while the burst lasts.
+ *
+ * The git panel's push and "create PR" land the change through Mend (`runStackedAction`).
  */
 
 /** At most one read of a worktree's status this often while it keeps changing. */
@@ -129,6 +136,13 @@ const refsFailed = (cwd: string) => (detail: string) =>
 const failed = (operation: string, cwd: string) => (detail: string) =>
   new GitManagerError({ operation, cwd, detail });
 
+/** A git action Mend does not take, by its own rule, in its own words. */
+const refusedByRule = (message: string) => refusalOf(WS_METHODS.gitRunStackedAction, message);
+
+/** Why a git action at the project's root is refused. */
+export const PROJECT_ROOT_HAS_NO_CHANGE =
+  "Mend lands a thread's change. The project's root has none.";
+
 /** The remote half for a thread whose worktree holds no change yet. */
 const NO_REMOTE: VcsStatusRemoteResult = {
   hasUpstream: false,
@@ -145,11 +159,11 @@ export const makeVcsHandlers = (input: {
   readonly session: BearerSession;
 }) => {
   const { hub, mend, session } = input;
-  // A refresh that ended at a cwd: its status streams read again now.
+  // When a refresh or a git action at a cwd ends, its status streams read again at once.
   const nudges = Effect.runSync(PubSub.unbounded<string>());
   const nudge = (cwd: string) => PubSub.publish(nudges, cwd).pipe(Effect.asVoid);
 
-  /** Where `cwd` is, and its status now: the local half, and the remote half (null at the root). */
+  /** Where `cwd` is, and both halves of its status now. The root has no remote half. */
   const statusAt = (operation: string, cwd: string) =>
     Effect.gen(function* () {
       const fail = failed(operation, cwd);
@@ -272,5 +286,78 @@ export const makeVcsHandlers = (input: {
       } satisfies VcsListRefsResult;
     });
 
-  return { listRefs, refreshStatus, subscribeStatus };
+  /**
+   * t3code's push and "create PR", as a landing of the thread's change (`landing.ts`). Commit
+   * alone, a new branch, a selection of files and the panel's message are refused in Mend's words,
+   * as is a caller who does not own the change, before anything reaches Mend's landing.
+   */
+  const runStackedAction = (
+    request: GitRunStackedActionInput,
+  ): Stream.Stream<GitActionProgressEvent, GitManagerError | EnvironmentAuthorizationError> => {
+    const operation = WS_METHODS.gitRunStackedAction;
+    const fail = failed(operation, request.cwd);
+    const base = { actionId: request.actionId, cwd: request.cwd, action: request.action };
+    return Stream.unwrap(
+      Effect.gen(function* () {
+        const location = yield* hub
+          .locationOf(request.cwd)
+          .pipe(Effect.mapError((error) => fail(error.message)));
+        if (location === null) return yield* fail(NOWHERE);
+        if (location.sessionId === null) return yield* refusedByRule(PROJECT_ROOT_HAS_NO_CHANGE);
+        const plan = planOf(request);
+        if (plan._tag === "refused") return yield* refusedByRule(plan.text);
+        if (location.changeId === null) {
+          return yield* fail("This thread's worktree holds no change yet.");
+        }
+        const view = yield* mend
+          .changeLandings(session.deviceToken, location.changeId)
+          .pipe(Effect.mapError((error) => fail(error.message)));
+        if (!view.land) return yield* refusedByRule(ONLY_THE_OWNER);
+        const known = standingOf(view, 0).pullRequest;
+        const landed = mend
+          .land(session.deviceToken, view.sessionId ?? location.sessionId, {
+            pullRequest: plan.pullRequest,
+          })
+          .pipe(
+            Effect.mapError((error) =>
+              error._tag === "MendCommandRefused" && error.tag === "LandingNotAllowed"
+                ? refusedByRule(error.message)
+                : fail(error.message),
+            ),
+            Effect.flatMap((report) => {
+              const outcome = landingResultOf(request.action, report, location, known);
+              return outcome._tag === "failed"
+                ? Effect.fail(fail(outcome.detail))
+                : Effect.succeed<GitActionProgressEvent>({
+                    ...base,
+                    kind: "action_finished",
+                    result: outcome.result,
+                  });
+            }),
+          );
+        const started: ReadonlyArray<GitActionProgressEvent> = [
+          { ...base, kind: "action_started", phases: plan.phases },
+          { ...base, kind: "phase_started", phase: "push", label: "Landing with Mend..." },
+        ];
+        return Stream.fromIterable(started).pipe(
+          Stream.concat(
+            Stream.fromEffect(landed).pipe(
+              // As t3code's own server ends a failed action, with its phase and words first.
+              Stream.catch((error) => {
+                const ended: GitActionProgressEvent = {
+                  ...base,
+                  kind: "action_failed",
+                  phase: "push",
+                  message: error.message,
+                };
+                return Stream.make(ended).pipe(Stream.concat(Stream.fail(error)));
+              }),
+            ),
+          ),
+        );
+      }),
+    ).pipe(Stream.ensuring(nudge(request.cwd)));
+  };
+
+  return { listRefs, refreshStatus, runStackedAction, subscribeStatus };
 };

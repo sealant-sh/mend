@@ -7,7 +7,6 @@ import {
   AuthOrchestrationReadScope,
   AuthTerminalReadScope,
   EnvironmentAuthorizationError,
-  authScopeRequiredResponse,
   ExternalLauncherUnsupportedEditorError,
   GitManagerError,
   ORCHESTRATION_V2_WS_METHODS,
@@ -58,7 +57,7 @@ import { makeFileHandlers } from "./files.ts";
 import type { HubReadError, PersonHub, ThreadChange } from "./hub.ts";
 import { launchThread } from "./launch.ts";
 import { makeReviewHandlers } from "./review.ts";
-import { RPC_REQUIRED_SCOPES } from "./rpc-scopes.ts";
+import { refusalOf } from "./rpc-scopes.ts";
 import {
   loginsOf,
   makeServerConfig,
@@ -124,6 +123,7 @@ export const SERVED_METHODS: ReadonlySet<WsRpcMethod> = new Set<WsRpcMethod>([
   WS_METHODS.subscribeVcsStatus,
   WS_METHODS.vcsRefreshStatus,
   WS_METHODS.vcsListRefs,
+  WS_METHODS.gitRunStackedAction,
   WS_METHODS.terminalOpen,
   WS_METHODS.terminalAttach,
   WS_METHODS.terminalObserve,
@@ -164,15 +164,8 @@ const TERMINAL_READ = AuthTerminalReadScope;
 
 const notOfferedText = (method: string) => `Mend's t3code gateway does not offer ${method}.`;
 
-/**
- * The refusal every method's contract allows, naming the scope t3code's own server requires for the
- * method (`rpc-scopes.ts`): the permission, and its legacy parent for clients from before them.
- */
-const notOffered = (method: WsRpcMethod) =>
-  new EnvironmentAuthorizationError({
-    message: notOfferedText(method),
-    ...authScopeRequiredResponse(RPC_REQUIRED_SCOPES[method]),
-  });
+/** The refusal every method's contract allows (`refusalOf`). */
+const notOffered = (method: WsRpcMethod) => refusalOf(method, notOfferedText(method));
 
 const refuse = (method: WsRpcMethod) => Effect.fail(notOffered(method));
 
@@ -203,8 +196,19 @@ const SELF_UPDATE_REASON = "The gateway updates with Mend, never from a t3code c
 export const WORKTREE_KEPT =
   "Mend keeps the worktree and its change. Remove it in Mend, with mend worktrees rm or from the project's page.";
 
-const gitManager = (method: WsRpcMethod, cwd: string) =>
-  new GitManagerError({ operation: method, cwd, detail: notOfferedText(method) });
+/** Why t3code's branch picker cannot switch a thread's branch or make a new one. */
+export const BRANCH_KEPT =
+  "Mend keeps every thread on its own branch and never moves it. Start a new thread to work from another branch.";
+
+/** Why t3code's "Pull" is refused. */
+export const PULL_REFUSED = "Mend does not update a thread's worktree from origin.";
+
+/** Why checking out a pull request into a thread is refused. */
+export const PULL_REQUEST_THREAD =
+  "Mend starts a thread from a project's branch. Checking out a pull request into a thread is not offered.";
+
+const pullRequestThread = (method: WsRpcMethod, cwd: string) =>
+  new GitManagerError({ operation: method, cwd, detail: PULL_REQUEST_THREAD });
 
 const vcsUnsupported = (method: WsRpcMethod) =>
   Effect.fail(
@@ -969,24 +973,19 @@ export const makeGatewayRpcHandlers = ({
     [WS_METHODS.vcsRefreshStatus]: (input) =>
       authorize(session).pipe(Effect.andThen(vcs.refreshStatus(input))),
     [WS_METHODS.gitRunStackedAction]: (input) =>
-      Stream.fail(gitManager(WS_METHODS.gitRunStackedAction, input.cwd)),
+      Stream.unwrap(authorize(session).pipe(Effect.as(vcs.runStackedAction(input)))),
     [WS_METHODS.gitResolvePullRequest]: (input) =>
-      Effect.fail(gitManager(WS_METHODS.gitResolvePullRequest, input.cwd)),
+      Effect.fail(pullRequestThread(WS_METHODS.gitResolvePullRequest, input.cwd)),
     [WS_METHODS.gitPreparePullRequestThread]: (input) =>
-      Effect.fail(gitManager(WS_METHODS.gitPreparePullRequestThread, input.cwd)),
-    [WS_METHODS.vcsPull]: () => refuse(WS_METHODS.vcsPull),
+      Effect.fail(pullRequestThread(WS_METHODS.gitPreparePullRequestThread, input.cwd)),
+    [WS_METHODS.vcsPull]: () => Effect.fail(refusalOf(WS_METHODS.vcsPull, PULL_REFUSED)),
     [WS_METHODS.vcsListRefs]: (input) =>
       authorize(session).pipe(Effect.andThen(vcs.listRefs(input))),
     [WS_METHODS.vcsCreateWorktree]: () => refuse(WS_METHODS.vcsCreateWorktree),
     [WS_METHODS.vcsRemoveWorktree]: () =>
-      Effect.fail(
-        new EnvironmentAuthorizationError({
-          message: WORKTREE_KEPT,
-          ...authScopeRequiredResponse(RPC_REQUIRED_SCOPES[WS_METHODS.vcsRemoveWorktree]),
-        }),
-      ),
-    [WS_METHODS.vcsCreateRef]: () => refuse(WS_METHODS.vcsCreateRef),
-    [WS_METHODS.vcsSwitchRef]: () => refuse(WS_METHODS.vcsSwitchRef),
+      Effect.fail(refusalOf(WS_METHODS.vcsRemoveWorktree, WORKTREE_KEPT)),
+    [WS_METHODS.vcsCreateRef]: () => Effect.fail(refusalOf(WS_METHODS.vcsCreateRef, BRANCH_KEPT)),
+    [WS_METHODS.vcsSwitchRef]: () => Effect.fail(refusalOf(WS_METHODS.vcsSwitchRef, BRANCH_KEPT)),
     [WS_METHODS.vcsInit]: () => vcsUnsupported(WS_METHODS.vcsInit),
     [WS_METHODS.subscribeWorktreeSetup]: () => Stream.never,
     [WS_METHODS.worktreeSetupCancel]: () => refuse(WS_METHODS.worktreeSetupCancel),
