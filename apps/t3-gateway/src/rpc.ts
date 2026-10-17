@@ -135,6 +135,8 @@ export const SERVED_METHODS: ReadonlySet<WsRpcMethod> = new Set<WsRpcMethod>([
   WS_METHODS.vcsRefreshStatus,
   WS_METHODS.vcsListRefs,
   WS_METHODS.gitRunStackedAction,
+  WS_METHODS.subscribeWorktreeSetup,
+  WS_METHODS.worktreeSetupCancel,
   WS_METHODS.terminalOpen,
   WS_METHODS.terminalAttach,
   WS_METHODS.terminalObserve,
@@ -162,7 +164,6 @@ export const SILENT_STREAMS: ReadonlySet<WsRpcMethod> = new Set<WsRpcMethod>([
   WS_METHODS.providerInstallSubscribe,
   WS_METHODS.pullRequestsSubscribeRefreshes,
   WS_METHODS.subscribeProjectClones,
-  WS_METHODS.subscribeWorktreeSetup,
   WS_METHODS.subscribePreviewEvents,
   WS_METHODS.subscribeDiscoveredLocalServers,
   WS_METHODS.subscribeBackgroundPolicy,
@@ -1121,8 +1122,20 @@ export const makeGatewayRpcHandlers = ({
     [WS_METHODS.vcsCreateRef]: () => Effect.fail(refusalOf(WS_METHODS.vcsCreateRef, BRANCH_KEPT)),
     [WS_METHODS.vcsSwitchRef]: () => Effect.fail(refusalOf(WS_METHODS.vcsSwitchRef, BRANCH_KEPT)),
     [WS_METHODS.vcsInit]: () => vcsUnsupported(WS_METHODS.vcsInit),
-    [WS_METHODS.subscribeWorktreeSetup]: () => Stream.never,
-    [WS_METHODS.worktreeSetupCancel]: () => refuse(WS_METHODS.worktreeSetupCancel),
+    // A new worktree's preparation (`worktree-setup.ts`): the setup card, and its cancel.
+    [WS_METHODS.subscribeWorktreeSetup]: (input) =>
+      Stream.unwrap(
+        authorize(session).pipe(
+          Effect.as(
+            hub.worktreeSetups.stream(input.threadId).pipe(Stream.mapError(() => fellBehind(READ))),
+          ),
+        ),
+      ),
+    [WS_METHODS.worktreeSetupCancel]: (input) =>
+      authorize(session).pipe(
+        Effect.andThen(hub.worktreeSetups.cancel(input.threadId)),
+        Effect.map((cancelled) => ({ cancelled })),
+      ),
 
     // ── Review: the thread's change ─────────────────────────────────────────
     [WS_METHODS.reviewGetDiffPreview]: (input) =>

@@ -1,3 +1,5 @@
+import type { OrchestrationV2ThreadLaunchWorkspaceStrategy } from "@mend/t3-contracts";
+
 import type { PendingRun } from "./shell.ts";
 
 /**
@@ -28,13 +30,22 @@ import type { PendingRun } from "./shell.ts";
  * loses no message. A message being sent when the gateway stopped cannot be known to have reached
  * Mend or not; it comes back failed, saying so, and is never sent twice (`restoredEntry`).
  *
+ * - `preparing`: a launch's opening message while the gateway prepares its new worktree
+ *   (`worktree-setup.ts`). Nothing in the thread moves until the preparation releases it to
+ *   `queued` or fails it; a failed preparation can be retried.
  * - `queued`: waiting behind an open turn, for its turn in the queue, or for a retry.
  * - `launching`: the session is being launched again; sent once the agent is live.
  * - `sending`: `POST /turns` is in flight.
  * - `failed`, `cancelled`: settled; kept a while so the client sees why.
  */
 
-export type EntryState = "queued" | "launching" | "sending" | "failed" | "cancelled";
+export type EntryState = "preparing" | "queued" | "launching" | "sending" | "failed" | "cancelled";
+
+/** The new worktree a launch's opening message waits for: what t3code's run calls its preparation. */
+export type WorkspacePreparation = Extract<
+  OrchestrationV2ThreadLaunchWorkspaceStrategy,
+  { readonly type: "worktree" }
+>;
 
 export interface QueueEntry {
   readonly runId: string;
@@ -66,6 +77,10 @@ export interface QueueEntry {
   lastRefusal: string | null;
   /** Taken back while `sending`: the turn `POST /turns` answers is interrupted. */
   takenBack: boolean;
+  /** The opening message of a launch into a new worktree: the worktree it is prepared for. */
+  readonly workspacePreparation: WorkspacePreparation | null;
+  /** It failed while its workspace was prepared, so preparing it again is a retry. */
+  preparationFailed: boolean;
 }
 
 export interface ThreadQueue {
@@ -137,10 +152,12 @@ export const newEntry = (input: {
   readonly token: string;
   readonly sender: string;
   readonly imageIds?: ReadonlyArray<string>;
+  readonly workspacePreparation?: WorkspacePreparation | null;
 }): QueueEntry => ({
   imageIds: [],
+  workspacePreparation: null,
   ...input,
-  state: "queued",
+  state: (input.workspacePreparation ?? null) === null ? "queued" : "preparing",
   error: null,
   launches: 0,
   launchAnsweredAt: null,
@@ -151,11 +168,15 @@ export const newEntry = (input: {
   sendDeadline: null,
   lastRefusal: null,
   takenBack: false,
+  preparationFailed: false,
 });
 
 /** A message that can still reach Mend: only these hold the hub alive. */
 export const canProgress = (entry: QueueEntry): boolean =>
-  entry.state === "queued" || entry.state === "launching" || entry.state === "sending";
+  entry.state === "preparing" ||
+  entry.state === "queued" ||
+  entry.state === "launching" ||
+  entry.state === "sending";
 
 /** Whether any message in any queue can still progress. */
 export const anyProgress = (queues: Iterable<ThreadQueue>): boolean => {
@@ -213,6 +234,48 @@ export const holdIfQueued = (queue: ThreadQueue, holdQueue: boolean) => {
 
 export const resume = (queue: ThreadQueue) => {
   queue.held = false;
+};
+
+/** The message whose workspace is being prepared: at most one, a launch's opening message. */
+export const preparing = (queue: ThreadQueue): QueueEntry | undefined =>
+  queue.entries.find((entry) => entry.state === "preparing");
+
+/** Its workspace is ready: the opening message takes its turn in the queue. */
+export const prepared = (entry: QueueEntry) => {
+  if (entry.state === "preparing") entry.state = "queued";
+};
+
+/**
+ * Preparing its workspace failed: the message fails, preparing it again is a retry, and what was
+ * queued behind it is held, as on t3code's own server, so nothing goes out to an unprepared
+ * worktree.
+ */
+export const preparationFailed = (queue: ThreadQueue, entry: QueueEntry, reason: string) => {
+  if (entry.state !== "preparing") return;
+  entry.state = "failed";
+  entry.error = reason;
+  entry.preparationFailed = true;
+  holdIfQueued(queue, true);
+  tidy(queue);
+};
+
+/**
+ * `prepared-run.retry`: a message whose preparation failed is prepared again, and what its failure
+ * held follows it again. Null when there is nothing to retry or another message is on its way.
+ */
+export const retryPreparation = (queue: ThreadQueue, runId: string): QueueEntry | null => {
+  const entry = queue.entries.find((candidate) => candidate.runId === runId);
+  if (entry === undefined || entry.state !== "failed" || !entry.preparationFailed) return null;
+  const onItsWay = queue.entries.some(
+    (candidate) => canProgress(candidate) && candidate.state !== "queued",
+  );
+  if (onItsWay) return null;
+  entry.state = "preparing";
+  entry.error = null;
+  entry.preparationFailed = false;
+  entry.launches = 0;
+  queue.held = false;
+  return entry;
 };
 
 /** The message waiting in the queue under `runId`, or undefined once it is on its way or settled. */
@@ -329,6 +392,7 @@ export const nextStep = (
     failAll(queue, "The session is gone from Mend, or is no longer a protocol session.");
     return null;
   }
+  if (preparing(queue) !== undefined) return null;
   const launching = queue.entries.find((entry) => entry.state === "launching");
   if (launching !== undefined) {
     if (launching.launchAnsweredAt !== null && view.agentLive) {
@@ -406,6 +470,7 @@ export const pendingStateOf = (entry: QueueEntry): PendingRun["state"] => {
   switch (entry.state) {
     case "queued":
       return "queued";
+    case "preparing":
     case "launching":
       return "preparing";
     case "sending":
@@ -431,6 +496,8 @@ export interface StoredEntry {
   readonly error: string | null;
   readonly launches: number;
   readonly imageIds: ReadonlyArray<string>;
+  readonly workspacePreparation: WorkspacePreparation | null;
+  readonly preparationFailed: boolean;
 }
 
 export interface StoredQueue {
@@ -450,6 +517,8 @@ export const storedOf = (queue: ThreadQueue): StoredQueue => ({
     error: entry.error,
     launches: entry.launches,
     imageIds: entry.imageIds,
+    workspacePreparation: entry.workspacePreparation,
+    preparationFailed: entry.preparationFailed,
   })),
 });
 
@@ -459,11 +528,15 @@ export const SENT_BEFORE_RESTART =
 /** What a message says whose sender's device is no longer paired with the gateway. */
 export const SENDER_GONE =
   "The device that sent this message is no longer paired with the gateway.";
+/** What an opening message says whose worktree was being prepared when the gateway stopped. */
+export const PREPARED_BEFORE_RESTART =
+  "The gateway restarted while it prepared this thread's worktree. Retry to prepare it again.";
 
 /**
  * A stored message as it comes back, with its sender's token, or null when the device is gone.
  * Waiting, or being launched for, it waits again from the start of its turn (a launch it asked
- * for still counts). Being sent, it failed: the gateway never guesses whether Mend took it.
+ * for still counts). Being sent, it failed: the gateway never guesses whether Mend took it. Its
+ * worktree being prepared, it failed as a preparation does: a retry prepares it again.
  */
 export const restoredEntry = (stored: StoredEntry, token: string | null): QueueEntry => {
   const entry = newEntry({
@@ -474,8 +547,10 @@ export const restoredEntry = (stored: StoredEntry, token: string | null): QueueE
     token: token ?? "",
     sender: stored.sender,
     imageIds: stored.imageIds,
+    workspacePreparation: stored.workspacePreparation,
   });
   entry.launches = stored.launches;
+  entry.preparationFailed = stored.preparationFailed;
   const settle = (state: "failed" | "cancelled", error: string | null) => {
     entry.state = state;
     entry.error = error;
@@ -488,6 +563,9 @@ export const restoredEntry = (stored: StoredEntry, token: string | null): QueueE
       return settle("cancelled", null);
     case "sending":
       return settle("failed", SENT_BEFORE_RESTART);
+    case "preparing":
+      entry.preparationFailed = true;
+      return settle("failed", PREPARED_BEFORE_RESTART);
     case "queued":
     case "launching":
       return token === null ? settle("failed", SENDER_GONE) : entry;
@@ -503,6 +581,10 @@ export const restoredQueue = (
     entries: stored.entries.map((entry) => restoredEntry(entry, tokenOf(entry.sender))),
     held: stored.held,
   };
+  holdIfQueued(
+    queue,
+    stored.entries.some((entry) => entry.state === "preparing"),
+  );
   tidy(queue);
   return queue;
 };

@@ -156,6 +156,12 @@ import {
   type TurnSlice,
 } from "./turn-checkpoints.ts";
 import { markedUnread, visitedAfter } from "./visits.ts";
+import {
+  makeWorktreeSetups,
+  prepareWorktree,
+  type Preparation,
+  type WorktreeSetups,
+} from "./worktree-setup.ts";
 
 /**
  * The projection hub (ADR 0012, "Projection"): one per paired person, shared by every socket and
@@ -334,6 +340,8 @@ export interface PersonHub {
   }) => Effect.Effect<string, ThreadCommandFailure>;
   /** The person's terminals, Mend's shells reached over `/api/tty` (`terminals.ts`). */
   readonly terminals: Terminals;
+  /** How each new worktree's preparation goes, by t3code thread id (`worktree-setup.ts`). */
+  readonly worktreeSetups: Pick<WorktreeSetups, "stream" | "cancel">;
   /** One of the person's images, or null when it is not theirs. */
   readonly imageOf: (imageId: string) => MessageImage | null;
   /**
@@ -464,6 +472,15 @@ export interface ThreadCommands {
    * runs. A retry of the same command is the same thread.
    */
   readonly launch: (input: ThreadLaunch) => Effect.Effect<LaunchedThreadId, ThreadCommandFailure>;
+  /**
+   * `prepared-run.retry`: prepares again the worktree of an opening message whose preparation
+   * failed, then sends the message as a launch's would be.
+   */
+  readonly retryPreparation: (input: {
+    readonly session: BearerSession;
+    readonly threadId: string;
+    readonly runId: string;
+  }) => Effect.Effect<number, ThreadCommandFailure>;
   /** The session's name in Mend (`thread.metadata.update` with a title). Mend lets only its owner. */
   readonly rename: (input: {
     readonly session: BearerSession;
@@ -534,9 +551,16 @@ export interface ThreadCommands {
   }) => Effect.Effect<number, ThreadCommandFailure>;
 }
 
-/** Where a launched thread works: a new worktree from a base, or an existing one it joins. */
+/**
+ * Where a launched thread works: a new worktree made and prepared as t3code's strategy asks
+ * (`worktree-setup.ts`), or an existing one it joins.
+ */
 export type ThreadWorkspace =
-  | { readonly kind: "new"; readonly base: string; readonly name: string | null }
+  | {
+      readonly kind: "new";
+      readonly strategy: Queueing.WorkspacePreparation;
+      readonly name: string | null;
+    }
   | { readonly kind: "join"; readonly worktreePath: string };
 
 export interface ThreadLaunch {
@@ -1448,6 +1472,8 @@ export const makePersonHub = (input: {
             requestedAt: queued.requestedAt,
             state: Queueing.pendingStateOf(queued),
             error: queued.error,
+            workspacePreparation: queued.workspacePreparation,
+            preparationFailed: queued.preparationFailed,
           }));
           sources.push({
             threadId: ThreadId.make(thread?.threadId ?? session.id),
@@ -2740,6 +2766,26 @@ export const makePersonHub = (input: {
       });
 
     /**
+     * What a launch of the session names. A launched thread's options go with its launches only
+     * until Mend has recorded a protocol agent for it; from then on Mend reuses what that agent
+     * recorded (mend#493), as for every session, so a mode or model changed in Mend is never undone
+     * from here. The mode, effort and model chosen for the next start go over either.
+     */
+    const launchOptionsOf = (sessionId: string): ThreadLaunchOptions => {
+      const next = nextModes.get(sessionId);
+      const nextEffort = nextEfforts.get(sessionId);
+      const nextModel = nextModels.get(sessionId);
+      const named =
+        recordedAgentOf(sessionId) === null ? launched.get(sessionId)?.options : undefined;
+      return {
+        ...named,
+        ...(next === undefined ? {} : { permissionMode: next }),
+        ...(nextEffort === undefined ? {} : { effort: nextEffort }),
+        ...(nextModel === undefined ? {} : { model: nextModel }),
+      };
+    };
+
+    /**
      * Launches the stopped session again with no prompt: the message goes out by `POST /turns`
      * once Mend reports the agent live. Naming no options, Mend reuses what the session's last
      * protocol agent recorded (mend#493), so an ask session comes back asking. A thread a t3code
@@ -2748,44 +2794,15 @@ export const makePersonHub = (input: {
      */
     const launchAgain = (sessionId: string, entry: Queueing.QueueEntry): Effect.Effect<void> =>
       Effect.gen(function* () {
-        // A launched thread's options go with its launches only until Mend has recorded a protocol
-        // agent for it; from then on Mend reuses what that agent recorded (mend#493), as for every
-        // session, so a mode or model changed in Mend is never undone from here. What the person
-        // chose for the next start goes over either.
-        const next = nextModes.get(sessionId);
-        const nextEffort = nextEfforts.get(sessionId);
-        const nextModel = nextModels.get(sessionId);
-        const named =
-          recordedAgentOf(sessionId) === null ? launched.get(sessionId)?.options : undefined;
-        const options = {
-          ...named,
-          ...(next === undefined ? {} : { permissionMode: next }),
-          ...(nextEffort === undefined ? {} : { effort: nextEffort }),
-          ...(nextModel === undefined ? {} : { model: nextModel }),
-        };
+        const options = launchOptionsOf(sessionId);
         const answer = yield* mend
           .launchProtocol(entry.token, sessionId, "", options)
           .pipe(Effect.result);
-        // Mend refuses a launch that races another (`session_starting`) or finds the agent up
-        // (`session_active`); its 422 carries only words, so the session itself is read: launching
-        // or with a live agent, the launch is under way or done, and the message waits for it.
         const underWay =
           answer._tag === "Failure" &&
           answer.failure._tag === "MendCommandRefused" &&
           answer.failure.status === 422
-            ? yield* mend.sessionDetail(entry.token, sessionId).pipe(
-                Effect.map((detail) => {
-                  const agent = detail.currentAgent;
-                  const agentUp =
-                    agent !== null &&
-                    agent.exitedAt === null &&
-                    (agent.status === "running" || agent.status === "starting");
-                  return detail.session.status === "starting" || agentUp
-                    ? detail.session.updatedAt
-                    : null;
-                }),
-                Effect.orElseSucceed(() => null),
-              )
+            ? yield* launchUnderWay(entry.token, sessionId)
             : null;
         yield* locked(
           Effect.gen(function* () {
@@ -3223,6 +3240,71 @@ export const makePersonHub = (input: {
      */
     const launching = new Set<string>();
 
+    // ─── Preparing a new worktree (`worktree-setup.ts`) ────────────────────
+
+    const setups = makeWorktreeSetups(hubScope);
+
+    /**
+     * Mend refused a launch with a 422: it races another (`session_starting`) or finds the agent up
+     * (`session_active`), and its 422 carries only words, so the session itself is read. The
+     * session's `updatedAt` when its launch is under way or done, else null.
+     */
+    const launchUnderWay = (token: string, sessionId: string) =>
+      mend.sessionDetail(token, sessionId).pipe(
+        Effect.map((detail) => {
+          const agent = detail.currentAgent;
+          const agentUp =
+            agent !== null &&
+            agent.exitedAt === null &&
+            (agent.status === "running" || agent.status === "starting");
+          return detail.session.status === "starting" || agentUp ? detail.session.updatedAt : null;
+        }),
+        Effect.orElseSucceed(() => null),
+      );
+
+    /** Ends a preparation for the opening message: it takes its turn, or fails as a retry takes. */
+    const settlePreparation = (preparation: Preparation, failure: string | null) =>
+      Effect.gen(function* () {
+        const { runId, sessionId } = preparation;
+        yield* locked(
+          Effect.gen(function* () {
+            const queue = queueOf(sessionId);
+            const entry = queue.entries.find((candidate) => candidate.runId === runId);
+            if (entry === undefined) return;
+            if (failure === null) Queueing.prepared(entry);
+            else Queueing.preparationFailed(queue, entry, failure);
+            yield* keepQueue(sessionId, queue);
+            yield* publishAll;
+          }),
+        );
+        yield* requestRefresh(`project:${preparation.projectId}`);
+      });
+
+    const startPreparation = (preparation: Preparation) =>
+      prepareWorktree(
+        {
+          mend,
+          terminals,
+          setups,
+          worktreeOf: (sessionId) =>
+            locked(
+              Effect.sync(() => {
+                const source = sourceOf(sessionId);
+                return source === null
+                  ? null
+                  : {
+                      worktreeId: source.session.worktreeId,
+                      worktreePath: worktreePathOf(source.project, source.session),
+                    };
+              }),
+            ),
+          launchUnderWay,
+          refresh: (projectId) => requestRefresh(`project:${projectId}`),
+          settle: settlePreparation,
+        },
+        preparation,
+      ).pipe(Effect.forkIn(hubScope), Effect.asVoid);
+
     const launchReserved = (request: ThreadLaunch) =>
       Effect.gen(function* () {
         const token = request.session.deviceToken;
@@ -3238,7 +3320,12 @@ export const makePersonHub = (input: {
             if (entry === undefined) return { kind: "no-project" as const };
             const { workspace } = request;
             if (workspace.kind === "new") {
-              return { kind: "new" as const, name: workspace.name, base: workspace.base };
+              return {
+                kind: "new" as const,
+                name: workspace.name,
+                base: workspace.strategy.baseRef,
+                hasOrigin: (entry.project.originUrl ?? null) !== null,
+              };
             }
             // A worktree is known by the path of a session in it: the same directory.
             const joined = entry.sessions.find(
@@ -3262,24 +3349,56 @@ export const makePersonHub = (input: {
               : "No such worktree.",
           );
         }
-        // Mend joins an existing worktree of the same name: a new worktree takes a name no
-        // worktree of the project has, or none, and Mend names it.
-        const name =
-          target.kind === "new" && target.name !== null
-            ? yield* freeWorktreeName(token, request.projectId, target.name)
-            : null;
-        const created = yield* asCommandRefusal(
-          target.kind === "new"
-            ? mend.createSession(token, request.projectId, {
-                harness: request.harness,
-                label: request.label,
-                name,
-                base: target.base,
-              })
-            : mend.joinWorktree(token, target.worktreeId, {
+        const strategy = request.workspace.kind === "new" ? request.workspace.strategy : null;
+        // The setup card is the client's, keyed by the thread id it subscribes with from the moment
+        // it sends; a launch that names no thread has none, and its worktree is prepared all the same.
+        const card = strategy === null ? null : request.threadId;
+        if (strategy !== null && card !== null) {
+          yield* setups.begin({
+            threadId: card,
+            branch: strategy.branch ?? null,
+            baseRef: strategy.baseRef,
+            stages: ["fetch", "checkout", "setup-script", "agent"],
+          });
+        }
+        const stage = (stageId: "fetch" | "checkout", status: "running" | "done" | "skipped") =>
+          card === null ? Effect.void : setups.stageStatus(card, stageId, status);
+        const created = yield* Effect.gen(function* () {
+          if (target.kind === "join") {
+            return yield* asCommandRefusal(
+              mend.joinWorktree(token, target.worktreeId, {
                 harness: request.harness,
                 label: request.label,
               }),
+            );
+          }
+          const fetchOrigin = strategy?.startFromOrigin === true && target.hasOrigin;
+          yield* stage("fetch", fetchOrigin ? "running" : "skipped");
+          if (fetchOrigin) {
+            yield* asCommandRefusal(mend.refreshProject(token, request.projectId));
+            yield* stage("fetch", "done");
+          }
+          // Mend joins an existing worktree of the same name: a new worktree takes a name no
+          // worktree of the project has, or none, and Mend names it.
+          const name =
+            target.name === null
+              ? null
+              : yield* freeWorktreeName(token, request.projectId, target.name);
+          yield* stage("checkout", "running");
+          const made = yield* asCommandRefusal(
+            mend.createSession(token, request.projectId, {
+              harness: request.harness,
+              label: request.label,
+              name,
+              base: target.base,
+            }),
+          );
+          yield* stage("checkout", "done");
+          return made;
+        }).pipe(
+          Effect.tapError((error) =>
+            card === null ? Effect.void : setups.finish(card, "failed", error.message),
+          ),
         );
         const thread: LaunchedThread = {
           threadId: request.threadId ?? created.id,
@@ -3303,24 +3422,38 @@ export const makePersonHub = (input: {
           }),
         );
         const { message } = request;
+        const openingRunId = message === null ? null : `t3-run:${randomUUID()}`;
         // The opening message is queued like any other: the queue launches the session on what
-        // the launch named and sends the message as an exact turn once the agent runs.
+        // the launch named and sends the message as an exact turn once the agent runs. Into a new
+        // worktree, it waits for the worktree's preparation first.
         const queueOpening = (requestedAt: string) => {
-          if (message === null) return;
+          if (message === null || openingRunId === null) return;
           const queue = queueOf(created.id);
           if (queue.entries.some((entry) => entry.messageId === message.messageId)) return;
           queue.entries.push(
             Queueing.newEntry({
-              runId: `t3-run:${randomUUID()}`,
+              runId: openingRunId,
               messageId: message.messageId,
               text: message.text,
               requestedAt,
               token,
               sender: request.session.sessionId,
               imageIds: message.imageIds,
+              workspacePreparation: strategy,
             }),
           );
         };
+        const preparation: Preparation | null =
+          strategy === null
+            ? null
+            : {
+                session: request.session,
+                threadId: thread.threadId,
+                sessionId: created.id,
+                projectId: request.projectId,
+                runId: openingRunId,
+                options: request.options,
+              };
         // The message is queued at once, whatever the reads below find: it is never dropped.
         // Until a project read shows the session, it stays hidden and its queue waits.
         yield* locked(Effect.map(DateTime.now, (now) => queueOpening(DateTime.formatIso(now))));
@@ -3336,32 +3469,51 @@ export const makePersonHub = (input: {
             ),
           );
         yield* read(OPENING_READ_ATTEMPTS);
+        if (message === null) {
+          // Nothing to send: the agent comes up now, and a refusal is the launch's.
+          yield* asCommandRefusal(mend.launchProtocol(token, created.id, "", request.options)).pipe(
+            Effect.tap(() => requestRefresh(`project:${request.projectId}`)),
+            Effect.tapError((error) =>
+              preparation === null
+                ? Effect.void
+                : setups.finish(preparation.threadId, "failed", error.message),
+            ),
+          );
+        }
+        // The worktree is prepared once a read shows the session: its shell needs the thread.
+        const prepare = preparation === null ? Effect.void : startPreparation(preparation);
         if (yield* locked(Effect.sync(() => opening.has(created.id)))) {
           // Mend not answering yet: keep reading in the background; the message waits for it.
+          const unread =
+            "Mend created the session, but the gateway could not read it to send this message.";
           yield* Effect.forkIn(
             read(OPENING_READ_BACKGROUND_ATTEMPTS).pipe(
               Effect.andThen(
                 locked(
                   Effect.gen(function* () {
-                    if (!opening.has(created.id)) return;
+                    if (!opening.has(created.id)) return true;
                     opening.delete(created.id);
-                    Queueing.failAll(
-                      queueOf(created.id),
-                      "Mend created the session, but the gateway could not read it to send this message.",
-                    );
+                    const queue = queueOf(created.id);
+                    const held = Queueing.preparing(queue);
+                    if (held !== undefined) Queueing.preparationFailed(queue, held, unread);
+                    Queueing.failAll(queue, unread);
                     yield* publishAll;
+                    return false;
                   }),
                 ),
+              ),
+              Effect.flatMap((shown) =>
+                shown
+                  ? prepare
+                  : preparation === null
+                    ? Effect.void
+                    : setups.finish(preparation.threadId, "failed", unread),
               ),
             ),
             hubScope,
           );
-        }
-        if (message === null) {
-          // Nothing to send: the agent comes up now, and a refusal is the launch's.
-          yield* asCommandRefusal(mend.launchProtocol(token, created.id, "", request.options)).pipe(
-            Effect.tap(() => requestRefresh(`project:${request.projectId}`)),
-          );
+        } else {
+          yield* prepare;
         }
         const launchedId: LaunchedThreadId = { threadId: thread.threadId, resumed: false };
         return launchedId;
@@ -3400,6 +3552,52 @@ export const makePersonHub = (input: {
             }),
           ),
         );
+      });
+
+    const retryPreparation: ThreadCommands["retryPreparation"] = (command) =>
+      Effect.gen(function* () {
+        yield* ensureLoaded;
+        const sessionId = sessionIdOf(command.threadId);
+        const projectId = yield* projectOfThread(command.threadId, sessionId);
+        const entry = yield* locked(
+          Effect.gen(function* () {
+            if (archived.has(sessionId)) {
+              return yield* refused("The thread is archived. Unarchive it, then retry.");
+            }
+            const retried = yield* changeKept(
+              sessionId,
+              (queue) => Queueing.retryPreparation(queue, command.runId) !== null,
+            );
+            if (!retried) {
+              return yield* refused(
+                `Run ${command.runId} has no failed worktree preparation to retry.`,
+              );
+            }
+            yield* publishAll;
+            return {
+              baseRef:
+                queueOf(sessionId).entries.find((candidate) => candidate.runId === command.runId)
+                  ?.workspacePreparation?.baseRef ?? null,
+              branch: sourceOf(sessionId)?.session.branch ?? null,
+            };
+          }),
+        );
+        // The worktree is there already: what is prepared again is its setup, and the hand-off.
+        yield* setups.begin({
+          threadId: command.threadId,
+          branch: entry.branch,
+          baseRef: entry.baseRef,
+          stages: ["setup-script", "agent"],
+        });
+        yield* startPreparation({
+          session: command.session,
+          threadId: command.threadId,
+          sessionId,
+          projectId,
+          runId: command.runId,
+          options: launchOptionsOf(sessionId),
+        });
+        return yield* locked(Effect.sync(() => sequence));
       });
 
     /** The project of a thread the person has, or a refusal naming the thread. */
@@ -3796,6 +3994,7 @@ export const makePersonHub = (input: {
         changeQueue(sessionIdOf(threadId), (queue) => Queueing.reorder(queue, runId, beforeRunId)),
       respond: (command) => respond({ ...command, threadId: sessionIdOf(command.threadId) }),
       launch,
+      retryPreparation,
       rename,
       stop,
       remove,
@@ -4194,6 +4393,7 @@ export const makePersonHub = (input: {
       archivedShell,
       subscribeArchivedShell,
       terminals,
+      worktreeSetups: setups,
       turnDiff,
       locationOf,
       worktreeFileOf,

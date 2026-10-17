@@ -26,8 +26,11 @@ import type { BearerSession, ThreadLaunchOptions } from "./state.ts";
  *
  * - The session is created as the person who paired (`POST /api/projects/:id/sessions`), so Mend
  *   records them as its owner and origin `mend`, and its agent runs as them (docs/adr/0016).
- * - `worktree` starts a new worktree from `baseRef`; `existing_worktree` joins the worktree of a
- *   session of the project, by its name. `root` is refused: every Mend session has a worktree.
+ * - `worktree` starts a new worktree from `baseRef`, after fetching origin when `startFromOrigin`
+ *   asks, and prepares it as t3code does: its t3.json setup script runs before the opening message
+ *   goes, with t3code's setup card showing it (`worktree-setup.ts`). `existing_worktree` joins the
+ *   worktree of a session of the project, by its name. `root` is refused: every Mend session has a
+ *   worktree.
  * - The model, its reasoning effort and service tier, and the runtime mode (`full-access` is
  *   `bypass`, `approval-required` is `ask`) are what every launch of the thread names.
  * - The opening message is queued by the gateway like a follow-up: the run is `preparing` while the
@@ -135,7 +138,7 @@ export const planLaunch = (input: OrchestrationV2ThreadLaunchInput): LaunchPlan 
         UNNAMED_LABEL,
       workspace:
         strategy.type === "worktree"
-          ? { kind: "new", base: strategy.baseRef, name: worktreeNameOf(strategy.branch) }
+          ? { kind: "new", strategy, name: worktreeNameOf(strategy.branch) }
           : { kind: "join", worktreePath: strategy.worktreePath },
       options,
       message:

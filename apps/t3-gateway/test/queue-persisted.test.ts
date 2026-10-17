@@ -18,6 +18,7 @@ import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 
 import {
+  PREPARED_BEFORE_RESTART,
   restoredQueue,
   SENDER_GONE,
   SENT_BEFORE_RESTART,
@@ -452,6 +453,8 @@ const stored = (state: StoredQueue["entries"][number]["state"], sender = "bearer
   error: state === "failed" ? "Mend refused it." : null,
   launches: state === "launching" ? 1 : 0,
   imageIds: [],
+  workspacePreparation: null,
+  preparationFailed: false,
 });
 
 describe("what a restart makes of each message", () => {
@@ -486,6 +489,29 @@ describe("what a restart makes of each message", () => {
       storedOf(queue).entries.map((entry) => entry.state),
       ["queued", "queued", "failed", "failed", "cancelled"],
     );
+  });
+
+  it("fails an opening message whose worktree was being prepared as a preparation, and holds what follows", () => {
+    const preparing = {
+      ...stored("preparing"),
+      workspacePreparation: { type: "worktree" as const, baseRef: "main" },
+    };
+    const queue = restoredQueue(
+      { held: false, entries: [preparing, stored("queued")] },
+      () => "mdt_token",
+    );
+    assert.deepStrictEqual(
+      queue.entries.map((entry) => [entry.state, entry.error, entry.preparationFailed]),
+      [
+        ["failed", PREPARED_BEFORE_RESTART, true],
+        ["queued", null, false],
+      ],
+    );
+    assert.isTrue(queue.held);
+    assert.deepStrictEqual(storedOf(queue).entries[0]?.workspacePreparation, {
+      type: "worktree",
+      baseRef: "main",
+    });
   });
 
   it("fails a message whose sender is no longer paired, and lets go of a hold with nothing queued", () => {
