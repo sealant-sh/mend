@@ -38,6 +38,8 @@ import * as Option from "effect/Option";
 import type * as RpcGroup from "effect/rpc/RpcGroup";
 import * as Schema from "effect/Schema";
 
+import { modelPreferencesUpdateOf } from "./model-preferences.ts";
+
 /**
  * The scope each RPC requires, as t3code's own server declares it at the pinned tag
  * (`RPC_REQUIRED_SCOPES` in t3:apps/server/src/auth/RpcAuthorization.ts, MIT, T3 Tools Inc.).
@@ -254,6 +256,7 @@ const settingsUpdateScopes = (payload: unknown): ReadonlyArray<AuthEnvironmentSc
   Option.match(decodeSettingsUpdate(payload), {
     onNone: () => [AuthSettingsWriteScope],
     onSome: (update) => {
+      if (modelPreferencesUpdateOf(update) !== null) return [AuthOrchestrationOperateScope];
       const scopes = requiredScopesForServerSettingsPatch(update.patch);
       if (update.providerInstanceMutation === undefined) return scopes;
       return Object.values(update.patch).every((value) => value === undefined)

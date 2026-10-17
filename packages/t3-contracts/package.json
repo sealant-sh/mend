@@ -11,6 +11,7 @@
     "./keybindings": "./t3-shared/src/keybindings.ts",
     "./pin": "./t3code.pin.json",
     "./relay": "./src/relay.ts",
+    "./server-settings": "./t3-shared/src/serverSettings.ts",
     "./settings": "./src/settings.ts",
     "./thread-settled": "./client-runtime/threadSettled.ts",
     "./thread-transcript": "./t3-shared/src/threadTranscript.ts"

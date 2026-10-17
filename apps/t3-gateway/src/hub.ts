@@ -21,6 +21,7 @@ import {
   type OrchestrationV2ShellSnapshot,
   type OrchestrationV2ShellStreamItem,
   type OrchestrationV2ThreadProjection,
+  type ServerSettings,
 } from "@mend/t3-contracts";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -81,6 +82,14 @@ import type {
   MendWorkspaceRetirement,
 } from "./mend-workbench.ts";
 import { optionsChangeOf } from "./model-options.ts";
+import {
+  applyModelPreferencesPatch,
+  boundedModelPreferences,
+  keptSettingsOf,
+  type KeptSettings,
+  type ModelPreferencesPatch,
+  type ModelPreferencesTooLarge,
+} from "./model-preferences.ts";
 import { readsRetirement, readsWaiting, threadNoticesOf } from "./notices.ts";
 import * as Queueing from "./queue.ts";
 import {
@@ -106,6 +115,7 @@ import {
 } from "./shell.ts";
 import {
   GatewayState,
+  type GatewayStateError,
   type BearerSession,
   type LaunchedThread,
   type ImagePlacement,
@@ -214,6 +224,24 @@ export interface PersonHub {
   readonly accountChanges: Effect.Effect<
     Stream.Stream<"accounts", SubscriberFellBehind>,
     never,
+    Scope.Scope
+  >;
+  /**
+   * The person's t3code server settings: t3code's defaults with the model preferences the gateway
+   * keeps for them (`model-preferences.ts`).
+   */
+  readonly settings: (session: BearerSession) => Effect.Effect<KeptSettings, GatewayStateError>;
+  /** Applies a model preferences patch for the person; their sockets hear the settings after it. */
+  readonly updateModelPreferences: (
+    session: BearerSession,
+    patch: ModelPreferencesPatch,
+  ) => Effect.Effect<ServerSettings, GatewayStateError | ModelPreferencesTooLarge>;
+  /** The person's settings now, then again each time one of their clients changes them. */
+  readonly subscribeSettings: (
+    session: BearerSession,
+  ) => Effect.Effect<
+    Stream.Stream<KeptSettings, SubscriberFellBehind>,
+    GatewayStateError,
     Scope.Scope
   >;
   /** The person's archived threads, as `orchestration.getArchivedShellSnapshot` answers. */
@@ -1255,6 +1283,7 @@ export const makePersonHub = (input: {
     let shellArchived = new Map<string, Printed<OrchestrationV2ThreadShell>>();
     const archivedChanges = makeFanout<ArchivedShellDelta>();
     const accountSignals = makeFanout<"accounts">();
+    const settingsChanges = makeFanout<KeptSettings>();
     const shellChanges = makeFanout<ShellDelta>();
     const watches = new Map<string, Watch>();
     const threadChanges = makeFanout<{
@@ -3733,8 +3762,30 @@ export const makePersonHub = (input: {
       return { snapshot, changes };
     });
 
+    const settings = (session: BearerSession) =>
+      state.modelPreferences(session.mendUser.id).pipe(Effect.map(keptSettingsOf));
+    const updateModelPreferences = (session: BearerSession, patch: ModelPreferencesPatch) =>
+      state
+        .updateModelPreferences(session.mendUser.id, (current) =>
+          boundedModelPreferences(applyModelPreferencesPatch(current, patch)),
+        )
+        .pipe(
+          Effect.map(keptSettingsOf),
+          Effect.tap((next) => settingsChanges.publish([next])),
+          Effect.map((next) => next.settings),
+        );
+    const subscribeSettings = (session: BearerSession) =>
+      Effect.gen(function* () {
+        const changes = yield* settingsChanges.subscribe(() => true);
+        const now = yield* settings(session);
+        return Stream.concat(Stream.make(now), changes);
+      });
+
     return {
       accountChanges: accountSignals.subscribe(() => true),
+      settings,
+      updateModelPreferences,
+      subscribeSettings,
       archivedShell,
       subscribeArchivedShell,
       terminals,

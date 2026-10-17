@@ -5,12 +5,16 @@ export const REPOSITORY = "https://github.com/pingdotgg/t3code.git";
 
 const T3_SHARED_FILES = [
   "Array",
+  "backgroundActivitySettings",
   "changeRequestUrl",
   "keybindings",
   "model",
   "orchestrationV2PendingBackgroundWork",
   "path",
+  "schemaJson",
+  "serverSettings",
   "sourceControl",
+  "Struct",
   "threadPullRequests",
   "threadTranscript",
 ];
