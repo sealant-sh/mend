@@ -279,6 +279,16 @@ export type AttachOutcome =
   | "unavailable"
   | "no-answer";
 
+/**
+ * What an attach came to, and the refusal to leave raw mode that no gone terminal explains, if any:
+ * never thrown out of the attach, said by its caller once the outcome's own step (a foreground
+ * session's stop) has gone out.
+ */
+export interface AttachResult {
+  readonly outcome: AttachOutcome;
+  readonly rawModeRefusal: Error | null;
+}
+
 export const LIVE_STATUSES: ReadonlySet<string> = new Set([
   "starting",
   "running",
