@@ -373,7 +373,11 @@ name the version that replaces it.
 A release's images reach `:<version>` only after its own acceptance passed. image.yml's `merge`
 creates each multi-arch index under `staging-<run id>-<run attempt>` and records its digest in the
 release manifest. Packaged acceptance pulls by digest, never by tag. Then release-cli.yml's
-`finalize-images` reads each image's `:<version>` and:
+`finalize-images`, before it reads or writes any tag, reads each image's index by the digest the
+manifest records and binds its platforms again, as `merge` and acceptance did: each arch's platform
+must map to the build the manifest records for that arch. The manifest outlives the one-day digest
+artifacts, so a re-run can still check. Any mismatch fails with nothing written. Then it reads each
+image's `:<version>` and:
 
 - absent (the registry answered not found): creates it from the manifest's index digest;
 - already this run's digest: done;

@@ -13,10 +13,17 @@ import {
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 import { parse } from "yaml";
 
 import { isDryRunVersion } from "./check-release-pins.mjs";
+import {
+  acceptedIndexes,
+  buildsOf,
+  refusedIndexes,
+  releaseIndex,
+} from "./fixtures/release-indexes.mjs";
 import { githubApi, npmDistTags, registryStandIn, writesIn } from "./fixtures/release-markers.mjs";
 
 const releaseWorkflow = readFileSync(
@@ -1295,17 +1302,47 @@ test("pins gets --dry-run only on a dispatch building to archives", (t) => {
 
 // --- finalize-images ---
 
+/** Each image's two attested builds and the index merge staged of them, as the manifest records. */
+const RELEASED = Object.fromEntries(
+  ["mend", "mend-before", "mend-api", "mend-web"].map((image) => [image, buildsOf(image)]),
+);
+const STAGED = Object.fromEntries(
+  Object.entries(RELEASED).map(([image, builds]) => [image, releaseIndex(builds)]),
+);
+const accepted = (image) => STAGED[image].digest;
+/** What the manifest records for each image of that release. */
+const STAGED_MANIFEST_IMAGES = Object.fromEntries(
+  Object.entries(RELEASED).map(([image, builds]) => [
+    image,
+    {
+      index: accepted(image),
+      platforms: { amd64: builds.amd64.source.digest, arm64: builds.arm64.source.digest },
+    },
+  ]),
+);
+const rawRead = (reference) => ["buildx", "imagetools", "inspect", reference, "--raw"];
+const tagRead = (reference) => [
+  "buildx",
+  "imagetools",
+  "inspect",
+  reference,
+  "--format",
+  "{{json .Manifest}}",
+];
+
 /**
  * finalize-images' step as written, against a stand-in docker over a registry held in a JSON file:
  * `tags` maps a reference to its digest, `unreadable` lists references whose read fails for a
  * reason other than not found, and `onCreate` says what a create does: `land` (the tag gets the
  * source's digest), `other` (another digest lands), `vanish` (the tag becomes unreadable), with an
  * optional exit code. `answers` replaces a reference's read with exact stdout, stderr and exit
- * (only its first read, with `once`).
+ * (only its first read, with `once`). The registry serves each image's index and builds by digest,
+ * as merge staged them and the manifest records them; `indexes` replaces an image's index with
+ * another document, which the manifest then records.
  */
 const finalize = (
   t,
-  { tags = {}, unreadable = [], onCreate = {}, manifest = {}, answers = {} } = {},
+  { tags = {}, unreadable = [], onCreate = {}, manifest = {}, answers = {}, indexes = {} } = {},
 ) => {
   const directory = mkdtempSync(path.join(tmpdir(), "mend-finalize-"));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
@@ -1314,7 +1351,17 @@ const finalize = (
   const calls = path.join(directory, "calls.jsonl");
   const state = path.join(directory, "registry.json");
   writeFileSync(calls, "");
-  writeFileSync(state, JSON.stringify({ tags, unreadable, onCreate, answers }));
+  const staged = { ...STAGED, ...indexes };
+  const documents = {};
+  for (const image of Object.keys(RELEASED)) {
+    documents[`${promoted(image)}@${staged[image].digest}`] =
+      staged[image].bytes.toString("base64");
+    for (const arch of ["amd64", "arm64"]) {
+      const { source } = RELEASED[image][arch];
+      documents[`${promoted(image)}@${source.digest}`] = source.bytes.toString("base64");
+    }
+  }
+  writeFileSync(state, JSON.stringify({ tags, unreadable, onCreate, answers, documents }));
   writeFileSync(
     path.join(bin, "docker"),
     `#!${process.execPath}
@@ -1323,6 +1370,12 @@ const args = process.argv.slice(2);
 appendFileSync(${JSON.stringify(calls)}, JSON.stringify(args) + "\\n");
 const registry = JSON.parse(readFileSync(${JSON.stringify(state)}, "utf8"));
 const save = () => writeFileSync(${JSON.stringify(state)}, JSON.stringify(registry));
+if (args.slice(0, 3).join(" ") === "buildx imagetools inspect" && args[4] === "--raw" && args.length === 5) {
+  const served = registry.documents[args[3]];
+  if (served === undefined) { console.error("ERROR: " + args[3] + ": not found"); process.exit(1); }
+  process.stdout.write(Buffer.from(served, "base64"));
+  process.exit(0);
+}
 if (args.slice(0, 3).join(" ") === "buildx imagetools inspect" && args[4] === "--format") {
   const ref = args[3];
   const answer = registry.answers[ref];
@@ -1361,13 +1414,19 @@ process.exit(79);
     file,
     JSON.stringify({
       version: "1.2.3",
+      before: "0.0.0-acceptance.9.1",
       commit: "f".repeat(40),
       images: Object.fromEntries(
-        ["mend", "mend-before", "mend-api", "mend-web"].map((image) => [
+        Object.entries(STAGED_MANIFEST_IMAGES).map(([image, entry]) => [
           image,
-          { index: indexOf(image) },
+          { ...entry, index: staged[image].digest },
         ]),
       ),
+      cli: {
+        file: "sealant-mend-1.2.3.tgz",
+        sha512: "0".repeat(128),
+        integrity: `sha512-${Buffer.from("0".repeat(128), "hex").toString("base64")}`,
+      },
       ...manifest,
     }),
   );
@@ -1378,6 +1437,7 @@ process.exit(79);
     encoding: "utf8",
     env: {
       PATH: `${bin}:${process.env.PATH}`,
+      GITHUB_WORKSPACE: fileURLToPath(new URL("../", import.meta.url)),
       RUNNER_TEMP: directory,
       GITHUB_SHA: "f".repeat(40),
       GITHUB_REPOSITORY_OWNER: "sealant-ci",
@@ -1397,7 +1457,7 @@ process.exit(79);
 };
 const FINAL = ["mend", "mend-api", "mend-web"];
 const finalRef = (image) => `${promoted(image)}:1.2.3`;
-const ours = Object.fromEntries(FINAL.map((image) => [finalRef(image), indexOf(image)]));
+const ours = Object.fromEntries(FINAL.map((image) => [finalRef(image), accepted(image)]));
 const creates = (result) => result.calls.filter((args) => args[2] === "create");
 
 test("finalize creates each absent :<version> from the accepted index, after reading every one", (t) => {
@@ -1411,12 +1471,76 @@ test("finalize creates each absent :<version> from the accepted index, after rea
       "create",
       "--tag",
       finalRef(image),
-      `${promoted(image)}@${indexOf(image)}`,
+      `${promoted(image)}@${accepted(image)}`,
     ]),
   );
-  for (const image of FINAL) assert.equal(result.registry.tags[finalRef(image)], indexOf(image));
+  for (const image of FINAL) assert.equal(result.registry.tags[finalRef(image)], accepted(image));
+  // Every index is bound, both arches, before any tag is read; every tag is read before any is
+  // written.
   const firstCreate = result.calls.findIndex((args) => args[2] === "create");
-  assert.equal(firstCreate, FINAL.length, "every tag is read before any is written");
+  assert.deepEqual(result.calls.slice(0, firstCreate), [
+    ...FINAL.flatMap((image) =>
+      ["amd64", "arm64"].flatMap((arch) => [
+        rawRead(`${promoted(image)}@${accepted(image)}`),
+        rawRead(`${promoted(image)}@${RELEASED[image][arch].source.digest}`),
+      ]),
+    ),
+    ...FINAL.map((image) => tagRead(finalRef(image))),
+  ]);
+});
+
+test("finalize binds each index's platforms again, and writes nothing for an index the binding refuses", (t) => {
+  // Each reaches finalize as if merge's check and acceptance had been stubbed to pass: the manifest
+  // records the bad index, and nothing before this step looked at it. It is the last image's, so
+  // the other two were bound and still no tag is read.
+  for (const { label, index, problems } of refusedIndexes(RELEASED["mend-web"])) {
+    const result = finalize(t, { indexes: { "mend-web": index } });
+    assert.equal(result.status, 1, `${label}: ${result.output}`);
+    assert.match(result.output, problems.amd64 ?? problems.arm64, label);
+    assert.deepEqual(
+      result.calls.filter((args) => args[4] !== "--raw"),
+      [],
+      `${label} reads no tag`,
+    );
+    assert.deepEqual(result.registry.tags, {}, label);
+  }
+  // The first image's swapped index stops finalize before any other image is read.
+  const swapped = refusedIndexes(RELEASED.mend)[0];
+  const first = finalize(t, { indexes: { mend: swapped.index } });
+  assert.equal(first.status, 1, first.output);
+  assert.match(first.output, swapped.problems.amd64);
+  assert.deepEqual(first.calls, [
+    rawRead(`${promoted("mend")}@${swapped.index.digest}`),
+    rawRead(`${promoted("mend")}@${RELEASED.mend.amd64.source.digest}`),
+  ]);
+  // An index or a build the registry cannot serve by the recorded digest writes nothing either.
+  for (const images of [
+    { "mend-api": { index: `sha256:${"9".repeat(64)}` } },
+    { "mend-api": { platforms: { arm64: `sha256:${"9".repeat(64)}` } } },
+  ]) {
+    const recorded = JSON.parse(JSON.stringify(STAGED_MANIFEST_IMAGES));
+    for (const [image, entry] of Object.entries(images))
+      recorded[image] = {
+        ...recorded[image],
+        ...entry,
+        platforms: { ...recorded[image].platforms, ...entry.platforms },
+      };
+    const unserved = finalize(t, { manifest: { images: recorded } });
+    assert.equal(unserved.status, 1, unserved.output);
+    assert.match(unserved.output, /Could not read ghcr\.io\/sealant-ci\/mend-api@sha256:9{64}/);
+    assert.deepEqual(
+      unserved.calls.filter((args) => args[4] !== "--raw"),
+      [],
+    );
+    assert.deepEqual(unserved.registry.tags, {});
+  }
+  // A real BuildKit index, its attestations unknown/unknown, in each order and with arm64 as v8,
+  // is bound and tagged.
+  for (const { label, index } of acceptedIndexes(RELEASED.mend)) {
+    const result = finalize(t, { indexes: { mend: index } });
+    assert.equal(result.status, 0, `${label}: ${result.output}`);
+    assert.equal(result.registry.tags[finalRef("mend")], index.digest, label);
+  }
 });
 
 test("finalize is done when :<version> already names this run's index: a rerun of failed jobs", (t) => {
@@ -1470,7 +1594,7 @@ test("finalize reads absent only from buildx's sole not-found line, and fails on
   });
   assert.equal(result.status, 0, result.output);
   assert.equal(creates(result).length, 1 + 2);
-  assert.deepEqual(creates(result)[0].slice(4), [ref, `${promoted("mend")}@${indexOf("mend")}`]);
+  assert.deepEqual(creates(result)[0].slice(4), [ref, `${promoted("mend")}@${accepted("mend")}`]);
 });
 
 test("finalize: a create that reported an error but left this run's digest is a success", (t) => {
@@ -1520,10 +1644,19 @@ test("finalize gates npm and promotion, and the three queue on one release chann
   assert.deepEqual(finalizeJob.permissions, { contents: "read", packages: "write" });
   assert.equal(finalizeJob["runs-on"], "ubuntu-24.04");
   assert.ok(finalizeJob.needs.includes("acceptance"));
-  assert.deepEqual(
-    finalizeJob.steps.find((step) => step.uses?.startsWith("actions/download-artifact@")).with,
-    { name: "release-manifest", path: "release" },
+  const download = finalizeJob.steps.find((step) =>
+    step.uses?.startsWith("actions/download-artifact@"),
   );
+  assert.deepEqual(download.with, { name: "release-manifest", path: "release" });
+  // Only the manifest reader that binds the index, from the tag push's own commit (no ref), with
+  // no credential left behind; checked out first, so the workspace it cleans is still empty.
+  const checkout = finalizeJob.steps.find((step) => step.uses?.startsWith("actions/checkout@"));
+  assert.deepEqual(checkout.with, {
+    "persist-credentials": false,
+    "sparse-checkout": ".node-version\nscripts/release-manifest.mjs\n",
+    "sparse-checkout-cone-mode": false,
+  });
+  assert.ok(finalizeJob.steps.indexOf(checkout) < finalizeJob.steps.indexOf(download));
   for (const name of ["npm", "promote-images"])
     assert.ok(releaseJobs[name].needs.includes("finalize-images"), name);
   for (const name of ["finalize-images", "npm", "promote-images"])
