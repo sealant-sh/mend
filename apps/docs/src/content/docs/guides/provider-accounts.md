@@ -135,7 +135,9 @@ remove an account that is not connected.
 
 Removing an account stops Mend refreshing it and giving it to new workspaces. A copy already in a
 running workspace (your own session's, or your other agent's login in it) works until its access
-token expires or that workspace lets go of your logins; stop those sessions to remove it sooner.
+token expires, its home there is released, or the workspace ends. In a workspace you started, your
+copies stay until the workspace ends: stopping your own sessions there may leave them in place while
+someone else's session keeps it running.
 
 ## Where the account is used
 

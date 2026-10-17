@@ -42,7 +42,7 @@ import {
   seedStoppedBeforeRestart,
   shipCapturedHarnessHome,
 } from "./engine/capture-fixture.ts";
-import { signalWrites, signalled } from "./engine/clock-fixture.ts";
+import { signalWrites, signalled, watched } from "./engine/clock-fixture.ts";
 import {
   agentConversationStub,
   agentMemoryLayerOf,
@@ -991,11 +991,13 @@ describe("shared steering through the engine (docs/adr/0016, Delivery 18)", () =
       readonly resumePath: string | null;
     }> = [];
     const stops: Array<string> = [];
-    const posts: Array<{
+    // Every write of logins wakes `posted`: the re-login below is forked off the turn's path.
+    const posted = Effect.runSync(Queue.sliding<void>(1));
+    const posts = watched<{
       readonly onBehalfOf: string;
       readonly home: string;
       readonly logins: HomeLogins;
-    }> = [];
+    }>(posted);
     const state = makeHarnessLayoutsMemoryState();
     const provider = "8f14e45f-ceea-4e7a-9c2b-1f0a7e3d2c11";
     let sessionId: SessionId | null = null;
@@ -1099,9 +1101,7 @@ describe("shared steering through the engine (docs/adr/0016, Delivery 18)", () =
               endedAt: now(),
             }),
           );
-          for (let wait = 0; wait < 200 && posts.length === postsBefore; wait++) {
-            yield* Effect.sleep("10 millis");
-          }
+          yield* signalled(posted)(() => posts.length > postsBefore, "Maria's re-login");
           expect(posts.slice(postsBefore)).toEqual([
             {
               onBehalfOf: MARIA,
