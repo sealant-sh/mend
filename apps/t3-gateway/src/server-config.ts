@@ -341,11 +341,28 @@ export interface GatewayPaths {
   readonly logsDirectoryPath: string;
 }
 
+const RELEASE_VERSION =
+  /^(?<major>\d+)\.(?<minor>\d+)\.(?<patch>\d+)(?<prerelease>-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
+/** t3code v0.1.1's web app: the first that renders Codex follow-up directives as the gateway counts. */
+const FINDS_AS_THE_GATEWAY_COUNTS = [0, 1, 0];
+
+export const findsInThread = (clientAppVersion: string | undefined): boolean => {
+  const parts = RELEASE_VERSION.exec(clientAppVersion ?? "")?.groups;
+  if (parts === undefined) return false;
+  const version = [parts["major"], parts["minor"], parts["patch"]].map(Number);
+  const order =
+    version
+      .map((part, place) => Math.sign(part - (FINDS_AS_THE_GATEWAY_COUNTS[place] ?? 0)))
+      .find((sign) => sign !== 0) ?? 0;
+  return order > 0 || (order === 0 && parts["prerelease"] === undefined);
+};
+
 export const makeServerConfig = (input: {
   readonly environment: ExecutionEnvironmentDescriptor;
   readonly auth: ServerAuthDescriptor;
   readonly paths: GatewayPaths;
   readonly providers: ReadonlyArray<ServerProvider>;
+  readonly findInThread: boolean;
 }): ServerConfig => ({
   environment: input.environment,
   auth: input.auth,
@@ -369,8 +386,8 @@ export const makeServerConfig = (input: {
   // (`rpc.ts`), as t3code's own server does, so a resuming client knows when it has caught up.
   shellResumeCompletionMarker: true,
   threadResumeCompletionMarker: true,
-  threadFind: true,
-  threadFindProgressive: true,
+  threadFind: input.findInThread,
+  threadFindProgressive: input.findInThread,
 });
 
 /** The `welcome` lifecycle event: nothing to bootstrap, so the bootstrap is complete. */

@@ -11,18 +11,22 @@ import * as RpcSerialization from "effect/rpc/RpcSerialization";
 import * as Schedule from "effect/Schedule";
 import * as Socket from "effect/socket/Socket";
 
-import { WEBSOCKET_TICKET_QUERY_PARAM } from "../../src/ws.ts";
+import { CLIENT_APP_VERSION_QUERY_PARAM, WEBSOCKET_TICKET_QUERY_PARAM } from "../../src/ws.ts";
 import type { FakeMend, FakeMendUser } from "./fake-mend.ts";
 import { bearer, PERSON, t3Client, tokenRequest } from "./gateway.ts";
 
+/** What t3code v0.1.1's web app says it is: the version in its `package.json`. */
+export const PINNED_CLIENT_APP_VERSION = "0.1.0";
+
 /**
  * The gateway's `/ws` URL as t3code's client builds it: the WebSocket origin of the HTTP base,
- * the ticket, and the orchestration protocol it speaks
+ * the ticket, the orchestration protocol it speaks and its app version
  * (`t3:packages/client-runtime/src/authorization/remote.ts`).
  */
 export const socketUrl = (
   ticket: string | null,
   protocol: string | null = String(ORCHESTRATION_PROTOCOL_VERSION),
+  clientAppVersion: string | null = PINNED_CLIENT_APP_VERSION,
 ) =>
   HttpServer.addressFormattedWith((base) =>
     Effect.sync(() => {
@@ -30,6 +34,9 @@ export const socketUrl = (
       url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
       if (ticket !== null) url.searchParams.set(WEBSOCKET_TICKET_QUERY_PARAM, ticket);
       if (protocol !== null) url.searchParams.set(ORCHESTRATION_PROTOCOL_QUERY_PARAM, protocol);
+      if (clientAppVersion !== null) {
+        url.searchParams.set(CLIENT_APP_VERSION_QUERY_PARAM, clientAppVersion);
+      }
       return url.toString();
     }),
   );
@@ -65,7 +72,12 @@ export const connectWsRpc = (url: string) =>
  * Pairs a person with a fresh code and opens a socket for them, as a t3code client does on
  * connect: the bearer, a ticket, then `/ws`.
  */
-export const pairAndConnect = (mend: FakeMend, code: string, person: FakeMendUser = PERSON) =>
+export const pairAndConnect = (
+  mend: FakeMend,
+  code: string,
+  person: FakeMendUser = PERSON,
+  clientAppVersion: string | null = PINNED_CLIENT_APP_VERSION,
+) =>
   Effect.gen(function* () {
     mend.addPairingCode(code, person);
     const client = yield* t3Client;
@@ -73,6 +85,8 @@ export const pairAndConnect = (mend: FakeMend, code: string, person: FakeMendUse
       tokenRequest(code, { client_label: "Ada's MacBook", client_device_type: "desktop" }),
     );
     const ticket = yield* client.auth.webSocketTicket({ headers: bearer(access.access_token) });
-    const rpc = yield* connectWsRpc(yield* socketUrl(ticket.ticket));
+    const rpc = yield* connectWsRpc(
+      yield* socketUrl(ticket.ticket, String(ORCHESTRATION_PROTOCOL_VERSION), clientAppVersion),
+    );
     return { client, access, rpc };
   });

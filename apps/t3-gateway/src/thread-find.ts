@@ -6,19 +6,13 @@ import type {
   OrchestrationV2SearchThreadResult,
   OrchestrationV2TurnItem,
 } from "@mend/t3-contracts";
-// t3code's client highlights matches through `threadFindText.ts` and `threadSearch.ts`; counts
-// read any other way drift from what it highlights.
-import {
-  searchableMessageSegments,
-  searchablePlanSegments,
-} from "@mend/t3-contracts/thread-find-text";
 import { countThreadSearchOccurrences } from "@mend/t3-contracts/thread-search";
 import * as Effect from "effect/Effect";
 import * as Stream from "effect/Stream";
 
+import type { ParseRequest } from "./find-parse.ts";
+import type { FindParser } from "./find-parser.ts";
 import type { ThreadSnapshot } from "./hub.ts";
-
-type Skills = NonNullable<OrchestrationV2SearchThreadInput["skills"]>;
 
 interface FindDocument {
   readonly entryId: string;
@@ -33,12 +27,7 @@ interface Selection {
   readonly occurrence: number;
 }
 
-type SearchableText = {
-  readonly role: "user" | "assistant" | "plan";
-  readonly text: string;
-  readonly streaming: boolean;
-  readonly hasContext: boolean;
-};
+type SearchableText = Omit<ParseRequest, "cwd" | "skills">;
 
 const searchableTextOf = (item: OrchestrationV2TurnItem): SearchableText => {
   switch (item.type) {
@@ -57,24 +46,6 @@ const searchableTextOf = (item: OrchestrationV2TurnItem): SearchableText => {
       return { role: "assistant", text: "", streaming: false, hasContext: false };
   }
 };
-
-const parseSegments = (
-  { role, text, streaming, hasContext }: SearchableText,
-  cwd: string | undefined,
-  skills: Skills,
-): ReadonlyArray<string> =>
-  role === "plan"
-    ? searchablePlanSegments(text, cwd)
-    : (searchableMessageSegments(
-        {
-          role,
-          text,
-          streaming,
-          context: hasContext ? { version: 1, records: [] } : undefined,
-        },
-        cwd,
-        skills,
-      ) ?? []);
 
 export interface CacheLimits {
   readonly entries: number;
@@ -130,11 +101,23 @@ const leastRecentlyUsed = <A>(limits: CacheLimits, bytesOf: (value: A) => number
   };
 };
 
-const lengthPrefixedDigest = (parts: Iterable<string>): string => {
+const DIGEST_CHUNK_LENGTH = 512 * 1024;
+
+/**
+ * Over UTF-16 code units, as JavaScript compares strings: UTF-8 would hash every unpaired
+ * surrogate as U+FFFD, so two different messages would share a parse.
+ */
+const lengthPrefixedDigest = Effect.fnUntraced(function* (parts: ReadonlyArray<string>) {
   const hash = createHash("sha256");
-  for (const part of parts) hash.update(`${part.length}:`).update(part);
+  for (const part of parts) {
+    hash.update(`${part.length}:`, "utf16le");
+    for (let at = 0; at < part.length; at += DIGEST_CHUNK_LENGTH) {
+      if (at > 0) yield* Effect.yieldNow;
+      hash.update(part.slice(at, at + DIGEST_CHUNK_LENGTH), "utf16le");
+    }
+  }
   return hash.digest("hex");
-};
+});
 
 interface Parse {
   readonly segments: ReadonlyArray<string>;
@@ -275,7 +258,21 @@ export interface ThreadFinder {
   readonly retainedBytes: () => number;
 }
 
-export const makeThreadFinder = (limits: FindCacheLimits = FIND_CACHE_LIMITS): ThreadFinder => {
+const SEGMENTS_COUNTED_BETWEEN_YIELDS = 4096;
+
+const countIn = Effect.fnUntraced(function* (segments: ReadonlyArray<string>, query: string) {
+  let count = 0;
+  for (const [index, text] of segments.entries()) {
+    if (index > 0 && index % SEGMENTS_COUNTED_BETWEEN_YIELDS === 0) yield* Effect.yieldNow;
+    count += countThreadSearchOccurrences(text, query);
+  }
+  return count;
+});
+
+export const makeThreadFinder = (
+  parser: FindParser["Service"],
+  limits: FindCacheLimits = FIND_CACHE_LIMITS,
+): ThreadFinder => {
   const parses = leastRecentlyUsed<Parse>(limits.parses, parseBytes);
   const scans = leastRecentlyUsed<ReadonlyArray<FindDocument>>(limits.scans, scanBytes);
 
@@ -283,7 +280,7 @@ export const makeThreadFinder = (limits: FindCacheLimits = FIND_CACHE_LIMITS): T
     Effect.gen(function* () {
       const skills = search.skills ?? [];
       const cwd = snapshot.projection.thread.worktreePath ?? undefined;
-      const context = lengthPrefixedDigest([JSON.stringify([cwd ?? null, skills])]);
+      const context = yield* lengthPrefixedDigest([JSON.stringify([cwd ?? null, skills])]);
       const rows: Array<FindRow> = [];
       for (const { item } of searchableRows(snapshot.projection.visibleTurnItems)) {
         const searchable = searchableTextOf(item);
@@ -292,7 +289,7 @@ export const makeThreadFinder = (limits: FindCacheLimits = FIND_CACHE_LIMITS): T
           entryId: entryIdOf(item),
           runId: item.runId,
           searchable,
-          parseKey: lengthPrefixedDigest([
+          parseKey: yield* lengthPrefixedDigest([
             context,
             role,
             String(streaming),
@@ -302,7 +299,7 @@ export const makeThreadFinder = (limits: FindCacheLimits = FIND_CACHE_LIMITS): T
         });
         yield* Effect.yieldNow;
       }
-      const scanKey = lengthPrefixedDigest([
+      const scanKey = yield* lengthPrefixedDigest([
         search.query,
         ...rows.flatMap(({ entryId, runId, parseKey }) => [entryId, runId ?? "", parseKey]),
       ]);
@@ -318,7 +315,7 @@ export const makeThreadFinder = (limits: FindCacheLimits = FIND_CACHE_LIMITS): T
         let parse = parses.get(row.parseKey);
         if (parse === undefined) {
           parse = {
-            segments: parseSegments(row.searchable, cwd, skills),
+            segments: yield* parser.segments({ ...row.searchable, cwd, skills }),
             sourceLength: row.searchable.text.length,
           };
           parses.set(row.parseKey, parse);
@@ -326,10 +323,7 @@ export const makeThreadFinder = (limits: FindCacheLimits = FIND_CACHE_LIMITS): T
         const document: FindDocument = {
           entryId: row.entryId,
           runId: row.runId,
-          count: parse.segments.reduce(
-            (sum, text) => sum + countThreadSearchOccurrences(text, search.query),
-            0,
-          ),
+          count: yield* countIn(parse.segments, search.query),
         };
         counted.set(index, document);
         yield* Effect.yieldNow;

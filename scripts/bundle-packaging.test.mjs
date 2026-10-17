@@ -299,7 +299,7 @@ test("the t3code gateway is in the bundle, and runs only when the operator turne
   assert.match(dockerfile, /dev\.sealant\.mend\.t3-gateway="1"/);
   assert.match(
     dockerfile,
-    /COPY --from=mend-build \/app\/apps\/t3-gateway\/dist\/bin\.js \/opt\/mend-t3-gateway\/app\/bin\.js/,
+    /COPY --from=mend-build \/app\/apps\/t3-gateway\/dist\/bin\.js \/app\/apps\/t3-gateway\/dist\/find-parse-worker\.js \/opt\/mend-t3-gateway\/app\/\n/,
   );
   // Kept running on its own: its exit never stops Mend.
   assert.match(supervisor, /keepRunning\(t3Gateway, \{/);
