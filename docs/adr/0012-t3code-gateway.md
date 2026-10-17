@@ -293,6 +293,11 @@ its own pull request.
   request checkout are refused in Mend's words. The grant is stored per pairing, so migration 16
   widens only the pairings narrowed while the scope was withheld, never one made later that asked
   for less.
+- 2026-10-18: `hasWorkingTreeChanges` is true only while the change holds work no landing took: the
+  change has files, and nothing has landed or Mend observed files that differ from the last landed
+  checkpoint (`changed-since-landing`). Before a landing t3code's main action reads "Commit, push &
+  PR", which lands, since Mend commits when it lands. Once everything has landed it is false, so
+  t3code offers no commit and Push stays offered for Mend to answer.
 - 2026-10-11: read state is the gateway's, per person, and `threadVisitedTracking` says so. The
   shell sent `lastVisitedAt: null`, which t3code reads as server-tracked, and every `thread.visit`
   was refused, so no thread ever showed as unread.

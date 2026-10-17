@@ -311,6 +311,13 @@ export const MendChangeLandings = Schema.Struct({
   pullRequest: Schema.Struct({ available: Schema.Boolean, reason: Schema.NullOr(Schema.String) }),
   /** The branch the next landing pushes when the owner names none; older servers omit it. */
   nextBranch: Schema.optional(Schema.NullOr(Schema.String)),
+  /**
+   * What Mend observed about the landing (`LandingFact`), read here only for
+   * `changed-since-landing`: the files that differ from the last landed checkpoint.
+   */
+  facts: Schema.optional(
+    Schema.Array(Schema.Struct({ _tag: Schema.String, files: Schema.optional(Schema.Number) })),
+  ),
 });
 export type MendChangeLandings = typeof MendChangeLandings.Type;
 

@@ -303,6 +303,67 @@ describe("the git panel over Mend's landing", () => {
       ),
   );
 
+  it.live(
+    "says the worktree holds work while some is unlanded, and clean once all of it has landed",
+    () =>
+      withGateway((mend) =>
+        Effect.gen(function* () {
+          setup(mend);
+          const { rpc } = yield* pairAndConnect(mend, "LAND-UNLANDED");
+          // Before any landing, the change's files are unlanded: t3code offers "Commit, push & PR".
+          const unlanded = yield* rpc[WS_METHODS.vcsRefreshStatus]({ cwd: WORKTREE });
+          assert.isTrue(unlanded.hasWorkingTreeChanges);
+
+          yield* runAction(rpc, "create_pr");
+          // Everything landed, nothing new since: no commit, and the push stays offered.
+          const landed = yield* rpc[WS_METHODS.vcsRefreshStatus]({ cwd: WORKTREE });
+          assert.isFalse(landed.hasWorkingTreeChanges);
+          assert.deepStrictEqual(countsOf(landed), [true, 1, 1, "#1 open"]);
+
+          // New work after the landing is unlanded again.
+          mend.workbench.sinceLanding.set(CHANGE, 2);
+          const changed = yield* rpc[WS_METHODS.vcsRefreshStatus]({ cwd: WORKTREE });
+          assert.isTrue(changed.hasWorkingTreeChanges);
+
+          // Landing it settles the status again.
+          yield* runAction(rpc, "push");
+          const settled = yield* rpc[WS_METHODS.vcsRefreshStatus]({ cwd: WORKTREE });
+          assert.isFalse(settled.hasWorkingTreeChanges);
+
+          // A change that holds no files has nothing to land, landed or not.
+          mend.workbench.stats.set(CHANGE, { files: 0, additions: 0, deletions: 0 });
+          mend.workbench.sinceLanding.set(CHANGE, 3);
+          const empty = yield* rpc[WS_METHODS.vcsRefreshStatus]({ cwd: WORKTREE });
+          assert.isFalse(empty.hasWorkingTreeChanges);
+        }),
+      ),
+  );
+
+  it.live("streams the worktree as clean once the owner lands it", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        setup(mend);
+        const { rpc } = yield* pairAndConnect(mend, "LAND-STREAM-CLEAN");
+        const events: Array<Event> = [];
+        yield* rpc[WS_METHODS.subscribeVcsStatus]({ cwd: WORKTREE }).pipe(
+          Stream.runForEach((event) => Effect.sync(() => events.push(event))),
+          Effect.forkScoped,
+        );
+        yield* Effect.sleep("200 millis");
+        const opening = events.find(snapshotOf);
+        assert.isTrue(opening?.local.hasWorkingTreeChanges);
+
+        yield* runAction(rpc, "push");
+        yield* Effect.sleep("1500 millis");
+        const local = events.filter(
+          (event): event is Extract<Event, { _tag: "localUpdated" }> =>
+            event._tag === "localUpdated",
+        );
+        assert.isFalse(local.at(-1)?.local.hasWorkingTreeChanges);
+      }),
+    ),
+  );
+
   it.live("offers a push after the agent commits the tree a landing already pushed", () =>
     withGateway((mend) =>
       Effect.gen(function* () {
@@ -313,6 +374,8 @@ describe("the git panel over Mend's landing", () => {
 
         const status = yield* rpc[WS_METHODS.vcsRefreshStatus]({ cwd: WORKTREE });
         assert.deepStrictEqual(countsOf(status), [true, 1, 1, "#1 open"]);
+        // The agent's commit moved no file past the landed checkpoint: nothing to commit.
+        assert.isFalse(status.hasWorkingTreeChanges);
         const { error, result } = yield* runAction(rpc, "push");
         assert.isUndefined(error);
         assert.strictEqual(result?.toast.title, `Pushed to ${BRANCH}`);

@@ -391,13 +391,13 @@ thread's worktree as it stands through Mend's `GET /api/worktrees/:id/contents`,
 `subscribeVcsStatus` and `vcs.refreshStatus` (`src/vcs.ts`) answer for a thread's worktree from the
 change Mend keeps for it (`GET /api/changes/:id/stats`), read as the person.
 
-| t3code                                 | From Mend                                                                                     |
-| -------------------------------------- | --------------------------------------------------------------------------------------------- |
-| `refName`, `isDefaultRef`              | the session's branch; the project's root is its default branch                                |
-| `branchChanges`                        | the change's totals: the worktree against its base, committed or not                          |
-| `hasWorkingTreeChanges`, `workingTree` | false and empty: Mend has no read of HEAD, the index or uncommitted files, so none is claimed |
-| `hasPrimaryRemote`                     | the project was adopted from an origin                                                        |
-| the remote half                        | none: Mend tracks no upstream for a session's branch (landing is its own step)                |
+| t3code                                 | From Mend                                                                                                                                                                                                                             |
+| -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `refName`, `isDefaultRef`              | the session's branch; the project's root is its default branch                                                                                                                                                                        |
+| `branchChanges`                        | the change's totals: the worktree against its base, committed or not                                                                                                                                                                  |
+| `hasWorkingTreeChanges`, `workingTree` | true while the change holds work no landing took (files and no landing yet, or files that differ from the last landed checkpoint), else false; `workingTree` stays empty, as Mend has no read of HEAD, the index or uncommitted files |
+| `hasPrimaryRemote`                     | the project was adopted from an origin                                                                                                                                                                                                |
+| the remote half                        | the change's landing record (`GET /api/changes/:id/landings`): the branch a landing pushed, whether anything may be new since, and the pull request as GitHub last reported it                                                        |
 
 `vcs.listRefs` answers the project's branches as its store holds them
 (`GET /api/projects/:id/ branches`, read as the person: no session branch, the default marked as

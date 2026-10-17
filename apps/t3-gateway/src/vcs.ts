@@ -29,6 +29,7 @@ import { makeFanout } from "./fanout.ts";
 import type { CwdLocation, PersonHub } from "./hub.ts";
 import {
   landingResultOf,
+  hasUnlandedWork,
   ONLY_THE_OWNER,
   planOf,
   recordedPullRequestOf,
@@ -48,8 +49,9 @@ import type { BearerSession } from "./state.ts";
  * - Mend's change is the worktree against its base, committed or not, which is t3code's
  *   `branchChanges`: those totals (`GET /api/changes/:id/stats`).
  * - Mend has no read of the worktree's HEAD, index or uncommitted files, and t3code says "Worktree
- *   is clean" when `hasWorkingTreeChanges` is false: it is true whenever the change has files, and
- *   `workingTree` stays empty.
+ *   is clean" when `hasWorkingTreeChanges` is false: it is true while the change holds work no
+ *   landing took (`hasUnlandedWork`), and false where there is no change. `workingTree` stays
+ *   empty.
  * - The remote half comes from the change's landing record (`GET /api/changes/:id/landings`,
  *   `landing.ts`). It says the branch a landing pushed, whether anything may be new since, and
  *   the pull request as GitHub last reported it. A refresh the person asks for has Mend ask
@@ -264,7 +266,10 @@ export const makeVcsHandlers = (input: {
       ).pipe(Effect.mapError((error) => fail(error.message)));
       return {
         location,
-        local: localStatusOf(location, stats),
+        local: {
+          ...localStatusOf(location, stats),
+          hasWorkingTreeChanges: hasUnlandedWork(landings, stats.files),
+        },
         remote: remoteStatusOf(standingOf(landings, stats.files), location),
       };
     });

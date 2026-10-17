@@ -73,6 +73,21 @@ export const standingOf = (view: MendChangeLandings, changeFiles: number): Landi
   };
 };
 
+/**
+ * Whether the change holds work no landing took, which t3code reads as `hasWorkingTreeChanges`:
+ * the change has files, and either nothing has landed or Mend observed files that differ from the
+ * last landed checkpoint (`changed-since-landing`). Once everything has landed it is false, so
+ * t3code offers no commit and says the worktree is clean. Mend leaves that fact out when it could
+ * not compare as well, and this then reads false too; the remote half still offers a landing.
+ */
+export const hasUnlandedWork = (view: MendChangeLandings, changeFiles: number): boolean => {
+  if (changeFiles === 0) return false;
+  if (!view.landings.some((landing) => landing.pushedSha !== null)) return true;
+  return (view.facts ?? []).some(
+    (fact) => fact._tag === "changed-since-landing" && (fact.files ?? 0) > 0,
+  );
+};
+
 const nonBlank = (value: string | null | undefined): string | undefined =>
   value != null && value.trim().length > 0 ? value : undefined;
 
