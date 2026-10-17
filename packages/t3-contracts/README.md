@@ -17,6 +17,8 @@ License in `LICENSE` (t3code's own, copied with the files):
   `keybindings.ts` among them (t3code's default keybindings, `DEFAULT_KEYBINDINGS`), and
   `serverSettings.ts` with its imports: how t3code's server applies a settings patch
   (`applyServerSettingsPatch`), which the gateway applies to the model preferences it keeps.
+  `orchestrationV2PendingBackgroundWork.ts` says which background work keeps a thread from settling
+  on its own (`backgroundWorkHoldsCompletion`).
 - The copied files import `@t3tools/contracts` and `@t3tools/shared/<name>` as upstream does. This
   package links the first to itself and the second to `t3-shared/`, whose `package.json` (Mend's,
   not copied) maps each name to `src/<name>.ts` as t3code's own package does. When a pin brings a

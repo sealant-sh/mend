@@ -104,7 +104,7 @@ export interface ThreadSource {
   readonly nextMode: "bypass" | "ask" | null;
   /** When the person archived the thread in t3code; null while it is not archived. */
   readonly archivedAt: string | null;
-  /** The person's settle and snooze of the thread, as they stand now (`lifecycleOf`). */
+  /** The person's settle, snooze, pin and order of the thread, as they stand now (`lifecycleOf`). */
   readonly lifecycle: ThreadLifecycle;
   /** When the person last saw the thread (`visits.ts`); null when they never have. */
   readonly lastVisitedAt: string | null;
@@ -398,6 +398,11 @@ export const appThreadOf = (source: ThreadSource): OrchestrationV2AppThread => {
     unsettledAt: utcOrNull(lifecycle.unsettledAt),
     snoozedUntil: utcOrNull(lifecycle.snoozedUntil),
     snoozedAt: utcOrNull(lifecycle.snoozedAt),
+    lastSnoozeWakeAt: utcOrNull(lifecycle.lastSnoozeWakeAt),
+    pinnedAt: utcOrNull(lifecycle.pinnedAt),
+    pinOrderKey: lifecycle.pinOrderKey,
+    activeOrderKey: lifecycle.activeOrderKey,
+    autoSettleDisabledAt: utcOrNull(lifecycle.autoSettleDisabledAt),
     lastVisitedAt: utcOrNull(source.lastVisitedAt),
     deletedAt: null,
   };
@@ -652,8 +657,23 @@ export const threadShellOf = (
     unsettledAt: thread.unsettledAt ?? null,
     snoozedUntil: thread.snoozedUntil ?? null,
     snoozedAt: thread.snoozedAt ?? null,
+    pinnedAt: thread.pinnedAt ?? null,
+    pinOrderKey: thread.pinOrderKey ?? null,
+    activeOrderKey: thread.activeOrderKey ?? null,
+    autoSettleDisabledAt: thread.autoSettleDisabledAt ?? null,
     // Present, so t3code takes the gateway's read state as the person's on every device.
     lastVisitedAt: thread.lastVisitedAt,
     deletedAt: null,
   };
 };
+
+/**
+ * The thread as t3code's settlement sweep reads it (`ProjectionSettlementCandidate`): the shell
+ * row, and when the person last ended a snooze by hand.
+ */
+export const settlementCandidateOf = (source: ThreadSource) => ({
+  ...threadShellOf(source, { itemCount: 0, visibleItemCount: 0 }),
+  lastSnoozeWakeAt: utcOrNull(source.lifecycle.lastSnoozeWakeAt),
+});
+
+export type SettlementCandidate = ReturnType<typeof settlementCandidateOf>;

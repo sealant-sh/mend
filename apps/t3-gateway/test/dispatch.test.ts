@@ -269,9 +269,10 @@ describe("message.dispatch", () => {
           }).pipe(
             Effect.andThen(
               rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({
-                type: "thread.pin",
+                type: "thread.interaction-mode.set",
                 commandId: commandId(),
                 threadId: ThreadId.make("session-1"),
+                interactionMode: "plan",
               }),
             ),
           ),

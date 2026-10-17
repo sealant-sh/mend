@@ -9,6 +9,7 @@
     ".": "./src/index.ts",
     "./client-rpc-permissions": "./src/clientRpcPermissions.ts",
     "./keybindings": "./t3-shared/src/keybindings.ts",
+    "./pending-background-work": "./t3-shared/src/orchestrationV2PendingBackgroundWork.ts",
     "./pin": "./t3code.pin.json",
     "./relay": "./src/relay.ts",
     "./server-settings": "./t3-shared/src/serverSettings.ts",

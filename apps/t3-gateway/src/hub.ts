@@ -52,6 +52,8 @@ import {
   turnInputOf,
 } from "./images.ts";
 import {
+  activityAtOf,
+  autoSettledAt,
   changeLifecycle,
   isLifecycleEmpty,
   lifecycleOf,
@@ -115,7 +117,9 @@ import {
   runsOf,
   threadModelOptionsOf,
   projectShellOf,
+  settlementCandidateOf,
   threadShellOf,
+  type SettlementCandidate,
   type ThreadSource,
   type TurnCheckpoint,
   worktreePathOf,
@@ -133,7 +137,7 @@ import {
   type TurnIds,
 } from "./state.ts";
 import { makeTerminals, type Terminals } from "./terminals.ts";
-import { threadProjectionOf } from "./thread-projection.ts";
+import { backgroundWorkOf, threadProjectionOf } from "./thread-projection.ts";
 import {
   checkpointFileOf,
   isSharedChain,
@@ -472,9 +476,10 @@ export interface ThreadCommands {
     readonly archived: boolean;
   }) => Effect.Effect<number, ThreadCommandFailure>;
   /**
-   * Settles or unsettles the thread in the person's view, or snoozes it until a time or wakes it
-   * (`thread.settle`, `thread.unsettle`, `thread.snooze`, `thread.unsnooze`; `lifecycle.ts`). Mend
-   * has neither: the session is not touched.
+   * Settles, snoozes, pins or orders the thread in the person's view, or undoes one
+   * (`thread.settle`, `thread.snooze`, `thread.pin`, `thread.active.reorder`,
+   * `thread.auto-settle.set` and their kin; `lifecycle.ts`). Mend has none of them: the session is
+   * not touched.
    */
   readonly setLifecycle: (input: {
     readonly threadId: string;
@@ -584,6 +589,37 @@ interface Watch {
   /** A read again is already set for when the last one is `CHAIN_REREAD_MS` old. */
   chainRecheck: boolean;
 }
+
+/**
+ * A quiet thread's items still in progress, as last read from Mend: a background agent can outlast
+ * its turn by days, so the settlement sweep reads them before it settles a thread on its own.
+ */
+interface QuietWork {
+  /** The highest item change-feed cursor read so far. */
+  cursor: number;
+  readonly open: Map<string, MendItem>;
+  /** When the last read began (epoch ms): one from before the thread's latest turn is stale. */
+  readAt: number;
+}
+
+/** The thread's shell, when the sweep would settle it but for the work its items hold. */
+const settleableShellOf = (source: ThreadSource, nowMs: number) => {
+  const { lifecycle } = source;
+  // Passed over before its shell is built: most threads are settled, and this runs on every read.
+  if (
+    source.archivedAt !== null ||
+    lifecycle.settledOverride !== null ||
+    lifecycle.pinnedAt !== null ||
+    lifecycle.autoSettleDisabledAt !== null
+  ) {
+    return null;
+  }
+  const shell = settlementCandidateOf(source);
+  return autoSettledAt(shell, nowMs) === null ? null : shell;
+};
+
+const isCurrent = (work: QuietWork, shell: SettlementCandidate) =>
+  work.readAt > (activityAtOf(shell) ?? Number.NEGATIVE_INFINITY);
 
 /** A refusal Mend gave a command, in the words t3code shows. */
 const commandRefusalOf = (error: MendCommandRefused | MendNotFound): ThreadCommandRefused =>
@@ -1097,7 +1133,7 @@ export const makePersonHub = (input: {
         ? []
         : yield* state.listLifecycles(keeper.id).pipe(
             Effect.catch((error) =>
-              Effect.logError("t3 gateway could not read its settled and snoozed threads", {
+              Effect.logError("t3 gateway could not read its settled, snoozed and pinned threads", {
                 cause: error.message,
               }).pipe(Effect.as(new Map<string, ThreadLifecycle>())),
             ),
@@ -1707,6 +1743,152 @@ export const makePersonHub = (input: {
       Effect.forEach(Array.from(watches.keys()), publishThread, { discard: true }),
     );
 
+    /** Session id → its quiet work, for a thread the sweep would settle but for that work. */
+    const quietWork = new Map<string, QuietWork>();
+    /** Threads whose work Mend did not answer for: they wait for the sweep's timer to ask again. */
+    const quietWorkUnread = new Set<string>();
+    let readingQuietWork = false;
+
+    /**
+     * Settles each quiet thread whose work is read and done; a thread whose work is not read yet
+     * waits for `readQuietWork`, which this starts.
+     */
+    const autoSettle: Effect.Effect<boolean> = Effect.gen(function* () {
+      if (keeper === null) return false;
+      const now = yield* DateTime.nowAsDate;
+      let settled = false;
+      let unread = false;
+      for (const source of threadSources()) {
+        const sessionId = source.session.id;
+        const shell = settleableShellOf(source, now.getTime());
+        if (shell === null) continue;
+        const work = quietWork.get(sessionId);
+        if (work === undefined || !isCurrent(work, shell)) {
+          unread ||= !quietWorkUnread.has(sessionId);
+          continue;
+        }
+        const settledAt = autoSettledAt(
+          {
+            ...shell,
+            pendingBackgroundTasks: [
+              ...(shell.pendingBackgroundTasks ?? []),
+              ...backgroundWorkOf(source, Array.from(work.open.values())),
+            ],
+          },
+          now.getTime(),
+        );
+        if (settledAt === null) continue;
+        const result = changeLifecycle(source, { kind: "auto-settle", settledAt }, now);
+        if (result._tag === "Refused") continue;
+        const kept = yield* state.setLifecycle(keeper.id, sessionId, result.lifecycle).pipe(
+          Effect.as(true),
+          Effect.catch((error) =>
+            Effect.logWarning("t3 gateway could not keep a thread it settled on its own", {
+              cause: error.message,
+            }).pipe(Effect.as(false)),
+          ),
+        );
+        if (!kept) continue;
+        lifecycles.set(sessionId, result.lifecycle);
+        quietWork.delete(sessionId);
+        settled = true;
+      }
+      if (unread && !readingQuietWork) {
+        yield* Effect.forkIn(readQuietWork({ onTimer: false }), hubScope);
+      }
+      return settled;
+    });
+
+    /**
+     * What `readQuietWork` reads, each from its cursor: a thread never read or read before its
+     * latest turn, and, on the timer, one whose work was still in progress.
+     */
+    const quietWorkDue = (nowMs: number, onTimer: boolean) => {
+      if (onTimer) quietWorkUnread.clear();
+      const due: Array<{ readonly sessionId: string; readonly after: number }> = [];
+      const settleable = new Set<string>();
+      for (const source of threadSources()) {
+        const sessionId = source.session.id;
+        const shell = settleableShellOf(source, nowMs);
+        if (shell === null) continue;
+        settleable.add(sessionId);
+        const work = quietWork.get(sessionId);
+        if (work === undefined) {
+          if (!quietWorkUnread.has(sessionId)) due.push({ sessionId, after: 0 });
+        } else if (!isCurrent(work, shell) || (onTimer && work.open.size > 0)) {
+          due.push({ sessionId, after: work.cursor });
+        }
+      }
+      if (onTimer) {
+        for (const sessionId of quietWork.keys()) {
+          if (!settleable.has(sessionId)) quietWork.delete(sessionId);
+        }
+      }
+      return due;
+    };
+
+    /**
+     * Reads the quiet threads' work from Mend and settles each whose work is done, round after
+     * round while a thread came due during the last.
+     */
+    const readQuietWork = (options: { readonly onTimer: boolean }): Effect.Effect<void> => {
+      const round = (onTimer: boolean): Effect.Effect<void> =>
+        Effect.gen(function* () {
+          const readAt = yield* Clock.currentTimeMillis;
+          const due = yield* locked(Effect.sync(() => quietWorkDue(readAt, onTimer)));
+          if (due.length === 0 && !onTimer) return;
+          const reads = yield* Effect.forEach(
+            due,
+            ({ sessionId, after }) =>
+              readItemsAfter(sessionId, after).pipe(
+                Effect.map((items) => ({ sessionId, after, items })),
+                Effect.catch((error) =>
+                  Effect.logWarning("t3 gateway could not read a quiet thread's work", {
+                    sessionId,
+                    cause: error.message,
+                  }).pipe(Effect.as({ sessionId, after, items: null })),
+                ),
+              ),
+            { concurrency: QUIET_WORK_READS },
+          );
+          yield* locked(
+            Effect.gen(function* () {
+              for (const { sessionId, after, items } of reads) {
+                if (items === null) {
+                  quietWorkUnread.add(sessionId);
+                  continue;
+                }
+                const work: QuietWork | undefined =
+                  after === 0
+                    ? { cursor: 0, open: new Map<string, MendItem>(), readAt }
+                    : quietWork.get(sessionId);
+                if (work === undefined) continue;
+                for (const item of items.toSorted((left, right) => left.seq - right.seq)) {
+                  work.cursor = Math.max(work.cursor, item.seq);
+                  if (item.status === "in-progress") work.open.set(item.id, item);
+                  else work.open.delete(item.id);
+                }
+                work.readAt = readAt;
+                quietWork.set(sessionId, work);
+              }
+              if (yield* autoSettle) yield* publishAll;
+            }),
+          );
+          if (due.length > 0) yield* round(false);
+        });
+      return Effect.suspend(() => {
+        if (readingQuietWork) return Effect.void;
+        readingQuietWork = true;
+        return round(options.onTimer).pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              readingQuietWork = false;
+            }),
+          ),
+        );
+      });
+    };
+
     /** Moves every queue on after a read (set below, once the queue's machinery exists). */
     let settleQueues: Effect.Effect<void> = Effect.void;
     /** Whether a message the gateway accepted can still reach Mend: what holds the hub alive. */
@@ -1722,6 +1904,7 @@ export const makePersonHub = (input: {
       Effect.andThen(settleNextEfforts),
       Effect.andThen(settleNextModels),
       Effect.andThen(settleLifecycles),
+      Effect.andThen(autoSettle),
       Effect.andThen(keepQueues),
       Effect.andThen(publishShell),
       Effect.andThen(publishThreads),
@@ -3436,7 +3619,9 @@ export const makePersonHub = (input: {
       Effect.gen(function* () {
         yield* ensureLoaded;
         if (keeper === null) {
-          return yield* refused("A settle or a snooze needs a paired person to keep it for.");
+          return yield* refused(
+            "A settle, snooze, pin or order needs a paired person to keep it for.",
+          );
         }
         const sessionId = sessionIdOf(command.threadId);
         return yield* locked(
@@ -3456,7 +3641,7 @@ export const makePersonHub = (input: {
                 .setLifecycle(keeper.id, sessionId, isLifecycleEmpty(next) ? null : next)
                 .pipe(
                   Effect.tapError((error) =>
-                    Effect.logError("t3 gateway could not keep a settle or a snooze", {
+                    Effect.logError("t3 gateway could not keep a settle, snooze, pin or order", {
                       cause: error.message,
                     }),
                   ),
@@ -3716,6 +3901,13 @@ export const makePersonHub = (input: {
       );
       yield* Effect.forkIn(
         pruneDrafts.pipe(Effect.repeat(Schedule.spaced(IMAGE_PRUNE_INTERVAL))),
+        hubScope,
+      );
+      yield* Effect.forkIn(
+        // A hub nothing has read yet has no threads to settle: its first read settles them.
+        Effect.suspend(() => (loaded ? readQuietWork({ onTimer: true }) : Effect.void)).pipe(
+          Effect.repeat(Schedule.spaced(AUTO_SETTLE_SWEEP_INTERVAL)),
+        ),
         hubScope,
       );
     }
@@ -3984,6 +4176,9 @@ const messageImageOf = (image: StoredImage): MessageImage => ({
 
 /** How often a hub looks for images attached to a message never sent. */
 const IMAGE_PRUNE_INTERVAL = "1 hour";
+const AUTO_SETTLE_SWEEP_INTERVAL = "1 minute";
+/** How many quiet threads' work the sweep reads from Mend at once. */
+const QUIET_WORK_READS = 4;
 
 /** How long an image attached to a message that was never sent is kept. */
 const UNSENT_IMAGE_TTL_MS = 7 * 24 * 60 * 60_000;
