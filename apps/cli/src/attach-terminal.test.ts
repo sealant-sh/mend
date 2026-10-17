@@ -331,6 +331,28 @@ describe.skipIf(!hasScript)("mend attach in a terminal", () => {
     }
   }, 30_000);
 
+  it("a foreground session stops when SIGHUP is handled before the terminal's EOF, as tmux kill-session sends them (mend#1048)", async () => {
+    const fake = await startFake("open");
+    const cli = attachInTerminal(
+      fake.url,
+      "claude --name wt --project demo --foreground --no-tunnel",
+    );
+    try {
+      await waitFor(() => fake.frames().length >= 2);
+      // tmux signals the pane's process first and closes its pty after: the CLI handles SIGHUP on
+      // a terminal that is already gone, before the terminal's EOF reaches stdin. Leaving raw mode
+      // then fails with EIO, which must not cost the session its stop.
+      const mend = spawnSync("pgrep", ["-P", String(cli.child.pid)], { encoding: "utf8" });
+      expect(mend.stdout.trim()).toMatch(/^\d+$/);
+      process.kill(Number(mend.stdout.trim()), "SIGHUP");
+      cli.child.kill("SIGKILL");
+      await waitFor(() => fake.requests().includes(`POST /api/sessions/${session.id}/stop`));
+    } finally {
+      cli.child.kill("SIGKILL");
+      await fake.close();
+    }
+  }, 30_000);
+
   it("a reattach to an agent that already drew gets its screen and never the starting line", async () => {
     const fake = await startFake("open");
     const cli = attachInTerminal(fake.url);
