@@ -6,6 +6,7 @@
 #   .claude/skills/verify/scripts/local-outer.sh serve <commit-ish>
 #   .claude/skills/verify/scripts/local-outer.sh budgets
 #   .claude/skills/verify/scripts/local-outer.sh seed
+#   .claude/skills/verify/scripts/local-outer.sh images
 #   .claude/skills/verify/scripts/local-outer.sh down
 #   .claude/skills/verify/scripts/local-outer.sh hub-cache up|down|status
 #
@@ -44,6 +45,11 @@
 # its stack does (SKILL.md, Launch). It loads only a tag the daemon lacks, and only a copy whose
 # digest Docker Hub still names for the tag: a stale copy is left to be pulled. When Docker Hub
 # refuses to say (its limit spent), the copy is loaded and its digest printed as unchecked.
+#
+# `images` prints, as JSON, the image each container ran: the outer itself on this machine, and
+# every container in it (the server's, its sessions' workspaces and Docker services). Each entry
+# names its service, container, image reference, image id and repo digests (none for an image
+# `seed` loaded). Keep it with a run's evidence, so a tag that moved can be caught afterwards.
 #
 # `hub-cache up` starts one pull-through cache of Docker Hub for every outer on this machine,
 # `st-verify-hub-cache` (registry:2, volume st-verify-hub-cache), on a Docker network of its own
@@ -148,6 +154,32 @@ seed() {
       echo "local-outer · seed · $service · $image · loaded from $name"
     done
   done
+}
+
+# One entry per container in `docker inspect` output $1, its image found in `docker image inspect`
+# output $2.
+ran() {
+  jq -n --argjson containers "$1" --argjson images "$2" '[$containers[] as $c
+    | (first($images[] | select(.Id == $c.Image)) // {}) as $image
+    | ($c.Name | ltrimstr("/")) as $name
+    | {service: ($c.Config.Labels["com.docker.compose.service"] // $name), container: $name,
+       image: $c.Config.Image, id: $c.Image, repoDigests: ($image.RepoDigests // [])}]'
+}
+
+images() {
+  outer=$(docker inspect "$name")
+  outer_image=$(docker image inspect "$(echo "$outer" | jq -r '.[0].Image')")
+  ids=$(inner docker ps -aq)
+  containers='[]'
+  pulled='[]'
+  if [ -n "$ids" ]; then
+    # shellcheck disable=SC2086 # one argument per id
+    containers=$(inner docker inspect $ids)
+    # shellcheck disable=SC2046 # one argument per image id
+    pulled=$(inner docker image inspect $(echo "$containers" | jq -r '.[].Image' | sort -u))
+  fi
+  jq -n --argjson outer "$(ran "$outer" "$outer_image")" --argjson inner "$(ran "$containers" "$pulled")" \
+    '[($outer[] | .service = "outer")] + $inner'
 }
 
 hub_cache() {
@@ -357,6 +389,9 @@ budgets)
 seed)
   seed
   ;;
+images)
+  images
+  ;;
 hub-cache)
   hub_cache "${2:-}"
   ;;
@@ -373,7 +408,7 @@ down)
   rm -rf "$config" "$work"
   ;;
 *)
-  echo "usage: local-outer.sh up [--version <v>] | serve <commit-ish> | budgets | seed | down | hub-cache up|down|status" >&2
+  echo "usage: local-outer.sh up [--version <v>] | serve <commit-ish> | budgets | seed | images | down | hub-cache up|down|status" >&2
   exit 2
   ;;
 esac

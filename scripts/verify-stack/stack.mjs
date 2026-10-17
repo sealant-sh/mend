@@ -53,6 +53,7 @@ import {
   INNER_ACCOUNT_EMAIL,
   INNER_WEB_PORT,
   MEMORY_PROBE,
+  NETWORK_GUARD_IMAGE_LABEL,
   REPOSITORIES,
   RELAY_CONTAINER,
   SESSION_REPOS,
@@ -77,6 +78,7 @@ import {
   mergeLedgers,
   planTeardown,
   imageNames,
+  imageRecord,
   innerOrigins,
   insideCaptureRoot,
   isolationFindings,
@@ -1676,7 +1678,9 @@ async function report(args) {
   const state = await readState();
   if (!state) throw new Error("no verify stack here: `up` starts one");
   const memory = await measureMemory(state);
-  const isolation = isolationFindings(await inspectAll(await stackContainers()), outerSecrets);
+  const containers = await inspectAll(await stackContainers());
+  const isolation = isolationFindings(containers, outerSecrets);
+  const images = await ranImages(state, containers);
   // Read-only: what it measures is printed with the stack's state, never written back.
   const measured = {
     memory: {
@@ -1686,6 +1690,7 @@ async function report(args) {
       top: memory.processes.slice(0, 12),
     },
     isolation: { checked: outerSecrets.length, findings: isolation },
+    ran: images,
   };
   if (flags.json) return say(JSON.stringify({ ...state, ...measured }, null, 2));
   say(`verify stack · ${state.phase ?? "ready"}`);
@@ -1710,7 +1715,43 @@ async function report(args) {
         ? `  isolation · the session's credential (${outerSecrets.length} value(s)) is in no container's environment, command or labels`
         : `  isolation · FOUND in ${isolation.join(", ")}`,
   );
+  for (const item of images)
+    say(
+      `  image · ${item.service} · ${item.image ?? "?"} · ${item.id ?? "not on this daemon"} · ${item.repoDigests.join(" ") || "no repo digest"}`,
+    );
   if (isolation.length > 0) process.exitCode = 1;
+}
+
+/** The image every stack container ran and every image the stack named, as `imageRecord` says. */
+async function ranImages(state, containers) {
+  const inspect = (ref) =>
+    dockerOut(["image", "inspect", ref])
+      .then((text) => JSON.parse(text))
+      .catch(() => []);
+  const guard = state.images?.mend
+    ? (
+        await dockerOut([
+          "image",
+          "inspect",
+          "--format",
+          `{{index .Config.Labels "${NETWORK_GUARD_IMAGE_LABEL}"}}`,
+          state.images.mend,
+        ]).catch(() => "")
+      ).trim()
+    : "";
+  const named = {
+    ...Object.fromEntries(
+      Object.entries(state.images ?? {}).filter(([role]) => role !== "version"),
+    ),
+    fixture: FIXTURE_BASE_IMAGE,
+    ...(guard === "" || guard === "<no value>" ? {} : { guard }),
+  };
+  const refs = new Set([
+    ...containers.map((container) => container.Image).filter(Boolean),
+    ...Object.values(named).filter((ref) => typeof ref === "string"),
+  ]);
+  const images = (await Promise.all([...refs].map(inspect))).flat();
+  return imageRecord(containers, images, named);
 }
 
 // ─── down ───────────────────────────────────────────────────────────────────

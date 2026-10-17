@@ -155,7 +155,17 @@ test("report reads the stack and writes nothing", async () => {
   writeFileSync(stateFile, written);
   const report = fakeDaemon.run(["report", "--json"]);
   assert.equal(await report.done, 0, report.output());
-  assert.equal(JSON.parse(report.output()).phase, "ready");
+  const json = JSON.parse(report.output());
+  assert.equal(json.phase, "ready");
+  // What each named image is, recorded even when no container shows it (Core's, the fixture's).
+  assert.deepEqual(
+    json.ran.map((item) => [item.service, item.image]),
+    [
+      ["mend", "m"],
+      ["cli", "c"],
+      ["fixture", "node:26-bookworm"],
+    ],
+  );
   assert.equal(readFileSync(stateFile, "utf8"), written);
 });
 

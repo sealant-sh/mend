@@ -219,7 +219,11 @@ first. The helpers start `mend` through `PATH`, so they always meet the guard.
 
    ```sh
    .claude/skills/verify/scripts/local-outer.sh seed > "$E/launch/seed.txt"
+   .claude/skills/verify/scripts/local-outer.sh images > "$E/launch/outer-images.json"
    ```
+
+   `outer-images.json` records the image each of the outer's containers ran (the outer itself, its
+   server's, the session's workspace and Docker service): reference, image id and repo digests.
 
 3. **Start the stack** as a Service of that session, named for this run, so `logs`, `connect` and
    `stop` can never pick another verifier's:
@@ -343,7 +347,15 @@ when every `ok`/`NOT` line holds:
   session) in every container's environment, command and labels. When it could read none, the doctor
   prints `isolation · not compared`: that line observes nothing and counts for nothing.
 
-`doctor.txt`, `report.json` and `health.json` land in `--out`. On a `NOT` line, read
+- **What each service ran.** `report` names the image every stack container ran (inner Mend,
+  Postgres, Garage, the mirrors, the inner sessions' workspaces) and every image the stack named
+  that no container shows (Core's and sealantd's builds, the fixture's base, the network guard): its
+  reference, image id and repo digests. The doctor writes them to `images.json` and prints one
+  `image · <service> · <reference> · <id> · …` line each. A digest says where a pulled image came
+  from; `no repo digest (loaded)` marks one `stack.mjs` built, or `local-outer.sh seed` loaded after
+  checking its digest (`$E/launch/seed.txt`). This lets a stale tag be caught after the run.
+
+`doctor.txt`, `report.json`, `images.json` and `health.json` land in `--out`. On a `NOT` line, read
 `$E/launch/stack.log`, then go to Cleanup and launch again. Run the doctor after `health answers`:
 before it, the check reads `not run yet`.
 
@@ -632,7 +644,7 @@ Cleanup removes neither. Name each directory for the feature file and the entry 
 | screenshot               | the same `capture(name)`, full page, heading in view, every canvas masked; withheld on a page that shows a credential                                                                              | `<dir>/<name>.png` and `.png.checked`, or `.png.withheld` |
 | web steps                | `note(text)`, and every capture and failure                                                                                                                                                        | `<dir>/steps.log`                                         |
 | CLI stdout, stderr, exit | `node $skill/scripts/steps.mjs <dir> <batch> …` (inner steps) or `capture.sh <dir> <step> -- <command…>` (one command), redacted                                                                   | `<dir>/<step>.{cmd,stdout,stderr,exit}`                   |
-| the stack                | the doctor, and once more before Cleanup: `doctor.mjs … --out "$E/final"`                                                                                                                          | `report.json`, `doctor.txt`                               |
+| the stack                | the doctor, and once more before Cleanup: `doctor.mjs … --out "$E/final"`                                                                                                                          | `report.json`, `images.json`, `doctor.txt`                |
 | the inner record         | before Cleanup: `stack.mjs mend sessions --all --json` through `capture.sh`, and the inner session page through `capture()`; `stack.mjs mend logs <id>` once the Mend under test has it (mend#610) | `$E/<feature>/cli`, `/web`                                |
 | the outer record         | each `mend run` prints `session <id8>` on stderr; the outer server keeps those records after Cleanup: `mend logs <id8>`                                                                            | `<step>.stderr`                                           |
 | a Stop that stays saving | `settle.mjs` (Cleanup): the session's last state, and the outer server's logs with its `capture seals` lines                                                                                       | `$E/cleanup/settle/`                                      |
