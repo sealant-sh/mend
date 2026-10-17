@@ -153,3 +153,22 @@ Never guess at Effect patterns - check the guide first.
 The Effect v4 repository is cloned to `~/.local/share/effect-solutions/effect` for reference. Use
 this to explore APIs, find usage examples, and understand implementation details when the
 documentation isn't enough.
+
+## Cursor Cloud specific instructions
+
+- `pnpm dev` is the product loop: Vite on port 3105 and the API on 3101. It starts Postgres and
+  Garage from `compose.dev.yaml` when Docker is up, and loads a root `.env` copied from
+  `.env.example` when that file is absent. Creating an account and opening Now works without a
+  Sealant control plane. Session launches need `SEALANT_BASE_URL` pointed at one (`DEVELOPMENT.md`).
+- Node is the version in `.node-version` and pnpm is the `packageManager` pin, both installed on
+  `/usr/local/bin`. Login shells prepend that directory so an older Node earlier on `PATH` does not
+  win. Node 26's official tarball does not include corepack; pnpm is installed with
+  `npm install -g`.
+- systemd is not running in this VM. The Docker daemon is started directly and uses the
+  `fuse-overlayfs` graph driver (`containerd` snapshotter off). Nested `overlayfs` mounts fail.
+- Git must be 2.45 or newer. Store tests compare `%aI` author dates, and UTC uses a `Z` suffix only
+  from that version. Ubuntu 24.04's git is 2.43; the cloud install takes git from the git-core PPA.
+- The managed `~/.gitconfig` sets `core.fsmonitor` and rewrites GitHub SSH URLs. Git-backed tests
+  can time out or see different remote URLs under that config, and `pnpm exec turbo` does not
+  forward `GIT_CONFIG_GLOBAL`. Re-run a failing git test with
+  `GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 pnpm exec vitest` inside the package.
