@@ -164,6 +164,7 @@ const sourceWith = (notices: ThreadNotices): ThreadSource => ({
   lifecycle: NO_LIFECYCLE,
   lastVisitedAt: null,
   nextEffort: null,
+  nextModel: null,
   tier: null,
   project,
   session,

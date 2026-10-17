@@ -28,7 +28,7 @@ import type * as DateTime from "effect/DateTime";
 
 import { wordsOf } from "./images.ts";
 import type { MendItem, MendRequest, MendTurn } from "./mend-workbench.ts";
-import { nextEffortLineOf } from "./model-options.ts";
+import { nextEffortLineOf, nextModelLineOf } from "./model-options.ts";
 import { harnessProvider } from "./server-config.ts";
 import {
   appThreadOf,
@@ -42,6 +42,7 @@ import {
   runsOf,
   runtimeRequestsOf,
   threadIdOf,
+  threadModelOptionsOf,
   userMessageIdOf,
   utc,
   worktreePathOf,
@@ -763,6 +764,10 @@ const noticeItems = (
   if (source.nextEffort !== null) {
     const line = nextEffortLineOf(source.nextEffort, source.agent.protocolOptions?.effort ?? null);
     out.push(notice("next-effort", line, null, endBase + 5, sessionAt));
+  }
+  if (source.nextModel !== null) {
+    const line = nextModelLineOf(threadModelOptionsOf(source), source.nextModel);
+    out.push(notice("next-model", line, null, endBase + 6, sessionAt));
   }
   if (source.sharedWorktree && source.turnCheckpoints.size > 0) {
     out.push(notice("shared-worktree", SHARED_CHAIN_NOTICE, null, endBase + 3, sessionAt));

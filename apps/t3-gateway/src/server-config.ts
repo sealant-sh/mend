@@ -295,8 +295,7 @@ export const providersFromMend = (
       instanceId: ProviderInstanceId.make(driver.driver),
       driver: driver.driver,
       displayName: driver.displayName,
-      // A Mend session keeps the model it launched with.
-      requiresNewThreadForModelChange: true,
+      requiresNewThreadForModelChange: false,
       supportsConversationRollback: false,
       // No plan mode: Mend sessions have no interaction modes.
       showInteractionModeToggle: false,

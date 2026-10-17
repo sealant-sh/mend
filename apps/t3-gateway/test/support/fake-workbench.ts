@@ -27,7 +27,7 @@ export interface FakeSession {
   readonly projectId: string;
   readonly worktreeId: string;
   readonly harness: string;
-  readonly model: string | null;
+  model: string | null;
   label: string | null;
   readonly worktree: string;
   readonly branch: string;
@@ -1036,6 +1036,7 @@ export class FakeWorkbench {
       }, this.launchLiveDelayMs);
       return json(422, { _tag: "StoreFailure", message: refusal });
     }
+    session.model = named("model") ?? session.model;
     session.status = "starting";
     session.updatedAt = tick();
     const prompt =
