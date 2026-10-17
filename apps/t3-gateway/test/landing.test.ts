@@ -84,6 +84,24 @@ const runAction = (
 const landCalls = (mend: FakeMend) =>
   mend.workbench.calls.filter((call) => call.method === "POST" && call.path.endsWith("/land"));
 
+const refreshCalls = (mend: FakeMend) =>
+  mend.workbench.calls.filter((call) => call.method === "POST" && call.path.endsWith("/refresh"));
+
+const OBSERVED_TITLE = /^session-1 · observed \d{4}-\d\d-\d\d \d\d:\d\d UTC$/u;
+
+/** The counts t3code's panel reads, and the pull request's number and state. */
+const countsOf = (status: {
+  readonly hasUpstream: boolean;
+  readonly aheadCount: number;
+  readonly aheadOfDefaultCount?: number | undefined;
+  readonly pr: { readonly number: number; readonly state: string } | null;
+}) => [
+  status.hasUpstream,
+  status.aheadCount,
+  status.aheadOfDefaultCount,
+  status.pr === null ? null : `#${status.pr.number} ${status.pr.state}`,
+];
+
 const remoteUpdated = (event: Event): event is Extract<Event, { _tag: "remoteUpdated" }> =>
   event._tag === "remoteUpdated";
 
@@ -176,15 +194,16 @@ describe("the git panel over Mend's landing", () => {
           );
 
           // The feed's 5 s timeout is well inside the 15 s poll, so only the nudge answers.
+          // Mend cannot tell nothing is new after a push, so Push stays offered.
           const after = yield* status.next(remoteUpdated);
           assert.deepStrictEqual(after.remote, {
             hasUpstream: true,
-            aheadCount: 0,
+            aheadCount: 1,
             behindCount: 0,
-            aheadOfDefaultCount: 0,
+            aheadOfDefaultCount: 1,
             pr: {
               number: 1,
-              title: "session-1",
+              title: after.remote?.pr?.title ?? "",
               url: "https://github.com/sealant-sh/mend/pull/1",
               baseRef: "main",
               headRef: BRANCH,
@@ -192,6 +211,7 @@ describe("the git panel over Mend's landing", () => {
               updatedAt: after.remote?.pr?.updatedAt,
             },
           });
+          assert.match(after.remote?.pr?.title ?? "", OBSERVED_TITLE);
           assert.isString(after.remote?.pr?.updatedAt);
         }),
       ),
@@ -206,10 +226,7 @@ describe("the git panel over Mend's landing", () => {
         mend.workbench.sinceLanding.set(CHANGE, 2);
 
         const ahead = yield* rpc[WS_METHODS.vcsRefreshStatus]({ cwd: WORKTREE });
-        assert.deepStrictEqual(
-          [ahead.hasUpstream, ahead.aheadCount, ahead.aheadOfDefaultCount, ahead.pr?.state],
-          [true, 1, 1, "open"],
-        );
+        assert.deepStrictEqual(countsOf(ahead), [true, 1, 1, "#1 open"]);
 
         const { error, result } = yield* runAction(rpc, "push");
         assert.isUndefined(error);
@@ -228,56 +245,187 @@ describe("the git panel over Mend's landing", () => {
         });
 
         const landed = yield* rpc[WS_METHODS.vcsRefreshStatus]({ cwd: WORKTREE });
+        assert.deepStrictEqual(countsOf(landed), [true, 1, 1, "#1 open"]);
+      }),
+    ),
+  );
+
+  it.live(
+    "pushes, opens #1, sees it merged on GitHub, and opens #2 for the work after the merge",
+    () =>
+      withGateway((mend) =>
+        Effect.gen(function* () {
+          setup(mend);
+          const { rpc } = yield* pairAndConnect(mend, "LAND-SEQUENCE");
+          const pushed = yield* runAction(rpc, "push");
+          assert.deepStrictEqual(pushed.result?.pr, { status: "skipped_not_requested" });
+          assert.deepStrictEqual(pushed.result?.toast.cta, { kind: "none" });
+
+          // Pushed without a pull request: t3code offers "Push & create PR".
+          const unopened = yield* rpc[WS_METHODS.vcsRefreshStatus]({ cwd: WORKTREE });
+          assert.deepStrictEqual(countsOf(unopened), [true, 1, 1, null]);
+          const first = yield* runAction(rpc, "create_pr");
+          assert.deepStrictEqual(first.result?.pr, {
+            status: "created",
+            url: "https://github.com/sealant-sh/mend/pull/1",
+            number: 1,
+            headBranch: BRANCH,
+            title: "session-1",
+            baseBranch: "main",
+          });
+
+          // Merged on GitHub. The person's refresh asks GitHub through Mend.
+          mend.workbench.github.set(1, "merged");
+          const merged = yield* rpc[WS_METHODS.vcsRefreshStatus]({ cwd: WORKTREE });
+          assert.strictEqual(refreshCalls(mend).length, 1);
+          assert.deepStrictEqual(countsOf(merged), [true, 1, 1, "#1 merged"]);
+
+          // Nothing new since: Mend says so in its own words.
+          const idle = yield* runAction(rpc, "create_pr");
+          assert.include(
+            idle.error?.message ?? "",
+            "landing not started · nothing new since the last landing",
+          );
+
+          // New work after the merge opens a new pull request on the same branch.
+          mend.workbench.sinceLanding.set(CHANGE, 1);
+          const after = yield* rpc[WS_METHODS.vcsRefreshStatus]({ cwd: WORKTREE });
+          assert.deepStrictEqual(countsOf(after), [true, 1, 1, "#1 merged"]);
+          const second = yield* runAction(rpc, "create_pr");
+          assert.isUndefined(second.error);
+          assert.deepStrictEqual(
+            [second.result?.pr.status, second.result?.toast.title],
+            ["created", "Opened pull request #2"],
+          );
+          const reopened = yield* rpc[WS_METHODS.vcsRefreshStatus]({ cwd: WORKTREE });
+          assert.deepStrictEqual(countsOf(reopened), [true, 1, 1, "#2 open"]);
+        }),
+      ),
+  );
+
+  it.live("offers a push after the agent commits the tree a landing already pushed", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        setup(mend);
+        const { rpc } = yield* pairAndConnect(mend, "LAND-SAME-TREE");
+        yield* runAction(rpc, "create_pr");
+        mend.workbench.agentCommitted.add(CHANGE);
+
+        const status = yield* rpc[WS_METHODS.vcsRefreshStatus]({ cwd: WORKTREE });
+        assert.deepStrictEqual(countsOf(status), [true, 1, 1, "#1 open"]);
+        const { error, result } = yield* runAction(rpc, "push");
+        assert.isUndefined(error);
+        assert.strictEqual(result?.toast.title, `Pushed to ${BRANCH}`);
+        assert.strictEqual(landCalls(mend).length, 2);
+      }),
+    ),
+  );
+
+  it.live("commit & push and commit, push & PR land the change", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        setup(mend);
+        const { rpc } = yield* pairAndConnect(mend, "LAND-COMMIT-PUSH");
+        const pushed = yield* runAction(rpc, "commit_push");
+        assert.isUndefined(pushed.error);
+        assert.deepStrictEqual(pushed.result?.push, {
+          status: "pushed",
+          branch: BRANCH,
+          upstreamBranch: `origin/${BRANCH}`,
+        });
+        assert.deepStrictEqual(pushed.result?.pr, { status: "skipped_not_requested" });
+
+        mend.workbench.sinceLanding.set(CHANGE, 1);
+        const opened = yield* runAction(rpc, "commit_push_pr");
+        assert.isUndefined(opened.error);
+        assert.strictEqual(opened.result?.pr.status, "created");
+        assert.strictEqual(opened.result?.toast.title, "Opened pull request #1");
         assert.deepStrictEqual(
-          [landed.hasUpstream, landed.aheadCount, landed.aheadOfDefaultCount, landed.pr?.number],
-          [true, 0, 0, 1],
+          landCalls(mend).map((call) => call.body),
+          [
+            { pullRequest: false, branch: null, title: null, body: null },
+            { pullRequest: true, branch: null, title: null, body: null },
+          ],
         );
       }),
     ),
   );
 
   it.live(
-    "offers a pull request for a change pushed without one, and a new one after a merge",
+    "a failed pull request step ends the action failed after the push, and Create PR stays offered",
     () =>
       withGateway((mend) =>
         Effect.gen(function* () {
           setup(mend);
-          const { rpc } = yield* pairAndConnect(mend, "LAND-CREATE");
-          const pushed = yield* runAction(rpc, "push");
-          assert.deepStrictEqual(pushed.result?.pr, { status: "skipped_not_requested" });
-          assert.deepStrictEqual(pushed.result?.toast.cta, { kind: "none" });
+          const { rpc } = yield* pairAndConnect(mend, "LAND-PR-FAILED");
+          mend.workbench.nextPullRequestFailure = "gh: HTTP 502";
+          const { events, error, result } = yield* runAction(rpc, "create_pr");
+          assert.isUndefined(result);
+          assert.strictEqual(error?._tag, "GitManagerError");
+          assert.match(
+            error?.message ?? "",
+            new RegExp(
+              `pushed [0-9a-f]{7} to ${BRANCH} · pull request step failed · gh: HTTP 502$`,
+              "u",
+            ),
+          );
+          const ended = events.at(-1);
+          assert.deepStrictEqual(
+            ended?.kind === "action_failed" ? [ended.phase, ended.message] : [],
+            ["pr", error?.message],
+          );
 
-          // Pushed, no pull request, nothing new. t3code shows "Create PR".
-          const unopened = yield* rpc[WS_METHODS.vcsRefreshStatus]({ cwd: WORKTREE });
-          assert.deepStrictEqual(
-            [unopened.hasUpstream, unopened.aheadCount, unopened.aheadOfDefaultCount, unopened.pr],
-            [true, 0, 1, null],
-          );
-          const opened = yield* runAction(rpc, "create_pr");
-          assert.strictEqual(opened.result?.pr.status, "created");
-
-          // Merged on GitHub with nothing new. Up to date, nothing to offer.
-          for (const landing of mend.workbench.landings.get(CHANGE) ?? []) {
-            if (landing.pullRequest !== null) landing.pullRequest.state = "merged";
-          }
-          const merged = yield* rpc[WS_METHODS.vcsRefreshStatus]({ cwd: WORKTREE });
-          assert.deepStrictEqual(
-            [merged.aheadCount, merged.aheadOfDefaultCount, merged.pr?.state],
-            [0, 0, "merged"],
-          );
-          // New work after the merge. t3code shows "Push & create PR".
-          mend.workbench.sinceLanding.set(CHANGE, 1);
-          const after = yield* rpc[WS_METHODS.vcsRefreshStatus]({ cwd: WORKTREE });
-          assert.deepStrictEqual(
-            [after.hasUpstream, after.aheadCount, after.aheadOfDefaultCount, after.pr?.state],
-            [true, 1, 1, "merged"],
-          );
+          // On reload the push stands and no pull request is open, so Create PR is offered.
+          const status = yield* rpc[WS_METHODS.vcsRefreshStatus]({ cwd: WORKTREE });
+          assert.deepStrictEqual(countsOf(status), [true, 1, 1, null]);
+          const retried = yield* runAction(rpc, "create_pr");
+          assert.isUndefined(retried.error);
+          assert.strictEqual(retried.result?.toast.title, "Opened pull request #1");
         }),
       ),
   );
 
+  it.live("offers no pull request when origin is not on GitHub, and keeps Push", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        setup(mend);
+        const reason = "pull request unavailable · origin is on gitlab.com, not GitHub";
+        mend.workbench.pullRequestAvailability.set("project-1", { available: false, reason });
+        const { rpc } = yield* pairAndConnect(mend, "LAND-GITLAB");
+
+        const before = yield* rpc[WS_METHODS.vcsRefreshStatus]({ cwd: WORKTREE });
+        assert.deepStrictEqual(countsOf(before), [false, 1, 0, null]);
+        // t3code's main action still reads "Push & create PR"; Mend pushes and says why not.
+        const { error, result } = yield* runAction(rpc, "create_pr");
+        assert.isUndefined(error);
+        assert.deepStrictEqual(result?.pr, { status: "skipped_not_requested" });
+        assert.match(result?.toast.description ?? "", new RegExp(` · ${reason}$`, "u"));
+        const after = yield* rpc[WS_METHODS.vcsRefreshStatus]({ cwd: WORKTREE });
+        assert.deepStrictEqual(countsOf(after), [true, 1, 0, null]);
+      }),
+    ),
+  );
+
+  it.live("asks GitHub at most once a minute, only on the person's refresh", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        setup(mend);
+        const { rpc } = yield* pairAndConnect(mend, "LAND-REFRESH");
+        yield* runAction(rpc, "create_pr");
+        const status = yield* feed(rpc[WS_METHODS.subscribeVcsStatus]({ cwd: WORKTREE }));
+        yield* status.next(snapshotOf);
+        assert.deepStrictEqual(refreshCalls(mend), [], "a status stream never asks GitHub");
+
+        const first = yield* rpc[WS_METHODS.vcsRefreshStatus]({ cwd: WORKTREE });
+        yield* rpc[WS_METHODS.vcsRefreshStatus]({ cwd: WORKTREE });
+        assert.strictEqual(refreshCalls(mend).length, 1);
+        assert.match(first.pr?.title ?? "", OBSERVED_TITLE);
+      }),
+    ),
+  );
+
   it.live(
-    "a teammate who does not own the change sees its pull request, and a landing is refused in Mend's words",
+    "a teammate reads the owner's counts, and a landing is refused in Mend's words with no side effect",
     () =>
       withGateway((mend) =>
         Effect.gen(function* () {
@@ -288,10 +436,10 @@ describe("the git panel over Mend's landing", () => {
 
           const bea = yield* pairAndConnect(mend, "LAND-BEA", BEA);
           const seen = yield* bea.rpc[WS_METHODS.vcsRefreshStatus]({ cwd: WORKTREE });
-          assert.deepStrictEqual(
-            [seen.hasUpstream, seen.aheadCount, seen.aheadOfDefaultCount, seen.pr?.state],
-            [true, 0, 0, "open"],
-          );
+          const owners = yield* ada.rpc[WS_METHODS.vcsRefreshStatus]({ cwd: WORKTREE });
+          assert.deepStrictEqual(countsOf(seen), [true, 1, 1, "#1 open"]);
+          assert.deepStrictEqual(countsOf(seen), countsOf(owners), "the counts Ada sees");
+          assert.strictEqual(refreshCalls(mend).length, 1, "only Ada's refresh asked GitHub");
 
           const { events, error } = yield* runAction(bea.rpc, "push");
           assert.strictEqual(error?._tag, "EnvironmentAuthorizationError");
@@ -419,26 +567,6 @@ describe("the git panel over Mend's landing", () => {
         assert.include(
           refused.error?.message ?? "",
           `push refused · ${BRANCH} · ! [rejected] (fetch first)`,
-        );
-
-        mend.workbench.nextLandingAnswer = {
-          status: 200,
-          body: {
-            landing: landingAs({
-              outcome: "failed",
-              pushedSha: "d".repeat(40),
-              message: "gh: HTTP 502",
-            }),
-            pullRequest: { _tag: "failed", message: "gh: HTTP 502" },
-          },
-        };
-        const stepFailed = yield* runAction(rpc, "create_pr");
-        assert.isUndefined(stepFailed.error);
-        assert.deepStrictEqual(stepFailed.result?.pr, { status: "skipped_not_requested" });
-        assert.deepStrictEqual(stepFailed.result?.commit, { status: "skipped_no_changes" });
-        assert.strictEqual(
-          stepFailed.result?.toast.description,
-          "pushed ddddddd · pull request step failed · gh: HTTP 502",
         );
 
         mend.workbench.nextLandingAnswer = {

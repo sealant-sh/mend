@@ -38,6 +38,7 @@ export const unreachableMend: MendClient["Service"] = {
   changeStats: () => unavailable("GET /api/changes/:id/stats"),
   changeLandings: () => unavailable("GET /api/changes/:id/landings"),
   land: () => unavailable("POST /api/sessions/:id/land"),
+  refreshLanding: () => unavailable("POST /api/landings/:id/refresh"),
   worktreeCheckpoints: () => unavailable("GET /api/worktrees/:id"),
   worktreeDiff: () => unavailable("GET /api/worktrees/:id/diff"),
   worktreeContents: () => unavailable("GET /api/worktrees/:id/contents"),

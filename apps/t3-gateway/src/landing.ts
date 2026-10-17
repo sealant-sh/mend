@@ -22,39 +22,52 @@ import type {
 
 /** A pull request a landing recorded, as GitHub last reported it, with the branch it is from. */
 export interface RecordedPullRequest extends MendLandedPullRequest {
+  /** The landing that recorded it, which `POST /api/landings/:id/refresh` asks GitHub about. */
+  readonly landingId: string;
   /** The landing's branch on origin, which is the pull request's head. */
   readonly head: string;
 }
 
 /** What t3code's git panel needs to know about a thread's change, from Mend's landing record. */
 export interface LandingStanding {
-  /** The caller owns the change, so may land it (Mend's `land`). */
-  readonly owner: boolean;
   /** The branch on origin the last landing pushed to, if any. */
   readonly pushedBranch: string | null;
-  /** Something is in the change that no landing pushed yet. */
-  readonly unlanded: boolean;
+  /** The change may hold something no landing pushed. */
+  readonly mayLand: boolean;
   /** Mend can open a pull request for the project (origin on GitHub). */
   readonly pullRequestAvailable: boolean;
-  /** The newest pull request any landing recorded, as GitHub last reported it. */
+  /** The pull request on the branch the next landing pushes, as GitHub last reported it. */
   readonly pullRequest: RecordedPullRequest | null;
 }
 
-/** The newest pull request any of the change's landings recorded. */
+/**
+ * The newest pull request recorded on the branch the next landing pushes. Only that one is the
+ * current landing's: an open one there is the one the next landing updates, and a merged or closed
+ * one leaves Mend to open another.
+ */
 export const recordedPullRequestOf = (view: MendChangeLandings): RecordedPullRequest | null => {
-  const withPullRequest = view.landings.find((landing) => landing.pullRequest !== null);
-  return withPullRequest?.pullRequest == null
+  const branch =
+    view.nextBranch ?? view.landings.find((landing) => landing.pushedSha !== null)?.remoteBranch;
+  const recorded = view.landings.find(
+    (landing) => landing.pullRequest !== null && landing.remoteBranch === branch,
+  );
+  return recorded?.pullRequest == null
     ? null
-    : { ...withPullRequest.pullRequest, head: withPullRequest.remoteBranch };
+    : { ...recorded.pullRequest, landingId: recorded.id, head: recorded.remoteBranch };
 };
 
+/**
+ * Before a push, the change's files against its base say whether there is anything to land. After
+ * one, Mend's record cannot say there is nothing: it leaves `changed-since-landing` out both when
+ * no file moved and when it could not compare, and an agent's commit of the tree a landing already
+ * pushed moves no file yet still lands. So the panel keeps offering a landing, and Mend itself
+ * answers "nothing new since the last landing" when there is none.
+ */
 export const standingOf = (view: MendChangeLandings, changeFiles: number): LandingStanding => {
   const lastPush = view.landings.find((landing) => landing.pushedSha !== null);
-  const sinceLanding = view.facts.find((fact) => fact._tag === "changed-since-landing")?.files ?? 0;
   return {
-    owner: view.land,
     pushedBranch: lastPush?.remoteBranch ?? null,
-    unlanded: lastPush === undefined ? changeFiles > 0 : sinceLanding > 0,
+    mayLand: lastPush !== undefined || changeFiles > 0,
     pullRequestAvailable: view.pullRequest.available,
     pullRequest: recordedPullRequestOf(view),
   };
@@ -66,34 +79,41 @@ const nonBlank = (value: string | null | undefined): string | undefined =>
 const titleOf = (pullRequest: MendLandedPullRequest): string =>
   nonBlank(pullRequest.title) ?? `#${pullRequest.number}`;
 
+/** When GitHub last reported the pull request, as t3code's row and its tooltip show the title. */
+const observedTitleOf = (pullRequest: MendLandedPullRequest): string => {
+  const at = new Date(pullRequest.observedAt);
+  const when = Number.isNaN(at.getTime())
+    ? pullRequest.observedAt
+    : `${at.toISOString().slice(0, 16).replace("T", " ")} UTC`;
+  return `${titleOf(pullRequest)} · observed ${when}`;
+};
+
 /**
  * The remote half of t3code's status, which drives its git panel's main action and menu. Mend
  * does not fetch origin on a status read, so nothing is ever behind; a push origin refuses comes
- * back as the landing's refusal. t3code reads the ahead counts only as more than zero. A count of
- * 1 says a landing has something to push, or a pull request to open for a change pushed without
- * one. A caller who does not own the change sees nothing to push and the pull request as GitHub
- * last reported it, so no write control is live for them.
+ * back as the landing's refusal. t3code reads the ahead counts only as more than zero. Everyone
+ * who can see the change reads the same counts: a landing by anyone but its owner is refused in
+ * Mend's words. A project whose origin is not on GitHub offers no pull request. t3code hides
+ * "Create PR" itself while the pull request is open.
  */
 export const remoteStatusOf = (
   standing: LandingStanding,
   location: Pick<CwdLocation, "baseRef" | "defaultBranch">,
 ): VcsStatusRemoteResult => {
-  const { owner, unlanded, pullRequest } = standing;
-  const hasUpstream = standing.pushedBranch !== null;
-  const opensPullRequest = hasUpstream && pullRequest === null && standing.pullRequestAvailable;
+  const { mayLand, pullRequest } = standing;
   const baseRef = nonBlank(location.baseRef) ?? nonBlank(location.defaultBranch);
   const head = nonBlank(pullRequest?.head);
   return {
-    hasUpstream,
-    aheadCount: owner && unlanded ? 1 : 0,
+    hasUpstream: standing.pushedBranch !== null,
+    aheadCount: mayLand ? 1 : 0,
     behindCount: 0,
-    aheadOfDefaultCount: owner && (unlanded || opensPullRequest) ? 1 : 0,
+    aheadOfDefaultCount: mayLand && standing.pullRequestAvailable ? 1 : 0,
     pr:
       pullRequest === null || baseRef === undefined || head === undefined
         ? null
         : {
             number: pullRequest.number,
-            title: titleOf(pullRequest),
+            title: observedTitleOf(pullRequest),
             url: pullRequest.url,
             baseRef,
             headRef: head,
@@ -148,7 +168,12 @@ export const planOf = (
 /** How a landing came back. It is what t3code's panel shows, or why it did not land. */
 export type LandingResult =
   | { readonly _tag: "landed"; readonly result: GitRunStackedActionResult }
-  | { readonly _tag: "failed"; readonly detail: string };
+  | {
+      readonly _tag: "failed";
+      /** The step that stopped it: the push, or the pull request after a push went through. */
+      readonly phase: Extract<GitActionProgressPhase, "push" | "pr">;
+      readonly detail: string;
+    };
 
 const shortSha = (sha: string): string => sha.slice(0, 7);
 
@@ -156,8 +181,9 @@ const NO_REASON = "no reason given";
 
 /**
  * A landing report as t3code's action result. Mend never creates or moves a branch here. The
- * toast says what was observed, the push and the pull request as GitHub reported it. `known` is
- * the pull request the record held before this landing, for the toast's link.
+ * toast says what was observed, the push and the pull request as GitHub reported it. A pull
+ * request step that failed after the push ends the action failed, saying the push went through.
+ * `known` is the pull request the record held before this landing, for the toast's link.
  */
 export const landingResultOf = (
   action: GitStackedAction,
@@ -169,24 +195,35 @@ export const landingResultOf = (
   if (landing.outcome === "refused") {
     return {
       _tag: "failed",
+      phase: "push",
       detail: `push refused · ${landing.remoteBranch} · ${landing.message ?? NO_REASON}`,
     };
   }
   if (landing.pushedSha === null) {
-    return { _tag: "failed", detail: `landing failed · ${landing.message ?? NO_REASON}` };
+    return {
+      _tag: "failed",
+      phase: "push",
+      detail: `landing failed · ${landing.message ?? NO_REASON}`,
+    };
   }
   const branch = landing.remoteBranch;
+  const pushed = `pushed ${shortSha(landing.pushedSha)}`;
+  if (step._tag === "failed") {
+    return {
+      _tag: "failed",
+      phase: "pr",
+      detail: `${pushed} to ${branch} · pull request step failed · ${step.message}`,
+    };
+  }
   const commitSha = nonBlank(landing.commitSha);
   const baseBranch = nonBlank(location.baseRef) ?? nonBlank(location.defaultBranch);
   const opened = step._tag === "opened" || step._tag === "updated" ? step.pullRequest : null;
   const stepLine =
-    step._tag === "opened" || step._tag === "updated"
-      ? `pull request #${step.pullRequest.number} · ${step.pullRequest.state} · observed`
+    opened !== null
+      ? `pull request #${opened.number} · ${opened.state} · observed`
       : step._tag === "unavailable"
         ? step.reason
-        : step._tag === "failed"
-          ? `pull request step failed · ${step.message}`
-          : null;
+        : null;
   const link = opened?.url ?? (known?.state === "open" ? known.url : null);
   return {
     _tag: "landed",
@@ -214,9 +251,7 @@ export const landingResultOf = (
           step._tag === "opened"
             ? `Opened pull request #${step.pullRequest.number}`
             : `Pushed to ${branch}`,
-        description: [`pushed ${shortSha(landing.pushedSha)}`, stepLine]
-          .filter((part) => nonBlank(part) !== undefined)
-          .join(" · "),
+        description: [pushed, stepLine].filter((part) => nonBlank(part) !== undefined).join(" · "),
         cta: link === null ? { kind: "none" } : { kind: "open_pr", label: "View PR", url: link },
       },
     },

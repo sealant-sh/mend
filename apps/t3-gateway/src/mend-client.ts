@@ -20,6 +20,7 @@ import {
   MendChangeLandings,
   MendChangeStats,
   MendCheckpoint,
+  MendLanding,
   MendLandingReport,
   MendRangeDiff,
   MendWorktreeContents,
@@ -375,6 +376,11 @@ export class MendClient extends Context.Service<
       input: { readonly pullRequest: boolean },
     ) => MendCommand<MendLandingReport>;
     /**
+     * `POST /api/landings/:id/refresh`: Mend asks GitHub, as the change's owner, for the landing's
+     * pull request now and records what it said. The owner only (403 `LandingNotAllowed`).
+     */
+    readonly refreshLanding: (deviceToken: string, landingId: string) => MendCommand<MendLanding>;
+    /**
      * `POST /api/projects/:id/sessions`: a session owned by the caller, in a new worktree. Mend
      * stamps origin `mend` and the caller as owner, so its agent runs as them (docs/adr/0016).
      */
@@ -488,6 +494,7 @@ const decodeFileListing = Schema.decodeUnknownEffect(MendFileListing);
 const decodeChangeStats = Schema.decodeUnknownEffect(MendChangeStats);
 const decodeChangeLandings = Schema.decodeUnknownEffect(MendChangeLandings);
 const decodeLandingReport = Schema.decodeUnknownEffect(MendLandingReport);
+const decodeLanding = Schema.decodeUnknownEffect(MendLanding);
 const decodeWorktreeDetail = Schema.decodeUnknownEffect(MendWorktreeDetail);
 const decodeRangeDiff = Schema.decodeUnknownEffect(MendRangeDiff);
 const decodeWorktreeContents = Schema.decodeUnknownEffect(MendWorktreeContents);
@@ -920,6 +927,18 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
           "POST /api/sessions/:id/land",
         );
 
+      const refreshLanding = (deviceToken: string, landingId: string) =>
+        answered(
+          command(
+            "POST /api/landings/:id/refresh",
+            `/api/landings/${encodeURIComponent(landingId)}/refresh`,
+            deviceToken,
+            {},
+            decodeLanding,
+          ),
+          "POST /api/landings/:id/refresh",
+        );
+
       const submitTurn = (deviceToken: string, sessionId: string, input: string) =>
         answered(
           command(
@@ -1174,6 +1193,7 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
         changeStats,
         changeLandings,
         land,
+        refreshLanding,
         worktreeCheckpoints,
         worktreeDiff,
         worktreeContents,

@@ -195,6 +195,37 @@ describe("stored grants", () => {
       }
     }),
   );
+  it.effect("keeps a five-scope pairing made after the widening as asked, across a restart", () =>
+    Effect.gen(function* () {
+      const path = join(mkdtempSync(join(tmpdir(), "t3-gateway-grants-")), "state.sqlite");
+      const five: ReadonlyArray<AuthEnvironmentScope> = [
+        "orchestration:read",
+        "orchestration:operate",
+        "terminal:read",
+        "terminal:operate",
+        "filesystem:read",
+      ];
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const state = yield* openGatewayState(path);
+          yield* state.insertSession({
+            ...testBearerSession,
+            sessionId: AuthSessionId.make("paired-after"),
+            tokenHash: "hash-paired-after",
+            scopes: five,
+          });
+        }),
+      );
+      const scopesAfterRestart = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const state = yield* openGatewayState(path);
+          const session = yield* state.findSessionById(AuthSessionId.make("paired-after"));
+          return Option.getOrThrow(session).scopes;
+        }),
+      );
+      assert.deepStrictEqual(scopesAfterRestart, five);
+    }),
+  );
 });
 
 const modeOf = (path: string) => statSync(path).mode & 0o777;
