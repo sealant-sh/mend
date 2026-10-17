@@ -141,6 +141,8 @@ by an older gateway no longer reads files, which now need a permission of their 
 | Archive                            | Your own view, kept by the gateway: Mend has no archive. What was queued is held, not lost                                                                                                                                                                                                                                                                                            |
 | Settle                             | Your own, kept by the gateway as the archive is: Mend has none, and others sharing the session do not see it. A settle is refused while a turn runs, a message waits or a question is open: settle once they are done                                                                                                                                                                 |
 | Snooze                             | Your own as well. The thread wakes at the time you chose, or earlier when the agent asks for an approval or an answer, or a turn fails or completes. A snooze ends in the future, and is refused while a question is open or a message waits to be sent, which it would hide                                                                                                          |
+| Pins and order                     | Your own, kept by the gateway: pin a thread from its menu or with Mod+Shift+P, and drag the pinned threads and the Active list into your order. Settling a thread unpins it                                                                                                                                                                                                           |
+| Automatic settlement               | A thread with no activity for three days settles on its own, as on t3code's own server with its default settings. The settings page shows them; the gateway does not let you change them. Turn it off for one thread with Auto-settle behavior in its menu. A pinned thread never settles on its own                                                                                  |
 | Diffs                              | Each turn's slice of the worktree's checkpoints, matched to the turn by session and time, and the whole thread's. The changes panel shows the thread's change, the worktree against its base, and a file opened there whole                                                                                                                                                           |
 | Files and `@`-mentions             | The session's worktree as it stands: the file tree, reading a file, searching contents. The Files tab is read-only                                                                                                                                                                                                                                                                    |
 | Branch status                      | The session's branch and its change against its base. The branch picker lists the project's branches, any of them a new worktree's base, and the thread's own                                                                                                                                                                                                                         |
@@ -193,10 +195,11 @@ t3code shows those controls inert with its own wording, or it refuses them with 
   it ran."
 - **Archive and the queue.** t3code's own server cancels a thread's queued messages on archive; the
   gateway holds them instead, so none is lost. Unarchive the thread and resume, or cancel them.
-- **Settle, snooze and read state are per person.** They are kept by the gateway, not Mend, so
-  Mend's web app, the CLI and other people's t3code clients do not show them. A message sent to a
-  settled or snoozed thread brings it back, as on t3code's own server. A thread you never opened in
-  t3code shows no unread mark until you do.
+- **Settle, snooze, pins, order and read state are per person.** They are kept by the gateway, not
+  Mend, so Mend's web app, the CLI and other people's t3code clients do not show them. No thread
+  carries a pull request in t3code, so a merged pull request settles nothing on its own. A message
+  sent to a settled or snoozed thread brings it back, as on t3code's own server. A thread you never
+  opened in t3code shows no unread mark until you do.
 - **Service tier.** Mend's agents in a T3 Code thread take no tier, so every thread runs on the
   standard tier and t3code offers no Fast.
 - **Next-start choices and shared control.** A model, effort or runtime mode chosen on a started
@@ -258,9 +261,9 @@ The gateway keeps one SQLite file of its own, in its own volume on a packaged se
 (`mend-t3-gateway`, `/opt/mend-t3-gateway/state/state.sqlite` in the container): its environment id,
 each paired client, the thread ids t3code gave, the queue, images attached to messages (one never
 sent is let go of after seven days) and what each sent message carried, deleted sessions Mend still
-keeps, each person's archived, settled and snoozed threads and when they last saw each, their model
-favorites, and the mode and effort chosen for an agent's next start. Mend's database is never
-touched; losing the file loses pairings and t3code-side ids, never Mend's records.
+keeps, each person's archived, settled, snoozed and pinned threads, their order, and when they last
+saw each, their model favorites, and the mode and effort chosen for an agent's next start. Mend's
+database is never touched; losing the file loses pairings and t3code-side ids, never Mend's records.
 
 The file holds each paired person's Mend device token, which acts as that person until the device is
 revoked: the gateway needs it to read Mend and send queued messages when no client is connected. It
