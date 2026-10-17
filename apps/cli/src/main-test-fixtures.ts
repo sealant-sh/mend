@@ -68,6 +68,9 @@ const startFakeMend = async (
     upgradeUrls.push(request.url ?? "");
     upgradedSockets.add(socket);
     socket.once("close", () => upgradedSockets.delete(socket));
+    // A CLI killed before it read the 101 answers with a reset, not a FIN (unread bytes at death
+    // turn the kernel's close into RST). http detached its error listener on upgrade (mend#1069).
+    socket.on("error", () => {});
     acceptWebSocket(request, socket);
     notifyUpgraded?.();
     if (behavior === "end") {

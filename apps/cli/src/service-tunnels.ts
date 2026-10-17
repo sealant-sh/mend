@@ -69,6 +69,9 @@ export const touchesSessionServices = (payload: string, sessionId: string): bool
 export const pumpConnection = (socket: net.Socket, url: Promise<URL>): void => {
   // Hold local bytes until the tunnel is open; loopback buffers are tiny.
   socket.pause();
+  // A peer that resets is an ordinary close: the 'close' that follows shuts its tunnel. Without
+  // a listener the reset is an uncaught exception, and it can land while the ticket is minted.
+  socket.on("error", () => {});
   void url.then(
     (target) => {
       if (socket.destroyed) return null;
@@ -87,7 +90,6 @@ export const pumpConnection = (socket: net.Socket, url: Promise<URL>): void => {
         if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ t: "eof" }));
       });
       socket.on("close", () => ws.close());
-      socket.on("error", () => ws.close());
       return null;
     },
     () => socket.destroy(),
