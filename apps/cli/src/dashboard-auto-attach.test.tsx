@@ -20,7 +20,7 @@ import {
   type SessionDto,
 } from "./dashboard-model.ts";
 import { App, HANDOVER_MS, type DashboardContext } from "./dashboard.tsx";
-import type { AttachOutcome } from "./shared.ts";
+import type { AttachResult } from "./shared.ts";
 import { COUNTDOWN_STEP_MS } from "./snake-play.ts";
 
 const NOW = "2026-10-10T12:00:00.000Z";
@@ -104,7 +104,10 @@ const openDashboard = async (
     ...options.routes,
   };
   const attachTty = vi.fn(
-    async (_sessionId: string, _harness: string): Promise<AttachOutcome> => "detached",
+    async (_sessionId: string, _harness: string): Promise<AttachResult> => ({
+      outcome: "detached",
+      rawModeRefusal: null,
+    }),
   );
   const queryClient = new QueryClient();
   const ctx: DashboardContext = {

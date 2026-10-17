@@ -188,7 +188,7 @@ import {
   type SessionCaptureLike,
   firstPositional,
 } from "./shared.ts";
-import { type AttachOutcome } from "./shared.ts";
+import { type AttachOutcome, type AttachResult } from "./shared.ts";
 import { DEFAULT_SKILLS_DIR, scanSkillLibrary } from "./skills.ts";
 import { removeThisMachineKey, sshCommand } from "./ssh-setup.ts";
 import {
@@ -1183,8 +1183,11 @@ const takeTerminal = (): { readonly raw: boolean } => {
 /** How long an attach waits, once connected, for the detail that says whether the caller types. */
 const WATCH_READ_GRACE_MS = 3_000;
 
-/** The last attach's refusal to leave raw mode that a gone terminal does not explain, if any. */
-let rawModeRefusal: Error | null = null;
+/** An attach's refusal to leave raw mode, said once its caller has done what the outcome asked. */
+const sayRawModeRefusal = (refusal: Error | null): void => {
+  if (refusal !== null)
+    process.stderr.write(`mend: could not leave raw mode (${refusal.message})\n`);
+};
 
 /**
  * The terminal's size as the PTY should read it. A pty whose size was never set reads 0×0.
@@ -1223,9 +1226,11 @@ const attachTty = async (
   from: bigint,
   processId?: string,
   options?: { readonly readOnly?: boolean; readonly handleSignals?: boolean },
-): Promise<AttachOutcome> => {
+): Promise<AttachResult> => {
   const interactive = options?.readOnly !== true;
   const rawModeEnabled = interactive ? takeTerminal().raw : false;
+  let rawModeRefusal: Error | null = null;
+  let outcome: AttachOutcome;
   const connecting = new AbortController();
   let abortReason: "detached" | "interrupted" | "no-answer" | null = null;
   const abort = (reason: "detached" | "interrupted" | "no-answer") => {
@@ -1431,39 +1436,41 @@ const attachTty = async (
     }
     const connected = await connect();
     stopConnecting();
-    if (connected === "unavailable") return "unavailable";
-    if (connected === "aborted") return abortReason ?? "interrupted";
-    ws = connected;
-    // The agent's own terminal, interactive, on a terminal that shows it: an agent that has not
-    // drawn yet reads as starting, with the facts from its detail once they answer.
-    if (interactive && processId === undefined && process.stdout.isTTY === true) {
-      const gate = firstOutputGate({
-        label: startingLabelOf(harness),
-        write: (text) => process.stdout.write(text),
-        now: Date.now,
-        cancelHint: detachKeyEnabled ? "Ctrl+] detaches" : "",
-      });
-      starting = gate;
-      void detailRead.then((read) => {
-        if (read !== null) {
-          gate.update(agentStartingFacts(read.currentAgent, read.processes, Date.now()));
-        }
-        return null;
-      });
+    if (connected === "unavailable") outcome = "unavailable";
+    else if (connected === "aborted") outcome = abortReason ?? "interrupted";
+    else {
+      ws = connected;
+      // The agent's own terminal, interactive, on a terminal that shows it: an agent that has not
+      // drawn yet reads as starting, with the facts from its detail once they answer.
+      if (interactive && processId === undefined && process.stdout.isTTY === true) {
+        const gate = firstOutputGate({
+          label: startingLabelOf(harness),
+          write: (text) => process.stdout.write(text),
+          now: Date.now,
+          cancelHint: detachKeyEnabled ? "Ctrl+] detaches" : "",
+        });
+        starting = gate;
+        void detailRead.then((read) => {
+          if (read !== null) {
+            gate.update(agentStartingFacts(read.currentAgent, read.processes, Date.now()));
+          }
+          return null;
+        });
+      }
+      stopHerdrHint = hintHerdrAttachment(harness);
+      const onClose = () => finishAttachment?.();
+      if (ws.readyState === WebSocket.CLOSED) finishAttachment?.();
+      else ws.addEventListener("close", onClose, { once: true });
+      ws.addEventListener("message", onTtyFrame);
+      // One row short, then the real size: the PTY sees a size change either way, so the agent
+      // gets SIGWINCH and repaints now instead of on the first key.
+      const size = terminalSize();
+      if (size.rows > 1) sendResize({ cols: size.cols, rows: size.rows - 1 });
+      setTimeout(() => sendResize(), 80);
+      process.stdout.on("resize", onWinch);
+      await finished;
+      outcome = detached ? "detached" : interrupted ? "interrupted" : sawEnd ? "ended" : "dropped";
     }
-    stopHerdrHint = hintHerdrAttachment(harness);
-    const onClose = () => finishAttachment?.();
-    if (ws.readyState === WebSocket.CLOSED) finishAttachment?.();
-    else ws.addEventListener("close", onClose, { once: true });
-    ws.addEventListener("message", onTtyFrame);
-    // One row short, then the real size: the PTY sees a size change either way, so the agent
-    // gets SIGWINCH and repaints now instead of on the first key.
-    const size = terminalSize();
-    if (size.rows > 1) sendResize({ cols: size.cols, rows: size.rows - 1 });
-    setTimeout(() => sendResize(), 80);
-    process.stdout.on("resize", onWinch);
-    await finished;
-    return detached ? "detached" : interrupted ? "interrupted" : sawEnd ? "ended" : "dropped";
   } finally {
     stopConnecting();
     starting?.stop();
@@ -1471,8 +1478,8 @@ const attachTty = async (
     process.stdin.off("data", onKeys);
     process.stdout.off("resize", onWinch);
     ws?.removeEventListener("message", onTtyFrame);
-    // A refusal the terminal's going away does not explain is kept for `finishAttach`, which says
-    // it before it acts on the outcome: it never costs a foreground session its stop.
+    // A refusal the terminal's going away does not explain goes back with the outcome: the caller
+    // says it once the outcome's own step is done, so it never costs a foreground session its stop.
     rawModeRefusal = rawModeEnabled ? leaveRawMode(process.stdin) : null;
     if (interactive && ws !== null && process.stdout.isTTY === true) {
       // The inner TUI's terminal modes leaked onto OUR terminal through the
@@ -1488,6 +1495,7 @@ const attachTty = async (
       ws.close();
     stopHerdrHint();
   }
+  return { outcome, rawModeRefusal };
 };
 
 /**
@@ -1532,10 +1540,21 @@ const stopSessionQuickly = (config: CliConfig, sessionId: string): Promise<boole
   return stopping;
 };
 
-/** Foreground exit: stop the session, or say honestly that it may still run. */
-const stopAndExit = async (config: CliConfig, sessionId: string): Promise<never> => {
+/**
+ * Foreground exit: stop the session, or say honestly that it may still run. The attach's refusal
+ * to leave raw mode, if any, is said once the stop has its answer and never before: a write to a
+ * stderr whose reader is gone (EPIPE) exits this CLI, and an exit ahead of the stop would leave the
+ * session running (review 2 of mend#1061).
+ */
+const stopAndExit = async (
+  config: CliConfig,
+  sessionId: string,
+  rawModeRefusal: Error | null,
+): Promise<never> => {
   const id8 = sessionId.slice(0, 8);
-  if (await stopSessionQuickly(config, sessionId)) {
+  const stopped = await stopSessionQuickly(config, sessionId);
+  sayRawModeRefusal(rawModeRefusal);
+  if (stopped) {
     say(`${green("✓")} stopped · ${id8}`);
     say(`${cobalt("  review")} · ${config.url}/sessions/${sessionId}`);
     process.exit(0);
@@ -1556,21 +1575,23 @@ const noAnswerLine = (config: CliConfig, id8: string): string =>
 const finishAttach = async (
   config: CliConfig,
   sessionId: string,
-  outcome: AttachOutcome,
+  { outcome, rawModeRefusal }: AttachResult,
   mode: LifecycleMode = "background",
 ): Promise<void> => {
   const id8 = sessionId.slice(0, 8);
-  if (rawModeRefusal !== null) {
-    process.stderr.write(`mend: could not leave raw mode (${rawModeRefusal.message})\n`);
-    rawModeRefusal = null;
-  }
+  // An outcome that stops the session says the refusal after the stop (`stopAndExit`); any other
+  // has nothing to send first.
+  const stopsFirst =
+    mode === "foreground" &&
+    (outcome === "no-answer" || outcome === "interrupted" || outcome === "dropped");
+  if (!stopsFirst) sayRawModeRefusal(rawModeRefusal);
   if (outcome === "unavailable") {
     return fail(`tty attach unavailable: could not connect to ${config.url}`);
   }
   if (outcome === "no-answer") {
     say("");
     say(noAnswerLine(config, id8));
-    if (mode === "foreground") return stopAndExit(config, sessionId);
+    if (mode === "foreground") return stopAndExit(config, sessionId, rawModeRefusal);
     process.exit(1);
   }
   if (outcome === "detached") {
@@ -1580,7 +1601,7 @@ const finishAttach = async (
   }
   if (outcome === "interrupted") {
     say("");
-    if (mode === "foreground") return stopAndExit(config, sessionId);
+    if (mode === "foreground") return stopAndExit(config, sessionId, rawModeRefusal);
     say(`${amber("detached")} — the session keeps running; reattach: mend attach ${id8}`);
     process.exit(0);
   }
@@ -1593,11 +1614,16 @@ const finishAttach = async (
         const detail = await request<SessionDetailLiteDto>(config, "GET", `/sessions/${sessionId}`);
         live = agentIsLive(detail.session, detail.currentAgent);
       } catch {
+        sayRawModeRefusal(rawModeRefusal);
         say(`${amber("could not stop")} — the session may still run · mend stop ${id8}`);
         process.exit(1);
       }
-      if (!live) return; // settled as the socket closed — the caller prints the end facts
-      return stopAndExit(config, sessionId);
+      if (!live) {
+        // Settled as the socket closed: nothing to stop, the caller prints the end facts.
+        sayRawModeRefusal(rawModeRefusal);
+        return;
+      }
+      return stopAndExit(config, sessionId, rawModeRefusal);
     }
     say(`${amber("disconnected")} — the session keeps running; reattach: mend attach ${id8}`);
     process.exit(0);
@@ -1623,8 +1649,8 @@ const attachOrExit = async (
 /** The attach itself, with the session's tunnels (when any) stated on the bottom row meanwhile. */
 const attachWithTunnels = (
   tunnels: AttachTunnels | null,
-  work: () => Promise<AttachOutcome>,
-): Promise<AttachOutcome> => (tunnels === null ? work() : tunnels.attached(work));
+  work: () => Promise<AttachResult>,
+): Promise<AttachResult> => (tunnels === null ? work() : tunnels.attached(work));
 
 /** Return terminal control as soon as the terminal reports the observed end. */
 const exitAfterSessionEnd = (config: CliConfig, sessionId: string): never => {
@@ -1665,7 +1691,7 @@ const attachPicked = async (
   }
   await tunnels?.start(session.id);
   say("");
-  const outcome = await attachWithTunnels(tunnels, () =>
+  const attached = await attachWithTunnels(tunnels, () =>
     attachTty(config, session.id, session.harness, 0n, undefined, {
       handleSignals: true,
     }),
@@ -1673,12 +1699,13 @@ const attachPicked = async (
   // A live protocol agent (a phone pickup) has no PTY behind it — the attach
   // reports "unavailable" with nothing wrong. Take the session over: end the
   // protocol agent, resume the same conversation as a TUI, then attach to it.
-  if (outcome === "unavailable") {
+  if (attached.outcome === "unavailable") {
     const detail = await api<SessionDetailLiteDto>(config, "GET", `/sessions/${session.id}`);
     if (
       detail.currentAgent?.kind === "agent-protocol" &&
       agentIsLive(detail.session, detail.currentAgent)
     ) {
+      sayRawModeRefusal(attached.rawModeRefusal);
       say(`${amber("taking over")} from the protocol session`);
       await startAndFollow(
         config,
@@ -1691,7 +1718,7 @@ const attachPicked = async (
       return exitAfterSessionEnd(config, session.id);
     }
   }
-  await finishAttach(config, session.id, outcome);
+  await finishAttach(config, session.id, attached);
   return exitAfterSessionEnd(config, session.id);
 };
 
@@ -1888,9 +1915,18 @@ const shellCommand = async (config: CliConfig, args: ReadonlyArray<string>) => {
     api<SessionProcessDto>(config, "POST", `/sessions/${session.id}/shell`),
   );
   say("");
-  const outcome = await attachTty(config, session.id, "shell", 0n, shellProcess.id, {
-    handleSignals: true,
-  });
+  const { outcome, rawModeRefusal } = await attachTty(
+    config,
+    session.id,
+    "shell",
+    0n,
+    shellProcess.id,
+    {
+      handleSignals: true,
+    },
+  );
+  // A shell stops nothing on its way out, so the refusal to leave raw mode, if any, is said at once.
+  sayRawModeRefusal(rawModeRefusal);
   if (outcome === "unavailable") {
     return fail(`tty attach unavailable: could not connect to ${config.url}`);
   }
@@ -4523,8 +4559,9 @@ const exitOnceStopped = async (stop: () => Promise<boolean>): Promise<never> =>
  *
  * A terminal that closes (its window, `tmux kill-session`) fails the next write with EIO, often
  * before this CLI's SIGHUP handler has sent what it must: a foreground session's stop goes out
- * first, as on SIGHUP, and then the CLI exits without another word. Any other stream error is not
- * swallowed.
+ * first, as on SIGHUP, and then the CLI exits without another word. A closed pipe exits the same
+ * way once a foreground session exists: its stop first, never an exit ahead of it (review 2 of
+ * mend#1061). Any other stream error is not swallowed.
  */
 const onStreamError =
   (stream: NodeJS.WriteStream) =>
@@ -4535,12 +4572,10 @@ const onStreamError =
       stream.isTTY === true && (isTerminalGone(error.code) || error.code === "EPIPE");
     if (!closedTerminal && error.code !== "EPIPE") throw error;
     if (recordedOutput) return;
-    if (!closedTerminal) {
-      readerGone = true;
-      return whenServerLockReleased(() => process.exit(0));
-    }
-    if (terminalGone) return;
-    terminalGone = true;
+    if (closedTerminal) {
+      if (terminalGone) return;
+      terminalGone = true;
+    } else readerGone = true;
     const stop = stopForegroundSession;
     if (stop === null) return whenServerLockReleased(() => process.exit(0));
     void exitOnceStopped(stop);
@@ -5273,12 +5308,14 @@ const rejoinCommand = async (config: CliConfig, args: ReadonlyArray<string>) => 
   );
   await tunnels?.start(session.id);
   say("");
-  let outcome = await attachWithTunnels(tunnels, () =>
+  let attached = await attachWithTunnels(tunnels, () =>
     attachTty(config, session.id, session.harness, 0n, undefined, {
       handleSignals: true,
     }),
   );
-  if (outcome === "unavailable") {
+  if (attached.outcome === "unavailable") {
+    // This attach is over and a second one follows: its refusal, if any, is said now.
+    sayRawModeRefusal(attached.rawModeRefusal);
     const refreshed = await api<SessionDetailLiteDto>(config, "GET", `/sessions/${session.id}`);
     if (!agentIsLive(refreshed.session, refreshed.currentAgent)) {
       await resumeForRejoin(
@@ -5287,13 +5324,13 @@ const rejoinCommand = async (config: CliConfig, args: ReadonlyArray<string>) => 
         "session settled while attaching — restoring it once…",
       );
     }
-    outcome = await attachWithTunnels(tunnels, () =>
+    attached = await attachWithTunnels(tunnels, () =>
       attachTty(config, session.id, session.harness, 0n, undefined, {
         handleSignals: true,
       }),
     );
   }
-  await finishAttach(config, session.id, outcome);
+  await finishAttach(config, session.id, attached);
   exitAfterSessionEnd(config, session.id);
 };
 

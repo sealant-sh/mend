@@ -113,7 +113,7 @@ import {
   normalizeProjectName,
   pendingId,
 } from "./shared.ts";
-import type { AttachOutcome } from "./shared.ts";
+import type { AttachOutcome, AttachResult } from "./shared.ts";
 import { snakeHints, snakeKey } from "./snake-play.ts";
 import {
   SNAKE_BEHIND_DIALOG,
@@ -232,7 +232,7 @@ export interface DashboardContext {
     sessionId: string,
     harness: string,
     processId?: string,
-  ) => Promise<AttachOutcome>;
+  ) => Promise<AttachResult>;
   /** The ssh-agent share running alongside; null when off or no agent. */
   readonly agentShare: AgentShareHandle | null;
   /** The user's saved git access mode (`mend keys mode`); null when the server could not say. */
@@ -1162,8 +1162,11 @@ export const App = ({
       `\nattaching · ${session.harness} · ${short} · detach: Ctrl+]\n${tunneled}\n`,
     );
     let outcome: AttachOutcome;
+    // The last attach's refusal to leave raw mode, if any: on the status line once the dashboard
+    // is back, after the attach's own lifecycle, never dropped.
+    let rawModeRefusal: Error | null = null;
     try {
-      outcome = await ctx.attachTty(session.id, session.harness);
+      ({ outcome, rawModeRefusal } = await ctx.attachTty(session.id, session.harness));
       if (outcome === "unavailable") {
         // A live session whose terminal ended (idle: a workspace held open,
         // no PTY behind it). `a` still means "get me in" — REJOIN the shell
@@ -1182,17 +1185,17 @@ export const App = ({
           // conversation as a TUI, then attach to that.
           process.stdout.write(`taking over from the protocol session · same conversation…\n\n`);
           await ctx.api<SessionDto>("POST", `/sessions/${session.id}/handoff`, { to: "pty" });
-          outcome = await ctx.attachTty(session.id, session.harness);
+          ({ outcome, rawModeRefusal } = await ctx.attachTty(session.id, session.harness));
         } else if (existing === null) {
           const shell = await ctx.api<{ readonly id: string }>(
             "POST",
             `/sessions/${session.id}/shell`,
           );
           process.stdout.write(`no live terminal · opened a shell in the workspace\n\n`);
-          outcome = await ctx.attachTty(session.id, "shell", shell.id);
+          ({ outcome, rawModeRefusal } = await ctx.attachTty(session.id, "shell", shell.id));
         } else {
           process.stdout.write(`no live terminal · rejoining the open shell\n\n`);
-          outcome = await ctx.attachTty(session.id, "shell", existing.id);
+          ({ outcome, rawModeRefusal } = await ctx.attachTty(session.id, "shell", existing.id));
         }
       }
     } catch (error) {
@@ -1202,7 +1205,7 @@ export const App = ({
       renderer.resume();
       lockRef.current = false;
     }
-    say(
+    const outcomeLine =
       outcome === "unavailable"
         ? "attach unavailable · could not connect"
         : outcome === "no-answer"
@@ -1211,7 +1214,11 @@ export const App = ({
             ? `detached · ${short} keeps running`
             : outcome === "dropped"
               ? `disconnected · ${short} · refreshing session status`
-              : `terminal ended · ${short} · refreshing session status`,
+              : `terminal ended · ${short} · refreshing session status`;
+    say(
+      rawModeRefusal === null
+        ? outcomeLine
+        : `${outcomeLine} · could not leave raw mode (${rawModeRefusal.message})`,
     );
     refetch();
   };

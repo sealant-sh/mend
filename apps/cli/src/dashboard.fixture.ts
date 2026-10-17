@@ -249,7 +249,7 @@ export const fixtureContext = (over: Partial<DashboardContext> = {}): DashboardC
   cwd: "/home/dev/mend",
   cwdBranch: "main",
   api: fixtureApi,
-  attachTty: () => Promise.resolve("detached"),
+  attachTty: () => Promise.resolve({ outcome: "detached", rawModeRefusal: null }),
   agentShare: null,
   gitAccessMode: null,
   tunnels: null,
