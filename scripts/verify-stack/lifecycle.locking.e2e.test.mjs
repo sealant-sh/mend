@@ -155,7 +155,18 @@ test("report reads the stack and writes nothing", async () => {
   writeFileSync(stateFile, written);
   const report = fakeDaemon.run(["report", "--json"]);
   assert.equal(await report.done, 0, report.output());
-  assert.equal(JSON.parse(report.output()).phase, "ready");
+  const json = JSON.parse(report.output());
+  assert.equal(json.phase, "ready");
+  // What each named image is, recorded even when no container shows it (Core's, the fixture's).
+  assert.deepEqual(
+    json.ran.map((item) => [item.service, item.image, "hub" in item ? item.hub : "not Hub's"]),
+    [
+      ["mend", "m", "not Hub's"],
+      ["cli", "c", "not Hub's"],
+      // MEND_VERIFY_DOCKER_HUB=off: Docker Hub does not answer.
+      ["fixture", "node:26-bookworm", null],
+    ],
+  );
   assert.equal(readFileSync(stateFile, "utf8"), written);
 });
 
@@ -243,11 +254,18 @@ test("every removal a teardown runs carries the lock (N16)", async () => {
 // A public up that reaches offline setup. The downstream HTTP refusal is deliberate: this
 // fixture verifies orchestration and command boundaries, not a working inner Mend installation.
 
-async function orchestrationRun(t, guardPullFailure) {
+async function orchestrationRun(t, guardPullFailure, { held = {}, env = {} } = {}) {
   const guard = "example.invalid/guard:fixture";
   const fakeDaemon = daemon({
     build: "success",
     orchestration: { guard, guardPullFailure },
+    images: Object.fromEntries(
+      Object.entries(held).map(([tag, RepoDigests]) => [
+        tag,
+        { Id: `sha256:held-${tag}`, Labels: {}, RepoDigests },
+      ]),
+    ),
+    env,
     containers: [["ordinary-container", { purpose: "ordinary" }]],
     volumes: [volume("ordinary-volume", { purpose: "ordinary" })],
     networks: [
@@ -348,6 +366,70 @@ async function orchestrationRun(t, guardPullFailure) {
   assert.deepEqual(failures, []);
   return { fakeDaemon, code, output: running.output(), requests, guard, port };
 }
+
+/** A Docker Hub that names `digests[repository:tag]` for a tag, and knows no other. */
+async function fakeHub(t, digests) {
+  const hub = createServer((request, response) => {
+    if (request.url.startsWith("/token")) return response.end('{"token":"t"}');
+    const match = /^\/v2\/(.+)\/manifests\/(.+)$/.exec(request.url);
+    const digest = match && digests[`${match[1]}:${match[2]}`];
+    if (!digest) return response.writeHead(404).end();
+    response.writeHead(200, { "docker-content-digest": digest }).end();
+  });
+  hub.listen(0, "127.0.0.1");
+  await once(hub, "listening");
+  t.after(() => new Promise((resolve) => hub.close(resolve)));
+  return `http://127.0.0.1:${hub.address().port}`;
+}
+
+const pullsOf = (result) =>
+  callsOf(result.fakeDaemon)
+    .filter((args) => args[0] === "pull")
+    .map((args) => args.at(-1))
+    .toSorted();
+const others = (result) => [
+  "dxflrs/garage:v2.4.1",
+  "nginx:1.29-alpine",
+  "registry:3.1",
+  result.guard,
+];
+
+test("a held image is reused, not pulled, and said when Docker Hub cannot confirm it", async (t) => {
+  const result = await orchestrationRun(t, false, {
+    held: { "node:26-bookworm": [], "postgres:17-alpine": ["postgres@sha256:p"] },
+  });
+  assert.deepEqual(pullsOf(result), others(result).toSorted());
+  assert.match(
+    result.output,
+    /held node:26-bookworm sha256:held-node:26-bookworm \(loaded, no repo digest\) · Docker Hub did not answer/,
+  );
+  assert.match(result.output, /held postgres:17-alpine sha256:p · Docker Hub did not answer/);
+});
+
+test("a held copy Docker Hub has moved past is said, and pulled only with MEND_VERIFY_REFRESH_IMAGES=1", async (t) => {
+  const hub = await fakeHub(t, {
+    "library/node:26-bookworm": "sha256:new",
+    "library/postgres:17-alpine": "sha256:p",
+  });
+  const held = {
+    "node:26-bookworm": ["node@sha256:old"],
+    "postgres:17-alpine": ["postgres@sha256:p"],
+  };
+  const kept = await orchestrationRun(t, false, { held, env: { MEND_VERIFY_DOCKER_HUB: hub } });
+  assert.deepEqual(pullsOf(kept), others(kept).toSorted());
+  assert.match(kept.output, /held node:26-bookworm sha256:old · Hub has sha256:new\n/);
+  assert.doesNotMatch(kept.output, /held postgres/, "a copy Docker Hub names is reused quietly");
+
+  const refreshed = await orchestrationRun(t, false, {
+    held,
+    env: { MEND_VERIFY_DOCKER_HUB: hub, MEND_VERIFY_REFRESH_IMAGES: "1" },
+  });
+  assert.deepEqual(pullsOf(refreshed), [...others(refreshed), "node:26-bookworm"].toSorted());
+  assert.match(
+    refreshed.output,
+    /held node:26-bookworm sha256:old · Hub has sha256:new · pulled \(MEND_VERIFY_REFRESH_IMAGES=1\)/,
+  );
+});
 
 for (const guardPullFailure of [false, true]) {
   test(`public up accepts builds and ${guardPullFailure ? "refuses offline setup after guard preload failure" : "reaches offline setup before the deliberate downstream HTTP503 boundary"}`, async (t) => {

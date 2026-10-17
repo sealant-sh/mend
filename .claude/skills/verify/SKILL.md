@@ -49,6 +49,45 @@ verdicts. They never appear in a report.
   `MEND_VERIFY_OUTER_URL` to match): with the defaults, its `up` meets the first one's container and
   its `serve` writes into the first one's served repository.
 
+  **Docker Hub pulls.** Docker Hub gives this machine's address 100 anonymous pulls an hour, and
+  every outer and every stack would otherwise pull the same images; past the limit a pull fails with
+  `toomanyrequests` and so does the run. Two things keep a run off it; neither logs in to Docker
+  Hub.
+  - **Seeding.** `up` loads the images this machine's Docker already holds into the outer's daemon,
+    and `local-outer.sh seed` does it again for the Docker service of each session running in the
+    outer (Launch, step 2): from this machine, or from the outer's daemon, which pulls an image once
+    for all its sessions. A copy is loaded only while Docker Hub still names its digest for the tag;
+    a stale one is reported and pulled instead. When Docker Hub refuses to say (its limit spent),
+    the copy is loaded anyway and the line says `unchecked`. Every seeding line also goes to the
+    outer's `/st-verify/seed.log`, which `seed` prints first, so a run's `seed.txt` holds what `up`
+    loaded too. The network guard's image stays one pull per stack: it is named by digest, and a
+    loaded image carries none.
+  - **Held images are reused, and reported.** `stack.mjs` pulls only what its daemon lacks, and
+    `seed` reuses what a daemon already holds: pulling a held tag would spend the limit again.
+    Whenever Docker Hub does not confirm a held copy (a HEAD on the manifest, which it does not
+    count), the run says `held <ref> <digest> · Hub has <digest>` (or `· Docker Hub did not answer`;
+    a loaded copy is named by its image id). `stack.mjs` prints it in its log and keeps it in its
+    state's `held`, which the doctor prints; `seed` keeps it in the seed log. With
+    `MEND_VERIFY_REFRESH_IMAGES=1`, a held copy whose repo digest is provably another is pulled
+    instead.
+  - **One pull-through cache.** `local-outer.sh hub-cache up` starts `st-verify-hub-cache`
+    (registry:2) on a Docker network of its own, `st-verify-hub-cache`, and publishes no port: this
+    machine's firewall drops what containers send to the Docker bridge's address, and no LAN address
+    ever reaches it. An outer brought up with
+    `MEND_VERIFY_REGISTRY_MIRROR=http://st-verify-hub-cache:5000` joins that network and asks the
+    cache first, so the cache pulls each image from Docker Hub once for every outer on this machine,
+    and serves its copy while Docker Hub refuses. This machine reaches it by its container address,
+    which `hub-cache status` prints with what it holds and Docker Hub's remaining pulls.
+    `hub-cache down` removes the container and keeps its volume and network on purpose: the cache is
+    shared by every outer on this machine, and the network may still hold running outers. A
+    session's Docker service under Mend 0.36.0-next.658 takes no mirror, which is why `seed` fills
+    it from the outer's daemon.
+
+  ```sh
+  .claude/skills/verify/scripts/local-outer.sh hub-cache up   # once per machine; it restarts with Docker
+  export MEND_VERIFY_REGISTRY_MIRROR=http://st-verify-hub-cache:5000   # before `up`
+  ```
+
   It always serves a complete repository (one parentless commit of the tree, then each serve on
   top), never a shallow clone: Mend refuses to adopt a shallow repository (mend#654), and a worktree
   whose history it cannot walk never finishes its Stop (`final seal · refused · unrestorable`). The
@@ -189,6 +228,17 @@ first. The helpers start `mend` through `PATH`, so they always meet the guard.
 
    Done when the JSON reads `"status": "running"`. This took 20 to 43 s.
 
+   On a `local-outer.sh` outer, seed the session's Docker service before its stack pulls anything
+   (What you need, Docker Hub pulls). It took about a minute here.
+
+   ```sh
+   .claude/skills/verify/scripts/local-outer.sh seed > "$E/launch/seed.txt"
+   .claude/skills/verify/scripts/local-outer.sh images > "$E/launch/outer-images.json"
+   ```
+
+   `outer-images.json` records the image each of the outer's containers ran (the outer itself, its
+   server's, the session's workspace and Docker service): reference, image id and repo digests.
+
 3. **Start the stack** as a Service of that session, named for this run, so `logs`, `connect` and
    `stop` can never pick another verifier's:
 
@@ -311,7 +361,19 @@ when every `ok`/`NOT` line holds:
   session) in every container's environment, command and labels. When it could read none, the doctor
   prints `isolation · not compared`: that line observes nothing and counts for nothing.
 
-`doctor.txt`, `report.json` and `health.json` land in `--out`. On a `NOT` line, read
+- **What each service ran.** `report` names the image every stack container ran (inner Mend,
+  Postgres, Garage, the mirrors, the inner sessions' workspaces) and every image the stack named
+  that no container shows (Core's and sealantd's builds, the fixture's base, the network guard): its
+  reference, image id, repo digests and, for a Docker Hub tag, the digest Docker Hub names now
+  (`hub`). The doctor writes them to `images.json` and prints one
+  `image · <service> · <reference> · <id> · …` line each, ending `Hub's current`, `Hub has <digest>`
+  or `Docker Hub did not answer`; then each `held` line from `up`. A digest says where a pulled
+  image came from; `no repo digest (built or loaded here)` marks one `stack.mjs` built, or
+  `local-outer.sh seed` loaded after checking its digest (`$E/launch/seed.txt`). The ledger keeps
+  the same record for each container a recording window saw (`ran`, by container id, kept after the
+  container is removed), so it survives the stack.
+
+`doctor.txt`, `report.json`, `images.json` and `health.json` land in `--out`. On a `NOT` line, read
 `$E/launch/stack.log`, then go to Cleanup and launch again. Run the doctor after `health answers`:
 before it, the check reads `not run yet`.
 
@@ -600,7 +662,7 @@ Cleanup removes neither. Name each directory for the feature file and the entry 
 | screenshot               | the same `capture(name)`, full page, heading in view, every canvas masked; withheld on a page that shows a credential                                                                              | `<dir>/<name>.png` and `.png.checked`, or `.png.withheld` |
 | web steps                | `note(text)`, and every capture and failure                                                                                                                                                        | `<dir>/steps.log`                                         |
 | CLI stdout, stderr, exit | `node $skill/scripts/steps.mjs <dir> <batch> …` (inner steps) or `capture.sh <dir> <step> -- <command…>` (one command), redacted                                                                   | `<dir>/<step>.{cmd,stdout,stderr,exit}`                   |
-| the stack                | the doctor, and once more before Cleanup: `doctor.mjs … --out "$E/final"`                                                                                                                          | `report.json`, `doctor.txt`                               |
+| the stack                | the doctor, and once more before Cleanup: `doctor.mjs … --out "$E/final"`                                                                                                                          | `report.json`, `images.json`, `doctor.txt`                |
 | the inner record         | before Cleanup: `stack.mjs mend sessions --all --json` through `capture.sh`, and the inner session page through `capture()`; `stack.mjs mend logs <id>` once the Mend under test has it (mend#610) | `$E/<feature>/cli`, `/web`                                |
 | the outer record         | each `mend run` prints `session <id8>` on stderr; the outer server keeps those records after Cleanup: `mend logs <id8>`                                                                            | `<step>.stderr`                                           |
 | a Stop that stays saving | `settle.mjs` (Cleanup): the session's last state, and the outer server's logs with its `capture seals` lines                                                                                       | `$E/cleanup/settle/`                                      |

@@ -12,8 +12,9 @@
 // web is asked for /api/health. The tunnel is tunnel.mjs's record: the same pid, with the same
 // start time. It starts, stops and writes nothing of the stack (`report` writes nothing back). Its
 // traces: the sibling session is a record on the outer server, and `report` runs a short-lived
-// probe container on the session's Docker. It writes report.json, health.json and doctor.txt into
-// --out and exits 0 only when every `ok`/`NOT` line of doctor.txt holds. `mend` is the first one on
+// probe container on the session's Docker. It writes report.json, images.json (the image id, and
+// repo digests, each stack service ran), health.json and doctor.txt into --out and exits 0 only
+// when every `ok`/`NOT` line of doctor.txt holds. `mend` is the first one on
 // PATH.
 
 import { spawnSync } from "node:child_process";
@@ -158,6 +159,30 @@ if (report !== null) {
   else if (checked === 0)
     say("isolation · not compared: report could read no credential of the session");
   else observe(true, `isolation · no container holds the session's ${checked} credential(s)`);
+  // What each service ran, by image id: a tag that moved, or a stale copy seeded in, shows here.
+  const ran = report.ran ?? [];
+  writeFileSync(join(out, "images.json"), `${JSON.stringify(ran, null, 2)}\n`);
+  if (ran.length === 0) say("images · the report named none (a stack.mjs from before images.json)");
+  for (const item of ran) {
+    const digests =
+      item.repoDigests.length > 0
+        ? item.repoDigests.join(" ")
+        : item.id === null
+          ? "no image"
+          : "no repo digest (built or loaded here)";
+    const hub = !("hub" in item)
+      ? ""
+      : item.hub === null
+        ? " · Docker Hub did not answer"
+        : item.repoDigests.some((digest) => digest.endsWith(`@${item.hub}`))
+          ? " · Hub's current"
+          : ` · Hub has ${item.hub}`;
+    say(
+      `image · ${item.service} · ${item.image ?? "?"} · ${item.id ?? "not on the daemon"} · ${digests}${hub}`,
+    );
+  }
+  // The held images the stack reused without Docker Hub confirming them, as it said at `up`.
+  for (const line of report.held ?? []) say(line);
   if (report.memory)
     say(
       `memory · ${(report.memory.totalKb / 1024 / 1024).toFixed(1)} GiB · ${report.memory.method}`,
