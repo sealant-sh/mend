@@ -392,53 +392,53 @@ export const makeGatewayRpcHandlers = ({
    */
   const providersWith = (asked: ReadonlyArray<WorkspaceSkills>) =>
     Effect.gen(function* () {
-    yield* authorize(session);
-    const catalogRead = mend.listHarnessModels(session.deviceToken).pipe(
-      Effect.catchTags({
-        MendDeviceRefused: () =>
-          Effect.fail(
-            new EnvironmentAuthorizationError({
-              message: "Mend no longer accepts this device. Pair again from Mend.",
-              requiredScope: READ,
-            }),
-          ),
-        MendUnavailable: (cause) =>
-          Effect.logWarning("t3 gateway could not read Mend's model catalog", { cause }).pipe(
-            Effect.andThen(
-              Effect.fail(
-                new ServerSettingsError({
-                  settingsPath: MODELS_SOURCE,
-                  operation: "read-file",
-                  cause,
-                }),
+      yield* authorize(session);
+      const catalogRead = mend.listHarnessModels(session.deviceToken).pipe(
+        Effect.catchTags({
+          MendDeviceRefused: () =>
+            Effect.fail(
+              new EnvironmentAuthorizationError({
+                message: "Mend no longer accepts this device. Pair again from Mend.",
+                requiredScope: READ,
+              }),
+            ),
+          MendUnavailable: (cause) =>
+            Effect.logWarning("t3 gateway could not read Mend's model catalog", { cause }).pipe(
+              Effect.andThen(
+                Effect.fail(
+                  new ServerSettingsError({
+                    settingsPath: MODELS_SOURCE,
+                    operation: "read-file",
+                    cause,
+                  }),
+                ),
               ),
             ),
-          ),
-      }),
-    );
-    // Beside the catalog, never in front of it: a slow or failed read leaves the logins unknown.
-    const loginsRead = mend.connectedAccounts(session.deviceToken).pipe(
-      Effect.flatMap((accounts) =>
-        Effect.map(Clock.currentTimeMillis, (now): PersonLogins => loginsOf(accounts, now)),
-      ),
-      Effect.timeoutOption(LOGINS_DEADLINE),
-      Effect.map(Option.getOrNull),
-      Effect.catch((cause) =>
-        Effect.logDebug("t3 gateway could not read the person's logins", { cause }).pipe(
-          Effect.as(null),
+        }),
+      );
+      // Beside the catalog, never in front of it: a slow or failed read leaves the logins unknown.
+      const loginsRead = mend.connectedAccounts(session.deviceToken).pipe(
+        Effect.flatMap((accounts) =>
+          Effect.map(Clock.currentTimeMillis, (now): PersonLogins => loginsOf(accounts, now)),
         ),
-      ),
-    );
-    const [catalogs, logins] = yield* Effect.all([catalogRead, loginsRead], {
-      concurrency: "unbounded",
+        Effect.timeoutOption(LOGINS_DEADLINE),
+        Effect.map(Option.getOrNull),
+        Effect.catch((cause) =>
+          Effect.logDebug("t3 gateway could not read the person's logins", { cause }).pipe(
+            Effect.as(null),
+          ),
+        ),
+      );
+      const [catalogs, logins] = yield* Effect.all([catalogRead, loginsRead], {
+        concurrency: "unbounded",
+      });
+      const checkedAt = DateTime.formatIso(yield* DateTime.now);
+      const providers = providersFromMend(catalogs, checkedAt, logins, [
+        ...hub.workspaceSkills(),
+        ...asked,
+      ]);
+      return yield* readable(encodeServerProviders(providers), providers);
     });
-    const checkedAt = DateTime.formatIso(yield* DateTime.now);
-    const providers = providersFromMend(catalogs, checkedAt, logins, [
-      ...hub.workspaceSkills(),
-      ...asked,
-    ]);
-    return yield* readable(encodeServerProviders(providers), providers);
-  });
   const loadProviders = providersWith([]);
 
   const configOf = (providers: ReadonlyArray<ServerProvider>, settings: ServerSettings) => {
@@ -459,7 +459,6 @@ export const makeGatewayRpcHandlers = ({
       Effect.flatMap(([providers, kept]) => configOf(providers, kept.settings)),
     );
   const loadServerConfig = configWith([]);
-
 
   return WsRpcGroup.of({
     // ── Served ──────────────────────────────────────────────────────────────
