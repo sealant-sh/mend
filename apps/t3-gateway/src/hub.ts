@@ -62,6 +62,7 @@ import {
   MendCommandRefused,
   MendDeviceRefused,
   type MendCommand,
+  type MendHarnessCatalog,
   type MendRequestResponse,
   type MendNotFound,
   type MendUnavailable,
@@ -80,7 +81,13 @@ import type {
   MendTurn,
   MendWorkspaceRetirement,
 } from "./mend-workbench.ts";
-import { optionsChangeOf, type NextChoice } from "./model-options.ts";
+import {
+  effortsTakenBy,
+  nextLaunchModelOf,
+  optionsChangeOf,
+  withEffortTaken,
+  type NextChoice,
+} from "./model-options.ts";
 import { readsRetirement, readsWaiting, threadNoticesOf } from "./notices.ts";
 import * as Queueing from "./queue.ts";
 import {
@@ -341,7 +348,7 @@ export interface ThreadCommands {
     readonly imageIds: ReadonlyArray<string>;
     /**
      * The model selection the message carries: a model or effort changed on the picker is kept
-     * for the agent's next start, a tier or provider changed is refused (`model-options.ts`).
+     * for the agent's next start, the Fast tier or another provider is refused (`model-options.ts`).
      */
     readonly modelSelection?: ModelSelection | undefined;
   }) => Effect.Effect<number, ThreadCommandFailure>;
@@ -1146,10 +1153,7 @@ export const makePersonHub = (input: {
           ([sessionId, value]) => {
             const source = sourceOf(sessionId);
             const applied =
-              source !== null &&
-              source.agent.exitedAt === null &&
-              source.agent.status === "running" &&
-              runsWith(source.agent, value);
+              source !== null && isLive(source.agent) && runsWith(source.agent, value);
             if (!applied || keeper === null) return Effect.void;
             return letGo(keeper.id, sessionId).pipe(
               Effect.tap(() => Effect.sync(() => chosen.delete(sessionId))),
@@ -1173,13 +1177,13 @@ export const makePersonHub = (input: {
       "effort",
       nextEfforts,
       (agent, effort) => agent.protocolOptions?.effort === effort,
-      (user, session) => state.setNextEffort(user, session, null),
+      (user, session) => state.setNextChoices(user, session, { effort: null }),
     );
     const settleNextModels = settleNext(
       "model",
       nextModels,
       (agent, model) => agent.protocolOptions?.model === model,
-      (user, session) => state.setNextModel(user, session, null),
+      (user, session) => state.setNextChoices(user, session, { model: null }),
     );
 
     /** Writes every queue that changed since it was last kept. */
@@ -1364,11 +1368,10 @@ export const makePersonHub = (input: {
             })(),
             nextModel: (() => {
               const next = nextModels.get(session.id);
-              return next === undefined || next === (session.model ?? agent.protocolOptions?.model)
+              return next === undefined || (isLive(agent) && agent.protocolOptions?.model === next)
                 ? null
                 : next;
             })(),
-            tier: thread?.options.speed === "fast" ? "fast" : null,
             ...turnCheckpointsOf(session.id, conversation.turns),
             pending,
             queueHeld: queue?.held ?? false,
@@ -2449,7 +2452,6 @@ export const makePersonHub = (input: {
         const next = nextModes.get(sessionId);
         const nextEffort = nextEfforts.get(sessionId);
         const nextModel = nextModels.get(sessionId);
-        const speed = launched.get(sessionId)?.options.speed;
         const named =
           recordedAgentOf(sessionId) === null ? launched.get(sessionId)?.options : undefined;
         const options = {
@@ -2457,7 +2459,6 @@ export const makePersonHub = (input: {
           ...(next === undefined ? {} : { permissionMode: next }),
           ...(nextEffort === undefined ? {} : { effort: nextEffort }),
           ...(nextModel === undefined ? {} : { model: nextModel }),
-          ...(speed === undefined ? {} : { speed }),
         };
         const answer = yield* mend
           .launchProtocol(entry.token, sessionId, "", options)
@@ -2642,6 +2643,11 @@ export const makePersonHub = (input: {
       Effect.gen(function* () {
         // Only those who may steer queue a message.
         yield* steerableBy(command.session, command.threadId, command.threadId);
+        const catalog = yield* catalogFor(
+          command.session,
+          command.threadId,
+          command.modelSelection,
+        );
         const selection = selectionRefusal(
           command.imageIds,
           (image) => sessionIdOf(image.threadId) === command.threadId,
@@ -2664,7 +2670,7 @@ export const makePersonHub = (input: {
             ) {
               return sequence;
             }
-            yield* keepNextChoices(command.threadId, command.modelSelection);
+            yield* keepNextChoices(command.threadId, command.modelSelection, catalog);
             const requestedAt = DateTime.formatIso(yield* DateTime.now);
             yield* changeKept(command.threadId, (queue) => {
               queue.entries.push(
@@ -2686,45 +2692,75 @@ export const makePersonHub = (input: {
         );
       });
 
-    const keepNextChoices = (sessionId: string, selection: ModelSelection | undefined) =>
+    const catalogFor = (
+      session: BearerSession,
+      sessionId: string,
+      selection: ModelSelection | undefined,
+    ): Effect.Effect<CatalogRead> =>
+      Effect.suspend(() => {
+        const source = sourceOf(sessionId);
+        return selection === undefined ||
+          source === null ||
+          selection.model === threadModelOptionsOf(source).runningModel
+          ? Effect.succeed(null)
+          : Effect.exit(mend.listHarnessModels(session.deviceToken));
+      });
+
+    const keepNextChoices = (
+      sessionId: string,
+      selection: ModelSelection | undefined,
+      catalog: CatalogRead,
+    ) =>
       Effect.gen(function* () {
         const source = sourceOf(sessionId);
         if (source === null) return;
-        const change = optionsChangeOf(threadModelOptionsOf(source), selection);
-        if (change._tag === "Refused") return yield* refused(change.reason);
-        const keep = (
-          what: string,
-          choice: NextChoice,
-          chosen: Map<string, string>,
-          write: typeof state.setNextEffort,
-        ) =>
-          Effect.gen(function* () {
-            if (choice._tag === "Unchanged") return;
-            if (keeper === null) {
-              return yield* refused(
-                `A ${what} for the next start needs a paired person to keep it for.`,
-              );
-            }
-            const value = choice._tag === "Chosen" ? choice.value : null;
-            yield* write(keeper.id, sessionId, value).pipe(
-              Effect.tapError((error) =>
-                Effect.logError(`t3 gateway could not keep a next-start ${what}`, {
-                  cause: error.message,
-                }),
-              ),
-              Effect.mapError(
-                () =>
-                  new ThreadCommandRefused({
-                    reason: `The gateway could not keep this ${what} for the agent's next start, so nothing changed. Try again.`,
-                    authorization: false,
-                  }),
-              ),
+        const thread = threadModelOptionsOf(source);
+        const asked = optionsChangeOf(thread, selection);
+        if (asked._tag === "Refused") return yield* refused(asked.reason);
+        if (asked.model._tag === "Unchanged" && asked.effort._tag === "Unchanged") return;
+        let change = asked;
+        const model = nextLaunchModelOf(thread, asked);
+        if (model !== thread.runningModel) {
+          if (catalog === null || Exit.isFailure(catalog)) {
+            return yield* refused(
+              "The gateway could not read Mend's model catalog, so nothing changed. Try again.",
             );
-            if (value === null) chosen.delete(sessionId);
-            else chosen.set(sessionId, value);
-          });
-        yield* keep("model", change.model, nextModels, state.setNextModel);
-        yield* keep("effort", change.effort, nextEfforts, state.setNextEffort);
+          }
+          change = withEffortTaken(
+            thread,
+            asked,
+            effortsTakenBy(catalog.value, thread.harness, model),
+          );
+        }
+        if (keeper === null) {
+          return yield* refused(
+            "A choice for the next start needs a paired person to keep it for.",
+          );
+        }
+        const nextModel = keptValueOf(change.model);
+        const nextEffort = keptValueOf(change.effort);
+        yield* state
+          .setNextChoices(keeper.id, sessionId, {
+            ...(nextModel === undefined ? {} : { model: nextModel }),
+            ...(nextEffort === undefined ? {} : { effort: nextEffort }),
+          })
+          .pipe(
+            Effect.tapError((error) =>
+              Effect.logError("t3 gateway could not keep a next-start choice", {
+                cause: error.message,
+              }),
+            ),
+            Effect.mapError(
+              () =>
+                new ThreadCommandRefused({
+                  reason:
+                    "The gateway could not keep this choice for the agent's next start, so nothing changed. Try again.",
+                  authorization: false,
+                }),
+            ),
+          );
+        remember(nextModels, sessionId, nextModel);
+        remember(nextEfforts, sessionId, nextEffort);
       });
 
     /** The Mend turn a run is: the turn the gateway sent it as, or the turn of that id. */
@@ -3280,12 +3316,13 @@ export const makePersonHub = (input: {
         yield* ensureLoaded;
         const sessionId = sessionIdOf(command.threadId);
         yield* steerableBy(command.session, sessionId, command.threadId);
+        const catalog = yield* catalogFor(command.session, sessionId, command.modelSelection);
         return yield* locked(
           Effect.gen(function* () {
             if (sourceOf(sessionId) === null) {
               return yield* refused(`Thread ${command.threadId} is not in this environment.`);
             }
-            yield* keepNextChoices(sessionId, command.modelSelection);
+            yield* keepNextChoices(sessionId, command.modelSelection, catalog);
             yield* publishAll;
             return sequence;
           }),
@@ -3848,6 +3885,23 @@ const NOT_KEPT =
 /** The mode an agent started with; a launch that named none ran `bypass`. */
 const modeOf = (agent: MendProcess): "bypass" | "ask" =>
   agent.protocolOptions?.permissionMode === "ask" ? "ask" : "bypass";
+
+const isLive = (agent: MendProcess): boolean =>
+  agent.exitedAt === null && agent.status === "running";
+
+type CatalogRead = Exit.Exit<ReadonlyArray<MendHarnessCatalog>, HubReadError> | null;
+
+const keptValueOf = (choice: NextChoice): string | null | undefined =>
+  choice._tag === "Unchanged" ? undefined : choice._tag === "Chosen" ? choice.value : null;
+
+const remember = (
+  chosen: Map<string, string>,
+  sessionId: string,
+  value: string | null | undefined,
+) => {
+  if (value === null) chosen.delete(sessionId);
+  else if (value !== undefined) chosen.set(sessionId, value);
+};
 
 const messageImageOf = (image: StoredImage): MessageImage => ({
   id: image.id,

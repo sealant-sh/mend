@@ -52,6 +52,11 @@ export interface BearerSession {
   readonly revokedAt: number | null;
 }
 
+export interface NextChoices {
+  readonly model?: string | null;
+  readonly effort?: string | null;
+}
+
 /**
  * The t3code ids a gateway-sent turn carries (ADR 0012, "State"): the run id the gateway minted
  * when it queued the message, and the message id the t3code client sent it with. A client
@@ -73,7 +78,6 @@ export const ThreadLaunchOptions = Schema.Struct({
   model: Schema.optional(Schema.String),
   effort: Schema.optional(Schema.String),
   permissionMode: Schema.optional(Schema.Literals(["bypass", "ask"])),
-  speed: Schema.optional(Schema.Literals(["standard", "fast"])),
 });
 export type ThreadLaunchOptions = typeof ThreadLaunchOptions.Type;
 
@@ -321,22 +325,19 @@ export class GatewayState extends Context.Service<
     readonly listVisited: (
       mendUserId: string,
     ) => Effect.Effect<ReadonlyMap<string, string>, GatewayStateError>;
-    /** The reasoning effort a person chose for a session's next launch; null clears it. */
-    readonly setNextEffort: (
+    /**
+     * The model and reasoning effort a person chose for a session's next launch, written together:
+     * an absent field stays as it is, null clears it.
+     */
+    readonly setNextChoices: (
       mendUserId: string,
       sessionId: string,
-      effort: string | null,
+      choices: NextChoices,
     ) => Effect.Effect<void, GatewayStateError>;
     /** Every next-launch effort a person chose, by session. */
     readonly listNextEfforts: (
       mendUserId: string,
     ) => Effect.Effect<ReadonlyMap<string, string>, GatewayStateError>;
-    /** The model a person chose for a session's next launch; null clears it. */
-    readonly setNextModel: (
-      mendUserId: string,
-      sessionId: string,
-      model: string | null,
-    ) => Effect.Effect<void, GatewayStateError>;
     /** Every next-launch model a person chose, by session. */
     readonly listNextModels: (
       mendUserId: string,
@@ -1389,19 +1390,25 @@ export const openGatewayState = (
         ),
       );
 
-    const setNextEffort = (mendUserId: string, sessionId: string, effort: string | null) =>
-      run("setNextEffort", () => {
-        if (effort === null) {
+    const setNextChoices = (mendUserId: string, sessionId: string, choices: NextChoices) =>
+      transaction("setNextChoices", () => {
+        const write = (table: "next_models" | "next_efforts", column: "model" | "effort") => {
+          const value = choices[column];
+          if (value === undefined) return;
+          if (value === null) {
+            database
+              .prepare(`DELETE FROM ${table} WHERE mend_user_id = ? AND mend_session_id = ?`)
+              .run(mendUserId, sessionId);
+            return;
+          }
           database
-            .prepare("DELETE FROM next_efforts WHERE mend_user_id = ? AND mend_session_id = ?")
-            .run(mendUserId, sessionId);
-          return;
-        }
-        database
-          .prepare(
-            "INSERT OR REPLACE INTO next_efforts (mend_user_id, mend_session_id, effort) VALUES (?, ?, ?)",
-          )
-          .run(mendUserId, sessionId, effort);
+            .prepare(
+              `INSERT OR REPLACE INTO ${table} (mend_user_id, mend_session_id, ${column}) VALUES (?, ?, ?)`,
+            )
+            .run(mendUserId, sessionId, value);
+        };
+        write("next_models", "model");
+        write("next_efforts", "effort");
       });
 
     const listNextEfforts = (mendUserId: string) =>
@@ -1416,21 +1423,6 @@ export const openGatewayState = (
             new Map(rows.map((row) => [row.mend_session_id, row.effort] as const)),
         ),
       );
-
-    const setNextModel = (mendUserId: string, sessionId: string, model: string | null) =>
-      run("setNextModel", () => {
-        if (model === null) {
-          database
-            .prepare("DELETE FROM next_models WHERE mend_user_id = ? AND mend_session_id = ?")
-            .run(mendUserId, sessionId);
-          return;
-        }
-        database
-          .prepare(
-            "INSERT OR REPLACE INTO next_models (mend_user_id, mend_session_id, model) VALUES (?, ?, ?)",
-          )
-          .run(mendUserId, sessionId, model);
-      });
 
     const listNextModels = (mendUserId: string) =>
       run("listNextModels", () =>
@@ -1504,9 +1496,8 @@ export const openGatewayState = (
       listLifecycles,
       setVisited,
       listVisited,
-      setNextEffort,
+      setNextChoices,
       listNextEfforts,
-      setNextModel,
       listNextModels,
       liveSessions,
       peopleWithQueuedMessages,

@@ -1,12 +1,12 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 
 import {
   CommandId,
   MessageId,
   ORCHESTRATION_V2_WS_METHODS,
-  ProjectId,
   ProviderInstanceId,
   ThreadId,
   type ModelSelection,
@@ -15,8 +15,10 @@ import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
+import * as Schedule from "effect/Schedule";
 
 import { nextEffortLineOf, nextModelLineOf } from "../src/model-options.ts";
+import { FAST_TIER_REFUSAL } from "../src/server-config.ts";
 import { assert, describe, it, TestClock } from "./support/effect-vitest.ts";
 import { startFakeMend, type FakeMend } from "./support/fake-mend.ts";
 import { gatewayTestLayer } from "./support/gateway.ts";
@@ -24,10 +26,10 @@ import { pairAndConnect } from "./support/rpc.ts";
 import { GatewayTimers, withGatewayTimers } from "./support/timers.ts";
 
 /**
- * The traits picker on a started thread (ADR 0012, phase 3): Mend sets the reasoning effort and the
- * service tier per launch of the agent. A changed effort applies from the agent's next start, as
- * the runtime mode does, and the thread says so until then; Mend records no tier, so a changed tier
- * is refused with t3code's own dispatch error and the picker never shows one the agent lacks.
+ * The model and traits pickers on a started thread (ADR 0012, phase 3): Mend sets the model and the
+ * reasoning effort per launch of the agent. A changed one applies from the launch a message makes
+ * once the agent has stopped, as the runtime mode does, and the thread says so until then. A
+ * protocol agent takes no service tier, so Fast is refused with t3code's own dispatch error.
  */
 
 const withGateway = <A, E, R>(test: (mend: FakeMend) => Effect.Effect<A, E, R>) =>
@@ -102,6 +104,13 @@ const sessionRunningOn = (mend: FakeMend, effort: string | null) => {
       protocolOptions: { ...agent.protocolOptions, effort },
     });
   }
+};
+
+const stopAfterTurns = (mend: FakeMend) => {
+  for (const turn of mend.workbench.turns.get("session-1") ?? []) {
+    mend.workbench.setTurn(turn, "completed");
+  }
+  mend.workbench.stopAgent("session-1");
 };
 
 describe("reasoning effort on a started thread", () => {
@@ -195,7 +204,7 @@ describe("reasoning effort on a started thread", () => {
 });
 
 describe("service tier on a started thread", () => {
-  it.live("refuses a changed tier with t3code's dispatch error, and sends nothing", () =>
+  it.live("refuses Fast with t3code's dispatch error, and sends nothing", () =>
     withGateway((mend) =>
       Effect.gen(function* () {
         sessionRunningOn(mend, null);
@@ -205,76 +214,15 @@ describe("service tier on a started thread", () => {
         );
         const error = errorOf(fast);
         assert.strictEqual(error._tag, "OrchestrationV2DispatchCommandError");
-        assert.include(error.message ?? "", "service tier");
+        assert.strictEqual(error.message, FAST_TIER_REFUSAL);
         const projection = yield* rpc[ORCHESTRATION_V2_WS_METHODS.getThreadProjection]({
           threadId: THREAD,
         });
         assert.lengthOf(projection.runs, 0);
-        // The tier it shows (Standard) is no change.
         yield* send(rpc, "As before", selection([{ id: "serviceTier", value: "default" }]));
         yield* eventually(() => mend.workbench.turns.get("session-1")?.length === 1, "the turn");
       }),
     ),
-  );
-
-  it.effect("keeps a launched thread on the tier it asked for, naming it on every relaunch", () =>
-    withGateway((mend) =>
-      Effect.gen(function* () {
-        const timers = yield* GatewayTimers;
-        mend.workbench.addProject("project-1", "mend");
-        const { rpc } = yield* pairAndConnect(mend, "TIER-LAUNCH");
-        const threadId = ThreadId.make("draft-fast");
-        yield* rpc[ORCHESTRATION_V2_WS_METHODS.launchThread]({
-          commandId: commandId(),
-          threadId,
-          projectId: ProjectId.make("project-1"),
-          title: "Fast one",
-          modelSelection: selection([{ id: "serviceTier", value: "fast" }]),
-          runtimeMode: "full-access",
-          interactionMode: "default",
-          workspaceStrategy: { type: "worktree", baseRef: "main" },
-          initialMessage: {
-            messageId: MessageId.make("message-fast"),
-            text: "Go",
-            attachments: [],
-          },
-        });
-        yield* TestClock.withLive(
-          eventually(() => mend.workbench.launches.length === 1, "the launch"),
-        );
-        const sessionId = mend.workbench.launches[0]?.sessionId ?? "";
-        yield* TestClock.withLive(
-          eventually(() => mend.workbench.turns.get(sessionId)?.length === 1, "the turn"),
-        );
-        const projection = yield* rpc[ORCHESTRATION_V2_WS_METHODS.getThreadProjection]({
-          threadId,
-        });
-        assert.deepInclude(projection.thread.modelSelection.options ?? [], {
-          id: "serviceTier",
-          value: "fast",
-        });
-        const standard = yield* Effect.exit(
-          send(rpc, "Slower", selection([{ id: "serviceTier", value: "default" }]), threadId),
-        );
-        assert.strictEqual(errorOf(standard)._tag, "OrchestrationV2DispatchCommandError");
-
-        // The idle stop: Mend recorded the agent, but no tier, so the relaunch names it again.
-        const first = mend.workbench.turns.get(sessionId)?.[0];
-        if (first !== undefined) mend.workbench.setTurn(first, "completed");
-        mend.workbench.stopAgent(sessionId);
-        yield* send(rpc, "Again", selection([{ id: "serviceTier", value: "fast" }]), threadId);
-        // A send that finds the agent gone waits out its backoff, then reads and launches.
-        yield* timers.drive(
-          { within: "1 second", deadline: "5 seconds" },
-          () => mend.workbench.launches.length === 2,
-          "the relaunch",
-        );
-        assert.deepStrictEqual(mend.workbench.launches[1]?.body, {
-          mode: "protocol",
-          speed: "fast",
-        });
-      }),
-    ).pipe(withGatewayTimers),
   );
 });
 
@@ -297,7 +245,6 @@ describe("model on a started thread", () => {
       nextModel: null,
       runningEffort: null,
       nextEffort: null,
-      tier: null,
     },
     "gpt-6.1-astra",
   );
@@ -416,6 +363,220 @@ describe("model on a started thread", () => {
         assert.strictEqual(projection.thread.modelSelection.model, "gpt-6.1-astra");
         assert.include(notices(projection), astraLine);
       }).pipe(Effect.scoped, Effect.provide(gatewayTestLayer(mend.url, statePath)));
+    });
+  });
+
+  it.effect("keeps a choice through a start Mend makes itself, for the gateway's next launch", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        const timers = yield* GatewayTimers;
+        sessionRunningOn(mend, "medium");
+        const { rpc } = yield* pairAndConnect(mend, "MODEL-HANDOVER");
+        yield* pick(rpc, onModel("gpt-6.1-astra"));
+        yield* send(rpc, "To the live agent", onModel("gpt-6.1-astra"));
+        yield* TestClock.withLive(
+          eventually(() => mend.workbench.turns.get("session-1")?.length === 1, "the turn"),
+        );
+        mend.workbench.startAgentOn("session-1", "gpt-6.1-sol");
+        yield* TestClock.withLive(
+          eventually(
+            () => mend.workbench.sessions.get("session-1")?.status === "running",
+            "the agent Mend started",
+          ),
+        );
+        const handedOver = yield* rpc[ORCHESTRATION_V2_WS_METHODS.getThreadProjection]({
+          threadId: THREAD,
+        });
+        assert.strictEqual(handedOver.thread.modelSelection.model, "gpt-6.1-astra");
+        assert.include(notices(handedOver), astraLine);
+        assert.strictEqual(mend.workbench.launches.length, 0);
+
+        stopAfterTurns(mend);
+        yield* send(rpc, "After the stop", onModel("gpt-6.1-astra"));
+        yield* timers.drive(
+          { within: "1 second", deadline: "5 seconds" },
+          () => mend.workbench.launches.length === 1,
+          "the launch",
+        );
+        assert.deepStrictEqual(mend.workbench.launches[0]?.body, {
+          mode: "protocol",
+          model: "gpt-6.1-astra",
+        });
+      }),
+    ).pipe(withGatewayTimers),
+  );
+
+  it.effect("says the model waits until an agent runs on it, though Mend records it first", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        const timers = yield* GatewayTimers;
+        sessionRunningOn(mend, "medium");
+        const { rpc } = yield* pairAndConnect(mend, "MODEL-RECORDED");
+        yield* pick(rpc, onModel("gpt-6.1-astra"));
+        stopAfterTurns(mend);
+        mend.workbench.launchBringsAgentUp = false;
+        yield* send(rpc, "After the stop", onModel("gpt-6.1-astra"));
+        yield* timers.drive(
+          { within: "1 second", deadline: "5 seconds" },
+          () => mend.workbench.launches.length === 1,
+          "the launch",
+        );
+        yield* TestClock.withLive(
+          eventually(
+            () => mend.workbench.sessions.get("session-1")?.model === "gpt-6.1-astra",
+            "the model recorded with the session",
+          ),
+        );
+        const projection = yield* rpc[ORCHESTRATION_V2_WS_METHODS.getThreadProjection]({
+          threadId: THREAD,
+        });
+        assert.include(notices(projection), astraLine);
+      }),
+    ).pipe(withGatewayTimers),
+  );
+
+  it.effect(
+    "lets go of an applied model in the state file, so a later change in Mend stands",
+    () => {
+      const statePath = join(mkdtempSync(join(tmpdir(), "t3-gateway-model-")), "state.sqlite");
+      return Effect.gen(function* () {
+        const mend = yield* startFakeMend;
+        sessionRunningOn(mend, "medium");
+        yield* Effect.gen(function* () {
+          const timers = yield* GatewayTimers;
+          const { rpc } = yield* pairAndConnect(mend, "MODEL-SETTLED-1");
+          const projection = () =>
+            rpc[ORCHESTRATION_V2_WS_METHODS.getThreadProjection]({ threadId: THREAD });
+          yield* pick(rpc, onModel("gpt-6.1-astra"));
+          stopAfterTurns(mend);
+          yield* send(rpc, "On Astra", onModel("gpt-6.1-astra"));
+          yield* timers.drive(
+            { within: "1 second", deadline: "5 seconds" },
+            () => mend.workbench.launches.length === 1,
+            "the launch",
+          );
+          yield* TestClock.withLive(
+            eventually(
+              () => mend.workbench.turns.get("session-1")?.length === 1,
+              "the turn on Astra",
+            ),
+          );
+          mend.workbench.startAgentOn("session-1", "gpt-6.1-sol");
+          yield* TestClock.withLive(
+            eventually(
+              () =>
+                mend.workbench.agents.get("session-1")?.protocolOptions?.model === "gpt-6.1-sol",
+              "the agent on Sol",
+            ),
+          );
+          const changed = yield* projection().pipe(
+            Effect.repeat({
+              until: (read) => read.thread.modelSelection.model === "gpt-6.1-sol",
+              schedule: Schedule.spaced("50 millis"),
+              times: 100,
+            }),
+            TestClock.withLive,
+          );
+          assert.strictEqual(changed.thread.modelSelection.model, "gpt-6.1-sol");
+          assert.notInclude(notices(changed), astraLine);
+        }).pipe(
+          Effect.scoped,
+          Effect.provide(gatewayTestLayer(mend.url, statePath)),
+          withGatewayTimers,
+        );
+        yield* Effect.gen(function* () {
+          const timers = yield* GatewayTimers;
+          const { rpc } = yield* pairAndConnect(mend, "MODEL-SETTLED-2");
+          const restarted = yield* rpc[ORCHESTRATION_V2_WS_METHODS.getThreadProjection]({
+            threadId: THREAD,
+          });
+          assert.strictEqual(restarted.thread.modelSelection.model, "gpt-6.1-sol");
+          assert.notInclude(notices(restarted), astraLine);
+          stopAfterTurns(mend);
+          // The message carries the picker's selection, as t3code sends it.
+          yield* send(rpc, "Still on Sol", restarted.thread.modelSelection);
+          yield* timers.drive(
+            { within: "1 second", deadline: "5 seconds" },
+            () => mend.workbench.launches.length === 2,
+            "the relaunch",
+          );
+          assert.deepStrictEqual(mend.workbench.launches[1]?.body, { mode: "protocol" });
+        }).pipe(
+          Effect.scoped,
+          Effect.provide(gatewayTestLayer(mend.url, statePath)),
+          withGatewayTimers,
+        );
+      });
+    },
+  );
+
+  it.effect("brings a waiting effort within what a picked model takes", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        const timers = yield* GatewayTimers;
+        sessionRunningOn(mend, "medium");
+        const { rpc } = yield* pairAndConnect(mend, "MODEL-EFFORT");
+        const projection = () =>
+          rpc[ORCHESTRATION_V2_WS_METHODS.getThreadProjection]({ threadId: THREAD });
+        yield* pick(rpc, onModel("gpt-6.1-sol", [{ id: "reasoningEffort", value: "ultra" }]));
+        yield* pick(rpc, onModel("gpt-5.5"));
+        const chosen = yield* projection();
+        assert.deepStrictEqual(chosen.thread.modelSelection.options, [
+          { id: "reasoningEffort", value: "xhigh" },
+        ]);
+        assert.include(notices(chosen), nextEffortLineOf("xhigh", "medium"));
+        assert.notInclude(notices(chosen), nextEffortLineOf("ultra", "medium"));
+
+        stopAfterTurns(mend);
+        yield* send(
+          rpc,
+          "On GPT-5.5",
+          onModel("gpt-5.5", [{ id: "reasoningEffort", value: "xhigh" }]),
+        );
+        yield* timers.drive(
+          { within: "1 second", deadline: "5 seconds" },
+          () => mend.workbench.launches.length === 1,
+          "the launch",
+        );
+        assert.deepStrictEqual(mend.workbench.launches[0]?.body, {
+          mode: "protocol",
+          effort: "xhigh",
+          model: "gpt-5.5",
+        });
+        yield* TestClock.withLive(
+          eventually(() => mend.workbench.turns.get("session-1")?.length === 1, "its turn"),
+        );
+        const applied = yield* projection();
+        assert.isFalse(notices(applied).some((line) => line.includes("next message")));
+      }),
+    ).pipe(withGatewayTimers),
+  );
+
+  it.live("changes neither the model nor the effort when the state file takes only one", () => {
+    const statePath = join(mkdtempSync(join(tmpdir(), "t3-gateway-model-")), "state.sqlite");
+    return Effect.gen(function* () {
+      const mend = yield* startFakeMend;
+      sessionRunningOn(mend, "medium");
+      yield* Effect.gen(function* () {
+        const { rpc } = yield* pairAndConnect(mend, "MODEL-ATOMIC-1");
+        const database = new DatabaseSync(statePath);
+        database.exec("DROP TABLE next_efforts");
+        database.close();
+        const both = yield* Effect.exit(
+          pick(rpc, onModel("gpt-6.1-astra", [{ id: "reasoningEffort", value: "high" }])),
+        );
+        assert.strictEqual(errorOf(both)._tag, "OrchestrationV2DispatchCommandError");
+        assert.include(errorOf(both).message ?? "", "nothing changed");
+        const projection = yield* rpc[ORCHESTRATION_V2_WS_METHODS.getThreadProjection]({
+          threadId: THREAD,
+        });
+        assert.strictEqual(projection.thread.modelSelection.model, "gpt-6.1-sol");
+        assert.isFalse(notices(projection).some((line) => line.includes("next message")));
+      }).pipe(Effect.scoped, Effect.provide(gatewayTestLayer(mend.url, statePath)));
+      const kept = new DatabaseSync(statePath);
+      const rows = kept.prepare("SELECT model FROM next_models").all();
+      kept.close();
+      assert.deepStrictEqual(rows, []);
     });
   });
 });
