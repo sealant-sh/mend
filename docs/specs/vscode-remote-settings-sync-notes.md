@@ -60,6 +60,29 @@ spike. The leanings below are guesses. The `how` pass has not yet confirmed them
    workspace uses a shared home (the shared layout). Never write into another person's session.
    Confirm how ADR 0016 shows which layout and home a workspace has.
 
+## Resume 2 (2026-10-17), stopped by a second hold
+
+- The branch is rebased onto origin/main `ee4bc44aa`, which includes the harness fix #1054 and
+  GitHub-hosted CI #1047.
+- **Scope is decided (redesign D8).** This covers extensions and machine settings only. VS Code
+  already applies local user settings and keybindings in a Remote-SSH window.
+- **Story h.** Setup runs once, at first run, and never asks again at open time. A missing
+  precondition becomes a progress step, never a dialog.
+- **The redesign's placeholder** is "P2 settings and extensions" in
+  `docs/specs/vscode-extension-redesign.md` on the `vscode-redesign-study` branch:
+  - the setting `Mend › Workspaces: Bring my editor` (`off | extensions | extensions and settings`);
+  - the status item `$(mend) extensions not synced · Sync`;
+  - the progress step `installing your extensions · 12/41`;
+  - the output channel **Mend: workspace editor**;
+  - its errors: no Marketplace or Open VSX reach, refused by policy, off for the organization.
+- **Gap G8** proposes a per-person editor profile (extension ids and machine settings) applied at
+  workspace boot. The nearest carrier today is the dotfiles snapshot (`dotfiles-store.ts`: 1 MiB per
+  file, 4 MiB total, applied at launch). It is not yet checked whether a dotfile may target
+  `~/.vscode-server/data/Machine/settings.json`.
+- **The `how` pass** was relaunched with three explorers (client, server user and home, harness).
+  The hold stopped all three before they reported, so their findings are not recorded. Rerun them
+  first on restart.
+
 ## Next step
 
 1. Finish the `how` pass with three explorers: client open path, server user and home, harness.
