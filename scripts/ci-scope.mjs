@@ -24,8 +24,8 @@ const changedPaths = (base, head) =>
     .filter(Boolean);
 
 // A package's tests and their helpers: its test/ directory, or a *.test.* / *.spec.* source
-// file. Neither the mobile web build nor the packaged server bundles them; the `./testing`
-// exports that point into test/ are imported only by tests (scripts/test-only-imports.test.mjs).
+// file. Nothing the mobile or packaging lane builds, reads or runs names them, nor the `./testing`
+// exports that point into test/ (scripts/test-only-imports.test.mjs fails if anything starts to).
 const testOnly = (path) =>
   !path.includes("\n") &&
   !path.endsWith("/package.json") &&
