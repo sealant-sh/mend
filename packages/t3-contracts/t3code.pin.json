@@ -607,6 +607,11 @@
       "upstream": "packages/shared/src/threadPullRequests.ts",
       "blob": "9b0c1a7457d3f8d6cdcd56af64f2e0983e0bac0d",
       "sha256": "51f784eb7c620309acbf7a2d93fbedadf555509eb88623f78d3f5d3c0b26ebb9"
+    },
+    "t3-shared/src/threadTranscript.ts": {
+      "upstream": "packages/shared/src/threadTranscript.ts",
+      "blob": "e8954bc24894d945bfb6a2d34230253aa6cbacf4",
+      "sha256": "597fba37cd280ac6fca341c52f9e4940a0b3b221dbb3e9a87952fbe4a92d63f3"
     }
   }
 }

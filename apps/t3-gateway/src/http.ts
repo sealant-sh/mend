@@ -6,9 +6,9 @@ import {
   EnvironmentAuthenticatedPrincipal,
   EnvironmentHttpApi,
   ORCHESTRATION_PROTOCOL_HEADER,
-  OrchestrationV2ThreadTranscript,
   PROVIDER_SEND_TURN_MAX_FILE_BYTES,
 } from "@mend/t3-contracts";
+import { threadTranscriptHeader } from "@mend/t3-contracts/thread-transcript";
 import * as Effect from "effect/Effect";
 import * as HttpApi from "effect/http-api/HttpApi";
 import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
@@ -18,7 +18,6 @@ import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/http/HttpServerResponse";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import * as Schema from "effect/Schema";
 
 import { AssetRouteLive } from "./assets.ts";
 import {
@@ -251,6 +250,7 @@ export const OrchestrationGroupLive = HttpApiBuilder.group(
     Effect.gen(function* () {
       const auth = yield* GatewayAuth;
       const projections = yield* Projections;
+      const { environmentId } = (yield* GatewayEnvironment).descriptor;
 
       /**
        * The caller's hub, held for the request's scope, once they may read orchestration. The
@@ -381,9 +381,14 @@ export const OrchestrationGroupLive = HttpApiBuilder.group(
                   updatedAt: projection.updatedAt,
                   items: projection.visibleTurnItems,
                 };
-                const bytes = Buffer.byteLength(
-                  JSON.stringify(encodeTranscript(transcript)),
-                  "utf8",
+                // The size of the JSONL file the client attaches
+                // (`t3:apps/web/src/lib/threadContextAttachment.ts`), as t3code's server measures
+                // it: the header, then each row's `JSON.stringify` and a newline
+                // (`t3:apps/server/src/orchestration-v2/ThreadManagementService.ts:627-650`,
+                // `projectedRowEncodedBytes` in `threadHistoryPaging.ts:82`).
+                const bytes = transcript.items.reduce(
+                  (total, row) => total + Buffer.byteLength(JSON.stringify(row), "utf8") + 1,
+                  Buffer.byteLength(threadTranscriptHeader(environmentId, transcript), "utf8"),
                 );
                 if (bytes > PROVIDER_SEND_TURN_MAX_FILE_BYTES) {
                   return yield* requestInvalid("thread_transcript_too_large");
@@ -400,8 +405,6 @@ export const OrchestrationGroupLive = HttpApiBuilder.group(
       );
     }),
 );
-
-const encodeTranscript = Schema.encodeSync(Schema.toCodecJson(OrchestrationV2ThreadTranscript));
 
 // ─── Router ──────────────────────────────────────────────────────────────────
 

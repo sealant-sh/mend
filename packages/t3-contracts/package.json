@@ -12,7 +12,8 @@
     "./pin": "./t3code.pin.json",
     "./relay": "./src/relay.ts",
     "./settings": "./src/settings.ts",
-    "./thread-settled": "./client-runtime/threadSettled.ts"
+    "./thread-settled": "./client-runtime/threadSettled.ts",
+    "./thread-transcript": "./t3-shared/src/threadTranscript.ts"
   },
   "scripts": {
     "lint": "oxlint . --no-error-on-unmatched-pattern",

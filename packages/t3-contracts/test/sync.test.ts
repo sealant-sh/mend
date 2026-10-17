@@ -19,6 +19,7 @@ const shared = [
   "path",
   "sourceControl",
   "threadPullRequests",
+  "threadTranscript",
 ];
 const clientRuntime = ["models", "subagentDisplay", "subagentRuntime", "threadSettled"];
 const inventory: ReadonlyArray<{ upstream: string; local: string; bytes: string }> = [

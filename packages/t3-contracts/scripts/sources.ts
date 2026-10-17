@@ -12,6 +12,7 @@ const T3_SHARED_FILES = [
   "path",
   "sourceControl",
   "threadPullRequests",
+  "threadTranscript",
 ];
 
 const CLIENT_RUNTIME_STATE_FILES = [
