@@ -10,6 +10,7 @@ import {
   type VcsStatusStreamEvent,
 } from "@mend/t3-contracts";
 import * as Effect from "effect/Effect";
+import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
 import type { GatedMend } from "./device-gate.ts";
@@ -38,6 +39,10 @@ import type { BearerSession } from "./state.ts";
  * once a second, however busy the worktree: a burst is one read at the end of its second, never
  * put off while the burst lasts. `vcs.refreshStatus` sends what it read down the socket's streams
  * of that `cwd` at once: t3code drops the call's answer and waits for the stream.
+ *
+ * A socket reads one `cwd`'s status one read at a time, and every ask joins the next read to start
+ * after it: a burst of refreshes is at most two reads, and a stream never shows an older read after
+ * a newer one.
  */
 
 /** At most one read of a worktree's status this often while it keeps changing. */
@@ -128,16 +133,31 @@ const refsFailed = (cwd: string) => (detail: string) =>
 const failed = (operation: string, cwd: string) => (detail: string) =>
   new GitManagerError({ operation, cwd, detail });
 
+/** One read of a `cwd`'s status; `seq` counts the asks it answers, so a later read is higher. */
+interface StatusRead {
+  readonly cwd: string;
+  readonly seq: number;
+  readonly location: CwdLocation;
+  readonly local: VcsStatusLocalResult;
+}
+
+interface Reader {
+  readonly lock: Semaphore.Semaphore;
+  asked: number;
+  last: StatusRead | null;
+}
+
 export const makeVcsHandlers = (input: {
   readonly hub: PersonHub;
   readonly mend: GatedMend;
   readonly session: BearerSession;
 }) => {
   const { hub, mend, session } = input;
-  const refreshed = makeFanout<{ readonly cwd: string; readonly local: VcsStatusLocalResult }>();
+  const reads = makeFanout<StatusRead>();
+  const readers = new Map<string, Reader>();
 
   /** Where `cwd` is, and its status now. */
-  const statusAt = (operation: string, cwd: string) =>
+  const readStatus = (operation: string, cwd: string) =>
     Effect.gen(function* () {
       const location = yield* hub
         .locationOf(cwd)
@@ -154,9 +174,30 @@ export const makeVcsHandlers = (input: {
       return { location, local: localStatusOf(location, stats) };
     });
 
+  /** `cwd`'s status from a read that started after this ask, shared with every ask meanwhile. */
+  const statusAt = (operation: string, cwd: string) =>
+    Effect.suspend(() => {
+      const reader = readers.get(cwd) ?? {
+        lock: Semaphore.makeUnsafe(1),
+        asked: 0,
+        last: null,
+      };
+      readers.set(cwd, reader);
+      const ask = ++reader.asked;
+      return reader.lock.withPermits(1)(
+        Effect.gen(function* () {
+          if (reader.last !== null && reader.last.seq >= ask) return reader.last;
+          const seq = reader.asked;
+          const read: StatusRead = { cwd, seq, ...(yield* readStatus(operation, cwd)) };
+          reader.last = read;
+          yield* reads.publish([read]);
+          return read;
+        }),
+      );
+    });
+
   const refreshStatus = (request: VcsStatusInput) =>
     statusAt("vcs.refreshStatus", request.cwd).pipe(
-      Effect.tap(({ local }) => refreshed.publish([{ cwd: request.cwd, local }])),
       Effect.map(
         ({ local }): VcsStatusResult => ({
           ...local,
@@ -178,7 +219,7 @@ export const makeVcsHandlers = (input: {
         const shell = yield* hub
           .subscribeShell(undefined)
           .pipe(Effect.mapError((error) => failed(operation, request.cwd)(error.message)));
-        const asked = yield* refreshed.subscribe((entry) => entry.cwd === request.cwd);
+        const read = yield* reads.subscribe((entry) => entry.cwd === request.cwd);
         const first = yield* statusAt(operation, request.cwd);
         const snapshot: VcsStatusStreamEvent = {
           _tag: "snapshot",
@@ -188,6 +229,7 @@ export const makeVcsHandlers = (input: {
         if (first.location.sessionId === null) {
           return Stream.make(snapshot).pipe(Stream.concat(Stream.never));
         }
+        let seq = first.seq;
         let last = JSON.stringify(first.local);
         // Any session of the worktree moving its one change, or a thread going (the one the
         // first read found may be gone, and another in the worktree read instead).
@@ -199,25 +241,22 @@ export const makeVcsHandlers = (input: {
           ),
           Stream.map(() => undefined),
         );
-        const read = Stream.merge(moved, Stream.tick(VCS_POLL).pipe(Stream.drop(1))).pipe(
+        const asks = Stream.merge(moved, Stream.tick(VCS_POLL).pipe(Stream.drop(1))).pipe(
           Stream.groupedWithin(Number.MAX_SAFE_INTEGER, VCS_REFRESH_MS),
-          Stream.mapEffect(() =>
-            statusAt(operation, request.cwd).pipe(
-              Effect.map(({ local }) => local),
-              // A read that fails leaves the last status standing; the next change reads again.
-              Effect.orElseSucceed(() => null),
-            ),
-          ),
+          // What it reads comes down `read`; one that fails leaves the last status standing.
+          Stream.mapEffect(() => statusAt(operation, request.cwd).pipe(Effect.ignore)),
+          Stream.drain,
         );
-        const updates = Stream.merge(read, asked.pipe(Stream.map((entry) => entry.local))).pipe(
-          Stream.filter((local): local is VcsStatusLocalResult => {
-            if (local === null) return false;
-            const print = JSON.stringify(local);
+        const updates = Stream.merge(read, asks).pipe(
+          Stream.filter((entry) => {
+            if (entry.seq <= seq) return false;
+            seq = entry.seq;
+            const print = JSON.stringify(entry.local);
             if (print === last) return false;
             last = print;
             return true;
           }),
-          Stream.map((local): VcsStatusStreamEvent => ({ _tag: "localUpdated", local })),
+          Stream.map(({ local }): VcsStatusStreamEvent => ({ _tag: "localUpdated", local })),
           Stream.mapError((error) => failed(operation, request.cwd)(error.message)),
         );
         return Stream.make(snapshot).pipe(Stream.concat(updates));

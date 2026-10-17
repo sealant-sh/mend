@@ -151,28 +151,52 @@ interface Listed {
   readonly entries: ReadonlyArray<ProjectEntry>;
 }
 
+/** One read of a listing, and what it has answered. */
+interface Kept {
+  readonly read: MendRead<Listed>;
+  readonly workspaceMutation: string | null;
+  /** The directories it listed: t3code asks for one again only to refresh it. */
+  readonly listed: Set<string | null>;
+}
+
 export const makeFileHandlers = (input: {
   readonly hub: PersonHub;
   readonly mend: GatedMend;
   readonly session: BearerSession;
 }) => {
   const { hub, mend, session } = input;
-  const listings = new Map<string, MendRead<Listed>>();
+  const listings = new Map<string, Kept>();
 
-  /** The files at `cwd`, from the kept listing while it is fresh. */
-  const filesAt = (cwd: string) =>
+  /**
+   * The files at `cwd`. A listing is read again after a second, after a command or file change
+   * finishes in the worktree, and when the tree asks for a directory it already listed.
+   */
+  const filesAt = (cwd: string, directory?: string | null) =>
     Effect.gen(function* () {
       const location: CwdLocation | null = yield* hub.locationOf(cwd);
       if (location === null) return null;
       const key = `${location.projectId}:${location.sessionId ?? ""}`;
-      const kept =
-        listings.get(key) ??
-        (yield* mend.projectFiles(session.deviceToken, location.projectId, location.sessionId).pipe(
-          Effect.map((listing): Listed => ({ listing, entries: entriesOf(listing.files) })),
-          Effect.cachedWithTTL((exit) => (Exit.isSuccess(exit) ? LISTING_TTL : Duration.zero)),
-        ));
-      listings.set(key, kept);
-      return yield* kept;
+      const kept = listings.get(key);
+      const current =
+        kept !== undefined &&
+        kept.workspaceMutation === location.workspaceMutation &&
+        (directory === undefined || !kept.listed.has(directory))
+          ? kept
+          : {
+              read: yield* mend
+                .projectFiles(session.deviceToken, location.projectId, location.sessionId)
+                .pipe(
+                  Effect.map((listing): Listed => ({ listing, entries: entriesOf(listing.files) })),
+                  Effect.cachedWithTTL((exit) =>
+                    Exit.isSuccess(exit) ? LISTING_TTL : Duration.zero,
+                  ),
+                ),
+              workspaceMutation: location.workspaceMutation,
+              listed: new Set<string | null>(),
+            };
+      listings.set(key, current);
+      if (directory !== undefined) current.listed.add(directory);
+      return yield* current.read;
     });
 
   const searchEntriesAt = (request: ProjectSearchEntriesInput) => {
@@ -204,7 +228,7 @@ export const makeFileHandlers = (input: {
       failure: "workspace_root_not_found" | "directory_list_failed",
       detail: string,
     ) => new ProjectListEntriesError({ cwd: request.cwd, failure, detail });
-    return filesAt(request.cwd).pipe(
+    return filesAt(request.cwd, request.directoryPath ?? null).pipe(
       Effect.mapError((error) => failed("directory_list_failed", error.message)),
       Effect.flatMap((kept) => {
         if (kept === null) {

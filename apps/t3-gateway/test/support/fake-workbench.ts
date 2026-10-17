@@ -184,6 +184,10 @@ export class FakeWorkbench {
     readonly entered: () => void;
     readonly answer: Promise<void>;
   } | null = null;
+  private nextStatsRead: {
+    readonly entered: () => void;
+    readonly answer: Promise<void>;
+  } | null = null;
   private nextTurnsRead: {
     readonly sessionId: string;
     readonly entered: () => void;
@@ -205,6 +209,14 @@ export class FakeWorkbench {
       turnsRead: turnsRead.promise,
       release: () => answer.resolve(),
     };
+  }
+
+  /** Holds the next `GET /api/changes/:id/stats` answer, read when it arrived, until `release`. */
+  holdNextStatsRead(): { readonly entered: Promise<void>; readonly release: () => void } {
+    const entered = Promise.withResolvers<void>();
+    const answer = Promise.withResolvers<void>();
+    this.nextStatsRead = { entered: () => entered.resolve(), answer: answer.promise };
+    return { entered: entered.promise, release: () => answer.resolve() };
   }
 
   /** Holds the next real HTTP launch request until the test chooses its refusal status. */
@@ -609,8 +621,7 @@ export class FakeWorkbench {
       return json(200, { worktreeId: id, file: null, search: { matches, truncated: false } });
     }
     if (method === "GET" && collection === "worktrees" && sub === "diff") {
-      const whitespace = url.searchParams.get("whitespace") === "ignore" ? " -w" : "";
-      const key = `${url.searchParams.get("from") ?? "base"}..${url.searchParams.get("to") ?? ""}${whitespace}`;
+      const key = `${url.searchParams.get("from") ?? "base"}..${url.searchParams.get("to") ?? ""}`;
       const range = this.ranges.get(key);
       if (range === undefined) return json(404, { _tag: "NotFound", id: key });
       return json(200, {
@@ -936,8 +947,15 @@ export class FakeWorkbench {
       });
     }
     if (method === "GET" && collection === "changes" && sub === "stats") {
-      const stats = this.stats.get(id);
-      return stats === undefined ? json(404, { _tag: "NotFound" }) : json(200, stats);
+      const stats = structuredClone(this.stats.get(id));
+      const answer = () =>
+        stats === undefined ? json(404, { _tag: "NotFound" }) : json(200, stats);
+      const held = this.nextStatsRead;
+      if (held === null) return answer();
+      // As Mend reads them when the request arrives; the held answer is that read, late.
+      this.nextStatsRead = null;
+      held.entered();
+      return held.answer.then(answer);
     }
     if (method === "GET" && collection === "changes" && sub === "diff") {
       const diff = this.diffs.get(id);
@@ -1099,7 +1117,7 @@ export class FakeWorkbench {
       createdAt: string;
     }>
   >();
-  /** `GET /api/worktrees/:id/diff`, by `<from or base>..<to>`, then ` -w` when whitespace is ignored. */
+  /** `GET /api/worktrees/:id/diff`, by `<from or base>..<to>`. */
   readonly ranges = new Map<
     string,
     {

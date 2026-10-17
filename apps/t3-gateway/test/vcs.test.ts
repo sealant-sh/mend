@@ -2,6 +2,7 @@ import { WS_METHODS, type VcsStatusStreamEvent } from "@mend/t3-contracts";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as Option from "effect/Option";
 
 import { assert, describe, it, TestClock } from "./support/effect-vitest.ts";
@@ -25,6 +26,8 @@ const withGateway = <A, E, R>(test: (mend: FakeMend) => Effect.Effect<A, E, R>) 
 const WORKTREE = "/var/lib/mend/store/project-1/worktrees/wt-session-1";
 const STORE = "/var/lib/mend/store/project-1/repo.git";
 type Event = VcsStatusStreamEvent;
+const isUpdate = (event: Event): event is Extract<Event, { _tag: "localUpdated" }> =>
+  event._tag === "localUpdated";
 
 describe("VCS status", () => {
   it.effect("reports the thread's branch and change, and follows it as turns change it", () =>
@@ -277,6 +280,109 @@ describe("VCS status", () => {
         assert.strictEqual(updated.local.branchChanges?.insertions, 30);
       }),
     ).pipe(withGatewayTimers),
+  );
+
+  it.live("never sends an older read after a newer one", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        mend.workbench.addProject("project-1", "mend");
+        mend.workbench.addSession({ id: "session-1", projectId: "project-1" });
+        mend.workbench.stats.set("change-session-1", { files: 1, additions: 10, deletions: 0 });
+        const { rpc } = yield* pairAndConnect(mend, "ORDER");
+        const stream = yield* feed(rpc[WS_METHODS.subscribeVcsStatus]({ cwd: WORKTREE }));
+        yield* stream.next(
+          (event): event is Extract<Event, { _tag: "snapshot" }> => event._tag === "snapshot",
+        );
+        const refresh = rpc[WS_METHODS.vcsRefreshStatus]({ cwd: WORKTREE }).pipe(
+          Effect.map((status) => status.branchChanges?.insertions),
+        );
+
+        // A read of 20 is slow to answer; the change moves to 30 and another refresh asks.
+        mend.workbench.stats.set("change-session-1", { files: 1, additions: 20, deletions: 0 });
+        const held = mend.workbench.holdNextStatsRead();
+        const slow = yield* Effect.forkScoped(refresh);
+        yield* Effect.promise(() => held.entered);
+        mend.workbench.stats.set("change-session-1", { files: 1, additions: 30, deletions: 0 });
+        const later = yield* Effect.forkScoped(refresh);
+        // Long enough for the later refresh to have read and answered, were it not held back.
+        yield* Effect.sleep("300 millis");
+        held.release();
+        assert.strictEqual(yield* Fiber.join(slow), 20);
+        assert.strictEqual(yield* Fiber.join(later), 30);
+
+        const shown: Array<number | undefined> = [];
+        for (;;) {
+          const update = yield* Effect.option(stream.next(isUpdate, "400 millis"));
+          if (Option.isNone(update)) break;
+          shown.push(update.value.local.branchChanges?.insertions);
+        }
+        assert.deepStrictEqual(shown, [20, 30]);
+      }),
+    ),
+  );
+
+  it.live("opens a stream on the newer read when an older one answers after it subscribed", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        mend.workbench.addProject("project-1", "mend");
+        mend.workbench.addSession({ id: "session-1", projectId: "project-1" });
+        mend.workbench.stats.set("change-session-1", { files: 1, additions: 20, deletions: 0 });
+        const { rpc } = yield* pairAndConnect(mend, "OPENING");
+        const held = mend.workbench.holdNextStatsRead();
+        const slow = yield* Effect.forkScoped(rpc[WS_METHODS.vcsRefreshStatus]({ cwd: WORKTREE }));
+        yield* Effect.promise(() => held.entered);
+        const stream = yield* feed(rpc[WS_METHODS.subscribeVcsStatus]({ cwd: WORKTREE }));
+        mend.workbench.stats.set("change-session-1", { files: 1, additions: 30, deletions: 0 });
+        // Long enough for the subscription to be waiting behind the read in flight.
+        yield* Effect.sleep("300 millis");
+        held.release();
+        yield* Fiber.join(slow);
+        const snapshot = yield* stream.next(
+          (event): event is Extract<Event, { _tag: "snapshot" }> => event._tag === "snapshot",
+        );
+        assert.strictEqual(snapshot.local.branchChanges?.insertions, 30);
+        assert.isTrue(
+          yield* stream.quiet((event) => event._tag === "localUpdated"),
+          "no older read follows the snapshot",
+        );
+      }),
+    ),
+  );
+
+  it.live("reads Mend twice for a burst of refreshes, however many", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        mend.workbench.addProject("project-1", "mend");
+        mend.workbench.addSession({ id: "session-1", projectId: "project-1" });
+        mend.workbench.stats.set("change-session-1", { files: 1, additions: 10, deletions: 0 });
+        const { rpc } = yield* pairAndConnect(mend, "BURST");
+        const statsReads = () =>
+          mend.workbench.calls.filter((call) => call.path.endsWith("/stats")).length;
+        const refresh = rpc[WS_METHODS.vcsRefreshStatus]({ cwd: WORKTREE }).pipe(
+          Effect.map((status) => status.branchChanges?.insertions),
+        );
+
+        const held = mend.workbench.holdNextStatsRead();
+        const first = yield* Effect.forkScoped(refresh);
+        yield* Effect.promise(() => held.entered);
+        mend.workbench.stats.set("change-session-1", { files: 2, additions: 40, deletions: 0 });
+        const burst = yield* Effect.forkScoped(
+          Effect.all(
+            Array.from({ length: 24 }, () => refresh),
+            { concurrency: "unbounded" },
+          ),
+        );
+        // Long enough for every ask of the burst to reach the gateway behind the read in flight.
+        yield* Effect.sleep("300 millis");
+        held.release();
+        assert.strictEqual(yield* Fiber.join(first), 10);
+        assert.deepStrictEqual(
+          yield* Fiber.join(burst),
+          Array.from({ length: 24 }, () => 40),
+        );
+        assert.strictEqual(statsReads(), 2);
+      }),
+    ),
   );
 
   it.live("refuses to remove a worktree: the grant leaves out source-control:write", () =>
