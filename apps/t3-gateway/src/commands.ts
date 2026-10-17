@@ -39,6 +39,8 @@ import type { BearerSession } from "./state.ts";
  *   snooze, kept by the gateway the same way (`lifecycle.ts`).
  * - `thread.visit`, `thread.mark-unread`: when the person last saw the thread, kept by the gateway
  *   the same way (`visits.ts`).
+ * - `prepared-run.retry`: prepares again the worktree of an opening message whose preparation
+ *   failed (`worktree-setup.ts`), then sends it.
  */
 
 const RENAME_FIELDS: ReadonlySet<string> = new Set(["type", "commandId", "threadId", "title"]);
@@ -234,6 +236,14 @@ export const dispatchCommand = (
       }
       return answered(hub.commands.rename({ session, threadId, title }));
     }
+    case "prepared-run.retry":
+      return answered(
+        hub.commands.retryPreparation({
+          session,
+          threadId: command.threadId,
+          runId: command.runId,
+        }),
+      );
     case "provider-session.detach":
       return answered(hub.commands.stop({ session, threadId: command.threadId }));
     case "thread.delete":

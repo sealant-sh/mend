@@ -30,6 +30,7 @@ import {
   ServerConfig,
   ServerProviderUpdateError,
   ServerSelfUpdateError,
+  DEFAULT_SERVER_SETTINGS,
   ServerSettingsError,
   type OrchestrationV2ShellStreamItem,
   UsageLimitSourceError,
@@ -58,7 +59,7 @@ import { makeFileHandlers } from "./files.ts";
 import type { HubReadError, PersonHub, ThreadChange } from "./hub.ts";
 import { launchThread } from "./launch.ts";
 import { makeReviewHandlers } from "./review.ts";
-import { RPC_REQUIRED_SCOPES } from "./rpc-scopes.ts";
+import { projectActionsPatchOf, RPC_REQUIRED_SCOPES } from "./rpc-scopes.ts";
 import {
   loginsOf,
   makeServerConfig,
@@ -124,6 +125,8 @@ export const SERVED_METHODS: ReadonlySet<WsRpcMethod> = new Set<WsRpcMethod>([
   WS_METHODS.subscribeVcsStatus,
   WS_METHODS.vcsRefreshStatus,
   WS_METHODS.vcsListRefs,
+  WS_METHODS.subscribeWorktreeSetup,
+  WS_METHODS.worktreeSetupCancel,
   WS_METHODS.terminalOpen,
   WS_METHODS.terminalAttach,
   WS_METHODS.terminalObserve,
@@ -151,7 +154,6 @@ export const SILENT_STREAMS: ReadonlySet<WsRpcMethod> = new Set<WsRpcMethod>([
   WS_METHODS.providerInstallSubscribe,
   WS_METHODS.pullRequestsSubscribeRefreshes,
   WS_METHODS.subscribeProjectClones,
-  WS_METHODS.subscribeWorktreeSetup,
   WS_METHODS.subscribePreviewEvents,
   WS_METHODS.subscribeDiscoveredLocalServers,
   WS_METHODS.subscribeBackgroundPolicy,
@@ -715,7 +717,32 @@ export const makeGatewayRpcHandlers = ({
     [WS_METHODS.serverUpsertKeybinding]: () => refuse(WS_METHODS.serverUpsertKeybinding),
     [WS_METHODS.serverRemoveKeybinding]: () => refuse(WS_METHODS.serverRemoveKeybinding),
     [WS_METHODS.serverGetSettings]: () => refuse(WS_METHODS.serverGetSettings),
-    [WS_METHODS.serverUpdateSettings]: () => refuse(WS_METHODS.serverUpdateSettings),
+    // The answer is the settings the gateway serves, which name no override: t3code then reads the
+    // project's own scripts.
+    [WS_METHODS.serverUpdateSettings]: (input) => {
+      const actions = projectActionsPatchOf(input);
+      if (actions === null) return refuse(WS_METHODS.serverUpdateSettings);
+      return authorize(session).pipe(
+        Effect.andThen(
+          Effect.forEach(
+            Object.entries(actions),
+            ([projectId, scripts]) =>
+              hub.saveProjectScripts(projectId, scripts).pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new ServerSettingsError({
+                      settingsPath: `projectScriptOverrides.${projectId}`,
+                      operation: "write-file",
+                      cause,
+                    }),
+                ),
+              ),
+            { discard: true },
+          ),
+        ),
+        Effect.as(DEFAULT_SERVER_SETTINGS),
+      );
+    },
     [WS_METHODS.serverDiscoverSourceControl]: () => refuse(WS_METHODS.serverDiscoverSourceControl),
     [WS_METHODS.serverGetTraceDiagnostics]: () => refuse(WS_METHODS.serverGetTraceDiagnostics),
     [WS_METHODS.serverGetProcessDiagnostics]: () => refuse(WS_METHODS.serverGetProcessDiagnostics),
@@ -986,8 +1013,20 @@ export const makeGatewayRpcHandlers = ({
     [WS_METHODS.vcsCreateRef]: () => refuse(WS_METHODS.vcsCreateRef),
     [WS_METHODS.vcsSwitchRef]: () => refuse(WS_METHODS.vcsSwitchRef),
     [WS_METHODS.vcsInit]: () => vcsUnsupported(WS_METHODS.vcsInit),
-    [WS_METHODS.subscribeWorktreeSetup]: () => Stream.never,
-    [WS_METHODS.worktreeSetupCancel]: () => refuse(WS_METHODS.worktreeSetupCancel),
+    // A new worktree's preparation (`worktree-setup.ts`): the setup card, and its cancel.
+    [WS_METHODS.subscribeWorktreeSetup]: (input) =>
+      Stream.unwrap(
+        authorize(session).pipe(
+          Effect.as(
+            hub.worktreeSetups.stream(input.threadId).pipe(Stream.mapError(() => fellBehind(READ))),
+          ),
+        ),
+      ),
+    [WS_METHODS.worktreeSetupCancel]: (input) =>
+      authorize(session).pipe(
+        Effect.andThen(hub.worktreeSetups.cancel(input.threadId)),
+        Effect.map((cancelled) => ({ cancelled })),
+      ),
 
     // ── Review: the thread's change ─────────────────────────────────────────
     [WS_METHODS.reviewGetDiffPreview]: (input) =>

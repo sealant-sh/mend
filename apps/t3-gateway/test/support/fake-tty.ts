@@ -86,6 +86,47 @@ export class FakeTty {
 
   constructor(private readonly workbench: FakeWorkbench) {}
 
+  /**
+   * What a wrapped setup script prints and how it exits, by a piece of its command: the shell
+   * prints the wrapper's start mark, each line, `delayMs` apart, then the wrapper's exit line. A
+   * wrapped command no entry names exits 0 with no output; `hang` never exits.
+   */
+  readonly scripts = new Map<
+    string,
+    { readonly lines: ReadonlyArray<string>; readonly exitCode: number | "hang"; delayMs?: number }
+  >();
+  /** How long after a stop answers its shell's socket ends: Mend ends it once the process has. */
+  stopEndDelayMs = 0;
+  /** The processes a setup script was typed into, in order. */
+  readonly scriptRuns: Array<string> = [];
+  /** Each setup script as the shell decoded it from the typed line, in order. */
+  readonly scriptCommands: Array<string> = [];
+
+  private runScript(process: string, typed: string, socket: Duplex): void {
+    const token = /\\137_T3_SETUP_START__([A-Za-z0-9]+)/.exec(typed)?.[1];
+    const encoded = /printf %s ([A-Za-z0-9+/=]+) \| base64 -d/.exec(typed)?.[1];
+    if (token === undefined || encoded === undefined) return;
+    if (this.shells.get(process)?.running !== true) return;
+    const command = Buffer.from(encoded, "base64").toString("utf8");
+    this.scriptRuns.push(process);
+    this.scriptCommands.push(command);
+    const script = Array.from(this.scripts).find(([piece]) => command.includes(piece))?.[1];
+    const lines = script?.lines ?? [];
+    const delay = script?.delayMs ?? 50;
+    socket.write(frame(2, Buffer.from(`\r\n__T3_SETUP_START__${token}\r\n`)));
+    lines.forEach((line, index) => {
+      setTimeout(() => socket.write(frame(2, Buffer.from(`${line}\r\n`))), delay * (index + 1));
+    });
+    if (script?.exitCode === "hang") return;
+    setTimeout(
+      () =>
+        socket.write(
+          frame(2, Buffer.from(`\r\n__T3_SETUP_DONE__${token}:${script?.exitCode ?? 0}\r\n$ `)),
+        ),
+      delay * (lines.length + 1),
+    );
+  }
+
   /** Ends a shell from Mend's side: its socket gets `{"t":"end"}` and closes. */
   end(processId: string): void {
     const socket = this.sockets.get(processId);
@@ -134,7 +175,8 @@ export class FakeTty {
         const known = this.shells.get(id);
         if (known === undefined) return json(404, { _tag: "NotFound" });
         known.running = false;
-        this.end(id);
+        if (this.stopEndDelayMs === 0) this.end(id);
+        else setTimeout(() => this.end(id), this.stopEndDelayMs);
         return json(200, { id, sessionId: known.sessionId, kind: "shell" });
       }
       if (this.ticketFailures > 0) {
@@ -213,6 +255,7 @@ export class FakeTty {
           const text = payload.toString("utf8");
           this.typed.push(text);
           socket.write(frame(2, Buffer.from(text)));
+          this.runScript(process, text, socket);
         }
       }
     });
