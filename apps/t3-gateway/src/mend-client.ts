@@ -17,8 +17,11 @@ import {
   MendEventPointer,
   MendItem,
   MendProject,
+  MendChangeLandings,
   MendChangeStats,
   MendCheckpoint,
+  MendLanding,
+  MendLandingReport,
   MendRangeDiff,
   MendWorktreeContents,
   MendWorktreeDetail,
@@ -353,6 +356,31 @@ export class MendClient extends Context.Service<
     /** `GET /api/changes/:id/diff`: the change against its base, as git answers now. */
     readonly changeDiff: (deviceToken: string, changeId: string) => MendRead<MendChangeDiff>;
     /**
+     * `GET /api/changes/:id/landings`, without a fetch of origin. The change's landing record,
+     * what Mend observed about it, and whether the caller owns it.
+     */
+    readonly changeLandings: (
+      deviceToken: string,
+      changeId: string,
+    ) => MendRead<MendChangeLandings>;
+    /**
+     * `POST /api/sessions/:id/land`. Mend commits what the agent left uncommitted under its own
+     * ref, pushes the change to its branch on origin, and opens or updates its pull request when
+     * asked.
+     * The change's owner only (403 `LandingNotAllowed`); 409 `LandingNotStarted` when nothing is
+     * new. The pull request step can take a while, within `MEND_RESPONSE_DEADLINE`.
+     */
+    readonly land: (
+      deviceToken: string,
+      sessionId: string,
+      input: { readonly pullRequest: boolean },
+    ) => MendCommand<MendLandingReport>;
+    /**
+     * `POST /api/landings/:id/refresh`: Mend asks GitHub, as the change's owner, for the landing's
+     * pull request now and records what it said. The owner only (403 `LandingNotAllowed`).
+     */
+    readonly refreshLanding: (deviceToken: string, landingId: string) => MendCommand<MendLanding>;
+    /**
      * `POST /api/projects/:id/sessions`: a session owned by the caller, in a new worktree. Mend
      * stamps origin `mend` and the caller as owner, so its agent runs as them (docs/adr/0016).
      */
@@ -464,6 +492,9 @@ const decodeShell = Schema.decodeUnknownEffect(MendShell);
 const decodeUpgradeTicket = Schema.decodeUnknownEffect(MendUpgradeTicket);
 const decodeFileListing = Schema.decodeUnknownEffect(MendFileListing);
 const decodeChangeStats = Schema.decodeUnknownEffect(MendChangeStats);
+const decodeChangeLandings = Schema.decodeUnknownEffect(MendChangeLandings);
+const decodeLandingReport = Schema.decodeUnknownEffect(MendLandingReport);
+const decodeLanding = Schema.decodeUnknownEffect(MendLanding);
 const decodeWorktreeDetail = Schema.decodeUnknownEffect(MendWorktreeDetail);
 const decodeRangeDiff = Schema.decodeUnknownEffect(MendRangeDiff);
 const decodeWorktreeContents = Schema.decodeUnknownEffect(MendWorktreeContents);
@@ -872,6 +903,42 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
           decodeChangeDiff,
         );
 
+      const changeLandings = (deviceToken: string, changeId: string) =>
+        read(
+          "GET /api/changes/:id/landings",
+          `/api/changes/${encodeURIComponent(changeId)}/landings`,
+          deviceToken,
+          decodeChangeLandings,
+        );
+
+      const land = (
+        deviceToken: string,
+        sessionId: string,
+        input: { readonly pullRequest: boolean },
+      ) =>
+        answered(
+          command(
+            "POST /api/sessions/:id/land",
+            `/api/sessions/${encodeURIComponent(sessionId)}/land`,
+            deviceToken,
+            { pullRequest: input.pullRequest, branch: null, title: null, body: null },
+            decodeLandingReport,
+          ),
+          "POST /api/sessions/:id/land",
+        );
+
+      const refreshLanding = (deviceToken: string, landingId: string) =>
+        answered(
+          command(
+            "POST /api/landings/:id/refresh",
+            `/api/landings/${encodeURIComponent(landingId)}/refresh`,
+            deviceToken,
+            {},
+            decodeLanding,
+          ),
+          "POST /api/landings/:id/refresh",
+        );
+
       const submitTurn = (deviceToken: string, sessionId: string, input: string) =>
         answered(
           command(
@@ -1124,6 +1191,9 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
         projectBranches,
         worktreeNames,
         changeStats,
+        changeLandings,
+        land,
+        refreshLanding,
         worktreeCheckpoints,
         worktreeDiff,
         worktreeContents,

@@ -224,6 +224,16 @@ export const RPC_REQUIRED_SCOPES = {
 
 const isWsRpcMethod = (tag: string): tag is WsRpcMethod => Object.hasOwn(RPC_REQUIRED_SCOPES, tag);
 
+/**
+ * A call the gateway refuses with its reason. It names the scope t3code's own server requires
+ * for the method, as the permission and as its legacy parent for clients from before them.
+ */
+export const refusalOf = (method: WsRpcMethod, message: string) =>
+  new EnvironmentAuthorizationError({
+    message,
+    ...authScopeRequiredResponse(RPC_REQUIRED_SCOPES[method]),
+  });
+
 const decodeAssetUrlInput = Schema.decodeUnknownOption(AssetCreateUrlInput);
 const decodeProjectMutation = Schema.decodeUnknownOption(ProjectMutation);
 const decodeSettingsUpdate = Schema.decodeUnknownOption(

@@ -93,6 +93,37 @@ export interface FakeRequest {
   decidedAt: string | null;
 }
 
+/** `LandedPullRequest` in @mend/domain/workbench. */
+export interface FakePullRequest {
+  readonly number: number;
+  readonly url: string;
+  state: "open" | "closed" | "merged";
+  readonly title: string | null;
+  observedAt: string;
+}
+
+/** `ChangeLanding` in @mend/domain/workbench, with every field Mend sends. */
+export interface FakeLanding {
+  readonly id: string;
+  readonly changeId: string;
+  readonly sessionId: string | null;
+  readonly projectId: string;
+  readonly checkpointId: string | null;
+  readonly checkpointRef: string | null;
+  readonly checkpointSha: string | null;
+  readonly commitSha: string | null;
+  readonly remoteBranch: string;
+  readonly pushedSha: string | null;
+  readonly trigger: "manual" | "automatic" | "adopted";
+  readonly pullRequest: FakePullRequest | null;
+  readonly pullRequestCrossRepository: boolean;
+  readonly pullRequestHeadOwner: string | null;
+  readonly outcome: "pushed" | "pull-request" | "refused" | "failed" | "adopted";
+  readonly message: string | null;
+  readonly userId: string;
+  readonly createdAt: string;
+}
+
 export interface FakeCall {
   readonly method: string;
   readonly path: string;
@@ -273,6 +304,8 @@ export class FakeWorkbench {
     readonly changeId?: string | null;
     /** A session whose worktree this one joins: the same worktree, branch and change. */
     readonly joins?: string;
+    /** The Mend account that owns it; the first session's owner owns its change. */
+    readonly ownerUserId?: string;
   }): FakeSession {
     const harness = input.harness ?? "codex";
     const createdAt = tick();
@@ -289,7 +322,7 @@ export class FakeWorkbench {
       baseSha: "6abd2ab9fee56f5a5fa3eaafa7bbad52ae65bdd4",
       baseRef: "main",
       status: input.live === false ? "stopped" : "idle",
-      ownerUserId: "user-1",
+      ownerUserId: input.ownerUserId ?? "user-1",
       summary: null,
       createdAt,
       updatedAt: createdAt,
@@ -486,7 +519,7 @@ export class FakeWorkbench {
       path === "/api/projects" ||
       path === "/api/sessions" ||
       path === "/api/events" ||
-      /^\/api\/(projects|sessions|turns|requests|changes|worktrees)\//.test(path);
+      /^\/api\/(projects|sessions|turns|requests|changes|worktrees|landings)\//.test(path);
     if (!known) return false;
     if (!accepted) return json(401, { _tag: "Unauthorized" });
 
@@ -731,6 +764,21 @@ export class FakeWorkbench {
           return json(200, session);
         });
       }
+      if (method === "POST" && sub === "land") {
+        return body().then((value) => {
+          record(value);
+          const held = this.nextLandingAnswer;
+          this.nextLandingAnswer = null;
+          const pullRequest =
+            typeof value === "object" &&
+            value !== null &&
+            "pullRequest" in value &&
+            value.pullRequest === true;
+          const answer =
+            held ?? this.land(session, this.accountOf(request.headers.authorization), pullRequest);
+          return json(answer.status, answer.body);
+        });
+      }
       if (method === "POST" && sub === "stop") {
         return body().then((value) => {
           record(value);
@@ -882,6 +930,34 @@ export class FakeWorkbench {
         });
       }
     }
+    if (method === "POST" && collection === "landings" && sub === "refresh") {
+      return body().then((value) => {
+        record(value);
+        for (const [changeId, landings] of this.landings) {
+          const index = landings.findIndex((landing) => landing.id === id);
+          const landing = landings[index];
+          if (landing === undefined) continue;
+          if (this.changeOwnerOf(changeId) !== this.accountOf(request.headers.authorization)) {
+            return json(403, {
+              _tag: "LandingNotAllowed",
+              message: "only the change's owner lands it",
+            });
+          }
+          if (landing.pullRequest === null) return json(404, { _tag: "NotFound" });
+          const refreshed: FakeLanding = {
+            ...landing,
+            pullRequest: {
+              ...landing.pullRequest,
+              state: this.github.get(landing.pullRequest.number) ?? landing.pullRequest.state,
+              observedAt: tick(),
+            },
+          };
+          landings[index] = refreshed;
+          return json(200, refreshed);
+        }
+        return json(404, { _tag: "NotFound" });
+      });
+    }
     if (method === "POST" && collection === "turns" && sub === "interrupt") {
       return body().then((value) => {
         record(value);
@@ -933,6 +1009,13 @@ export class FakeWorkbench {
         }
         return json(404, { _tag: "NotFound" });
       });
+    }
+    if (method === "GET" && collection === "changes" && sub === "landings") {
+      const visible = Array.from(this.sessions.values()).some(
+        (session) => this.changes.get(session.id) === id && canReadProject(session.projectId),
+      );
+      if (!visible) return json(404, { _tag: "NotFound" });
+      return json(200, this.landingsView(id, this.accountOf(request.headers.authorization)));
     }
     if (method === "GET" && collection === "changes" && sub === "stats") {
       const stats = this.stats.get(id);
@@ -1115,6 +1198,165 @@ export class FakeWorkbench {
   readonly fileContents = new Map<string, Map<string, string>>();
   /** `GET /api/changes/:id/stats`, by change id. */
   readonly stats = new Map<string, { files: number; additions: number; deletions: number }>();
+  /** Change id → its landings, newest first (`GET /api/changes/:id/landings`). */
+  readonly landings = new Map<string, Array<FakeLanding>>();
+  /** Change id → files that differ from the last landing (the `changed-since-landing` fact). */
+  readonly sinceLanding = new Map<string, number>();
+  /**
+   * Changes whose agent committed since the last landing, which lands even when no file differs
+   * (the agent committed the tree the landing pushed).
+   */
+  readonly agentCommitted = new Set<string>();
+  /** Pull request number → its state on GitHub now, which `POST /api/landings/:id/refresh` reads. */
+  readonly github = new Map<number, "open" | "closed" | "merged">();
+  /** Project id → whether Mend can open a pull request for it; unset is available. */
+  readonly pullRequestAvailability = new Map<
+    string,
+    { readonly available: boolean; readonly reason: string | null }
+  >();
+  /** The next landing's pull request step fails with `gh`'s words, after its push. */
+  nextPullRequestFailure: string | null = null;
+  /** The next `POST /api/sessions/:id/land` answers this instead of landing. */
+  nextLandingAnswer: { readonly status: number; readonly body: unknown } | null = null;
+  private pullRequestNumbers = 0;
+  private shas = 0;
+
+  private nextSha(): string {
+    this.shas += 1;
+    return this.shas.toString(16).padStart(40, "a");
+  }
+
+  private changeOwnerOf(changeId: string): string | null {
+    const first = Array.from(this.sessions.values())
+      .filter((session) => this.changes.get(session.id) === changeId)
+      .toSorted((left, right) => left.createdAt.localeCompare(right.createdAt))[0];
+    return first?.ownerUserId ?? null;
+  }
+
+  private availabilityOf(projectId: string) {
+    return this.pullRequestAvailability.get(projectId) ?? { available: true, reason: null };
+  }
+
+  /** `ChangeLandingsView` for a change, as the caller reads it. */
+  private landingsView(changeId: string, caller: string | null) {
+    const landings = this.landings.get(changeId) ?? [];
+    const session = Array.from(this.sessions.values()).find(
+      (candidate) => this.changes.get(candidate.id) === changeId,
+    );
+    const owner = this.changeOwnerOf(changeId);
+    const lastPush = landings.find((landing) => landing.pushedSha !== null);
+    const lastPullRequest = landings.find((landing) => landing.pullRequest !== null);
+    const since = this.sinceLanding.get(changeId) ?? 0;
+    const facts: Array<Record<string, unknown>> = [];
+    if (lastPush?.pushedSha != null) {
+      facts.push({ _tag: "pushed", branch: lastPush.remoteBranch, sha: lastPush.pushedSha });
+    }
+    if (lastPullRequest?.pullRequest != null) {
+      const { number, state, observedAt } = lastPullRequest.pullRequest;
+      facts.push({ _tag: "pull-request", number, state, observedAt, outside: false, fork: null });
+    }
+    if (lastPush !== undefined && since > 0) {
+      facts.push({ _tag: "changed-since-landing", files: since });
+    }
+    return {
+      changeId,
+      sessionId: session?.id ?? null,
+      land: owner !== null && owner === caller,
+      landings,
+      facts,
+      remote: null,
+      remoteFailure: null,
+      pullRequest: this.availabilityOf(session?.projectId ?? ""),
+      nextBranch: lastPush?.remoteBranch ?? session?.branch ?? null,
+    };
+  }
+
+  /** `POST /api/sessions/:id/land`, as Mend's landing answers it (docs/adr/0007-landing.md). */
+  private land(
+    session: FakeSession,
+    caller: string | null,
+    pullRequest: boolean,
+  ): { readonly status: number; readonly body: unknown } {
+    const changeId = this.changes.get(session.id) ?? "";
+    const owner = changeId === "" ? null : this.changeOwnerOf(changeId);
+    if (owner === null || owner !== caller) {
+      return {
+        status: 403,
+        body: { _tag: "LandingNotAllowed", message: "only the change's owner lands it" },
+      };
+    }
+    const history = this.landings.get(changeId) ?? [];
+    const lastPush = history.find((landing) => landing.pushedSha !== null);
+    const latest = history[0];
+    const recorded = history.find((landing) => landing.pullRequest !== null)?.pullRequest ?? null;
+    const previous = recorded?.state === "open" ? recorded : null;
+    const availability = this.availabilityOf(session.projectId);
+    const wantsPullRequest = pullRequest && availability.available;
+    const nothingNew =
+      lastPush !== undefined &&
+      (this.sinceLanding.get(changeId) ?? 0) === 0 &&
+      !this.agentCommitted.has(changeId);
+    if (
+      nothingNew &&
+      latest !== undefined &&
+      (latest.outcome === "pull-request" || (latest.outcome === "pushed" && !wantsPullRequest))
+    ) {
+      return {
+        status: 409,
+        body: {
+          _tag: "LandingNotStarted",
+          message: "landing not started · nothing new since the last landing",
+        },
+      };
+    }
+    const observedAt = tick();
+    const stepFailure = wantsPullRequest ? this.nextPullRequestFailure : null;
+    this.nextPullRequestFailure = null;
+    const opened: FakePullRequest | null =
+      !wantsPullRequest || stepFailure !== null
+        ? null
+        : previous === null
+          ? {
+              number: (this.pullRequestNumbers += 1),
+              url: `https://github.com/sealant-sh/mend/pull/${this.pullRequestNumbers}`,
+              state: "open",
+              title: session.label ?? session.id,
+              observedAt,
+            }
+          : { ...previous, observedAt };
+    const landing: FakeLanding = {
+      id: this.nextId("landing"),
+      changeId,
+      sessionId: session.id,
+      projectId: session.projectId,
+      checkpointId: this.nextId("checkpoint"),
+      checkpointRef: `refs/mend/landed/${changeId}`,
+      checkpointSha: this.nextSha(),
+      commitSha: this.nextSha(),
+      remoteBranch: lastPush?.remoteBranch ?? session.branch,
+      pushedSha: this.nextSha(),
+      trigger: "manual",
+      pullRequest: opened,
+      pullRequestCrossRepository: false,
+      pullRequestHeadOwner: null,
+      outcome: stepFailure !== null ? "failed" : opened === null ? "pushed" : "pull-request",
+      message: stepFailure,
+      userId: owner,
+      createdAt: observedAt,
+    };
+    this.landings.set(changeId, [landing, ...history]);
+    this.sinceLanding.set(changeId, 0);
+    this.agentCommitted.delete(changeId);
+    const step =
+      stepFailure !== null
+        ? { _tag: "failed", message: stepFailure }
+        : opened !== null
+          ? { _tag: previous === null ? "opened" : "updated", pullRequest: opened }
+          : !pullRequest
+            ? { _tag: "off" }
+            : { _tag: "unavailable", reason: availability.reason ?? "pull request unavailable" };
+    return { status: 200, body: { landing, pullRequest: step } };
+  }
   /** How many images were pasted into workspaces. */
   pastedImages = 0;
   /** The Mend account a request's bearer belongs to (set by the fake Mend that pairs devices). */

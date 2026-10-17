@@ -9,6 +9,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 
+import { WORKTREE_KEPT } from "../src/rpc.ts";
 import { assert, describe, it, TestClock } from "./support/effect-vitest.ts";
 import { startFakeMend, type FakeMend } from "./support/fake-mend.ts";
 import { feed } from "./support/feed.ts";
@@ -18,7 +19,7 @@ import { GatewayTimers, withGatewayTimers } from "./support/timers.ts";
 
 /**
  * VCS status (ADR 0012, phase 2): the thread's branch and its change's totals, from Mend's
- * `GET /api/changes/:id/stats`, kept current while the client watches.
+ * `GET /api/changes/:id/stats`, and its landing record, kept current while the client watches.
  */
 
 const withGateway = <A, E, R>(test: (mend: FakeMend) => Effect.Effect<A, E, R>) =>
@@ -54,9 +55,11 @@ describe("VCS status", () => {
           insertions: 10,
           deletions: 3,
         });
-        // Mend tracks no upstream for a session's branch: nothing is claimed about one.
+        // Never landed. Nothing is on origin yet, and a landing has something to push.
         assert.isFalse(status.hasUpstream);
-        assert.strictEqual(status.aheadCount, 0);
+        assert.strictEqual(status.aheadCount, 1);
+        assert.strictEqual(status.aheadOfDefaultCount, 1);
+        assert.strictEqual(status.behindCount, 0);
         assert.isNull(status.pr);
 
         const stream = yield* feed(rpc[WS_METHODS.subscribeVcsStatus]({ cwd: WORKTREE }));
@@ -65,7 +68,13 @@ describe("VCS status", () => {
             (event): event is Extract<Event, { _tag: "snapshot" }> => event._tag === "snapshot",
           ),
         );
-        assert.isNull(snapshot.remote);
+        assert.deepStrictEqual(snapshot.remote, {
+          hasUpstream: false,
+          aheadCount: 1,
+          behindCount: 0,
+          aheadOfDefaultCount: 1,
+          pr: null,
+        });
         assert.strictEqual(snapshot.local.branchChanges?.insertions, 10);
 
         // A turn changes the worktree; the status follows.
@@ -288,14 +297,13 @@ describe("VCS status", () => {
       ),
   );
 
-  it.live("refuses to remove a worktree: the grant leaves out source-control:write", () =>
+  it.live("refuses to remove a worktree in Mend's words, removing nothing", () =>
     withGateway((mend) =>
       Effect.gen(function* () {
         mend.workbench.addProject("project-1", "mend");
         mend.workbench.addSession({ id: "session-1", projectId: "project-1" });
         const { rpc } = yield* pairAndConnect(mend, "KEEPWT");
-        // What t3code would send after deleting a thread, asked to delete its worktree too. It
-        // never asks: the scope the removal needs is not granted (`auth.ts`).
+        // What t3code sends after deleting the only thread on a worktree, asked to delete it too.
         const removal = yield* Effect.exit(
           rpc[WS_METHODS.vcsRemoveWorktree]({ cwd: STORE, path: WORKTREE, force: true }),
         );
@@ -303,7 +311,7 @@ describe("VCS status", () => {
         if (Exit.isFailure(removal)) {
           const error = Option.getOrUndefined(Cause.findErrorOption(removal.cause));
           assert.strictEqual(error?._tag, "EnvironmentAuthorizationError");
-          assert.include(error?.message ?? "", "source-control:write");
+          assert.strictEqual(error?.message, WORKTREE_KEPT);
         }
         assert.isFalse(
           mend.workbench.calls.some((call) => call.method === "DELETE"),

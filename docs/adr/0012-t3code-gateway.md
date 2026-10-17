@@ -104,8 +104,11 @@ hand. The first pin was `v0.0.46-nightly.20261003.2623`; the current one is in
 | checkpoint                  | a `turn-boundary` checkpoint, matched to its turn by session and time             |
 | changes panel               | the change (one per worktree)                                                     |
 
-Review comments, handoffs, context packs and landing have no t3code surface and stay in Mend's own
-clients.
+Review comments, handoffs and context packs have no t3code surface and stay in Mend's own clients.
+Landing has one. t3code's git panel pushes a thread's change and opens its pull request through
+Mend's landing, as the change's owner, and its remote status comes from the landing record. Mend
+never moves the thread's branch and never commits it alone (ADR 0007), so the panel's other writes
+are refused in Mend's words.
 
 ### The surface
 
@@ -126,7 +129,8 @@ vendored group.
 | queued-run edit and reorder, `queue.resume`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | 2     | the gateway's queue                                                                                                                                             |
 | per-turn diffs, worktree file reads, terminal, runtime-mode switch, reasoning effort                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | 3     | two additive reads (below); `/api/tty` with a `tty` ticket; the next launch                                                                                     |
 | archive, settle, snooze, read state (`thread.visit`, `thread.mark-unread`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | 3     | the gateway's own state, per person                                                                                                                             |
-| mid-turn steering, model or provider switch mid-thread, a service tier changed on a started thread, plan mode, rollback, fork, delegated tasks, PR watch, `git.*`, `vcs.*` writes, preview (the in-app browser), devices, provider install and auth, scheduled tasks, settings writes, usage and limits, diagnostics, self-update, T3 Connect, MCP apps, `/feedback`, non-image attachments, file writes, project add, clone, import, rename and removal, open in editor, pairing administration (Mend's), provider slash commands and skills (absent) | never | the scope withheld, capability off, or the method's typed refusal; streams that never emit, or answer none (scheduled tasks) or a hub that never runs (devices) |
+| `git.runStackedAction` push and create PR, VCS status remote half                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | 4     | `POST /sessions/:id/land`, as the change's owner; `GET /changes/:id/landings`                                                                                   |
+| mid-turn steering, model or provider switch mid-thread, a service tier changed on a started thread, plan mode, rollback, fork, delegated tasks, PR watch, `git.*` and `vcs.*` writes but push and a PR, preview, devices, provider install and auth, scheduled tasks, settings writes, usage and limits, diagnostics, self-update, T3 Connect, MCP apps, `/feedback`, non-image attachments, file writes, project add, clone, import, rename and removal, open in editor, pairing administration (Mend's), provider slash commands and skills (absent) | never | the scope withheld, capability off, or the method's typed refusal; streams that never emit, or answer none (scheduled tasks) or a hub that never runs (devices) |
 
 ### Choices inside the gateway
 
@@ -141,10 +145,11 @@ vendored group.
 - **State.** Thread and message id maps, the persisted queue, each person's archive, settle and
   snooze flags and read state, and the mode and effort chosen for an agent's next start live in a
   `node:sqlite` file the gateway owns. No Mend migration.
-- **Scopes.** A paired client is granted the scopes of t3code's standard grant the gateway backs:
-  `orchestration:*`, `terminal:*` and `filesystem:read`. t3code renders a control whose scope is
-  withheld as inert, so a refused feature never looks live. A grant stored before is narrowed when
-  it is read.
+- **Scopes.** A paired client is granted the scopes of t3code's standard grant the gateway backs.
+  They are `orchestration:*`, `terminal:*`, `filesystem:read` and `source-control:write`. t3code
+  renders a control whose scope is withheld as inert, so a refused feature never looks live. A grant
+  stored before is narrowed when it is read. Pairings stored while `source-control:write` was
+  withheld get it back once, from the state file's migration 13.
 - **Effort and tier.** Mend sets both per launch. A reasoning effort changed on a started thread
   applies from the agent's next start, as the runtime mode does; Mend records no service tier, so a
   change of one on a started thread is refused.
@@ -271,6 +276,16 @@ its own pull request.
 - 2026-10-11: the gateway grants only the scopes it backs. Granting t3code's whole standard set made
   refused features look live; a Files-tab edit was lost to a refused `projects.writeFile` with only
   a console warning. Stored grants are narrowed on read.
+- 2026-10-17: the gateway grants `source-control:write`. The git panel's push and create PR land the
+  thread's change through `POST /sessions/:id/land`, and the remote half of VCS status reads
+  `GET /changes/:id/landings`. Everyone who can see the change reads the same counts. After a push
+  the record cannot say nothing is new, so Push stays offered and Mend answers "nothing new" itself.
+  A landing by anyone but the change's owner is refused with Mend's own words. A refresh the owner
+  asks for has Mend ask GitHub about the pull request, at most once a minute. Commit alone, a new
+  branch, a selection of files, the panel's commit message, branch switch and create, pull and pull
+  request checkout are refused in Mend's words. The grant is stored per pairing, so migration 13
+  widens only the pairings narrowed while the scope was withheld, never one made later that asked
+  for less.
 - 2026-10-11: read state is the gateway's, per person, and `threadVisitedTracking` says so. The
   shell sent `lastVisitedAt: null`, which t3code reads as server-tracked, and every `thread.visit`
   was refused, so no thread ever showed as unread.

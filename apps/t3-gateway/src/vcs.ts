@@ -1,47 +1,73 @@
 import {
   GitCommandError,
   GitManagerError,
+  WS_METHODS,
+  type EnvironmentAuthorizationError,
+  type GitActionProgressEvent,
+  type GitActionProgressPhase,
+  type GitRunStackedActionInput,
   type VcsListRefsInput,
   type VcsListRefsResult,
   type VcsRef,
   type VcsStatusInput,
   type VcsStatusLocalResult,
+  type VcsStatusRemoteResult,
   type VcsStatusResult,
   type VcsStatusStreamEvent,
 } from "@mend/t3-contracts";
+import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
+import * as PubSub from "effect/PubSub";
+import * as Result from "effect/Result";
 import * as Stream from "effect/Stream";
 
 import type { GatedMend } from "./device-gate.ts";
 import type { CwdLocation, PersonHub } from "./hub.ts";
+import {
+  landingResultOf,
+  ONLY_THE_OWNER,
+  planOf,
+  recordedPullRequestOf,
+  remoteStatusOf,
+  standingOf,
+} from "./landing.ts";
 import type { MendBranch } from "./mend-client.ts";
+import type { MendChangeLandings } from "./mend-workbench.ts";
+import { refusalOf } from "./rpc-scopes.ts";
 import type { BearerSession } from "./state.ts";
 
 /**
- * A thread's VCS status for t3code's branch toolbar and git menu (ADR 0012, phase 2: VCS status),
- * from the change Mend keeps for the thread's worktree (`GET /api/changes/:id/stats`), read as the
- * person.
+ * A thread's VCS status for t3code's branch toolbar and git panel (ADR 0012, phase 2: VCS status),
+ * from the change Mend keeps for the thread's worktree, read as the person.
  *
  * - The ref is the session's branch; the project's root is its default branch.
  * - Mend's change is the worktree against its base, committed or not, which is t3code's
- *   `branchChanges`: those totals.
+ *   `branchChanges`: those totals (`GET /api/changes/:id/stats`).
  * - Mend has no read of the worktree's HEAD, index or uncommitted files, so nothing is claimed
  *   about them: `hasWorkingTreeChanges` is false and `workingTree` empty, rather than base-diff
  *   totals presented as uncommitted work.
- * - Mend tracks no upstream for a session's branch (landing is its own step, ADR 0007), so the
- *   remote half is null: nothing ahead, behind or in review is claimed.
+ * - The remote half comes from the change's landing record (`GET /api/changes/:id/landings`,
+ *   `landing.ts`). It says the branch a landing pushed, whether anything may be new since, and
+ *   the pull request as GitHub last reported it. A refresh the person asks for has Mend ask
+ *   GitHub about that pull request first. The project's root has none.
  *
- * The stream sends a snapshot, then the local half again whenever any thread in the worktree
- * changes in the shell (every session there adds to its one change), or a thread goes, and every
- * fifteen seconds besides, as a change can move without its threads changing. Reads come at most
- * once a second, however busy the worktree: a burst is one read at the end of its second, never
- * put off while the burst lasts.
+ * The stream sends a snapshot, then each half again when it moved. It reads again whenever any
+ * thread in the worktree changes in the shell (every session there adds to its one change), a
+ * thread goes, a status refresh or a git action here ends, and every fifteen seconds besides, as
+ * a change can move without its threads changing. Reads come at most once a second, however busy
+ * the worktree: a burst is one read at the end of its second, never put off while the burst lasts.
+ *
+ * The git panel's push and "create PR" land the change through Mend (`runStackedAction`).
  */
 
 /** At most one read of a worktree's status this often while it keeps changing. */
 export const VCS_REFRESH_MS = 1_000;
 /** How often a watched status is read with nothing in the shell to say it moved. */
 export const VCS_POLL = "15 seconds";
+/** At most one ask of GitHub about a pull request this often, when the person refreshes. */
+export const PULL_REQUEST_REFRESH_MS = 60_000;
+
+type VcsActionError = GitManagerError | EnvironmentAuthorizationError;
 
 const EMPTY_TREE = { files: [], insertions: 0, deletions: 0 } as const;
 
@@ -126,42 +152,96 @@ const refsFailed = (cwd: string) => (detail: string) =>
 const failed = (operation: string, cwd: string) => (detail: string) =>
   new GitManagerError({ operation, cwd, detail });
 
+const refusedByRule = (message: string) => refusalOf(WS_METHODS.gitRunStackedAction, message);
+
+/** Why a git action at the project's root is refused. */
+export const PROJECT_ROOT_HAS_NO_CHANGE =
+  "Mend lands a thread's change. The project's root has none.";
+
+const NO_REMOTE: VcsStatusRemoteResult = {
+  hasUpstream: false,
+  aheadCount: 0,
+  behindCount: 0,
+  pr: null,
+};
+
+const NOWHERE = "No Mend thread or project of yours works there.";
+
 export const makeVcsHandlers = (input: {
   readonly hub: PersonHub;
   readonly mend: GatedMend;
   readonly session: BearerSession;
 }) => {
   const { hub, mend, session } = input;
+  const nudges = Effect.runSync(PubSub.unbounded<string>());
+  const nudge = (cwd: string) => PubSub.publish(nudges, cwd).pipe(Effect.asVoid);
 
-  /** Where `cwd` is, and its status now. */
-  const statusAt = (operation: string, cwd: string) =>
+  /** When this socket last asked GitHub about each landing's pull request, by landing id. */
+  const observedAt = new Map<string, number>();
+
+  /**
+   * The change's landing record, its pull request asked of GitHub first when the person refreshed
+   * and the change is theirs. That is at most once a minute per pull request, and never for one
+   * merged, which cannot change. A refresh that fails leaves the last observation standing.
+   */
+  const observe = (view: MendChangeLandings) =>
     Effect.gen(function* () {
+      const recorded = recordedPullRequestOf(view);
+      if (!view.land || recorded === null || recorded.state === "merged") return view;
+      const now = yield* Clock.currentTimeMillis;
+      const last = observedAt.get(recorded.landingId);
+      if (last !== undefined && now - last < PULL_REQUEST_REFRESH_MS) return view;
+      observedAt.set(recorded.landingId, now);
+      return yield* mend.refreshLanding(session.deviceToken, recorded.landingId).pipe(
+        Effect.map(
+          (refreshed): MendChangeLandings => ({
+            ...view,
+            landings: view.landings.map((landing) =>
+              landing.id === refreshed.id ? refreshed : landing,
+            ),
+          }),
+        ),
+        Effect.orElseSucceed(() => view),
+      );
+    });
+
+  /** Where `cwd` is, and both halves of its status now. The root has no remote half. */
+  const statusAt = (operation: string, cwd: string, refreshed = false) =>
+    Effect.gen(function* () {
+      const fail = failed(operation, cwd);
       const location = yield* hub
         .locationOf(cwd)
-        .pipe(Effect.mapError((error) => failed(operation, cwd)(error.message)));
-      if (location === null) {
-        return yield* failed(operation, cwd)("No Mend thread or project of yours works there.");
+        .pipe(Effect.mapError((error) => fail(error.message)));
+      if (location === null) return yield* fail(NOWHERE);
+      const { changeId } = location;
+      if (changeId === null) {
+        return {
+          location,
+          local: localStatusOf(location, null),
+          remote: location.sessionId === null ? null : NO_REMOTE,
+        };
       }
-      const stats =
-        location.changeId === null
-          ? null
-          : yield* mend
-              .changeStats(session.deviceToken, location.changeId)
-              .pipe(Effect.mapError((error) => failed(operation, cwd)(error.message)));
-      return { location, local: localStatusOf(location, stats) };
+      const [stats, landings] = yield* Effect.all(
+        [
+          mend.changeStats(session.deviceToken, changeId),
+          mend
+            .changeLandings(session.deviceToken, changeId)
+            .pipe(Effect.flatMap((view) => (refreshed ? observe(view) : Effect.succeed(view)))),
+        ],
+        { concurrency: 2 },
+      ).pipe(Effect.mapError((error) => fail(error.message)));
+      return {
+        location,
+        local: localStatusOf(location, stats),
+        remote: remoteStatusOf(standingOf(landings, stats.files), location),
+      };
     });
 
   const refreshStatus = (request: VcsStatusInput) =>
-    statusAt("vcs.refreshStatus", request.cwd).pipe(
-      Effect.map(
-        ({ local }): VcsStatusResult => ({
-          ...local,
-          hasUpstream: false,
-          aheadCount: 0,
-          behindCount: 0,
-          pr: null,
-        }),
-      ),
+    statusAt("vcs.refreshStatus", request.cwd, true).pipe(
+      Effect.map(({ local, remote }): VcsStatusResult => ({ ...local, ...(remote ?? NO_REMOTE) })),
+      // t3code drops this answer and waits for its status stream to say the same.
+      Effect.ensuring(nudge(request.cwd)),
     );
 
   const subscribeStatus = (
@@ -174,16 +254,18 @@ export const makeVcsHandlers = (input: {
         const shell = yield* hub
           .subscribeShell(undefined)
           .pipe(Effect.mapError((error) => failed(operation, request.cwd)(error.message)));
+        const nudged = yield* PubSub.subscribe(nudges);
         const first = yield* statusAt(operation, request.cwd);
         const snapshot: VcsStatusStreamEvent = {
           _tag: "snapshot",
           local: first.local,
-          remote: null,
+          remote: first.remote,
         };
         if (first.location.sessionId === null) {
           return Stream.make(snapshot).pipe(Stream.concat(Stream.never));
         }
-        let last = JSON.stringify(first.local);
+        let lastLocal = JSON.stringify(first.local);
+        let lastRemote = JSON.stringify(first.remote);
         // Any session of the worktree moving its one change, or a thread going (the one the
         // first read found may be gone, and another in the worktree read instead).
         const moved = shell.changes.pipe(
@@ -193,24 +275,36 @@ export const makeVcsHandlers = (input: {
               delta.kind === "thread.removed",
           ),
           Stream.map(() => undefined),
+          Stream.merge(
+            Stream.fromSubscription(nudged).pipe(
+              Stream.filter((cwd) => cwd === request.cwd),
+              Stream.map(() => undefined),
+            ),
+          ),
         );
         const updates = Stream.merge(moved, Stream.tick(VCS_POLL).pipe(Stream.drop(1))).pipe(
           Stream.groupedWithin(Number.MAX_SAFE_INTEGER, VCS_REFRESH_MS),
           Stream.mapEffect(() =>
             statusAt(operation, request.cwd).pipe(
-              Effect.map(({ local }) => local),
               // A read that fails leaves the last status standing; the next change reads again.
               Effect.orElseSucceed(() => null),
             ),
           ),
-          Stream.filter((local): local is VcsStatusLocalResult => {
-            if (local === null) return false;
-            const print = JSON.stringify(local);
-            if (print === last) return false;
-            last = print;
-            return true;
+          Stream.flatMap((status) => {
+            if (status === null) return Stream.empty;
+            const events: Array<VcsStatusStreamEvent> = [];
+            const local = JSON.stringify(status.local);
+            if (local !== lastLocal) {
+              lastLocal = local;
+              events.push({ _tag: "localUpdated", local: status.local });
+            }
+            const remote = JSON.stringify(status.remote);
+            if (remote !== lastRemote) {
+              lastRemote = remote;
+              events.push({ _tag: "remoteUpdated", remote: status.remote });
+            }
+            return Stream.fromIterable(events);
           }),
-          Stream.map((local): VcsStatusStreamEvent => ({ _tag: "localUpdated", local })),
           Stream.mapError((error) => failed(operation, request.cwd)(error.message)),
         );
         return Stream.make(snapshot).pipe(Stream.concat(updates));
@@ -223,7 +317,7 @@ export const makeVcsHandlers = (input: {
         .locationOf(request.cwd)
         .pipe(Effect.mapError((error) => refsFailed(request.cwd)(error.message)));
       if (location === null) {
-        return yield* refsFailed(request.cwd)("No Mend thread or project of yours works there.");
+        return yield* refsFailed(request.cwd)(NOWHERE);
       }
       const branches = yield* mend
         .projectBranches(session.deviceToken, location.projectId)
@@ -236,5 +330,86 @@ export const makeVcsHandlers = (input: {
       } satisfies VcsListRefsResult;
     });
 
-  return { listRefs, refreshStatus, subscribeStatus };
+  /**
+   * t3code's push and "create PR", as a landing of the thread's change (`landing.ts`). Commit
+   * alone, a new branch, a selection of files and the panel's message are refused in Mend's words,
+   * as is a caller who does not own the change, before anything reaches Mend's landing.
+   */
+  const runStackedAction = (
+    request: GitRunStackedActionInput,
+  ): Stream.Stream<GitActionProgressEvent, VcsActionError> => {
+    const operation = WS_METHODS.gitRunStackedAction;
+    const fail = failed(operation, request.cwd);
+    const base = { actionId: request.actionId, cwd: request.cwd, action: request.action };
+    return Stream.unwrap(
+      Effect.gen(function* () {
+        const location = yield* hub
+          .locationOf(request.cwd)
+          .pipe(Effect.mapError((error) => fail(error.message)));
+        if (location === null) return yield* fail(NOWHERE);
+        if (location.sessionId === null) return yield* refusedByRule(PROJECT_ROOT_HAS_NO_CHANGE);
+        const plan = planOf(request);
+        if (plan._tag === "refused") return yield* refusedByRule(plan.text);
+        if (location.changeId === null) {
+          return yield* fail("This thread's worktree holds no change yet.");
+        }
+        const view = yield* mend
+          .changeLandings(session.deviceToken, location.changeId)
+          .pipe(Effect.mapError((error) => fail(error.message)));
+        if (!view.land) return yield* refusedByRule(ONLY_THE_OWNER);
+        const known = recordedPullRequestOf(view);
+        // As t3code's own server ends a failed action, with its phase and words first.
+        const failedAt = (
+          phase: GitActionProgressPhase,
+          error: VcsActionError,
+        ): Stream.Stream<GitActionProgressEvent, VcsActionError> => {
+          const ended: GitActionProgressEvent = {
+            ...base,
+            kind: "action_failed",
+            phase,
+            message: error.message,
+          };
+          return Stream.make(ended).pipe(Stream.concat(Stream.fail(error)));
+        };
+        const landed = mend
+          .land(session.deviceToken, view.sessionId ?? location.sessionId, {
+            pullRequest: plan.pullRequest,
+          })
+          .pipe(
+            Effect.mapError((error) =>
+              error._tag === "MendCommandRefused" && error.tag === "LandingNotAllowed"
+                ? refusedByRule(error.message)
+                : fail(error.message),
+            ),
+            Effect.map((report) => landingResultOf(request.action, report, location, known)),
+            Effect.result,
+          );
+        const started: ReadonlyArray<GitActionProgressEvent> = [
+          { ...base, kind: "action_started", phases: plan.phases },
+          { ...base, kind: "phase_started", phase: "push", label: "Landing with Mend..." },
+        ];
+        return Stream.fromIterable(started).pipe(
+          Stream.concat(
+            Stream.unwrap(
+              landed.pipe(
+                Effect.map((outcome): Stream.Stream<GitActionProgressEvent, VcsActionError> => {
+                  if (Result.isFailure(outcome)) return failedAt("push", outcome.failure);
+                  const result = outcome.success;
+                  if (result._tag === "failed") return failedAt(result.phase, fail(result.detail));
+                  const finished: GitActionProgressEvent = {
+                    ...base,
+                    kind: "action_finished",
+                    result: result.result,
+                  };
+                  return Stream.make(finished);
+                }),
+              ),
+            ),
+          ),
+        );
+      }),
+    ).pipe(Stream.ensuring(nudge(request.cwd)));
+  };
+
+  return { listRefs, refreshStatus, runStackedAction, subscribeStatus };
 };
