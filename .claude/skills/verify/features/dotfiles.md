@@ -24,6 +24,8 @@ why.
   and removes the snapshot.
 - `dotfiles-project-switch` turns dotfiles, and the default shell profile, on or off per project.
 - `dotfiles-session-line` shows on the session page what the launch sent, or what it left out.
+- `dotfiles-dir-modes` sets the mode of each directory the copy makes in a person's home (see
+  Directory modes below).
 
 ## How to get to it (user POV)
 
@@ -117,8 +119,57 @@ Preconditions:
   project's Dotfiles card, and of the session page with its `dotfiles ·` line; keep every `mend`
   transcript with exit codes.
 
+## Directory modes in a person's home
+
+Added from sealantd#186 and its verifier's drive
+(https://github.com/sealant-sh/sealantd/pull/186#issuecomment-6238698981). A directory the copy
+makes in a person's home takes the tree's mode intersected with the mode a new directory gets there.
+Both Mend dotfiles sources pack with `git archive` (`packages/store/src/dotfiles-store.ts:277`,
+`packages/sessions/src/dotfiles.ts:444`), whose default `tar.umask 002` stages directories at `0775`
+and files at `0664`. A `0700` tree directory, a set-id directory and a two-archive `0555` merge
+cannot reach sealantd through Mend; sealantd's root tests cover them. What a stack can show is the
+ceiling a default ACL on `/home` puts on a new directory. The decisive case is `o::rwx`: a new
+directory takes `0777`. Expected for the created directories, parent vs head of #186: `777` vs
+`775`. Under `o::rx` both give `775`. Files are `664` on both.
+
+Preconditions: [per-person-homes.md](./per-person-homes.md) (two accounts, `<owner>` and `<member>`,
+as in [organization.md](./organization.md)), `<wt>-shared` a `shared` project on the fixture image
+(`stack.mjs project-image`; `setfacl` is present), and `<scratch>/.verify-modes/inner/file` holding
+`modes`.
+
+- **Throwaway launch first.** After any image change, start one launch on the image in a worktree
+  you will not measure, for example `mend run --name verify-probe --project <wt>-shared -- true`,
+  and let it end. An image's first launch runs on the shared layout while Mend probes whether the
+  image supports per-person homes (`executor_layouts.reason`:
+  `per-person users not yet known for this image`). Without it the member's launch runs as root in
+  `/root`, not in a per-person home, and the modes below describe nothing. The rule is in
+  [per-person-homes.md](./per-person-homes.md) Gotchas.
+- **Hold the executor.** As `<owner>`:
+  `mend run --name verify-pp --project <wt>-shared --detach -- sleep 900`. A `mend run` with no live
+  session gets a fresh executor, so an ACL set in a session that has ended is gone before the member
+  joins.
+- **Set the ACL.** As `<owner>`:
+  `mend run --worktree verify-pp --project <wt>-shared -- sh -c 'sudo setfacl -d -m u::rwx,g::rwx,o::rwx /home && getfacl -p /home'`.
+  The output ends with three `default:` lines. For the `o::rx` pass use `o::rx`.
+- **Snapshot.** As `<member>`:
+  `HOME=<scratch> XDG_CONFIG_HOME=<member-config> mend dotfiles sync .verify-modes/inner/file`.
+  `mend dotfiles` lists that one file.
+- **Join while the owner's session runs.** As `<member>`:
+  `XDG_CONFIG_HOME=<member-config> mend run --worktree verify-pp --project <wt>-shared -- sh -c 'getfacl -p $HOME | grep default; stat -c "%a %U %n" $HOME $HOME/.verify-modes $HOME/.verify-modes/inner $HOME/.verify-modes/inner/file'`.
+  Dotfiles apply at a person's first process in a per-person workspace, so this launch makes the
+  directories. The home is `700` with three `default:` lines and the file is `664`. Under `o::rwx`,
+  `.verify-modes` and `.verify-modes/inner` read `777 777` at the parent and `775 775` at the head.
+  Under `o::rx` both read `775 775`.
+- **Proof.** Keep `getfacl` and `stat` output for both ACLs on both stacks, the daemon's `Umask`
+  (`0022` in the drive), and the staged copy under `~/.local/share/sealant-dotfiles/0/.verify-modes`
+  (`775` with a `664` file, from `git archive`).
+
 ## Gotchas
 
+- Under `o::rwx`, other directories in a member's home that this copy does not make read `0777` at
+  the parent and the head of #186 (`.claude`, `.codex`, `.local`, `.local/share`,
+  `.local/share/sealant-dotfiles`, `.local/state`, `.pi`, `.pi/agent`, `.config/git`). Do not count
+  them against a dotfiles change.
 - `Add files…` is a `<label>` styled as a button around a file input with `display: none`. It has no
   button role and no keyboard focus, so `getByRole` cannot reach it. Use
   `page.getByLabel("Add files…").setInputFiles(…)`. A finding: the control is unreachable by
