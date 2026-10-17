@@ -3356,15 +3356,20 @@ test("review 624 r3 (N10): a run's unknown requests are waited out on disk befor
     throw new TypeError("fetch failed");
   };
   await runAll(run.ctx).catch(() => null);
+  const interrupted = Date.now();
   await cleanupAll(run.ctx);
   const stateFile = path.join(run.ctx.stateDir, "late01.json");
-  assert.equal(JSON.parse(readFileSync(stateFile, "utf8")).rid, "late01");
+  const recorded = JSON.parse(readFileSync(stateFile, "utf8"));
+  assert.equal(recorded.rid, "late01");
+  assert.ok(recorded.quietUntil >= interrupted + waits.quiet);
   assert.match(
     run.ctx.result.errors.map((error) => error.message).join("\n"),
     /`cleanup --run late01`, which waits until/,
   );
-  // `cleanup --run late01` at once, in a fresh process: it waits the quiet period out, so the late
-  // commit is there to remove, and only a second sweep that finds nothing settles it.
+  // `cleanup --run late01` at once, in a fresh process: it waits the recorded quiet period out, so
+  // the late commit is there to remove, and only a second sweep that finds nothing settles it. The
+  // wait is checked against the recorded instant, not this test's clock, so a slow runner's time
+  // between the record and the cleanup falls inside the window instead of shortening the measure.
   const later = cleanupWorld({ rid: "late01" });
   later.ctx.stateDir = run.ctx.stateDir;
   later.ctx.cleanupWaits = waits;
@@ -3373,9 +3378,8 @@ test("review 624 r3 (N10): a run's unknown requests are waited out on disk befor
   later.ctx.api2.delete = async (route) => ({
     removed: run.stored.delete(decodeURIComponent(route.split("?path=")[1])),
   });
-  const started = Date.now();
   await cleanupAll(later.ctx, { reconcile: true });
-  assert.ok(Date.now() - started >= 300);
+  assert.ok(Date.now() >= recorded.quietUntil);
   assert.equal(run.stored.size, 0);
   assert.deepEqual(later.result.errors, []);
   assert.throws(() => readFileSync(stateFile));
