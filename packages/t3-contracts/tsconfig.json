@@ -22,5 +22,5 @@
     "resolveJsonModule": true,
     "types": ["node"]
   },
-  "include": ["src", "shared", "test", "types", "scripts", "vitest.config.ts"]
+  "include": ["src", "t3-shared", "client-runtime", "test", "types", "scripts", "vitest.config.ts"]
 }

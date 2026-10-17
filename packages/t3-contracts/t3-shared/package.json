@@ -1,0 +1,11 @@
+{
+  "name": "@t3tools/shared",
+  "version": "0.0.0",
+  "private": true,
+  "description": "The files of t3code's @t3tools/shared that @mend/t3-contracts vendors, under t3code's package name so the vendored files import them unchanged",
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    "./*": "./src/*.ts"
+  }
+}

@@ -78,16 +78,16 @@ catalog:
 # with the t3 catalog's (beta.93 is below @effect/vitest's ^4.0.0-beta.98); hence effect in apps/cli.
 catalogs:
   t3:
-    "@effect/platform-node": 4.0.2
-    "@effect/vitest": 4.0.2
-    effect: 4.0.2
+    "@effect/platform-node": 4.0.5
+    "@effect/vitest": 4.0.5
+    effect: 4.0.5
     vitest: 5.0.1
     vitest-v5: npm:vitest@5.0.1
 
-# @effect/platform-node 4.0.2 asks for @effect/platform-node-shared ^4.0.2, which would resolve to
-# the newest 4.0.x and its own effect peer. t3code pins it to 4.0.2 in its catalog; so does this.
+# @effect/platform-node 4.0.5 asks for @effect/platform-node-shared ^4.0.5, which would resolve to
+# the newest 4.0.x and its own effect peer. t3code pins it to 4.0.5 in its catalog; so does this.
 overrides:
-  "@effect/platform-node@4.0.2>@effect/platform-node-shared": 4.0.2
+  "@effect/platform-node@4.0.5>@effect/platform-node-shared": 4.0.5
 
 onlyBuiltDependencies:
   - electron

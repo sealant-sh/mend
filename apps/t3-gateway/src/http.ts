@@ -6,6 +6,8 @@ import {
   EnvironmentAuthenticatedPrincipal,
   EnvironmentHttpApi,
   ORCHESTRATION_PROTOCOL_HEADER,
+  OrchestrationV2ThreadTranscript,
+  PROVIDER_SEND_TURN_MAX_FILE_BYTES,
 } from "@mend/t3-contracts";
 import * as Effect from "effect/Effect";
 import * as HttpApi from "effect/http-api/HttpApi";
@@ -16,6 +18,7 @@ import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/http/HttpServerResponse";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 
 import { AssetRouteLive } from "./assets.ts";
 import {
@@ -359,9 +362,46 @@ export const OrchestrationGroupLive = HttpApiBuilder.group(
               }),
             ),
           )
+          .handle("threadTranscript", ({ params }) =>
+            Effect.scoped(
+              Effect.gen(function* () {
+                const hub = yield* callerHub;
+                const snapshot = yield* hub
+                  .threadSnapshot(params.threadId)
+                  .pipe(
+                    Effect.catch((error) =>
+                      internal("orchestration_thread_snapshot_failed", error),
+                    ),
+                  );
+                if (snapshot === null) return yield* notFound("thread_not_found");
+                const { projection } = snapshot;
+                const transcript = {
+                  threadId: projection.thread.id,
+                  title: projection.thread.title,
+                  updatedAt: projection.updatedAt,
+                  items: projection.visibleTurnItems,
+                };
+                const bytes = Buffer.byteLength(
+                  JSON.stringify(encodeTranscript(transcript)),
+                  "utf8",
+                );
+                if (bytes > PROVIDER_SEND_TURN_MAX_FILE_BYTES) {
+                  return yield* requestInvalid("thread_transcript_too_large");
+                }
+                return transcript;
+              }),
+            ).pipe(
+              Effect.catchTags({
+                GatewayCredentialInvalid: invalidCredential,
+                GatewayDeviceUnconfirmed: deviceUnconfirmed,
+              }),
+            ),
+          )
       );
     }),
 );
+
+const encodeTranscript = Schema.encodeSync(Schema.toCodecJson(OrchestrationV2ThreadTranscript));
 
 // ─── Router ──────────────────────────────────────────────────────────────────
 

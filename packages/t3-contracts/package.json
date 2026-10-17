@@ -8,11 +8,11 @@
   "exports": {
     ".": "./src/index.ts",
     "./client-rpc-permissions": "./src/clientRpcPermissions.ts",
-    "./keybindings": "./shared/keybindings.ts",
+    "./keybindings": "./t3-shared/src/keybindings.ts",
     "./pin": "./t3code.pin.json",
     "./relay": "./src/relay.ts",
     "./settings": "./src/settings.ts",
-    "./thread-settled": "./shared/threadSettled.ts"
+    "./thread-settled": "./client-runtime/threadSettled.ts"
   },
   "scripts": {
     "lint": "oxlint . --no-error-on-unmatched-pattern",
@@ -22,6 +22,7 @@
   },
   "dependencies": {
     "@t3tools/contracts": "link:.",
+    "@t3tools/shared": "link:./t3-shared",
     "effect": "catalog:t3"
   },
   "devDependencies": {

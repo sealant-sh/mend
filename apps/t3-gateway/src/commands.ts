@@ -41,6 +41,16 @@ import type { BearerSession } from "./state.ts";
  *   the same way (`visits.ts`).
  */
 
+const RENAME_FIELDS: ReadonlySet<string> = new Set(["type", "commandId", "threadId", "title"]);
+
+const isRenameOnly = (command: object): boolean =>
+  Object.entries(command).every(
+    ([key, value]) =>
+      RENAME_FIELDS.has(key) ||
+      value === undefined ||
+      (key === "regenerateTitle" && value === false),
+  );
+
 /** t3code's approval decisions as Mend's; Mend has no "always", so it is "for this session". */
 export const mendDecisionOf = (
   decision: ProviderApprovalDecision,
@@ -217,16 +227,7 @@ export const dispatchCommand = (
     case "thread.metadata.update": {
       // Only the name moves through Mend; the branch and worktree are Mend's, and so are titles.
       const { threadId, title } = command;
-      const others = [
-        command.regenerateTitle === true ? true : undefined,
-        command.branch,
-        command.worktreePath,
-        command.expectedWorktreePath,
-        command.expectedEmpty,
-        command.limitRecovery,
-        command.linkedPullRequest,
-      ];
-      if (title === undefined || others.some((value) => value !== undefined)) {
+      if (title === undefined || !isRenameOnly(command)) {
         return refuse(
           "Mend's t3code gateway renames a thread and nothing else: its branch, worktree and pull request are Mend's.",
         );

@@ -10,20 +10,38 @@ import { expect, it } from "vitest";
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const tag = "v0.0.1-nightly.20261013.1";
 // Independent inventory: adding a mapping requires reviewing the expected copied contract.
-const upstream = {
-  LICENSE: "fixture license\n",
-  "packages/contracts/src/a.ts": "export const a = 1;\n",
-  "packages/contracts/src/nested/b.ts": "export const b = 2;\n",
-  "packages/shared/src/keybindings.ts": "export const keys = [];\n",
-  "packages/client-runtime/src/state/threadSettled.ts": "export const settled = true;\n",
-};
-const local = {
-  LICENSE: "fixture license\n",
-  "src/a.ts": "export const a = 1;\n",
-  "src/nested/b.ts": "export const b = 2;\n",
-  "shared/keybindings.ts": "export const keys = [];\n",
-  "shared/threadSettled.ts": "export const settled = true;\n",
-};
+const shared = [
+  "Array",
+  "changeRequestUrl",
+  "keybindings",
+  "model",
+  "orchestrationV2PendingBackgroundWork",
+  "path",
+  "sourceControl",
+  "threadPullRequests",
+];
+const clientRuntime = ["models", "subagentDisplay", "subagentRuntime", "threadSettled"];
+const inventory: ReadonlyArray<{ upstream: string; local: string; bytes: string }> = [
+  { upstream: "LICENSE", local: "LICENSE", bytes: "fixture license\n" },
+  { upstream: "packages/contracts/src/a.ts", local: "src/a.ts", bytes: "export const a = 1;\n" },
+  {
+    upstream: "packages/contracts/src/nested/b.ts",
+    local: "src/nested/b.ts",
+    bytes: "export const b = 2;\n",
+  },
+  ...shared.map((name) => ({
+    upstream: `packages/shared/src/${name}.ts`,
+    local: `t3-shared/src/${name}.ts`,
+    bytes: `export const ${name} = "shared";\n`,
+  })),
+  ...clientRuntime.map((name) => ({
+    upstream: `packages/client-runtime/src/state/${name}.ts`,
+    local: `client-runtime/${name}.ts`,
+    bytes: `export const ${name} = "state";\n`,
+  })),
+];
+const upstream = Object.fromEntries(inventory.map((file) => [file.upstream, file.bytes]));
+const local = Object.fromEntries(inventory.map((file) => [file.local, file.bytes]));
 const write = (root: string, name: string, bytes: string) => {
   fs.mkdirSync(path.dirname(path.join(root, name)), { recursive: true });
   fs.writeFileSync(path.join(root, name), bytes);
@@ -68,8 +86,8 @@ const fixture = (
     fs.cpSync(path.join(packageRoot, "scripts"), path.join(target, "scripts"), { recursive: true });
     write(target, "package.json", '{"type":"module"}\n');
     write(target, "src/previous.ts", "previous source\n");
-    write(target, "shared/keybindings.ts", "previous keybindings\n");
-    write(target, "shared/threadSettled.ts", "previous thread reading\n");
+    write(target, "t3-shared/src/keybindings.ts", "previous keybindings\n");
+    write(target, "client-runtime/threadSettled.ts", "previous thread reading\n");
     write(target, "LICENSE", "previous license\n");
     write(target, "t3code.pin.json", "previous pin\n");
     work({
@@ -103,38 +121,28 @@ it("copies the complete tagged mapping and pin, excluding dirty and unrelated fi
   fixture(({ repo, target, git, run }) => {
     write(repo, "packages/contracts/src/a.ts", "dirty bytes\n");
     write(repo, "packages/contracts/src/untracked.ts", "untracked bytes\n");
-    write(target, "shared/unrelated.txt", "keep me\n");
+    write(target, "t3-shared/package.json", "keep me\n");
     const result = run();
     expect(result.status, result.stderr).toBe(0);
     for (const [name, bytes] of Object.entries(local))
       expect(fs.readFileSync(path.join(target, name), "utf8")).toBe(bytes);
     expect(fs.existsSync(path.join(target, "src/previous.ts"))).toBe(false);
     expect(fs.existsSync(path.join(target, "src/untracked.ts"))).toBe(false);
-    expect(fs.readFileSync(path.join(target, "shared/unrelated.txt"), "utf8")).toBe("keep me\n");
+    expect(fs.readFileSync(path.join(target, "t3-shared/package.json"), "utf8")).toBe("keep me\n");
     const pin: unknown = JSON.parse(fs.readFileSync(path.join(target, "t3code.pin.json"), "utf8"));
     expect(pin).toEqual({
       repository: "https://github.com/pingdotgg/t3code.git",
       tag,
       commit: git("rev-parse", tag),
       files: Object.fromEntries(
-        Object.entries(local).map(([name, bytes]) => {
-          const source =
-            name === "LICENSE"
-              ? "LICENSE"
-              : name.startsWith("src/")
-                ? `packages/contracts/${name}`
-                : name.endsWith("keybindings.ts")
-                  ? "packages/shared/src/keybindings.ts"
-                  : "packages/client-runtime/src/state/threadSettled.ts";
-          return [
-            name,
-            {
-              upstream: source,
-              blob: git("rev-parse", `${tag}:${source}`),
-              sha256: createHash("sha256").update(bytes).digest("hex"),
-            },
-          ];
-        }),
+        inventory.map((file) => [
+          file.local,
+          {
+            upstream: file.upstream,
+            blob: git("rev-parse", `${tag}:${file.upstream}`),
+            sha256: createHash("sha256").update(file.bytes).digest("hex"),
+          },
+        ]),
       ),
     });
     expect(fs.readdirSync(target).filter((name) => name.startsWith(".sync-"))).toEqual([]);
@@ -173,8 +181,8 @@ it("preserves the old copy when a required mapped source is absent at the tag", 
 
 it("rolls back already replaced paths when a later destination cannot be installed", () =>
   fixture(({ target, run }) => {
-    fs.rmSync(path.join(target, "shared"), { recursive: true });
-    write(target, "shared", "existing non-directory obstacle\n");
+    fs.rmSync(path.join(target, "client-runtime"), { recursive: true });
+    write(target, "client-runtime", "existing non-directory obstacle\n");
     const before = snapshot(target);
     const result = run();
     expect(result.status).not.toBe(0);

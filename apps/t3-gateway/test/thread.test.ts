@@ -104,6 +104,14 @@ describe("a thread", () => {
           "Twelve decisions.",
         );
         assert.strictEqual(bounded.latestLocalTurnOrdinal, answer?.ordinal);
+
+        const transcript = yield* client.orchestration.threadTranscript({
+          headers,
+          params: { threadId: ThreadId.make("session-1") },
+        });
+        assert.strictEqual(transcript.threadId, "session-1");
+        assert.strictEqual(transcript.title, projection.thread.title);
+        assert.deepStrictEqual(transcript.items, projection.visibleTurnItems);
         assert.deepStrictEqual(
           projection.messages.map((message) => [message.role, message.text]),
           [
@@ -301,6 +309,21 @@ describe("a thread", () => {
               "EnvironmentResourceNotFoundError",
             );
           }
+          const transcript = yield* Effect.exit(
+            client.orchestration.threadTranscript({
+              headers: {
+                authorization: `Bearer ${access.access_token}`,
+                [ORCHESTRATION_PROTOCOL_HEADER]: ORCHESTRATION_PROTOCOL_VERSION_TEXT,
+              },
+              params: { threadId: ThreadId.make(threadId) },
+            }),
+          );
+          assert.strictEqual(
+            Exit.isFailure(transcript)
+              ? Option.getOrUndefined(Cause.findErrorOption(transcript.cause))?._tag
+              : "succeeded",
+            "EnvironmentResourceNotFoundError",
+          );
         }
       }),
     ),

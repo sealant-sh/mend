@@ -1,7 +1,7 @@
 // Says whether a newer t3code changed the contracts this package vendors (docs/adr/0012, phase 4:
-// the drift job). Reads the newest nightly tag (or --tag), lists the files under the vendored
-// sources at its commit by git blob id, and compares them with t3code.pin.json. Nothing is written
-// to this package.
+// the drift job). Reads the newest nightly or preview tag (or --tag), lists the files under the
+// vendored sources at its commit by git blob id, and compares them with t3code.pin.json. Nothing is
+// written to this package.
 //
 //   node scripts/drift.ts [--tag <t3code tag>] [--out <report.md>]
 //
@@ -16,7 +16,7 @@ import { parseArgs } from "node:util";
 import {
   driftOf,
   hasDrift,
-  newestNightly,
+  newestTag,
   parseLsTree,
   reportOf,
   type PinnedFile,
@@ -55,12 +55,21 @@ try {
   if (!isPin(parsed)) throw new Error("t3code.pin.json has no tag and files");
   const tag =
     values.tag ??
-    newestNightly(
-      git(scratch, ["ls-remote", "--tags", "--refs", values.repository, "refs/tags/v*-nightly.*"])
+    newestTag(
+      git(scratch, [
+        "ls-remote",
+        "--tags",
+        "--refs",
+        values.repository,
+        "refs/tags/v*-nightly.*",
+        "refs/tags/v*-preview.*",
+      ])
         .split("\n")
         .map((line) => line.slice(line.indexOf("refs/tags/") + "refs/tags/".length)),
     );
-  if (tag === null || tag === undefined) throw new Error(`no nightly tag at ${values.repository}`);
+  if (tag === null || tag === undefined) {
+    throw new Error(`no nightly or preview tag at ${values.repository}`);
+  }
   git(scratch, ["init", "--quiet"]);
   git(scratch, [
     "fetch",

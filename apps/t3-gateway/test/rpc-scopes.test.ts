@@ -94,6 +94,23 @@ describe("per-RPC scopes", () => {
     assert.deepStrictEqual(requiredScopesFor(WS_METHODS.serverUpdateSettings, "not a patch"), [
       "settings:write",
     ]);
+    const rename = {
+      type: "project.update",
+      commandId: "command-1",
+      projectId: "project-1",
+      title: "mend",
+    };
+    assert.deepStrictEqual(requiredScopesFor(WS_METHODS.projectsMutate, rename), [
+      "orchestration:operate",
+    ]);
+    assert.deepStrictEqual(
+      requiredScopesFor(WS_METHODS.projectsMutate, { ...rename, scripts: [] }),
+      ["orchestration:operate", "settings:write"],
+    );
+    assert.deepStrictEqual(requiredScopesFor(WS_METHODS.projectsMutate, "not a mutation"), [
+      "orchestration:operate",
+      "settings:write",
+    ]);
   });
 
   it.live("refuses a call the bearer's grant does not cover, before its handler runs", () =>
@@ -295,6 +312,21 @@ describe("methods the 2026-10-10 pin added", () => {
           itemId: TurnItemId.make("no-such-item"),
         });
         assert.isNull(missing.item);
+      }),
+    ),
+  );
+
+  it.live("answers file metadata as unsupported, and database storage as no status", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        setup(mend);
+        const { rpc } = yield* pairAndConnect(mend, "METADATA");
+        const metadata = yield* rpc[WS_METHODS.filesystemGetMetadata]({
+          paths: ["/workspace/src/a.ts", "~/notes.md"],
+        });
+        assert.deepStrictEqual(metadata.entries, [null, null]);
+        const storage = yield* feed(rpc[WS_METHODS.serverGetDatabaseStorage]({}));
+        assert.isNull(yield* storage.next((status) => status === null));
       }),
     ),
   );

@@ -120,6 +120,12 @@ const knownRecords: Record<(typeof COMPOSER_CONTEXT_KINDS)[number], Record<strin
     threadId: "thread-1",
     title: "Fix login flow",
   },
+  environment: {
+    ...base,
+    kind: "environment",
+    label: "vps",
+    environmentId: "environment-vps",
+  },
 };
 
 describe("ComposerContextRecord", () => {
@@ -223,7 +229,6 @@ describe("OrchestrationMessageContext", () => {
           payload: { count: Number.NaN },
         },
         { ...knownRecords["review-comment"], contextId: "ctx_3", fenceLanguage: undefined },
-        // JSON.stringify throws on a bigint on every engine.
         { ...base, contextId: "ctx_4", kind: "future-kind", label: "y", payload: { n: 1n } },
       ],
     });
