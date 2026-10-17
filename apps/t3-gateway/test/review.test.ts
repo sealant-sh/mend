@@ -330,3 +330,46 @@ describe("whole added and deleted files", () => {
     }
   }
 });
+
+describe("whitespace ignored on Changes", () => {
+  it.live("previews Mend's patch as it is: the gateway filters no line", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        const reindented = [
+          "diff --git a/src/index.ts b/src/index.ts",
+          "index 1111111..2222222 100644",
+          "--- a/src/index.ts",
+          "+++ b/src/index.ts",
+          "@@ -1,3 +1,3 @@",
+          " const a = 1;",
+          "-const b = 2;",
+          "+    const b = 2;",
+          " const c = 3;",
+          "",
+        ].join("\n");
+        mend.workbench.addProject("project-1", "mend");
+        mend.workbench.addSession({
+          id: "session-1",
+          projectId: "project-1",
+          changeId: "change-1",
+        });
+        mend.workbench.diffs.set("change-1", {
+          diff: reindented,
+          files: [{ path: "src/index.ts", additions: 1, deletions: 1 }],
+        });
+        const { rpc } = yield* pairAndConnect(mend, "WHITESPACE");
+        const preview = yield* rpc[WS_METHODS.reviewGetDiffPreview]({
+          cwd: "/var/lib/mend/store/project-1/worktrees/wt-session-1",
+          ignoreWhitespace: true,
+        });
+        const [source] = preview.sources;
+        assert.strictEqual(source?.diff, reindented);
+        // The session's branch, not Mend's last checkpoint: the patch is the worktree as it stands.
+        assert.strictEqual(source?.headRef, "mend/wt-session-1");
+        assert.deepStrictEqual(source?.files, [
+          { path: "src/index.ts", previousPath: null, additions: 1, deletions: 1 },
+        ]);
+      }),
+    ),
+  );
+});

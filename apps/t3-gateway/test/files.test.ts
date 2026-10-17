@@ -1,4 +1,9 @@
-import { WS_METHODS } from "@mend/t3-contracts";
+import {
+  ORCHESTRATION_V2_WS_METHODS,
+  type OrchestrationV2ThreadStreamItem,
+  ThreadId,
+  WS_METHODS,
+} from "@mend/t3-contracts";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -8,6 +13,7 @@ import { entriesOf, listEntries, matchScore, searchEntries } from "../src/files.
 import { highlightLines } from "../src/highlight.ts";
 import { assert, describe, it } from "./support/effect-vitest.ts";
 import { startFakeMend, type FakeMend } from "./support/fake-mend.ts";
+import { feed } from "./support/feed.ts";
 import { gatewayTestLayer } from "./support/gateway.ts";
 import { pairAndConnect } from "./support/rpc.ts";
 
@@ -91,6 +97,92 @@ describe("project files for the composer", () => {
           const error = Option.getOrUndefined(Cause.findErrorOption(elsewhere.cause));
           assert.strictEqual(error?._tag, "ProjectSearchEntriesError");
         }
+      }),
+    ),
+  );
+});
+
+type ThreadItem = OrchestrationV2ThreadStreamItem;
+
+describe("a file the agent just wrote", () => {
+  it.live("is found the moment its file change finishes, though the listing is a second old", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        mend.workbench.addProject("project-1", "mend");
+        mend.workbench.addSession({ id: "session-1", projectId: "project-1" });
+        mend.workbench.files.set("session-1", ["README.md", "src/parser.ts", "docs/adr.md"]);
+        const { rpc } = yield* pairAndConnect(mend, "FRESH");
+        const thread = yield* feed(
+          rpc[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({
+            threadId: ThreadId.make("session-1"),
+          }),
+        );
+        yield* thread.next((item): item is ThreadItem => item.kind === "snapshot");
+        const listed = (directoryPath: string) =>
+          rpc[WS_METHODS.projectsListEntries]({ cwd: WORKTREE, directoryPath }).pipe(
+            Effect.map((answer) => answer.entries.map((entry) => entry.path)),
+          );
+        const search = (query: string) =>
+          rpc[WS_METHODS.projectsSearchEntries]({ cwd: WORKTREE, query, limit: 80 }).pipe(
+            Effect.map((answer) => answer.entries.map((entry) => entry.path)),
+          );
+
+        // The tree opens its folders: one read of Mend, which a search then answers from.
+        const before = fileReads(mend).length;
+        yield* Effect.all([listed(""), listed("src"), listed("docs")], {
+          concurrency: "unbounded",
+        });
+        assert.deepStrictEqual(yield* search("csv"), []);
+        assert.strictEqual(fileReads(mend).length - before, 1);
+
+        // The agent writes a file; t3code sees the finished file change and asks again.
+        mend.workbench.files.set("session-1", [
+          "README.md",
+          "src/parser.ts",
+          "docs/adr.md",
+          "src/csv.test.ts",
+        ]);
+        const turn = mend.workbench.addTurn("session-1", "Test the CSV parser");
+        mend.workbench.addItem(turn, {
+          kind: "file-change",
+          title: "src/csv.test.ts",
+          data: { changes: [{ path: "src/csv.test.ts", kind: "add" }] },
+        });
+        yield* thread.next(
+          (item): item is ThreadItem =>
+            item.kind === "event" &&
+            item.event.type === "turn-item.updated" &&
+            item.event.payload.type === "file_change",
+        );
+        assert.deepStrictEqual(yield* search("csv"), ["src/csv.test.ts"]);
+        assert.strictEqual(fileReads(mend).length - before, 2);
+      }),
+    ),
+  );
+
+  it.live("is in the tree when it is refreshed, though nothing in the thread said so", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        mend.workbench.addProject("project-1", "mend");
+        mend.workbench.addSession({ id: "session-1", projectId: "project-1" });
+        mend.workbench.files.set("session-1", ["README.md", "src/parser.ts"]);
+        const { rpc } = yield* pairAndConnect(mend, "REFRESH");
+        const listed = (directoryPath: string) =>
+          rpc[WS_METHODS.projectsListEntries]({ cwd: WORKTREE, directoryPath }).pipe(
+            Effect.map((answer) => answer.entries.map((entry) => entry.path)),
+          );
+        assert.deepStrictEqual(yield* listed(""), ["README.md", "src"]);
+        assert.deepStrictEqual(yield* listed("src"), ["src/parser.ts"]);
+
+        // Written outside any thread, then the tree's refresh asks for each open folder again.
+        mend.workbench.files.set("session-1", ["README.md", "src/parser.ts", "src/lexer.ts"]);
+        const before = fileReads(mend).length;
+        const [root, src] = yield* Effect.all([listed(""), listed("src")], {
+          concurrency: "unbounded",
+        });
+        assert.deepStrictEqual(root, ["README.md", "src"]);
+        assert.deepStrictEqual(src, ["src/lexer.ts", "src/parser.ts"]);
+        assert.strictEqual(fileReads(mend).length - before, 1);
       }),
     ),
   );
@@ -180,11 +272,18 @@ describe("reading and searching a worktree's files", () => {
           ),
           "workspace_path_outside_root",
         );
-        // The project's root has no files of its own to read.
         assert.strictEqual(
           failureOf(
             yield* Effect.exit(
               rpc[WS_METHODS.projectsReadFile]({ cwd: STORE, relativePath: "README.md" }),
+            ),
+          ),
+          "operation_failed",
+        );
+        assert.strictEqual(
+          failureOf(
+            yield* Effect.exit(
+              rpc[WS_METHODS.projectsReadFile]({ cwd: "/etc", relativePath: "passwd" }),
             ),
           ),
           "workspace_path_outside_root",

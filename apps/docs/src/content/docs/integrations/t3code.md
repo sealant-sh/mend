@@ -179,8 +179,13 @@ t3code shows those controls inert with its own wording, or it refuses them with 
 - **Large trees.** Mend lists at most 20,000 files. In a larger tree a file past that cannot be
   found from the composer, and the search says it was cut.
 - **Uncommitted changes.** Mend reports a branch's change against its base, committed or not, and
-  has no read of what is uncommitted. t3code's branch toolbar shows the branch's changes and no
-  uncommitted ones.
+  has no read of what is uncommitted. t3code's branch toolbar shows the branch's changes, and
+  "Uncommitted" in the diff panel shows no patch. While the change has files, the git menu takes the
+  worktree to have uncommitted work, even when the agent committed all of it: it offers "Commit,
+  push & PR" where t3code's own server would offer "Push".
+- **Whitespace in "Changes".** Mend's patch for the whole change is shown as git wrote it, so hiding
+  whitespace changes does not hide them there. A turn's diff hides them. The comparison base picked
+  in the panel is not used either: "Changes" always compares against the base Mend recorded.
 - **Shared worktrees.** Mend keeps checkpoints per worktree, not per turn. When other sessions work
   in the same worktree, a turn's diff can include what they changed while it ran, and the thread
   says so: "Other sessions work in this worktree too: a turn's changes can include theirs from while

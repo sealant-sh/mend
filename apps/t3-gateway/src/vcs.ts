@@ -9,12 +9,16 @@ import {
   type VcsStatusResult,
   type VcsStatusStreamEvent,
 } from "@mend/t3-contracts";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
 import type { GatedMend } from "./device-gate.ts";
+import { makeFanout } from "./fanout.ts";
 import type { CwdLocation, PersonHub } from "./hub.ts";
-import type { MendBranch } from "./mend-client.ts";
+import { MEND_RESPONSE_DEADLINE, type MendBranch } from "./mend-client.ts";
 import type { BearerSession } from "./state.ts";
 
 /**
@@ -25,9 +29,9 @@ import type { BearerSession } from "./state.ts";
  * - The ref is the session's branch; the project's root is its default branch.
  * - Mend's change is the worktree against its base, committed or not, which is t3code's
  *   `branchChanges`: those totals.
- * - Mend has no read of the worktree's HEAD, index or uncommitted files, so nothing is claimed
- *   about them: `hasWorkingTreeChanges` is false and `workingTree` empty, rather than base-diff
- *   totals presented as uncommitted work.
+ * - Mend has no read of the worktree's HEAD, index or uncommitted files, and t3code says "Worktree
+ *   is clean" when `hasWorkingTreeChanges` is false: it is true whenever the change has files, and
+ *   `workingTree` stays empty.
  * - Mend tracks no upstream for a session's branch (landing is its own step, ADR 0007), so the
  *   remote half is null: nothing ahead, behind or in review is claimed.
  *
@@ -35,7 +39,13 @@ import type { BearerSession } from "./state.ts";
  * changes in the shell (every session there adds to its one change), or a thread goes, and every
  * fifteen seconds besides, as a change can move without its threads changing. Reads come at most
  * once a second, however busy the worktree: a burst is one read at the end of its second, never
- * put off while the burst lasts.
+ * put off while the burst lasts. `vcs.refreshStatus` sends what it read down the socket's streams
+ * of that `cwd` at once: t3code drops the call's answer and waits for the stream.
+ *
+ * A socket reads one `cwd`'s status one read at a time, and every ask joins the next read to start
+ * after it: a burst of refreshes is at most two reads, and a stream never shows an older read after
+ * a newer one. A read that fails, or has no complete answer within Mend's deadline, fails every ask
+ * it covers; an ask made after it reads again.
  */
 
 /** At most one read of a worktree's status this often while it keeps changing. */
@@ -53,7 +63,7 @@ export const localStatusOf = (
   hasPrimaryRemote: location.hasOrigin,
   isDefaultRef: location.branch === location.defaultBranch,
   refName: location.branch.trim().length > 0 ? location.branch : null,
-  hasWorkingTreeChanges: false,
+  hasWorkingTreeChanges: stats !== null && stats.files > 0,
   workingTree: EMPTY_TREE,
   ...(location.sessionId === null
     ? {}
@@ -126,15 +136,32 @@ const refsFailed = (cwd: string) => (detail: string) =>
 const failed = (operation: string, cwd: string) => (detail: string) =>
   new GitManagerError({ operation, cwd, detail });
 
+/** One read of a `cwd`'s status; `seq` counts the asks it answers, so a later read is higher. */
+interface StatusRead {
+  readonly cwd: string;
+  readonly seq: number;
+  readonly location: CwdLocation;
+  readonly local: VcsStatusLocalResult;
+}
+
+interface Reader {
+  readonly lock: Semaphore.Semaphore;
+  asked: number;
+  /** The last read to finish, failed or not, and the asks up to `seq` it answers. */
+  last: { readonly seq: number; readonly outcome: Exit.Exit<StatusRead, GitManagerError> } | null;
+}
+
 export const makeVcsHandlers = (input: {
   readonly hub: PersonHub;
   readonly mend: GatedMend;
   readonly session: BearerSession;
 }) => {
   const { hub, mend, session } = input;
+  const reads = makeFanout<StatusRead>();
+  const readers = new Map<string, Reader>();
 
   /** Where `cwd` is, and its status now. */
-  const statusAt = (operation: string, cwd: string) =>
+  const readStatus = (operation: string, cwd: string) =>
     Effect.gen(function* () {
       const location = yield* hub
         .locationOf(cwd)
@@ -149,6 +176,44 @@ export const makeVcsHandlers = (input: {
               .changeStats(session.deviceToken, location.changeId)
               .pipe(Effect.mapError((error) => failed(operation, cwd)(error.message)));
       return { location, local: localStatusOf(location, stats) };
+    });
+
+  /** `cwd`'s status from a read that started after this ask, shared with every ask meanwhile. */
+  const statusAt = (operation: string, cwd: string) =>
+    Effect.suspend(() => {
+      const reader = readers.get(cwd) ?? {
+        lock: Semaphore.makeUnsafe(1),
+        asked: 0,
+        last: null,
+      };
+      readers.set(cwd, reader);
+      const ask = ++reader.asked;
+      return reader.lock.withPermits(1)(
+        Effect.gen(function* () {
+          if (reader.last !== null && reader.last.seq >= ask) return yield* reader.last.outcome;
+          const seq = reader.asked;
+          // The lock is held for the whole read, so the whole read is bounded, body included: a
+          // Mend that sends its headers and stalls in the body must not hold every ask behind it.
+          const outcome = yield* readStatus(operation, cwd).pipe(
+            Effect.map((status): StatusRead => ({ cwd, seq, ...status })),
+            Effect.timeoutOrElse({
+              duration: MEND_RESPONSE_DEADLINE,
+              orElse: () =>
+                Effect.fail(
+                  failed(operation, cwd)(`Mend did not answer within ${MEND_RESPONSE_DEADLINE}.`),
+                ),
+            }),
+            Effect.exit,
+          );
+          // A read its asker cancelled answers no one: the asks it covered read again.
+          if (Exit.isFailure(outcome) && Cause.hasInterruptsOnly(outcome.cause)) {
+            return yield* outcome;
+          }
+          reader.last = { seq, outcome };
+          if (Exit.isSuccess(outcome)) yield* reads.publish([outcome.value]);
+          return yield* outcome;
+        }),
+      );
     });
 
   const refreshStatus = (request: VcsStatusInput) =>
@@ -174,6 +239,7 @@ export const makeVcsHandlers = (input: {
         const shell = yield* hub
           .subscribeShell(undefined)
           .pipe(Effect.mapError((error) => failed(operation, request.cwd)(error.message)));
+        const read = yield* reads.subscribe((entry) => entry.cwd === request.cwd);
         const first = yield* statusAt(operation, request.cwd);
         const snapshot: VcsStatusStreamEvent = {
           _tag: "snapshot",
@@ -183,6 +249,7 @@ export const makeVcsHandlers = (input: {
         if (first.location.sessionId === null) {
           return Stream.make(snapshot).pipe(Stream.concat(Stream.never));
         }
+        let seq = first.seq;
         let last = JSON.stringify(first.local);
         // Any session of the worktree moving its one change, or a thread going (the one the
         // first read found may be gone, and another in the worktree read instead).
@@ -194,23 +261,22 @@ export const makeVcsHandlers = (input: {
           ),
           Stream.map(() => undefined),
         );
-        const updates = Stream.merge(moved, Stream.tick(VCS_POLL).pipe(Stream.drop(1))).pipe(
+        const asks = Stream.merge(moved, Stream.tick(VCS_POLL).pipe(Stream.drop(1))).pipe(
           Stream.groupedWithin(Number.MAX_SAFE_INTEGER, VCS_REFRESH_MS),
-          Stream.mapEffect(() =>
-            statusAt(operation, request.cwd).pipe(
-              Effect.map(({ local }) => local),
-              // A read that fails leaves the last status standing; the next change reads again.
-              Effect.orElseSucceed(() => null),
-            ),
-          ),
-          Stream.filter((local): local is VcsStatusLocalResult => {
-            if (local === null) return false;
-            const print = JSON.stringify(local);
+          // What it reads comes down `read`; one that fails leaves the last status standing.
+          Stream.mapEffect(() => statusAt(operation, request.cwd).pipe(Effect.ignore)),
+          Stream.drain,
+        );
+        const updates = Stream.merge(read, asks).pipe(
+          Stream.filter((entry) => {
+            if (entry.seq <= seq) return false;
+            seq = entry.seq;
+            const print = JSON.stringify(entry.local);
             if (print === last) return false;
             last = print;
             return true;
           }),
-          Stream.map((local): VcsStatusStreamEvent => ({ _tag: "localUpdated", local })),
+          Stream.map(({ local }): VcsStatusStreamEvent => ({ _tag: "localUpdated", local })),
           Stream.mapError((error) => failed(operation, request.cwd)(error.message)),
         );
         return Stream.make(snapshot).pipe(Stream.concat(updates));

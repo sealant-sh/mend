@@ -13,12 +13,14 @@ import {
   type ProjectSearchEntriesInput,
   type ProjectSearchEntriesResult,
 } from "@mend/t3-contracts";
-import * as Clock from "effect/Clock";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 
 import type { GatedMend } from "./device-gate.ts";
 import { highlightLines } from "./highlight.ts";
 import type { CwdLocation, PersonHub } from "./hub.ts";
+import type { MendRead } from "./mend-client.ts";
 import type { MendFileListing } from "./mend-workbench.ts";
 import type { BearerSession } from "./state.ts";
 
@@ -27,16 +29,14 @@ import type { BearerSession } from "./state.ts";
  * `projects.searchEntries` on every keystroke after `@`, and the file tree `projects.listEntries`;
  * both name the thread's worktree (or the project's root) as `cwd`. The gateway answers from
  * Mend's `GET /api/projects/:id/files`, read as the person, which lists a session's worktree, or
- * the default branch for the project's root. A listing is kept for a few seconds, so a word typed
- * after `@` reads Mend once.
+ * the default branch for the project's root.
  *
  * Mend lists at most 20,000 files, sorted, and says when it cut the list; it has no paging and no
  * directory-scoped listing. So the gateway answers from those files only, and every search or
  * directory listing over a cut list says `truncated`: a file past the cut is not found here.
  */
 
-/** How long one listing answers the composer before Mend is read again. */
-export const LISTING_TTL_MS = 15_000;
+const LISTING_TTL = Duration.seconds(1);
 
 /** The extensions t3code previews as images (`isWorkspaceImagePreviewPath`). */
 const IMAGE_EXTENSIONS: ReadonlySet<string> = new Set([
@@ -146,39 +146,57 @@ export const listEntries = (
   });
 };
 
+interface Listed {
+  readonly listing: MendFileListing;
+  readonly entries: ReadonlyArray<ProjectEntry>;
+}
+
+/** One read of a listing, and what it has answered. */
+interface Kept {
+  readonly read: MendRead<Listed>;
+  readonly workspaceMutation: string | null;
+  /** The directories it listed: t3code asks for one again only to refresh it. */
+  readonly listed: Set<string | null>;
+}
+
 export const makeFileHandlers = (input: {
   readonly hub: PersonHub;
   readonly mend: GatedMend;
   readonly session: BearerSession;
 }) => {
   const { hub, mend, session } = input;
-  /** `projectId:sessionId` → a listing and when it was read; one socket's composer. */
-  const listings = new Map<
-    string,
-    {
-      readonly readAt: number;
-      readonly listing: MendFileListing;
-      readonly entries: ReadonlyArray<ProjectEntry>;
-    }
-  >();
+  const listings = new Map<string, Kept>();
 
-  /** The files at `cwd`, from the kept listing while it is fresh. */
-  const filesAt = (cwd: string) =>
+  /**
+   * The files at `cwd`. A listing is read again after a second, after a command or file change
+   * finishes in the worktree, and when the tree asks for a directory it already listed.
+   */
+  const filesAt = (cwd: string, directory?: string | null) =>
     Effect.gen(function* () {
       const location: CwdLocation | null = yield* hub.locationOf(cwd);
       if (location === null) return null;
       const key = `${location.projectId}:${location.sessionId ?? ""}`;
       const kept = listings.get(key);
-      const now = yield* Clock.currentTimeMillis;
-      if (kept !== undefined && now - kept.readAt < LISTING_TTL_MS) return kept;
-      const listing = yield* mend.projectFiles(
-        session.deviceToken,
-        location.projectId,
-        location.sessionId,
-      );
-      const fresh = { readAt: now, listing, entries: entriesOf(listing.files) };
-      listings.set(key, fresh);
-      return fresh;
+      const current =
+        kept !== undefined &&
+        kept.workspaceMutation === location.workspaceMutation &&
+        (directory === undefined || !kept.listed.has(directory))
+          ? kept
+          : {
+              read: yield* mend
+                .projectFiles(session.deviceToken, location.projectId, location.sessionId)
+                .pipe(
+                  Effect.map((listing): Listed => ({ listing, entries: entriesOf(listing.files) })),
+                  Effect.cachedWithTTL((exit) =>
+                    Exit.isSuccess(exit) ? LISTING_TTL : Duration.zero,
+                  ),
+                ),
+              workspaceMutation: location.workspaceMutation,
+              listed: new Set<string | null>(),
+            };
+      listings.set(key, current);
+      if (directory !== undefined) current.listed.add(directory);
+      return yield* current.read;
     });
 
   const searchEntriesAt = (request: ProjectSearchEntriesInput) => {
@@ -210,7 +228,7 @@ export const makeFileHandlers = (input: {
       failure: "workspace_root_not_found" | "directory_list_failed",
       detail: string,
     ) => new ProjectListEntriesError({ cwd: request.cwd, failure, detail });
-    return filesAt(request.cwd).pipe(
+    return filesAt(request.cwd, request.directoryPath ?? null).pipe(
       Effect.mapError((error) => failed("directory_list_failed", error.message)),
       Effect.flatMap((kept) => {
         if (kept === null) {
@@ -237,10 +255,13 @@ export const makeFileHandlers = (input: {
     ) =>
       new ProjectReadFileError({ cwd: request.cwd, relativePath: request.relativePath, failure });
     return Effect.gen(function* () {
-      const worktreeId = yield* worktreeAt(request.cwd).pipe(
-        Effect.mapError(() => failed("operation_failed")),
-      );
-      if (worktreeId === null) return yield* failed("workspace_path_outside_root");
+      const location = yield* hub
+        .locationOf(request.cwd)
+        .pipe(Effect.mapError(() => failed("operation_failed")));
+      if (location === null) return yield* failed("workspace_path_outside_root");
+      // The project's root (a new thread's): Mend lists its default branch but reads no file there.
+      const worktreeId = location.worktreeId;
+      if (worktreeId === null) return yield* failed("operation_failed");
       const answer = yield* mend
         .worktreeContents(session.deviceToken, worktreeId, { path: request.relativePath, at: null })
         .pipe(
