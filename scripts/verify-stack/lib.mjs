@@ -330,11 +330,11 @@ export function dockerHubTag(ref) {
  * pulled carries no repo digest, so only its id can be named.
  */
 export function heldVerdict(ref, held, hub) {
-  const repository = ref.replace(/:[^:/]*$/, "");
+  // Docker Hub's spellings of one repository are one: `docker.io/library/postgres` is `postgres`.
+  const short = (name) => name.replace(/^docker\.io\//, "").replace(/^library\//, "");
+  const repository = short(ref.replace(/:[^:/]*$/, ""));
   const digests = (held.RepoDigests ?? [])
-    .filter(
-      (item) => item.startsWith(`${repository}@`) || item.startsWith(`docker.io/${repository}@`),
-    )
+    .filter((item) => short(item.slice(0, item.indexOf("@"))) === repository)
     .map((item) => item.slice(item.indexOf("@") + 1));
   if (hub !== null && digests.includes(hub)) return null;
   const what = digests.length > 0 ? digests.join(",") : `${held.Id} (loaded, no repo digest)`;
@@ -350,7 +350,8 @@ export function heldVerdict(ref, held, hub) {
  * that no container shows (Core's and sealantd's builds, which the bundle and the workspace images
  * carry, the fixture's base and the network guard). `containers` is `docker inspect` of the
  * containers, `images` of the images (by id or reference, as found), `named` a role → reference
- * map. `id` is the image's id; `repoDigests` is empty for an image loaded rather than pulled.
+ * map. `containerId` is Docker's id for the container (names are reused), `id` the image's;
+ * `repoDigests` is empty for an image loaded rather than pulled.
  */
 export function imageRecord(containers, images, named) {
   const byKey = new Map();
@@ -359,11 +360,12 @@ export function imageRecord(containers, images, named) {
       byKey.set(key, image);
   // `name:tag@digest` is found by its repo digest, `name@digest`.
   const find = (key) => byKey.get(key) ?? byKey.get(String(key).replace(/:[^:/@]+@/, "@"));
-  const entry = (service, container, ref, id) => {
+  const entry = (service, container, containerId, ref, id) => {
     const image = find(id ?? ref);
     return {
       service,
       container,
+      containerId,
       image: ref,
       id: id ?? image?.Id ?? null,
       repoDigests: image?.RepoDigests ?? [],
@@ -372,11 +374,17 @@ export function imageRecord(containers, images, named) {
   const record = containers.map((container) => {
     const name = String(container.Name ?? container.Id).replace(/^\//, "");
     const service = container.Config?.Labels?.["com.docker.compose.service"] ?? name;
-    return entry(service, name, container.Config?.Image ?? null, container.Image ?? null);
+    return entry(
+      service,
+      name,
+      container.Id ?? null,
+      container.Config?.Image ?? null,
+      container.Image ?? null,
+    );
   });
   const shown = new Set(record.map((item) => item.image));
   for (const [role, ref] of Object.entries(named))
-    if (typeof ref === "string" && !shown.has(ref)) record.push(entry(role, null, ref, null));
+    if (typeof ref === "string" && !shown.has(ref)) record.push(entry(role, null, null, ref, null));
   return record;
 }
 
@@ -519,7 +527,8 @@ export function mergeLedgers(ledgers) {
     for (const id of ledger.containers ?? []) containers.add(id);
     for (const id of ledger.networks ?? []) networks.add(id);
     for (const volume of ledger.volumes ?? []) volumes.set(volumeIdentity(volume), volume);
-    for (const item of ledger.ran ?? []) ran.set(item.container, item);
+    // By the container's id: a name such as mend-postgres-1 is reused by the next container.
+    for (const item of ledger.ran ?? []) ran.set(item.containerId ?? item.container, item);
   }
   return {
     containers: [...containers],
