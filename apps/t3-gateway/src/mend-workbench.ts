@@ -276,8 +276,7 @@ export const MendLanding = Schema.Struct({
   /** The commit Mend wrote for work the agent left uncommitted; null when it wrote none. */
   commitSha: Schema.NullOr(Schema.String),
   pullRequest: Schema.NullOr(MendLandedPullRequest),
-  /** `pushed`, `pull-request`, `refused`, `failed` or `adopted` (`LandingOutcome`). */
-  outcome: Schema.String,
+  outcome: Schema.Literals(["pushed", "pull-request", "refused", "failed", "adopted"]),
   /** The remote's or `gh`'s own words for a refusal or a failure. */
   message: Schema.NullOr(Schema.String),
 });

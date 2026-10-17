@@ -1184,13 +1184,11 @@ export class FakeWorkbench {
   private pullRequestNumbers = 0;
   private shas = 0;
 
-  /** A sha nobody else has, as git would write one. */
   private nextSha(): string {
     this.shas += 1;
     return this.shas.toString(16).padStart(40, "a");
   }
 
-  /** The change's owner, who owns the earliest session whose worktree holds it. */
   private changeOwnerOf(changeId: string): string | null {
     const first = Array.from(this.sessions.values())
       .filter((session) => this.changes.get(session.id) === changeId)

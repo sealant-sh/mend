@@ -48,7 +48,6 @@ const setup = (mend: FakeMend) => {
   mend.workbench.stats.set(CHANGE, { files: 2, additions: 10, deletions: 3 });
 };
 
-/** The typed failure a call ended with, if any. */
 const errorOf = <A, E>(effect: Effect.Effect<A, E>) =>
   Effect.exit(effect).pipe(
     Effect.map((exit) =>
@@ -56,7 +55,6 @@ const errorOf = <A, E>(effect: Effect.Effect<A, E>) =>
     ),
   );
 
-/** Every event a git action sent, and how it ended. */
 const runAction = (
   rpc: Rpc,
   action: GitRunStackedActionInput["action"],
@@ -92,7 +90,6 @@ const remoteUpdated = (event: Event): event is Extract<Event, { _tag: "remoteUpd
 const snapshotOf = (event: Event): event is Extract<Event, { _tag: "snapshot" }> =>
   event._tag === "snapshot";
 
-/** A landing as Mend records one, for an answer a test makes Mend give. */
 const landingAs = (overrides: Partial<FakeLanding>): FakeLanding => ({
   id: "landing-x",
   changeId: CHANGE,

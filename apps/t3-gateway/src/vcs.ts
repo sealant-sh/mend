@@ -20,7 +20,14 @@ import * as Stream from "effect/Stream";
 
 import type { GatedMend } from "./device-gate.ts";
 import type { CwdLocation, PersonHub } from "./hub.ts";
-import { landingResultOf, ONLY_THE_OWNER, planOf, remoteStatusOf, standingOf } from "./landing.ts";
+import {
+  landingResultOf,
+  ONLY_THE_OWNER,
+  planOf,
+  recordedPullRequestOf,
+  remoteStatusOf,
+  standingOf,
+} from "./landing.ts";
 import type { MendBranch } from "./mend-client.ts";
 import { refusalOf } from "./rpc-scopes.ts";
 import type { BearerSession } from "./state.ts";
@@ -42,8 +49,8 @@ import type { BearerSession } from "./state.ts";
  * The stream sends a snapshot, then each half again when it moved. It reads again whenever any
  * thread in the worktree changes in the shell (every session there adds to its one change), a
  * thread goes, a status refresh or a git action here ends, and every fifteen seconds besides, as
- * a change can move without its threads changing. Reads come at most once a second, however busy the
- * worktree: a burst is one read at the end of its second, never put off while the burst lasts.
+ * a change can move without its threads changing. Reads come at most once a second, however busy
+ * the worktree: a burst is one read at the end of its second, never put off while the burst lasts.
  *
  * The git panel's push and "create PR" land the change through Mend (`runStackedAction`).
  */
@@ -136,14 +143,12 @@ const refsFailed = (cwd: string) => (detail: string) =>
 const failed = (operation: string, cwd: string) => (detail: string) =>
   new GitManagerError({ operation, cwd, detail });
 
-/** A git action Mend does not take, by its own rule, in its own words. */
 const refusedByRule = (message: string) => refusalOf(WS_METHODS.gitRunStackedAction, message);
 
 /** Why a git action at the project's root is refused. */
 export const PROJECT_ROOT_HAS_NO_CHANGE =
   "Mend lands a thread's change. The project's root has none.";
 
-/** The remote half for a thread whose worktree holds no change yet. */
 const NO_REMOTE: VcsStatusRemoteResult = {
   hasUpstream: false,
   aheadCount: 0,
@@ -159,7 +164,6 @@ export const makeVcsHandlers = (input: {
   readonly session: BearerSession;
 }) => {
   const { hub, mend, session } = input;
-  // When a refresh or a git action at a cwd ends, its status streams read again at once.
   const nudges = Effect.runSync(PubSub.unbounded<string>());
   const nudge = (cwd: string) => PubSub.publish(nudges, cwd).pipe(Effect.asVoid);
 
@@ -313,7 +317,7 @@ export const makeVcsHandlers = (input: {
           .changeLandings(session.deviceToken, location.changeId)
           .pipe(Effect.mapError((error) => fail(error.message)));
         if (!view.land) return yield* refusedByRule(ONLY_THE_OWNER);
-        const known = standingOf(view, 0).pullRequest;
+        const known = recordedPullRequestOf(view);
         const landed = mend
           .land(session.deviceToken, view.sessionId ?? location.sessionId, {
             pullRequest: plan.pullRequest,
